@@ -1,5 +1,5 @@
 /** @jsxImportSource react */
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { FlatList, KeyboardAvoidingView, Platform, Pressable, TextInput, View } from 'react-native';
 import { Feather } from '@expo/vector-icons';
 import { useRoute } from '@react-navigation/native';
@@ -9,9 +9,10 @@ import { useChatMessages, useChatRoom, useSendMessage } from '../../../hooks/cha
 import { chatSendRefusal } from '../sendRefusal';
 import { useAuthStore } from '../../../stores/authStore';
 import { useBlockUser, useReportContent } from '../../../hooks/customer';
-import { ActionSheet, CircleChip, ConfirmDialog, ErrorState, Header, LoadingBlock, Screen, T } from '../../../kit';
+import { ActionSheet, CircleChip, ConfirmDialog, ErrorState, Header, LoadingBlock, Screen, Spinner, T } from '../../../kit';
 import { errorMessage } from '../../../lib/apiError';
 import { CHAT_REPORT_REASONS } from '../../../lib/reportReasons';
+import { confirmedOutbox, dropOutbox, markOutbox, outboxBaseline, outboxItem, settleConfirmedFailed, settleOutbox, threadWithOutbox, type OutboxItem } from '../../../lib/chatOutbox';
 
 const GUTTER = space['2xl'];
 
@@ -36,9 +37,16 @@ export function ConversationScreen() {
   const messages = useChatMessages(roomId);
   const send = useSendMessage(roomId);
   const [draft, setDraft] = useState('');
+  // [APP-SPEED 10] This phone's messages on their way ("Sending…") or not sent (Retry), drawn after the thread.
+  const [outbox, setOutbox] = useState<OutboxItem[]>([]);
   const listRef = useRef<FlatList>(null);
 
-  const msgs: any[] = Array.isArray(messages.data) ? messages.data : ((messages.data as any)?.messages ?? []);
+  // Memoised on the read's data: the outbox effect below depends on it.
+  const msgs: any[] = useMemo(
+    () => (Array.isArray(messages.data) ? messages.data : ((messages.data as any)?.messages ?? [])),
+    [messages.data],
+  );
+  const thread: any[] = threadWithOutbox(msgs, outbox, user?.id);
 
   // [STORE-002] Report and block, from the place a person actually needs them.
   //
@@ -69,22 +77,54 @@ export function ConversationScreen() {
   const reportContent = useReportContent();
 
   useEffect(() => {
-    if (msgs.length) setTimeout(() => listRef.current?.scrollToEnd({ animated: true }), 60);
-  }, [msgs.length]);
+    if (thread.length) setTimeout(() => listRef.current?.scrollToEnd({ animated: true }), 60);
+  }, [thread.length]);
 
+  // [APP-SPEED 10] The message is in the thread at the tap, "Sending…"; the server's stored copy replaces it at the
+  // answer (hooks/chat writes it into the thread). [WR-035] A failed send never eats the message: it stays in the
+  // thread as "Not sent" with Retry. A refusal the server names (L13) is not retried: the words go back into the box
+  // (unless they typed anew) and the reason is shown, as before.
+  // [review S3] A "Not sent" item a re-read confirmed (its stored copy is in the thread) is done: drop it for good and
+  // give its copy to no other item, so the state holds only what is still unsent. Copies are matched over ALL items
+  // (one on its way still claims its copy, for display), but only "Not sent" ones are settled here, re-checked in
+  // the updater; one on its way is settled by its own answer (lib/chatOutbox settleConfirmedFailed).
+  useEffect(() => {
+    const failed = new Set(outbox.filter((item) => item.state === 'failed').map((item) => item.localId));
+    const confirmed = confirmedOutbox(msgs, outbox, user?.id).filter((c) => failed.has(c.localId));
+    if (confirmed.length === 0) return;
+    setOutbox((cur) => settleConfirmedFailed(cur, confirmed));
+  }, [msgs, outbox, user?.id]);
+  const deliver = (item: OutboxItem) => {
+    send.mutate(item.text, {
+      // [review S3] Done: dropped for good, and its stored copy can no longer confirm another item.
+      onSuccess: (sent: unknown) => setOutbox((cur) => settleOutbox(cur, item.localId, (sent as { id?: unknown } | null)?.id)),
+      onError: (error) => {
+        const refusal = chatSendRefusal(error);
+        if (refusal) {
+          setOutbox((cur) => dropOutbox(cur, item.localId));
+          setDraft((cur) => (cur.trim() ? cur : item.text));
+          setNotice(refusal);
+          return;
+        }
+        setOutbox((cur) => markOutbox(cur, item.localId, 'failed'));
+      },
+    });
+  };
   const onSend = () => {
     const text = draft.trim();
     if (!text || send.isPending) return;
     setDraft('');
-    // [WR-035] A failed send restores the draft (unless they typed anew) —
-    // clearing it optimistically must never eat the message.
-    send.mutate(text, {
-      onError: (error) => {
-        setDraft((cur) => (cur.trim() ? cur : text));
-        const refusal = chatSendRefusal(error);
-        if (refusal) setNotice(refusal);
-      },
-    });
+    // [review S2] The thread at the tap, only if it was loaded: a thread not read (or failed) gives no baseline,
+    // and that message is then never hidden by a re-read (only its own answer removes it).
+    const loaded = messages.data !== undefined && !messages.isError;
+    const item = outboxItem(text, loaded ? outboxBaseline(msgs, user?.id, text) : null);
+    setOutbox((cur) => [...cur, item]);
+    deliver(item);
+  };
+  const onRetry = (item: OutboxItem) => {
+    if (send.isPending) return;
+    setOutbox((cur) => markOutbox(cur, item.localId, 'sending'));
+    deliver(item);
   };
 
   return (
@@ -115,13 +155,18 @@ export function ConversationScreen() {
         <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1 }}>
           <FlatList
             ref={listRef}
-            data={msgs}
-            keyExtractor={(m, i) => m.id ?? String(i)}
+            data={thread}
+            keyExtractor={(m, i) => m.localId ?? m.id ?? String(i)}
             contentContainerStyle={{ padding: GUTTER, gap: space.md, flexGrow: 1 }}
             ListEmptyComponent={
               messages.isError ? (
                 // [WR-035] A failed history load is not an empty thread.
                 <ErrorState onRetry={() => messages.refetch()} message="Couldn't load this conversation." />
+              ) : messages.data === undefined ? (
+                // [APP-SPEED 10] Still reading the thread: a loader, never "Say hi" over messages not yet arrived.
+                <View accessibilityLabel="Loading messages" style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
+                  <Spinner />
+                </View>
               ) : (
                 <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
                   <T variant="label" tone="muted">
@@ -131,6 +176,7 @@ export function ConversationScreen() {
               )
             }
             renderItem={({ item: m }) => {
+              if (m.outbox) return <OutboxBubble item={m} retryDisabled={send.isPending} onRetry={() => onRetry(m)} />;
               const mine = m.senderId === user?.id;
               return (
                 <View
@@ -306,5 +352,44 @@ export function ConversationScreen() {
         onClose={() => setNotice(null)}
       />
     </Screen>
+  );
+}
+
+/** [APP-SPEED 10] This phone's message before the server has it: "Sending…", or "Not sent" with Retry. */
+function OutboxBubble({ item, retryDisabled, onRetry }: { item: OutboxItem; retryDisabled: boolean; onRetry: () => void }) {
+  const failed = item.state === 'failed';
+  return (
+    <View style={{ alignSelf: 'flex-end', maxWidth: '78%', alignItems: 'flex-end' }}>
+      <View
+        style={{
+          backgroundColor: failed ? color.surface.base : withAlpha(color.brand[500], 0.75),
+          borderRadius: radius.lg,
+          borderBottomRightRadius: 4,
+          paddingHorizontal: space.lg,
+          paddingVertical: space.md,
+          borderWidth: failed ? 1 : 0,
+          borderColor: color.border.subtle,
+        }}
+      >
+        <T variant="body" style={{ color: failed ? color.text.primary : color.white }}>{item.text}</T>
+        {failed ? null : (
+          <T variant="caption" style={{ color: withAlpha(color.white, 0.7), marginTop: 3, alignSelf: 'flex-end' }}>Sending…</T>
+        )}
+      </View>
+      {failed ? (
+        <Pressable
+          onPress={onRetry}
+          disabled={retryDisabled}
+          accessibilityRole="button"
+          accessibilityLabel="Retry sending this message"
+          hitSlop={8}
+          style={{ marginTop: 4, flexDirection: 'row', alignItems: 'center', gap: 4 }}
+        >
+          <Feather name="alert-circle" size={13} color={color.text.muted} />
+          <T variant="caption" tone="muted">Not sent · </T>
+          <T variant="caption" weight="semibold" style={{ color: color.brand[600] }}>Retry</T>
+        </Pressable>
+      ) : null}
+    </View>
   );
 }

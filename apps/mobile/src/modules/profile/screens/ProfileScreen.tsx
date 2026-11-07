@@ -79,7 +79,8 @@ export function MarketingConsentRow() {
   const toggle = useMutation({
     mutationFn: (next: boolean) => customerApi.setMarketingConsent(next),
     onError: () => toast.error('Marketing messages were not changed', 'Check your connection and try again.'),
-    onSettled: () => qc.invalidateQueries({ queryKey: ['consent'] }),
+    // [APP-SPEED 5] Free at the server's answer: the accepted choice shows until the re-read (acceptedChange below).
+    onSettled: () => { void qc.invalidateQueries({ queryKey: ['consent'] }); },
   });
   // [#1946 review S4-1] A change the server accepted (its success is the
   // authority) is the choice until a newer read answers, so a failed

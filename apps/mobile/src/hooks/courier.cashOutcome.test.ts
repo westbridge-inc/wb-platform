@@ -74,7 +74,8 @@ describe('the proof hook', () => {
   it('re-proves the auth principal after the wait, like every cash step', () => {
     expect(hook).toContain('requireAuthSessionForPrincipal(owner)');
     expect(MOVER).toContain('export async function evidenceFix(owner: AuthSessionSnapshot)');
-    expect(COURIER).toContain("import { evidenceFix } from './mover'");
+    // [APP-SPEED 6] The same import also brings writeJobEnded (a delivered parcel leaves the job screen at the answer).
+    expect(COURIER).toMatch(/import \{ evidenceFix(, writeJobEnded)? \} from '\.\/mover'/);
   });
 });
 
