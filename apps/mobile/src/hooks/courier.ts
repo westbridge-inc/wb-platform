@@ -1,6 +1,7 @@
 import { prepareUploadImage } from '../lib/uploadImage';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { courierApi } from '../services/api';
+import { homeFeedChanged } from '../lib/homeFeed';
 import { courierRequestAttempt } from '../lib/courierRequestAttemptStore';
 import { useMoverPreview } from '../stores/moverPreview';
 import { previewMutation } from '../lib/moverPreviewData';
@@ -72,6 +73,8 @@ export function useSendCourier() {
     // [APP-SPEED 5] The screen opens the parcel's tracking from the answer's own orderId: the button is free at the
     // answer, and the sender's parcel list refreshes in the background.
     onSuccess: () => { void qc.invalidateQueries({ queryKey: ['courier', 'orders'] }); },
+    // [APP-SPEED C · review S2-2] Home shows the parcel: its feed is out of date (an unanswered send may have landed too).
+    onSettled: () => { homeFeedChanged(qc); },
   });
 }
 

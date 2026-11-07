@@ -131,7 +131,8 @@ describe('[APP-SPEED A] the Cart tab opens on the cart the phone already has', (
     await render();
 
     // the Cart tab asks for the stand-in (enabled, from any cached quote of the same cart)
-    expect(fx.cartArgs.filter((args) => args.length === 5).at(-1)!.slice(3)).toEqual([true, true]);
+    // [APP-SPEED C] The sixth: the quote is watched while the tab is on screen.
+    expect(fx.cartArgs.filter((args) => args.length === 6).at(-1)!.slice(3)).toEqual([true, true, true]);
     // (a) at once
     expect(text()).toContain('Test item');
     expect(text()).toContain('Updating…');
@@ -158,7 +159,7 @@ describe('[APP-SPEED A] the Cart tab opens on the cart the phone already has', (
 
 describe('[APP-SPEED A · review S2-1] the Cart tab drawn ahead reads nothing until it is first shown', () => {
   /** The Cart tab's own quote call (the pickup-retry quote is the other useCart call). */
-  const tabQuote = () => fx.cartArgs.filter((args) => args.length === 5).at(-1)!;
+  const tabQuote = () => fx.cartArgs.filter((args) => args.length === 6).at(-1)!;
   const lastEnabled = () => tabQuote()[3];
 
   it('hidden and never opened: the quote and the rider read are held; the first focus opens them, for good', async () => {
@@ -178,6 +179,12 @@ describe('[APP-SPEED A · review S2-1] the Cart tab drawn ahead reads nothing un
     fx.focused = false;
     await render();
     expect(lastEnabled()).toBe(true);
+    // [APP-SPEED C] …but not watched while another screen is in front: a store page's +/− marks it stale, the quote
+    // is not re-read behind the store page; shown again, it is watched (and read) again.
+    expect(tabQuote()[5], 'not watched while hidden').toBe(false);
+    fx.focused = true;
+    await render();
+    expect(tabQuote()[5], 'watched again once shown').toBe(true);
   });
 
   it('a guest’s Cart (shown or not) asks for no quote', async () => {

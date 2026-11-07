@@ -30,6 +30,14 @@ vi.mock('react-native', async () => {
     Dimensions: { get: () => ({ width: 390, height: 844 }) }, Linking: { openURL: vi.fn() }, Share: { share: vi.fn() },
   };
 });
+// [APP-SPEED C] The menu is one FlashList: its header, every row (no windowing here) and its footer.
+vi.mock('@shopify/flash-list', async () => {
+  const R = await import('react');
+  const FlashList = (p: any) => R.createElement('div', null, p.ListHeaderComponent ?? null,
+    (p.data ?? []).map((item: any, i: number) => R.createElement(R.Fragment, { key: p.keyExtractor ? p.keyExtractor(item, i) : i }, p.renderItem({ item, index: i }))),
+    p.ListFooterComponent ?? null);
+  return { FlashList };
+});
 vi.mock('@expo/vector-icons', () => ({ Feather: () => null }));
 vi.mock('@react-navigation/native', () => ({ useRoute: () => fx.route, useNavigation: () => ({ navigate: vi.fn(), goBack: vi.fn() }) }));
 vi.mock('react-native-safe-area-context', () => ({ useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }) }));

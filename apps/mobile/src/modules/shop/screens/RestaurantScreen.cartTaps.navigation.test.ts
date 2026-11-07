@@ -19,6 +19,10 @@ const fx = vi.hoisted(() => ({
   writes: [] as Array<[string, unknown]>,
   report: vi.fn(),
   navigate: vi.fn(),
+  /** [APP-SPEED C] How many times each menu row was drawn. */
+  rowDraws: {} as Record<string, number>,
+  /** [APP-SPEED C] What the store page handed its menu list. */
+  list: null as any,
   token: new Proxy({}, { get: (_target, key): unknown => key === Symbol.toPrimitive ? () => 0 : fx.token }),
 }));
 
@@ -31,8 +35,20 @@ vi.mock('react-native', async () => {
     Dimensions: { get: () => ({ width: 390, height: 844 }) }, Linking: { openURL: vi.fn() }, Share: { share: vi.fn() },
   };
 });
+// [APP-SPEED C] The menu is one FlashList: its header, every row (no windowing here) and its footer.
+vi.mock('@shopify/flash-list', async () => {
+  const R = await import('react');
+  const FlashList = (p: any) => (fx.list = p, R.createElement('div', null, p.ListHeaderComponent ?? null,
+    (p.data ?? []).map((item: any, i: number) => R.createElement(R.Fragment, { key: p.keyExtractor ? p.keyExtractor(item, i) : i }, p.renderItem({ item, index: i }))),
+    p.ListFooterComponent ?? null));
+  return { FlashList };
+});
 vi.mock('@expo/vector-icons', () => ({ Feather: () => null }));
-vi.mock('@react-navigation/native', () => ({ useRoute: () => fx.route, useNavigation: () => ({ navigate: fx.navigate, goBack: vi.fn() }) }));
+// The navigation object keeps its identity across draws, as React Navigation's does.
+vi.mock('@react-navigation/native', () => {
+  const navigation = { navigate: (...args: unknown[]) => fx.navigate(...args), goBack: vi.fn() };
+  return { useRoute: () => fx.route, useNavigation: () => navigation };
+});
 vi.mock('react-native-safe-area-context', () => ({ useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }) }));
 vi.mock('@swift/ui', () => ({ color: fx.token, font: fx.token, fontSize: fx.token, radius: fx.token, space: fx.token, withAlpha: () => 'c' }));
 // [CHAINS PR3] The storefront asks with the customer's place; no place here (the device store is native).
@@ -89,9 +105,9 @@ vi.mock('../../../kit', async () => {
     PillButton: (p: any) => h('button', { type: 'button', onClick: p.onPress }, p.label),
     Chip: (p: any) => h('button', { type: 'button', 'data-chip': p.label, 'aria-pressed': p.selected ? 'true' : 'false', onClick: p.onPress }, p.label),
     CircleChip: (p: any) => h('button', { type: 'button', 'aria-label': p.label, onClick: p.onPress }),
-    MenuRow: (p: any) => h('div', { 'data-menu-row': p.name, 'data-qty': String(p.qty), 'data-busy': String(!!p.busy) },
+    MenuRow: (p: any) => (fx.rowDraws[p.name] = (fx.rowDraws[p.name] ?? 0) + 1, h('div', { 'data-menu-row': p.name, 'data-qty': String(p.qty), 'data-busy': String(!!p.busy) },
       h('button', { type: 'button', 'aria-label': `Add ${p.name}`, disabled: !!p.busy, onClick: p.qty > 0 ? p.onInc : p.onAdd }, '+'),
-      h('button', { type: 'button', 'aria-label': `Less ${p.name}`, disabled: !!p.busy, onClick: p.onDec }, '-')),
+      h('button', { type: 'button', 'aria-label': `Less ${p.name}`, disabled: !!p.busy, onClick: p.onDec }, '-'))),
   };
 });
 
@@ -183,5 +199,22 @@ describe('[BOOK-POLISH · #2205] a booking on the store page has no + / −', ()
     fx.lines = [{ id: 'line-curry', itemId: 'curry', quantity: 2 }];
     await draw({ ...store, vendorType: 'STORE', categories: [{ id: 'a-aisle', name: 'Aisle', items: [{ id: 'curry', name: 'Curry chicken', basePrice: 1000 }] }] });
     expect(host.querySelector('[data-tile-qty]')!.getAttribute('data-tile-qty')).toBe('2');
+  });
+});
+
+describe('[APP-SPEED C] a + redraws its own row only, in one virtualised list', () => {
+  it('a + on Curry chicken redraws that row; Pepperpot is not redrawn', async () => {
+    fx.rowDraws = {};
+    await click(row('Curry chicken').querySelector('[aria-label="Add Curry chicken"]')!);
+    await click(row('Curry chicken').querySelector('[aria-label="Add Curry chicken"]')!);
+    expect(row('Curry chicken').getAttribute('data-qty')).toBe('3');
+    expect(fx.rowDraws['Curry chicken'], 'one draw per tap').toBe(2);
+    expect(fx.rowDraws['Pepperpot'] ?? 0, 'the other row is left alone').toBe(0);
+  });
+
+  it('the menu is one FlashList of rows (title, then each item), keyed and typed for recycling', async () => {
+    expect(fx.list.data.map((r: any) => r.key)).toEqual(['section:a-mains', 'item:a-mains:curry', 'item:a-mains:pepperpot']);
+    expect(fx.list.data.map((r: any) => fx.list.getItemType(r))).toEqual(['section', 'item', 'item']);
+    expect(fx.list.keyExtractor(fx.list.data[1])).toBe('item:a-mains:curry');
   });
 });

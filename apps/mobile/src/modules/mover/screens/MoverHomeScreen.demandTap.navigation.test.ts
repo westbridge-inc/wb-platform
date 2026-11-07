@@ -89,7 +89,8 @@ vi.mock('../../../hooks', () => {
   };
 });
 vi.mock('../../../stores/locationStore', () => ({
-  useLocationStore: Object.assign(() => ({ latitude: 6.81, longitude: -58.15, status: 'granted' }), { getState: () => ({ latitude: 6.81, longitude: -58.15, status: 'granted' }) }),
+  // [APP-SPEED C · item 9] Home reads the store field by field (selectors), as the real store answers them.
+  useLocationStore: Object.assign((select?: (s: object) => unknown) => { const s = { latitude: 6.81, longitude: -58.15, status: 'granted' }; return select ? select(s) : s; }, { getState: () => ({ latitude: 6.81, longitude: -58.15, status: 'granted' }) }),
 }));
 vi.mock('../../../stores/authStore', () => ({ requireAuthSessionSnapshot: vi.fn() }));
 vi.mock('../../../hooks/useDeviceLocation', () => ({ GEORGETOWN: { latitude: 6.8013, longitude: -58.1553 }, useDeviceLocation: () => ({ resolve: vi.fn() }) }));

@@ -444,3 +444,53 @@ describe('[TAXI route line] the driver’s map draws the road when the server ha
     expect([halo?.geodesic, stroke?.geodesic]).toEqual([true, true]);
   });
 });
+
+describe('[APP-SPEED C · report item 8] the wait ticks in its own card, only while the trip screen is shown', () => {
+  const start = () => Date.parse(WAITING_LIVE.nextChargeAt) - 390_000;
+  const listeners: Partial<Record<'focus' | 'blur', () => void>> = {};
+  let focused = true;
+  const shownNavigation = {
+    navigate: fx.navigate, goBack: vi.fn(), isFocused: () => focused,
+    addListener: (event: 'focus' | 'blur', cb: () => void) => { listeners[event] = cb; return () => { delete listeners[event]; }; },
+  };
+  const waitingTrip = () => riderRideWithoutStops({ status: 'DRIVER_ARRIVED', ridePinVerified: false, customer: { firstName: 'Asha' }, waiting: WAITING_LIVE });
+  async function renderShown() {
+    fx.job = waitingTrip();
+    await act(async () => root.render(React.createElement(ActiveJobScreen, { navigation: shownNavigation })));
+    await act(async () => { await new Promise((r) => setTimeout(r, 5)); });
+  }
+  const tick = async (ms: number) => { await act(async () => { vi.advanceTimersByTime(ms); }); };
+
+  beforeEach(() => {
+    focused = true;
+    vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'], now: start() });
+  });
+
+  it('three seconds of waiting: the countdown moves, the map (and its route line) is not drawn again', async () => {
+    await renderShown();
+    expect(byTestId('driver-waiting')?.textContent).toMatch(/Next \$300 in 6:30/);
+    const strokes = fx.polylines.length;
+    expect(strokes, 'the route line is drawn').toBeGreaterThan(0);
+    await tick(3_000);
+    expect(byTestId('driver-waiting')?.textContent).toMatch(/Next \$300 in 6:27/);
+    expect(fx.polylines.length - strokes, 'the old root clock redrew the map every second').toBe(0);
+  });
+
+  it('a redraw of the trip screen with the same job (a location fix, a sheet) does not redraw the map', async () => {
+    await renderShown();
+    const strokes = fx.polylines.length;
+    await act(async () => root.render(React.createElement(ActiveJobScreen, { navigation: shownNavigation })));
+    await act(async () => root.render(React.createElement(ActiveJobScreen, { navigation: shownNavigation })));
+    expect(fx.polylines.length - strokes).toBe(0);
+  });
+
+  it('another screen in front: the clock stops; shown again, it reads the time at once', async () => {
+    await renderShown();
+    await act(async () => { focused = false; listeners.blur?.(); });
+    const hidden = byTestId('driver-waiting')?.textContent;
+    await tick(5_000);
+    expect(byTestId('driver-waiting')?.textContent, 'no tick behind another screen').toBe(hidden);
+    await act(async () => { focused = true; listeners.focus?.(); });
+    expect(byTestId('driver-waiting')?.textContent).toMatch(/Next \$300 in 6:25/);
+  });
+});
