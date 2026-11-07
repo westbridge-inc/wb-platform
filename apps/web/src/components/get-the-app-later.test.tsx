@@ -49,19 +49,26 @@ describe('[WEB-APPBAR · perf] GetAppBarLater', () => {
   });
 });
 
-describe('[WEB-APPBAR review · ruling: table QR = menu only] GetAppBarLater on a table-QR visit', () => {
-  it('a phone that scanned a table’s QR code never fetches the bar', async () => {
-    const { forgetGetAppVisit } = await import('@/lib/get-the-app');
-    forgetGetAppVisit();
-    const before = fetched.count;
-    device('Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Mobile Safari/537.36', true);
-    (window as unknown as { happyDOM: { setURL(_u: string): void } }).happyDOM.setURL('https://swiftgy.com/store/kfc?src=qr&c=AB12');
-    const view = render(<GetAppBarLater />);
-    await settle();
-    expect(screen.queryByText('The bar’s code arrived')).toBeNull();
-    expect(fetched.count).toBe(before);
-    view.unmount();
-    (window as unknown as { happyDOM: { setURL(_u: string): void } }).happyDOM.setURL('http://localhost:3000/');
-    forgetGetAppVisit();
+describe('[WEB-APPBAR review · ruling: table QR = menu only] the store page records a table-QR visit itself', () => {
+  it('a store page opened from a table’s QR code marks the visit as it loads; the bar’s gate then draws nothing', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { join } = await import('node:path');
+    const store = readFileSync(join(process.cwd(), 'src', 'components', 'storefront', 'storefront-experience.tsx'), 'utf8');
+    expect(store).toMatch(/if \(!fromQr\) return;\s*\/\/[^\n]*\n\s*markTableQrVisit\(\);/);
+    const { markTableQrVisit, qrVisit, forgetQrVisit } = await import('@/lib/table-qr');
+    forgetQrVisit();
+    expect(qrVisit()).toBe(false);
+    markTableQrVisit();
+    expect(qrVisit()).toBe(true);
+    expect(sessionStorage.getItem('swift.qr-visit')).toBe('1');
+    forgetQrVisit();
+  });
+
+  it('[perf] the frame’s loader carries no QR code of its own', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { join } = await import('node:path');
+    const loader = readFileSync(join(process.cwd(), 'src', 'components', 'get-the-app-later.tsx'), 'utf8');
+    const imports = loader.split('\n').filter((line) => /^import\s/.test(line)).join('\n');
+    expect(imports).not.toMatch(/table-qr|get-the-app'/);
   });
 });

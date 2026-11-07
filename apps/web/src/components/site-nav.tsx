@@ -7,7 +7,7 @@ import { SwiftLogo } from './swift-logo';
 import { signedInBefore } from '@/lib/session-hint';
 import { useAppStoresLive, useWebOrderingOpen } from '@/lib/use-web-ordering';
 // [WEB-APPBAR · perf] The badges' code comes when a menu opens, never in the header's first load.
-import { AppStoreLinksLater, GetTheAppLinksLater } from './get-the-app-later';
+import { GetTheAppLinksLater, useLater } from './get-the-app-later';
 
 const NAV = [
   { href: '/how-it-works', label: 'How it works' },
@@ -118,4 +118,11 @@ function GetTheAppMenu() {
       ) : null}
     </div>
   );
+}
+
+/** The header's "Get the app" item, opened: the two badges (they show only once the stores switch is live). [perf]
+ *  Here, not in get-the-app-later.tsx, so the app's frame (which never draws it) does not carry it. */
+function AppStoreLinksLater({ className = '' }: { className?: string }) {
+  const Links = useLater(() => import('./app-store-links').then((module) => module.AppStoreLinks), () => true);
+  return Links ? <Links className={className} /> : null;
 }

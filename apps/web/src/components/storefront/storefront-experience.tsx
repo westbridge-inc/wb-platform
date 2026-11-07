@@ -53,6 +53,7 @@ import styles from './storefront.module.css';
 import { SellerInfo } from './seller-info';
 import { AddPlusGlyph } from '@/components/add-plus';
 import { STORE_PICK } from '@/lib/store-pick';
+import { markTableQrVisit } from '@/lib/table-qr';
 import type { CartTaps, CartTapsIO } from '@/lib/cart-taps';
 
 export type DisplayItem = MenuItem & {
@@ -286,6 +287,8 @@ export function StorefrontExperience({ store, returnPath, fromQr = false, initia
   const diningNoticeStorageKey = `swift:dining-notice:${store.id}`;
   useEffect(() => {
     if (!fromQr) return;
+    // [WEB-APPBAR · ruling: table QR = menu only] No "Get the app" bar for the rest of this visit.
+    markTableQrVisit();
     try {
       setDismissedDiningStore(sessionStorage.getItem(diningNoticeStorageKey) === 'dismissed' ? store.id : null);
     } catch {

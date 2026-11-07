@@ -9,7 +9,11 @@ let qrVisitThisLoad = false;
 export function noteQrVisit(pathname: string | null | undefined, search: string): void {
   const path = pathname ?? '';
   const fromQr = path.startsWith('/qr/') || path === '/qr' || ((path.startsWith('/store/') || path.startsWith('/order/vendor/')) && new URLSearchParams(search).get('src') === 'qr');
-  if (!fromQr) return;
+  if (fromQr) markTableQrVisit();
+}
+
+/** The store page calls this when the server says it was opened from a table's QR code (its `fromQr`). */
+export function markTableQrVisit(): void {
   qrVisitThisLoad = true;
   try { sessionStorage.setItem(QR_VISIT_KEY, '1'); } catch { /* this page load only */ }
 }
