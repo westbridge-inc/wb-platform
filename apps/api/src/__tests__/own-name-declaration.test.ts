@@ -178,6 +178,8 @@ describe('[ROLE-DOCS] the declaration replaces the business registration, checke
     const o = await owner('Ramesh', 'Persaud', 'R. Persaud');
     expect((await statusOf(o)).checklist).toEqual(['owner_national_id', 'business_registration', 'storefront_photo']);
     expect((await statusOf(o)).nameBasis).toBe('REGISTERED');
+    // [OWNNAME-FIT · COORD 7 Nov 2026] the store's name passes the own-name test, so the apps may offer the route
+    expect((await statusOf(o)).ownNameFits).toEqual({ [o.vendorId]: true });
     const signed = await sign(o);
     expect(signed.statusCode, signed.body).toBe(201);
     expect(signed.json().data.declaration.status).toBe('PENDING');
@@ -231,6 +233,8 @@ describe('[ROLE-DOCS] the declaration replaces the business registration, checke
       latitude: 6.8, longitude: -58.16, status: 'PENDING_APPROVAL', publicPhone: '+5926001235',
     } }));
     const other = { ...o, vendorId: burgers.id };
+    // [OWNNAME-FIT · COORD 7 Nov 2026] per store: the offer fits "R. Persaud", never "Best Burgers"
+    expect((await statusOf(o)).ownNameFits).toEqual({ [o.vendorId]: true, [burgers.id]: false });
     expect((await sign(other)).json().error.code).toBe('OWN_NAME_MISMATCH');
     const signed = await sign(o);
     expect(signed.statusCode, signed.body).toBe(201);
@@ -258,6 +262,11 @@ describe('[ROLE-DOCS] the declaration replaces the business registration, checke
 
   it('refuses to sign for a name that is not the owner\'s own, for a service business, and once a registration is on file', async () => {
     const trading = await owner('Ramesh', 'Persaud', 'Persaud Enterprises');
+    // [OWNNAME-FIT · COORD 7 Nov 2026] a name the route refuses is never offered it
+    expect((await statusOf(trading)).ownNameFits).toEqual({ [trading.vendorId]: false });
+    const company = await owner('Ramesh', 'Persaud', 'Westbridge Inc.', 'RESTAURANT');
+    expect((await statusOf(company, 'RESTAURANT')).ownNameFits).toEqual({ [company.vendorId]: false });
+    expect((await sign(company)).json().error.code).toBe('OWN_NAME_MISMATCH');
     const res = await sign(trading);
     expect(res.statusCode).toBe(400);
     expect(res.json().error.code).toBe('OWN_NAME_MISMATCH');
@@ -265,6 +274,7 @@ describe('[ROLE-DOCS] the declaration replaces the business registration, checke
     expect((await system(() => app.prisma.vendor.findUniqueOrThrow({ where: { id: trading.vendorId } }))).tradesUnderOwnName).toBe(false);
 
     const services = await owner('Anne', 'Fung', 'Fung', 'SERVICE');
+    expect((await statusOf(services, 'SERVICE')).ownNameFits).toBeUndefined();
     expect((await sign(services)).json().error.code).toBe('OWN_NAME_NOT_APPLICABLE');
 
     const registered = await owner('Mark', 'Singh', 'Singh');

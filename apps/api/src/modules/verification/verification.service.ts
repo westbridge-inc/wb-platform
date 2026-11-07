@@ -2192,7 +2192,7 @@ export class VerificationService {
     // clearance starts beside the mover's rows. About ten round trips in a row became four.
     const user = await this.prisma.user.findUnique({
       where: { id: userId },
-      select: { countryCode: true, trustLevel: true, activeRole: true, lastMoverRole: true, roles: true },
+      select: { countryCode: true, trustLevel: true, activeRole: true, lastMoverRole: true, roles: true, firstName: true, lastName: true },
     });
     if (!user) throw new NotFoundError('User', userId);
 
@@ -2261,8 +2261,20 @@ export class VerificationService {
     // [ROLE-DOCS · owner 21 Oct 2026] A store says on what its name stands: its owner's OWN name (the declaration in
     // place of a business registration) or a registered business name. Additive field. [CHECKLIST-LEGAL · owner 1 Nov
     // 2026 (a)] Never the self-declared tier: it is removed.
-    const nameBasis = roleKey === 'RESTAURANT' || roleKey === 'SUPERMARKET' || roleKey === 'STORE'
-      ? ((await this.vendorTierOf(userId, roleKey, this.prisma)) ?? 'REGISTERED') : undefined;
+    // [OWNNAME-FIT · COORD 7 Nov 2026, BNA Cap. 90:05 s.3] `ownNameFits`, per store of this type: does its name pass the
+    // own-name test POST /vendor/onboarding/own-name applies? The apps offer the own-name route only where it does.
+    // Additive (an older app ignores it; a newer app reading an older server finds none and offers nothing). Read
+    // beside the name basis.
+    const storeRole = roleKey === 'RESTAURANT' || roleKey === 'SUPERMARKET' || roleKey === 'STORE';
+    const [nameBasis, ownNameFits] = storeRole
+      ? await Promise.all([
+        this.vendorTierOf(userId, roleKey, this.prisma).then((tier) => tier ?? 'REGISTERED'),
+        Promise.all([
+          import('../vendor/own-name'),
+          this.prisma.vendorOwner.findUnique({ where: { userId }, select: { vendors: { where: { vendorType: roleKey }, select: { id: true, name: true } } } }),
+        ]).then(([{ ownNameFitsByStore }, owner]) => ownNameFitsByStore(owner?.vendors ?? [], user.firstName, user.lastName)),
+      ])
+      : [undefined, undefined];
     if (roleKey === 'SERVICE') {
       const { homeVisitsCleared, ownerOffersHomeVisits } = await import('./home-visits');
       const [offered, cleared] = await Promise.all([ownerOffersHomeVisits(this.prisma, userId), homeVisitsCleared(this.prisma, userId)]);
@@ -2337,6 +2349,7 @@ export class VerificationService {
       // the owner's clearance lets those visits be booked.
       ...(homeVisits ? { homeVisits } : {}),
       ...(nameBasis ? { nameBasis } : {}),
+      ...(ownNameFits ? { ownNameFits } : {}),
       ...(foodHandlerAttestation ? { foodHandlerAttestation } : {}),
     };
   }
