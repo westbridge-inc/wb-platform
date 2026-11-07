@@ -186,8 +186,10 @@ export function OrdersHistoryScreen() {
   const pressRead = usePressRead();
   const { isAuthenticated, promptLogin } = useAuthStore();
   const orders = useOrdersInfinite();
-  // [APP-SPEED C · report item 12] Every refresh of history (tab return, foreground, a live order leaving, the
-  // pull, Try again) re-reads page 1 only, never every page scrolled through (lib/infiniteFirstPage).
+  // [APP-SPEED C · report item 12] A refresh the person asks for (the pull, Try again) re-reads page 1 only, never
+  // every page scrolled through (lib/infiniteFirstPage); the list starts again from the top, as a pull does. The
+  // refreshes nobody asked for (a return to the screen, the foreground, a live order leaving) keep every page, so
+  // the person's place in the list is never lost (Back from an order lands where they were).
   const refreshHistory = () => refetchFromFirstPage(qc, HISTORY_KEY);
   // [row 5 · ANDROID-QA] The list must follow orders in progress while the
   // customer looks at it: no socket event reaches this screen, so the live
@@ -210,7 +212,7 @@ export function OrdersHistoryScreen() {
   // of them would show it in neither — or in both.
   useEffect(() => {
     if (isFocused && isAuthenticated) {
-      void refreshHistory();
+      orders.refetch();
       liveOrders.refetch();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -222,7 +224,7 @@ export function OrdersHistoryScreen() {
   foreground.current = {
     isFocused,
     isAuthenticated,
-    refresh: () => { void refreshHistory(); void liveOrders.refetch(); },
+    refresh: () => { void orders.refetch(); void liveOrders.refetch(); },
   };
   useEffect(() => {
     let previous = AppState.currentState;
@@ -245,7 +247,7 @@ export function OrdersHistoryScreen() {
     previousLiveIds.current = liveIdsKey;
     if (before === null || !isAuthenticated) return;
     const now = new Set(liveIdsKey ? liveIdsKey.split(',') : []);
-    if (before.split(',').some((id) => id && !now.has(id))) void refreshHistory();
+    if (before.split(',').some((id) => id && !now.has(id))) void orders.refetch();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [liveIdsKey]);
 
@@ -615,7 +617,9 @@ export function OrdersHistoryScreen() {
           contentContainerStyle={{ paddingHorizontal: space['2xl'], paddingBottom: space['3xl'] }}
           onEndReachedThreshold={0.5}
           onEndReached={() => {
-            if (orders.hasNextPage && !orders.isFetchingNextPage) orders.fetchNextPage();
+            // [APP-SPEED C · review S2-1] Never while a refresh is on its way: fetchNextPage would cancel it (its
+            // default cancelRefetch), and a delivered order would stay "Pending" on screen. The end is reached again.
+            if (orders.hasNextPage && !orders.isFetching) orders.fetchNextPage();
           }}
           ListFooterComponent={
             orders.isFetchingNextPage ? (
@@ -624,7 +628,8 @@ export function OrdersHistoryScreen() {
               </T>
             ) : orders.hasNextPage && serverTotal !== null ? (
               <Pressable
-                onPress={() => orders.fetchNextPage()}
+                // Never cancels a refresh on its way (see onEndReached): the next page waits for it.
+                onPress={() => { if (!orders.isFetching) orders.fetchNextPage(); }}
                 accessibilityRole="button"
                 accessibilityLabel={`Show more. ${rows.length} of ${serverTotal} shown`}
                 style={{ paddingVertical: space.lg, alignItems: 'center' }}
