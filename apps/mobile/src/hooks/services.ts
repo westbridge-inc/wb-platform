@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { servicesApi } from '../services/api';
 import { track } from '../lib/analytics';
+import { homeFeedChanged } from '../lib/homeFeed';
 import { unwrapOptionalServiceProviderProfile } from '../lib/serviceProviderProfile';
 import {
   requireAuthSessionForPrincipal,
@@ -257,6 +258,8 @@ export function useBookPro() {
       qc.invalidateQueries({ queryKey: ['services', 'jobs'] });
       qc.invalidateQueries({ queryKey: ['services', 'pro-slots', input.providerId] });
       qc.invalidateQueries({ queryKey: ['services', 'pro-offerings', input.providerId] });
+      // [APP-SPEED C · review S2-2] Home's feed is out of date: a new booking.
+      homeFeedChanged(qc);
     },
   });
 }

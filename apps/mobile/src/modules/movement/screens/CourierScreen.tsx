@@ -19,6 +19,7 @@ import { BrandCheckbox, PinGlyph, Card, CircleChip, LabeledInput, Pictogram, Pil
 import { JourneyRail } from '../../../kit/journey-rail';
 import { VERTICAL_TINT } from '../../../kit/vertical-tint';
 import type { PickedPlace } from './DestinationSearchScreen';
+import { QuietMarker } from '../map/QuietMarker';
 import { PARCEL_BANNED_GOODS, PARCEL_DECLARATION, courierWaitingCaption } from '../parcelDeclaration';
 
 type Size = 'SMALL' | 'MEDIUM' | 'LARGE' | 'EXTRA_LARGE';
@@ -246,7 +247,7 @@ export function CourierScreen({ navigation }: any) {
         mapPadding={{ top: 0, right: 0, bottom: Math.round(winH * 0.46), left: 0 }}
       >
         {pickupLL ? (
-          <Marker coordinate={pickupLL} anchor={{ x: 0.5, y: 0.5 }} title="From">
+          <Marker coordinate={pickupLL} anchor={{ x: 0.5, y: 0.5 }} title="From" tracksViewChanges={false}>
             <View
               style={[
                 { width: 16, height: 16, borderRadius: 8, backgroundColor: color.text.primary, borderWidth: 3, borderColor: color.white },
@@ -256,9 +257,9 @@ export function CourierScreen({ navigation }: any) {
           </Marker>
         ) : null}
         {dropoffLL ? (
-          <Marker coordinate={dropoffLL} title="To">
+          <QuietMarker coordinate={dropoffLL} title="To">
             <PinGlyph size={34} color={color.brand[600]} />
-          </Marker>
+          </QuietMarker>
         ) : null}
         {pickupLL && dropoffLL ? (
           <Polyline coordinates={[pickupLL, dropoffLL]} strokeColor={color.brand[500]} strokeWidth={4} />

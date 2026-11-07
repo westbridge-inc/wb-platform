@@ -10,6 +10,7 @@ import { rideMapProps } from '../../../kit/map-style';
 import { shareMessage, shareStatusLine, failureOf, linkStillWorks, SHARE_FAILURE_COPY, type MintedShare } from '../../../lib/tripShare';
 import { useInterpolatedDriver } from '../map/useInterpolatedDriver';
 import { STALE_AFTER_MS, type DriverPing } from '../map/interpolation';
+import { QuietMarker } from '../map/QuietMarker';
 import BottomSheet, { BottomSheetScrollView } from '@gorhom/bottom-sheet';
 import { Image } from 'expo-image';
 import { Feather } from '@expo/vector-icons';
@@ -17,6 +18,7 @@ import { color, elevation, motion, radius, space } from '@swift/ui';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useActiveRide, useRideEstimate, useRequestRide, useCancelRide, useConfirmDriverArrival, useRideAvailability, useWatchAvailability, useRideSupply, useRidePresence, useQueueStatus, useJoinQueue, useLeaveQueue, useRideCapabilities } from '../../../hooks';
 import { useWaitingClock } from '../../../hooks/useWaitingClock';
+import { useNavigationFocused } from '../../../hooks/useNavigationFocused';
 import { addStop, canAddStop, maxStopsFrom, moveStop, removeStop, replaceStop, rideStops, sameWireStops, stopRefusalCopy, wireStops } from '../../../lib/taxiItinerary';
 import { fareBreakdownOf, liveWaiting, waitingDisclosure, waitingEcho } from '../../../lib/taxiWaiting';
 import { AddStopRow, RideItinerary, RouteLegs, StopNumber, StopRows, WaitingCard, oneFareLine } from '../TaxiStops';
@@ -570,19 +572,19 @@ function TaxiBooking({ navigation }: any) {
         {...rideMapProps(scheme)}
       >
         {!queued && pickupLL ? (
-          <Marker coordinate={pickupLL} title="Pickup" anchor={{ x: 0.5, y: 0.5 }}>
+          <Marker coordinate={pickupLL} title="Pickup" anchor={{ x: 0.5, y: 0.5 }} tracksViewChanges={false}>
             <PickupDot />
           </Marker>
         ) : null}
         {!queued && dropoffLL ? (
-          <Marker coordinate={dropoffLL} title="Drop-off" anchor={{ x: 0.5, y: 1 }}>
+          <QuietMarker coordinate={dropoffLL} title="Drop-off" anchor={{ x: 0.5, y: 1 }}>
             <DropPin />
-          </Marker>
+          </QuietMarker>
         ) : null}
         {/* [TAXI multi-stop] Each stop, numbered in the passenger's order. */}
         {!queued
           ? stopPoints.map((point, i) => (point ? (
-              <Marker key={`stop-${i + 1}`} coordinate={point} title={`Stop ${i + 1}`} anchor={{ x: 0.5, y: 0.5 }}>
+              <Marker key={`stop-${i + 1}`} coordinate={point} title={`Stop ${i + 1}`} anchor={{ x: 0.5, y: 0.5 }} tracksViewChanges={false}>
                 <StopNumber n={i + 1} />
               </Marker>
             ) : null))
@@ -1136,6 +1138,12 @@ function AssignedRideCard({
   );
 }
 
+/** [APP-SPEED C · report item 8] The passenger's waiting card with its own 1 s clock (only while the ride screen is shown). */
+function WaitingCardLive({ ride, shown, pickupWaitMinutes }: { ride: unknown; shown: boolean; pickupWaitMinutes: number | null }) {
+  const view = useWaitingClock(ride, shown);
+  return view ? <WaitingCard view={view} pickupWaitMinutes={pickupWaitMinutes} /> : null;
+}
+
 function ActiveRide({ navigation, ride, cancelRide, confirmDriverArrival, insets, rematching, checking = false }: any) {
   const { height: winH } = useWindowDimensions();
   const scheme = useColorScheme();
@@ -1325,7 +1333,10 @@ function ActiveRide({ navigation, ride, cancelRide, confirmDriverArrival, insets
   const itineraryLLs = itineraryPoints.map((s) => s.point).filter((p): p is LatLng => p != null);
   const itineraryKey = itineraryLLs.map((p) => `${p.latitude},${p.longitude}`).join(';');
   // [TAXI waiting charge §8.3] The live wait, from the driver's arrival on.
-  const waitingClock = useWaitingClock(ride);
+  // [APP-SPEED C · report item 8] Here only the server's figures: the 1 s clock lives in WaitingCardLive, so a tick
+  // redraws the waiting card, never this ride screen and its map, and stops while another screen is in front.
+  const rideWaiting = liveWaiting(ride);
+  const rideShown = useNavigationFocused(navigation);
 
   // [TAXI multi-stop · part 4] Each stop change is announced on the ride's
   // room; re-read the ride so its stops and their statuses are current.
@@ -1497,17 +1508,17 @@ function ActiveRide({ navigation, ride, cancelRide, confirmDriverArrival, insets
           {...rideMapProps(scheme)}
         >
         {pickup ? (
-          <Marker coordinate={pickup} title="Pickup" anchor={{ x: 0.5, y: 0.5 }}>
+          <Marker coordinate={pickup} title="Pickup" anchor={{ x: 0.5, y: 0.5 }} tracksViewChanges={false}>
             <PickupDot />
           </Marker>
         ) : null}
         {drop ? (
-          <Marker coordinate={drop} title="Drop-off" anchor={{ x: 0.5, y: 1 }}>
+          <QuietMarker coordinate={drop} title="Drop-off" anchor={{ x: 0.5, y: 1 }}>
             <DropPin />
-          </Marker>
+          </QuietMarker>
         ) : null}
         {itineraryPoints.map(({ sequence, point }) => (point ? (
-          <Marker key={`stop-${sequence}`} coordinate={point} title={`Stop ${sequence}`} anchor={{ x: 0.5, y: 0.5 }}>
+          <Marker key={`stop-${sequence}`} coordinate={point} title={`Stop ${sequence}`} anchor={{ x: 0.5, y: 0.5 }} tracksViewChanges={false}>
             <StopNumber n={sequence} />
           </Marker>
         ) : null))}
@@ -1517,7 +1528,11 @@ function ActiveRide({ navigation, ride, cancelRide, confirmDriverArrival, insets
           // The glyph IS the tinted top-view render (6B.5) — the car on the
           // map matches the card and the curb. Stale = frozen + dimmed; a
           // silent feed must never look like a live, moving car (0.8).
-          <DrivingMarker
+          // [APP-SPEED C] The car's picture is drawn once per look (faded or not, its body and colour); the sweep
+          // between pings moves the pin, never re-drawing the car on every frame.
+          <QuietMarker
+            as={DrivingMarker}
+            look={`${interp.stale || fixStale || connLost ? 'faded' : 'live'}:${d?.bodyType ?? ''}:${d?.colorHex ?? ''}`}
             animatedProps={interp.animatedProps as never}
             coordinate={driverLoc ?? { latitude: 0, longitude: 0 }}
             title="Driver"
@@ -1527,13 +1542,19 @@ function ActiveRide({ navigation, ride, cancelRide, confirmDriverArrival, insets
             <View style={{ opacity: interp.stale || fixStale || connLost ? 0.45 : 1 }}>
               <VehicleRender bodyType={d?.bodyType} colorHex={d?.colorHex} view="top" size={20} />
             </View>
-          </DrivingMarker>
+          </QuietMarker>
         ) : driverLoc ? (
-          <Marker coordinate={driverLoc} title="Driver" anchor={{ x: 0.5, y: 0.5 }} flat>
+          <QuietMarker
+            look={`${fixStale || connLost ? 'faded' : 'live'}:${d?.bodyType ?? ''}:${d?.colorHex ?? ''}`}
+            coordinate={driverLoc}
+            title="Driver"
+            anchor={{ x: 0.5, y: 0.5 }}
+            flat
+          >
             <View style={{ opacity: fixStale || connLost ? 0.45 : 1 }}>
               <VehicleRender bodyType={d?.bodyType} colorHex={d?.colorHex} view="top" size={20} />
             </View>
-          </Marker>
+          </QuietMarker>
         ) : null}
         </MapView>
       ) : (
@@ -1631,8 +1652,8 @@ function ActiveRide({ navigation, ride, cancelRide, confirmDriverArrival, insets
                   )}
                 />
               ) : null}
-              {waitingClock ? (
-                <WaitingCard view={waitingClock} pickupWaitMinutes={liveWaiting(ride)?.pickupWaitMinutes ?? null} />
+              {rideWaiting ? (
+                <WaitingCardLive ride={ride} shown={rideShown} pickupWaitMinutes={rideWaiting.pickupWaitMinutes ?? null} />
               ) : null}
             </>
           ) : (

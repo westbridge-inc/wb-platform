@@ -2,7 +2,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { QueryClient, QueryObserver, onlineManager } from '@tanstack/react-query';
 import {
   createHomeRefreshGate,
+  HOME_FOCUS_FRESH_MS,
+  homeAttentionRefresh,
   homeFeedState,
+  homeFocusRefreshDue,
   homePlaceholderData,
   homeQueryKey,
   isHomeFeed,
@@ -293,5 +296,62 @@ describe('external order refresh', () => {
     expect(load).toHaveBeenCalledOnce();
     unsubscribe();
     qc.clear();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// [APP-SPEED 11] Home re-downloaded its whole feed on every return to it (each tab switch, each Back from a store, each
+// trip to the foreground), ~0.3 s a round trip from Guyana, though it was read seconds ago. Now a focus or foreground
+// re-reads it only when the feed is older than HOME_FOCUS_FRESH_MS — or when it shows a live order (its status is the
+// thing that moves), its last read failed, or something marked it out of date. A pull always re-reads (usePullToRefresh
+// calls home.refetch, not this gate); a cancel or a ride change still invalidates it at once.
+// ---------------------------------------------------------------------------
+describe('[APP-SPEED 11] a return to Home re-reads only an old feed', () => {
+  const fresh = (over: Record<string, unknown> = {}) => ({
+    status: 'success', fetchStatus: 'idle', dataUpdatedAt: 100_000, isInvalidated: false,
+    data: { activeOrder: null, featured: [] }, ...over,
+  }) as any;
+
+  it('the window is about 30 s', () => {
+    expect(HOME_FOCUS_FRESH_MS).toBe(30_000);
+  });
+
+  it('a feed read under 30 s ago is not read again on a return; at 30 s it is', () => {
+    expect(homeFocusRefreshDue(fresh(), 100_000 + 29_999)).toBe(false);
+    expect(homeFocusRefreshDue(fresh(), 100_000 + 30_000)).toBe(true);
+  });
+
+  it('always re-read: nothing cached, a failed last read, a feed marked out of date, a live order on it', () => {
+    expect(homeFocusRefreshDue(undefined, 1)).toBe(true);
+    expect(homeFocusRefreshDue(fresh({ status: 'error' }), 100_001)).toBe(true);
+    expect(homeFocusRefreshDue(fresh({ status: 'pending', data: undefined, dataUpdatedAt: 0 }), 100_001)).toBe(true);
+    expect(homeFocusRefreshDue(fresh({ isInvalidated: true }), 100_001)).toBe(true);
+    expect(homeFocusRefreshDue(fresh({ data: { activeOrder: { id: 'o1' }, featured: [] } }), 100_001)).toBe(true);
+  });
+
+  it('wired through the gate with a real cache: a fresh feed costs no request; an old one is read once', async () => {
+    const qc = client();
+    const key = homeQueryKey(6, -58, 'account');
+    const load = vi.fn(async () => ({ activeOrder: null, featured: ['fresh'] }));
+    qc.setQueryData(key, { activeOrder: null, featured: ['cached'] }, { updatedAt: 100_000 });
+    // Read at 100 000 (the test's clock); nothing else asks for it here.
+    const observer = new QueryObserver(qc, { queryKey: key, queryFn: load, staleTime: Infinity });
+    const unsubscribe = observer.subscribe(() => {});
+    const gate = createHomeRefreshGate(() => {
+      void qc.invalidateQueries({ queryKey: ['customer', 'home'], refetchType: 'active' });
+    }, 750);
+    expect(homeAttentionRefresh(qc.getQueryState(key), 110_000, gate)).toBe(false);
+    expect(load).not.toHaveBeenCalled();
+    expect(homeAttentionRefresh(qc.getQueryState(key), 140_000, gate)).toBe(true);
+    await vi.waitFor(() => expect(load).toHaveBeenCalledOnce());
+    unsubscribe();
+    qc.clear();
+  });
+
+  it('an old feed already being read is not read twice', () => {
+    const refresh = vi.fn();
+    const gate = createHomeRefreshGate(refresh, 750);
+    expect(homeAttentionRefresh(fresh({ fetchStatus: 'fetching' }), 200_000, gate)).toBe(false);
+    expect(refresh).not.toHaveBeenCalled();
   });
 });
