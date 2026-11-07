@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { acceptedJobParams, awaitingAcceptedJob, jobAnswerIsOver } from './acceptedJob';
+import { acceptedJobParams, acceptedJobState, jobAnswerIsOver } from './acceptedJob';
 
 // [APP-SPEED 6 · 7 Nov 2026] The pure rules behind landing on the job at the accept's answer and leaving it at
 // the completion's answer (screens: MoverHome.acceptLanding / ActiveJobScreen.acceptedLanding navigation tests).
@@ -8,14 +8,16 @@ describe('[APP-SPEED 6] the accepted job', () => {
     expect(acceptedJobParams('ride-1', 42)).toEqual({ acceptedOrderId: 'ride-1', acceptedAt: 42 });
   });
 
-  it('loading only while the first read made after the accept is on its way', () => {
+  it('waiting until a read made after the accept lands; failed (never "none") when that read failed', () => {
     const at = { acceptedAt: 1000 };
-    expect(awaitingAcceptedJob(at, { isFetching: true, dataUpdatedAt: 999 })).toBe(true);
-    expect(awaitingAcceptedJob(at, { isFetching: false, dataUpdatedAt: 999 }), 'a read that is not on its way never hangs the screen').toBe(false);
-    expect(awaitingAcceptedJob(at, { isFetching: true, dataUpdatedAt: 1000 }), 'a read from after the accept is the answer').toBe(false);
-    expect(awaitingAcceptedJob(undefined, { isFetching: true, dataUpdatedAt: 0 }), 'no accept: never').toBe(false);
-    expect(awaitingAcceptedJob({ acceptedAt: 'soon' }, { isFetching: true, dataUpdatedAt: 0 })).toBe(false);
-    expect(awaitingAcceptedJob({ acceptedAt: Number.NaN }, { isFetching: true, dataUpdatedAt: 0 })).toBe(false);
+    expect(acceptedJobState(at, { isFetching: true, isError: false, dataUpdatedAt: 999 })).toBe('waiting');
+    expect(acceptedJobState(at, { isFetching: false, isError: false, dataUpdatedAt: 999 }), 'no read after the accept yet: still waiting').toBe('waiting');
+    expect(acceptedJobState(at, { isFetching: true, isError: true, dataUpdatedAt: 999 }), 'an older failure while a read is on its way').toBe('waiting');
+    expect(acceptedJobState(at, { isFetching: false, isError: true, dataUpdatedAt: 999 }), 'the read after the accept failed, every retry spent').toBe('failed');
+    expect(acceptedJobState(at, { isFetching: false, isError: false, dataUpdatedAt: 1000 }), 'a read from after the accept is the answer').toBe('answered');
+    expect(acceptedJobState(undefined, { isFetching: true, isError: false, dataUpdatedAt: 0 }), 'no accept').toBe('answered');
+    expect(acceptedJobState({ acceptedAt: 'soon' }, { isFetching: true, isError: false, dataUpdatedAt: 0 })).toBe('answered');
+    expect(acceptedJobState({ acceptedAt: Number.NaN }, { isFetching: true, isError: false, dataUpdatedAt: 0 })).toBe('answered');
   });
 
   it('an answer says the job is over only with a finished status, in words', () => {

@@ -145,6 +145,24 @@ describe('[APP-SPEED 7] the phone\'s own step echo', () => {
     expect(refresh).toHaveBeenCalledTimes(4);
   });
 
+  it('[review S3.1] a status event carrying more than the order, its status and a timestamp is always re-read', () => {
+    vi.useFakeTimers();
+    const socket = fakeSocket();
+    const refresh = vi.fn();
+    bindMoverJobFeed(socket, ['order-e5'], refresh);
+    noteOwnJobStep('order-e5', 'ARRIVED');
+    socket.fire('order:status_changed', { orderId: 'order-e5', status: 'ARRIVED', timestamp: '2026-11-07T15:00:00.000Z' });
+    expect(refresh, 'a bare echo with a timestamp is skipped').not.toHaveBeenCalled();
+    // The shapes the server sends with a status that is not news alone (vendor MMG payment confirm, customer MMG
+    // claim, admin ride-code reset).
+    socket.fire('order:status_changed', { orderId: 'order-e5', status: 'ARRIVED', paymentStatus: 'CLAIMED', mmgClaimRevision: 2, mmgDisputed: false });
+    expect(refresh).toHaveBeenCalledTimes(1);
+    socket.fire('order:status_changed', { orderId: 'order-e5', status: 'ARRIVED', paymentStatus: 'CAPTURED' });
+    expect(refresh).toHaveBeenCalledTimes(2);
+    socket.fire('order:status_changed', { orderId: 'order-e5', status: 'ARRIVED', reason: 'ride_code_reset' });
+    expect(refresh).toHaveBeenCalledTimes(3);
+  });
+
   it('a step with no status in its answer notes nothing', () => {
     const socket = fakeSocket();
     const refresh = vi.fn();

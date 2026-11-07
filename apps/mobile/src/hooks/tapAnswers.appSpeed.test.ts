@@ -85,6 +85,16 @@ describe('[APP-SPEED 5] a pro job step writes the job the server answered', () =
     list.off();
   });
 
+  it('[review S3.2] a reply older than the row the list already holds is not written over it; equal or newer is', () => {
+    const newer = { ...row, status: 'SCHEDULED', updatedAt: '2026-11-07T10:10:00.000Z' };
+    expect(jobsWithAnswer([newer], { id: 'job-1', status: 'QUOTED', updatedAt: '2026-11-07T10:05:00.000Z' })).toEqual([newer]);
+    const same = jobsWithAnswer([newer], { id: 'job-1', status: 'SCHEDULED', updatedAt: '2026-11-07T10:10:00.000Z', quoteAmount: '1' }) as Array<Record<string, unknown>>;
+    expect(same[0]).toMatchObject({ quoteAmount: '1' });
+    const later = jobsWithAnswer([newer], { id: 'job-1', status: 'IN_PROGRESS', updatedAt: '2026-11-07T10:20:00.000Z' }) as Array<Record<string, unknown>>;
+    expect(later[0]).toMatchObject({ status: 'IN_PROGRESS', updatedAt: '2026-11-07T10:20:00.000Z' });
+    expect(jobsWithAnswer([newer], { id: 'job-1', status: 'QUOTED', updatedAt: 'not a time' }), 'an unreadable reply time never overwrites').toEqual([newer]);
+  });
+
   it('only a job answer is written (id, status, updatedAt)', () => {
     expect(jobsWithAnswer([row], { id: 'job-1' })).toEqual([row]);
     expect(jobsWithAnswer([row], { status: 'QUOTED', updatedAt: 'y' })).toEqual([row]);

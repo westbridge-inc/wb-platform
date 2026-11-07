@@ -45,7 +45,7 @@ import { driverMapLine } from '../../../lib/routeLine';
 import { useWaitingClock } from '../../../hooks/useWaitingClock';
 import { afterDismiss } from '../../../kit/after-dismiss';
 import { moverStatusLabel } from '../../../lib/orderStatus';
-import { awaitingAcceptedJob, jobAnswerIsOver } from '../../../lib/acceptedJob';
+import { acceptedJobState, jobAnswerIsOver } from '../../../lib/acceptedJob';
 import { DriverItinerary, DriverWaiting, TaxiStopActions, openStopNavigation, useNoShowOpen } from '../TaxiItinerary';
 
 /** [F-213] Every driver handover PIN is 6 digits (api ride-pin.ts). */
@@ -255,12 +255,14 @@ export function ActiveJobScreen({ navigation, route }: any) {
     // [BUG-GUARDS C3] Until the job read answers (loading, or failed with nothing cached) this is not
     // "No active job": a driver mid-trip must never be told they have none.
     // [APP-SPEED 6] Opened at an accept's answer (MoverHomeScreen): the read from before the accept still says "none",
-    // so until the read made after it lands the job is loading. Leaving at a completion's answer: loading too.
-    const awaitingAccepted = awaitingAcceptedJob(route?.params, active);
-    const unanswered = (active.data === undefined && (active.isLoading || active.isError)) || awaitingAccepted || leaving;
+    // so until a read made after it lands the job is loading, and if that read fails, the failure with Try again;
+    // never "No active job" for a job just accepted. Leaving at a completion's answer: loading too.
+    const accepted = acceptedJobState(route?.params, active);
+    const unanswered = (active.data === undefined && (active.isLoading || active.isError)) || accepted !== 'answered' || leaving;
+    const failed = !leaving && (accepted === 'failed' || (accepted === 'answered' && active.isError));
     return (
       <Screen>
-        {unanswered && active.isError && !awaitingAccepted && !leaving ? (
+        {unanswered && failed ? (
           <ErrorState message="We couldn't load your job. Check your connection and try again." onRetry={() => void active.refetch()} />
         ) : unanswered ? (
           <View accessibilityLabel="Loading your job" style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>

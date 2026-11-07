@@ -9,13 +9,31 @@
 // Pure: the screen keeps the outbox in state, the hook writes the answer into the thread (hooks/chat).
 // ---------------------------------------------------------------------------
 
-export type OutboxItem = { localId: string; text: string; state: 'sending' | 'failed' };
+/** `seen`: how many of this sender's messages with these exact words the thread held at the tap (see storedCopies). */
+export type OutboxItem = { localId: string; text: string; state: 'sending' | 'failed'; seen: number };
 
 let seq = 0;
-/** A new message on its way. */
-export function outboxItem(text: string): OutboxItem {
+/** A new message on its way; `seen` from storedCopies at the tap. */
+export function outboxItem(text: string, seen = 0): OutboxItem {
   seq += 1;
-  return { localId: `local-${Date.now().toString(36)}-${seq}`, text, state: 'sending' };
+  return { localId: `local-${Date.now().toString(36)}-${seq}`, text, state: 'sending', seen };
+}
+
+/** [review S3.3] How many messages from `senderId` with exactly these words the thread holds. When a re-read brings
+ *  more than there were at the tap, the server has stored this message (a socket re-read landed mid-send, or a send
+ *  that timed out was stored after all): its outbox bubble goes, so the thread never shows it twice and a
+ *  "Not sent" with Retry never sends it again. (The chat API takes no idempotency key, so this is the guard.) */
+export function storedCopies(messages: readonly unknown[], senderId: string | undefined, text: string): number {
+  if (!senderId) return 0;
+  return messages.filter((m) => {
+    const row = m as { senderId?: unknown; message?: unknown; text?: unknown } | null;
+    return row?.senderId === senderId && (row.message ?? row.text) === text;
+  }).length;
+}
+
+/** The outbox items the thread does not yet hold a stored copy of. */
+export function pendingOutbox(messages: readonly unknown[], outbox: readonly OutboxItem[], senderId: string | undefined): OutboxItem[] {
+  return outbox.filter((item) => storedCopies(messages, senderId, item.text) <= item.seen);
 }
 
 export function markOutbox(items: readonly OutboxItem[], localId: string, state: OutboxItem['state']): OutboxItem[] {
@@ -26,9 +44,10 @@ export function dropOutbox(items: readonly OutboxItem[], localId: string): Outbo
   return items.filter((item) => item.localId !== localId);
 }
 
-/** The thread as drawn: the server's messages, then this phone's messages still on their way or not sent. */
-export function threadWithOutbox<M>(messages: readonly M[], outbox: readonly OutboxItem[]): Array<M | (OutboxItem & { outbox: true })> {
-  return [...messages, ...outbox.map((item) => ({ ...item, outbox: true as const }))];
+/** The thread as drawn: the server's messages, then this phone's messages still on their way or not sent (never
+ *  one the thread already holds: pendingOutbox). */
+export function threadWithOutbox<M>(messages: readonly M[], outbox: readonly OutboxItem[], senderId?: string): Array<M | (OutboxItem & { outbox: true })> {
+  return [...messages, ...pendingOutbox(messages, outbox, senderId).map((item) => ({ ...item, outbox: true as const }))];
 }
 
 /** The room read (POST /chat/rooms) carries the latest page of messages, newest first; the thread reads oldest first,

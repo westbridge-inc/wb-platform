@@ -152,6 +152,30 @@ describe('[APP-SPEED 10] a sent message shows at the tap', () => {
   });
 });
 
+describe('[review S3.3] a re-read that already holds the message', () => {
+  it('lands mid-send: the stored copy only, no "Sending…" twin; the answer then adds nothing twice', async () => {
+    await typeAndSend('At the gate');
+    expect(text()).toContain('Sending…');
+    fx.messages = { ...fx.messages, data: [{ id: 'm1', senderId: 'them', message: 'On my way' }, { id: 'm2', senderId: 'me', message: 'At the gate' }] };
+    await draw();
+    expect(text()).not.toContain('Sending…');
+    expect(text().split('At the gate')).toHaveLength(2); // exactly one copy
+    await settle(() => fx.sent[0]!.ok({ id: 'm2', senderId: 'me', message: 'At the gate' }));
+    expect(text().split('At the gate')).toHaveLength(2);
+  });
+
+  it('a timed-out send the server stored after all: once a re-read shows it, no "Not sent" and no Retry to send it twice', async () => {
+    await typeAndSend('At the gate');
+    await settle(() => fx.sent[0]!.fail(new Error('timeout of 15000ms exceeded')));
+    expect(retry()).toBeTruthy();
+    fx.messages = { ...fx.messages, data: [{ id: 'm1', senderId: 'them', message: 'On my way' }, { id: 'm2', senderId: 'me', message: 'At the gate' }] };
+    await draw();
+    expect(retry()).toBeNull();
+    expect(text()).not.toContain('Not sent');
+    expect(fx.sent).toHaveLength(1);
+  });
+});
+
 describe('[APP-SPEED 10] the thread while it loads', () => {
   it('a loader, never "Say hi" over messages not yet arrived', async () => {
     fx.messages = { data: undefined, isError: false, refetch: () => undefined };

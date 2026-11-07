@@ -182,6 +182,21 @@ describe('[APP-SPEED 6] opened at the accept\'s answer', () => {
     expect(host.querySelector('[role="alert"]')).toBeNull();
   });
 
+  it('[review S2] the read after the accept failed every retry: the failure with Try again (which asks again), never "No active job"', async () => {
+    await render({ data: null, isLoading: false, isError: true, isFetching: false, dataUpdatedAt: ACCEPTED_AT - 5_000 }, accepted);
+    expect(host.querySelector('[role="alert"]')?.textContent).toContain("We couldn't load your job");
+    expect(text()).not.toContain('No active job');
+    const retry = Array.from(host.querySelectorAll('button')).find((b) => b.textContent === 'Try again')!;
+    await act(async () => { retry.click(); });
+    expect(fx.refetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('[review S2] no read after the accept has landed and none is on its way: still loading, never "No active job"', async () => {
+    await render({ data: null, isLoading: false, isError: false, isFetching: false, dataUpdatedAt: ACCEPTED_AT - 5_000 }, accepted);
+    expect(spinner()).toBeTruthy();
+    expect(text()).not.toContain('No active job');
+  });
+
   it('an older failed read is not shown while the new read is on its way', async () => {
     await render({ data: null, isLoading: false, isError: true, isFetching: true, dataUpdatedAt: ACCEPTED_AT - 5_000 }, accepted);
     expect(spinner()).toBeTruthy();

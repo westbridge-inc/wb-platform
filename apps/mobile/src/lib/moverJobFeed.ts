@@ -15,7 +15,7 @@ export const MOVER_JOB_EVENTS = ['order:status_changed', 'order:prep_update'] as
  * [APP-SPEED 7] The phone's own step, echoed back. A step's answer already puts the job's new status on screen
  * (hooks/mover writeJobStatus) and re-reads the job once; the server then tells the order's room the same news, and
  * that echo re-read the job a second time. For OWN_STEP_ECHO_MS after a step, a status change naming this order and
- * the very status the step answered is that echo and is not re-read. Any other news (another status, a prep signal,
+ * the very status the step answered, and carrying nothing else (bar a timestamp), is that echo and is not re-read. Any other news (another status, a prep signal,
  * another order, or the same status later) re-reads as before.
  */
 export const OWN_STEP_ECHO_MS = 2_000;
@@ -24,7 +24,12 @@ export function noteOwnJobStep(orderId: unknown, status: unknown): void {
   if (typeof orderId !== 'string' || !orderId || typeof status !== 'string' || !status) return;
   ownSteps.set(orderId, { status, at: Date.now() });
 }
+/** [review S3.1] An echo is a bare status change: the order, its status and (perhaps) a timestamp, nothing more.
+ *  A status event that carries anything else (a payment confirmed or claimed, a ride code reset, a reason) is news
+ *  the step's answer did not bring, and is always re-read. */
+const ECHO_FIELDS: ReadonlySet<string> = new Set(['orderId', 'status', 'timestamp']);
 function isOwnStepEcho(payload: { orderId?: unknown; status?: unknown } | undefined): boolean {
+  if (!payload || typeof payload !== 'object' || Object.keys(payload).some((key) => !ECHO_FIELDS.has(key))) return false;
   const own = typeof payload?.orderId === 'string' ? ownSteps.get(payload.orderId) : undefined;
   if (!own) return false;
   if (Date.now() - own.at >= OWN_STEP_ECHO_MS) {

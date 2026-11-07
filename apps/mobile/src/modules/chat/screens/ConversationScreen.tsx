@@ -12,7 +12,7 @@ import { useBlockUser, useReportContent } from '../../../hooks/customer';
 import { ActionSheet, CircleChip, ConfirmDialog, ErrorState, Header, LoadingBlock, Screen, Spinner, T } from '../../../kit';
 import { errorMessage } from '../../../lib/apiError';
 import { CHAT_REPORT_REASONS } from '../../../lib/reportReasons';
-import { dropOutbox, markOutbox, outboxItem, threadWithOutbox, type OutboxItem } from '../../../lib/chatOutbox';
+import { dropOutbox, markOutbox, outboxItem, storedCopies, threadWithOutbox, type OutboxItem } from '../../../lib/chatOutbox';
 
 const GUTTER = space['2xl'];
 
@@ -42,7 +42,7 @@ export function ConversationScreen() {
   const listRef = useRef<FlatList>(null);
 
   const msgs: any[] = Array.isArray(messages.data) ? messages.data : ((messages.data as any)?.messages ?? []);
-  const thread: any[] = threadWithOutbox(msgs, outbox);
+  const thread: any[] = threadWithOutbox(msgs, outbox, user?.id);
 
   // [STORE-002] Report and block, from the place a person actually needs them.
   //
@@ -99,7 +99,7 @@ export function ConversationScreen() {
     const text = draft.trim();
     if (!text || send.isPending) return;
     setDraft('');
-    const item = outboxItem(text);
+    const item = outboxItem(text, storedCopies(msgs, user?.id, text));
     setOutbox((cur) => [...cur, item]);
     deliver(item);
   };

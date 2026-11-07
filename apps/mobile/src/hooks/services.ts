@@ -86,7 +86,7 @@ export function useServiceJobs<T = any>() {
 
 /** [APP-SPEED 5] A job step answers the job as the server just wrote it (status, times, quote and its updatedAt):
  *  it replaces that job's row at once, so the next tap on it sends the new updatedAt as expectedUpdatedAt (never a
- *  stale one the server would refuse). The reader-specific views GET /jobs adds (appointment, customerCancel) are
+ *  stale one the server would refuse), unless the row already holds a newer updatedAt. The reader-specific views GET /jobs adds (appointment, customerCancel) are
  *  not in the answer: they are left off until the background re-read brings them, so no move or cancel offer
  *  from before the step is shown as still open. */
 export function jobsWithAnswer(list: unknown, job: unknown): unknown {
@@ -95,10 +95,21 @@ export function jobsWithAnswer(list: unknown, job: unknown): unknown {
   const READER_VIEWS = ['appointment', 'customerCancel', 'provider'];
   return list.map((row) => {
     if ((row as { id?: unknown } | null)?.id !== j.id) return row;
+    // [review S3.2] Never older over newer: a reply that left before a change the list already holds (a re-read, the
+    // other side's step) is not written over it.
+    if (isOlderThan(j.updatedAt, (row as { updatedAt?: unknown }).updatedAt)) return row;
     const next: Record<string, unknown> = { ...(row as object), ...(j as object) };
     for (const view of READER_VIEWS) delete next[view];
     return next;
   });
+}
+
+/** Is `a` strictly older than `b` (both job updatedAt values)? An unreadable or missing `b` is never newer. */
+function isOlderThan(a: unknown, b: unknown): boolean {
+  const ta = typeof a === 'string' || a instanceof Date ? new Date(a).getTime() : Number.NaN;
+  const tb = typeof b === 'string' || b instanceof Date ? new Date(b).getTime() : Number.NaN;
+  if (Number.isNaN(tb)) return false;
+  return Number.isNaN(ta) || ta < tb;
 }
 
 /** Write a job step's answer (when it is the job) and re-read the list in the background: the button is free at the

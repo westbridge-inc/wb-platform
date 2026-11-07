@@ -18,16 +18,22 @@ export function acceptedJobParams(orderId: string, now: number = Date.now()): Ac
 }
 
 /**
- * Is the job screen still waiting for the first read made after the accept? Only while that read is on its way:
- * an answer older than the accept is not the job's absence. Once a read lands (with the job, or, if the server
- * already took it away, without) or fails, the screen shows what it says.
+ * Where the job screen stands with a just-accepted job, until a read made AFTER the accept lands:
+ * - 'waiting': no such read yet (it is on its way, or retrying): the job is loading. An answer older than the accept
+ *   is never the job's absence, so a just-accepted job is never "No active job" ([BUG-GUARDS C3]).
+ * - 'failed': the read after the accept failed (every retry spent, none in flight): say so, with Try again; the
+ *   screen still never says "No active job".
+ * - 'answered': a read made after the accept landed (with the job, or without it if the server already took it
+ *   away), or the screen was not opened by an accept: the screen shows what the read says.
  */
-export function awaitingAcceptedJob(
+export type AcceptedJobState = 'waiting' | 'failed' | 'answered';
+export function acceptedJobState(
   params: { acceptedAt?: unknown } | null | undefined,
-  read: { isFetching: boolean; dataUpdatedAt: number },
-): boolean {
+  read: { isFetching: boolean; isError: boolean; dataUpdatedAt: number },
+): AcceptedJobState {
   const at = params?.acceptedAt;
-  return typeof at === 'number' && Number.isFinite(at) && read.isFetching && read.dataUpdatedAt < at;
+  if (typeof at !== 'number' || !Number.isFinite(at) || read.dataUpdatedAt >= at) return 'answered';
+  return read.isError && !read.isFetching ? 'failed' : 'waiting';
 }
 
 /** Does a step's own answer say the job is over (delivered, completed, failed, cancelled, returned...)? */
