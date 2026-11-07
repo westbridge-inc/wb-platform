@@ -72,6 +72,27 @@ export function storeNameIsOwnName(storeName: string, firstName: string, lastNam
   return rest.every((w) => forenames.has(w) || (w.length === 1 && initials.has(w)));
 }
 
+/**
+ * [OWNNAME-FIT · COORD 7 Nov 2026, BNA Cap. 90:05 s.3] Which of the owner's stores could trade under the owner's own
+ * name, by the same test POST /onboarding/own-name applies (storeNameIsOwnName). GET /verification/status sends it as
+ * `ownNameFits` (store id → true/false) so the apps OFFER "No business name? Trade under your own name" only for a
+ * store whose name passes; a store named e.g. "Westbridge Inc." is never offered a route the server would refuse.
+ * False for every store when the account's first or last name, or the store's name, is missing or blank. Only an
+ * offer: the signing route still decides, and a person still checks the name against the owner's ID.
+ */
+export function ownNameFitsByStore(
+  stores: ReadonlyArray<{ id: string; name: string | null | undefined }>,
+  firstName: string | null | undefined,
+  lastName: string | null | undefined,
+): Record<string, boolean> {
+  const present = (s: string | null | undefined): s is string => typeof s === 'string' && s.trim().length > 0;
+  const fits: Record<string, boolean> = {};
+  for (const store of stores) {
+    fits[store.id] = present(firstName) && present(lastName) && present(store.name) && storeNameIsOwnName(store.name, firstName, lastName);
+  }
+  return fits;
+}
+
 export interface OwnNameFacts { storeName: string; legalName: string; signedAt: Date }
 
 /** Render the signed declaration: the words, then the facts, then the signature line. */
