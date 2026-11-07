@@ -34,7 +34,8 @@ describe('[review S2-2] homeFeedChanged', () => {
   });
 
   it('is the key Home reads (customerKeys.homeAll)', () => {
-    expect(read('../hooks/customer.ts')).toContain('homeAll: HOME_FEED_ALL,');
+    expect(HOME_FEED_ALL).toEqual(['customer', 'home']);
+    expect(read('../hooks/customer.ts')).toContain("homeAll: ['customer', 'home'] as const,");
   });
 });
 

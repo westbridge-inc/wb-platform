@@ -1,4 +1,4 @@
-import { HOME_FEED_ALL, homeFeedChanged } from '../lib/homeFeed';
+import { homeFeedChanged } from '../lib/homeFeed';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { keepPreviousData, useInfiniteQuery, useMutation, useQuery, useQueryClient, type MutateOptions, type QueryClient } from '@tanstack/react-query';
 import { track } from '../lib/analytics';
@@ -43,7 +43,7 @@ export const customerKeys = {
   // The PREFIX of every Home feed, whatever coordinates it was fetched for.
   // Anything that changes what Home should show — an order placed, cancelled,
   // a store favourited — invalidates this, not one lat/lng variant.
-  homeAll: HOME_FEED_ALL,
+  homeAll: ['customer', 'home'] as const,
   vendors: (params?: Record<string, string>) => ['customer', 'vendors', params ?? {}] as const,
   search: (q: string, type?: string, lat?: number, lng?: number) => ['customer', 'search', q, type ?? null, lat ?? null, lng ?? null] as const,
   searchSuggestions: (q: string) => ['customer', 'search-suggestions', q] as const,
