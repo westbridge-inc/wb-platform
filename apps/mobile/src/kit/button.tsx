@@ -56,7 +56,7 @@ export function PillButton({
       testID={testID}
       onPress={blocked ? undefined : onPress}
       onPressIn={blocked ? undefined : onPressIn}
-      onPressOut={onPressOut}
+      onPressOut={blocked ? undefined : onPressOut}
       disabled={blocked}
       accessibilityRole="button"
       accessibilityLabel={label}

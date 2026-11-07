@@ -3,7 +3,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import React, { act } from 'react';
 // @ts-expect-error react-dom is deliberately not a mobile runtime dependency.
 import { createRoot } from 'react-dom/client';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { QueryClient, QueryClientProvider, onlineManager } from '@tanstack/react-query';
+import { readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 
 // ---------------------------------------------------------------------------
 // [APP-SPEED A] The REAL customer hooks over a real query client: what a door
@@ -49,6 +51,7 @@ vi.mock('../lib/deviceLocation', () => ({
 
 import { customerKeys, prefetchActiveRide, prefetchOrder, prefetchVendor, useCart, useOrder } from './customer';
 import { PRESS_READ_DELAY_MS, usePressRead, useVendorPrefetch } from './storeDoor';
+import { PRESS_READ_LOCK_MS, RN_MIN_PRESS_DURATION_MS } from './pressRead';
 
 const CART = { id: 'cart', items: [{ id: 'line', itemId: 'item', quantity: 1 }], totalAmount: 2500 };
 const answer = (data: unknown) => ({ data: { data } });
@@ -261,6 +264,84 @@ describe('[APP-SPEED A · review S2-2] reads asked by a resting finger', () => {
     expect(fx.getVendor).toHaveBeenCalledWith('store-9', { lat: 6.8, lng: -58.16 });
     handlers.onPressOut();
     await act(async () => { await vi.advanceTimersByTimeAsync(10); });
+  });
+});
+
+describe('[APP-SPEED A · delta S2] the delay sits above React Native’s press floor', () => {
+  beforeEach(() => { vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] }); });
+  afterEach(() => { vi.useRealTimers(); onlineManager.setOnline(true); });
+
+  /** A press as RN 0.85 Pressability delivers it: onPressOut never before the minimum press duration. */
+  async function pressLike(handlers: { onPressIn: () => void; onPressOut: () => void }, liftAt: number) {
+    handlers.onPressIn();
+    const outAt = Math.max(liftAt, RN_MIN_PRESS_DURATION_MS);
+    await act(async () => { await vi.advanceTimersByTimeAsync(outAt); });
+    handlers.onPressOut();
+    await act(async () => { await vi.advanceTimersByTimeAsync(1_000); });
+  }
+
+  it('pins React Native’s own floor (Pressability DEFAULT_MIN_PRESS_DURATION), and stays above it', () => {
+    const rnRequire = createRequire(new URL('../../package.json', import.meta.url));
+    const pressability = readFileSync(rnRequire.resolve('react-native/Libraries/Pressability/Pressability.js'), 'utf8');
+    expect(pressability).toContain(`const DEFAULT_MIN_PRESS_DURATION = ${RN_MIN_PRESS_DURATION_MS};`);
+    expect(PRESS_READ_DELAY_MS).toBeGreaterThanOrEqual(RN_MIN_PRESS_DURATION_MS + 40);
+  });
+
+  it('a scroll starting on a card (the touch taken at 20 ms, press-out held to 130 ms) reads nothing', async () => {
+    const read = vi.fn(() => Promise.resolve());
+    const press = await probe(() => usePressRead());
+    await pressLike(press.current()(read), 20);
+    expect(read).not.toHaveBeenCalled();
+  });
+
+  it('a finger resting 180+ ms reads once', async () => {
+    const read = vi.fn(() => Promise.resolve());
+    const press = await probe(() => usePressRead());
+    await pressLike(press.current()(read), PRESS_READ_DELAY_MS + 20);
+    expect(read).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('[APP-SPEED A · delta S3-1] offline and slow lines', () => {
+  beforeEach(() => { vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] }); });
+  afterEach(() => { vi.useRealTimers(); onlineManager.setOnline(true); });
+
+  it('offline: a resting finger asks nothing', async () => {
+    onlineManager.setOnline(false);
+    const read = vi.fn(() => Promise.resolve());
+    const press = await probe(() => usePressRead());
+    press.current()(read).onPressIn();
+    await act(async () => { await vi.advanceTimersByTimeAsync(PRESS_READ_DELAY_MS + 50); });
+    expect(read).not.toHaveBeenCalled();
+  });
+
+  it('a read still on its way lets other cards read again after the lock time; its late settle frees nothing it no longer holds', async () => {
+    let landFirst!: () => void;
+    const first = vi.fn(() => new Promise<void>((res) => { landFirst = res; }));
+    let landSecond!: () => void;
+    const second = vi.fn(() => new Promise<void>((res) => { landSecond = res; }));
+    const third = vi.fn(() => Promise.resolve());
+    const press = await probe(() => usePressRead());
+
+    press.current()(first).onPressIn();
+    await act(async () => { await vi.advanceTimersByTimeAsync(PRESS_READ_DELAY_MS + 5); });
+    expect(first).toHaveBeenCalledTimes(1);
+
+    press.current()(second).onPressIn();
+    await act(async () => { await vi.advanceTimersByTimeAsync(PRESS_READ_DELAY_MS + 5); });
+    expect(second, 'held while the first is on its way').not.toHaveBeenCalled();
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(PRESS_READ_LOCK_MS); });
+    press.current()(second).onPressIn();
+    await act(async () => { await vi.advanceTimersByTimeAsync(PRESS_READ_DELAY_MS + 5); });
+    expect(second, 'the stuck first read no longer blocks').toHaveBeenCalledTimes(1);
+
+    // The first read lands late: the lock now belongs to the second, which still holds it.
+    await act(async () => { landFirst(); await vi.advanceTimersByTimeAsync(1); });
+    press.current()(third).onPressIn();
+    await act(async () => { await vi.advanceTimersByTimeAsync(PRESS_READ_DELAY_MS + 5); });
+    expect(third).not.toHaveBeenCalled();
+    await act(async () => { landSecond(); await vi.advanceTimersByTimeAsync(1); });
   });
 });
 
