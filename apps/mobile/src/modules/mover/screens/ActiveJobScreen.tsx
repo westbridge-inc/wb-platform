@@ -44,6 +44,7 @@ import { driverMapLine } from '../../../lib/routeLine';
 import { useWaitingClock } from '../../../hooks/useWaitingClock';
 import { afterDismiss } from '../../../kit/after-dismiss';
 import { moverStatusLabel } from '../../../lib/orderStatus';
+import { awaitingAcceptedJob, jobAnswerIsOver } from '../../../lib/acceptedJob';
 import { DriverItinerary, DriverWaiting, TaxiStopActions, openStopNavigation, useNoShowOpen } from '../TaxiItinerary';
 
 /** [F-213] Every driver handover PIN is 6 digits (api ride-pin.ts). */
@@ -133,7 +134,7 @@ function regionAround(points: { latitude: number; longitude: number }[]) {
   };
 }
 
-export function ActiveJobScreen({ navigation }: any) {
+export function ActiveJobScreen({ navigation, route }: any) {
   const insets = useSafeAreaInsets();
   const { kind } = useMoverKind();
   const active = useActiveJob(kind);
@@ -150,6 +151,8 @@ export function ActiveJobScreen({ navigation }: any) {
   const [pin, setPin] = useState('');
   const [selectedLegId, setSelectedLegId] = useState<string | null>(null);
   const [ratePopup, setRatePopup] = useState<{ orderId: string; name: string; mmg: boolean } | null>(null);
+  // [APP-SPEED 6] The job ended at the step's answer and the screen is on its way back to Home.
+  const [leaving, setLeaving] = useState(false);
   const [stars, setStars] = useState(5);
   // [MOB-018] The signed-in market decides the emergency number the preview popup names.
   const sosCountry = useAuthStore((st) => st.countryCode);
@@ -250,10 +253,13 @@ export function ActiveJobScreen({ navigation }: any) {
   if (!job && !ratePopup) {
     // [BUG-GUARDS C3] Until the job read answers (loading, or failed with nothing cached) this is not
     // "No active job": a driver mid-trip must never be told they have none.
-    const unanswered = active.data === undefined && (active.isLoading || active.isError);
+    // [APP-SPEED 6] Opened at an accept's answer (MoverHomeScreen): the read from before the accept still says "none",
+    // so until the read made after it lands the job is loading. Leaving at a completion's answer: loading too.
+    const awaitingAccepted = awaitingAcceptedJob(route?.params, active);
+    const unanswered = (active.data === undefined && (active.isLoading || active.isError)) || awaitingAccepted || leaving;
     return (
       <Screen>
-        {unanswered && active.isError ? (
+        {unanswered && active.isError && !awaitingAccepted && !leaving ? (
           <ErrorState message="We couldn't load your job. Check your connection and try again." onRetry={() => void active.refetch()} />
         ) : unanswered ? (
           <View accessibilityLabel="Loading your job" style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
@@ -331,6 +337,7 @@ export function ActiveJobScreen({ navigation }: any) {
             capturedProofs.current.forget(captured.key);
             // [BUG-HUNT-2 G02] Unpaid at the door: the parcel is still in their hands, so the job stays, on its return leg.
             if (outcome && outcome !== 'paid') toast.show(parcelUnpaidWords(res?.claim?.status, res?.claim?.flags));
+            if (leaveIfOver(res)) return;
             active.refetch?.();
           },
           onError: (proofError: any) => {
@@ -370,8 +377,16 @@ export function ActiveJobScreen({ navigation }: any) {
       toast.error(body.message ?? "Couldn't verify the delivery code — try again or contact support.");
     }
   };
+  // [APP-SPEED 6] The step's own answer says the job is over: back to Home at the answer (the hook took the job off
+  // the active read and re-reads in the background). A stacked rider stays: the legs' re-read shows the next leg.
+  const leaveIfOver = (answer: unknown): boolean => {
+    if (stacked || !jobAnswerIsOver(answer)) return false;
+    setLeaving(true);
+    navigation?.goBack?.();
+    return true;
+  };
   const markDelivered = () =>
-    isCourier ? captureCourierProof() : riderAct.mutate({ id: job.id, action: 'delivered', pin, handoverVersion: door.version ?? undefined }, { onError: onPinRefused });
+    isCourier ? captureCourierProof() : riderAct.mutate({ id: job.id, action: 'delivered', pin, handoverVersion: door.version ?? undefined }, { onSuccess: leaveIfOver, onError: onPinRefused });
   const deliverLabel = isCourier ? 'Capture proof & deliver' : 'Mark delivered';
   // [E16] Pickup custody proof. PICKED_UP is a physical-custody claim: the
   // server refuses the bare tap for a courier, so the pickup step captures a
@@ -596,10 +611,11 @@ export function ActiveJobScreen({ navigation }: any) {
       courierReturnProof.mutate(
         { orderId: job.id, uri: captured.uri, authSession: owner ?? undefined },
         {
-          onSuccess: () => {
+          onSuccess: (res: unknown) => {
             capturedProofs.current.forget(captured.key);
             haptic.success();
             toast.show('Return complete', 'The parcel is back with the sender — return proof saved.');
+            if (leaveIfOver(res)) return;
             active.refetch?.();
           },
           onError: (proofError: any) => {
@@ -1194,7 +1210,10 @@ export function ActiveJobScreen({ navigation }: any) {
                   pin={pin}
                   busy={busy}
                   pending={riderAct.isPending}
-                  submit={(fields, handlers) => riderAct.mutate({ id: job.id, action: 'handover', ...fields, handoverVersion: door.version ?? undefined }, handlers)}
+                  submit={(fields, handlers) => riderAct.mutate({ id: job.id, action: 'handover', ...fields, handoverVersion: door.version ?? undefined }, {
+                    onSuccess: (res: unknown) => { handlers.onSuccess(res); leaveIfOver(res); },
+                    onError: handlers.onError,
+                  })}
                   onDoorRefused={onPinRefused}
                 >
                   {doorPinCeremony}

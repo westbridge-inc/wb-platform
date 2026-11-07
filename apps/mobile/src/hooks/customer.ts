@@ -60,11 +60,27 @@ export function useAddresses<T = any>() {
   return useQuery<T>({ queryKey: customerKeys.addresses, queryFn: () => unwrap<T>(customerApi.getAddresses()) });
 }
 
+/** [APP-SPEED 5] The saved address as the server answered it, in the list at once (the list reads defaults first,
+ *  newest first, as GET /addresses orders them; a new default clears the others' flag, as the server just did). The list still
+ *  re-reads in the background. An answer without an id (an older server) is not written. */
+export function listWithAddedAddress(list: unknown, added: unknown): unknown {
+  const a = added as { id?: unknown; isDefault?: unknown } | null | undefined;
+  if (!Array.isArray(list) || typeof a?.id !== 'string' || !a.id) return list;
+  if (list.some((row) => (row as { id?: unknown } | null)?.id === a.id)) return list;
+  if (a.isDefault === true) return [a, ...list.map((row) => ({ ...(row as object), isDefault: false }))];
+  // Newest first after the default, as the server lists them.
+  const at = list.findIndex((row) => (row as { isDefault?: unknown } | null)?.isDefault !== true);
+  return at < 0 ? [...list, a] : [...list.slice(0, at), a, ...list.slice(at)];
+}
+
 export function useAddAddress() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (data: AddressInput) => unwrap(customerApi.addAddress(data)),
-    onSuccess: () => qc.invalidateQueries({ queryKey: customerKeys.addresses }),
+    onSuccess: (added: unknown) => {
+      qc.setQueryData(customerKeys.addresses, (list: unknown) => listWithAddedAddress(list, added));
+      void qc.invalidateQueries({ queryKey: customerKeys.addresses });
+    },
   });
 }
 
@@ -942,7 +958,8 @@ export function useCreateTicket() {
     // Own inline success/reset — opt out of the global error toast so the
     // form can show its own state.
     mutationFn: (data: Parameters<typeof customerApi.createTicket>[0]) => unwrap(customerApi.createTicket(data)),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['support', 'tickets'] }),
+    // [APP-SPEED 5] Free at the server's answer; the ticket list refreshes in the background.
+    onSuccess: () => { void qc.invalidateQueries({ queryKey: ['support', 'tickets'] }); },
   });
 }
 
@@ -994,7 +1011,8 @@ export function useRescheduleBooking() {
   return useMutation({
     mutationFn: ({ bookingId, newSlotStart }: { orderId: string; bookingId: string; newSlotStart: string }) =>
       unwrap(customerApi.rescheduleBooking(bookingId, newSlotStart)),
-    onSettled: (_data, _error, { orderId }) => qc.invalidateQueries({ queryKey: customerKeys.order(orderId) }),
+    // [APP-SPEED 5] Free at the server's answer; the order (with the booking's new time) re-reads in the background.
+    onSettled: (_data, _error, { orderId }) => { void qc.invalidateQueries({ queryKey: customerKeys.order(orderId) }); },
   });
 }
 

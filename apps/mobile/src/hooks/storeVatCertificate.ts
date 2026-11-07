@@ -4,7 +4,7 @@ import { useStoreSwitcher } from '../stores/storeSwitcher';
 import { requireAuthSessionForPrincipal, requireAuthSessionSnapshot } from '../stores/authStore';
 import { guardVendorOperation } from './useVendorMutation';
 import { useUploadFile } from './verification';
-import { bound, previewReadOnly, unwrap, type StoreVatView } from './storeVat';
+import { bound, previewReadOnly, unwrap, writeStoreVatAnswer, type StoreVatView } from './storeVat';
 import type { StoreVatMode } from '../lib/storeVat';
 
 // [STORE-VAT · owner O-5] The store's GRA VAT certificate, sent from the phone (OWNER only). Kept apart from
@@ -30,6 +30,7 @@ export function useSendVatCertificate() {
         { fileUrl, consent: true, privacyNoticeVersion: PRIVACY_NOTICE_VERSION, consentTick: 'document_v1', ...(claim ?? {}) }, current, storeId,
       )));
     })),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['vendor', 'vat'] }),
+    // [APP-SPEED 5] The answer is the store's VAT view: on screen at the answer, re-read in the background.
+    onSuccess: (view: StoreVatView | undefined) => writeStoreVatAnswer(qc, storeId, view),
   });
 }

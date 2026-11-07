@@ -36,7 +36,8 @@ describe('the rider door PIN ceremony [MKT-F057]', () => {
     // to the cash door, which sends it with every hand-over statement
     // (behaviour: ActiveJobScreen.doorCash.navigation.test.ts).
     expect(SCREEN).toMatch(/<DoorCash[^>]*\bpin=\{pin\}/);
-    expect(SCREEN).toMatch(/submit=\{\(fields, handlers\) => riderAct\.mutate\(\{ id: job\.id, action: 'handover', \.\.\.fields, handoverVersion: door\.version \?\? undefined \}, handlers\)\}/);
+    // [APP-SPEED 6] The door's own handlers run first; a hand-over that ends the job then leaves at the answer.
+    expect(SCREEN).toMatch(/submit=\{\(fields, handlers\) => riderAct\.mutate\(\{ id: job\.id, action: 'handover', \.\.\.fields, handoverVersion: door\.version \?\? undefined \}, \{\s*onSuccess: \(res: unknown\) => \{ handlers\.onSuccess\(res\); leaveIfOver\(res\); \},\s*onError: handlers\.onError,\s*\}\)\}/);
     expect(DOOR_CASH).toMatch(/\{ \.\.\.fields, \.\.\.\(fields\.outcome === 'paid' && pin \? \{ pin \} : \{\}\) \}/);
   });
 

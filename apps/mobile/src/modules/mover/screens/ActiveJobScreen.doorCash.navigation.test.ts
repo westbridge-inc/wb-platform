@@ -422,3 +422,35 @@ describe('a goods order going back to the store', () => {
     expect(buttonNamed('Record cash & hand over')).toBeNull();
   });
 });
+
+// [APP-SPEED 6 · 7 Nov 2026] A hand-over whose own answer says the order is delivered leaves the job screen at the
+// answer (Home), after the door's own words; an answer that keeps the job (a return leg) stays on it.
+describe('the door’s answer decides where the rider goes next', () => {
+  async function confirmPaid() {
+    await render(cashDoorJob());
+    await click(buttonNamed('Record cash & hand over'));
+    await type('2500');
+    await click(byTestId('door-cash-review'));
+    await click(byTestId('door-cash-confirm'));
+  }
+
+  it('delivered: the door’s words, then back to Home at the answer', async () => {
+    await confirmPaid();
+    expect(navigation.goBack).not.toHaveBeenCalled(); // nothing moves before the server answers
+    await answer('success', { orderId: 'ord-cash-1', status: 'DELIVERED', claim: null, cash: { due: 2500, collected: 2500, shortfall: 0, heldForReview: false } });
+    expect(fx.toast.success).toHaveBeenCalledWith('Cash recorded', '$2,500 collected of $2,500 due. Delivery complete.');
+    expect(navigation.goBack).toHaveBeenCalledTimes(1);
+  });
+
+  it('going back to the store (a return leg): the rider stays on the job', async () => {
+    await confirmPaid();
+    await answer('success', { orderId: 'ord-cash-1', status: 'RETURNING', claim: null });
+    expect(navigation.goBack).not.toHaveBeenCalled();
+  });
+
+  it('a refused hand-over: the rider stays on the job', async () => {
+    await confirmPaid();
+    await answer('error', refusal('CASH_OVER_DUE', 'over'));
+    expect(navigation.goBack).not.toHaveBeenCalled();
+  });
+});
