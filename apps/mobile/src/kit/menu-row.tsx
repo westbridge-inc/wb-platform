@@ -15,8 +15,11 @@ import { T } from './text';
  * row is a designed variant, never a gray placeholder wall. Rows sit in one
  * card per category with subtle dividers (elevation law: borders, not
  * shadows, for list rows).
+ *
+ * [APP-SPEED C] Memoised: a row redraws only when its own props change (its number, its item), never because
+ * another row's + was tapped. Callers pass callbacks that keep their identity.
  */
-export function MenuRow({
+export const MenuRow = React.memo(function MenuRow({
   name,
   description,
   price,
@@ -94,4 +97,4 @@ export function MenuRow({
       )}
     </Pressable>
   );
-}
+});

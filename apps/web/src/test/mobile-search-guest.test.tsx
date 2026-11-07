@@ -8,8 +8,20 @@ import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 // Fastify search/auth handlers execute. No device or network listener is used.
 vi.mock('../../../mobile/node_modules/react-native', () => {
   const View = ({ children }: any) => <div>{children}</div>;
+  const element = (c: any) => (c == null ? null : React.isValidElement(c) ? c : React.createElement(c));
+  // [APP-SPEED C] Search's results are one FlatList (lib/searchRows): every row is drawn, as the device draws the
+  // rows on screen (no windowing here).
+  const FlatList = (p: any) => (
+    <div>
+      {element(p.ListHeaderComponent)}
+      {(p.data ?? []).map((item: any, index: number) => (
+        <React.Fragment key={p.keyExtractor ? p.keyExtractor(item, index) : index}>{p.renderItem({ item, index })}</React.Fragment>
+      ))}
+      {element(p.ListFooterComponent)}
+    </div>
+  );
   return {
-    View, ScrollView: View, FlatList: () => null,
+    View, ScrollView: View, FlatList,
     Pressable: ({ children, onPress, accessibilityLabel }: any) => <button aria-label={accessibilityLabel} onClick={onPress}>{typeof children === 'function' ? children({ pressed: false }) : children}</button>,
     TextInput: ({ onChangeText, ...p }: any) => <input value={p.value} placeholder={p.placeholder} onChange={(e) => onChangeText(e.target.value)} />,
     TurboModuleRegistry: { get: () => null },

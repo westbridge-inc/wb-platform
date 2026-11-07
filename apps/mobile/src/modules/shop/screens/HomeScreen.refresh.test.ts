@@ -73,3 +73,34 @@ describe('the other main tabs follow the same rule', () => {
     expect(PROFILE).not.toMatch(/profile\.(isFetching|isRefetching)\) \{\s*return \(\s*<Screen>\s*<LoadingBlock/);
   });
 });
+
+// ---------------------------------------------------------------------------
+// [APP-SPEED 11] Home does no work for nobody. It is never frozen (its tab keeps rendering under every other screen),
+// so: a return re-reads the feed only when it is old (lib/homeReliability homeAttentionRefresh, behaviour pinned in
+// homeReliability.test.ts); the live-order clock, the ad loops and the hero video run only while Home is live
+// (hooks/useScreenLive, behaviour pinned in the ads' and the hook's own tests); and the stores are read field by field.
+// ---------------------------------------------------------------------------
+describe('[APP-SPEED 11] Home is quiet when nobody is looking at it', () => {
+  it('a return re-reads the feed through the freshness check, then the same gate', () => {
+    expect(HOME).toContain('homeAttentionRefresh(current, Date.now(), attentionGate);');
+    expect(HOME).not.toContain("attentionGate(Date.now(), current?.fetchStatus === 'fetching');");
+  });
+
+  it('the live-order clock, every ad unit and the hero video follow useScreenLive', () => {
+    expect(HOME).toContain("import { useScreenLive } from '../../../hooks/useScreenLive';");
+    expect(HOME).toContain('const live = useScreenLive();');
+    expect(HOME).toMatch(/if \(!holdRunning \|\| !live\) return;/);
+    for (const unit of ['LiveOrderCard', 'AdHeroVideo', 'AdTopCard', 'AdBar']) {
+      const at = HOME.indexOf(`<${unit}`);
+      expect(at, unit).toBeGreaterThan(0);
+      expect(HOME.slice(at, HOME.indexOf('/>', at)), unit).toContain('live={live}');
+    }
+  });
+
+  it('the auth and location stores are read field by field, never whole', () => {
+    expect(HOME).not.toMatch(/=\s*useAuthStore\(\);/);
+    expect(HOME).not.toMatch(/=\s*useLocationStore\(\);/);
+    expect(HOME).toContain('const avatar = useAuthStore((state) => state.user?.avatar);');
+    expect(HOME).toContain('const latitude = useLocationStore((state) => state.latitude);');
+  });
+});

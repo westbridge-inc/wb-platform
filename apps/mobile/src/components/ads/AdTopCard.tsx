@@ -20,10 +20,13 @@ export function AdTopCard({
   item,
   trackable,
   trackingScope,
+  live = true,
 }: {
   item: AdServeItem;
   trackable: boolean;
   trackingScope: AdEventScope | null;
+  /** [APP-SPEED 11] Home is shown and Swift is in the foreground: the card measures itself only then. */
+  live?: boolean;
 }) {
   const [failed, setFailed] = React.useState(false);
   const track = trackable ? item.impressionToken : undefined;
@@ -34,6 +37,7 @@ export function AdTopCard({
 
   const { ref } = useAdViewability({
     enabled: !!track,
+    live,
     onViewable: () => trackAdEvent(track, 'VIEWABLE_IMPRESSION', trackingScope),
   });
 

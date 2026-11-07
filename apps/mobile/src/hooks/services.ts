@@ -1,6 +1,7 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { servicesApi } from '../services/api';
 import { track } from '../lib/analytics';
+import { homeFeedChanged } from '../lib/homeFeed';
 import { unwrapOptionalServiceProviderProfile } from '../lib/serviceProviderProfile';
 import {
   requireAuthSessionForPrincipal,
@@ -84,6 +85,41 @@ export function useServiceJobs<T = any>() {
   return useQuery<T>({ queryKey: ['services', 'jobs'], queryFn: () => unwrap<T>(servicesApi.jobs()) });
 }
 
+/** [APP-SPEED 5] A job step answers the job as the server just wrote it (status, times, quote and its updatedAt):
+ *  it replaces that job's row at once, so the next tap on it sends the new updatedAt as expectedUpdatedAt (never a
+ *  stale one the server would refuse), unless the row already holds a newer updatedAt. The reader-specific views GET /jobs adds (appointment, customerCancel) are
+ *  not in the answer: they are left off until the background re-read brings them, so no move or cancel offer
+ *  from before the step is shown as still open. */
+export function jobsWithAnswer(list: unknown, job: unknown): unknown {
+  const j = job as { id?: unknown; updatedAt?: unknown; status?: unknown } | null | undefined;
+  if (!Array.isArray(list) || typeof j?.id !== 'string' || !j.id || j.updatedAt == null || typeof j.status !== 'string') return list;
+  const READER_VIEWS = ['appointment', 'customerCancel', 'provider'];
+  return list.map((row) => {
+    if ((row as { id?: unknown } | null)?.id !== j.id) return row;
+    // [review S3.2] Never older over newer: a reply that left before a change the list already holds (a re-read, the
+    // other side's step) is not written over it.
+    if (isOlderThan(j.updatedAt, (row as { updatedAt?: unknown }).updatedAt)) return row;
+    const next: Record<string, unknown> = { ...(row as object), ...(j as object) };
+    for (const view of READER_VIEWS) delete next[view];
+    return next;
+  });
+}
+
+/** Is `a` strictly older than `b` (both job updatedAt values)? An unreadable or missing `b` is never newer. */
+function isOlderThan(a: unknown, b: unknown): boolean {
+  const ta = typeof a === 'string' || a instanceof Date ? new Date(a).getTime() : Number.NaN;
+  const tb = typeof b === 'string' || b instanceof Date ? new Date(b).getTime() : Number.NaN;
+  if (Number.isNaN(tb)) return false;
+  return Number.isNaN(ta) || ta < tb;
+}
+
+/** Write a job step's answer (when it is the job) and re-read the list in the background: the button is free at the
+ *  answer, whatever it was (a refusal re-reads too, so a stale row is replaced). */
+function afterJobStep(qc: QueryClient, job?: unknown): void {
+  if (job !== undefined) qc.setQueryData(['services', 'jobs'], (list: unknown) => jobsWithAnswer(list, job));
+  void qc.invalidateQueries({ queryKey: ['services', 'jobs'] });
+}
+
 export function useRequestJob() {
   const qc = useQueryClient();
   return useMutation({
@@ -106,7 +142,7 @@ export function useScheduleJob() {
       expectedUpdatedAt: string;
       expectedQuoteAmount: number;
     }) => unwrap(servicesApi.scheduleJob(id, { scheduledFor, expectedUpdatedAt, expectedQuoteAmount })),
-    onSettled: () => qc.invalidateQueries({ queryKey: ['services', 'jobs'] }),
+    onSettled: (job) => afterJobStep(qc, job),
   });
 }
 
@@ -115,7 +151,7 @@ export function useCancelJob() {
   return useMutation({
     mutationFn: ({ id, expectedUpdatedAt }: { id: string; expectedUpdatedAt: string }) =>
       unwrap(servicesApi.cancelJob(id, expectedUpdatedAt)),
-    onSettled: () => qc.invalidateQueries({ queryKey: ['services', 'jobs'] }),
+    onSettled: (job) => afterJobStep(qc, job),
   });
 }
 
@@ -124,7 +160,8 @@ export function useRateJob() {
   return useMutation({
     mutationFn: ({ id, score, comment }: { id: string; score: number; comment?: string }) =>
       unwrap(servicesApi.rateJob(id, score, comment)),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['services', 'jobs'] }),
+    // [APP-SPEED 5] The answer is the rating, not the job: the list re-reads in the background.
+    onSuccess: () => afterJobStep(qc),
   });
 }
 
@@ -134,7 +171,7 @@ export function useQuoteJob() {
   return useMutation({
     mutationFn: ({ id, amount, expectedUpdatedAt }: { id: string; amount: number; expectedUpdatedAt: string }) =>
       unwrap(servicesApi.quoteJob(id, amount, expectedUpdatedAt)),
-    onSettled: () => qc.invalidateQueries({ queryKey: ['services', 'jobs'] }),
+    onSettled: (job) => afterJobStep(qc, job),
   });
 }
 
@@ -146,7 +183,7 @@ export function useConfirmJob() {
       expectedUpdatedAt: string;
       expectedScheduledFor: string;
     }) => unwrap(servicesApi.confirmJob(id, expectedUpdatedAt, expectedScheduledFor)),
-    onSettled: () => qc.invalidateQueries({ queryKey: ['services', 'jobs'] }),
+    onSettled: (job) => afterJobStep(qc, job),
   });
 }
 
@@ -158,7 +195,7 @@ export function useStartJob() {
       expectedUpdatedAt: string;
       expectedScheduledFor: string;
     }) => unwrap(servicesApi.startJob(id, expectedUpdatedAt, expectedScheduledFor)),
-    onSettled: () => qc.invalidateQueries({ queryKey: ['services', 'jobs'] }),
+    onSettled: (job) => afterJobStep(qc, job),
   });
 }
 
@@ -167,7 +204,7 @@ export function useCompleteJob() {
   return useMutation({
     mutationFn: ({ id, expectedUpdatedAt }: { id: string; expectedUpdatedAt: string }) =>
       unwrap(servicesApi.completeJob(id, expectedUpdatedAt)),
-    onSettled: () => qc.invalidateQueries({ queryKey: ['services', 'jobs'] }),
+    onSettled: (job) => afterJobStep(qc, job),
   });
 }
 
@@ -179,7 +216,7 @@ export function useDeclineSlot() {
       expectedUpdatedAt: string;
       expectedScheduledFor: string;
     }) => unwrap(servicesApi.declineSlot(id, expectedUpdatedAt, expectedScheduledFor)),
-    onSettled: () => qc.invalidateQueries({ queryKey: ['services', 'jobs'] }),
+    onSettled: (job) => afterJobStep(qc, job),
   });
 }
 
@@ -221,6 +258,8 @@ export function useBookPro() {
       qc.invalidateQueries({ queryKey: ['services', 'jobs'] });
       qc.invalidateQueries({ queryKey: ['services', 'pro-slots', input.providerId] });
       qc.invalidateQueries({ queryKey: ['services', 'pro-offerings', input.providerId] });
+      // [APP-SPEED C · review S2-2] Home's feed is out of date: a new booking.
+      homeFeedChanged(qc);
     },
   });
 }
@@ -257,7 +296,8 @@ export function useMyBookable<T = any>(enabled = true) {
 
 function useMyBookableMutation<I>(fn: (input: I) => Promise<any>) {
   const qc = useQueryClient();
-  return useMutation({ mutationFn: (input: I) => unwrap(fn(input)), onSettled: () => qc.invalidateQueries({ queryKey: MY_BOOKABLE_KEY }) });
+  // [APP-SPEED 5] Free at the server's answer; the pro's list re-reads in the background.
+  return useMutation({ mutationFn: (input: I) => unwrap(fn(input)), onSettled: () => { void qc.invalidateQueries({ queryKey: MY_BOOKABLE_KEY }); } });
 }
 
 export const useAddOffering = () => useMyBookableMutation((input: { name: string; durationMinutes: number; price: number }) => servicesApi.addOffering(input));

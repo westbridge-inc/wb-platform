@@ -4,7 +4,7 @@ import { MapCredits } from '../../../components/MapCredits';
 import { uploadHandoverPhoto } from '../../../hooks/mover';
 import type { AuthSessionSnapshot } from '../../../lib/authSession';
 /** @jsxImportSource react */
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Platform, Pressable, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import MapView, { Marker, PROVIDER_DEFAULT, Polyline } from 'react-native-maps';
@@ -42,8 +42,11 @@ import { canDriverHandbackRide, driverHandbackDoneWords, driverStepFailedWords }
 import { hasOpenStop, nextStopSequence, rideStops } from '../../../lib/taxiItinerary';
 import { driverMapLine } from '../../../lib/routeLine';
 import { useWaitingClock } from '../../../hooks/useWaitingClock';
+import { useNavigationFocused } from '../../../hooks/useNavigationFocused';
+import { liveWaiting } from '../../../lib/taxiWaiting';
 import { afterDismiss } from '../../../kit/after-dismiss';
 import { moverStatusLabel } from '../../../lib/orderStatus';
+import { acceptedJobState, jobAnswerIsOver } from '../../../lib/acceptedJob';
 import { DriverItinerary, DriverWaiting, TaxiStopActions, openStopNavigation, useNoShowOpen } from '../TaxiItinerary';
 
 /** [F-213] Every driver handover PIN is 6 digits (api ride-pin.ts). */
@@ -121,6 +124,91 @@ function railFor(status: string | undefined, isDriver: boolean): { steps: Timeli
   return { steps, currentIndex };
 }
 
+/** The job's pickup and drop-off points (null without coordinates). */
+function jobPickup(job: any) {
+  return job?.pickupLat != null ? { latitude: Number(job.pickupLat), longitude: Number(job.pickupLng) } : null;
+}
+function jobDrop(job: any) {
+  return job?.deliveryLat != null ? { latitude: Number(job.deliveryLat), longitude: Number(job.deliveryLng) } : null;
+}
+
+/**
+ * [APP-SPEED C · report item 8] The job's map: pins, stops and the route line. Drawn again only when the job, its road
+ * line or the location permission change — never by a tick of the screen around it (a location fix moving the nav
+ * pill's distance, a sheet, a toast) — and the route line and the opening region are worked out once per job.
+ */
+const ActiveJobMap = React.memo(function ActiveJobMap({
+  job,
+  isDriver,
+  roadLineData,
+  showsUserLocation,
+}: {
+  job: any;
+  isDriver: boolean;
+  roadLineData: unknown;
+  showsUserLocation: boolean;
+}) {
+  const pickup = useMemo(() => jobPickup(job), [job]);
+  const drop = useMemo(() => jobDrop(job), [job]);
+  // [TAXI multi-stop] A driver's taxi trip with stops: the points the map draws between pickup and drop-off (none
+  // without stops).
+  const itineraryPoints = useMemo(
+    () => (isDriver ? rideStops(job) : []).flatMap((s) => (s.lat != null && s.lng != null ? [{ sequence: s.sequence, latitude: s.lat, longitude: s.lng }] : [])),
+    [isDriver, job],
+  );
+  const routePoints = useMemo(
+    () => (pickup && drop ? [pickup, ...itineraryPoints.map(({ latitude, longitude }) => ({ latitude, longitude })), drop] : []),
+    [pickup, drop, itineraryPoints],
+  );
+  // [TAXI route line] The road the server's routing engine gives (drivers only), else the straight heading.
+  const mapLine = useMemo(() => driverMapLine(roadLineData as Parameters<typeof driverMapLine>[0], routePoints), [roadLineData, routePoints]);
+  const region = useMemo(
+    () => (itineraryPoints.length > 0 && pickup && drop
+      ? regionAround(routePoints)
+      : pickup && drop
+      ? {
+          latitude: (pickup.latitude + drop.latitude) / 2,
+          longitude: (pickup.longitude + drop.longitude) / 2,
+          latitudeDelta: Math.max(0.02, Math.abs(pickup.latitude - drop.latitude) * 2.2),
+          longitudeDelta: Math.max(0.02, Math.abs(pickup.longitude - drop.longitude) * 2.2),
+        }
+      : pickup
+        ? { ...pickup, latitudeDelta: 0.02, longitudeDelta: 0.02 }
+        : undefined),
+    [itineraryPoints, pickup, drop, routePoints],
+  );
+  return (
+    <MapView
+      provider={PROVIDER_DEFAULT}
+      style={{ flex: 1 }}
+      initialRegion={region}
+      showsUserLocation={showsUserLocation}
+    >
+      {pickup ? <Marker coordinate={pickup} title="Pickup" /> : null}
+      {drop ? <Marker coordinate={drop} title="Drop-off" pinColor={color.brand[500]} /> : null}
+      {itineraryPoints.map(({ sequence, latitude, longitude }) => (
+        <Marker key={`stop-${sequence}`} coordinate={{ latitude, longitude }} title={`Stop ${sequence}`} pinColor={color.info} />
+      ))}
+      {pickup && drop ? (
+        <>
+          {/* Bold route line: white halo under the accent stroke. [TAXI route
+              line] The road the server's routing engine gives, through the
+              stops in order; without one, the geodesic heading through the
+              same points, as before (a heading, not turn-by-turn). */}
+          <Polyline coordinates={mapLine.coordinates} geodesic={!mapLine.road} strokeColor={withAlpha(color.white, 0.35)} strokeWidth={9} />
+          <Polyline coordinates={mapLine.coordinates} geodesic={!mapLine.road} strokeColor={color.brand[500]} strokeWidth={5} />
+        </>
+      ) : null}
+    </MapView>
+  );
+});
+
+/** [APP-SPEED C · report item 8] The driver's waiting card with its own 1 s clock (only while the screen is shown). */
+function DriverWaitingLive({ ride, shown, tripFare }: { ride: unknown; shown: boolean; tripFare: number | null }) {
+  const view = useWaitingClock(ride, shown);
+  return view ? <DriverWaiting view={view} tripFare={tripFare} /> : null;
+}
+
 /** [TAXI multi-stop] A map region that frames every point of a route. */
 function regionAround(points: { latitude: number; longitude: number }[]) {
   const lats = points.map((p) => p.latitude);
@@ -133,7 +221,7 @@ function regionAround(points: { latitude: number; longitude: number }[]) {
   };
 }
 
-export function ActiveJobScreen({ navigation }: any) {
+export function ActiveJobScreen({ navigation, route }: any) {
   const insets = useSafeAreaInsets();
   const { kind } = useMoverKind();
   const active = useActiveJob(kind);
@@ -150,6 +238,8 @@ export function ActiveJobScreen({ navigation }: any) {
   const [pin, setPin] = useState('');
   const [selectedLegId, setSelectedLegId] = useState<string | null>(null);
   const [ratePopup, setRatePopup] = useState<{ orderId: string; name: string; mmg: boolean } | null>(null);
+  // [APP-SPEED 6] The job ended at the step's answer and the screen is on its way back to Home.
+  const [leaving, setLeaving] = useState(false);
   const [stars, setStars] = useState(5);
   // [MOB-018] The signed-in market decides the emergency number the preview popup names.
   const sosCountry = useAuthStore((st) => st.countryCode);
@@ -199,7 +289,11 @@ export function ActiveJobScreen({ navigation }: any) {
   const job: any = liveJob ?? (retainDriverHandbackHost ? driverHandbackFlow?.job : null) ?? null;
   // [TAXI waiting charge §8.3] The live wait on a taxi trip, from the driver's
   // arrival on — the same figures the passenger sees. Null without the field.
-  const waitingClock = useWaitingClock(isDriver ? liveJob : null);
+  // [APP-SPEED C · report item 8] Here only the server's figures (is there a wait, does it run); the card's 1 s clock
+  // lives in DriverWaitingLive, so a tick redraws that card, never this screen and its map, and stops while another
+  // screen is in front.
+  const waiting = liveWaiting(isDriver ? liveJob : null);
+  const shown = useNavigationFocused(navigation);
   // [TAXI multi-stop · part 4] With a stop open, the passenger-didn't-come-back
   // outcome opens only at the server's grace time for that stop.
   const noShowOpen = useNoShowOpen(isDriver ? liveJob : null);
@@ -250,15 +344,24 @@ export function ActiveJobScreen({ navigation }: any) {
   if (!job && !ratePopup) {
     // [BUG-GUARDS C3] Until the job read answers (loading, or failed with nothing cached) this is not
     // "No active job": a driver mid-trip must never be told they have none.
-    const unanswered = active.data === undefined && (active.isLoading || active.isError);
+    // [APP-SPEED 6] Opened at an accept's answer (MoverHomeScreen): the read from before the accept still says "none",
+    // so until a read made after it lands the job is loading, and if that read fails, the failure with Try again;
+    // never "No active job" for a job just accepted. Leaving at a completion's answer: loading too.
+    const accepted = acceptedJobState(route?.params, active);
+    const unanswered = (active.data === undefined && (active.isLoading || active.isError)) || accepted !== 'answered' || leaving;
+    const failed = !leaving && (accepted === 'failed' || (accepted === 'answered' && active.isError));
     return (
       <Screen>
-        {unanswered && active.isError ? (
+        {unanswered && failed ? (
           <ErrorState message="We couldn't load your job. Check your connection and try again." onRetry={() => void active.refetch()} />
         ) : unanswered ? (
           <View accessibilityLabel="Loading your job" style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
             <Spinner size="large" />
           </View>
+        ) : typeof route?.params?.acceptedAt === 'number' ? (
+          // [review S3] The read made after this accept says there is no job: it ended after the accept (the
+          // customer cancelled, or operations moved it). Said as such, never as "you never had one".
+          <EmptyState icon="map-pin" title="This job is no longer yours" body="It was cancelled or moved after you accepted. New work shows on Home." />
         ) : (
           <EmptyState icon="map-pin" title="No active job" body="When you accept a job it'll show up here." />
         )}
@@ -269,27 +372,10 @@ export function ActiveJobScreen({ navigation }: any) {
     );
   }
 
-  const pickup = job?.pickupLat != null ? { latitude: Number(job.pickupLat), longitude: Number(job.pickupLng) } : null;
-  const drop = job?.deliveryLat != null ? { latitude: Number(job.deliveryLat), longitude: Number(job.deliveryLng) } : null;
-  // [TAXI multi-stop] A driver's taxi trip with stops: the stops in order, and
-  // the points the map draws between pickup and drop-off (none without stops).
+  const pickup = jobPickup(job);
+  const drop = jobDrop(job);
+  // [TAXI multi-stop] A driver's taxi trip with stops: the stops in order (the map draws them: ActiveJobMap).
   const itinerary = isDriver ? rideStops(job) : [];
-  const itineraryPoints = itinerary.flatMap((s) => (s.lat != null && s.lng != null ? [{ sequence: s.sequence, latitude: s.lat, longitude: s.lng }] : []));
-  const routePoints = pickup && drop ? [pickup, ...itineraryPoints.map(({ latitude, longitude }) => ({ latitude, longitude })), drop] : [];
-  const mapLine = driverMapLine(isDriver ? roadLine.data : null, routePoints);
-  const region =
-    itineraryPoints.length > 0 && pickup && drop
-      ? regionAround(routePoints)
-      : pickup && drop
-      ? {
-          latitude: (pickup.latitude + drop.latitude) / 2,
-          longitude: (pickup.longitude + drop.longitude) / 2,
-          latitudeDelta: Math.max(0.02, Math.abs(pickup.latitude - drop.latitude) * 2.2),
-          longitudeDelta: Math.max(0.02, Math.abs(pickup.longitude - drop.longitude) * 2.2),
-        }
-      : pickup
-        ? { ...pickup, latitudeDelta: 0.02, longitudeDelta: 0.02 }
-        : undefined;
 
   activePhotoBoundary.current = `${job?.id}:${kind}`;
   const busy = photoBusy || driverAct.isPending || riderAct.isPending || courierProof.isPending || courierCollect.isPending || courierPickupProof.isPending || courierReturn.isPending || courierReturnProof.isPending;
@@ -331,6 +417,7 @@ export function ActiveJobScreen({ navigation }: any) {
             capturedProofs.current.forget(captured.key);
             // [BUG-HUNT-2 G02] Unpaid at the door: the parcel is still in their hands, so the job stays, on its return leg.
             if (outcome && outcome !== 'paid') toast.show(parcelUnpaidWords(res?.claim?.status, res?.claim?.flags));
+            if (leaveIfOver(res)) return;
             active.refetch?.();
           },
           onError: (proofError: any) => {
@@ -370,8 +457,16 @@ export function ActiveJobScreen({ navigation }: any) {
       toast.error(body.message ?? "Couldn't verify the delivery code — try again or contact support.");
     }
   };
+  // [APP-SPEED 6] The step's own answer says the job is over: back to Home at the answer (the hook took the job off
+  // the active read and re-reads in the background). A stacked rider stays: the legs' re-read shows the next leg.
+  const leaveIfOver = (answer: unknown): boolean => {
+    if (stacked || !jobAnswerIsOver(answer)) return false;
+    setLeaving(true);
+    navigation?.goBack?.();
+    return true;
+  };
   const markDelivered = () =>
-    isCourier ? captureCourierProof() : riderAct.mutate({ id: job.id, action: 'delivered', pin, handoverVersion: door.version ?? undefined }, { onError: onPinRefused });
+    isCourier ? captureCourierProof() : riderAct.mutate({ id: job.id, action: 'delivered', pin, handoverVersion: door.version ?? undefined }, { onSuccess: leaveIfOver, onError: onPinRefused });
   const deliverLabel = isCourier ? 'Capture proof & deliver' : 'Mark delivered';
   // [E16] Pickup custody proof. PICKED_UP is a physical-custody claim: the
   // server refuses the bare tap for a courier, so the pickup step captures a
@@ -596,10 +691,11 @@ export function ActiveJobScreen({ navigation }: any) {
       courierReturnProof.mutate(
         { orderId: job.id, uri: captured.uri, authSession: owner ?? undefined },
         {
-          onSuccess: () => {
+          onSuccess: (res: unknown) => {
             capturedProofs.current.forget(captured.key);
             haptic.success();
             toast.show('Return complete', 'The parcel is back with the sender — return proof saved.');
+            if (leaveIfOver(res)) return;
             active.refetch?.();
           },
           onError: (proofError: any) => {
@@ -666,28 +762,7 @@ export function ActiveJobScreen({ navigation }: any) {
   return (
     <View style={{ flex: 1, backgroundColor: dk.bg }}>
       {job ? (
-        <MapView
-          provider={PROVIDER_DEFAULT}
-          style={{ flex: 1 }}
-          initialRegion={region}
-          showsUserLocation={me !== null}
-        >
-          {pickup ? <Marker coordinate={pickup} title="Pickup" /> : null}
-          {drop ? <Marker coordinate={drop} title="Drop-off" pinColor={color.brand[500]} /> : null}
-          {itineraryPoints.map(({ sequence, latitude, longitude }) => (
-            <Marker key={`stop-${sequence}`} coordinate={{ latitude, longitude }} title={`Stop ${sequence}`} pinColor={color.info} />
-          ))}
-          {pickup && drop ? (
-            <>
-              {/* Bold route line: white halo under the accent stroke. [TAXI route
-                  line] The road the server's routing engine gives, through the
-                  stops in order; without one, the geodesic heading through the
-                  same points, as before (a heading, not turn-by-turn). */}
-              <Polyline coordinates={mapLine.coordinates} geodesic={!mapLine.road} strokeColor={withAlpha(color.white, 0.35)} strokeWidth={9} />
-              <Polyline coordinates={mapLine.coordinates} geodesic={!mapLine.road} strokeColor={color.brand[500]} strokeWidth={5} />
-            </>
-          ) : null}
-        </MapView>
+        <ActiveJobMap job={job} isDriver={isDriver} roadLineData={isDriver ? roadLine.data : null} showsUserLocation={me !== null} />
       ) : (
         <View style={{ flex: 1 }} />
       )}
@@ -807,10 +882,11 @@ export function ActiveJobScreen({ navigation }: any) {
             </DCard>
 
             {/* [TAXI waiting charge] The live wait, once the driver has arrived. */}
-            {waitingClock ? (
-              <DriverWaiting
-                view={waitingClock}
-                tripFare={inProgress && !stopGate && !waitingClock.running && job?.taxiFareTotal != null ? Number(job.taxiFareTotal) : null}
+            {waiting ? (
+              <DriverWaitingLive
+                ride={liveJob}
+                shown={shown}
+                tripFare={inProgress && !stopGate && !waiting.running && job?.taxiFareTotal != null ? Number(job.taxiFareTotal) : null}
               />
             ) : null}
 
@@ -1194,7 +1270,10 @@ export function ActiveJobScreen({ navigation }: any) {
                   pin={pin}
                   busy={busy}
                   pending={riderAct.isPending}
-                  submit={(fields, handlers) => riderAct.mutate({ id: job.id, action: 'handover', ...fields, handoverVersion: door.version ?? undefined }, handlers)}
+                  submit={(fields, handlers) => riderAct.mutate({ id: job.id, action: 'handover', ...fields, handoverVersion: door.version ?? undefined }, {
+                    onSuccess: (res: unknown) => { handlers.onSuccess(res); leaveIfOver(res); },
+                    onError: handlers.onError,
+                  })}
                   onDoorRefused={onPinRefused}
                 >
                   {doorPinCeremony}

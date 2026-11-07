@@ -125,25 +125,35 @@ describe('a job step waits for the active job only (PERF partner #2)', () => {
     reads.stop();
   });
 
-  const steps: Array<[string, () => Step, 'onSuccess' | 'onSettled', unknown[]]> = [
-    ['accept a dispatch offer', () => useAcceptOffer('DRIVER') as unknown as Step, 'onSuccess', [{}, { orderId: 'ride-1' }]],
-    ['accept from the job board', () => useAcceptJob('RIDER') as unknown as Step, 'onSuccess', [{}, { id: 'order-1' }]],
-    ['a driver step (arrived)', () => useDriverAction() as unknown as Step, 'onSuccess', [{}, { id: 'ride-1', action: 'arrived' }]],
-    ['a driver step (fare handover)', () => useDriverAction() as unknown as Step, 'onSuccess', [{}, { id: 'ride-1', action: 'handover', outcome: 'paid' }]],
-    ['a rider step (picked up)', () => useRiderAction() as unknown as Step, 'onSuccess', [{}, { id: 'order-1', action: 'picked-up' }]],
-    ['a taxi stop action', () => useTaxiStopAction() as unknown as Step, 'onSettled', [{}, null, { id: 'ride-1', sequence: 1, action: 'arrived' }]],
+  // [APP-SPEED 7 · 7 Nov 2026] Each step re-reads what it changes: a step in the middle of a job the job alone, a
+  // step that ends one every mover read (in the background). [APP-SPEED 6] An accept is free at the server's yes:
+  // the job and the board re-read in the background while the job screen opens.
+  type Scope = 'the job alone' | 'every mover read' | 'accept: free at the answer';
+  const steps: Array<[string, () => Step, 'onSuccess' | 'onSettled', unknown[], Scope]> = [
+    ['accept a dispatch offer', () => useAcceptOffer('DRIVER') as unknown as Step, 'onSuccess', [{}, { orderId: 'ride-1' }], 'accept: free at the answer'],
+    ['accept from the job board', () => useAcceptJob('RIDER') as unknown as Step, 'onSuccess', [{}, { id: 'order-1' }], 'accept: free at the answer'],
+    ['a driver step (arrived)', () => useDriverAction() as unknown as Step, 'onSuccess', [{}, { id: 'ride-1', action: 'arrived' }], 'the job alone'],
+    ['a driver step (fare handover)', () => useDriverAction() as unknown as Step, 'onSuccess', [{}, { id: 'ride-1', action: 'handover', outcome: 'paid' }], 'every mover read'],
+    ['a rider step (picked up)', () => useRiderAction() as unknown as Step, 'onSuccess', [{}, { id: 'order-1', action: 'picked-up' }], 'the job alone'],
+    ['a taxi stop action', () => useTaxiStopAction() as unknown as Step, 'onSettled', [{}, null, { id: 'ride-1', sequence: 1, action: 'arrived' }], 'the job alone'],
   ];
 
-  for (const [name, hook, callback, args] of steps) {
-    it(`${name}: done once the active job is re-read, not when the slowest mover read answers`, async () => {
+  for (const [name, hook, callback, args, scope] of steps) {
+    it(`${name}: re-reads ${scope.startsWith('accept') ? 'the job and the board' : scope}, never waits for the slowest mover read`, async () => {
       const reads = await mountMoverReads(); // the profile's refresh is held
       const options = hook();
       const returned = options[callback]!(...args);
-      expect(returned).toBeInstanceOf(Promise); // still awaited: the screen shows the new job state
-      expect(await settlesSoon(returned)).toBe(true);
-      expect(reads.active).toHaveBeenCalledTimes(2);
-      expect(reads.profile).toHaveBeenCalledTimes(2); // refreshed in the background, still out
-      expect(reads.earnings).toHaveBeenCalledTimes(2);
+      if (scope === 'accept: free at the answer') {
+        expect(returned, 'the accept is free at the server\'s yes').toBeUndefined();
+        await vi.waitFor(() => expect(reads.active).toHaveBeenCalledTimes(2));
+      } else {
+        expect(returned).toBeInstanceOf(Promise); // still awaited: the screen shows the new job state
+        expect(await settlesSoon(returned)).toBe(true);
+        expect(reads.active).toHaveBeenCalledTimes(2);
+      }
+      const others = scope === 'every mover read' ? 2 : 1;
+      expect(reads.profile, 'the profile is re-read only when a job ends').toHaveBeenCalledTimes(others);
+      expect(reads.earnings, 'the earnings are re-read only when a job ends').toHaveBeenCalledTimes(others);
       reads.release();
       reads.stop();
     });

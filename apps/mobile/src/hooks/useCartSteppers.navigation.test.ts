@@ -35,7 +35,7 @@ vi.mock('./customer', () => {
 });
 vi.mock('../stores/authStore', () => ({ useAuthStore: (select: (_s: { sessionGeneration: number }) => unknown) => select({ sessionGeneration: 1 }) }));
 
-import { forgetCartSteppers, useCartSteppers } from './useCartSteppers';
+import { forgetCartSteppers, setCartStepper, useCartStepperQty, useCartSteppers } from './useCartSteppers';
 
 const h = React.createElement;
 let host: HTMLDivElement;
@@ -301,5 +301,77 @@ describe('[BOOK-POLISH · #2205] a booking line is one appointment', () => {
     await read([cut, rice]);
     await cartTap(rice, 3);
     expect(sent()).toEqual([['set', { id: 'line-rice', quantity: 3 }]]);
+  });
+});
+
+describe('[APP-SPEED C] per-line numbers: a tap redraws its own row, not the page or the other rows', () => {
+  // The store page as it now is: the page watches only `settled` (Place order's hold), each row its own number.
+  const renders = { page: 0, rice: 0, oil: 0 };
+  let quiet: ReturnType<typeof useCartSteppers>;
+  const Row = React.memo(function Row({ itemId, line }: { itemId: 'rice' | 'oil'; line: Line | undefined }) {
+    renders[itemId] += 1;
+    return h('span', { 'data-row': itemId }, String(useCartStepperQty(itemId, line)));
+  });
+  function QuietPage() {
+    renders.page += 1;
+    quiet = useCartSteppers(cartQuery(), 'settled');
+    return h('div', { 'data-page': 'quiet' }, h(Row, { itemId: 'rice', line: lineOf('rice') }), h(Row, { itemId: 'oil', line: lineOf('oil') }),
+      h('i', null, quiet.settled ? 'settled' : 'pending'));
+  }
+  const drawQuiet = async () => { await act(async () => root.render(h(QuietPage))); };
+  const row = (itemId: string) => host.querySelector(`[data-row="${itemId}"]`)?.textContent;
+  const quietTap = async (itemId: 'rice' | 'oil', next: number) => {
+    await act(async () => { setCartStepper(itemId, lineOf(itemId), next, { vendorId: 'store-1', itemId }); });
+  };
+  const counts = () => ({ ...renders });
+
+  beforeEach(async () => {
+    renders.page = 0; renders.rice = 0; renders.oil = 0;
+    await drawQuiet();
+  });
+
+  it('three + on rice: only the rice row redraws per tap; the page once (Order held), the oil row never', async () => {
+    const start = counts();
+    await quietTap('rice', 2);
+    await quietTap('rice', 3);
+    await quietTap('rice', 4);
+    expect(row('rice')).toBe('4');
+    expect(row('oil')).toBe('0');
+    expect(renders.rice - start.rice, 'one redraw per tap').toBe(3);
+    expect(renders.oil - start.oil, 'another line’s tap leaves this row alone').toBe(0);
+    expect(renders.page - start.page, 'the page redraws once: its Place order hold started').toBe(1);
+    expect(host.querySelector('[data-page="quiet"] i')?.textContent).toBe('pending');
+    expect(sent()).toEqual([['set', { id: 'line-rice', quantity: 2 }]]);
+  });
+
+  it('Place order is still held until every tap is answered and the cart read again (quoteSettled)', async () => {
+    await quietTap('rice', 2);
+    expect(quiet.settled).toBe(false);
+    await answer(0, [{ id: 'line-rice', itemId: 'rice', quantity: 2 }]);
+    expect(quiet.settled, 'answered, not yet read').toBe(false);
+    server = [{ id: 'line-rice', itemId: 'rice', quantity: 2 }];
+    readAt = Date.now() + 1000;
+    await drawQuiet();
+    expect(quiet.settled).toBe(true);
+    expect(host.querySelector('[data-page="quiet"] i')?.textContent).toBe('settled');
+    expect(row('rice')).toBe('2');
+  });
+
+  it('control: the default watch still redraws the page on every tap (the tests above use the quiet one)', async () => {
+    showStore = true; showCart = false;
+    let pageDraws = 0;
+    function LoudPage() { pageDraws += 1; useCartSteppers(cartQuery()); return null; }
+    await act(async () => root.render(h(LoudPage)));
+    const start = pageDraws;
+    await quietTap('rice', 2);
+    await quietTap('rice', 3);
+    expect(pageDraws - start).toBe(2);
+  });
+
+  it('`set` keeps its identity across draws (memoised rows keep their callbacks)', async () => {
+    const first = quiet.set;
+    await quietTap('rice', 2);
+    await drawQuiet();
+    expect(quiet.set).toBe(first);
   });
 });

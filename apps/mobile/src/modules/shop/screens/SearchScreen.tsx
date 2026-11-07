@@ -29,6 +29,9 @@ import {
 } from '../../../kit';
 import { touchTarget } from '../../../kit/touch-target';
 import { brandLine, brandTitle, type BrandCard } from '../../../lib/brandCard';
+import { useVendorPrefetch } from '../../../hooks/storeDoor';
+import { itemPreviewOf, storePreviewOf } from '../../../lib/doorPreview';
+import { engineSearchRows, searchRowKey } from '../../../lib/searchRows';
 
 // Kit 57–60: idle = headline + history chips + popular rows.
 //
@@ -87,6 +90,8 @@ function ResultRow({
   sub,
   trailing,
   onPress,
+  onPressIn,
+  onPressOut,
   wide = false,
   closed = false,
   glyph = 'shops',
@@ -103,6 +108,9 @@ function ResultRow({
   sub?: string;
   trailing?: React.ReactNode;
   onPress?: () => void;
+  /** [APP-SPEED A] The finger-down: start reading what the tap opens (never an action). */
+  onPressIn?: () => void;
+  onPressOut?: () => void;
   wide?: boolean;
   closed?: boolean;
   glyph?: React.ComponentProps<typeof Photo>['glyph'];
@@ -112,6 +120,8 @@ function ResultRow({
   return (
     <Pressable
       onPress={onPress}
+      onPressIn={onPressIn}
+      onPressOut={onPressOut}
       accessibilityRole="button"
       accessibilityLabel={[title, branchLine, sub, closed ? 'Closed right now' : null].filter(Boolean).join('. ')}
     >
@@ -169,6 +179,8 @@ export function SearchScreen() {
   // [E09] While the cart bar floats over the list, the last row must scroll clear of it.
   const cartClearance = useCartBarClearance();
   const navigation = useNavigation<any>();
+  // [APP-SPEED A] A store's menu is asked for at the finger-down on its row or one of its dishes.
+  const prefetchStore = useVendorPrefetch();
   const route = useRoute<any>();
   const insets = useSafeAreaInsets();
   const { latitude, longitude, status } = useLocationStore();
@@ -252,6 +264,8 @@ export function SearchScreen() {
   const retryResults = () => (engineMode ? engine.refetch() : vendors.refetch());
 
   const results: any[] = places;
+  // [APP-SPEED C] The engine's places and dishes as one list's rows (drawn by a FlatList, below).
+  const engineRows = engineSearchRows(results, dishes);
 
   // Distance sorting needs coordinates: the server only re-sorts by distance
   // when lat/lng were sent (customer.routes.ts). Without a location fix it
@@ -467,7 +481,8 @@ export function SearchScreen() {
                             name={it.name}
                             sub={it.vendorName}
                             trailing={<Money amount={it.basePrice} />}
-                            onPress={() => navigation.navigate('MenuItem', { itemId: it.id, vendorId: it.vendorId })}
+                            {...prefetchStore(it.vendorId)}
+                            onPress={() => navigation.navigate('MenuItem', { itemId: it.id, vendorId: it.vendorId, preview: itemPreviewOf(it) })}
                           />
                         </React.Fragment>
                       ))}
@@ -478,19 +493,29 @@ export function SearchScreen() {
             ) : engineMode ? (
               // [B2] Engine results: PLACES then DISHES — the second section is
               // the whole point ("pepperpot" now finds the dish, not silence).
-              <ScrollView contentContainerStyle={{ paddingHorizontal: GUTTER, paddingTop: space.lg, paddingBottom: space['3xl'] + cartClearance }}>
-                {results.length > 0 ? (
-                  <>
-                    {/* [Wave 3 vs reference 10] The header says HOW the list is
-                        ordered, not just how long it is. In engine mode the
-                        ranking is the engine's — relevance — and saying so is
-                        the honest version of the reference's "sorted by". */}
-                    <T variant="caption" tone="muted" style={{ marginBottom: space.sm }}>
-                      {results.length} {results.length === 1 ? 'place' : 'places'} · sorted by relevance
-                    </T>
-                    {results.map((v: any, i: number) => (
-                      <React.Fragment key={v.id}>
-                        {i > 0 ? <Divider /> : null}
+              // [APP-SPEED C] One virtualised list (lib/searchRows): only the rows near the screen are drawn,
+              // instead of every place and dish of a long answer mounted at once.
+              <FlatList
+                data={engineRows}
+                keyExtractor={searchRowKey}
+                contentContainerStyle={{ paddingHorizontal: GUTTER, paddingTop: space.lg, paddingBottom: space['3xl'] + cartClearance }}
+                renderItem={({ item: row }) => {
+                  if (row.kind === 'count') {
+                    return (
+                      // [Wave 3 vs reference 10] The header says HOW the list is
+                      // ordered, not just how long it is. In engine mode the
+                      // ranking is the engine's — relevance — and saying so is
+                      // the honest version of the reference's "sorted by".
+                      <T variant="caption" tone="muted" style={{ marginBottom: space.sm }}>
+                        {results.length} {results.length === 1 ? 'place' : 'places'} · sorted by relevance
+                      </T>
+                    );
+                  }
+                  if (row.kind === 'place') {
+                    const v = row.row;
+                    return (
+                      <>
+                        {row.index > 0 ? <Divider /> : null}
                         <ResultRow
                           image={vendorPhoto(v)}
                           name={v.name}
@@ -499,34 +524,37 @@ export function SearchScreen() {
                           meta={<RatingMeta rating={v.displayRating ?? null} topRated={v.topRated} />}
                           wide
                           closed={v.isCurrentlyOpen === false}
-                          onPress={() => navigation.navigate('Restaurant', { vendorId: v.id })}
+                          {...prefetchStore(v.id)}
+                          onPress={() => navigation.navigate('Restaurant', { vendorId: v.id, preview: storePreviewOf(v) })}
                         />
-                      </React.Fragment>
-                    ))}
-                  </>
-                ) : null}
-                {dishes.length > 0 ? (
-                  <>
-                    <SectionHeader title="Dishes" style={{ marginTop: results.length ? space['2xl'] : 0 }} />
-                    <View style={{ marginTop: space.sm }}>
-                      {dishes.map((it: any, i: number) => (
-                        <React.Fragment key={it.id}>
-                          {i > 0 ? <Divider /> : null}
-                          <ResultRow
-                            image={itemPhoto(it)}
-                            glyph="food"
-                            name={it.name}
-                            sub={it.categoryName ? `${it.vendorName} · ${it.categoryName}` : it.vendorName}
-                            closed={it.vendorIsCurrentlyOpen === false}
-                            trailing={<Money amount={it.basePrice} />}
-                            onPress={() => navigation.navigate('MenuItem', { itemId: it.id, vendorId: it.vendorId })}
-                          />
-                        </React.Fragment>
-                      ))}
-                    </View>
-                  </>
-                ) : null}
-              </ScrollView>
+                      </>
+                    );
+                  }
+                  if (row.kind === 'dishes') {
+                    return (
+                      <View style={{ marginBottom: space.sm }}>
+                        <SectionHeader title="Dishes" style={{ marginTop: results.length ? space['2xl'] : 0 }} />
+                      </View>
+                    );
+                  }
+                  const it = row.row;
+                  return (
+                    <>
+                      {row.index > 0 ? <Divider /> : null}
+                      <ResultRow
+                        image={itemPhoto(it)}
+                        glyph="food"
+                        name={it.name}
+                        sub={it.categoryName ? `${it.vendorName} · ${it.categoryName}` : it.vendorName}
+                        closed={it.vendorIsCurrentlyOpen === false}
+                        trailing={<Money amount={it.basePrice} />}
+                        {...prefetchStore(it.vendorId)}
+                        onPress={() => navigation.navigate('MenuItem', { itemId: it.id, vendorId: it.vendorId, preview: itemPreviewOf(it) })}
+                      />
+                    </>
+                  );
+                }}
+              />
             ) : (
               <FlatList
                 data={results}
@@ -561,7 +589,8 @@ export function SearchScreen() {
                     }
                     wide
                     closed={v.isCurrentlyOpen === false}
-                    onPress={() => navigation.navigate('Restaurant', { vendorId: v.id })}
+                    {...prefetchStore(v.id)}
+                    onPress={() => navigation.navigate('Restaurant', { vendorId: v.id, preview: storePreviewOf(v) })}
                   />
                 )}
               />
@@ -621,7 +650,8 @@ export function SearchScreen() {
                       name={it.name}
                       sub={it.vendorName}
                       trailing={<Money amount={it.price} />}
-                      onPress={() => navigation.navigate('MenuItem', { itemId: it.id, vendorId: it.vendorId })}
+                      {...prefetchStore(it.vendorId)}
+                      onPress={() => navigation.navigate('MenuItem', { itemId: it.id, vendorId: it.vendorId, preview: itemPreviewOf(it) })}
                     />
                   </React.Fragment>
                 ))}

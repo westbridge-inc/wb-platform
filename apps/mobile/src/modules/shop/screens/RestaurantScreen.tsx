@@ -1,12 +1,13 @@
 /** @jsxImportSource react */
-import React, { useMemo, useState } from 'react';
+import React, { useCallback, useMemo, useState } from 'react';
 import { Dimensions, FlatList, Linking, Pressable, ScrollView, Share, TextInput, View } from 'react-native';
 import { Feather } from '@expo/vector-icons';
 import { useNavigation, useRoute } from '@react-navigation/native';
+import { FlashList } from '@shopify/flash-list';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { color, font, fontSize, radius, space, withAlpha } from '@swift/ui';
 import { useCart, useReportContent, useToggleFavorite, useVendor } from '../../../hooks/customer';
-import { useCartSteppers } from '../../../hooks/useCartSteppers';
+import { useCartStepperQty, useCartSteppers } from '../../../hooks/useCartSteppers';
 import { isBooking } from '../../../lib/cartSteppers';
 import { ActionSheet } from '../../../kit/action-sheet';
 import { useAuthStore } from '../../../stores/authStore';
@@ -18,6 +19,7 @@ import { HERO_PHOTO_WIDTH, itemPhoto, vendorPhoto } from '../../../lib/images';
 import { money } from '../../../lib/money';
 import { itemVatNote, storefrontVat, storefrontVatLine, type StorefrontVat } from '../../../lib/storeVat';
 import { formatPhoneForDisplay } from '../../../lib/phoneDisplay';
+import { readStorePreview, type StorePreview } from '../../../lib/doorPreview';
 import { SellerInfo } from '../../../components/SellerInfo';
 import { SectionPhotoHeader } from '../../../components/SectionPhotoHeader';
 import { toast } from '../../../kit/toast';
@@ -27,6 +29,7 @@ import { useLocationStore } from '../../../stores/locationStore';
 import { afterDismiss } from '../../../kit/after-dismiss';
 import { grantedLocationFix } from '../../../lib/deviceLocation';
 import { branchAddress, branchFactsLine, currentBranchLabel, showsBranchSwitcher, type BrandBranch } from '../../../lib/brandCard';
+import { firstLineByItem, storeMenuRows, type StoreMenuRow } from '../storeMenuRows';
 import {
   AddMorph,
   CartBar,
@@ -230,6 +233,119 @@ function ServiceRow({ item, onOpen, vat = null }: { item: any; onOpen: () => voi
   );
 }
 
+/** [APP-SPEED C] A tap on a row's stepper: the item, its cart line (if any) and the number tapped to. */
+type StepperTap = (item: any, line: any, next: number) => void;
+
+/** [APP-SPEED C] One menu row with its own number (hooks/useCartSteppers): a + redraws this row only, never the page. */
+const MenuItemRow = React.memo(function MenuItemRow({
+  item,
+  line,
+  vat,
+  last,
+  onOpenItem,
+  onTap,
+}: {
+  item: any;
+  line: any;
+  vat: StorefrontVat | null;
+  last: boolean;
+  onOpenItem: (item: any) => void;
+  onTap: StepperTap;
+}) {
+  // [BOOK-POLISH · #2205] An item with choices, or a booking (one appointment, its time picked on
+  // the item screen), opens the item: no quantity on the row.
+  const opensItem = (item.optionGroups?.length ?? 0) > 0 || isBooking(item);
+  const qty = useCartStepperQty(item.id, line);
+  const shown = opensItem ? 0 : qty;
+  return (
+    <MenuRow
+      name={item.name}
+      description={item.description}
+      price={item.customerPrice ?? item.basePrice}
+      priceNote={itemVatNote(vat, item)}
+      image={itemPhoto(item)}
+      soldOut={item.stockQuantity === 0}
+      qty={shown}
+      busy={false}
+      last={last}
+      onOpen={() => onOpenItem(item)}
+      onAdd={() => (opensItem ? onOpenItem(item) : onTap(item, line, shown + 1))}
+      onInc={() => onTap(item, line, shown + 1)}
+      onDec={() => onTap(item, line, shown - 1)}
+    />
+  );
+});
+
+/** [APP-SPEED C] A shelf tile with its own number: a + redraws this tile only. */
+const MartTile = React.memo(function MartTile({
+  item,
+  line,
+  vat,
+  onOpenItem,
+  onTap,
+}: {
+  item: any;
+  line: any;
+  vat: StorefrontVat | null;
+  onOpenItem: (item: any) => void;
+  onTap: StepperTap;
+}) {
+  const qty = useCartStepperQty(item.id, line);
+  return (
+    <ProductTile
+      item={item}
+      vat={vat}
+      qty={qty}
+      busy={false}
+      onOpen={() => onOpenItem(item)}
+      onAdd={() => onTap(item, line, qty + 1)}
+      onSetQty={(next) => onTap(item, line, next)}
+    />
+  );
+});
+
+/** [APP-SPEED A] A store opening from its card: the card's photo and name in the hero's place, a
+ *  visible Back, and the menu loading below. Drawn only from what the server sent the card. */
+function StoreOpening({ preview, top, onBack }: { preview: StorePreview; top: number; onBack: () => void }) {
+  return (
+    <View style={{ flex: 1, backgroundColor: color.surface.subtle }} accessibilityLabel={`${preview.name}. Loading the menu`}>
+      <View>
+        <Photo
+          uri={vendorPhoto(preview, HERO_PHOTO_WIDTH)}
+          label={preview.name}
+          showLabel={false}
+          glyph="shops"
+          transition={200}
+          style={{ width: SCREEN_W, height: 300 }}
+          contentFit="cover"
+        />
+        <Scrim anchor="top" height={top + 76} to={withAlpha(color.text.primary, 0.45)} />
+        <Scrim height={170} />
+        <View style={{ position: 'absolute', left: GUTTER, right: GUTTER, bottom: radius.xl + space.lg }}>
+          <T variant="title" tone="onBrand" numberOfLines={2}>
+            {preview.name}
+          </T>
+        </View>
+        <View style={{ position: 'absolute', top: top + space.sm, left: GUTTER }}>
+          <CircleChip icon="chevron-left" label="Back" onPress={onBack} />
+        </View>
+      </View>
+      <View
+        style={{
+          flex: 1,
+          marginTop: -radius.xl,
+          borderTopLeftRadius: radius.xl,
+          borderTopRightRadius: radius.xl,
+          backgroundColor: color.surface.subtle,
+          paddingTop: space['2xl'],
+        }}
+      >
+        <LoadingBlock />
+      </View>
+    </View>
+  );
+}
+
 // Kit 14–20: cover hero + floating chips, white sheet w/ name + info strip,
 // promos row, Recommended/Best-seller rails, then the full menu by category.
 export function RestaurantScreen() {
@@ -264,21 +380,19 @@ function RestaurantStore() {
   const [aisleId, setAisleId] = useState<string | null>(null);
   const [menuCatId, setMenuCatId] = useState<string | null>(null);
   const [storeQuery, setStoreQuery] = useState('');
-  // D6-MOB-01: a supermarket/store can carry hundreds of SKUs. Mounting every
-  // ProductTile (each an expo-image) at once opens slowly and risks OOM on the
-  // low-end Android of the launch market. Render a bounded window and grow it as
-  // the shopper nears the end. (Full unmount-on-scroll virtualization via
-  // FlashList is the on-device follow-up — this bounds the eager mount now.)
-  const [renderCap, setRenderCap] = useState(48);
+  // D6-MOB-01: a supermarket/store can carry hundreds of SKUs. [APP-SPEED C] The menu is one FlashList
+  // (storeMenuRows): only the rows near the screen are drawn, so no item window is needed any more.
   const cart = useCart<any>();
   // [E09] While this store's cart bar floats over the menu, the last row must scroll clear of it.
   const cartClearance = useCartBarClearance({ vendorId });
   // [TAP-AUDIT] + and − answer at the tap and add up; only that item has a request out (hooks/useCartSteppers).
-  const steppers = useCartSteppers(cart);
+  // [APP-SPEED C] 'settled': the page no longer redraws on every tap; each row reads its own number.
+  const steppers = useCartSteppers(cart, 'settled');
 
   const v = vendor.data;
   // [STORE-VAT · owner O-5] Only a store whose VAT a person approved sends `vat`; every other store (and an older server) shows none.
-  const storeVat = storefrontVat(v?.vat);
+  // [APP-SPEED C] Kept by value, so the memoised menu rows are not redrawn by a new object on every page draw.
+  const storeVat = useMemo(() => storefrontVat(v?.vat), [v?.vat]);
   const categories: any[] = useMemo(() => v?.categories ?? [], [v?.categories]);
   const allItems = useMemo(() => categories.flatMap((c: any) => c.items ?? []), [categories]);
   const recommended = useMemo(() => allItems.filter((i: any) => i.isPopular).slice(0, 8), [allItems]);
@@ -307,26 +421,34 @@ function RestaurantStore() {
     return forgivingFilter(base, storeQuery, (i: any) => ({ name: i?.name, description: i?.description }));
   }, [aisleId, storeQuery, categories, allItems]);
 
-  // Bounded render windows (see renderCap above). The mart grid is a flat slice;
-  // the restaurant "full menu" caps the CUMULATIVE item count across categories
-  // so a huge store never mounts everything before the shopper scrolls to it.
-  const martShown = useMemo(() => martItems.slice(0, renderCap), [martItems, renderCap]);
-  const cappedCategories = useMemo(() => {
-    let budget = renderCap;
-    const out: any[] = [];
-    for (const cat of categories) {
-      if (budget <= 0) break;
-      const items = (cat.items ?? []).slice(0, budget);
-      if (items.length > 0) {
-        out.push({ ...cat, items });
-        budget -= items.length;
-      }
-    }
-    return out;
-  }, [categories, renderCap]);
-  const totalItems = isMart ? martItems.length : allItems.length;
+  // [APP-SPEED C] The menu as one list's rows; each row finds its cart line here (the first line of its item).
+  const menuRows = useMemo(
+    () => storeMenuRows({ mode: isMart ? 'mart' : isServiceStore ? 'services' : 'menu', categories, menuCatId, martItems, allItems }),
+    [isMart, isServiceStore, categories, menuCatId, martItems, allItems],
+  );
+  const lineByItem = useMemo(() => firstLineByItem<any>(cart.data?.items), [cart.data?.items]);
+  // Stable for the memoised rows: they keep their callbacks while the page redraws.
+  const openItem = useCallback(
+    (item: any) => navigation.navigate('MenuItem', { vendorId, itemId: item.id }),
+    [navigation, vendorId],
+  );
+  const setStepper = steppers.set;
+  const onTap = useCallback<StepperTap>((item, line, next) => {
+    const tap = () => setStepper(item.id, line, next, { vendorId, itemId: item.id });
+    if (isAuthenticated) return tap();
+    requestAuthContinuation({ screen: 'Restaurant', vendorId }, promptLogin);
+    // A scan can open the public menu over an already active sign-in flow.
+    // In that case its root gate is mounted already, so return to it directly.
+    if (wantsAuth) navigation.getParent()?.navigate('Auth');
+  }, [isAuthenticated, wantsAuth, promptLogin, navigation, vendorId, setStepper]);
+  const rowsDrawnWith = useMemo(() => ({ lineByItem, storeVat, openItem, onTap }), [lineByItem, storeVat, openItem, onTap]);
 
   if (vendor.isLoading) {
+    // [APP-SPEED A] The tapped card handed over the store's name and photo: draw them at once, the
+    // menu's place loading below. Nothing here can be pressed but Back — no Add, no stepper, no
+    // heart — until the store's own answer replaces it.
+    const preview = readStorePreview(route.params?.preview);
+    if (preview) return <StoreOpening preview={preview} top={insets.top} onBack={() => navigation.goBack()} />;
     return (
       <View style={{ flex: 1, backgroundColor: color.surface.subtle, paddingTop: insets.top }}>
         {/* [UI-SWEEP U32] A visible way back while this loads or fails, not swipe only. */}
@@ -345,18 +467,6 @@ function RestaurantStore() {
     );
   }
 
-  const openItem = (item: any) => navigation.navigate('MenuItem', { vendorId, itemId: item.id });
-
-  const cartLines: any[] = cart.data?.items ?? [];
-  const lineFor = (itemId: string) => cartLines.find((l) => l.itemId === itemId);
-  const guardAuth = (fn: () => void) => {
-    if (isAuthenticated) return fn();
-    requestAuthContinuation({ screen: 'Restaurant', vendorId }, promptLogin);
-    // A scan can open the public menu over an already active sign-in flow.
-    // In that case its root gate is mounted already, so return to it directly.
-    if (wantsAuth) navigation.getParent()?.navigate('Auth');
-  };
-
   const itemCard = (item: any, width: number) => (
     <FoodCard
       key={item.id}
@@ -369,19 +479,66 @@ function RestaurantStore() {
     />
   );
 
+  // [APP-SPEED C] One row of the menu list (storeMenuRows). A category's card is drawn by its rows: the first closes
+  // it above, the last below, the others carry its sides.
+  const renderMenuRow = (row: StoreMenuRow) => {
+    if (row.kind === 'section') {
+      const cat = row.cat;
+      return <SectionPhotoHeader title={cat.name} imageUrl={cat.imageUrl} style={{ paddingHorizontal: GUTTER, marginTop: space['2xl'] }} />;
+    }
+    if (row.kind === 'item') {
+      const corner = (on: boolean) => (on ? radius.lg : 0);
+      return (
+        <View
+          style={{
+            marginHorizontal: GUTTER,
+            marginTop: row.first ? space.md : 0,
+            paddingHorizontal: space.lg,
+            backgroundColor: color.surface.base,
+            borderColor: color.border.subtle,
+            borderLeftWidth: 1,
+            borderRightWidth: 1,
+            borderTopWidth: row.first ? 1 : 0,
+            borderBottomWidth: row.last ? 1 : 0,
+            borderTopLeftRadius: corner(row.first),
+            borderTopRightRadius: corner(row.first),
+            borderBottomLeftRadius: corner(row.last),
+            borderBottomRightRadius: corner(row.last),
+          }}
+        >
+          <MenuItemRow item={row.item} line={lineByItem.get(row.item.id)} vat={storeVat} last={row.last} onOpenItem={openItem} onTap={onTap} />
+        </View>
+      );
+    }
+    if (row.kind === 'tiles') {
+      return (
+        <View style={{ flexDirection: 'row', gap: space.md, paddingHorizontal: GUTTER, paddingTop: row.first ? space.lg : space.md }}>
+          {row.items.map((item: any) => (
+            <MartTile key={item.id} item={item} line={lineByItem.get(item.id)} vat={storeVat} onOpenItem={openItem} onTap={onTap} />
+          ))}
+        </View>
+      );
+    }
+    return (
+      <View style={{ paddingHorizontal: GUTTER, paddingTop: row.first ? space.lg : space.md }}>
+        <ServiceRow item={row.item} vat={storeVat} onOpen={() => openItem(row.item)} />
+      </View>
+    );
+  };
+
   return (
     <View style={{ flex: 1, backgroundColor: color.surface.subtle }}>
-      <ScrollView
+      <FlashList
+        data={menuRows}
+        keyExtractor={(row) => row.key}
+        getItemType={(row) => row.kind}
+        renderItem={({ item: row }) => renderMenuRow(row)}
+        // A cart read or a sign-in redraws the rows on screen (each row is memoised: only a changed one redraws).
+        extraData={rowsDrawnWith}
         showsVerticalScrollIndicator={false}
         contentContainerStyle={{ paddingBottom: space['3xl'] + cartClearance }}
-        scrollEventThrottle={64}
-        onScroll={(e) => {
-          const { contentOffset, contentSize, layoutMeasurement } = e.nativeEvent;
-          if (renderCap < totalItems && contentOffset.y + layoutMeasurement.height > contentSize.height - 1000) {
-            setRenderCap((c) => c + 48);
-          }
-        }}
-      >
+        ListHeaderComponent={
+          <>
         {/* Cover hero — the MerchantCard treatment at hero scale: a real
             gradient (never a flat band), the store's identity riding its own
             photograph, and frosted pills for the facts. Photography is the
@@ -687,43 +844,11 @@ function RestaurantStore() {
                   />
                 ))}
               </ScrollView>
-              <View
-                style={{
-                  flexDirection: 'row',
-                  flexWrap: 'wrap',
-                  gap: space.md,
-                  paddingHorizontal: GUTTER,
-                  paddingTop: space.lg,
-                }}
-              >
-                {martShown.map((item: any) => (
-                  <ProductTile
-                    key={item.id}
-                    item={item}
-                    vat={storeVat}
-                    qty={steppers.qty(item.id, lineFor(item.id))}
-                    busy={false}
-                    onOpen={() => openItem(item)}
-                    onAdd={() => guardAuth(() => steppers.set(item.id, lineFor(item.id), steppers.qty(item.id, lineFor(item.id)) + 1, { vendorId, itemId: item.id }))}
-                    onSetQty={(qty) => guardAuth(() => steppers.set(item.id, lineFor(item.id), qty, { vendorId, itemId: item.id }))}
-                  />
-                ))}
-              </View>
-              {martItems.length === 0 ? (
-                <T variant="label" tone="muted" center style={{ marginTop: space['2xl'] }}>
-                  Nothing matches — try another search or aisle.
-                </T>
-              ) : null}
             </>
           ) : isServiceStore ? (
             <>
               {/* Bookable services: duration + where-it-happens, tap to book */}
               <SectionHeader title="Services" style={{ paddingHorizontal: GUTTER, marginTop: space['2xl'] }} />
-              <View style={{ paddingHorizontal: GUTTER, paddingTop: space.lg, gap: space.md }}>
-                {allItems.map((item: any) => (
-                  <ServiceRow key={item.id} item={item} vat={storeVat} onOpen={() => openItem(item)} />
-                ))}
-              </View>
             </>
           ) : (
             <>
@@ -779,56 +904,19 @@ function RestaurantStore() {
               ))}
             </ScrollView>
           ) : null}
-          {cappedCategories
-            .filter((cat: any) => !menuCatId || cat.id === menuCatId)
-            .map((cat: any) =>
-              (cat.items?.length ?? 0) > 0 ? (
-                <View key={cat.id}>
-                  <SectionPhotoHeader title={cat.name} imageUrl={cat.imageUrl} style={{ paddingHorizontal: GUTTER, marginTop: space['2xl'] }} />
-                  <View
-                    style={{
-                      marginHorizontal: GUTTER,
-                      marginTop: space.md,
-                      paddingHorizontal: space.lg,
-                      borderRadius: radius.lg,
-                      backgroundColor: color.surface.base,
-                      borderWidth: 1,
-                      borderColor: color.border.subtle,
-                    }}
-                  >
-                    {cat.items.map((item: any, idx: number) => {
-                      // [BOOK-POLISH · #2205] An item with choices, or a booking (one appointment, its time picked on
-                      // the item screen), opens the item: no quantity on the row.
-                      const opensItem = (item.optionGroups?.length ?? 0) > 0 || isBooking(item);
-                      const line = lineFor(item.id);
-                      const shown = opensItem ? 0 : steppers.qty(item.id, line);
-                      const tapTo = (next: number) => guardAuth(() => steppers.set(item.id, line, next, { vendorId, itemId: item.id }));
-                      return (
-                        <MenuRow
-                          key={item.id}
-                          name={item.name}
-                          description={item.description}
-                          price={item.customerPrice ?? item.basePrice}
-                          priceNote={itemVatNote(storeVat, item)}
-                          image={itemPhoto(item)}
-                          soldOut={item.stockQuantity === 0}
-                          qty={shown}
-                          busy={false}
-                          last={idx === cat.items.length - 1}
-                          onOpen={() => openItem(item)}
-                          onAdd={() => (opensItem ? openItem(item) : tapTo(shown + 1))}
-                          onInc={() => tapTo(shown + 1)}
-                          onDec={() => tapTo(shown - 1)}
-                        />
-                      );
-                    })}
-                  </View>
-                </View>
-              ) : null,
-            )}
 
             </>
           )}
+        </View>
+          </>
+        }
+        ListFooterComponent={
+          <>
+          {isMart && martItems.length === 0 ? (
+            <T variant="label" tone="muted" center style={{ marginTop: space['2xl'] }}>
+              Nothing matches — try another search or aisle.
+            </T>
+          ) : null}
 
           {allItems.length === 0 ? (
             <T variant="label" tone="muted" center style={{ marginTop: space['3xl'] }}>
@@ -844,8 +932,9 @@ function RestaurantStore() {
             </T>
           ) : null}
           {v.seller ? <SellerInfo seller={v.seller} gutter={GUTTER} /> : null}
-        </View>
-      </ScrollView>
+          </>
+        }
+      />
 
       {/* [E09] One pinned cart bar for every surface: the storefront passes its
           vendorId so the bar only shows for THIS store's basket. */}

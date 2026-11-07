@@ -180,7 +180,9 @@ export function FeedbackScreen() {
       </Screen>
     );
   }
-  if (order.isError || !o) {
+  // [APP-SPEED 12] Only an order the screen has never read is an error. A background refresh that fails while the
+  // order is on screen keeps the half-filled rating (stars, words, tags) instead of swapping it for an error page.
+  if (!o) {
     return (
       <Screen>
         <Header title="Feedback" />

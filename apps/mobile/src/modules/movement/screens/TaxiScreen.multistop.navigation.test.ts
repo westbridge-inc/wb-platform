@@ -105,7 +105,12 @@ vi.mock('react-native-maps', async () => {
     R.useImperativeHandle(ref, () => ({ animateToRegion() {}, fitToCoordinates() {} }));
     return h('div', { 'data-map': '' }, p.children);
   });
-  const Marker = (p: any) => h('div', { 'data-marker': p.title ?? '' }, p.children);
+  // [APP-SPEED C] Each pin's draws and its tracksViewChanges, by title (read through globalThis: the factory is hoisted).
+  const Marker = (p: any) => {
+    const seen = ((globalThis as any).__taxiPins ??= []) as Array<{ title: string; tracks: unknown }>;
+    seen.push({ title: p.title ?? '', tracks: p.tracksViewChanges });
+    return h('div', { 'data-marker': p.title ?? '' }, p.children);
+  };
   return { __esModule: true, default: MapView, Marker, MarkerAnimated: Marker, PROVIDER_DEFAULT: 'default', Polyline: () => null };
 });
 vi.mock('react-native-reanimated', () => ({ __esModule: true, default: { createAnimatedComponent: (c: unknown) => c } }));
@@ -581,6 +586,20 @@ describe('the live ride', () => {
     expect(card?.textContent).toContain('13 min waited');
     expect(card?.textContent).toMatch(/\$300 so far/);
     expect(card?.textContent).toMatch(/Next \$300 in 6:30/);
+  });
+
+  it('[APP-SPEED C] the wait ticks in its own card: the countdown moves, the ride map is not drawn again', async () => {
+    vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'] });
+    vi.setSystemTime(Date.parse(WAITING_LIVE.nextChargeAt) - 390_000);
+    fx.routes['get /rides/active'] = () => ok(riderRideWithoutStops({ status: 'DRIVER_ARRIVED', ridePinVerified: false, waiting: WAITING_LIVE }));
+    await mount();
+    const pins = () => ((globalThis as any).__taxiPins ?? []) as Array<{ title: string; tracks: unknown }>;
+    expect(byTestId('taxi-waiting')?.textContent).toMatch(/Next \$300 in 6:30/);
+    const drawn = pins().length;
+    expect(pins().find((p) => p.title === 'Pickup')?.tracks, 'a plain pin is drawn once').toBe(false);
+    await act(async () => { vi.advanceTimersByTime(3_000); });
+    expect(byTestId('taxi-waiting')?.textContent).toMatch(/Next \$300 in 6:27/);
+    expect(pins().length - drawn, 'the old screen clock redrew every pin each second').toBe(0);
   });
 
   it('no waiting card before the server sends one', async () => {

@@ -1,5 +1,6 @@
 import { prepareUploadImage } from '../lib/uploadImage';
 import { POLL } from '../lib/pollPolicy';
+import { keepDemandOfKind } from '../lib/moverHomeMap';
 import { runBillingMutation } from '../lib/billingMutation';
 import type { MutationGuard } from './useStepUp';
 import { useEffect, useMemo, useRef } from 'react';
@@ -10,6 +11,8 @@ import { currentDevicePosition } from '../services/devicePosition';
 import { TAXI_STOPS_CAPABILITY, maxStopsFrom, rideStops } from '../lib/taxiItinerary';
 import { DELIVERY_CARDS_CAPABILITY, isCarDeliveryProfile, serverKnowsTaxiAndDeliveries } from '../lib/deliveriesToo';
 import { skippedStopsKey } from '../lib/routeLine';
+import { noteOwnJobStep } from '../lib/moverJobFeed';
+import { rideIsOver } from '../lib/rideAfterTrip';
 import { track } from '../lib/analytics';
 import {
   publishMoverLocation,
@@ -290,6 +293,9 @@ export function useDemand<T = any>(kind: MoverKind | null, point?: { lat: number
     queryFn: () => unwrap<T>(svc(kind as MoverKind).demand(point as { lat: number; lng: number })),
     enabled: !!kind && !!point && !pv,
     refetchInterval: POLL.moverDemand,
+    // [APP-SPEED C · item 9] A new rounded position is a new key: the last answer for this kind of work stays on the
+    // map while it is read (the dots no longer vanish and come back), never another kind's.
+    placeholderData: keepDemandOfKind(kind),
   });
   return pv ? PV.previewQuery(PV.PREVIEW_DEMAND) : q;
 }
@@ -464,8 +470,21 @@ export function useSelectMoverKind() {
 export function useGoOffline(kind: MoverKind) {
   const pv = usePreview();
   const qc = useQueryClient();
-  const m = useMutation({ mutationFn: () => unwrap(svc(kind).goOffline()), onSuccess: () => qc.invalidateQueries({ queryKey: ['mover'] }) });
+  const m = useMutation({
+    mutationFn: () => unwrap(svc(kind).goOffline()),
+    // [APP-SPEED 5] The server's yes IS the new state (it refuses, never half-does, a go-offline with a job on): the
+    // profile says offline at the answer and the toggle is free; every mover read still refreshes, in the background.
+    onSuccess: () => {
+      writeWentOffline(qc, kind);
+      void qc.invalidateQueries({ queryKey: ['mover'] });
+    },
+  });
   return pv ? PV.previewMutation() : m;
+}
+/** [APP-SPEED 5] The profile of `kind` as the server left it on a go-offline answer: offline, not available. */
+export function writeWentOffline(qc: QueryClient, kind: MoverKind): void {
+  qc.setQueryData(['mover', kind === 'DRIVER' ? 'driverProfile' : 'riderProfile'], (profile: unknown) =>
+    (profile && typeof profile === 'object' ? { ...(profile as object), isOnline: false, isAvailable: false } : profile));
 }
 /**
  * [PERF partner #2] What a job step's button waits for: the active job, the
@@ -476,10 +495,25 @@ export function useGoOffline(kind: MoverKind) {
  * the job board). The button spun until the slowest of them came back, though
  * the step had already succeeded. The other reads still refresh, at once, in
  * the background; only the wait is narrower.
+ *
+ * [APP-SPEED 7] This whole refresh is for a step that ENDS a job (delivered, the door's or the fare's outcome, a
+ * handback): the earnings, the board, the profile and the claims all change then. A step in the middle of a job
+ * re-reads the job alone (refreshJobOnly), and an accept the job and the board (refreshAfterAccept).
  */
 export function refreshAfterJobStep(qc: QueryClient): Promise<void> {
   void qc.invalidateQueries({ queryKey: ['mover'], predicate: (query) => query.queryKey[1] !== 'active' });
   return qc.invalidateQueries({ queryKey: ['mover', 'active'] });
+}
+/** [APP-SPEED 7] A step in the middle of a job changes the job and nothing else the mover reads: only it is re-read
+ *  (a stacked rider's legs share its key). Profiles, earnings, demand and the board are left to their own polls. */
+export function refreshJobOnly(qc: QueryClient): Promise<void> {
+  return qc.invalidateQueries({ queryKey: ['mover', 'active'] });
+}
+/** [APP-SPEED 7] An accept takes the job off the board: the job, the board and the demand around the mover. */
+export function refreshAfterAccept(qc: QueryClient): Promise<void> {
+  void qc.invalidateQueries({ queryKey: ['mover', 'available'] });
+  void qc.invalidateQueries({ queryKey: ['mover', 'demand'] });
+  return refreshJobOnly(qc);
 }
 
 /**
@@ -509,18 +543,64 @@ export function writeJobStatus(qc: QueryClient, jobId: string | undefined, answe
   return wrote;
 }
 
-/** [TAP-AUDIT] The steps whose answer moves the job along without ending it: their button is free at the answer. The
- *  steps that end or hand back a job (delivered, the door's handover, a fare outcome, a handback) still wait for the
- *  re-read: the screen's completion flow follows the job leaving the active read. */
+/**
+ * [APP-SPEED 6] A job the step's OWN answer says is over (delivered, completed, failed...): it leaves the active job
+ * at the answer, so the job screen goes back to Home (and the driver's rating opens) without a second round trip.
+ * Only a mover working that ONE job: a stacked rider's run keeps waiting for the legs' re-read, which shows the
+ * next leg. False (the caller waits for the re-read, as before) when the answer names no finished status, the job is
+ * not on screen, or it is one leg of several.
+ */
+export function writeJobEnded(qc: QueryClient, jobId: string | undefined, answer: unknown): boolean {
+  const status = (answer as { status?: unknown } | null | undefined)?.status;
+  if (!jobId || typeof status !== 'string' || !rideIsOver(status)) return false;
+  const reads = qc.getQueriesData<unknown>({ queryKey: ['mover', 'active'] });
+  const stacked = reads.some(([, data]) => {
+    const legs = (data as { legs?: unknown } | null | undefined)?.legs;
+    return Array.isArray(legs) && legs.length > 1 && legs.some((l: { id?: unknown } | null) => l?.id === jobId);
+  });
+  if (stacked) return false;
+  let wrote = false;
+  for (const [key, data] of reads) {
+    if ((data as { id?: unknown } | null | undefined)?.id !== jobId) continue;
+    qc.setQueryData(key, null);
+    wrote = true;
+  }
+  return wrote;
+}
+
+/** [TAP-AUDIT] The steps whose answer moves the job along without ending it: their button is free at the answer. */
 const STEPS_SHOWN_AT_THE_ANSWER: ReadonlySet<string> = new Set([
   'en-route-pickup', 'arrived-pickup', 'picked-up', 'en-route-delivery', 'arrived', 'en-route', 'verify-pin', 'start',
 ]);
+/** [APP-SPEED 6] The steps that can end (or hand back) a job: everything the mover reads is refreshed. Free at the
+ *  answer when it says the job is over and the mover works that one job (writeJobEnded); a handback (the order goes
+ *  back to dispatch, not over), a stacked rider, an answer that keeps the job (a return leg) or an older server's
+ *  answer still waits for the re-read: the screen's completion flow follows the job leaving the active read. */
+const STEPS_THAT_END_A_JOB: ReadonlySet<string> = new Set(['handover', 'delivered', 'handback']);
 function afterStep(qc: QueryClient, jobId: string | undefined, action: string, answer: unknown): Promise<void> | undefined {
+  // [APP-SPEED 7] The room's echo of this very status is not re-read again (lib/moverJobFeed).
+  noteOwnJobStep(jobId, (answer as { status?: unknown } | null | undefined)?.status);
   if (STEPS_SHOWN_AT_THE_ANSWER.has(action) && writeJobStatus(qc, jobId, answer)) {
-    void refreshAfterJobStep(qc); // everything else (and the job's other fields) still refreshes, in the background
+    void refreshJobOnly(qc); // the job's other fields still refresh, in the background
     return undefined;
   }
+  if (STEPS_THAT_END_A_JOB.has(action) && writeJobEnded(qc, jobId, answer)) {
+    void refreshAfterJobStep(qc); // the job's end changes earnings, the board, the profile: all re-read, in the background
+    return undefined;
+  }
+  if (!STEPS_THAT_END_A_JOB.has(action)) return refreshJobOnly(qc);
   return refreshAfterJobStep(qc);
+}
+/**
+ * [APP-SPEED 6] An accept is free at the server's yes: the job and the board are re-read in the background while the
+ * screen opens the job (MoverHomeScreen navigates to ActiveJob with the accepted id, which shows it loading). A rider
+ * who already has a job (stacking) keeps the wait: the new leg joins the run the screen is showing.
+ */
+function afterAccept(qc: QueryClient, kind: MoverKind): Promise<void> | undefined {
+  const stacking = kind === 'RIDER' && !!qc.getQueryData(['mover', 'active', 'RIDER']);
+  if (stacking) return refreshAfterAccept(qc);
+  void refreshAfterAccept(qc);
+  return undefined;
 }
 export function useAcceptJob(kind: MoverKind) {
   const pv = usePreview();
@@ -529,7 +609,7 @@ export function useAcceptJob(kind: MoverKind) {
   const m = useMutation({
     mutationFn: ({ id, payToVendor }: { id: string; payToVendor?: number }) =>
       unwrap(kind === 'RIDER' ? riderApi.accept(id, payToVendor) : driverApi.accept(id)),
-    onSuccess: () => refreshAfterJobStep(qc),
+    onSuccess: () => afterAccept(qc, kind),
   });
   return pv ? PV.previewMutation() : m;
 }
@@ -543,7 +623,7 @@ export function useAcceptOffer(kind: MoverKind) {
   const m = useMutation({
     mutationFn: ({ orderId, offerAttemptId, payToVendor }: { orderId: string; offerAttemptId?: string; payToVendor?: number }) =>
       unwrap(kind === 'RIDER' ? riderApi.acceptOffer(orderId, offerAttemptId, payToVendor) : driverApi.acceptOffer(orderId, offerAttemptId)),
-    onSuccess: () => refreshAfterJobStep(qc),
+    onSuccess: () => afterAccept(qc, kind),
   });
   return pv ? PV.previewMutation() : m;
 }
@@ -1010,7 +1090,8 @@ export function useTaxiStopAction() {
     },
     // The screen says what went wrong in its own words; no second toast.
     meta: { silent: true },
-    onSettled: () => refreshAfterJobStep(qc),
+    // [APP-SPEED 7] A stop moves the ride along: the ride alone is re-read.
+    onSettled: () => refreshJobOnly(qc),
   });
   return pv ? PV.previewMutation() : m;
 }

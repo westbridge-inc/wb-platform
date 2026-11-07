@@ -35,6 +35,8 @@ interface Setup {
   /** [WEB-POLICE] The police clearance's own consent words the status carries (the API sends them for SERVICE/MOVER). */
   police?: Record<string, unknown>;
   withdrawAnswer?: Record<string, number>;
+  /** [OWNNAME-FIT] the server's per-store own-name answer (GET /verification/status `ownNameFits`); absent = an older server */
+  ownNameFits?: Record<string, boolean>;
 }
 
 /** The API's police-clearance words for a checklist (police-clearance-consent.ts), synthetic days. */
@@ -74,6 +76,7 @@ function api(s: Setup = {}) {
         roleVerified: false,
         documentConsent: { tick: 'document_v1', given: s.consentOnRecord === true, givenAt: s.consentOnRecord ? '2026-10-20T14:00:00.000Z' : null },
         ...(s.police ? { policeClearanceConsent: s.police } : {}),
+        ...(s.ownNameFits ? { ownNameFits: s.ownNameFits } : {}),
         ...(s.food ? { foodHandlerAttestation: { version: 'v1', tick: 'Everyone who handles food here holds a current food handler’s certificate.', stores: [{ vendorId: storeId, name: store.name, attested: false }] } } : {}),
       } } };
     }
@@ -110,8 +113,30 @@ describe('[OPEN-EARLY PR-2] the store’s documents on the website', () => {
     fireEvent.click(tick());
     expect(card('Business Registration').disabled).toBe(false);
     expect(screen.getByText('Recommended next step')).toBeTruthy();
-    // [ROLE-DOCS] no business registration yet: the own-name route is offered
-    expect(screen.getByText('No business name? Trade under your own name')).toBeTruthy();
+    // [OWNNAME-FIT · COORD 7 Nov 2026] no business registration yet, but no own-name answer from the server (an older
+    // server): the own-name route is not offered
+    expect(screen.queryByText('No business name? Trade under your own name')).toBeNull();
+  });
+
+  // [OWNNAME-FIT · COORD ruling 7 Nov 2026, Business Names (Registration) Act Cap. 90:05 s.3] The own-name route is
+  // offered only for a store whose name passes the server's own-name test (`ownNameFits`, per store).
+  it('own name: offered when the server says the selected store\'s name is the owner\'s own name', async () => {
+    (await import('@/lib/auth')).setSelectedStore('grocer');
+    api({ store: 'grocer', checklist: ['owner_national_id', 'business_registration'], ownNameFits: { grocer: true } });
+    renderWithQuery(<DocumentsPage />);
+    expect(await screen.findByText('No business name? Trade under your own name')).toBeTruthy();
+    expect(screen.getByText('You sign this for “Persaud” only.')).toBeTruthy();
+  });
+
+  it.each([
+    ['the server says the name does not fit (e.g. a company name)', { shop: false }],
+    ['the answer names only another store', { grocer: true }],
+  ])('own name: not offered when %s', async (_why, ownNameFits) => {
+    api({ ownNameFits });
+    renderWithQuery(<DocumentsPage />);
+    await screen.findByText('Business Registration');
+    expect(screen.queryByText('No business name? Trade under your own name')).toBeNull();
+    expect(screen.queryByText(/Trade under your own name/)).toBeNull();
   });
 
   it('uploads the file, then files it for the store type with exactly the phone’s body (ticked on this visit)', async () => {

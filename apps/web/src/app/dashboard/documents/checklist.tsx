@@ -14,7 +14,7 @@ import {
   DOCUMENT_CONSENT_TEXT, DOCUMENT_PHOTO_HINT, DOCUMENT_REVIEW_PROMISE, DOCUMENTS_FOOTNOTE, FOOD_HANDLERS_DOC, OPTIONAL_HEADING, OPTIONAL_INTRO,
   OWN_NAME_DOC, POLICE_CLEARANCE_DOC, POLICE_CLEARANCE_HOME_VISITS, POLICE_CLEARANCE_NO_WORDS, POLICE_CLEARANCE_STORE_TYPES, REQUIRED_HEADING,
   REQUIRED_INTRO, docLabel, documentConsentGivenLine, documentConsentOnRecord, emptyChecklistCopy, latestDocument, optionalDocHint,
-  optionalDocTypes, ownNameApplies, policeClearanceWordsFrom, vatDocumentStatusWord,
+  optionalDocTypes, ownNameApplies, ownNameOfferFits, policeClearanceWordsFrom, vatDocumentStatusWord,
 } from '@/lib/store-documents';
 import { FoodHandlersCard } from '../settings/food-handlers-card';
 import { StoreFeeCard } from '../settings/store-fee-card';
@@ -165,7 +165,8 @@ export function StoreDocumentChecklist({ storeId, vendorType, storeName }: { sto
       {/* [RETIER PR-A2] a store whose fee follows its catalogue above the first step ticks it before it goes live */}
       <StoreFeeCard storeId={storeId} isOwner />
       {ownNameApplies(vendorType) && checklist.includes(OWN_NAME_DOC) && <OwnNameCard mode="drop" storeName={storeName} onDone={refresh} />}
-      {ownNameApplies(vendorType) && checklist.includes('business_registration') && latest('business_registration')?.status !== 'APPROVED' && (
+      {/* [OWNNAME-FIT · COORD 7 Nov 2026, Cap. 90:05 s.3] offered only for a store whose name is its owner's own name */}
+      {ownNameApplies(vendorType) && checklist.includes('business_registration') && latest('business_registration')?.status !== 'APPROVED' && ownNameOfferFits(d, storeId) && (
         <OwnNameCard mode="offer" storeName={storeName} onDone={refresh} />
       )}
 

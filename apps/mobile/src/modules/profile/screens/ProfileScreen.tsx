@@ -79,7 +79,8 @@ export function MarketingConsentRow() {
   const toggle = useMutation({
     mutationFn: (next: boolean) => customerApi.setMarketingConsent(next),
     onError: () => toast.error('Marketing messages were not changed', 'Check your connection and try again.'),
-    onSettled: () => qc.invalidateQueries({ queryKey: ['consent'] }),
+    // [APP-SPEED 5] Free at the server's answer: the accepted choice shows until the re-read (acceptedChange below).
+    onSettled: () => { void qc.invalidateQueries({ queryKey: ['consent'] }); },
   });
   // [#1946 review S4-1] A change the server accepted (its success is the
   // authority) is the choice until a newer read answers, so a failed
@@ -126,11 +127,14 @@ export function ProfileScreen() {
   const insets = useSafeAreaInsets();
   const navigation = useNavigation<any>();
   const { isAuthenticated, promptLogin, user, setIntent } = useAuthStore();
-  const profile = useProfile<any>();
-  const myRating = useMyRating();
+  // [APP-SPEED A] The signed-in person (auth store) stands in while the first profile read is on
+  // its way: their name and picture at once; the profile's own facts wait for it (below).
+  // [review S3] Profile is drawn ahead (warm tabs): a guest's hidden tab reads nothing.
+  const profile = useProfile<any>({ placeholderData: user ?? undefined, enabled: isAuthenticated });
+  const myRating = useMyRating(isAuthenticated);
   // [Wave 3 · ref 05] The Orders tile's badge is the LIVE order count — a real
   // number from the live query, never unread-notifications wearing its badge.
-  const liveOrders = useLiveOrders();
+  const liveOrders = useLiveOrders(undefined, isAuthenticated);
   // Kit logout popup (51), now the one shared ask. The cart is a server
   // query and the account keeps it; logout clears this device's copy.
   const { requestLogout, logoutDialog } = useLogoutConfirm({
@@ -204,7 +208,9 @@ export function ProfileScreen() {
     );
   }
 
-  const p = profile.data;
+  // [APP-SPEED A] The stand-in is not the profile: orders, unread and "member since" stay unknown.
+  const fromUser = profile.isPlaceholderData;
+  const p = fromUser ? undefined : profile.data;
   const name = `${p?.firstName ?? user?.firstName ?? ''} ${p?.lastName ?? user?.lastName ?? ''}`.trim() || 'Swift member';
   const rawAvatar = p?.avatar ?? user?.avatar;
   // [F-022-17] the API may return a relative path — normalize before Image.
@@ -222,7 +228,7 @@ export function ProfileScreen() {
     { on: true, label: 'Phone verified', next: 'verify your phone' },
     { on: orders > 0, label: 'First order placed', next: 'place your first order' },
   ];
-  const nextFact = facts.find((f) => !f.on);
+  const nextFact = fromUser ? undefined : facts.find((f) => !f.on);
   const liveCount = liveOrders.data?.total ?? liveOrders.data?.items?.length ?? 0;
 
   return (
@@ -258,7 +264,7 @@ export function ProfileScreen() {
                 control is white with a hairline edge, and maroon is spent on
                 the one brand moment further down. A pencil, not a camera:
                 Personal data has no picture action for a customer. */}
-            <TrustHalo size={80} stroke={4} facts={facts.map((f) => f.on)}>
+            <TrustHalo size={80} stroke={4} facts={fromUser ? [] : facts.map((f) => f.on)}>
               <Pressable
                 accessibilityRole="button"
                 accessibilityLabel="Edit your personal data"
@@ -298,11 +304,13 @@ export function ProfileScreen() {
               imperative the person can act on. [R7] Never "Verified": a selfie
               and a first order are not anything a person on our team checked. */}
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5, marginTop: space.md }}>
-            <Feather name="check-circle" size={12} color={color.success} />
+            {fromUser ? null : <Feather name="check-circle" size={12} color={color.success} />}
             <T variant="caption" tone="muted">
-              {nextFact
-                ? `${facts.filter((f) => f.on).length} of ${facts.length} done — next: ${nextFact.next}`
-                : 'Account complete'}
+              {fromUser
+                ? 'Checking your account…'
+                : nextFact
+                  ? `${facts.filter((f) => f.on).length} of ${facts.length} done — next: ${nextFact.next}`
+                  : 'Account complete'}
             </T>
           </View>
 

@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState } from 'react';
+import { homeFeedChanged } from '../lib/homeFeed';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { keepPreviousData, useInfiniteQuery, useMutation, useQuery, useQueryClient, type MutateOptions, type QueryClient } from '@tanstack/react-query';
 import { track } from '../lib/analytics';
 import { checkoutAttempt } from '../lib/checkoutAttemptStore';
@@ -7,10 +8,11 @@ import { AuthSessionBoundaryError, getAuthSessionSnapshot, requireAuthSessionFor
 import { homePlaceholderData, homeQueryKey, isHomeFeed, marketDepthVerdict, retainedHomeData } from '../lib/homeReliability';
 import { rememberMarketDepth, rememberedMarketDepth, type MarketDepthBody } from '../lib/marketDepthMemory';
 import { isAxiosError } from 'axios';
-import { marketApi, customerApi, discoveryApi, moderationApi, type AddressInput, type CartQuoteChoices } from '../services/api';
+import { marketApi, customerApi, discoveryApi, moderationApi, rideApi, type AddressInput, type CartQuoteChoices } from '../services/api';
 import { samePrincipalBoundary, type AuthSessionSnapshot } from '../lib/authSession';
 import type { OrderProjection } from '@swift/types';
 import type { PromiseView } from '../lib/promise';
+import { cachedOrderRow, newestCachedCart } from '../lib/doorPreview';
 
 /**
  * Thin React Query wrappers over `customerApi`. Every consumer screen reads data
@@ -20,6 +22,18 @@ import type { PromiseView } from '../lib/promise';
 async function unwrap<T = any>(p: Promise<any>): Promise<T> {
   const res = await p;
   return res?.data?.data as T;
+}
+
+/** React Query's own bound on cached data (a function is never data): a placeholder for a generic T. */
+// eslint-disable-next-line @typescript-eslint/no-unsafe-function-type -- the exact shape of React Query's NonFunctionGuard
+type QueryData<T> = T extends Function ? never : T;
+
+/** The part of the quote's choices the quote read actually sends (everything but the promo code). */
+function quoteKeyChoices(choices?: CartQuoteChoices): Omit<CartQuoteChoices, 'promoCode'> | null {
+  if (!choices) return null;
+  const asked: Omit<CartQuoteChoices, 'promoCode'> = { ...choices };
+  delete (asked as CartQuoteChoices).promoCode;
+  return asked;
 }
 
 export const customerKeys = {
@@ -38,21 +52,35 @@ export const customerKeys = {
   orders: ['customer', 'orders'] as const,
   order: (id: string) => ['customer', 'order', id] as const,
   // [E01] The choices the quote is priced for are part of its identity.
+  // [APP-SPEED A] Except the promo code: it is never sent with the quote read
+  // (services/api.ts cartQuoteParams; the server prices the cart's STORED
+  // promo), so in the key it only asked the same question twice once a code
+  // was applied. It still rides `choices` to the order body.
   cart: (lat?: number, lng?: number, choices?: CartQuoteChoices) =>
-    ['customer', 'cart', lat ?? null, lng ?? null, choices ?? null] as const,
+    ['customer', 'cart', lat ?? null, lng ?? null, quoteKeyChoices(choices)] as const,
   notifications: ['customer', 'notifications'] as const,
 };
 
-export function useProfile<T = any>() {
-  return useQuery<T>({ queryKey: customerKeys.profile, queryFn: () => unwrap<T>(customerApi.getProfile()) });
+/** [APP-SPEED A] `placeholderData`: what the screen may draw while the first read is on its way
+ *  (Profile: the signed-in person from the auth store). The screen reads `isPlaceholderData` and
+ *  treats the profile's own facts (orders, unread, member since) as not known yet. */
+export function useProfile<T = any>(opts?: { placeholderData?: QueryData<T>; enabled?: boolean }) {
+  return useQuery<T>({
+    queryKey: customerKeys.profile,
+    queryFn: () => unwrap<T>(customerApi.getProfile()),
+    placeholderData: opts?.placeholderData,
+    // [APP-SPEED A] Profile is drawn ahead (warm tabs): a guest's hidden tab asks nothing.
+    enabled: opts?.enabled ?? true,
+  });
 }
 
 /** Movement R9: "Your rating" — the customer's own aggregate (aggregate only,
  *  never per-rating rows — respect runs both ways). */
-export function useMyRating() {
+export function useMyRating(enabled = true) {
   return useQuery<{ displayRating: number | null; ratingBucket: string; ratingCount: number }>({
     queryKey: ['customer', 'my-rating'],
     queryFn: () => unwrap(customerApi.myRating()),
+    enabled,
   });
 }
 
@@ -60,11 +88,27 @@ export function useAddresses<T = any>() {
   return useQuery<T>({ queryKey: customerKeys.addresses, queryFn: () => unwrap<T>(customerApi.getAddresses()) });
 }
 
+/** [APP-SPEED 5] The saved address as the server answered it, in the list at once (the list reads defaults first,
+ *  newest first, as GET /addresses orders them; a new default clears the others' flag, as the server just did). The list still
+ *  re-reads in the background. An answer without an id (an older server) is not written. */
+export function listWithAddedAddress(list: unknown, added: unknown): unknown {
+  const a = added as { id?: unknown; isDefault?: unknown } | null | undefined;
+  if (!Array.isArray(list) || typeof a?.id !== 'string' || !a.id) return list;
+  if (list.some((row) => (row as { id?: unknown } | null)?.id === a.id)) return list;
+  if (a.isDefault === true) return [a, ...list.map((row) => ({ ...(row as object), isDefault: false }))];
+  // Newest first after the default, as the server lists them.
+  const at = list.findIndex((row) => (row as { isDefault?: unknown } | null)?.isDefault !== true);
+  return at < 0 ? [...list, a] : [...list.slice(0, at), a, ...list.slice(at)];
+}
+
 export function useAddAddress() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (data: AddressInput) => unwrap(customerApi.addAddress(data)),
-    onSuccess: () => qc.invalidateQueries({ queryKey: customerKeys.addresses }),
+    onSuccess: (added: unknown) => {
+      qc.setQueryData(customerKeys.addresses, (list: unknown) => listWithAddedAddress(list, added));
+      void qc.invalidateQueries({ queryKey: customerKeys.addresses });
+    },
   });
 }
 
@@ -290,6 +334,21 @@ export function useVendor<T = any>(id: string, point?: { lat: number; lng: numbe
   });
 }
 
+/**
+ * [APP-SPEED A] Start reading a store's menu at the FINGER-DOWN on its card
+ * (onPressIn), so the round trip overlaps the tap and the screen change. Only
+ * a store with nothing in memory: a cached store opens with what it has and
+ * re-reads on mount (its freshness stays 0, #1380 F1), so a second read here
+ * would only ask twice. The place rides the read exactly as the store page
+ * sends it (the key carries no place).
+ */
+export function prefetchVendor(qc: QueryClient, id: string, point?: { lat: number; lng: number } | null): Promise<void> | undefined {
+  if (!id) return undefined;
+  const state = qc.getQueryState(customerKeys.vendor(id));
+  if (state?.data !== undefined || state?.fetchStatus === 'fetching') return undefined;
+  return qc.prefetchQuery({ queryKey: customerKeys.vendor(id), queryFn: () => unwrap(customerApi.getVendor(id, point)) });
+}
+
 export function useVendorReviews<T = any>(id: string) {
   return useQuery<T>({
     queryKey: [...customerKeys.vendor(id), 'reviews'],
@@ -457,8 +516,9 @@ const LIVE_ORDERS_LIMIT = 50;
  *  is on screen and the app is in front): re-ask on that cadence, but only
  *  while something is in progress — an empty live list has nothing to follow,
  *  and a new order arrives through the cart's own invalidation. */
-export function useLiveOrders(poll?: () => number) {
+export function useLiveOrders(poll?: () => number, enabled = true) {
   return useQuery({
+    enabled,
     queryKey: [...customerKeys.orders, 'live'],
     refetchInterval: poll ? (query) => ((query.state.data?.items.length ?? 0) > 0 ? poll() : false) : false,
     queryFn: async () => {
@@ -472,13 +532,46 @@ export function useLiveOrders(poll?: () => number) {
   });
 }
 
-export function useOrder<T = OrderProjection>(id: string, refetchInterval?: number) {
+/**
+ * `preview` [APP-SPEED A]: while the first read of this order is on its way,
+ * hand back the order's row from the lists already in memory (live orders,
+ * history, Home's live-order card) flagged `isPlaceholderData`. The screen
+ * draws it as "checking" and holds every action until the server's own
+ * answer replaces it. A failed read never shows the row (React Query drops a
+ * placeholder once the query errors). Off by default: only a screen that
+ * handles the flag asks for it.
+ */
+export function useOrder<T = OrderProjection>(id: string, refetchInterval?: number, opts?: { preview?: boolean }) {
+  const qc = useQueryClient();
+  const preview = opts?.preview === true;
+  const fromLists = useCallback(() => cachedOrderRow<QueryData<T>>(qc, id), [qc, id]);
   return useQuery<T>({
     queryKey: customerKeys.order(id),
     queryFn: () => unwrap<T>(customerApi.getOrder(id)),
     enabled: !!id,
     refetchInterval,
+    placeholderData: preview ? fromLists : undefined,
   });
+}
+
+/** [APP-SPEED A] Start reading an order at the finger-down on "Track" (only when it is not in
+ *  memory: a cached order is shown and re-read on mount). */
+export function prefetchOrder(qc: QueryClient, id: string): Promise<void> | undefined {
+  if (!id) return undefined;
+  const state = qc.getQueryState(customerKeys.order(id));
+  if (state?.data !== undefined || state?.fetchStatus === 'fetching') return undefined;
+  return qc.prefetchQuery({ queryKey: customerKeys.order(id), queryFn: () => unwrap(customerApi.getOrder(id)) });
+}
+
+/** [APP-SPEED A] Ask "is a ride in progress?" ahead of the Taxi door (Home once it is idle, and the
+ *  finger-down on Track ride), so the door opens on an answer. The same key and answer as
+ *  hooks/rides useActiveRide. Only when nothing is in memory: a remembered answer is shown and
+ *  re-read on mount (freshness 0), so this never asks twice. The Taxi screen still holds Request
+ *  (and a remembered ride's Cancel) until its own read lands. */
+export function prefetchActiveRide(qc: QueryClient): Promise<void> | undefined {
+  const state = qc.getQueryState(['rides', 'active']);
+  if (state?.data !== undefined || state?.fetchStatus === 'fetching') return undefined;
+  return qc.prefetchQuery({ queryKey: ['rides', 'active'], queryFn: () => unwrap(rideApi.active()) });
 }
 
 /** [row 5 · ANDROID-QA] One fresh read of an order for a decision the customer
@@ -708,6 +801,7 @@ export function usePlaceOrder<T = any>() {
       if (!current(operation) || !operation.key || !checkoutAttempt.end(operation.key, operation.principal)) return;
       qc.invalidateQueries({ queryKey: customerKeys.orders });
       qc.invalidateQueries({ queryKey: ['customer', 'cart'] });
+      homeFeedChanged(qc);
       track('order_placed', { orders: data?.orders?.length ?? 1 });
     },
     onError: (err, operation) => {
@@ -715,6 +809,7 @@ export function usePlaceOrder<T = any>() {
       if (err instanceof CheckoutAlreadyPlacedError) {
         qc.invalidateQueries({ queryKey: customerKeys.orders });
         qc.invalidateQueries({ queryKey: ['customer', 'cart'] });
+        homeFeedChanged(qc);
       }
     },
     onSettled: (_data, _error, operation) => {
@@ -789,6 +884,7 @@ export function useCheckoutRecovery(): { recovering: boolean; placedOrderIds: st
         setPlacedOrderIds(probe.orderIds);
         qc.invalidateQueries({ queryKey: customerKeys.orders });
         qc.invalidateQueries({ queryKey: ['customer', 'cart'] });
+        homeFeedChanged(qc);
       } else if (probe.status === 'none') {
         checkoutAttempt.markOpen(observation);
       }
@@ -802,7 +898,15 @@ export function useCheckoutRecovery(): { recovering: boolean; placedOrderIds: st
 
 // --- Cart ---------------------------------------------------------------------
 
-export function useCart<T = any>(lat?: number, lng?: number, choices?: CartQuoteChoices, enabled = true) {
+export function useCart<T = any>(
+  lat?: number, lng?: number, choices?: CartQuoteChoices, enabled = true, fromAnyCachedQuote = false, onScreen = true,
+) {
+  const qc = useQueryClient();
+  // A previous quote of THIS key wins, an empty cart (null) included; only a first quote borrows.
+  const fromCache = useCallback(
+    (previous: QueryData<T> | undefined) => (previous !== undefined ? previous : newestCachedCart<QueryData<T>>(qc)),
+    [qc],
+  );
   return useQuery<T>({
     queryKey: customerKeys.cart(lat, lng, choices),
     queryFn: () => unwrap<T>(customerApi.getCart(lat, lng, choices)),
@@ -811,7 +915,17 @@ export function useCart<T = any>(lat?: number, lng?: number, choices?: CartQuote
     // last one on screen — flagged `isPlaceholderData` — while the server
     // prices the new choice, instead of blanking the cart; the screen holds
     // the order button until the quote for the current choice has arrived.
-    placeholderData: keepPreviousData,
+    // [APP-SPEED A] `fromAnyCachedQuote` (the Cart tab): on its FIRST quote,
+    // the newest quote of the same server cart already in memory (the store
+    // page's) is shown the same way — flagged, total "Updating…", Order held.
+    // While held (`enabled` false: the hidden, never-opened Cart tab) the stand-in still draws; nothing is read.
+    placeholderData: fromAnyCachedQuote ? fromCache : keepPreviousData,
+    // [APP-SPEED C] `onScreen` false (the Cart tab while another screen is in front): this quote is not watched, so a
+    // +/− on a store page marks it stale without re-quoting it in the background (a cart write's invalidation
+    // refetches only the cart reads on screen), and the hidden tab is not redrawn by each answer. Shown again, it is
+    // read once (it is stale): the last quote stays on screen while that read is on its way (isFetching), which holds
+    // Order (the cart's quoteSettled) until it lands.
+    subscribed: onScreen,
   });
 }
 
@@ -942,7 +1056,8 @@ export function useCreateTicket() {
     // Own inline success/reset — opt out of the global error toast so the
     // form can show its own state.
     mutationFn: (data: Parameters<typeof customerApi.createTicket>[0]) => unwrap(customerApi.createTicket(data)),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['support', 'tickets'] }),
+    // [APP-SPEED 5] Free at the server's answer; the ticket list refreshes in the background.
+    onSuccess: () => { void qc.invalidateQueries({ queryKey: ['support', 'tickets'] }); },
   });
 }
 
@@ -994,7 +1109,8 @@ export function useRescheduleBooking() {
   return useMutation({
     mutationFn: ({ bookingId, newSlotStart }: { orderId: string; bookingId: string; newSlotStart: string }) =>
       unwrap(customerApi.rescheduleBooking(bookingId, newSlotStart)),
-    onSettled: (_data, _error, { orderId }) => qc.invalidateQueries({ queryKey: customerKeys.order(orderId) }),
+    // [APP-SPEED 5] Free at the server's answer; the order (with the booking's new time) re-reads in the background.
+    onSettled: (_data, _error, { orderId }) => { void qc.invalidateQueries({ queryKey: customerKeys.order(orderId) }); },
   });
 }
 

@@ -6,7 +6,10 @@ import { useNavigation, useIsFocused } from '@react-navigation/native';
 import Animated, { FadeInDown, ReduceMotion } from 'react-native-reanimated';
 
 import { color, radius, space } from '@swift/ui';
-import { useLiveOrders, useOrdersInfinite, useReorder } from '../../../hooks/customer';
+import { customerKeys, prefetchActiveRide, prefetchOrder, useLiveOrders, useOrdersInfinite, useReorder } from '../../../hooks/customer';
+import { refetchFromFirstPage } from '../../../lib/infiniteFirstPage';
+import { useQueryClient } from '@tanstack/react-query';
+import { usePressRead } from '../../../hooks/pressRead';
 import { usePullToRefresh } from '../../../hooks/usePullToRefresh';
 import { useAuthStore } from '../../../stores/authStore';
 import { POLL } from '../../../lib/pollPolicy';
@@ -170,14 +173,24 @@ const isRideOrder = (o: any) => o?.orderType === 'TAXI';
 const rideTitle = (o: any) =>
   `Taxi${o.rideClass ? ` · ${String(o.rideClass).charAt(0)}${String(o.rideClass).slice(1).toLowerCase()}` : ''}`;
 
+/** The history query's key (hooks/customer useOrdersInfinite): its refreshes start again from the newest page. */
+const HISTORY_KEY = [...customerKeys.orders, 'infinite', 'history'] as const;
+
 type LedgerItem =
   | { kind: 'eyebrow'; id: string; label: string }
   | { kind: 'row'; id: string; order: any; index: number; divided: boolean };
 
 export function OrdersHistoryScreen() {
   const navigation = useNavigation<any>();
+  const qc = useQueryClient();
+  const pressRead = usePressRead();
   const { isAuthenticated, promptLogin } = useAuthStore();
   const orders = useOrdersInfinite();
+  // [APP-SPEED C · report item 12] A refresh the person asks for (the pull, Try again) re-reads page 1 only, never
+  // every page scrolled through (lib/infiniteFirstPage); the list starts again from the top, as a pull does. The
+  // refreshes nobody asked for (a return to the screen, the foreground, a live order leaving) keep every page, so
+  // the person's place in the list is never lost (Back from an order lands where they were).
+  const refreshHistory = () => refetchFromFirstPage(qc, HISTORY_KEY);
   // [row 5 · ANDROID-QA] The list must follow orders in progress while the
   // customer looks at it: no socket event reaches this screen, so the live
   // query re-asks (15 s; 30 s on a slow network) while the tab is on screen,
@@ -190,7 +203,7 @@ export function OrdersHistoryScreen() {
   // focus refetch below runs on EVERY switch to this tab, and a spinner bound
   // to isRefetching made iOS pull the list down behind a spinner each time —
   // a reload nobody asked for. A pull refreshes BOTH lists, as before.
-  const pull = usePullToRefresh(() => Promise.all([orders.refetch(), liveOrders.refetch()]));
+  const pull = usePullToRefresh(() => Promise.all([refreshHistory(), liveOrders.refetch()]));
 
   // Tab screens stay mounted, so without this the list NEVER updates after
   // first load (found live: a delivered order stuck on "Pending" forever).
@@ -394,6 +407,8 @@ export function OrdersHistoryScreen() {
         <PillButton
           label={isRide ? 'Track ride' : 'Track order'}
           size="md"
+          // [APP-SPEED A] The finger-down starts the read the tracking screen opens on.
+          {...pressRead(() => (isRide ? prefetchActiveRide(qc) : prefetchOrder(qc, o.id)))}
           onPress={() => navigation.navigate(isRide ? 'Taxi' : 'Delivery', isRide ? undefined : { orderId: o.id })}
         />
       </View>
@@ -517,15 +532,16 @@ export function OrdersHistoryScreen() {
           {headerBlock}
           <LoadingBlock />
         </>
-      ) : orders.isError && live.length === 0 ? (
+      ) : orders.isError && rows.length === 0 && live.length === 0 ? (
         // Only when there is genuinely nothing to show. A history failure must
         // not blank out live orders that loaded fine — those are the ones the
-        // customer opened this tab for.
+        // customer opened this tab for. [APP-SPEED C] Nor history already on
+        // screen: a failed refresh keeps its rows (with a retry line above them).
         <>
           {headerBlock}
           <ErrorState
             onRetry={() => {
-              orders.refetch();
+              void refreshHistory();
               liveOrders.refetch();
             }}
           />
@@ -563,6 +579,19 @@ export function OrdersHistoryScreen() {
                   </T>
                 </Pressable>
               ) : null}
+              {orders.isError && rows.length > 0 ? (
+                // [APP-SPEED C] A refresh of history failed: the rows already read stay, and say so.
+                <Pressable
+                  onPress={() => { void refreshHistory(); }}
+                  accessibilityRole="button"
+                  accessibilityLabel="Retry refreshing your history"
+                  style={{ paddingBottom: space.md }}
+                >
+                  <T variant="caption" tone="muted">
+                    Couldn’t refresh your history. Tap to retry.
+                  </T>
+                </Pressable>
+              ) : null}
               {live.length > 0 ? (
                 <View style={{ gap: space.md, paddingBottom: space.sm }}>
                   <T variant="micro" tone="muted">IN PROGRESS</T>
@@ -588,7 +617,9 @@ export function OrdersHistoryScreen() {
           contentContainerStyle={{ paddingHorizontal: space['2xl'], paddingBottom: space['3xl'] }}
           onEndReachedThreshold={0.5}
           onEndReached={() => {
-            if (orders.hasNextPage && !orders.isFetchingNextPage) orders.fetchNextPage();
+            // [APP-SPEED C · review S2-1] Never while a refresh is on its way: fetchNextPage would cancel it (its
+            // default cancelRefetch), and a delivered order would stay "Pending" on screen. The end is reached again.
+            if (orders.hasNextPage && !orders.isFetching) orders.fetchNextPage();
           }}
           ListFooterComponent={
             orders.isFetchingNextPage ? (
@@ -597,7 +628,8 @@ export function OrdersHistoryScreen() {
               </T>
             ) : orders.hasNextPage && serverTotal !== null ? (
               <Pressable
-                onPress={() => orders.fetchNextPage()}
+                // Never cancels a refresh on its way (see onEndReached): the next page waits for it.
+                onPress={() => { if (!orders.isFetching) orders.fetchNextPage(); }}
                 accessibilityRole="button"
                 accessibilityLabel={`Show more. ${rows.length} of ${serverTotal} shown`}
                 style={{ paddingVertical: space.lg, alignItems: 'center' }}

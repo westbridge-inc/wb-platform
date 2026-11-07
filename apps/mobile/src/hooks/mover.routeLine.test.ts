@@ -55,7 +55,10 @@ describe('the hook', () => {
 describe('the screen', () => {
   it('feeds the hook the driver’s live job and draws driverMapLine on both strokes, geodesic only when straight', () => {
     expect(SCREEN).toContain('const roadLine = useDriverRouteLine(isDriver ? liveJob : null);');
-    expect(SCREEN).toContain('const mapLine = driverMapLine(isDriver ? roadLine.data : null, routePoints);');
+    // [APP-SPEED C] The map is its own memoised component (ActiveJobMap): the road line is handed in for drivers only,
+    // and the line is worked out once per job and road answer.
+    expect(SCREEN).toContain('roadLineData={isDriver ? roadLine.data : null}');
+    expect(SCREEN).toMatch(/const mapLine = useMemo\(\(\) => driverMapLine\(roadLineData as [^,]+, routePoints\), \[roadLineData, routePoints\]\);/);
     const strokes = SCREEN.match(/<Polyline [^>]*\/>/g) ?? [];
     expect(strokes).toHaveLength(2);
     for (const stroke of strokes) {

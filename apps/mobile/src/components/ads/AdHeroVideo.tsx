@@ -9,6 +9,7 @@ import { AdChip } from './AdChip';
 import { useAdViewability } from './useAdViewability';
 import { trackAdEvent, openAdDestination } from '../../lib/ads';
 import type { AdEventScope, AdServeItem } from '../../lib/adsCore';
+import { videoModule } from './videoModule';
 
 // Tier 1 — the hero video card (spec §13.1). Poster first; autoplay MUTED when
 // ≥50% on screen; pause when scrolled off (battery/data — the Caribbean device
@@ -16,14 +17,7 @@ import type { AdEventScope, AdServeItem } from '../../lib/adsCore';
 // Failure ladder (E8): video load fails → poster as a static banner → poster
 // fails → collapse. expo-video is a native module: a stale binary without it
 // must degrade to the poster banner, never crash at import
-// [reference_swift_native_module_crash] — hence the guarded require.
-
-let videoModule: typeof import('expo-video') | null = null;
-try {
-  videoModule = require('expo-video');
-} catch {
-  videoModule = null;
-}
+// [reference_swift_native_module_crash] — hence the guarded require (./videoModule).
 
 const HERO_H = 200;
 const QUARTILES = [
@@ -36,10 +30,14 @@ export function AdHeroVideo({
   item,
   trackable,
   trackingScope,
+  live = true,
 }: {
   item: AdServeItem;
   trackable: boolean;
   trackingScope: AdEventScope | null;
+  /** [APP-SPEED 11] Home is shown and Swift is in the foreground. Off: the video stops and nothing measures; back on,
+   *  the measuring loop plays it again only if it is in sight. */
+  live?: boolean;
 }) {
   const track = trackable ? item.impressionToken : undefined;
   const [videoFailed, setVideoFailed] = useState(false);
@@ -61,6 +59,7 @@ export function AdHeroVideo({
   const { ref } = useAdViewability({
     enabled: !!track || useVideo,
     keepMeasuring: useVideo,
+    live,
     onViewable: () => trackAdEvent(track, 'VIEWABLE_IMPRESSION', trackingScope),
     onVisibility: (fraction) => {
       visibleRef.current = fraction;
@@ -81,6 +80,18 @@ export function AdHeroVideo({
       }
     },
   });
+
+  // [APP-SPEED 11] Home left for another tab or screen, or Swift sent to the background: the video stops at once
+  // (Home is never frozen, so it went on playing for nobody).
+  useEffect(() => {
+    if (live) return;
+    const player = playerRef.current;
+    try {
+      if (player?.playing) player.pause();
+    } catch {
+      setVideoFailed(true);
+    }
+  }, [live]);
 
   const onPress = () => {
     trackAdEvent(track, 'CLICK', trackingScope);

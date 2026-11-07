@@ -41,7 +41,10 @@ describe('the quote is priced for exactly what the order button submits (E01)', 
   const src = code();
 
   it('ONE pricing-choices object: the quote is requested with it, the order body is built from it', () => {
-    expect(src).toContain('const cart = useCart<any>(latitude ?? undefined, longitude ?? undefined, pricing);');
+    // [APP-SPEED A] `cartReadsOn` (held until the tab is first shown, and for a guest), and on its first quote another
+    // quote of the same cart stands in (flagged; Order held).
+    // [APP-SPEED C] `focused`: the quote is watched (and re-read on a cart write) only while the tab is on screen.
+    expect(src).toContain('const cart = useCart<any>(latitude ?? undefined, longitude ?? undefined, pricing, cartReadsOn, true, focused);');
     expect(src).toContain('...(pricing.express ? { express: true } : {}),');
     expect(src).toContain('...(pricing.fulfillmentSelections ? { fulfillmentSelections: pricing.fulfillmentSelections } : {}),');
     expect(src).toContain('const submittedTip = pickupRetry ? 0 : pricedTip(pricing, c);');

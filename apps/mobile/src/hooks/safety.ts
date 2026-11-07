@@ -157,23 +157,58 @@ export function useEmergencyContacts() {
 
 /** Every write refetches the list — a contact's VERIFIED state is the whole
  *  point of the screen, and a stale badge would claim someone will be alerted
- *  in an emergency when they will not. */
-function useContactMutation<TArg, TRes>(fn: (arg: TArg) => Promise<TRes>) {
+ *  in an emergency when they will not.
+ *  [APP-SPEED 5] The refetch runs in the background: the button is free at the
+ *  server's answer, and what that answer itself says (the saved contact, the
+ *  verification time, the removal) is in the list at once. Nothing the server
+ *  did not answer is ever written: a verified badge appears only from a
+ *  verification time the server sent. */
+function useContactMutation<TArg, TRes>(
+  fn: (arg: TArg) => Promise<TRes>,
+  write?: (list: EmergencyContact[], answer: TRes, arg: TArg) => EmergencyContact[],
+) {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: fn,
-    onSuccess: () => qc.invalidateQueries({ queryKey: emergencyContactKeys.all }),
+    onSuccess: (answer: TRes, arg: TArg) => {
+      if (write) {
+        qc.setQueryData<EmergencyContact[]>(emergencyContactKeys.all, (list) => (Array.isArray(list) ? write(list, answer, arg) : list));
+      }
+      void qc.invalidateQueries({ queryKey: emergencyContactKeys.all });
+    },
   });
 }
 
+/** [APP-SPEED 5] The contact list after each answer (pure; exported for the tests). */
+export const contactListAfter = {
+  added(list: EmergencyContact[], answer: unknown): EmergencyContact[] {
+    const a = answer as (Partial<EmergencyContact> & { codeSent?: unknown }) | null | undefined;
+    if (typeof a?.id !== 'string' || !a.id || typeof a.name !== 'string' || typeof a.phoneE164 !== 'string') return list;
+    if (list.some((c) => c.id === a.id)) return list;
+    const contact: Record<string, unknown> = { verifiedAt: null, ...a };
+    delete contact['codeSent'];
+    return [...list, contact as unknown as EmergencyContact];
+  },
+  verified(list: EmergencyContact[], response: unknown): EmergencyContact[] {
+    const a = (response as { data?: { data?: { id?: unknown; verifiedAt?: unknown } } } | null | undefined)?.data?.data;
+    if (typeof a?.id !== 'string' || typeof a.verifiedAt !== 'string' || !a.verifiedAt) return list;
+    return list.map((c) => (c.id === a.id ? { ...c, verifiedAt: a.verifiedAt as string } : c));
+  },
+  removed(list: EmergencyContact[], id: string): EmergencyContact[] {
+    return list.filter((c) => c.id !== id);
+  },
+};
+
 export function useAddEmergencyContact() {
   return useContactMutation((data: { name: string; phoneE164: string; relationship?: string; priority?: number }) =>
-    safetyApi.addEmergencyContact(data).then((r) => r.data?.data as { id: string; codeSent: boolean }));
+    safetyApi.addEmergencyContact(data).then((r) => r.data?.data as { id: string; codeSent: boolean }),
+  (list, answer) => contactListAfter.added(list, answer));
 }
 
 export function useVerifyEmergencyContact() {
   return useContactMutation(({ id, code }: { id: string; code: string }) =>
-    safetyApi.verifyEmergencyContact(id, code));
+    safetyApi.verifyEmergencyContact(id, code),
+  (list, response) => contactListAfter.verified(list, response));
 }
 
 export function useResendEmergencyContactCode() {
@@ -181,7 +216,8 @@ export function useResendEmergencyContactCode() {
 }
 
 export function useRemoveEmergencyContact() {
-  return useContactMutation((id: string) => safetyApi.removeEmergencyContact(id));
+  return useContactMutation((id: string) => safetyApi.removeEmergencyContact(id),
+    (list, _answer, id) => contactListAfter.removed(list, id));
 }
 
 export interface LivenessCheckOutcome {
@@ -223,7 +259,8 @@ export function useLivenessCheck() {
       return res.data?.data as LivenessCheckOutcome;
     },
     // A pass changes what go-online will say — refetch the mover surface.
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['mover'] }),
+    // [APP-SPEED 5] In the background: the screen shows this check's own outcome from the answer.
+    onSuccess: () => { void qc.invalidateQueries({ queryKey: ['mover'] }); },
     meta: { silent: true },
   });
 }

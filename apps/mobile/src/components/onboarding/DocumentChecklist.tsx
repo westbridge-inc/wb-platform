@@ -9,7 +9,7 @@ import { OwnNameCard } from './OwnNameCard';
 import { FoodHandlersCard } from './FoodHandlersCard';
 import { StoreWeeklyFeeCard, type StoreFeeScope } from './StoreWeeklyFeeCard';
 import { FOOD_HANDLERS_DOC } from './foodHandlers';
-import { ownNameApplies } from '../../lib/ownNameCopy';
+import { ownNameApplies, ownNameOfferFits } from '../../lib/ownNameCopy';
 import { isTaxiChecklist, taxiDocumentHint, TAXI_TWO_LICENCES } from './taxiDocumentCopy';
 import { DOCUMENT_REVIEW_PROMISE, emptyChecklistCopy, optionalDocHint, optionalDocTypes } from './documentChecklistPresentation';
 import { SENSITIVE_DOC_TYPES, documentConsentGivenLine, documentConsentOnRecord, policeClearanceWordsFrom } from './documentConsentRecord';
@@ -36,6 +36,7 @@ export function DocumentChecklist({
   isError,
   onRetry,
   storeName,
+  storeId,
   optionalExtra,
   storeFee,
 }: {
@@ -43,6 +44,9 @@ export function DocumentChecklist({
   status: any;
   /** [ROLE-DOCS · per store] the selected store's name, for the own-name card */
   storeName?: string | null;
+  /** [OWNNAME-FIT · COORD 7 Nov 2026] the selected store's id: the own-name route is offered only when the server says
+   *  this store's name passes its own-name test (status `ownNameFits`); no id, no offer */
+  storeId?: string | null;
   /** [VAT-DOCS · owner 30 Oct 2026] A row the screen adds to the Optional documents (a store owner's "VAT certificate
    *  (only if VAT-registered)", modules/vendor/VatDocumentRow). `withHeading`: true when no other optional document
    *  put the "Optional" heading up, so the row brings its own (and nothing shows when the row hides itself). */
@@ -236,7 +240,9 @@ export function DocumentChecklist({
       {/* [RETIER PR-A2] a store whose fee follows its catalogue above the first step ticks it here before it goes live */}
       <StoreWeeklyFeeCard role={role} scope={storeFee} />
       {ownNameApplies(role) && checklist.includes(OWN_NAME_DOC) ? <OwnNameCard role={role} mode="drop" /> : null}
+      {/* [OWNNAME-FIT · COORD 7 Nov 2026, Cap. 90:05 s.3] offered only for a store whose name is its owner's own name */}
       {ownNameApplies(role) && checklist.includes('business_registration') && latestDoc('business_registration')?.status !== 'APPROVED'
+        && ownNameOfferFits(status, storeId)
         ? <OwnNameCard role={role} mode="offer" storeName={storeName} /> : null}
       {optional.length > 0 ? (
         <View style={{ marginTop: space.md }}>
