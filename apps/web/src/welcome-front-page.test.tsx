@@ -120,7 +120,7 @@ describe('[WEB-APPBAR · no cookie] a returning visitor skips the welcome page, 
     const { WELCOME_REDIRECT_SCRIPT } = await import('@/lib/welcome');
     const parsed = new URL(url);
     const replace = vi.fn();
-    const location = { pathname: parsed.pathname, search: parsed.search, replace };
+    const location = { pathname: parsed.pathname, search: parsed.search, hash: parsed.hash, replace };
     const localStorage = {
       getItem: (key: string) => {
         if (stored === 'blocked') throw new DOMException('blocked', 'SecurityError');
@@ -136,6 +136,10 @@ describe('[WEB-APPBAR · no cookie] a returning visitor skips the welcome page, 
     expect(await earlyScriptAt('https://swiftgy.com/', '0')).toEqual([]);
     expect(await earlyScriptAt('https://swiftgy.com/', '1')).toEqual(['/order']);
     expect(await earlyScriptAt('https://swiftgy.com/?src=qr&c=AB12', '1')).toEqual(['/order?src=qr&c=AB12']);
+    // [WEB-APPBAR review] The hash travels too.
+    expect(await earlyScriptAt('https://swiftgy.com/#stores', '1')).toEqual(['/order#stores']);
+    expect(await earlyScriptAt('https://swiftgy.com/?a=1#stores', '1')).toEqual(['/order?a=1#stores']);
+    expect(await earlyScriptAt('https://swiftgy.com/?welcome#stores', '1')).toEqual([]);
   });
 
   it('an installed app’s launch goes to ordering; `/?welcome` always stays; storage that is blocked stays', async () => {

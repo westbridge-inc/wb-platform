@@ -8,6 +8,7 @@ import {
   GET_APP_ENGAGED_MS, GET_APP_SCROLL_SHARE, engagedEarlier, getAppBarAllowedOn, insideAnApp, isPhone, markEngaged, snooze, snoozed,
   storePlatform, type StorePlatform,
 } from '@/lib/get-the-app';
+import { noteQrVisit, qrVisit } from '@/lib/table-qr';
 
 /**
  * [WEB-APPBAR · owner 7 Nov 2026] The website comes first; the app is offered gently, on phones only.
@@ -24,7 +25,9 @@ type Device = { platform: StorePlatform } | null;
 
 export function GetAppBar() {
   const pathname = usePathname();
-  const allowed = getAppBarAllowedOn(pathname);
+  // [WEB-APPBAR review] A table's QR code opens the menu only: no bar for the rest of that visit.
+  noteQrVisit(pathname, typeof window === 'undefined' ? '' : window.location.search);
+  const allowed = getAppBarAllowedOn(pathname) && !qrVisit();
   const [device, setDevice] = useState<Device>(null);
   const [engaged, setEngaged] = useState(false);
   const [closed, setClosed] = useState(false);

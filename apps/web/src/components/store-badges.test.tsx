@@ -1,8 +1,9 @@
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { render, screen } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import { act, render, screen } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { forgetLaunchAnswer } from '@/lib/use-web-ordering';
 import { STORE_BADGES, StoreBadges } from './store-badges';
 import { APPLE_TRADEMARKS, GOOGLE_TRADEMARKS, SiteFooter } from './site';
 
@@ -16,6 +17,9 @@ import { APPLE_TRADEMARKS, GOOGLE_TRADEMARKS, SiteFooter } from './site';
 // ---------------------------------------------------------------------------
 
 const PUBLIC = join(process.cwd(), 'public');
+const setUrl = (url: string) => (window as unknown as { happyDOM: { setURL(_u: string): void } }).happyDOM.setURL(url);
+beforeEach(() => setUrl('https://swiftgy.com/about'));
+afterEach(() => { vi.unstubAllGlobals(); setUrl('http://localhost:3000/'); });
 const sha256 = (path: string) => createHash('sha256').update(readFileSync(join(PUBLIC, path))).digest('hex');
 
 describe('[WEB-APPBAR] the official badges, unmodified', () => {
@@ -63,11 +67,22 @@ describe('[WEB-APPBAR] the official badges, unmodified', () => {
     expect(screen.getAllByRole('link').map((link) => link.querySelector('img')?.getAttribute('alt'))).toEqual(['Get it on Google Play']);
   });
 
-  it('the footer carries both trademark lines in its legal area, word for word', () => {
-    expect(APPLE_TRADEMARKS).toBe('Apple and the Apple logo are trademarks of Apple Inc., registered in the U.S. and other countries. App Store is a service mark of Apple Inc.');
+  it('the footer carries both trademark lines in its legal area, word for word, only while the badges can show', async () => {
+    expect(APPLE_TRADEMARKS).toBe('Apple and the Apple logo are trademarks of Apple Inc., registered in the U.S. and other countries and regions. App Store is a service mark of Apple Inc.');
     expect(GOOGLE_TRADEMARKS).toBe('Google Play and the Google Play logo are trademarks of Google LLC.');
-    const view = render(<SiteFooter />);
-    const lines = view.container.querySelector('[data-trademarks]')!;
-    expect([...lines.querySelectorAll('p')].map((p) => p.textContent)).toEqual([APPLE_TRADEMARKS, GOOGLE_TRADEMARKS]);
+    for (const appStores of ['soon', 'live'] as const) {
+      forgetLaunchAnswer();
+      vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ webOrdering: 'live', appStores }))));
+      const view = render(<SiteFooter />);
+      await act(async () => { for (let i = 0; i < 3; i += 1) await new Promise((r) => setTimeout(r, 0)); });
+      const lines = view.container.querySelector('[data-trademarks]');
+      if (appStores === 'soon') {
+        expect(lines).toBeNull();
+        expect(view.container.textContent).not.toMatch(/trademark/);
+      } else {
+        expect([...lines!.querySelectorAll('p')].map((p) => p.textContent)).toEqual([APPLE_TRADEMARKS, GOOGLE_TRADEMARKS]);
+      }
+      view.unmount();
+    }
   });
 });

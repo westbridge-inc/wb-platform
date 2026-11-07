@@ -48,3 +48,20 @@ describe('[WEB-APPBAR · perf] GetAppBarLater', () => {
     expect(fetched.count).toBe(1);
   });
 });
+
+describe('[WEB-APPBAR review · ruling: table QR = menu only] GetAppBarLater on a table-QR visit', () => {
+  it('a phone that scanned a table’s QR code never fetches the bar', async () => {
+    const { forgetGetAppVisit } = await import('@/lib/get-the-app');
+    forgetGetAppVisit();
+    const before = fetched.count;
+    device('Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/129.0.0.0 Mobile Safari/537.36', true);
+    (window as unknown as { happyDOM: { setURL(_u: string): void } }).happyDOM.setURL('https://swiftgy.com/store/kfc?src=qr&c=AB12');
+    const view = render(<GetAppBarLater />);
+    await settle();
+    expect(screen.queryByText('The bar’s code arrived')).toBeNull();
+    expect(fetched.count).toBe(before);
+    view.unmount();
+    (window as unknown as { happyDOM: { setURL(_u: string): void } }).happyDOM.setURL('http://localhost:3000/');
+    forgetGetAppVisit();
+  });
+});

@@ -91,12 +91,51 @@ describe('[E27] a new customer is not sent to the camera', () => {
 
   it('lands on ordering, not /selfie', async () => {
     window.history.replaceState(null, '', '/signup');
-    // [Q7b] Ordering is the site's home now.
-    expect(await registerCustomer()).toBe('/');
+    // [Q7b · WEB-APPBAR] Ordering is the customer's home: /order (`/` is the welcome page).
+    expect(await registerCustomer()).toBe('/order');
+  });
+
+  // [WEB-APPBAR review S2] `/` is the welcome page, and this is a client navigation: the welcome page's early check
+  // never runs, so a new customer sent to `/` would land on the welcome page. `next=/` means "no deep link".
+  it('next=/ (Home’s "Create an account") is no deep link: lands on ordering at /order', async () => {
+    window.history.replaceState(null, '', '/signup?next=%2F');
+    expect(await registerCustomer()).toBe('/order');
   });
 
   it('keeps a safe return path, still without the selfie detour', async () => {
     window.history.replaceState(null, '', '/signup?next=%2Fcart');
     expect(await registerCustomer()).toBe('/cart');
+  });
+});
+
+describe('[WEB-APPBAR review S2] an existing customer who signs in through sign-up', () => {
+  beforeEach(() => {
+    mocked.replace.mockReset();
+    mocked.sendOtp.mockResolvedValue(undefined);
+    mocked.verifyOtp.mockResolvedValue({ isNewUser: false, signedIn: true, user: { id: 'u1', roles: ['CUSTOMER'] } });
+  });
+
+  async function verifyExisting() {
+    const user = userEvent.setup();
+    render(<SignupPage />);
+    await user.click(screen.getByRole('button', { name: /Order on Swift/i }));
+    const phone = screen.getByLabelText('Phone number');
+    await user.clear(phone);
+    await user.type(phone, '+5926001002');
+    await user.click(screen.getByRole('button', { name: 'Send code' }));
+    await user.type(await screen.findByLabelText('Verification code'), '246810');
+    await user.click(screen.getByRole('button', { name: 'Continue' }));
+    await waitFor(() => expect(mocked.replace).toHaveBeenCalledTimes(1));
+    return String(mocked.replace.mock.calls[0]?.[0]);
+  }
+
+  it.each(['/signup', '/signup?next=%2F', '/signup?next=%2F%3Fsource%3Dpwa'])('%s lands on ordering at /order, never the welcome page', async (url) => {
+    window.history.replaceState(null, '', url);
+    expect(await verifyExisting()).toBe('/order');
+  });
+
+  it('a real deep link still comes back to that page', async () => {
+    window.history.replaceState(null, '', '/signup?next=%2Fcart');
+    expect(await verifyExisting()).toBe('/cart');
   });
 });

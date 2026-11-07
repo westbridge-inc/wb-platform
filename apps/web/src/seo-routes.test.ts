@@ -107,8 +107,13 @@ describe('[Q7b] the site’s search duties survive the move', () => {
     expect('generateMetadata' in front).toBe(false);
   });
 
-  it('[WEB-APPBAR] the ordering Home at /order is canonical at its own address, never at `/`', () => {
-    expect((home as { metadata?: { alternates?: { canonical?: string } } }).metadata?.alternates?.canonical).toBe(`${SITE}/order`);
+  it('[WEB-APPBAR] the ordering Home at /order has its own title, description and card, canonical at its own address, never at `/`', () => {
+    const own = (home as { metadata?: import('next').Metadata }).metadata!;
+    expect(own.alternates?.canonical).toBe(`${SITE}/order`);
+    expect(own.title).toBe('Order food, groceries and more');
+    expect(own.description).toBe('Food, groceries and more from businesses in Georgetown, Guyana — pay the business directly, cash or MMG.');
+    expect(own.openGraph).toMatchObject({ url: 'https://swiftgy.com/order', siteName: 'Swift', type: 'website', title: 'Order food, groceries and more — Swift' });
+    expect(own.description).not.toMatch(/\$|GYD|\d/);
     expect('generateMetadata' in home).toBe(false);
   });
 

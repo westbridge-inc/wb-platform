@@ -113,7 +113,9 @@ describe('[WEB-APPBAR] the website first: never on first paint, only after the v
     await wait(1);
     expect(bar()).not.toBeNull();
     expect(bar()!.textContent).toContain(GET_APP_BAR_TEXT);
-    expect(GET_APP_BAR_TEXT).toBe('Swift works best in the app: live tracking, taxi rides and faster ordering.');
+    // [WEB-APPBAR review] Only what is true of the app alone (the website already tracks orders live).
+    expect(GET_APP_BAR_TEXT).toBe('Swift works best in the app: taxi rides, instant order alerts and faster ordering.');
+    expect(GET_APP_BAR_TEXT).not.toMatch(/tracking/i);
   });
 
   it('a scroll of half a screen counts as engaged; a small one does not', async () => {
@@ -293,6 +295,43 @@ describe('[WEB-APPBAR] never on checkout, payment, sign-in, an order, an account
     }
     for (const layout of ['legal/layout.tsx', 'dashboard/layout.tsx', 'portal/layout.tsx', 'login/layout.tsx', 'signup/layout.tsx', 'layout.tsx']) {
       expect(readFileSync(join(src, layout), 'utf8'), layout).not.toMatch(/GetAppBar/);
+    }
+  });
+});
+
+describe('[WEB-APPBAR review · ruling: table QR = menu only] never on a visit from a table’s QR code', () => {
+  it.each(['/store/kfc?src=qr&c=AB12', '/order/vendor/v1?src=qr'])('an engaged phone visitor who scanned in (%s) sees no bar, there or on the next page', async (url) => {
+    device(IPHONE);
+    openAt(`https://swiftgy.com${url}`);
+    const view = page();
+    await wait(GET_APP_ENGAGED_MS * 2);
+    expect(bar()).toBeNull();
+    view.unmount();
+    // The same visit moves on (the query is gone): still no bar.
+    openAt('https://swiftgy.com/store/kfc');
+    page();
+    await wait(GET_APP_ENGAGED_MS * 2);
+    expect(bar()).toBeNull();
+    expect(sessionStorage.getItem('swift.qr-visit')).toBe('1');
+  });
+
+  it('the same store opened without the QR code offers the bar as usual', async () => {
+    device(IPHONE);
+    openAt('https://swiftgy.com/store/kfc?src=search');
+    page();
+    await wait(GET_APP_ENGAGED_MS);
+    expect(bar()).not.toBeNull();
+  });
+
+  it('the pure check: a store or old store address with src=qr, or a /qr/ address, is a table-QR visit', async () => {
+    const { noteQrVisit, qrVisit } = await import('@/lib/table-qr');
+    for (const [path, search, expected] of [
+      ['/store/kfc', '?src=qr', true], ['/order/vendor/v1', '?c=1&src=qr', true], ['/qr/AB12', '', true],
+      ['/store/kfc', '?src=qrx', false], ['/', '?src=qr', false], ['/store/kfc', '', false],
+    ] as const) {
+      forgetGetAppVisit();
+      noteQrVisit(path, search);
+      expect(qrVisit(), `${path}${search}`).toBe(expected);
     }
   });
 });

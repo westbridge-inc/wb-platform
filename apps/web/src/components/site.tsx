@@ -2,13 +2,14 @@ import Link from 'next/link';
 import { SwiftLogo } from './swift-logo';
 import { BrowserOrderingNote } from './browser-ordering-note';
 import { StoreBadgesWhenLive } from './store-badges';
+import { StoresLive } from './stores-live';
 import { site, launch } from '@/site.config';
 
 /** Shared marketing chrome: the footer, Swift red on a light canvas. The header is components/site-nav.tsx,
  *  imported on its own: [WEB-APPBAR · perf] re-exported from here, it rode as a client module in every page that
  *  draws only the footer (the ordering Home), though those pages never show it. */
 
-export const APPLE_TRADEMARKS = 'Apple and the Apple logo are trademarks of Apple Inc., registered in the U.S. and other countries. App Store is a service mark of Apple Inc.';
+export const APPLE_TRADEMARKS = 'Apple and the Apple logo are trademarks of Apple Inc., registered in the U.S. and other countries and regions. App Store is a service mark of Apple Inc.';
 export const GOOGLE_TRADEMARKS = 'Google Play and the Google Play logo are trademarks of Google LLC.';
 
 /**
@@ -120,11 +121,14 @@ export function SiteFooter() {
             {site.legalEntityName.endsWith('.') ? '' : '.'} All rights reserved.
           </p>
         </div>
-        {/* [WEB-APPBAR] The store badges' trademark lines, as Apple's and Google's badge guidelines ask. */}
-        <div data-trademarks className="mx-auto max-w-6xl space-y-1 px-5 pb-5 text-xs text-[var(--swift-muted)]">
-          <p>{APPLE_TRADEMARKS}</p>
-          <p>{GOOGLE_TRADEMARKS}</p>
-        </div>
+        {/* [WEB-APPBAR] The store badges' trademark lines, as Apple's and Google's badge guidelines ask: only while
+            the badges can show (the stores switch is live). */}
+        <StoresLive>
+          <div data-trademarks className="mx-auto max-w-6xl space-y-1 px-5 pb-5 text-xs text-[var(--swift-muted)]">
+            <p>{APPLE_TRADEMARKS}</p>
+            <p>{GOOGLE_TRADEMARKS}</p>
+          </div>
+        </StoresLive>
       </div>
     </footer>
   );

@@ -19,6 +19,6 @@ export function rememberOrdering(): void {
 
 /**
  * Runs as written (no build step): bare `location` and `localStorage`, ES5, and every failure ends in "stay".
- * `?welcome` (with or without a value) keeps the welcome page; the query otherwise travels on to /order.
+ * `?welcome` (with or without a value) keeps the welcome page; the query and the hash otherwise travel on to /order.
  */
-export const WELCOME_REDIRECT_SCRIPT = `(function(){try{var l=location,q=l.search;if(l.pathname!=='/'||/[?&]welcome(=|&|$)/.test(q))return;if(/[?&]source=pwa(&|$)/.test(q)||localStorage.getItem('${ORDERING_FLAG_KEY}')==='1')l.replace('/order'+q)}catch(e){}})();`;
+export const WELCOME_REDIRECT_SCRIPT = `(function(){try{var l=location,q=l.search;if(l.pathname!=='/'||/[?&]welcome(=|&|$)/.test(q))return;if(/[?&]source=pwa(&|$)/.test(q)||localStorage.getItem('${ORDERING_FLAG_KEY}')==='1')l.replace('/order'+q+l.hash)}catch(e){}})();`;

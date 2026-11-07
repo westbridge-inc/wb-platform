@@ -14,7 +14,8 @@ import type { StorePlatform } from '@/lib/get-the-app';
  * cannot tell). Tapping a badge or "Not now" keeps the bar away for 30 days. The bar does not animate: the
  * stores' badges are never animated.
  */
-export const GET_APP_BAR_TEXT = 'Swift works best in the app: live tracking, taxi rides and faster ordering.';
+// [WEB-APPBAR review] Only what is true of the app alone: the website already tracks orders live.
+export const GET_APP_BAR_TEXT = 'Swift works best in the app: taxi rides, instant order alerts and faster ordering.';
 
 const STORES: Record<StorePlatform, readonly StoreKey[]> = { ios: ['ios'], android: ['android'], unknown: ['ios', 'android'] };
 

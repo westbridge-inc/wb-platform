@@ -5,8 +5,11 @@
  * spent a little time on the site (GET_APP_ENGAGED_MS) or scrolled a real way down a page, a small bar at
  * the bottom offers the app, with "Not now" that keeps it away for GET_APP_SNOOZE_MS. These are the pure
  * decisions behind that bar (components/get-app-bar.tsx); nothing here touches a person's data, and the
- * only thing kept in the browser is when "Not now" was pressed.
+ * only things kept in the browser are when "Not now" was pressed and, for the tab, that a visit came from a
+ * table's QR code (lib/table-qr.ts).
  */
+
+import { forgetQrVisit } from './table-qr';
 
 /** How long a visitor is on the site before the bar may show. */
 export const GET_APP_ENGAGED_MS = 10_000;
@@ -88,4 +91,5 @@ export function markEngaged(): void {
 export function forgetGetAppVisit(): void {
   notNowThisVisit = false;
   engagedThisVisit = false;
+  forgetQrVisit();
 }

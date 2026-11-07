@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState, type ComponentType } from 'react';
+import { noteQrVisit, qrVisit } from '@/lib/table-qr';
 
 /**
  * [WEB-APPBAR] What the layouts and the app's menus carry for "Get the app": next to nothing. The real code
@@ -19,11 +20,18 @@ function useLater<P>(load: () => Promise<ComponentType<P>>, wanted: () => boolea
   return Later;
 }
 
-/** The phone bar's gate (components/get-app-bar.tsx), fetched only on what may be a phone: never on a desktop. */
+/**
+ * The phone bar's gate (components/get-app-bar.tsx), fetched only on what may be a phone: never on a desktop, and
+ * never on a visit that came from a table's QR code (ruling: table QR = menu only). The QR check runs as the page
+ * loads, before anything can change the address.
+ */
 export function GetAppBarLater() {
   const Bar = useLater(
     () => import('./get-app-bar').then((module) => module.GetAppBar),
-    () => /iPhone|iPod|Android/.test(navigator.userAgent) || window.matchMedia?.('(pointer: coarse)').matches === true,
+    () => {
+      noteQrVisit(window.location.pathname, window.location.search);
+      return !qrVisit() && (/iPhone|iPod|Android/.test(navigator.userAgent) || window.matchMedia?.('(pointer: coarse)').matches === true);
+    },
   );
   return Bar ? <Bar /> : null;
 }
