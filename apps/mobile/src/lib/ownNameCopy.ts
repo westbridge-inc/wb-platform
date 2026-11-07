@@ -33,3 +33,16 @@ export function ownNameSigningFor(storeName: string | null | undefined): string 
   const name = storeName?.trim();
   return name ? `You sign this for “${name}” only.` : null;
 }
+
+/**
+ * [OWNNAME-FIT · COORD ruling 7 Nov 2026, Cap. 90:05 s.3] Offer "No business name? Trade under your own name" only for
+ * a store whose name passes the server's own-name test: GET /verification/status `ownNameFits` (store id → true/false,
+ * the same test POST /vendor/onboarding/own-name applies). No store, no answer for it, or an older server that sends
+ * none: no offer (the server would refuse a name that does not fit anyway). Never decides the signing itself.
+ */
+export function ownNameOfferFits(status: unknown, storeId: string | null | undefined): boolean {
+  if (!storeId || !status || typeof status !== 'object') return false;
+  const fits = (status as { ownNameFits?: unknown }).ownNameFits;
+  if (!fits || typeof fits !== 'object' || Array.isArray(fits)) return false;
+  return (fits as Record<string, unknown>)[storeId] === true;
+}
