@@ -29,6 +29,8 @@ import {
 } from '../../../kit';
 import { touchTarget } from '../../../kit/touch-target';
 import { brandLine, brandTitle, type BrandCard } from '../../../lib/brandCard';
+import { useVendorPrefetch } from '../../../hooks/storeDoor';
+import { itemPreviewOf, storePreviewOf } from '../../../lib/doorPreview';
 
 // Kit 57–60: idle = headline + history chips + popular rows.
 //
@@ -87,6 +89,7 @@ function ResultRow({
   sub,
   trailing,
   onPress,
+  onPressIn,
   wide = false,
   closed = false,
   glyph = 'shops',
@@ -103,6 +106,8 @@ function ResultRow({
   sub?: string;
   trailing?: React.ReactNode;
   onPress?: () => void;
+  /** [APP-SPEED A] The finger-down: start reading what the tap opens (never an action). */
+  onPressIn?: () => void;
   wide?: boolean;
   closed?: boolean;
   glyph?: React.ComponentProps<typeof Photo>['glyph'];
@@ -112,6 +117,7 @@ function ResultRow({
   return (
     <Pressable
       onPress={onPress}
+      onPressIn={onPressIn}
       accessibilityRole="button"
       accessibilityLabel={[title, branchLine, sub, closed ? 'Closed right now' : null].filter(Boolean).join('. ')}
     >
@@ -169,6 +175,8 @@ export function SearchScreen() {
   // [E09] While the cart bar floats over the list, the last row must scroll clear of it.
   const cartClearance = useCartBarClearance();
   const navigation = useNavigation<any>();
+  // [APP-SPEED A] A store's menu is asked for at the finger-down on its row or one of its dishes.
+  const prefetchStore = useVendorPrefetch();
   const route = useRoute<any>();
   const insets = useSafeAreaInsets();
   const { latitude, longitude, status } = useLocationStore();
@@ -467,7 +475,8 @@ export function SearchScreen() {
                             name={it.name}
                             sub={it.vendorName}
                             trailing={<Money amount={it.basePrice} />}
-                            onPress={() => navigation.navigate('MenuItem', { itemId: it.id, vendorId: it.vendorId })}
+                            onPressIn={() => prefetchStore(it.vendorId)}
+                            onPress={() => navigation.navigate('MenuItem', { itemId: it.id, vendorId: it.vendorId, preview: itemPreviewOf(it) })}
                           />
                         </React.Fragment>
                       ))}
@@ -499,7 +508,8 @@ export function SearchScreen() {
                           meta={<RatingMeta rating={v.displayRating ?? null} topRated={v.topRated} />}
                           wide
                           closed={v.isCurrentlyOpen === false}
-                          onPress={() => navigation.navigate('Restaurant', { vendorId: v.id })}
+                          onPressIn={() => prefetchStore(v.id)}
+                          onPress={() => navigation.navigate('Restaurant', { vendorId: v.id, preview: storePreviewOf(v) })}
                         />
                       </React.Fragment>
                     ))}
@@ -519,7 +529,8 @@ export function SearchScreen() {
                             sub={it.categoryName ? `${it.vendorName} · ${it.categoryName}` : it.vendorName}
                             closed={it.vendorIsCurrentlyOpen === false}
                             trailing={<Money amount={it.basePrice} />}
-                            onPress={() => navigation.navigate('MenuItem', { itemId: it.id, vendorId: it.vendorId })}
+                            onPressIn={() => prefetchStore(it.vendorId)}
+                            onPress={() => navigation.navigate('MenuItem', { itemId: it.id, vendorId: it.vendorId, preview: itemPreviewOf(it) })}
                           />
                         </React.Fragment>
                       ))}
@@ -561,7 +572,8 @@ export function SearchScreen() {
                     }
                     wide
                     closed={v.isCurrentlyOpen === false}
-                    onPress={() => navigation.navigate('Restaurant', { vendorId: v.id })}
+                    onPressIn={() => prefetchStore(v.id)}
+                    onPress={() => navigation.navigate('Restaurant', { vendorId: v.id, preview: storePreviewOf(v) })}
                   />
                 )}
               />
@@ -621,7 +633,8 @@ export function SearchScreen() {
                       name={it.name}
                       sub={it.vendorName}
                       trailing={<Money amount={it.price} />}
-                      onPress={() => navigation.navigate('MenuItem', { itemId: it.id, vendorId: it.vendorId })}
+                      onPressIn={() => prefetchStore(it.vendorId)}
+                      onPress={() => navigation.navigate('MenuItem', { itemId: it.id, vendorId: it.vendorId, preview: itemPreviewOf(it) })}
                     />
                   </React.Fragment>
                 ))}

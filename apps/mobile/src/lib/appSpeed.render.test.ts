@@ -86,7 +86,10 @@ describe('actual tab render contracts', () => {
       for (const screen of screens) expect(screen.props.freezeOnBlur).toBe(screen.key === 'Market' || screen.key === 'Profile');
     }
     const customer = readFileSync(new URL('../navigation/CustomerStack.tsx', import.meta.url), 'utf8');
-    expect(customer).toContain('lazy: true');
+    // [APP-SPEED A] Lazy until warm: only Profile and Cart are drawn ahead (navigation/warmTabs), never through preload.
+    expect(customer).toContain('lazy: !warm.has(route.name),');
+    expect(customer).toContain("const WARM_CUSTOMER_TABS = ['Profile', 'Cart'] as const;");
+    expect(customer).not.toMatch(/\.preload\(/);
     expect(customer).toContain('freezeOnBlur: true');
     expect(customer).not.toContain('unmountOnBlur');
     for (const name of ['Home', 'Cart']) expect(customer).toContain(`name="${name}" component={${name}Screen} options={{ freezeOnBlur: false }}`);

@@ -5,6 +5,7 @@ import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { StyleSheet, Text } from 'react-native';
 import { color, font, fontSize } from '@swift/ui';
 import { TabGlyph, type TabGlyphName } from '../kit';
+import { useWarmTabs } from './warmTabs';
 
 // Rebuilt customer screens (Super Food layouts, Indian Red brand)
 import { HomeScreen } from '../modules/shop/screens/HomeScreen';
@@ -79,16 +80,22 @@ const TAB_ICON: Record<string, TabGlyphName> = {
   Profile: 'profile',
 };
 
+/** [APP-SPEED A] The tabs drawn ahead, hidden, once Home has painted and Swift is quiet (the
+ *  business tabs' pattern, navigation/warmTabs.ts): the first tap only shows them. */
+const WARM_CUSTOMER_TABS = ['Profile', 'Cart'] as const;
+
 function HomeTabs() {
   const depth = useMarketDepth();
   const marketVisible = marketTabVisible(depth.data);
+  const warm = useWarmTabs(WARM_CUSTOMER_TABS);
   return (
     <Tab.Navigator
       detachInactiveScreens
       screenOptions={({ route }) => ({
         // First visit is lazy; visited routes retain their state and queries.
         // Freeze offscreen rendering without eagerly mounting every tab.
-        lazy: true,
+        // [APP-SPEED A] Profile and Cart stop being lazy once Swift is quiet (warmTabs).
+        lazy: !warm.has(route.name),
         freezeOnBlur: true,
         animation: 'none',
         headerShown: false,

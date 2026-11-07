@@ -254,7 +254,9 @@ export function CartScreen() {
     () => cartPricingChoices({ mode: fulfillment, express, storeIds: quoteBasis.storeIds, bookingsOnly: quoteBasis.bookingsOnly, selectedTip, promoCode: appliedPromo }),
     [fulfillment, express, quoteBasis, selectedTip, appliedPromo],
   );
-  const cart = useCart<any>(latitude ?? undefined, longitude ?? undefined, pricing);
+  // [APP-SPEED A] First open: the store page's quote of the same cart stands in (total
+  // "Updating…", Order held by quoteSettled) until this quote lands.
+  const cart = useCart<any>(latitude ?? undefined, longitude ?? undefined, pricing, true, true);
   // [TAP-AUDIT] A line's + and − answer at the tap and add up; only that line has a request out (hooks/useCartSteppers).
   const steppers = useCartSteppers(cart);
   const c = cart.data; // null = empty cart

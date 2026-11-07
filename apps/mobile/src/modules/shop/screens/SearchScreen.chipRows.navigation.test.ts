@@ -3,6 +3,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import React, { act } from 'react';
 // @ts-expect-error The workspace web install supplies the test renderer.
 import { createRoot } from 'react-dom/client';
+// [APP-SPEED A] Search's rows start a store's read at the finger-down (hooks/storeDoor), which needs the app's QueryClient.
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
 // Owner screenshot, 17 Oct (search "Garlic"): the "Open now" row and the
 // suggestion chips under it had their bottoms cut off. React Native gives a
@@ -94,7 +96,7 @@ async function renderSearch(params: Record<string, unknown>) {
   fx.params = params;
   host = document.createElement('div'); document.body.append(host);
   root = createRoot(host);
-  await act(async () => root!.render(React.createElement(SearchScreen)));
+  await act(async () => root!.render(React.createElement(QueryClientProvider, { client: new QueryClient() }, React.createElement(SearchScreen))));
 }
 
 type Drawn = { flexShrink?: unknown; height?: unknown; minHeight?: unknown; paddingHorizontal?: unknown };

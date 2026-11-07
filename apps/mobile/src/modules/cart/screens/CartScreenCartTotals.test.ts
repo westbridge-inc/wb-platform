@@ -41,7 +41,8 @@ describe('the quote is priced for exactly what the order button submits (E01)', 
   const src = code();
 
   it('ONE pricing-choices object: the quote is requested with it, the order body is built from it', () => {
-    expect(src).toContain('const cart = useCart<any>(latitude ?? undefined, longitude ?? undefined, pricing);');
+    // [APP-SPEED A] `true, true`: enabled, and on its first quote another quote of the same cart stands in (flagged; Order held).
+    expect(src).toContain('const cart = useCart<any>(latitude ?? undefined, longitude ?? undefined, pricing, true, true);');
     expect(src).toContain('...(pricing.express ? { express: true } : {}),');
     expect(src).toContain('...(pricing.fulfillmentSelections ? { fulfillmentSelections: pricing.fulfillmentSelections } : {}),');
     expect(src).toContain('const submittedTip = pickupRetry ? 0 : pricedTip(pricing, c);');

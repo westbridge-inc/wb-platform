@@ -7,6 +7,8 @@ import { useFavorites, useToggleFavorite } from '../../../hooks/customer';
 import { useRowHold } from '../../../lib/useRowHold';
 import { useAuthStore } from '../../../stores/authStore';
 import { vendorPhoto } from '../../../lib/images';
+import { useVendorPrefetch } from '../../../hooks/storeDoor';
+import { storePreviewOf } from '../../../lib/doorPreview';
 import { CartBar, useCartBarClearance, EmptyState, ErrorState, FoodCard, Header, LoadingBlock, Screen } from '../../../kit';
 
 const SCREEN_W = Dimensions.get('window').width;
@@ -16,6 +18,8 @@ const CARD_W = (SCREEN_W - GUTTER * 2 - space.lg) / 2;
 export function FavoritesScreen() {
   const navigation = useNavigation<any>();
   const { isAuthenticated, promptLogin } = useAuthStore();
+  // [APP-SPEED A] A store's menu is asked for at the finger-down on its card.
+  const prefetchStore = useVendorPrefetch();
   const favorites = useFavorites<any>();
   const toggleFav = useToggleFavorite();
   const holdRow = useRowHold(); // [BUG-GUARDS C2] one request per store's heart; another store's heart still goes
@@ -65,7 +69,8 @@ export function FavoritesScreen() {
               topRated={v.topRated}
               favorite
               onToggleFavorite={() => holdRow(v.id, () => toggleFav.mutateAsync({ vendorId: v.id, isFavorite: true }))}
-              onPress={() => navigation.navigate('Restaurant', { vendorId: v.id })}
+              onPressIn={() => prefetchStore(v.id)}
+              onPress={() => navigation.navigate('Restaurant', { vendorId: v.id, preview: storePreviewOf(v) })}
             />
           )}
         />
