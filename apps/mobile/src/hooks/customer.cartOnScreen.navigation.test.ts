@@ -108,14 +108,27 @@ describe('[APP-SPEED C] the opened Cart tab while a store page is in front', () 
     await draw();
     await cartWrite();
     const reads = tabReads();
+    // The re-show's read answers only when the test says, with a new total: every draw until then is pinned, not
+    // just the last one (the old assertion read the LAST draw, which raced the answer landing a macrotask later).
+    let land!: (v: unknown) => void;
+    fx.getCart.mockImplementationOnce(() => new Promise((r) => { land = r; }));
 
     onScreen = true;
+    const shown = draws.length;
     await draw();
-    expect(draws.at(-1)!.isFetching, 'the first draw on screen holds Order (quoteSettled needs !isFetching)').toBe(true);
     await flush();
+    const waiting = draws.slice(shown);
+    expect(waiting.length, 'drawn on screen').toBeGreaterThan(0);
+    expect(waiting[0]!.isFetching, 'the first draw on screen holds Order (quoteSettled needs !isFetching)').toBe(true);
+    expect(waiting.every((d) => d.isFetching), 'Order stays held on every draw until the fresh quote lands').toBe(true);
+    expect(waiting.map((d) => (d.data as { totalAmount: number }).totalAmount), 'the last quote shows meanwhile').not.toContain(2900);
     expect(tabReads(), 'exactly one read of the stale quote').toBe(reads + 1);
+
+    await act(async () => { land(answer({ ...CART, totalAmount: 2900 })); });
+    await flush();
     expect(draws.at(-1)!.isFetching).toBe(false);
-    expect((draws.at(-1)!.data as { totalAmount: number }).totalAmount).toBe(2700);
+    expect((draws.at(-1)!.data as { totalAmount: number }).totalAmount).toBe(2900);
+    expect(tabReads(), 'still one read').toBe(reads + 1);
   });
 
   it('control: on screen, a cart write re-quotes the tab as before', async () => {
