@@ -1,6 +1,6 @@
 /** @jsxImportSource react */
 import React, { useEffect, useState } from 'react';
-import { RefreshControl, ScrollView, View } from 'react-native';
+import { FlatList, RefreshControl, ScrollView, View } from 'react-native';
 import { Feather } from '@expo/vector-icons';
 import { color, fontSize, radius, space } from '@swift/ui';
 import { useQueryClient } from '@tanstack/react-query';
@@ -32,7 +32,7 @@ const DRIVER_FILTERS: { label: string; status?: string }[] = [
   { label: 'Cancelled', status: 'CANCELLED' },
 ];
 
-function JobRow({ job, isDriver }: { job: Record<string, unknown>; isDriver: boolean }) {
+const JobRow = React.memo(function JobRow({ job, isDriver }: { job: Record<string, unknown>; isDriver: boolean }) {
   const pickup = isDriver
     ? serverText(job['taxiPickupAddress'])
     : serverText(serverRecord(job['vendor'])?.['name']) ?? serverText(job['pickupAddress']);
@@ -105,7 +105,7 @@ function JobRow({ job, isDriver }: { job: Record<string, unknown>; isDriver: boo
       </View>
     </Card>
   );
-}
+});
 
 export function JobHistoryScreen({ navigation: _navigation }: any) {
   const mover = useMoverKind();
@@ -184,6 +184,27 @@ export function JobHistoryScreen({ navigation: _navigation }: any) {
     && rows.length === 0
     && !emptyResponseContradictsMeta;
 
+  // Loading, the failure, or the confirmed-empty history: drawn in place of the rows (null: the rows show).
+  const stateBlock = (q.isLoading || q.isFetching) && rows.length === 0 ? (
+    <LoadingBlock />
+  ) : (q.isError || valid === false || emptyResponseContradictsMeta)
+    && rows.length === 0 ? (
+    <ErrorState
+      message={q.isError
+        ? "We couldn't load your history. Check your connection and try again."
+        : "Your history wasn't included in the response. Try again."}
+      onRetry={() => q.refetch()}
+    />
+  ) : confirmedEmpty ? (
+    <EmptyState
+      icon="inbox"
+      title={isDriver ? 'No trips yet' : 'No jobs yet'}
+      body={isDriver
+        ? 'Finished trips build your history here — go online to start earning.'
+        : 'Finished jobs build your history here — go online to start earning.'}
+    />
+  ) : null;
+
   return (
     <Screen>
       <Header title={isDriver ? 'Your trips' : 'Your jobs'} />
@@ -222,81 +243,62 @@ export function JobHistoryScreen({ navigation: _navigation }: any) {
             </ScrollView>
           ) : null}
 
-          <ScrollView
+          {/* [APP-SPEED C · report item 12] A FlatList: a long history draws only the rows near the screen (the
+              ScrollView mounted every loaded row, and each "Load more" added twenty to the mounted pile). */}
+          <FlatList
+            data={stateBlock === null ? rows : []}
+            keyExtractor={(job, index) => serverText(job['id']) ?? `${historyKey}-${index}`}
+            renderItem={({ item: job }) => <JobRow job={job} isDriver={isDriver} />}
             contentContainerStyle={{ paddingHorizontal: space['2xl'], paddingBottom: space['3xl'] }}
             showsVerticalScrollIndicator={false}
             refreshControl={<RefreshControl refreshing={pull.refreshing} onRefresh={() => { void pull.onRefresh(); }} tintColor={color.brand[500]} />}
-          >
-            {valid === true && total != null ? (
-              <T variant="caption" weight="semibold" tone="muted" style={{ marginBottom: space.md }}>
-                {total} {isDriver ? (total === 1 ? 'trip' : 'trips') : (total === 1 ? 'job' : 'jobs')}
-              </T>
-            ) : null}
-
-            {(q.isLoading || q.isFetching) && rows.length === 0 ? (
-              <LoadingBlock />
-            ) : (q.isError || valid === false || emptyResponseContradictsMeta)
-              && rows.length === 0 ? (
-              <ErrorState
-                message={q.isError
-                  ? "We couldn't load your history. Check your connection and try again."
-                  : "Your history wasn't included in the response. Try again."}
-                onRetry={() => q.refetch()}
-              />
-            ) : confirmedEmpty ? (
-              <EmptyState
-                icon="inbox"
-                title={isDriver ? 'No trips yet' : 'No jobs yet'}
-                body={isDriver
-                  ? 'Finished trips build your history here — go online to start earning.'
-                  : 'Finished jobs build your history here — go online to start earning.'}
-              />
-            ) : (
+            ListHeaderComponent={
               <>
-                {rows.map((job, index) => (
-                  <JobRow
-                    key={serverText(job['id']) ?? `${historyKey}-${index}`}
-                    job={job}
-                    isDriver={isDriver}
-                  />
-                ))}
-                {q.isError || valid === false ? (
-                  <Card style={{ marginTop: space.sm }}>
-                    <T variant="caption" tone="error" center>
-                      {q.isError
-                        ? 'We couldn\'t load the next page.'
-                        : 'The next page wasn\'t included in the response.'}
-                    </T>
-                    <PillButton
-                      label="Try again"
-                      variant="outline"
-                      size="md"
-                      onPress={() => q.refetch()}
-                      style={{ marginTop: space.sm }}
-                    />
-                  </Card>
-                ) : hasMore ? (
+                {valid === true && total != null ? (
+                  <T variant="caption" weight="semibold" tone="muted" style={{ marginBottom: space.md }}>
+                    {total} {isDriver ? (total === 1 ? 'trip' : 'trips') : (total === 1 ? 'job' : 'jobs')}
+                  </T>
+                ) : null}
+                {stateBlock}
+              </>
+            }
+            ListFooterComponent={stateBlock === null ? (
+              q.isError || valid === false ? (
+                <Card style={{ marginTop: space.sm }}>
+                  <T variant="caption" tone="error" center>
+                    {q.isError
+                      ? 'We couldn\'t load the next page.'
+                      : 'The next page wasn\'t included in the response.'}
+                  </T>
                   <PillButton
-                    label={q.isFetching
-                      ? 'Loading…'
-                      : total != null
-                        ? `Load more (${rows.length} of ${total})`
-                        : `Load more (${rows.length} loaded)`}
-                    variant="soft"
+                    label="Try again"
+                    variant="outline"
                     size="md"
-                    disabled={q.isFetching}
-                    onPress={() => setPage((currentPage) => currentPage + 1)}
+                    onPress={() => q.refetch()}
                     style={{ marginTop: space.sm }}
                   />
-                ) : atEnd ? (
-                  <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: space.xs, marginTop: space.md }}>
-                    <Feather name="check-circle" size={fontSize.xs} color={color.text.muted} />
-                    <T variant="caption" tone="muted">That&apos;s everything</T>
-                  </View>
-                ) : null}
-              </>
-            )}
-          </ScrollView>
+                </Card>
+              ) : hasMore ? (
+                <PillButton
+                  label={q.isFetching
+                    ? 'Loading…'
+                    : total != null
+                      ? `Load more (${rows.length} of ${total})`
+                      : `Load more (${rows.length} loaded)`}
+                  variant="soft"
+                  size="md"
+                  disabled={q.isFetching}
+                  onPress={() => setPage((currentPage) => currentPage + 1)}
+                  style={{ marginTop: space.sm }}
+                />
+              ) : atEnd ? (
+                <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: space.xs, marginTop: space.md }}>
+                  <Feather name="check-circle" size={fontSize.xs} color={color.text.muted} />
+                  <T variant="caption" tone="muted">That&apos;s everything</T>
+                </View>
+              ) : null
+            ) : null}
+          />
         </>
       )}
     </Screen>

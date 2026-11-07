@@ -6,7 +6,8 @@ import { useNavigation, useIsFocused } from '@react-navigation/native';
 import Animated, { FadeInDown, ReduceMotion } from 'react-native-reanimated';
 
 import { color, radius, space } from '@swift/ui';
-import { prefetchActiveRide, prefetchOrder, useLiveOrders, useOrdersInfinite, useReorder } from '../../../hooks/customer';
+import { customerKeys, prefetchActiveRide, prefetchOrder, useLiveOrders, useOrdersInfinite, useReorder } from '../../../hooks/customer';
+import { refetchFromFirstPage } from '../../../lib/infiniteFirstPage';
 import { useQueryClient } from '@tanstack/react-query';
 import { usePressRead } from '../../../hooks/pressRead';
 import { usePullToRefresh } from '../../../hooks/usePullToRefresh';
@@ -172,6 +173,9 @@ const isRideOrder = (o: any) => o?.orderType === 'TAXI';
 const rideTitle = (o: any) =>
   `Taxi${o.rideClass ? ` · ${String(o.rideClass).charAt(0)}${String(o.rideClass).slice(1).toLowerCase()}` : ''}`;
 
+/** The history query's key (hooks/customer useOrdersInfinite): its refreshes start again from the newest page. */
+const HISTORY_KEY = [...customerKeys.orders, 'infinite', 'history'] as const;
+
 type LedgerItem =
   | { kind: 'eyebrow'; id: string; label: string }
   | { kind: 'row'; id: string; order: any; index: number; divided: boolean };
@@ -182,6 +186,9 @@ export function OrdersHistoryScreen() {
   const pressRead = usePressRead();
   const { isAuthenticated, promptLogin } = useAuthStore();
   const orders = useOrdersInfinite();
+  // [APP-SPEED C · report item 12] Every refresh of history (tab return, foreground, a live order leaving, the
+  // pull, Try again) re-reads page 1 only, never every page scrolled through (lib/infiniteFirstPage).
+  const refreshHistory = () => refetchFromFirstPage(qc, HISTORY_KEY);
   // [row 5 · ANDROID-QA] The list must follow orders in progress while the
   // customer looks at it: no socket event reaches this screen, so the live
   // query re-asks (15 s; 30 s on a slow network) while the tab is on screen,
@@ -194,7 +201,7 @@ export function OrdersHistoryScreen() {
   // focus refetch below runs on EVERY switch to this tab, and a spinner bound
   // to isRefetching made iOS pull the list down behind a spinner each time —
   // a reload nobody asked for. A pull refreshes BOTH lists, as before.
-  const pull = usePullToRefresh(() => Promise.all([orders.refetch(), liveOrders.refetch()]));
+  const pull = usePullToRefresh(() => Promise.all([refreshHistory(), liveOrders.refetch()]));
 
   // Tab screens stay mounted, so without this the list NEVER updates after
   // first load (found live: a delivered order stuck on "Pending" forever).
@@ -203,7 +210,7 @@ export function OrdersHistoryScreen() {
   // of them would show it in neither — or in both.
   useEffect(() => {
     if (isFocused && isAuthenticated) {
-      orders.refetch();
+      void refreshHistory();
       liveOrders.refetch();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -215,7 +222,7 @@ export function OrdersHistoryScreen() {
   foreground.current = {
     isFocused,
     isAuthenticated,
-    refresh: () => { void orders.refetch(); void liveOrders.refetch(); },
+    refresh: () => { void refreshHistory(); void liveOrders.refetch(); },
   };
   useEffect(() => {
     let previous = AppState.currentState;
@@ -238,7 +245,7 @@ export function OrdersHistoryScreen() {
     previousLiveIds.current = liveIdsKey;
     if (before === null || !isAuthenticated) return;
     const now = new Set(liveIdsKey ? liveIdsKey.split(',') : []);
-    if (before.split(',').some((id) => id && !now.has(id))) void orders.refetch();
+    if (before.split(',').some((id) => id && !now.has(id))) void refreshHistory();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [liveIdsKey]);
 
@@ -523,15 +530,16 @@ export function OrdersHistoryScreen() {
           {headerBlock}
           <LoadingBlock />
         </>
-      ) : orders.isError && live.length === 0 ? (
+      ) : orders.isError && rows.length === 0 && live.length === 0 ? (
         // Only when there is genuinely nothing to show. A history failure must
         // not blank out live orders that loaded fine — those are the ones the
-        // customer opened this tab for.
+        // customer opened this tab for. [APP-SPEED C] Nor history already on
+        // screen: a failed refresh keeps its rows (with a retry line above them).
         <>
           {headerBlock}
           <ErrorState
             onRetry={() => {
-              orders.refetch();
+              void refreshHistory();
               liveOrders.refetch();
             }}
           />
@@ -566,6 +574,19 @@ export function OrdersHistoryScreen() {
                 >
                   <T variant="caption" tone="muted">
                     Couldn’t load orders in progress. Tap to retry.
+                  </T>
+                </Pressable>
+              ) : null}
+              {orders.isError && rows.length > 0 ? (
+                // [APP-SPEED C] A refresh of history failed: the rows already read stay, and say so.
+                <Pressable
+                  onPress={() => { void refreshHistory(); }}
+                  accessibilityRole="button"
+                  accessibilityLabel="Retry refreshing your history"
+                  style={{ paddingBottom: space.md }}
+                >
+                  <T variant="caption" tone="muted">
+                    Couldn’t refresh your history. Tap to retry.
                   </T>
                 </Pressable>
               ) : null}
