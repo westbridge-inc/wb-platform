@@ -423,17 +423,19 @@ function MoverHomeMap({
   const [initialRegion] = useState(() => moverCameraRegion(latitude ?? GEORGETOWN.latitude, longitude ?? GEORGETOWN.longitude));
   const mapRef = useRef<MapView>(null);
   const centredOnFix = useRef(latitude != null && longitude != null);
+  // [review S3-1] A camera move asked before the map is ready is dropped on Android: the first centring waits for it.
+  const [mapReady, setMapReady] = useState(false);
   useEffect(() => {
-    if (centredOnFix.current || latitude == null || longitude == null) return;
+    if (!mapReady || centredOnFix.current || latitude == null || longitude == null) return;
     centredOnFix.current = true;
     mapRef.current?.animateToRegion(moverCameraRegion(latitude, longitude), 400);
-  }, [latitude, longitude]);
+  }, [mapReady, latitude, longitude]);
   const recentre = latitude != null && longitude != null
     ? () => mapRef.current?.animateToRegion(moverCameraRegion(latitude, longitude), 400)
     : null;
   return (
     <>
-      <MapView ref={mapRef} provider={PROVIDER_DEFAULT} style={{ flex: 1 }} initialRegion={initialRegion} showsUserLocation={showsUserLocation}>
+      <MapView ref={mapRef} provider={PROVIDER_DEFAULT} style={{ flex: 1 }} initialRegion={initialRegion} showsUserLocation={showsUserLocation} onMapReady={() => setMapReady(true)}>
         {children}
       </MapView>
       {/* Back to the driver's position (the map no longer snaps back by itself). */}

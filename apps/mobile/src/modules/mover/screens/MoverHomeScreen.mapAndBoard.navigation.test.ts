@@ -151,6 +151,9 @@ afterEach(async () => {
   host.remove();
 });
 
+/** The native map says it is ready (onMapReady). */
+const mapReady = async () => { await act(async () => { fx.map.props.onMapReady?.(); }); };
+
 describe('[APP-SPEED C · item 9] the map is never pulled back by a redraw', () => {
   it('opens on the driver (initialRegion, no controlled region); later fixes and redraws never move it', async () => {
     await draw();
@@ -168,12 +171,26 @@ describe('[APP-SPEED C · item 9] the map is never pulled back by a redraw', () 
     await draw();
     expect(fx.map.props.initialRegion).toEqual(camera(6.8013, -58.1553));
     expect(recentreButton(), 'nothing to recentre on yet').toBeNull();
+    await mapReady();
     await setLoc({ latitude: 6.81, longitude: -58.15 });
     expect(fx.map.animate).toHaveBeenCalledTimes(1);
     expect(fx.map.animate).toHaveBeenCalledWith(camera(6.81, -58.15), 400);
     await setLoc({ latitude: 6.82, longitude: -58.16 });
     await setLoc({ latitude: 6.83, longitude: -58.17 });
     expect(fx.map.animate).toHaveBeenCalledTimes(1);
+  });
+
+  it('[review S3-1] a first position before the map is ready: the centring waits for the map (Android drops it)', async () => {
+    fx.loc = { ...fx.loc, latitude: null, longitude: null };
+    await draw();
+    await setLoc({ latitude: 6.81, longitude: -58.15 });
+    expect(fx.map.animate, 'not asked of a map that is not ready').not.toHaveBeenCalled();
+    await mapReady();
+    expect(fx.map.animate).toHaveBeenCalledTimes(1);
+    expect(fx.map.animate).toHaveBeenCalledWith(camera(6.81, -58.15), 400);
+    await mapReady();
+    await setLoc({ latitude: 6.82, longitude: -58.16 });
+    expect(fx.map.animate, 'once only').toHaveBeenCalledTimes(1);
   });
 
   it('Recentre moves the map back to the driver’s latest position', async () => {
