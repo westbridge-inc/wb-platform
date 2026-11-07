@@ -90,7 +90,7 @@ export function GuestCart() {
   const subtotal = basket.lines.reduce((n, l) => n + l.unitPrice * l.quantity, 0);
   const change = (id: string, quantity: number) => { try { changeGuestQuantity(id, quantity); } catch (e) { setError((e as Error).message); } };
   return <section className="py-6"><h1 className="sw-title">Your basket</h1>
-    {!cart.items.length ? <p className="my-4">Your basket is empty. <Link href="/">Browse stores</Link></p> : <>
+    {!cart.items.length ? <p className="my-4">Your basket is empty. <Link href="/order">Browse stores</Link></p> : <>
       <h2 className="my-4 font-semibold">{cart.vendor?.name}</h2>
       <ul className="sw-card divide-y divide-[var(--swift-border)]">{cart.items.map(l => <li className="flex items-center justify-between gap-3 p-4" key={l.id}>
         <div><p className="font-semibold">{l.name}</p><p>{money(l.customerPrice)} each</p></div>

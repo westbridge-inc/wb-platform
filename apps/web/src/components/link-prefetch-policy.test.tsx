@@ -26,7 +26,7 @@ describe('customer links never force a full background render (PERF #5)', () => 
   it('the phone dock prefetches by default, not in full', () => {
     render(<TabBar activeTab="home" marketVisible cartCount={0} />);
     const links = within(screen.getByRole('navigation', { name: 'Swift tabs' })).getAllByRole('link');
-    expect(links.map((link) => link.getAttribute('href'))).toEqual(['/', '/market', '/cart', '/account']);
+    expect(links.map((link) => link.getAttribute('href'))).toEqual(['/order', '/market', '/cart', '/account']);
     for (const link of links) expect(link.getAttribute('data-prefetch'), link.getAttribute('href') ?? '').toBeNull();
   });
 

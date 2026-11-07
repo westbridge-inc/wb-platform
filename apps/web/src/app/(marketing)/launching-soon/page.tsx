@@ -3,7 +3,7 @@ import type { StaticImageData } from 'next/image';
 import Link from 'next/link';
 import type { ComponentType, ReactNode, SVGProps } from 'react';
 import { ArrowRight, Banknote, LifeBuoy, ShieldCheck } from 'lucide-react';
-import { StoreButtons } from '@/components/app-store-links';
+import { StoreButtons } from '@/components/store-badges';
 import { site, SITE_ORIGIN } from '@/site.config';
 import { launchCity } from '@/lib/web-ordering';
 // Real screens of the Swift phone app, cut so that no shop price, rating, review, earning or person's name shows:
@@ -38,7 +38,7 @@ import appPartner1206 from './app-partner-1206.webp';
  *  - keep 100%, one flat weekly fee, no commission: Terms §11;
  *  - support days and hours: site.supportDays.
  * The company and policy links live once, in the footer every marketing page carries. The store area follows
- * the server's SWIFT_APP_STORES switch (StoreButtons in components/app-store-links.tsx).
+ * the server's SWIFT_APP_STORES switch (StoreButtons in components/store-badges.tsx).
  *
  * [OPEN-EARLY · owner 31 Oct 2026] Partners sign up and send documents before ordering opens. This page is only
  * ever the closed front door (middleware.ts answers ordering addresses with it while the switch is not live), so
@@ -174,8 +174,8 @@ export default function LaunchingSoonPage() {
                 Join Swift
               </Link>
             </div>
-            {/* [REVIEW-F S4-2] The area keeps the store buttons' height (one 56 px row) in both states. */}
-            <div data-store-area className="mt-8 flex min-h-14 items-center">
+            {/* [REVIEW-F S4-2] The area keeps the store badges' height (one 60 px row) in both states. */}
+            <div data-store-area className="mt-8 flex min-h-[60px] items-center">
               <StoreButtons />
             </div>
           </div>

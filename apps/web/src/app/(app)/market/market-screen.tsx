@@ -73,7 +73,7 @@ function MarketInner({ seed }: { seed: MarketPageSeed }) {
           <span className="sw-empty-tile"><Pictogram name="shops" size={40} /></span>
           <p className="sw-heading">The market isn’t open yet</p>
           <p className="sw-caption max-w-[360px] text-[15px] leading-[22px]">The market opens once enough stores list their goods. Until then, every store is on Home.</p>
-          <Link href="/" className="sw-btn sw-btn-block mt-4 max-w-[400px]">Browse stores</Link>
+          <Link href="/order" className="sw-btn sw-btn-block mt-4 max-w-[400px]">Browse stores</Link>
         </div>
       </div>
     );

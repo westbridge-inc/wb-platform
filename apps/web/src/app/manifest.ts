@@ -8,8 +8,8 @@ import { launch } from '@/site.config';
  *
  * Served by Next at /manifest.webmanifest and linked from every page's head.
  *
- * - `start_url` is the customer app's Home (/), the page the header logo
- *   returns to. `?source=pwa` marks a launch from the installed icon in request
+ * - `start_url` is the customer app's Home (/order; [WEB-APPBAR] `/` is now the
+ *   site's welcome page), the page the app's logo returns to. `?source=pwa` marks a launch from the installed icon in request
  *   logs; nothing reads the query, and the sign-in redirect keeps only the path.
  * - `id` is pinned separately, so changing the start URL can never turn one
  *   installed app into two. [Q7b] That is exactly what happened here: Home
@@ -31,7 +31,7 @@ export default function manifest(): MetadataRoute.Manifest {
     short_name: 'Swift',
     description: `Food, groceries and more from businesses in ${launch.markets[0]} — pay the business directly, cash or MMG.`,
     lang: 'en-GY',
-    start_url: '/?source=pwa',
+    start_url: '/order?source=pwa',
     scope: '/',
     display: 'standalone',
     orientation: 'portrait',

@@ -32,7 +32,7 @@ export default function ExplorePage() {
       <section className="rounded-[20px] bg-[var(--swift-red)] p-8 text-[var(--swift-white)] wide:p-12">
         <h1 className="font-display text-[28px] font-semibold leading-[34px] wide:text-[34px] wide:leading-[38px]">Explore Swift</h1>
         <p className="mt-2 max-w-xl text-white/90">One app for your city — food, groceries, shops, rides, courier and services. Order from stores on the web. Taxi rides require the Swift mobile app.</p>
-        <Link href="/" className="sw-btn sw-btn-md mt-5 bg-[var(--swift-card)] text-[var(--swift-red)] hover:!bg-[var(--swift-red-50)]">Start an order</Link>
+        <Link href="/order" className="sw-btn sw-btn-md mt-5 bg-[var(--swift-card)] text-[var(--swift-red)] hover:!bg-[var(--swift-red-50)]">Start an order</Link>
       </section>
 
       <section>

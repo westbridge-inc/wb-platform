@@ -125,7 +125,7 @@ export default function OrdersPage() {
             <span className="sw-empty-tile"><Pictogram name="orders" size={40} /></span>
             <p className="sw-heading">No orders yet</p>
             <p className="sw-caption text-[15px] leading-[22px]">What you order on Swift shows up here, with live tracking.</p>
-            <Link href="/" className="sw-btn sw-btn-block mt-4 max-w-[400px]">Start an order</Link>
+            <Link href="/order" className="sw-btn sw-btn-block mt-4 max-w-[400px]">Start an order</Link>
           </div>
         ) : (
           <>

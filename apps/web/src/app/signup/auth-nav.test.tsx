@@ -61,7 +61,8 @@ describe('[FLOW-QA F1] "Sign in" from the header (next=/) lands each account in 
     [['VENDOR_OWNER', 'CUSTOMER'], false, '/dashboard'],
     [['MOVER', 'CUSTOMER'], false, '/portal'],
     [['CUSTOMER'], true, '/portal/weekly-fee'],
-    [['CUSTOMER'], false, '/'],
+    // [WEB-APPBAR] A customer's own area is ordering Home, /order (`/` is the welcome page).
+    [['CUSTOMER'], false, '/order'],
   ])('roles %j (pro %s) -> %s', async (roles, pro, home) => {
     mocked.verifyCustomerLogin.mockResolvedValue({ user: { id: 'u1', roles } });
     mocked.pro.mockResolvedValue(pro);

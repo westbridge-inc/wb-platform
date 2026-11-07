@@ -14,7 +14,7 @@ const MAX_CAPTURE_EDGE = 1280;
 
 /** [WEB-GUARDS] The one shared rule (lib/safe-return-path); anything else goes Home. */
 function safeNext(value: string | null): string {
-  return safeInternalPath(value) ?? '/';
+  return safeInternalPath(value) ?? '/order';
 }
 
 function SelfieSetup() {

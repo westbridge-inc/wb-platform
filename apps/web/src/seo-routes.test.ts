@@ -13,7 +13,8 @@ const { default: sitemap } = await import('./app/sitemap');
 const { default: robots } = await import('./app/robots');
 const { metadata: rootMetadata } = await import('./app/layout');
 const { metadata: welcomeMetadata } = await import('./app/(marketing)/welcome/page');
-const home = await import('./app/(app)/page');
+const home = await import('./app/(app)/order/page');
+const front = await import('./app/(marketing)/page');
 
 const SITE = 'https://swiftgy.com';
 const APP = join(process.cwd(), 'src', 'app');
@@ -50,18 +51,21 @@ describe('[Q7b] the site’s search duties survive the move', () => {
   const entries = sitemap();
   const paths = entries.map((entry) => new URL(entry.url).pathname);
 
-  it('the sitemap lists absolute apex URLs, leads with the ordering Home, and includes the moved introduction', () => {
+  it('the sitemap lists absolute apex URLs, leads with the front page, and includes the ordering Home and the introduction', () => {
     for (const entry of entries) expect(entry.url.startsWith(`${SITE}/`) || entry.url === SITE, entry.url).toBe(true);
     expect(paths[0]).toBe('/');
     expect(entries[0]!.priority).toBe(1);
+    // [WEB-APPBAR] The ordering Home moved to /order and stays listed.
+    expect(paths).toContain('/order');
     expect(paths).toContain('/welcome');
     expect(new Set(paths).size).toBe(paths.length);
   });
 
-  it('every sitemap address is served by exactly one real page — `/` by the ordering Home', () => {
+  it('every sitemap address is served by exactly one real page — `/` by the welcome front page, /order by the ordering Home', () => {
     const pages = pagesByUrl();
     for (const path of paths) expect(pages.get(path)?.length, `${path} → ${pages.get(path)}`).toBe(1);
-    expect(pages.get('/')).toEqual(['(app)/page.tsx']);
+    expect(pages.get('/')).toEqual(['(marketing)/page.tsx']);
+    expect(pages.get('/order')).toEqual(['(app)/order/page.tsx']);
     expect(pages.get('/welcome')).toEqual(['(marketing)/welcome/page.tsx']);
   });
 
@@ -93,13 +97,23 @@ describe('[Q7b] the site’s search duties survive the move', () => {
     expect(rules.host).toBe(SITE);
   });
 
-  it('`/` keeps the site’s canonical address, title and card — the Home adds no override of its own', () => {
+  it('`/` keeps the site’s canonical address, title and card — the front page adds no override of its own', () => {
     expect(rootMetadata.metadataBase?.toString()).toBe(`${SITE}/`);
     expect(rootMetadata.alternates?.canonical).toBe(SITE);
     expect(rootMetadata.openGraph).toMatchObject({ url: SITE, siteName: 'Swift' });
     expect(rootMetadata.title).toMatchObject({ default: expect.stringContaining('Swift') });
     expect(rootMetadata.robots).toMatchObject({ index: true, follow: true });
-    expect('metadata' in home).toBe(false);
+    expect('metadata' in front).toBe(false);
+    expect('generateMetadata' in front).toBe(false);
+  });
+
+  it('[WEB-APPBAR] the ordering Home at /order has its own title, description and card, canonical at its own address, never at `/`', () => {
+    const own = (home as { metadata?: import('next').Metadata }).metadata!;
+    expect(own.alternates?.canonical).toBe(`${SITE}/order`);
+    expect(own.title).toBe('Order food, groceries and more');
+    expect(own.description).toBe('Food, groceries and more from businesses in Georgetown, Guyana — pay the business directly, cash or MMG.');
+    expect(own.openGraph).toMatchObject({ url: 'https://swiftgy.com/order', siteName: 'Swift', type: 'website', title: 'Order food, groceries and more — Swift' });
+    expect(own.description).not.toMatch(/\$|GYD|\d/);
     expect('generateMetadata' in home).toBe(false);
   });
 

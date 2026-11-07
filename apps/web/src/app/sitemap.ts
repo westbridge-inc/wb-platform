@@ -10,11 +10,12 @@ import { SITE_ORIGIN } from '@/site.config';
  * Store pages are excluded on purpose — they are generated from live vendor
  * data and belong in a separate feed once the catalogue is stable.
  *
- * [Q7b] `/` is the ordering Home now (public, server-rendered, canonical), so
- * it stays first; the introduction it used to be is listed at /welcome.
+ * [Q7b] The introduction is listed at /welcome. [WEB-APPBAR · owner 7 Nov 2026] `/` is the welcome front page
+ * with its four doors (first), and the ordering Home it used to be is public and server-rendered at /order.
  */
 const PAGES = [
-  { path: '/', priority: 1.0, changeFrequency: 'daily' as const },
+  { path: '/', priority: 1.0, changeFrequency: 'monthly' as const },
+  { path: '/order', priority: 0.9, changeFrequency: 'daily' as const },
   { path: '/welcome', priority: 0.9, changeFrequency: 'monthly' as const },
   { path: '/how-it-works', priority: 0.8, changeFrequency: 'monthly' as const },
   { path: '/vendors', priority: 0.9, changeFrequency: 'monthly' as const },

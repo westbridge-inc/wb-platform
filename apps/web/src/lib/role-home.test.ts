@@ -8,9 +8,9 @@ describe('roleHome', () => {
     [{ roles: ['CUSTOMER'], storeStaff: true }, { home: '/dashboard', kind: 'staff' }],
     [{ roles: ['CUSTOMER', 'VENDOR_OWNER'], storeStaff: true }, { home: '/dashboard', kind: 'business' }],
     [{ roles: ['CUSTOMER', 'MOVER'], storeStaff: true }, { home: '/portal', kind: 'earner' }],
-    [{ roles: ['CUSTOMER'], storeStaff: false }, { home: '/', kind: 'customer' }],
-    [{ roles: ['CUSTOMER'] }, { home: '/', kind: 'customer' }],
-    [{ roles: ['CUSTOMER'], storeStaff: 'yes' }, { home: '/', kind: 'customer' }],
+    [{ roles: ['CUSTOMER'], storeStaff: false }, { home: '/order', kind: 'customer' }],
+    [{ roles: ['CUSTOMER'] }, { home: '/order', kind: 'customer' }],
+    [{ roles: ['CUSTOMER'], storeStaff: 'yes' }, { home: '/order', kind: 'customer' }],
   ])('%j', (user, expected) => {
     expect(roleHome(user)).toEqual(expected);
   });

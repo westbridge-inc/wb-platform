@@ -73,10 +73,10 @@ describe('the order context bar', () => {
   });
 
   it('shows only on the ordering pages', () => {
-    for (const path of ['/', '/store/sample-kitchen', '/cart', '/checkout', '/market', '/order/browse', '/order/search', '/explore']) expect(showsOrderingContext(path), path).toBe(true);
-    for (const path of ['/account', '/account/profile', '/orders', '/orders/o1', '/taxi', '/courier', '/order/location']) expect(showsOrderingContext(path), path).toBe(false);
+    for (const path of ['/order', '/store/sample-kitchen', '/cart', '/checkout', '/market', '/order/browse', '/order/search', '/explore']) expect(showsOrderingContext(path), path).toBe(true);
+    for (const path of ['/', '/account', '/account/profile', '/orders', '/orders/o1', '/taxi', '/courier', '/order/location']) expect(showsOrderingContext(path), path).toBe(false);
     // Home's own top row carries it (with the delivery address), as the phone app's Home has one location pill.
-    expect(framesOrderingContext('/')).toBe(false);
+    expect(framesOrderingContext('/order')).toBe(false);
     for (const path of ['/store/sample-kitchen', '/cart', '/checkout', '/market', '/order/browse', '/order/search', '/explore']) expect(framesOrderingContext(path), path).toBe(true);
     for (const path of ['/account', '/orders', '/order/location']) expect(framesOrderingContext(path), path).toBe(false);
   });

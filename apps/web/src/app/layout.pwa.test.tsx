@@ -55,8 +55,9 @@ describe('[PWA-1] root metadata for the installed app', () => {
   });
 
   it('registers the service worker from every page', () => {
-    const html = RootLayout({ children: null }) as ReactElement<{ children: ReactElement<{ children: unknown }> }>;
-    const body = html.props.children;
+    const html = RootLayout({ children: null }) as ReactElement<{ children: unknown }>;
+    // [WEB-APPBAR] The <html> holds a <head> (the welcome page's early check) and the <body>.
+    const body = Children.toArray(html.props.children as never).find((child) => isValidElement(child) && child.type === 'body') as ReactElement<{ children: unknown }>;
     const mounted = Children.toArray(body.props.children as never).some(
       (child) => isValidElement(child) && child.type === ServiceWorkerRegistrar,
     );

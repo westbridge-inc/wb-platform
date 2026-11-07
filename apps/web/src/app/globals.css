@@ -613,6 +613,22 @@ body {
   }
 
   .sw-in { animation: sw-in 320ms cubic-bezier(0.2, 0, 0, 1); }
+
+  /* [WEB-APPBAR] The phone "Get the app" bar (components/get-app-bar-card.tsx): above the tab bar, and above a
+     store's checkout button while it shows, never over either. Below the menus and sheets. While the install
+     card is up the bar steps aside, so the two never stack. */
+  .sw-appbar {
+    position: fixed;
+    inset-inline: 0;
+    bottom: calc(var(--swift-dock, env(safe-area-inset-bottom)) + 8px);
+    z-index: 30;
+    padding-inline: 12px;
+  }
+  .swift-app:has([data-floating-dock]) .sw-appbar {
+    bottom: calc(var(--swift-dock, 0px) + var(--swift-space-lg) + var(--swift-touch) + var(--swift-space-md) + 8px);
+  }
+  .swift-app:has([data-install-clearance]) .sw-appbar,
+  .swift-app:has([data-install-clearance]) [data-get-app-clearance] { display: none; }
 }
 
 @keyframes sw-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
