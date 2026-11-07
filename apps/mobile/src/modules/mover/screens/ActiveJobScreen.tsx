@@ -124,18 +124,6 @@ function railFor(status: string | undefined, isDriver: boolean): { steps: Timeli
   return { steps, currentIndex };
 }
 
-/** [TAXI multi-stop] A map region that frames every point of a route. */
-function regionAround(points: { latitude: number; longitude: number }[]) {
-  const lats = points.map((p) => p.latitude);
-  const lngs = points.map((p) => p.longitude);
-  return {
-    latitude: (Math.min(...lats) + Math.max(...lats)) / 2,
-    longitude: (Math.min(...lngs) + Math.max(...lngs)) / 2,
-    latitudeDelta: Math.max(0.02, (Math.max(...lats) - Math.min(...lats)) * 2.2),
-    longitudeDelta: Math.max(0.02, (Math.max(...lngs) - Math.min(...lngs)) * 2.2),
-  };
-}
-
 /** The job's pickup and drop-off points (null without coordinates). */
 function jobPickup(job: any) {
   return job?.pickupLat != null ? { latitude: Number(job.pickupLat), longitude: Number(job.pickupLng) } : null;
@@ -219,6 +207,18 @@ const ActiveJobMap = React.memo(function ActiveJobMap({
 function DriverWaitingLive({ ride, shown, tripFare }: { ride: unknown; shown: boolean; tripFare: number | null }) {
   const view = useWaitingClock(ride, shown);
   return view ? <DriverWaiting view={view} tripFare={tripFare} /> : null;
+}
+
+/** [TAXI multi-stop] A map region that frames every point of a route. */
+function regionAround(points: { latitude: number; longitude: number }[]) {
+  const lats = points.map((p) => p.latitude);
+  const lngs = points.map((p) => p.longitude);
+  return {
+    latitude: (Math.min(...lats) + Math.max(...lats)) / 2,
+    longitude: (Math.min(...lngs) + Math.max(...lngs)) / 2,
+    latitudeDelta: Math.max(0.02, (Math.max(...lats) - Math.min(...lats)) * 2.2),
+    longitudeDelta: Math.max(0.02, (Math.max(...lngs) - Math.min(...lngs)) * 2.2),
+  };
 }
 
 export function ActiveJobScreen({ navigation }: any) {
