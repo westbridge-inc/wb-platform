@@ -3,8 +3,8 @@ import { MapCredits } from '../../../components/MapCredits';
 import { CallParty } from '../../../components/CallParty';
 import { CallInApp } from '../../../components/CallInApp';
 import { SwiftCallNumberTip } from '../../../components/SwiftCallNumberTip';
-import React, { useEffect, useRef, useState } from 'react';
-import { AppState, Pressable, ScrollView, Share, StyleSheet, View, useWindowDimensions } from 'react-native';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { Pressable, ScrollView, Share, StyleSheet, View, useWindowDimensions } from 'react-native';
 import MapView, { Marker } from 'react-native-maps';
 import { Image } from 'expo-image';
 import { openExternal } from '../../../lib/openExternal';
@@ -35,6 +35,8 @@ import { CircleChip, DecorativeIcon, ErrorState, Eyebrow, Header, HoldRing, Icon
 import { afterDismiss } from '../../../kit/after-dismiss';
 import { VERTICAL_TINT } from '../../../kit/vertical-tint';
 import { STALE_AFTER_MS } from '../../movement/map/interpolation';
+import { useDeadlineClock } from '../../../hooks/useDeadlineClock';
+import { useScreenLive } from '../../../hooks/useScreenLive';
 import { customerKeys } from '../../../hooks/customer';
 import { orderPrepFacts, orderStepState, orderTimelineIndex } from '../timeline-states';
 import { MmgPaymentClaimCard } from '../MmgPaymentClaimCard';
@@ -322,6 +324,105 @@ function OrderOpening({ row, top }: { row: any; top: number }) {
   );
 }
 
+/**
+ * [APP-SPEED C · report item 8] The tracking map. Drawn again only when a pin moves or changes look — never by the
+ * rest of the screen redrawing (a status line, the hold ring, a sheet) — and its pins are drawn once
+ * (tracksViewChanges off: the native map stops re-rendering each pin's view on every frame).
+ */
+type MapPoint = { latitude: number; longitude: number };
+const DeliveryMap = React.memo(function DeliveryMap({
+  orderId,
+  mapRef,
+  anchor,
+  pickupPos,
+  pickupTitle,
+  pickupInk,
+  dropPos,
+  courierPos,
+  courierFaded,
+}: {
+  orderId: string;
+  mapRef: React.RefObject<MapView | null>;
+  anchor: MapPoint;
+  pickupPos: MapPoint | null;
+  pickupTitle: string;
+  pickupInk: string;
+  dropPos: MapPoint | null;
+  courierPos: MapPoint | null;
+  courierFaded: boolean;
+}) {
+  const initialRegion = useMemo(() => ({ ...anchor, latitudeDelta: 0.05, longitudeDelta: 0.05 }), [anchor]);
+  return (
+    <MapView key={orderId} ref={mapRef} style={{ flex: 1 }} initialRegion={initialRegion}>
+      {pickupPos ? (
+        <Marker coordinate={pickupPos} title={pickupTitle} tracksViewChanges={false}>
+          <View
+            style={{
+              width: space['4xl'],
+              height: space['4xl'],
+              borderRadius: radius.full,
+              backgroundColor: pickupInk,
+              alignItems: 'center',
+              justifyContent: 'center',
+              borderWidth: space.xs / 2,
+              borderColor: color.white,
+            }}
+          >
+            <Feather name="shopping-bag" size={16} color={color.white} />
+          </View>
+        </Marker>
+      ) : null}
+      {dropPos ? (
+        <Marker coordinate={dropPos} title="Delivery address" tracksViewChanges={false}>
+          {/* [Wave 3 vs reference 09] The destination is the INK pin —
+              a black-filled marker against the maroon store marker, so
+              the two ends of the journey read as different things. */}
+          <View
+            style={{
+              width: space['4xl'],
+              height: space['4xl'],
+              borderRadius: radius.full,
+              backgroundColor: color.text.primary,
+              alignItems: 'center',
+              justifyContent: 'center',
+              borderWidth: space.xs / 2,
+              borderColor: color.white,
+            }}
+          >
+            <Feather name="map-pin" size={16} color={color.white} />
+          </View>
+        </Marker>
+      ) : null}
+      {courierPos ? (
+        // A marker drawn once (tracksViewChanges off) is drawn again by a new key when its look changes (faded).
+        <Marker
+          key={courierFaded ? 'rider-faded' : 'rider'}
+          coordinate={courierPos}
+          title={courierFaded ? 'Rider — last received location' : 'Your rider'}
+          tracksViewChanges={false}
+        >
+          <View
+            style={{
+              width: space['4xl'],
+              height: space['4xl'],
+              borderRadius: radius.full,
+              backgroundColor: color.surface.base,
+              alignItems: 'center',
+              justifyContent: 'center',
+              borderWidth: space.xs / 2,
+              borderColor: color.brand[500],
+              opacity: courierFaded ? 0.45 : 1,
+              ...elevation.card,
+            }}
+          >
+            <Feather name="navigation" size={16} color={color.brand[500]} />
+          </View>
+        </Marker>
+      ) : null}
+    </MapView>
+  );
+});
+
 export function DeliveryScreen() {
   const navigation = useNavigation<any>();
   const route = useRoute<any>();
@@ -345,7 +446,6 @@ export function DeliveryScreen() {
   const [courier, setCourier] = useState<{ latitude: number; longitude: number } | null>(null);
   const [lastCourierFixAt, setLastCourierFixAt] = useState<number | null>(null);
   const [trackingDisconnected, setTrackingDisconnected] = useState(false);
-  const [nowTs, setNowTs] = useState(() => Date.now());
   // Server-computed ETA for the courier's ACTIVE leg, refreshed with the
   // location stream [SWIFT-UG-RT-01]. Null until the first event lands.
   const [liveEtaMin, setLiveEtaMin] = useState<number | null>(null);
@@ -442,6 +542,16 @@ export function DeliveryScreen() {
   // arrival ceremony, live tracking, cancel, MMG, swaps, refunds) sees only the server's own answer.
   const preview = order.isPlaceholderData ? order.data : undefined;
   const o = order.isPlaceholderData ? undefined : order.data;
+  // [APP-SPEED C · report item 8] The screen's clock moves only when one of its time-based facts flips — the hold
+  // window closing (holdActive / releasePending), the rider's last fix going stale (fixStale), the promised window
+  // passing (promiseLine) — and never while the screen is hidden or Swift is in the background. It used to redraw this
+  // whole screen every 3 s, unfocused and on finished orders too. Shown again, the clock is read at once.
+  const screenLive = useScreenLive();
+  const [nowTs, readClockNow] = useDeadlineClock([
+    Date.parse(o?.holdExpiresAt ?? ''),
+    lastCourierFixAt != null ? lastCourierFixAt + STALE_AFTER_MS : null,
+    Date.parse(o?.promise?.windowEnd ?? ''),
+  ], screenLive);
   // [TAXI-FLOW 22 Oct] THE BACKSTOP. A ride is never drawn as a store order
   // ("Sent to the store", "Preparing", "have $800 ready for the seller"). Any
   // door that reaches this screen with a ride's id — a notification tap, the
@@ -525,13 +635,12 @@ export function DeliveryScreen() {
   };
 
   // Socket: join the order room, follow courier + status.
+  // [APP-SPEED C · report item 8] A return to this screen keeps the rider's last fix (its age still says whether it is
+  // stale, and older fixes are still refused): the map no longer loses the rider and waits for the next fix on every
+  // refocus. Another order's fix is cleared by the order change below, as before.
   useEffect(() => {
     if (!orderId || !isFocused) return;
-    setCourier(null);
-    setLastCourierFixAt(null);
-    setLiveEtaMin(null);
     setTrackingDisconnected(false);
-    lastCourierServerFixAt.current = null;
     connectSocket();
     subscribeToOrder(orderId);
     const s = getSocket();
@@ -612,22 +721,6 @@ export function DeliveryScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isFocused, orderId]);
 
-  useEffect(() => {
-    const t = setInterval(() => setNowTs(Date.now()), 3000);
-    return () => clearInterval(t);
-  }, []);
-
-  useEffect(() => {
-    if (isFocused) setNowTs(Date.now());
-  }, [isFocused]);
-
-  useEffect(() => {
-    const subscription = AppState.addEventListener('change', (state) => {
-      if (state === 'active') setNowTs(Date.now());
-    });
-    return () => subscription.remove();
-  }, []);
-
   // The live-ETA cache does not identify which journey leg produced a value.
   // Clear every transition, and only render the pre-custody legs above; an old
   // pickup ETA must never reappear as a delivery ETA after the rider departs.
@@ -676,10 +769,11 @@ export function DeliveryScreen() {
 
   // The order's immutable pickup snapshot owns this marker. A vendor profile
   // edit must never move an already-placed order, and courier requests have no vendor.
-  const pickupPos = validMapCoordinate(o?.pickupLat, o?.pickupLng);
-  const dropPos = o?.fulfillment === 'PICKUP'
+  // [APP-SPEED C] Kept by value, so the memoised map is not redrawn by new pin objects on every screen draw.
+  const pickupPos = useMemo(() => validMapCoordinate(o?.pickupLat, o?.pickupLng), [o?.pickupLat, o?.pickupLng]);
+  const dropPos = useMemo(() => (o?.fulfillment === 'PICKUP'
     ? null
-    : validMapCoordinate(o?.deliveryLat, o?.deliveryLng);
+    : validMapCoordinate(o?.deliveryLat, o?.deliveryLng)), [o?.fulfillment, o?.deliveryLat, o?.deliveryLng]);
   // The REST rider coordinate has no freshness timestamp. It is deliberately
   // ignored; only a timestamped socket fix earns a tracking marker.
   const courierPos = liveTrackingAllowed ? courier : null;
@@ -926,67 +1020,17 @@ export function DeliveryScreen() {
           track. No route geometry is drawn because the API does not send one. */}
       <View style={{ height: screenHeight * (holdActive || releasePending || holdTimingUnavailable ? 0.24 : 0.4) }}>
         {initialRegion ? (
-          <MapView key={orderId} ref={mapRef} style={{ flex: 1 }} initialRegion={initialRegion}>
-            {pickupPos ? (
-              <Marker coordinate={pickupPos} title={o.vendor?.name ?? 'Pickup'}>
-                <View
-                  style={{
-                    width: space['4xl'],
-                    height: space['4xl'],
-                    borderRadius: radius.full,
-                    backgroundColor: verticalTint.ink,
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    borderWidth: space.xs / 2,
-                    borderColor: color.white,
-                  }}
-                >
-                  <Feather name="shopping-bag" size={16} color={color.white} />
-                </View>
-              </Marker>
-            ) : null}
-            {dropPos ? (
-              <Marker coordinate={dropPos} title="Delivery address">
-                {/* [Wave 3 vs reference 09] The destination is the INK pin —
-                    a black-filled marker against the maroon store marker, so
-                    the two ends of the journey read as different things. */}
-                <View
-                  style={{
-                    width: space['4xl'],
-                    height: space['4xl'],
-                    borderRadius: radius.full,
-                    backgroundColor: color.text.primary,
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    borderWidth: space.xs / 2,
-                    borderColor: color.white,
-                  }}
-                >
-                  <Feather name="map-pin" size={16} color={color.white} />
-                </View>
-              </Marker>
-            ) : null}
-            {courierPos ? (
-              <Marker coordinate={courierPos} title={fixStale || trackingDisconnected ? 'Rider — last received location' : 'Your rider'}>
-                <View
-                  style={{
-                    width: space['4xl'],
-                    height: space['4xl'],
-                    borderRadius: radius.full,
-                    backgroundColor: color.surface.base,
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    borderWidth: space.xs / 2,
-                    borderColor: color.brand[500],
-                    opacity: fixStale || trackingDisconnected ? 0.45 : 1,
-                    ...elevation.card,
-                  }}
-                >
-                  <Feather name="navigation" size={16} color={color.brand[500]} />
-                </View>
-              </Marker>
-            ) : null}
-          </MapView>
+          <DeliveryMap
+            orderId={orderId}
+            mapRef={mapRef}
+            anchor={mapAnchor!}
+            pickupPos={pickupPos}
+            pickupTitle={o.vendor?.name ?? 'Pickup'}
+            pickupInk={verticalTint.ink}
+            dropPos={dropPos}
+            courierPos={courierPos}
+            courierFaded={fixStale || trackingDisconnected}
+          />
         ) : (
           <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center', paddingHorizontal: space['3xl'], backgroundColor: color.surface.sunken }}>
             <IconChip icon="map-pin" size={48} />
@@ -1067,7 +1111,7 @@ export function DeliveryScreen() {
             releaseLead={holdReleaseLead}
             cancellationCaption={holdCancellationCaption}
             onExpire={() => {
-              setNowTs(Date.now());
+              readClockNow();
               void order.refetch();
             }}
             hidden={ringHidden || !isFocused}
