@@ -45,6 +45,7 @@ import { driverMapLine } from '../../../lib/routeLine';
 import { useWaitingClock } from '../../../hooks/useWaitingClock';
 import { afterDismiss } from '../../../kit/after-dismiss';
 import { moverStatusLabel } from '../../../lib/orderStatus';
+import { acceptedJobState, jobAnswerIsOver } from '../../../lib/acceptedJob';
 import { DriverItinerary, DriverWaiting, TaxiStopActions, openStopNavigation, useNoShowOpen } from '../TaxiItinerary';
 
 /** [F-213] Every driver handover PIN is 6 digits (api ride-pin.ts). */
@@ -134,7 +135,7 @@ function regionAround(points: { latitude: number; longitude: number }[]) {
   };
 }
 
-export function ActiveJobScreen({ navigation }: any) {
+export function ActiveJobScreen({ navigation, route }: any) {
   const insets = useSafeAreaInsets();
   const { kind } = useMoverKind();
   const active = useActiveJob(kind);
@@ -151,6 +152,8 @@ export function ActiveJobScreen({ navigation }: any) {
   const [pin, setPin] = useState('');
   const [selectedLegId, setSelectedLegId] = useState<string | null>(null);
   const [ratePopup, setRatePopup] = useState<{ orderId: string; name: string; mmg: boolean } | null>(null);
+  // [APP-SPEED 6] The job ended at the step's answer and the screen is on its way back to Home.
+  const [leaving, setLeaving] = useState(false);
   const [stars, setStars] = useState(5);
   // [MOB-018] The signed-in market decides the emergency number the preview popup names.
   const sosCountry = useAuthStore((st) => st.countryCode);
@@ -251,15 +254,24 @@ export function ActiveJobScreen({ navigation }: any) {
   if (!job && !ratePopup) {
     // [BUG-GUARDS C3] Until the job read answers (loading, or failed with nothing cached) this is not
     // "No active job": a driver mid-trip must never be told they have none.
-    const unanswered = active.data === undefined && (active.isLoading || active.isError);
+    // [APP-SPEED 6] Opened at an accept's answer (MoverHomeScreen): the read from before the accept still says "none",
+    // so until a read made after it lands the job is loading, and if that read fails, the failure with Try again;
+    // never "No active job" for a job just accepted. Leaving at a completion's answer: loading too.
+    const accepted = acceptedJobState(route?.params, active);
+    const unanswered = (active.data === undefined && (active.isLoading || active.isError)) || accepted !== 'answered' || leaving;
+    const failed = !leaving && (accepted === 'failed' || (accepted === 'answered' && active.isError));
     return (
       <Screen>
-        {unanswered && active.isError ? (
+        {unanswered && failed ? (
           <ErrorState message="We couldn't load your job. Check your connection and try again." onRetry={() => void active.refetch()} />
         ) : unanswered ? (
           <View accessibilityLabel="Loading your job" style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
             <Spinner size="large" />
           </View>
+        ) : typeof route?.params?.acceptedAt === 'number' ? (
+          // [review S3] The read made after this accept says there is no job: it ended after the accept (the
+          // customer cancelled, or operations moved it). Said as such, never as "you never had one".
+          <EmptyState icon="map-pin" title="This job is no longer yours" body="It was cancelled or moved after you accepted. New work shows on Home." />
         ) : (
           <EmptyState icon="map-pin" title="No active job" body="When you accept a job it'll show up here." />
         )}
@@ -332,6 +344,7 @@ export function ActiveJobScreen({ navigation }: any) {
             capturedProofs.current.forget(captured.key);
             // [BUG-HUNT-2 G02] Unpaid at the door: the parcel is still in their hands, so the job stays, on its return leg.
             if (outcome && outcome !== 'paid') toast.show(parcelUnpaidWords(res?.claim?.status, res?.claim?.flags));
+            if (leaveIfOver(res)) return;
             active.refetch?.();
           },
           onError: (proofError: any) => {
@@ -371,8 +384,16 @@ export function ActiveJobScreen({ navigation }: any) {
       toast.error(body.message ?? "Couldn't verify the delivery code — try again or contact support.");
     }
   };
+  // [APP-SPEED 6] The step's own answer says the job is over: back to Home at the answer (the hook took the job off
+  // the active read and re-reads in the background). A stacked rider stays: the legs' re-read shows the next leg.
+  const leaveIfOver = (answer: unknown): boolean => {
+    if (stacked || !jobAnswerIsOver(answer)) return false;
+    setLeaving(true);
+    navigation?.goBack?.();
+    return true;
+  };
   const markDelivered = () =>
-    isCourier ? captureCourierProof() : riderAct.mutate({ id: job.id, action: 'delivered', pin, handoverVersion: door.version ?? undefined }, { onError: onPinRefused });
+    isCourier ? captureCourierProof() : riderAct.mutate({ id: job.id, action: 'delivered', pin, handoverVersion: door.version ?? undefined }, { onSuccess: leaveIfOver, onError: onPinRefused });
   const deliverLabel = isCourier ? 'Capture proof & deliver' : 'Mark delivered';
   // [E16] Pickup custody proof. PICKED_UP is a physical-custody claim: the
   // server refuses the bare tap for a courier, so the pickup step captures a
@@ -597,10 +618,11 @@ export function ActiveJobScreen({ navigation }: any) {
       courierReturnProof.mutate(
         { orderId: job.id, uri: captured.uri, authSession: owner ?? undefined },
         {
-          onSuccess: () => {
+          onSuccess: (res: unknown) => {
             capturedProofs.current.forget(captured.key);
             haptic.success();
             toast.show('Return complete', 'The parcel is back with the sender — return proof saved.');
+            if (leaveIfOver(res)) return;
             active.refetch?.();
           },
           onError: (proofError: any) => {
@@ -1207,7 +1229,10 @@ export function ActiveJobScreen({ navigation }: any) {
                   pin={pin}
                   busy={busy}
                   pending={riderAct.isPending}
-                  submit={(fields, handlers) => riderAct.mutate({ id: job.id, action: 'handover', ...fields, handoverVersion: door.version ?? undefined }, handlers)}
+                  submit={(fields, handlers) => riderAct.mutate({ id: job.id, action: 'handover', ...fields, handoverVersion: door.version ?? undefined }, {
+                    onSuccess: (res: unknown) => { handlers.onSuccess(res); leaveIfOver(res); },
+                    onError: handlers.onError,
+                  })}
                   onDoorRefused={onPinRefused}
                 >
                   {doorPinCeremony}

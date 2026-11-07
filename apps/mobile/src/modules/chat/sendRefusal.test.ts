@@ -33,11 +33,15 @@ describe('chat send refusal', () => {
   it('the conversation screen shows the refusal when a send fails', () => {
     const src = readFileSync(path.join(__dirname, 'screens', 'ConversationScreen.tsx'), 'utf8')
       .replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1');
+    // [APP-SPEED 10] Every send (the first tap and each Retry) goes through `deliver`; onSend hands it the message.
     const onSend = /const onSend = \(\) => \{[\s\S]*?\n {2}\};/.exec(src)?.[0] ?? '';
     expect(onSend, 'onSend not found').not.toBe('');
-    expect(onSend).toMatch(/onError: \(error\) => \{/);
-    expect(onSend).toMatch(/const refusal = chatSendRefusal\(error\);/);
-    expect(onSend).toMatch(/if \(refusal\) setNotice\(refusal\);/);
-    expect(onSend).toMatch(/setDraft\(\(cur\) => \(cur\.trim\(\) \? cur : text\)\)/);
+    expect(onSend).toMatch(/deliver\(item\);/);
+    const deliver = /const deliver = \(item: OutboxItem\) => \{[\s\S]*?\n {2}\};/.exec(src)?.[0] ?? '';
+    expect(deliver, 'deliver not found').not.toBe('');
+    expect(deliver).toMatch(/onError: \(error\) => \{/);
+    expect(deliver).toMatch(/const refusal = chatSendRefusal\(error\);/);
+    expect(deliver).toMatch(/if \(refusal\) \{[\s\S]*?setNotice\(refusal\);/);
+    expect(deliver).toMatch(/setDraft\(\(cur\) => \(cur\.trim\(\) \? cur : item\.text\)\)/);
   });
 });

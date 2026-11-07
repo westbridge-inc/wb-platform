@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import { vendorApi } from '../services/api';
 import { useStoreSwitcher } from '../stores/storeSwitcher';
 import { getAuthSessionSnapshot, requireAuthSessionSnapshot, useAuthStore } from '../stores/authStore';
@@ -61,6 +61,14 @@ export function previewReadOnly<A extends unknown[], R>(send: (...args: A) => Pr
   };
 }
 
+/** [APP-SPEED 5] The store's VAT view as the server answered a change (PUT /vendor/vat, POST /vendor/vat/certificate
+ *  both answer the view GET /vendor/vat reads), written for that store, then every VAT read refreshed in the
+ *  background. An answer without the view (an older server) is not written. */
+export function writeStoreVatAnswer(qc: QueryClient, storeId: string | null | undefined, view: StoreVatView | null | undefined): void {
+  if (view && typeof view === 'object') qc.setQueriesData({ queryKey: ['vendor', 'vat', storeId] }, view);
+  void qc.invalidateQueries({ queryKey: ['vendor', 'vat'] });
+}
+
 export function useStoreVat(enabled: boolean) {
   const storeId = useStoreSwitcher((s) => s.selectedStoreId);
   const principal = useAuthStore((s) => s.user?.id);
@@ -82,6 +90,8 @@ export function useUpdateStoreVat() {
         answer.registered ? { registered: true, vatRegistrationNumber: answer.vatRegistrationNumber, ...(answer.mode ? { mode: answer.mode } : {}) } : { registered: false },
         session, storeId,
       ))))),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['vendor', 'vat'] }),
+    // [APP-SPEED 5] The answer IS the store's VAT view (the same as GET /vendor/vat): on screen at the answer, and
+    // re-read in the background.
+    onSuccess: (view: StoreVatView | undefined) => writeStoreVatAnswer(qc, storeId, view),
   });
 }

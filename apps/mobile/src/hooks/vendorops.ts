@@ -169,7 +169,8 @@ export function useRespondReview() {
   const qc = useQueryClient();
   return usePreviewSafeMutation({
     mutationFn: ({ id, response }: { id: string; response: string }) => unwrap(vendorApi.respondReview(id, response)),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['vendor', 'reviews'] }),
+    // [APP-SPEED 5] Free at the server's answer; the list refreshes in the background.
+    onSuccess: () => { void qc.invalidateQueries({ queryKey: ['vendor', 'reviews'] }); },
   });
 }
 
@@ -240,7 +241,8 @@ export function useCreatePromo() {
   const qc = useQueryClient();
   return usePreviewSafeMutation({
     mutationFn: (data: Parameters<typeof vendorApi.createPromo>[0]) => unwrap(vendorApi.createPromo(data)),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['vendor', 'promos'] }),
+    // [APP-SPEED 5] Free at the server's answer; the list refreshes in the background.
+    onSuccess: () => { void qc.invalidateQueries({ queryKey: ['vendor', 'promos'] }); },
   });
 }
 
@@ -249,7 +251,8 @@ export function useUpdatePromo() {
   return usePreviewSafeMutation({
     mutationFn: ({ id, data }: { id: string; data: { isActive?: boolean; validUntil?: string } }) =>
       unwrap(vendorApi.updatePromo(id, data)),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['vendor', 'promos'] }),
+    // [APP-SPEED 5] Free at the server's answer; the list refreshes in the background.
+    onSuccess: () => { void qc.invalidateQueries({ queryKey: ['vendor', 'promos'] }); },
   });
 }
 
@@ -257,7 +260,8 @@ export function useDeletePromo() {
   const qc = useQueryClient();
   return usePreviewSafeMutation({
     mutationFn: (id: string) => unwrap(vendorApi.deletePromo(id)),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['vendor', 'promos'] }),
+    // [APP-SPEED 5] Free at the server's answer; the list refreshes in the background.
+    onSuccess: () => { void qc.invalidateQueries({ queryKey: ['vendor', 'promos'] }); },
   });
 }
 
@@ -279,7 +283,8 @@ export function useAddStaff(guard: MutationGuard = passThrough) {
   const qc = useQueryClient();
   return usePreviewSafeMutation({
     mutationFn: guard(guardVendorOperation((data: { phone: string; role: 'MANAGER' | 'STAFF'; vendorIds?: string[] }) => unwrap(vendorApi.addStaff(data)))),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['vendor', 'staff'] }),
+    // [APP-SPEED 5] Free at the server's answer; the list refreshes in the background.
+    onSuccess: () => { void qc.invalidateQueries({ queryKey: ['vendor', 'staff'] }); },
   });
 }
 
@@ -294,7 +299,8 @@ export function useRemoveStaff() {
   const qc = useQueryClient();
   return usePreviewSafeMutation({
     mutationFn: (id: string) => unwrap(vendorApi.removeStaff(id)),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['vendor', 'staff'] }),
+    // [APP-SPEED 5] Free at the server's answer; the list refreshes in the background.
+    onSuccess: () => { void qc.invalidateQueries({ queryKey: ['vendor', 'staff'] }); },
   });
 }
 
@@ -302,7 +308,8 @@ export function useUpdateStaffRole(guard: MutationGuard = passThrough) {
   const qc = useQueryClient();
   return usePreviewSafeMutation({
     mutationFn: guard(guardVendorOperation(({ id, role }: { id: string; role: 'MANAGER' | 'STAFF' }) => unwrap(vendorApi.updateStaff(id, role)))),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['vendor', 'staff'] }),
+    // [APP-SPEED 5] Free at the server's answer; the list refreshes in the background.
+    onSuccess: () => { void qc.invalidateQueries({ queryKey: ['vendor', 'staff'] }); },
   });
 }
 
@@ -485,7 +492,8 @@ export function useRetryDispatch() {
   const qc = useQueryClient();
   return usePreviewSafeMutation({
     mutationFn: (id: string) => unwrap(vendorApi.retryDispatch(id)),
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['vendor', 'orders'] }),
+    // [APP-SPEED 5] Free at the server's answer; the list refreshes in the background.
+    onSuccess: () => { void qc.invalidateQueries({ queryKey: ['vendor', 'orders'] }); },
   });
 }
 
@@ -495,7 +503,8 @@ export function useReturnReceived() {
   const qc = useQueryClient();
   return usePreviewSafeMutation({
     mutationFn: (id: string) => unwrap(vendorApi.returnReceived(id)),
-    onSettled: () => qc.invalidateQueries({ queryKey: ['vendor', 'orders'] }),
+    // [APP-SPEED 5] Free at the server's answer (a success or a race refusal); the orders re-read in the background.
+    onSettled: () => { void qc.invalidateQueries({ queryKey: ['vendor', 'orders'] }); },
   });
 }
 
@@ -507,7 +516,8 @@ export function useSetOrderFulfillmentMode() {
   return usePreviewSafeMutation({
     mutationFn: ({ id, mode }: { id: string; mode: 'PLATFORM_RIDER' | 'VENDOR_DELIVERY' }) =>
       unwrap(vendorApi.setFulfillmentMode(id, mode)),
-    onSettled: () => qc.invalidateQueries({ queryKey: ['vendor', 'orders'] }),
+    // [APP-SPEED 5] Free at the server's answer (a success or a race refusal); the orders re-read in the background.
+    onSettled: () => { void qc.invalidateQueries({ queryKey: ['vendor', 'orders'] }); },
   });
 }
 
@@ -1398,7 +1408,8 @@ export function useImportItems() {
       requireAuthSessionForPrincipal(owner);
       return result;
     },
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['vendor', 'menu'] }),
+    // [APP-SPEED 5] Free at the server's answer; the list refreshes in the background.
+    onSuccess: () => { void qc.invalidateQueries({ queryKey: ['vendor', 'menu'] }); },
   });
 }
 

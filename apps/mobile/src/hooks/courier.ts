@@ -4,7 +4,8 @@ import { courierApi } from '../services/api';
 import { courierRequestAttempt } from '../lib/courierRequestAttemptStore';
 import { useMoverPreview } from '../stores/moverPreview';
 import { previewMutation } from '../lib/moverPreviewData';
-import { evidenceFix } from './mover';
+import { evidenceFix, writeJobEnded } from './mover';
+import { noteOwnJobStep } from '../lib/moverJobFeed';
 import type { AuthSessionSnapshot } from '../lib/authSession';
 import {
   requireAuthSessionForPrincipal,
@@ -68,7 +69,9 @@ export function useSendCourier() {
         throw error;
       }
     },
-    onSuccess: () => qc.invalidateQueries({ queryKey: ['courier', 'orders'] }),
+    // [APP-SPEED 5] The screen opens the parcel's tracking from the answer's own orderId: the button is free at the
+    // answer, and the sender's parcel list refreshes in the background.
+    onSuccess: () => { void qc.invalidateQueries({ queryKey: ['courier', 'orders'] }); },
   });
 }
 
@@ -112,6 +115,9 @@ export function useCourierProof() {
       }
       const result = await unwrap(courierApi.proof(orderId, body, current));
       requireAuthSessionForPrincipal(owner);
+      // [APP-SPEED 6] Delivered (or failed at the door with no return leg): the job leaves the active read at the
+      // answer, so the screen goes back to Home at once; a stacked run or a return leg waits for the re-read below.
+      writeJobEnded(qc, orderId, result);
       void qc.invalidateQueries({ queryKey: ['courier', 'orders'] });
       void qc.invalidateQueries({ queryKey: ['mover'] });
       return result;
@@ -154,7 +160,10 @@ export function useCourierReturn() {
       const result = await unwrap(courierApi.return(orderId, { reason, gps }, current));
       requireAuthSessionForPrincipal(owner);
       void qc.invalidateQueries({ queryKey: ['courier', 'orders'] });
-      void qc.invalidateQueries({ queryKey: ['mover'] });
+      // [APP-SPEED 7] The parcel turns back, the job goes on: only the job is re-read (not every mover read), and
+      // the room's echo of this status is not re-read again.
+      noteOwnJobStep(orderId, (result as { status?: unknown } | null)?.status);
+      void qc.invalidateQueries({ queryKey: ['mover', 'active'] });
       return result;
     },
   });
@@ -185,6 +194,8 @@ export function useCourierReturnProof() {
       requireAuthSessionForPrincipal(owner);
       const result = await unwrap(courierApi.returnProof(orderId, form, current));
       requireAuthSessionForPrincipal(owner);
+      // [APP-SPEED 6] Back with the sender (RETURNED): the job leaves the active read at the answer (writeJobEnded).
+      writeJobEnded(qc, orderId, result);
       void qc.invalidateQueries({ queryKey: ['courier', 'orders'] });
       void qc.invalidateQueries({ queryKey: ['mover'] });
       return result;
@@ -220,7 +231,9 @@ export function useCourierPickupProof() {
       const result = await unwrap(courierApi.pickupProof(orderId, { proofPhotoUrl: url, gps: fix.gps }, fix.current));
       requireAuthSessionForPrincipal(owner);
       void qc.invalidateQueries({ queryKey: ['courier', 'orders'] });
-      void qc.invalidateQueries({ queryKey: ['mover'] });
+      // [APP-SPEED 7] Picked up, the job goes on: only the job is re-read, and the room's echo is not re-read again.
+      noteOwnJobStep(orderId, (result as { status?: unknown } | null)?.status);
+      void qc.invalidateQueries({ queryKey: ['mover', 'active'] });
       return result;
     },
   });
