@@ -19,6 +19,7 @@ import { useGuestBasket } from '@/lib/basket-state';
 import { framesOrderingContext } from '@/lib/ordering-paths';
 import { InstallPrompt } from '@/components/install-prompt';
 import { GetAppBarLater } from '@/components/get-the-app-later';
+import { rememberOrdering } from '@/lib/welcome';
 import { lazyRetry } from '@/lib/chunk-retry';
 
 // [PERF #4] The cart's and an order's own loading shapes are drawn here only
@@ -170,6 +171,8 @@ function CustomerShell({ children }: { children: React.ReactNode }) {
   const [nearPoint, setNearPoint] = useState<NearPoint | null>(null);
 
   useEffect(() => { setSwitching(false); }, [pathname]);
+  // [WEB-APPBAR] This browser has opened ordering: next time, `/` goes straight here (lib/welcome.ts). No cookie.
+  useEffect(() => { rememberOrdering(); }, []);
 
   // [Q7b] Market is a tab only when the server's depth verdict says so — the
   // phone app's rule, read from the same public endpoint.

@@ -113,3 +113,72 @@ describe('[WEB-APPBAR] the welcome page itself', () => {
     expect(HOME_PATH).toBe('/order');
   });
 });
+
+describe('[WEB-APPBAR · no cookie] a returning visitor skips the welcome page, decided before it is painted', () => {
+  /** Runs the early script exactly as the page's <head> carries it, against a URL and this browser's storage. */
+  async function earlyScriptAt(url: string, stored: string | null | 'blocked') {
+    const { WELCOME_REDIRECT_SCRIPT } = await import('@/lib/welcome');
+    const parsed = new URL(url);
+    const replace = vi.fn();
+    const location = { pathname: parsed.pathname, search: parsed.search, replace };
+    const localStorage = {
+      getItem: (key: string) => {
+        if (stored === 'blocked') throw new DOMException('blocked', 'SecurityError');
+        return key === 'swift.ordering' ? stored : null;
+      },
+    };
+    new Function('location', 'localStorage', WELCOME_REDIRECT_SCRIPT)(location, localStorage);
+    return replace.mock.calls.map((call) => call[0]);
+  }
+
+  it('a new visitor stays on the welcome page; a browser that opened ordering goes to /order, query kept', async () => {
+    expect(await earlyScriptAt('https://swiftgy.com/', null)).toEqual([]);
+    expect(await earlyScriptAt('https://swiftgy.com/', '0')).toEqual([]);
+    expect(await earlyScriptAt('https://swiftgy.com/', '1')).toEqual(['/order']);
+    expect(await earlyScriptAt('https://swiftgy.com/?src=qr&c=AB12', '1')).toEqual(['/order?src=qr&c=AB12']);
+  });
+
+  it('an installed app’s launch goes to ordering; `/?welcome` always stays; storage that is blocked stays', async () => {
+    expect(await earlyScriptAt('https://swiftgy.com/?source=pwa', null)).toEqual(['/order?source=pwa']);
+    for (const url of ['https://swiftgy.com/?welcome', 'https://swiftgy.com/?welcome=1', 'https://swiftgy.com/?a=1&welcome']) {
+      expect(await earlyScriptAt(url, '1'), url).toEqual([]);
+    }
+    expect(await earlyScriptAt('https://swiftgy.com/?welcomed=1', '1')).toEqual(['/order?welcomed=1']);
+    expect(await earlyScriptAt('https://swiftgy.com/', 'blocked')).toEqual([]);
+  });
+
+  it('does nothing on any other page', async () => {
+    for (const url of ['https://swiftgy.com/order', 'https://swiftgy.com/vendors', 'https://swiftgy.com/legal/terms', 'https://swiftgy.com/cart?source=pwa']) {
+      expect(await earlyScriptAt(url, '1'), url).toEqual([]);
+    }
+  });
+
+  it('every page’s <head> carries it inline, before anything is painted, under the unchanged policy', async () => {
+    const { WELCOME_REDIRECT_SCRIPT } = await import('@/lib/welcome');
+    const { renderToStaticMarkup } = await import('react-dom/server');
+    const { default: RootLayout } = await import('@/app/layout');
+    const html = renderToStaticMarkup(RootLayout({ children: null }) as React.ReactElement);
+    const head = /<head>([\s\S]*?)<\/head>/.exec(html)?.[1] ?? '';
+    expect(head).toContain(`<script>${WELCOME_REDIRECT_SCRIPT}</script>`);
+    // Not async, not deferred, not a module: it runs where it stands, before the body is parsed.
+    expect(head).not.toMatch(/<script[^>]+(async|defer|type=)/);
+    // The policy that allows it is the site's existing one, unchanged: inline scripts were already allowed.
+    const policy = readFileSync(join(SRC, 'lib', 'browser-api-origin.ts'), 'utf8');
+    expect(policy).toContain(`? "script-src 'self' 'unsafe-inline'"`);
+    // Plain ES5 the browser runs as written, with no person, cookie or network in it.
+    expect(WELCOME_REDIRECT_SCRIPT).not.toMatch(/=>|\blet\b|\bconst\b|cookie|fetch|XMLHttpRequest/);
+  });
+
+  it('the ordering app’s frame records the visit in this site’s own storage (no cookie), and survives blocked storage', async () => {
+    const { rememberOrdering, ORDERING_FLAG_KEY } = await import('@/lib/welcome');
+    expect(ORDERING_FLAG_KEY).toBe('swift.ordering');
+    localStorage.clear();
+    rememberOrdering();
+    expect(localStorage.getItem('swift.ordering')).toBe('1');
+    const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new DOMException('blocked', 'QuotaExceededError'); });
+    expect(() => rememberOrdering()).not.toThrow();
+    setItem.mockRestore();
+    const frame = readFileSync(join(SRC, 'app', '(app)', 'layout.tsx'), 'utf8');
+    expect(frame).toMatch(/useEffect\(\(\) => \{ rememberOrdering\(\); \}, \[\]\);/);
+  });
+});

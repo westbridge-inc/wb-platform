@@ -5,6 +5,7 @@ import { appleStartupImages } from '@/lib/apple-startup-images';
 import './globals.css';
 import { appChrome, swiftDesignVariables } from '@/lib/design-tokens';
 import { ServiceWorkerRegistrar } from '@/components/service-worker-registrar';
+import { WELCOME_REDIRECT_SCRIPT } from '@/lib/welcome';
 import { site, launch, SITE_ORIGIN } from '@/site.config';
 
 /**
@@ -74,6 +75,12 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   for (const href of PRELOADED_FONTS) preload(href, { as: 'font', type: 'font/woff2', crossOrigin: 'anonymous' });
   return (
     <html lang="en-GY" style={swiftDesignVariables}>
+      <head>
+        {/* [WEB-APPBAR] Before anything is painted: a returning visitor on `/` goes straight to ordering (lib/welcome.ts).
+            Inline, as the site's policy already allows; it does nothing on any other page. */}
+        {/* eslint-disable-next-line react/no-danger -- a constant from lib/welcome.ts, never user input */}
+        <script dangerouslySetInnerHTML={{ __html: WELCOME_REDIRECT_SCRIPT }} />
+      </head>
       <body>
         {/* [Row 111 · W8] A keyboard or screen-reader user can jump past the navigation to the content. */}
         <a href="#main" className="sw-skip-link">Skip to main content</a>

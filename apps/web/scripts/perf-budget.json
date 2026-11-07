@@ -5,8 +5,8 @@
     "/(app)/store/[slug]/page": 167,
     "/(app)/market/page": 153,
     "/(app)/order/browse/page": 151,
-    "/(app)/cart/page": 158,
-    "/(app)/checkout/page": 158,
+    "/(app)/cart/page": 159,
+    "/(app)/checkout/page": 159,
     "/login/page": 119,
     "/signup/page": 125,
     "/dashboard/orders/page": 173,
@@ -31,6 +31,8 @@
     "/(marketing)/page": 113
   },
   "raisedBecause": {
+    "/(app)/cart/page": "[WEB-APPBAR · owner 7 Nov] 158 -> 159 kB (local build: 158.0; checkout 158.1): the app frame carries the after-load loader for \"Get the app\" (the phone bar and the menus' store badges load after the page), the menus' Welcome link, and the one line that records this browser opened ordering in its own storage, so `/` skips the welcome page next time (no cookie). Same change lowered the ordering Home and store page ceilings.",
+    "/(app)/checkout/page": "[WEB-APPBAR · owner 7 Nov] 158 -> 159 kB: as /(app)/cart/page (the same frame).",
     "/(app)/order/browse/page": "[WEB-APPBAR · owner 7 Nov] 150 -> 151 kB (local build at a matched path: 149.8 -> 150.2): the app frame now carries the one small loader for \"Get the app\" (the phone bar's gate after load, on phones only, and the menus' store badges after load) and the menus' Welcome link; the bar, its badges and their switch all load after the page. The same change took the ordering Home (now /order) and the store page DOWN by 1.2-1.5 kB (the header no longer rides in every page that draws the footer), so their ceilings come down: Home 156 -> 155, store 168 -> 167.",
     "/(marketing)/launching-soon/page": "[WEB-APPBAR · owner 7 Nov] 113 -> 114 kB (local build at a matched path: 112.9 -> 113.2): every marketing page carries the header's \"Get the app\" item and the phone bar's after-load loader; the official store badges are drawn by the server, and only their live switch runs in the browser.",
     "/advertiser/page": "[ADS-ON #2325 · 4 Nov] 144 -> 145 kB (CI measured 144.4): the Pay with MMG button and its checkout call on the campaign page.",

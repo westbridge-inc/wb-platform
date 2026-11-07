@@ -90,6 +90,17 @@ describe('[Q7b] the shell stays put while pages change', () => {
   });
 });
 
+describe('[WEB-APPBAR · no cookie] opening ordering is remembered in this site’s own storage', () => {
+  it('the frame records it on any ordering page it draws, so `/` sends this browser straight here next time', async () => {
+    localStorage.clear();
+    state.pathname = '/store/shanta-kitchen';
+    render(<AppLayout><p>Store page</p></AppLayout>);
+    await screen.findByText('Store page');
+    expect(localStorage.getItem('swift.ordering')).toBe('1');
+    expect(document.cookie).not.toMatch(/swift/);
+  });
+});
+
 describe('[Q7b] the phone app’s tabs', () => {
   it('docks Home · Cart · Profile at the bottom on phone widths only, lighting the current one', async () => {
     state.pathname = '/cart';

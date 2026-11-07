@@ -10,8 +10,9 @@ import { launch, site } from '@/site.config';
  * A NEW visitor lands here: what Swift is, in the site's existing words (the About page's "food, groceries,
  * shops, couriers, rides", the front door's "keep 100% of what they earn", the company line every footer
  * carries), then four doors as big tap targets, and the store badges once the apps are live. No price and no
- * new claim. A RETURNING visitor never sees it flash: the server sends them straight to ordering
- * (middleware.ts), and the app's menus link back here (`/?welcome`).
+ * new claim. A RETURNING visitor never sees it flash: they go straight to ordering
+ * (lib/welcome.ts: a check in the page's <head>, before anything is painted), and the app's menus link back here
+ * (`/?welcome`).
  *
  * The doors go to pages that already exist: ordering Home (/order), the business page (/vendors), and the riders
  * and drivers page (/drivers), which serves both delivery riders and taxi drivers on one page (it has no

@@ -31,7 +31,7 @@ export interface CustomerRoute {
 }
 
 /** [WEB-APPBAR · owner 7 Nov 2026] The ordering Home lives at /order; `/` is the site's welcome page, which a
- *  returning visitor skips (middleware.ts). */
+ *  returning visitor skips (lib/welcome.ts). */
 export const HOME_PATH = '/order';
 /** The welcome page, even for a returning visitor (who `/` alone sends straight to ordering). */
 export const WELCOME_PATH = '/?welcome';

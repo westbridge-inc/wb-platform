@@ -8,7 +8,7 @@ import { HomeScreen } from '../home-screen';
  *
  * [WEB-APPBAR · owner 7 Nov 2026] It lives at /order: `/` is the site's welcome page, with four doors (Order,
  * Sell, Deliver, Drive), and a returning visitor (one who has opened ordering before, or an installed app's
- * launch) is sent from `/` straight here by the server (middleware.ts), with no welcome page in between.
+ * launch) is sent from `/` straight here before the welcome page is painted (lib/welcome.ts).
  *
  * What this page owes the site:
  *   - SEO: canonical at its own address, listed in the sitemap after `/`. The heading, the services and their

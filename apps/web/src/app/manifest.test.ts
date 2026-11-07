@@ -50,7 +50,7 @@ describe('[PWA-1] the web app manifest', () => {
     // must not turn one installed app into two.
     expect(app.id).toBe('/order');
     // The start page is a real route of the customer app, not a guess — and
-    // the second installs' start page (`/`) still resolves: the welcome page, which middleware.ts sends an
+    // the second installs' start page (`/`) still resolves: the welcome page, whose early check (lib/welcome.ts) sends an
     // installed app's launch (?source=pwa) straight on to ordering.
     expect(existsSync(join(WEB_ROOT, 'src/app/(app)/order/page.tsx'))).toBe(true);
     expect(existsSync(join(WEB_ROOT, 'src/app/(marketing)/page.tsx'))).toBe(true);
