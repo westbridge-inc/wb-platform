@@ -18,7 +18,7 @@ export type { PoliceClearanceWords } from '../../../mobile/src/components/onboar
 export { FOOD_HANDLERS_DOC } from '../../../mobile/src/components/onboarding/foodHandlers';
 export { DOCUMENT_CONSENT_TEXT } from '../../../mobile/src/lib/uploadConsentCopy';
 export {
-  OWN_NAME_DECLARATION_V1, OWN_NAME_DECLARATION_VERSION, OWN_NAME_HINT, OWN_NAME_TICK, ownNameApplies, ownNameSigningFor,
+  OWN_NAME_DECLARATION_V1, OWN_NAME_DECLARATION_VERSION, OWN_NAME_HINT, OWN_NAME_TICK, ownNameApplies, ownNameOfferFits, ownNameSigningFor,
 } from '../../../mobile/src/lib/ownNameCopy';
 
 /** The roles whose checklist is a store's (a Services business included): the API's store roles on /verification. */
@@ -94,6 +94,8 @@ export interface StoreDocumentStatus {
   missing?: string[];
   roleVerified?: boolean;
   nameBasis?: string;
+  /** [OWNNAME-FIT · COORD 7 Nov 2026] per store id: does the store's name pass the server's own-name test (read by ownNameOfferFits) */
+  ownNameFits?: Record<string, boolean>;
   documentConsent?: unknown;
   /** [POLICE-CLEARANCE CONSENT] The clearance's own consent words for this checklist (read by policeClearanceWordsFrom). */
   policeClearanceConsent?: unknown;

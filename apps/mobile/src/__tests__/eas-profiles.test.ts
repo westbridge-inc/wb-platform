@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'fs';
 import { join } from 'path';
+import { usableDsn } from '../lib/crashReporting';
 
 /**
  * Which server each EAS build talks to. The staging server lives at
@@ -55,8 +56,11 @@ describe('EAS build profiles point at the right server', () => {
 
   // [GUARDRAILS 5 · owner 7 Nov 2026, build 13] No crash reports until the owner confirms App Privacy and Play Data
   // safety list crash data. The EAS "production" environment holds a DSN, and EAS merges it into every production
-  // build; the profile's own empty value wins over it, so the store build carries none (crashReporting.ts usableDsn).
+  // build; the profile's own value wins over it. EAS refuses an empty value, so it is "off", which is not a DSN:
+  // crashReporting.ts usableDsn returns null for it and reporting never starts.
   it('production builds carry no crash-report DSN until the owner switches it on', () => {
-    expect((eas.build.production.env as Record<string, string> | undefined)?.['EXPO_PUBLIC_SENTRY_DSN']).toBe('');
+    const dsn = (eas.build.production.env as Record<string, string> | undefined)?.['EXPO_PUBLIC_SENTRY_DSN'];
+    expect(dsn).toBe('off');
+    expect(usableDsn(dsn)).toBeNull();
   });
 });
