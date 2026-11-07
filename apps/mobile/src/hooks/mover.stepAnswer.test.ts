@@ -80,14 +80,15 @@ beforeEach(() => { fx.qc = new QueryClient({ defaultOptions: { queries: { retry:
 afterEach(() => { fx.qc.clear(); });
 
 describe('[TAP-AUDIT] a job step: the answered status at once, the button free at the answer', () => {
-  it('a rider step: the next status is on screen at the answer; nothing to wait for; every read still refreshes', async () => {
+  it('a rider step: the next status is on screen at the answer; nothing to wait for; the job still refreshes', async () => {
     const reads = await mount('RIDER', { id: 'order-1', status: 'RIDER_EN_ROUTE_PICKUP' });
     const step = useRiderAction() as unknown as Step;
     const returned = step.onSuccess!({ orderId: 'order-1', status: 'RIDER_ARRIVED_PICKUP' }, { id: 'order-1', action: 'arrived-pickup' });
     expect(returned, 'the button is not held for the re-read').toBeUndefined();
     expect(statusOf('RIDER')).toBe('RIDER_ARRIVED_PICKUP');
     await vi.waitFor(() => expect(reads.active).toHaveBeenCalledTimes(2));
-    expect(reads.profile).toHaveBeenCalledTimes(2);
+    // [APP-SPEED 7] A step in the middle of a job re-reads the job alone: the profile is not asked again.
+    expect(reads.profile).toHaveBeenCalledTimes(1);
     reads.stop();
   });
 
@@ -124,9 +125,10 @@ describe('[TAP-AUDIT] a job step: the answered status at once, the button free a
   });
 
   const waits: Array<[string, () => Step, unknown, unknown]> = [
-    ['the rider\'s delivered step (the job ends)', () => useRiderAction() as unknown as Step, { orderId: 'order-1', status: 'DELIVERED' }, { id: 'order-1', action: 'delivered' }],
-    ['the door\'s handover (the job ends)', () => useRiderAction() as unknown as Step, { orderId: 'order-1', status: 'DELIVERED' }, { id: 'order-1', action: 'handover' }],
-    ['the driver\'s fare outcome (the ride ends)', () => useDriverAction() as unknown as Step, { id: 'ride-1', status: 'COMPLETED' }, { id: 'ride-1', action: 'handover', outcome: 'paid' }],
+    // [APP-SPEED 6] An ending step whose answer keeps the job (the door's short payment starts a return leg) waits.
+    ['the door\'s handover that starts a return leg', () => useRiderAction() as unknown as Step, { orderId: 'order-1', status: 'RETURNING' }, { id: 'order-1', action: 'handover' }],
+    ['an ending step whose answer names no status (an older server)', () => useRiderAction() as unknown as Step, {}, { id: 'order-1', action: 'delivered' }],
+    ['a handback (the order goes back to dispatch)', () => useRiderAction() as unknown as Step, { orderId: 'order-1', status: 'READY_FOR_PICKUP' }, { id: 'order-1', action: 'handback' }],
     ['an answer with no status (an older server)', () => useRiderAction() as unknown as Step, {}, { id: 'order-1', action: 'picked-up' }],
     ['a job that is not the one on screen', () => useRiderAction() as unknown as Step, { orderId: 'order-9', status: 'PICKED_UP' }, { id: 'order-9', action: 'picked-up' }],
   ];
@@ -177,5 +179,43 @@ describe('[TAP-AUDIT] a job step: the answered status at once, the button free a
     expect(writeJobStatus(fx.qc, undefined, { status: 'PICKED_UP' })).toBe(false);
     expect(writeJobStatus(fx.qc, 'order-1', { status: '' })).toBe(false);
     expect(writeJobStatus(fx.qc, 'order-1', null)).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// [APP-SPEED 6 · 7 Nov 2026] A step that ENDS the job is free at the server's answer: the answer says the job is
+// over, so the job leaves the active read at once (the screen goes back to Home, the driver's rating opens) and every
+// mover read refreshes in the background. A stacked rider keeps the wait: the legs' re-read shows the next leg.
+// ---------------------------------------------------------------------------
+describe('[APP-SPEED 6] a step that ends the job', () => {
+  const ends: Array<[string, 'RIDER' | 'DRIVER', Record<string, unknown>, () => Step, unknown, unknown]> = [
+    ['the rider\'s delivered step', 'RIDER', { id: 'order-1', status: 'ARRIVED' }, () => useRiderAction() as unknown as Step, { orderId: 'order-1', status: 'DELIVERED' }, { id: 'order-1', action: 'delivered' }],
+    ['the door\'s hand-over', 'RIDER', { id: 'order-1', status: 'ARRIVED' }, () => useRiderAction() as unknown as Step, { orderId: 'order-1', status: 'DELIVERED' }, { id: 'order-1', action: 'handover' }],
+    ['the driver\'s fare outcome', 'DRIVER', { id: 'ride-1', status: 'RIDE_IN_PROGRESS' }, () => useDriverAction() as unknown as Step, { id: 'ride-1', status: 'COMPLETED' }, { id: 'ride-1', action: 'handover', outcome: 'paid' }],
+    ['the driver\'s unpaid outcome', 'DRIVER', { id: 'ride-1', status: 'RIDE_IN_PROGRESS' }, () => useDriverAction() as unknown as Step, { id: 'ride-1', status: 'FAILED' }, { id: 'ride-1', action: 'handover', outcome: 'refused' }],
+  ];
+  for (const [name, kind, job, hook, answer, input] of ends) {
+    it(`${name}: free at the answer, the job off the active read, every read refreshed in the background`, async () => {
+      const reads = await mount(kind, job);
+      reads.server.job = null as never; // the server has no active job any more
+      const returned = hook().onSuccess!(answer, input);
+      expect(returned, 'the button is not held for the re-read').toBeUndefined();
+      expect(fx.qc.getQueryData(ACTIVE(kind)), 'the finished job is not shown as active').toBeNull();
+      await vi.waitFor(() => expect(reads.active).toHaveBeenCalledTimes(2));
+      await vi.waitFor(() => expect(reads.profile).toHaveBeenCalledTimes(2));
+      reads.stop();
+    });
+  }
+
+  it('a stacked rider: the delivered leg waits for the legs\' re-read; nothing is taken off ahead of it', async () => {
+    const reads = await mount('RIDER', { id: 'order-1', status: 'ARRIVED' }, [
+      { id: 'order-1', status: 'ARRIVED' }, { id: 'order-2', status: 'PICKED_UP' },
+    ]);
+    const returned = (useRiderAction() as unknown as Step).onSuccess!({ orderId: 'order-1', status: 'DELIVERED' }, { id: 'order-1', action: 'delivered' });
+    expect(returned).toBeInstanceOf(Promise);
+    expect(statusOf('RIDER'), 'nothing written ahead of the re-read').toBe('ARRIVED');
+    expect((fx.qc.getQueryData([...ACTIVE('RIDER'), 'legs']) as { legs: unknown[] }).legs).toHaveLength(2);
+    await returned;
+    reads.stop();
   });
 });

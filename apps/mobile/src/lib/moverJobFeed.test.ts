@@ -1,6 +1,6 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { QueryClient, QueryObserver } from '@tanstack/react-query';
-import { bindMoverJobFeed, MOVER_JOB_EVENTS } from './moverJobFeed';
+import { bindMoverJobFeed, MOVER_JOB_EVENTS, moverJobFeedLive, noteOwnJobStep, OWN_STEP_ECHO_MS } from './moverJobFeed';
 
 // [PERF partner #1] A driver or rider used to learn that the live job changed
 // (the passenger cancelled, the store marked the order ready) only on the next
@@ -110,5 +110,98 @@ describe('mover live job feed', () => {
     expect(earnings).toHaveBeenCalledTimes(1);
     unsubscribe.forEach((u) => u());
     qc.clear();
+  });
+});
+
+// [APP-SPEED 7 · 7 Nov 2026] The phone's own step is already on screen (its answer) and re-read once; the room's
+// echo of that same status is not re-read a second time, for OWN_STEP_ECHO_MS. Anything else still re-reads.
+describe('[APP-SPEED 7] the phone\'s own step echo', () => {
+  afterEach(() => { vi.useRealTimers(); });
+
+  it('the room\'s echo of the very status this phone\'s step answered is not re-read', () => {
+    vi.useFakeTimers();
+    const socket = fakeSocket();
+    const refresh = vi.fn();
+    bindMoverJobFeed(socket, ['order-e1'], refresh);
+    noteOwnJobStep('order-e1', 'PICKED_UP');
+    socket.fire('order:status_changed', { orderId: 'order-e1', status: 'PICKED_UP' });
+    expect(refresh).not.toHaveBeenCalled();
+  });
+
+  it('other news still re-reads at once: another status, a prep signal, another order, or the same status later', () => {
+    vi.useFakeTimers();
+    const socket = fakeSocket();
+    const refresh = vi.fn();
+    bindMoverJobFeed(socket, ['order-e2', 'order-e3'], refresh);
+    noteOwnJobStep('order-e2', 'PICKED_UP');
+    socket.fire('order:status_changed', { orderId: 'order-e2', status: 'CANCELLED' }); // the customer cancelled
+    expect(refresh).toHaveBeenCalledTimes(1);
+    socket.fire('order:prep_update', { orderId: 'order-e2', status: 'PICKED_UP' });
+    expect(refresh).toHaveBeenCalledTimes(2);
+    socket.fire('order:status_changed', { orderId: 'order-e3', status: 'PICKED_UP' });
+    expect(refresh).toHaveBeenCalledTimes(3);
+    vi.advanceTimersByTime(OWN_STEP_ECHO_MS);
+    socket.fire('order:status_changed', { orderId: 'order-e2', status: 'PICKED_UP' });
+    expect(refresh).toHaveBeenCalledTimes(4);
+  });
+
+  it('[review S3.1] a status event carrying more than the order, its status and a timestamp is always re-read', () => {
+    vi.useFakeTimers();
+    const socket = fakeSocket();
+    const refresh = vi.fn();
+    bindMoverJobFeed(socket, ['order-e5'], refresh);
+    noteOwnJobStep('order-e5', 'ARRIVED');
+    socket.fire('order:status_changed', { orderId: 'order-e5', status: 'ARRIVED', timestamp: '2026-11-07T15:00:00.000Z' });
+    expect(refresh, 'a bare echo with a timestamp is skipped').not.toHaveBeenCalled();
+    // The shapes the server sends with a status that is not news alone (vendor MMG payment confirm, customer MMG
+    // claim, admin ride-code reset).
+    socket.fire('order:status_changed', { orderId: 'order-e5', status: 'ARRIVED', paymentStatus: 'CLAIMED', mmgClaimRevision: 2, mmgDisputed: false });
+    expect(refresh).toHaveBeenCalledTimes(1);
+    socket.fire('order:status_changed', { orderId: 'order-e5', status: 'ARRIVED', paymentStatus: 'CAPTURED' });
+    expect(refresh).toHaveBeenCalledTimes(2);
+    socket.fire('order:status_changed', { orderId: 'order-e5', status: 'ARRIVED', reason: 'ride_code_reset' });
+    expect(refresh).toHaveBeenCalledTimes(3);
+  });
+
+  it('a step with no status in its answer notes nothing', () => {
+    const socket = fakeSocket();
+    const refresh = vi.fn();
+    bindMoverJobFeed(socket, ['order-e4'], refresh);
+    noteOwnJobStep('order-e4', undefined);
+    noteOwnJobStep(undefined, 'PICKED_UP');
+    socket.fire('order:status_changed', { orderId: 'order-e4', status: 'PICKED_UP' });
+    expect(refresh).toHaveBeenCalledTimes(1);
+  });
+});
+
+// [APP-SPEED 7] The active job's poll may slow only while a feed is bound AND its socket is connected.
+describe('[APP-SPEED 7] the feed is live only while bound and connected', () => {
+  it('bound and connected: live; disconnected: not; unbound: not', () => {
+    const socket = Object.assign(fakeSocket(), { connected: true });
+    expect(moverJobFeedLive()).toBe(false);
+    const off = bindMoverJobFeed(socket, ['order-l1'], vi.fn());
+    expect(moverJobFeedLive()).toBe(true);
+    socket.connected = false;
+    expect(moverJobFeedLive()).toBe(false);
+    socket.connected = true;
+    off();
+    off();
+    expect(moverJobFeedLive()).toBe(false);
+  });
+
+  it('no live job binds nothing, so it is never live', () => {
+    const socket = Object.assign(fakeSocket(), { connected: true });
+    bindMoverJobFeed(socket, [], vi.fn());
+    expect(moverJobFeedLive()).toBe(false);
+  });
+
+  it('two bindings on one socket (a re-bind): live until the last one is undone', () => {
+    const socket = Object.assign(fakeSocket(), { connected: true });
+    const a = bindMoverJobFeed(socket, ['order-l2'], vi.fn());
+    const b = bindMoverJobFeed(socket, ['order-l2', 'order-l3'], vi.fn());
+    a();
+    expect(moverJobFeedLive()).toBe(true);
+    b();
+    expect(moverJobFeedLive()).toBe(false);
   });
 });
