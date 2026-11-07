@@ -11,8 +11,8 @@ import { QueryClient, QueryClientProvider, onlineManager } from '@tanstack/react
 //   - The screen redrew itself whole every 3 s (even hidden, even on a finished order) so a few time-based facts
 //     would flip on time. Its clock now moves only at those moments (hooks/useDeadlineClock) and never while the
 //     screen is hidden or Swift is in the background; shown again, the facts are read against the real time at once.
-//   - The map is memoised and its pins are drawn once (tracksViewChanges off); the rider's pin is drawn again (a new
-//     key) when it fades.
+//   - The map is memoised and its pins are drawn once per look (QuietMarker: tracksViewChanges on while the icon
+//     first draws, then off [review S3-2]); the rider's pin is drawn again when it fades.
 //   - A return to the screen keeps the rider's last fix instead of dropping the rider until the next one.
 // The REAL order screen over the REAL order hooks and a real query client (DeliveryScreen.opening's setup); the
 // transport, the socket, native drawing and the toast are stand-ins; time is the test's.
@@ -126,6 +126,7 @@ vi.mock('../../../kit', async () => {
 
 import { DeliveryScreen } from './DeliveryScreen';
 import { resetFixDrops } from '../../../lib/liveFix';
+import { MARKER_SETTLE_MS } from '../../movement/map/QuietMarker';
 
 const T0 = Date.parse('2026-11-07T15:00:00.000Z');
 const BASE = {
@@ -215,14 +216,19 @@ describe('[APP-SPEED C] the map: pins drawn once, the rider kept across a return
     await settle();
   };
 
-  it('every pin is drawn once (tracksViewChanges off)', async () => {
+  /** Each pin's tracksViewChanges as last drawn. */
+  const lastTracks = () => Object.fromEntries(fx.markers.map((m) => [m.title, m.tracksViewChanges]));
+
+  it('every pin draws its icon, then is drawn once (tracksViewChanges off after it settles)', async () => {
     fx.getOrder.mockResolvedValue(answer({ ...BASE, status: 'RIDER_ASSIGNED', rider: { firstName: 'Ravi' } }));
     await draw();
     await fix(T0);
     expect(rider()?.getAttribute('data-marker')).toBe('Your rider');
-    expect(fx.markers.length).toBeGreaterThanOrEqual(3);
-    expect(fx.markers.map((m) => m.tracksViewChanges)).not.toContain(true);
-    expect(fx.markers.every((m) => m.tracksViewChanges === false)).toBe(true);
+    expect(lastTracks()['Your rider'], 'on while the glyph first draws (never a blank pin on Android)').toBe(true);
+    await pass(MARKER_SETTLE_MS);
+    const tracks = lastTracks();
+    expect(Object.keys(tracks)).toEqual(expect.arrayContaining(['Test store', 'Delivery address', 'Your rider']));
+    expect(Object.values(tracks).every((t) => t === false)).toBe(true);
   });
 
   it('the rider fades exactly when the fix goes stale (15 s), and its pin is drawn again for the new look', async () => {
@@ -235,6 +241,9 @@ describe('[APP-SPEED C] the map: pins drawn once, the rider kept across a return
     await pass(1_002);
     expect(rider()?.getAttribute('data-marker')).toBe('Rider — last received location');
     expect(keys()).toContain('Rider — last received location');
+    expect(lastTracks()['Rider — last received location'], 'the faded look is drawn').toBe(true);
+    await pass(MARKER_SETTLE_MS);
+    expect(lastTracks()['Rider — last received location']).toBe(false);
   });
 
   it('a redraw of the screen that moves no pin does not redraw the map', async () => {

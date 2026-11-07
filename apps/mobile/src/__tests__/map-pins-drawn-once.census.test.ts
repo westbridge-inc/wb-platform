@@ -43,7 +43,7 @@ describe('[APP-SPEED C] map pins with their own view are drawn once', () => {
 
   it('finds the pins (the census is looking at the maps)', () => {
     expect(all.length).toBeGreaterThanOrEqual(10);
-    for (const screen of ['DeliveryScreen.tsx', 'TaxiScreen.tsx', 'CourierScreen.tsx', 'MoverHomeScreen.tsx']) {
+    for (const screen of ['TaxiScreen.tsx', 'CourierScreen.tsx', 'MoverHomeScreen.tsx']) {
       expect(all.some((t) => t.file.endsWith(screen)), screen).toBe(true);
     }
   });
@@ -57,5 +57,9 @@ describe('[APP-SPEED C] map pins with their own view are drawn once', () => {
     const read = (f: string) => readFileSync(join(SRC, f), 'utf8');
     expect(read('modules/movement/screens/TaxiScreen.tsx').match(/<QuietMarker\b/g)?.length ?? 0).toBe(4);
     expect(read('modules/movement/screens/CourierScreen.tsx')).toMatch(/<QuietMarker coordinate=\{dropoffLL\} title="To">/);
+    // [review S3-2] The tracking map's Feather-glyph pins (a font glyph can paint late on Android, too).
+    const delivery = read('modules/orders/screens/DeliveryScreen.tsx');
+    expect(delivery.match(/<QuietMarker\b/g)?.length ?? 0).toBe(3);
+    expect(delivery).not.toMatch(/<Marker\b/);
   });
 });

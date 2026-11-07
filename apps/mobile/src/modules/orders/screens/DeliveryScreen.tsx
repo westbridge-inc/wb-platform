@@ -5,7 +5,8 @@ import { CallInApp } from '../../../components/CallInApp';
 import { SwiftCallNumberTip } from '../../../components/SwiftCallNumberTip';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Pressable, ScrollView, Share, StyleSheet, View, useWindowDimensions } from 'react-native';
-import MapView, { Marker } from 'react-native-maps';
+import MapView from 'react-native-maps';
+import { QuietMarker } from '../../movement/map/QuietMarker';
 import { Image } from 'expo-image';
 import { openExternal } from '../../../lib/openExternal';
 import { openDirections } from '../../../lib/openDirections';
@@ -326,8 +327,8 @@ function OrderOpening({ row, top }: { row: any; top: number }) {
 
 /**
  * [APP-SPEED C · report item 8] The tracking map. Drawn again only when a pin moves or changes look — never by the
- * rest of the screen redrawing (a status line, the hold ring, a sheet) — and its pins are drawn once
- * (tracksViewChanges off: the native map stops re-rendering each pin's view on every frame).
+ * rest of the screen redrawing (a status line, the hold ring, a sheet) — and its pins are drawn once per look
+ * (QuietMarker: tracksViewChanges on while the icon glyph first draws, then off, so Android never keeps a blank pin).
  */
 type MapPoint = { latitude: number; longitude: number };
 const DeliveryMap = React.memo(function DeliveryMap({
@@ -355,7 +356,7 @@ const DeliveryMap = React.memo(function DeliveryMap({
   return (
     <MapView key={orderId} ref={mapRef} style={{ flex: 1 }} initialRegion={initialRegion}>
       {pickupPos ? (
-        <Marker coordinate={pickupPos} title={pickupTitle} tracksViewChanges={false}>
+        <QuietMarker coordinate={pickupPos} title={pickupTitle}>
           <View
             style={{
               width: space['4xl'],
@@ -370,10 +371,10 @@ const DeliveryMap = React.memo(function DeliveryMap({
           >
             <Feather name="shopping-bag" size={16} color={color.white} />
           </View>
-        </Marker>
+        </QuietMarker>
       ) : null}
       {dropPos ? (
-        <Marker coordinate={dropPos} title="Delivery address" tracksViewChanges={false}>
+        <QuietMarker coordinate={dropPos} title="Delivery address">
           {/* [Wave 3 vs reference 09] The destination is the INK pin —
               a black-filled marker against the maroon store marker, so
               the two ends of the journey read as different things. */}
@@ -391,15 +392,14 @@ const DeliveryMap = React.memo(function DeliveryMap({
           >
             <Feather name="map-pin" size={16} color={color.white} />
           </View>
-        </Marker>
+        </QuietMarker>
       ) : null}
       {courierPos ? (
-        // A marker drawn once (tracksViewChanges off) is drawn again by a new key when its look changes (faded).
-        <Marker
-          key={courierFaded ? 'rider-faded' : 'rider'}
+        // Drawn once per look: a fade (stale fix, lost connection) draws it again (QuietMarker).
+        <QuietMarker
+          look={courierFaded ? 'faded' : 'live'}
           coordinate={courierPos}
           title={courierFaded ? 'Rider — last received location' : 'Your rider'}
-          tracksViewChanges={false}
         >
           <View
             style={{
@@ -417,7 +417,7 @@ const DeliveryMap = React.memo(function DeliveryMap({
           >
             <Feather name="navigation" size={16} color={color.brand[500]} />
           </View>
-        </Marker>
+        </QuietMarker>
       ) : null}
     </MapView>
   );
