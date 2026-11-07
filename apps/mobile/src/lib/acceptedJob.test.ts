@@ -14,6 +14,8 @@ describe('[APP-SPEED 6] the accepted job', () => {
     expect(acceptedJobState(at, { isFetching: false, isError: false, dataUpdatedAt: 999 }), 'no read after the accept yet: still waiting').toBe('waiting');
     expect(acceptedJobState(at, { isFetching: true, isError: true, dataUpdatedAt: 999 }), 'an older failure while a read is on its way').toBe('waiting');
     expect(acceptedJobState(at, { isFetching: false, isError: true, dataUpdatedAt: 999 }), 'the read after the accept failed, every retry spent').toBe('failed');
+    expect(acceptedJobState(at, { isFetching: true, isError: true, dataUpdatedAt: 999, errorUpdatedAt: 1500 }), '[review S3] a poll or Try again on its way after that failure: still failed, no flicker').toBe('failed');
+    expect(acceptedJobState(at, { isFetching: true, isError: true, dataUpdatedAt: 999, errorUpdatedAt: 500 }), 'a failure from before the accept, a read on its way').toBe('waiting');
     expect(acceptedJobState(at, { isFetching: false, isError: false, dataUpdatedAt: 1000 }), 'a read from after the accept is the answer').toBe('answered');
     expect(acceptedJobState(undefined, { isFetching: true, isError: false, dataUpdatedAt: 0 }), 'no accept').toBe('answered');
     expect(acceptedJobState({ acceptedAt: 'soon' }, { isFetching: true, isError: false, dataUpdatedAt: 0 })).toBe('answered');

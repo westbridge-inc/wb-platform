@@ -268,6 +268,10 @@ export function ActiveJobScreen({ navigation, route }: any) {
           <View accessibilityLabel="Loading your job" style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
             <Spinner size="large" />
           </View>
+        ) : typeof route?.params?.acceptedAt === 'number' ? (
+          // [review S3] The read made after this accept says there is no job: it ended after the accept (the
+          // customer cancelled, or operations moved it). Said as such, never as "you never had one".
+          <EmptyState icon="map-pin" title="This job is no longer yours" body="It was cancelled or moved after you accepted. New work shows on Home." />
         ) : (
           <EmptyState icon="map-pin" title="No active job" body="When you accept a job it'll show up here." />
         )}

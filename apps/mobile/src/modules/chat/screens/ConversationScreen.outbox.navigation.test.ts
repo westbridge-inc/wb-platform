@@ -103,7 +103,7 @@ const retry = () => host.querySelector('[aria-label="Retry sending this message"
 beforeEach(async () => {
   fx.sent = [];
   fx.input = null;
-  fx.messages = { data: [{ id: 'm1', senderId: 'them', message: 'On my way' }], isError: false, refetch: () => undefined };
+  fx.messages = { data: [{ id: 'm1', senderId: 'them', message: 'On my way', createdAt: '2026-11-07T15:01:00.000Z' }], isError: false, refetch: () => undefined };
   fx.qc = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
   host = document.createElement('div'); document.body.append(host); root = createRoot(host);
   await draw();
@@ -117,12 +117,12 @@ describe('[APP-SPEED 10] a sent message shows at the tap', () => {
     expect(text()).toContain('At the gate');
     expect(text()).toContain('Sending…');
     expect(fx.input!.value, 'the box is cleared for the next message').toBe('');
-    fx.qc.setQueryData(['chat', 'messages', 'room-1'], [{ id: 'm1', senderId: 'them', message: 'On my way' }]);
-    await settle(() => fx.sent[0]!.ok({ id: 'm2', senderId: 'me', message: 'At the gate' }));
+    fx.qc.setQueryData(['chat', 'messages', 'room-1'], [{ id: 'm1', senderId: 'them', message: 'On my way', createdAt: '2026-11-07T15:01:00.000Z' }]);
+    await settle(() => fx.sent[0]!.ok({ id: 'm2', senderId: 'me', message: 'At the gate', createdAt: '2026-11-07T15:02:00.000Z' }));
     expect(text()).not.toContain('Sending…');
     expect(retry()).toBeNull();
     expect(fx.qc.getQueryData(['chat', 'messages', 'room-1'])).toEqual([
-      { id: 'm1', senderId: 'them', message: 'On my way' }, { id: 'm2', senderId: 'me', message: 'At the gate' },
+      { id: 'm1', senderId: 'them', message: 'On my way', createdAt: '2026-11-07T15:01:00.000Z' }, { id: 'm2', senderId: 'me', message: 'At the gate', createdAt: '2026-11-07T15:02:00.000Z' },
     ]);
   });
 
@@ -137,7 +137,7 @@ describe('[APP-SPEED 10] a sent message shows at the tap', () => {
     expect(fx.sent.map((s) => s.text)).toEqual(['At the gate', 'At the gate']);
     expect(text()).toContain('Sending…');
     expect(retry()).toBeNull();
-    await settle(() => fx.sent[1]!.ok({ id: 'm2', senderId: 'me', message: 'At the gate' }));
+    await settle(() => fx.sent[1]!.ok({ id: 'm2', senderId: 'me', message: 'At the gate', createdAt: '2026-11-07T15:02:00.000Z' }));
     expect(text()).not.toContain('Not sent');
     expect(text()).not.toContain('Sending…');
   });
@@ -156,11 +156,11 @@ describe('[review S3.3] a re-read that already holds the message', () => {
   it('lands mid-send: the stored copy only, no "Sending…" twin; the answer then adds nothing twice', async () => {
     await typeAndSend('At the gate');
     expect(text()).toContain('Sending…');
-    fx.messages = { ...fx.messages, data: [{ id: 'm1', senderId: 'them', message: 'On my way' }, { id: 'm2', senderId: 'me', message: 'At the gate' }] };
+    fx.messages = { ...fx.messages, data: [{ id: 'm1', senderId: 'them', message: 'On my way', createdAt: '2026-11-07T15:01:00.000Z' }, { id: 'm2', senderId: 'me', message: 'At the gate', createdAt: '2026-11-07T15:02:00.000Z' }] };
     await draw();
     expect(text()).not.toContain('Sending…');
     expect(text().split('At the gate')).toHaveLength(2); // exactly one copy
-    await settle(() => fx.sent[0]!.ok({ id: 'm2', senderId: 'me', message: 'At the gate' }));
+    await settle(() => fx.sent[0]!.ok({ id: 'm2', senderId: 'me', message: 'At the gate', createdAt: '2026-11-07T15:02:00.000Z' }));
     expect(text().split('At the gate')).toHaveLength(2);
   });
 
@@ -168,11 +168,32 @@ describe('[review S3.3] a re-read that already holds the message', () => {
     await typeAndSend('At the gate');
     await settle(() => fx.sent[0]!.fail(new Error('timeout of 15000ms exceeded')));
     expect(retry()).toBeTruthy();
-    fx.messages = { ...fx.messages, data: [{ id: 'm1', senderId: 'them', message: 'On my way' }, { id: 'm2', senderId: 'me', message: 'At the gate' }] };
+    fx.messages = { ...fx.messages, data: [{ id: 'm1', senderId: 'them', message: 'On my way', createdAt: '2026-11-07T15:01:00.000Z' }, { id: 'm2', senderId: 'me', message: 'At the gate', createdAt: '2026-11-07T15:02:00.000Z' }] };
     await draw();
     expect(retry()).toBeNull();
     expect(text()).not.toContain('Not sent');
     expect(fx.sent).toHaveLength(1);
+  });
+});
+
+describe('[review S2] a message is never lost to an older identical one', () => {
+  it('sent before the thread loaded (no baseline), failed, then history loads with an older identical message: "Not sent" with Retry stays', async () => {
+    fx.messages = { data: undefined, isError: false, refetch: () => undefined };
+    await draw();
+    await typeAndSend('On my way');
+    await settle(() => fx.sent[0]!.fail(new Error('Network Error')));
+    fx.messages = { data: [{ id: 'm0', senderId: 'me', message: 'On my way', createdAt: '2026-11-06T09:00:00.000Z' }], isError: false, refetch: () => undefined };
+    await draw();
+    expect(retry(), 'the unsent message is still there to send').toBeTruthy();
+    expect(text()).toContain('Not sent');
+  });
+
+  it('sent with the thread loaded, failed, then an OLDER identical message scrolls in: still "Not sent" with Retry', async () => {
+    await typeAndSend('On my way');
+    await settle(() => fx.sent[0]!.fail(new Error('Network Error')));
+    fx.messages = { ...fx.messages, data: [{ id: 'm0', senderId: 'me', message: 'On my way', createdAt: '2026-11-06T09:00:00.000Z' }, ...(fx.messages.data as unknown[])] };
+    await draw();
+    expect(retry()).toBeTruthy();
   });
 });
 

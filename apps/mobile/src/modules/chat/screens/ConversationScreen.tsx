@@ -12,7 +12,7 @@ import { useBlockUser, useReportContent } from '../../../hooks/customer';
 import { ActionSheet, CircleChip, ConfirmDialog, ErrorState, Header, LoadingBlock, Screen, Spinner, T } from '../../../kit';
 import { errorMessage } from '../../../lib/apiError';
 import { CHAT_REPORT_REASONS } from '../../../lib/reportReasons';
-import { dropOutbox, markOutbox, outboxItem, storedCopies, threadWithOutbox, type OutboxItem } from '../../../lib/chatOutbox';
+import { dropOutbox, markOutbox, outboxBaseline, outboxItem, threadWithOutbox, type OutboxItem } from '../../../lib/chatOutbox';
 
 const GUTTER = space['2xl'];
 
@@ -99,7 +99,10 @@ export function ConversationScreen() {
     const text = draft.trim();
     if (!text || send.isPending) return;
     setDraft('');
-    const item = outboxItem(text, storedCopies(msgs, user?.id, text));
+    // [review S2] The thread at the tap, only if it was loaded: a thread not read (or failed) gives no baseline,
+    // and that message is then never hidden by a re-read (only its own answer removes it).
+    const loaded = messages.data !== undefined && !messages.isError;
+    const item = outboxItem(text, loaded ? outboxBaseline(msgs, user?.id, text) : null);
     setOutbox((cur) => [...cur, item]);
     deliver(item);
   };

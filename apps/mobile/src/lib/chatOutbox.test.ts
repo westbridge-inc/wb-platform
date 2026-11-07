@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { dropOutbox, markOutbox, outboxItem, pendingOutbox, roomMessagesOldestFirst, storedCopies, threadWithOutbox, threadWithSent } from './chatOutbox';
+import { dropOutbox, markOutbox, outboxBaseline, outboxItem, pendingOutbox, roomMessagesOldestFirst, threadWithOutbox, threadWithSent } from './chatOutbox';
 
 // [APP-SPEED 10 · 7 Nov 2026] The pure rules of a chat message sent at the tap (the screen:
 // ConversationScreen.outbox.navigation.test.ts; the hooks: hooks/chat.appSpeed.test.ts).
@@ -7,7 +7,7 @@ describe('[APP-SPEED 10] the chat outbox', () => {
   it('a new message is "sending", with its own id; it can fail, go again, or go', () => {
     const a = outboxItem('hello');
     const b = outboxItem('hello');
-    expect(a).toMatchObject({ text: 'hello', state: 'sending', seen: 0 });
+    expect(a).toMatchObject({ text: 'hello', state: 'sending', baseline: null });
     expect(a.localId).not.toBe(b.localId);
     const failed = markOutbox([a, b], a.localId, 'failed');
     expect(failed.map((i) => i.state)).toEqual(['failed', 'sending']);
@@ -19,17 +19,69 @@ describe('[APP-SPEED 10] the chat outbox', () => {
     expect(threadWithOutbox([{ id: 'm1' }], [item])).toEqual([{ id: 'm1' }, { ...item, outbox: true }]);
   });
 
-  it('[review S3.3] a message the thread already holds a stored copy of is never drawn twice, nor offered for Retry', () => {
-    const before = [{ id: 'm1', senderId: 'me', message: 'ok' }, { id: 'm2', senderId: 'them', message: 'ok' }];
-    const seen = storedCopies(before, 'me', 'ok');
-    expect(seen, 'only this sender, these exact words').toBe(1);
-    const sending = outboxItem('ok', seen);
-    const failed = { ...outboxItem('at the gate', 0), state: 'failed' as const };
+  // [review S2] Id-based, never count-based: a stored copy is this sender's exact words with an id the thread did not
+  // hold at the tap, newer than the thread's newest message then. Anything short of that keeps the bubble.
+  const at = (min: number) => `2026-11-07T15:${String(min).padStart(2, '0')}:00.000Z`;
+  const msg = (id: string, senderId: string, message: string, min: number) => ({ id, senderId, message, createdAt: at(min) });
+
+  it('a confirmed stored copy (new id, newer than the tap\'s newest) takes the bubble away, sending or failed', () => {
+    const before = [msg('m1', 'me', 'ok', 1), msg('m2', 'them', 'ok', 2)];
+    const base = outboxBaseline(before, 'me', 'ok');
+    expect(base).toEqual({ matchIds: ['m1'], newestAt: new Date(at(2)).getTime(), newestId: 'm2' });
+    const sending = outboxItem('ok', base);
+    const failed = { ...outboxItem('at the gate', outboxBaseline(before, 'me', 'at the gate')), state: 'failed' as const };
     expect(pendingOutbox(before, [sending, failed], 'me'), 'nothing stored yet: both drawn').toEqual([sending, failed]);
-    const reread = [...before, { id: 'm3', senderId: 'me', message: 'ok' }, { id: 'm4', senderId: 'me', message: 'at the gate' }];
-    expect(pendingOutbox(reread, [sending, failed], 'me'), 'the re-read holds both: neither drawn').toEqual([]);
+    const reread = [...before, msg('m3', 'me', 'ok', 3), msg('m4', 'me', 'at the gate', 4)];
+    expect(pendingOutbox(reread, [sending, failed], 'me')).toEqual([]);
     expect(threadWithOutbox(reread, [sending, failed], 'me')).toEqual(reread);
     expect(pendingOutbox(reread, [sending], undefined), 'no signed-in sender: nothing is matched away').toEqual([sending]);
+  });
+
+  it('a thread not loaded at the tap gives no baseline: that message is never hidden by a re-read', () => {
+    const item = { ...outboxItem('on my way', null), state: 'failed' as const };
+    const history = [msg('m1', 'me', 'on my way', 1), msg('m9', 'me', 'on my way', 59)];
+    expect(pendingOutbox(history, [item], 'me')).toEqual([item]);
+  });
+
+  it('a failed item stays when an OLDER identical message arrives (history loading, or scrolled in)', () => {
+    const tapThread = [msg('m5', 'them', 'where are you', 5)];
+    const item = { ...outboxItem('on my way', outboxBaseline(tapThread, 'me', 'on my way')), state: 'failed' as const };
+    const withOlder = [msg('m1', 'me', 'on my way', 1), ...tapThread];
+    expect(pendingOutbox(withOlder, [item], 'me'), 'older than the tap\'s newest: not the copy').toEqual([item]);
+  });
+
+  it('a full 50-message window that slides: the stored copy pushes an older identical one out and is still recognised', () => {
+    const window = Array.from({ length: 50 }, (_, i) => msg(`m${i + 1}`, i === 0 ? 'me' : 'them', i === 0 ? 'ok' : `line ${i}`, i));
+    const item = outboxItem('ok', outboxBaseline(window, 'me', 'ok'));
+    expect(item.baseline!.matchIds).toEqual(['m1']);
+    const slid = [...window.slice(1), { id: 'm51', senderId: 'me', message: 'ok', createdAt: '2026-11-07T15:59:59.000Z' }];
+    expect(slid).toHaveLength(50);
+    expect(pendingOutbox(slid, [item], 'me')).toEqual([]);
+  });
+
+  it('a message of mine already in the thread at the tap is never its copy, even tied with the newest to the millisecond', () => {
+    const tap = [msg('m1', 'me', 'ok', 7), msg('m2', 'them', 'right', 7)]; // same server millisecond; m2 listed last
+    const item = { ...outboxItem('ok', outboxBaseline(tap, 'me', 'ok')), state: 'failed' as const };
+    expect(pendingOutbox(tap, [item], 'me')).toEqual([item]);
+  });
+
+  it('a loaded thread whose messages carry no readable time gives no baseline (newer cannot be told)', () => {
+    expect(outboxBaseline([{ id: 'm1', senderId: 'them', message: 'hi' }], 'me', 'ok')).toBeNull();
+    expect(outboxBaseline([], 'me', 'ok'), 'an empty loaded thread is a baseline').toEqual({ matchIds: [], newestAt: null, newestId: null });
+  });
+
+  it('a copy the server redacted (a ride code or PIN taken out) never matches: the bubble stays until the send\'s answer', () => {
+    const item = outboxItem('the code is 4821', outboxBaseline([], 'me', 'the code is 4821'));
+    const stored = [{ id: 'm1', senderId: 'me', message: 'the code is [removed]', createdAt: at(1) }];
+    expect(pendingOutbox(stored, [item], 'me')).toEqual([item]);
+  });
+
+  it('one stored copy confirms one item, oldest first; a copy with no readable time confirms nothing', () => {
+    const tap = [msg('m1', 'them', 'hi', 1)];
+    const first = { ...outboxItem('ok', outboxBaseline(tap, 'me', 'ok')), state: 'failed' as const };
+    const second = outboxItem('ok', outboxBaseline(tap, 'me', 'ok'));
+    expect(pendingOutbox([...tap, msg('m2', 'me', 'ok', 2)], [first, second], 'me')).toEqual([second]);
+    expect(pendingOutbox([...tap, { id: 'm2', senderId: 'me', message: 'ok' }], [first], 'me')).toEqual([first]);
   });
 
   it('the room\'s page (newest first) seeds the thread oldest first; a room with no list seeds nothing', () => {

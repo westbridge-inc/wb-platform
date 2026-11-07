@@ -22,7 +22,7 @@ const fx = vi.hoisted(() => {
   return {
     kind: 'DRIVER' as 'DRIVER' | 'RIDER',
     job: null as any,
-    active: { data: undefined as unknown, isLoading: false, isError: false, isFetching: false, dataUpdatedAt: 0 },
+    active: { data: undefined as unknown, isLoading: false, isError: false, isFetching: false, dataUpdatedAt: 0 } as { data: unknown; isLoading: boolean; isError: boolean; isFetching: boolean; dataUpdatedAt: number; errorUpdatedAt?: number },
     refetch: vi.fn(async () => undefined),
     preview: false,
     routes: {} as Record<string, (config: any) => any>,
@@ -203,10 +203,18 @@ describe('[APP-SPEED 6] opened at the accept\'s answer', () => {
     expect(host.querySelector('[role="alert"]')).toBeNull();
   });
 
-  it('the read made after the accept answered "no job" (the server took it away): that is what it says', async () => {
+  it('[review S3] the read made after the accept answered "no job" (it ended after the accept): said as such', async () => {
     await render({ data: null, isLoading: false, isError: false, isFetching: false, dataUpdatedAt: ACCEPTED_AT + 300 }, accepted);
-    expect(text()).toContain('No active job');
+    expect(text()).toContain('This job is no longer yours');
+    expect(text()).not.toContain('No active job');
     expect(spinner()).toBeNull();
+  });
+
+  it('[review S3] failed after the accept, then a poll or Try again on its way: the failure stays (no spinner flicker)', async () => {
+    await render({ data: null, isLoading: false, isError: true, isFetching: true, dataUpdatedAt: ACCEPTED_AT - 5_000, errorUpdatedAt: ACCEPTED_AT + 200 }, accepted);
+    expect(host.querySelector('[role="alert"]')).toBeTruthy();
+    expect(spinner()).toBeNull();
+    expect(text()).not.toContain('No active job');
   });
 
   it('opened without an accept (control): a cached "no job" is "No active job", even while a poll is on its way', async () => {
