@@ -52,4 +52,11 @@ describe('EAS build profiles point at the right server', () => {
       expect({ name, url }).toEqual({ name, url: expect.stringMatching(/^https:\/\/[a-z0-9.-]+\.[a-z]{2,}$/) });
     }
   });
+
+  // [GUARDRAILS 5 · owner 7 Nov 2026, build 13] No crash reports until the owner confirms App Privacy and Play Data
+  // safety list crash data. The EAS "production" environment holds a DSN, and EAS merges it into every production
+  // build; the profile's own empty value wins over it, so the store build carries none (crashReporting.ts usableDsn).
+  it('production builds carry no crash-report DSN until the owner switches it on', () => {
+    expect((eas.build.production.env as Record<string, string> | undefined)?.['EXPO_PUBLIC_SENTRY_DSN']).toBe('');
+  });
 });
