@@ -209,7 +209,7 @@ describe('[APP-SPEED C] a + redraws its own row only, in one virtualised list', 
     await click(row('Curry chicken').querySelector('[aria-label="Add Curry chicken"]')!);
     expect(row('Curry chicken').getAttribute('data-qty')).toBe('3');
     expect(fx.rowDraws['Curry chicken'], 'one draw per tap').toBe(2);
-    expect(fx.rowDraws.Pepperpot ?? 0, 'the other row is left alone').toBe(0);
+    expect(fx.rowDraws['Pepperpot'] ?? 0, 'the other row is left alone').toBe(0);
   });
 
   it('the menu is one FlashList of rows (title, then each item), keyed and typed for recycling', async () => {
