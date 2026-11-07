@@ -36,6 +36,7 @@ import {
 import { afterDismiss } from '../../../kit/after-dismiss';
 import { STORE_PICK } from '../../../lib/storePick';
 import { ItemDescription } from '../components/ItemDescription';
+import { readItemPreview, type ItemPreview } from '../../../lib/doorPreview';
 
 /** [P35 · board 4b] "Craft & Kind · Georgetown": the store's name, and its city when it has one. */
 export function storeLine(store: { name?: string | null; city?: string | null }): string {
@@ -63,6 +64,41 @@ function defaultSelections(groups: any[]): Selected {
     }
   }
   return out;
+}
+
+/** [APP-SPEED A] A dish opening from its card: the card's photo and name, a visible Back, and the
+ *  rest loading below. Drawn only from what the server sent the card. */
+function ItemOpening({ preview, top, onBack }: { preview: ItemPreview; top: number; onBack: () => void }) {
+  return (
+    <View style={{ flex: 1, backgroundColor: color.surface.subtle }} accessibilityLabel={`${preview.name}. Loading`}>
+      <View>
+        <Photo
+          uri={itemPhoto(preview, HERO_PHOTO_WIDTH)}
+          label={preview.name}
+          transition={200}
+          style={{ width: SCREEN_W, height: 340 }}
+          contentFit="cover"
+        />
+        <View style={{ position: 'absolute', top: top + space.sm, left: GUTTER }}>
+          <CircleChip icon="chevron-left" label="Back" onPress={onBack} />
+        </View>
+      </View>
+      <View
+        style={{
+          flex: 1,
+          marginTop: -radius.xl,
+          borderTopLeftRadius: radius.xl,
+          borderTopRightRadius: radius.xl,
+          backgroundColor: color.surface.subtle,
+          paddingTop: space['2xl'],
+          paddingHorizontal: GUTTER,
+        }}
+      >
+        <T variant="title">{preview.name}</T>
+        <LoadingBlock />
+      </View>
+    </View>
+  );
 }
 
 // Kit Menu Detail V1 (21–24): hero + floating chips, sheet w/ name/price,
@@ -206,6 +242,10 @@ export function MenuItemScreen() {
   }, [route.params?.addAfterSignIn, isAuthenticated, item, vendor.isLoading, vendor.isError, outOfStock, requiredUnmet, addToCart.isPending, selected, groups, isBooking, slot, daySlots, slotsQ.isError, slotsQ.isPending, navigation, onAdd]);
 
   if (vendor.isLoading) {
+    // [APP-SPEED A] Opened from a dish card: its photo and name at once, the rest loading below.
+    // No Add, no quantity and no price until the store's own menu answers.
+    const preview = readItemPreview(route.params?.preview);
+    if (preview) return <ItemOpening preview={preview} top={insets.top} onBack={() => navigation.goBack()} />;
     return (
       <View style={{ flex: 1, backgroundColor: color.surface.subtle, paddingTop: insets.top }}>
         {/* [UI-SWEEP U32] A visible way back while this loads or fails, not swipe only. */}

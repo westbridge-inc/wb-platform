@@ -31,7 +31,7 @@ import { mediaUrl } from '../../../lib/images';
 import { haptic } from '../../../lib/haptics';
 import { toast } from '../../../kit/toast';
 import { safetyApi, type RideClass, type RideRequestBody, type TierEstimate } from '../../../services/api';
-import { CalmRadar, Card, CircleChip, Eyebrow, IconChip, LoadingBlock, Money, PillButton, Pictogram, type PictogramName, PinGlyph, PopupCard, PopupTitle, Stars, T, VehicleRender, cardShadow } from '../../../kit';
+import { CalmRadar, Card, CircleChip, Eyebrow, IconChip, Money, PillButton, Pictogram, type PictogramName, PinGlyph, PopupCard, PopupTitle, Stars, T, VehicleRender, cardShadow } from '../../../kit';
 import { VERTICAL_TINT } from '../../../kit/vertical-tint';
 import type { PickedPlace } from './DestinationSearchScreen';
 import { CallParty } from '../../../components/CallParty';
@@ -290,7 +290,12 @@ function TaxiBooking({ navigation }: any) {
   const { latitude, longitude, address, status: locationStatus } = useLocationStore();
   const { resolve: requestLocation } = useDeviceLocation({ refreshOnMount: false });
   const locationContext = pickupLocationContext(latitude, longitude, locationStatus);
-  const { data: activeRide, isLoading: loadingActive } = useActiveRide<any>(true);
+  const activeRideQ = useActiveRide<any>(true);
+  const activeRide = activeRideQ.data;
+  // [APP-SPEED A] "Is a ride in progress?" has been answered by the server SINCE this screen
+  // opened (success or failure). Until then the form draws (or a remembered ride shows), but
+  // nothing that books, joins the queue or cancels can be pressed.
+  const activeChecked = activeRideQ.isFetchedAfterMount;
   const requestRide = useRequestRide();
   const cancelRide = useCancelRide();
   // [E19] The passenger's own eyes override the driver-arrival GPS gate.
@@ -416,16 +421,8 @@ function TaxiBooking({ navigation }: any) {
   const openSearch = (onSelect: (p: PickedPlace) => void, title: string) =>
     navigation?.navigate?.('DestinationSearch', { onSelect, title });
 
-  if (loadingActive) {
-    return (
-      <View style={{ flex: 1, backgroundColor: color.surface.subtle }}>
-        <LoadingBlock />
-        {/* [BUG-GUARDS C4] A slow ride read is no trap: Back stays on screen while it loads. */}
-        <FloatingBack navigation={navigation} insets={insets} />
-      </View>
-    );
-  }
-
+  // [APP-SPEED A] No spinner while the active-ride read is on its way: the booking form draws at
+  // once (below) with Request and Join held until the answer, and a ride found swaps it out.
   if (activeRide) {
     return (
       <ActiveRide
@@ -436,6 +433,7 @@ function TaxiBooking({ navigation }: any) {
         confirmDriverArrival={confirmDriverArrival}
         insets={insets}
         rematching={rematching}
+        checking={!activeChecked}
       />
     );
   }
@@ -456,7 +454,7 @@ function TaxiBooking({ navigation }: any) {
   const routeRegion = !queued && pickupLL && dropoffLL ? regionFor([pickupLL, ...stopLLs, dropoffLL]) : mapCenter;
 
   const selectedTier = estimate?.tiers.find((t) => t.rideClass === selectedClass);
-  const canRequest = !!pickupPoint && !!dropoffPoint && !!selectedTier;
+  const canRequest = !!pickupPoint && !!dropoffPoint && !!selectedTier && activeChecked;
   const requestVariables = requestRide.variables;
   const errorMatchesCurrentTrip = !!requestVariables
     && requestVariables.pickup.lat === pickupPoint?.lat
@@ -796,7 +794,7 @@ function TaxiBooking({ navigation }: any) {
                 // [PRICE-LOCK · row 448] Like Request, Join needs the fare on screen:
                 // nobody joins the line without seeing what they pay (the join
                 // carries it as expectedFare, and the queue books only at it).
-                disabled={!tripPayload() || !selectedTier || stops.length > 0}
+                disabled={!tripPayload() || !selectedTier || stops.length > 0 || !activeChecked}
                 onPress={() => {
                   const payload = tripPayload();
                   // [TAXI multi-stop] The queue never holds stops (v1): a trip
@@ -850,7 +848,13 @@ function TaxiBooking({ navigation }: any) {
                   Few drivers nearby — may take a little longer
                 </T>
               ) : null}
-              {!canRequest && dropoffPoint ? (
+              {!activeChecked ? (
+                <T variant="caption" tone="muted" center accessibilityLiveRegion="polite" style={{ marginTop: space.sm }}>
+                  {activeRideQ.fetchStatus === 'paused'
+                    ? 'You’re offline. Connect to check for a ride in progress, then book.'
+                    : 'Checking for a ride in progress…'}
+                </T>
+              ) : !canRequest && dropoffPoint ? (
                 <T variant="caption" tone="muted" center style={{ marginTop: space.sm }}>
                   Pick a ride option to continue.
                 </T>
@@ -1132,7 +1136,7 @@ function AssignedRideCard({
   );
 }
 
-function ActiveRide({ navigation, ride, cancelRide, confirmDriverArrival, insets, rematching }: any) {
+function ActiveRide({ navigation, ride, cancelRide, confirmDriverArrival, insets, rematching, checking = false }: any) {
   const { height: winH } = useWindowDimensions();
   const scheme = useColorScheme();
   const sheetRef = useRef<BottomSheet>(null);
@@ -1615,6 +1619,8 @@ function ActiveRide({ navigation, ride, cancelRide, confirmDriverArrival, insets
                   icon="map-pin"
                   style={{ marginTop: space.md, alignSelf: 'stretch' }}
                   loading={confirmDriverArrival.isPending}
+                  // [APP-SPEED A] A remembered ride: the server's answer first.
+                  disabled={checking}
                   onPress={() => confirmDriverArrival.mutate(
                     { id: ride.id },
                     {
@@ -1699,6 +1705,8 @@ function ActiveRide({ navigation, ride, cancelRide, confirmDriverArrival, insets
                 variant="outline"
                 style={{ flex: 1 }}
                 loading={cancelRide.isPending}
+                // [APP-SPEED A] A remembered ride is cancelled only once the server has answered for it.
+                disabled={checking}
                 onPress={() => {
                   setCancelRideError(null);
                   setConfirmCancel(true);
