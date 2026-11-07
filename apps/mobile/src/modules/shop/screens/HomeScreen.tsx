@@ -10,7 +10,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { API_URL } from '../../../services/api';
 import { color, radius, space } from '@swift/ui';
-import { customerKeys, useDiscoveryCategories, useHome, useToggleFavorite, type HomeFeed, type LiveOrderProjection } from '../../../hooks/customer';
+import { customerKeys, prefetchActiveRide, prefetchOrder, useDiscoveryCategories, useHome, useToggleFavorite, type HomeFeed, type LiveOrderProjection } from '../../../hooks/customer';
 import { useRowHold } from '../../../lib/useRowHold';
 import { createHomeRefreshGate, homeFeedState, homeQueryKey, subscribeToHomeAttention } from '../../../lib/homeReliability';
 import { useAds } from '../../../hooks/ads';
@@ -33,6 +33,9 @@ import { formatAppointmentSlot } from '../../../lib/appointmentTime';
 import { orderRecipientNoun, orderStatusLabel, orderSubtitle, presentedVertical } from '../../../lib/orderStatus';
 import { promiseLine } from '../../../lib/promise';
 import { trackRouteFor } from '../../../lib/orderTrackRoute';
+import { useVendorPrefetch } from '../../../hooks/storeDoor';
+import { usePressRead } from '../../../hooks/pressRead';
+import { itemPreviewOf, storePreviewOf } from '../../../lib/doorPreview';
 // ONE hold authority, shared with the tracking screen — never a second
 // countdown that could disagree with it about whether the window is open.
 import { holdRingActive, holdRingWindow } from '../../../kit/hold-window';
@@ -190,6 +193,8 @@ function ServiceTile({ item, index, navigation }: { item: (typeof SERVICES)[numb
  * arrived from the server. No local five-minute assumption, one authority.
  */
 function LiveOrderCard({ order, navigation, statusNote }: { order: LiveOrderProjection; navigation: any; statusNote: string }) {
+  const qc = useQueryClient();
+  const pressRead = usePressRead();
   // Tick ONLY while a hold is actually running. `holdRingWindow` is pure, so
   // re-evaluating it against a fresh `now` is the whole animation; when the
   // window closes the interval clears itself and the card goes quiet.
@@ -273,6 +278,11 @@ function LiveOrderCard({ order, navigation, statusNote }: { order: LiveOrderProj
             size="sm"
             // [TAXI-FLOW 22 Oct] A ride tracks on the ride screen, never the
             // store's: the server's orderType picks (orderTrackRoute.ts).
+            // [APP-SPEED A] A finger resting on Track starts the read the tracking screen opens on.
+            {...pressRead(() => {
+              const target = trackRouteFor(order);
+              return target.screen === 'Taxi' ? prefetchActiveRide(qc) : prefetchOrder(qc, target.params.orderId);
+            })}
             onPress={() => {
               const target = trackRouteFor(order);
               navigation.navigate(target.screen, target.params);
@@ -319,12 +329,17 @@ function LiveOrderCard({ order, navigation, statusNote }: { order: LiveOrderProj
   );
 }
 
+/** [APP-SPEED A] How long Home's feed must have been on screen before it asks about a ride. */
+const HOME_IDLE_PREFETCH_MS = 1_500;
+
 export function HomeScreen() {
   const [avatarBroken, setAvatarBroken] = useState(false);
   const navigation = useNavigation<any>();
   const insets = useSafeAreaInsets();
   const { user, isAuthenticated, promptLogin, adEventScopeId: scope } = useAuthStore();
   const qc = useQueryClient();
+  // [APP-SPEED A] A store's menu is asked for at the finger-down on its card or one of its dishes.
+  const prefetchStore = useVendorPrefetch();
   // [REPORT-022 F-022-18] clear the failure latch when the URL changes.
   React.useEffect(() => { setAvatarBroken(false); }, [user?.avatar]);
   const { latitude, longitude, address, status } = useLocationStore();
@@ -388,6 +403,19 @@ export function HomeScreen() {
 
   const feed = home.data;
   const feedState = homeFeedState({ ...home, data: feed });
+  // [APP-SPEED A] Once Home has drawn its feed and sat a moment, ask once whether a ride is in
+  // progress (only when nothing is remembered), so the Taxi door opens on an answer.
+  React.useEffect(() => {
+    if (!isAuthenticated || feedState !== 'content') return undefined;
+    let timer: ReturnType<typeof setTimeout>;
+    // A read still on its way (an ad, the category rail): wait for the next quiet moment.
+    const fire = () => {
+      if (qc.isFetching() > 0) timer = setTimeout(fire, HOME_IDLE_PREFETCH_MS);
+      else void prefetchActiveRide(qc);
+    };
+    timer = setTimeout(fire, HOME_IDLE_PREFETCH_MS);
+    return () => clearTimeout(timer);
+  }, [isAuthenticated, feedState, qc]);
   const featured: any[] = feed?.featured ?? [];
   const popularItems: any[] = feed?.popularItems ?? [];
   const nearby: any[] = locationFix ? (feed?.nearby ?? []) : [];
@@ -651,7 +679,8 @@ export function HomeScreen() {
                   // vendor's own enrichVendor ETA now rides popularItems;
                   // null (no buyer position) says nothing, never a guess.
                   meta={[it.vendorName, it.etaMin != null ? `${it.etaMin} min` : null].filter(Boolean).join(' · ')}
-                  onPress={() => navigation.navigate('MenuItem', { itemId: it.id, vendorId: it.vendorId })}
+                  {...prefetchStore(it.vendorId)}
+                  onPress={() => navigation.navigate('MenuItem', { itemId: it.id, vendorId: it.vendorId, preview: itemPreviewOf(it) })}
                 />
               )}
             />
@@ -718,7 +747,8 @@ export function HomeScreen() {
                       meta={v.etaMin ? `${v.etaMin} min` : undefined}
                       favorite={v.isFavorite}
                       onToggleFavorite={() => onFavorite(v.id, !!v.isFavorite)}
-                      onPress={() => navigation.navigate('Restaurant', { vendorId: v.id })}
+                      {...prefetchStore(v.id)}
+                      onPress={() => navigation.navigate('Restaurant', { vendorId: v.id, preview: storePreviewOf(v) })}
                     />
                   )}
                 />
@@ -851,7 +881,8 @@ export function HomeScreen() {
                     ].filter(Boolean).join(' · ') || undefined}
                     favorite={v.isFavorite}
                     onToggleFavorite={() => onFavorite(v.id, !!v.isFavorite)}
-                    onPress={() => navigation.navigate('Restaurant', { vendorId: v.id })}
+                    {...prefetchStore(v.id)}
+                    onPress={() => navigation.navigate('Restaurant', { vendorId: v.id, preview: storePreviewOf(v) })}
                   />
                 )}
               />
@@ -922,7 +953,8 @@ export function HomeScreen() {
                           ].filter(Boolean).join(' · ') || undefined}
                         />
                       }
-                      onPress={() => navigation.navigate('Restaurant', { vendorId: v.id })}
+                      {...prefetchStore(v.id)}
+                      onPress={() => navigation.navigate('Restaurant', { vendorId: v.id, preview: storePreviewOf(v) })}
                     />
                   ))}
                 </View>
@@ -963,7 +995,8 @@ export function HomeScreen() {
                         meta={v.etaMin ? `${v.etaMin} min` : undefined}
                         favorite={v.isFavorite}
                         onToggleFavorite={() => onFavorite(v.id, !!v.isFavorite)}
-                        onPress={() => navigation.navigate('Restaurant', { vendorId: v.id })}
+                        {...prefetchStore(v.id)}
+                        onPress={() => navigation.navigate('Restaurant', { vendorId: v.id, preview: storePreviewOf(v) })}
                       />
                     )}
                   />
@@ -1008,7 +1041,8 @@ export function HomeScreen() {
                             extra={locationFix ? distanceLabel(v.distanceKm) : undefined}
                           />
                         }
-                        onPress={() => navigation.navigate('Restaurant', { vendorId: v.id })}
+                        {...prefetchStore(v.id)}
+                        onPress={() => navigation.navigate('Restaurant', { vendorId: v.id, preview: storePreviewOf(v) })}
                       />
                     ))}
                   </View>

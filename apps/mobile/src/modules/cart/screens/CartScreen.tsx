@@ -2,7 +2,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, AppState, Platform, Pressable, ScrollView, View, type ViewStyle } from 'react-native';
 import { Feather } from '@expo/vector-icons';
-import { useFocusEffect, useNavigation } from '@react-navigation/native';
+import { useFocusEffect, useIsFocused, useNavigation } from '@react-navigation/native';
 import { color, radius, space } from '@swift/ui';
 import { createHomeRefreshGate, subscribeToHomeAttention } from '../../../lib/homeReliability';
 import { customerApi } from '../../../services/api';
@@ -148,6 +148,14 @@ export function CartScreen() {
   const navigation = useNavigation<any>();
   const qc = useQueryClient();
   const { isAuthenticated, promptLogin } = useAuthStore();
+  // [APP-SPEED A · review S2-1] The Cart tab is drawn ahead, hidden (warm tabs), and it is never
+  // frozen. Until it is first SHOWN its quote and rider reads stay held: a hidden, never-opened
+  // Cart must not re-quote on every +/− on a store page. Latched: once opened, it stays live
+  // exactly as before. A guest's Cart asks nothing.
+  const focused = useIsFocused();
+  const [opened, setOpened] = useState(focused);
+  if (focused && !opened) setOpened(true);
+  const cartReadsOn = opened && isAuthenticated;
   const { latitude, longitude } = useLocationStore();
 
   const removeItem = useRemoveCartItem();
@@ -254,7 +262,9 @@ export function CartScreen() {
     () => cartPricingChoices({ mode: fulfillment, express, storeIds: quoteBasis.storeIds, bookingsOnly: quoteBasis.bookingsOnly, selectedTip, promoCode: appliedPromo }),
     [fulfillment, express, quoteBasis, selectedTip, appliedPromo],
   );
-  const cart = useCart<any>(latitude ?? undefined, longitude ?? undefined, pricing);
+  // [APP-SPEED A] First open: the store page's quote of the same cart stands in (total
+  // "Updating…", Order held by quoteSettled) until this quote lands.
+  const cart = useCart<any>(latitude ?? undefined, longitude ?? undefined, pricing, cartReadsOn, true);
   // [TAP-AUDIT] A line's + and − answer at the tap and add up; only that line has a request out (hooks/useCartSteppers).
   const steppers = useCartSteppers(cart);
   const c = cart.data; // null = empty cart
@@ -319,7 +329,7 @@ export function CartScreen() {
   const riderRead = useQuery({
     queryKey: ['delivery-availability', riderStore, c?.deliveryAddress?.id ?? null, effectivePaySelection.method, riderBasketKey(c?.items)],
     queryFn: async () => (await customerApi.getDeliveryAvailability(riderStore!, effectivePaySelection.method === 'MMG' ? 'MOBILE_MONEY' : 'CASH')).data?.data,
-    enabled: riderReadOn,
+    enabled: riderReadOn && cartReadsOn,
     staleTime: 10_000,
     retry: false,
   });

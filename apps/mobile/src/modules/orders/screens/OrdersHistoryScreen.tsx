@@ -6,7 +6,9 @@ import { useNavigation, useIsFocused } from '@react-navigation/native';
 import Animated, { FadeInDown, ReduceMotion } from 'react-native-reanimated';
 
 import { color, radius, space } from '@swift/ui';
-import { useLiveOrders, useOrdersInfinite, useReorder } from '../../../hooks/customer';
+import { prefetchActiveRide, prefetchOrder, useLiveOrders, useOrdersInfinite, useReorder } from '../../../hooks/customer';
+import { useQueryClient } from '@tanstack/react-query';
+import { usePressRead } from '../../../hooks/pressRead';
 import { usePullToRefresh } from '../../../hooks/usePullToRefresh';
 import { useAuthStore } from '../../../stores/authStore';
 import { POLL } from '../../../lib/pollPolicy';
@@ -176,6 +178,8 @@ type LedgerItem =
 
 export function OrdersHistoryScreen() {
   const navigation = useNavigation<any>();
+  const qc = useQueryClient();
+  const pressRead = usePressRead();
   const { isAuthenticated, promptLogin } = useAuthStore();
   const orders = useOrdersInfinite();
   // [row 5 · ANDROID-QA] The list must follow orders in progress while the
@@ -394,6 +398,8 @@ export function OrdersHistoryScreen() {
         <PillButton
           label={isRide ? 'Track ride' : 'Track order'}
           size="md"
+          // [APP-SPEED A] The finger-down starts the read the tracking screen opens on.
+          {...pressRead(() => (isRide ? prefetchActiveRide(qc) : prefetchOrder(qc, o.id)))}
           onPress={() => navigation.navigate(isRide ? 'Taxi' : 'Delivery', isRide ? undefined : { orderId: o.id })}
         />
       </View>

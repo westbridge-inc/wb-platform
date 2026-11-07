@@ -26,6 +26,8 @@ const BG: Record<Variant, { rest: string; pressed: string; label: string; border
 export function PillButton({
   label,
   onPress,
+  onPressIn,
+  onPressOut,
   variant = 'primary',
   size = 'lg',
   icon,
@@ -36,6 +38,9 @@ export function PillButton({
 }: {
   label: string;
   onPress?: () => void;
+  /** [APP-SPEED A] The finger-down: start reading what the tap opens (never an action). */
+  onPressIn?: () => void;
+  onPressOut?: () => void;
   variant?: Variant;
   size?: Size;
   icon?: React.ComponentProps<typeof Feather>['name'];
@@ -50,6 +55,8 @@ export function PillButton({
     <Pressable
       testID={testID}
       onPress={blocked ? undefined : onPress}
+      onPressIn={blocked ? undefined : onPressIn}
+      onPressOut={blocked ? undefined : onPressOut}
       disabled={blocked}
       accessibilityRole="button"
       accessibilityLabel={label}

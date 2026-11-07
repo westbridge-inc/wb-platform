@@ -296,6 +296,31 @@ function TrackingTimeline({ order, holdActive, releasePending }: { order: any; h
 // (The HoldRing itself now lives in the kit [Wave 3 part 2] — the moment is
 // platform-wide, not this screen's. Its honesty matrix rides kit/hold-window.)
 
+/** What an order opening from a list says in its status's place until the server answers. */
+const ORDER_CHECKING_WORDS = 'Checking the latest status…';
+/** [review S3] What it says instead when the phone is offline and the read cannot start. */
+const ORDER_OFFLINE_WORDS = 'You’re offline. Connect to see this order’s latest status, then try again.';
+
+/** [APP-SPEED A] An order opening from a list: the store and the order number the list already
+ *  showed, the status as "checking", and not one button but Back until the server answers. */
+function OrderOpening({ row, top }: { row: any; top: number }) {
+  const store = typeof row?.vendor?.name === 'string' && row.vendor.name.trim() ? row.vendor.name : null;
+  const number = typeof row?.orderNumber === 'string' && row.orderNumber ? row.orderNumber : null;
+  return (
+    <View style={{ flex: 1, backgroundColor: color.surface.subtle, paddingTop: top }}>
+      <Header />
+      <View style={{ paddingHorizontal: space['2xl'], paddingTop: space.md, gap: space.xs }}>
+        <T variant="title" numberOfLines={2}>{store ?? 'Your order'}</T>
+        {number ? <T variant="caption" tone="muted">Order {number}</T> : null}
+        <T variant="body" tone="muted" accessibilityLiveRegion="polite" style={{ marginTop: space.sm }}>
+          {ORDER_CHECKING_WORDS}
+        </T>
+      </View>
+      <LoadingBlock />
+    </View>
+  );
+}
+
 export function DeliveryScreen() {
   const navigation = useNavigation<any>();
   const route = useRoute<any>();
@@ -313,7 +338,9 @@ export function DeliveryScreen() {
   const [sosConfirm, setSosConfirm] = useState(false);
   const myLocation = useLocationStore();
 
-  const order = useOrder<any>(orderId, 15000);
+  // [APP-SPEED A] `preview`: while the first read is on its way, the order's row from the lists
+  // already in memory (Orders, Home's live card) is drawn as "checking" (below) with no action.
+  const order = useOrder<any>(orderId, 15000, { preview: true });
   const [courier, setCourier] = useState<{ latitude: number; longitude: number } | null>(null);
   const [lastCourierFixAt, setLastCourierFixAt] = useState<number | null>(null);
   const [trackingDisconnected, setTrackingDisconnected] = useState(false);
@@ -410,7 +437,10 @@ export function DeliveryScreen() {
     toast.error('That didn’t go through', typeof serverMessage === 'string' ? serverMessage : 'Check your connection and try again.');
   };
 
-  const o = order.data;
+  // [APP-SPEED A] A row from a list is NOT the order: everything below (the ride hand-off, the
+  // arrival ceremony, live tracking, cancel, MMG, swaps, refunds) sees only the server's own answer.
+  const preview = order.isPlaceholderData ? order.data : undefined;
+  const o = order.isPlaceholderData ? undefined : order.data;
   // [TAXI-FLOW 22 Oct] THE BACKSTOP. A ride is never drawn as a store order
   // ("Sent to the store", "Preparing", "have $800 ready for the seller"). Any
   // door that reaches this screen with a ride's id — a notification tap, the
@@ -692,6 +722,24 @@ export function DeliveryScreen() {
         <LoadingBlock />
       </View>
     );
+  }
+  if (preview && order.fetchStatus === 'paused') {
+    // [review S3] Offline: the read is parked, not on its way. Never "Checking…" forever.
+    return (
+      <View style={{ flex: 1, backgroundColor: color.surface.subtle, paddingTop: insets.top }}>
+        <Header />
+        <ErrorState message={ORDER_OFFLINE_WORDS} onRetry={() => order.refetch()} />
+      </View>
+    );
+  }
+  if (preview) {
+    // [APP-SPEED A] A ride's row draws nothing of a store order: the hand-off waits for the answer.
+    return isTaxiOrder(preview) ? (
+      <View style={{ flex: 1, backgroundColor: color.surface.subtle, paddingTop: insets.top }}>
+        <Header />
+        <LoadingBlock />
+      </View>
+    ) : <OrderOpening row={preview} top={insets.top} />;
   }
   if (isTaxiOrder(o)) {
     // The hand-off above is on its way: nothing of the store screen shows.

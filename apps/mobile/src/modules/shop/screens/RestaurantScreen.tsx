@@ -18,6 +18,7 @@ import { HERO_PHOTO_WIDTH, itemPhoto, vendorPhoto } from '../../../lib/images';
 import { money } from '../../../lib/money';
 import { itemVatNote, storefrontVat, storefrontVatLine, type StorefrontVat } from '../../../lib/storeVat';
 import { formatPhoneForDisplay } from '../../../lib/phoneDisplay';
+import { readStorePreview, type StorePreview } from '../../../lib/doorPreview';
 import { SellerInfo } from '../../../components/SellerInfo';
 import { SectionPhotoHeader } from '../../../components/SectionPhotoHeader';
 import { toast } from '../../../kit/toast';
@@ -230,6 +231,48 @@ function ServiceRow({ item, onOpen, vat = null }: { item: any; onOpen: () => voi
   );
 }
 
+/** [APP-SPEED A] A store opening from its card: the card's photo and name in the hero's place, a
+ *  visible Back, and the menu loading below. Drawn only from what the server sent the card. */
+function StoreOpening({ preview, top, onBack }: { preview: StorePreview; top: number; onBack: () => void }) {
+  return (
+    <View style={{ flex: 1, backgroundColor: color.surface.subtle }} accessibilityLabel={`${preview.name}. Loading the menu`}>
+      <View>
+        <Photo
+          uri={vendorPhoto(preview, HERO_PHOTO_WIDTH)}
+          label={preview.name}
+          showLabel={false}
+          glyph="shops"
+          transition={200}
+          style={{ width: SCREEN_W, height: 300 }}
+          contentFit="cover"
+        />
+        <Scrim anchor="top" height={top + 76} to={withAlpha(color.text.primary, 0.45)} />
+        <Scrim height={170} />
+        <View style={{ position: 'absolute', left: GUTTER, right: GUTTER, bottom: radius.xl + space.lg }}>
+          <T variant="title" tone="onBrand" numberOfLines={2}>
+            {preview.name}
+          </T>
+        </View>
+        <View style={{ position: 'absolute', top: top + space.sm, left: GUTTER }}>
+          <CircleChip icon="chevron-left" label="Back" onPress={onBack} />
+        </View>
+      </View>
+      <View
+        style={{
+          flex: 1,
+          marginTop: -radius.xl,
+          borderTopLeftRadius: radius.xl,
+          borderTopRightRadius: radius.xl,
+          backgroundColor: color.surface.subtle,
+          paddingTop: space['2xl'],
+        }}
+      >
+        <LoadingBlock />
+      </View>
+    </View>
+  );
+}
+
 // Kit 14–20: cover hero + floating chips, white sheet w/ name + info strip,
 // promos row, Recommended/Best-seller rails, then the full menu by category.
 export function RestaurantScreen() {
@@ -327,6 +370,11 @@ function RestaurantStore() {
   const totalItems = isMart ? martItems.length : allItems.length;
 
   if (vendor.isLoading) {
+    // [APP-SPEED A] The tapped card handed over the store's name and photo: draw them at once, the
+    // menu's place loading below. Nothing here can be pressed but Back — no Add, no stepper, no
+    // heart — until the store's own answer replaces it.
+    const preview = readStorePreview(route.params?.preview);
+    if (preview) return <StoreOpening preview={preview} top={insets.top} onBack={() => navigation.goBack()} />;
     return (
       <View style={{ flex: 1, backgroundColor: color.surface.subtle, paddingTop: insets.top }}>
         {/* [UI-SWEEP U32] A visible way back while this loads or fails, not swipe only. */}
