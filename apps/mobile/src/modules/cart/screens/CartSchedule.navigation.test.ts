@@ -28,7 +28,7 @@ vi.mock('react-native', async () => {
   };
 });
 vi.mock('@expo/vector-icons', () => ({ Feather: () => null }));
-vi.mock('@react-navigation/native', () => ({ useNavigation: () => ({ canGoBack: () => false, navigate: vi.fn() }), useFocusEffect: () => undefined }));
+vi.mock('@react-navigation/native', () => ({ useNavigation: () => ({ canGoBack: () => false, navigate: vi.fn() }), useFocusEffect: () => undefined, useIsFocused: () => true }));
 vi.mock('../../../services/api', () => ({ customerApi: { validatePromo: vi.fn() } }));
 vi.mock('../../../services/notification-priming', () => ({ maybePrimeNotifications: vi.fn() }));
 vi.mock('../../../stores/authStore', () => ({ useAuthStore: () => ({ isAuthenticated: true, promptLogin: vi.fn() }) }));

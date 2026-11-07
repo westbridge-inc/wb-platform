@@ -34,6 +34,7 @@ import { orderRecipientNoun, orderStatusLabel, orderSubtitle, presentedVertical 
 import { promiseLine } from '../../../lib/promise';
 import { trackRouteFor } from '../../../lib/orderTrackRoute';
 import { useVendorPrefetch } from '../../../hooks/storeDoor';
+import { usePressRead } from '../../../hooks/pressRead';
 import { itemPreviewOf, storePreviewOf } from '../../../lib/doorPreview';
 // ONE hold authority, shared with the tracking screen — never a second
 // countdown that could disagree with it about whether the window is open.
@@ -193,6 +194,7 @@ function ServiceTile({ item, index, navigation }: { item: (typeof SERVICES)[numb
  */
 function LiveOrderCard({ order, navigation, statusNote }: { order: LiveOrderProjection; navigation: any; statusNote: string }) {
   const qc = useQueryClient();
+  const pressRead = usePressRead();
   // Tick ONLY while a hold is actually running. `holdRingWindow` is pure, so
   // re-evaluating it against a fresh `now` is the whole animation; when the
   // window closes the interval clears itself and the card goes quiet.
@@ -276,12 +278,11 @@ function LiveOrderCard({ order, navigation, statusNote }: { order: LiveOrderProj
             size="sm"
             // [TAXI-FLOW 22 Oct] A ride tracks on the ride screen, never the
             // store's: the server's orderType picks (orderTrackRoute.ts).
-            // [APP-SPEED A] The finger-down starts the read the tracking screen opens on.
-            onPressIn={() => {
+            // [APP-SPEED A] A finger resting on Track starts the read the tracking screen opens on.
+            {...pressRead(() => {
               const target = trackRouteFor(order);
-              if (target.screen === 'Taxi') prefetchActiveRide(qc);
-              else prefetchOrder(qc, target.params.orderId);
-            }}
+              return target.screen === 'Taxi' ? prefetchActiveRide(qc) : prefetchOrder(qc, target.params.orderId);
+            })}
             onPress={() => {
               const target = trackRouteFor(order);
               navigation.navigate(target.screen, target.params);
@@ -410,7 +411,7 @@ export function HomeScreen() {
     // A read still on its way (an ad, the category rail): wait for the next quiet moment.
     const fire = () => {
       if (qc.isFetching() > 0) timer = setTimeout(fire, HOME_IDLE_PREFETCH_MS);
-      else prefetchActiveRide(qc);
+      else void prefetchActiveRide(qc);
     };
     timer = setTimeout(fire, HOME_IDLE_PREFETCH_MS);
     return () => clearTimeout(timer);
@@ -678,7 +679,7 @@ export function HomeScreen() {
                   // vendor's own enrichVendor ETA now rides popularItems;
                   // null (no buyer position) says nothing, never a guess.
                   meta={[it.vendorName, it.etaMin != null ? `${it.etaMin} min` : null].filter(Boolean).join(' · ')}
-                  onPressIn={() => prefetchStore(it.vendorId)}
+                  {...prefetchStore(it.vendorId)}
                   onPress={() => navigation.navigate('MenuItem', { itemId: it.id, vendorId: it.vendorId, preview: itemPreviewOf(it) })}
                 />
               )}
@@ -746,7 +747,7 @@ export function HomeScreen() {
                       meta={v.etaMin ? `${v.etaMin} min` : undefined}
                       favorite={v.isFavorite}
                       onToggleFavorite={() => onFavorite(v.id, !!v.isFavorite)}
-                      onPressIn={() => prefetchStore(v.id)}
+                      {...prefetchStore(v.id)}
                       onPress={() => navigation.navigate('Restaurant', { vendorId: v.id, preview: storePreviewOf(v) })}
                     />
                   )}
@@ -880,7 +881,7 @@ export function HomeScreen() {
                     ].filter(Boolean).join(' · ') || undefined}
                     favorite={v.isFavorite}
                     onToggleFavorite={() => onFavorite(v.id, !!v.isFavorite)}
-                    onPressIn={() => prefetchStore(v.id)}
+                    {...prefetchStore(v.id)}
                     onPress={() => navigation.navigate('Restaurant', { vendorId: v.id, preview: storePreviewOf(v) })}
                   />
                 )}
@@ -952,7 +953,7 @@ export function HomeScreen() {
                           ].filter(Boolean).join(' · ') || undefined}
                         />
                       }
-                      onPressIn={() => prefetchStore(v.id)}
+                      {...prefetchStore(v.id)}
                       onPress={() => navigation.navigate('Restaurant', { vendorId: v.id, preview: storePreviewOf(v) })}
                     />
                   ))}
@@ -994,7 +995,7 @@ export function HomeScreen() {
                         meta={v.etaMin ? `${v.etaMin} min` : undefined}
                         favorite={v.isFavorite}
                         onToggleFavorite={() => onFavorite(v.id, !!v.isFavorite)}
-                        onPressIn={() => prefetchStore(v.id)}
+                        {...prefetchStore(v.id)}
                         onPress={() => navigation.navigate('Restaurant', { vendorId: v.id, preview: storePreviewOf(v) })}
                       />
                     )}
@@ -1040,7 +1041,7 @@ export function HomeScreen() {
                             extra={locationFix ? distanceLabel(v.distanceKm) : undefined}
                           />
                         }
-                        onPressIn={() => prefetchStore(v.id)}
+                        {...prefetchStore(v.id)}
                         onPress={() => navigation.navigate('Restaurant', { vendorId: v.id, preview: storePreviewOf(v) })}
                       />
                     ))}

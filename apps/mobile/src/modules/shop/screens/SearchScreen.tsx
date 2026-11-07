@@ -90,6 +90,7 @@ function ResultRow({
   trailing,
   onPress,
   onPressIn,
+  onPressOut,
   wide = false,
   closed = false,
   glyph = 'shops',
@@ -108,6 +109,7 @@ function ResultRow({
   onPress?: () => void;
   /** [APP-SPEED A] The finger-down: start reading what the tap opens (never an action). */
   onPressIn?: () => void;
+  onPressOut?: () => void;
   wide?: boolean;
   closed?: boolean;
   glyph?: React.ComponentProps<typeof Photo>['glyph'];
@@ -118,6 +120,7 @@ function ResultRow({
     <Pressable
       onPress={onPress}
       onPressIn={onPressIn}
+      onPressOut={onPressOut}
       accessibilityRole="button"
       accessibilityLabel={[title, branchLine, sub, closed ? 'Closed right now' : null].filter(Boolean).join('. ')}
     >
@@ -475,7 +478,7 @@ export function SearchScreen() {
                             name={it.name}
                             sub={it.vendorName}
                             trailing={<Money amount={it.basePrice} />}
-                            onPressIn={() => prefetchStore(it.vendorId)}
+                            {...prefetchStore(it.vendorId)}
                             onPress={() => navigation.navigate('MenuItem', { itemId: it.id, vendorId: it.vendorId, preview: itemPreviewOf(it) })}
                           />
                         </React.Fragment>
@@ -508,7 +511,7 @@ export function SearchScreen() {
                           meta={<RatingMeta rating={v.displayRating ?? null} topRated={v.topRated} />}
                           wide
                           closed={v.isCurrentlyOpen === false}
-                          onPressIn={() => prefetchStore(v.id)}
+                          {...prefetchStore(v.id)}
                           onPress={() => navigation.navigate('Restaurant', { vendorId: v.id, preview: storePreviewOf(v) })}
                         />
                       </React.Fragment>
@@ -529,7 +532,7 @@ export function SearchScreen() {
                             sub={it.categoryName ? `${it.vendorName} · ${it.categoryName}` : it.vendorName}
                             closed={it.vendorIsCurrentlyOpen === false}
                             trailing={<Money amount={it.basePrice} />}
-                            onPressIn={() => prefetchStore(it.vendorId)}
+                            {...prefetchStore(it.vendorId)}
                             onPress={() => navigation.navigate('MenuItem', { itemId: it.id, vendorId: it.vendorId, preview: itemPreviewOf(it) })}
                           />
                         </React.Fragment>
@@ -572,7 +575,7 @@ export function SearchScreen() {
                     }
                     wide
                     closed={v.isCurrentlyOpen === false}
-                    onPressIn={() => prefetchStore(v.id)}
+                    {...prefetchStore(v.id)}
                     onPress={() => navigation.navigate('Restaurant', { vendorId: v.id, preview: storePreviewOf(v) })}
                   />
                 )}
@@ -633,7 +636,7 @@ export function SearchScreen() {
                       name={it.name}
                       sub={it.vendorName}
                       trailing={<Money amount={it.price} />}
-                      onPressIn={() => prefetchStore(it.vendorId)}
+                      {...prefetchStore(it.vendorId)}
                       onPress={() => navigation.navigate('MenuItem', { itemId: it.id, vendorId: it.vendorId, preview: itemPreviewOf(it) })}
                     />
                   </React.Fragment>

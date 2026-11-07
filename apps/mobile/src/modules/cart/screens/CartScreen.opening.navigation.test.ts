@@ -29,6 +29,9 @@ const fx = vi.hoisted(() => {
     reset: vi.fn(),
     cart: null as any,
     standIn: false,
+    focused: true,
+    signedIn: true,
+    availability: vi.fn(() => new Promise(() => {})),
     fetching: false,
     cartArgs: [] as unknown[][],
     error: null as unknown,
@@ -52,10 +55,10 @@ vi.mock('react-native', async () => {
   };
 });
 vi.mock('@expo/vector-icons', () => ({ Feather: () => null }));
-vi.mock('@react-navigation/native', () => ({ useNavigation: () => ({ canGoBack: () => false, navigate: fx.navigate }), useFocusEffect: () => undefined }));
-vi.mock('../../../services/api', () => ({ customerApi: { validatePromo: vi.fn() } }));
+vi.mock('@react-navigation/native', () => ({ useNavigation: () => ({ canGoBack: () => false, navigate: fx.navigate }), useFocusEffect: () => undefined, useIsFocused: () => fx.focused }));
+vi.mock('../../../services/api', () => ({ customerApi: { validatePromo: vi.fn(), getDeliveryAvailability: fx.availability } }));
 vi.mock('../../../services/notification-priming', () => ({ maybePrimeNotifications: vi.fn() }));
-vi.mock('../../../stores/authStore', () => ({ useAuthStore: () => ({ isAuthenticated: true, promptLogin: vi.fn() }) }));
+vi.mock('../../../stores/authStore', () => ({ useAuthStore: () => ({ isAuthenticated: fx.signedIn, promptLogin: vi.fn() }) }));
 vi.mock('../../../stores/locationStore', () => ({ useLocationStore: () => ({ latitude: 6.8, longitude: -58.16 }) }));
 vi.mock('../../../lib/images', () => ({ itemPhoto: () => undefined }));
 vi.mock('../../../lib/haptics', () => ({ haptic: { success: vi.fn() } }));
@@ -105,7 +108,7 @@ let host: HTMLDivElement;
 let client: QueryClient;
 beforeEach(() => {
   vi.clearAllMocks();
-  fx.cart = CART; fx.error = null; fx.checkingOutcome = false; fx.standIn = false; fx.fetching = false; fx.cartArgs = [];
+  fx.cart = CART; fx.error = null; fx.checkingOutcome = false; fx.standIn = false; fx.fetching = false; fx.cartArgs = []; fx.focused = true; fx.signedIn = true;
   fx.recovery = { recovering: false, placedOrderIds: null };
   client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   host = document.createElement('div'); document.body.append(host);
@@ -128,7 +131,7 @@ describe('[APP-SPEED A] the Cart tab opens on the cart the phone already has', (
     await render();
 
     // the Cart tab asks for the stand-in (enabled, from any cached quote of the same cart)
-    expect(fx.cartArgs[0]!.slice(3)).toEqual([true, true]);
+    expect(fx.cartArgs.filter((args) => args.length === 5).at(-1)!.slice(3)).toEqual([true, true]);
     // (a) at once
     expect(text()).toContain('Test item');
     expect(text()).toContain('Updating…');
@@ -152,3 +155,36 @@ describe('[APP-SPEED A] the Cart tab opens on the cart the phone already has', (
     expect(button('Place order')!.disabled).toBe(true);
   });
 });
+
+describe('[APP-SPEED A · review S2-1] the Cart tab drawn ahead reads nothing until it is first shown', () => {
+  /** The Cart tab's own quote call (the pickup-retry quote is the other useCart call). */
+  const tabQuote = () => fx.cartArgs.filter((args) => args.length === 5).at(-1)!;
+  const lastEnabled = () => tabQuote()[3];
+
+  it('hidden and never opened: the quote and the rider read are held; the first focus opens them, for good', async () => {
+    fx.focused = false;
+    await render();
+    expect(lastEnabled(), 'the quote is held while the tab was never shown').toBe(false);
+    expect(tabQuote()[4], 'a remembered quote of the same cart may still be drawn').toBe(true);
+    expect(fx.availability).not.toHaveBeenCalled();
+
+    fx.focused = true;
+    await render();
+    expect(lastEnabled()).toBe(true);
+    await act(async () => { await new Promise((r) => setTimeout(r, 5)); });
+    expect(fx.availability, 'the rider read goes once the cart is shown').toHaveBeenCalled();
+
+    // Latched: leaving the tab keeps it live, exactly as before this change.
+    fx.focused = false;
+    await render();
+    expect(lastEnabled()).toBe(true);
+  });
+
+  it('a guest’s Cart (shown or not) asks for no quote', async () => {
+    fx.signedIn = false;
+    await render();
+    expect(lastEnabled()).toBe(false);
+    expect(fx.availability).not.toHaveBeenCalled();
+  });
+});
+

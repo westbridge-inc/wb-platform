@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import React, { act } from 'react';
 // @ts-expect-error react-dom is deliberately not a mobile runtime dependency.
 import { createRoot } from 'react-dom/client';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { QueryClient, QueryClientProvider, onlineManager } from '@tanstack/react-query';
 
 // [APP-SPEED A] "View ride" opened a blank spinner although Orders held the ride. The ride's row from the
 // Orders lists is drawn at once as "checking": no fare, no rating, no help door until the server answers.
@@ -102,5 +102,22 @@ describe('[APP-SPEED A] a finished ride opens on the row Orders already has', ()
     await settle();
     expect(host.textContent).toContain('failed');
     expect(host.textContent).not.toContain('Stabroek');
+  });
+});
+
+describe('[APP-SPEED A · review S3] offline: never "Checking your ride…" forever', () => {
+  afterEach(() => { onlineManager.setOnline(true); });
+
+  it('the first read parked offline with only the row: the error state, then the ride once back online', async () => {
+    onlineManager.setOnline(false);
+    client.setQueryData(['customer', 'orders', 'live'], { items: [ROW], total: 1 });
+    await open();
+    await settle();
+    expect(host.textContent).toContain('failed');
+    expect(host.textContent).not.toContain('Checking your ride…');
+    onlineManager.setOnline(true);
+    fx.read.resolve({ data: { data: finished } });
+    await settle();
+    expect(host.textContent).toContain('Trip complete');
   });
 });

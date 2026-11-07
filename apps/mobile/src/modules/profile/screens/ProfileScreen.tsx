@@ -128,11 +128,12 @@ export function ProfileScreen() {
   const { isAuthenticated, promptLogin, user, setIntent } = useAuthStore();
   // [APP-SPEED A] The signed-in person (auth store) stands in while the first profile read is on
   // its way: their name and picture at once; the profile's own facts wait for it (below).
-  const profile = useProfile<any>({ placeholderData: user ? () => user : undefined });
-  const myRating = useMyRating();
+  // [review S3] Profile is drawn ahead (warm tabs): a guest's hidden tab reads nothing.
+  const profile = useProfile<any>({ placeholderData: user ?? undefined, enabled: isAuthenticated });
+  const myRating = useMyRating(isAuthenticated);
   // [Wave 3 · ref 05] The Orders tile's badge is the LIVE order count — a real
   // number from the live query, never unread-notifications wearing its badge.
-  const liveOrders = useLiveOrders();
+  const liveOrders = useLiveOrders(undefined, isAuthenticated);
   // Kit logout popup (51), now the one shared ask. The cart is a server
   // query and the account keeps it; logout clears this device's copy.
   const { requestLogout, logoutDialog } = useLogoutConfirm({

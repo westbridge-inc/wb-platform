@@ -48,7 +48,7 @@ vi.mock('../lib/deviceLocation', () => ({
 }));
 
 import { customerKeys, prefetchActiveRide, prefetchOrder, prefetchVendor, useCart, useOrder } from './customer';
-import { useVendorPrefetch } from './storeDoor';
+import { PRESS_READ_DELAY_MS, usePressRead, useVendorPrefetch } from './storeDoor';
 
 const CART = { id: 'cart', items: [{ id: 'line', itemId: 'item', quantity: 1 }], totalAmount: 2500 };
 const answer = (data: unknown) => ({ data: { data } });
@@ -152,25 +152,18 @@ describe('[APP-SPEED A] an order’s list row stands in only where the screen as
 });
 
 describe('[APP-SPEED A] reads asked at the finger-down', () => {
-  it('a store’s menu: once, with the customer’s granted place, only when nothing is in memory or on its way', async () => {
+  it('a store’s menu: with the customer’s granted place, only when nothing is in memory or on its way', async () => {
     const read = later();
     fx.getVendor.mockImplementationOnce(() => read.promise);
-    const prefetch = await probe(() => useVendorPrefetch());
-    await act(async () => { prefetch.current()('store-1'); prefetch.current()('store-1'); });
+    prefetchVendor(client, 'store-1', { lat: 6.8, lng: -58.16 });
+    prefetchVendor(client, 'store-1', { lat: 6.8, lng: -58.16 });
     expect(fx.getVendor).toHaveBeenCalledTimes(1);
     expect(fx.getVendor).toHaveBeenCalledWith('store-1', { lat: 6.8, lng: -58.16 });
     read.resolve(answer({ id: 'store-1', name: 'Store 1' }));
     await flush();
     expect(client.getQueryData(customerKeys.vendor('store-1'))).toEqual({ id: 'store-1', name: 'Store 1' });
-    await act(async () => { prefetch.current()('store-1'); });
-    expect(fx.getVendor, 'a remembered store is re-read by its page, not here').toHaveBeenCalledTimes(1);
-
-    fx.place = { latitude: null as never, longitude: null as never, status: 'denied' };
-    fx.getVendor.mockImplementationOnce(() => new Promise(() => {}));
-    prefetchVendor(client, 'store-2', null);
-    expect(fx.getVendor).toHaveBeenLastCalledWith('store-2', null);
-    await act(async () => { prefetch.current()(undefined); });
-    expect(fx.getVendor).toHaveBeenCalledTimes(2);
+    expect(prefetchVendor(client, 'store-1', null), 'a remembered store is re-read by its page, not here').toBeUndefined();
+    expect(fx.getVendor).toHaveBeenCalledTimes(1);
   });
 
   it('an order, and "is a ride in progress?": only when nothing is in memory or on its way', async () => {
@@ -192,3 +185,82 @@ describe('[APP-SPEED A] reads asked at the finger-down', () => {
     expect(fx.active, 'a remembered "no ride" is re-read by the Taxi screen itself').toHaveBeenCalledTimes(1);
   });
 });
+
+describe('[APP-SPEED A · review S2-1] a cart change before the Cart tab is first shown', () => {
+  it('re-reads only the store page’s cart key; the hidden Cart tab’s held quote asks nothing', async () => {
+    fx.getCart.mockImplementation(() => Promise.resolve(answer(CART)));
+    const both = await probe(() => [useCart<any>(), useCart<any>(6.8, -58.16, { tipAmount: 0 }, false, true)] as const);
+    await flush();
+    expect(fx.getCart).toHaveBeenCalledTimes(1);
+    expect(both.current()[1].data, 'the hidden tab may draw the store page’s quote').toEqual(CART);
+
+    // What every cart mutation does when it lands (hooks/customer invalidateCart).
+    await act(async () => { await client.invalidateQueries({ queryKey: ['customer', 'cart'] }); });
+    await flush();
+    expect(fx.getCart).toHaveBeenCalledTimes(2);
+    for (const call of fx.getCart.mock.calls) expect(call, 'only the store page’s key (no place, no choices)').toEqual([undefined, undefined, undefined]);
+  });
+});
+
+describe('[APP-SPEED A · review S3] an empty cart of this quote is kept, never replaced by another cart', () => {
+  it('a choice change on an empty cart keeps "empty" as its stand-in', async () => {
+    client.setQueryData(customerKeys.cart(), CART);
+    fx.getCart.mockImplementationOnce(() => Promise.resolve(answer(null))).mockImplementation(() => new Promise(() => {}));
+    let choices: Record<string, unknown> = { tipAmount: 0 };
+    const cart = await probe(() => useCart<any>(6.8, -58.16, choices as never, true, true));
+    await flush();
+    expect(cart.current().data).toBeNull();
+    choices = { express: true };
+    await cart.rerender();
+    expect(cart.current().isPlaceholderData).toBe(true);
+    expect(cart.current().data, 'this quote’s own empty cart, not the store page’s').toBeNull();
+  });
+});
+
+describe('[APP-SPEED A · review S2-2] reads asked by a resting finger', () => {
+  beforeEach(() => { vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] }); });
+  afterEach(() => { vi.useRealTimers(); });
+
+  it('a press that ends inside the delay (a lift or a scroll starting on the card) reads nothing', async () => {
+    const read = vi.fn(() => Promise.resolve());
+    const press = await probe(() => usePressRead());
+    const handlers = press.current()(read);
+    handlers.onPressIn();
+    await act(async () => { await vi.advanceTimersByTimeAsync(PRESS_READ_DELAY_MS - 20); });
+    handlers.onPressOut();
+    await act(async () => { await vi.advanceTimersByTimeAsync(500); });
+    expect(read).not.toHaveBeenCalled();
+  });
+
+  it('a finger resting on the card starts the read once; one read in flight at a time', async () => {
+    let land!: () => void;
+    const first = vi.fn(() => new Promise<void>((res) => { land = res; }));
+    const second = vi.fn(() => Promise.resolve());
+    const press = await probe(() => usePressRead());
+    press.current()(first).onPressIn();
+    await act(async () => { await vi.advanceTimersByTimeAsync(PRESS_READ_DELAY_MS + 5); });
+    expect(first).toHaveBeenCalledTimes(1);
+
+    press.current()(second).onPressIn();
+    await act(async () => { await vi.advanceTimersByTimeAsync(PRESS_READ_DELAY_MS + 5); });
+    expect(second, 'another card waits while the first read is on its way').not.toHaveBeenCalled();
+
+    await act(async () => { land(); await vi.advanceTimersByTimeAsync(1); });
+    press.current()(second).onPressIn();
+    await act(async () => { await vi.advanceTimersByTimeAsync(PRESS_READ_DELAY_MS + 5); });
+    expect(second).toHaveBeenCalledTimes(1);
+  });
+
+  it('the store card’s handlers ask the menu with the granted place, only after the delay', async () => {
+    fx.getVendor.mockImplementation(() => Promise.resolve(answer({ id: 'store-9' })));
+    const store = await probe(() => useVendorPrefetch());
+    const handlers = store.current()('store-9');
+    handlers.onPressIn();
+    expect(fx.getVendor).not.toHaveBeenCalled();
+    await act(async () => { await vi.advanceTimersByTimeAsync(PRESS_READ_DELAY_MS + 5); });
+    expect(fx.getVendor).toHaveBeenCalledWith('store-9', { lat: 6.8, lng: -58.16 });
+    handlers.onPressOut();
+    await act(async () => { await vi.advanceTimersByTimeAsync(10); });
+  });
+});
+

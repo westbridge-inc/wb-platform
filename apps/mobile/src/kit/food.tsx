@@ -124,6 +124,7 @@ export function FoodCard({
   onToggleFavorite,
   onPress,
   onPressIn,
+  onPressOut,
   width,
   brand,
   place,
@@ -148,6 +149,7 @@ export function FoodCard({
   onPress?: () => void;
   /** [APP-SPEED A] The finger-down: start reading what the tap opens (never an action). */
   onPressIn?: () => void;
+  onPressOut?: () => void;
   width: number;
 }) {
   // NO CARD CHASSIS [100x pass §5]: "Cards lose their gray borders —
@@ -159,7 +161,7 @@ export function FoodCard({
   const title = brandTitle(name, brand);
   const branchLine = brandLine(brand, place);
   return (
-    <Pressable onPress={onPress} onPressIn={onPressIn} accessibilityRole="button" accessibilityLabel={branchLine ? `${title}. ${branchLine}` : title}>
+    <Pressable onPress={onPress} onPressIn={onPressIn} onPressOut={onPressOut} accessibilityRole="button" accessibilityLabel={branchLine ? `${title}. ${branchLine}` : title}>
       {({ pressed }) => (
       <View style={{ width, opacity: pressed ? 0.85 : 1 }}>
         <View style={{ borderRadius: radius.lg, overflow: 'hidden' }}>
@@ -231,6 +233,7 @@ export function VendorRow({
   trailing,
   onPress,
   onPressIn,
+  onPressOut,
   style,
   wide = false,
   closed = false,
@@ -249,6 +252,7 @@ export function VendorRow({
   onPress?: () => void;
   /** [APP-SPEED A] The finger-down: start reading what the tap opens (never an action). */
   onPressIn?: () => void;
+  onPressOut?: () => void;
   style?: ViewStyle;
   wide?: boolean;
   closed?: boolean;
@@ -259,7 +263,7 @@ export function VendorRow({
   return (
     <Pressable
       onPress={onPress}
-      onPressIn={onPressIn}
+      onPressIn={onPressIn} onPressOut={onPressOut}
       accessibilityRole="button"
       accessibilityLabel={closed ? `${spoken}. Closed right now` : sub ? `${spoken}. ${sub}` : spoken}
     >
@@ -413,6 +417,7 @@ export function MerchantCard({
   onToggleFavorite,
   onPress,
   onPressIn,
+  onPressOut,
   width,
   brand,
   place,
@@ -432,13 +437,14 @@ export function MerchantCard({
   onPress?: () => void;
   /** [APP-SPEED A] The finger-down: start reading what the tap opens (never an action). */
   onPressIn?: () => void;
+  onPressOut?: () => void;
   width: number;
 }) {
   const title = brandTitle(name, brand);
   const branchLine = brandLine(brand, place);
   const spoken = branchLine ? `${title}. ${branchLine}` : title;
   return (
-    <Pressable onPress={onPress} onPressIn={onPressIn} accessibilityRole="button" accessibilityLabel={meta ? `${spoken}. ${meta}` : spoken}>
+    <Pressable onPress={onPress} onPressIn={onPressIn} onPressOut={onPressOut} accessibilityRole="button" accessibilityLabel={meta ? `${spoken}. ${meta}` : spoken}>
       {({ pressed }) => (
         <Card pad={false} style={{ width, opacity: pressed ? 0.85 : 1, overflow: 'hidden' }}>
           <View>

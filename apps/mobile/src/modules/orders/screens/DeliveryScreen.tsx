@@ -299,6 +299,8 @@ function TrackingTimeline({ order, holdActive, releasePending }: { order: any; h
 
 /** What an order opening from a list says in its status's place until the server answers. */
 const ORDER_CHECKING_WORDS = 'Checking the latest status…';
+/** [review S3] What it says instead when the phone is offline and the read cannot start. */
+const ORDER_OFFLINE_WORDS = 'You’re offline. Connect to see this order’s latest status, then try again.';
 
 /** [APP-SPEED A] An order opening from a list: the store and the order number the list already
  *  showed, the status as "checking", and not one button but Back until the server answers. */
@@ -719,6 +721,15 @@ export function DeliveryScreen() {
         {/* [UI-SWEEP U32] A visible way back while this loads or fails, not swipe only. */}
         <Header />
         <LoadingBlock />
+      </View>
+    );
+  }
+  if (preview && order.fetchStatus === 'paused') {
+    // [review S3] Offline: the read is parked, not on its way. Never "Checking…" forever.
+    return (
+      <View style={{ flex: 1, backgroundColor: color.surface.subtle, paddingTop: insets.top }}>
+        <Header />
+        <ErrorState message={ORDER_OFFLINE_WORDS} onRetry={() => order.refetch()} />
       </View>
     );
   }

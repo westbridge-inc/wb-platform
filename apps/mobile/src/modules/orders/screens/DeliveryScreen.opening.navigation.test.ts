@@ -4,7 +4,7 @@ import React, { act } from 'react';
 // The renderer is resolved to the workspace's existing web dependency by Vitest.
 // @ts-expect-error react-dom is deliberately not a mobile runtime dependency.
 import { createRoot } from 'react-dom/client';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { QueryClient, QueryClientProvider, onlineManager } from '@tanstack/react-query';
 
 // ---------------------------------------------------------------------------
 // [APP-SPEED A · owner 7 Nov: "tapping and lagginess"] "Track order" opened a
@@ -214,5 +214,26 @@ describe('[APP-SPEED A] Track order opens on the row the phone already has', () 
     expect(host.textContent).toContain('Loading');
     expect(host.textContent).not.toContain('Test store');
     expect(host.textContent).not.toContain('Checking the latest status…');
+  });
+});
+
+describe('[APP-SPEED A · review S3] offline: never "Checking…" forever', () => {
+  afterEach(() => { onlineManager.setOnline(true); });
+
+  it('the first read parked offline with only the row: the error state says offline, with Try again', async () => {
+    onlineManager.setOnline(false);
+    client.setQueryData(['customer', 'orders', 'live'], { items: [LIST_ROW], total: 1 });
+    fx.getOrder.mockImplementation(() => Promise.resolve(answer(ORDER)));
+    await open();
+    await flush();
+    expect(client.getQueryState(['customer', 'order', 'order-1'])?.fetchStatus).toBe('paused');
+    expect(host.textContent).toContain('Error');
+    expect(host.textContent).not.toContain('Checking the latest status…');
+    expect(buttons()).toEqual([]);
+
+    onlineManager.setOnline(true);
+    await flush();
+    expect(host.textContent).not.toContain('Error');
+    expect(buttons()).toContain('Cancel order');
   });
 });

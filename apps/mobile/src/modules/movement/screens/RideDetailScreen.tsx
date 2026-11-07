@@ -1,5 +1,5 @@
 /** @jsxImportSource react */
-import React, { useState } from 'react';
+import React, { useCallback, useState } from 'react';
 import { ScrollView, View } from 'react-native';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { color, radius, space } from '@swift/ui';
@@ -22,17 +22,22 @@ export function RideDetailScreen({ navigation, route }: any) {
   const qc = useQueryClient();
   // [APP-SPEED A] While the first read is on its way, the ride's row from the Orders lists already
   // in memory is drawn as "checking": no fare, no rating, no help door until the server answers.
+  const fromLists = useCallback(() => cachedOrderRow<any>(qc, rideId), [qc, rideId]);
   const ride = useQuery({
     queryKey: ['ride', 'detail', rideId],
     queryFn: () => rideApi.get(rideId).then((res) => res.data?.data),
     enabled: !!rideId,
-    placeholderData: () => cachedOrderRow<any>(qc, rideId),
+    placeholderData: fromLists,
   });
   const checking = ride.isPlaceholderData;
   const rate = useRateOrder(rideId);
   const [score, setScore] = useState(0);
   const [rated, setRated] = useState(false);
 
+  // [review S3] Offline with only the row: the read is parked, not on its way. Never "Checking…" forever.
+  if (checking && ride.fetchStatus === 'paused') {
+    return <Screen><Header title="Your ride" /><ErrorState message="You’re offline. Connect to see this ride, then try again." onRetry={() => void ride.refetch()} /></Screen>;
+  }
   if (ride.isLoading) return <Screen><Header title="Your ride" /><LoadingBlock /></Screen>;
   if (ride.isError || !ride.data) return <Screen><Header title="Your ride" /><ErrorState onRetry={() => void ride.refetch()} /></Screen>;
 

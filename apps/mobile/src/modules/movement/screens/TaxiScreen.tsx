@@ -850,7 +850,9 @@ function TaxiBooking({ navigation }: any) {
               ) : null}
               {!activeChecked ? (
                 <T variant="caption" tone="muted" center accessibilityLiveRegion="polite" style={{ marginTop: space.sm }}>
-                  Checking for a ride in progress…
+                  {activeRideQ.fetchStatus === 'paused'
+                    ? 'You’re offline. Connect to check for a ride in progress, then book.'
+                    : 'Checking for a ride in progress…'}
                 </T>
               ) : !canRequest && dropoffPoint ? (
                 <T variant="caption" tone="muted" center style={{ marginTop: space.sm }}>

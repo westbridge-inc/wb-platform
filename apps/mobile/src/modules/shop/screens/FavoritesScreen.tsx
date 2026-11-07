@@ -69,7 +69,7 @@ export function FavoritesScreen() {
               topRated={v.topRated}
               favorite
               onToggleFavorite={() => holdRow(v.id, () => toggleFav.mutateAsync({ vendorId: v.id, isFavorite: true }))}
-              onPressIn={() => prefetchStore(v.id)}
+              {...prefetchStore(v.id)}
               onPress={() => navigation.navigate('Restaurant', { vendorId: v.id, preview: storePreviewOf(v) })}
             />
           )}

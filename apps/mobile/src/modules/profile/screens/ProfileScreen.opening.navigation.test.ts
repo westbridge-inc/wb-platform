@@ -18,6 +18,9 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 const fx = vi.hoisted(() => ({
   user: { id: 'u-1', firstName: 'Asha', lastName: 'Persaud', avatar: null } as Record<string, unknown> | null,
   getProfile: vi.fn(),
+  myRating: vi.fn(() => new Promise(() => {})),
+  getOrders: vi.fn(() => new Promise(() => {})),
+  signedIn: true,
   token: new Proxy({}, { get: (_target, key): unknown => key === Symbol.toPrimitive ? () => 0 : fx.token }),
 }));
 
@@ -42,8 +45,8 @@ vi.mock('../../../services/api', () => ({
   API_URL: 'https://api.example.test',
   customerApi: {
     getProfile: fx.getProfile,
-    myRating: () => new Promise(() => {}),
-    getOrders: () => new Promise(() => {}),
+    myRating: fx.myRating,
+    getOrders: fx.getOrders,
     getConsent: () => new Promise(() => {}),
     setMarketingConsent: vi.fn(),
   },
@@ -54,7 +57,7 @@ vi.mock('../../../lib/checkoutAttemptStore', () => ({ checkoutAttempt: {} }));
 vi.mock('../../../lib/checkoutAttempt', () => ({ recordCheckoutOutcome: vi.fn(), stableBodyHash: vi.fn(), checkoutFailureOutcome: vi.fn(), settleUnresolvedIntent: vi.fn() }));
 vi.mock('../../../lib/marketDepthMemory', () => ({ rememberedMarketDepth: vi.fn(), rememberMarketDepth: vi.fn() }));
 vi.mock('../../../stores/authStore', () => {
-  const state = () => ({ isAuthenticated: true, promptLogin: vi.fn(), user: fx.user, setIntent: vi.fn(), sessionGeneration: 1 });
+  const state = () => ({ isAuthenticated: fx.signedIn, promptLogin: vi.fn(), user: fx.user, setIntent: vi.fn(), sessionGeneration: 1 });
   return {
     useAuthStore: Object.assign((select?: (s: ReturnType<typeof state>) => unknown) => (select ? select(state()) : state()), { getState: state }),
     getAuthSessionSnapshot: () => null, requireAuthSessionForPrincipal: vi.fn(), AuthSessionBoundaryError: class extends Error {},
@@ -100,7 +103,7 @@ const later = () => {
 
 beforeEach(() => {
   fx.user = { id: 'u-1', firstName: 'Asha', lastName: 'Persaud', avatar: null };
-  fx.getProfile.mockReset();
+  fx.getProfile.mockReset(); fx.myRating.mockClear(); fx.getOrders.mockClear(); fx.signedIn = true;
   client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } });
   host = document.createElement('div'); document.body.append(host); root = createRoot(host);
 });
@@ -151,3 +154,16 @@ describe('[APP-SPEED A] Profile opens on the signed-in person', () => {
     expect(host.querySelector('[data-loading]')).not.toBeNull();
   });
 });
+
+describe('[APP-SPEED A · review S3] a guest’s Profile (drawn ahead, hidden) reads nothing', () => {
+  it('no profile, rating or live-orders read for a guest', async () => {
+    fx.signedIn = false;
+    fx.user = null;
+    await open();
+    await flush();
+    expect(fx.getProfile).not.toHaveBeenCalled();
+    expect(fx.myRating).not.toHaveBeenCalled();
+    expect(fx.getOrders).not.toHaveBeenCalled();
+  });
+});
+

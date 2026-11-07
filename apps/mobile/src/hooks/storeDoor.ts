@@ -3,16 +3,20 @@ import { useQueryClient } from '@tanstack/react-query';
 import { prefetchVendor } from './customer';
 import { useLocationStore } from '../stores/locationStore';
 import { grantedLocationFix } from '../lib/deviceLocation';
+import { usePressRead, type PressReadHandlers } from './pressRead';
 
-/** [APP-SPEED A] The press-in prefetch for store and dish cards (Home, Search, Favourites, Market):
- *  the store's menu is asked for at the finger-down, with the customer's granted place exactly as
- *  the store page asks (hooks/customer prefetchVendor). */
-export function useVendorPrefetch(): (vendorId: string | null | undefined) => void {
+export { PRESS_READ_DELAY_MS, usePressRead, type PressReadHandlers } from './pressRead';
+
+/** [APP-SPEED A] The press-held read of a store's menu for store and dish cards (Home, Search,
+ *  Favourites), with the customer's granted place exactly as the store page asks
+ *  (hooks/customer prefetchVendor). Spread the result on the card: `{...storeRead(v.id)}`. */
+export function useVendorPrefetch(): (vendorId: string | null | undefined) => PressReadHandlers {
   const qc = useQueryClient();
-  return useCallback((vendorId) => {
-    if (!vendorId) return;
+  const pressRead = usePressRead();
+  return useCallback((vendorId) => pressRead(() => {
+    if (!vendorId) return undefined;
     const { latitude, longitude, status } = useLocationStore.getState();
     const here = grantedLocationFix(latitude, longitude, status);
-    prefetchVendor(qc, vendorId, here ? { lat: here.latitude, lng: here.longitude } : null);
-  }, [qc]);
+    return prefetchVendor(qc, vendorId, here ? { lat: here.latitude, lng: here.longitude } : null);
+  }), [qc, pressRead]);
 }
