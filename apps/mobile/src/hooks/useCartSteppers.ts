@@ -38,6 +38,8 @@ let generation: number | null = null;
 const notify = () => { version += 1; listeners.forEach((listener) => listener()); };
 const subscribe = (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; };
 const snapshot = () => version;
+/** [APP-SPEED C] Changes only when the first tap starts or the last line settles (the cart's Place order hold). */
+const settledSnapshot = () => entries.size === 0;
 
 function keyOf(key: string, line: CartLine | null | undefined) {
   if (!line) return aliases.get(`item:${key}`) ?? `item:${key}`;
@@ -127,6 +129,40 @@ function onRead(items: CartLine[], readAt: number) {
   if (changed) notify();
 }
 
+/** What a line's stepper shows: what was tapped to, else the cart's own number. */
+function qtyOf(key: string, line: CartLine | null | undefined): number {
+  return entries.get(keyOf(key, line))?.target ?? heldQty(line);
+}
+
+/** A tap: the number moves now; the line's one request goes when it can (module-wide, so its identity never changes).
+ *  The writes go through the newest mounted useCartSteppers screen's cart hooks, as `set` always did. */
+export function setCartStepper(key: string, line: CartLine | null | undefined, next: number, addAs?: AddAs) {
+  const k = keyOf(key, line);
+  // [BOOK-POLISH] A booking line never goes past 1 (no request for a number the server refuses).
+  const target = clampQty(next, maxQtyFor(line));
+  let entry = entries.get(k);
+  if (!entry) {
+    if (target === heldQty(line)) return;
+    entry = { key: k, target, line: line ?? null, sent: null, out: false, answeredAt: 0, addAs };
+    entries.set(k, entry);
+  } else {
+    entry.target = target;
+    if (addAs) entry.addAs = addAs;
+  }
+  notify();
+  void drive(entry);
+}
+
+/**
+ * [APP-SPEED C] One line's number, for the row that shows it: a tap redraws that row only (the store page and the
+ * cart no longer redraw every row, and the whole screen, on every + and −). The value is a plain number, so a tap on
+ * another line leaves this row alone.
+ */
+export function useCartStepperQty(key: string, line: CartLine | null | undefined): number {
+  const read = () => qtyOf(key, line);
+  return useSyncExternalStore(subscribe, read, read);
+}
+
 /** Forget every line's taps (tests; a change of person does this by itself). */
 export function forgetCartSteppers() { entries.clear(); aliases.clear(); notify(); }
 
@@ -137,8 +173,15 @@ export function forgetCartSteppers() { entries.clear(); aliases.clear(); notify(
  *
  * `qty(key, line)` is what a stepper shows; `set(key, line, next, addAs?)` is a tap; `settled` is false while any line,
  * on any screen, still has taps the server has not confirmed (the cart's Place order waits for it, as for the quote).
+ *
+ * [APP-SPEED C] `watch`: 'every-line' (the default) redraws the screen on every tap anywhere; 'settled' redraws it
+ * only when `settled` changes — its rows then read their own number with useCartStepperQty (`qty` here is a read at
+ * that moment, not a subscription). `set` never changes identity, so memoised rows keep their callbacks.
  */
-export function useCartSteppers(cart: { data?: unknown; dataUpdatedAt?: number; refetch?: () => unknown }) {
+export function useCartSteppers(
+  cart: { data?: unknown; dataUpdatedAt?: number; refetch?: () => unknown },
+  watch: 'every-line' | 'settled' = 'every-line',
+) {
   const add = useAddToCart();
   const update = useUpdateCartItem();
   const session = useAuthStore((state) => state.sessionGeneration);
@@ -150,7 +193,8 @@ export function useCartSteppers(cart: { data?: unknown; dataUpdatedAt?: number; 
     update: (body) => update.mutateAsync(body),
     reread: () => { void cart.refetch?.(); },
   };
-  useSyncExternalStore(subscribe, snapshot, snapshot);
+  const read: () => number | boolean = watch === 'settled' ? settledSnapshot : snapshot;
+  useSyncExternalStore(subscribe, read, read);
 
   const items = (cart.data as { items?: CartLine[] } | null | undefined)?.items ?? [];
   const latest = useRef(items);
@@ -159,23 +203,8 @@ export function useCartSteppers(cart: { data?: unknown; dataUpdatedAt?: number; 
   useEffect(() => { onRead(latest.current, readAt); }, [readAt]);
 
   return {
-    qty: (key: string, line: CartLine | null | undefined) => entries.get(keyOf(key, line))?.target ?? heldQty(line),
-    set: (key: string, line: CartLine | null | undefined, next: number, addAs?: AddAs) => {
-      const k = keyOf(key, line);
-      // [BOOK-POLISH] A booking line never goes past 1 (no request for a number the server refuses).
-      const target = clampQty(next, maxQtyFor(line));
-      let entry = entries.get(k);
-      if (!entry) {
-        if (target === heldQty(line)) return;
-        entry = { key: k, target, line: line ?? null, sent: null, out: false, answeredAt: 0, addAs };
-        entries.set(k, entry);
-      } else {
-        entry.target = target;
-        if (addAs) entry.addAs = addAs;
-      }
-      notify();
-      void drive(entry);
-    },
+    qty: qtyOf,
+    set: setCartStepper,
     settled: entries.size === 0,
   };
 }

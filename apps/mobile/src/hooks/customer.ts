@@ -878,7 +878,9 @@ export function useCheckoutRecovery(): { recovering: boolean; placedOrderIds: st
 
 // --- Cart ---------------------------------------------------------------------
 
-export function useCart<T = any>(lat?: number, lng?: number, choices?: CartQuoteChoices, enabled = true, fromAnyCachedQuote = false) {
+export function useCart<T = any>(
+  lat?: number, lng?: number, choices?: CartQuoteChoices, enabled = true, fromAnyCachedQuote = false, onScreen = true,
+) {
   const qc = useQueryClient();
   // A previous quote of THIS key wins, an empty cart (null) included; only a first quote borrows.
   const fromCache = useCallback(
@@ -898,6 +900,12 @@ export function useCart<T = any>(lat?: number, lng?: number, choices?: CartQuote
     // page's) is shown the same way — flagged, total "Updating…", Order held.
     // While held (`enabled` false: the hidden, never-opened Cart tab) the stand-in still draws; nothing is read.
     placeholderData: fromAnyCachedQuote ? fromCache : keepPreviousData,
+    // [APP-SPEED C] `onScreen` false (the Cart tab while another screen is in front): this quote is not watched, so a
+    // +/− on a store page marks it stale without re-quoting it in the background (a cart write's invalidation
+    // refetches only the cart reads on screen), and the hidden tab is not redrawn by each answer. Shown again, it is
+    // read once (it is stale): the last quote stays on screen while that read is on its way (isFetching), which holds
+    // Order (the cart's quoteSettled) until it lands.
+    subscribed: onScreen,
   });
 }
 

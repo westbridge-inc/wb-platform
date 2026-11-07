@@ -21,7 +21,7 @@ import {
   useRemoveCartPromo,
   useSetCartTip,
 } from '../../../hooks/customer';
-import { useCartSteppers } from '../../../hooks/useCartSteppers';
+import { setCartStepper, useCartStepperQty, useCartSteppers } from '../../../hooks/useCartSteppers';
 import { isBooking } from '../../../lib/cartSteppers';
 import { useRowHold } from '../../../lib/useRowHold';
 import { maybePrimeNotifications } from '../../../services/notification-priming';
@@ -139,6 +139,15 @@ function CartHeader({ onBack, onMenu }: { onBack?: () => void; onMenu?: () => vo
       </View>
     </View>
   );
+}
+
+/** [APP-SPEED C] A cart line's + and − with its own number (hooks/useCartSteppers): a tap redraws this stepper only,
+ *  not the whole cart. The number never goes below 1 here (the trash takes a line out). */
+function CartLineStepper({ line }: { line: any }) {
+  const key = `line:${line.id}`;
+  const qty = useCartStepperQty(key, line);
+  const set = (next: number) => setCartStepper(key, line, next);
+  return <AddMorph qty={qty} busy={false} onAdd={() => set(qty + 1)} onInc={() => set(qty + 1)} onDec={() => qty > 1 && set(qty - 1)} />;
 }
 
 // Kit My Cart (29–34). The kit folds checkout into the cart: delivery location,
@@ -264,9 +273,13 @@ export function CartScreen() {
   );
   // [APP-SPEED A] First open: the store page's quote of the same cart stands in (total
   // "Updating…", Order held by quoteSettled) until this quote lands.
-  const cart = useCart<any>(latitude ?? undefined, longitude ?? undefined, pricing, cartReadsOn, true);
+  // [APP-SPEED C] `focused`: while another screen is in front (a store page's +/−), this quote is marked stale, not
+  // re-read; shown again, it is read once before Order is free (hooks/customer useCart).
+  const cart = useCart<any>(latitude ?? undefined, longitude ?? undefined, pricing, cartReadsOn, true, focused);
   // [TAP-AUDIT] A line's + and − answer at the tap and add up; only that line has a request out (hooks/useCartSteppers).
-  const steppers = useCartSteppers(cart);
+  // [APP-SPEED C] 'settled': the cart redraws when Place order's hold changes, not on every tap; each line's
+  // stepper reads its own number (CartLineStepper).
+  const steppers = useCartSteppers(cart, 'settled');
   const c = cart.data; // null = empty cart
   // [E01-B] The retry's own quote, requested only once the customer asked to
   // switch (no riders): every store collects, no express, no tip, promo kept.
@@ -925,13 +938,7 @@ export function CartScreen() {
                         ) : (
                           /* A quantity stepper is one of the four things allowed
                              to wear maroon. */
-                          <AddMorph
-                            qty={steppers.qty(`line:${it.id}`, it)}
-                            busy={false}
-                            onAdd={() => steppers.set(`line:${it.id}`, it, steppers.qty(`line:${it.id}`, it) + 1)}
-                            onInc={() => steppers.set(`line:${it.id}`, it, steppers.qty(`line:${it.id}`, it) + 1)}
-                            onDec={() => steppers.qty(`line:${it.id}`, it) > 1 && steppers.set(`line:${it.id}`, it, steppers.qty(`line:${it.id}`, it) - 1)}
-                          />
+                          <CartLineStepper line={it} />
                         )}
                         {/* Removing a line is an ordinary action, not an error —
                             it stops being red. hitSlop holds the 44pt target. */}
