@@ -19,12 +19,16 @@ export function useAdViewability(opts: {
   onVisibility?: (visibleFraction: number) => void;
   /** Keep measuring after the viewable fired (for onVisibility consumers). */
   keepMeasuring?: boolean;
+  /** [APP-SPEED 11] The screen is shown and Swift is in the foreground (hooks/useScreenLive). The loop runs only
+   *  then: Home is never frozen, and it must not measure under another tab, screen or with the phone in a pocket.
+   *  Left out: measures as before. */
+  live?: boolean;
 }) {
   const ref = useRef<View>(null);
   const fired = useRef(false);
   const streak = useRef(0);
 
-  const { enabled, onViewable, isActive, onVisibility, keepMeasuring } = opts;
+  const { enabled, onViewable, isActive, onVisibility, keepMeasuring, live = true } = opts;
   const cbs = useRef({ onViewable, isActive, onVisibility });
   cbs.current = { onViewable, isActive, onVisibility };
 
@@ -32,11 +36,12 @@ export function useAdViewability(opts: {
     const node = ref.current;
     if (!node) return;
     node.measureInWindow((x, y, w, h) => {
-      if (w <= 0 || h <= 0) return;
+      // [APP-SPEED 11] 0×0 (its tab detached under another one, not laid out) is out of sight: a playing video is told
+      // 0 and pauses. Returning here without a word left it playing for nobody.
       const win = Dimensions.get('window');
-      const visW = Math.max(0, Math.min(x + w, win.width) - Math.max(x, 0));
-      const visH = Math.max(0, Math.min(y + h, win.height) - Math.max(y, 0));
-      const fraction = (visW * visH) / (w * h);
+      const visW = w > 0 && h > 0 ? Math.max(0, Math.min(x + w, win.width) - Math.max(x, 0)) : 0;
+      const visH = w > 0 && h > 0 ? Math.max(0, Math.min(y + h, win.height) - Math.max(y, 0)) : 0;
+      const fraction = w > 0 && h > 0 ? (visW * visH) / (w * h) : 0;
       cbs.current.onVisibility?.(fraction);
       if (fired.current) return;
       const active = cbs.current.isActive ? cbs.current.isActive() : true;
@@ -53,7 +58,7 @@ export function useAdViewability(opts: {
   }, []);
 
   useEffect(() => {
-    if (!enabled) return;
+    if (!enabled || !live) return;
     const timer = setInterval(() => {
       if (fired.current && !keepMeasuring) {
         clearInterval(timer);
@@ -61,8 +66,12 @@ export function useAdViewability(opts: {
       }
       check();
     }, CHECK_MS);
-    return () => clearInterval(timer);
-  }, [enabled, keepMeasuring, check]);
+    return () => {
+      clearInterval(timer);
+      // [APP-SPEED 11] The 1 s dwell is continuous (§12.1): a pause starts it again.
+      streak.current = 0;
+    };
+  }, [enabled, live, keepMeasuring, check]);
 
   /** Reset the once-latch (AdBar reuses one hook per slide change). */
   const reset = useCallback(() => {

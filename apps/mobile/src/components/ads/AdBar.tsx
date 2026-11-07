@@ -25,12 +25,15 @@ export function AdBar({
   trackable,
   trackingScope,
   width,
+  live = true,
 }: {
   items: AdServeItem[];
   rotationSeconds: number | null;
   trackable: boolean;
   trackingScope: AdEventScope | null;
   width: number;
+  /** [APP-SPEED 11] Home is shown and Swift is in the foreground: the bar rotates and measures only then. */
+  live?: boolean;
 }) {
   const listRef = useRef<FlatList<AdServeItem>>(null);
   const [index, setIndex] = useState(0);
@@ -55,6 +58,7 @@ export function AdBar({
   const { ref: barRef, reset } = useAdViewability({
     enabled: trackable && items.length > 0,
     keepMeasuring: true,
+    live,
     onViewable: () => {
       const current = items[indexRef.current];
       const token = current?.impressionToken;
@@ -76,15 +80,16 @@ export function AdBar({
   });
 
   // Auto-advance timer — checks the pause window each tick.
+  // [APP-SPEED 11] Only while Home is live: under another screen or in the background nothing turns.
   useEffect(() => {
-    if (items.length <= 1 || !rotationSeconds) return;
+    if (items.length <= 1 || !rotationSeconds || !live) return;
     const timer = setInterval(() => {
       if (Date.now() < pausedUntil.current) return;
       const next = (indexRef.current + 1) % items.length;
       listRef.current?.scrollToIndex({ index: next, animated: true });
     }, rotationSeconds * 1000);
     return () => clearInterval(timer);
-  }, [items.length, rotationSeconds]);
+  }, [items.length, rotationSeconds, live]);
 
   const pause = useCallback(() => {
     pausedUntil.current = Number.MAX_SAFE_INTEGER; // touching — no auto-advance

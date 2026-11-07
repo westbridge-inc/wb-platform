@@ -12,7 +12,8 @@ import { API_URL } from '../../../services/api';
 import { color, radius, space } from '@swift/ui';
 import { customerKeys, prefetchActiveRide, prefetchOrder, useDiscoveryCategories, useHome, useToggleFavorite, type HomeFeed, type LiveOrderProjection } from '../../../hooks/customer';
 import { useRowHold } from '../../../lib/useRowHold';
-import { createHomeRefreshGate, homeFeedState, homeQueryKey, subscribeToHomeAttention } from '../../../lib/homeReliability';
+import { createHomeRefreshGate, homeAttentionRefresh, homeFeedState, homeQueryKey, subscribeToHomeAttention } from '../../../lib/homeReliability';
+import { useScreenLive } from '../../../hooks/useScreenLive';
 import { useAds } from '../../../hooks/ads';
 import { AdHeroVideo, AdTopCard, AdBar } from '../../../components/ads';
 import { PressableScale } from '../../../kit/pressable-scale';
@@ -192,7 +193,7 @@ function ServiceTile({ item, index, navigation }: { item: (typeof SERVICES)[numb
  * the tracking screen uses, which returns null unless BOTH ends of the window
  * arrived from the server. No local five-minute assumption, one authority.
  */
-function LiveOrderCard({ order, navigation, statusNote }: { order: LiveOrderProjection; navigation: any; statusNote: string }) {
+function LiveOrderCard({ order, navigation, statusNote, live }: { order: LiveOrderProjection; navigation: any; statusNote: string; live: boolean }) {
   const qc = useQueryClient();
   const pressRead = usePressRead();
   // Tick ONLY while a hold is actually running. `holdRingWindow` is pure, so
@@ -200,11 +201,14 @@ function LiveOrderCard({ order, navigation, statusNote }: { order: LiveOrderProj
   // window closes the interval clears itself and the card goes quiet.
   const [now, setNow] = useState(() => Date.now());
   const holdRunning = holdRingActive(order.holdExpiresAt, now, false);
+  // [APP-SPEED 11] …and only while Home is in front of the person (Home is never frozen): on return the clock is read
+  // again at once, so the countdown is right the moment it shows.
   React.useEffect(() => {
-    if (!holdRunning) return;
+    if (!holdRunning || !live) return;
+    setNow(Date.now());
     const t = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(t);
-  }, [holdRunning]);
+  }, [holdRunning, live]);
 
   const hold = holdRingWindow(order.holdExpiresAt, order.placedAt, now, false);
   const remaining = hold ? Math.ceil(hold.remainingMs / 1000) : 0;
@@ -336,13 +340,24 @@ export function HomeScreen() {
   const [avatarBroken, setAvatarBroken] = useState(false);
   const navigation = useNavigation<any>();
   const insets = useSafeAreaInsets();
-  const { user, isAuthenticated, promptLogin, adEventScopeId: scope } = useAuthStore();
+  // [APP-SPEED 11] Each store read field by field: a change Home does not show (a token refresh, another field of the
+  // profile, the location's accuracy) no longer redraws the whole of Home.
+  const avatar = useAuthStore((state) => state.user?.avatar);
+  const firstName = useAuthStore((state) => state.user?.firstName);
+  const isAuthenticated = useAuthStore((state) => state.isAuthenticated);
+  const promptLogin = useAuthStore((state) => state.promptLogin);
+  const scope = useAuthStore((state) => state.adEventScopeId);
+  // [APP-SPEED 11] Home is shown and Swift is in the foreground: its clocks, ad loops and video run only then.
+  const live = useScreenLive();
   const qc = useQueryClient();
   // [APP-SPEED A] A store's menu is asked for at the finger-down on its card or one of its dishes.
   const prefetchStore = useVendorPrefetch();
   // [REPORT-022 F-022-18] clear the failure latch when the URL changes.
-  React.useEffect(() => { setAvatarBroken(false); }, [user?.avatar]);
-  const { latitude, longitude, address, status } = useLocationStore();
+  React.useEffect(() => { setAvatarBroken(false); }, [avatar]);
+  const latitude = useLocationStore((state) => state.latitude);
+  const longitude = useLocationStore((state) => state.longitude);
+  const address = useLocationStore((state) => state.address);
+  const status = useLocationStore((state) => state.status);
   // refreshOnMount:false — App.tsx already owns the silent boot refresh; this
   // hook is here ONLY to hand the primer its explicit, user-initiated request.
   const { resolve: requestLocation } = useDeviceLocation({ refreshOnMount: false });
@@ -361,9 +376,11 @@ export function HomeScreen() {
     () => createHomeRefreshGate(() => { void qc.invalidateQueries({ queryKey: customerKeys.homeAll, refetchType: 'active' }); }, 750),
     [qc],
   );
+  // [APP-SPEED 11] A return to Home re-reads the feed only when it is older than ~30 s (or shows a live order, or its
+  // last read failed): a tab switch or a Back seconds after a read no longer downloads it all again. A pull always does.
   const refreshForAttention = React.useCallback(() => {
     const current = qc.getQueryState(homeQueryKey(locationFix?.latitude, locationFix?.longitude, scope));
-    attentionGate(Date.now(), current?.fetchStatus === 'fetching');
+    homeAttentionRefresh(current, Date.now(), attentionGate);
   }, [attentionGate, qc, locationFix?.latitude, locationFix?.longitude, scope]);
   useFocusEffect(React.useCallback(
     () => subscribeToHomeAttention(AppState.currentState, (callback) => AppState.addEventListener('change', callback), refreshForAttention),
@@ -507,9 +524,9 @@ export function HomeScreen() {
                 accessibilityRole="button"
                 accessibilityLabel="Profile"
               >
-                {user?.avatar && !avatarBroken ? (
+                {avatar && !avatarBroken ? (
                   <Image
-                    source={{ uri: /^https?:\/\//.test(user.avatar) ? user.avatar : `${API_URL}${user.avatar}` }}
+                    source={{ uri: /^https?:\/\//.test(avatar) ? avatar : `${API_URL}${avatar}` }}
                     // A dead/expired avatar URL must never leave a nameless
                     // blank circle — fall back to the monogram [visual pass 08-19].
                     onError={() => setAvatarBroken(true)}
@@ -518,7 +535,7 @@ export function HomeScreen() {
                 ) : (
                   <View style={{ width: 40, height: 40, borderRadius: radius.full, backgroundColor: color.brand[50], alignItems: 'center', justifyContent: 'center' }}>
                     <T variant="body" weight="bold" tone="brand">
-                      {(user?.firstName?.[0] ?? 'S').toUpperCase()}
+                      {(firstName?.[0] ?? 'S').toUpperCase()}
                     </T>
                   </View>
                 )}
@@ -529,7 +546,7 @@ export function HomeScreen() {
         {/* Home's ONE display-face line — now in INK, on paper. */}
         <T variant="title" numberOfLines={1} style={{ marginTop: space.md }}>
           {greetingLine(new Date().getHours())}
-          {user?.firstName?.trim() ? `, ${user.firstName.trim()}` : ''}
+          {firstName?.trim() ? `, ${firstName.trim()}` : ''}
         </T>
 
         {/* Search — the front door on every super app. White field, hairline
@@ -603,6 +620,7 @@ export function HomeScreen() {
           <LiveOrderCard
             order={activeOrder}
             navigation={navigation}
+            live={live}
             statusNote={home.isFetching || home.isPlaceholderData ? 'Updating order…' : home.isError || home.fetchStatus === 'paused' ? 'Last known' : ''}
           />
         ) : null}
@@ -705,6 +723,7 @@ export function HomeScreen() {
               item={heroAd}
               trackable={adTrackable}
               trackingScope={adTrackingScope}
+              live={live}
             />
           </View>
         ) : null}
@@ -788,6 +807,7 @@ export function HomeScreen() {
                     item={topAd}
                     trackable={adTrackable}
                     trackingScope={adTrackingScope}
+                    live={live}
                   />
                 </View>
               ) : null}
@@ -841,6 +861,7 @@ export function HomeScreen() {
                   trackable={adTrackable}
                   trackingScope={adTrackingScope}
                   width={SCREEN_W - GUTTER * 2}
+                  live={live}
                 />
               </View>
             ) : null}
