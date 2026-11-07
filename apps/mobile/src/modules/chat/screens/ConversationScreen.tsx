@@ -1,5 +1,5 @@
 /** @jsxImportSource react */
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { FlatList, KeyboardAvoidingView, Platform, Pressable, TextInput, View } from 'react-native';
 import { Feather } from '@expo/vector-icons';
 import { useRoute } from '@react-navigation/native';
@@ -12,7 +12,7 @@ import { useBlockUser, useReportContent } from '../../../hooks/customer';
 import { ActionSheet, CircleChip, ConfirmDialog, ErrorState, Header, LoadingBlock, Screen, Spinner, T } from '../../../kit';
 import { errorMessage } from '../../../lib/apiError';
 import { CHAT_REPORT_REASONS } from '../../../lib/reportReasons';
-import { dropOutbox, markOutbox, outboxBaseline, outboxItem, threadWithOutbox, type OutboxItem } from '../../../lib/chatOutbox';
+import { confirmedOutbox, dropOutbox, markOutbox, outboxBaseline, outboxItem, settleOutbox, threadWithOutbox, type OutboxItem } from '../../../lib/chatOutbox';
 
 const GUTTER = space['2xl'];
 
@@ -41,7 +41,11 @@ export function ConversationScreen() {
   const [outbox, setOutbox] = useState<OutboxItem[]>([]);
   const listRef = useRef<FlatList>(null);
 
-  const msgs: any[] = Array.isArray(messages.data) ? messages.data : ((messages.data as any)?.messages ?? []);
+  // Memoised on the read's data: the outbox effect below depends on it.
+  const msgs: any[] = useMemo(
+    () => (Array.isArray(messages.data) ? messages.data : ((messages.data as any)?.messages ?? [])),
+    [messages.data],
+  );
   const thread: any[] = threadWithOutbox(msgs, outbox, user?.id);
 
   // [STORE-002] Report and block, from the place a person actually needs them.
@@ -80,9 +84,17 @@ export function ConversationScreen() {
   // answer (hooks/chat writes it into the thread). [WR-035] A failed send never eats the message: it stays in the
   // thread as "Not sent" with Retry. A refusal the server names (L13) is not retried: the words go back into the box
   // (unless they typed anew) and the reason is shown, as before.
+  // [review S3] An item a re-read confirmed (its stored copy is in the thread) is done: drop it for good and give its
+  // copy to no other item. Settled items leave the state, so it holds only what is still unsent.
+  useEffect(() => {
+    const confirmed = confirmedOutbox(msgs, outbox, user?.id);
+    if (confirmed.length === 0) return;
+    setOutbox((cur) => confirmed.reduce((acc, c) => settleOutbox(acc, c.localId, c.copyId), cur));
+  }, [msgs, outbox, user?.id]);
   const deliver = (item: OutboxItem) => {
     send.mutate(item.text, {
-      onSuccess: () => setOutbox((cur) => dropOutbox(cur, item.localId)),
+      // [review S3] Done: dropped for good, and its stored copy can no longer confirm another item.
+      onSuccess: (sent: unknown) => setOutbox((cur) => settleOutbox(cur, item.localId, (sent as { id?: unknown } | null)?.id)),
       onError: (error) => {
         const refusal = chatSendRefusal(error);
         if (refusal) {

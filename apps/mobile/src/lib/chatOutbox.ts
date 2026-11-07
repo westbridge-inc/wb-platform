@@ -57,21 +57,45 @@ function isStoredCopy(row: Row, item: OutboxItem, senderId: string): boolean {
 }
 
 /**
- * [review S3.3 · S2] The outbox items the thread does not yet hold a confirmed stored copy of. A re-read that lands
- * mid-send (or a timed-out send the server stored after all) brings the copy: that bubble goes, so there is no
- * twin and no Retry that would send it twice (the chat API takes no idempotency key). Each stored copy confirms at
- * most one item, oldest first. An item whose thread was not loaded at the tap, or with no confirmed copy, always
- * stays, "sending" or "failed": a message is never lost to a guess.
+ * [review S3.3 · S2 · S3] Which outbox items the thread now holds a confirmed stored copy of, and by which message.
+ * A re-read that lands mid-send (or a timed-out send the server stored after all) brings the copy. Each copy belongs
+ * to exactly one item: items still on their way claim first (a copy arriving while a send is out is most likely that
+ * send's), then "Not sent" ones, each oldest first. An item whose thread was not loaded at the tap, or with no
+ * confirmed copy, is never matched: a message is never lost to a guess.
  */
-export function pendingOutbox(messages: readonly unknown[], outbox: readonly OutboxItem[], senderId: string | undefined): OutboxItem[] {
-  if (!senderId) return [...outbox];
+export function confirmedOutbox(messages: readonly unknown[], outbox: readonly OutboxItem[], senderId: string | undefined): Array<{ localId: string; copyId: string }> {
+  if (!senderId) return [];
   const used = new Set<string>();
-  return outbox.filter((item) => {
+  const out: Array<{ localId: string; copyId: string }> = [];
+  const order = [...outbox.filter((i) => i.state === 'sending'), ...outbox.filter((i) => i.state !== 'sending')];
+  for (const item of order) {
     const copy = (messages as Row[]).find((m) => !used.has(m?.id as string) && isStoredCopy(m, item, senderId));
-    if (!copy) return true;
+    if (!copy) continue;
     used.add(copy!.id as string);
-    return false;
-  });
+    out.push({ localId: item.localId, copyId: copy!.id as string });
+  }
+  return out;
+}
+
+/** The outbox items the thread does not yet hold a confirmed stored copy of (what is drawn). */
+export function pendingOutbox(messages: readonly unknown[], outbox: readonly OutboxItem[], senderId: string | undefined): OutboxItem[] {
+  const confirmed = new Set(confirmedOutbox(messages, outbox, senderId).map((c) => c.localId));
+  return outbox.filter((item) => !confirmed.has(item.localId));
+}
+
+/**
+ * [review S3] An item is done once its stored copy is known (the send's own answer, or a re-read that confirmed it):
+ * it leaves the outbox for good, so it can never come back as "Not sent" after its copy slides out of the window, and
+ * the outbox holds only what is still unsent. Its copy is then added to every other item's baseline, so the same
+ * stored message can never also confirm (and hide) another item with the same words.
+ */
+export function settleOutbox(items: readonly OutboxItem[], localId: string, copyId: unknown): OutboxItem[] {
+  const id = typeof copyId === 'string' && copyId ? copyId : null;
+  return items
+    .filter((item) => item.localId !== localId)
+    .map((item) => (id && item.baseline && !item.baseline.matchIds.includes(id)
+      ? { ...item, baseline: { ...item.baseline, matchIds: [...item.baseline.matchIds, id] } }
+      : item));
 }
 
 export function markOutbox(items: readonly OutboxItem[], localId: string, state: OutboxItem['state']): OutboxItem[] {

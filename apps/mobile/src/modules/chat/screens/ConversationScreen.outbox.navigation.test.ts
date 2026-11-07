@@ -197,6 +197,40 @@ describe('[review S2] a message is never lost to an older identical one', () => 
   });
 });
 
+describe('[review S3] a stored copy belongs to one message, and a confirmed message is done for good', () => {
+  const at = (min: number) => `2026-11-07T15:${String(min).padStart(2, '0')}:00.000Z`;
+
+  it('failed A, the same words retyped as B, B answered (its copy in the thread): A is still "Not sent" with Retry', async () => {
+    await typeAndSend('ok');
+    await settle(() => fx.sent[0]!.fail(new Error('Network Error')));
+    expect(retry()).toBeTruthy();
+    await typeAndSend('ok');
+    expect(fx.sent).toHaveLength(2);
+    const copy = { id: 'm2', senderId: 'me', message: 'ok', createdAt: at(5) };
+    await settle(() => fx.sent[1]!.ok(copy));
+    fx.messages = { ...fx.messages, data: [...(fx.messages.data as unknown[]), copy] };
+    await draw();
+    expect(retry(), 'A was never stored: it is still there to send').toBeTruthy();
+    expect(text()).toContain('Not sent');
+    expect(text()).not.toContain('Sending…');
+  });
+
+  it('a lost answer the server stored: the re-read confirms it, and it never returns as "Not sent" once the copy slides out of the window', async () => {
+    await typeAndSend('see you');
+    await settle(() => fx.sent[0]!.fail(new Error('timeout of 15000ms exceeded')));
+    fx.messages = { ...fx.messages, data: [...(fx.messages.data as unknown[]), { id: 'm3', senderId: 'me', message: 'see you', createdAt: at(6) }] };
+    await draw();
+    await act(async () => { await new Promise((r) => setTimeout(r, 5)); });
+    expect(retry()).toBeNull();
+    fx.messages = { ...fx.messages, data: Array.from({ length: 50 }, (_, i) => ({ id: `x${i}`, senderId: 'them', message: `line ${i}`, createdAt: `2026-11-07T16:${String(i).padStart(2, '0')}:00.000Z` })) };
+    await draw();
+    expect(retry(), 'the copy left the window: the message does not come back').toBeNull();
+    expect(text()).not.toContain('Not sent');
+    expect(text()).not.toContain('see you');
+    expect(fx.sent).toHaveLength(1);
+  });
+});
+
 describe('[APP-SPEED 10] the thread while it loads', () => {
   it('a loader, never "Say hi" over messages not yet arrived', async () => {
     fx.messages = { data: undefined, isError: false, refetch: () => undefined };

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { dropOutbox, markOutbox, outboxBaseline, outboxItem, pendingOutbox, roomMessagesOldestFirst, threadWithOutbox, threadWithSent } from './chatOutbox';
+import { confirmedOutbox, dropOutbox, markOutbox, outboxBaseline, outboxItem, pendingOutbox, settleOutbox, roomMessagesOldestFirst, threadWithOutbox, threadWithSent, type OutboxItem } from './chatOutbox';
 
 // [APP-SPEED 10 · 7 Nov 2026] The pure rules of a chat message sent at the tap (the screen:
 // ConversationScreen.outbox.navigation.test.ts; the hooks: hooks/chat.appSpeed.test.ts).
@@ -76,12 +76,56 @@ describe('[APP-SPEED 10] the chat outbox', () => {
     expect(pendingOutbox(stored, [item], 'me')).toEqual([item]);
   });
 
-  it('one stored copy confirms one item, oldest first; a copy with no readable time confirms nothing', () => {
+  it('one stored copy confirms one item: a send still out claims it before a "Not sent" one; a copy with no readable time confirms nothing', () => {
     const tap = [msg('m1', 'them', 'hi', 1)];
     const first = { ...outboxItem('ok', outboxBaseline(tap, 'me', 'ok')), state: 'failed' as const };
     const second = outboxItem('ok', outboxBaseline(tap, 'me', 'ok'));
-    expect(pendingOutbox([...tap, msg('m2', 'me', 'ok', 2)], [first, second], 'me')).toEqual([second]);
+    // A copy arriving while "ok" is still out is that send's: the earlier "Not sent" one stays, to be sent.
+    expect(pendingOutbox([...tap, msg('m2', 'me', 'ok', 2)], [first, second], 'me')).toEqual([first]);
+    expect(confirmedOutbox([...tap, msg('m2', 'me', 'ok', 2)], [first, second], 'me')).toEqual([{ localId: second.localId, copyId: 'm2' }]);
+    // Two copies (the timed-out one was stored after all, too): both items are confirmed.
+    expect(pendingOutbox([...tap, msg('m2', 'me', 'ok', 2), msg('m3', 'me', 'ok', 3)], [first, second], 'me')).toEqual([]);
     expect(pendingOutbox([...tap, { id: 'm2', senderId: 'me', message: 'ok' }], [first], 'me')).toEqual([first]);
+  });
+
+  // [review S3 · double count] A's send failed (never stored); the same words retyped as B, B stored and answered.
+  it('failed A, the same words retyped as B, B answered: A is still shown (B\'s copy belongs to B alone)', () => {
+    let thread: unknown[] = [msg('m1', 'them', 'leaving now', 0)];
+    const A = { ...outboxItem('ok', outboxBaseline(thread, 'me', 'ok')), state: 'failed' as const };
+    const B = outboxItem('ok', outboxBaseline(thread, 'me', 'ok'));
+    let outbox: OutboxItem[] = [A, B];
+    const sent = msg('m2', 'me', 'ok', 1);
+    thread = threadWithSent(thread, sent) as unknown[];
+    outbox = settleOutbox(outbox, B.localId, sent.id); // B's own answer
+    expect(outbox.map((i) => i.localId)).toEqual([A.localId]);
+    expect(pendingOutbox(thread, outbox, 'me')).toEqual(outbox);
+    expect(pendingOutbox(thread, outbox, 'me')[0]!.state).toBe('failed');
+  });
+
+  // [review S3 · comeback] The answer was lost (Not sent) but the server stored it; a re-read confirmed it.
+  it('a confirmed item is settled for good: it does not come back after its copy slides out of the 50-message window; the outbox empties', () => {
+    const thread = [msg('m1', 'them', 'leaving now', 0)];
+    const C = { ...outboxItem('see you', outboxBaseline(thread, 'me', 'see you')), state: 'failed' as const };
+    let outbox: OutboxItem[] = [C];
+    const reread = [...thread, msg('m3', 'me', 'see you', 2)];
+    const confirmed = confirmedOutbox(reread, outbox, 'me');
+    expect(confirmed).toEqual([{ localId: C.localId, copyId: 'm3' }]);
+    outbox = confirmed.reduce((acc, c) => settleOutbox(acc, c.localId, c.copyId), outbox);
+    expect(outbox, 'memory stays bounded: a settled item leaves the state').toEqual([]);
+    const later = Array.from({ length: 50 }, (_, i) => ({ id: `x${i}`, senderId: 'them', message: 'hi', createdAt: new Date(Date.parse('2026-11-07T16:00:00Z') + i * 1000).toISOString() }));
+    expect(pendingOutbox(later, outbox, 'me')).toEqual([]);
+    expect(threadWithOutbox(later, outbox, 'me')).toEqual(later);
+  });
+
+  it('settling adds the copy to every remaining item\'s baseline, once; an answer with no id just drops the item', () => {
+    const A = outboxItem('ok', { matchIds: ['m0'], newestAt: 0, newestId: 'm0' });
+    const B = outboxItem('ok', { matchIds: [], newestAt: 0, newestId: 'm0' });
+    const N = outboxItem('ok', null);
+    const after = settleOutbox(settleOutbox([A, B, N], 'nope', 'm5'), B.localId, 'm5');
+    expect(after.map((i) => i.localId)).toEqual([A.localId, N.localId]);
+    expect(after[0]!.baseline!.matchIds).toEqual(['m0', 'm5']);
+    expect(after[1]!.baseline).toBeNull();
+    expect(settleOutbox([A, B], A.localId, undefined)).toEqual([B]);
   });
 
   it('the room\'s page (newest first) seeds the thread oldest first; a room with no list seeds nothing', () => {
