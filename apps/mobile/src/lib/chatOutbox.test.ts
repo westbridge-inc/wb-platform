@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { confirmedOutbox, dropOutbox, markOutbox, outboxBaseline, outboxItem, pendingOutbox, settleOutbox, roomMessagesOldestFirst, threadWithOutbox, threadWithSent, type OutboxItem } from './chatOutbox';
+import { confirmedOutbox, dropOutbox, markOutbox, outboxBaseline, outboxItem, pendingOutbox, settleConfirmedFailed, settleOutbox, roomMessagesOldestFirst, threadWithOutbox, threadWithSent, type OutboxItem } from './chatOutbox';
 
 // [APP-SPEED 10 · 7 Nov 2026] The pure rules of a chat message sent at the tap (the screen:
 // ConversationScreen.outbox.navigation.test.ts; the hooks: hooks/chat.appSpeed.test.ts).
@@ -103,6 +103,50 @@ describe('[APP-SPEED 10] the chat outbox', () => {
   });
 
   // [review S3 · comeback] The answer was lost (Not sent) but the server stored it; a re-read confirmed it.
+  // [review S3 · final] What the screen's effect does: copies matched over all items, only "Not sent" ones settled.
+  const reread = (thread: unknown[], ob: OutboxItem[]) => {
+    const failed = new Set(ob.filter((i) => i.state === 'failed').map((i) => i.localId));
+    return settleConfirmedFailed(ob, confirmedOutbox(thread, ob, 'me').filter((c) => failed.has(c.localId)));
+  };
+
+  it('F stored with a lost answer, S retyped, a re-read lands mid-send, S answered: nothing shows "Not sent"', () => {
+    let thread: unknown[] = [msg('m1', 'them', 'hi', 0)];
+    const F = { ...outboxItem('ok', outboxBaseline(thread, 'me', 'ok')), state: 'failed' as const };
+    const S = outboxItem('ok', outboxBaseline(thread, 'me', 'ok'));
+    let ob: OutboxItem[] = [F, S];
+    thread = [...thread, msg('cF', 'me', 'ok', 1)];
+    ob = reread(thread, ob);
+    expect(ob.map((i) => i.localId), 'the send on its way is kept until its own answer').toEqual([F.localId, S.localId]);
+    expect(pendingOutbox(thread, ob, 'me').map((i) => i.localId), 'S claims cF for display; F still offered').toEqual([F.localId]);
+    thread = [...thread, msg('cS', 'me', 'ok', 2)];
+    ob = settleOutbox(ob, S.localId, 'cS');
+    ob = reread(thread, ob);
+    expect(ob).toEqual([]);
+    expect(pendingOutbox(thread, ob, 'me')).toEqual([]);
+  });
+
+  it('the same, but S fails (never stored): exactly one "Not sent" remains', () => {
+    let thread: unknown[] = [msg('m1', 'them', 'hi', 0)];
+    const F = { ...outboxItem('ok', outboxBaseline(thread, 'me', 'ok')), state: 'failed' as const };
+    const S = outboxItem('ok', outboxBaseline(thread, 'me', 'ok'));
+    let ob: OutboxItem[] = [F, S];
+    thread = [...thread, msg('cF', 'me', 'ok', 1)];
+    ob = reread(thread, ob);
+    ob = markOutbox(ob, S.localId, 'failed');
+    ob = reread(thread, ob);
+    expect(pendingOutbox(thread, ob, 'me')).toHaveLength(1);
+    expect(ob).toHaveLength(1);
+  });
+
+  it('a stale confirmation never settles an item that is gone or back on its way (its answer or a Retry came first)', () => {
+    const F = { ...outboxItem('ok', null), state: 'failed' as const };
+    const R = outboxItem('ok', null); // a Retry put it back on its way
+    const current = [F];
+    expect(settleConfirmedFailed(current, [{ localId: 'gone', copyId: 'cX' }]), 'nothing settled: the very same array (no re-render)').toBe(current);
+    expect(settleConfirmedFailed([F, R], [{ localId: R.localId, copyId: 'cX' }])).toEqual([F, R]);
+    expect(settleConfirmedFailed([F, R], [{ localId: F.localId, copyId: 'cX' }]).map((i) => i.localId)).toEqual([R.localId]);
+  });
+
   it('a confirmed item is settled for good: it does not come back after its copy slides out of the 50-message window; the outbox empties', () => {
     const thread = [msg('m1', 'them', 'leaving now', 0)];
     const C = { ...outboxItem('see you', outboxBaseline(thread, 'me', 'see you')), state: 'failed' as const };

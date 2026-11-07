@@ -98,6 +98,21 @@ export function settleOutbox(items: readonly OutboxItem[], localId: string, copy
       : item));
 }
 
+/**
+ * [review S3 · final] What a re-read may settle: only "Not sent" items, each re-checked against the CURRENT outbox
+ * (a Retry may have put it back on its way, or its own answer settled it, since the render that confirmed it). An
+ * item still on its way keeps its claim on a copy for display (pendingOutbox hides it), but stays until its own
+ * answer: success settles it with its real id; an error makes it "Not sent" and the next re-read may confirm it. So
+ * a copy claimed by a send that then stores its own message is never lost to the "Not sent" item it was really for.
+ */
+export function settleConfirmedFailed<T extends readonly OutboxItem[]>(current: T, confirmed: ReadonlyArray<{ localId: string; copyId: string }>): T | OutboxItem[] {
+  // The same array back when nothing settles: a state update with no change never re-renders (no effect loop).
+  return confirmed.reduce<T | OutboxItem[]>(
+    (acc, c) => (acc.some((item) => item.localId === c.localId && item.state === 'failed') ? settleOutbox(acc, c.localId, c.copyId) : acc),
+    current,
+  );
+}
+
 export function markOutbox(items: readonly OutboxItem[], localId: string, state: OutboxItem['state']): OutboxItem[] {
   return items.map((item) => (item.localId === localId ? { ...item, state } : item));
 }

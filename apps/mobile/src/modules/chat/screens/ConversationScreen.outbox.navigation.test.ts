@@ -215,6 +215,37 @@ describe('[review S3] a stored copy belongs to one message, and a confirmed mess
     expect(text()).not.toContain('Sending…');
   });
 
+  it('[final] F stored with a lost answer, S retyped, a re-read lands mid-send, S answered: nothing shows "Not sent"', async () => {
+    await typeAndSend('ok');
+    await settle(() => fx.sent[0]!.fail(new Error('timeout of 15000ms exceeded'))); // F: stored as cF, answer lost
+    await typeAndSend('ok'); // S
+    fx.messages = { ...fx.messages, data: [...(fx.messages.data as unknown[]), { id: 'cF', senderId: 'me', message: 'ok', createdAt: at(5) }] };
+    await draw();
+    await act(async () => { await new Promise((r) => setTimeout(r, 5)); });
+    const cS = { id: 'cS', senderId: 'me', message: 'ok', createdAt: at(6) };
+    await settle(() => fx.sent[1]!.ok(cS));
+    fx.messages = { ...fx.messages, data: [...(fx.messages.data as unknown[]), cS] };
+    await draw();
+    await act(async () => { await new Promise((r) => setTimeout(r, 5)); });
+    expect(retry()).toBeNull();
+    expect(text()).not.toContain('Not sent');
+    expect(text()).not.toContain('Sending…');
+    expect(fx.sent).toHaveLength(2);
+  });
+
+  it('[final] the same, but S fails (never stored): exactly one "Not sent" with Retry', async () => {
+    await typeAndSend('ok');
+    await settle(() => fx.sent[0]!.fail(new Error('timeout of 15000ms exceeded')));
+    await typeAndSend('ok');
+    fx.messages = { ...fx.messages, data: [...(fx.messages.data as unknown[]), { id: 'cF', senderId: 'me', message: 'ok', createdAt: at(5) }] };
+    await draw();
+    await settle(() => fx.sent[1]!.fail(new Error('Network Error')));
+    await draw();
+    await act(async () => { await new Promise((r) => setTimeout(r, 5)); });
+    expect(host.querySelectorAll('[aria-label="Retry sending this message"]')).toHaveLength(1);
+    expect(text().split('Not sent')).toHaveLength(2);
+  });
+
   it('a lost answer the server stored: the re-read confirms it, and it never returns as "Not sent" once the copy slides out of the window', async () => {
     await typeAndSend('see you');
     await settle(() => fx.sent[0]!.fail(new Error('timeout of 15000ms exceeded')));

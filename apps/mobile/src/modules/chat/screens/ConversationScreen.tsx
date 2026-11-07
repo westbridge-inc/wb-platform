@@ -12,7 +12,7 @@ import { useBlockUser, useReportContent } from '../../../hooks/customer';
 import { ActionSheet, CircleChip, ConfirmDialog, ErrorState, Header, LoadingBlock, Screen, Spinner, T } from '../../../kit';
 import { errorMessage } from '../../../lib/apiError';
 import { CHAT_REPORT_REASONS } from '../../../lib/reportReasons';
-import { confirmedOutbox, dropOutbox, markOutbox, outboxBaseline, outboxItem, settleOutbox, threadWithOutbox, type OutboxItem } from '../../../lib/chatOutbox';
+import { confirmedOutbox, dropOutbox, markOutbox, outboxBaseline, outboxItem, settleConfirmedFailed, settleOutbox, threadWithOutbox, type OutboxItem } from '../../../lib/chatOutbox';
 
 const GUTTER = space['2xl'];
 
@@ -84,12 +84,15 @@ export function ConversationScreen() {
   // answer (hooks/chat writes it into the thread). [WR-035] A failed send never eats the message: it stays in the
   // thread as "Not sent" with Retry. A refusal the server names (L13) is not retried: the words go back into the box
   // (unless they typed anew) and the reason is shown, as before.
-  // [review S3] An item a re-read confirmed (its stored copy is in the thread) is done: drop it for good and give its
-  // copy to no other item. Settled items leave the state, so it holds only what is still unsent.
+  // [review S3] A "Not sent" item a re-read confirmed (its stored copy is in the thread) is done: drop it for good and
+  // give its copy to no other item, so the state holds only what is still unsent. Copies are matched over ALL items
+  // (one on its way still claims its copy, for display), but only "Not sent" ones are settled here, re-checked in
+  // the updater; one on its way is settled by its own answer (lib/chatOutbox settleConfirmedFailed).
   useEffect(() => {
-    const confirmed = confirmedOutbox(msgs, outbox, user?.id);
+    const failed = new Set(outbox.filter((item) => item.state === 'failed').map((item) => item.localId));
+    const confirmed = confirmedOutbox(msgs, outbox, user?.id).filter((c) => failed.has(c.localId));
     if (confirmed.length === 0) return;
-    setOutbox((cur) => confirmed.reduce((acc, c) => settleOutbox(acc, c.localId, c.copyId), cur));
+    setOutbox((cur) => settleConfirmedFailed(cur, confirmed));
   }, [msgs, outbox, user?.id]);
   const deliver = (item: OutboxItem) => {
     send.mutate(item.text, {
