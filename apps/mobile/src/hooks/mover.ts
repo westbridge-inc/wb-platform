@@ -1,5 +1,6 @@
 import { prepareUploadImage } from '../lib/uploadImage';
 import { POLL } from '../lib/pollPolicy';
+import { keepDemandOfKind } from '../lib/moverHomeMap';
 import { runBillingMutation } from '../lib/billingMutation';
 import type { MutationGuard } from './useStepUp';
 import { useEffect, useMemo, useRef } from 'react';
@@ -290,6 +291,9 @@ export function useDemand<T = any>(kind: MoverKind | null, point?: { lat: number
     queryFn: () => unwrap<T>(svc(kind as MoverKind).demand(point as { lat: number; lng: number })),
     enabled: !!kind && !!point && !pv,
     refetchInterval: POLL.moverDemand,
+    // [APP-SPEED C · item 9] A new rounded position is a new key: the last answer for this kind of work stays on the
+    // map while it is read (the dots no longer vanish and come back), never another kind's.
+    placeholderData: keepDemandOfKind(kind),
   });
   return pv ? PV.previewQuery(PV.PREVIEW_DEMAND) : q;
 }

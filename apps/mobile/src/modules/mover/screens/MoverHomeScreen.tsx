@@ -60,6 +60,7 @@ import { RelayTasks } from '../RelayTasks';
 import { useJobRing } from '../../../hooks/useJobRing';
 import { PushOffStrip } from '../../../components/PushOffStrip';
 import { docLabel } from '../../../components/onboarding/docLabels';
+import { acceptRowState, moverCameraRegion } from '../../../lib/moverHomeMap';
 
 /**
  * The earner home (dashboard plan Phase B/C): light, map-first, demand-aware.
@@ -398,6 +399,58 @@ function MoverKindChoiceScreen({
   );
 }
 
+/**
+ * [APP-SPEED C · item 9] The earner's map. Its camera sits slightly SOUTH of the earner so the location dot floats in
+ * the upper map half, clear of the GO ring (lib/moverHomeMap). It used to be a CONTROLLED region rebuilt on every
+ * draw, so each location tick, demand poll or sheet change pulled the map back over the driver's own pan or zoom. It
+ * now opens there (initialRegion, taken when the map is first drawn), moves once when the first position arrives,
+ * and after that only when the driver taps Recentre.
+ */
+function MoverHomeMap({
+  latitude,
+  longitude,
+  showsUserLocation,
+  recentreTop,
+  children,
+}: {
+  latitude: number | null;
+  longitude: number | null;
+  showsUserLocation: boolean;
+  recentreTop: number;
+  children: React.ReactNode;
+}) {
+  const [initialRegion] = useState(() => moverCameraRegion(latitude ?? GEORGETOWN.latitude, longitude ?? GEORGETOWN.longitude));
+  const mapRef = useRef<MapView>(null);
+  const centredOnFix = useRef(latitude != null && longitude != null);
+  useEffect(() => {
+    if (centredOnFix.current || latitude == null || longitude == null) return;
+    centredOnFix.current = true;
+    mapRef.current?.animateToRegion(moverCameraRegion(latitude, longitude), 400);
+  }, [latitude, longitude]);
+  const recentre = latitude != null && longitude != null
+    ? () => mapRef.current?.animateToRegion(moverCameraRegion(latitude, longitude), 400)
+    : null;
+  return (
+    <>
+      <MapView ref={mapRef} provider={PROVIDER_DEFAULT} style={{ flex: 1 }} initialRegion={initialRegion} showsUserLocation={showsUserLocation}>
+        {children}
+      </MapView>
+      {/* Back to the driver's position (the map no longer snaps back by itself). */}
+      {recentre ? (
+        <View style={{ position: 'absolute', top: recentreTop, right: GUTTER }}>
+          <Pressable onPress={recentre} accessibilityRole="button" accessibilityLabel="Recentre the map on your position" hitSlop={4}>
+            {({ pressed }) => (
+              <View style={[{ width: 48, height: 48, borderRadius: 24, alignItems: 'center', justifyContent: 'center', backgroundColor: dk.card, borderWidth: 1, borderColor: dk.line, opacity: pressed ? 0.8 : 1 }, cardShadow]}>
+                <Feather name="crosshair" size={20} color={dk.text} />
+              </View>
+            )}
+          </Pressable>
+        </View>
+      ) : null}
+    </>
+  );
+}
+
 export function MoverHomeScreen({ navigation }: any) {
   const preview = useMoverPreview((state) => state.preview);
   const insets = useSafeAreaInsets();
@@ -418,7 +471,10 @@ export function MoverHomeScreen({ navigation }: any) {
     dual,
     refetch: refetchMoverProfiles,
   } = useMoverKind();
-  const { latitude, longitude, status: locationStatus } = useLocationStore();
+  // [APP-SPEED C · item 9] Field by field: a change Home does not show (the address line, an accuracy) no longer redraws it.
+  const latitude = useLocationStore((state) => state.latitude);
+  const longitude = useLocationStore((state) => state.longitude);
+  const locationStatus = useLocationStore((state) => state.status);
   const { resolve: resolveLocationForGo } = useDeviceLocation({ refreshOnMount: false });
   const [preparingOnline, setPreparingOnline] = useState(false);
   const { disclosure, disclose } = useBackgroundLocationDisclosure();
@@ -608,14 +664,6 @@ export function MoverHomeScreen({ navigation }: any) {
       }
     : undefined;
 
-  // Camera sits slightly SOUTH of the earner so the location dot floats in
-  // the upper map half, clear of the GO ring.
-  const region = {
-    latitude: (latitude ?? GEORGETOWN.latitude) - 0.008,
-    longitude: longitude ?? GEORGETOWN.longitude,
-    latitudeDelta: 0.04,
-    longitudeDelta: 0.04,
-  };
 
   // One server-backed opportunity feeds both the arm's-length band and the
   // quieter online copy. Categories keep their existing priority; they are
@@ -659,12 +707,7 @@ export function MoverHomeScreen({ navigation }: any) {
 
   return (
     <View style={{ flex: 1, backgroundColor: dk.bg }}>
-      <MapView
-        provider={PROVIDER_DEFAULT}
-        style={{ flex: 1 }}
-        region={region}
-        showsUserLocation={liveLocation !== null}
-      >
+      <MoverHomeMap latitude={latitude} longitude={longitude} showsUserLocation={liveLocation !== null} recentreTop={insets.top + 36 + space.sm * 2 + space.md}>
         {/* REAL demand on the map (Phase A): taxi pickups rounded ~300 m /
             stores with unassigned orders. Never customer identities. */}
         {isDriver
@@ -704,7 +747,7 @@ export function MoverHomeScreen({ navigation }: any) {
             />
           ) : null,
         )}
-      </MapView>
+      </MoverHomeMap>
 
       {/* Top bar over the map */}
       <View style={{ position: 'absolute', top: insets.top, left: 0, right: 0, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingHorizontal: GUTTER, paddingVertical: space.sm }}>
@@ -1041,8 +1084,8 @@ export function MoverHomeScreen({ navigation }: any) {
                     {/* [O1 · riders choose] The cash to collect and to pay the store, BEFORE accepting, as on the offer
                         card; the grab sends back the amount shown, so a changed basket is never taken blind. */}
                     <OfferCashMath cashMath={j.cashMath} vendorName={j.vendor?.name} />
-                    <PillButton label={accept.isPending ? 'Checking acceptance…' : 'Accept'} size="md" style={{ marginTop: space.md }} loading={accept.isPending} onPress={() => accept.mutate({ id: j.id, ...(j.cashMath ? { payToVendor: Number(j.cashMath.payToVendor) } : {}) })} />
-                    {accept.isPending ? <T variant="label" tone="muted">Checking acceptance… Keep this screen open.</T> : null}
+                    <PillButton label={acceptRowState(accept.isPending, accept.variables, j.id) === 'mine' ? 'Checking acceptance…' : 'Accept'} size="md" style={{ marginTop: space.md }} loading={acceptRowState(accept.isPending, accept.variables, j.id) === 'mine'} disabled={accept.isPending} onPress={() => accept.mutate({ id: j.id, ...(j.cashMath ? { payToVendor: Number(j.cashMath.payToVendor) } : {}) })} />
+                    {acceptRowState(accept.isPending, accept.variables, j.id) === 'mine' ? <T variant="label" tone="muted">Checking acceptance… Keep this screen open.</T> : null}
                   </DCard>
                 ))}
               </>
