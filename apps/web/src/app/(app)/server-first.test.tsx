@@ -5,14 +5,14 @@ import { renderToString } from 'react-dom/server';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mockApi, type ApiRequest, type ApiReply } from '@/test/test-utils';
 import AppLayout from './layout';
-import HomePage from './page';
+import HomePage from './order/page';
 import StorePage from './store/[slug]/page';
 import { GET as legacyStore } from './order/vendor/[id]/route';
 import { storefrontFixture } from '@/test/storefront-fixture';
 import BrowsePage from './order/browse/page';
 import MarketPage from './market/page';
 
-const state = vi.hoisted(() => ({ pathname: '/', params: {} as Record<string, string>, query: '' }));
+const state = vi.hoisted(() => ({ pathname: '/order', params: {} as Record<string, string>, query: '' }));
 vi.mock('next/navigation', () => ({
   usePathname: () => state.pathname,
   useParams: () => state.params,
@@ -75,7 +75,7 @@ beforeEach(async () => {
   (await import('@/lib/auth')).clearSession();
   signedIn = false;
   homeFails = false;
-  state.pathname = '/';
+  state.pathname = '/order';
   state.params = {};
   state.query = '';
   api = ({ url, init }) => {
@@ -270,7 +270,7 @@ describe('[W2] the server never reads who is visiting', () => {
   const WEB = join(__dirname, '..', '..');
   it.each([
     'lib/browse-server.ts',
-    'app/(app)/page.tsx',
+    'app/(app)/order/page.tsx',
     'app/(app)/order/vendor/[id]/route.ts',
     'app/(app)/store/[slug]/page.tsx',
     'components/storefront/storefront-page.tsx',

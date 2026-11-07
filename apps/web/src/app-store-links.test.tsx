@@ -28,7 +28,11 @@ async function load<T>(relativePath: string): Promise<T> {
   return (await import(/* @vite-ignore */ path)) as T;
 }
 
-const APP_STORE = 'https://apps.apple.com/app/id6815507102';
+// [WEB-APPBAR] The Guyana storefront: Swift is listed in Guyana only, and the storefront-less address
+// shows "not found" in a desktop browser elsewhere. The phone app keeps the storefront-less address (on a
+// phone the App Store opens it in the person's own store); both name the same app id.
+const APP_STORE = 'https://apps.apple.com/gy/app/swiftgy/id6815507102';
+const PHONE_APP_STORE = 'https://apps.apple.com/app/id6815507102';
 const GOOGLE_PLAY = 'https://play.google.com/store/apps/details?id=gy.swift.app';
 const SOON_SENTENCE = 'Store download links will appear here when available.';
 
@@ -128,8 +132,9 @@ describe('[G11] what the visitor sees', () => {
       const view = render(<SiteFooter />);
       await answered();
       expect(storeHrefs(view.container), url).toEqual([APP_STORE, GOOGLE_PLAY]);
-      expect(view.container.querySelector(`a[href="${APP_STORE}"]`)?.textContent).toBe('Swift on the App Store');
-      expect(view.container.querySelector(`a[href="${GOOGLE_PLAY}"]`)?.textContent).toBe('Swift on Google Play');
+      // [WEB-APPBAR] The official badges: each link is the badge image, named by its alt text.
+      expect(view.container.querySelector(`a[href="${APP_STORE}"] img`)?.getAttribute('alt')).toBe('Download on the App Store');
+      expect(view.container.querySelector(`a[href="${GOOGLE_PLAY}"] img`)?.getAttribute('alt')).toBe('Get it on Google Play');
       expect(view.container.textContent, url).toContain('Taxi rides require the Swift mobile app.');
       view.unmount();
     }
@@ -170,8 +175,8 @@ describe('[G11] what the visitor sees', () => {
     view = render(<>{Page()}</>);
     await answered();
     expect(view.container.textContent).not.toContain(COMING);
-    expect(view.container.querySelector(`a[href="${APP_STORE}"]`)?.textContent).toBe('Download on the App Store');
-    expect(view.container.querySelector(`a[href="${GOOGLE_PLAY}"]`)?.textContent).toBe('Get it on Google Play');
+    expect(view.container.querySelector(`a[href="${APP_STORE}"] img`)?.getAttribute('alt')).toBe('Download on the App Store');
+    expect(view.container.querySelector(`a[href="${GOOGLE_PLAY}"] img`)?.getAttribute('alt')).toBe('Get it on Google Play');
     view.unmount();
   });
 
@@ -220,13 +225,21 @@ describe('[G11] what the visitor sees', () => {
 });
 
 describe('[G11] the links are the real store pages, never invented', () => {
-  it('match the phone app’s own store links (the update-required screen sends people to the same two pages)', () => {
+  it('match the phone app’s own store links (the update-required screen sends people to the same app and listing)', async () => {
     const phone = readFileSync(join(process.cwd(), '..', 'mobile', 'src', 'lib', 'appVersionGate.ts'), 'utf8');
-    expect(phone).toContain(`ios: '${APP_STORE}'`);
+    expect(phone).toContain(`ios: '${PHONE_APP_STORE}'`);
     expect(phone).toContain(`android: '${GOOGLE_PLAY}'`);
     const web = readFileSync(join(SRC, 'lib', 'app-stores.ts'), 'utf8');
     expect(web).toContain(`'${APP_STORE}'`);
     expect(web).toContain(`'${GOOGLE_PLAY}'`);
+    // The same app: the web link and the phone's end in the one App Store id.
+    const appId = (url: string) => /\/id(\d+)$/.exec(new URL(url).pathname)?.[1];
+    expect(appId(APP_STORE)).toBe('6815507102');
+    expect(appId(APP_STORE)).toBe(appId(PHONE_APP_STORE));
+    // [WEB-APPBAR · owner 7 Nov] The website's App Store link opens the Guyana storefront.
+    const { APP_STORE_URL } = await load<{ APP_STORE_URL: string }>('lib/app-stores.ts');
+    expect(APP_STORE_URL).toBe('https://apps.apple.com/gy/app/swiftgy/id6815507102');
+    expect(new URL(APP_STORE_URL).pathname.split('/')[1]).toBe('gy');
   });
 
   it('no build-time store switch is left: the site config has no store state to flip in code', () => {

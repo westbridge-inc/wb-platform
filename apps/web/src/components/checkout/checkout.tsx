@@ -659,7 +659,7 @@ export function CheckoutPanel() {
       <span className="sw-empty-tile"><Pictogram name="groceries" size={40} /></span>
       <h1 className={styles.stateTitle}>Your cart is empty</h1>
       <p className={styles.stateCopy}>Add something good — it lands here.</p>
-      <Link href="/" className={styles.emptyLink}>Find food</Link>
+      <Link href="/order" className={styles.emptyLink}>Find food</Link>
     </section>
   );
 

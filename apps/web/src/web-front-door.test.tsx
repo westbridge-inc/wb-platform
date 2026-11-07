@@ -200,15 +200,19 @@ describe('[Item 7] the front door itself', () => {
   });
 
   // [REVIEW-F S4-2] Turning the store switch on must not move the page: the store area keeps the height of the
-  // two buttons (one 56 px row, never wrapping) in both states.
+  // two buttons (one row, never wrapping) in both states. [WEB-APPBAR] The buttons are now the official badges:
+  // one 60 px row (each badge's link is 60 px tall), so the area reserves 60 px.
   it('the store area keeps one button-row of height whether the stores are live or not', async () => {
     const view = await frontDoor();
     const area = view.container.querySelector('[data-store-area]')!;
     expect(area).toBeTruthy();
-    expect(area.className).toContain('min-h-14');
+    expect(area.className).toContain('min-h-[60px]');
     const { readFileSync } = await import('node:fs');
-    const buttons = readFileSync(join(SRC, 'components', 'app-store-links.tsx'), 'utf8');
-    expect(buttons).toMatch(/aria-label="Get the Swift app" className=\{`flex flex-nowrap gap-3/);
+    const buttons = readFileSync(join(SRC, 'components', 'store-badges.tsx'), 'utf8');
+    expect(buttons).toMatch(/<StoreBadges wrap=\{false\} \/>\s*<\/StoresLive>/);
+    expect(buttons).toMatch(/aria-label="Get the Swift app" className=\{`flex \$\{wrap \? 'flex-wrap' : 'flex-nowrap'\}/);
+    expect(buttons).toMatch(/height: 60,\s*link: '',/);
+    expect(buttons).toMatch(/height: 40,\s*link: 'p-\[10px\]',/);
   });
 
   it('no heading skips a level, and axe finds nothing', async () => {
@@ -238,7 +242,8 @@ describe('[Item 7] the CTAs that lead to ordering follow the switch', () => {
     openAt('https://staging.swiftgy.com/welcome');
     const { default: WelcomePage } = await import('@/app/(marketing)/welcome/page');
     render(<WelcomePage />);
-    expect(screen.getByRole('link', { name: 'Order on the web' }).getAttribute('href')).toBe('/');
+    // [WEB-APPBAR] The ordering Home is /order (`/` is the welcome page).
+    expect(screen.getByRole('link', { name: 'Order on the web' }).getAttribute('href')).toBe('/order');
   });
 
   it('sign-up on the closed public site cannot start a customer account; business and driver sign-up stay open', async () => {

@@ -5,7 +5,9 @@ import Link from 'next/link';
 import { Menu, X } from 'lucide-react';
 import { SwiftLogo } from './swift-logo';
 import { signedInBefore } from '@/lib/session-hint';
-import { useWebOrderingOpen } from '@/lib/use-web-ordering';
+import { useAppStoresLive, useWebOrderingOpen } from '@/lib/use-web-ordering';
+// [WEB-APPBAR · perf] The badges' code comes when a menu opens, never in the header's first load.
+import { AppStoreLinksLater, GetTheAppLinksLater } from './get-the-app-later';
 
 const NAV = [
   { href: '/how-it-works', label: 'How it works' },
@@ -45,6 +47,7 @@ export function SiteNav() {
         <Link href="/" aria-label="Swift home"><SwiftLogo /></Link>
         <nav aria-label="Main" className="hidden gap-7 text-sm font-medium text-[var(--swift-muted)] md:flex">
           {NAV.map((n) => <Link key={n.href} href={n.href} className="transition-colors hover:text-[var(--swift-ink)]">{n.label}</Link>)}
+          <GetTheAppMenu />
         </nav>
         <div className="flex items-center gap-2 sm:gap-4">
           {account ? (
@@ -73,6 +76,8 @@ export function SiteNav() {
             <nav aria-label="Mobile main" className="mt-2 divide-y divide-black/10">
               {NAV.map((n) => <Link key={n.href} href={n.href} onClick={close} className="flex min-h-11 items-center py-3 text-base font-semibold">{n.label}</Link>)}
             </nav>
+            {/* [WEB-APPBAR] The two store links, in the menu, once the apps are live. */}
+            <GetTheAppLinksLater className="mt-4 border-t border-[var(--swift-border)] pt-4" />
             {account
               ? <Link href={account.href} onClick={close} className="mt-3 flex min-h-11 items-center font-semibold sm:hidden">{account.label}</Link>
               : <Link href={signInHref} onClick={close} className="mt-3 flex min-h-11 items-center font-semibold sm:hidden">Sign in</Link>}
@@ -80,5 +85,37 @@ export function SiteNav() {
         </div>
       )}
     </header>
+  );
+}
+
+/**
+ * [WEB-APPBAR · owner 7 Nov 2026] "Get the app" in the wide header: one item that opens the two store
+ * links, only once the apps are live in both stores (the phone menu shows the links in its list instead).
+ * Escape, a second tap or a tap elsewhere closes it.
+ */
+function GetTheAppMenu() {
+  const live = useAppStoresLive();
+  const [open, setOpen] = useState(false);
+  const box = useRef<HTMLDivElement>(null);
+  const button = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onPointer = (event: PointerEvent) => { if (!box.current?.contains(event.target as Node)) setOpen(false); };
+    document.addEventListener('pointerdown', onPointer);
+    return () => document.removeEventListener('pointerdown', onPointer);
+  }, [open]);
+  if (!live) return null;
+  return (
+    <div ref={box} className="relative" onKeyDown={(event) => { if (event.key === 'Escape' && open) { setOpen(false); button.current?.focus(); } }}>
+      <button ref={button} type="button" aria-expanded={open} aria-controls="site-get-the-app" onClick={() => setOpen((was) => !was)}
+        className="font-medium transition-colors hover:text-[var(--swift-ink)]">
+        Get the app
+      </button>
+      {open ? (
+        <div id="site-get-the-app" className="absolute right-0 top-full z-50 mt-4 w-max rounded-2xl border border-[var(--swift-border)] bg-[var(--swift-card)] p-3 shadow-[var(--swift-elevation-floating)]">
+          <AppStoreLinksLater className="flex-col" />
+        </div>
+      ) : null}
+    </div>
   );
 }

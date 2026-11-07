@@ -18,6 +18,7 @@ import { OfflineNotice } from '@/components/offline-notice';
 import { useGuestBasket } from '@/lib/basket-state';
 import { framesOrderingContext } from '@/lib/ordering-paths';
 import { InstallPrompt } from '@/components/install-prompt';
+import { GetAppBarLater } from '@/components/get-the-app-later';
 import { lazyRetry } from '@/lib/chunk-retry';
 
 // [PERF #4] The cart's and an order's own loading shapes are drawn here only
@@ -205,8 +206,13 @@ function CustomerShell({ children }: { children: React.ReactNode }) {
 
   // Where sign-in brings the person back to: this page, with its query (a
   // store's ?item=, a category) — read when the link is drawn or tapped.
+  // [WEB-APPBAR] Home itself returns as `/`, sign-in's "no deep link": each account then goes where it belongs (a
+  // customer to Home, a partner to their own area), as when Home was `/`.
   const returnPath = useCallback(
-    () => `${pathname}${typeof window === 'undefined' ? '' : window.location.search}`,
+    () => {
+      const search = typeof window === 'undefined' ? '' : window.location.search;
+      return pathname === HOME_PATH && !search ? '/' : `${pathname}${search}`;
+    },
     [pathname],
   );
 
@@ -256,6 +262,9 @@ function CustomerShell({ children }: { children: React.ReactNode }) {
               order. Mounted from the first render, so an install event that
               lands before Home does is still caught. */}
           <InstallPrompt enabled={pathname === HOME_PATH} />
+          {/* [WEB-APPBAR] The website first: on a phone, after the visitor has engaged, a gentle bar offers the
+              app (only while the stores switch is live, never on the cart, checkout, orders or account). */}
+          <GetAppBarLater />
         </div>
       </ShellNavProvider>
     </CustomerSessionProvider>

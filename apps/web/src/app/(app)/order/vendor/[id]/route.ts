@@ -44,7 +44,7 @@ export async function GET(request: Request, { params }: { params: Promise<{ id: 
 // The retry link is the address the visitor asked for (an empty href), so
 // nothing from that address is ever written into the page.
 const UNAVAILABLE = '<!doctype html><html lang="en-GY"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="robots" content="noindex"><title>Store unavailable — Swift</title></head>'
-  + '<body><main><h1>Swift could not check this store right now</h1><p>Please try again in a moment. Nothing has been ordered or charged.</p><p><a href="">Try again</a> · <a href="/">Browse stores on Swift</a></p></main></body></html>';
+  + '<body><main><h1>Swift could not check this store right now</h1><p>Please try again in a moment. Nothing has been ordered or charged.</p><p><a href="">Try again</a> · <a href="/order">Browse stores on Swift</a></p></main></body></html>';
 
 const NOT_FOUND = '<!doctype html><html lang="en-GY"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="robots" content="noindex"><title>Store not found — Swift</title></head>'
-  + '<body><main><h1>This store page is not available</h1><p>The link may be old, or this store may no longer be listed on Swift. Nothing has been ordered or charged.</p><p><a href="/">Browse stores on Swift</a></p></main></body></html>';
+  + '<body><main><h1>This store page is not available</h1><p>The link may be old, or this store may no longer be listed on Swift. Nothing has been ordered or charged.</p><p><a href="/order">Browse stores on Swift</a></p></main></body></html>';

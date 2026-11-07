@@ -7,7 +7,7 @@ import {
 import { Section } from '@/components/site';
 import { OrderOnTheWeb } from '@/components/order-on-the-web';
 import { BrowserOrderingNote } from '@/components/browser-ordering-note';
-import { AppStoreLinks } from '@/components/app-store-links';
+import { StoreBadgesWhenLive } from '@/components/store-badges';
 import { launch, SITE_ORIGIN } from '@/site.config';
 import { CANCEL_FREE_SHORT } from '@/lib/cancel-policy-copy';
 
@@ -119,7 +119,7 @@ export default function WelcomePage() {
           </p>
           {/* [G11] No store link until the apps are live in both stores. A dead
               link reads as carelessness — and is a review flag. */}
-          <AppStoreLinks className="mt-4" />
+          <StoreBadgesWhenLive className="mt-4" />
         </div>
       </Section>
 

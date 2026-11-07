@@ -30,7 +30,11 @@ export interface CustomerRoute {
   door: SignInDoor;
 }
 
-export const HOME_PATH = '/';
+/** [WEB-APPBAR · owner 7 Nov 2026] The ordering Home lives at /order; `/` is the site's welcome page, which a
+ *  returning visitor skips (middleware.ts). */
+export const HOME_PATH = '/order';
+/** The welcome page, even for a returning visitor (who `/` alone sends straight to ordering). */
+export const WELCOME_PATH = '/?welcome';
 
 const DEFAULT_DOOR: SignInDoor = {
   title: 'Sign in to continue',
@@ -43,9 +47,7 @@ const exact = (path: string) => (pathname: string) => pathname === path;
 const under = (prefix: string) => (pathname: string) => pathname.startsWith(`${prefix}/`) && pathname.length > prefix.length + 1;
 
 const RULES: RouteRule[] = [
-  { match: exact('/'), public: true, tab: 'home', parent: null },
-  // The old home address; it redirects to / (old links and first installs).
-  { match: exact('/order'), public: true, tab: 'home', parent: null },
+  { match: exact(HOME_PATH), public: true, tab: 'home', parent: null },
   { match: exact('/order/browse'), public: true, tab: 'home', parent: HOME_PATH },
   { match: exact('/order/search'), public: true, tab: 'home', parent: HOME_PATH },
   { match: under('/order/vendor'), public: true, tab: 'home', parent: HOME_PATH },

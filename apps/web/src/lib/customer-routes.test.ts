@@ -10,7 +10,8 @@ import { customerRoute, signInPath, signUpPath } from './customer-routes';
 
 describe('[Q7b] the customer route map', () => {
   it('lets a guest browse: Home, the store lists, search, a store, Market and the taxi explainer', () => {
-    for (const path of ['/', '/order', '/order/browse', '/order/search', '/order/vendor/v1', '/store/shanta-kitchen', '/explore', '/taxi', '/market', '/cart']) {
+    // [WEB-APPBAR] Home is /order; `/` is the welcome page, outside the customer app.
+    for (const path of ['/order', '/order/browse', '/order/search', '/order/vendor/v1', '/store/shanta-kitchen', '/explore', '/taxi', '/market', '/cart']) {
       expect(customerRoute(path).public, path).toBe(true);
     }
   });
@@ -28,7 +29,7 @@ describe('[Q7b] the customer route map', () => {
   });
 
   it('lights the phone app’s tabs: stores under Home, orders and addresses under Profile', () => {
-    expect(customerRoute('/').tab).toBe('home');
+    expect(customerRoute('/order').tab).toBe('home');
     expect(customerRoute('/order/vendor/v1').tab).toBe('home');
     expect(customerRoute('/store/shanta-kitchen').tab).toBe('home');
     expect(customerRoute('/market').tab).toBe('market');
@@ -39,13 +40,13 @@ describe('[Q7b] the customer route map', () => {
   });
 
   it('sends each back button to the page above it, and gives a tab’s first page none', () => {
-    expect(customerRoute('/order/vendor/v1').parent).toBe('/');
-    expect(customerRoute('/store/shanta-kitchen').parent).toBe('/');
-    expect(customerRoute('/cart').parent).toBe('/');
+    expect(customerRoute('/order/vendor/v1').parent).toBe('/order');
+    expect(customerRoute('/store/shanta-kitchen').parent).toBe('/order');
+    expect(customerRoute('/cart').parent).toBe('/order');
     expect(customerRoute('/orders/o1').parent).toBe('/orders');
     expect(customerRoute('/orders').parent).toBe('/account');
     expect(customerRoute('/order/location').parent).toBe('/account');
-    for (const root of ['/', '/market', '/account']) expect(customerRoute(root).parent, root).toBeNull();
+    for (const root of ['/order', '/market', '/account']) expect(customerRoute(root).parent, root).toBeNull();
   });
 
   it('[WEB-REDESIGN] keeps Account’s own pages under Profile, private, going back to Account', () => {

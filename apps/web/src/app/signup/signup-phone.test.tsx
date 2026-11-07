@@ -191,7 +191,7 @@ describe('a browser already signed in is not asked for a code again', () => {
     [['VENDOR_OWNER'], '/dashboard', 'Go to your dashboard'],
     [['MOVER'], '/portal', 'Go to your portal'],
     [['DRIVER'], '/portal', 'Go to your portal'],
-    [['CUSTOMER'], '/', 'Go to Swift'],
+    [['CUSTOMER'], '/order', 'Go to Swift'],
   ])('sign-up, roles %j: straight on to %s', async (roles, home, label) => {
     mocked.sessionProbe.mockResolvedValue({ ok: true, user: { id: 'u1', phone: '+5926001234', roles } });
     render(<SignupPage />);

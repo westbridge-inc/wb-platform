@@ -37,3 +37,10 @@ export function webOrderingOpen(host: string | null | undefined, state: LaunchSt
 export function launchCity(): string {
   return (launch.markets[0] ?? '').split(',')[0]!.trim();
 }
+
+/**
+ * [WEB-APPBAR · owner 7 Nov 2026] The first-party cookie that says "this browser has opened ordering here
+ * before": the value "1", nothing else (no person, account or tracking). middleware.ts sets it when it answers
+ * an ordering page, and sends a browser that carries it from the welcome page (`/`) straight to ordering.
+ */
+export const ORDERING_COOKIE = 'swift_ordering';

@@ -34,7 +34,7 @@ export async function homeFor(user: Record<string, unknown>): Promise<{ home: st
   }
   // [REVIEW-G G3] A self-employed pro holds no partner role: sign-in sends them to their weekly fee, and so does this.
   if (await isProvider()) return { home: '/portal/weekly-fee', label: 'Go to your weekly fee' };
-  return { home: '/', label: 'Go to Swift' };
+  return { home: '/order', label: 'Go to Swift' };
 }
 
 /** The session already in this browser, or null (signed out, or the server could not say). */

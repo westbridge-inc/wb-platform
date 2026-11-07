@@ -40,7 +40,7 @@ describe('partner redesign', () => {
     expect(here.getAttribute('aria-current')).toBe('true');
     expect(within(sheet).queryByRole('link', { name: /Swift Business/ })).toBeNull();
     // The other web apps are plain links: the customer app from a console goes home.
-    expect(within(sheet).getByRole('link', { name: /^Swift\s?Order food/ }).getAttribute('href')).toBe('/');
+    expect(within(sheet).getByRole('link', { name: /^Swift\s?Order food/ }).getAttribute('href')).toBe('/order');
     expect(within(sheet).getByRole('link', { name: /Swift Driver/ }).getAttribute('href')).toBe('/portal');
     await waitFor(() => expect(seen).toContain('/api/v1/public/capabilities'));
     // Advertising switched off on the server: no door to the ads pages.

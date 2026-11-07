@@ -1218,6 +1218,7 @@ export function StorefrontExperience({ store, returnPath, fromQr = false, initia
           ref={orderDock}
           href="/checkout"
           className={styles.mobileDock}
+          data-floating-dock
           onClick={(event) => { if (cartBusyNow()) { event.preventDefault(); checkoutAfterTaps.current = true; } }}
         >
           <span>Checkout · {itemCount} item{itemCount === 1 ? '' : 's'}</span>

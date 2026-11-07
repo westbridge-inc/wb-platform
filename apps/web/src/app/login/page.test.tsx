@@ -52,8 +52,9 @@ async function signIn(query: string) {
 
 describe('[Q7b] signing in from the customer app', () => {
   it.each([
-    ['Home', '/'],
-    ['Home with its query', '/?source=pwa'],
+    // [WEB-APPBAR] Home is /order (`/` alone is the header's "no deep link": the account goes where it belongs).
+    ['Home', '/order'],
+    ['Home with its query', '/order?source=pwa'],
     ['Market', '/market'],
     ['a store, on one item', '/order/vendor/v1?item=i1'],
     ['the cart', '/cart'],

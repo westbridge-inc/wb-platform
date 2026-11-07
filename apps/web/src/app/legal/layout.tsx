@@ -1,4 +1,5 @@
-import { SiteNav, SiteFooter } from '@/components/site';
+import { SiteFooter } from '@/components/site';
+import { SiteNav } from '@/components/site-nav';
 
 /** Legal pages carry the full site chrome: a reviewer landing on /legal/privacy
  *  from a store listing must be able to reach the rest of the company site. */
