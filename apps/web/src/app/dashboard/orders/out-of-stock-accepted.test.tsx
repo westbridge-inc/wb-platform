@@ -15,7 +15,7 @@ import { wireOrderLine, wireVendorOrder } from '@/test/vendor-wire-fixtures';
 //   - an order emptied on an older server says what to do, with the way out.
 // ---------------------------------------------------------------------------
 
-const writes: Array<{ method: string; path: string; body?: unknown }> = [];
+const writes: Array<{ method: string; path: string }> = [];
 const lines = (...over: Array<Record<string, unknown>>) => over.map((o, i) => wireOrderLine({ id: `line-${i + 1}`, itemId: `item-${i + 1}`, name: `Item ${i + 1}`, ...o }));
 const shop = { vendor: { vendorType: 'STORE', selfDeliveryEnabled: false }, status: 'PREPARING', paymentMethod: 'CASH' };
 
@@ -23,7 +23,7 @@ function api(orders: unknown[]) {
   return mockApi((request: ApiRequest) => {
     const { method, url } = request;
     const path = url.pathname.replace('/api/v1', '');
-    if (method !== 'GET') { writes.push({ method, path, body: request.body }); return { body: { success: true, data: {} } }; }
+    if (method !== 'GET') { writes.push({ method, path }); return { body: { success: true, data: {} } }; }
     if (path === '/vendor/orders') return { body: { success: true, data: orders, meta: { total: orders.length } } };
     if (path.startsWith('/vendor/orders/')) return { body: { success: true, data: orders[0] } };
     return { status: 404, body: { success: false } };
