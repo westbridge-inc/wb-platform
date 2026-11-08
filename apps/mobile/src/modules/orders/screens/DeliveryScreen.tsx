@@ -1355,7 +1355,8 @@ export function DeliveryScreen() {
                   </Pressable>
                 )}
               </CallParty>
-              {/* [INAPP-CALLS] Build 13+, switch on: call the rider inside the app. */}
+              {/* [INAPP-CALLS] Build 13+, switch on: call the rider inside the app.
+                  [CALLS-UX] In-app first: when this shows, the dial button above is the backup only (CallParty). */}
               <CallInApp orderId={o?.id ?? orderId} target="rider">
                 {(call) => (
                   <Pressable
@@ -1371,11 +1372,10 @@ export function DeliveryScreen() {
                       backgroundColor: color.brand[500],
                       alignItems: 'center',
                       justifyContent: 'center',
-                      marginLeft: space.sm,
                       opacity: call.busy ? 0.7 : 1,
                     }}
                   >
-                    <Feather name="headphones" size={18} color={color.white} />
+                    <Feather name="phone-call" size={18} color={color.white} />
                   </Pressable>
                 )}
               </CallInApp>

@@ -138,7 +138,10 @@ describe('[INAPP-CALLS] build 13 (module present)', () => {
   it('a connect that fails frees the order at once (cancel) and reports the failure', async () => {
     sdkState.connectFails = true;
     const cancel = vi.fn(async () => undefined);
-    await expect(voice.placeInAppCall('o1', 'rider', { start: async () => ({ callId: 'cabc', token: 'tok' }), cancel })).rejects.toThrow('connect failed');
+    await expect(voice.placeInAppCall('o1', 'rider', { start: async () => ({ callId: 'cabc', token: 'tok' }), cancel })).rejects.toMatchObject({
+      code: 'INAPP_CONNECT_FAILED', // [CALLS-UX review S3] the backup comes back (lib/inAppCalls revealsBackup)
+      cause: expect.objectContaining({ message: 'connect failed' }),
+    });
     expect(cancel).toHaveBeenCalledWith('cabc');
     expect(voice.inAppCallActive()).toBe(false);
   });

@@ -1107,14 +1107,15 @@ function AssignedRideCard({
             />
           )}
         </CallParty>
-        {/* [INAPP-CALLS] Build 13+, switch on: call the driver inside the app. */}
+        {/* [INAPP-CALLS] Build 13+, switch on: call the driver inside the app.
+            [CALLS-UX] In-app first: when this shows, the dial button above is the backup only (CallParty). */}
         <CallInApp orderId={ride?.id} target="driver">
           {(call) => (
             <PillButton
               label={call.label}
               variant="soft"
               size="md"
-              icon="headphones"
+              icon="phone-call"
               disabled={call.busy}
               onPress={call.onPress}
             />

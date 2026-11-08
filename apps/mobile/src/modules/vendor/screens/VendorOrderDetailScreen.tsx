@@ -116,7 +116,8 @@ function ContactCard({
         <CallParty orderId={orderId} target={target} phone={phone} dialFailText={`Couldn't start the call — dial the ${title.toLowerCase()} directly.`}>
           {(call) => <PillButton label={call.label} variant="soft" size="sm" disabled={call.busy} onPress={call.onPress} />}
         </CallParty>
-        {/* [INAPP-CALLS] Build 13+, switch on: call inside the app (never the parcel recipient). */}
+        {/* [INAPP-CALLS] Build 13+, switch on: call inside the app (never the parcel recipient).
+            [CALLS-UX] In-app first: when this shows, the button above is the backup only (CallParty). */}
         <CallInApp orderId={orderId} target={target}>
           {(call) => <PillButton label={call.label} variant="soft" size="sm" disabled={call.busy} onPress={call.onPress} />}
         </CallInApp>
