@@ -11,6 +11,7 @@ import { grantedLocationFix } from '../../../lib/deviceLocation';
 import { vendorPhoto } from '../../../lib/images';
 import { CartBar, useCartBarClearance, EmptyState, ErrorState, FoodCard, Header, Screen } from '../../../kit';
 import { GridSkeleton } from '../../../kit/skeletons';
+import { OFFLINE_FIRST_READ_MESSAGE, offlineFirstRead } from '../../../lib/offlineRead';
 import { useVendorPrefetch } from '../../../hooks/storeDoor';
 import { storePreviewOf } from '../../../lib/doorPreview';
 
@@ -40,7 +41,10 @@ export function RecommendedScreen() {
   return (
     <Screen>
       <Header title="Recommended" />
-      {home.isLoading ? (
+      {offlineFirstRead(home) ? (
+        // [APP-SPEED D · review S3] A first read waiting for a connection is the offline state, never "nothing here".
+        <ErrorState message={OFFLINE_FIRST_READ_MESSAGE} onRetry={() => { void home.refetch(); }} />
+      ) : home.isLoading ? (
         // [APP-SPEED D] Home's own feed (usually already in memory): the cards' shapes until it lands.
         <GridSkeleton />
       ) : home.isError ? (

@@ -10,6 +10,7 @@ import { distanceLabel } from '../../../lib/geo';
 import { vendorPhoto } from '../../../lib/images';
 import { CartBar, useCartBarClearance, Chip, EmptyState, ErrorState, Header, RatingMeta, Screen, T, VendorRow } from '../../../kit';
 import { ListSkeleton } from '../../../kit/skeletons';
+import { OFFLINE_FIRST_READ_MESSAGE, offlineFirstRead } from '../../../lib/offlineRead';
 import { useVendorPrefetch } from '../../../hooks/storeDoor';
 import { storePreviewOf } from '../../../lib/doorPreview';
 
@@ -66,7 +67,10 @@ export function CategoryFeedScreen() {
   return (
     <Screen>
       <Header title={name} />
-      {vendorsQ.isLoading ? (
+      {offlineFirstRead(vendorsQ) ? (
+        // [APP-SPEED D · review S3] A first read waiting for a connection is the offline state, never "nothing here".
+        <ErrorState message={OFFLINE_FIRST_READ_MESSAGE} onRetry={() => { void vendorsQ.refetch(); }} />
+      ) : vendorsQ.isLoading ? (
         // [APP-SPEED D] The rows' shapes on the first frame (the chip on Home starts this read at the finger-down).
         <ListSkeleton />
       ) : vendorsQ.isError ? (

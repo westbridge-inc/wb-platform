@@ -62,8 +62,8 @@ vi.mock('../../../kit', async () => {
     Header: (p: any) => h('header', null, p.title, p.right),
     // A full-screen spinner, were any door to draw one.
     LoadingBlock: () => h('p', null, 'SPINNER'),
-    EmptyState: (p: any) => h('div', null, p.title, p.actionLabel ? button({ label: p.actionLabel, onPress: p.onAction }) : null),
-    ErrorState: (p: any) => h('div', null, 'We couldn’t load this', button({ label: 'Try again', onPress: p.onRetry })),
+    EmptyState: (p: any) => h('div', null, p.title, p.body ?? null, p.actionLabel ? button({ label: p.actionLabel, onPress: p.onAction }) : null),
+    ErrorState: (p: any) => h('div', null, 'We couldn’t load this', p.message ?? null, button({ label: 'Try again', onPress: p.onRetry })),
     LinkText: button, PillButton: button, Chip: button,
     FoodCard: (p: any) => h('button', { type: 'button', onClick: p.onPress }, p.name),
     Photo: () => null, Money: () => null, RatingMeta: () => null, Pictogram: () => null, IconChip: () => null,
@@ -106,6 +106,7 @@ vi.mock('../../../lib/deviceLocation', () => ({
 }));
 
 import { readDoor } from '../../../hooks/homeDoors';
+import { OFFLINE_FIRST_READ_MESSAGE } from '../../../lib/offlineRead';
 import { ServicesScreen } from '../../services/screens/ServicesScreen';
 import { SearchScreen } from './SearchScreen';
 import { FavoritesScreen } from './FavoritesScreen';
@@ -236,5 +237,50 @@ describe('[APP-SPEED D] Favourites', () => {
     await flush();
     expect(text()).toContain('We couldn’t load this');
     expect(text()).not.toContain('Nothing saved yet');
+  });
+});
+
+describe('[APP-SPEED D · review S3] a first read waiting for a connection is the offline state', () => {
+  const offline = async (screen: React.ComponentType<any>, params: Record<string, unknown> = {}) => {
+    onlineManager.setOnline(false);
+    fx.route = { params };
+    await firstFrame(screen);
+    await flush();
+  };
+
+  it('Services: offline with Try again, never a skeleton that never ends', async () => {
+    await offline(ServicesScreen);
+    expect(text()).toContain(OFFLINE_FIRST_READ_MESSAGE);
+    expect(skeleton()).toBeNull();
+    expect(fx.get).not.toHaveBeenCalled();
+  });
+
+  it('Search (a Groceries tile): offline with Try again, never "No matches"', async () => {
+    await offline(SearchScreen, { type: 'SUPERMARKET' });
+    expect(text()).toContain(OFFLINE_FIRST_READ_MESSAGE);
+    expect(text()).not.toContain('No matches');
+    expect(skeleton()).toBeNull();
+  });
+
+  it('Favourites: offline with Try again, never "Nothing saved yet"', async () => {
+    await offline(FavoritesScreen);
+    expect(text()).toContain(OFFLINE_FIRST_READ_MESSAGE);
+    expect(text()).not.toContain('Nothing saved yet');
+    expect(skeleton()).toBeNull();
+  });
+});
+
+describe('[APP-SPEED D · review S2-1] a screen opened while its read ahead is on its way', () => {
+  it('joins it, and one dropped answer is asked again: the stores, not the error', async () => {
+    const first = new Promise((_resolve, reject) => { setTimeout(() => reject(new Error('network')), 20); });
+    fx.getFavorites.mockImplementationOnce(() => first).mockResolvedValueOnce(answer(STORES));
+    const ahead = readDoor(client, 'favourites', DOORS);
+    await firstFrame(FavoritesScreen);
+    expect(skeleton(), 'the read ahead is still on its way').toBeTruthy();
+    await ahead;
+    await flush();
+    expect(fx.getFavorites).toHaveBeenCalledTimes(2);
+    expect(text()).toContain('Shanta’s Roti Shop');
+    expect(text()).not.toContain('We couldn’t load this');
   });
 });

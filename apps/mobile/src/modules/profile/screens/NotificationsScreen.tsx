@@ -7,6 +7,7 @@ import { useNotifications } from '../../../hooks/customer';
 import { usePullToRefresh } from '../../../hooks/usePullToRefresh';
 import { Card, EmptyState, ErrorState, Header, IconChip, PressableScale, Screen, T } from '../../../kit';
 import { ListSkeleton } from '../../../kit/skeletons';
+import { OFFLINE_FIRST_READ_MESSAGE, offlineFirstRead } from '../../../lib/offlineRead';
 import { destinationFor, HOME_SCREEN } from '../../../services/notification-router';
 import { safeNavigate } from '../../../navigation/navigationRef';
 import { TeamInviteCards } from '../components/TeamInviteCards';
@@ -74,7 +75,10 @@ export function NotificationsScreen() {
       <Header title="Notification" />
       {/* [Row 55] Store team invites are answered here, above the inbox. */}
       <TeamInviteCards />
-      {notifications.isLoading ? (
+      {offlineFirstRead(notifications) ? (
+        // [APP-SPEED D · review S3] A first read waiting for a connection is the offline state, never "nothing here".
+        <ErrorState message={OFFLINE_FIRST_READ_MESSAGE} onRetry={() => { void notifications.refetch(); }} />
+      ) : notifications.isLoading ? (
         // [APP-SPEED D] The rows' shapes on the first frame, never a full-screen spinner.
         <ListSkeleton thumb={40} />
       ) : notifications.isError ? (

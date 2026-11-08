@@ -32,6 +32,7 @@ import { useVendorPrefetch } from '../../../hooks/storeDoor';
 import { itemPreviewOf, storePreviewOf } from '../../../lib/doorPreview';
 import { engineSearchRows, searchRowKey } from '../../../lib/searchRows';
 import { searchBrowseParams } from '../../../lib/searchBrowse';
+import { OFFLINE_FIRST_READ_MESSAGE, offlineFirstRead } from '../../../lib/offlineRead';
 import { ListSkeleton } from '../../../kit/skeletons';
 
 // Kit 57–60: idle = headline + history chips + popular rows.
@@ -253,6 +254,8 @@ export function SearchScreen() {
   const dishes: any[] = openNow ? engineDishes.filter((d) => d.vendorIsCurrentlyOpen !== false) : engineDishes;
   const suggestions: any[] = (suggestionsQ.data ?? []).filter((s: any) => s.text?.toLowerCase() !== text.toLowerCase()).slice(0, 6);
   const resultsBusy = engineMode ? engine.isLoading : vendors.isLoading;
+  // [APP-SPEED D · review S3] A first read waiting for a connection: the offline state, never "No matches".
+  const resultsOffline = offlineFirstRead(engineMode ? engine : vendors);
   const resultsError = engineMode ? engine.isError : vendors.isError;
   const retryResults = () => (engineMode ? engine.refetch() : vendors.refetch());
 
@@ -444,7 +447,9 @@ export function SearchScreen() {
           ) : null}
 
           {(
-            resultsBusy ? (
+            resultsOffline ? (
+              <ErrorState message={OFFLINE_FIRST_READ_MESSAGE} onRetry={() => void retryResults()} />
+            ) : resultsBusy ? (
               // [APP-SPEED D] The list's shape on the first frame, never a full-screen spinner. A failed read
               // still says so (the branch below); an empty answer is only ever drawn from a read that came back.
               <ListSkeleton />
