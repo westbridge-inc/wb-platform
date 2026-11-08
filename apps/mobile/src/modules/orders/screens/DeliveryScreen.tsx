@@ -53,6 +53,10 @@ import { rideIsOver } from '../../../lib/rideAfterTrip';
 import { pickupShowsCode, pickupWords } from '../pickup-words';
 import { BookingRescheduleCard } from '../BookingRescheduleCard';
 import { appointmentBookingView } from '../../../lib/appointmentBooking';
+import { customerCancellationWords } from '@swift/types';
+
+/** The store kinds Search can filter by (its own chips): a declined order opens Search on the same kind. */
+const SEARCH_TYPES: ReadonlySet<unknown> = new Set(['RESTAURANT', 'SUPERMARKET', 'STORE', 'SERVICE']);
 
 const GUTTER = space['2xl'];
 const ORDER_TINT = VERTICAL_TINT.orders ?? { bg: color.brand[50], ink: color.brand[600] };
@@ -979,6 +983,17 @@ export function DeliveryScreen() {
   // booking a booking. Food, pickup and courier keep their exact words.
   const refundParty = o.fulfillment === 'APPOINTMENT' ? 'the provider' : 'the store';
   const cancelledNoun = o.fulfillment === 'APPOINTMENT' ? 'booking' : 'order';
+  // [owner 8 Nov 2026] Who closed a cancelled order and why, from the server's `cancellation` (null from an older
+  // server, or on any order that is not CANCELLED: the card keeps its own words then).
+  const closedWords = customerCancellationWords(o);
+  // A store that declined (or never answered) sends the customer elsewhere: the same kind of store, one tap.
+  const findElsewhere = closedWords && (o.cancellation?.by === 'STORE' || o.cancellation?.by === 'NO_RESPONSE')
+    && o.orderType !== 'TAXI' && o.orderType !== 'COURIER'
+    ? {
+      label: o.fulfillment === 'APPOINTMENT' ? 'Book with another provider' : 'Order from another store',
+      params: SEARCH_TYPES.has(o.vendor?.vendorType) ? { type: o.vendor.vendorType } : undefined,
+    }
+    : null;
   let etaCopy = pendingSummary;
   if (cancelled) etaCopy = 'Cancelled';
   else if (failed) etaCopy = 'Couldn’t complete this order';
@@ -1389,32 +1404,51 @@ export function DeliveryScreen() {
           ) : null}
 
           {cancelled || failed ? (
-            <View
-              style={{
-                flexDirection: 'row',
-                alignItems: 'center',
-                gap: space.md,
-                marginTop: rider ? space.xl : 0,
-                padding: space.lg,
-                borderRadius: radius.md,
-                backgroundColor: color.soft.danger,
-              }}
-            >
-              <Feather name={failed ? 'alert-triangle' : 'x-circle'} size={18} color={color.error} />
-              <View style={{ flex: 1 }}>
-                <T variant="body" weight="semibold" tone="error">
-                  {/* Server's authoritative result first — it knows the real
-                      final cost/refund outcome the client clock cannot. */}
-                  {failed
-                    ? 'This order could not continue. Report a problem for help with what happens next.'
-                    : cancelMessage
-                      ?? (typeof o.cancellationNotice === 'string' && o.cancellationNotice.trim() ? o.cancellationNotice : null) /* [owner 18 Oct 2026] why an unpaid MMG order closed by itself */
-                      ?? (mmgCancellationAmbiguous
-                        ? `This ${cancelledNoun} was cancelled. If you already sent the MMG payment, ${refundParty} refunds you directly.`
-                        : `This ${cancelledNoun} was cancelled.`)}
-                </T>
+            <>
+              <View
+                style={{
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  gap: space.md,
+                  marginTop: rider ? space.xl : 0,
+                  padding: space.lg,
+                  borderRadius: radius.md,
+                  backgroundColor: color.soft.danger,
+                }}
+              >
+                <Feather name={failed ? 'alert-triangle' : 'x-circle'} size={18} color={color.error} />
+                <View style={{ flex: 1 }} testID="order-closed-card">
+                  <T variant="body" weight="semibold" tone="error">
+                    {/* Server's authoritative result first — it knows the real
+                        final cost/refund outcome the client clock cannot. */}
+                    {failed
+                      ? 'This order could not continue. Report a problem for help with what happens next.'
+                      : cancelMessage
+                        ?? (typeof o.cancellationNotice === 'string' && o.cancellationNotice.trim() ? o.cancellationNotice : null) /* [owner 18 Oct 2026] why an unpaid MMG order closed by itself */
+                        ?? closedWords?.headline /* [owner 8 Nov 2026] who closed it and why ("The store declined your order: Out of stock.") */
+                        ?? (mmgCancellationAmbiguous
+                          ? `This ${cancelledNoun} was cancelled. If you already sent the MMG payment, ${refundParty} refunds you directly.`
+                          : `This ${cancelledNoun} was cancelled.`)}
+                  </T>
+                  {/* What happens to the money, only where it is certainly true (cash: never charged; MMG still
+                      waiting for the store: the store refunds it directly). Not under the customer's own cancel. */}
+                  {!failed && !cancelMessage && !(typeof o.cancellationNotice === 'string' && o.cancellationNotice.trim()) && closedWords?.money ? (
+                    <T variant="body" tone="muted" style={{ marginTop: space.xs }}>
+                      {closedWords.money}
+                    </T>
+                  ) : null}
+                </View>
               </View>
-            </View>
+              {!failed && findElsewhere ? (
+                <PillButton
+                  label={findElsewhere.label}
+                  variant="outline"
+                  size="md"
+                  style={{ marginTop: space.md }}
+                  onPress={() => navigation.navigate('Search', findElsewhere.params)}
+                />
+              ) : null}
+            </>
           ) : (
             <>
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.sm, marginTop: rider ? space.xl : 0 }}>
