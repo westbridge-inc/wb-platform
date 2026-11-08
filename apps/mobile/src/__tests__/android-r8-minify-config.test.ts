@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
 
@@ -26,6 +27,7 @@ const plugin = createRequire(join(MOBILE, 'package.json'))('./plugins/withAndroi
     mergeProguardRules(src: string): string;
     resourceKeeps(config: { plugins?: unknown[] }): string[];
     resourceKeepXml(config: { plugins?: unknown[] }): string;
+    writeAndroidFiles(platformProjectRoot: string, config: { plugins?: unknown[] }): void;
   };
 };
 const I = plugin.internals;
@@ -75,7 +77,14 @@ const REQUIRED_RULES = [
   '-keep class com.swmansion.gesturehandler.RNGestureHandlerPackage$$ReactModuleInfoProvider { <init>(); }',
   // expo-modules-core reflection
   '-keep class inline.modules.ExpoInlineModulesList { <init>(); }',
+  // expo-modules-core headless app loader: named only in its manifest meta-data, loaded by Class.forName in
+  // AppLoaderProvider.kt; expo-task-manager TaskService.java needs it for background location after process death
+  '-keep class expo.modules.adapters.react.apploader.RNHeadlessAppLoader { <init>(); }',
 ];
+
+const fromMobile = createRequire(join(MOBILE, 'package.json'));
+const pkgDir = (name: string) => join(fromMobile.resolve(`${name}/package.json`), '..');
+const JOB_RING_PLUGINS = [['expo-notifications', { sounds: ['./assets/sounds/swift_job_ring.wav'] }]];
 
 describe('Android release builds are minified and shrunk (R8)', () => {
   it('app.config.ts registers the plugin', () => {
@@ -153,4 +162,56 @@ describe('Android release builds are minified and shrunk (R8)', () => {
     // Expo's bundler writes res/raw/keep.xml for JS assets; ours must not collide with it.
     expect(I.RESOURCE_KEEP_FILE).not.toBe('keep.xml');
   }, 90_000);
+
+  it('the six call-SDK resources kept by name really exist in the installed SDK, under those names', () => {
+    const sdk = join(pkgDir('@twilio/voice-react-native-sdk'), 'android/src/main');
+    const keeps = I.resourceKeeps({ plugins: JOB_RING_PLUGINS }).filter((k) => !k.startsWith('@raw/'));
+    expect(keeps).toHaveLength(6);
+    const drawables = readdirSync(join(sdk, 'res/drawable')).map((f) => f.replace(/\.[^.]+$/, ''));
+    const strings = readFileSync(join(sdk, 'res/values/strings.xml'), 'utf8');
+    const lookup = readFileSync(join(sdk, 'java/com/twiliovoicereactnative/NotificationUtility.java'), 'utf8');
+    for (const keep of keeps) {
+      const [type, name] = keep.slice(1).split('/') as [string, string];
+      if (type === 'drawable') expect(drawables, keep).toContain(name);
+      else expect(strings, keep).toContain(`name="${name}"`);
+      // ...and are looked up by exactly that string (getIdentifier), which is why they need the keep.
+      expect(lookup, keep).toContain(`"${name}"`);
+    }
+  });
+
+  it('the plugin refuses a config with no expo-notifications sounds (the job-ring keep cannot vanish silently)', () => {
+    expect(() => I.resourceKeeps({ plugins: [] })).toThrow(/no expo-notifications sounds/);
+    expect(() => I.resourceKeeps({ plugins: [['expo-notifications', { sounds: [] }]] })).toThrow(/no expo-notifications sounds/);
+    expect(() => I.resourceKeeps({ plugins: ['expo-notifications'] })).toThrow(/no expo-notifications sounds/);
+  });
+
+  it('the file-writing step writes proguard-rules.pro and res/raw/swift_resource_keep.xml (twice = same files)', () => {
+    const root = mkdtempSync(join(tmpdir(), 'swift-r8-'));
+    try {
+      const template = '# react-native-reanimated\n-keep class com.swmansion.reanimated.** { *; }\n';
+      mkdirSync(join(root, 'app'), { recursive: true });
+      writeFileSync(join(root, 'app/proguard-rules.pro'), template);
+      I.writeAndroidFiles(root, { plugins: JOB_RING_PLUGINS });
+      const rules = readFileSync(join(root, 'app/proguard-rules.pro'), 'utf8');
+      const keepXml = readFileSync(join(root, 'app/src/main/res/raw/swift_resource_keep.xml'), 'utf8');
+      expect(rules.startsWith(template)).toBe(true);
+      for (const rule of REQUIRED_RULES) expect(rules, rule).toContain(rule);
+      expect(keepXml).toBe(I.resourceKeepXml({ plugins: JOB_RING_PLUGINS }));
+      expect(keepXml).toContain('tools:keep="@raw/swift_job_ring,@drawable/incoming_call_small_icon,');
+      I.writeAndroidFiles(root, { plugins: JOB_RING_PLUGINS });
+      expect(readFileSync(join(root, 'app/proguard-rules.pro'), 'utf8')).toBe(rules);
+      expect(readFileSync(join(root, 'app/src/main/res/raw/swift_resource_keep.xml'), 'utf8')).toBe(keepXml);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('Android release profiles upload the R8 mapping/usage/seeds files; production keeps the DSN off', () => {
+    type Profile = { android?: { buildArtifactPaths?: string[] }; env?: Record<string, string> };
+    const eas = JSON.parse(readFileSync(join(MOBILE, 'eas.json'), 'utf8')) as { build: Record<string, Profile> };
+    for (const name of ['preview', 'staging', 'production']) {
+      expect(eas.build[name]?.android?.buildArtifactPaths, name).toEqual(['android/app/build/outputs/mapping/release/*']);
+    }
+    expect(eas.build['production']?.env?.['EXPO_PUBLIC_SENTRY_DSN']).toBe('off');
+  });
 });

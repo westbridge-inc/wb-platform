@@ -72,12 +72,21 @@ const EXTRA_PROGUARD_RULES = `# --- Twilio Voice Android SDK (com.twilio:voice-a
 # --- expo-modules-core 56: AppContext.kt loads inline.modules.ExpoInlineModulesList with
 # Class.forName(...).getConstructor().newInstance() and catches only ClassNotFoundException, so a stripped
 # constructor would crash at start. Not covered by expo-modules-core's own rules. (Absent class = no-op.)
--keep class inline.modules.ExpoInlineModulesList { <init>(); }`;
+-keep class inline.modules.ExpoInlineModulesList { <init>(); }
+
+# --- expo-modules-core 56: the headless app loader is named ONLY in expo-modules-core's AndroidManifest.xml
+# meta-data (org.unimodules.core.AppLoader#react-native-headless) and loaded by AppLoaderProvider.kt with
+# Class.forName(...).getDeclaredConstructor().newInstance(). expo-task-manager's TaskService.java asks for it
+# when a background task (services/backgroundLocation.ts, the mover location task) fires after the process
+# died; a renamed or stripped class crashes that path. Its @DoNotStrip constructor alone does not keep the name.
+-keep class expo.modules.adapters.react.apploader.RNHeadlessAppLoader { <init>(); }`;
 
 /** Notification sounds the expo-notifications plugin copies into res/raw, as `@raw/<name>`. */
 function notificationSoundKeeps(config) {
   const entry = (config.plugins || []).find((p) => Array.isArray(p) && p[0] === 'expo-notifications');
   const sounds = (entry && entry[1] && entry[1].sounds) || [];
+  // The job ring's channel sound would be shrunk away without its keep: never let it vanish silently.
+  if (sounds.length === 0) throw new Error(`${TAG}: no expo-notifications sounds in the config, so the job-ring sound keep would vanish`);
   return sounds.map((file) => `@raw/${path.basename(file, path.extname(file))}`);
 }
 
@@ -128,19 +137,25 @@ function mergeProguardRules(src) {
   return `${src.replace(/\n*$/, '\n')}\n${block}`;
 }
 
+/** The file-writing step: proguard-rules.pro (merged) + res/raw keep file, under an android/ project root. */
+function writeAndroidFiles(platformProjectRoot, config) {
+  const appDir = path.join(platformProjectRoot, 'app');
+  const rulesPath = path.join(appDir, 'proguard-rules.pro');
+  const current = fs.existsSync(rulesPath) ? fs.readFileSync(rulesPath, 'utf8') : '';
+  fs.mkdirSync(appDir, { recursive: true });
+  fs.writeFileSync(rulesPath, mergeProguardRules(current));
+  const rawDir = path.join(appDir, 'src/main/res/raw');
+  fs.mkdirSync(rawDir, { recursive: true });
+  fs.writeFileSync(path.join(rawDir, RESOURCE_KEEP_FILE), resourceKeepXml(config));
+}
+
 const withAndroidReleaseMinify = (config) => {
   config = withGradleProperties(config, (cfg) => {
     cfg.modResults = applyGradleProperties(cfg.modResults);
     return cfg;
   });
   config = withDangerousMod(config, ['android', (cfg) => {
-    const appDir = path.join(cfg.modRequest.platformProjectRoot, 'app');
-    const rulesPath = path.join(appDir, 'proguard-rules.pro');
-    const current = fs.existsSync(rulesPath) ? fs.readFileSync(rulesPath, 'utf8') : '';
-    fs.writeFileSync(rulesPath, mergeProguardRules(current));
-    const rawDir = path.join(appDir, 'src/main/res/raw');
-    fs.mkdirSync(rawDir, { recursive: true });
-    fs.writeFileSync(path.join(rawDir, RESOURCE_KEEP_FILE), resourceKeepXml(cfg));
+    writeAndroidFiles(cfg.modRequest.platformProjectRoot, cfg);
     return cfg;
   }]);
   return config;
@@ -149,5 +164,5 @@ const withAndroidReleaseMinify = (config) => {
 module.exports = createRunOncePlugin(withAndroidReleaseMinify, TAG, '1');
 module.exports.internals = {
   GRADLE_PROPERTIES, EXTRA_PROGUARD_RULES, BEGIN, END, RESOURCE_KEEP_FILE,
-  applyGradleProperties, mergeProguardRules, resourceKeeps, resourceKeepXml,
+  applyGradleProperties, mergeProguardRules, resourceKeeps, resourceKeepXml, writeAndroidFiles,
 };

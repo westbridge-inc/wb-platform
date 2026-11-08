@@ -15,7 +15,8 @@
       "distribution": "internal",
       "channel": "preview",
       "android": {
-        "buildType": "apk"
+        "buildType": "apk",
+        "buildArtifactPaths": ["android/app/build/outputs/mapping/release/*"]
       },
       "env": {
         "EXPO_PUBLIC_API_URL": "https://api-staging.swiftgy.com",
@@ -26,6 +27,9 @@
       "distribution": "store",
       "channel": "staging",
       "autoIncrement": true,
+      "android": {
+        "buildArtifactPaths": ["android/app/build/outputs/mapping/release/*"]
+      },
       "env": {
         "EXPO_PUBLIC_API_URL": "https://api-staging.swiftgy.com",
         "EAS_PROJECT_ID": "bb17a405-1f85-4384-9186-25de0319122b"
@@ -34,6 +38,9 @@
     "production": {
       "channel": "production",
       "autoIncrement": true,
+      "android": {
+        "buildArtifactPaths": ["android/app/build/outputs/mapping/release/*"]
+      },
       "env": {
         "EXPO_PUBLIC_API_URL": "https://api.swiftgy.com",
         "EAS_PROJECT_ID": "bb17a405-1f85-4384-9186-25de0319122b",
