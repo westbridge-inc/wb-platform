@@ -17,6 +17,9 @@ const mocks = vi.hoisted(() => {
 vi.mock('react-native-mmkv', () => ({ MMKV: mocks.FakeMMKV }));
 
 import {
+  answerCallsMicrophone,
+  askCallsMicrophone,
+  primeCardShowing,
   markPrimeAsked,
   maybePrimeEarnerNotifications,
   maybePrimeNotifications,
@@ -68,5 +71,29 @@ describe('[STORE-ALERT] earner dashboards ask while the OS still can', () => {
     maybePrimeNotifications('customer_order');
     vi.advanceTimersByTime(600);
     expect(shown()).toBeNull();
+  });
+});
+
+// [CALLS-REACH · review S2-2] The in-app calls microphone card uses this same slot: one ask at a time.
+describe('[CALLS-REACH] the microphone card shares the one priming slot', () => {
+  it('never shows over a notifications card; the notifications card waits behind it', async () => {
+    usePrimeStore.getState().show('customer_order');
+    expect(askCallsMicrophone('customer')).toBeNull();
+    usePrimeStore.getState().dismiss();
+    const answer = askCallsMicrophone('partner');
+    expect(answer).not.toBeNull();
+    expect(usePrimeStore.getState().micAsk).toBe('partner');
+    expect(primeCardShowing()).toBe(true);
+    expect(askCallsMicrophone('customer')).toBeNull(); // never two
+    answerCallsMicrophone('not-now');
+    await expect(answer).resolves.toBe('not-now');
+    expect(usePrimeStore.getState().micAsk).toBeNull();
+    expect(primeCardShowing()).toBe(false);
+  });
+
+  it('closing it is "dismissed", never a no', async () => {
+    const answer = askCallsMicrophone('customer');
+    answerCallsMicrophone('dismissed');
+    await expect(answer).resolves.toBe('dismissed');
   });
 });

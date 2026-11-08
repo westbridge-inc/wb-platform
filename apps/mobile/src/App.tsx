@@ -45,6 +45,7 @@ import { useDeviceLocation } from './hooks/useDeviceLocation';
 import { PillButton, Screen, T } from './kit';
 import { SwiftMark } from './components/SwiftLogo';
 import { startInAppVoiceIfRegistered } from './services/inAppVoice';
+import { InAppCallReach } from './components/InAppCallReach';
 
 // One app-lifetime cache boundary, before persisted auth hydration or queries.
 // Logout/account switch/token rejection still use the existing auth lifecycle.
@@ -312,6 +313,8 @@ export default function App() {
               <QueryClientProvider client={queryClient}>
                 <LocationBootstrap />
                 <SessionRefreshAhead />
+                {/* [CALLS-REACH] On a live order, this phone can be rung in the app on any screen (build 13+). */}
+                <InAppCallReach />
                 <ConnectivityBoundary>
                   <RootNavigator />
                 </ConnectivityBoundary>

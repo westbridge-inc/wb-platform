@@ -19,6 +19,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useActiveRide, useRideEstimate, useRequestRide, useCancelRide, useConfirmDriverArrival, useRideAvailability, useWatchAvailability, useRideSupply, useRidePresence, useQueueStatus, useJoinQueue, useLeaveQueue, useRideCapabilities } from '../../../hooks';
 import { useWaitingClock } from '../../../hooks/useWaitingClock';
 import { useNavigationFocused } from '../../../hooks/useNavigationFocused';
+import { useCallsAskMoment } from '../../../hooks/useCallsAskMoment';
 import { addStop, canAddStop, maxStopsFrom, moveStop, removeStop, replaceStop, rideStops, sameWireStops, stopRefusalCopy, wireStops } from '../../../lib/taxiItinerary';
 import { fareBreakdownOf, liveWaiting, waitingDisclosure, waitingEcho } from '../../../lib/taxiWaiting';
 import { AddStopRow, RideItinerary, RouteLegs, StopNumber, StopRows, WaitingCard, oneFareLine } from '../TaxiStops';
@@ -1345,6 +1346,8 @@ function ActiveRide({ navigation, ride, cancelRide, confirmDriverArrival, insets
   // redraws the waiting card, never this ride screen and its map, and stops while another screen is in front.
   const rideWaiting = liveWaiting(ride);
   const rideShown = useNavigationFocused(navigation);
+  // [CALLS-REACH] The ride in front: a fitting moment for the in-app calls microphone (Android).
+  useCallsAskMoment(rideShown && !!ride?.id);
 
   // [TAXI multi-stop · part 4] Each stop change is announced on the ride's
   // room; re-read the ride so its stops and their statuses are current.

@@ -78,6 +78,9 @@ import { vendorSurfaceForRole } from '../../../lib/vendorRbac';
 import { shownStoreOpen } from '../../../lib/storeOpenSwitch';
 import { storeLabel } from '../../../lib/branches';
 import { Switch as AvailabilitySwitch } from '../../../kit/switch';
+import { useNavigationFocused } from '../../../hooks/useNavigationFocused';
+import { useCallsAskMoment } from '../../../hooks/useCallsAskMoment';
+import { reachSignal } from '../../../lib/inAppReach';
 import {
   TYPES,
   catalogueMeta,
@@ -943,6 +946,9 @@ export function VendorOps({ store, navigation }: any) {
   // [STORE-DASH] Only the order that was tapped waits for the server's answer
   // (boardTaps): a slow answer for one order never freezes the others.
   const pendingIds = usePendingOrderIds();
+  // [CALLS-REACH] The board in front with an open order: a fitting moment for the in-app calls microphone (Android).
+  const boardShown = useNavigationFocused(navigation);
+  useCallsAskMoment(boardShown && reachSignal({ storeOrders: fetched }).state === 'live');
   const openOrder = (o: any) => navigation.navigate('VendorOrderDetail', { orderId: o.id, orderNumber: o.orderNumber });
   const onCardAction = (o: any, action: VendorOrderActionKind, code?: string) => {
     const tap = cardTapFor(action);

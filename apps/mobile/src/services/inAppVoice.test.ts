@@ -219,3 +219,58 @@ describe('[INAPP-CALLS] the microphone', () => {
     expect(await voice.ensureMicrophone(async () => true)).toBe(true);
   });
 });
+
+// [CALLS-REACH · review S3-1] The sign-out boundary: work started for one account never lands on the next.
+describe('[CALLS-REACH] register / unregister across a sign-out', () => {
+  beforeEach(() => { rn.native = { TwilioVoiceReactNative: {} }; });
+
+  it('a register in flight when the account signs out is dropped: no throttle, no launch flag for the next account', async () => {
+    let release!: (token: string) => void;
+    const slow = vi.fn(() => new Promise<string>((r) => { release = r; }));
+    const pending = voice.registerForInAppCallsResult(slow, { now: 1_000_000 });
+    await vi.waitFor(() => expect(slow).toHaveBeenCalled());
+    await voice.unregisterInAppCalls(async () => 'old'); // the sign-out
+    release('tok-old-account');
+    expect(await pending).toBe('stale');
+    expect(voice.mayBeRegistered()).toBe(false);
+    expect(disk.get('registeredOnce')).toBeUndefined();
+    // the next account registers at once (not held back ten minutes)
+    expect(await voice.registerForInAppCallsResult(async () => 'tok-new', { now: 1_000_000 + 1_000 })).toBe('registered');
+  });
+
+  it('a late unregister (the old account\'s) never clears the new account\'s registration', async () => {
+    await voice.registerForInAppCalls(async () => 'reg-old', 2_000_000);
+    let finish!: (token: string) => void;
+    const late = voice.unregisterInAppCalls(() => new Promise<string>((r) => { finish = r; }));
+    expect(await voice.registerForInAppCallsResult(async () => 'reg-new', { now: 2_000_000 + 1_000 })).toBe('registered');
+    finish('old-token');
+    expect(await late).toBe(true);
+    expect(disk.get('registeredOnce')).toBe(true);
+    expect(voice.mayBeRegistered()).toBe(true);
+    expect(await voice.registerForInAppCallsResult(async () => 'again', { now: 2_000_000 + 2_000 })).toBe('throttled');
+  });
+
+  it('the server\'s 403 INAPP_NO_LIVE_ORDER is told apart ("not-live"); `force` asks past the ten-minute rhythm', async () => {
+    expect(await voice.registerForInAppCallsResult(async () => 'tok', { now: 3_000_000 })).toBe('registered');
+    expect(await voice.registerForInAppCallsResult(async () => 'tok', { now: 3_000_000 + 1_000 })).toBe('throttled');
+    const refused = Object.assign(new Error('403'), { response: { status: 403, data: { error: { code: 'INAPP_NO_LIVE_ORDER' } } } });
+    expect(await voice.registerForInAppCallsResult(async () => { throw refused; }, { now: 3_000_000 + 2_000, force: true })).toBe('not-live');
+    expect(await voice.registerForInAppCallsResult(async () => { throw new Error('offline'); }, { now: 3_000_000 + 3_000, force: true })).toBe('failed');
+  });
+
+  it('Android without the microphone: "no-mic", and an earlier registration is removed', async () => {
+    rn.os = 'android';
+    expect(await voice.registerForInAppCallsResult(async () => 'tok', { now: 4_000_000 })).toBe('registered');
+    rn.granted = false;
+    expect(await voice.registerForInAppCallsResult(async (_p, purpose) => `${purpose}-tok`, { now: 4_000_000 + 1_000, force: true })).toBe('no-mic');
+    expect(sdkState.calls.at(-1)).toEqual({ m: 'unregister', a: ['unregister-tok'] });
+    expect(voice.mayBeRegistered()).toBe(false);
+  });
+
+  it('build 12 (no module): "unavailable", nothing imported', async () => {
+    rn.native = {};
+    voice.resetInAppVoiceForTests(fakeSdk, fakeFlags);
+    expect(await voice.registerForInAppCallsResult(async () => 'x')).toBe('unavailable');
+    expect(sdkState.imported).toBe(0);
+  });
+});

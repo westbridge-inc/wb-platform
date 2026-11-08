@@ -31,13 +31,23 @@ export const INAPP_WORDS = {
   hint: 'Calls them inside the Swift app, over the internet. Your number stays hidden.',
   a11y: 'Call in the Swift app',
   calling: 'Calling in the app',
-  callingHow: 'Their phone shows a Swift call screen. If they do not answer in the app, Swift rings their phone.',
+  // [CALLS-REACH] Never promises a phone call: Swift rings their phone only while the phone bridge is on.
+  callingHow: 'Their phone shows a Swift call screen. If they cannot answer, you will hear it on the call.',
   endLabel: 'End call',
   failedTitle: 'Call not started',
   micTitle: 'Microphone needed',
   /** Shown before the system asks (Android), and after a refusal (both). */
   micWhy: 'Swift needs the microphone so you can talk on in-app calls. Swift never records calls.',
   micRefused: 'The microphone is off for Swift, so in-app calls cannot work. You can turn it on in Settings, or use Call via Swift.',
+  /** [CALLS-REACH] Android, once a live order exists: so the other side's in-app call can ring this phone. */
+  reachTitle: 'Let Swift calls reach you',
+  reachWhyCustomer: 'So the store, rider or driver can call you in Swift, allow the microphone. Swift never records calls.',
+  reachWhyPartner: 'So the people on your orders can call you in Swift, allow the microphone. Swift never records calls.',
+  /** The caller's words when nobody for them can take an in-app call (server code INAPP_NOT_REACHABLE). Not "right
+   *  now": they may have turned the microphone off for good. */
+  notReachable: "They can't take calls in the Swift app. Message them in chat instead.",
+  /** Swift could not tell which phones can ring (server code INAPP_CALLS_TROUBLE): Swift's trouble, never theirs. */
+  callsTrouble: 'Swift calls are having trouble right now. Try again in a minute, or message them in chat.',
 } as const;
 
 /** The server's refusal, in the person's words. Unknown codes get a safe general line. */
@@ -49,6 +59,8 @@ export function inAppErrorText(code: string | null | undefined): string {
     case 'CALL_LIMIT_REACHED': return 'Swift has connected as many calls as it can for this order. Message them in chat, or ask support.';
     case 'INAPP_NO_ONE': return 'There is no one to call in the app for this. Message them in chat, or ask support.';
     case 'INAPP_NOT_FOR_TARGET': return 'They do not have the Swift app. Use Call via Swift instead.';
+    case 'INAPP_NOT_REACHABLE': return INAPP_WORDS.notReachable;
+    case 'INAPP_CALLS_TROUBLE': return INAPP_WORDS.callsTrouble;
     case 'MIC_REFUSED': return INAPP_WORDS.micRefused;
     // [owner 6 Nov] The bridge's daily rules hold for in-app calls too: the bridge's own words.
     case 'CALL_CALLER_BUSY':
