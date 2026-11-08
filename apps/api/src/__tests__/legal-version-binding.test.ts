@@ -392,6 +392,17 @@ const PUBLISHED: Record<
     driver_agreement: 'bc4d65166549aaa4205cdfa1084618abe36737617490bcedd99c7eaa944da516',
     vendor_agreement: '22c1763a78a89c22a6831e7e2f55abd234e4fd4fcb8b037db0f09bc0eff443de',
   },
+  // [2026-11-08 · DELIVERY-800 · owner ruling 8 Nov 2026 · MATERIAL (a price rise after launch) · DRAFT until a Guyana
+  // attorney reads it] The bump for the website's Delivery policy: GYD 800 for the first 3 km, then GYD 175 per km. No
+  // served text states the delivery schedule, so every document changes only by its "Last updated" date: putting
+  // "6 November 2026" back in place of "8 November 2026" reproduces all four 2026-11-06 pins above exactly (checked
+  // mechanically before pinning).
+  '2026-11-08': {
+    terms: '61fd354dc2e2420eb01bce036a5f4a807dd2719c315c20453da4113bdb606565',
+    privacy: '9ef38a19ad45c7c357d513d866b17aed3c94f8d04a142b55866fbb17c522d6d7',
+    driver_agreement: 'dc5cf4cdc720f9e259765546c805461da13e6772b93bab66a49013a95aa6cb5b',
+    vendor_agreement: '881dcf40cf3067f9930ea7e4a3720602848aebbd7e6b3ff1d1a2eebf870be920',
+  },
 };
 
 describe('legal version binding [F-035-08]', () => {

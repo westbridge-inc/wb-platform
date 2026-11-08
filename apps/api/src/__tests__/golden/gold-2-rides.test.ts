@@ -288,7 +288,7 @@ describe('GOLD-2 · RIDE-04 — the cash door', () => {
     const otherRider = await makeRider('Bo');
     const order = await orderAtTheDoor(rider);
     // One Door Pepperpot plus the delivery leg (inside the included distance).
-    expect({ total: order.total, deliveryFee: order.deliveryFee }).toEqual({ total: 2700, deliveryFee: 500 });
+    expect({ total: order.total, deliveryFee: order.deliveryFee }).toEqual({ total: 3000, deliveryFee: 800 }); // the 800 base [owner 8 Nov 2026]
 
     // The screen the rider rendered on the way (EN_ROUTE_DELIVERY).
     const onTheWay = await activeHandover(rider);

@@ -17,7 +17,7 @@ import { renderReceiptHtml } from '../modules/order/receipt';
 // ---------------------------------------------------------------------------
 // Owner decision 18 (13 Oct 2026): when road routing (OSRM) is down, food and
 // shop deliveries keep flowing on the straight-line estimate (× road factor),
-// NEVER below the 500 base fee, and it is logged. Taxis keep refusing (#1555).
+// NEVER below the base fee (800 since the owner's 8 Nov 2026 ruling; 500 before), and it is logged. Taxis keep refusing (#1555).
 //
 // What already held, proven here end to end with OSRM unreachable: the quote,
 // the charged fee, the frozen distance and its engine, the receipt and the
@@ -113,12 +113,12 @@ describe('[owner #18] the formula never prices under the base fee', () => {
   });
 
   it('a bad per-km rate or a surge below 1 in a market config cannot price under it', () => {
-    expect(deliveryFeeFromRates(8, { ...DEFAULT_DELIVERY_RATES, perKmRate: -100 })).toBe(500);
+    expect(deliveryFeeFromRates(8, { ...DEFAULT_DELIVERY_RATES, perKmRate: -100 })).toBe(800);
     // A negative per-km rate counts as none: it never eats into a surged base either.
-    expect(deliveryFeeFromRates(10, { ...DEFAULT_DELIVERY_RATES, perKmRate: -100, surgeMultiplier: 1.5 })).toBe(750);
-    expect(deliveryFeeFromRates(1, { ...DEFAULT_DELIVERY_RATES, surgeMultiplier: 0.5 })).toBe(500);
-    // Above the base the schedule is unchanged: 500 + 2 km × 100.
-    expect(deliveryFeeFromRates(5, DEFAULT_DELIVERY_RATES)).toBe(700);
+    expect(deliveryFeeFromRates(10, { ...DEFAULT_DELIVERY_RATES, perKmRate: -100, surgeMultiplier: 1.5 })).toBe(1200);
+    expect(deliveryFeeFromRates(1, { ...DEFAULT_DELIVERY_RATES, surgeMultiplier: 0.5 })).toBe(800);
+    // Above the base the schedule is unchanged: 800 + 2 km × 175 [owner 8 Nov 2026].
+    expect(deliveryFeeFromRates(5, DEFAULT_DELIVERY_RATES)).toBe(1150);
   });
 });
 
@@ -133,7 +133,7 @@ describe('[owner #18] routing down: deliveries keep flowing at or above the base
 
     const quote = await inject('GET', '/api/v1/customer/cart', customer.token);
     expect(quote.statusCode, quote.body).toBe(200);
-    expect(Number(quote.json().data.deliveryFee)).toBe(500);
+    expect(Number(quote.json().data.deliveryFee)).toBe(800);
 
     lines.length = 0;
     const placed = await inject('POST', '/api/v1/customer/checkout', customer.token, { paymentMethod: 'CASH', fulfillmentSelections: { [vendorId]: 'DELIVERY' } });
@@ -142,11 +142,11 @@ describe('[owner #18] routing down: deliveries keep flowing at or above the base
     const order = await app.prisma.order.findUniqueOrThrow({ where: { id: orderId } });
 
     // The charge equals the quote, at the base fee; the distance is frozen and SAYS it was estimated.
-    expect(Number(order.deliveryFee)).toBe(500);
+    expect(Number(order.deliveryFee)).toBe(800);
     expect(order.billableKmSource).toBe('haversine');
     expect(billableDistance(order)?.source).toBe('haversine');
-    // The rider's earning on this job is the delivery fee (plus any tip): the same 500.
-    expect(Number(order.deliveryFee) + Number(order.tipAmount)).toBeGreaterThanOrEqual(500);
+    // The rider's earning on this job is the delivery fee (plus any tip): the same 800.
+    expect(Number(order.deliveryFee) + Number(order.tipAmount)).toBeGreaterThanOrEqual(800);
     const html = renderReceiptHtml({ ...(order as never as Record<string, unknown>), status: 'DELIVERED', vendor: { name: 'Floor Kitchen', addressLine1: '7 Robb Street', city: 'Georgetown', phone: '' }, customer: { firstName: 'Floor', lastName: 'F' }, items: [] } as never);
     expect(html).toContain('Distance (estimated)');
 
@@ -154,6 +154,6 @@ describe('[owner #18] routing down: deliveries keep flowing at or above the base
     expect(await fallbackCount()).toBeGreaterThan(before);
     const named = lines.filter((l) => l.msg === 'delivery:fee-fallback');
     expect(named).toHaveLength(1);
-    expect(named[0]!.obj).toMatchObject({ vendorId, source: 'haversine', deliveryFee: 500, baseFee: 500 });
+    expect(named[0]!.obj).toMatchObject({ vendorId, source: 'haversine', deliveryFee: 800, baseFee: 800 });
   });
 });

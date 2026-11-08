@@ -228,15 +228,17 @@ describe('[5 Nov read] what ships now, in the words', () => {
 
 describe('classification', () => {
   it('2026-11-05 is material, and classed once (served now under 2026-11-06, partner-only)', () => {
-    expect(LEGAL_VERSION).toBe('2026-11-06');
+    expect(LEGAL_VERSION).toBe('2026-11-08'); // [DELIVERY-800 · owner 8 Nov 2026] served now under 2026-11-08 (the delivery price: material)
     expect(MATERIAL_CHANGES.filter((c) => c.version === '2026-11-05')).toHaveLength(1);
     expect(NON_MATERIAL_CHANGES.map((c) => c.version)).not.toContain('2026-11-05');
   });
   it('anyone on an older version is asked, with the summary, and never by continued use', () => {
-    const status = acceptanceStatus({ tosVersion: '2026-11-04', roles: ['CUSTOMER'] as UserRole[] });
+    // Served as 2026-11-06 (the last version before the 8 Nov delivery price, which is material on its own account).
+    const served = '2026-11-06';
+    const status = acceptanceStatus({ tosVersion: '2026-11-04', roles: ['CUSTOMER'] as UserRole[] }, served);
     expect(status.needsAcceptance).toBe(true);
     expect(status.summary).toEqual(MATERIAL_CHANGES.find((c) => c.version === '2026-11-05')!.summary);
-    expect(acceptanceStatus({ tosVersion: '2026-11-05', roles: ['CUSTOMER'] as UserRole[] }).needsAcceptance).toBe(false);
+    expect(acceptanceStatus({ tosVersion: '2026-11-05', roles: ['CUSTOMER'] as UserRole[] }, served).needsAcceptance).toBe(false);
   });
   it('the summary a person reads keeps the same rules', () => {
     const words = MATERIAL_CHANGES.find((c) => c.version === '2026-11-05')!.summary.join(' ');
