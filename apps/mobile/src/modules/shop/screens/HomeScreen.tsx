@@ -425,10 +425,11 @@ export function HomeScreen() {
   const feedState = homeFeedState({ ...home, data: feed });
   // [APP-SPEED A → D] Once Home has drawn a fresh feed and Swift has sat quiet a moment, the first reads of the doors
   // on it (Taxi's "is a ride in progress?" first, then the tiles' lists and the Market tab) are asked one at a time,
-  // so each door opens on an answer instead of a spinner (hooks/homeDoors). Only while Home is in front.
+  // so each door opens on an answer instead of a spinner (hooks/homeDoors). Only while Home is in front, and never
+  // while it shows a live order (the person is following it, and Home re-reads often then: review S2-2).
   const marketVisible = marketTabVisible(useMarketDepth().data);
-  const doorContext: DoorContext = { signedIn: isAuthenticated, here: locationFix, marketVisible };
-  useHomeDoorReads(live && feedState === 'content' && !home.isPlaceholderData, home.dataUpdatedAt, doorContext);
+  const doorContext: DoorContext = { signedIn: isAuthenticated, here: locationFix, marketVisible, scope };
+  useHomeDoorReads(live && feedState === 'content' && !home.isPlaceholderData, home.dataUpdatedAt, doorContext, !!feed?.activeOrder);
   const doorPress = useDoorPress(doorContext);
   const pressRead = usePressRead();
   const featured: any[] = feed?.featured ?? [];

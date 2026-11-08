@@ -9,6 +9,7 @@ import { useServiceProviders, useRequestJob } from '../../../hooks';
 import { Card, Chip, DecorativeIcon, EmptyState, Header, IconChip, LinkText, Pictogram, PillButton, PopupCard, PopupTitle, RatingMeta, Screen, T, TonePill, type PictogramName } from '../../../kit';
 import { afterDismiss } from '../../../kit/after-dismiss';
 import { ChipsSkeleton, ListSkeleton } from '../../../kit/skeletons';
+import { OFFLINE_FIRST_READ_MESSAGE, offlineFirstRead } from '../../../lib/offlineRead';
 import { errorMessage } from '../../../lib/apiError';
 import { VERTICAL_TINT } from '../../../kit/vertical-tint';
 import { useAuthStore } from '../../../stores/authStore';
@@ -62,7 +63,7 @@ export function ServicesScreen({ navigation }: any) {
   const categories = catalog.data?.categories ?? [];
   const visibleCategories = customerServiceCategories(categories);
   const requestTrade = catalog.isError ? undefined : serviceRequestTrade(categories, trade);
-  const { data, isFetching, isError, refetch: refetchProviders } = useServiceProviders<ProviderBrowse>(requestTrade);
+  const { data, isFetching, isError, fetchStatus: providersFetchStatus, refetch: refetchProviders } = useServiceProviders<ProviderBrowse>(requestTrade);
   const requestJob = useRequestJob();
 
   const providers = data?.providers ?? [];
@@ -132,7 +133,10 @@ export function ServicesScreen({ navigation }: any) {
             reference outranks them. */}
         {/* [APP-SPEED D] The catalogue's pills, as shapes, on the first frame (Home reads it ahead of this door, so
             usually the real pills are already here). A failed read still says so, with Try again. */}
-        {catalog.isPending ? <ChipsSkeleton style={{ marginBottom: space.lg }} /> : catalog.isError ? (
+        {offlineFirstRead(catalog) ? (
+          // [APP-SPEED D · review S3] A first read waiting for a connection: the offline state, never an endless skeleton.
+          <EmptyState icon="wifi-off" title="You’re offline" body={OFFLINE_FIRST_READ_MESSAGE} actionLabel="Try again" onAction={() => void catalog.refetch()} />
+        ) : catalog.isPending ? <ChipsSkeleton style={{ marginBottom: space.lg }} /> : catalog.isError ? (
           <EmptyState icon="alert-circle" title="Couldn’t load services" body="Try loading the service catalogue again." actionLabel="Try again" onAction={() => void catalog.refetch()} />
         ) : Object.entries(SERVICE_GROUP_LABELS).filter(([group]) =>
           visibleCategories.some((category) => category.group === group)).map(([group, label]) => (
@@ -183,6 +187,8 @@ export function ServicesScreen({ navigation }: any) {
           <EmptyState icon="tool" title="What needs doing?" body="Pick a service to see verified pros near you." />
         ) : !requestTrade ? (
           <EmptyState icon="clock" title="This service is being prepared" body="You can browse other categories while the required provider checks are completed." />
+        ) : offlineFirstRead({ fetchStatus: providersFetchStatus, data }) ? (
+          <EmptyState icon="wifi-off" title="You’re offline" body={OFFLINE_FIRST_READ_MESSAGE} actionLabel="Try again" onAction={() => { void refetchProviders(); }} />
         ) : isFetching ? (
           <ListSkeleton rows={3} style={{ paddingHorizontal: 0 }} />
         ) : isError ? (

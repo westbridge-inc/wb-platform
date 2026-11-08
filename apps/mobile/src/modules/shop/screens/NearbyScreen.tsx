@@ -11,6 +11,7 @@ import { distanceLabel } from '../../../lib/geo';
 import { vendorPhoto } from '../../../lib/images';
 import { CartBar, useCartBarClearance, EmptyState, ErrorState, Header, RatingMeta, Screen, VendorRow } from '../../../kit';
 import { ListSkeleton } from '../../../kit/skeletons';
+import { OFFLINE_FIRST_READ_MESSAGE, offlineFirstRead } from '../../../lib/offlineRead';
 import { useVendorPrefetch } from '../../../hooks/storeDoor';
 import { storePreviewOf } from '../../../lib/doorPreview';
 
@@ -52,6 +53,9 @@ export function NearbyScreen() {
                 else void requestLocation();
               }}
         />
+      ) : offlineFirstRead(home) ? (
+        // [APP-SPEED D · review S3] A first read waiting for a connection is the offline state, never "nothing here".
+        <ErrorState message={OFFLINE_FIRST_READ_MESSAGE} onRetry={() => { void home.refetch(); }} />
       ) : home.isLoading ? (
         // [APP-SPEED D] Home's own feed (usually already in memory): the rows' shapes until it lands.
         <ListSkeleton />

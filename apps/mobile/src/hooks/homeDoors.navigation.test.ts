@@ -51,6 +51,8 @@ import { customerKeys, ordersHistoryRead } from './customer';
 import { searchBrowseParams } from '../lib/searchBrowse';
 import {
   DOOR_FRESH_MS,
+  DOOR_PASSES_PER_SESSION,
+  doorPassAllowed,
   HOME_DOORS,
   HOME_DOORS_IDLE_MS,
   doorStoreListKey,
@@ -91,7 +93,8 @@ function answerEverything() {
 beforeEach(() => {
   vi.clearAllMocks();
   onlineManager.setOnline(true);
-  client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  // retryDelay 0: a read ahead keeps the app's retry rule (retryRead), at once here.
+  client = new QueryClient({ defaultOptions: { queries: { retry: false, retryDelay: 0 } } });
   answerEverything();
 });
 afterEach(() => {
@@ -135,19 +138,42 @@ describe('[APP-SPEED D] each door’s read lands in the key its screen opens on'
 });
 
 describe('[APP-SPEED D] bounded: data cost and honesty', () => {
-  it('once per freshness window, and never while the same read is on its way', async () => {
+  it('a read asked ahead is not asked again for 10 minutes, whatever the cache did since; never while on its way', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date('2026-11-07T12:00:00Z'));
+    expect(DOOR_FRESH_MS).toBe(10 * 60_000);
     const first = later();
     fx.get.mockImplementationOnce(() => first.promise);
     const asked = readDoor(client, 'services', SIGNED_IN);
     expect(readDoor(client, 'services', SIGNED_IN), 'on its way: not asked twice').toBeUndefined();
     first.resolve({ data: { data: CATALOG } });
     await asked;
-    expect(readDoor(client, 'services', SIGNED_IN), 'fresh: not asked again').toBeUndefined();
     expect(fx.get).toHaveBeenCalledTimes(1);
 
-    // The same answer, older than the window: asked again.
-    client.setQueryData(['services', 'catalog', 1], CATALOG, { updatedAt: Date.now() - DOOR_FRESH_MS - 1 });
+    // The answer gone from memory (or made to look old): still not asked again inside the window.
+    client.removeQueries({ queryKey: ['services', 'catalog', 1] });
+    expect(readDoor(client, 'services', SIGNED_IN)).toBeUndefined();
+    client.setQueryData(['services', 'catalog', 1], CATALOG, { updatedAt: Date.now() - DOOR_FRESH_MS * 2 });
+    expect(readDoor(client, 'services', SIGNED_IN)).toBeUndefined();
+    vi.setSystemTime(Date.now() + DOOR_FRESH_MS - 1000);
+    expect(readDoor(client, 'services', SIGNED_IN)).toBeUndefined();
+    expect(fx.get).toHaveBeenCalledTimes(1);
+
+    // Past the window, with only an old answer in memory: asked again.
+    vi.setSystemTime(Date.now() + 2000);
     await readDoor(client, 'services', SIGNED_IN);
+    expect(fx.get).toHaveBeenCalledTimes(2);
+
+    // The screen's own answer younger than the window: a pass does not ask, even with the ledger clear.
+    const other: DoorContext = { ...SIGNED_IN, scope: 'another-account' };
+    expect(readDoor(client, 'services', other)).toBeUndefined();
+  });
+
+  it('a finger on the tile asks only when nothing is in memory', async () => {
+    await readDoor(client, 'services', SIGNED_IN);
+    expect(readDoor(client, 'services', SIGNED_IN, 'press'), 'in memory: the screen re-reads it on open').toBeUndefined();
+    client.removeQueries({ queryKey: ['services', 'catalog', 1] });
+    await readDoor(client, 'services', SIGNED_IN, 'press');
     expect(fx.get).toHaveBeenCalledTimes(2);
   });
 
@@ -178,10 +204,26 @@ describe('[APP-SPEED D] bounded: data cost and honesty', () => {
     expect(fx.get).not.toHaveBeenCalled();
   });
 
-  it('a failed read ahead settles, is not retried, and leaves a failure, never an empty answer, for the screen', async () => {
-    fx.get.mockRejectedValueOnce(new Error('network'));
+  it('[review S2-1] a read ahead keeps the app’s retry rule: one dropped answer is asked again, not an error', async () => {
+    fx.getFavorites.mockRejectedValueOnce(new Error('network')).mockResolvedValueOnce(answer([{ id: 'store-2' }]));
+    await readDoor(client, 'favourites', SIGNED_IN);
+    expect(fx.getFavorites).toHaveBeenCalledTimes(2);
+    expect(client.getQueryState(['customer', 'favorites'])?.status).toBe('success');
+  });
+
+  it('[review S2-1] the same for a list read page by page (the history, the Market)', async () => {
+    fx.getOrders.mockRejectedValueOnce(new Error('network'));
+    client.setQueryData([...customerKeys.orders, 'live'], { items: [], total: 0 });
+    await readDoor(client, 'orders', SIGNED_IN);
+    expect(client.getQueryState(ordersHistoryRead().queryKey)?.status).toBe('success');
+    fx.marketItems.mockRejectedValueOnce(new Error('network'));
+    await readDoor(client, 'market', SIGNED_IN);
+    expect(client.getQueryState(['market', 'items', 'all', 'new'])?.status).toBe('success');
+  });
+
+  it('a read ahead that keeps failing settles and leaves a failure, never an empty answer, for the screen', async () => {
+    fx.get.mockRejectedValue(new Error('network'));
     await expect(readDoor(client, 'services', SIGNED_IN)).resolves.toBeUndefined();
-    expect(fx.get).toHaveBeenCalledTimes(1);
     const state = client.getQueryState(['services', 'catalog', 1]);
     expect(state?.status).toBe('error');
     expect(state?.data).toBeUndefined();
@@ -203,19 +245,21 @@ describe('[APP-SPEED D] bounded: data cost and honesty', () => {
   });
 });
 
-describe('[APP-SPEED D] Home asks them once it has sat quiet, once per fresh feed', () => {
+describe('[APP-SPEED D] Home’s passes: after a quiet moment, never with a live order, at most one per 10 minutes', () => {
   let host: HTMLDivElement;
   let root: ReturnType<typeof createRoot>;
   beforeEach(() => { host = document.createElement('div'); document.body.append(host); root = createRoot(host); });
   afterEach(async () => { await act(async () => root.unmount()); host.remove(); });
 
-  async function draw(enabled: boolean, feedAt: number) {
-    function Probe() { useHomeDoorReads(enabled, feedAt, SIGNED_IN); return null; }
+  async function draw(enabled: boolean, feedAt: number, liveOrder = false) {
+    function Probe() { useHomeDoorReads(enabled, feedAt, SIGNED_IN, liveOrder); return null; }
     await act(async () => root.render(React.createElement(QueryClientProvider, { client }, React.createElement(Probe))));
   }
   const quiet = async (ms: number) => { await act(async () => { await vi.advanceTimersByTimeAsync(ms); }); };
+  const reads = () => fx.active.mock.calls.length + fx.capabilities.mock.calls.length + fx.getVendors.mock.calls.length
+    + fx.get.mock.calls.length + fx.getOrders.mock.calls.length + fx.getFavorites.mock.calls.length + fx.marketItems.mock.calls.length;
 
-  it('nothing before the quiet moment; then every door; never twice for the same feed; again for a new feed', async () => {
+  it('nothing before the quiet moment; then every door; never twice for the same feed', async () => {
     vi.useFakeTimers();
     await draw(true, 1000);
     await quiet(HOME_DOORS_IDLE_MS - 10);
@@ -230,21 +274,48 @@ describe('[APP-SPEED D] Home asks them once it has sat quiet, once per fresh fee
     await draw(true, 1000);
     await quiet(HOME_DOORS_IDLE_MS * 2);
     expect(fx.getVendors, 'the same feed: no second pass').toHaveBeenCalledTimes(2);
+  });
 
-    // A new feed read: a second pass, which asks only what has gone stale.
-    client.setQueryData(customerKeys.vendors(searchBrowseParams({ type: 'RESTAURANT', latitude: HERE.latitude, longitude: HERE.longitude })), [], { updatedAt: Date.now() - DOOR_FRESH_MS - 1 });
-    await draw(true, 2000);
-    await quiet(HOME_DOORS_IDLE_MS + 50);
-    expect(fx.getVendors).toHaveBeenCalledTimes(3);
-    expect(fx.get, 'the catalogue is still fresh').toHaveBeenCalledTimes(1);
+  it('13 Home refreshes in 40 minutes while Home shows a live order: not one read ahead', async () => {
+    vi.useFakeTimers();
+    for (let i = 0; i < 13; i += 1) {
+      await draw(true, 1000 + i, true);
+      await quiet(3 * 60_000 + 5_000);
+    }
+    expect(reads()).toBe(0);
+  });
+
+  it('13 Home refreshes in 40 minutes with no live order: at most one pass per 10 minutes', async () => {
+    vi.useFakeTimers();
+    const catalogAt: number[] = [];
+    fx.get.mockImplementation(() => { catalogAt.push(Date.now()); return Promise.resolve({ data: { data: CATALOG } }); });
+    for (let i = 0; i < 13; i += 1) {
+      await draw(true, 1000 + i);
+      await quiet(3 * 60_000 + 5_000);
+    }
+    // Each pass reads the catalogue once (it is never fresh by then): the passes are its reads.
+    expect(catalogAt.length).toBeGreaterThanOrEqual(1);
+    expect(catalogAt.length).toBeLessThanOrEqual(4);
+    for (let i = 1; i < catalogAt.length; i += 1) expect(catalogAt[i]! - catalogAt[i - 1]!).toBeGreaterThanOrEqual(DOOR_FRESH_MS);
+    expect(fx.active.mock.calls.length, 'Taxi’s check: at most once a pass').toBeLessThanOrEqual(catalogAt.length);
+  });
+
+  it('at most DOOR_PASSES_PER_SESSION passes per account in an app session, however long', async () => {
+    vi.useFakeTimers();
+    for (let i = 0; i < DOOR_PASSES_PER_SESSION + 6; i += 1) {
+      await draw(true, 1000 + i);
+      await quiet(DOOR_FRESH_MS + 5_000);
+    }
+    // Each pass reads the catalogue once (10 minutes on, it is due again): the passes are its reads.
+    expect(fx.get).toHaveBeenCalledTimes(DOOR_PASSES_PER_SESSION);
+    expect(doorPassAllowed(client, undefined)).toBe(false);
   });
 
   it('Home covered (or showing no feed): nothing is asked', async () => {
     vi.useFakeTimers();
     await draw(false, 1000);
     await quiet(HOME_DOORS_IDLE_MS * 3);
-    expect(fx.active).not.toHaveBeenCalled();
-    expect(fx.getVendors).not.toHaveBeenCalled();
+    expect(reads()).toBe(0);
   });
 
   it('a read still on its way holds the pass to the next quiet moment', async () => {

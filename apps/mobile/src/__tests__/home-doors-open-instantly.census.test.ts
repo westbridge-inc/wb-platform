@@ -47,6 +47,11 @@ describe('[APP-SPEED D] every door from Home opens on its content or its shape',
     expect(without).toEqual([]);
   });
 
+  it('[review S3] every door says "offline" for a first read waiting for a connection (never "nothing here", never an endless skeleton)', () => {
+    const without = DOORS.filter((rel) => !/offlineFirstRead\(/.test(read(rel)));
+    expect(without).toEqual([]);
+  });
+
   it('Taxi and Send draw the map only once the screen has slid in', () => {
     for (const rel of ['modules/movement/screens/TaxiScreen.tsx', 'modules/movement/screens/CourierScreen.tsx']) {
       const src = read(rel);
@@ -65,9 +70,9 @@ describe('[APP-SPEED D] Home reads its doors ahead', () => {
     }
   });
 
-  it('the tile spreads its door’s press-in read, and Home asks the doors only while it is in front with a fresh feed', () => {
+  it('the tile spreads its door’s press-in read, and Home asks the doors only while it is in front with a fresh feed and no live order', () => {
     expect(HOME).toMatch(/<PressableScale\s+strong\s+\{\.\.\.press\}/);
     expect(HOME).toMatch(/press=\{doorPress\(s\.door\)\}/);
-    expect(HOME).toMatch(/useHomeDoorReads\(live && feedState === 'content' && !home\.isPlaceholderData, home\.dataUpdatedAt, doorContext\)/);
+    expect(HOME).toMatch(/useHomeDoorReads\(live && feedState === 'content' && !home\.isPlaceholderData, home\.dataUpdatedAt, doorContext, !!feed\?\.activeOrder\)/);
   });
 });

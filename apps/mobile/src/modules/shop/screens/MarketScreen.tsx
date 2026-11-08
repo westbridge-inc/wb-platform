@@ -27,6 +27,7 @@ import {
 import { MARKET_WINDOW } from '../../../lib/listPerformance';
 import { VERTICAL_TINT } from '../../../kit/vertical-tint';
 import { GridSkeleton } from '../../../kit/skeletons';
+import { OFFLINE_FIRST_READ_MESSAGE, offlineFirstRead } from '../../../lib/offlineRead';
 
 /**
  * THE MARKET TAB — A CATALOGUE, NOT A DIRECTORY [MKT G2].
@@ -283,7 +284,10 @@ export function MarketScreen() {
         ) : null}
       </View>
 
-      {feed.isLoading && items.length === 0 ? (
+      {offlineFirstRead(feed) ? (
+        // [APP-SPEED D · review S3] A first read waiting for a connection is the offline state, never "nothing here".
+        <ErrorState message={OFFLINE_FIRST_READ_MESSAGE} onRetry={() => { void feed.refetch(); }} />
+      ) : feed.isLoading && items.length === 0 ? (
         // [APP-SPEED D] The cards' shapes on the first frame (Home reads the first page ahead of this tab). Nothing
         // to add from: a card's + exists only on a card the server sent.
         <GridSkeleton cards={6} />
