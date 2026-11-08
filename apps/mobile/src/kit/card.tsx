@@ -1,6 +1,7 @@
 /** @jsxImportSource react */
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import {
+  Keyboard,
   KeyboardAvoidingView,
   Modal,
   Platform,
@@ -66,7 +67,54 @@ export function PopupTitle({ variant = 'title', ...rest }: Omit<TP, 'accessibili
  *  for nothing at all. The guard read as if it waited and did not.
  *
  *  iOS only, per React Native: on Android a Modal is not a separate window and
- *  the race does not exist, so callers keep a frame-based fallback. */
+ *  the race does not exist, so callers keep a frame-based fallback.
+ *
+ *  [BUG-RATING-SHAKE · owner 8 Nov 2026] On Android a card never opens over a
+ *  keyboard that belongs to the screen below. The owner typed a comment on the
+ *  rating screen, tapped Submit, and the "Thanks for the feedback!" card bounced
+ *  up and down without end ("Clear your cart?" over the focused promo field did
+ *  the same: 602 frames in 10 s with no input; the same card opened with no
+ *  field focused drew none). The dialog took focus with that keyboard half
+ *  withdrawn, and each resize of the card's 'height' keyboard layer flipped what
+ *  the screen below reported (keyboard shown / hidden), which resized the layer
+ *  again. So that keyboard is put away first: the card waits, closed, until it
+ *  has gone (or KEYBOARD_GONE_MS at most), then opens. Its content mounts only
+ *  then, so a field of its own (a step-up or relay code, a reference, the
+ *  emergency-contact form) still takes focus and is lifted above the keyboard IT
+ *  opens. iOS is unchanged; a hardware keyboard shows no keyboard and is never
+ *  waited for. */
+export const KEYBOARD_GONE_MS = 300;
+
+/** Android: true while a card asked to open waits for another screen's keyboard to go. */
+function useWaitForForeignKeyboard(visible: boolean): boolean {
+  const [asked, setAsked] = useState(false);
+  const [waiting, setWaiting] = useState(false);
+  // Decided in the render where `visible` turns true, before anything of the card mounts.
+  if (visible !== asked) {
+    setAsked(visible);
+    setWaiting(visible && Platform.OS === 'android' && Keyboard.isVisible());
+  }
+  useEffect(() => {
+    if (!waiting) return undefined;
+    let settled = false;
+    const open = () => {
+      if (settled) return;
+      settled = true;
+      setWaiting(false);
+    };
+    // Nothing of the card is mounted yet: this blurs only the field on the screen below.
+    Keyboard.dismiss();
+    const gone = Keyboard.addListener('keyboardDidHide', open);
+    const fallback = setTimeout(open, KEYBOARD_GONE_MS);
+    return () => {
+      settled = true;
+      gone.remove();
+      clearTimeout(fallback);
+    };
+  }, [waiting]);
+  return waiting;
+}
+
 export function PopupCard({
   visible,
   onClose,
@@ -79,9 +127,10 @@ export function PopupCard({
   children: React.ReactNode;
 }) {
   const insets = useSafeAreaInsets();
+  const waiting = useWaitForForeignKeyboard(visible);
 
   return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose} {...(onDismissed ? { onDismiss: onDismissed } : {})}>
+    <Modal visible={visible && !waiting} transparent animationType="fade" onRequestClose={onClose} {...(onDismissed ? { onDismiss: onDismissed } : {})}>
       <KeyboardAvoidingView
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         style={{ flex: 1 }}
