@@ -5,7 +5,7 @@ import { Feather, MaterialCommunityIcons } from '@expo/vector-icons';
 import { color, radius, space } from '@swift/ui';
 import { cancellationReasonWords } from '@swift/types';
 import { Card, Chip, CodeInput, IconChip, InfoRow, LoadingBlock, ErrorState, PillButton, PopupCard, PopupTitle, Screen, T } from '../../../kit';
-import { OUT_OF_STOCK_WORDS, canMarkOutOfStock, customerDeciding, lastLineStanding, lineQuestion, nothingToAccept } from '../storeOrderRules';
+import { OUT_OF_STOCK_WORDS, canMarkOutOfStock, customerDeciding, lastItemAfterAccept, lastLineStanding, lineQuestion, nothingLeftToHandOver, nothingToAccept, storeCanReject } from '../storeOrderRules';
 import { HANDOVER_WORDS, handoverNeedsNoCode, withHandoverSteps } from '../storeHandover';
 import { mmgDisputePaused } from '../order-dispute';
 import { RiderHandoverLine } from '../RiderHandoverLine';
@@ -155,6 +155,10 @@ function VendorOrderDetailBody({ navigation, route }: any) {
   // the failure was swallowed — a button that could not succeed.
   const [pickupCode, setPickupCode] = useState('');
   const [subFor, setSubFor] = useState<string | null>(null);
+  // [OOS-FLOW · owner 8 Nov 2026] The replacement list widened to every item in stock, and the one "Remove
+  // item" on the last item still coming that waits for a yes (it cancels the order): per line, by id.
+  const [allFor, setAllFor] = useState<string | null>(null);
+  const [lastRemoveFor, setLastRemoveFor] = useState<string | null>(null);
   const picking = usePickingActions();
   // [TAP-AUDIT] Each line's tick waits alone: a second tap on a box whose tick is still on its way sends nothing.
   const pickPending = usePendingPickLines(orderId);
@@ -204,16 +208,36 @@ function VendorOrderDetailBody({ navigation, route }: any) {
   const pickable = !isPlaceholderData && ['SUPERMARKET', 'STORE'].includes(order.vendor?.vendorType ?? '') && PICKABLE_STATES.includes(s);
   const lineResolved = (l: any) => l.picked || l.subStatus === 'REFUNDED' || l.subStatus === 'REJECTED';
   const openLines = pickable ? items.filter((l) => !lineResolved(l)).length : 0;
-  /** Same substitutionGroup wins; otherwise same category; always in stock. */
-  const substituteCandidates = (line: any) => {
+  /** Same substitutionGroup wins; otherwise same category; always in stock. [OOS-FLOW] "Show all items"
+   *  widens it to every item in stock it may offer: an item with a substitutionGroup can only be swapped
+   *  within that group (the server refuses WRONG_GROUP), so "all" stays inside the group there. */
+  const substituteCandidates = (line: any, everything = false) => {
     const all: any[] = (menu.data ?? []).flatMap((c: any) => (c.items ?? []).map((i: any) => ({ ...i, categoryId: c.id })));
     const original = all.find((i) => i.id === line.itemId);
     const pool = all.filter((i) => i.id !== line.itemId && i.isAvailable !== false);
     const grouped = original?.substitutionGroup
       ? pool.filter((i) => i.substitutionGroup === original.substitutionGroup)
       : pool.filter((i) => original && i.categoryId === original.categoryId);
+    if (everything) return (original?.substitutionGroup ? grouped : pool).slice(0, 24);
     return grouped.slice(0, 6);
   };
+  /** [OOS-FLOW] Take a line off. The last item still coming ends the order (the server cancels it as
+   *  out of stock and tells the customer): the store hears that it happened. */
+  const removeLine = (line: any) => {
+    const ends = lastItemAfterAccept(order, line);
+    setSubFor(null);
+    setLastRemoveFor(null);
+    picking.refundLine.mutate(
+      { orderId: order.id, lineId: line.id },
+      ends ? { onSuccess: () => toast.show(OUT_OF_STOCK_WORDS.orderEnded) } : undefined,
+    );
+  };
+  /** [OOS-FLOW] "Remove item": asked once first when it is the last item still coming. */
+  const askOrRemove = (line: any) => {
+    if (lastItemAfterAccept(order, line)) setLastRemoveFor(line.id);
+    else removeLine(line);
+  };
+  const emptied = nothingLeftToHandOver(order);
   const isPickup = order.fulfillment === 'PICKUP';
   const isAppt = order.fulfillment === 'APPOINTMENT';
   const apptMobile = isAppt && !!order.deliveryAddress && order.deliveryAddress !== order.pickupAddress;
@@ -286,6 +310,26 @@ function VendorOrderDetailBody({ navigation, route }: any) {
             <T variant="label" weight="semibold">
               {customerDeciding(order) ? OUT_OF_STOCK_WORDS.deciding : OUT_OF_STOCK_WORDS.nothing}
             </T>
+          </View>
+        ) : null}
+        {/* [OOS-FLOW · owner 8 Nov 2026] An accepted order every item came off (on an older server): Ready is
+            refused, so say why and give the way out, never a silent failure. */}
+        {emptied ? (
+          <View style={{ borderRadius: radius.lg, backgroundColor: color.soft.warning, padding: space.md, marginBottom: space.md, gap: space.sm }}>
+            <T variant="label" weight="semibold">
+              {storeCanReject(order) ? OUT_OF_STOCK_WORDS.emptied : OUT_OF_STOCK_WORDS.emptiedSupport}
+            </T>
+            {storeCanReject(order) ? (
+              <View style={{ alignSelf: 'flex-start' }}>
+                <PillButton
+                  label={OUT_OF_STOCK_WORDS.emptiedButton}
+                  variant="primary"
+                  size="sm"
+                  disabled={busy}
+                  onPress={() => orderAction.mutate({ id: order.id, action: 'reject', reason: OUT_OF_STOCK_WORDS.lastReason })}
+                />
+              </View>
+            ) : null}
           </View>
         ) : null}
 
@@ -447,7 +491,8 @@ function VendorOrderDetailBody({ navigation, route }: any) {
                     ) : null}
                     {closed ? (
                       <T variant="caption" tone="muted" style={{ marginTop: 2 }}>
-                        {it.subStatus === 'REFUNDED' ? 'Refunded — out of stock' : 'Customer declined the substitute'}
+                        {/* [OOS-FLOW] Never "Refunded": on cash nothing was ever charged for it. */}
+                        {it.subStatus === 'REFUNDED' ? OUT_OF_STOCK_WORDS.removed : OUT_OF_STOCK_WORDS.declined}
                       </T>
                     ) : null}
                   </View>
@@ -489,33 +534,54 @@ function VendorOrderDetailBody({ navigation, route }: any) {
                     />
                   </View>
                 ) : null}
+                {/* [OOS-FLOW · owner 8 Nov 2026] "Out of stock?" names both ways out: remove the item, or offer a
+                    replacement the customer approves or declines in the app (with a timer). The last item still
+                    coming asks once before it is removed: that cancels the order as out of stock. */}
                 {pickable && !closed && !pending && !it.picked ? (
                   <View style={{ marginLeft: 64 }}>
-                    {subFor === it.id ? (
-                      <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: space.sm, marginTop: space.sm }}>
-                        {substituteCandidates(it).map((cand: any) => (
+                    {lastRemoveFor === it.id ? (
+                      <View style={{ marginTop: space.sm, gap: space.xs }}>
+                        <T variant="caption" weight="semibold" tone="error">{OUT_OF_STOCK_WORDS.lastRemoveAsk}</T>
+                        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: space.sm }}>
+                          <PillButton label={OUT_OF_STOCK_WORDS.lastRemoveYes} variant="primary" size="sm" disabled={picking.refundLine.isPending || busy} onPress={() => removeLine(it)} />
+                          <PillButton label={OUT_OF_STOCK_WORDS.lastRemoveKeep} variant="soft" size="sm" onPress={() => setLastRemoveFor(null)} />
+                        </View>
+                      </View>
+                    ) : subFor === it.id ? (
+                      <View style={{ marginTop: space.sm, gap: space.xs }}>
+                        <T variant="caption" weight="semibold" tone="muted">{OUT_OF_STOCK_WORDS.menuTitle}</T>
+                        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: space.sm }}>
                           <Chip
-                            key={cand.id}
-                            label={`${cand.name} · ${money(cand.basePrice)}`}
-                            onPress={() => {
-                              setSubFor(null);
-                              picking.substitute.mutate({ orderId: order.id, lineId: it.id, substituteItemId: cand.id });
-                            }}
+                            label={OUT_OF_STOCK_WORDS.removeItem}
+                            onPress={() => askOrRemove(it)}
                             style={{ height: 32, paddingHorizontal: space.md }}
                           />
-                        ))}
-                        <Chip
-                          label="Refund line"
-                          onPress={() => {
-                            setSubFor(null);
-                            picking.refundLine.mutate({ orderId: order.id, lineId: it.id });
-                          }}
-                          style={{ height: 32, paddingHorizontal: space.md }}
-                        />
-                        <Chip label="Back" selected onPress={() => setSubFor(null)} style={{ height: 32, paddingHorizontal: space.md }} />
+                          <Chip label="Back" selected onPress={() => { setSubFor(null); setAllFor(null); }} style={{ height: 32, paddingHorizontal: space.md }} />
+                        </View>
+                        <T variant="caption" tone="muted" style={{ marginTop: space.xs }}>{OUT_OF_STOCK_WORDS.offerTitle}</T>
+                        {substituteCandidates(it, allFor === it.id).length === 0 ? (
+                          <T variant="caption" tone="muted">{OUT_OF_STOCK_WORDS.noReplacement}</T>
+                        ) : null}
+                        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: space.sm }}>
+                          {substituteCandidates(it, allFor === it.id).map((cand: any) => (
+                            <Chip
+                              key={cand.id}
+                              label={`${cand.name} · ${money(cand.basePrice)}`}
+                              onPress={() => {
+                                setSubFor(null);
+                                setAllFor(null);
+                                picking.substitute.mutate({ orderId: order.id, lineId: it.id, substituteItemId: cand.id });
+                              }}
+                              style={{ height: 32, paddingHorizontal: space.md }}
+                            />
+                          ))}
+                          {allFor !== it.id ? (
+                            <Chip label={OUT_OF_STOCK_WORDS.showAll} onPress={() => setAllFor(it.id)} style={{ height: 32, paddingHorizontal: space.md }} />
+                          ) : null}
+                        </View>
                       </View>
                     ) : (
-                      <Pressable onPress={() => setSubFor(it.id)} hitSlop={6}>
+                      <Pressable onPress={() => setSubFor(it.id)} hitSlop={6} accessibilityRole="button" accessibilityLabel={`${it.name}: out of stock? Remove it or offer a replacement`}>
                         <T variant="caption" weight="semibold" tone="brand" style={{ marginTop: 4 }}>
                           Out of stock?
                         </T>
@@ -527,20 +593,31 @@ function VendorOrderDetailBody({ navigation, route }: any) {
                     waiting: while the customer decides, it can take the item
                     off instead (the server removes it, lowers the total and
                     tells the customer). Not on MMG: its total can't change
-                    in-app, and the server refuses. */}
+                    in-app, and the server refuses. [OOS-FLOW] The last item
+                    still coming asks once (removing it cancels the order). */}
                 {pickable && pending && order.paymentMethod !== 'MOBILE_MONEY' ? (
                   <View style={{ marginLeft: 64 }}>
-                    <Pressable
-                      onPress={() => picking.refundLine.mutate({ orderId: order.id, lineId: it.id })}
-                      disabled={picking.refundLine.isPending}
-                      hitSlop={6}
-                      accessibilityRole="button"
-                      accessibilityLabel={`Remove ${it.name} instead`}
-                    >
-                      <T variant="caption" weight="semibold" tone="brand" style={{ marginTop: 4 }}>
-                        Remove item instead
-                      </T>
-                    </Pressable>
+                    {lastRemoveFor === it.id ? (
+                      <View style={{ marginTop: space.sm, gap: space.xs }}>
+                        <T variant="caption" weight="semibold" tone="error">{OUT_OF_STOCK_WORDS.lastRemoveAsk}</T>
+                        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: space.sm }}>
+                          <PillButton label={OUT_OF_STOCK_WORDS.lastRemoveYes} variant="primary" size="sm" disabled={picking.refundLine.isPending || busy} onPress={() => removeLine(it)} />
+                          <PillButton label={OUT_OF_STOCK_WORDS.lastRemoveKeep} variant="soft" size="sm" onPress={() => setLastRemoveFor(null)} />
+                        </View>
+                      </View>
+                    ) : (
+                      <Pressable
+                        onPress={() => askOrRemove(it)}
+                        disabled={picking.refundLine.isPending}
+                        hitSlop={6}
+                        accessibilityRole="button"
+                        accessibilityLabel={`Remove ${it.name} instead`}
+                      >
+                        <T variant="caption" weight="semibold" tone="brand" style={{ marginTop: 4 }}>
+                          Remove item instead
+                        </T>
+                      </Pressable>
+                    )}
                   </View>
                 ) : null}
               </View>

@@ -105,3 +105,9 @@ export function storeSwapWaitText(decideBy: string | null | undefined, paymentMe
     ? `No answer by ${clock(at)} closes the question; settle the item with the customer directly.`
     : `No answer by ${clock(at)} removes the item and lowers the total.`;
 }
+
+/** [OOS-FLOW · owner 8 Nov 2026] A line the store took off (out of stock) or whose swap was declined: it is not
+ *  charged, so the order's list shows it at nothing and the lines add up to the total (as the web order page). */
+export function lineRemoved(line: { subStatus?: string | null } | null | undefined): boolean {
+  return line?.subStatus === 'REFUNDED' || line?.subStatus === 'REJECTED';
+}
