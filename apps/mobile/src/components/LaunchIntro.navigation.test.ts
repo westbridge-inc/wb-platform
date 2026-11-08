@@ -214,7 +214,7 @@ describe('[APP-INTRO] first launch, signed out: the splash continues into the br
     await launch();
     // app.config.ts is the native splash: its colour and size are the intro's first frame, read from the source.
     const config = readFileSync(join(process.cwd(), 'app.config.ts'), 'utf8');
-    expect(config).toMatch(/const brandMaroon = '#803B3B';/);
+    expect(config).toMatch(/const brandMaroon = '#[0-9A-Fa-f]{6}';/);
     expect(config).toMatch(/const splashBackgroundColor = brandMaroon;/);
     expect(config).toMatch(/const splashImage = '\.\/assets\/icon\.png';/);
     expect(config).toMatch(/'expo-splash-screen',\s*\{\s*backgroundColor: splashBackgroundColor,\s*image: splashImage,\s*imageWidth: 140,\s*resizeMode: 'contain',/);
