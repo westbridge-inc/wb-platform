@@ -20,13 +20,20 @@ const fx = vi.hoisted(() => ({
   dials: [] as string[],
   toasts: [] as Array<[string, string, string]>,
   connects: 0,
+  os: 'ios' as 'ios' | 'android',
+  micGranted: true,
+  configGate: null as null | Promise<void>,
+  connectError: null as null | Error,
+  lastCall: null as null | { emit: (e: string) => void },
+  cancels: [] as string[],
 }));
 
 vi.mock('react-native', () => ({
   NativeModules: new Proxy({}, { get: (_t, k: string) => fx.native[k] }),
-  Platform: { OS: 'ios' },
-  PermissionsAndroid: { PERMISSIONS: { RECORD_AUDIO: 'mic' }, RESULTS: { GRANTED: 'granted' }, check: async () => true, request: async () => 'granted' },
-  Alert: { alert: vi.fn() },
+  Platform: { get OS() { return fx.os; } },
+  PermissionsAndroid: { PERMISSIONS: { RECORD_AUDIO: 'mic' }, RESULTS: { GRANTED: 'granted' }, check: async () => fx.micGranted, request: async () => 'denied' },
+  // Swift's own words before the system prompt: the person taps "Not now".
+  Alert: { alert: (_t: string, _m: string, buttons: Array<{ onPress?: () => void }>) => { buttons[0]?.onPress?.(); } },
 }));
 vi.mock('../kit/toast', () => ({
   toast: {
@@ -41,6 +48,7 @@ vi.mock('../services/api', () => ({
     bridge: async (...a: unknown[]) => { fx.bridges.push(a); return { data: { data: { callId: 'b1', status: 'RINGING' } } }; },
     appConfig: async () => {
       fx.appConfigReads += 1;
+      if (fx.configGate) await fx.configGate;
       if (fx.inAppOn === null) throw new Error('network');
       return { data: { data: { enabled: fx.inAppOn } } };
     },
@@ -53,7 +61,7 @@ vi.mock('../services/api', () => ({
       }
       return { data: { data: { callId: 'c1', token: 'tok', ttlSeconds: 900 } } };
     },
-    appCancel: async () => ({ data: { data: { ended: true } } }),
+    appCancel: async (callId: string) => { fx.cancels.push(callId); return { data: { data: { ended: true } } }; },
   },
 }));
 
@@ -65,7 +73,10 @@ import { resetInAppVoiceForTests } from '../services/inAppVoice';
 import type { CallTarget } from '../lib/callBridge';
 
 class FakeCall {
-  on() { return this; }
+  handlers = new Map<string, Array<() => void>>();
+  on(e: string, l: () => void) { this.handlers.set(e, [...(this.handlers.get(e) ?? []), l]); return this; }
+  removeListener(e: string, l: () => void) { this.handlers.set(e, (this.handlers.get(e) ?? []).filter((x) => x !== l)); return this; }
+  emit(e: string) { for (const l of this.handlers.get(e) ?? []) l(); }
   getState() { return 'connecting'; }
   disconnect = async () => undefined;
 }
@@ -75,7 +86,13 @@ const fakeSdk = () => ({
     setIncomingCallContactHandleTemplate = async () => undefined;
     register = async () => undefined;
     unregister = async () => undefined;
-    connect = async () => { fx.connects += 1; return new FakeCall(); };
+    connect = async () => {
+      fx.connects += 1;
+      if (fx.connectError) throw fx.connectError;
+      const call = new FakeCall();
+      fx.lastCall = call;
+      return call;
+    };
   },
 });
 const flags = () => {
@@ -108,9 +125,12 @@ const press = async (id: string) => {
 };
 
 beforeEach(() => {
-  Object.assign(fx, { native: { TwilioVoiceReactNative: {} }, bridgeOn: false, inAppOn: true, appConfigReads: 0, startError: null, starts: [], bridges: [], dials: [], toasts: [], connects: 0 });
+  Object.assign(fx, {
+    native: { TwilioVoiceReactNative: {} }, bridgeOn: false, inAppOn: true, appConfigReads: 0, startError: null, starts: [], bridges: [], dials: [], toasts: [], connects: 0,
+    os: 'ios', micGranted: true, configGate: null, connectError: null, lastCall: null, cancels: [],
+  });
   resetCallConfigForTests();
-  resetInAppConfigForTests();
+  resetInAppConfigForTests({ graceMs: 60 });
   resetInAppVoiceForTests(fakeSdk, flags);
   host = document.createElement('div'); document.body.append(host); root = createRoot(host);
 });
@@ -138,16 +158,52 @@ describe('[CALLS-UX] in-app first', () => {
 });
 
 describe('[CALLS-UX] the number as the backup', () => {
-  it('they cannot be rung in the app (409 INAPP_NOT_REACHABLE): the dial button appears, with the server\'s words, and dials', async () => {
+  it('they cannot be rung in the app (409 INAPP_NOT_REACHABLE): the dial button appears, with words that point at it, and dials', async () => {
     fx.startError = { status: 409, code: 'INAPP_NOT_REACHABLE', message: "They can't take calls in the Swift app. Message them in chat instead." };
     await draw();
     expect(buttons()).toEqual(['inapp:Call in app']);
     await press('inapp');
     expect(fx.connects).toBe(0);
-    expect(fx.toasts.at(-1)).toEqual(['error', 'Call not started', "They can't take calls in the Swift app. Message them in chat instead."]);
+    // [review S2] Not the server's "message them in chat instead" beside a Call button: the words name that button.
+    expect(fx.toasts.at(-1)).toEqual(['error', 'Call not started', "They can't take calls in the Swift app. Tap Call to ring their phone, or message them in chat."]);
     expect(buttons()).toEqual(['backup:Call', 'inapp:Call in app']);
     await press('backup');
     expect(fx.dials).toEqual(['tel:+5926000000']);
+  });
+
+  it('[review S2] the bridge on: the words name "Call via Swift", the button that appears', async () => {
+    fx.bridgeOn = true;
+    fx.startError = { status: 503, code: 'INAPP_CALLS_TROUBLE', message: 'm' };
+    await draw({ phone: null });
+    await press('inapp');
+    expect(fx.toasts.at(-1)).toEqual(['error', 'Call not started', 'Swift calls in the app are having trouble right now. Tap Call via Swift to reach them by phone, or message them in chat.']);
+    expect(buttons()).toEqual(['backup:Call via Swift', 'inapp:Call in app']);
+  });
+
+  it('[review S2] bridge off and no number for them: no button appears, so the words promise none', async () => {
+    fx.startError = { status: 409, code: 'INAPP_NOT_REACHABLE', message: 'm' };
+    await draw({ phone: null });
+    await press('inapp');
+    expect(fx.toasts.at(-1)).toEqual(['error', 'Call not started', "They can't take calls in the Swift app. Message them in chat."]);
+    expect(buttons()).toEqual(['inapp:Call in app']);
+  });
+
+  it('[review S2] Android, microphone refused: the backup appears and the words match it (dial, then the bridge)', async () => {
+    fx.os = 'android';
+    fx.micGranted = false;
+    await draw();
+    await press('inapp');
+    expect(fx.starts).toEqual([]);
+    expect(fx.toasts.at(-1)).toEqual(['error', 'Microphone needed', 'The microphone is off for Swift, so in-app calls cannot work. You can turn it on in Settings. Tap Call to ring their phone, or message them in chat.']);
+    expect(buttons()).toEqual(['backup:Call', 'inapp:Call in app']);
+
+    fx.bridgeOn = true;
+    resetCallConfigForTests();
+    await act(async () => root.render(h('div')));
+    await draw({ orderId: 'o2', phone: null });
+    await press('inapp');
+    expect(fx.toasts.at(-1)?.[2]).toBe('The microphone is off for Swift, so in-app calls cannot work. You can turn it on in Settings. Tap Call via Swift to reach them by phone, or message them in chat.');
+    expect(buttons()).toEqual(['backup:Call via Swift', 'inapp:Call in app']);
   });
 
   it('the backup stays for that person on that order when the screen opens again, and only for them', async () => {
@@ -180,6 +236,59 @@ describe('[CALLS-UX] the number as the backup', () => {
     fx.inAppOn = null;
     await draw();
     expect(buttons()).toEqual(['backup:Call']);
+  });
+
+  it('[review S3] while the switch is being read: no call button at all (no flash of the dial button), then the answer decides', async () => {
+    let open!: () => void;
+    fx.configGate = new Promise<void>((r) => { open = r; });
+    await act(async () => root.render(h(Controls, { orderId: 'o1', target: 'customer', phone: '+5926000000' })));
+    expect(buttons()).toEqual([]); // the very first frame: nothing to tap yet
+    await act(async () => { await new Promise((r) => setTimeout(r, 5)); });
+    expect(buttons()).toEqual([]);
+    await act(async () => { open(); });
+    await settle();
+    expect(buttons()).toEqual(['inapp:Call in app']);
+  });
+
+  it('[review S3] the switch read hangs: after a short grace the dial button shows (never no way to call)', async () => {
+    fx.configGate = new Promise<void>(() => undefined);
+    await act(async () => root.render(h(Controls, { orderId: 'o1', target: 'customer', phone: '+5926000000' })));
+    expect(buttons()).toEqual([]);
+    await act(async () => { await new Promise((r) => setTimeout(r, 90)); });
+    expect(buttons()).toEqual(['backup:Call']);
+  });
+
+  it('[review S3] the server accepted but the connect threw: the backup appears, the order is freed, the words name it', async () => {
+    fx.connectError = new Error('twilio');
+    await draw();
+    await press('inapp');
+    expect(fx.connects).toBe(1);
+    expect(fx.cancels).toEqual(['c1']);
+    expect(fx.toasts.at(-1)).toEqual(['error', 'Call not started', "Swift couldn't connect the call in the app. Tap Call to ring their phone, or message them in chat."]);
+    expect(buttons()).toEqual(['backup:Call', 'inapp:Call in app']);
+  });
+
+  it('[review S3] connected, then the SDK reports connectFailure: the backup appears for this person on this order', async () => {
+    await draw();
+    await press('inapp');
+    expect(buttons()).toEqual(['inapp:End call']);
+    await act(async () => { fx.lastCall?.emit('connectFailure'); });
+    await settle();
+    expect(fx.cancels).toEqual(['c1']);
+    expect(fx.toasts.at(-1)).toEqual(['error', 'Call not started', "Swift couldn't connect the call in the app. Tap Call to ring their phone, or message them in chat."]);
+    expect(buttons()).toEqual(['backup:Call', 'inapp:Call in app']);
+    await act(async () => root.render(h('div')));
+    await draw();
+    expect(buttons()).toEqual(['backup:Call', 'inapp:Call in app']); // kept for that order (10 minutes)
+    await draw({ orderId: 'o2' });
+    expect(buttons()).toEqual(['inapp:Call in app']);
+  });
+
+  it('[review S3] 503 CALL_PROVIDER_FAILED: the backup appears', async () => {
+    fx.startError = { status: 503, code: 'CALL_PROVIDER_FAILED', message: 'm' };
+    await draw();
+    await press('inapp');
+    expect(buttons()).toEqual(['backup:Call', 'inapp:Call in app']);
   });
 
   it('build 12 (no calling module): only the dial button, and the in-app switch is never even read', async () => {

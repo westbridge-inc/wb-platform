@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from '
 import { Alert } from 'react-native';
 import { toast } from '../kit/toast';
 import type { CallTarget } from '../lib/callBridge';
-import { INAPP_WORDS, inAppErrorText, offerInApp, revealsBackup, type InAppConfig } from '../lib/inAppCalls';
+import { INAPP_WORDS, backupRevealText, inAppErrorText, offerInApp, revealsBackup, type BackupKind, type InAppConfig } from '../lib/inAppCalls';
 import {
   endInAppCall,
   ensureMicrophone,
@@ -31,8 +31,18 @@ export async function loadInAppConfig(now = Date.now()): Promise<InAppConfig | n
   return inflight;
 }
 
+/**
+ * [CALLS-UX review S3] How long the backup control waits for the switch before it shows anyway. The read can take
+ * up to the API client's GET timeout (20 s); nobody is left that long with no way to call.
+ */
+const CONFIG_GRACE_MS = 4_000;
+let configGraceMs = CONFIG_GRACE_MS;
+
 /** Tests only. */
-export function resetInAppConfigForTests(): void { cached = null; inflight = null; backups.clear(); }
+export function resetInAppConfigForTests(opts: { graceMs?: number } = {}): void {
+  cached = null; inflight = null; backups.clear(); backupKinds.clear();
+  configGraceMs = opts.graceMs ?? CONFIG_GRACE_MS;
+}
 
 // ---------------------------------------------------------------------------
 // [CALLS-UX · owner 8 Nov 2026, "A"] In-app first, the number only as a backup. While "Call in app" is offered
@@ -68,21 +78,47 @@ let backupVersion = 0;
 backupListeners.add(() => { backupVersion += 1; });
 
 /**
- * For the dial / "Call via Swift" control: should it show beside "Call in app"? Yes when "Call in app" is not
- * offered here (switch off or not read, build 12 without the module, the parcel recipient, no order), or when the
- * backup has been revealed for this person. While the switch is still being read it shows (never no way to call).
+ * [CALLS-UX review S2] Which backup control CallParty draws for this person on this order, so the words shown when
+ * it comes back name that control. Written by CallParty itself (useBackupCallShown); unknown means none (chat only:
+ * the words never promise a button that is not there).
  */
-export function useBackupCallShown(orderId: string | null | undefined, target: CallTarget): boolean {
-  const [config, setConfig] = useState<InAppConfig | null>(cached?.value ?? null);
+const backupKinds = new Map<string, { kind: BackupKind; owner: object }>();
+export function backupKindFor(orderId: string, target: CallTarget): BackupKind {
+  return backupKinds.get(backupKey(orderId, target))?.kind ?? 'none';
+}
+
+/** The switch as the backup control sees it: still being read, could not be read (null), or the answer. */
+type ConfigState = InAppConfig | null | 'loading';
+
+/**
+ * For the dial / "Call via Swift" control: should it show beside "Call in app"? `kind` is what that control is.
+ * - Yes when "Call in app" can never be offered here (build 12 without the module, the parcel recipient, no order),
+ *   or when the backup has been revealed for this person.
+ * - [CALLS-UX review S3] While the switch is being read: no (it would flash and be tappable, then vanish); after a
+ *   short grace, or when the read fails: yes (never no way to call). A loaded switch decides.
+ */
+export function useBackupCallShown(orderId: string | null | undefined, target: CallTarget, kind: BackupKind = 'none'): boolean {
   const available = inAppVoiceAvailable();
+  const [config, setConfig] = useState<ConfigState>(() => cached?.value ?? 'loading');
+  const [owner] = useState(() => ({}));
   useSyncExternalStore(subscribeBackups, () => backupVersion);
   useEffect(() => {
     if (!available) return undefined; // build 12: never read the switch for this
     let live = true;
+    const grace = setTimeout(() => { if (live) setConfig((c) => (c === 'loading' ? null : c)); }, configGraceMs);
     void loadInAppConfig().then((c) => { if (live) setConfig(c); });
-    return () => { live = false; };
+    return () => { live = false; clearTimeout(grace); };
   }, [available]);
-  return !offerInApp(config, available, orderId, target) || backupRevealed(orderId, target);
+  useEffect(() => {
+    if (!orderId) return undefined;
+    const key = backupKey(orderId, target);
+    backupKinds.set(key, { kind, owner });
+    return () => { if (backupKinds.get(key)?.owner === owner) backupKinds.delete(key); };
+  }, [orderId, target, kind, owner]);
+  if (backupRevealed(orderId, target)) return true;
+  if (!available || !orderId || target === 'recipient') return true; // "Call in app" can never show: no wait
+  if (config === 'loading') return false;
+  return !offerInApp(config, available, orderId, target);
 }
 
 /** Swift's own words before Android's bare microphone prompt. Resolves true on "Continue". */
@@ -95,16 +131,12 @@ function explainMicrophone(): Promise<boolean> {
   });
 }
 
-/** The server's own sentence for a refusal (POST /calls/app), when it sent one. */
-const serverWords = (e: unknown): string | null => {
-  const m = (e as { response?: { data?: { error?: { message?: unknown } } } })?.response?.data?.error?.message;
-  return typeof m === 'string' && m.trim() ? m : null;
+/** The server's code, else the thrown one (placeInAppCall's own). Only words: an SDK error's number is not a code here. */
+const errorCode = (e: unknown): string | null => {
+  const c = (e as { response?: { data?: { error?: { code?: unknown } } } })?.response?.data?.error?.code
+    ?? (e as { code?: unknown })?.code;
+  return typeof c === 'string' ? c : null;
 };
-
-const errorCode = (e: unknown): string | null =>
-  (e as { response?: { data?: { error?: { code?: string } } } })?.response?.data?.error?.code
-  ?? (e as { code?: string })?.code
-  ?? null;
 
 /**
  * "Call in app" for one person on one order. Each screen keeps its own look: it shows the control when
@@ -140,25 +172,29 @@ export function useInAppCall(input: { orderId?: string | null; target: CallTarge
     if (inAppCallActive()) { await endInAppCall(); return; }
     busyRef.current = true;
     setBusy(true);
+    // [CALLS-UX] The in-app call cannot happen: the backup control comes back, and the words name that control
+    // (review S2: never the server's "message them in chat instead" beside a Call button).
+    const fallBack = (title: string, code: string) => {
+      revealBackupCall(orderId, target);
+      toast.error(title, backupRevealText(code, backupKindFor(orderId, target)));
+    };
     try {
       if (!(await ensureMicrophone(explainMicrophone))) {
-        // [CALLS-UX] This phone cannot talk in the app: the backup call control comes back.
-        revealBackupCall(orderId, target);
-        toast.error(INAPP_WORDS.micTitle, inAppErrorText('MIC_REFUSED'));
+        fallBack(INAPP_WORDS.micTitle, 'MIC_REFUSED'); // this phone cannot talk in the app
         return;
       }
       const api = await calls();
       await placeInAppCall(orderId, target, {
         start: async (o, t, platform) => (await api.appStart(o, t, platform)).data.data,
         cancel: (callId) => api.appCancel(callId),
+        // [CALLS-UX review S3] Accepted by the server, then the SDK reported it never connected.
+        onConnectFailure: () => fallBack(INAPP_WORDS.failedTitle, 'INAPP_CONNECT_FAILED'),
       });
       toast.success(INAPP_WORDS.calling, INAPP_WORDS.callingHow);
     } catch (e) {
       const code = errorCode(e);
-      if (revealsBackup(code)) {
-        // [CALLS-UX] The in-app call cannot happen: show the backup control, with the server's own words.
-        revealBackupCall(orderId, target);
-        toast.error(INAPP_WORDS.failedTitle, serverWords(e) ?? inAppErrorText(code));
+      if (code && revealsBackup(code)) {
+        fallBack(INAPP_WORDS.failedTitle, code);
         return;
       }
       toast.error(INAPP_WORDS.failedTitle, inAppErrorText(code));

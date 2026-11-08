@@ -16,6 +16,8 @@ type Listener = (...args: unknown[]) => void;
 class Emitter {
   private handlers = new Map<string, Listener[]>();
   on(event: string, listener: Listener) { this.handlers.set(event, [...(this.handlers.get(event) ?? []), listener]); return this; }
+  removeListener(event: string, listener: Listener) { this.handlers.set(event, (this.handlers.get(event) ?? []).filter((l) => l !== listener)); return this; }
+  total() { let n = 0; for (const ls of this.handlers.values()) n += ls.length; return n; }
   emit(event: string, ...args: unknown[]) { for (const l of this.handlers.get(event) ?? []) l(...args); }
   count(event: string) { return this.handlers.get(event)?.length ?? 0; }
 }
@@ -229,6 +231,7 @@ describe('[CALLS-UX] a call answered here (Android has no in-call screen for it)
   });
 
   it('Mute pressed on CallKit\'s own screen is read back when the app comes back', async () => {
+    rn.os = 'ios'; // CallKit: iPhone only
     const call = new FakeCall('CA7');
     sdk.nextCall = call;
     await voice.placeInAppCall('o1', 'rider', deps());
@@ -245,5 +248,143 @@ describe('[CALLS-UX] a call answered here (Android has no in-call screen for it)
     await voice.startInAppVoice();
     expect(sdk.voice.count('callInvite')).toBe(1);
     expect(sdk.voice.count('audioDevicesUpdated')).toBe(1);
+  });
+});
+
+describe('[CALLS-UX review S4] a second quick tap never sends the same value twice', () => {
+  it('Mute: while one change is on its way, another is ignored; after it lands, the next goes through', async () => {
+    const call = new FakeCall();
+    sdk.nextCall = call;
+    await voice.placeInAppCall('o1', 'rider', deps());
+    let land!: () => void;
+    call.mute.mockImplementationOnce(async (m: boolean) => { await new Promise<void>((r) => { land = r; }); call.muted = m; return m; });
+    const first = voice.setInCallMuted(true);
+    const second = voice.setInCallMuted(true);
+    expect(await second).toBeNull();
+    expect(call.mute).toHaveBeenCalledTimes(1);
+    land();
+    expect(await first).toBe(true);
+    expect(await voice.setInCallMuted(false)).toBe(false);
+    expect(call.mute).toHaveBeenCalledTimes(2);
+    expect(call.mute).toHaveBeenLastCalledWith(false);
+  });
+
+  it('Speaker: the same', async () => {
+    sdk.nextCall = new FakeCall();
+    await voice.placeInAppCall('o1', 'rider', deps());
+    const [, speaker] = sdk.devices;
+    let land!: () => void;
+    speaker!.select.mockImplementationOnce(async () => { await new Promise<void>((r) => { land = r; }); sdk.selected = 'speaker'; });
+    const first = voice.setInCallSpeaker(true);
+    expect(await voice.setInCallSpeaker(true)).toBe(false);
+    land();
+    expect(await first).toBe(true);
+    expect(speaker!.select).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('[CALLS-UX review S3] the server accepted, then the call never connected', () => {
+  it('connectFailure: the bar goes, the order is freed (cancel) and the caller is told (the backup comes back)', async () => {
+    const call = new FakeCall();
+    sdk.nextCall = call;
+    const d = { ...deps(), onConnectFailure: vi.fn() };
+    await voice.placeInAppCall('o1', 'rider', d);
+    call.emit('connectFailure');
+    await flush();
+    expect(voice.inCallSnapshot()).toBeNull();
+    expect(d.cancel).toHaveBeenCalledWith('c1');
+    expect(d.onConnectFailure).toHaveBeenCalledTimes(1);
+  });
+
+  it('a Hang up here is not a failure: nothing is told', async () => {
+    const call = new FakeCall();
+    sdk.nextCall = call;
+    const d = { ...deps(), onConnectFailure: vi.fn() };
+    await voice.placeInAppCall('o1', 'rider', d);
+    await voice.endInAppCall();
+    call.emit('connectFailure');
+    expect(d.onConnectFailure).not.toHaveBeenCalled();
+  });
+
+  it('the connect itself throws: INAPP_CONNECT_FAILED (the SDK error as its cause), and the order is freed', async () => {
+    const boom = new Error('twilio said no');
+    sdk.voice = undefined as never;
+    voice.resetInAppVoiceForTests(() => { const m = makeSdk(); return { Voice: class extends m.Voice { override connect = vi.fn(async () => { throw boom; }); } }; }, flags);
+    const d = deps();
+    await expect(voice.placeInAppCall('o1', 'rider', d)).rejects.toMatchObject({ code: 'INAPP_CONNECT_FAILED', cause: boom });
+    expect(d.cancel).toHaveBeenCalledWith('c1');
+    expect(voice.inCallSnapshot()).toBeNull();
+  });
+});
+
+describe('[CALLS-UX review S4] call objects: deduped by SID, listeners removed when dropped', () => {
+  it('the bar\'s listeners come off the call when it ends, when it is hung up, and when a newer call replaces it', async () => {
+    const a = new FakeCall('CA1');
+    sdk.nextCall = a;
+    await voice.placeInAppCall('o1', 'rider', deps());
+    expect(a.total()).toBeGreaterThan(0);
+    a.emit('disconnected');
+    expect(a.total()).toBe(0);
+
+    const b = new FakeCall('CA2');
+    sdk.nextCall = b;
+    await voice.placeInAppCall('o1', 'rider', deps());
+    await voice.endInAppCall();
+    expect(b.total()).toBe(0);
+
+    const c = new FakeCall('CA3');
+    sdk.nextCall = c;
+    await voice.placeInAppCall('o1', 'rider', deps());
+    await voice.startInAppVoice();
+    const invite = new Emitter();
+    sdk.voice.emit('callInvite', invite);
+    const answered = new FakeCall('CA4');
+    invite.emit('accepted', answered);
+    expect(c.total()).toBe(0);
+    expect(answered.total()).toBeGreaterThan(0);
+  });
+
+  it('iPhone, the app comes back during the call: the tracked call is kept (same SID), never a second copy', async () => {
+    rn.os = 'ios';
+    const call = new FakeCall('CA7');
+    call.state = 'connected';
+    sdk.nextCall = call;
+    await voice.placeInAppCall('o1', 'rider', deps());
+    const before = voice.inCallSnapshot();
+    const copy = new FakeCall('CA7');
+    copy.state = 'connected';
+    sdk.held = [copy];
+    await voice.syncInAppCalls();
+    await voice.syncInAppCalls();
+    expect(copy.total()).toBe(0); // the SDK's fresh copy got nothing of Swift's
+    call.emit('disconnected'); // the bar still follows the original
+    expect(voice.inCallSnapshot()).toBeNull();
+    expect(before).not.toBeNull();
+  });
+
+  it('Android with a call on the bar: the SDK is not asked for its calls (no new call objects at all)', async () => {
+    sdk.nextCall = new FakeCall('CA8');
+    await voice.placeInAppCall('o1', 'rider', deps());
+    await flush();
+    sdk.voice.getCalls.mockClear(); // the start's own read (nothing was on the bar yet) is not the point here
+    await voice.syncInAppCalls();
+    await voice.syncInAppCalls();
+    expect(sdk.voice.getCalls).not.toHaveBeenCalled();
+    expect(voice.inCallSnapshot()).not.toBeNull();
+  });
+
+  it('a call hung up here that the SDK still lists is never picked up again', async () => {
+    rn.os = 'ios';
+    const call = new FakeCall('CA9');
+    call.disconnect = vi.fn(async () => undefined); // the SDK has not dropped it yet
+    call.state = 'connected';
+    sdk.nextCall = call;
+    await voice.placeInAppCall('o1', 'rider', deps());
+    await voice.endInAppCall();
+    const stale = new FakeCall('CA9');
+    stale.state = 'connected';
+    sdk.held = [stale];
+    await voice.syncInAppCalls();
+    expect(voice.inCallSnapshot()).toBeNull();
   });
 });

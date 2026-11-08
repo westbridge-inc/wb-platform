@@ -1,5 +1,5 @@
 import { type ComponentProps, type ReactNode, useEffect, useState, useSyncExternalStore } from 'react';
-import { AppState, Pressable, View } from 'react-native';
+import { AppState, Pressable, StatusBar, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { color, radius, space, withAlpha } from '@swift/ui';
@@ -96,6 +96,9 @@ export function InCallBar({ snap, onBodyHeight }: { snap: InCallSnapshot; onBody
         elevation: 10000,
       }}
     >
+      {/* [CALLS-UX review S4] Light status-bar text over the dark bar while it shows. React Native keeps a stack of
+          StatusBar settings: when the bar goes, the app's own (App.tsx, dark text) comes back by itself. */}
+      <StatusBar barStyle="light-content" />
       <View style={{ flex: 1 }} accessible accessibilityLiveRegion="polite" accessibilityLabel={`${INCALL_WORDS.title}, ${status}`}>
         <T variant="caption" weight="semibold" style={{ color: color.white }} numberOfLines={1}>
           {INCALL_WORDS.title}

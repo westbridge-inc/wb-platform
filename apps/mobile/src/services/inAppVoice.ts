@@ -36,6 +36,7 @@ import { phaseOf, pickRoute, type InCallSnapshot } from '../lib/inCallBar';
 export interface SdkCall {
   disconnect(): Promise<void>;
   on(event: string, listener: (...args: never[]) => void): unknown;
+  removeListener?(event: string, listener: () => void): unknown;
   mute?(mute: boolean): Promise<boolean>;
   isMuted?(): boolean | undefined;
   getState?(): string;
@@ -309,8 +310,24 @@ export async function ensureMicrophone(explain: () => Promise<boolean>): Promise
 // bar: its state and time, Mute, Speaker and Hang up. One at a time: the newest call is the one shown.
 // ---------------------------------------------------------------------------
 
-let current: { call: SdkCall; snap: InCallSnapshot; onEnded?: () => void } | null = null;
+let current: { call: SdkCall; snap: InCallSnapshot; onEnded?: () => void; off: () => void } | null = null;
 const inCallListeners = new Set<() => void>();
+/**
+ * [CALLS-UX review S4] SIDs of calls this phone stopped following (ended, hung up, failed): a read of the SDK's
+ * calls that still lists one (the SDK may not have dropped it yet) never brings it back onto the bar.
+ */
+const endedSids = new Set<string>();
+const sidOf = (call: SdkCall): string | undefined => { try { return call.getSid?.() ?? undefined; } catch { return undefined; } };
+
+/** Stop following the call on the bar: its listeners come off, and it is never picked up again. */
+function release(entry: NonNullable<typeof current>): void {
+  entry.off();
+  const sid = sidOf(entry.call);
+  if (sid) {
+    endedSids.add(sid);
+    if (endedSids.size > 20) endedSids.delete(endedSids.values().next().value as string);
+  }
+}
 const emitInCall = () => { for (const l of [...inCallListeners]) { try { l(); } catch { /* one listener never stops the rest */ } } };
 
 /** The bar's view of the call that is on now, or null. A new object on every change (React's external store). */
@@ -346,33 +363,55 @@ async function readRoute(call: SdkCall): Promise<void> {
   } catch { /* the bar keeps what it last knew */ }
 }
 
-/** Show this call on the bar and follow it until it ends. */
-function trackCall(call: SdkCall, onEnded?: () => void): void {
+/**
+ * Show this call on the bar and follow it until it ends. `onFailed`: the SDK reported connectFailure while this
+ * phone still followed the call (not after Hang up here).
+ * [CALLS-UX review S4] The listeners added here are removed when the bar stops following the call (ended, hung up,
+ * or replaced by a newer call), so a call object the bar dropped holds nothing of Swift's.
+ */
+function trackCall(call: SdkCall, onEnded?: () => void, onFailed?: () => void): void {
+  if (current?.call === call) return;
   let phase: InCallSnapshot['phase'] = 'connecting';
   try { phase = phaseOf(call.getState?.()) ?? 'connecting'; } catch { /* connecting */ }
   let muted = false;
   try { muted = call.isMuted?.() === true; } catch { /* not muted */ }
   const connectedAt = connectedAtOf(call) ?? (phase === 'connected' ? Date.now() : null);
-  current = { call, onEnded, snap: { phase, connectedAt, muted, speaker: false, routePicker: false } };
   const ended = () => {
     if (current?.call !== call) return;
     const done = current.onEnded;
+    release(current);
     current = null;
     emitInCall();
     done?.();
+  };
+  const failed = () => {
+    const mine = current?.call === call;
+    ended();
+    if (mine) onFailed?.();
   };
   const connected = () => {
     const at = current?.call === call ? current.snap.connectedAt : null;
     patch(call, { phase: 'connected', connectedAt: at ?? connectedAtOf(call) ?? Date.now() });
     void readRoute(call);
   };
+  const listeners: Array<[string, () => void]> = [
+    [SDK_EVENTS.callConnected, connected],
+    [SDK_EVENTS.callReconnected, connected],
+    [SDK_EVENTS.callRinging, () => patch(call, { phase: 'ringing' })],
+    [SDK_EVENTS.callReconnecting, () => patch(call, { phase: 'reconnecting' })],
+    [SDK_EVENTS.callDisconnected, ended],
+    [SDK_EVENTS.callConnectFailure, failed],
+  ];
+  const added: typeof listeners = [];
+  const off = () => {
+    for (const [event, listener] of added.splice(0)) {
+      try { call.removeListener?.(event, listener); } catch { /* best effort */ }
+    }
+  };
+  if (current) release(current); // one call on the bar at a time: the newest
+  current = { call, onEnded, off, snap: { phase, connectedAt, muted, speaker: false, routePicker: false } };
   try {
-    call.on(SDK_EVENTS.callConnected, connected);
-    call.on(SDK_EVENTS.callReconnected, connected);
-    call.on(SDK_EVENTS.callRinging, () => patch(call, { phase: 'ringing' }));
-    call.on(SDK_EVENTS.callReconnecting, () => patch(call, { phase: 'reconnecting' }));
-    call.on(SDK_EVENTS.callDisconnected, ended);
-    call.on(SDK_EVENTS.callConnectFailure, ended);
+    for (const pair of listeners) { call.on(pair[0], pair[1]); added.push(pair); }
   } catch { /* the call still runs; Hang up and the system's own screen still end it */ }
   emitInCall();
   void readRoute(call);
@@ -401,40 +440,56 @@ function watchVoice(v: SdkVoice): void {
 /**
  * A call answered while the app's JavaScript was not running (the answer launched the app), or Mute pressed on
  * CallKit's own screen: ask the SDK for the calls it holds. Runs at start and whenever the app comes back.
+ * [CALLS-UX review S4] Deduped by call SID: the call the bar already follows is kept (only its Mute is read back),
+ * never a second copy. Every getCalls() makes NEW call objects, and the SDK subscribes each one to its native call
+ * events in the Call constructor with no public way to undo it, so Swift asks only when it can matter: with no call
+ * on the bar (one may have been answered), or on iPhone (CallKit's own Mute). Android with a call on the bar has no
+ * other place to change it, so only the audio route is read there.
  */
 export async function syncInAppCalls(): Promise<void> {
   const v = getVoice();
   if (!v?.getCalls) return;
+  if (current && Platform.OS !== 'ios') { await readRoute(current.call); return; }
   let calls: SdkCall[];
   try { calls = [...(await v.getCalls()).values()]; } catch { return; }
-  const live = calls.filter((c) => { try { return phaseOf(c.getState?.()) !== null; } catch { return false; } });
-  if (!current) {
+  const live = calls.filter((c) => {
+    try { return phaseOf(c.getState?.()) !== null && !endedSids.has(sidOf(c) ?? ''); } catch { return false; }
+  });
+  const tracked = current; // read again: a call may have been answered or ended while the SDK answered
+  if (!tracked) {
     const call = live[live.length - 1];
     if (call) trackCall(call);
     return;
   }
-  const mine = current.call;
-  let sid: string | undefined;
-  try { sid = mine.getSid?.(); } catch { sid = undefined; }
-  const same = sid ? live.find((c) => { try { return c.getSid?.() === sid; } catch { return false; } }) : undefined;
+  const sid = sidOf(tracked.call);
+  const same = sid ? live.find((c) => sidOf(c) === sid) : undefined;
   if (same) {
     let muted: boolean | undefined;
     try { muted = same.isMuted?.(); } catch { muted = undefined; }
-    if (typeof muted === 'boolean') patch(mine, { muted });
+    if (typeof muted === 'boolean') patch(tracked.call, { muted });
   }
-  await readRoute(mine);
+  await readRoute(tracked.call);
 }
 
-/** Mute or unmute this side of the call (the SDK's call.mute). Resolves with the muted state the SDK reports. */
+/** [CALLS-UX review S4] A Mute or Speaker change on its way to the SDK: a second quick tap is ignored until it lands
+ *  (the bar's button still shows the old state, so that tap would send the same value again). */
+let muteInFlight = false;
+let speakerInFlight = false;
+
+/** Mute or unmute this side of the call (the SDK's call.mute). Resolves with the muted state the SDK reports, or
+ *  null when nothing was sent (no call, no SDK member, or a change already on its way). */
 export async function setInCallMuted(muted: boolean): Promise<boolean | null> {
   const c = current;
-  if (!c?.call.mute) return null;
+  if (!c?.call.mute || muteInFlight) return null;
+  muteInFlight = true;
   try {
     const now = await c.call.mute(muted);
     patch(c.call, { muted: now === true });
     return now === true;
   } catch {
     return null;
+  } finally {
+    muteInFlight = false;
   }
 }
 
@@ -446,7 +501,8 @@ export async function setInCallMuted(muted: boolean): Promise<boolean | null> {
 export async function setInCallSpeaker(on: boolean): Promise<boolean> {
   const c = current;
   const v = getVoice();
-  if (!c || !v?.getAudioDevices) return false;
+  if (!c || !v?.getAudioDevices || speakerInFlight) return false;
+  speakerInFlight = true;
   try {
     const { audioDevices } = await v.getAudioDevices();
     if (Platform.OS === 'ios' && v.showAvRoutePickerView && audioDevices.some((d) => d.type === 'bluetooth')) {
@@ -461,6 +517,8 @@ export async function setInCallSpeaker(on: boolean): Promise<boolean> {
   } catch {
     await readRoute(c.call);
     return false;
+  } finally {
+    speakerInFlight = false;
   }
 }
 
@@ -473,9 +531,18 @@ export interface PlaceDeps {
   start: (orderId: string, target: CallTarget, platform: 'ios' | 'android') => Promise<{ callId: string; token: string }>;
   cancel: (callId: string) => Promise<unknown>;
   onEnded?: () => void;
+  /** [CALLS-UX review S3] The server accepted, then the SDK reported connectFailure (never after Hang up here). */
+  onConnectFailure?: () => void;
 }
 
-/** Start an in-app call. Throws (with a server code when there is one) when it could not start. */
+/** Free the server's call row Twilio never took, at once rather than in a minute. Never throws. */
+const cancelQuietly = (deps: PlaceDeps, callId: string): Promise<void> =>
+  Promise.resolve().then(() => deps.cancel(callId)).then(() => undefined, () => undefined);
+
+/**
+ * Start an in-app call. Throws (with a server code when there is one) when it could not start; when the server
+ * accepted but this phone's connect threw, the code is INAPP_CONNECT_FAILED (the SDK's own error is the cause).
+ */
 export async function placeInAppCall(orderId: string, target: CallTarget, deps: PlaceDeps): Promise<void> {
   const v = getVoice();
   if (!v) throw Object.assign(new Error('in-app calling not available'), { code: 'INAPP_UNAVAILABLE' });
@@ -485,25 +552,27 @@ export async function placeInAppCall(orderId: string, target: CallTarget, deps: 
   try {
     call = await v.connect(token, { params: { callId }, contactHandle: OUTGOING_HANDLE, notificationDisplayName: OUTGOING_HANDLE });
   } catch (err) {
-    // Twilio never took it: free the order at once rather than in a minute.
-    await deps.cancel(callId).catch(() => undefined);
-    throw err;
+    await cancelQuietly(deps, callId);
+    throw Object.assign(new Error('in-app call did not connect'), { code: 'INAPP_CONNECT_FAILED', cause: err });
   }
-  trackCall(call, deps.onEnded);
+  trackCall(call, deps.onEnded, () => {
+    void cancelQuietly(deps, callId);
+    deps.onConnectFailure?.();
+  });
 }
 
 /** End the call that is on (Hang up, or "End call" on the order screen; the system call screen also ends it). */
 export async function endInAppCall(): Promise<void> {
   const c = current;
   current = null;
-  if (c) emitInCall();
+  if (c) { release(c); emitInCall(); }
   await c?.call.disconnect().catch(() => undefined);
 }
 
 /** Tests only: forget everything; `loader` stands in for the package (default: the real one). */
 export function resetInAppVoiceForTests(loader: () => unknown = defaultLoad, flagsFactory: () => FlagStore = defaultFlags): void {
   sdk = undefined; voice = null; started = false; registeredAt = 0; current = null; watched = null; load = loader;
-  inCallListeners.clear();
+  inCallListeners.clear(); endedSids.clear(); muteInFlight = false; speakerInFlight = false;
   voiceGeneration = 0; marks = 0;
   flagStore = undefined; makeFlags = flagsFactory;
 }

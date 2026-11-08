@@ -24,6 +24,8 @@ export type SdkShapeChecks = [
   Assert<Fits<Voice['getCalls'], () => Promise<ReadonlyMap<string, Call>>>>,
   Assert<Fits<Voice['showAvRoutePickerView'], () => Promise<void>>>,
   Assert<Fits<Call['mute'], (mute: boolean) => Promise<boolean>>>,
+  // [CALLS-UX review S4] The bar takes its listeners off a call it stops following.
+  Assert<Fits<Call, Required<Pick<SdkCall, 'removeListener'>>>>,
   Assert<Fits<Call['isMuted'], () => boolean | undefined>>,
   Assert<Fits<Call['getState'], () => `${Call.State}`>>,
   Assert<Fits<AudioDevice['select'], () => Promise<void>>>,

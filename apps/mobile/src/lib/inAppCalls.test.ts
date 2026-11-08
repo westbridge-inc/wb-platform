@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { CALL_SCREEN_TEMPLATE, INAPP_WORDS, OUTGOING_HANDLE, inAppErrorText, offerInApp, revealsBackup } from './inAppCalls';
+import { CALL_SCREEN_TEMPLATE, INAPP_WORDS, OUTGOING_HANDLE, backupRevealText, inAppErrorText, offerInApp, revealsBackup } from './inAppCalls';
 
 // [INAPP-CALLS] When "Call in app" shows, and the words people read.
 describe('[INAPP-CALLS] offerInApp', () => {
@@ -52,8 +52,8 @@ describe('[INAPP-CALLS] words', () => {
 });
 
 describe('[CALLS-UX · owner 8 Nov] which refusals bring the backup call control back', () => {
-  it('the in-app call cannot happen: they cannot be rung, no account to ring, Swift cannot tell, the switch went off, no app, no module, no microphone', () => {
-    for (const code of ['INAPP_NOT_REACHABLE', 'INAPP_NO_ONE', 'INAPP_CALLS_TROUBLE', 'INAPP_CALLS_OFF', 'INAPP_NOT_FOR_TARGET', 'INAPP_UNAVAILABLE', 'MIC_REFUSED']) {
+  it('the in-app call cannot happen: they cannot be rung, no account to ring, Swift cannot tell, the switch went off, no app, no module, no microphone, the connect failed', () => {
+    for (const code of ['INAPP_NOT_REACHABLE', 'INAPP_NO_ONE', 'INAPP_CALLS_TROUBLE', 'INAPP_CALLS_OFF', 'INAPP_NOT_FOR_TARGET', 'INAPP_UNAVAILABLE', 'MIC_REFUSED', 'INAPP_CONNECT_FAILED', 'CALL_PROVIDER_FAILED']) {
       expect(revealsBackup(code)).toBe(true);
     }
   });
@@ -64,5 +64,41 @@ describe('[CALLS-UX · owner 8 Nov] which refusals bring the backup call control
     }
     expect(revealsBackup(null)).toBe(false);
     expect(revealsBackup(undefined)).toBe(false);
+  });
+});
+
+describe('[CALLS-UX review S2] the words when the backup comes back name the control that really appears', () => {
+  const codes = ['INAPP_NOT_REACHABLE', 'INAPP_NO_ONE', 'INAPP_CALLS_TROUBLE', 'INAPP_CALLS_OFF', 'INAPP_NOT_FOR_TARGET', 'INAPP_UNAVAILABLE', 'MIC_REFUSED', 'INAPP_CONNECT_FAILED', 'CALL_PROVIDER_FAILED', 'SOMETHING', null];
+
+  it('the dialler: "Tap Call to ring their phone", never "Call via Swift" and never "instead"', () => {
+    expect(backupRevealText('INAPP_NOT_REACHABLE', 'dial')).toBe("They can't take calls in the Swift app. Tap Call to ring their phone, or message them in chat.");
+    for (const code of codes) {
+      const text = backupRevealText(code, 'dial');
+      expect(text, String(code)).toContain('Tap Call to ring their phone');
+      expect(text).not.toMatch(/Call via Swift|instead/);
+    }
+  });
+
+  it('the bridge: "Call via Swift"', () => {
+    expect(backupRevealText('INAPP_NOT_REACHABLE', 'bridge')).toBe("They can't take calls in the Swift app. Tap Call via Swift to reach them by phone, or message them in chat.");
+    for (const code of codes) expect(backupRevealText(code, 'bridge'), String(code)).toContain('Tap Call via Swift');
+  });
+
+  it('no backup at all (bridge off, no number): chat only, never a button that is not there', () => {
+    for (const code of codes) expect(backupRevealText(code, 'none'), String(code)).not.toMatch(/Tap Call|Call via Swift/);
+    expect(backupRevealText('INAPP_NOT_REACHABLE', 'none')).toBe("They can't take calls in the Swift app. Message them in chat.");
+    expect(backupRevealText('INAPP_CONNECT_FAILED', 'none')).toBe("Swift couldn't connect the call in the app. Try again in a minute, or message them in chat.");
+  });
+
+  it('the microphone refused: Settings, then the backup that is there', () => {
+    expect(backupRevealText('MIC_REFUSED', 'dial')).toBe('The microphone is off for Swift, so in-app calls cannot work. You can turn it on in Settings. Tap Call to ring their phone, or message them in chat.');
+    expect(backupRevealText('MIC_REFUSED', 'bridge')).toBe('The microphone is off for Swift, so in-app calls cannot work. You can turn it on in Settings. Tap Call via Swift to reach them by phone, or message them in chat.');
+  });
+
+  it('[review S3-4] never "right now" or "try again" for them (they may have refused for good); no number', () => {
+    for (const code of ['INAPP_NOT_REACHABLE', 'INAPP_NO_ONE', 'INAPP_NOT_FOR_TARGET']) {
+      for (const kind of ['dial', 'bridge', 'none'] as const) expect(backupRevealText(code, kind)).not.toMatch(/right now|try again/i);
+    }
+    for (const code of codes) for (const kind of ['dial', 'bridge', 'none'] as const) expect(backupRevealText(code, kind)).not.toMatch(/\d{3}/);
   });
 });

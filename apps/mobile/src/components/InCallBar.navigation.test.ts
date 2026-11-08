@@ -20,12 +20,14 @@ const fx = vi.hoisted(() => ({
 vi.mock('react-native', async () => {
   const React = await import('react');
   const h = React.createElement;
-  type P = { children?: unknown; testID?: string; accessibilityLabel?: string; accessibilityState?: { selected?: boolean }; onPress?: () => void };
+  type P = { children?: unknown; testID?: string; accessibilityLabel?: string; accessibilityState?: { selected?: boolean }; onPress?: () => void; barStyle?: string };
   return {
     NativeModules: new Proxy({}, { get: (_t, k: string) => fx.native[k] }),
     Platform: { get OS() { return fx.os; } },
     PermissionsAndroid: { PERMISSIONS: { RECORD_AUDIO: 'mic' }, RESULTS: { GRANTED: 'granted' }, check: async () => true, request: async () => 'granted' },
     AppState: { addEventListener: () => { fx.appListeners += 1; return { remove: () => { fx.appListeners -= 1; } }; } },
+    // React Native keeps a stack of StatusBar settings: the newest mounted one wins, and unmounting restores.
+    StatusBar: (p: P) => h('i', { 'data-testid': 'status-bar', 'data-bar-style': p.barStyle }),
     View: (p: P) => h('div', { 'data-testid': p.testID, 'aria-label': p.accessibilityLabel }, p.children as React.ReactNode),
     Pressable: (p: P) => h('button', {
       'data-testid': p.testID,
@@ -51,6 +53,7 @@ class FakeCall {
   muted = false;
   constructor(public connectedAt?: Date) {}
   on(e: string, l: Listener) { this.handlers.set(e, [...(this.handlers.get(e) ?? []), l]); return this; }
+  removeListener(e: string, l: Listener) { this.handlers.set(e, (this.handlers.get(e) ?? []).filter((x) => x !== l)); return this; }
   emit(e: string) { for (const l of this.handlers.get(e) ?? []) l(); }
   getState() { return this.connectedAt ? 'connected' : 'connecting'; }
   getSid() { return 'CA1'; }
@@ -143,6 +146,53 @@ describe('[CALLS-UX] the in-call bar', () => {
     await press('in-call-mute');
     expect(nextCall.mute).toHaveBeenLastCalledWith(false);
     expect(byId('in-call-mute')?.getAttribute('aria-label')).toBe('Mute');
+  });
+
+  it('[review S4] Mute double-tapped before the SDK answers: one change only, the same value never sent twice', async () => {
+    await draw();
+    await call();
+    let land!: () => void;
+    nextCall.mute.mockImplementationOnce(async (m: boolean) => { await new Promise<void>((r) => { land = r; }); nextCall.muted = m; return m; });
+    await act(async () => { (byId('in-call-mute') as HTMLButtonElement).click(); (byId('in-call-mute') as HTMLButtonElement).click(); });
+    await act(async () => { land(); });
+    await settle();
+    expect(nextCall.mute).toHaveBeenCalledTimes(1);
+    expect(byId('in-call-mute')?.getAttribute('aria-label')).toBe('Unmute');
+  });
+
+  it('[review S4] Speaker double-tapped: one change only', async () => {
+    await draw();
+    await call();
+    let land!: () => void;
+    vi.mocked(fx.devices[1]!.select).mockImplementationOnce(async () => { await new Promise<void>((r) => { land = r; }); fx.selected = 'speaker'; });
+    await act(async () => { (byId('in-call-speaker') as HTMLButtonElement).click(); (byId('in-call-speaker') as HTMLButtonElement).click(); });
+    await act(async () => { land(); });
+    await settle();
+    expect(fx.devices[1]?.select).toHaveBeenCalledTimes(1);
+    expect(fx.devices[0]?.select).not.toHaveBeenCalled();
+    expect(byId('in-call-speaker')?.getAttribute('aria-pressed')).toBe('true');
+  });
+
+  it('[review S4] light status-bar text over the dark bar while it shows; the app\'s own comes back after', async () => {
+    await draw();
+    expect(byId('status-bar')).toBeNull();
+    await call();
+    expect(byId('status-bar')?.getAttribute('data-bar-style')).toBe('light-content');
+    await press('in-call-hang-up');
+    expect(byId('status-bar')).toBeNull();
+  });
+
+  it('a second call after a muted one starts unmuted (the bar shows the new call\'s own state)', async () => {
+    await draw();
+    await call();
+    await press('in-call-mute');
+    expect(byId('in-call-mute')?.getAttribute('aria-label')).toBe('Unmute');
+    await press('in-call-hang-up');
+    nextCall = new FakeCall();
+    await call();
+    expect(byId('in-call-mute')?.getAttribute('aria-label')).toBe('Mute');
+    await press('in-call-mute');
+    expect(nextCall.mute).toHaveBeenLastCalledWith(true);
   });
 
   it('Hang up ends the call and the bar goes', async () => {
