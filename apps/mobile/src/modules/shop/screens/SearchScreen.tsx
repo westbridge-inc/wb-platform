@@ -19,7 +19,6 @@ import {
   Chip,
   EmptyState,
   ErrorState,
-  LoadingBlock,
   Money,
   Photo,
   RatingMeta,
@@ -32,6 +31,8 @@ import { brandLine, brandTitle, type BrandCard } from '../../../lib/brandCard';
 import { useVendorPrefetch } from '../../../hooks/storeDoor';
 import { itemPreviewOf, storePreviewOf } from '../../../lib/doorPreview';
 import { engineSearchRows, searchRowKey } from '../../../lib/searchRows';
+import { searchBrowseParams } from '../../../lib/searchBrowse';
+import { ListSkeleton } from '../../../kit/skeletons';
 
 // Kit 57–60: idle = headline + history chips + popular rows.
 //
@@ -222,20 +223,12 @@ export function SearchScreen() {
   const text = debounced.trim();
   const engineMode = text.length >= 2 && (!type || type === 'RESTAURANT' || type === 'SUPERMARKET');
 
-  const params = useMemo(() => {
-    const p: Record<string, string> = {};
-    if (debounced.trim()) p['search'] = debounced.trim();
-    if (type) p['type'] = type;
-    if (sort) p['sort'] = sort;
-    // The browse endpoint already understands `open` — the chip is a real
-    // server filter, not a client-side hide.
-    if (openNow) p['open'] = 'true';
-    if (deviceLatitude !== undefined && deviceLongitude !== undefined) {
-      p['lat'] = String(deviceLatitude);
-      p['lng'] = String(deviceLongitude);
-    }
-    return p;
-  }, [debounced, type, sort, openNow, deviceLatitude, deviceLongitude]);
+  // [APP-SPEED D] One builder for this query and for the read Home asks ahead of the Food and Groceries doors
+  // (lib/searchBrowse): the list read ahead is the very key this screen opens on.
+  const params = useMemo(
+    () => searchBrowseParams({ text: debounced, type, sort, openNow, latitude: deviceLatitude, longitude: deviceLongitude }),
+    [debounced, type, sort, openNow, deviceLatitude, deviceLongitude],
+  );
 
   const vendors = useVendors<any[]>(searching && !engineMode ? params : undefined);
   const engine = useSearch<any>(engineMode ? text : '', engineMode ? { type, lat: deviceLatitude, lng: deviceLongitude } : undefined);
@@ -452,7 +445,9 @@ export function SearchScreen() {
 
           {(
             resultsBusy ? (
-              <LoadingBlock />
+              // [APP-SPEED D] The list's shape on the first frame, never a full-screen spinner. A failed read
+              // still says so (the branch below); an empty answer is only ever drawn from a read that came back.
+              <ListSkeleton />
             ) : resultsError ? (
               <ErrorState onRetry={() => void retryResults()} />
             ) : results.length === 0 && dishes.length === 0 ? (

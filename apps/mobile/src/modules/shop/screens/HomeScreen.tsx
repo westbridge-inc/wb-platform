@@ -10,9 +10,9 @@ import { useQueryClient } from '@tanstack/react-query';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { API_URL } from '../../../services/api';
 import { color, radius, space } from '@swift/ui';
-import { customerKeys, prefetchActiveRide, prefetchOrder, useDiscoveryCategories, useHome, useToggleFavorite, type HomeFeed, type LiveOrderProjection } from '../../../hooks/customer';
+import { customerKeys, prefetchActiveRide, prefetchOrder, useDiscoveryCategories, useHome, useMarketDepth, useToggleFavorite, type HomeFeed, type LiveOrderProjection } from '../../../hooks/customer';
 import { useRowHold } from '../../../lib/useRowHold';
-import { createHomeRefreshGate, homeAttentionRefresh, homeFeedState, homeQueryKey, subscribeToHomeAttention } from '../../../lib/homeReliability';
+import { createHomeRefreshGate, homeAttentionRefresh, homeFeedState, homeQueryKey, marketTabVisible, subscribeToHomeAttention } from '../../../lib/homeReliability';
 import { useScreenLive } from '../../../hooks/useScreenLive';
 import { useAds } from '../../../hooks/ads';
 import { AdHeroVideo, AdTopCard, AdBar } from '../../../components/ads';
@@ -35,7 +35,8 @@ import { orderRecipientNoun, orderStatusLabel, orderSubtitle, presentedVertical 
 import { promiseLine } from '../../../lib/promise';
 import { trackRouteFor } from '../../../lib/orderTrackRoute';
 import { useVendorPrefetch } from '../../../hooks/storeDoor';
-import { usePressRead } from '../../../hooks/pressRead';
+import { usePressRead, type PressReadHandlers } from '../../../hooks/pressRead';
+import { readCategoryFeed, readCategorySearch, useDoorPress, useHomeDoorReads, type DoorContext, type HomeDoor } from '../../../hooks/homeDoors';
 import { itemPreviewOf, storePreviewOf } from '../../../lib/doorPreview';
 // ONE hold authority, shared with the tracking screen — never a second
 // countdown that could disagree with it about whether the window is open.
@@ -85,19 +86,23 @@ const HERO_CARD_W = Math.round(SCREEN_W * 0.72);
 // feature shipped while the customer app had no scanner, and because
 // POST /qr/:code/app-open exists to record an in-app open and had no caller.
 // It is a door onto something already built, not a new destination.
+//
+// [APP-SPEED D] `door`: the first reads its screen opens on, asked ahead (hooks/homeDoors) once Home is quiet and at
+// the finger-down on the tile. Send and Scan open on a form and the camera: nothing to read ahead.
 const SERVICES: {
   key: PictogramName;
   label: string;
+  door: HomeDoor | null;
   nav: (n: any) => void;
 }[] = [
-  { key: 'food', label: 'Food', nav: (n) => n.navigate('Search', { type: 'RESTAURANT' }) },
-  { key: 'groceries', label: 'Groceries', nav: (n) => n.navigate('Search', { type: 'SUPERMARKET' }) },
-  { key: 'taxi', label: 'Taxi', nav: (n) => n.navigate('Taxi') },
-  { key: 'send', label: 'Send', nav: (n) => n.navigate('Courier') },
-  { key: 'services', label: 'Services', nav: (n) => n.navigate('Services') },
-  { key: 'orders', label: 'Orders', nav: (n) => n.navigate('OrdersHistory') },
-  { key: 'favourites', label: 'Favourites', nav: (n) => n.navigate('Favorites') },
-  { key: 'scan', label: 'Scan', nav: (n) => n.navigate('Scan') },
+  { key: 'food', label: 'Food', door: 'food', nav: (n) => n.navigate('Search', { type: 'RESTAURANT' }) },
+  { key: 'groceries', label: 'Groceries', door: 'groceries', nav: (n) => n.navigate('Search', { type: 'SUPERMARKET' }) },
+  { key: 'taxi', label: 'Taxi', door: 'taxi', nav: (n) => n.navigate('Taxi') },
+  { key: 'send', label: 'Send', door: null, nav: (n) => n.navigate('Courier') },
+  { key: 'services', label: 'Services', door: 'services', nav: (n) => n.navigate('Services') },
+  { key: 'orders', label: 'Orders', door: 'orders', nav: (n) => n.navigate('OrdersHistory') },
+  { key: 'favourites', label: 'Favourites', door: 'favourites', nav: (n) => n.navigate('Favorites') },
+  { key: 'scan', label: 'Scan', door: null, nav: (n) => n.navigate('Scan') },
 ];
 
 // Status wording moved to lib/orderStatus.ts: it has to know the order
@@ -118,7 +123,7 @@ function greetingLine(hour: number): string {
   return 'Good evening';
 }
 
-function ServiceTile({ item, index, navigation }: { item: (typeof SERVICES)[number]; index: number; navigation: any }) {
+function ServiceTile({ item, index, navigation, press }: { item: (typeof SERVICES)[number]; index: number; navigation: any; press: PressReadHandlers | Record<string, never> }) {
   // ONE ACCENT, NOT EIGHT [100x pass §5, Home v2].
   //
   // The grid used to give every service its own hue off the F-263 ramp. The
@@ -141,6 +146,7 @@ function ServiceTile({ item, index, navigation }: { item: (typeof SERVICES)[numb
     >
     <PressableScale
       strong
+      {...press}
       onPress={() => {
         haptic.select();
         item.nav(navigation);
@@ -333,9 +339,6 @@ function LiveOrderCard({ order, navigation, statusNote, live }: { order: LiveOrd
   );
 }
 
-/** [APP-SPEED A] How long Home's feed must have been on screen before it asks about a ride. */
-const HOME_IDLE_PREFETCH_MS = 1_500;
-
 export function HomeScreen() {
   const [avatarBroken, setAvatarBroken] = useState(false);
   const navigation = useNavigation<any>();
@@ -420,19 +423,14 @@ export function HomeScreen() {
 
   const feed = home.data;
   const feedState = homeFeedState({ ...home, data: feed });
-  // [APP-SPEED A] Once Home has drawn its feed and sat a moment, ask once whether a ride is in
-  // progress (only when nothing is remembered), so the Taxi door opens on an answer.
-  React.useEffect(() => {
-    if (!isAuthenticated || feedState !== 'content') return undefined;
-    let timer: ReturnType<typeof setTimeout>;
-    // A read still on its way (an ad, the category rail): wait for the next quiet moment.
-    const fire = () => {
-      if (qc.isFetching() > 0) timer = setTimeout(fire, HOME_IDLE_PREFETCH_MS);
-      else void prefetchActiveRide(qc);
-    };
-    timer = setTimeout(fire, HOME_IDLE_PREFETCH_MS);
-    return () => clearTimeout(timer);
-  }, [isAuthenticated, feedState, qc]);
+  // [APP-SPEED A → D] Once Home has drawn a fresh feed and Swift has sat quiet a moment, the first reads of the doors
+  // on it (Taxi's "is a ride in progress?" first, then the tiles' lists and the Market tab) are asked one at a time,
+  // so each door opens on an answer instead of a spinner (hooks/homeDoors). Only while Home is in front.
+  const marketVisible = marketTabVisible(useMarketDepth().data);
+  const doorContext: DoorContext = { signedIn: isAuthenticated, here: locationFix, marketVisible };
+  useHomeDoorReads(live && feedState === 'content' && !home.isPlaceholderData, home.dataUpdatedAt, doorContext);
+  const doorPress = useDoorPress(doorContext);
+  const pressRead = usePressRead();
   const featured: any[] = feed?.featured ?? [];
   const popularItems: any[] = feed?.popularItems ?? [];
   const nearby: any[] = locationFix ? (feed?.nearby ?? []) : [];
@@ -642,7 +640,7 @@ export function HomeScreen() {
           }}
         >
           {SERVICES.map((s, i) => (
-            <ServiceTile key={s.key} item={s} index={i} navigation={navigation} />
+            <ServiceTile key={s.key} item={s} index={i} navigation={navigation} press={doorPress(s.door)} />
           ))}
         </View>
 
@@ -711,6 +709,8 @@ export function HomeScreen() {
         <CategoryRail
           data={discovery.data}
           loading={false}
+          // [APP-SPEED D] A finger resting on a chip starts the read of the store list it opens.
+          pressRead={(c) => pressRead(() => readCategoryFeed(qc, c.slug, locationFix))}
           onChip={(c) => navigation.navigate('CategoryFeed', { slug: c.slug, name: c.name })}
           onSeeAll={() => navigation.navigate('CategoryGrid')}
         />
@@ -844,6 +844,8 @@ export function HomeScreen() {
                     <CategoryTile
                       name={item.name}
                       image={categoryPhoto(item)}
+                      // [APP-SPEED D] A finger resting on the tile starts the search Search opens on.
+                      {...pressRead(() => readCategorySearch(qc, item.name, locationFix))}
                       onPress={() => navigation.navigate('Search', { q: item.name })}
                     />
                   )}

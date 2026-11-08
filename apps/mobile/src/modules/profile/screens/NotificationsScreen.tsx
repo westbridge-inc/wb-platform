@@ -5,7 +5,8 @@ import { useNavigation, type NavigationProp, type ParamListBase } from '@react-n
 import { color, space } from '@swift/ui';
 import { useNotifications } from '../../../hooks/customer';
 import { usePullToRefresh } from '../../../hooks/usePullToRefresh';
-import { Card, EmptyState, ErrorState, Header, IconChip, LoadingBlock, PressableScale, Screen, T } from '../../../kit';
+import { Card, EmptyState, ErrorState, Header, IconChip, PressableScale, Screen, T } from '../../../kit';
+import { ListSkeleton } from '../../../kit/skeletons';
 import { destinationFor, HOME_SCREEN } from '../../../services/notification-router';
 import { safeNavigate } from '../../../navigation/navigationRef';
 import { TeamInviteCards } from '../components/TeamInviteCards';
@@ -74,7 +75,8 @@ export function NotificationsScreen() {
       {/* [Row 55] Store team invites are answered here, above the inbox. */}
       <TeamInviteCards />
       {notifications.isLoading ? (
-        <LoadingBlock />
+        // [APP-SPEED D] The rows' shapes on the first frame, never a full-screen spinner.
+        <ListSkeleton thumb={40} />
       ) : notifications.isError ? (
         <ErrorState onRetry={() => notifications.refetch()} />
       ) : rows.length === 0 ? (

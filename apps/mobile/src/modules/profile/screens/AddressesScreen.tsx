@@ -5,7 +5,8 @@ import { Feather } from '@expo/vector-icons';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { color, space } from '@swift/ui';
 import { useAddresses, useDeleteAddress, useSetCartAddress, useSetDefaultAddress } from '../../../hooks/customer';
-import { Card, EmptyState, ErrorState, Header, IconChip, LoadingBlock, PillButton, Screen, T } from '../../../kit';
+import { Card, EmptyState, ErrorState, Header, IconChip, PillButton, Screen, T } from '../../../kit';
+import { ListSkeleton } from '../../../kit/skeletons';
 import { errorMessage } from '../../../lib/apiError';
 
 // Address book, in kit row-card language. With route.params.selectFor==='cart'
@@ -80,7 +81,8 @@ export function AddressesScreen() {
     <Screen>
       <Header title={selectForCart ? 'Deliver To' : 'My Addresses'} />
       {addresses.isLoading ? (
-        <LoadingBlock />
+        // [APP-SPEED D] The rows' shapes on the first frame, never a full-screen spinner.
+        <ListSkeleton rows={3} thumb={40} />
       ) : addresses.isError ? (
         <ErrorState onRetry={() => addresses.refetch()} />
       ) : rows.length === 0 ? (

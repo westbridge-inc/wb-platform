@@ -8,7 +8,8 @@ import { color, fontSize, radius, space } from '@swift/ui';
 import { useDiscoveryCategories } from '../../../hooks/customer';
 import { useLocationStore } from '../../../stores/locationStore';
 import { grantedLocationFix } from '../../../lib/deviceLocation';
-import { CartBar, useCartBarClearance, EmptyState, ErrorState, Header, LoadingBlock, Screen, T } from '../../../kit';
+import { CartBar, useCartBarClearance, EmptyState, ErrorState, Header, Screen, T } from '../../../kit';
+import { ChipsSkeleton } from '../../../kit/skeletons';
 
 // ---------------------------------------------------------------------------
 // "See all →" (#17 6.1): the full category grid, grouped by kind — the same
@@ -44,7 +45,8 @@ export function CategoryGridScreen() {
     <Screen>
       <Header title="Browse by category" />
       {railQ.isLoading ? (
-        <LoadingBlock />
+        // [APP-SPEED D] The tiles' shapes on the first frame (Home's rail already holds this read when it shows).
+        <ChipsSkeleton shape="tile" count={12} style={{ paddingHorizontal: space['2xl'], marginTop: space.xl }} />
       ) : railQ.isError || !railQ.data?.enabled ? (
         <ErrorState onRetry={() => railQ.refetch()} />
       ) : categories.length === 0 ? (

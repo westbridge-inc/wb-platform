@@ -6,6 +6,7 @@ import { color, fontSize, radius, space } from '@swift/ui';
 import { T } from '../../kit';
 import type { DiscoveryRail } from '../../hooks/customer';
 import { categoryIcon } from '../../lib/categoryIcon';
+import type { PressReadHandlers } from '../../hooks/pressRead';
 
 // ---------------------------------------------------------------------------
 // The category rail (#17 6.1) — at the founder's X: below the quick-action
@@ -22,9 +23,9 @@ export const CAT_RAIL_MIN_CHIPS = 4;
 const TILE = 64;
 const BLOCK_W = 76;
 
-function ChipTile({ slug, iconKey, label, onPress }: { slug: string; iconKey?: string | null; label: string; onPress: () => void }) {
+function ChipTile({ slug, iconKey, label, onPress, press }: { slug: string; iconKey?: string | null; label: string; onPress: () => void; press?: PressReadHandlers }) {
   return (
-    <Pressable onPress={onPress} accessibilityRole="button" accessibilityLabel={label}>
+    <Pressable onPress={onPress} onPressIn={press?.onPressIn} onPressOut={press?.onPressOut} accessibilityRole="button" accessibilityLabel={label}>
       {({ pressed }) => (
         <View style={{ width: BLOCK_W, alignItems: 'center', opacity: pressed ? 0.7 : 1 }}>
           <View
@@ -67,11 +68,14 @@ export function CategoryRail({
   loading,
   onChip,
   onSeeAll,
+  pressRead,
 }: {
   data: DiscoveryRail | undefined;
   loading: boolean;
   onChip: (c: DiscoveryRail['categories'][number]) => void;
   onSeeAll: () => void;
+  /** [APP-SPEED D] A chip's press-in read (hooks/pressRead): the store list its feed opens on. */
+  pressRead?: (c: DiscoveryRail['categories'][number]) => PressReadHandlers;
 }) {
   if (loading) return <View style={{ marginTop: space.lg }}><RailSkeleton /></View>;
   // Fetch failure or flag off or too few chips → absent, silently (garnish).
@@ -86,7 +90,7 @@ export function CategoryRail({
       style={{ marginTop: space.lg }}
       contentContainerStyle={{ paddingHorizontal: space['2xl'], gap: 12 }}
       renderItem={({ item }) => (
-        <ChipTile slug={item.slug} iconKey={item.iconKey} label={item.name} onPress={() => onChip(item)} />
+        <ChipTile slug={item.slug} iconKey={item.iconKey} label={item.name} onPress={() => onChip(item)} press={pressRead?.(item)} />
       )}
       ListFooterComponent={
         <Pressable onPress={onSeeAll} accessibilityRole="button" accessibilityLabel="See all categories">

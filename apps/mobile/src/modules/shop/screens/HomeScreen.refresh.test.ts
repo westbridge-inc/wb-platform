@@ -60,7 +60,9 @@ describe('the other main tabs follow the same rule', () => {
     expect(MARKET).toContain('const pull = usePullToRefresh(feed.refetch);');
     expect(MARKET).toMatch(/refreshing=\{pull\.refreshing\}/);
     expect(MARKET).not.toMatch(/refreshing=\{feed\.isRefetching/);
-    expect(MARKET).toMatch(/feed\.isLoading && items\.length === 0 \? \(\s*<LoadingBlock/);
+    // [APP-SPEED D] The first load draws the grid's shape (kit/skeletons), never a full-screen spinner.
+    expect(MARKET).toMatch(/feed\.isLoading && items\.length === 0 \? \(\s*<GridSkeleton/);
+    expect(MARKET).not.toMatch(/<LoadingBlock/);
   });
 
   it('Cart: the block is on isLoading (first load), never on a refetch flag', () => {

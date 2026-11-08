@@ -9,7 +9,8 @@ import { useAuthStore } from '../../../stores/authStore';
 import { vendorPhoto } from '../../../lib/images';
 import { useVendorPrefetch } from '../../../hooks/storeDoor';
 import { storePreviewOf } from '../../../lib/doorPreview';
-import { CartBar, useCartBarClearance, EmptyState, ErrorState, FoodCard, Header, LoadingBlock, Screen } from '../../../kit';
+import { CartBar, useCartBarClearance, EmptyState, ErrorState, FoodCard, Header, Screen } from '../../../kit';
+import { GridSkeleton } from '../../../kit/skeletons';
 
 const SCREEN_W = Dimensions.get('window').width;
 const GUTTER = space['2xl'];
@@ -41,7 +42,8 @@ export function FavoritesScreen() {
     <Screen>
       <Header title="Favourites" />
       {favorites.isLoading ? (
-        <LoadingBlock />
+        // [APP-SPEED D] The cards' shapes on the first frame (Home reads the list ahead of this door).
+        <GridSkeleton />
       ) : favorites.isError ? (
         <ErrorState onRetry={() => favorites.refetch()} />
       ) : rows.length === 0 ? (
