@@ -121,7 +121,7 @@ describe('[SITE-1.1 Part 2] the identity law: the company is the only author', (
 
   it('no public page or footer speaks of a founder', async () => {
     const pages = [
-      '@/app/(marketing)/about/page', '@/app/(marketing)/contact/page', '@/app/(marketing)/welcome/page',
+      '@/app/(marketing)/about/page', '@/app/(marketing)/contact/page', '@/app/(welcome)/welcome/page',
       '@/app/legal/refunds/page', '@/app/legal/delivery/page',
     ];
     const { SiteFooter } = await import('@/components/site');

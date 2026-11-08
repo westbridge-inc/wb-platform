@@ -141,7 +141,7 @@ describe('[G11] what the visitor sees', () => {
   });
 
   it('/welcome and the launching-soon front door show the links only once live', async () => {
-    for (const route of ['app/(marketing)/welcome/page.tsx', 'app/(marketing)/launching-soon/page.tsx']) {
+    for (const route of ['app/(welcome)/welcome/page.tsx', 'app/(welcome)/launching-soon/page.tsx']) {
       for (const [value, expected] of [['', []], ['live', [APP_STORE, GOOGLE_PLAY]]] as const) {
         await serverWith(value);
         openAt('https://swiftgy.com/');
@@ -160,7 +160,7 @@ describe('[G11] what the visitor sees', () => {
     const COMING = 'Coming to the App Store and Google Play';
     await serverWith('');
     openAt('https://swiftgy.com/');
-    let { default: Page } = await load<{ default: () => React.ReactNode }>('app/(marketing)/launching-soon/page.tsx');
+    let { default: Page } = await load<{ default: () => React.ReactNode }>('app/(welcome)/launching-soon/page.tsx');
     let view = render(<>{Page()}</>);
     // Before the server answers, and while off, the line shows and nothing links to a store.
     expect(view.container.textContent).toContain(COMING);
@@ -171,7 +171,7 @@ describe('[G11] what the visitor sees', () => {
 
     await serverWith('live');
     openAt('https://swiftgy.com/');
-    ({ default: Page } = await load<{ default: () => React.ReactNode }>('app/(marketing)/launching-soon/page.tsx'));
+    ({ default: Page } = await load<{ default: () => React.ReactNode }>('app/(welcome)/launching-soon/page.tsx'));
     view = render(<>{Page()}</>);
     await answered();
     expect(view.container.textContent).not.toContain(COMING);

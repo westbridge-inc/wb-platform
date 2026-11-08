@@ -44,7 +44,7 @@ describe('[WEB-APPBAR] the welcome page itself', () => {
 
   it('says what Swift is, in the site’s own words, with no price', async () => {
     storesSwitch('soon');
-    const { default: Welcome } = await load<{ default: () => React.ReactElement }>('app/(marketing)/page.tsx');
+    const { default: Welcome } = await load<{ default: () => React.ReactElement }>('app/(welcome)/page.tsx');
     const view = render(<Welcome />);
     expect(screen.getByRole('heading', { level: 1 }).textContent).toBe('Food, groceries, shops, couriers and rides.');
     expect(view.container.textContent).toContain('The people doing the work keep 100% of what they earn.');
@@ -56,7 +56,7 @@ describe('[WEB-APPBAR] the welcome page itself', () => {
 
   it('opens on four doors, big tap targets, each to the page that already exists', async () => {
     storesSwitch('soon');
-    const { default: Welcome } = await load<{ default: () => React.ReactElement }>('app/(marketing)/page.tsx');
+    const { default: Welcome } = await load<{ default: () => React.ReactElement }>('app/(welcome)/page.tsx');
     render(<Welcome />);
     const doors = within(screen.getByRole('navigation', { name: 'Get started' })).getAllByRole('link');
     expect(doors.map((door) => [door.querySelector('span')!.textContent, door.getAttribute('href')])).toEqual([
@@ -78,7 +78,7 @@ describe('[WEB-APPBAR] the welcome page itself', () => {
 
   it('shows the official store badges only once the stores switch is live', async () => {
     storesSwitch('soon');
-    const { default: Welcome } = await load<{ default: () => React.ReactElement }>('app/(marketing)/page.tsx');
+    const { default: Welcome } = await load<{ default: () => React.ReactElement }>('app/(welcome)/page.tsx');
     let view = render(<Welcome />);
     await settle();
     expect(screen.queryByRole('region', { name: 'Get the app' })).toBeNull();
@@ -97,10 +97,10 @@ describe('[WEB-APPBAR] the welcome page itself', () => {
   });
 
   it('is a static page: no cookies, headers or per-visitor work, and no emoji anywhere in this work', () => {
-    const source = readFileSync(join(SRC, 'app', '(marketing)', 'page.tsx'), 'utf8');
+    const source = readFileSync(join(SRC, 'app', '(welcome)', 'page.tsx'), 'utf8');
     expect(source).not.toMatch(/next\/headers|cookies\(|headers\(\)|revalidate|dynamic\s*=/);
     expect(source).not.toMatch(/'use client'/);
-    for (const file of ['app/(marketing)/page.tsx', 'components/get-app-bar.tsx', 'components/get-app-bar-card.tsx', 'components/app-store-links.tsx', 'lib/get-the-app.ts', 'middleware.ts']) {
+    for (const file of ['app/(welcome)/page.tsx', 'components/get-app-bar.tsx', 'components/get-app-bar-card.tsx', 'components/app-store-links.tsx', 'lib/get-the-app.ts', 'middleware.ts']) {
       expect(readFileSync(join(SRC, file), 'utf8'), file).not.toMatch(/\p{Extended_Pictographic}/u);
     }
   });

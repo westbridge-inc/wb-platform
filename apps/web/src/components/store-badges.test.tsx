@@ -58,6 +58,15 @@ describe('[WEB-APPBAR] the official badges, unmodified', () => {
       expect(link.className).not.toMatch(/animate|transition|opacity|scale|rotate|grayscale|invert|hue/);
       expect(link.querySelector('img')!.getAttribute('style')).not.toMatch(/filter|transform|opacity/);
     }
+    // [WEB-APPBAR · owner, live page] Never inline boxes on a text line: the line's baseline set the padded Apple
+    // badge 3 px lower than Google's (measured on swiftgy.com at 375 px: 1172.4 vs 1169.2; with flex boxes 1169.4 vs
+    // 1169.2). Each link is a flex box inside a flex item, centred in the row.
+    for (const link of [apple, google]) {
+      expect(link.className.split(' ')).toContain('flex');
+      expect(link.className).not.toMatch(/\binline-flex\b|\binline-block\b/);
+      expect(link.parentElement!.className.split(' ')).toContain('flex');
+    }
+    expect(apple.closest('ul')!.className).toMatch(/\bitems-center\b/);
     expect(apple.querySelector('img')!.getAttribute('style')).toMatch(/height: 40px/);
     expect(google.querySelector('img')!.getAttribute('style')).toMatch(/height: 60px/);
   });

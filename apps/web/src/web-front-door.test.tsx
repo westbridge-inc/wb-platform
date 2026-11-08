@@ -66,7 +66,7 @@ describe('[Item 7] the front door itself', () => {
   // carries; the page no longer repeats them as rows of pills.
   async function frontDoor() {
     await configWith('');
-    const { default: FrontDoor } = await load<{ default: () => React.ReactNode }>('app/(marketing)/launching-soon/page.tsx');
+    const { default: FrontDoor } = await load<{ default: () => React.ReactNode }>('app/(welcome)/launching-soon/page.tsx');
     return render(<>{FrontDoor()}</>);
   }
 
@@ -144,7 +144,7 @@ describe('[Item 7] the front door itself', () => {
   it('each card screen offers a full 1206-pixel file for Retina screens and zoom', async () => {
     const view = await frontDoor();
     const cards = [...view.container.querySelectorAll('img')].slice(1);
-    const dir = join(SRC, 'app/(marketing)/launching-soon');
+    const dir = join(SRC, 'app/(welcome)/launching-soon');
     const webpWidth = (file: string) => {
       const b = readFileSync(join(dir, file));
       expect(b.toString('ascii', 0, 4) + b.toString('ascii', 8, 12), file).toBe('RIFFWEBP');
@@ -229,7 +229,7 @@ describe('[Item 7] the CTAs that lead to ordering follow the switch', () => {
   it('/welcome on the closed public site offers no ordering, only the launch note', async () => {
     await configWith('');
     openAt('https://swiftgy.com/welcome');
-    const { default: WelcomePage } = await import('@/app/(marketing)/welcome/page');
+    const { default: WelcomePage } = await import('@/app/(welcome)/welcome/page');
     render(<WelcomePage />);
     await answered();
     expect(screen.queryByRole('link', { name: 'Order on the web' })).toBeNull();
@@ -240,7 +240,7 @@ describe('[Item 7] the CTAs that lead to ordering follow the switch', () => {
   it('/welcome on staging still sends customers to order', async () => {
     await configWith('');
     openAt('https://staging.swiftgy.com/welcome');
-    const { default: WelcomePage } = await import('@/app/(marketing)/welcome/page');
+    const { default: WelcomePage } = await import('@/app/(welcome)/welcome/page');
     render(<WelcomePage />);
     // [WEB-APPBAR] The ordering Home is /order (`/` is the welcome page).
     expect(screen.getByRole('link', { name: 'Order on the web' }).getAttribute('href')).toBe('/order');
@@ -284,7 +284,7 @@ describe('[Item 7] the CTAs that lead to ordering follow the switch', () => {
 
   it('/welcome and the FAQ claim browser ordering only where it works', async () => {
     for (const [route, openClaim] of [
-      ['@/app/(marketing)/welcome/page', "Order from stores in your phone's browser, tracking included."],
+      ['@/app/(welcome)/welcome/page', "Order from stores in your phone's browser, tracking included."],
       ['@/app/(marketing)/faq/page', "Store ordering and order tracking work in your phone's browser."],
     ] as const) {
       for (const [switchValue, url, open] of [

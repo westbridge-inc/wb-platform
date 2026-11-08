@@ -6,7 +6,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import TaxiPage from './app/(app)/taxi/page';
 import { HomeScreen as CustomerHomePage } from './app/(app)/home-screen';
 import ExplorePage from './app/(app)/explore/page';
-import WelcomePage from './app/(marketing)/welcome/page';
+import WelcomePage from './app/(welcome)/welcome/page';
 import FaqPage from './app/(marketing)/faq/page';
 import HowItWorksPage from './app/(marketing)/how-it-works/page';
 import { SiteFooter } from './components/site';

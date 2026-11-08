@@ -16,7 +16,7 @@ const strip = (text: string) => text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(
 
 describe('welcome page: honest fee and parcel words', () => {
   it('says "no commission on orders" without a forever promise or an introductory-rate claim', () => {
-    const welcome = strip(read('src/app/(marketing)/welcome/page.tsx'));
+    const welcome = strip(read('src/app/(welcome)/welcome/page.tsx'));
     expect(welcome).toContain("title: 'No commission on orders'");
     expect(welcome).toContain('keep 100% of every sale, fare and tip. Swift takes no percentage.');
     expect(welcome).not.toMatch(/introductory rate|commission,? ever|commission — ever|no hidden cut/i);
@@ -24,7 +24,7 @@ describe('welcome page: honest fee and parcel words', () => {
   });
 
   it('describes parcels as goods, never "anything", and names what is refused', () => {
-    const welcome = strip(read('src/app/(marketing)/welcome/page.tsx'));
+    const welcome = strip(read('src/app/(welcome)/welcome/page.tsx'));
     expect(welcome).toContain("label: 'Parcels', blurb: 'Goods across town, never letters or mail'");
     expect(welcome).not.toMatch(/Anything, across town/);
   });

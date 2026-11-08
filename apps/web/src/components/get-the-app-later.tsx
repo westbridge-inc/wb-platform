@@ -37,3 +37,12 @@ export function GetTheAppLinksLater({ className = '' }: { className?: string }) 
   const Links = useLater(() => import('./app-store-links').then((module) => module.GetTheAppLinks), () => true);
   return Links ? <Links className={className} /> : null;
 }
+
+/**
+ * [WEB-APPBAR · badges once per page] The ordering app's rail: a plain "Get the app" item that opens the badges
+ * beside the rail (GetTheAppPopover in components/app-store-links.tsx); the page itself never shows a second set.
+ */
+export function GetTheAppRailItemLater({ className = '' }: { className?: string }) {
+  const Item = useLater(() => import('./app-store-links').then((module) => module.GetTheAppPopover), () => true);
+  return Item ? <Item className={className} /> : null;
+}

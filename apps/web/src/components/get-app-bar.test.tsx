@@ -290,7 +290,7 @@ describe('[WEB-APPBAR] never on checkout, payment, sign-in, an order, an account
 
   it('the shell and the company pages carry it; the legal pages, partner consoles and sign-in do not', () => {
     const src = join(process.cwd(), 'src', 'app');
-    for (const layout of ['(app)/layout.tsx', '(marketing)/layout.tsx']) {
+    for (const layout of ['(app)/layout.tsx', '(marketing)/layout.tsx', '(welcome)/layout.tsx']) {
       expect(readFileSync(join(src, layout), 'utf8'), layout).toMatch(/<GetAppBarLater \/>/);
     }
     for (const layout of ['legal/layout.tsx', 'dashboard/layout.tsx', 'portal/layout.tsx', 'login/layout.tsx', 'signup/layout.tsx', 'layout.tsx']) {

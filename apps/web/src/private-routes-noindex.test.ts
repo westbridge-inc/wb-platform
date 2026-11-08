@@ -18,7 +18,7 @@ import sitemap from './app/sitemap';
 // forbidden even though they also carry noindex. Ordinary noindex pages MUST
 // be crawlable so robots.txt does not hide their metadata from search engines.
 const PUBLIC_PAGES = [
-  '(marketing)/page.tsx', // [WEB-APPBAR] the welcome front page at /
+  '(welcome)/page.tsx', // [WEB-APPBAR] the welcome front page at /
   '(app)/explore/page.tsx',
   '(app)/market/page.tsx',
   '(app)/order/page.tsx', // [WEB-APPBAR] the ordering Home
@@ -31,12 +31,12 @@ const PUBLIC_PAGES = [
   '(marketing)/drivers/page.tsx',
   '(marketing)/faq/page.tsx',
   '(marketing)/how-it-works/page.tsx',
-  '(marketing)/launching-soon/page.tsx', // [Item 7] the public site's front door before launch, canonical at /
+  '(welcome)/launching-soon/page.tsx', // [Item 7] the public site's front door before launch, canonical at /
   '(marketing)/pricing/page.tsx',
   '(marketing)/stores/page.tsx',
   '(marketing)/stores/[slug]/page.tsx', // legacy storefront redirect
   '(marketing)/vendors/page.tsx',
-  '(marketing)/welcome/page.tsx',
+  '(welcome)/welcome/page.tsx',
   'legal/child-safety/page.tsx',
   'legal/delivery/page.tsx', // [Q36] the card bank's delivery policy
   'legal/privacy/page.tsx',

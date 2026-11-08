@@ -53,7 +53,7 @@ describe('[PWA-1] the web app manifest', () => {
     // the second installs' start page (`/`) still resolves: the welcome page, whose early check (lib/welcome.ts) sends an
     // installed app's launch (?source=pwa) straight on to ordering.
     expect(existsSync(join(WEB_ROOT, 'src/app/(app)/order/page.tsx'))).toBe(true);
-    expect(existsSync(join(WEB_ROOT, 'src/app/(marketing)/page.tsx'))).toBe(true);
+    expect(existsSync(join(WEB_ROOT, 'src/app/(welcome)/page.tsx'))).toBe(true);
   });
 
   it('takes its colours from the design tokens', () => {

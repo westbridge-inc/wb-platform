@@ -43,7 +43,8 @@ export function PaymentMethods() {
   );
 }
 
-export function SiteFooter() {
+/** `storeBadges={false}`: a page that shows the store badges itself (the welcome page) keeps them out of its footer. */
+export function SiteFooter({ storeBadges = true }: { storeBadges?: boolean } = {}) {
   return (
     <footer className="border-t border-[var(--swift-border)] bg-[var(--swift-card)]">
       <div className="mx-auto grid max-w-6xl gap-10 px-5 py-12 md:grid-cols-[1.4fr_1fr_1fr]">
@@ -59,7 +60,7 @@ export function SiteFooter() {
           {/* [G11] No store link until the apps are live in both stores: a dead
               link is a review flag and a small lie. The web server's
               SWIFT_APP_STORES switch is the only way on (lib/launch-switch.ts). */}
-          <StoreBadgesWhenLive className="mt-3" />
+          {storeBadges ? <StoreBadgesWhenLive className="mt-3" /> : null}
         </div>
 
         <nav aria-label="Company" className="text-sm">

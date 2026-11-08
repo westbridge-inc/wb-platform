@@ -20,7 +20,7 @@ describe('[R7] honest trust labels on the website', () => {
     expect(stores).toContain('local businesses in Guyana, each checked by a person on our team before going live.');
     expect(stores).toContain('A person on our team checked every business here before it went live, and each keeps 100% of what you pay them.');
     expect(stores).not.toMatch(/across the Caribbean|delivered by Swift/);
-    const welcome = read('src/app/(marketing)/welcome/page.tsx');
+    const welcome = read('src/app/(welcome)/welcome/page.tsx');
     expect(welcome).toContain("title: 'Checked partners, honest orders'");
     expect(welcome).toContain('Partners’ documents checked by a person on our team');
     expect(welcome).not.toMatch(/read off the policy|not ticked by an operator/);
