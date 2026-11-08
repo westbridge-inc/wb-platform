@@ -126,7 +126,7 @@ describe('[PHONE-HELPER] parsing: a bad command connects to nothing', () => {
     for (const [argv, why] of cases) expect(() => helper.parseHelperArgs(argv), argv.join(' ')).toThrow(why);
   });
 
-  it('defaults: taxi rides are the L2 passenger C7’s, parcels C8’s, the rest the role’s default', () => {
+  it('defaults: taxi rides are the passenger C7’s, parcels C8’s, the rest the role’s default', () => {
     expect(helper.parseHelperArgs(['customer', 'ride', '--at', '6.81,-58.15', '--to', '6.82,-58.14']).as).toBe('C7');
     expect(helper.parseHelperArgs(['customer', 'send', '--at', '6.81,-58.15', '--to', '6.82,-58.14']).as).toBe('C8');
     expect(helper.parseHelperArgs(['customer', 'order', '--store', STORE]).as).toBe('C4');
@@ -409,7 +409,7 @@ describe('[PHONE-HELPER] customer: orders, codes, rides and parcels as the custo
     expect(d.lines.join('\n')).toContain('pickup code 482913 · door PIN 5521');
   });
 
-  it('ride (C7, the L2 passenger) requests with the given points and prints the passenger PIN; ride-pin reads it back', async () => {
+  it('ride (C7, the taxi passenger) requests with the given points and prints the passenger PIN; ride-pin reads it back', async () => {
     const calls = api((method, path) => {
       if (path === '/rides/request') return [201, { success: true, data: { ride: { id: ORDER, status: 'PENDING', ridePin: '7788' } } }];
       if (path === `/rides/${ORDER}`) return [200, { success: true, data: { status: 'DRIVER_ARRIVED', ridePin: '7788' } }];

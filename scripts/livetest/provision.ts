@@ -8,12 +8,12 @@
 // [TASK-057] provisionJourneyWorld() does the same for the whole journey
 // roster over HTTP only: vendor and mover checklists (unique bytes per
 // upload), admin review, movers online at their positions, the service
-// provider verified, the taxi passenger raised to L2, and leftovers from an
-// earlier run healed.
+// provider verified, the taxi passenger signed in (L1: a ride needs no ID),
+// and leftovers from an earlier run healed.
 
 import { randomBytes } from 'node:crypto';
 import { login, GET, POST, PUT, req, upload, codeOf, type Session, type Res } from './client.js';
-import { ensureSelfies, uniquePng, type Roster } from './roster.js';
+import { ensureSelfies, type Roster } from './roster.js';
 import { FICTIONAL_GY, TargetRefused } from './guard.js';
 import { isJourneyMintedStore } from './store-retire.js';
 import { completeCourierFixture } from './courier-cleanup.js';
@@ -429,21 +429,18 @@ export async function provisionJourneyWorld(roster: Roster, admin: Session, log:
     log(`  ${p.id}: provider ${world.providers[p.id] ? 'present' : 'missing'} docs=${docs} verified=${me?.isVerified}`);
   }
 
-  // The taxi passenger: every ride needs an L2 account (rides.service.ts).
+  // The taxi passenger. [Owner 24 Oct + 1 Nov 2026] A ride needs no ID: an L1
+  // account books like any other (rides.service.ts assertRideGates asks no
+  // trust level), and Swift keeps no customer ID at all now (POST
+  // /verification/identity answers 410 CUSTOMER_ID_NOT_NEEDED and records
+  // nothing). So C7 is never sent for an identity review: it is ready once its
+  // signed-in account reads its own status, whatever level that says.
   const c7 = roster.customers.C7;
   if (c7) {
-    const me = (await GET('/verification/status?role=MOVER', c7.session.token)).json?.data;
-    if (me?.trustLevel !== 'L2' && me?.trustLevel !== 'L3') {
-      const idDoc = await uploadDoc(c7.session, 'C7-national-id');
-      const face = await upload('/verification/upload', c7.session.token, { name: 'face.png', type: 'image/png', bytes: uniquePng('C7-identity') });
-      const idv = await POST('/verification/identity', { idDocumentUrl: idDoc.url, selfieUrl: face.json?.data?.url, consent: true, privacyNoticeVersion: PRIVACY_NOTICE_VERSION }, c7.session.token);
-      const docId = idv.json?.data?.id;
-      if (docId) await asAdmin(admin.token, 'approve the synthetic identity check of the taxi journey passenger', 'PUT', `/admin/verification/${docId}/approve`, reviewerTypedBody('identity_l2', docId));
-      else if (idv.status !== 409) log(`  C7: identity → ${idv.status} ${codeOf(idv)} ${idv.text.slice(0, 160)}`);
-    }
-    const after = (await GET('/verification/status?role=MOVER', c7.session.token)).json?.data;
-    if (after?.trustLevel !== 'L2' && after?.trustLevel !== 'L3') world.notReady.C7 = `trustLevel=${after?.trustLevel}`;
-    log(`  C7: trustLevel=${after?.trustLevel}`);
+    const st = await GET('/verification/status?role=MOVER', c7.session.token);
+    const level = st.json?.data?.trustLevel;
+    if (!st.ok || typeof level !== 'string') world.notReady.C7 = `status read → ${st.status} ${codeOf(st)}`;
+    log(`  C7: trustLevel=${level} (a ride needs no ID)${world.notReady.C7 ? '' : ' ✓'}`);
   }
   return world;
 }
