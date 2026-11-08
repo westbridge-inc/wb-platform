@@ -169,6 +169,20 @@ describe('[UI-SWEEP U-P2, owner 22 Oct] Back is the kit Header, top left, like e
   });
 });
 
+describe('[UI-HEADERS, owner 7 Nov] the title rides in the Back row, like Favourites', () => {
+  it.each([
+    ['with orders', true],
+    ['with nothing yet', false],
+  ] as const)('%s, "Your activity" is the kit Header title and there is no eyebrow block below Back', async (_case, withRows) => {
+    if (withRows) fx.history = [order('h1', 'DELIVERED')];
+    await render();
+    const header = host.querySelector('[data-kit-header]');
+    expect(header?.textContent, 'the title sits in the Header row').toBe('Your activity');
+    expect(text().split('Your activity'), 'the title is drawn once').toHaveLength(2);
+    expect(text(), 'no separate eyebrow above a second title').not.toContain('ORDERS & RIDES');
+  });
+});
+
 describe('[UI-SWEEP U-P3 + U-P4, owner 22 Oct] the activity rows', () => {
   it('a store with no logo or photo gets the icon alone, never its name squeezed into the tile', async () => {
     fx.history = [order('h1', 'DELIVERED')];

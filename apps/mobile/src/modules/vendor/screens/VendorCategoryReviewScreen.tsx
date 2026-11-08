@@ -1,12 +1,9 @@
 /** @jsxImportSource react */
 import React from 'react';
 import { FlatList, Pressable, View } from 'react-native';
-import { useNavigation } from '@react-navigation/native';
-import { Feather } from '@expo/vector-icons';
 import { color, radius, space } from '@swift/ui';
 import { useCategorySuggestions, useResolveCategorySuggestion } from '../../../hooks/vendorops';
-import { Card, EmptyState, ErrorState, LoadingBlock, PhotoPlaceholder, Screen, T } from '../../../kit';
-import { touchTarget } from '../../../kit/touch-target';
+import { Card, EmptyState, ErrorState, Header, LoadingBlock, PhotoPlaceholder, Screen, T } from '../../../kit';
 import { toast } from '../../../kit/toast';
 import { haptic } from '../../../lib/haptics';
 
@@ -33,7 +30,6 @@ import { haptic } from '../../../lib/haptics';
  * is what stops the classifier proposing the same thing again next week.
  */
 export function VendorCategoryReviewScreen() {
-  const navigation = useNavigation<any>();
   const q = useCategorySuggestions();
   const resolve = useResolveCategorySuggestion();
 
@@ -61,16 +57,11 @@ export function VendorCategoryReviewScreen() {
 
   return (
     <Screen>
-      <View style={{ paddingHorizontal: space['2xl'], paddingTop: space.lg, paddingBottom: space.md }}>
-        {/* [UI-SWEEP U-P2 census] Back keeps to the left (it stretched across the
-            column, so the whole row was Back) and is 44pt on its own. */}
-        <Pressable onPress={() => navigation.goBack()} accessibilityRole="button" accessibilityLabel="Back" hitSlop={8} style={{ ...touchTarget(24), alignSelf: 'flex-start' }}>
-          <Feather name="chevron-left" size={24} color={color.text.primary} />
-        </Pressable>
-        <T variant="title" style={{ marginTop: space.md }}>
-          Review your categories
-        </T>
-        <T variant="caption" tone="muted" style={{ marginTop: space.xs }}>
+      {/* [UI-HEADERS, owner 7 Nov] The kit Header every pushed screen uses (Favourites):
+          Back at the top left and the title centred in the same row. */}
+      <Header title="Review your categories" />
+      <View style={{ paddingHorizontal: space['2xl'], paddingTop: space.sm, paddingBottom: space.md }}>
+        <T variant="caption" tone="muted">
           {/* The count is the honest one — never "a few". */}
           {total > 0
             ? `${total} suggestion${total === 1 ? '' : 's'} across ${groups.length} item${groups.length === 1 ? '' : 's'}. Customers browse the Market by category, so a listing with none is harder to find.`

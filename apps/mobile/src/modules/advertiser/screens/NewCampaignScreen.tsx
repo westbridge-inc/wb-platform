@@ -7,8 +7,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useQueryClient } from '@tanstack/react-query';
 import { Feather } from '@expo/vector-icons';
 import { color, radius, space } from '@swift/ui';
-import { Card, LabeledInput, LoadingBlock, PillButton, T } from '../../../kit';
-import { touchTarget } from '../../../kit/touch-target';
+import { Card, Header, LabeledInput, LoadingBlock, PillButton, T } from '../../../kit';
 import { useAdPlacements, useAdAvailability, useMyAdvertisers } from '../../../hooks/advertiser';
 import { adsApi } from '../../../services/api';
 import { errorMessage } from '../../../lib/apiError';
@@ -195,18 +194,20 @@ export function NewCampaignScreen() {
   return (
     <View style={{ flex: 1, backgroundColor: color.surface.subtle, paddingTop: insets.top }}>
       {/* Header + step dots */}
-      <View style={{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: space.xl, paddingVertical: space.md }}>
-        {/* [UI-SWEEP U-P2 census] Back is 44pt on its own, not only through hitSlop. */}
-        <Pressable onPress={() => (step === 1 ? navigation.goBack() : setStep((s) => (s === 5 ? 4 : s === 4 ? 2 : 1) as Step))} hitSlop={10} accessibilityRole="button" accessibilityLabel="Back" style={touchTarget(22)}>
-          <Feather name="arrow-left" size={22} color={color.text.primary} />
-        </Pressable>
-        <T variant="heading" style={{ marginLeft: space.lg, flex: 1 }}>
-          New campaign
-        </T>
-        <T variant="caption" tone="muted">
-          {step === 1 ? '1' : step === 2 ? '2' : step === 4 ? '3' : '4'} / 4
-        </T>
-      </View>
+      {/* [UI-HEADERS, owner 7 Nov] The kit Header every pushed screen uses (Favourites): Back at the
+          top left (a step back inside the form, out of it from step 1), the title centred in the same
+          row, the step count on the right in the accessory's 44pt slot. */}
+      <Header
+        title="New campaign"
+        onBack={() => (step === 1 ? navigation.goBack() : setStep((s) => (s === 5 ? 4 : s === 4 ? 2 : 1) as Step))}
+        right={
+          <View style={{ minWidth: 44, alignItems: 'flex-end' }}>
+            <T variant="caption" tone="muted">
+              {step === 1 ? '1' : step === 2 ? '2' : step === 4 ? '3' : '4'} / 4
+            </T>
+          </View>
+        }
+      />
 
       <ScrollView contentContainerStyle={{ padding: space['2xl'], paddingBottom: space['3xl'] }} keyboardShouldPersistTaps="handled">
         {step === 1 ? (
