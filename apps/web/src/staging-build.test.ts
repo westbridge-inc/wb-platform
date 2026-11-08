@@ -205,13 +205,15 @@ describe('[Size budget] the customer app\u2019s shared code is one chunk', () =>
     type LayoutGroup = Omit<Group, 'test'> & { priority: number; test: (_m: { type?: string; nameForCondition?: () => string | null }, _c?: unknown) => boolean };
     const group = (await run(false))['marketingLayoutShared'] as LayoutGroup;
     expect(group).toMatchObject({ name: 'marketing-shared', minChunks: 2, minSize: 0 });
-    for (const name of ['app/(marketing)/launching-soon/page', 'app/(marketing)/welcome/page', 'app/(marketing)/layout']) expect(group.chunks({ name }), name).toBe(true);
+    // [WEB-APPBAR] The front pages with their own store badges (`/`, /welcome, /launching-soon) live in (welcome).
+    for (const name of ['app/(welcome)/launching-soon/page', 'app/(welcome)/welcome/page', 'app/(welcome)/page', 'app/(welcome)/layout', 'app/(marketing)/faq/page', 'app/(marketing)/layout']) expect(group.chunks({ name }), name).toBe(true);
     for (const name of ['app/(app)/page', 'app/dashboard/layout', 'app/portal/page', 'app/login/page', 'app/legal/terms/page', 'app/layout', null]) expect(group.chunks({ name }), String(name)).toBe(false);
     const mod = (path: string, type = 'javascript/auto') => ({ type, nameForCondition: () => path });
     const inChunks = (...names: string[]) => ({ chunkGraph: { getModuleChunksIterable: () => names.map((name) => ({ name })) } });
     const links = mod('/w/apps/web/src/components/app-store-links.tsx');
-    expect(group.test(links, inChunks('app/(marketing)/layout', 'app/(marketing)/launching-soon/page'))).toBe(true);
-    expect(group.test(links, inChunks('app/(marketing)/welcome/page', 'app/(marketing)/faq/page'))).toBe(false);
+    expect(group.test(links, inChunks('app/(marketing)/layout', 'app/(welcome)/launching-soon/page'))).toBe(true);
+    expect(group.test(links, inChunks('app/(welcome)/layout', 'app/(welcome)/launching-soon/page'))).toBe(true);
+    expect(group.test(links, inChunks('app/(welcome)/welcome/page', 'app/(marketing)/faq/page'))).toBe(false);
     expect(group.test(links)).toBe(false);
     expect(group.test(mod('/w/node_modules/.pnpm/react-dom@19/node_modules/react-dom/index.js'), inChunks('app/(marketing)/layout', 'app/(marketing)/faq/page'))).toBe(false);
     expect(group.test(mod('/w/apps/web/src/app/(marketing)/stores/stores.module.css', 'css/mini-extract'), inChunks('app/(marketing)/layout'))).toBe(false);

@@ -42,7 +42,8 @@ const RULES: Array<{ rule: string; terms: RegExp; answer: RegExp }> = [
 ];
 
 const OLD = /may carry a cost|exact amount|typically free|exact outcome|first few minutes|may not be available|cancellation fee may|late-cancellation|possible fee|costs nothing inside|inside it costs|clock counting down/i;
-const WELCOME_PAGE = page('welcome', 'page.tsx');
+// [WEB-APPBAR] /welcome sits in the (welcome) group (pages that show the store badges themselves); same address.
+const WELCOME_PAGE = readFileSync(join(process.cwd(), 'src', 'app', '(welcome)', 'welcome', 'page.tsx'), 'utf8');
 
 describe('the site says what Terms §7 says about cancelling', () => {
   it.each(RULES)('FAQ: $rule', ({ terms, answer }) => {

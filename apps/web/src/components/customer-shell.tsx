@@ -10,7 +10,7 @@ import { LoadingRegion } from '@/components/customer-skeletons';
 import type { SessionStatus } from '@/components/customer-session';
 import { WELCOME_PATH, signInPath, signUpPath, type CustomerTab, type SignInDoor as SignInDoorCopy } from '@/lib/customer-routes';
 // [WEB-APPBAR] The menus' "Get the app" badges come after the page (they ask the stores switch, and show only once live).
-import { GetTheAppLinksLater } from '@/components/get-the-app-later';
+import { GetTheAppLinksLater, GetTheAppRailItemLater } from '@/components/get-the-app-later';
 
 /**
  * [Q7b · WEB-REDESIGN] The chrome of the customer app — the parts that stay
@@ -175,7 +175,8 @@ export function SideRail({
 
       <div className="flex-1" />
 
-      <GetTheAppLinksLater className="px-2.5" />
+      {/* [WEB-APPBAR · badges once per page] A plain item; the page footer (where there is one) carries the badges. */}
+      <GetTheAppRailItemLater className="px-2.5" />
 
       <nav aria-label="Swift for business">
         <ul className="flex flex-wrap gap-x-3 px-2.5 text-[13px] leading-[18px] text-[var(--swift-muted)]">

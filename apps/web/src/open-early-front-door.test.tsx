@@ -82,7 +82,7 @@ afterEach(() => {
 describe('[OPEN-EARLY] the front door says "opening soon" and leads partners in', () => {
   async function frontDoor() {
     await configWith('');
-    const { default: FrontDoor } = await load<{ default: () => ReactNode }>('app/(marketing)/launching-soon/page.tsx');
+    const { default: FrontDoor } = await load<{ default: () => ReactNode }>('app/(welcome)/launching-soon/page.tsx');
     return render(<>{FrontDoor()}</>);
   }
 

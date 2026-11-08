@@ -123,12 +123,14 @@ export default function createNextConfig(phase: string): NextConfig {
         // marketing layout loads (the footer's store links and the launch switch's one question to the server) and
         // a page loads too was copied into that page's own chunk. One chunk the layout always loads holds it
         // instead, so no marketing page downloads it twice. Pages outside (marketing) keep their chunking.
+        // [WEB-APPBAR] The front pages that carry their own store badges (app/(welcome)/...: `/`, /welcome and
+        // /launching-soon) have the same header and footer under their own layout, and share the same chunk.
         marketingLayoutShared: {
           name: 'marketing-shared',
-          chunks: (chunk: { name?: string | null }) => /^app\/\(marketing\)\//.test(chunk.name ?? ''),
+          chunks: (chunk: { name?: string | null }) => /^app\/\((marketing|welcome)\)\//.test(chunk.name ?? ''),
           test: (module: ChunkModule, context?: { chunkGraph?: { getModuleChunksIterable: (_m: unknown) => Iterable<{ name?: string | null }> } }) =>
             appOwnJs(module)
-            && [...(context?.chunkGraph?.getModuleChunksIterable(module) ?? [])].some((chunk) => chunk.name === 'app/(marketing)/layout'),
+            && [...(context?.chunkGraph?.getModuleChunksIterable(module) ?? [])].some((chunk) => chunk.name === 'app/(marketing)/layout' || chunk.name === 'app/(welcome)/layout'),
           minChunks: 2,
           minSize: 0,
           priority: 23,

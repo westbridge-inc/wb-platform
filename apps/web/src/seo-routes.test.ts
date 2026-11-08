@@ -12,9 +12,9 @@ vi.mock('@/site.config', () => ({
 const { default: sitemap } = await import('./app/sitemap');
 const { default: robots } = await import('./app/robots');
 const { metadata: rootMetadata } = await import('./app/layout');
-const { metadata: welcomeMetadata } = await import('./app/(marketing)/welcome/page');
+const { metadata: welcomeMetadata } = await import('./app/(welcome)/welcome/page');
 const home = await import('./app/(app)/order/page');
-const front = await import('./app/(marketing)/page');
+const front = await import('./app/(welcome)/page');
 
 const SITE = 'https://swiftgy.com';
 const APP = join(process.cwd(), 'src', 'app');
@@ -64,9 +64,9 @@ describe('[Q7b] the site’s search duties survive the move', () => {
   it('every sitemap address is served by exactly one real page — `/` by the welcome front page, /order by the ordering Home', () => {
     const pages = pagesByUrl();
     for (const path of paths) expect(pages.get(path)?.length, `${path} → ${pages.get(path)}`).toBe(1);
-    expect(pages.get('/')).toEqual(['(marketing)/page.tsx']);
+    expect(pages.get('/')).toEqual(['(welcome)/page.tsx']);
     expect(pages.get('/order')).toEqual(['(app)/order/page.tsx']);
-    expect(pages.get('/welcome')).toEqual(['(marketing)/welcome/page.tsx']);
+    expect(pages.get('/welcome')).toEqual(['(welcome)/welcome/page.tsx']);
   });
 
   it('robots lets crawlers read public content and private noindex, but blocks secret-token links', () => {

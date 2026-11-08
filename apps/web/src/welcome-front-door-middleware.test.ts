@@ -76,7 +76,7 @@ describe('[WEB-APPBAR] the welcome page sets no cookie, and the server redirects
   it('no source in the site sets a cookie for this: the middleware is what it was, and nothing writes document.cookie', () => {
     const middleware = readFileSync(join(SRC, 'middleware.ts'), 'utf8');
     expect(middleware).not.toMatch(/cookies\.set|Set-Cookie|swift_ordering|redirect\(/i);
-    for (const file of ['lib/welcome.ts', 'app/layout.tsx', 'app/(app)/layout.tsx', 'app/(marketing)/page.tsx', 'lib/web-ordering.ts']) {
+    for (const file of ['lib/welcome.ts', 'app/layout.tsx', 'app/(app)/layout.tsx', 'app/(welcome)/page.tsx', 'lib/web-ordering.ts']) {
       expect(readFileSync(join(SRC, file), 'utf8'), file).not.toMatch(/document\.cookie|swift_ordering/);
     }
   });

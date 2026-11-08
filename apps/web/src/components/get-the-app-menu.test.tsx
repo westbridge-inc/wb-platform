@@ -80,17 +80,43 @@ describe('[WEB-APPBAR] the header’s "Get the app"', () => {
 });
 
 describe('[WEB-APPBAR] the shopping app’s menus', () => {
-  it('the phone "More from Swift" menu and the wide rail show the two store links once live', async () => {
+  it('the phone "More from Swift" menu shows the two store links once live', async () => {
     storesSwitch('live');
     const more = render(<MoreMenu guest returnPath={() => '/'} onClose={() => undefined} />);
     await settle();
     expect(hrefs(await screen.findByRole('region', { name: 'Get the app' }))).toEqual([APP_STORE_URL, GOOGLE_PLAY_URL]);
     more.unmount();
+  });
 
+  // [WEB-APPBAR · owner, live page: the badges appear ONCE per page] The wide rail draws no badges of its own: a
+  // plain "Get the app" item opens them, side by side, in a panel beside the rail.
+  it('the wide rail has a plain "Get the app" item, no badges until it is opened, then the two side by side', async () => {
+    storesSwitch('live');
     const rail = render(<SideRail activeTab="home" marketVisible={false} cartCount={0} status="guest" person={null} returnPath={() => '/'} onSwitchApp={() => undefined} />);
     await settle();
-    expect(hrefs(await screen.findByRole('region', { name: 'Get the app' }))).toEqual([APP_STORE_URL, GOOGLE_PLAY_URL]);
+    const item = await screen.findByRole('button', { name: 'Get the app' });
+    expect(hrefs(rail.container)).toEqual([]);
+    expect(item.getAttribute('aria-expanded')).toBe('false');
+    fireEvent.click(item);
+    expect(item.getAttribute('aria-expanded')).toBe('true');
+    const panel = screen.getByRole('group', { name: 'Get the Swift app' });
+    expect(hrefs(panel)).toEqual([APP_STORE_URL, GOOGLE_PLAY_URL]);
+    expect(panel.querySelector('ul')!.className).toMatch(/\bflex-nowrap\b/);
+    expect(panel.className).toMatch(/\bfixed\b/);
+    fireEvent.keyDown(item, { key: 'Escape' });
+    expect(screen.queryByRole('group', { name: 'Get the Swift app' })).toBeNull();
+    expect(document.activeElement).toBe(item);
+    fireEvent.click(item);
+    fireEvent.pointerDown(document.body);
+    expect(screen.queryByRole('group', { name: 'Get the Swift app' })).toBeNull();
     rail.unmount();
+  });
+
+  it('the rail item is not there while the switch is off', async () => {
+    storesSwitch('soon');
+    render(<SideRail activeTab="home" marketVisible={false} cartCount={0} status="guest" person={null} returnPath={() => '/'} onSwitchApp={() => undefined} />);
+    await settle();
+    expect(screen.queryByRole('button', { name: 'Get the app' })).toBeNull();
   });
 
   it('nothing while the switch is off', async () => {

@@ -63,8 +63,11 @@ export function StoreBadges({
       {stores.map((key) => {
         const badge = STORE_BADGES[key];
         return (
-          <li key={key} className="shrink-0">
-            <a href={badge.href} onClick={onPick} className={`inline-flex min-h-11 items-center rounded-lg ${badge.link}`}>
+          // [WEB-APPBAR · owner, live page] Each link is a flex box in a flex item, never an inline box on a text
+          // line: an inline box sits on the line's baseline, which set the padded Apple badge a few pixels lower than
+          // Google's. Both links are 60 px tall and centred in the row, so the two visible badges line up exactly.
+          <li key={key} className="flex shrink-0">
+            <a href={badge.href} onClick={onPick} className={`flex min-h-11 items-center rounded-lg ${badge.link}`}>
               {/* eslint-disable-next-line @next/next/no-img-element -- the official badge file as published, with no client script */}
               <img src={badge.src} alt={badge.alt} width={badge.width} height={badge.height} style={{ height: badge.height, width: 'auto' }} decoding="async" />
             </a>
