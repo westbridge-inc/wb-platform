@@ -8,7 +8,11 @@ import { useLocationStore } from '../../../stores/locationStore';
 import { grantedLocationFix } from '../../../lib/deviceLocation';
 import { distanceLabel } from '../../../lib/geo';
 import { vendorPhoto } from '../../../lib/images';
-import { CartBar, useCartBarClearance, Chip, EmptyState, ErrorState, Header, LoadingBlock, RatingMeta, Screen, T, VendorRow } from '../../../kit';
+import { CartBar, useCartBarClearance, Chip, EmptyState, ErrorState, Header, RatingMeta, Screen, T, VendorRow } from '../../../kit';
+import { ListSkeleton } from '../../../kit/skeletons';
+import { OFFLINE_FIRST_READ_MESSAGE, offlineFirstRead } from '../../../lib/offlineRead';
+import { useVendorPrefetch } from '../../../hooks/storeDoor';
+import { storePreviewOf } from '../../../lib/doorPreview';
 
 // ---------------------------------------------------------------------------
 // The category feed (#17 6.3): chip tap lands here. The EXISTING store-list
@@ -24,6 +28,8 @@ export function CategoryFeedScreen() {
   const navigation = useNavigation<any>();
   const route = useRoute<any>();
   const { slug, name } = route.params as { slug: string; name: string };
+  // [APP-SPEED D] A store's menu is asked for at the finger-down on its row (the door Home's cards already have).
+  const prefetchStore = useVendorPrefetch();
   const { latitude, longitude, status } = useLocationStore();
   const locationFix = grantedLocationFix(latitude, longitude, status);
 
@@ -53,15 +59,20 @@ export function CategoryFeedScreen() {
         />
       }
       sub={v.itemsInCategory ? `${v.itemsInCategory} ${name.toLowerCase()} items` : v.etaMin ? `~${v.etaMin} min delivery` : undefined}
-      onPress={() => navigation.navigate('Restaurant', { vendorId: v.id })}
+      {...prefetchStore(v.id)}
+      onPress={() => navigation.navigate('Restaurant', { vendorId: v.id, preview: storePreviewOf(v) })}
     />
   );
 
   return (
     <Screen>
       <Header title={name} />
-      {vendorsQ.isLoading ? (
-        <LoadingBlock />
+      {offlineFirstRead(vendorsQ) ? (
+        // [APP-SPEED D · review S3] A first read waiting for a connection is the offline state, never "nothing here".
+        <ErrorState message={OFFLINE_FIRST_READ_MESSAGE} onRetry={() => { void vendorsQ.refetch(); }} />
+      ) : vendorsQ.isLoading ? (
+        // [APP-SPEED D] The rows' shapes on the first frame (the chip on Home starts this read at the finger-down).
+        <ListSkeleton />
       ) : vendorsQ.isError ? (
         <ErrorState onRetry={() => vendorsQ.refetch()} />
       ) : vendors.length === 0 ? (

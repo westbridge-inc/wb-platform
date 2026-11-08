@@ -45,6 +45,7 @@ import { orderStatusLabel } from '../../../lib/orderStatus';
 import { noDriverView } from '../../../lib/taxiNoDriver';
 import { TaxiSignedOut } from '../TaxiSignedOut';
 import { signInForTaxi } from '../taxiEntry';
+import { useScreenOpened } from '../../../hooks/useScreenOpened';
 
 /**
  * The ride's status, in words — from `lib/orderStatus.ts`, the one authority.
@@ -286,6 +287,8 @@ export function TaxiScreen(props: any) {
 }
 
 function TaxiBooking({ navigation }: any) {
+  // [APP-SPEED D] The map joins once the screen has slid in (hooks/useScreenOpened): the tap opens Taxi at once.
+  const opened = useScreenOpened(navigation);
   const { height: winH } = useWindowDimensions();
   const scheme = useColorScheme();
   const insets = useSafeAreaInsets();
@@ -563,6 +566,7 @@ function TaxiBooking({ navigation }: any) {
 
   return (
     <View style={{ flex: 1, backgroundColor: color.surface.subtle }}>
+      {opened ? (
       <MapView
         provider={PROVIDER_DEFAULT}
         style={{ flex: 1 }}
@@ -606,6 +610,10 @@ function TaxiBooking({ navigation }: any) {
             ))
           : null}
       </MapView>
+      ) : (
+        // The map's ground while the screen slides in; the form below is live from the first frame.
+        <View testID="map-ground" style={{ flex: 1, backgroundColor: color.surface.sunken }} />
+      )}
 
       <FloatingBack navigation={navigation} insets={insets} />
 

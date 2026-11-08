@@ -9,7 +9,11 @@ import { useAuthStore } from '../../../stores/authStore';
 import { useLocationStore } from '../../../stores/locationStore';
 import { grantedLocationFix } from '../../../lib/deviceLocation';
 import { vendorPhoto } from '../../../lib/images';
-import { CartBar, useCartBarClearance, EmptyState, ErrorState, FoodCard, Header, LoadingBlock, Screen } from '../../../kit';
+import { CartBar, useCartBarClearance, EmptyState, ErrorState, FoodCard, Header, Screen } from '../../../kit';
+import { GridSkeleton } from '../../../kit/skeletons';
+import { OFFLINE_FIRST_READ_MESSAGE, offlineFirstRead } from '../../../lib/offlineRead';
+import { useVendorPrefetch } from '../../../hooks/storeDoor';
+import { storePreviewOf } from '../../../lib/doorPreview';
 
 const SCREEN_W = Dimensions.get('window').width;
 const GUTTER = space['2xl'];
@@ -26,6 +30,8 @@ export function RecommendedScreen() {
   const home = useHome<any>(locationFix?.latitude, locationFix?.longitude);
   const toggleFav = useToggleFavorite();
   const holdRow = useRowHold(); // [BUG-GUARDS C2] one request per store's heart; another store's heart still goes
+  // [APP-SPEED D] A store's menu is asked for at the finger-down on its card (the door Home's cards already have).
+  const prefetchStore = useVendorPrefetch();
 
   const featured: any[] = home.data?.featured ?? [];
   const open: any[] = home.data?.openVendors ?? [];
@@ -35,8 +41,12 @@ export function RecommendedScreen() {
   return (
     <Screen>
       <Header title="Recommended" />
-      {home.isLoading ? (
-        <LoadingBlock />
+      {offlineFirstRead(home) ? (
+        // [APP-SPEED D · review S3] A first read waiting for a connection is the offline state, never "nothing here".
+        <ErrorState message={OFFLINE_FIRST_READ_MESSAGE} onRetry={() => { void home.refetch(); }} />
+      ) : home.isLoading ? (
+        // [APP-SPEED D] Home's own feed (usually already in memory): the cards' shapes until it lands.
+        <GridSkeleton />
       ) : home.isError ? (
         <ErrorState onRetry={() => home.refetch()} />
       ) : vendors.length === 0 ? (
@@ -63,7 +73,8 @@ export function RecommendedScreen() {
               onToggleFavorite={() =>
                 isAuthenticated ? holdRow(v.id, () => toggleFav.mutateAsync({ vendorId: v.id, isFavorite: !!v.isFavorite })) : promptLogin()
               }
-              onPress={() => navigation.navigate('Restaurant', { vendorId: v.id })}
+              {...prefetchStore(v.id)}
+              onPress={() => navigation.navigate('Restaurant', { vendorId: v.id, preview: storePreviewOf(v) })}
             />
           )}
         />
