@@ -173,7 +173,9 @@ export function onlyItemLeft(
   lines: ReadonlyArray<{ id: string; subStatus: string; substituteItemId: string | null; substituteName: string | null }>,
   orderStatus: string,
 ): boolean {
-  if (orderStatus !== 'PENDING') return false;
+  // [OOS-FLOW · owner 8 Nov 2026] After acceptance too: a declined swap or no answer about the only item
+  // left ends the order (picking.service cancelForStockOut), so the customer is told before answering.
+  void orderStatus;
   return !lines.some((other) => other.id !== line.id && lineKeepsOrderAlive(other));
 }
 
@@ -192,6 +194,10 @@ export const PICK_ALIVE_WHERE = {
   subStatus: { notIn: ['REFUNDED', 'REJECTED'] as ('REFUNDED' | 'REJECTED')[] },
   NOT: { subStatus: 'PENDING' as const, substituteItemId: null, substituteName: null },
 };
+
+/** [OOS-FLOW · owner 8 Nov 2026] A swap for the only item left on an accepted order whose total may change
+ *  (cash: nothing is paid before the hand-over). */
+export const LAST_ITEM_SWAP_COPY = 'This is the only item left on your order: if you say no thanks or don’t answer in time, the order is cancelled. Nothing has been charged.';
 
 /** [O-4 · REVIEW-F S3-1] What the customer reads about the only item left. */
 export const ONLY_ITEM_LEFT_COPY = "This was the only item on your order, so the order can't go ahead. Cancel it — nothing has been charged.";
@@ -222,12 +228,16 @@ export function substitutionView(line: ViewLine, order: ViewOrder, ctx: { onlyIt
   const decideBy = line.substituteDecideBy ? line.substituteDecideBy.toISOString() : null;
   // [O-4 · REVIEW-F S3-1] The only item left on a waiting order: no answer may empty it. The
   // customer cancels free; no answer cancels it free. (MMG past adjustability keeps WITHDRAW.)
-  const lastItem = ctx.onlyItemLeft === true && order.status === 'PENDING';
+  const waitingLast = ctx.onlyItemLeft === true && order.status === 'PENDING';
+  // [OOS-FLOW · owner 8 Nov 2026] The only item left on an ACCEPTED order: "No thanks" (where the total
+  // may change, i.e. cash) and no answer both cancel the order; the customer reads that before answering.
+  const acceptedLast = ctx.onlyItemLeft === true && order.status !== 'PENDING';
+  const lastItem = waitingLast || acceptedLast;
   const noAnswer = lastItem && substitutionNoAnswer(order) === 'REMOVE' ? 'CANCEL' as const : substitutionNoAnswer(order);
   if (isRemovalQuestion(line)) {
     // [O-4] Nothing is proposed: the customer continues without the item (the
     // total goes down by the line, never below zero) or cancels the order.
-    if (lastItem) {
+    if (waitingLast) {
       return {
         state: line.subStatus, kind: 'REMOVAL' as const, lastItem: true, original, proposed: null,
         priceDelta: null, decisions: { approve: false, reject: false },
@@ -249,7 +259,8 @@ export function substitutionView(line: ViewLine, order: ViewOrder, ctx: { onlyIt
   const negativeTotal = Number(order.totalAmount) + delta < 0;
   const settlementGuidance = approvalHold
     ?? (!adjustable ? totalFixedCopy(order) : negativeTotal
-      ? 'That substitute would drop the order total below zero — refund the line instead.' : null);
+      ? 'That substitute would drop the order total below zero — refund the line instead.'
+      : acceptedLast ? LAST_ITEM_SWAP_COPY : null);
   return {
     state: line.subStatus,
     kind: 'SWAP' as const,
@@ -257,7 +268,7 @@ export function substitutionView(line: ViewLine, order: ViewOrder, ctx: { onlyIt
     proposed: { itemId: line.substituteItemId, name: line.substituteName, unitPrice: Number(line.substitutePrice ?? 0) },
     priceDelta: delta,
     // [O-4 · REVIEW-F S3-1] Declining the only item left would empty the order: not offered.
-    decisions: { approve: !approvalHold && !negativeTotal && (adjustable || delta === 0), reject: adjustable && !lastItem },
+    decisions: { approve: !approvalHold && !negativeTotal && (adjustable || delta === 0), reject: adjustable && !waitingLast },
     ...(lastItem ? { lastItem: true } : {}),
     settlementGuidance,
     // [SUBSTITUTION] The wait is bounded and the customer is told how: answer
@@ -300,6 +311,12 @@ export function legacySwapItemFields(line: ViewLine, order: ViewOrder, ctx: { on
   }
   if (line.subStatus !== 'PENDING') return {};
   const view = substitutionView(line, order, ctx);
+  // [OOS-FLOW · owner 8 Nov 2026] The only item left on an ACCEPTED order: the old card's "Rejecting removes the
+  // item and lowers your total" would be untrue (no thanks, or no answer, cancels the order), so it stays off and
+  // the line's name says what happens.
+  if (view?.lastItem && order.status !== 'PENDING' && view.ifNoAnswer === 'CANCEL') {
+    return { name: `${line.name} (out of stock: the store suggests ${line.substituteName ?? 'another item'}; it is the only item left, so without a yes in the app the order is cancelled, nothing has been charged)` };
+  }
   if (view?.decisions?.approve && view.decisions.reject) {
     const lost = (view.original?.options.length ?? 0) > 0;
     return {

@@ -45,7 +45,7 @@ import { MmgPaymentClaimCard } from '../MmgPaymentClaimCard';
 import { MmgRefundCard } from '../MmgRefundCard';
 import { MMG_REFUND_WORDS, parseMmgRefundView } from '../mmgRefund';
 import { errorMessage } from '../../../lib/apiError';
-import { isRemovalQuestion, removalChangeText, swapChangeText, swapDeadlineText, swapDecisionPermissions } from '../substitutionCopy';
+import { isRemovalQuestion, lineRemoved, removalChangeText, swapChangeText, swapDeadlineText, swapDecisionPermissions } from '../substitutionCopy';
 import { CustodyRecoveryNotice } from '../CustodyRecoveryNotice';
 import { parsePartyCaseView, partyCaseWorthShowing } from '../../../lib/custodyRecovery';
 import { boundMmgClaim, parseMmgClaimView, sendBoundMmgClaim, type PendingMmgClaim } from '../mmgClaim';
@@ -1233,7 +1233,7 @@ export function DeliveryScreen() {
                 </View>
                 <T variant="caption" tone="muted" style={{ marginTop: space.xs }}>
                   {o.vendor?.name ?? 'The store'} suggests {it.substituteName} ({money(Number(it.substitutePrice ?? 0))}
-                  {it.quantity > 1 ? ` × ${it.quantity}` : ''}) instead.{swapDecisionPermissions(it.substitution, o.paymentMethod).reject ? ' Rejecting removes the item and lowers your total.' : ''}
+                  {it.quantity > 1 ? ` × ${it.quantity}` : ''}) instead.{swapDecisionPermissions(it.substitution, o.paymentMethod).reject && !it.substitution?.lastItem ? ' Rejecting removes the item and lowers your total.' : ''}
                 </T>
                 {/* [L09 · M028] What approving changes, from the server's own
                     numbers: the total (paid options included), and the chosen
@@ -1596,8 +1596,8 @@ export function DeliveryScreen() {
             {items.map((it: any, i: number) => (
               <InfoRow
                 key={it.id ?? i}
-                label={`${it.quantity} ${it.item?.name ?? it.name}`}
-                value={money(it.totalPrice ?? it.lineTotal ?? Number(it.unitPrice ?? 0) * (it.quantity ?? 1))}
+                label={`${it.quantity} ${it.item?.name ?? it.name}${lineRemoved(it) ? ' (out of stock, removed)' : ''}`}
+                value={money(lineRemoved(it) ? 0 : it.totalPrice ?? it.lineTotal ?? Number(it.unitPrice ?? 0) * (it.quantity ?? 1))}
               />
             ))}
             {Number(o.deliveryFee ?? 0) > 0 ? <InfoRow label="Delivery" value={money(o.deliveryFee)} /> : null}

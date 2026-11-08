@@ -836,7 +836,8 @@ export async function customerRoutes(app: FastifyInstance) {
     // the store, and stacked riders only where the stacking rules pass for it.
     (probe) => dispatchForAvailability.getDeliveryCapacity(probe),
   );
-  const picking = new PickingService(app.prisma, app.io);
+  // [OOS-FLOW] With the canonical seam: "No thanks" to a swap for the only item left ends the order.
+  const picking = new PickingService(app.prisma, app.io, orderService);
   const ratingService = new RatingService(app.prisma, app.io, (vendorId) => scheduleVendorSearchSync(app, vendorId));
   const notificationService = new NotificationService(app.prisma, app.io);
   const bookingService = new BookingService(app.prisma, app.io);

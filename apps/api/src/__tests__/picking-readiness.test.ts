@@ -178,7 +178,9 @@ describe('[W-28] settled is not fulfilled', () => {
 });
 
 describe('[W-28] an emptied order cannot be marked ready', () => {
-  it('refunding EVERY line leaves the order settled and empty — ready is refused, and the order never leaves the store', async () => {
+  // [OOS-FLOW · owner 8 Nov 2026] Removing every line no longer leaves an empty order in preparation: the
+  // last removal ends it as the store's decline "Out of stock" (out-of-stock-flow.test.ts has the whole flow).
+  it('refunding EVERY line ends the order at the last one ("Out of stock") — it never sits empty, never goes out', async () => {
     const a = await makeItem(`Rice ${nanoid(4)}`);
     const b = await makeItem(`Milk ${nanoid(4)}`);
     const order = await makeOrderWithLines([
@@ -191,6 +193,24 @@ describe('[W-28] an emptied order cannot be marked ready', () => {
       expect(refunded.statusCode).toBe(200);
     }
 
+    const state = await new PickingService(app.prisma, app.io).readiness(order.id);
+    expect(state).toMatchObject({ total: 2, unresolved: 0, fulfilled: 0, removed: 2, ready: false });
+    const after = await app.prisma.order.findUniqueOrThrow({ where: { id: order.id }, select: { status: true, cancellationReason: true } });
+    expect(after).toEqual({ status: 'CANCELLED', cancellationReason: 'Out of stock' });
+
+    const ready = await inject('PUT', `/api/v1/vendor/orders/${order.id}/ready`, owner.token);
+    expect(ready.statusCode).not.toBe(200);
+  });
+
+  it('an order emptied before that rule: every line settled, none fulfilled — ready is refused and says what to do', async () => {
+    const a = await makeItem(`Rice ${nanoid(4)}`);
+    const b = await makeItem(`Milk ${nanoid(4)}`);
+    const order = await makeOrderWithLines([
+      { itemId: a.id, name: a.name, qty: 2, price: 500 },
+      { itemId: b.id, name: b.name, qty: 1, price: 800 },
+    ]);
+    await app.prisma.orderItem.updateMany({ where: { orderId: order.id }, data: { subStatus: 'REFUNDED' } });
+
     // every line is settled: the OLD gate is satisfied
     const state = await new PickingService(app.prisma, app.io).readiness(order.id);
     expect(state).toMatchObject({ total: 2, unresolved: 0, fulfilled: 0, removed: 2, ready: false });
@@ -198,14 +218,14 @@ describe('[W-28] an emptied order cannot be marked ready', () => {
     const ready = await inject('PUT', `/api/v1/vendor/orders/${order.id}/ready`, owner.token);
     expect(ready.statusCode).toBe(409);
     expect(ready.json().error.code).toBe('NOTHING_TO_HAND_OVER');
-    expect(ready.json().error.message).toContain('Cancel the order');
+    expect(ready.json().error.message).toContain('Reject the order with the reason "Out of stock"');
 
     // and the order really did not move
     const after = await app.prisma.order.findUniqueOrThrow({ where: { id: order.id }, select: { status: true } });
     expect(after.status).toBe('PREPARING');
   });
 
-  it('a customer rejecting every substitute empties the order the same way, and ready is refused', async () => {
+  it('a customer rejecting the swap for the only item ends the order the same way (never an empty one)', async () => {
     const a = await makeItem(`Bread ${nanoid(4)}`);
     const sub = await makeItem(`Bun ${nanoid(4)}`);
     const order = await makeOrderWithLines([{ itemId: a.id, name: a.name, qty: 1, price: 400 }]);
@@ -220,10 +240,10 @@ describe('[W-28] an emptied order cannot be marked ready', () => {
     expect(stored.subStatus).toBe('REJECTED');
     expect(PickingService.lineResolved(stored)).toBe(true);
     expect(PickingService.lineFulfilled(stored)).toBe(false);
+    expect((await app.prisma.order.findUniqueOrThrow({ where: { id: order.id } })).status).toBe('CANCELLED');
 
     const ready = await inject('PUT', `/api/v1/vendor/orders/${order.id}/ready`, owner.token);
-    expect(ready.statusCode).toBe(409);
-    expect(ready.json().error.code).toBe('NOTHING_TO_HAND_OVER');
+    expect(ready.statusCode).not.toBe(200);
   });
 
   it('one surviving line is enough: a partly emptied order IS ready, and the count is honest', async () => {
@@ -255,7 +275,7 @@ describe('[W-28] an emptied order cannot be marked ready', () => {
     const ready = await inject('PUT', `/api/v1/vendor/orders/${order.id}/ready`, owner.token);
     expect(ready.statusCode).toBe(409);
     expect(ready.json().error.code).toBe('NOTHING_TO_HAND_OVER');
-    expect(ready.json().error.message).toContain('no lines to hand over');
+    expect(ready.json().error.message).toContain('no items to hand over');
   });
 
   it('the ordinary path is untouched: every line picked, ready succeeds', async () => {
@@ -269,7 +289,8 @@ describe('[W-28] an emptied order cannot be marked ready', () => {
   it('the refusal is not a lockout: the vendor can still cancel the emptied order, which is the correct exit', async () => {
     const a = await makeItem(`Oil ${nanoid(4)}`);
     const order = await makeOrderWithLines([{ itemId: a.id, name: a.name, qty: 1, price: 900 }]);
-    expect((await inject('POST', `/api/v1/vendor/orders/${order.id}/items/${order.items[0]!.id}/refund-line`, owner.token)).statusCode).toBe(200);
+    // [OOS-FLOW] Emptied before the last-item rule (a removal now ends the order instead).
+    await app.prisma.orderItem.update({ where: { id: order.items[0]!.id }, data: { subStatus: 'REFUNDED' } });
     expect((await inject('PUT', `/api/v1/vendor/orders/${order.id}/ready`, owner.token)).statusCode).toBe(409);
 
     const rejected = await inject('PUT', `/api/v1/vendor/orders/${order.id}/reject`, owner.token, { reason: 'Nothing left in stock for this order' });

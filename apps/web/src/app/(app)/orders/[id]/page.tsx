@@ -744,7 +744,7 @@ export default function OrderDetailPage() {
               <p className={styles.eyebrow}>The store asks</p>
               <h2 id={`swap-title-${lineId}`} className={styles.cardTitle}>Swap {item.name} for {item.substituteName ?? 'another item'}?</h2>
               <p className={styles.mutedCopy}>
-                {item.name} is out of stock. {vendorName} suggests {item.substituteName ?? 'another item'} ({money(Number(item.substitutePrice ?? 0))}{item.quantity > 1 ? ` × ${item.quantity}` : ''}) instead.{allowed.reject ? ' Declining removes the item and lowers your total.' : ''}
+                {item.name} is out of stock. {vendorName} suggests {item.substituteName ?? 'another item'} ({money(Number(item.substitutePrice ?? 0))}{item.quantity > 1 ? ` × ${item.quantity}` : ''}) instead.{allowed.reject && !view?.lastItem ? ' Declining removes the item and lowers your total.' : ''}
               </p>
               {change ? <p className={styles.mutedCopy}><strong>{change}</strong></p> : null}
               {view?.settlementGuidance ? <p className={styles.mutedCopy}>{view.settlementGuidance}</p> : null}

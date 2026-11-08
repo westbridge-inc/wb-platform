@@ -27,7 +27,10 @@ describe('the store is never stuck waiting on a swap answer', () => {
     expect(at).toBeGreaterThan(-1);
     const block = detail.slice(at);
     const action = block.slice(0, block.indexOf(') : null}'));
-    expect(action).toContain('onPress={() => picking.refundLine.mutate({ orderId: order.id, lineId: it.id })}');
+    // [TRANSFORMED 8 Nov (OOS-FLOW): the tap goes through askOrRemove, which asks once on the last item still
+    // coming (removing it cancels the order) and otherwise removes through the same line-removal call.]
+    expect(action).toContain('onPress={() => askOrRemove(it)}');
+    expect(detail).toMatch(/const removeLine = \(line: any\) => \{[\s\S]*?picking\.refundLine\.mutate\(\s*\{ orderId: order\.id, lineId: line\.id \}/);
     expect(action).toContain('Remove item instead');
     expect(action).toContain('disabled={picking.refundLine.isPending}');
   });

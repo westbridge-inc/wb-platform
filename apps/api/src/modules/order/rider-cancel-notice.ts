@@ -13,10 +13,16 @@ export const RIDER_CANCEL_NOTICE_KIND = 'rider-cancel-notice';
  *  remains. Without it the row retried every 5 minutes forever. */
 export const RIDER_CANCEL_NOTICE_WINDOW_MS = 30 * 60_000;
 
+/** The rider's words when the customer cancelled. */
+export const CUSTOMER_CANCELLED_RIDER_BODY = 'The customer cancelled this delivery. Stop travelling to its pickup and check your current jobs.';
+
 /** Called with the cancellation's locked order, before its transaction commits. */
 export async function persistRiderCancellationNotice(
   tx: Prisma.TransactionClient,
   order: { id: string; tenantId: string; riderId: string | null },
+  /** [OOS-FLOW · owner 8 Nov 2026] Who closed it, in the rider's words: the customer by default; a store
+   *  out-of-stock close names the store (picking.service cancelForStockOut). Same row, same drain. */
+  body: string = CUSTOMER_CANCELLED_RIDER_BODY,
 ): Promise<void> {
   if (!order.riderId) return;
   const rider = await tx.rider.findUniqueOrThrow({ where: { id: order.riderId }, select: { userId: true } });
@@ -27,7 +33,7 @@ export async function persistRiderCancellationNotice(
   await upsertNoticeFor(tx, {
     id: notificationId, userId: rider.userId, dedupeKey,
     type: 'ORDER_UPDATE', title: 'Delivery cancelled',
-    body: 'The customer cancelled this delivery. Stop travelling to its pickup and check your current jobs.',
+    body,
     // kind: the phone opens the mover dashboard on tap, never the customer
     // order screen (a cross-app contract: mobile notification-router).
     data: { kind: 'mover_job_cancelled', orderId: order.id, status: 'CANCELLED', audience: 'earner' },
