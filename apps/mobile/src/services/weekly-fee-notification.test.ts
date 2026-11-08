@@ -5,7 +5,7 @@ const mock = vi.hoisted(() => ({
   owner: { userId: 'owner', generation: 1, accessToken: 'test-access', refreshToken: 'test-refresh' },
   listener: undefined as undefined | ((_response: unknown) => void),
   navigate: vi.fn(),
-  io: vi.fn(() => ({ disconnect: vi.fn() })),
+  io: vi.fn(() => ({ on: vi.fn(), disconnect: vi.fn() })),
 }));
 vi.mock('socket.io-client', () => ({ io: mock.io }));
 vi.mock('../stores/authStore', () => ({ getAuthSessionSnapshot: () => ({ ...mock.owner }), useAuthStore: { getState: () => ({}) } }));

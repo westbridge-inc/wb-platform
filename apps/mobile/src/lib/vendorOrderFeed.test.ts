@@ -154,3 +154,20 @@ describe('[PERF partner #6] the store overview follows the order feed', () => {
     staff();
   });
 });
+
+describe('[STORE-ALERT-RECONNECT] the board is re-read when the feed comes back', () => {
+  it('a reconnect after a drop re-reads the orders (an order:new sent meanwhile is never replayed); a connect with no drop does not', () => {
+    const socket = fakeSocket();
+    const refresh = vi.fn();
+    const off = bindVendorOrderFeed(socket, 'store-a', () => true, { onNew: noop, refresh, refreshBookings: noop }, { serverAdmits: true });
+    socket.fire('connect');
+    expect(refresh).not.toHaveBeenCalled();
+    socket.fire('disconnect');
+    socket.fire('connect');
+    expect(refresh).toHaveBeenCalledTimes(1);
+    expect(socket.emitted.filter(([event]) => event === 'vendor:subscribe')).toHaveLength(3);
+    socket.fire('connect');
+    expect(refresh).toHaveBeenCalledTimes(1);
+    off();
+  });
+});

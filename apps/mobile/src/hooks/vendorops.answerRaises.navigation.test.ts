@@ -48,15 +48,17 @@ vi.mock('../stores/storeSwitcher', () => ({
 vi.mock('../stores/vendorPreview', () => ({ useVendorPreview: (selector: (s: { previewType: null }) => unknown) => selector({ previewType: null }) }));
 
 import { useVendorOrdersLive } from './vendorops';
+import { resetHandledTakeovers } from '../modules/vendor/takeoverRaise';
 
 let root: { render: (n: React.ReactNode) => void; unmount: () => void } | null = null;
 let host: HTMLElement | null = null;
 let qc: QueryClient;
-const seen: { takeover: Array<{ orderId: string; orderNumber?: string }> } = { takeover: [] };
+const seen: { takeover: Array<{ orderId: string; orderNumber?: string }>; dismiss: (orderId: string) => void } = { takeover: [], dismiss: () => {} };
 
 function Layer() {
-  const { takeover } = useVendorOrdersLive('store-a', false);
+  const { takeover, dismissTakeover } = useVendorOrdersLive('store-a', false);
   seen.takeover = takeover;
+  seen.dismiss = dismissTakeover;
   return null;
 }
 async function mount() {
@@ -72,6 +74,7 @@ const asked = { id: 'l1', subStatus: 'PENDING', substituteName: null };
 beforeEach(() => {
   qc = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity } } });
   seen.takeover = [];
+  resetHandledTakeovers();
 });
 afterEach(() => {
   act(() => root?.unmount());
@@ -91,9 +94,13 @@ describe('[STORE-DASH] the customer\'s answer raises the new-order screen again'
     expect(qc.getQueryData(['vendor', 'orders', 'detail', 'o1'])).toBeUndefined();
   });
 
-  it('control: an order nobody asked about never comes back by itself; still deciding stays quiet', async () => {
+  it('control: an order nobody asked about never comes back by itself once answered here; still deciding stays quiet', async () => {
     qc.setQueryData(['vendor', 'orders'], [order('o2', [{ id: 'l1', subStatus: 'NONE' }]), order('o3', [asked])]);
     await mount();
+    // [STORE-ALERT-RECONNECT] A waiting order the board shows is on the new-order screen (its
+    // order:new may never have arrived); one waiting on the customer is not.
+    expect(seen.takeover).toEqual([{ orderId: 'o2', orderNumber: 'O2' }]);
+    await act(async () => { seen.dismiss('o2'); }); // "View later"
     await act(async () => { qc.setQueryData(['vendor', 'orders'], [order('o2', [{ id: 'l1', subStatus: 'NONE' }]), order('o3', [asked])]); });
     await flush();
     expect(seen.takeover).toEqual([]);
