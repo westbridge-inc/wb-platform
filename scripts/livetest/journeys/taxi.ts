@@ -1,16 +1,17 @@
-// Taxi journeys [TASK-057]: TAXI-01..06. Every ride needs an L2 passenger
-// (C7 is raised to L2 through identity review in provisioning); drivers are
-// online through their real endpoints and keep fresh positions via the suite
-// heartbeat. TAXI-06 is the ride with a stop (TAXI_MAX_STOPS).
+// Taxi journeys [TASK-057]: TAXI-01..06. A ride needs no ID (owner 24 Oct and
+// 1 Nov 2026): the passenger C7 is an ordinary signed-in (L1) account, and a
+// case that strikes an account books from a fresh one. Drivers are online
+// through their real endpoints and keep fresh positions via the suite
+// heartbeat. TAXI-06 is the ride with stops (TAXI_MAX_STOPS), and with
+// TAXI_WAITING_CHARGE on, the waiting charge over a whole multi-stop trip.
 
-import { OTP, BASE, ORIGIN, upload, type Session } from '../client.js';
+import { OTP, BASE, ORIGIN, type Session } from '../client.js';
 import type { Journey, Recorder } from '../journey.js';
 import { GET, POST, PUT, req, sleep, brief, pick, waitFor, codeOf, waitForNotification, type Res } from './common.js';
 import type { Ctx } from './context.js';
 import { mover, onlineOf, setOnline, pollOffer, driverArrives, releaseDrivers, closeRide } from './dispatch.js';
 import { registerFresh } from './auth.js';
-import { asAdmin, reviewerTypedBody, uploadDoc, ping } from '../provision.js';
-import { uniquePng } from '../roster.js';
+import { ping } from '../provision.js';
 import { twoPerson } from './admin-util.js';
 
 const PICKUP = { lat: 6.8110, lng: -58.1530 };
@@ -20,7 +21,7 @@ const rideBody = (extra: Record<string, unknown> = {}) => ({
 });
 const drivers = (ctx: Ctx) => onlineOf(ctx, 'driver');
 
-/** C7 (or another L2 passenger) requests a ride; returns its id and PIN. */
+/** C7 (or a fresh passenger) requests a ride; returns its id and PIN. */
 async function requestRide(rec: Recorder, ctx: Ctx, passenger: Session, label: string): Promise<{ id: string; pin: string } | null> {
   const r = await POST('/rides/request', rideBody(), passenger.token);
   if (!rec.expect(`${label}: ride request`, r, 201, undefined, `status=${r.json?.data?.ride?.status}`)) return null;
@@ -46,51 +47,27 @@ async function activeRide(passenger: Session): Promise<any> {
   return (await GET('/rides/active', passenger.token)).json?.data ?? null;
 }
 
-/** [VERIFY-DOCS V3 · owner 6 Oct] Approving a document needs the explicit
- *  documents.review grant (never implied by SUPER_ADMIN or `*`). A target whose
- *  runner admin lacks it cannot approve a fresh identity: that is the target's
- *  configuration, so the journey SKIPS with the reason instead of failing on it.
- *  (Copy run #2: TAXI-04 403 DOCUMENT_REVIEWER_REQUIRED; staging's admins hold
- *  no grant.) Null when the grant is held. */
-async function reviewerGrantGap(ctx: Ctx): Promise<string | null> {
-  const r = await GET('/admin/staff/document-reviewers', ctx.admin.token);
-  if (!r.ok) return `the runner admin cannot read the document-reviewer list (${brief(r)}), so the grant cannot be confirmed`;
-  const me = (r.json?.data ?? []).find((s: any) => s.you === true);
-  return me?.documentReviewer === true ? null
-    : 'the runner admin does not hold the documents.review grant (owner rule 6 Oct: an explicit grant, never implied), so no fresh identity can be approved on this target; a super-admin grants it under Review Center > Document reviewers';
-}
-
-/** A fresh L2 passenger for a case that strikes the account (no-show / refusal).
- *  Null when none can be made; when the target cannot approve an identity at
- *  all, the whole journey is skipped with that reason (not failed). */
-async function freshL2(rec: Recorder, ctx: Ctx, slot: string): Promise<Session | null> {
-  const gap = await reviewerGrantGap(ctx);
-  if (gap) {
-    rec.skipAll(`a fresh L2 passenger needs an identity approval: ${gap}`);
-    return null;
-  }
+/** A fresh passenger for a case that strikes the account (no-show / refusal),
+ *  so C7 never collects the strike. [Owner 24 Oct + 1 Nov 2026] An account
+ *  books a ride as it signs up: no ID, no identity review (the server keeps no
+ *  customer ID and answers 410 CUSTOMER_ID_NOT_NEEDED to one). Null when the
+ *  target would not register one. */
+async function freshPassenger(rec: Recorder, ctx: Ctx, slot: string): Promise<Session | null> {
   const acct = await registerFresh(ctx, slot);
-  if (!acct) return null;
-  await upload('/auth/selfie', acct.session.token, { name: 's.png', type: 'image/png', bytes: uniquePng(slot) });
-  const id = await uploadDoc(acct.session, `${slot}-national-id`);
-  const face = await upload('/verification/upload', acct.session.token, { name: 'face.png', type: 'image/png', bytes: uniquePng(`${slot}-face`) });
-  const idv = await POST('/verification/identity', { idDocumentUrl: id.url, selfieUrl: face.json?.data?.url, consent: true, privacyNoticeVersion: '2026-09-23' }, acct.session.token);
-  if (!rec.expect(`${slot}: identity submitted for review`, idv, 201)) return null;
-  const ok = await asAdmin(ctx.admin.token, 'approve the synthetic identity check of a taxi journey passenger', 'PUT', `/admin/verification/${idv.json?.data?.id}/approve`, reviewerTypedBody('identity_l2', String(idv.json?.data?.id ?? '')));
-  if (!rec.expect(`${slot}: identity approved (L2)`, ok, 200)) return null;
-  return acct.session;
+  rec.check(`${slot}: a fresh passenger signs up (no ID asked)`, !!acct, acct ? 'registered' : 'registration refused');
+  return acct?.session ?? null;
 }
 
 export const TAXI_01: Journey<Ctx> = {
   id: 'TAXI-01',
   estimateSeconds: 330,
   title: 'Ride request + queue (mobile only)',
-  cases: 'L2 request; L1 request (no ID asked, owner 24 Oct 2026); no-supply queue; auto-request recovery',
+  cases: 'passenger request; a second account requests too (no ID asked, owner 24 Oct 2026); no-supply queue; auto-request recovery',
   async run(rec, ctx) {
     const C7 = ctx.roster.customers.C7!.session;
-    rec.require('an L2 passenger was provisioned', !ctx.world.notReady.C7, ctx.world.notReady.C7 ?? '');
+    rec.require('a passenger was provisioned', !ctx.world.notReady.C7, ctx.world.notReady.C7 ?? '');
     // [Owner ruling 24 Oct 2026] A ride needs no ID on file: an L1 account books like any other. Its ride is
-    // withdrawn at once so the L2 cases below meet a clean board.
+    // withdrawn at once so the passenger's cases below meet a clean board.
     const C1 = ctx.roster.customers.C1!.session;
     const l1 = await POST('/rides/request', rideBody(), C1.token);
     rec.expect('an L1 account (no ID on file) requests a ride — no ID asked', l1, 201, undefined, `code=${l1.json?.error?.code ?? ''}`);
@@ -99,8 +76,8 @@ export const TAXI_01: Journey<Ctx> = {
     const eco = (est.json?.data?.tiers ?? []).find((t: any) => t.rideClass === 'ECONOMY');
     rec.check('the estimate prices an economy ride', est.ok && Number(eco?.fare) > 0, `→ ${brief(est)} economy=${eco?.fare} ${est.json?.data?.currencyCode ?? ''}`);
 
-    // L2 request with drivers online
-    const ride = await requestRide(rec, ctx, C7, 'L2 request');
+    // the passenger's request with drivers online
+    const ride = await requestRide(rec, ctx, C7, 'passenger request');
     if (ride) {
       rec.check('the passenger holds a 6-digit ride PIN', /^\d{6}$/.test(ride.pin), `pin ${ride.pin ? 'present' : 'missing'}`);
       rec.deny('a second ride while one is live', await POST('/rides/request', rideBody(), C7.token), [409], ['RIDE_IN_PROGRESS']);
@@ -276,9 +253,8 @@ export const TAXI_04: Journey<Ctx> = {
   title: 'Cash outcome / no-show claim',
   cases: 'paid/no-show outcome; missing-GPS denial; admin claim settlement',
   async run(rec, ctx) {
-    const passenger = await freshL2(rec, ctx, 'taxi04-noshow');
-    if (!passenger && rec.wholeSkip) return;
-    rec.require('a fresh L2 passenger (a no-show strikes the account)', !!passenger, '');
+    const passenger = await freshPassenger(rec, ctx, 'taxi04-noshow');
+    rec.require('a fresh passenger (a no-show strikes the account)', !!passenger, '');
     const ride = await requestRide(rec, ctx, passenger!, 'ride');
     rec.require('a ride', !!ride, '');
     const moved: string[] = [];
@@ -440,7 +416,13 @@ export const TAXI_05: Journey<Ctx> = {
 //    one driver goes online declaring TAXI_STOPS_V1, as builds 11/12 do once
 //    the server offers stops, while a NEARER driver stays an app without it.
 //    Ride 1 arrives at the stop (the car is there), waits, leaves, ends paid;
-//    ride 2 arrives from far away (not verified, #1908) and skips the stop.
+//    ride 2 arrives from far away (not verified, #1908) and skips the stop;
+//    ride 3 (at 2-3) drives the most stops the target allows end to end: the
+//    route quoted leg by leg, each stop reached, waited at and left in order,
+//    the trip link and the safety monitor following the car from stop to stop,
+//    and, with TAXI_WAITING_CHARGE=1, the waiting charge the server freezes
+//    checked against the owner's rule from the server's own clocks. Its waits
+//    are real time (no clock is moved): ~11 minutes in all.
 // The capability is cleared again at the end (a plain go-online), so no
 // journey after this one meets a driver that runs stops.
 // ---------------------------------------------------------------------------
@@ -457,6 +439,46 @@ const STOP_GRACE_SECONDS = 10 * 60;
 /** PUT /driver/location persists one fix per driver per 10 s (dispatch.ts). */
 const FIX_DEBOUNCE_MS = 11_000;
 const STOPS_OFF = ['MULTI_STOP_UNAVAILABLE'];
+
+/** [TAXI multi-stop · ride 3] The most stops a ride may carry, in the
+ *  passenger's order: each well over the 300 m arrival check from the others
+ *  and from both ends (the closest pair, stop 3 and the pickup, ~0.95 km), all
+ *  in Georgetown. */
+const STOP_ROUTE = [
+  STOP,
+  { lat: 6.8060, lng: -58.1450, address: 'TEST stop 2, Lamaha Street' },
+  { lat: 6.8180, lng: -58.1480, address: 'TEST stop 3, Camp Road' },
+] as const;
+/** [Owner 19 Oct 2026] The waiting terms: 300 GYD per FULL 10 minutes, the
+ *  pickup wait and every stop's wait summed (taxi-waiting.ts tallyTaxiWaiting). */
+const OWNER_WAITING = { chargePerBlock: 300, blockMinutes: 10 } as const;
+/** Ride 3's waits, in seconds: at the pickup, then at each stop. No single
+ *  wait comes near a 10-minute block, but the pickup and the first two stops
+ *  pass one together before the car leaves stop 2 (3 × 210 s = 630 s), and the
+ *  whole ride stays far inside the second block (~700 of 1,200 s). Waited only
+ *  while TAXI_WAITING_CHARGE is on. */
+const PICKUP_WAIT_S = 210;
+const STOP_WAITS_S = [210, 210, 45] as const;
+/** The car stands at the destination before "Fare collected" (the safety
+ *  monitor sees it there); a wait at the destination is never charged. */
+const DESTINATION_DWELL_S = 40;
+
+/** Metres between two points (haversine): where the trip link puts the car. */
+function metres(a: { lat: number; lng: number }, b: { lat: number; lng: number }): number {
+  const rad = (d: number) => (d * Math.PI) / 180;
+  const h = Math.sin(rad(b.lat - a.lat) / 2) ** 2 + Math.cos(rad(a.lat)) * Math.cos(rad(b.lat)) * Math.sin(rad(b.lng - a.lng) / 2) ** 2;
+  return 2 * 6_371_000 * Math.asin(Math.sqrt(h));
+}
+
+/** Milliseconds from one server timestamp to another (never negative), or null when either is missing. */
+function msBetween(from: unknown, to: unknown): number | null {
+  const a = Date.parse(String(from ?? ''));
+  const b = Date.parse(String(to ?? ''));
+  return Number.isFinite(a) && Number.isFinite(b) ? Math.max(0, b - a) : null;
+}
+
+/** An evidence note without its coordinates (they stay on the console). */
+const noteShown = (note: unknown) => (typeof note === 'string' ? note.replace(/gps:\S+/g, 'gps:…') : 'none');
 
 const tripWith = (stops: readonly unknown[], expectedFare?: number) =>
   rideBody({ stops, ...(expectedFare === undefined ? {} : { expectedFare }) });
@@ -508,8 +530,10 @@ async function bookWithStop(rec: Recorder, passenger: Session, fare: number, lab
   return { id: String(r.json.data.ride.id), pin: String(r.json.data.ride.ridePin ?? '') };
 }
 
-/** The capable driver takes the ride from its offer and starts the trip. */
-async function takeAndStart(rec: Recorder, ctx: Ctx, capable: string, ride: { id: string; pin: string }, label: string): Promise<Session> {
+/** The capable driver takes the ride from its offer and starts the trip;
+ *  `atPickup` runs with the car arrived at the pickup, before the code. */
+async function takeAndStart(rec: Recorder, ctx: Ctx, capable: string, ride: { id: string; pin: string }, label: string,
+  atPickup?: () => Promise<void>): Promise<Session> {
   const got = await pollOffer(ctx, ride.id, onlineOf(ctx, 'driver'), 60_000);
   rec.require(`${label}: offered to the driver whose app runs stops, never the nearer older app`, got?.moverId === capable,
     got ? `offered to ${got.moverId} (capable: ${capable})` : 'no offer in 60 s');
@@ -520,6 +544,7 @@ async function takeAndStart(rec: Recorder, ctx: Ctx, capable: string, ride: { id
   }
   await PUT(`/driver/rides/${ride.id}/en-route`, {}, D.token);
   rec.must(`${label}: the driver arrives at the pickup`, await driverArrives(ctx, capable, ride.id, PICKUP), 200);
+  if (atPickup) await atPickup();
   rec.must(`${label}: the passenger's PIN verifies`, await PUT(`/driver/rides/${ride.id}/verify-pin`, { pin: ride.pin }, D.token), 200);
   rec.must(`${label}: the trip starts`, await PUT(`/driver/rides/${ride.id}/start`, {}, D.token), 200);
   return D;
@@ -559,8 +584,10 @@ async function stopsSwitchedOff(rec: Recorder, passenger: Session): Promise<void
     'TAXI_MAX_STOPS is 0 on this target (the launch default): stops are off, and the off state is proven above. Set TAXI_MAX_STOPS=1 on the private journeys instance (never the public API) to run the stop cases.');
 }
 
-/** TAXI_MAX_STOPS is 1-3: the whole stop journey, two rides. */
-async function stopsSwitchedOn(rec: Recorder, ctx: Ctx, C7: Session, maxStops: number, plainFare: number | null): Promise<void> {
+/** TAXI_MAX_STOPS is 1-3: the whole stop journey, two rides, and a third
+ *  through the most stops allowed when that is more than one. `waiting` is
+ *  the terms GET /rides/capabilities disclosed (null: TAXI_WAITING_CHARGE off). */
+async function stopsSwitchedOn(rec: Recorder, ctx: Ctx, C7: Session, maxStops: number, plainFare: number | null, waiting: any | null): Promise<void> {
   const online = drivers(ctx);
   rec.require('two drivers online (one app runs stops, one does not)', online.length >= 2, online.join(','));
   const capable = online[0]!;
@@ -576,7 +603,8 @@ async function stopsSwitchedOn(rec: Recorder, ctx: Ctx, C7: Session, maxStops: n
     rec.check('the stop is priced: the trip with it costs more than the trip without it', q.fare !== null && plainFare !== null && q.fare > plainFare, `with=${q.fare} without=${plainFare}`);
     rec.require('a quoted fare to book at', q.fare !== null, '');
     const fare = q.fare!;
-    if (maxStops < 3) {
+    {
+      // Past the configured maximum (at 3, past the database cap too): counted before anything is looked at.
       const tooMany = Array.from({ length: maxStops + 1 }, (_, i) => ({ lat: STOP.lat - 0.002 * i, lng: STOP.lng, address: `TEST stop ${i + 1}, Hadfield Street` }));
       rec.deny(`a quote with ${maxStops + 1} stops, past the configured ${maxStops}`, (await quoteTrip(C7, tooMany)).res, [400], ['TOO_MANY_STOPS']);
     }
@@ -676,6 +704,14 @@ async function stopsSwitchedOn(rec: Recorder, ctx: Ctx, C7: Session, maxStops: n
     const con2 = await consoleStops(ctx, ride2!.id);
     rec.check('the console’s order page shows the stop skipped with its reason', con2?.[0]?.status === 'SKIPPED' && con2[0].skipReason === 'Road or access blocked',
       `stops=${JSON.stringify((con2 ?? []).map((s: any) => s.status))}`);
+
+    // Ride 3: the most stops the target allows, end to end, with the waiting charge.
+    if (maxStops >= 2) {
+      await rideThroughStops(rec, ctx, C7, capable, maxStops, fare, waiting, made);
+    } else {
+      rec.skipCase('a ride through more than one stop, end to end (and its waiting charge)',
+        'TAXI_MAX_STOPS is 1 on this target: a ride carries one stop, proven by rides 1 and 2. Set TAXI_MAX_STOPS=3 on the private journeys instance to drive a three-stop ride.');
+    }
   } finally {
     for (const id of made) {
       const left = await closeStopRide(ctx, C7, id, capable);
@@ -689,14 +725,228 @@ async function stopsSwitchedOn(rec: Recorder, ctx: Ctx, C7: Session, maxStops: n
   }
 }
 
+/** Ride 3: the most stops the target allows (three at TAXI_MAX_STOPS=3), end
+ *  to end, on the real endpoints: the whole route quoted leg by leg and booked
+ *  at that fare (with the waiting terms it showed), each stop arrived at with
+ *  the car there, waited at and left in the passenger's order, the trip link
+ *  and the safety monitor following the car from stop to stop, and the fare
+ *  collected at the destination. With TAXI_WAITING_CHARGE on, the charge the
+ *  server froze is checked against the owner's rule from the server's own
+ *  clocks: floor(pickup wait + every stop's wait / 10 min) × 300. */
+async function rideThroughStops(rec: Recorder, ctx: Ctx, C7: Session, capable: string, maxStops: number,
+  oneStopFare: number, waiting: any | null, made: string[]): Promise<void> {
+  const n = Math.min(maxStops, STOP_ROUTE.length);
+  const route = STOP_ROUTE.slice(0, n);
+  const label = `ride 3 (${n} stops)`;
+  const targets = [...route.map((_, i) => `STOP_${i + 1}`), 'DESTINATION'];
+  const codes = ['PICKUP', ...targets];
+  const blockS = OWNER_WAITING.blockMinutes * 60;
+
+  // The quote: one trip over the whole road, leg by leg.
+  const q = await quoteTrip(C7, route);
+  const est = q.res.json?.data;
+  const legs: any[] = Array.isArray(est?.legs) ? est.legs : [];
+  rec.check(`${label}: the quote prices the whole route through ${n} stops as one trip`, q.fare !== null && est?.stopCount === n && est?.maxStops === maxStops,
+    `→ ${brief(q.res)} economy=${q.fare} stopCount=${est?.stopCount} maxStops=${est?.maxStops}`);
+  rec.check(`${label}: the quote names one leg per pair of points, in the passenger's order`,
+    legs.length === n + 1 && legs.every((l, i) => l.from === codes[i] && l.to === codes[i + 1] && Number.isInteger(l.meters) && l.meters > 0),
+    `legs=${legs.map((l) => `${l.from}>${l.to} ${l.meters} m/${l.seconds ?? '-'} s`).join(', ') || 'none'}`);
+  const legKm = legs.reduce((sum, l) => sum + Number(l.meters), 0) / 1000;
+  rec.check(`${label}: the legs add up to the distance the fare is priced on`,
+    legs.length === n + 1 && Math.abs(legKm - Number(est?.billableKm)) <= 0.01 && Math.abs(legKm - Number(est?.distanceKm)) <= 0.06,
+    `legs sum ${legKm.toFixed(3)} km; billableKm=${est?.billableKm} distanceKm=${est?.distanceKm} durationMin=${est?.durationMin}`);
+  rec.check(`${label}: more stops, more road, more fare (${n} stops > 1 stop)`, q.fare !== null && q.fare > oneStopFare, `${n} stops=${q.fare} one stop=${oneStopFare}`);
+  if (waiting) {
+    const w = est?.waiting;
+    rec.check(`${label}: the quote discloses the owner's waiting terms beside the fare (${OWNER_WAITING.chargePerBlock} per ${OWNER_WAITING.blockMinutes} minutes)`,
+      w?.chargePerBlock === OWNER_WAITING.chargePerBlock && w?.blockMinutes === OWNER_WAITING.blockMinutes && typeof w?.text === 'string' && w.text.length > 0,
+      `waiting=${JSON.stringify(w ?? null)}`);
+  }
+  rec.require(`${label}: a quoted fare and its legs to book at`, q.fare !== null && legs.length === n + 1, '');
+  const fare = q.fare!;
+  const echo = waiting ? { waiting: { chargePerBlock: waiting.chargePerBlock, blockMinutes: waiting.blockMinutes } } : {};
+  if (waiting) {
+    rec.deny(`${label}: a booking that echoes waiting terms the passenger was not shown`,
+      await POST('/rides/request', { ...tripWith(route, fare), waiting: { chargePerBlock: Number(waiting.chargePerBlock) + 100, blockMinutes: waiting.blockMinutes } }, C7.token), [409], ['WAITING_TERMS_CHANGED']);
+    rec.check(`${label}: the refused booking booked nothing`, !(await activeRide(C7)), '');
+  }
+
+  // The booking: the itinerary and the terms frozen with the ride.
+  const book = await POST('/rides/request', { ...tripWith(route, fare), ...echo }, C7.token);
+  rec.expect(`${label}: booked at the quoted fare with its ${n} stops${waiting ? ' and the waiting terms it showed' : ''}`, book, 201, undefined,
+    `status=${book.json?.data?.ride?.status} fare=${book.json?.data?.ride?.fare} stops=${book.json?.data?.ride?.stops?.length} waiting=${JSON.stringify(book.json?.data?.ride?.waiting ?? null)}`);
+  rec.require(`${label} is booked`, book.status === 201 && !!book.json?.data?.ride?.id, '');
+  const ride = { id: String(book.json.data.ride.id), pin: String(book.json.data.ride.ridePin ?? '') };
+  made.push(ride.id);
+  const booked = (await GET(`/rides/${ride.id}`, C7.token)).json?.data;
+  const bStops: any[] = booked?.stops ?? [];
+  rec.check(`${label}: the ride carries its ${n} stops in the passenger's order, all ahead, stop 1 next`,
+    bStops.length === n && bStops.every((s, i) => s.sequence === i + 1 && s.status === 'PENDING' && s.address === route[i]!.address) && booked?.nextStopSequence === 1,
+    `stops=${JSON.stringify(bStops.map((s) => `${s.sequence}:${s.status}`))} next=${booked?.nextStopSequence}`);
+  rec.check(`${label}: each stop keeps the priced leg that ends at it, exactly as quoted`,
+    bStops.length === n && bStops.every((s, i) => s.legMeters === legs[i]?.meters && (s.legSeconds ?? null) === (legs[i]?.seconds ?? null)),
+    `booked=${bStops.map((s) => `${s.legMeters} m/${s.legSeconds ?? '-'} s`).join(', ')} quoted=${legs.slice(0, n).map((l) => `${l.meters} m/${l.seconds ?? '-'} s`).join(', ')}`);
+  rec.check(`${label}: the ride is frozen at the quoted fare and distance`,
+    Number(booked?.taxiFareTotal) === fare && Number(booked?.totalAmount) === fare && Number(booked?.taxiDistance) === Number(est?.distanceKm),
+    `taxiFareTotal=${booked?.taxiFareTotal} totalAmount=${booked?.totalAmount} taxiDistance=${booked?.taxiDistance}; quoted ${fare} over ${est?.distanceKm} km`);
+
+  // The pickup: the car arrives (GPS at the pickup), and the passenger is slow to come out.
+  const D = await takeAndStart(rec, ctx, capable, ride, label, async () => {
+    if (!waiting) {
+      rec.check(`${label}: waiting is off, so the arrived ride shows no wait`, (await activeRide(C7))?.waiting === undefined, '');
+      return;
+    }
+    await sleep(PICKUP_WAIT_S * 1000);
+    const a = await activeRide(C7);
+    const w = a?.waiting;
+    rec.check(`${label}: at the pickup the passenger sees the wait running from the GPS-placed arrival, nothing charged yet`,
+      a?.status === 'DRIVER_ARRIVED' && w?.running === true && Number(w?.pickupWaitMinutes) >= Math.floor(PICKUP_WAIT_S / 60) && w?.waitingCharge === 0 && typeof w?.nextChargeAt === 'string',
+      `status=${a?.status} waiting=${JSON.stringify(w ?? null)}`);
+  });
+
+  // The passenger shares the trip; the link follows the car.
+  const share = await POST(`/safety/trips/${ride.id}/share`, {}, C7.token);
+  rec.expect(`${label}: the passenger shares the trip`, share, [200, 201], undefined, `expiresAt=${share.json?.data?.expiresAt}`);
+  const token = typeof share.json?.data?.token === 'string' ? share.json.data.token : '';
+  const view = async (): Promise<Res | null> => (token ? req('GET', `/safety/public/trip/${token}`, {}) : null);
+
+  for (let i = 0; i < n; i += 1) {
+    const seq = i + 1;
+    const at = route[i]!;
+    const waitS = waiting ? STOP_WAITS_S[i] ?? 0 : 0;
+    if (seq === 1 && n > 1) rec.deny(`${label}: stop 2 before stop 1`, await stopMove(D, ride.id, 2, 'arrived'), [409], ['STOP_OUT_OF_ORDER']);
+    await driveTo(ctx, capable, at);
+    const arrive = await stopMove(D, ride.id, seq, 'arrived');
+    const sw = arrive.json?.data?.stopWait;
+    const grace = sw ? (Date.parse(sw.noShowAvailableAt) - Date.parse(sw.arrivedAt)) / 1000 : NaN;
+    rec.check(`${label}: arrived at stop ${seq} with the car there; its 10-minute grace runs on the server clock`,
+      arrive.ok && arrive.json?.data?.stop?.status === 'ARRIVED' && arrive.json?.data?.nextStopSequence === seq && sw?.sequence === seq && grace === STOP_GRACE_SECONDS,
+      `→ ${brief(arrive)} stop=${arrive.json?.data?.stop?.status} next=${arrive.json?.data?.nextStopSequence} grace=${grace}s`);
+    const note = (await consoleStops(ctx, ride.id))?.[i]?.evidenceNote;
+    rec.check(`${label}: stop ${seq}'s arrival is placed by the GPS (its wait counts)`, typeof note === 'string' && !note.includes(STOP_NOT_VERIFIED), `note=${noteShown(note)}`);
+    const pub = await view();
+    const loc = pub?.json?.data?.location;
+    rec.check(`${label}: the shared trip link shows the trip in progress, the car at stop ${seq}`,
+      !!pub && pub.ok && pub.json?.data?.status === 'Trip in progress' && pub.json?.data?.ended === false && !!loc && metres(loc, at) <= 100,
+      `→ ${pub ? brief(pub) : 'no link'} status=${pub?.json?.data?.status} ${loc ? `car ${Math.round(metres(loc, at))} m from the stop` : 'no car shown'}`);
+
+    if (waitS > 0) await sleep(waitS * 1000);
+    const live = await activeRide(C7);
+    const liveStop = (live?.stops ?? []).find((s: any) => s.sequence === seq);
+    if (waiting) {
+      // What has been waited so far (planned; the real clocks run a few seconds longer).
+      const soFar = PICKUP_WAIT_S + STOP_WAITS_S.slice(0, seq).reduce((a, b) => a + b, 0);
+      const blocks = Math.floor(soFar / blockS);
+      const w = live?.waiting;
+      rec.check(`${label}: waiting at stop ${seq}, the passenger's live wait runs: ${blocks} block(s) after ~${soFar} s waited in all`,
+        w?.running === true && Number(liveStop?.waitMinutes) >= Math.floor(waitS / 60) && w?.waitingCharge === blocks * OWNER_WAITING.chargePerBlock && Number(w?.waitingMinutes) >= Math.floor(soFar / 60),
+        `waiting=${JSON.stringify(w ?? null)} stop ${seq} waitMinutes=${liveStop?.waitMinutes}`);
+      const dv = (await GET('/driver/rides/active', D.token)).json?.data;
+      rec.check(`${label}: the driver's screen shows the same waiting charge, and the grace at stop ${seq}`,
+        dv?.waiting?.waitingCharge === w?.waitingCharge && dv?.stopWait?.sequence === seq,
+        `driver waiting=${dv?.waiting?.waitingCharge} passenger=${w?.waitingCharge} stopWait=${dv?.stopWait?.sequence}`);
+    } else {
+      rec.check(`${label}: waiting is off, so stop ${seq} shows no wait`, live?.waiting === undefined && liveStop?.waitMinutes === undefined, '');
+    }
+
+    const depart = await stopMove(D, ride.id, seq, 'depart');
+    const next = seq < n ? seq + 1 : null;
+    rec.check(`${label}: left stop ${seq}; ${next ? `stop ${next}` : 'the destination'} is next`,
+      depart.ok && depart.json?.data?.stop?.status === 'DEPARTED' && depart.json?.data?.nextStopSequence === next && depart.json?.data?.stopWait === null,
+      `→ ${brief(depart)} stop=${depart.json?.data?.stop?.status} next=${depart.json?.data?.nextStopSequence}`);
+    if (seq === 1 && n > 1) {
+      rec.deny(`${label}: “Fare collected” with stop${n > 2 ? `s 2-${n}` : ' 2'} still ahead`,
+        await POST(`/driver/rides/${ride.id}/handover`, { outcome: 'paid', gps: at }, D.token), [409], ['STOPS_REMAINING']);
+    }
+  }
+
+  // The destination: the safety monitor has followed the car there.
+  await driveTo(ctx, capable, DROPOFF);
+  await sleep(DESTINATION_DWELL_S * 1000);
+  const board = await GET('/safety/guardian?status=live&limit=200', ctx.admin.token);
+  const session = board.ok ? (board.json?.data ?? []).find((x: any) => x.orderId === ride.id) ?? null : null;
+  const state = session?.deviationState ?? {};
+  const changes: Array<{ from: string; to: string }> = (state.events ?? []).filter((e: any) => e.kind === 'TARGET_CHANGED').map((e: any) => ({ from: String(e.detail?.from), to: String(e.detail?.to) }));
+  const seen = changes.length > 0 ? [changes[0]!.from, ...changes.map((c) => c.to)] : [];
+  const expected = targets.slice(1).map((to, i) => `${targets[i]}>${to}`);
+  const chain = changes.map((c) => `${c.from}>${c.to}`);
+  // Every target, in order, once the waits ran; without them a 15-second sweep may step past a short visit.
+  const followed = waiting ? JSON.stringify(chain) === JSON.stringify(expected)
+    : seen.every((t, i) => targets.includes(t) && (i === 0 || targets.indexOf(t) > targets.indexOf(seen[i - 1]!)));
+  rec.check(`${label}: the safety monitor watches the trip and aims at each stop in turn, then the destination`,
+    !!session && session.status === 'MONITORING' && state.targetKey === 'DESTINATION' && followed,
+    `→ ${brief(board)} session=${session?.status ?? 'none'} target=${state.targetKey ?? '-'} changes=${chain.join(', ') || 'none'} (expected ${expected.join(', ')})`);
+  const flags = state.flags ?? {};
+  rec.check(`${label}: the waits at the stops raise no safety alarm (no long-stop, deviation or overdue flag, no check-in)`,
+    !!session && !flags.longStop && !flags.deviation && !flags.overdue && session.checkinRequestedAt == null,
+    `flags=${JSON.stringify(flags)} checkinRequestedAt=${session?.checkinRequestedAt ?? null} riskScore=${session?.riskScore}`);
+
+  // "Fare collected": the quoted fare, plus the waiting charge frozen once.
+  const paid = await POST(`/driver/rides/${ride.id}/handover`, { outcome: 'paid', gps: DROPOFF }, D.token);
+  rec.expect(`${label}: “Fare collected” at the destination`, paid, 200, undefined, `status=${paid.json?.data?.status}`);
+  const done = (await GET(`/rides/${ride.id}`, C7.token)).json?.data;
+  const dStops: any[] = done?.stops ?? [];
+  rec.check(`${label} reads DELIVERED, cash captured, every stop reached and left`,
+    done?.status === 'DELIVERED' && done?.paymentStatus === 'CAPTURED' && dStops.length === n && dStops.every((s) => s.status === 'DEPARTED' && !!s.arrivedAt && !!s.departedAt),
+    `status=${done?.status} payment=${done?.paymentStatus} stops=${JSON.stringify(dStops.map((s) => s.status))}`);
+  const fb = done?.fareBreakdown;
+  if (waiting) {
+    // The owner's rule, from the server's own clocks: the pickup (GPS arrival → the code) and each stop (arrival → departure).
+    const pickupMs = msBetween(done?.driverArrivedAt, done?.ridePinVerifiedAt ?? done?.pickedUpAt);
+    const stopMs = dStops.map((s) => msBetween(s.arrivedAt, s.departedAt ?? s.skippedAt));
+    const waits = [pickupMs, ...stopMs];
+    const totalS = Math.min(Math.floor(waits.reduce<number>((a, b) => a + (b ?? 0), 0) / 1000), 60 * 60);
+    const expectedCharge = Math.floor(totalS / blockS) * OWNER_WAITING.chargePerBlock;
+    const sec = (ms: number | null) => (ms === null ? '?' : (ms / 1000).toFixed(1));
+    const waitsText = `pickup ${sec(pickupMs)} s + stops ${stopMs.map(sec).join(' + ')} s = ${totalS} s (whole seconds, capped at an hour)`;
+    rec.check(`${label}: no single wait reached a block, but summed over the pickup and the stops they make exactly one`,
+      waits.every((w) => w !== null && w < blockS * 1000) && expectedCharge === OWNER_WAITING.chargePerBlock, waitsText);
+    rec.check(`${label}: the frozen waiting charge is floor(${totalS} s / ${OWNER_WAITING.blockMinutes} min) × ${OWNER_WAITING.chargePerBlock} = ${expectedCharge}, over ${Math.floor(totalS / 60)} min`,
+      fb?.waitingCharge === expectedCharge && fb?.waitingMinutes === Math.floor(totalS / 60),
+      `fareBreakdown=${JSON.stringify(fb ?? null)}; from the server clocks: ${waitsText}`);
+    rec.check(`${label}: the passenger pays the quoted route fare plus the waiting charge, nothing else`,
+      fb?.routeFare === fare && fb?.total === fare + expectedCharge && Number(done?.totalAmount) === fare + expectedCharge && Number(done?.taxiFareTotal) === fare,
+      `routeFare=${fb?.routeFare} total=${fb?.total} totalAmount=${done?.totalAmount} taxiFareTotal=${done?.taxiFareTotal} quoted=${fare}`);
+    const told = await waitForNotification(C7, (x) => x?.title === 'Ride Complete' && JSON.stringify(x).includes(ride.id));
+    rec.check(`${label}: the completion notice splits the trip and the waiting`,
+      !!told && String(told.body ?? '').includes(`(trip $${fare.toLocaleString()} + waiting $${expectedCharge.toLocaleString()})`), told ? String(told.body ?? '') : 'no notice in 20 s');
+  } else {
+    rec.check(`${label}: waiting is off, so nothing is added: the quoted fare is the fare`, !fb && Number(done?.totalAmount) === fare, `fareBreakdown=${fb ? 'present' : 'none'} totalAmount=${done?.totalAmount}`);
+    rec.skipCase(`${label}: the waiting charge over the pickup and the stops`,
+      'TAXI_WAITING_CHARGE is off on this target: no terms are shown, frozen or charged. Set TAXI_WAITING_CHARGE=1 on the private journeys instance to run the waiting cases.');
+  }
+  const receipt = await GET(`/customer/orders/${ride.id}/receipt`, C7.token);
+  const stopsLine = `Stops: ${route.map((s, i) => `${i + 1}. ${s.address}`).join(' · ')}`;
+  rec.check(`${label}: the receipt names the ${n} stops in order${waiting ? ' and itemises the waiting' : ''}`,
+    receipt.ok && receipt.text.includes(stopsLine) && !receipt.text.includes('(skipped)') && (!waiting || receipt.text.includes(`Waiting (${fb?.waitingMinutes} min)`)),
+    `→ ${brief(receipt)}`);
+  const con = await GET(`/admin/orders/${ride.id}`, ctx.admin.token);
+  const cStops: any[] = con.json?.data?.stops ?? [];
+  rec.check(`${label}: the console's order page shows every stop reached and left${waiting ? ', and the same fare breakdown' : ''}`,
+    con.ok && cStops.length === n && cStops.every((s) => s.status === 'DEPARTED' && !!s.arrivedAt && !!s.departedAt)
+      && (!waiting || JSON.stringify(con.json?.data?.fareBreakdown ?? null) === JSON.stringify(fb ?? null)),
+    `stops=${JSON.stringify(cStops.map((s) => s.status))} fareBreakdown=${JSON.stringify(con.json?.data?.fareBreakdown ?? null)}`);
+
+  // After the trip: the link says so and shows no car; the monitor stands down.
+  const after = await view();
+  rec.check(`${label}: the trip link now says the trip is over and shows no car`,
+    !!after && after.ok && after.json?.data?.ended === true && after.json?.data?.status === 'Trip completed' && after.json?.data?.location === null,
+    `→ ${after ? brief(after) : 'no link'} status=${after?.json?.data?.status} ended=${after?.json?.data?.ended}`);
+  const stood = await waitFor(async () => {
+    const r = await GET('/safety/guardian?status=live&limit=200', ctx.admin.token);
+    return r.ok && !(r.json?.data ?? []).some((x: any) => x.orderId === ride.id);
+  }, 60_000, 5_000);
+  rec.check(`${label}: the safety monitor stands down once the ride is delivered`, !!stood, stood ? 'session off the live board' : 'still live after 60 s');
+}
+
 export const TAXI_06: Journey<Ctx> = {
   id: 'TAXI-06',
-  estimateSeconds: 300,
-  title: 'A ride with a stop (TAXI_MAX_STOPS)',
-  cases: 'the stop count the app may offer; off: a stop refused at the quote, the request and the queue, nothing written; on: the whole route quoted, the quoted fare required, no stops in the queue, offered and given only to a driver app that runs stops, stop moves only in the trip by the ride’s driver, arrive/wait/leave and skip, no fare or no-show while a stop is open or inside its grace, the passenger told of a skip, the receipt and the console list the stops, a far arrival not verified (#1908)',
+  estimateSeconds: 1_100,
+  title: 'Rides with stops (TAXI_MAX_STOPS), and their waiting charge (TAXI_WAITING_CHARGE)',
+  cases: 'the stop count the app may offer; off: a stop refused at the quote, the request and the queue, nothing written; on: the whole route quoted, the quoted fare required, no stops in the queue, offered and given only to a driver app that runs stops, stop moves only in the trip by the ride’s driver, arrive/wait/leave and skip, no fare or no-show while a stop is open or inside its grace, the passenger told of a skip, the receipt and the console list the stops, a far arrival not verified (#1908); at 2-3 a ride through every stop allowed: the quote leg by leg, each leg frozen on its stop, stops only in order, each reached, waited at and left, the trip link and the safety monitor following the car stop by stop without an alarm, and with waiting on: the terms disclosed and echoed (a changed echo refused), the live wait on both screens, one block from waits summed over the pickup and the stops, frozen once and added to the quoted fare, on the receipt, the notice and the console',
   async run(rec, ctx) {
     const C7 = ctx.roster.customers.C7!.session;
-    rec.require('an L2 passenger was provisioned', !ctx.world.notReady.C7, ctx.world.notReady.C7 ?? '');
+    rec.require('a passenger was provisioned', !ctx.world.notReady.C7, ctx.world.notReady.C7 ?? '');
     const caps = await GET('/rides/capabilities', C7.token);
     const maxStops = Number(caps.json?.data?.maxStops);
     rec.require('GET /rides/capabilities says how many stops a ride may carry (0 to 3)', caps.ok && Number.isInteger(maxStops) && maxStops >= 0 && maxStops <= 3,
@@ -704,7 +954,12 @@ export const TAXI_06: Journey<Ctx> = {
     const plain = await quoteTrip(C7, []);
     rec.check('a ride without stops is quoted as always', plain.fare !== null, `→ ${brief(plain.res)} economy=${plain.fare}`);
     if (maxStops === 0) return stopsSwitchedOff(rec, C7);
-    return stopsSwitchedOn(rec, ctx, C7, maxStops, plain.fare);
+    // [TAXI waiting charge] On (TAXI_WAITING_CHARGE=1), the capability read discloses the market's terms.
+    const waiting = caps.json?.data?.waiting ?? null;
+    rec.check(`the capability read ${waiting ? 'discloses the waiting terms (TAXI_WAITING_CHARGE on)' : 'discloses no waiting terms (TAXI_WAITING_CHARGE off)'}`,
+      waiting === null || (Number.isFinite(waiting.chargePerBlock) && Number.isInteger(waiting.blockMinutes) && typeof waiting.text === 'string'),
+      `waiting=${JSON.stringify(waiting)}`);
+    return stopsSwitchedOn(rec, ctx, C7, maxStops, plain.fare, waiting);
   },
 };
 

@@ -47,7 +47,7 @@ export interface Actor { id: string; phone: string; lat: number; lng: number; ro
 export const ACTORS: Record<string, Actor> = {
   C4: { id: 'C4', phone: '+5920401004', lat: 6.8045, lng: -58.1633, roles: ['customer'] },
   C6: { id: 'C6', phone: '+5920401006', lat: 6.8150, lng: -58.1445, roles: ['customer'] },
-  C7: { id: 'C7', phone: '+5920401007', lat: 6.8110, lng: -58.1530, roles: ['customer'] }, // L2 (identity-reviewed): taxi requests need it
+  C7: { id: 'C7', phone: '+5920401007', lat: 6.8110, lng: -58.1530, roles: ['customer'] }, // the taxi passenger (L1: a ride needs no ID)
   C8: { id: 'C8', phone: '+5920401008', lat: 6.8140, lng: -58.1540, roles: ['customer'] }, // the courier sender
   R1: { id: 'R1', phone: '+5920402011', lat: 6.8090, lng: -58.1520, roles: ['store'] },
   R2: { id: 'R2', phone: '+5920402012', lat: 6.8210, lng: -58.1440, roles: ['store'] },
@@ -61,7 +61,7 @@ export const ACTORS: Record<string, Actor> = {
   SP1: { id: 'SP1', phone: '+5920404071', lat: 6.8105, lng: -58.1505, roles: ['provider'] },
 };
 
-/** Who plays each role unless --as says otherwise. Taxi rides need C7 (L2); courier sends are C8's. */
+/** Who plays each role unless --as says otherwise. Taxi rides are C7's; courier sends are C8's. */
 export const DEFAULT_ACTOR: Record<Exclude<Role, 'all'>, string> = { customer: 'C4', store: 'R1', rider: 'DR2', driver: 'T2', courier: 'DR3', provider: 'SP1' };
 const DEFAULT_FOR_ACTION: Record<string, string> = { 'customer ride': 'C7', 'customer ride-pin': 'C7', 'customer cancel-ride': 'C7', 'customer send': 'C8' };
 

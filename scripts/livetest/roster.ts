@@ -141,7 +141,7 @@ export async function seedRoster(log: (s: string) => void): Promise<Roster> {
 
 const JOURNEY_CUSTOMERS = [
   ...CUSTOMERS,
-  { id: 'C7', phone: '+5920401007', first: 'Gia', lat: 6.8110, lng: -58.1530 }, // taxi passenger (L2 via identity review)
+  { id: 'C7', phone: '+5920401007', first: 'Gia', lat: 6.8110, lng: -58.1530 }, // taxi passenger (L1: a ride needs no ID)
   { id: 'C8', phone: '+5920401008', first: 'Hal', lat: 6.8140, lng: -58.1540 }, // courier sender
 ];
 const JOURNEY_VENDORS = VENDORS.filter((v) => v.id !== 'SV1'); // services run through /services, not a SERVICE store
