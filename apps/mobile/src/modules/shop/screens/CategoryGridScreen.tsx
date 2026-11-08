@@ -8,7 +8,9 @@ import { color, fontSize, radius, space } from '@swift/ui';
 import { useDiscoveryCategories } from '../../../hooks/customer';
 import { useLocationStore } from '../../../stores/locationStore';
 import { grantedLocationFix } from '../../../lib/deviceLocation';
-import { CartBar, useCartBarClearance, EmptyState, ErrorState, Header, LoadingBlock, Screen, T } from '../../../kit';
+import { CartBar, useCartBarClearance, EmptyState, ErrorState, Header, Screen, T } from '../../../kit';
+import { ChipsSkeleton } from '../../../kit/skeletons';
+import { OFFLINE_FIRST_READ_MESSAGE, offlineFirstRead } from '../../../lib/offlineRead';
 
 // ---------------------------------------------------------------------------
 // "See all →" (#17 6.1): the full category grid, grouped by kind — the same
@@ -43,8 +45,12 @@ export function CategoryGridScreen() {
   return (
     <Screen>
       <Header title="Browse by category" />
-      {railQ.isLoading ? (
-        <LoadingBlock />
+      {offlineFirstRead(railQ) ? (
+        // [APP-SPEED D · review S3] A first read waiting for a connection is the offline state, never "nothing here".
+        <ErrorState message={OFFLINE_FIRST_READ_MESSAGE} onRetry={() => { void railQ.refetch(); }} />
+      ) : railQ.isLoading ? (
+        // [APP-SPEED D] The tiles' shapes on the first frame (Home's rail already holds this read when it shows).
+        <ChipsSkeleton shape="tile" count={12} style={{ paddingHorizontal: space['2xl'], marginTop: space.xl }} />
       ) : railQ.isError || !railQ.data?.enabled ? (
         <ErrorState onRetry={() => railQ.refetch()} />
       ) : categories.length === 0 ? (

@@ -263,12 +263,14 @@ export function useMarketDepth() {
   });
 }
 
-export function useMarketItems(params: { category?: string; sort?: string } = {}) {
+/** [APP-SPEED D] The Market feed's key and read, shared by the tab and by the read Home asks ahead of the tab's
+ *  first open (hooks/homeDoors): one question, never two shapes of it. */
+export function marketItemsRead(params: { category?: string; sort?: string } = {}) {
   const sort = params.sort ?? 'new';
-  return useInfiniteQuery({
-    queryKey: ['market', 'items', params.category ?? 'all', sort],
+  return {
+    queryKey: ['market', 'items', params.category ?? 'all', sort] as const,
     initialPageParam: undefined as string | undefined,
-    queryFn: async ({ pageParam }) => {
+    queryFn: async ({ pageParam }: { pageParam: string | undefined }) => {
       const res = await marketApi.items({
         ...(params.category ? { category: params.category } : {}),
         sort,
@@ -283,11 +285,21 @@ export function useMarketItems(params: { category?: string; sort?: string } = {}
       };
     },
     getNextPageParam: (last: { nextCursor: string | null }) => last.nextCursor ?? undefined,
-  });
+  };
+}
+
+export function useMarketItems(params: { category?: string; sort?: string } = {}) {
+  return useInfiniteQuery(marketItemsRead(params));
+}
+
+/** [APP-SPEED D] A store list's key and read (Search's Food and Groceries doors, a category's feed), shared by the
+ *  screen and by the read asked ahead of its door (hooks/homeDoors). */
+export function vendorsRead<T = any>(params?: Record<string, string>) {
+  return { queryKey: customerKeys.vendors(params), queryFn: () => unwrap<T>(customerApi.getVendors(params)) };
 }
 
 export function useVendors<T = any>(params?: Record<string, string>) {
-  return useQuery<T>({ queryKey: customerKeys.vendors(params), queryFn: () => unwrap<T>(customerApi.getVendors(params)) });
+  return useQuery<T>(vendorsRead<T>(params));
 }
 
 /** [B2] The search ENGINE — vendors AND dishes, typo-tolerant, ranked. The
@@ -296,13 +308,17 @@ export function useVendors<T = any>(params?: Record<string, string>) {
  *  sat with zero callers on any surface. */
 export function useSearch<T = any>(q: string, opts?: { type?: string; lat?: number; lng?: number }) {
   return useQuery<T>({
-    queryKey: customerKeys.search(q, opts?.type, opts?.lat, opts?.lng),
-    queryFn: () => unwrap<T>(customerApi.search(q, opts)),
+    ...searchRead<T>(q, opts),
     enabled: q.trim().length >= 2,
     // Type-ahead cadence: keep the previous page while the next keystroke's
     // answer arrives, so the list never flashes empty mid-word.
     placeholderData: keepPreviousData,
   });
+}
+
+/** [APP-SPEED D] The engine search's key and read, shared by Search and by a category tile's press-in read. */
+export function searchRead<T = any>(q: string, opts?: { type?: string; lat?: number; lng?: number }) {
+  return { queryKey: customerKeys.search(q, opts?.type, opts?.lat, opts?.lng), queryFn: () => unwrap<T>(customerApi.search(q, opts)) };
 }
 
 export function useSearchSuggestions<T = any>(q: string) {
@@ -442,8 +458,13 @@ export function useItemSlots<T = any>(itemId: string, date: string) {
   });
 }
 
+/** [APP-SPEED D] The favourites list's key and read, shared by the screen and the read asked ahead of its door. */
+export function favoritesRead<T = any>() {
+  return { queryKey: ['customer', 'favorites'] as const, queryFn: () => unwrap<T>(customerApi.getFavorites()) };
+}
+
 export function useFavorites<T = any>() {
-  return useQuery<T>({ queryKey: ['customer', 'favorites'], queryFn: () => unwrap<T>(customerApi.getFavorites()) });
+  return useQuery<T>(favoritesRead<T>());
 }
 
 /** [TAP-AUDIT 27 Oct] The store page's heart fills (or empties) at the tap: the store's own read takes the new state at
@@ -481,17 +502,22 @@ export function useOrders<T = any>() {
  *  HISTORY ONLY. Live orders come from `useLiveOrders` below and are not a
  *  slice of this feed — see the comment there for why that mattered. */
 export function useOrdersInfinite() {
-  return useInfiniteQuery({
-    queryKey: [...customerKeys.orders, 'infinite', 'history'],
+  return useInfiniteQuery(ordersHistoryRead());
+}
+
+/** [APP-SPEED D] The history's key and page read, shared by the screen and the read asked ahead of its door. */
+export function ordersHistoryRead() {
+  return {
+    queryKey: [...customerKeys.orders, 'infinite', 'history'] as const,
     initialPageParam: 1,
-    queryFn: async ({ pageParam }) => {
-      const res = await customerApi.getOrders(pageParam as number, { live: false });
+    queryFn: async ({ pageParam }: { pageParam: number }) => {
+      const res = await customerApi.getOrders(pageParam, { live: false });
       const body = res?.data ?? {};
       return { items: (body.data ?? []) as OrderProjection[], meta: body.meta ?? { page: 1, totalPages: 1 } };
     },
     getNextPageParam: (last: { meta: { page: number; totalPages: number } }) =>
       last.meta.page < last.meta.totalPages ? last.meta.page + 1 : undefined,
-  });
+  };
 }
 
 /**
@@ -519,9 +545,16 @@ const LIVE_ORDERS_LIMIT = 50;
 export function useLiveOrders(poll?: () => number, enabled = true) {
   return useQuery({
     enabled,
-    queryKey: [...customerKeys.orders, 'live'],
+    ...liveOrdersRead(),
     refetchInterval: poll ? (query) => ((query.state.data?.items.length ?? 0) > 0 ? poll() : false) : false,
-    queryFn: async () => {
+  });
+}
+
+/** [APP-SPEED D] The live orders' key and read, shared by the screens and the read asked ahead of the Orders door. */
+export function liveOrdersRead() {
+  return {
+    queryKey: [...customerKeys.orders, 'live'] as const,
+    queryFn: async (): Promise<{ items: OrderProjection[]; total: number | null }> => {
       const res = await customerApi.getOrders(1, { live: true, limit: LIVE_ORDERS_LIMIT });
       const body = res?.data ?? {};
       return {
@@ -529,7 +562,7 @@ export function useLiveOrders(poll?: () => number, enabled = true) {
         total: typeof body.meta?.total === 'number' ? (body.meta.total as number) : null,
       };
     },
-  });
+  };
 }
 
 /**

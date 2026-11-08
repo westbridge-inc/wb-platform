@@ -9,7 +9,9 @@ import { useAuthStore } from '../../../stores/authStore';
 import { vendorPhoto } from '../../../lib/images';
 import { useVendorPrefetch } from '../../../hooks/storeDoor';
 import { storePreviewOf } from '../../../lib/doorPreview';
-import { CartBar, useCartBarClearance, EmptyState, ErrorState, FoodCard, Header, LoadingBlock, Screen } from '../../../kit';
+import { CartBar, useCartBarClearance, EmptyState, ErrorState, FoodCard, Header, Screen } from '../../../kit';
+import { GridSkeleton } from '../../../kit/skeletons';
+import { OFFLINE_FIRST_READ_MESSAGE, offlineFirstRead } from '../../../lib/offlineRead';
 
 const SCREEN_W = Dimensions.get('window').width;
 const GUTTER = space['2xl'];
@@ -40,8 +42,12 @@ export function FavoritesScreen() {
   return (
     <Screen>
       <Header title="Favourites" />
-      {favorites.isLoading ? (
-        <LoadingBlock />
+      {offlineFirstRead(favorites) ? (
+        // [APP-SPEED D · review S3] A first read waiting for a connection is the offline state, never "nothing here".
+        <ErrorState message={OFFLINE_FIRST_READ_MESSAGE} onRetry={() => { void favorites.refetch(); }} />
+      ) : favorites.isLoading ? (
+        // [APP-SPEED D] The cards' shapes on the first frame (Home reads the list ahead of this door).
+        <GridSkeleton />
       ) : favorites.isError ? (
         <ErrorState onRetry={() => favorites.refetch()} />
       ) : rows.length === 0 ? (
