@@ -76,6 +76,7 @@ export function createInAppReach(deps: ReachDeps): InAppReach {
   let generation = 0;
   /** Orders whose card was closed without an answer this run: not asked again until the next start. */
   const laterThisRun = new Set<string>();
+  let laterWithoutIds = false;
   let next: ReachSignal | null = null;
   let running: Promise<ReachOutcome | null> | null = null;
   let lastOutcome: ReachOutcome | null = null;
@@ -106,14 +107,24 @@ export function createInAppReach(deps: ReachDeps): InAppReach {
     try { memory = parseMicMemory(deps.memory.get()); } catch { /* unreadable: never asked */ }
     if (!mayAskForMic(memory, signal.orderIds, deps.now())) return 'mic-off';
     if (signal.orderIds.length > 0 && signal.orderIds.every((id) => laterThisRun.has(id))) return 'mic-off';
+    // [follow-up 3] Live rows without ids cannot be remembered per order: one closed card is enough for this run.
+    if (signal.orderIds.length === 0 && laterWithoutIds) return 'mic-off';
     if (!deps.askMoment()) return 'waiting';
     const card = deps.ask(signal.audience ?? 'customer');
     if (!card) return 'waiting'; // another card is showing: asked when it is gone
+    // [follow-up 1] An answer that lands after a sign-out (the card left over a forced logout) belongs to the old
+    // account: it is never stored.
     const refuse = (never = false): ReachOutcome => {
+      if (gen !== generation) return 'stale';
       try { deps.memory.set(JSON.stringify(rememberMicRefusal(memory, signal.orderIds, deps.now(), never))); } catch { /* best effort */ }
       return 'mic-refused';
     };
-    const later = (): ReachOutcome => { for (const id of signal.orderIds) laterThisRun.add(id); return 'mic-later'; };
+    const later = (): ReachOutcome => {
+      if (gen !== generation) return 'stale';
+      for (const id of signal.orderIds) laterThisRun.add(id);
+      if (signal.orderIds.length === 0) laterWithoutIds = true;
+      return 'mic-later';
+    };
     const answer = await within(card.catch((): CallsMicAnswer => 'dismissed'));
     if (answer === TIMED_OUT) { deps.cancelAsk(); return later(); }
     if (answer === 'dismissed') return later();
@@ -204,6 +215,9 @@ export function createInAppReach(deps: ReachDeps): InAppReach {
       lastCheck = 0;
       next = null;
       laterThisRun.clear();
+      laterWithoutIds = false;
+      // [follow-up 1] A card still showing for the old account is closed (its answer is dropped above).
+      deps.cancelAsk();
     },
   };
 }

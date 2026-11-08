@@ -115,8 +115,19 @@ export function UpdateRequiredScreen({ platform, country }: { platform: StorePla
 
 /** [CALLS-REACH] Is the update gate covering the app? Nothing else asks the person anything meanwhile. */
 let gateShowing = false;
+const gateListeners = new Set<() => void>();
 export function updateGateShowing(): boolean {
   return gateShowing;
+}
+/** [CALLS-REACH follow-up 2] Told when the gate opens or closes (a question held back by it may be asked now). */
+export function onUpdateGateChange(listener: () => void): () => void {
+  gateListeners.add(listener);
+  return () => { gateListeners.delete(listener); };
+}
+function setGateShowing(on: boolean): void {
+  if (gateShowing === on) return;
+  gateShowing = on;
+  gateListeners.forEach((listener) => listener());
 }
 
 export function UpdateRequiredGate({ readBuild = nativeBuildNumber }: { readBuild?: () => string | null }) {
@@ -125,8 +136,8 @@ export function UpdateRequiredGate({ readBuild = nativeBuildNumber }: { readBuil
   const platform = storePlatformOf(Platform.OS);
   const showing = required && !!platform;
   useEffect(() => {
-    gateShowing = showing;
-    return () => { gateShowing = false; };
+    setGateShowing(showing);
+    return () => setGateShowing(false);
   }, [showing]);
   if (!required || !platform) return null;
   return (

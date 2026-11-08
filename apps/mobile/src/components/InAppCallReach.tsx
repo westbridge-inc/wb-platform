@@ -17,9 +17,9 @@ import {
   type ReachDeps,
 } from '../services/inAppReach';
 import { mayBeRegistered, inAppVoiceAvailable, registerForInAppCallsResult, unregisterInAppCalls, voicePlatform } from '../services/inAppVoice';
-import { answerCallsMicrophone, askCallsMicrophone, primeCardShowing } from '../services/notification-priming';
+import { answerCallsMicrophone, askCallsMicrophone, primeCardShowing, usePrimeStore } from '../services/notification-priming';
 import { useAuthStore } from '../stores/authStore';
-import { updateGateShowing } from './UpdateRequiredGate';
+import { onUpdateGateChange, updateGateShowing } from './UpdateRequiredGate';
 
 // ---------------------------------------------------------------------------
 // [CALLS-REACH · live test 8 Nov 2026] App-wide: a phone on a live order can be rung in the app, not only
@@ -162,11 +162,30 @@ export function InAppCallReach(): null {
     };
     run(true);
     const unsubscribe = queryClient.getQueryCache().subscribe((event) => {
-      if ((event.type === 'updated' || event.type === 'added' || event.type === 'removed') && isReachKey(event.query.queryKey)) run(false);
+      if (event.type !== 'updated' && event.type !== 'added' && event.type !== 'removed') return;
+      if (isReachKey(event.query.queryKey)) run(false);
+      // [follow-up 2] The terms answer arrived or changed: a microphone ask held back by it may go now.
+      else if (event.query.queryKey[0] === 'legal-acceptance') run(true);
     });
-    // A fitting screen opened (the Android microphone may be asked now).
+    // [follow-up 2] Run again the moment each thing that holds the Android microphone ask back is gone: a fitting
+    // screen opens, the launch quiet ends (a cold start straight into order tracking from a push tap), the card
+    // slot frees up, the update gate closes. Asking is still the controller's call (never twice, never a nag).
     const offMoment = onCallsAskMoment(() => run(true));
-    return () => { stopped = true; unsubscribe(); offMoment(); };
+    const quietLeft = LAUNCH_QUIET_MS - sinceLaunch();
+    const launchTimer = quietLeft > 0 ? setTimeout(() => run(true), quietLeft + 50) : undefined;
+    const offSlot = usePrimeStore.subscribe((state, previous) => {
+      const busy = (x: typeof state) => x.visibleMoment != null || x.micAsk != null;
+      if (busy(previous) && !busy(state)) run(true);
+    });
+    const offGate = onUpdateGateChange(() => { if (!updateGateShowing()) run(true); });
+    return () => {
+      stopped = true;
+      unsubscribe();
+      offMoment();
+      if (launchTimer) clearTimeout(launchTimer);
+      offSlot();
+      offGate();
+    };
   }, [signedIn, enabled, front, sessionGeneration, holdsStore, holdsMover]);
 
   return null;

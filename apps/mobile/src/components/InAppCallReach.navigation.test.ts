@@ -25,6 +25,7 @@ const fx = vi.hoisted(() => ({
   configReads: 0,
   sinceLaunch: 60_000,
   gate: false,
+  gateListeners: new Set<() => void>(),
 }));
 
 vi.mock('react-native', () => ({
@@ -52,7 +53,10 @@ vi.mock('react-native-mmkv', () => {
 vi.mock('../hooks/customer', () => ({ useLiveOrders: (...args: unknown[]) => { fx.liveOrdersArgs.push(args); } }));
 vi.mock('../hooks/useInAppCall', () => ({ loadInAppConfig: async () => { fx.configReads += 1; return { enabled: true }; } }));
 vi.mock('../lib/queryClient', () => ({ get queryClient() { return fx.client; } }));
-vi.mock('./UpdateRequiredGate', () => ({ updateGateShowing: () => fx.gate }));
+vi.mock('./UpdateRequiredGate', () => ({
+  updateGateShowing: () => fx.gate,
+  onUpdateGateChange: (listener: () => void) => { fx.gateListeners.add(listener); return () => fx.gateListeners.delete(listener); },
+}));
 vi.mock('../services/inAppVoice', () => ({
   inAppVoiceAvailable: () => fx.available,
   mayBeRegistered: () => fx.registered,
@@ -77,7 +81,7 @@ vi.mock('../stores/authStore', async () => {
 import { QueryClient } from '@tanstack/react-query';
 import { InAppCallReach, callsAskMomentNow } from './InAppCallReach';
 import { useAuthStore } from '../stores/authStore';
-import { closeCallsAskMoment, openCallsAskMoment, resetCallsAskMomentsForTests } from '../services/inAppReach';
+import { LAUNCH_QUIET_MS, closeCallsAskMoment, openCallsAskMoment, resetCallsAskMomentsForTests } from '../services/inAppReach';
 import { answerCallsMicrophone, resetPrimingForTests, usePrimeStore } from '../services/notification-priming';
 import { INAPP_WORDS } from '../lib/inAppCalls';
 
@@ -101,6 +105,7 @@ beforeEach(() => {
     appState: 'active', appListeners: 0, available: true, platform: 'ios', mic: true, micAnswer: 'granted', registered: false,
     server: 'registered', calls: [], liveOrdersArgs: [], configReads: 0, sinceLaunch: 60_000, gate: false,
   });
+  fx.gateListeners.clear();
   resetCallsAskMomentsForTests();
   resetPrimingForTests();
   signIn();
@@ -274,6 +279,88 @@ describe('[CALLS-REACH · review S2-2] Android\'s microphone: only at a fitting 
 
   it('the card shows the mic words in Swift\'s voice', async () => {
     expect(INAPP_WORDS.reachWhyCustomer).toBe('So the store, rider or driver can call you in Swift, allow the microphone. Swift never records calls.');
+  });
+});
+
+// [CALLS-REACH follow-ups 1-2] Asked as soon as what held it back is gone; a card left over a sign-out stores nothing.
+describe('[CALLS-REACH follow-ups] the ask comes back once it is allowed, and a sign-out closes it', () => {
+  beforeEach(() => { fx.platform = 'android'; fx.mic = false; });
+  const cardUp = () => usePrimeStore.getState().micAsk;
+
+  it('a cold start straight into order tracking (a push tap): held back by the launch quiet, asked when it ends', async () => {
+    fx.sinceLaunch = LAUNCH_QUIET_MS - 20; // the screen opened inside the first seconds after launch
+    termsAccepted();
+    openCallsAskMoment();
+    fx.client.setQueryData(['customer', 'orders', 'live'], pickup);
+    await draw();
+    await settle();
+    expect(cardUp()).toBeNull();
+    fx.sinceLaunch = LAUNCH_QUIET_MS; // the one-shot timer fires at the end of the quiet
+    await act(async () => { await new Promise((r) => setTimeout(r, 120)); });
+    await settle();
+    expect(cardUp()).toBe('customer');
+    await act(async () => { answerCallsMicrophone('dismissed'); });
+  });
+
+  it('the notifications card was showing: the microphone card follows once the slot is free', async () => {
+    termsAccepted();
+    usePrimeStore.getState().show('customer_order');
+    openCallsAskMoment();
+    fx.client.setQueryData(['customer', 'orders', 'live'], pickup);
+    await draw();
+    await settle();
+    expect(cardUp()).toBeNull();
+    await act(async () => { usePrimeStore.getState().dismiss(); });
+    await settle();
+    expect(cardUp()).toBe('customer');
+    await act(async () => { answerCallsMicrophone('dismissed'); });
+  });
+
+  it('the update gate closes: asked then', async () => {
+    termsAccepted();
+    fx.gate = true;
+    openCallsAskMoment();
+    fx.client.setQueryData(['customer', 'orders', 'live'], pickup);
+    await draw();
+    await settle();
+    expect(cardUp()).toBeNull();
+    await act(async () => { fx.gate = false; fx.gateListeners.forEach((l) => l()); });
+    await settle();
+    expect(cardUp()).toBe('customer');
+    await act(async () => { answerCallsMicrophone('dismissed'); });
+  });
+
+  it('the terms are accepted again: asked then', async () => {
+    fx.client.setQueryData(['legal-acceptance', auth.getState().sessionGeneration], { needsAcceptance: true });
+    openCallsAskMoment();
+    fx.client.setQueryData(['customer', 'orders', 'live'], pickup);
+    await draw();
+    await settle();
+    expect(cardUp()).toBeNull();
+    await act(async () => { termsAccepted(); });
+    await settle();
+    expect(cardUp()).toBe('customer');
+    await act(async () => { answerCallsMicrophone('dismissed'); });
+  });
+
+  it('a card left over a forced sign-out is closed, and the old account\'s card stores no refusal', async () => {
+    termsAccepted();
+    openCallsAskMoment();
+    fx.client.setQueryData(['customer', 'orders', 'live'], pickup);
+    await draw();
+    await settle();
+    expect(cardUp()).toBe('customer');
+    await act(async () => { auth.setState({ isAuthenticated: false, user: null, sessionGeneration: auth.getState().sessionGeneration + 1 }); });
+    await settle();
+    expect(cardUp()).toBeNull();
+    // the next account on this phone, on the same order: asked (nothing was stored for the old one)
+    signIn({ id: 'u4', roles: ['CUSTOMER'] });
+    termsAccepted();
+    fx.client.setQueryData(['customer', 'orders', 'live'], pickup);
+    await draw();
+    await settle();
+    expect(cardUp()).toBe('customer');
+    await act(async () => { answerCallsMicrophone('dismissed'); });
   });
 });
 
