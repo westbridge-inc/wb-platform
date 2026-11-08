@@ -206,7 +206,8 @@ export function customerCancellationWords(order: CustomerCancellationFacts | nul
     if (order.paymentMethod === 'MOBILE_MONEY' && order.paymentStatus === 'PENDING') {
       return `If you already sent the MMG payment, the ${party} refunds you directly.`;
     }
-    if (order.paymentMethod === 'CASH' && by !== 'SWIFT') return 'You weren’t charged.';
+    // Cash still marked unpaid: nothing was collected (a recorded collection would say otherwise).
+    if (order.paymentMethod === 'CASH' && order.paymentStatus === 'PENDING' && by !== 'SWIFT') return 'You weren’t charged.';
     return null;
   };
 
