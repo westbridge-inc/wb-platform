@@ -319,11 +319,18 @@ const inCallListeners = new Set<() => void>();
 const endedSids = new Set<string>();
 const sidOf = (call: SdkCall): string | undefined => { try { return call.getSid?.() ?? undefined; } catch { return undefined; } };
 
-/** Stop following the call on the bar: its listeners come off, and it is never picked up again. */
-function release(entry: NonNullable<typeof current>): void {
+/**
+ * Stop following the call on the bar: its listeners come off, a Mute/Speaker change still on its way for it no
+ * longer holds the buttons (review A2: a native answer that never comes must not leave them dead), and it is never
+ * picked up again. `sameCallFollows`: the SDK handed over another object for this SAME call (review A1), so its SID
+ * stays live (CallKit's Mute is still read back for it).
+ */
+function release(entry: NonNullable<typeof current>, sameCallFollows = false): void {
   entry.off();
+  muteInFlight = null;
+  speakerInFlight = null;
   const sid = sidOf(entry.call);
-  if (sid) {
+  if (sid && !sameCallFollows) {
     endedSids.add(sid);
     if (endedSids.size > 20) endedSids.delete(endedSids.values().next().value as string);
   }
@@ -408,7 +415,9 @@ function trackCall(call: SdkCall, onEnded?: () => void, onFailed?: () => void): 
       try { call.removeListener?.(event, listener); } catch { /* best effort */ }
     }
   };
-  if (current) release(current); // one call on the bar at a time: the newest
+  // One call on the bar at a time: the newest. The same call under a new object (a sync found it before the
+  // answer's own object arrived) only moves the listeners over.
+  if (current) { const sid = sidOf(call); release(current, !!sid && sidOf(current.call) === sid); }
   current = { call, onEnded, off, snap: { phase, connectedAt, muted, speaker: false, routePicker: false } };
   try {
     for (const pair of listeners) { call.on(pair[0], pair[1]); added.push(pair); }
@@ -473,15 +482,15 @@ export async function syncInAppCalls(): Promise<void> {
 
 /** [CALLS-UX review S4] A Mute or Speaker change on its way to the SDK: a second quick tap is ignored until it lands
  *  (the bar's button still shows the old state, so that tap would send the same value again). */
-let muteInFlight = false;
-let speakerInFlight = false;
+let muteInFlight: SdkCall | null = null;
+let speakerInFlight: SdkCall | null = null;
 
 /** Mute or unmute this side of the call (the SDK's call.mute). Resolves with the muted state the SDK reports, or
  *  null when nothing was sent (no call, no SDK member, or a change already on its way). */
 export async function setInCallMuted(muted: boolean): Promise<boolean | null> {
   const c = current;
-  if (!c?.call.mute || muteInFlight) return null;
-  muteInFlight = true;
+  if (!c?.call.mute || muteInFlight === c.call) return null;
+  muteInFlight = c.call;
   try {
     const now = await c.call.mute(muted);
     patch(c.call, { muted: now === true });
@@ -489,7 +498,7 @@ export async function setInCallMuted(muted: boolean): Promise<boolean | null> {
   } catch {
     return null;
   } finally {
-    muteInFlight = false;
+    if (muteInFlight === c.call) muteInFlight = null;
   }
 }
 
@@ -501,8 +510,8 @@ export async function setInCallMuted(muted: boolean): Promise<boolean | null> {
 export async function setInCallSpeaker(on: boolean): Promise<boolean> {
   const c = current;
   const v = getVoice();
-  if (!c || !v?.getAudioDevices || speakerInFlight) return false;
-  speakerInFlight = true;
+  if (!c || !v?.getAudioDevices || speakerInFlight === c.call) return false;
+  speakerInFlight = c.call;
   try {
     const { audioDevices } = await v.getAudioDevices();
     if (Platform.OS === 'ios' && v.showAvRoutePickerView && audioDevices.some((d) => d.type === 'bluetooth')) {
@@ -518,7 +527,7 @@ export async function setInCallSpeaker(on: boolean): Promise<boolean> {
     await readRoute(c.call);
     return false;
   } finally {
-    speakerInFlight = false;
+    if (speakerInFlight === c.call) speakerInFlight = null;
   }
 }
 
@@ -572,7 +581,7 @@ export async function endInAppCall(): Promise<void> {
 /** Tests only: forget everything; `loader` stands in for the package (default: the real one). */
 export function resetInAppVoiceForTests(loader: () => unknown = defaultLoad, flagsFactory: () => FlagStore = defaultFlags): void {
   sdk = undefined; voice = null; started = false; registeredAt = 0; current = null; watched = null; load = loader;
-  inCallListeners.clear(); endedSids.clear(); muteInFlight = false; speakerInFlight = false;
+  inCallListeners.clear(); endedSids.clear(); muteInFlight = null; speakerInFlight = null;
   voiceGeneration = 0; marks = 0;
   flagStore = undefined; makeFlags = flagsFactory;
 }

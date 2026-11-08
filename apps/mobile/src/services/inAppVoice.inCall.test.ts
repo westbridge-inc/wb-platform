@@ -388,3 +388,60 @@ describe('[CALLS-UX review S4] call objects: deduped by SID, listeners removed w
     expect(voice.inCallSnapshot()).toBeNull();
   });
 });
+
+describe('[CALLS-UX delta review] same call, new object; a native answer that never comes', () => {
+  it('A1: a sync found the answered call before the answer\'s own object arrived: CallKit\'s Mute is still read back', async () => {
+    rn.os = 'ios';
+    await voice.startInAppVoice();
+    const fromSync = new FakeCall('CA11');
+    fromSync.state = 'connected';
+    sdk.held = [fromSync];
+    await voice.syncInAppCalls();
+    expect(voice.inCallSnapshot()).not.toBeNull();
+    const invite = new Emitter();
+    sdk.voice.emit('callInvite', invite);
+    const fromAnswer = new FakeCall('CA11');
+    fromAnswer.state = 'connected';
+    invite.emit('accepted', fromAnswer);
+    expect(fromSync.total()).toBe(0); // the listeners moved to the newer object
+    const muted = new FakeCall('CA11');
+    muted.state = 'connected';
+    muted.muted = true;
+    sdk.held = [muted];
+    await voice.syncInAppCalls();
+    expect(voice.inCallSnapshot()?.muted).toBe(true);
+  });
+
+  it('A2: Mute and Speaker that never answered do not hold the buttons on the next call', async () => {
+    const first = new FakeCall('CA12');
+    sdk.nextCall = first;
+    await voice.placeInAppCall('o1', 'rider', deps());
+    first.mute.mockImplementationOnce(() => new Promise<boolean>(() => undefined));
+    sdk.devices[1]!.select.mockImplementationOnce(() => new Promise<void>(() => undefined));
+    void voice.setInCallMuted(true);
+    void voice.setInCallSpeaker(true);
+    await flush();
+    expect(await voice.setInCallMuted(true)).toBeNull(); // still on its way for this call
+    first.emit('disconnected');
+    const second = new FakeCall('CA13');
+    sdk.nextCall = second;
+    await voice.placeInAppCall('o1', 'rider', deps());
+    expect(await voice.setInCallMuted(true)).toBe(true);
+    expect(second.mute).toHaveBeenCalledWith(true);
+    expect(await voice.setInCallSpeaker(true)).toBe(true);
+    expect(sdk.devices[1]!.select).toHaveBeenCalledTimes(2);
+  });
+
+  it('A2: also when a newer call replaces one whose change never answered', async () => {
+    const first = new FakeCall('CA14');
+    sdk.nextCall = first;
+    await voice.placeInAppCall('o1', 'rider', deps());
+    first.mute.mockImplementationOnce(() => new Promise<boolean>(() => undefined));
+    void voice.setInCallMuted(true);
+    await flush();
+    const second = new FakeCall('CA15');
+    sdk.nextCall = second;
+    await voice.placeInAppCall('o1', 'rider', deps());
+    expect(await voice.setInCallMuted(true)).toBe(true);
+  });
+});
