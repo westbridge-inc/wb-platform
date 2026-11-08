@@ -25,7 +25,8 @@ import {
 } from '@/lib/vendor-api';
 import { statusChip, timeAgo } from './order-chip';
 // The app's own O-4 rules and words (plain file, imported as is).
-import { OUT_OF_STOCK_WORDS, canMarkOutOfStock, customerDeciding, lastItemAfterAccept, lastLineStanding, lineStockWords, nothingLeftToHandOver, nothingToAccept, storeCanReject } from '../../../../../mobile/src/modules/vendor/storeOrderRules';
+import { OUT_OF_STOCK_WORDS, canMarkOutOfStock, customerDeciding, lastLineStanding, lineStockWords, nothingToAccept } from '../../../../../mobile/src/modules/vendor/storeOrderRules';
+import { ACCEPTED_OUT_OF_STOCK_WORDS, lastItemAfterAccept, nothingLeftToHandOver, storeCanReject } from '../../../../../mobile/src/modules/vendor/acceptedOutOfStock';
 import { HANDOVER_WORDS, canMarkHandedToRider, handoverNeedsNoCode, pickupCheckWords } from '../../../../../mobile/src/modules/vendor/storeHandover';
 import { handedToRider } from '@/lib/store-handover-api';
 import { RiderHandoverLine } from '@/components/rider-handover-line';
@@ -218,7 +219,7 @@ function PickList({ order, onBusy }: { order: VendorOrder; onBusy: boolean }) {
     <div className="mt-4 rounded-xl border border-[var(--swift-border)] bg-[var(--swift-subtle)] p-4">
       <p className={`text-sm font-bold${open === 0 && fulfilled === 0 ? ' text-[var(--swift-red)]' : ''}`}>{pickingSummary}</p>
       <MutationNotice errors={[pickedMut.error, subMut.error, refundMut.error]} className="mt-2" />
-      {ended && <p role="status" className="mt-2 text-sm font-semibold text-[var(--swift-ink)]">{OUT_OF_STOCK_WORDS.orderEnded}</p>}
+      {ended && <p role="status" className="mt-2 text-sm font-semibold text-[var(--swift-ink)]">{ACCEPTED_OUT_OF_STOCK_WORDS.orderEnded}</p>}
       <div className="mt-2 space-y-2">
         {order.items.map((it) => (
           <div key={it.id} className="rounded-lg bg-[var(--swift-card)] p-3">
@@ -265,10 +266,10 @@ function PickList({ order, onBusy }: { order: VendorOrder; onBusy: boolean }) {
             </div>
             {lastRemoveFor === it.id && (
               <div role="group" aria-label="Remove the last item" className="mt-2 rounded-lg bg-[var(--swift-red)]/5 p-3">
-                <p className="text-sm font-semibold text-[var(--swift-red)]">{OUT_OF_STOCK_WORDS.lastRemoveAsk}</p>
+                <p className="text-sm font-semibold text-[var(--swift-red)]">{ACCEPTED_OUT_OF_STOCK_WORDS.lastRemoveAsk}</p>
                 <div className="mt-2 flex flex-wrap gap-2">
-                  <button type="button" disabled={busy} onClick={() => removeOrAsk(it)} className="min-h-11 rounded-lg bg-[var(--swift-red)] px-4 text-sm font-semibold text-white disabled:opacity-50">{OUT_OF_STOCK_WORDS.lastRemoveYes}</button>
-                  <button type="button" disabled={busy} onClick={() => setLastRemoveFor(null)} className="min-h-11 rounded-lg border border-[var(--swift-border)] px-4 text-sm font-semibold disabled:opacity-50">{OUT_OF_STOCK_WORDS.lastRemoveKeep}</button>
+                  <button type="button" disabled={busy} onClick={() => removeOrAsk(it)} className="min-h-11 rounded-lg bg-[var(--swift-red)] px-4 text-sm font-semibold text-white disabled:opacity-50">{ACCEPTED_OUT_OF_STOCK_WORDS.lastRemoveYes}</button>
+                  <button type="button" disabled={busy} onClick={() => setLastRemoveFor(null)} className="min-h-11 rounded-lg border border-[var(--swift-border)] px-4 text-sm font-semibold disabled:opacity-50">{ACCEPTED_OUT_OF_STOCK_WORDS.lastRemoveKeep}</button>
                 </div>
               </div>
             )}
@@ -276,9 +277,9 @@ function PickList({ order, onBusy }: { order: VendorOrder; onBusy: boolean }) {
               <div className="mt-2 border-t border-[var(--swift-border)] pt-2">
                 {/* [OOS-FLOW · owner 8 Nov 2026] Both ways out, by name: remove it, or offer a replacement the
                     customer approves or declines in the app. */}
-                <p className="text-xs font-semibold text-[var(--swift-muted)]">{OUT_OF_STOCK_WORDS.menuTitle}</p>
-                <p className="mt-1 text-xs text-[var(--swift-muted)]">{OUT_OF_STOCK_WORDS.offerTitle}</p>
-                {candidates(it, allFor === it.id).length === 0 && <p className="mt-1 text-xs text-[var(--swift-muted)]">{OUT_OF_STOCK_WORDS.noReplacement}</p>}
+                <p className="text-xs font-semibold text-[var(--swift-muted)]">{ACCEPTED_OUT_OF_STOCK_WORDS.menuTitle}</p>
+                <p className="mt-1 text-xs text-[var(--swift-muted)]">{ACCEPTED_OUT_OF_STOCK_WORDS.offerTitle}</p>
+                {candidates(it, allFor === it.id).length === 0 && <p className="mt-1 text-xs text-[var(--swift-muted)]">{ACCEPTED_OUT_OF_STOCK_WORDS.noReplacement}</p>}
                 <div className="mt-1 flex flex-wrap gap-1.5">
                   {allFor !== it.id && (
                     <button
@@ -287,7 +288,7 @@ function PickList({ order, onBusy }: { order: VendorOrder; onBusy: boolean }) {
                       disabled={busy}
                       className="rounded-full border border-dashed border-[var(--swift-border)] px-2.5 py-1 text-xs hover:border-[var(--swift-red)]"
                     >
-                      {OUT_OF_STOCK_WORDS.showAll}
+                      {ACCEPTED_OUT_OF_STOCK_WORDS.showAll}
                     </button>
                   )}
                   {candidates(it, allFor === it.id).map((c) => (
@@ -310,7 +311,7 @@ function PickList({ order, onBusy }: { order: VendorOrder; onBusy: boolean }) {
                     title={mmgLocked ? MMG_LINE_LOCK : undefined}
                     className="rounded-full bg-black/5 px-2.5 py-1 text-xs font-semibold disabled:opacity-50"
                   >
-                    {OUT_OF_STOCK_WORDS.removeItem}
+                    {ACCEPTED_OUT_OF_STOCK_WORDS.removeItem}
                   </button>
                   {mmgLocked && (
                     <span className="text-xs text-[var(--swift-muted)]">{MMG_LINE_LOCK}</span>
@@ -561,10 +562,10 @@ export function OrderDetail({ id, onClose }: { id: string; onClose: () => void }
           refused, so say why and give the way out, never a silent failure. */}
       {!paused && nothingLeftToHandOver(o) && (
         <div role="status" className="mt-4 rounded-lg bg-amber-50 p-3 text-sm text-amber-900">
-          <p className="font-semibold">{storeCanReject(o) ? OUT_OF_STOCK_WORDS.emptied : OUT_OF_STOCK_WORDS.emptiedSupport}</p>
+          <p className="font-semibold">{storeCanReject(o) ? ACCEPTED_OUT_OF_STOCK_WORDS.emptied : ACCEPTED_OUT_OF_STOCK_WORDS.emptiedSupport}</p>
           {storeCanReject(o) && (
             <button type="button" disabled={reject.isPending} onClick={() => reject.mutate(OUT_OF_STOCK_WORDS.lastReason)} className="mt-2 min-h-11 rounded-lg bg-[var(--swift-red)] px-4 text-sm font-semibold text-white disabled:opacity-50">
-              {OUT_OF_STOCK_WORDS.emptiedButton}
+              {ACCEPTED_OUT_OF_STOCK_WORDS.emptiedButton}
             </button>
           )}
         </div>

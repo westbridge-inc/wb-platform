@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { lastItemAfterAccept, nothingLeftToHandOver, storeCanReject } from './storeOrderRules';
+import { lastItemAfterAccept, nothingLeftToHandOver, storeCanReject } from './acceptedOutOfStock';
 import { lineRemoved } from '../orders/substitutionCopy';
 
 // ---------------------------------------------------------------------------

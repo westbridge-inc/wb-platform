@@ -5,7 +5,8 @@ import { Feather, MaterialCommunityIcons } from '@expo/vector-icons';
 import { color, radius, space } from '@swift/ui';
 import { cancellationReasonWords } from '@swift/types';
 import { Card, Chip, CodeInput, IconChip, InfoRow, LoadingBlock, ErrorState, PillButton, PopupCard, PopupTitle, Screen, T } from '../../../kit';
-import { OUT_OF_STOCK_WORDS, canMarkOutOfStock, customerDeciding, lastItemAfterAccept, lastLineStanding, lineQuestion, nothingLeftToHandOver, nothingToAccept, storeCanReject } from '../storeOrderRules';
+import { OUT_OF_STOCK_WORDS, canMarkOutOfStock, customerDeciding, lastLineStanding, lineQuestion, nothingToAccept } from '../storeOrderRules';
+import { ACCEPTED_OUT_OF_STOCK_WORDS, lastItemAfterAccept, nothingLeftToHandOver, storeCanReject } from '../acceptedOutOfStock';
 import { HANDOVER_WORDS, handoverNeedsNoCode, withHandoverSteps } from '../storeHandover';
 import { mmgDisputePaused } from '../order-dispute';
 import { RiderHandoverLine } from '../RiderHandoverLine';
@@ -235,7 +236,7 @@ function VendorOrderDetailBody({ navigation, route }: any) {
     setLastRemoveFor(null);
     picking.refundLine.mutate(
       { orderId: order.id, lineId: line.id },
-      ends ? { onSuccess: () => toast.show(OUT_OF_STOCK_WORDS.orderEnded) } : undefined,
+      ends ? { onSuccess: () => toast.show(ACCEPTED_OUT_OF_STOCK_WORDS.orderEnded) } : undefined,
     );
   };
   /** [OOS-FLOW] "Remove item": asked once first when it is the last item still coming. */
@@ -323,12 +324,12 @@ function VendorOrderDetailBody({ navigation, route }: any) {
         {emptied ? (
           <View style={{ borderRadius: radius.lg, backgroundColor: color.soft.warning, padding: space.md, marginBottom: space.md, gap: space.sm }}>
             <T variant="label" weight="semibold">
-              {storeCanReject(order) ? OUT_OF_STOCK_WORDS.emptied : OUT_OF_STOCK_WORDS.emptiedSupport}
+              {storeCanReject(order) ? ACCEPTED_OUT_OF_STOCK_WORDS.emptied : ACCEPTED_OUT_OF_STOCK_WORDS.emptiedSupport}
             </T>
             {storeCanReject(order) ? (
               <View style={{ alignSelf: 'flex-start' }}>
                 <PillButton
-                  label={OUT_OF_STOCK_WORDS.emptiedButton}
+                  label={ACCEPTED_OUT_OF_STOCK_WORDS.emptiedButton}
                   variant="primary"
                   size="sm"
                   disabled={busy}
@@ -547,26 +548,26 @@ function VendorOrderDetailBody({ navigation, route }: any) {
                   <View style={{ marginLeft: 64 }}>
                     {lastRemoveFor === it.id ? (
                       <View style={{ marginTop: space.sm, gap: space.xs }}>
-                        <T variant="caption" weight="semibold" tone="error">{OUT_OF_STOCK_WORDS.lastRemoveAsk}</T>
+                        <T variant="caption" weight="semibold" tone="error">{ACCEPTED_OUT_OF_STOCK_WORDS.lastRemoveAsk}</T>
                         <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: space.sm }}>
-                          <PillButton label={OUT_OF_STOCK_WORDS.lastRemoveYes} variant="primary" size="sm" disabled={picking.refundLine.isPending || busy} onPress={() => removeLine(it)} />
-                          <PillButton label={OUT_OF_STOCK_WORDS.lastRemoveKeep} variant="soft" size="sm" onPress={() => setLastRemoveFor(null)} />
+                          <PillButton label={ACCEPTED_OUT_OF_STOCK_WORDS.lastRemoveYes} variant="primary" size="sm" disabled={picking.refundLine.isPending || busy} onPress={() => removeLine(it)} />
+                          <PillButton label={ACCEPTED_OUT_OF_STOCK_WORDS.lastRemoveKeep} variant="soft" size="sm" onPress={() => setLastRemoveFor(null)} />
                         </View>
                       </View>
                     ) : subFor === it.id ? (
                       <View style={{ marginTop: space.sm, gap: space.xs }}>
-                        <T variant="caption" weight="semibold" tone="muted">{OUT_OF_STOCK_WORDS.menuTitle}</T>
+                        <T variant="caption" weight="semibold" tone="muted">{ACCEPTED_OUT_OF_STOCK_WORDS.menuTitle}</T>
                         <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: space.sm }}>
                           <Chip
-                            label={OUT_OF_STOCK_WORDS.removeItem}
+                            label={ACCEPTED_OUT_OF_STOCK_WORDS.removeItem}
                             onPress={() => askOrRemove(it)}
                             style={{ height: 32, paddingHorizontal: space.md }}
                           />
                           <Chip label="Back" selected onPress={() => { setSubFor(null); setAllFor(null); }} style={{ height: 32, paddingHorizontal: space.md }} />
                         </View>
-                        <T variant="caption" tone="muted" style={{ marginTop: space.xs }}>{OUT_OF_STOCK_WORDS.offerTitle}</T>
+                        <T variant="caption" tone="muted" style={{ marginTop: space.xs }}>{ACCEPTED_OUT_OF_STOCK_WORDS.offerTitle}</T>
                         {substituteCandidates(it, allFor === it.id).length === 0 ? (
-                          <T variant="caption" tone="muted">{OUT_OF_STOCK_WORDS.noReplacement}</T>
+                          <T variant="caption" tone="muted">{ACCEPTED_OUT_OF_STOCK_WORDS.noReplacement}</T>
                         ) : null}
                         <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: space.sm }}>
                           {substituteCandidates(it, allFor === it.id).map((cand: any) => (
@@ -582,7 +583,7 @@ function VendorOrderDetailBody({ navigation, route }: any) {
                             />
                           ))}
                           {allFor !== it.id ? (
-                            <Chip label={OUT_OF_STOCK_WORDS.showAll} onPress={() => setAllFor(it.id)} style={{ height: 32, paddingHorizontal: space.md }} />
+                            <Chip label={ACCEPTED_OUT_OF_STOCK_WORDS.showAll} onPress={() => setAllFor(it.id)} style={{ height: 32, paddingHorizontal: space.md }} />
                           ) : null}
                         </View>
                       </View>
@@ -605,10 +606,10 @@ function VendorOrderDetailBody({ navigation, route }: any) {
                   <View style={{ marginLeft: 64 }}>
                     {lastRemoveFor === it.id ? (
                       <View style={{ marginTop: space.sm, gap: space.xs }}>
-                        <T variant="caption" weight="semibold" tone="error">{OUT_OF_STOCK_WORDS.lastRemoveAsk}</T>
+                        <T variant="caption" weight="semibold" tone="error">{ACCEPTED_OUT_OF_STOCK_WORDS.lastRemoveAsk}</T>
                         <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: space.sm }}>
-                          <PillButton label={OUT_OF_STOCK_WORDS.lastRemoveYes} variant="primary" size="sm" disabled={picking.refundLine.isPending || busy} onPress={() => removeLine(it)} />
-                          <PillButton label={OUT_OF_STOCK_WORDS.lastRemoveKeep} variant="soft" size="sm" onPress={() => setLastRemoveFor(null)} />
+                          <PillButton label={ACCEPTED_OUT_OF_STOCK_WORDS.lastRemoveYes} variant="primary" size="sm" disabled={picking.refundLine.isPending || busy} onPress={() => removeLine(it)} />
+                          <PillButton label={ACCEPTED_OUT_OF_STOCK_WORDS.lastRemoveKeep} variant="soft" size="sm" onPress={() => setLastRemoveFor(null)} />
                         </View>
                       </View>
                     ) : (
