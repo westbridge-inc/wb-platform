@@ -6,6 +6,7 @@ import type { AdEventScope } from '../lib/adsCore';
 import { retireAdEventScope } from '../lib/adsQueue';
 import { queryClient } from '../lib/queryClient';
 import { zustandStorage } from '../lib/storage';
+import { bindHandledTakeoverStorage, forgetHandledTakeovers } from '../lib/handledTakeovers';
 import { accountHoldsRole, landingIntent } from '../lib/roleLanding';
 import { normalizePersistedAuth, recordHydration, type HydrationReason } from '../lib/authHydration';
 import { track } from '../lib/analytics';
@@ -153,8 +154,20 @@ export function getLastSignedOutUserId(): string | null {
   return lastSignedOutUserId;
 }
 
+// [STORE-ALERT-RECONNECT · S4-2] The store's answered new-order screens live in the encrypted device
+// storage, for the signed-in account only; every session end below wipes them.
+bindHandledTakeoverStorage({
+  getItem: (key) => {
+    const value = zustandStorage.getItem(key);
+    return typeof value === 'string' ? value : null;
+  },
+  setItem: (key, value) => { void zustandStorage.setItem(key, value); },
+  removeItem: (key) => { void zustandStorage.removeItem(key); },
+});
+
 function finishLocalLogout(session: AuthSessionSnapshot | null): void {
   if (session) lastSignedOutUserId = session.userId;
+  forgetHandledTakeovers();
   if (session?.adEventScopeId) {
     // Synchronous and exact-owner: A is retired before B can become usable,
     // while a stale A cleanup can never delete a newer boundary's events.
@@ -340,6 +353,7 @@ export const useAuthStore = create<AuthState>()(
           queryClient.clear();
           useBookingStore.getState().clear();
           useStoreSwitcher.getState().setSelectedStore(null);
+          forgetHandledTakeovers();
           track('auth_hydration_normalized', { reason });
         }
         return { ...current, ...state } as AuthState;
