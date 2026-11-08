@@ -21,6 +21,7 @@ import { VERTICAL_TINT } from '../../../kit/vertical-tint';
 import type { PickedPlace } from './DestinationSearchScreen';
 import { QuietMarker } from '../map/QuietMarker';
 import { PARCEL_BANNED_GOODS, PARCEL_DECLARATION, courierWaitingCaption } from '../parcelDeclaration';
+import { useScreenOpened } from '../../../hooks/useScreenOpened';
 
 type Size = 'SMALL' | 'MEDIUM' | 'LARGE' | 'EXTRA_LARGE';
 type Speed = 'STANDARD' | 'EXPRESS' | 'RUSH';
@@ -149,6 +150,8 @@ function OptionCard({
 }
 
 export function CourierScreen({ navigation }: any) {
+  // [APP-SPEED D] The map joins once the screen has slid in (hooks/useScreenOpened): the tap opens Send at once.
+  const opened = useScreenOpened(navigation);
   const { height: winH } = useWindowDimensions();
   const insets = useSafeAreaInsets();
   const { latitude, longitude, address, status: locationStatus } = useLocationStore();
@@ -238,6 +241,7 @@ export function CourierScreen({ navigation }: any) {
 
   return (
     <View style={{ flex: 1, backgroundColor: color.surface.subtle }}>
+      {opened ? (
       <MapView
         provider={PROVIDER_DEFAULT}
         style={{ flex: 1 }}
@@ -265,6 +269,10 @@ export function CourierScreen({ navigation }: any) {
           <Polyline coordinates={[pickupLL, dropoffLL]} strokeColor={color.brand[500]} strokeWidth={4} />
         ) : null}
       </MapView>
+      ) : (
+        // The map's ground while the screen slides in; the form below is live from the first frame.
+        <View testID="map-ground" style={{ flex: 1, backgroundColor: color.surface.sunken }} />
+      )}
 
       <View style={{ position: 'absolute', top: insets.top + space.sm, left: space['2xl'] }}>
         <CircleChip icon="chevron-left" label="Back" onPress={() => navigation?.goBack?.()} />

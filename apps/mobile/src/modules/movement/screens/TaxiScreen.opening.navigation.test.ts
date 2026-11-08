@@ -200,6 +200,7 @@ vi.mock('../../../stores/authStore', () => {
 
 import { api } from '../../../services/api';
 import { TaxiScreen } from './TaxiScreen';
+import { OPENED_FALLBACK_MS } from '../../../hooks/useScreenOpened';
 
 const LAMAHA = { lat: 6.82, lng: -58.16, label: 'Lamaha Street' };
 
@@ -344,5 +345,53 @@ describe('[APP-SPEED A] the Taxi door opens on the form; booking waits for the a
     await settle();
     expect((byLabel('Cancel ride') as HTMLButtonElement).disabled).toBe(false);
     expect((byLabel('My driver is here') as HTMLButtonElement).disabled).toBe(false);
+  });
+});
+
+describe('[APP-SPEED D] the map joins once the screen has slid in (the tap opens Taxi at once)', () => {
+  /** A navigator that slides the screen in and says when the slide ends (native-stack's `transitionEnd`). */
+  function slidingNavigation() {
+    const ends = new Set<() => void>();
+    return {
+      nav: { ...navigation, addListener: (event: string, cb: () => void) => { if (event === 'transitionEnd') ends.add(cb); return () => ends.delete(cb); } },
+      end: async () => { await act(async () => { for (const cb of [...ends]) cb(); }); },
+      listening: () => ends.size,
+    };
+  }
+  async function mountWith(nav: unknown) {
+    await act(async () => root.render(React.createElement(QueryClientProvider, { client }, React.createElement(TaxiScreen, { navigation: nav }))));
+    await settle(2);
+  }
+  const map = () => host.querySelector('[data-map]');
+  const ground = () => host.querySelector('[data-testid="map-ground"]');
+
+  it('first frame: the map’s ground and the live form, Request still held; the slide ends: the map', async () => {
+    const active = later();
+    fx.routes['get /rides/active'] = () => active.promise;
+    const slide = slidingNavigation();
+    await mountWith(slide.nav);
+
+    expect(map(), 'no map in the first frame').toBeNull();
+    expect(ground()).toBeTruthy();
+    expect(byLabel('Where to?. Choose your destination'), 'the form is there from the first frame').toBeTruthy();
+    await pickFromSearch(byLabel('Where to?. Choose your destination'), LAMAHA);
+    expect((requestButton() as HTMLButtonElement).disabled, 'held until "is a ride in progress?" answers').toBe(true);
+
+    await slide.end();
+    expect(map()).toBeTruthy();
+    expect(ground()).toBeNull();
+    expect(slide.listening(), 'the listener is let go').toBe(0);
+    expect((requestButton() as HTMLButtonElement).disabled, 'the map changes no hold').toBe(true);
+    active.resolve(ok(null));
+    await settle();
+    expect((requestButton() as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('a slide that never reports its end: the map is drawn anyway, a moment later', async () => {
+    const slide = slidingNavigation();
+    await mountWith(slide.nav);
+    expect(map()).toBeNull();
+    await act(async () => { await new Promise((r) => setTimeout(r, OPENED_FALLBACK_MS + 50)); });
+    expect(map()).toBeTruthy();
   });
 });
