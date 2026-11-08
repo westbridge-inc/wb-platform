@@ -5,6 +5,7 @@ import { connectSocket, getSocket } from '../services/socket';
 import { useMoverPreview } from '../stores/moverPreview';
 import type { MoverKind } from '../lib/moverLocation';
 import { offerKindOf } from '../lib/deliveriesToo';
+import { onAppForeground, onForegroundPush } from '../lib/appSignals';
 
 // ---------------------------------------------------------------------------
 // The mover's live offer cards: the dispatch:offer socket stream, the queue
@@ -196,11 +197,19 @@ export function useDispatchOffers(kind: MoverKind | null, online: boolean, alsoD
     };
     void recover();
     s.on('connect', recover);
+    // [STORE-ALERT-RECONNECT] The same recovery when the app returns to the screen (a socket
+    // that stayed "connected" through the background may have missed the ping), and when an
+    // offer's push arrives while the app is open: the card shows even if the socket did not
+    // deliver it. The server's answer carries the real remaining seconds; a retired card stays off.
+    const stopForeground = onAppForeground(() => { void recover(); });
+    const stopPush = onForegroundPush((data) => { if (data['kind'] === 'dispatch_offer') void recover(); });
     return () => {
       gone = true;
       s.off('dispatch:offer', onOffer);
       s.off('dispatch:offer_withdrawn', onWithdrawn);
       s.off('connect', recover);
+      stopForeground();
+      stopPush();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [kind, online, qc, pv, alsoDeliveries]);

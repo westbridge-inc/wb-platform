@@ -308,9 +308,28 @@ describe('[STORE-ALERT] push failures are logged and counted by class, never by 
     }));
     vi.stubGlobal('fetch', fetchMock);
     const outcome = await new ExpoPushProvider().checkReceipts(['r-1', 'r-2', 'r-3', 'r-4', 'r-not-ready'], { kind: 'vendor_order_alert' });
-    expect(outcome).toEqual({ ok: 1, failed: ['InvalidCredentials', 'InvalidCredentials', 'MessageRateExceeded'] });
+    expect(outcome).toEqual({ ok: 1, notReady: 1, failed: ['InvalidCredentials', 'InvalidCredentials', 'MessageRateExceeded'] });
     expect(JSON.parse((fetchMock.mock.calls[0] as unknown as [string, { body: string }])[1].body)).toEqual({ ids: ['r-1', 'r-2', 'r-3', 'r-4', 'r-not-ready'] });
     expect(await failures()).toEqual({ 'receipt:InvalidCredentials': 2, 'receipt:MessageRateExceeded': 1 });
+  });
+
+  it('[STORE-ALERT-RECONNECT] every receipt check logs its ok / not-ready / failed / unread counts by push kind, never a token', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true, status: 200, text: async () => '',
+      json: async () => ({ data: {
+        'r-1': { status: 'ok' },
+        'r-2': { status: 'ok' },
+        'r-3': { status: 'error', details: { error: 'DeviceNotRegistered' } },
+      } }),
+    })));
+    await new ExpoPushProvider().checkReceipts(['r-1', 'r-2', 'r-3', 'r-4', 'r-5'], { kind: 'vendor_order_alert' });
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false, status: 503, text: async () => '', json: async () => ({}) })));
+    await new ExpoPushProvider().checkReceipts(['r-6', 'r-7'], { kind: 'dispatch_offer' });
+    expect(lines.filter((l) => l.obj['event'] === 'push_receipts').map((l) => ({ level: l.level, ...l.obj }))).toEqual([
+      { level: 'info', event: 'push_receipts', kind: 'vendor_order_alert', ok: 2, notReady: 2, failed: 1, unread: 0 },
+      { level: 'info', event: 'push_receipts', kind: 'dispatch_offer', ok: 0, notReady: 0, failed: 0, unread: 2 },
+    ]);
+    expect(JSON.stringify(lines)).not.toContain('ExponentPushToken');
   });
 
   it('the production adapter reads the receipts of accepted tickets after the configured delay', async () => {

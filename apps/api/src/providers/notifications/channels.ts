@@ -15,6 +15,7 @@ import { guardNonProductionSms } from './sms-recipient-allowlist';
 import { SMS_REF_HANDOFF_SUPPRESSED } from './sms-outcome';
 import { expoErrorClass, httpFailureReason, recordPushFailure, recordPushFailureClasses } from './push-outcome';
 import { gsm7Sms } from '../../utils/sms-text';
+import { log } from '../../utils/logger';
 
 export type NotificationHandoff = <T>(part: string, effect: () => Promise<T>) => Promise<T | undefined>;
 export interface SmsOptions { handoff?: NotificationHandoff }
@@ -433,9 +434,14 @@ export class ExpoPushProvider implements PushProvider {
   /** [STORE-ALERT] Read the receipts of accepted tickets and record every
    *  failure by its class (InvalidCredentials = the app's push credentials,
    *  DeviceNotRegistered = an uninstalled app, ...). Ids Expo does not know
-   *  yet are skipped. Never throws; returns the classes it saw, for tests. */
-  async checkReceipts(ids: string[], context: { kind?: unknown } = {}): Promise<{ ok: number; failed: string[] }> {
+   *  yet are skipped. Never throws; returns the classes it saw, for tests.
+   *  [STORE-ALERT-RECONNECT] One `push_receipts` line per check says how many
+   *  were delivered to Apple/Google (ok), not ready yet, failed or unread, by
+   *  push kind: counts only, never a token, a person or the message. */
+  async checkReceipts(ids: string[], context: { kind?: unknown } = {}): Promise<{ ok: number; notReady: number; failed: string[] }> {
     let ok = 0;
+    let notReady = 0;
+    let unread = 0;
     const failed: string[] = [];
     for (let i = 0; i < ids.length; i += ExpoPushProvider.RECEIPT_CHUNK) {
       const chunk = ids.slice(i, i + ExpoPushProvider.RECEIPT_CHUNK);
@@ -451,6 +457,7 @@ export class ExpoPushProvider implements PushProvider {
         });
         if (!res.ok) {
           recordPushFailure('receipt', httpFailureReason(res.status), chunk.length, context);
+          unread += chunk.length;
           continue;
         }
         const body = await res.json() as { data?: Record<string, { status?: string; details?: { error?: string } } | undefined> };
@@ -458,7 +465,7 @@ export class ExpoPushProvider implements PushProvider {
         const errors: unknown[] = [];
         for (const id of chunk) {
           const receipt = receipts[id];
-          if (!receipt) continue; // not ready yet
+          if (!receipt) { notReady += 1; continue; } // not ready yet
           if (receipt.status === 'ok') ok += 1;
           else errors.push(receipt.details?.error);
         }
@@ -466,11 +473,17 @@ export class ExpoPushProvider implements PushProvider {
         failed.push(...errors.map(expoErrorClass));
       } catch {
         recordPushFailure('receipt', controller.signal.aborted ? 'timeout' : 'network', chunk.length, context);
+        unread += chunk.length;
       } finally {
         clearTimeout(timer);
       }
     }
-    return { ok, failed };
+    const kind = typeof context.kind === 'string' ? context.kind.slice(0, 64) : undefined;
+    log().info(
+      { event: 'push_receipts', ...(kind ? { kind } : {}), ok, notReady, failed: failed.length, unread },
+      'push receipts read',
+    );
+    return { ok, notReady, failed };
   }
 }
 

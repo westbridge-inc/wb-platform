@@ -37,6 +37,8 @@ import { usePartnerPricing } from './partnerPricing';
 import { guardVendorOperation, useVendorMutation } from './useVendorMutation';
 import { pendingOrderIds } from '../modules/vendor/boardTaps';
 import { answeredSinceAsked } from '../modules/vendor/storeOrderRules';
+import { markTakeoverHandled, storeAlertFromPush, takeoverHandled, waitingForStore, withRaised } from '../modules/vendor/takeoverRaise';
+import { onAppForeground, onForegroundPush } from '../lib/appSignals';
 import { errorMessage } from '../lib/apiError';
 import type { SaleAnswer, SaleOp } from '../lib/inStoreSale';
 import { phoneSaleFailure, soldInStore } from './useSoldInStore';
@@ -384,14 +386,22 @@ export function useVendorOrdersLive(vendorId: string | undefined, ownsStore = fa
   useEffect(() => {
     if (!vendorId || previewType) return;
     const check = () => {
-      const { answered, deciding } = answeredSinceAsked(askedRef.current, qc.getQueryData(['vendor', 'orders']));
+      const board = qc.getQueryData(['vendor', 'orders']);
+      const { answered, deciding } = answeredSinceAsked(askedRef.current, board);
       askedRef.current = deciding;
-      if (answered.length === 0) return;
-      Vibration.vibrate(400);
-      // The takeover opens on the board's fresh copy (useVendorOrder's placeholder), never on a
-      // stale copy of the order that still shows the question (which would settle it at once).
-      for (const a of answered) qc.removeQueries({ queryKey: ['vendor', 'orders', 'detail', a.orderId], exact: true });
-      setTakeover((q) => [...q, ...answered.filter((a) => !q.some((x) => x.orderId === a.orderId))]);
+      if (answered.length > 0) {
+        Vibration.vibrate(400);
+        // The takeover opens on the board's fresh copy (useVendorOrder's placeholder), never on a
+        // stale copy of the order that still shows the question (which would settle it at once).
+        for (const a of answered) qc.removeQueries({ queryKey: ['vendor', 'orders', 'detail', a.orderId], exact: true });
+        setTakeover((q) => withRaised(q, answered));
+      }
+      // [STORE-ALERT-RECONNECT] Every order the board shows waiting for this store's answer is on
+      // the new-order screen, whether or not its order:new arrived (a dropped socket, the app in the
+      // background): once each, never one answered here, never one with a store tap in flight.
+      const busy = pendingOrderIds(qc.getMutationCache().findAll({ status: 'pending' }).map((m) => m.state.variables));
+      const waiting = waitingForStore(board, vendorId, Date.now(), busy);
+      if (waiting.length > 0) setTakeover((q) => withRaised(q, waiting, (id) => takeoverHandled(vendorId, id)));
     };
     check();
     return qc.getQueryCache().subscribe((event) => {
@@ -400,9 +410,29 @@ export function useVendorOrdersLive(vendorId: string | undefined, ownsStore = fa
     });
   }, [vendorId, previewType, qc]);
 
+  // [STORE-ALERT-RECONNECT] Back on the screen: read the board now (the check above raises what
+  // waits). A new-order push while the store app is open raises its order at once, then re-reads.
+  useEffect(() => {
+    if (!vendorId || previewType) return undefined;
+    const reread = () => { void qc.refetchQueries({ queryKey: ['vendor', 'orders'], exact: true }).catch(() => undefined); };
+    const stopForeground = onAppForeground(reread);
+    const stopPush = onForegroundPush((data) => {
+      const alert = storeAlertFromPush(data, vendorId);
+      if (!alert) return;
+      setTakeover((q) => withRaised(q, [alert], (id) => takeoverHandled(vendorId, id)));
+      reread();
+    });
+    return () => { stopForeground(); stopPush(); };
+  }, [vendorId, previewType, qc]);
+
   const dismissTakeover = useCallback(
-    (orderId: string) => setTakeover((q) => q.filter((x) => x.orderId !== orderId)),
-    [],
+    (orderId: string) => {
+      // Answered here (Accept, Reject, "View later", or settled on screen): the board's read and a
+      // push do not raise it again. The server's escalation ladder still stands behind "View later".
+      if (vendorId) markTakeoverHandled(vendorId, orderId);
+      setTakeover((q) => q.filter((x) => x.orderId !== orderId));
+    },
+    [vendorId],
   );
   return { takeover, dismissTakeover };
 }

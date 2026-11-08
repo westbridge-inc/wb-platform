@@ -35,7 +35,7 @@ vi.mock('@tanstack/react-query', async (importOriginal) => {
     useQueryClient: () => ({
       invalidateQueries: (filter: { queryKey: unknown }) => { fx.invalidated.push(filter.queryKey); },
       // [STORE-DASH] the live layer also watches the board for a customer's answer (vendorops.answerRaises.navigation.test.ts)
-      getQueryData: () => undefined, getQueryCache: () => ({ subscribe: () => () => {} }), removeQueries: () => {},
+      getQueryData: () => undefined, getQueryCache: () => ({ subscribe: () => () => {} }), getMutationCache: () => ({ findAll: () => [] }), removeQueries: () => {},
     }),
   };
 });
