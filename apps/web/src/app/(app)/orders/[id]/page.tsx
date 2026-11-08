@@ -7,7 +7,7 @@ import { CallPartyButton } from '@/components/call-party-button';
 import { useParams } from 'next/navigation';
 import Link from 'next/link';
 // [UI-SWEEP U14] Cancellation codes read through the one shared plain-words map.
-import { cancellationReasonWords, ORDER_CANCELLED_WORDS } from '@swift/types';
+import { cancellationReasonWords, customerCancellationWords, ORDER_CANCELLED_WORDS } from '@swift/types';
 import { orderStatusLabel, presentedVertical } from '@/lib/order-words';
 import { formatAppointmentSlot } from '@/lib/appointmentTime';
 import {
@@ -34,6 +34,9 @@ import { appointmentBookingView } from '@/lib/booking-rules';
 import styles from './tracking.module.css';
 import { pickupCodeWords } from './pickup-words';
 import { lazyRetry } from '@/lib/chunk-retry';
+
+/** The store kinds the web search filters by (its own chips): a declined order opens search on the same kind. */
+const SEARCH_TYPES: ReadonlySet<string> = new Set(['RESTAURANT', 'SUPERMARKET', 'STORE', 'SERVICE']);
 
 // [Row 117] A taxi ride's code, driver position and SOS — only while the server
 // says web booking is on; its code (and the map's) loads only for such a ride.
@@ -70,7 +73,7 @@ type OrderDetail = {
   orderType?: 'FOOD_DELIVERY' | 'GROCERY_DELIVERY' | 'COURIER' | 'TAXI' | string;
   status: string;
   fulfillment?: 'DELIVERY' | 'PICKUP' | 'APPOINTMENT' | string;
-  vendor?: { name?: string; slug?: string } | null;
+  vendor?: { name?: string; slug?: string; vendorType?: string } | null;
   vendorName?: string;
   items?: OrderLine[];
   subtotalCustomer?: number;
@@ -129,6 +132,8 @@ type OrderDetail = {
   cancellationReason?: string | null;
   /** [owner 18 Oct 2026] Why an unpaid MMG order closed by itself, in the customer's words (null otherwise). */
   cancellationNotice?: string | null;
+  /** [owner 8 Nov 2026] Who closed a cancelled order and why, in the customer's terms (null unless CANCELLED). */
+  cancellation?: { by: string; reason: string | null } | null;
   /** [BUG-HUNT-2 G08] Who owes this customer what by MMG, and "Did it arrive?", in the server's words. */
   mmgRefund?: { state: string; line: string; sendId: string | null; canAnswer: boolean } | null;
   /** [owner 17 Oct 2026 · PAYMENT-SIMPLIFY] Where to send MMG on an ACCEPTED order: the store's number and the
@@ -460,6 +465,16 @@ export default function OrderDetailPage() {
   const refunded = order.status === 'REFUNDED';
   const failed = order.status === 'FAILED';
   const stopped = cancelled || refunded || failed;
+  // [owner 8 Nov 2026] "The store declined your order: Out of stock." and what is true about the money, as the phone.
+  const closedWords = customerCancellationWords(order);
+  const serverClosedNote = order.cancellationNotice?.trim() ? order.cancellationNotice : null;
+  const findElsewhere = closedWords && (order.cancellation?.by === 'STORE' || order.cancellation?.by === 'NO_RESPONSE')
+    && order.orderType !== 'TAXI' && order.orderType !== 'COURIER'
+    ? {
+      label: order.fulfillment === 'APPOINTMENT' ? 'Book with another provider' : 'Order from another store',
+      href: SEARCH_TYPES.has(order.vendor?.vendorType ?? '') ? `/order/search?type=${order.vendor!.vendorType}` : '/order/search',
+    }
+    : null;
   const completed = ['DELIVERED', 'COMPLETED'].includes(order.status)
     || (order.fulfillment === 'PICKUP' && order.status === 'PICKED_UP');
   // [FIXES-4] The business takes this cash itself: completing a pickup, an appointment or the store's own
@@ -608,13 +623,18 @@ export default function OrderDetailPage() {
           <p className={styles.eyebrow}>{vendorName} · {order.orderNumber}</p>
           <h1 ref={statusHeadingRef} tabIndex={-1} id="order-status-heading" className={styles.title}>{statusHeading(order)}</h1>
           <p className={styles.updateNote}>
-            {stopped ? cancelResult ?? (order.cancellationNotice?.trim() ? order.cancellationNotice : null) ?? cancellationReasonWords(order.cancellationReason, 'customer') ?? (cancelled ? ORDER_CANCELLED_WORDS : 'This order is closed.') : 'This page checks Swift for updates every few seconds.'}
+            {stopped ? cancelResult ?? serverClosedNote ?? closedWords?.headline ?? cancellationReasonWords(order.cancellationReason, 'customer') ?? (cancelled ? ORDER_CANCELLED_WORDS : 'This order is closed.') : 'This page checks Swift for updates every few seconds.'}
+            {stopped && !cancelResult && !serverClosedNote && closedWords?.money ? <> {closedWords.money}</> : null}
           </p>
         </div>
         <span className={`${styles.statusPill} ${completed ? styles.statusComplete : refunded ? styles.statusRefunded : cancelled || failed ? styles.statusCancelled : ''}`}>
           {orderStatusLabel(order.status, presentedVertical(order))}
         </span>
       </section>
+      {/* [owner 8 Nov 2026] A declined (or unanswered) store order: the same kind of store, one tap. */}
+      {findElsewhere ? (
+        <Link href={findElsewhere.href} className="sw-btn sw-btn-outline mt-3 inline-flex">{findElsewhere.label}</Link>
+      ) : null}
 
       {/* [BUG-HUNT-2 G08] A closed order can still owe a refund. Swift holds none of this money. */}
       {order.mmgRefund ? (

@@ -49,6 +49,7 @@ import { enterOwner, enterTenant, getTenantId } from '../../plugins/prisma';
 import { invalidateHomeCache } from '../user/home-cache';
 import { counterpartPhone } from '../calls/counterpart-phone';
 import { withoutPositionEvidence } from '../order/customer-timeline';
+import { customerCancellation } from '../order/customer-cancellation';
 
 // ---------------------------------------------------------------------------
 // Taxi: the fare is computed and SHOWN before any driver
@@ -601,7 +602,10 @@ export async function ridesRoutes(app: FastifyInstance) {
     const rated = finished
       ? { hasBeenRated: await app.prisma.rating.count({ where: { orderId: ride.id, raterId: request.user.userId } }) > 0 }
       : null;
-    return { success: true, data: itinerary || waiting.waiting || waiting.fareBreakdown || rated ? { ...ride, ...rated, ...itinerary, ...waiting } : ride };
+    // [owner 8 Nov 2026] Who closed a cancelled ride, in the passenger's terms (never the raw code or a support note).
+    // A ride has no store, so no store's people to look up. Null unless CANCELLED; additive.
+    const cancellation = customerCancellation(ride, () => false, 'The driver');
+    return { success: true, data: itinerary || waiting.waiting || waiting.fareBreakdown || rated ? { ...ride, cancellation, ...rated, ...itinerary, ...waiting } : { ...ride, cancellation } };
   });
 
   /** POST /:id/cancel — rides ride the same state machine as everything else. */

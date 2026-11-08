@@ -86,6 +86,7 @@ import { updateCustomerProfile } from './profile-update';
 import { transitionUserRoleAuthority } from '../mover-authority';
 import { safeMmgPayUrl } from '../../utils/mmg-pay-url';
 import { mmgAcceptedPayBy, mmgAcceptExpiryNotice, mmgOrderNoun, mmgPayByCustomerLine } from '../order/mmg-accept-expiry';
+import { customerCancellation, storeActorKeys } from '../order/customer-cancellation';
 import { displayMmgNumber, safeMmgNumber } from '../../utils/mmg-number';
 import { formatMoney } from '../../utils/currency-amount';
 import { validateOfferedStoreMmgPayUrl } from '../../utils/store-mmg';
@@ -2761,6 +2762,8 @@ export async function customerRoutes(app: FastifyInstance) {
     // every distinct one first (signing is local, and duplicates collapse),
     // then map — one pass, no per-row await.
     const riderAvatars = await resolveAvatarUrls(orders.map((o) => o.rider?.user?.avatar));
+    // [owner 8 Nov 2026] Who closed each cancelled row (the store's people, read once for the page).
+    const isStoreActor = await storeActorKeys(app.prisma, orders);
     const enrichedOrders = orders.map((o) => ({
       id: o.id,
       orderNumber: o.orderNumber,
@@ -2798,6 +2801,9 @@ export async function customerRoutes(app: FastifyInstance) {
       placedAt: o.placedAt,
       deliveredAt: o.deliveredAt,
       scheduledFor: o.scheduledFor,
+      // [owner 8 Nov 2026] A cancelled row says who closed it and why ("Declined by store · Out of stock"); null on
+      // every other row. Additive: older apps ignore it.
+      cancellation: customerCancellation(o, isStoreActor, o.vendor?.name ?? 'The store'),
       // LIFECYCLE_V2: while in the future, the free-cancel window is open
       // (the server clock decides; any app countdown is cosmetic).
       holdExpiresAt: o.holdExpiresAt,
@@ -3178,6 +3184,9 @@ export async function customerRoutes(app: FastifyInstance) {
         cancellationReason: order.cancellationReason,
         // [owner 18 Oct 2026] Why an unpaid MMG order closed, in the customer's words (null otherwise).
         cancellationNotice: mmgAcceptExpiryNotice(order, order.vendor?.name ?? 'The store'),
+        // [owner 8 Nov 2026] Who closed it and why, in the customer's terms (customer-cancellation.ts): the order
+        // screen's "The store declined your order: Out of stock." Null unless CANCELLED. Additive.
+        cancellation: customerCancellation(order, await storeActorKeys(app.prisma, [order]), order.vendor?.name ?? 'The store'),
         scheduledFor: order.scheduledFor,
         hasBeenRated,
         canCancel,

@@ -842,3 +842,40 @@ describe('[G04] a ride at the pickup on the web', () => {
     expect(screen.queryByRole('button', { name: /cancel/i })).toBeNull();
   });
 });
+
+// [owner 8 Nov 2026] "When the store says out of stock and rejects it, it should tell the customer that it was
+// rejected because of out of stock, not just that it cancels." The order page reads the server's `cancellation`, as
+// the phone: the reason, what is true about the money, and another store of the same kind.
+describe('[owner 8 Nov 2026] the order page says the store declined it, and why', () => {
+  const DECLINED = {
+    ...ORDER, status: 'CANCELLED', paymentMethod: 'CASH', paymentAction: null, orderType: 'FOOD_DELIVERY', fulfillment: 'DELIVERY',
+    vendor: { id: 'v1', name: 'Shanta Kitchen', vendorType: 'RESTAURANT' },
+    cancellationReason: 'Out of stock', cancellation: { by: 'STORE', reason: 'Out of stock' },
+  };
+
+  it('cash: the reason, "You weren’t charged.", and a link to another restaurant', async () => {
+    vi.spyOn(orders, 'getOrder').mockResolvedValue(DECLINED as never);
+    render(<OrderDetailPage />);
+    expect(await screen.findByText(/The store declined your order: Out of stock\. You weren’t charged\./)).toBeTruthy();
+    expect(screen.getByRole('link', { name: 'Order from another store' }).getAttribute('href')).toBe('/order/search?type=RESTAURANT');
+  });
+
+  it('MMG still waiting: the store refunds directly, never "not charged"', async () => {
+    vi.spyOn(orders, 'getOrder').mockResolvedValue({ ...DECLINED, paymentMethod: 'MOBILE_MONEY', paymentStatus: 'PENDING' } as never);
+    render(<OrderDetailPage />);
+    expect(await screen.findByText(/The store declined your order: Out of stock\. If you already sent the MMG payment, the store refunds you directly\./)).toBeTruthy();
+    expect(document.body.textContent).not.toContain('charged');
+  });
+
+  it('the customer’s own cancel: their words and no link; an older server keeps the reason as before', async () => {
+    vi.spyOn(orders, 'getOrder').mockResolvedValue({ ...DECLINED, cancellation: { by: 'CUSTOMER', reason: null } } as never);
+    const first = render(<OrderDetailPage />);
+    expect(await screen.findByText(/You cancelled this order\./)).toBeTruthy();
+    expect(screen.queryByRole('link', { name: 'Order from another store' })).toBeNull();
+    first.unmount();
+    vi.spyOn(orders, 'getOrder').mockResolvedValue({ ...DECLINED, cancellation: undefined } as never);
+    render(<OrderDetailPage />);
+    expect(await screen.findByText('Out of stock')).toBeTruthy();
+    expect(screen.queryByRole('link', { name: 'Order from another store' })).toBeNull();
+  });
+});

@@ -9,11 +9,15 @@ import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tansta
 import { money } from '@/lib/customer';
 import { getLiveOrders, getOrderHistoryPage, reorder } from '@/lib/customer-orders';
 import { orderStatusLabel, presentedVertical, reorderNotice } from '@/lib/order-words';
+import { customerCancellationWords } from '@swift/types';
 import { DataUnavailable } from '@/components/data-unavailable';
 import { Pictogram, verticalPictogram, type PictogramName } from '@/components/glyphs';
 
 /** [UI-SWEEP U14] The phone's words for a status (lib/orderStatus.ts), by the order's own vertical. */
 const statusWords = (order: any): string => orderStatusLabel(order?.status, presentedVertical(order ?? {}));
+/** [owner 8 Nov 2026] A cancelled row says who closed it and why ("Declined by store · Out of stock"), as the phone;
+ *  an older server's row keeps the status word. */
+const rowStatus = (order: any): string => customerCancellationWords(order)?.label ?? statusWords(order);
 
 /** [UI-SWEEP U17] Only a store order can be put back in the cart: a ride has no
  *  storefront, a parcel has no store, and a booking is a time, not a basket.
@@ -159,7 +163,7 @@ export default function OrdersPage() {
                         </span>
                         <span className="flex flex-col items-end gap-1">
                           <span className="sw-money">{money(o.totalAmount ?? o.total)}</span>
-                          <span className={tone(o.status)}>{statusWords(o)}</span>
+                          <span className={`${tone(o.status)} max-w-[13rem]`} title={rowStatus(o)}><span className="truncate">{rowStatus(o)}</span></span>
                         </span>
                       </Link>
                       {canReorder(o) ? (

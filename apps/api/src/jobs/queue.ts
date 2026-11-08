@@ -448,7 +448,8 @@ export async function opsPageOnce(
  *  the customer; the risk query requires cancelledBy === the customer). */
 export async function autoCancelUnresponsiveOrder(ctx: JobContext, orderId: string): Promise<boolean> {
   const { OrderService } = await import('../modules/order/order.service');
-  const reason = 'Auto-cancelled: vendor did not respond';
+  // [owner 8 Nov 2026] The customer's apps read this exact reason as "the store didn't respond" (customer-cancellation.ts).
+  const { VENDOR_NO_RESPONSE_REASON: reason } = await import('../modules/order/customer-cancellation');
   // [REPORT-007-v4 F-02] Read the payment shape BEFORE the transition: an MMG
   // order's customer may have paid externally without the store attesting, so
   // the copy below must never claim "you were not charged" for MMG.
