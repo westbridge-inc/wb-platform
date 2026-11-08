@@ -1,6 +1,7 @@
 /** @jsxImportSource react */
-import React from 'react';
+import React, { useRef } from 'react';
 import {
+  Keyboard,
   KeyboardAvoidingView,
   Modal,
   Platform,
@@ -66,7 +67,36 @@ export function PopupTitle({ variant = 'title', ...rest }: Omit<TP, 'accessibili
  *  for nothing at all. The guard read as if it waited and did not.
  *
  *  iOS only, per React Native: on Android a Modal is not a separate window and
- *  the race does not exist, so callers keep a frame-based fallback. */
+ *  the race does not exist, so callers keep a frame-based fallback.
+ *
+ *  [BUG-RATING-SHAKE · owner 8 Nov 2026] On Android the card never moves for a
+ *  keyboard it did not open. The owner typed a comment on the rating screen,
+ *  tapped Submit, and the "Thanks for the feedback!" card bounced up and down
+ *  without end. Reproduced on Android with the Cart's promo field and "Clear
+ *  your cart?": the keyboard layer below flipped between full height and 96dp
+ *  shorter on every frame (60 a second, for as long as the card stayed open),
+ *  and the centred card jumped with it; the same card opened with no field
+ *  focused drew nothing. The keyboard still belonged to the field on the screen
+ *  BELOW: the dialog takes focus, the keyboard is half-withdrawn, and each
+ *  resize of the 'height' layer flips what that screen reports (keyboard shown,
+ *  hidden), which resizes the layer again. So a card opened while a keyboard is
+ *  up does not follow it (nothing of its own is under it), and a card opened
+ *  with no keyboard still lifts its own fields (the emergency-contact form, the
+ *  step-up and relay codes) above the keyboard they open. The answer is taken
+ *  when the card opens and held until it closes, so the layer is never swapped
+ *  under a card on screen. */
+export function popupFollowsKeyboard(platform: string, keyboardUpWhenOpened: boolean): boolean {
+  return platform !== 'android' || !keyboardUpWhenOpened;
+}
+
+/** Was a keyboard up when this card opened? Read once per opening, held while it stays open. */
+function useKeyboardUpWhenOpened(visible: boolean): boolean {
+  const opened = useRef<boolean | null>(null);
+  if (!visible) opened.current = null;
+  else if (opened.current === null) opened.current = Platform.OS === 'android' && Keyboard.isVisible();
+  return opened.current === true;
+}
+
 export function PopupCard({
   visible,
   onClose,
@@ -79,68 +109,77 @@ export function PopupCard({
   children: React.ReactNode;
 }) {
   const insets = useSafeAreaInsets();
+  const followsKeyboard = popupFollowsKeyboard(Platform.OS, useKeyboardUpWhenOpened(visible));
+
+  const backdrop = (
+    <Pressable
+      onPress={onClose}
+      // A labelled Pressable becomes one accessibility element and swallows
+      // every heading/button beneath it. Keep the backdrop touchable but out
+      // of the accessibility tree; VoiceOver/TalkBack use the modal actions
+      // or the escape gesture instead.
+      accessible={false}
+      focusable={false}
+      importantForAccessibility="no"
+      style={{
+        flex: 1,
+        alignItems: 'center',
+        backgroundColor: 'rgba(33,26,26,0.45)',
+        justifyContent: 'center',
+        paddingTop: Math.max(space.lg, insets.top),
+        paddingRight: Math.max(space.lg, insets.right),
+        paddingBottom: Math.max(space.lg, insets.bottom),
+        paddingLeft: Math.max(space.lg, insets.left),
+      }}
+    >
+      <Pressable
+        onPress={(e) => e.stopPropagation()}
+        accessible={false}
+        accessibilityViewIsModal
+        focusable={false}
+        onAccessibilityEscape={onClose}
+        style={[
+          {
+            width: '100%',
+            maxWidth: 560,
+            maxHeight: '100%',
+            flexShrink: 1,
+            backgroundColor: color.surface.base,
+            borderRadius: radius.xl,
+            overflow: 'hidden',
+          },
+          cardShadow,
+        ]}
+      >
+        <ScrollView
+          bounces={false}
+          contentContainerStyle={{
+            alignItems: 'center',
+            padding: space['2xl'],
+          }}
+          keyboardDismissMode="on-drag"
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator
+          style={{ width: '100%', flexShrink: 1 }}
+        >
+          {children}
+        </ScrollView>
+      </Pressable>
+    </Pressable>
+  );
 
   return (
     <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose} {...(onDismissed ? { onDismiss: onDismissed } : {})}>
-      <KeyboardAvoidingView
-        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-        style={{ flex: 1 }}
-      >
-        <Pressable
-          onPress={onClose}
-          // A labelled Pressable becomes one accessibility element and swallows
-          // every heading/button beneath it. Keep the backdrop touchable but out
-          // of the accessibility tree; VoiceOver/TalkBack use the modal actions
-          // or the escape gesture instead.
-          accessible={false}
-          focusable={false}
-          importantForAccessibility="no"
-          style={{
-            flex: 1,
-            alignItems: 'center',
-            backgroundColor: 'rgba(33,26,26,0.45)',
-            justifyContent: 'center',
-            paddingTop: Math.max(space.lg, insets.top),
-            paddingRight: Math.max(space.lg, insets.right),
-            paddingBottom: Math.max(space.lg, insets.bottom),
-            paddingLeft: Math.max(space.lg, insets.left),
-          }}
+      {followsKeyboard ? (
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          style={{ flex: 1 }}
         >
-          <Pressable
-            onPress={(e) => e.stopPropagation()}
-            accessible={false}
-            accessibilityViewIsModal
-            focusable={false}
-            onAccessibilityEscape={onClose}
-            style={[
-              {
-                width: '100%',
-                maxWidth: 560,
-                maxHeight: '100%',
-                flexShrink: 1,
-                backgroundColor: color.surface.base,
-                borderRadius: radius.xl,
-                overflow: 'hidden',
-              },
-              cardShadow,
-            ]}
-          >
-            <ScrollView
-              bounces={false}
-              contentContainerStyle={{
-                alignItems: 'center',
-                padding: space['2xl'],
-              }}
-              keyboardDismissMode="on-drag"
-              keyboardShouldPersistTaps="handled"
-              showsVerticalScrollIndicator
-              style={{ width: '100%', flexShrink: 1 }}
-            >
-              {children}
-            </ScrollView>
-          </Pressable>
-        </Pressable>
-      </KeyboardAvoidingView>
+          {backdrop}
+        </KeyboardAvoidingView>
+      ) : (
+        <View style={{ flex: 1 }}>{backdrop}</View>
+      )}
     </Modal>
   );
 }
