@@ -70,6 +70,9 @@ export type InAppStepName = (typeof INAPP_STEPS)[number];
 export const INAPP_WORDS = {
   notReached: CALL_WORDS.notReached,
   tryingPhone: 'They are not answering in the app. Swift is calling their phone now.',
+  /** [CALLS-REACH 8 Nov] Nobody for them can take an in-app call (no phone registered to be rung) and Swift cannot
+   *  ring their phone instead (bridge off, or no number): the caller is told so, never a call that cannot ring. */
+  cannotTake: "They can't take Swift calls right now. Try again soon, or message them in chat.",
 } as const;
 
 /** The one line the other person's call screen shows. Role words only: never a name, never a number. */
@@ -269,8 +272,16 @@ export async function startInAppCall(deps: InAppDeps, input: StartInAppInput): P
   }
   const callerRole = roles.find((r) => pairAllowed(r, input.target, order.orderType));
   if (!callerRole) throw new AppError(400, 'CALL_TARGET_INVALID', 'Swift cannot connect that call on this order.');
-  if ((await appPeopleFor(deps.prisma, order, input.target)).filter((id) => id !== input.userId).length === 0) {
+  const people = (await appPeopleFor(deps.prisma, order, input.target)).filter((id) => id !== input.userId);
+  if (people.length === 0) {
     throw new AppError(409, 'INAPP_NO_ONE', 'There is no one to call in the app for this. Message them in chat, or ask support.');
+  }
+  // [CALLS-REACH 8 Nov] Live test: the store called a customer whose phone had never registered, with the phone
+  // bridge off. The call was started and only then hung up with "We couldn't reach them", spending one of the
+  // order's attempts. Now: no phone of theirs can ring in the app and Swift cannot ring their phone instead ->
+  // refused before any row, in plain words (the phone shows them). Checked again when Twilio connects (a race).
+  if ((await ringableIdentities(deps, people, now)).length === 0 && !phoneCanTakeIt(deps, order, input.target)) {
+    throw new AppError(409, 'INAPP_NOT_REACHABLE', INAPP_WORDS.cannotTake);
   }
   const ledger = deps.ledger;
   const ledgerDown = () => new AppError(503, 'CALL_PROVIDER_FAILED', 'Swift could not place the call right now. Try again, or message them in chat.');
@@ -428,7 +439,8 @@ export async function handleInAppStep(
       }
       if (!order || clients.length === 0) {
         await deps.prisma.callSession.updateMany({ where: { id: session.id, endedAt: null }, data: notConnected });
-        return hangup(INAPP_WORDS.notReached);
+        // [CALLS-REACH] A live order with nobody who can take it in the app: the same words the start refuses with.
+        return hangup(order && !isTerminalOrderStatus(order.status) ? INAPP_WORDS.cannotTake : INAPP_WORDS.notReached);
       }
       return {
         step: {
@@ -473,6 +485,12 @@ export async function handleInAppStep(
       return hangup(INAPP_WORDS.notReached);
     }
   }
+}
+
+/** [CALLS-REACH] Could the phone bridge ring them instead (the fallback leg)? CALL_RELAY on and a number the
+ *  bridge's one dial guard accepts. The same test phoneFallback makes, without changing anything. */
+function phoneCanTakeIt(deps: Pick<InAppDeps, 'relay'>, order: PartyOrder, target: CallTarget): boolean {
+  return !!deps.relay && dialFor(order, target, deps.relay.config.callerId) !== null;
 }
 
 /**

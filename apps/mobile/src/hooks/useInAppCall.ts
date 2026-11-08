@@ -51,6 +51,8 @@ const errorCode = (e: unknown): string | null =>
  * "Call in app" for one person on one order. Each screen keeps its own look: it shows the control when
  * `visible`, labels it with `label`, and calls `onPress`. While visible it also keeps this phone able to be
  * rung in the app (registration with a short server token; only people on a live order get one).
+ * [CALLS-REACH] That is no longer the only way: components/InAppCallReach registers anyone on a live order,
+ * whatever screen shows (a customer on a store pickup order never sees a call control).
  */
 export function useInAppCall(input: { orderId?: string | null; target: CallTarget }) {
   const [config, setConfig] = useState<InAppConfig | null>(cached?.value ?? null);

@@ -837,3 +837,54 @@ describe('[INAPP-CALLS] only phones that registered are rung; the rest get the p
     expect(await session(callId)).toMatchObject({ status: 'NOT_CONNECTED', durationSeconds: 0 });
   });
 });
+
+// [CALLS-REACH · live test 8 Nov] The store called a customer on a pickup order (no rider) whose phone had never
+// registered, with the phone bridge off: the call was started, then hung up with "We couldn't reach them".
+describe('[CALLS-REACH] nobody for them can take an in-app call: the caller is told, before any row', () => {
+  const CANNOT_TAKE = "They can't take Swift calls right now. Try again soon, or message them in chat.";
+  const pickup = () => order({ orderType: 'FOOD_DELIVERY', fulfillment: 'PICKUP', customerId: diner.id, vendorId, status: 'PREPARING', acceptedAt: new Date() });
+
+  it('bridge off, the customer\'s phone never registered: the store\'s start is refused (409 INAPP_NOT_REACHABLE), no row, no attempt spent', async () => {
+    await unregistered(diner);
+    try {
+      const o = await pickup();
+      const res = await start(owner.token, o.id, 'customer');
+      expect(res.statusCode, res.body).toBe(409);
+      expect(res.json().error).toMatchObject({ code: 'INAPP_NOT_REACHABLE', message: CANNOT_TAKE });
+      for (const p of allPhones()) expect(res.body.includes(p)).toBe(false);
+      expect(await rowsFor(o.id)).toHaveLength(0);
+      // Once the customer's phone registers (what the app now does for anyone on a live order), the same call rings it.
+      expect((await regToken(diner.token)).statusCode).toBe(200);
+      const ok = await start(owner.token, o.id, 'customer');
+      expect(ok.statusCode, ok.body).toBe(200);
+      const { r } = await connect(ok.json().data.callId, owner);
+      expect(r.body).toContain(`<Identity>${id(diner)}</Identity>`);
+      expect(r.body).toContain('value="Swift: the store is calling about your order"');
+    } finally { await registered(diner); }
+  });
+
+  it('bridge on with a number for them: the start goes ahead (the phone leg takes it), as before', async () => {
+    setEnv({ ...INAPP_ON, ...RELAY_ON });
+    await unregistered(diner);
+    try {
+      const o = await pickup();
+      const res = await start(owner.token, o.id, 'customer');
+      expect(res.statusCode, res.body).toBe(200);
+      const { r } = await connect(res.json().data.callId, owner);
+      expect(r.body).not.toContain('<Client');
+      expect(r.body).toContain(`<Number url="${BASE}/screen?s=${res.json().data.callId}" method="POST">`);
+    } finally { await registered(diner); }
+  });
+
+  it('their registration goes between the start and the connect (bridge off): the caller hears the same plain words', async () => {
+    const o = await liveFood();
+    const { callId } = (await start(diner.token, o.id, 'rider')).json().data;
+    await unregistered(riderP);
+    try {
+      const { r } = await connect(callId, diner);
+      expect(r.body).not.toContain('<Dial');
+      expect(r.body).toContain(`<Say>${CANNOT_TAKE}</Say><Hangup/>`);
+      expect(await session(callId)).toMatchObject({ status: 'NOT_CONNECTED', durationSeconds: 0 });
+    } finally { await registered(riderP); }
+  });
+});

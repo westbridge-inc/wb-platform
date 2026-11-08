@@ -17,12 +17,18 @@ describe('[INAPP-CALLS] offerInApp', () => {
 
 describe('[INAPP-CALLS] words', () => {
   it('every refusal is plain words with a way forward, and none shows a number', () => {
-    for (const code of ['INAPP_CALLS_OFF', 'CALL_ORDER_NOT_LIVE', 'CALL_IN_PROGRESS', 'CALL_LIMIT_REACHED', 'INAPP_NO_ONE', 'INAPP_NOT_FOR_TARGET', 'MIC_REFUSED', 'WHATEVER', null]) {
+    for (const code of ['INAPP_CALLS_OFF', 'CALL_ORDER_NOT_LIVE', 'CALL_IN_PROGRESS', 'CALL_LIMIT_REACHED', 'INAPP_NO_ONE', 'INAPP_NOT_FOR_TARGET', 'INAPP_NOT_REACHABLE', 'MIC_REFUSED', 'WHATEVER', null]) {
       const text = inAppErrorText(code);
       expect(text.length, String(code)).toBeGreaterThan(20);
       expect(text).not.toMatch(/\d{3}/);
     }
     expect(inAppErrorText('INAPP_NOT_FOR_TARGET')).toContain('Call via Swift');
+  });
+
+  it('[CALLS-REACH] nobody for them can take an in-app call: the server\'s own words, never a misleading error', () => {
+    expect(inAppErrorText('INAPP_NOT_REACHABLE')).toBe("They can't take Swift calls right now. Try again soon, or message them in chat.");
+    // Swift rings their phone only while the phone bridge is on: the "calling" note never promises it.
+    expect(INAPP_WORDS.callingHow).not.toMatch(/rings their phone/i);
   });
 
   it('the bridge\'s daily rules (owner 6 Nov) read exactly as they do for Call via Swift', () => {

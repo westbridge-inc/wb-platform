@@ -46,7 +46,7 @@ export interface InAppRoutesOptions {
 }
 
 export const INAPP_REGISTRY_PREFIX = 'swift:inapp-reg:';
-/** A phone re-registers every ten minutes while a call control is on screen; a binding not refreshed in 30 days is
+/** A phone re-registers every ten minutes while its person is on a live order; a binding not refreshed in 30 days is
  *  treated as gone (the bridge takes their calls until the phone registers again). */
 const REGISTRY_TTL_MS = 30 * 86_400_000;
 
