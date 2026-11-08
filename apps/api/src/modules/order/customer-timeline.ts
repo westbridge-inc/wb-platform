@@ -18,11 +18,15 @@ export function withoutPositionEvidence(note: string | null): string | null {
 /** The customer's view of the order's status log:
  *  - the store's "Handed to rider" row is left out: it carries the order's status at the tap, so it
  *    would read as a second "Rider assigned" / "Ready" step;
- *  - a step's position evidence is cut from its note. */
-export function customerTimeline(
-  rows: ReadonlyArray<{ status: string; note: string | null; createdAt: Date }>,
+ *  - a step's position evidence is cut from its note;
+ *  - [owner 8 Nov 2026] `noteOf` decides which notes the customer may read at all
+ *    (customer-cancellation.ts customerStepNote: never Swift support's, and the
+ *    CANCELLED step says only the customer's words for the close). */
+export function customerTimeline<Row extends { status: string; note: string | null; createdAt: Date }>(
+  rows: ReadonlyArray<Row>,
+  noteOf: (row: Row) => string | null = (row) => row.note,
 ): Array<{ status: string; note: string | null; timestamp: Date }> {
   return rows
     .filter((row) => row.note !== HANDED_TO_RIDER_NOTE)
-    .map((row) => ({ status: row.status, note: withoutPositionEvidence(row.note), timestamp: row.createdAt }));
+    .map((row) => ({ status: row.status, note: withoutPositionEvidence(noteOf(row)), timestamp: row.createdAt }));
 }

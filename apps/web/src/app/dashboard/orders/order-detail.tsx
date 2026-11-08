@@ -6,7 +6,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { rejectReasonsFor } from '@/lib/reject-reasons';
-import { cancellationReasonWords } from '@swift/types';
+import { cancellationReasonWords } from '@swift/types/src/order-words';
 import { useIsMutating, useMutation, useMutationState, useQuery, useQueryClient } from '@tanstack/react-query';
 import { mmgDisputePaused, MMG_DISPUTE_NOTICE } from '@/lib/mmg-dispute';
 import { MutationNotice } from '@/components/mutation-notice';

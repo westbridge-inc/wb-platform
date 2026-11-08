@@ -860,10 +860,12 @@ describe('[owner 8 Nov 2026] the order page says the store declined it, and why'
     expect(screen.getByRole('link', { name: 'Order from another store' }).getAttribute('href')).toBe('/order/search?type=RESTAURANT');
   });
 
-  it('MMG still waiting: the store refunds directly, never "not charged"', async () => {
+  it('MMG still waiting: the refund is said once (the page’s own MMG note), never "not charged"', async () => {
     vi.spyOn(orders, 'getOrder').mockResolvedValue({ ...DECLINED, paymentMethod: 'MOBILE_MONEY', paymentStatus: 'PENDING' } as never);
     render(<OrderDetailPage />);
-    expect(await screen.findByText(/The store declined your order: Out of stock\. If you already sent the MMG payment, the store refunds you directly\./)).toBeTruthy();
+    expect(await screen.findByText('The store declined your order: Out of stock.')).toBeTruthy();
+    expect(screen.getByText('If you already sent the MMG payment, the business refunds you directly; Swift never held it.')).toBeTruthy();
+    expect(document.body.textContent!.match(/refunds you directly/g)).toHaveLength(1);
     expect(document.body.textContent).not.toContain('charged');
   });
 

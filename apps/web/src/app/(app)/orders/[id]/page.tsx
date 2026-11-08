@@ -7,7 +7,7 @@ import { CallPartyButton } from '@/components/call-party-button';
 import { useParams } from 'next/navigation';
 import Link from 'next/link';
 // [UI-SWEEP U14] Cancellation codes read through the one shared plain-words map.
-import { cancellationReasonWords, ORDER_CANCELLED_WORDS } from '@swift/types';
+import { cancellationReasonWords, ORDER_CANCELLED_WORDS } from '@swift/types/src/order-words';
 import { customerCancellationWords } from '@swift/types/src/customer-cancellation-words';
 import { orderStatusLabel, presentedVertical } from '@/lib/order-words';
 import { formatAppointmentSlot } from '@/lib/appointmentTime';
@@ -625,7 +625,8 @@ export default function OrderDetailPage() {
           <h1 ref={statusHeadingRef} tabIndex={-1} id="order-status-heading" className={styles.title}>{statusHeading(order)}</h1>
           <p className={styles.updateNote}>
             {stopped ? cancelResult ?? serverClosedNote ?? closedWords?.headline ?? cancellationReasonWords(order.cancellationReason, 'customer') ?? (cancelled ? ORDER_CANCELLED_WORDS : 'This order is closed.') : 'This page checks Swift for updates every few seconds.'}
-            {stopped && !cancelResult && !serverClosedNote && closedWords?.money ? <> {closedWords.money}</> : null}
+            {/* An MMG order still waiting on the payment has its own refund note below (once, not twice). */}
+            {stopped && !cancelResult && !serverClosedNote && !mmgAmbiguous && closedWords?.money ? <> {closedWords.money}</> : null}
           </p>
         </div>
         <span className={`${styles.statusPill} ${completed ? styles.statusComplete : refunded ? styles.statusRefunded : cancelled || failed ? styles.statusCancelled : ''}`}>

@@ -86,7 +86,7 @@ import { updateCustomerProfile } from './profile-update';
 import { transitionUserRoleAuthority } from '../mover-authority';
 import { safeMmgPayUrl } from '../../utils/mmg-pay-url';
 import { mmgAcceptedPayBy, mmgAcceptExpiryNotice, mmgOrderNoun, mmgPayByCustomerLine } from '../order/mmg-accept-expiry';
-import { customerCancellation, swiftStaffIds } from '../order/customer-cancellation';
+import { customerCancellation, customerStepNote, orderPeople } from '../order/customer-cancellation';
 import { displayMmgNumber, safeMmgNumber } from '../../utils/mmg-number';
 import { formatMoney } from '../../utils/currency-amount';
 import { validateOfferedStoreMmgPayUrl } from '../../utils/store-mmg';
@@ -2763,7 +2763,7 @@ export async function customerRoutes(app: FastifyInstance) {
     // then map — one pass, no per-row await.
     const riderAvatars = await resolveAvatarUrls(orders.map((o) => o.rider?.user?.avatar));
     // [owner 8 Nov 2026] Who closed each cancelled row (Swift support's people, read once for the page).
-    const isSwiftStaff = await swiftStaffIds(app.prisma, orders);
+    const people = await orderPeople(app.prisma, orders);
     const enrichedOrders = orders.map((o) => ({
       id: o.id,
       orderNumber: o.orderNumber,
@@ -2803,7 +2803,7 @@ export async function customerRoutes(app: FastifyInstance) {
       scheduledFor: o.scheduledFor,
       // [owner 8 Nov 2026] A cancelled row says who closed it and why ("Declined by store · Out of stock"); null on
       // every other row. Additive: older apps ignore it.
-      cancellation: customerCancellation(o, isSwiftStaff, o.vendor?.name ?? 'The store'),
+      cancellation: customerCancellation(o, people, o.vendor?.name ?? 'The store'),
       // LIFECYCLE_V2: while in the future, the free-cancel window is open
       // (the server clock decides; any app countdown is cosmetic).
       holdExpiresAt: o.holdExpiresAt,
@@ -3035,11 +3035,13 @@ export async function customerRoutes(app: FastifyInstance) {
         }
       : null;
 
-    // Timeline — [O-2 · REVIEW-F S3-2] the customer's projection (no store-tap row, no position evidence).
-    const timeline = customerTimeline(order.statusHistory);
     // [owner 8 Nov 2026] Who closed it and why, in the customer's terms (customer-cancellation.ts): the order
     // screen's "The store declined your order: Out of stock." Null unless CANCELLED. Additive.
-    const cancellation = customerCancellation(order, await swiftStaffIds(app.prisma, [order]), order.vendor?.name ?? 'The store');
+    const people = await orderPeople(app.prisma, [order]);
+    const cancellation = customerCancellation(order, people, order.vendor?.name ?? 'The store');
+    // Timeline — [O-2 · REVIEW-F S3-2] the customer's projection (no store-tap row, no position evidence).
+    // [owner 8 Nov 2026] Never a note Swift support wrote; the CANCELLED step says only the customer's words.
+    const timeline = customerTimeline(order.statusHistory, (row) => customerStepNote(order, row, people, cancellation));
 
     // [BOOK-S6a · owner B2] With INSTANT_BOOKING on, the live booking behind an appointment and
     // whether the customer may move it now — the same verdict the move itself applies
