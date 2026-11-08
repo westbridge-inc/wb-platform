@@ -12,31 +12,17 @@ import { customerDeciding } from './storeOrderRules';
 
 export type TakeoverEntry = { orderId: string; orderNumber?: string };
 
-/** Orders remembered per store as answered on this phone; far more than a kitchen holds open. */
-export const HANDLED_TAKEOVERS_REMEMBERED = 200;
-
-const handled = new Map<string, Map<string, true>>();
-
-/** The store answered this order's new-order screen on this phone. */
-export function markTakeoverHandled(vendorId: string, orderId: string): void {
-  let orders = handled.get(vendorId);
-  if (!orders) {
-    orders = new Map();
-    handled.set(vendorId, orders);
-  }
-  orders.delete(orderId);
-  orders.set(orderId, true);
-  while (orders.size > HANDLED_TAKEOVERS_REMEMBERED) orders.delete(orders.keys().next().value!);
-}
-
-export function takeoverHandled(vendorId: string, orderId: string): boolean {
-  return handled.get(vendorId)?.has(orderId) === true;
-}
-
-/** Test seam. */
-export function resetHandledTakeovers(): void {
-  handled.clear();
-}
+// [S4-2] What the store answered here is remembered per signed-in account and order on the device
+// (lib/handledTakeovers): a restart does not ring again for an order put off with "View later".
+export {
+  HANDLED_TAKEOVERS_REMEMBERED,
+  HANDLED_TAKEOVER_FALLBACK_MS,
+  acceptWindowEnd,
+  markTakeoverHandled,
+  pruneHandledTakeovers,
+  resetHandledTakeovers,
+  takeoverHandled,
+} from '../../lib/handledTakeovers';
 
 /**
  * The board's orders that are waiting for THIS store's answer right now: still
@@ -73,8 +59,8 @@ export function isStoreAlertPush(data: Record<string, unknown>): boolean {
 }
 
 /** The new-order push's order, raised at once ONLY when the push names THIS store. [review S3] A
- *  push naming no store (a one-store owner's first alert, or a re-alert from an older API) could be
- *  another branch's order: it only re-reads the board, which raises it if it is this store's. */
+ *  push naming no store (a re-alert from an older API) could be another branch's order: it only
+ *  re-reads the board, which raises it if it is this store's. */
 export function storeAlertFromPush(data: Record<string, unknown>, vendorId: string): TakeoverEntry | null {
   if (!isStoreAlertPush(data)) return null;
   const orderId = data['orderId'];
