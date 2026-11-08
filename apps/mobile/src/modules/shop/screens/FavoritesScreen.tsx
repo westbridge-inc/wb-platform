@@ -29,8 +29,8 @@ export function FavoritesScreen() {
   if (!isAuthenticated) {
     return (
       <Screen>
-        <Header title="Favorites" />
-        <EmptyState icon="heart" title="Sign in to save favorites" actionLabel="Sign In" onAction={promptLogin} />
+        <Header title="Favourites" />
+        <EmptyState icon="heart" title="Sign in to save favourites" actionLabel="Sign In" onAction={promptLogin} />
       </Screen>
     );
   }
@@ -39,7 +39,7 @@ export function FavoritesScreen() {
 
   return (
     <Screen>
-      <Header title="Favorites" />
+      <Header title="Favourites" />
       {favorites.isLoading ? (
         <LoadingBlock />
       ) : favorites.isError ? (
