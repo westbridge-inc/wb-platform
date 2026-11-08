@@ -604,8 +604,12 @@ export async function ridesRoutes(app: FastifyInstance) {
       : null;
     // [owner 8 Nov 2026] Who closed a cancelled ride, in the passenger's terms (never the raw code or a support note).
     // A ride has no store, so no store's people to look up. Null unless CANCELLED; additive.
+    // A ride closed by anyone but its passenger, its driver's no-show record or the system is Swift support's.
     const cancellation = customerCancellation(ride, () => false, 'The driver');
-    return { success: true, data: itinerary || waiting.waiting || waiting.fareBreakdown || rated ? { ...ride, cancellation, ...rated, ...itinerary, ...waiting } : { ...ride, cancellation } };
+    // Never the canceller's user id (no app reads it), and never Swift support's own note.
+    const owned = (({ cancelledBy: _cancelledBy, ...rest }) => rest)(ride);
+    const shown = { ...owned, cancellationReason: cancellation?.by === 'SWIFT' ? null : ride.cancellationReason, cancellation };
+    return { success: true, data: itinerary || waiting.waiting || waiting.fareBreakdown || rated ? { ...shown, ...rated, ...itinerary, ...waiting } : shown };
   });
 
   /** POST /:id/cancel — rides ride the same state machine as everything else. */

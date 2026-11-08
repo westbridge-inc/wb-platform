@@ -60,6 +60,7 @@ import { tellCustomersOfStoreSuspension } from '../vendor/store-suspension-notic
 import { taxiNotificationData } from '../rides/taxi-notification';
 import { assertMayDecideRefund, openMmgRefundOnReturn, openRefundWhere, refundResolvedNotice, refundVoidedNotice, resolveMmgRefundDispute, tellBothOfRefund, tellOfReturnRefund, voidMmgRefundObligation, type ReturnOutcome } from '../order/mmg-refund-rail';
 import { closeMmgOrderAsStoreRefund, mmgStoreCloseNotices, mmgStoreCloseRefusal, MMG_STORE_CLOSE_DISPOSITION } from '../order/mmg-store-close';
+import { ADMIN_CANCEL_DEFAULT_REASON } from '../order/customer-cancellation';
 import { getKycProvider } from '../../providers/kyc/kyc-provider';
 import { getPaymentProvider } from '../../providers/payment/payment-provider';
 import { getStorageProvider } from '../../providers/storage/storage-provider';
@@ -3688,7 +3689,7 @@ export async function adminRoutes(app: FastifyInstance) {
     const newStatus: OrderStatus = 'CANCELLED';
     const allowedFrom = Object.values(OrderStatus)
       .filter((status) => !(TERMINAL_ORDER_STATUSES as string[]).includes(status)) as OrderStatus[];
-    const cancellationReason = reason || 'Cancelled by admin';
+    const cancellationReason = reason || ADMIN_CANCEL_DEFAULT_REASON;
 
     // The fresh source status, order mutation, status evidence, explicit admin
     // audit, booking/search closure, stock, float, and mover release share one

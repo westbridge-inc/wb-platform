@@ -5,15 +5,15 @@
  *
  * Who closed a cancelled order, in the customer's terms (`cancellation` on the
  * customer's order list, order screen and ride screen). The server decides it,
- * because only the server can tell a store's staff from Swift support: an order's
+ * because only the server can tell a store's people from Swift support: an order's
  * `cancelledBy` is a user id (or null for the system), and that id is never sent to
  * the customer. The apps only word it (@swift/types customerCancellationWords).
  *
  * What may reach the customer as `reason`:
  * - a store's decline: the reason the store chose (its apps offer a fixed list;
  *   the API also takes typed text), as one clean line of at most 140 characters;
- * - an automatic close: the system's own words (a known code, or the customer's
- *   sentence for an unpaid-MMG close);
+ * - an automatic close: only the system's own known words (a code with words, the
+ *   only-item-left sentence, or the customer's sentence for an unpaid-MMG close);
  * - nothing else. A customer's own note, a driver's or store's no-show record and
  *   Swift support's note are never sent here.
  *
@@ -25,6 +25,7 @@ import { NOT_COLLECTED_REASON } from './pickup-not-collected';
 import { NO_SHOW_REASON } from '../booking/appointment-no-show';
 import { PASSENGER_NO_SHOW_REASON } from '../rides/passenger-no-show';
 import { MMG_ACCEPT_EXPIRY_REASON, mmgAcceptExpiryNotice } from './mmg-accept-expiry';
+import { consoleRoleOf } from '../auth/console-role';
 
 /** The reason the vendor-no-response auto-cancel writes (jobs/queue.ts autoCancelUnresponsiveOrder). */
 export const VENDOR_NO_RESPONSE_REASON = 'Auto-cancelled: vendor did not respond';
@@ -34,9 +35,6 @@ const SYSTEM_ACTOR = 'system';
 
 /** A store's reason, as the customer reads it: one line, at most this many characters. */
 export const CUSTOMER_REASON_MAX = 140;
-
-/** The only-item-left close (picking.service cancelOnlyItemLeft) names "the customer"; the customer reads "you". */
-const ONLY_ITEM_LEFT_TAIL = ' and the customer did not answer in time';
 
 /** The no-show records a store, provider or driver makes: the customer is told it was a no-show, never the record. */
 const NO_SHOW_REASONS: ReadonlySet<string> = new Set([NOT_COLLECTED_REASON, NO_SHOW_REASON, PASSENGER_NO_SHOW_REASON]);
@@ -57,16 +55,22 @@ export function customerSafeReason(raw: unknown): string | null {
   return text.length > CUSTOMER_REASON_MAX ? `${text.slice(0, CUSTOMER_REASON_MAX - 1).trimEnd()}…` : text;
 }
 
-/** An automatic close's reason as the customer may read it: a code this build has words for (the apps word it), or
- *  the system's own sentence. Any other code is dropped (the apps then say "This order was cancelled."). */
+/** The only-item-left close (picking.service cancelOnlyItemLeft), whose words name the item and "the customer". */
+const ONLY_ITEM_LEFT = /^Out of stock: (.{1,120}) was the only item and the customer did not answer in time$/;
+
+/**
+ * An automatic close's reason as the customer may read it. Only the system's own
+ * known words get through: a code this build has words for (the apps word it), or
+ * the only-item-left sentence, spoken to the customer ("you"). Anything else is
+ * dropped, and the apps say "This order was cancelled.".
+ */
 function systemReason(raw: string | null): string | null {
   if (typeof raw !== 'string') return null;
   const text = raw.trim();
-  if (/^[A-Z0-9_]+$/.test(text)) return own(SYSTEM_CANCELLATION_WORDS, text) ? text : null;
-  const customerVoice = text.endsWith(ONLY_ITEM_LEFT_TAIL)
-    ? `${text.slice(0, -ONLY_ITEM_LEFT_TAIL.length)} and you didn’t answer in time`
-    : text;
-  return customerSafeReason(customerVoice);
+  if (own(SYSTEM_CANCELLATION_WORDS, text)) return text;
+  const onlyItem = ONLY_ITEM_LEFT.exec(text);
+  if (onlyItem) return customerSafeReason(`Out of stock: ${onlyItem[1]} was the only item and you didn’t answer in time`);
+  return null;
 }
 
 export interface CancelledOrderFacts {
@@ -79,14 +83,23 @@ export interface CancelledOrderFacts {
   fulfillment?: string | null;
 }
 
+/** The reason Swift support's cancel records when the operator gives none (admin.routes PUT /orders/:id/cancel). */
+export const ADMIN_CANCEL_DEFAULT_REASON = 'Cancelled by admin';
+
 /**
- * Who closed this order, for its customer. `storeActor` answers whether the
- * user who cancelled it works for the order's store (owner or staff): see
- * storeActorKeys. Null for an order that is not CANCELLED.
+ * Who closed this order, for its customer. `isSwiftStaff` answers whether the
+ * user who cancelled it holds a Swift console role (see swiftStaffIds). Null for
+ * an order that is not CANCELLED.
+ *
+ * Swift is recognised POSITIVELY (the canceller's console role, or the operator's
+ * default reason); on a store order every other person who is not the customer
+ * is the store. Store people come and go (a staff member removed, an account
+ * deleted, a partner wound down), and a past decline must not turn into "Cancelled
+ * by Swift" when they do.
  */
 export function customerCancellation(
   order: CancelledOrderFacts,
-  storeActor: (vendorId: string, userId: string) => boolean,
+  isSwiftStaff: (userId: string) => boolean,
   storeName: string,
 ): CustomerCancellation | null {
   if (order.status !== 'CANCELLED') return null;
@@ -99,33 +112,29 @@ export function customerCancellation(
     if (raw === MMG_ACCEPT_EXPIRY_REASON) return { by: 'SYSTEM', reason: mmgAcceptExpiryNotice(order, storeName) };
     return { by: 'SYSTEM', reason: systemReason(raw) };
   }
-  if (order.vendorId && storeActor(order.vendorId, by)) return { by: 'STORE', reason: customerSafeReason(raw) };
+  if (isSwiftStaff(by) || raw === ADMIN_CANCEL_DEFAULT_REASON) return { by: 'SWIFT', reason: null };
+  if (order.vendorId) return { by: 'STORE', reason: customerSafeReason(raw) };
+  // A ride or a parcel has no store; the only other person who closes one is Swift support.
   return { by: 'SWIFT', reason: null };
 }
 
-const storeKey = (vendorId: string, userId: string) => `${vendorId}\u0000${userId}`;
-
 /**
- * For these cancelled orders, which (store, user) pairs are the store's own
- * people: the store's owner, or a member of its staff. Two reads, and none when
- * no order was cancelled by a person other than its customer.
+ * Which of the people who cancelled these orders hold a Swift console role
+ * (ADMIN or SUPER_ADMIN, read as the console reads it: auth/console-role.ts).
+ * One read for the page, and none when no order was cancelled by a person other
+ * than its customer.
  */
-export async function storeActorKeys(
+export async function swiftStaffIds(
   prisma: PrismaClient | Prisma.TransactionClient,
-  orders: ReadonlyArray<Pick<CancelledOrderFacts, 'status' | 'customerId' | 'vendorId' | 'cancelledBy'>>,
-): Promise<(vendorId: string, userId: string) => boolean> {
-  const pairs = orders.filter((o): o is typeof o & { vendorId: string; cancelledBy: string } =>
-    o.status === 'CANCELLED' && !!o.vendorId && !!o.cancelledBy && o.cancelledBy !== SYSTEM_ACTOR && o.cancelledBy !== o.customerId);
-  const known = new Set<string>();
-  if (pairs.length > 0) {
-    const vendorIds = [...new Set(pairs.map((p) => p.vendorId))];
-    const userIds = [...new Set(pairs.map((p) => p.cancelledBy))];
-    const [owners, staff] = await Promise.all([
-      prisma.vendor.findMany({ where: { id: { in: vendorIds }, owner: { userId: { in: userIds } } }, select: { id: true, owner: { select: { userId: true } } } }),
-      prisma.vendorStaff.findMany({ where: { vendorId: { in: vendorIds }, userId: { in: userIds } }, select: { vendorId: true, userId: true } }),
-    ]);
-    for (const v of owners) known.add(storeKey(v.id, v.owner.userId));
-    for (const s of staff) known.add(storeKey(s.vendorId, s.userId));
+  orders: ReadonlyArray<Pick<CancelledOrderFacts, 'status' | 'customerId' | 'cancelledBy'>>,
+): Promise<(userId: string) => boolean> {
+  const ids = [...new Set(orders
+    .filter((o) => o.status === 'CANCELLED' && !!o.cancelledBy && o.cancelledBy !== SYSTEM_ACTOR && o.cancelledBy !== o.customerId)
+    .map((o) => o.cancelledBy as string))];
+  const staff = new Set<string>();
+  if (ids.length > 0) {
+    const users = await prisma.user.findMany({ where: { id: { in: ids } }, select: { id: true, roles: true } });
+    for (const u of users) if (consoleRoleOf(u.roles)) staff.add(u.id);
   }
-  return (vendorId, userId) => known.has(storeKey(vendorId, userId));
+  return (userId) => staff.has(userId);
 }

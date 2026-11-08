@@ -5,7 +5,7 @@ import {
   VENDOR_NO_RESPONSE_REASON,
   customerCancellation,
   customerSafeReason,
-  storeActorKeys,
+  swiftStaffIds,
 } from '../modules/order/customer-cancellation';
 import { NOT_COLLECTED_REASON } from '../modules/order/pickup-not-collected';
 import { NO_SHOW_REASON } from '../modules/booking/appointment-no-show';
@@ -53,38 +53,37 @@ const ADMIN = 'user-admin';
 
 type FindManyArgs = { where: Record<string, any>; select?: Record<string, unknown> };
 
-/** The store's people as the database holds them: the owner of vendor-food (through the vendor row) and one staff member. */
-function storePeople() {
-  const vendorFindMany = vi.fn(async (args: FindManyArgs) => {
+/** The users as the database holds them: Swift support holds a console role; the store's people do not. A staff
+ *  member removed from the store, or an account deleted, simply has no admin role (or no row at all). */
+const USERS: Record<string, { roles: string[] }> = {
+  [ADMIN]: { roles: ['CUSTOMER', 'ADMIN'] },
+  'user-super': { roles: ['SUPER_ADMIN'] },
+  [STAFF]: { roles: ['CUSTOMER'] },
+  [OWNER]: { roles: ['VENDOR_OWNER', 'CUSTOMER'] },
+  'user-provider': { roles: ['VENDOR_OWNER'] },
+};
+function userRoles() {
+  return vi.fn(async (args: FindManyArgs) => {
     const ids: string[] = args.where['id']?.in ?? [];
-    const users: string[] = args.where['owner']?.userId?.in ?? [];
-    const owners: Record<string, string> = { 'vendor-food': OWNER, 'vendor-svc': 'user-provider' };
-    return ids.filter((id) => owners[id] && users.includes(owners[id]!)).map((id) => ({ id, owner: { userId: owners[id]! } }));
+    return ids.filter((id) => USERS[id]).map((id) => ({ id, roles: USERS[id]!.roles }));
   });
-  const staffFindMany = vi.fn(async (args: FindManyArgs) => {
-    const vendorIds: string[] = args.where['vendorId']?.in ?? [];
-    const users: string[] = args.where['userId']?.in ?? [];
-    return [{ vendorId: 'vendor-food', userId: STAFF }].filter((s) => vendorIds.includes(s.vendorId) && users.includes(s.userId));
-  });
-  return { vendorFindMany, staffFindMany };
 }
 
 async function customerHost(rows: Row[]) {
   const store = orderStore(rows);
-  const people = storePeople();
+  const users = userRoles();
   const prisma = prismaDouble(store, {
     platformConfig: { findUnique: async () => null, findMany: async () => [] },
     customer: { findUnique: async () => ({ id: 'cust-1', userId: 'user-customer', referralCode: 'REF1' }) },
-    vendor: { findMany: people.vendorFindMany, findUnique: async () => ({ status: 'ACTIVE', publicPhone: null }) },
-    vendorStaff: { findMany: people.staffFindMany },
+    vendor: { findMany: async () => [], findUnique: async () => ({ status: 'ACTIVE', publicPhone: null }) },
     item: { findMany: async () => [] },
-    user: { findUnique: async () => ({ countryCode: 'GY' }) },
+    user: { findUnique: async () => ({ countryCode: 'GY' }), findMany: users },
     countryConfig: { findUnique: async () => null },
     rating: { findMany: async () => [] },
     dispatchSearch: { findFirst: async () => null },
   });
   const host = await hostRoutes(customerRoutes, { prisma, redis: recordingRedis(), io: recordingIo() });
-  return { ...host, store, people };
+  return { ...host, store, users };
 }
 
 const asCustomer = (extra: Record<string, unknown> = {}) => ({ user: { userId: 'user-customer', role: 'CUSTOMER' }, ...extra });
@@ -120,23 +119,44 @@ describe('GET /customer/orders and /customer/orders/:id — a store decline says
     expect(by['bk-1']).toEqual({ by: 'STORE', reason: 'Fully booked at that time' });
   });
 
-  it('the store’s people are read once for the page, only for rows cancelled by someone other than the customer', async () => {
+  it('the cancellers’ roles are read once for the page, only for rows cancelled by someone other than the customer', async () => {
     const h = await customerHost([
       foodDelivery('food-1', declinedBy(STAFF, 'Out of stock')),
       foodDelivery('food-2', declinedBy('user-customer', 'changed my mind')),
       foodDelivery('food-3', { status: 'DELIVERED' }),
+      foodDelivery('food-4', { status: 'CANCELLED', cancelledBy: 'system', cancellationReason: 'FOOD_TOO_OLD' }),
     ]);
     await h.call('get /orders', asCustomer());
-    expect(h.people.vendorFindMany).toHaveBeenCalledTimes(1);
-    expect(h.people.staffFindMany).toHaveBeenCalledTimes(1);
-    expect(h.people.staffFindMany.mock.calls[0]![0].where).toEqual({ vendorId: { in: ['vendor-food'] }, userId: { in: [STAFF] } });
+    expect(h.users).toHaveBeenCalledTimes(1);
+    expect(h.users.mock.calls[0]![0]).toEqual({ where: { id: { in: [STAFF] } }, select: { id: true, roles: true } });
   });
 
-  it('no cancelled row cancelled by another person: no store lookup at all', async () => {
+  it('no cancelled row cancelled by another person: no read at all', async () => {
     const h = await customerHost([foodDelivery('food-1', { status: 'DELIVERED' }), foodDelivery('food-2', declinedBy('user-customer', 'x'))]);
     await h.call('get /orders', asCustomer());
-    expect(h.people.vendorFindMany).not.toHaveBeenCalled();
-    expect(h.people.staffFindMany).not.toHaveBeenCalled();
+    expect(h.users).not.toHaveBeenCalled();
+  });
+
+  it('a decline by a staff member since removed from the store, or whose account is gone, still reads as the store’s', async () => {
+    const h = await customerHost([
+      foodDelivery('removed', declinedBy('user-former-staff', 'Out of stock')),
+      foodDelivery('gone', declinedBy('user-deleted-account', 'Closing soon')),
+    ]);
+    const list = (await h.call('get /orders', asCustomer())) as List;
+    const by = Object.fromEntries(list.data.map((o) => [o['id'], o['cancellation']]));
+    expect(by).toEqual({ removed: { by: 'STORE', reason: 'Out of stock' }, gone: { by: 'STORE', reason: 'Closing soon' } });
+  });
+
+  it('Swift support’s cancel: never its note, on the list or the order screen (the raw reason is blanked too)', async () => {
+    const note = 'Fraud check: card flagged, call back';
+    const h = await customerHost([foodDelivery('support', declinedBy(ADMIN, note)), foodDelivery('super', declinedBy('user-super', note))]);
+    const list = (await h.call('get /orders', asCustomer())) as List;
+    expect(list.data.map((o) => o['cancellation'])).toEqual([{ by: 'SWIFT', reason: null }, { by: 'SWIFT', reason: null }]);
+    const detail = (await h.call('get /orders/:id', asCustomer({ params: { id: 'support' } }))) as Detail;
+    expect(detail.data['cancellation']).toEqual({ by: 'SWIFT', reason: null });
+    expect(detail.data['cancellationReason']).toBeNull();
+    expect(JSON.stringify(detail.data)).not.toContain('Fraud check');
+    expect(JSON.stringify(detail.data)).not.toContain(ADMIN);
   });
 
   it('each other way an order closes keeps its own words, and only a reason the customer may read', async () => {
@@ -151,8 +171,9 @@ describe('GET /customer/orders and /customer/orders/:id — a store decline says
       foodDelivery('uncollected', { ...declinedBy(OWNER, NOT_COLLECTED_REASON), fulfillment: 'PICKUP' }),
       // A system close: the code, which the apps put in words.
       foodDelivery('cold', { status: 'CANCELLED', cancelledBy: 'system', cancellationReason: 'FOOD_TOO_OLD' }),
-      // An unknown system code never reaches the customer.
+      // An unknown system code never reaches the customer, nor a system sentence this build does not know.
       foodDelivery('code', { status: 'CANCELLED', cancelledBy: null, cancellationReason: 'SOME_INTERNAL_CODE' }),
+      foodDelivery('sentence', { status: 'CANCELLED', cancelledBy: null, cancellationReason: 'Ops sweep: duplicate of order 41' }),
       // A live order: no cancellation.
       foodDelivery('live', { status: 'PREPARING' }),
     ]);
@@ -165,6 +186,7 @@ describe('GET /customer/orders and /customer/orders/:id — a store decline says
       uncollected: { by: 'NO_SHOW', reason: null },
       cold: { by: 'SYSTEM', reason: 'FOOD_TOO_OLD' },
       code: { by: 'SYSTEM', reason: null },
+      sentence: { by: 'SYSTEM', reason: null },
       live: null,
     });
     expect(JSON.stringify(list.data)).not.toContain('Fraud check');
@@ -180,13 +202,13 @@ describe('GET /customer/orders and /customer/orders/:id — a store decline says
 
 describe('customerCancellation — who closed it, in the customer’s terms', () => {
   const base = { status: 'CANCELLED', customerId: 'cust', vendorId: 'v1', orderNumber: 'SW-1', fulfillment: 'DELIVERY' };
-  const store = (vendorId: string, userId: string) => vendorId === 'v1' && userId === 'staff';
+  const swift = (userId: string) => userId === 'admin';
   const view = (cancelledBy: string | null, cancellationReason: string | null, extra: Record<string, unknown> = {}) =>
-    customerCancellation({ ...base, cancelledBy, cancellationReason, ...extra }, store, 'Bourda Cafe');
+    customerCancellation({ ...base, cancelledBy, cancellationReason, ...extra }, swift, 'Bourda Cafe');
 
   it('null on an order that is not cancelled', () => {
-    expect(customerCancellation({ ...base, status: 'DELIVERED', cancelledBy: null, cancellationReason: null }, store, 'x')).toBeNull();
-    expect(customerCancellation({ ...base, status: 'REFUNDED', cancelledBy: 'staff', cancellationReason: 'Out of stock' }, store, 'x')).toBeNull();
+    expect(customerCancellation({ ...base, status: 'DELIVERED', cancelledBy: null, cancellationReason: null }, swift, 'x')).toBeNull();
+    expect(customerCancellation({ ...base, status: 'REFUNDED', cancelledBy: 'staff', cancellationReason: 'Out of stock' }, swift, 'x')).toBeNull();
   });
 
   it('every branch', () => {
@@ -197,10 +219,17 @@ describe('customerCancellation — who closed it, in the customer’s terms', ()
     expect(view('staff', NO_SHOW_REASON)).toEqual({ by: 'NO_SHOW', reason: null });
     expect(view('driver-user', PASSENGER_NO_SHOW_REASON, { vendorId: null })).toEqual({ by: 'NO_SHOW', reason: null });
     expect(view('admin', 'Cancelled by admin')).toEqual({ by: 'SWIFT', reason: null });
-    expect(view('admin', 'Out of stock', { vendorId: null })).toEqual({ by: 'SWIFT', reason: null });
+    expect(view('admin', 'Out of stock')).toEqual({ by: 'SWIFT', reason: null });
+    // The operator's default reason is Swift's even if that account later lost its role.
+    expect(view('former-admin', 'Cancelled by admin')).toEqual({ by: 'SWIFT', reason: null });
+    // Any other person on a store order is the store, whether or not they still work there.
+    expect(view('former-staff', 'Out of stock')).toEqual({ by: 'STORE', reason: 'Out of stock' });
+    // A ride or a parcel has no store: anyone else is Swift support.
+    expect(view('someone', 'Out of stock', { vendorId: null })).toEqual({ by: 'SWIFT', reason: null });
     expect(view(null, 'NO_DRIVERS_AVAILABLE', { vendorId: null })).toEqual({ by: 'SYSTEM', reason: 'NO_DRIVERS_AVAILABLE' });
     expect(view('system', 'NO_RIDER_FOR_PARCEL', { vendorId: null })).toEqual({ by: 'SYSTEM', reason: 'NO_RIDER_FOR_PARCEL' });
     expect(view(null, null)).toEqual({ by: 'SYSTEM', reason: null });
+    expect(view(null, 'Some sentence the system never writes')).toEqual({ by: 'SYSTEM', reason: null });
   });
 
   it('an unpaid-MMG close carries the customer’s sentence, never the store’s', () => {
@@ -237,18 +266,17 @@ describe('customerSafeReason — a store’s typed reason, made safe to show', (
   });
 });
 
-describe('storeActorKeys — the store’s people, read for the given orders only', () => {
-  it('owner and staff of the order’s own store; never another store’s people', async () => {
-    const people = storePeople();
-    const prisma = { vendor: { findMany: people.vendorFindMany }, vendorStaff: { findMany: people.staffFindMany } } as never;
-    const isStore = await storeActorKeys(prisma, [
-      { status: 'CANCELLED', customerId: 'c', vendorId: 'vendor-food', cancelledBy: STAFF },
-      { status: 'CANCELLED', customerId: 'c', vendorId: 'vendor-food', cancelledBy: OWNER },
-      { status: 'CANCELLED', customerId: 'c', vendorId: 'vendor-svc', cancelledBy: STAFF },
-    ]);
-    expect(isStore('vendor-food', STAFF)).toBe(true);
-    expect(isStore('vendor-food', OWNER)).toBe(true);
-    expect(isStore('vendor-svc', STAFF)).toBe(false);
-    expect(isStore('vendor-food', ADMIN)).toBe(false);
+describe('swiftStaffIds — Swift support’s people, by the console role they hold', () => {
+  it('ADMIN and SUPER_ADMIN are Swift; a store owner, a staff member and a missing account are not', async () => {
+    const users = userRoles();
+    const prisma = { user: { findMany: users } } as never;
+    const order = (cancelledBy: string) => ({ status: 'CANCELLED', customerId: 'c', cancelledBy });
+    const isSwift = await swiftStaffIds(prisma, [order(ADMIN), order('user-super'), order(OWNER), order(STAFF), order('user-deleted-account')]);
+    expect(isSwift(ADMIN)).toBe(true);
+    expect(isSwift('user-super')).toBe(true);
+    expect(isSwift(OWNER)).toBe(false);
+    expect(isSwift(STAFF)).toBe(false);
+    expect(isSwift('user-deleted-account')).toBe(false);
+    expect(users).toHaveBeenCalledTimes(1);
   });
 });
