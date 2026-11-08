@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { CALL_SCREEN_TEMPLATE, INAPP_WORDS, OUTGOING_HANDLE, inAppErrorText, offerInApp } from './inAppCalls';
+import { CALL_SCREEN_TEMPLATE, INAPP_WORDS, OUTGOING_HANDLE, inAppErrorText, offerInApp, revealsBackup } from './inAppCalls';
 
 // [INAPP-CALLS] When "Call in app" shows, and the words people read.
 describe('[INAPP-CALLS] offerInApp', () => {
@@ -48,5 +48,21 @@ describe('[INAPP-CALLS] words', () => {
   it('the call screen shows the server\'s role line; recent calls show "Swift"', () => {
     expect(CALL_SCREEN_TEMPLATE).toBe('${swiftLine}');
     expect(OUTGOING_HANDLE).toBe('Swift');
+  });
+});
+
+describe('[CALLS-UX · owner 8 Nov] which refusals bring the backup call control back', () => {
+  it('the in-app call cannot happen: they cannot be rung, no account to ring, Swift cannot tell, the switch went off, no app, no module, no microphone', () => {
+    for (const code of ['INAPP_NOT_REACHABLE', 'INAPP_NO_ONE', 'INAPP_CALLS_TROUBLE', 'INAPP_CALLS_OFF', 'INAPP_NOT_FOR_TARGET', 'INAPP_UNAVAILABLE', 'MIC_REFUSED']) {
+      expect(revealsBackup(code)).toBe(true);
+    }
+  });
+
+  it('not the shared caps, a finished order, a call already ringing, or an unknown error (those hold for every call)', () => {
+    for (const code of ['CALL_LIMIT_REACHED', 'CALL_ORDER_NOT_LIVE', 'CALL_IN_PROGRESS', 'CALL_CALLER_BUSY', 'CALL_USER_DAILY_LIMIT_REACHED', 'CALL_DAILY_LIMIT_REACHED', 'NOT_FOUND', 'SOMETHING']) {
+      expect(revealsBackup(code)).toBe(false);
+    }
+    expect(revealsBackup(null)).toBe(false);
+    expect(revealsBackup(undefined)).toBe(false);
   });
 });

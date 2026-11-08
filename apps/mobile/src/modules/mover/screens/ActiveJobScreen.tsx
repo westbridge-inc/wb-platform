@@ -922,13 +922,14 @@ export function ActiveJobScreen({ navigation, route }: any) {
                     </Pressable>
                   )}
                 </CallParty>
-                {/* [INAPP-CALLS] Build 13+, switch on: call inside the app (their phone shows a Swift call screen). */}
+                {/* [INAPP-CALLS] Build 13+, switch on: call inside the app (their phone shows a Swift call screen).
+                    [CALLS-UX] In-app first: when this shows, the dial button above is the backup only (CallParty). */}
                 <CallInApp orderId={job?.id} target="customer">
                   {(call) => (
                     <Pressable onPress={call.onPress} disabled={call.busy} hitSlop={6} accessibilityRole="button" accessibilityLabel={call.a11y} accessibilityHint={call.hint}>
                       {({ pressed }) => (
                         <View style={{ width: 40, height: 40, borderRadius: 20, alignItems: 'center', justifyContent: 'center', backgroundColor: dk.cardSoft, marginRight: space.sm, opacity: pressed || call.busy ? 0.7 : 1 }}>
-                          <Feather name="headphones" size={17} color={dk.success} />
+                          <Feather name="phone-call" size={17} color={dk.success} />
                         </View>
                       )}
                     </Pressable>

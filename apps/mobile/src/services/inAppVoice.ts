@@ -26,22 +26,56 @@
 import { NativeModules, PermissionsAndroid, Platform } from 'react-native';
 import { CALL_SCREEN_TEMPLATE, OUTGOING_HANDLE } from '../lib/inAppCalls';
 import type { CallTarget } from '../lib/callBridge';
+import { phaseOf, pickRoute, type InCallSnapshot } from '../lib/inCallBar';
 
-/** The few SDK members Swift uses (structural, so this file type-checks without the SDK's types). */
-interface SdkCall {
+/**
+ * The few SDK members Swift uses (structural, so this file loads without the SDK; inAppVoice.sdkShape.test.ts
+ * proves at type-check time that the installed SDK's own classes fit these shapes and event names).
+ * [CALLS-UX] The in-call members are optional: a call object or SDK without them simply shows no such control.
+ */
+export interface SdkCall {
   disconnect(): Promise<void>;
-  on(event: string, listener: (...args: unknown[]) => void): unknown;
+  on(event: string, listener: (...args: never[]) => void): unknown;
+  mute?(mute: boolean): Promise<boolean>;
+  isMuted?(): boolean | undefined;
+  getState?(): string;
+  getSid?(): string | undefined;
+  getInitialConnectedTimestamp?(): Date | undefined;
 }
-interface SdkVoice {
+export interface SdkAudioDevice {
+  type: string;
+  select(): Promise<void>;
+}
+export interface SdkCallInvite {
+  on(event: string, listener: (...args: never[]) => void): unknown;
+}
+export interface SdkVoice {
   initializePushRegistry(): Promise<void>;
   setIncomingCallContactHandleTemplate(template?: string): Promise<void>;
   register(token: string): Promise<void>;
   unregister(token: string): Promise<void>;
   connect(token: string, options?: { params?: Record<string, string>; contactHandle?: string; notificationDisplayName?: string }): Promise<SdkCall>;
+  on?(event: string, listener: (...args: never[]) => void): unknown;
+  getCalls?(): Promise<ReadonlyMap<string, SdkCall>>;
+  getAudioDevices?(): Promise<{ audioDevices: SdkAudioDevice[]; selectedDevice?: SdkAudioDevice }>;
+  showAvRoutePickerView?(): Promise<void>;
 }
 interface SdkModule {
   Voice: new () => SdkVoice;
 }
+
+/** The SDK's own event names Swift listens to (checked against the SDK's enums in inAppVoice.sdkShape.test.ts). */
+export const SDK_EVENTS = {
+  callConnected: 'connected',
+  callRinging: 'ringing',
+  callReconnecting: 'reconnecting',
+  callReconnected: 'reconnected',
+  callDisconnected: 'disconnected',
+  callConnectFailure: 'connectFailure',
+  voiceCallInvite: 'callInvite',
+  voiceAudioDevicesUpdated: 'audioDevicesUpdated',
+  inviteAccepted: 'accepted',
+} as const;
 
 const NATIVE_NAME = 'TwilioVoiceReactNative';
 
@@ -132,6 +166,7 @@ export async function startInAppVoice(): Promise<void> {
   try {
     await v.setIncomingCallContactHandleTemplate(CALL_SCREEN_TEMPLATE);
   } catch { /* the default handle is Swift's client name, never a number */ }
+  watchVoice(v);
 }
 
 /** Platform name the server picks the push credential by. */
@@ -269,11 +304,169 @@ export async function ensureMicrophone(explain: () => Promise<boolean>): Promise
   return (await PermissionsAndroid.request(mic)) === PermissionsAndroid.RESULTS.GRANTED;
 }
 
-let active: SdkCall | null = null;
+// ---------------------------------------------------------------------------
+// [CALLS-UX · owner 8 Nov 2026, "B"] The call that is on now (placed here, or answered here), for the in-call
+// bar: its state and time, Mute, Speaker and Hang up. One at a time: the newest call is the one shown.
+// ---------------------------------------------------------------------------
 
-/** Is an in-app call this phone placed still on? */
+let current: { call: SdkCall; snap: InCallSnapshot; onEnded?: () => void } | null = null;
+const inCallListeners = new Set<() => void>();
+const emitInCall = () => { for (const l of [...inCallListeners]) { try { l(); } catch { /* one listener never stops the rest */ } } };
+
+/** The bar's view of the call that is on now, or null. A new object on every change (React's external store). */
+export function inCallSnapshot(): InCallSnapshot | null {
+  return current?.snap ?? null;
+}
+
+export function subscribeInCall(listener: () => void): () => void {
+  inCallListeners.add(listener);
+  return () => { inCallListeners.delete(listener); };
+}
+
+function patch(call: SdkCall, next: Partial<InCallSnapshot>): void {
+  if (!current || current.call !== call) return;
+  current = { ...current, snap: { ...current.snap, ...next } };
+  emitInCall();
+}
+
+const connectedAtOf = (call: SdkCall): number | null => {
+  try { return call.getInitialConnectedTimestamp?.()?.getTime() ?? null; } catch { return null; }
+};
+
+/** Read the route the phone is on now (the SDK's getAudioDevices); nothing is selected here. */
+async function readRoute(call: SdkCall): Promise<void> {
+  const v = getVoice();
+  if (!v?.getAudioDevices) return;
+  try {
+    const { audioDevices, selectedDevice } = await v.getAudioDevices();
+    patch(call, {
+      speaker: selectedDevice?.type === 'speaker',
+      routePicker: Platform.OS === 'ios' && audioDevices.some((d) => d.type === 'bluetooth') && typeof v.showAvRoutePickerView === 'function',
+    });
+  } catch { /* the bar keeps what it last knew */ }
+}
+
+/** Show this call on the bar and follow it until it ends. */
+function trackCall(call: SdkCall, onEnded?: () => void): void {
+  let phase: InCallSnapshot['phase'] = 'connecting';
+  try { phase = phaseOf(call.getState?.()) ?? 'connecting'; } catch { /* connecting */ }
+  let muted = false;
+  try { muted = call.isMuted?.() === true; } catch { /* not muted */ }
+  const connectedAt = connectedAtOf(call) ?? (phase === 'connected' ? Date.now() : null);
+  current = { call, onEnded, snap: { phase, connectedAt, muted, speaker: false, routePicker: false } };
+  const ended = () => {
+    if (current?.call !== call) return;
+    const done = current.onEnded;
+    current = null;
+    emitInCall();
+    done?.();
+  };
+  const connected = () => {
+    const at = current?.call === call ? current.snap.connectedAt : null;
+    patch(call, { phase: 'connected', connectedAt: at ?? connectedAtOf(call) ?? Date.now() });
+    void readRoute(call);
+  };
+  try {
+    call.on(SDK_EVENTS.callConnected, connected);
+    call.on(SDK_EVENTS.callReconnected, connected);
+    call.on(SDK_EVENTS.callRinging, () => patch(call, { phase: 'ringing' }));
+    call.on(SDK_EVENTS.callReconnecting, () => patch(call, { phase: 'reconnecting' }));
+    call.on(SDK_EVENTS.callDisconnected, ended);
+    call.on(SDK_EVENTS.callConnectFailure, ended);
+  } catch { /* the call still runs; Hang up and the system's own screen still end it */ }
+  emitInCall();
+  void readRoute(call);
+}
+
+let watched: SdkVoice | null = null;
+/** Answered calls (the system's call screen or notification) and route changes (CallKit's own Speaker too). */
+function watchVoice(v: SdkVoice): void {
+  if (watched === v || typeof v.on !== 'function') return;
+  watched = v;
+  try {
+    v.on(SDK_EVENTS.voiceCallInvite, (invite: SdkCallInvite) => {
+      try { invite.on(SDK_EVENTS.inviteAccepted, (call: SdkCall) => trackCall(call)); } catch { /* the sync on return to the app finds it */ }
+    });
+    v.on(SDK_EVENTS.voiceAudioDevicesUpdated, (devices: SdkAudioDevice[], selected?: SdkAudioDevice) => {
+      if (!current) return;
+      patch(current.call, {
+        speaker: selected?.type === 'speaker',
+        routePicker: Platform.OS === 'ios' && (devices ?? []).some((d) => d.type === 'bluetooth') && typeof v.showAvRoutePickerView === 'function',
+      });
+    });
+  } catch { /* no listener: the bar still shows calls placed here */ }
+  void syncInAppCalls();
+}
+
+/**
+ * A call answered while the app's JavaScript was not running (the answer launched the app), or Mute pressed on
+ * CallKit's own screen: ask the SDK for the calls it holds. Runs at start and whenever the app comes back.
+ */
+export async function syncInAppCalls(): Promise<void> {
+  const v = getVoice();
+  if (!v?.getCalls) return;
+  let calls: SdkCall[];
+  try { calls = [...(await v.getCalls()).values()]; } catch { return; }
+  const live = calls.filter((c) => { try { return phaseOf(c.getState?.()) !== null; } catch { return false; } });
+  if (!current) {
+    const call = live[live.length - 1];
+    if (call) trackCall(call);
+    return;
+  }
+  const mine = current.call;
+  let sid: string | undefined;
+  try { sid = mine.getSid?.(); } catch { sid = undefined; }
+  const same = sid ? live.find((c) => { try { return c.getSid?.() === sid; } catch { return false; } }) : undefined;
+  if (same) {
+    let muted: boolean | undefined;
+    try { muted = same.isMuted?.(); } catch { muted = undefined; }
+    if (typeof muted === 'boolean') patch(mine, { muted });
+  }
+  await readRoute(mine);
+}
+
+/** Mute or unmute this side of the call (the SDK's call.mute). Resolves with the muted state the SDK reports. */
+export async function setInCallMuted(muted: boolean): Promise<boolean | null> {
+  const c = current;
+  if (!c?.call.mute) return null;
+  try {
+    const now = await c.call.mute(muted);
+    patch(c.call, { muted: now === true });
+    return now === true;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Speaker on / off with the SDK's own audio devices (getAudioDevices, then AudioDevice.select). Never stored and
+ * put back later: the bar only follows the route the phone reports, so CallKit's own Speaker and this one agree.
+ * iPhone with a Bluetooth device: the system's route picker (the SDK's iOS route API) lets the person choose.
+ */
+export async function setInCallSpeaker(on: boolean): Promise<boolean> {
+  const c = current;
+  const v = getVoice();
+  if (!c || !v?.getAudioDevices) return false;
+  try {
+    const { audioDevices } = await v.getAudioDevices();
+    if (Platform.OS === 'ios' && v.showAvRoutePickerView && audioDevices.some((d) => d.type === 'bluetooth')) {
+      await v.showAvRoutePickerView();
+      return true;
+    }
+    const device = pickRoute(audioDevices, on);
+    if (!device) return false;
+    await device.select();
+    patch(c.call, { speaker: on });
+    return true;
+  } catch {
+    await readRoute(c.call);
+    return false;
+  }
+}
+
+/** Is an in-app call (placed or answered here) still on? */
 export function inAppCallActive(): boolean {
-  return active !== null;
+  return current !== null;
 }
 
 export interface PlaceDeps {
@@ -296,24 +489,21 @@ export async function placeInAppCall(orderId: string, target: CallTarget, deps: 
     await deps.cancel(callId).catch(() => undefined);
     throw err;
   }
-  active = call;
-  const ended = () => { if (active === call) active = null; deps.onEnded?.(); };
-  try {
-    call.on('disconnected', ended);
-    call.on('connectFailure', ended);
-  } catch { /* the call still runs; the button falls back to its idle state on the next render */ }
+  trackCall(call, deps.onEnded);
 }
 
-/** End the call this phone placed (the system call screen also ends it). */
+/** End the call that is on (Hang up, or "End call" on the order screen; the system call screen also ends it). */
 export async function endInAppCall(): Promise<void> {
-  const call = active;
-  active = null;
-  await call?.disconnect().catch(() => undefined);
+  const c = current;
+  current = null;
+  if (c) emitInCall();
+  await c?.call.disconnect().catch(() => undefined);
 }
 
 /** Tests only: forget everything; `loader` stands in for the package (default: the real one). */
 export function resetInAppVoiceForTests(loader: () => unknown = defaultLoad, flagsFactory: () => FlagStore = defaultFlags): void {
-  sdk = undefined; voice = null; started = false; registeredAt = 0; active = null; load = loader;
+  sdk = undefined; voice = null; started = false; registeredAt = 0; current = null; watched = null; load = loader;
+  inCallListeners.clear();
   voiceGeneration = 0; marks = 0;
   flagStore = undefined; makeFlags = flagsFactory;
 }

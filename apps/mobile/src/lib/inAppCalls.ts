@@ -71,6 +71,32 @@ export function inAppErrorText(code: string | null | undefined): string {
   }
 }
 
+/**
+ * [CALLS-UX · owner 8 Nov 2026, "A"] In-app first: the dial / "Call via Swift" control shows only as a backup.
+ * These refusals mean the in-app call cannot happen for this person, so the backup control comes back:
+ * - INAPP_NOT_REACHABLE: no phone of theirs can be rung in the app (and Swift cannot ring their phone instead);
+ * - INAPP_NO_ONE: there is no Swift account to ring for them (a web order's customer, for one);
+ * - INAPP_CALLS_TROUBLE: Swift cannot tell which phones can ring right now;
+ * - INAPP_CALLS_OFF: the switch went off since this phone last read it;
+ * - INAPP_NOT_FOR_TARGET: the person has no Swift app (the parcel recipient);
+ * - INAPP_UNAVAILABLE: this phone's app has no calling module;
+ * - MIC_REFUSED: this phone cannot use the microphone for Swift.
+ * Not the caps, a finished order or a call already ringing: those hold for "Call via Swift" too.
+ */
+const BACKUP_CODES: ReadonlySet<string> = new Set([
+  'INAPP_NOT_REACHABLE',
+  'INAPP_NO_ONE',
+  'INAPP_CALLS_TROUBLE',
+  'INAPP_CALLS_OFF',
+  'INAPP_NOT_FOR_TARGET',
+  'INAPP_UNAVAILABLE',
+  'MIC_REFUSED',
+]);
+
+export function revealsBackup(code: string | null | undefined): boolean {
+  return !!code && BACKUP_CODES.has(code);
+}
+
 /** The call-screen template the native module fills from the server's `swiftLine` parameter. */
 export const CALL_SCREEN_TEMPLATE = '$' + '{swiftLine}';
 /** What CallKit shows in the phone's recent calls for a call this person placed (never a number). */

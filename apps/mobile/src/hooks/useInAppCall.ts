@@ -1,15 +1,17 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { Alert } from 'react-native';
 import { toast } from '../kit/toast';
 import type { CallTarget } from '../lib/callBridge';
-import { INAPP_WORDS, inAppErrorText, offerInApp, type InAppConfig } from '../lib/inAppCalls';
+import { INAPP_WORDS, inAppErrorText, offerInApp, revealsBackup, type InAppConfig } from '../lib/inAppCalls';
 import {
   endInAppCall,
   ensureMicrophone,
+  inCallSnapshot,
   inAppCallActive,
   inAppVoiceAvailable,
   placeInAppCall,
   registerForInAppCalls,
+  subscribeInCall,
 } from '../services/inAppVoice';
 
 // [INAPP-CALLS] One answer per app run for a few minutes (as the bridge's config); a failed read means
@@ -30,7 +32,58 @@ export async function loadInAppConfig(now = Date.now()): Promise<InAppConfig | n
 }
 
 /** Tests only. */
-export function resetInAppConfigForTests(): void { cached = null; inflight = null; }
+export function resetInAppConfigForTests(): void { cached = null; inflight = null; backups.clear(); }
+
+// ---------------------------------------------------------------------------
+// [CALLS-UX · owner 8 Nov 2026, "A"] In-app first, the number only as a backup. While "Call in app" is offered
+// for a person, the dial / "Call via Swift" control beside it is hidden. It comes back (the backup) for that
+// person on that order when the server says the in-app call cannot happen (they cannot be rung in the app, Swift
+// cannot tell, the switch went off, or this phone's microphone is refused): see revealsBackup in lib/inAppCalls.
+// No extra read: the answer is the one POST /calls/app already gives (party checked first, 404 for anyone else,
+// refused before any call row, so no attempt is spent). Kept a few minutes, so the screen does not ask again.
+// ---------------------------------------------------------------------------
+
+const BACKUP_TTL_MS = 10 * 60_000;
+const backups = new Map<string, number>();
+const backupListeners = new Set<() => void>();
+const backupKey = (orderId: string, target: CallTarget) => `${orderId}:${target}`;
+
+/** Show the backup call control for this person on this order (the in-app call could not happen). */
+export function revealBackupCall(orderId: string, target: CallTarget, now = Date.now()): void {
+  backups.set(backupKey(orderId, target), now);
+  for (const l of [...backupListeners]) l();
+}
+
+/** Has the backup been revealed for this person on this order (in the last few minutes)? */
+export function backupRevealed(orderId: string | null | undefined, target: CallTarget, now = Date.now()): boolean {
+  if (!orderId) return false;
+  const at = backups.get(backupKey(orderId, target));
+  if (at === undefined) return false;
+  if (now - at >= BACKUP_TTL_MS) { backups.delete(backupKey(orderId, target)); return false; }
+  return true;
+}
+
+const subscribeBackups = (listener: () => void) => { backupListeners.add(listener); return () => { backupListeners.delete(listener); }; };
+let backupVersion = 0;
+backupListeners.add(() => { backupVersion += 1; });
+
+/**
+ * For the dial / "Call via Swift" control: should it show beside "Call in app"? Yes when "Call in app" is not
+ * offered here (switch off or not read, build 12 without the module, the parcel recipient, no order), or when the
+ * backup has been revealed for this person. While the switch is still being read it shows (never no way to call).
+ */
+export function useBackupCallShown(orderId: string | null | undefined, target: CallTarget): boolean {
+  const [config, setConfig] = useState<InAppConfig | null>(cached?.value ?? null);
+  const available = inAppVoiceAvailable();
+  useSyncExternalStore(subscribeBackups, () => backupVersion);
+  useEffect(() => {
+    if (!available) return undefined; // build 12: never read the switch for this
+    let live = true;
+    void loadInAppConfig().then((c) => { if (live) setConfig(c); });
+    return () => { live = false; };
+  }, [available]);
+  return !offerInApp(config, available, orderId, target) || backupRevealed(orderId, target);
+}
 
 /** Swift's own words before Android's bare microphone prompt. Resolves true on "Continue". */
 function explainMicrophone(): Promise<boolean> {
@@ -41,6 +94,12 @@ function explainMicrophone(): Promise<boolean> {
     ], { cancelable: true, onDismiss: () => resolve(false) });
   });
 }
+
+/** The server's own sentence for a refusal (POST /calls/app), when it sent one. */
+const serverWords = (e: unknown): string | null => {
+  const m = (e as { response?: { data?: { error?: { message?: unknown } } } })?.response?.data?.error?.message;
+  return typeof m === 'string' && m.trim() ? m : null;
+};
 
 const errorCode = (e: unknown): string | null =>
   (e as { response?: { data?: { error?: { code?: string } } } })?.response?.data?.error?.code
@@ -57,17 +116,19 @@ const errorCode = (e: unknown): string | null =>
 export function useInAppCall(input: { orderId?: string | null; target: CallTarget }) {
   const [config, setConfig] = useState<InAppConfig | null>(cached?.value ?? null);
   const [busy, setBusy] = useState(false);
-  const [onCall, setOnCall] = useState(inAppCallActive());
+  // [CALLS-UX] On a call (placed or answered here): the same call the in-call bar shows.
+  const onCall = useSyncExternalStore(subscribeInCall, inCallSnapshot) !== null;
   const busyRef = useRef(false);
   const available = inAppVoiceAvailable();
   const { orderId, target } = input;
   const visible = offerInApp(config, available, orderId, target);
 
   useEffect(() => {
+    if (!available) return undefined; // [CALLS-UX] build 12: "Call in app" can never show, so the switch is not read
     let live = true;
     void loadInAppConfig().then((c) => { if (live) setConfig(c); });
     return () => { live = false; };
-  }, []);
+  }, [available]);
 
   useEffect(() => {
     if (!visible) return;
@@ -76,11 +137,13 @@ export function useInAppCall(input: { orderId?: string | null; target: CallTarge
 
   const onPress = useCallback(async () => {
     if (!visible || !orderId || busyRef.current) return;
-    if (inAppCallActive()) { await endInAppCall(); setOnCall(false); return; }
+    if (inAppCallActive()) { await endInAppCall(); return; }
     busyRef.current = true;
     setBusy(true);
     try {
       if (!(await ensureMicrophone(explainMicrophone))) {
+        // [CALLS-UX] This phone cannot talk in the app: the backup call control comes back.
+        revealBackupCall(orderId, target);
         toast.error(INAPP_WORDS.micTitle, inAppErrorText('MIC_REFUSED'));
         return;
       }
@@ -88,12 +151,17 @@ export function useInAppCall(input: { orderId?: string | null; target: CallTarge
       await placeInAppCall(orderId, target, {
         start: async (o, t, platform) => (await api.appStart(o, t, platform)).data.data,
         cancel: (callId) => api.appCancel(callId),
-        onEnded: () => setOnCall(false),
       });
-      setOnCall(true);
       toast.success(INAPP_WORDS.calling, INAPP_WORDS.callingHow);
     } catch (e) {
-      toast.error(INAPP_WORDS.failedTitle, inAppErrorText(errorCode(e)));
+      const code = errorCode(e);
+      if (revealsBackup(code)) {
+        // [CALLS-UX] The in-app call cannot happen: show the backup control, with the server's own words.
+        revealBackupCall(orderId, target);
+        toast.error(INAPP_WORDS.failedTitle, serverWords(e) ?? inAppErrorText(code));
+        return;
+      }
+      toast.error(INAPP_WORDS.failedTitle, inAppErrorText(code));
     } finally {
       busyRef.current = false;
       setBusy(false);
