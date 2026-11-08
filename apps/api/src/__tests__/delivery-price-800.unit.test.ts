@@ -77,10 +77,12 @@ describe('LEGAL_VERSION 2026-11-08 for the delivery-price wording: material, so 
 
   it('the summary names the new and the old price, and that express is unchanged', () => {
     const words = MATERIAL_CHANGES.find((c) => c.version === '2026-11-08')!.summary.join(' ');
-    expect(words).toContain('GY$800 for the first 3 km, then GY$175 per km');
-    expect(words).toContain('it was GY$500, then GY$100 per km');
+    expect(words).toContain('now costs GY$800 for the first 3 km, then GY$175 per km');
+    expect(words).toContain('it was GY$500 for the first 3 km, then GY$100 per km');
     expect(words).toContain(`Express still adds GY$${GYD(EXPRESS_DELIVERY_SURCHARGE)} for each store.`);
-    expect(words).toContain('an order already placed keeps its fee');
+    expect(words).toContain('Your cart always shows the fee before you order, and an order already placed keeps its fee.');
+    // Facts only: a delivery total is not a taxi fare (the taxi rounds to the nearest 100, airports and classes differ).
+    expect(words).not.toMatch(/taxi/i);
   });
 
   it.each([

@@ -113,7 +113,7 @@ export const MATERIAL_CHANGES: ReadonlyArray<MaterialChange> = [
     // paid by MMG pays its rider the fee]
     version: '2026-11-08',
     summary: [
-      'Delivery: the delivery fee for food, grocery and shop orders is now GY$800 for the first 3 km, then GY$175 per km, the same as a taxi (it was GY$500, then GY$100 per km). Express still adds GY$1,000 for each store. Your cart shows the exact fee before you order, and an order already placed keeps its fee.',
+      'Delivery on food, grocery and shop orders now costs GY$800 for the first 3 km, then GY$175 per km (it was GY$500 for the first 3 km, then GY$100 per km). Express still adds GY$1,000 for each store. Your cart always shows the fee before you order, and an order already placed keeps its fee.',
     ],
   },
 ];
