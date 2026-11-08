@@ -20,7 +20,7 @@ export function calculateDeliveryFee(options: {
   includedKm?: number;
   surgeMultiplier?: number;
 }): number {
-  const { distanceKm, baseFee = 500, perKmRate = 100, includedKm = 3, surgeMultiplier = 1.0 } = options;
+  const { distanceKm, baseFee = 800, perKmRate = 175, includedKm = 3, surgeMultiplier = 1.0 } = options;
   const distanceFee = Math.max(0, distanceKm - includedKm) * perKmRate;
   return Math.ceil((baseFee + distanceFee) * surgeMultiplier);
 }

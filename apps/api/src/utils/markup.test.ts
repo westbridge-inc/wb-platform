@@ -18,14 +18,17 @@ import * as markup from './markup';
 
 describe('calculateDeliveryFee', () => {
   it('returns base fee only when distance <= included km', () => {
-    // distance=1km, included=3km → no extra charge → baseFee=500
-    expect(calculateDeliveryFee(1)).toBe(500);
-    expect(calculateDeliveryFee(2)).toBe(500);
+    // [owner 8 Nov 2026] distance=1km, included=3km → no extra charge → baseFee=800
+    expect(calculateDeliveryFee(1)).toBe(800);
+    expect(calculateDeliveryFee(2)).toBe(800);
+    expect(calculateDeliveryFee(3)).toBe(800);
   });
 
   it('adds per-km charge after included km', () => {
-    // distance=5km, included=3km → extra=2km*100=200 → 500+200=700
-    expect(calculateDeliveryFee(5)).toBe(700);
+    // [owner 8 Nov 2026] distance=5km, included=3km → extra=2km*175=350 → 800+350=1150
+    expect(calculateDeliveryFee(5)).toBe(1150);
+    // a part kilometre is charged pro rata and rounded up: 3.46 km → 800 + 0.46*175 = 880.5 → 881
+    expect(calculateDeliveryFee(3.46)).toBe(881);
   });
 
   it('applies surge multiplier', () => {
@@ -39,7 +42,7 @@ describe('calculateDeliveryFee', () => {
   });
 
   it('handles 0 distance', () => {
-    expect(calculateDeliveryFee(0)).toBe(500);
+    expect(calculateDeliveryFee(0)).toBe(800);
   });
 
   it('handles custom base fee and per-km rate', () => {

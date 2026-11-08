@@ -107,6 +107,15 @@ export const MATERIAL_CHANGES: ReadonlyArray<MaterialChange> = [
       'Partners: if the weekly fee goes up, a week you paid for before we told you keeps the old fee; once we have told you, Swift takes payment only for weeks before the change. If it goes down, the lower fee applies even to weeks you have already paid for, and the difference counts toward your later weekly fees.',
     ],
   },
+  {
+    // [DELIVERY-800 · owner ruling 8 Nov 2026 · MATERIAL: a price rise after launch (GUARDRAILS standing rule 1: a fresh
+    // tick with the in-app notice, never "continued use"). Everyone: customers pay the fee, riders earn it, and a store
+    // paid by MMG pays its rider the fee]
+    version: '2026-11-08',
+    summary: [
+      'Delivery: the delivery fee for food, grocery and shop orders is now GY$800 for the first 3 km, then GY$175 per km, the same as a taxi (it was GY$500, then GY$100 per km). Express still adds GY$1,000 for each store. Your cart shows the exact fee before you order, and an order already placed keeps its fee.',
+    ],
+  },
 ];
 
 /** [BILL-PRO · COORD 29 Oct 16:13Z] The first version whose Business Agreement covers a Provider (s.12), including

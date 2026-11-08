@@ -38,7 +38,7 @@ import { plantGeorgetownPair } from './helpers/zone-fare-fixture';
 // so every taxi byte below stands unchanged (the October fare is pinned in
 // fares-georgetown-defaults.test.ts). Courier and delivery price from the new
 // defaults, re-derived by hand: courier base 800, perKm 120, MEDIUM +500;
-// delivery base 500, 100/km after 3 km.
+// delivery base 800, 175/km after 3 km (owner 8 Nov 2026; it was 500, then 100/km).
 // ---------------------------------------------------------------------------
 
 const DAY = 86_400_000;
@@ -265,7 +265,7 @@ describe('every caller of routeKm answers the same bytes, as today', () => {
     expect((await post('/api/v1/courier/estimate', parcel)).body).toBe(COURIER_FALLBACK_BODY);
   });
 
-  it('the delivery planner (the cart quote and checkout): 10.15 km → 1215, express 2215 (+ the flat 1,000)', async () => {
+  it('the delivery planner (the cart quote and checkout): 10.15 km → 2052 (800 + 7.15 × 175 = 2051.25, rounded up), express 3052 (+ the flat 1,000)', async () => {
     vi.stubGlobal('fetch', answer(body('10150', '1620')));
     const osrm = new OsrmMapsProvider(OSRM);
     const plan = await planVendorGroup({
@@ -277,6 +277,6 @@ describe('every caller of routeKm answers the same bytes, as today', () => {
       express: false,
       routeKm: (from, to) => osrm.routeKm(from, to),
     });
-    expect(plan).toMatchObject({ distanceKm: 10.15, distanceSource: 'osrm', standardDeliveryFee: 1215, deliveryFee: 1215, expressSurcharge: 1000 });
+    expect(plan).toMatchObject({ distanceKm: 10.15, distanceSource: 'osrm', standardDeliveryFee: 2052, deliveryFee: 2052, expressSurcharge: 1000 });
   });
 });
