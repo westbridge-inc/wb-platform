@@ -42,14 +42,16 @@ const APPS: {
     pictogram: 'wheel',
     title: 'Swift Driver',
     sub: 'Deliveries and taxi trips — you keep 100%',
-    invite: 'Become a driver — keep 100% of every fare',
+    // [APP-INTRO] Not held yet: the welcome's door words (Deliver with Swift / Drive with Swift).
+    invite: 'Deliver or drive with Swift — every fee, fare and tip is yours',
   },
   {
     intent: 'vendor',
     pictogram: 'shops',
     title: 'Swift Business',
     sub: 'Run your store, menu and orders',
-    invite: 'Put your store on Swift',
+    // [APP-INTRO] Not held yet: the welcome's door words (Sell on Swift).
+    invite: 'Sell on Swift — one flat weekly fee, you keep every dollar',
   },
 ];
 
@@ -169,7 +171,7 @@ export function RoleSwitcherSheet({
         Switch app
       </PopupTitle>
       <T variant="label" tone="muted" center style={{ marginTop: space.sm }}>
-        One account — pick where you&apos;re headed.
+        One account to order, sell, deliver and drive.
       </T>
 
       <View style={{ alignSelf: 'stretch', gap: space.md, marginTop: space.xl }}>

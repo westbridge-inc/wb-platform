@@ -32,6 +32,8 @@ const fx = vi.hoisted(() => ({
   capability: null as null | { resolve: (v: unknown) => void },
   capabilityReads: 0,
   otpSends: 0,
+  initialUrl: null as string | null,
+  qrReads: [] as string[],
 }));
 
 vi.mock('react-native', async () => {
@@ -60,7 +62,7 @@ vi.mock('react-native', async () => {
     useWindowDimensions: () => ({ width: 375, height: 667, fontScale: 1, scale: 2 }),
     Keyboard: { addListener: () => ({ remove() {} }), dismiss: () => undefined }, Vibration: { vibrate: () => undefined, cancel: () => undefined },
     AppState: { currentState: 'active', addEventListener: () => ({ remove() {} }) },
-    Linking: { openURL: async () => undefined, getInitialURL: async () => null, addEventListener: () => ({ remove() {} }) },
+    Linking: { openURL: async () => undefined, getInitialURL: async () => fx.initialUrl, addEventListener: () => ({ remove() {} }) },
     Alert: { alert: () => undefined }, TurboModuleRegistry: { get: () => null },
     BackHandler: { addEventListener: () => ({ remove() {} }) },
     PanResponder: { create: () => ({ panHandlers: {} }) },
@@ -142,13 +144,19 @@ vi.mock('../lib/analytics', () => ({ track: () => undefined }));
 vi.mock('../lib/haptics', () => ({ haptic: { select: () => undefined, light: () => undefined } }));
 vi.mock('../kit/toast', () => ({ toast: { show: () => undefined, success: () => undefined, info: () => undefined, error: () => undefined } }));
 // The transport: the welcome's only read is the ads switch. It is held open (no network) unless a test answers it.
+// A scanned table QR is the other read: the real link router asks which store the code is.
 vi.mock('../services/api', () => ({
   api: {
     get: (url: string) => {
+      if (url.startsWith('/public/qr/')) {
+        fx.qrReads.push(url);
+        return Promise.resolve({ data: { success: true, data: { verdict: 'WEB_RENDER', vendorId: 'vendor-table-qr' } } });
+      }
       if (url !== '/public/capabilities') throw new Error(`unexpected read ${url}`);
       fx.capabilityReads += 1;
       return new Promise((resolve) => { fx.capability = { resolve }; });
     },
+    post: async () => ({ data: { success: true } }),
   },
   authApi: { sendOtp: async () => { fx.otpSends += 1; return { data: { success: true } }; } },
 }));
@@ -157,7 +165,7 @@ vi.mock('../services/attribution', () => ({ ensureFirstLaunchClaim: () => undefi
 vi.mock('../services/notification-router', () => ({
   installNotificationTapRouter: () => () => undefined, flushPendingNavigation: () => undefined, settleTapAfterSignIn: () => undefined,
 }));
-vi.mock('../services/deep-links', () => ({ installDeepLinkHandler: () => () => undefined, flushPendingDeepLink: () => undefined }));
+// The link router is the real one (services/deep-links): a table QR opens its store while the intro steps aside.
 vi.mock('../hooks/useCustomerCountry', () => ({ useCustomerCountry: () => undefined }));
 vi.mock('../components/LegalAcceptanceModal', () => ({ LegalAcceptanceModal: () => null }));
 vi.mock('../modules/safety/OwnedSafetyPanel', () => ({ OwnedSafetyPanel: () => null }));
@@ -263,7 +271,7 @@ async function welcomeAfterIntro() {
 }
 
 beforeEach(() => {
-  Object.assign(fx, { os: 'ios', now: 0, anims: [], reduced: false, splashOptions: [], capability: null, capabilityReads: 0, otpSends: 0 });
+  Object.assign(fx, { os: 'ios', now: 0, anims: [], reduced: false, splashOptions: [], capability: null, capabilityReads: 0, otpSends: 0, initialUrl: null, qrReads: [] });
   fx.storage.clear();
   queryClient.clear();
   useAuthStore.setState(useAuthStore.getInitialState(), true);
@@ -433,6 +441,34 @@ describe('[APP-INTRO] the other launches', () => {
     await tap('role-picker-delivery');
     expect(currentRoute()).toBe('PhoneEntry');
     expect(useAuthStore.getState()).toMatchObject({ intent: 'mover', moverPreset: 'delivery' });
+  });
+});
+
+describe('[APP-INTRO · review] a signed-out first open from a link', () => {
+  it('a table QR: the intro steps aside at once and the store opens (the intro never plays over it)', async () => {
+    fx.initialUrl = 'https://swiftgy.com/s/bcdfghjkmn';
+    await launch();
+    // The launch link resolved: the reveal was replaced by the skip, which ends 140 ms after launch.
+    const cover = fx.anims.filter((a) => a.to === 0);
+    expect(cover.map((a) => a.duration)).toEqual([INTRO_TIMELINE.full.reveal.duration, INTRO_TIMELINE.skip.duration]);
+    await frames(INTRO_TIMELINE.skip.duration);
+    await settle();
+    expect(intro()).toBeNull();
+    expect(fx.qrReads).toEqual(['/public/qr/BCDFGHJKMN']);
+    expect(rootRoute()).toBe('Storefront');
+    expect(host.querySelector('[data-screen="customer-app"]')).not.toBeNull();
+    // Still signed out, no door picked: the store is public.
+    expect(useAuthStore.getState()).toMatchObject({ isAuthenticated: false, intent: null });
+  });
+
+  it('the development client\'s own link is not a store: the intro plays as usual', async () => {
+    fx.initialUrl = 'swift://expo-development-client/?url=http%3A%2F%2Flocalhost%3A8081';
+    await launch();
+    expect(fx.anims.filter((a) => a.to === 0)).toHaveLength(1);
+    await playIntro();
+    expect(intro()).toBeNull();
+    expect(rootRoute()).toBe('RolePicker');
+    expect(fx.qrReads).toEqual([]);
   });
 });
 

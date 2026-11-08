@@ -87,5 +87,11 @@ export const INTRO_BACKSTOP_GRACE_MS = 1500;
 export const SPLASH_IMAGE_PT = 140;
 export const SPLASH_MARK_PT = SPLASH_IMAGE_PT * 0.8;
 
+/**
+ * The dissolve's cover (1 = all maroon, 0 = the welcome) at which the white brand has fully faded: it leaves while
+ * the maroon is still three-quarters up, so the welcome's words never show through a white logo.
+ */
+export const INTRO_BRAND_GONE_AT = 0.75;
+
 /** Where the logo settles: lifted above centre and smaller, leaving room for the wordmark and tagline below. */
 export const MARK_SETTLE = { lift: 44, scale: 0.64 } as const;

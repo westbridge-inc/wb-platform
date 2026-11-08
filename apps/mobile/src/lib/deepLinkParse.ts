@@ -85,26 +85,46 @@ export function explainUrl(url: string, linkPolicy: LinkPolicy = defaultLinkPoli
 }
 
 export function destinationForUrl(url: string, linkPolicy: LinkPolicy = defaultLinkPolicy()): LinkDestination | null {
+  const { destination, decision } = decide(url, linkPolicy);
+  report(decision);
+  return destination;
+}
+
+/**
+ * [APP-INTRO] The same answer as destinationForUrl WITHOUT counting a decision: for a caller that only needs to
+ * know whether a link will open a screen (the launch intro steps aside for it). The router still counts the link
+ * once, when it handles it.
+ */
+export function peekDestinationForUrl(url: string, linkPolicy: LinkPolicy = defaultLinkPolicy()): LinkDestination | null {
+  return decide(url, linkPolicy).destination;
+}
+
+function decide(url: string, linkPolicy: LinkPolicy): { destination: LinkDestination | null; decision: LinkDecision } {
   const verdict = classifyLink(url, linkPolicy);
-  if (!verdict.ok) {
-    report({ kind: 'rejected', reason: verdict.reason, host: verdict.host });
-    return null;
-  }
+  if (!verdict.ok) return { destination: null, decision: { kind: 'rejected', reason: verdict.reason, host: verdict.host } };
   const { parts, query, origin, host } = verdict;
-  if (parts.length !== 2) {
-    report({ kind: 'rejected', reason: 'path_shape', host });
-    return null;
-  }
+  if (parts.length !== 2) return { destination: null, decision: { kind: 'rejected', reason: 'path_shape', host } };
   const [head, tail] = parts as [string, string];
   if (head === 'store' && STORE_SLUG_RE.test(tail)) {
     const c = query.get('c');
-    report({ kind: 'accepted', origin, host });
-    return { kind: 'store', slug: tail, code: c && CODE_RE.test(c) ? c.toUpperCase() : null };
+    return {
+      destination: { kind: 'store', slug: tail, code: c && CODE_RE.test(c) ? c.toUpperCase() : null },
+      decision: { kind: 'accepted', origin, host },
+    };
   }
   if (head === 's' && CODE_RE.test(tail)) {
-    report({ kind: 'accepted', origin, host });
-    return { kind: 'short', code: tail.toUpperCase() };
+    return { destination: { kind: 'short', code: tail.toUpperCase() }, decision: { kind: 'accepted', origin, host } };
   }
-  report({ kind: 'rejected', reason: 'path_shape', host });
-  return null;
+  return { destination: null, decision: { kind: 'rejected', reason: 'path_shape', host } };
+}
+
+/** The two fixed fee returns: MMG's page and the card page (CARD-CHECKOUT-API section 7). */
+export function isWeeklyFeeReturn(url: string): boolean {
+  try { const parsed = new URL(url); return parsed.protocol === 'swift:' && parsed.hostname === 'pay' && (parsed.pathname === '/mmg/return' || parsed.pathname === '/card/return'); } catch { return false; }
+}
+
+/** [APP-INTRO] Will this link open a screen of its own (a store, a QR outcome, the weekly fee)? Counts nothing. */
+export function linkOpensAScreen(url: string | null | undefined): boolean {
+  if (!url) return false;
+  return isWeeklyFeeReturn(url) || peekDestinationForUrl(url) !== null;
 }

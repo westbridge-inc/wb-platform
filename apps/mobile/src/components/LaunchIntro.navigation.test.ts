@@ -41,6 +41,13 @@ const fx = vi.hoisted(() => ({
   auth: { isAuthenticated: false, wantsAuth: false, intent: null as string | null },
   svCount: 0,
   svs: [] as SharedValue[],
+  // The launch link (Linking.getInitialURL) and links arriving while the app is open.
+  initialUrl: null as string | null,
+  urlListeners: new Set<(event: { url: string }) => void>(),
+  splashHides: 0,
+  setOptionsThrows: false,
+  markThrows: false,
+  crashes: [] as Array<{ message: string; source: unknown }>,
 }));
 
 vi.mock('react-native', async () => {
@@ -63,6 +70,13 @@ vi.mock('react-native', async () => {
       return null;
     },
     StyleSheet: { create: (s: unknown) => s, absoluteFill: {} },
+    Linking: {
+      getInitialURL: async () => fx.initialUrl,
+      addEventListener: (_event: 'url', fn: (event: { url: string }) => void) => {
+        fx.urlListeners.add(fn);
+        return { remove: () => { fx.urlListeners.delete(fn); } };
+      },
+    },
   };
 });
 
@@ -118,7 +132,16 @@ vi.mock('react-native-reanimated', async () => {
     // The intro never repeats: the stand-in has no withRepeat/withSequence, so using one would fail to render.
   };
 });
-vi.mock('expo-splash-screen', () => ({ setOptions: (options: unknown) => { fx.setOptions.push(options); } }));
+vi.mock('expo-splash-screen', () => ({
+  setOptions: (options: unknown) => {
+    if (fx.setOptionsThrows) throw new Error('splash options unavailable');
+    fx.setOptions.push(options);
+  },
+  hideAsync: async () => { fx.splashHides += 1; },
+}));
+vi.mock('../lib/crash-reporter', () => ({
+  reportCrash: (error: Error, context?: { source?: unknown }) => { fx.crashes.push({ message: error.message, source: context?.source }); },
+}));
 vi.mock('../kit', async () => {
   const R = await import('react');
   return { T: ({ children }: any) => R.createElement('span', { 'data-host': 'T' }, children) };
@@ -126,8 +149,10 @@ vi.mock('../kit', async () => {
 vi.mock('./SwiftLogo', async () => {
   const R = await import('react');
   return {
-    SwiftMark: (p: { size: number; tint?: string; accent?: string }) =>
-      R.createElement('div', { 'data-host': 'SwiftMark', 'data-size': p.size, 'data-tint': p.tint, 'data-accent': p.accent }),
+    SwiftMark: (p: { size: number; tint?: string; accent?: string }) => {
+      if (fx.markThrows) throw new Error('mark failed to draw');
+      return R.createElement('div', { 'data-host': 'SwiftMark', 'data-size': p.size, 'data-tint': p.tint, 'data-accent': p.accent });
+    },
     SwiftWordmark: (p: { height: number; tint?: string }) =>
       R.createElement('div', { 'data-host': 'SwiftWordmark', 'data-height': p.height, 'data-tint': p.tint }),
   };
@@ -144,7 +169,8 @@ vi.mock('../lib/storage', () => ({
 import { color } from '@swift/ui';
 import { INTRO_TAGLINE, LaunchIntro } from './LaunchIntro';
 import { useAppStore } from '../stores/appStore';
-import { INTRO_BACKSTOP_GRACE_MS, INTRO_TIMELINE, SPLASH_IMAGE_PT, SPLASH_MARK_PT } from '../lib/launchIntro';
+import { INTRO_BACKSTOP_GRACE_MS, INTRO_BRAND_GONE_AT, INTRO_TIMELINE, SPLASH_IMAGE_PT, SPLASH_MARK_PT } from '../lib/launchIntro';
+import { linkDecisionCounters, resetLinkDecisionsForTests } from '../lib/deepLinkParse';
 
 let host: HTMLDivElement;
 let root: ReturnType<typeof createRoot>;
@@ -195,7 +221,12 @@ const byValue = (): [Anim[], Anim[], Anim[], Anim[]] => [assignedTo(1), assigned
 
 beforeEach(() => {
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
-  Object.assign(fx, { now: 0, anims: [], reduced: false, setOptions: [], statusBars: [], svCount: 0, svs: [] });
+  Object.assign(fx, {
+    now: 0, anims: [], reduced: false, setOptions: [], statusBars: [], svCount: 0, svs: [],
+    initialUrl: null, splashHides: 0, setOptionsThrows: false, markThrows: false, crashes: [],
+  });
+  fx.urlListeners.clear();
+  resetLinkDecisionsForTests();
   fx.auth = { isAuthenticated: false, wantsAuth: false, intent: null };
   fx.storage.clear();
   useAppStore.setState({ hasSeenIntro: false });
@@ -222,6 +253,16 @@ describe('[APP-INTRO] first launch, signed out: the splash continues into the br
     // assets/icon.svg draws the mark at 80% of the square (translate(10,10) scale(0.8)).
     expect(readFileSync(join(process.cwd(), 'assets/icon.svg'), 'utf8')).toContain('<g transform="translate(10,10) scale(0.8)">');
     expect(SPLASH_MARK_PT).toBe(112);
+    // [review] Android 12+ draws the same size. expo-splash-screen paints the image imageWidth dp wide at the centre
+    // of a 288 dp transparent canvas, and sets no icon background, so the theme keeps core-splashscreen's 288 dp
+    // no-background icon slot (240 dp is only with an icon background): the canvas is shown 1:1, the image at
+    // 140 dp, the mark at 112 dp, and the slot's 192 dp visible circle clears the mark (65 dp at its farthest).
+    const plugin = (file: string) => readFileSync(join(process.cwd(), 'node_modules/expo-splash-screen/plugin/build', file), 'utf8');
+    expect(plugin('withAndroidSplashImages.js')).toContain('const size = imageWidth * multiplier;');
+    expect(plugin('withAndroidSplashImages.js')).toContain('const canvasSize = 288 * multiplier;');
+    expect(plugin('withAndroidSplashImages.js')).toContain('x: (canvasSize - size) / 2,');
+    expect(plugin('withAndroidSplashStyles.js')).toContain("parent: 'Theme.SplashScreen'");
+    expect(plugin('withAndroidSplashStyles.js')).not.toContain('windowSplashScreenIconBackgroundColor');
     // The token the intro paints is the colour the native splash paints.
     expect(color.brand[500]).toBe(/const brandMaroon = '(#[0-9A-Fa-f]{6})';/.exec(config)?.[1]);
 
@@ -397,5 +438,91 @@ describe('[APP-INTRO] who sees it', () => {
     expect(introCommits).toBe(1);
     expect(vi.getTimerCount()).toBe(0);
     expect(useAppStore.getState().hasSeenIntro).toBe(false);
+  });
+});
+
+describe('[APP-INTRO · review] a throw in the intro never leaves the splash up or the app blocked', () => {
+  it.each<[string, () => void, string]>([
+    ['the native splash options', () => { fx.setOptionsThrows = true; }, 'splash options unavailable'],
+    ['its own drawing', () => { fx.markThrows = true; }, 'mark failed to draw'],
+  ])('%s throws: the intro is left out, the welcome is in view, the splash is hidden, the crash is reported', async (_what, arm, message) => {
+    arm();
+    const quiet = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    await launch();
+    quiet.mockRestore();
+    expect(intro()).toBeNull();
+    expect(welcome(), 'the app underneath is untouched').not.toBeNull();
+    // React retries a render that threw once, synchronously, then stops: at most one extra render, and none after.
+    expect(welcomeRenders).toBeLessThanOrEqual(2);
+    const settled = welcomeRenders;
+    await frames(2000);
+    expect(welcomeRenders).toBe(settled);
+    expect(fx.splashHides).toBe(1);
+    expect(fx.crashes).toEqual([{ message, source: 'launch-intro' }]);
+    expect(vi.getTimerCount(), 'no backstop left behind').toBe(0);
+    expect(fx.urlListeners.size).toBe(0);
+  });
+});
+
+describe('[APP-INTRO · review] opened by a link: the intro steps aside at once', () => {
+  async function linkSettles() { await act(async () => { await Promise.resolve(); await Promise.resolve(); }); }
+
+  it.each([
+    ['a table QR (short code)', 'https://swiftgy.com/s/bcdfghjkmn'],
+    ['a shared store', 'https://swiftgy.com/store/green-bowl-x7k2m9?c=bcdfghjkmn'],
+    ['the app\'s own scheme', 'swift://s/BCDFGHJKMN'],
+    ['the weekly-fee return', 'swift://pay/mmg/return'],
+    ['the card fee return', 'swift://pay/card/return'],
+  ])('%s at launch', async (_what, url) => {
+    fx.initialUrl = url;
+    await launch();
+    await linkSettles();
+    const cover = assignedTo(4);
+    expect(cover, 'the reveal was replaced by the skip').toHaveLength(2);
+    expect(cover[0]!.settled).toBe(true);
+    expect(cover[1]).toMatchObject({ to: 0, delay: 0, duration: INTRO_TIMELINE.skip.duration });
+    await frames(INTRO_TIMELINE.skip.duration);
+    expect(intro()).toBeNull();
+    expect(welcome()).not.toBeNull();
+    // It only peeks: the router counts the link once, when it opens it.
+    expect(linkDecisionCounters()).toEqual({ accepted: {}, rejected: {} });
+    expect(fx.urlListeners.size, 'the listener left with the intro').toBe(0);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('a link that arrives while it plays', async () => {
+    await launch();
+    await linkSettles();
+    await frames(300);
+    expect(assignedTo(4)).toHaveLength(1);
+    await act(async () => { for (const fn of [...fx.urlListeners]) fn({ url: 'https://swiftgy.com/s/bcdfghjkmn' }); });
+    expect(assignedTo(4)).toHaveLength(2);
+    await frames(INTRO_TIMELINE.skip.duration);
+    expect(intro()).toBeNull();
+  });
+
+  it.each([
+    ['no link', null],
+    ['the development client', 'swift://expo-development-client/?url=http%3A%2F%2Flocalhost%3A8081'],
+    ['another site', 'https://attacker.example/s/BCDFGHJKMN'],
+    ['a page that is not a store', 'https://swiftgy.com/about'],
+  ])('%s: the intro plays as usual', async (_what, url) => {
+    fx.initialUrl = url;
+    await launch();
+    await linkSettles();
+    expect(assignedTo(4)).toHaveLength(1);
+    const total = Math.max(...fx.anims.map(endOf));
+    await frames(total - 1);
+    expect(intro()).not.toBeNull();
+    await frames(1);
+    expect(intro()).toBeNull();
+  });
+});
+
+describe('[APP-INTRO · review] the brand leaves before the welcome shows through', () => {
+  it('the white brand is gone while the maroon is still three-quarters up', () => {
+    expect(INTRO_BRAND_GONE_AT).toBeGreaterThanOrEqual(0.75);
+    const src = readFileSync(join(process.cwd(), 'src/components/LaunchIntro.tsx'), 'utf8');
+    expect(src).toContain('opacity: interpolate(cover.value, [INTRO_BRAND_GONE_AT, 1], [0, 1], Extrapolation.CLAMP),');
   });
 });
