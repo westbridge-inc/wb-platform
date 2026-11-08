@@ -9,7 +9,10 @@ import { useAuthStore } from '../../../stores/authStore';
 import { useLocationStore } from '../../../stores/locationStore';
 import { grantedLocationFix } from '../../../lib/deviceLocation';
 import { vendorPhoto } from '../../../lib/images';
-import { CartBar, useCartBarClearance, EmptyState, ErrorState, FoodCard, Header, LoadingBlock, Screen } from '../../../kit';
+import { CartBar, useCartBarClearance, EmptyState, ErrorState, FoodCard, Header, Screen } from '../../../kit';
+import { GridSkeleton } from '../../../kit/skeletons';
+import { useVendorPrefetch } from '../../../hooks/storeDoor';
+import { storePreviewOf } from '../../../lib/doorPreview';
 
 const SCREEN_W = Dimensions.get('window').width;
 const GUTTER = space['2xl'];
@@ -26,6 +29,8 @@ export function RecommendedScreen() {
   const home = useHome<any>(locationFix?.latitude, locationFix?.longitude);
   const toggleFav = useToggleFavorite();
   const holdRow = useRowHold(); // [BUG-GUARDS C2] one request per store's heart; another store's heart still goes
+  // [APP-SPEED D] A store's menu is asked for at the finger-down on its card (the door Home's cards already have).
+  const prefetchStore = useVendorPrefetch();
 
   const featured: any[] = home.data?.featured ?? [];
   const open: any[] = home.data?.openVendors ?? [];
@@ -36,7 +41,8 @@ export function RecommendedScreen() {
     <Screen>
       <Header title="Recommended" />
       {home.isLoading ? (
-        <LoadingBlock />
+        // [APP-SPEED D] Home's own feed (usually already in memory): the cards' shapes until it lands.
+        <GridSkeleton />
       ) : home.isError ? (
         <ErrorState onRetry={() => home.refetch()} />
       ) : vendors.length === 0 ? (
@@ -63,7 +69,8 @@ export function RecommendedScreen() {
               onToggleFavorite={() =>
                 isAuthenticated ? holdRow(v.id, () => toggleFav.mutateAsync({ vendorId: v.id, isFavorite: !!v.isFavorite })) : promptLogin()
               }
-              onPress={() => navigation.navigate('Restaurant', { vendorId: v.id })}
+              {...prefetchStore(v.id)}
+              onPress={() => navigation.navigate('Restaurant', { vendorId: v.id, preview: storePreviewOf(v) })}
             />
           )}
         />

@@ -6,8 +6,9 @@ import { storePhotoUrl } from '../../../lib/images';
 import { Feather } from '@expo/vector-icons';
 import { color, font, fontSize, radius, space } from '@swift/ui';
 import { useServiceProviders, useRequestJob } from '../../../hooks';
-import { Card, Chip, DecorativeIcon, EmptyState, Header, IconChip, LinkText, LoadingBlock, Pictogram, PillButton, PopupCard, PopupTitle, RatingMeta, Screen, T, TonePill, type PictogramName } from '../../../kit';
+import { Card, Chip, DecorativeIcon, EmptyState, Header, IconChip, LinkText, Pictogram, PillButton, PopupCard, PopupTitle, RatingMeta, Screen, T, TonePill, type PictogramName } from '../../../kit';
 import { afterDismiss } from '../../../kit/after-dismiss';
+import { ChipsSkeleton, ListSkeleton } from '../../../kit/skeletons';
 import { errorMessage } from '../../../lib/apiError';
 import { VERTICAL_TINT } from '../../../kit/vertical-tint';
 import { useAuthStore } from '../../../stores/authStore';
@@ -129,7 +130,9 @@ export function ServicesScreen({ navigation }: any) {
         {/* [Wave 3 · ref 13] The reference draws trade PILLS — the kit Chip —
             not pictogram tiles. Tiles were an unrecorded invention; the
             reference outranks them. */}
-        {catalog.isPending ? <LoadingBlock /> : catalog.isError ? (
+        {/* [APP-SPEED D] The catalogue's pills, as shapes, on the first frame (Home reads it ahead of this door, so
+            usually the real pills are already here). A failed read still says so, with Try again. */}
+        {catalog.isPending ? <ChipsSkeleton style={{ marginBottom: space.lg }} /> : catalog.isError ? (
           <EmptyState icon="alert-circle" title="Couldn’t load services" body="Try loading the service catalogue again." actionLabel="Try again" onAction={() => void catalog.refetch()} />
         ) : Object.entries(SERVICE_GROUP_LABELS).filter(([group]) =>
           visibleCategories.some((category) => category.group === group)).map(([group, label]) => (
@@ -181,7 +184,7 @@ export function ServicesScreen({ navigation }: any) {
         ) : !requestTrade ? (
           <EmptyState icon="clock" title="This service is being prepared" body="You can browse other categories while the required provider checks are completed." />
         ) : isFetching ? (
-          <LoadingBlock />
+          <ListSkeleton rows={3} style={{ paddingHorizontal: 0 }} />
         ) : isError ? (
           // [NO-DEAD-ENDS] A failed list is not "none available": say so, and retry here.
           <EmptyState

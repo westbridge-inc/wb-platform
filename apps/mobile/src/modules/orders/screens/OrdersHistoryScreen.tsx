@@ -23,10 +23,11 @@ import { orderStatusLabel, presentedVertical } from '../../../lib/orderStatus';
 import type { OrderVerticalFacts } from '@swift/types';
 import {
   Header, Photo,
-  EmptyState, ErrorState, LoadingBlock, Money,
+  EmptyState, ErrorState, Money,
   Pictogram, PillButton, Screen, T,
 } from '../../../kit';
 import { TonePill } from '../../../kit/controls';
+import { ListSkeleton } from '../../../kit/skeletons';
 
 // [design-100x Flow-7] The activity LEDGER, re-read off the rendered slides.
 //
@@ -530,7 +531,9 @@ export function OrdersHistoryScreen() {
       {orders.isLoading || liveOrders.isLoading ? (
         <>
           {headerBlock}
-          <LoadingBlock />
+          {/* [APP-SPEED D] The ledger's rows, as shapes, on the first frame (Home reads both lists ahead of this
+              door). Nothing here can be pressed: Reorder and Track wait for the rows themselves. */}
+          <ListSkeleton thumb={44} />
         </>
       ) : orders.isError && rows.length === 0 && live.length === 0 ? (
         // Only when there is genuinely nothing to show. A history failure must

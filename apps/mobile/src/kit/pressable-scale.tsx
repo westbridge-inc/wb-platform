@@ -19,6 +19,8 @@ export function PressableScale({
   children,
   strong,
   style,
+  onPressIn,
+  onPressOut,
   ...props
 }: PressableProps & { children?: ReactNode; strong?: boolean; style?: StyleProp<ViewStyle> }) {
   const scale = useSharedValue(1);
@@ -26,11 +28,15 @@ export function PressableScale({
   const animStyle = useAnimatedStyle(() => ({ transform: [{ scale: scale.value }] }));
   return (
     <AnimatedPressable
-      onPressIn={() => {
+      // [APP-SPEED D] A caller's own press-in/out (a Home tile's read ahead, hooks/pressRead) runs WITH the dip,
+      // never instead of it: spread last, it used to replace the scale.
+      onPressIn={(e) => {
         scale.value = withTiming(target, { duration: motion.duration.instant });
+        onPressIn?.(e);
       }}
-      onPressOut={() => {
+      onPressOut={(e) => {
         scale.value = withTiming(1, { duration: motion.duration.fast });
+        onPressOut?.(e);
       }}
       style={[style, animStyle]}
       {...props}

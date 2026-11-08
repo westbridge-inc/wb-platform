@@ -518,14 +518,19 @@ export function CategoryTile({
   name,
   image,
   onPress,
+  onPressIn,
+  onPressOut,
 }: {
   name: string;
   /** null ⇒ the category has no photo; the placeholder is drawn [F-264]. */
   image: string | null;
   onPress?: () => void;
+  /** [APP-SPEED D] The finger-down read of what the tile opens (hooks/pressRead). */
+  onPressIn?: () => void;
+  onPressOut?: () => void;
 }) {
   return (
-    <Pressable onPress={onPress} accessibilityRole="button" accessibilityLabel={name}>
+    <Pressable onPress={onPress} onPressIn={onPressIn} onPressOut={onPressOut} accessibilityRole="button" accessibilityLabel={name}>
       {({ pressed }) => (
         <View
           style={{

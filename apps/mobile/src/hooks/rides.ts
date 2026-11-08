@@ -62,10 +62,12 @@ export function useRideEstimate(pickup?: Point, dropoff?: Point, stops?: readonl
  *  An older server has no such read (404) — the query fails, there is no data,
  *  and the booking screen stays exactly today's. Never retried on a 4xx. */
 export function useRideCapabilities() {
-  return useQuery<{ maxStops?: number; waiting?: unknown }>({
-    queryKey: ['rides', 'capabilities'],
-    queryFn: () => unwrap(rideApi.capabilities()),
-  });
+  return useQuery<{ maxStops?: number; waiting?: unknown }>(rideCapabilitiesRead());
+}
+
+/** [APP-SPEED D] The capabilities read's key and read, shared by the Taxi screen and the read asked ahead of its door. */
+export function rideCapabilitiesRead() {
+  return { queryKey: ['rides', 'capabilities'] as const, queryFn: () => unwrap<{ maxStops?: number; waiting?: unknown }>(rideApi.capabilities()) };
 }
 
 /** Honest supply read for the request screen (availability spec §2.1):
