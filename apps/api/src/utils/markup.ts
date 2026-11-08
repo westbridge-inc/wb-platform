@@ -4,7 +4,8 @@
  * (delivery/courier/taxi) are mover earnings, not platform revenue.
  */
 
-import { DEFAULT_COURIER_RATES, type DeliverySpeed } from '../modules/courier/courier.service';
+import { DEFAULT_COURIER_RATES, exactCourierFee, type DeliverySpeed } from '../modules/courier/courier.service';
+import { allFinite, centsOf, divCeil, metresOf, millionthsOf } from './fare-integer';
 
 /**
  * Calculate delivery fee based on distance.
@@ -103,7 +104,9 @@ export function expressDeliveryFee(standardFee: number): number {
 /**
  * Calculate courier fee based on distance, package size, and speed.
  * The rates are DEFAULT_COURIER_RATES (courier.service), never numbers of
- * their own; this helper keeps its own rounding (up).
+ * their own; this helper keeps its own rounding (up), exactly [FARE-INTEGER]:
+ * in floating point a whole fee could land a hair above itself and round up a
+ * dollar (128.05 km: 800 + 128.05 × 120 = 16,166, the float charged 16,167).
  */
 export function calculateCourierFee(
   distanceKm: number,
@@ -111,8 +114,10 @@ export function calculateCourierFee(
   speed: 'standard' | 'express' | 'rush' = 'standard',
 ): number {
   const { baseFee, perKmRate, sizeSurcharge, speedMultiplier } = DEFAULT_COURIER_RATES;
-  const subtotal = baseFee + distanceKm * perKmRate + (sizeSurcharge[packageSize] ?? 0);
-  return Math.ceil(subtotal * (speedMultiplier[speed.toUpperCase() as DeliverySpeed] ?? 1.0));
+  const size = sizeSurcharge[packageSize] ?? 0;
+  const multiplier = speedMultiplier[speed.toUpperCase() as DeliverySpeed] ?? 1.0;
+  if (!allFinite(distanceKm, baseFee, perKmRate, size, multiplier)) return NaN;
+  return exactCourierFee(distanceKm, baseFee, perKmRate, size, multiplier, divCeil).totalFee;
 }
 
 /**
@@ -120,6 +125,8 @@ export function calculateCourierFee(
  * production caller and no rates of its own: a rider is quoted formulaFare
  * (rides/fare.service) over the market's TAXI_RATES (country/pricing-config),
  * which also has an included distance and rounds to the nearest 100.
+ * Exact integer maths and one round-up [FARE-INTEGER] (16.6 km at 175/km is
+ * 3,705 exactly; the float rounded it up to 3,706).
  */
 export function calculateTaxiFare(
   distanceKm: number,
@@ -131,9 +138,11 @@ export function calculateTaxiFare(
   surgeMultiplier: number = 1.0,
   vehicleMultiplier: number = 1.0,
 ): number {
-  const fare = baseFare + distanceKm * perKmRate + durationMin * perMinRate;
-  const surgedFare = fare * surgeMultiplier * vehicleMultiplier;
-  return Math.max(minimumFare, Math.ceil(surgedFare));
+  if (!allFinite(distanceKm, durationMin, baseFare, perKmRate, perMinRate, minimumFare, surgeMultiplier, vehicleMultiplier)) return NaN;
+  // Thousandths of a cent: base, metres × cents per km, thousandths of a minute × cents per minute.
+  const units = centsOf(baseFare) * 1000n + metresOf(distanceKm) * centsOf(perKmRate) + BigInt(Math.round(durationMin * 1000)) * centsOf(perMinRate);
+  const surged = units * millionthsOf(surgeMultiplier) * millionthsOf(vehicleMultiplier);
+  return Math.max(minimumFare, Number(divCeil(surged, 100_000n * 1_000_000n * 1_000_000n)));
 }
 
 // [OWNER RULING 8 Oct: REMOVE THE FARE SLIDER] There is no mover-set price:
