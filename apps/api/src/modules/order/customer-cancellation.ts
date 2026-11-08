@@ -20,7 +20,7 @@
  * Additive on every read: older apps ignore the field and keep their words.
  */
 import type { PrismaClient, Prisma } from '@prisma/client';
-import { SYSTEM_CANCELLATION_WORDS, type CustomerCancellation } from '@swift/types';
+import type { CustomerCancellation } from '@swift/types';
 import { NOT_COLLECTED_REASON } from './pickup-not-collected';
 import { NO_SHOW_REASON } from '../booking/appointment-no-show';
 import { PASSENGER_NO_SHOW_REASON } from '../rides/passenger-no-show';
@@ -30,6 +30,15 @@ import { consoleRoleOf } from '../auth/console-role';
 /** The reason the vendor-no-response auto-cancel writes (jobs/queue.ts autoCancelUnresponsiveOrder). */
 export const VENDOR_NO_RESPONSE_REASON = 'Auto-cancelled: vendor did not respond';
 
+/**
+ * The automatic-close codes the apps have words for (the keys of @swift/types
+ * SYSTEM_CANCELLATION_WORDS). Listed here because the compiled API can load only
+ * TYPES from @swift/types (it ships TypeScript source; a value import crashes the
+ * API at boot: runtime-package-imports.unit.test.ts). customer-cancellation.unit.test.ts
+ * pins this list to the apps' map, so a code added there must be added here.
+ */
+export const SYSTEM_CANCELLATION_CODES: ReadonlySet<string> = new Set(['NO_DRIVERS_AVAILABLE', 'FOOD_TOO_OLD', 'NO_RIDER_FOR_PARCEL']);
+
 /** rescue.ts records its cancellations as this actor, not a user. */
 const SYSTEM_ACTOR = 'system';
 
@@ -38,8 +47,6 @@ export const CUSTOMER_REASON_MAX = 140;
 
 /** The no-show records a store, provider or driver makes: the customer is told it was a no-show, never the record. */
 const NO_SHOW_REASONS: ReadonlySet<string> = new Set([NOT_COLLECTED_REASON, NO_SHOW_REASON, PASSENGER_NO_SHOW_REASON]);
-
-const own = (table: object, key: string) => Object.prototype.hasOwnProperty.call(table, key);
 
 /**
  * Text a person typed, made safe to show the customer: control, zero-width and
@@ -67,7 +74,7 @@ const ONLY_ITEM_LEFT = /^Out of stock: (.{1,120}) was the only item and the cust
 function systemReason(raw: string | null): string | null {
   if (typeof raw !== 'string') return null;
   const text = raw.trim();
-  if (own(SYSTEM_CANCELLATION_WORDS, text)) return text;
+  if (SYSTEM_CANCELLATION_CODES.has(text)) return text;
   const onlyItem = ONLY_ITEM_LEFT.exec(text);
   if (onlyItem) return customerSafeReason(`Out of stock: ${onlyItem[1]} was the only item and you didn’t answer in time`);
   return null;

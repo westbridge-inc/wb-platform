@@ -9,7 +9,7 @@ import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tansta
 import { money } from '@/lib/customer';
 import { getLiveOrders, getOrderHistoryPage, reorder } from '@/lib/customer-orders';
 import { orderStatusLabel, presentedVertical, reorderNotice } from '@/lib/order-words';
-import { customerCancellationWords } from '@swift/types';
+import { customerCancellationWords } from '@swift/types/src/customer-cancellation-words';
 import { DataUnavailable } from '@/components/data-unavailable';
 import { Pictogram, verticalPictogram, type PictogramName } from '@/components/glyphs';
 

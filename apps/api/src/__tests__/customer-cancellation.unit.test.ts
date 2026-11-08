@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import { customerRoutes } from '../modules/user/customer.routes';
+import { SYSTEM_CANCELLATION_WORDS } from '@swift/types';
 import {
   CUSTOMER_REASON_MAX,
+  SYSTEM_CANCELLATION_CODES,
   VENDOR_NO_RESPONSE_REASON,
   customerCancellation,
   customerSafeReason,
@@ -11,6 +13,7 @@ import { NOT_COLLECTED_REASON } from '../modules/order/pickup-not-collected';
 import { NO_SHOW_REASON } from '../modules/booking/appointment-no-show';
 import { PASSENGER_NO_SHOW_REASON } from '../modules/rides/passenger-no-show';
 import { MMG_ACCEPT_EXPIRY_REASON } from '../modules/order/mmg-accept-expiry';
+import { FOOD_TOO_OLD_REASON, NO_RIDER_FOR_PARCEL_REASON } from '../modules/dispatch/rescue';
 import {
   foodDelivery,
   hostRoutes,
@@ -230,6 +233,13 @@ describe('customerCancellation — who closed it, in the customer’s terms', ()
     expect(view('system', 'NO_RIDER_FOR_PARCEL', { vendorId: null })).toEqual({ by: 'SYSTEM', reason: 'NO_RIDER_FOR_PARCEL' });
     expect(view(null, null)).toEqual({ by: 'SYSTEM', reason: null });
     expect(view(null, 'Some sentence the system never writes')).toEqual({ by: 'SYSTEM', reason: null });
+  });
+
+  it('the API passes exactly the automatic-close codes the apps have words for (the API cannot load @swift/types values)', () => {
+    expect([...SYSTEM_CANCELLATION_CODES].sort()).toEqual(Object.keys(SYSTEM_CANCELLATION_WORDS).sort());
+    // The codes the closes really write.
+    expect(SYSTEM_CANCELLATION_CODES.has(FOOD_TOO_OLD_REASON)).toBe(true);
+    expect(SYSTEM_CANCELLATION_CODES.has(NO_RIDER_FOR_PARCEL_REASON)).toBe(true);
   });
 
   it('an unpaid-MMG close carries the customer’s sentence, never the store’s', () => {

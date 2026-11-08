@@ -7,7 +7,8 @@ import { CallPartyButton } from '@/components/call-party-button';
 import { useParams } from 'next/navigation';
 import Link from 'next/link';
 // [UI-SWEEP U14] Cancellation codes read through the one shared plain-words map.
-import { cancellationReasonWords, customerCancellationWords, ORDER_CANCELLED_WORDS } from '@swift/types';
+import { cancellationReasonWords, ORDER_CANCELLED_WORDS } from '@swift/types';
+import { customerCancellationWords } from '@swift/types/src/customer-cancellation-words';
 import { orderStatusLabel, presentedVertical } from '@/lib/order-words';
 import { formatAppointmentSlot } from '@/lib/appointmentTime';
 import {

@@ -11,7 +11,8 @@ import { fareBreakdownOf } from '../../../lib/taxiWaiting';
 import { rideCanBeRated, rideOverTitle, ridePaidAmount } from '../../../lib/rideAfterTrip';
 import { rideApi } from '../../../services/api';
 import { cachedOrderRow } from '../../../lib/doorPreview';
-import { cancellationReasonWords, customerCancellationWords } from '@swift/types';
+import { cancellationReasonWords } from '@swift/types';
+import { customerCancellationWords } from '@swift/types/src/customer-cancellation-words';
 
 /**
  * [BUG-HUNT-2 G06] A ride that is over. The post-trip sheet shows only if the ride screen was open when the socket event landed,
