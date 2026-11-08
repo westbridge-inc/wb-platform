@@ -1,4 +1,4 @@
-import { GUYANA_TZ } from '@swift/types';
+import { GUYANA_TZ } from '@swift/types/src/market-time';
 
 /** Appointment wire values are true instants; every phone surface uses this
  * formatter so the device's zone cannot alter the displayed market time. */
