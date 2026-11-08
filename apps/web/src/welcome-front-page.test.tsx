@@ -114,6 +114,107 @@ describe('[WEB-APPBAR] the welcome page itself', () => {
   });
 });
 
+describe('[WEB-PHONES · owner 8 Nov] the welcome page shows the real app screens', () => {
+  beforeEach(() => {
+    forgetLaunchAnswer();
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ webOrdering: 'live', appStores: 'soon' }))));
+  });
+
+  async function welcome() {
+    const { default: Welcome } = await load<{ default: () => React.ReactElement }>('app/(welcome)/page.tsx');
+    return render(<Welcome />);
+  }
+  const HOME_ALT = 'The Swift app’s Home screen: a Good afternoon greeting, search, and tiles for Food, Groceries, Taxi, Send, Services, Orders, Favourites and Scan.';
+  const SCREEN_ALTS = [
+    'Live order tracking in the Swift app: the rider on the map and where the order stands.',
+    'Booking a taxi in the Swift app: the destination pinned on the map, and the pickup and destination fields.',
+    'The rider’s side of the Swift app: a map of Georgetown and the button to go online for jobs.',
+  ];
+
+  it('the Home screen is the hero, beside the headline and the doors (under them on a phone), and loads first', async () => {
+    const view = await welcome();
+    const images = [...view.container.querySelectorAll('img')];
+    expect(images.map((img) => img.getAttribute('alt'))).toEqual([HOME_ALT, ...SCREEN_ALTS]);
+    const hero = images[0]!;
+    expect(hero.getAttribute('loading')).not.toBe('lazy');
+    expect(hero.getAttribute('fetchpriority')).toBe('high');
+    // The hero and the intro (headline, doors) share one grid: one column on a phone, the doors first and the phone
+    // under them; two columns on a wide screen, the phone beside them.
+    const intro = view.container.querySelector('[data-welcome-intro]')!;
+    expect(intro.querySelector('h1')).not.toBeNull();
+    expect(intro.querySelector('nav[aria-label="Get started"]')).not.toBeNull();
+    const grid = intro.parentElement!;
+    expect(grid.contains(hero)).toBe(true);
+    expect(grid.className).toMatch(/\blg:grid-cols-\[minmax\(0,1fr\)_340px\]/);
+    expect(intro.compareDocumentPosition(hero) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('a See it in action row: tracking, taxi and the rider’s side, each with a one-line caption, lazy', async () => {
+    const view = await welcome();
+    const section = screen.getByRole('region', { name: 'See it in action' });
+    const figures = [...section.querySelectorAll('figure')];
+    expect(figures.map((figure) => figure.querySelector('img')!.getAttribute('alt'))).toEqual(SCREEN_ALTS);
+    expect(figures.map((figure) => [figure.querySelector('h3')!.textContent, figure.querySelector('figcaption p')!.textContent])).toEqual([
+      ['Order', 'Follow every order live on the map.'],
+      ['Ride', 'A PIN check before every ride, and the trip live on the map.'],
+      ['Earn', 'Sell, deliver, drive or offer a service.'],
+    ]);
+    for (const figure of figures) expect(figure.querySelector('img')!.getAttribute('loading')).toBe('lazy');
+    // A swipe row on a phone that a keyboard can scroll; three columns on a wide screen.
+    const row = section.querySelector('[data-swipe-row]')!;
+    expect(row.getAttribute('tabindex')).toBe('0');
+    for (const cls of ['overflow-x-auto', 'snap-x', 'md:grid', 'md:grid-cols-3', 'md:overflow-visible']) expect(row.className, cls).toContain(cls);
+    expect(view.container.querySelectorAll('img')).toHaveLength(4);
+  });
+
+  it('no new claim: every caption is the "Launching soon" page’s own words', async () => {
+    const view = await welcome();
+    const captions = [...view.container.querySelectorAll('figcaption p')].map((p) => p.textContent!);
+    expect(captions).toHaveLength(3);
+    const source = readFileSync(join(SRC, 'app', '(welcome)', 'launching-soon', 'page.tsx'), 'utf8').replace(/\s+/g, ' ');
+    for (const caption of captions) expect(source, caption).toContain(caption);
+  });
+
+  it('no price, fare, rating, review, earning or name in any alt text or caption', async () => {
+    const view = await welcome();
+    const words = [
+      ...[...view.container.querySelectorAll('img')].map((img) => img.alt),
+      ...[...view.container.querySelectorAll('figcaption')].map((caption) => caption.textContent ?? ''),
+    ].join(' ');
+    expect(words).not.toMatch(/\$|GYD|\d|fare|price|fee\b|Demo|Kezia|rating|review|earn(ed|ings)/i);
+  });
+
+  it('sized, responsive images with no layout shift: width and height, srcset widths and the drawn size', async () => {
+    const view = await welcome();
+    const images = [...view.container.querySelectorAll('img')];
+    for (const img of images) {
+      expect(Number(img.getAttribute('width')), img.alt).toBeGreaterThan(0);
+      expect(Number(img.getAttribute('height')), img.alt).toBeGreaterThan(0);
+      expect(img.getAttribute('sizes'), img.alt).toBeTruthy();
+      expect(img.className, img.alt).toMatch(/\bh-auto\b.*\bw-full\b/);
+    }
+    const widths = (img: HTMLImageElement) => (img.getAttribute('srcset') ?? '').split(',').map((s) => s.trim().split(/\s+/)[1]);
+    expect(widths(images[0]!)).toEqual(['600w', '880w']);
+    expect(images[0]!.getAttribute('sizes')).toBe('(min-width: 1024px) 318px, 298px');
+    for (const img of images.slice(1)) expect(widths(img), img.alt).toEqual(['640w', '1206w']);
+  });
+
+  it('stays a server-rendered page with no client script: plain images, never next/image’s component', () => {
+    for (const file of ['app/(welcome)/page.tsx', 'app/(welcome)/app-screens.tsx']) {
+      const source = readFileSync(join(SRC, file), 'utf8');
+      expect(source, file).not.toMatch(/'use client'/);
+      expect(source, file).not.toMatch(/import (?!type\b)[^;]*from 'next\/image'/);
+      expect(source, file).not.toMatch(/\p{Extended_Pictographic}/u);
+    }
+  });
+
+  it('axe finds nothing on the page', async () => {
+    const { axeViolations } = await import('@/test/axe');
+    const view = await welcome();
+    expect(await axeViolations(view.container)).toEqual([]);
+  });
+});
+
 describe('[WEB-APPBAR · no cookie] a returning visitor skips the welcome page, decided before it is painted', () => {
   /** Runs the early script exactly as the page's <head> carries it, against a URL and this browser's storage. */
   async function earlyScriptAt(url: string, stored: string | null | 'blocked') {
