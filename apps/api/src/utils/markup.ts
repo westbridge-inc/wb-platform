@@ -36,10 +36,15 @@ export function calculateDeliveryFee(
  * hardcoded parameter defaults instead of config: fine for Georgetown (the
  * defaults ARE its zone) but silently wrong for a second market.
  *
- * The defaults below are the owner's Georgetown schedule (1 Oct 2026): 500
- * covers the first 3 km, then 100 a kilometre, no surge. They are the ONE
- * place these numbers live: `calculateDeliveryFee`'s parameter defaults read
- * them, and a null deliveryRates column prices from them.
+ * The defaults below are the owner's Georgetown schedule. [Owner ruling 8 Nov
+ * 2026] A store or food delivery is priced like a taxi: 800 covers the first
+ * 3 km, then 175 a kilometre, no surge (it was 500, then 100 a kilometre, from
+ * 1 Oct). Express still adds the flat EXPRESS_DELIVERY_SURCHARGE; parcels
+ * (DEFAULT_COURIER_RATES) and taxi fares (DEFAULT_TAXI_RATES) are unchanged.
+ * They are the ONE place these numbers live: `calculateDeliveryFee`'s
+ * parameter defaults read them, a null deliveryRates column prices from them,
+ * and the website's Delivery policy states them
+ * (delivery-price-800.unit.test.ts holds the two together).
  */
 export interface DeliveryRates {
   baseFee: number;
@@ -49,8 +54,8 @@ export interface DeliveryRates {
 }
 
 export const DEFAULT_DELIVERY_RATES: DeliveryRates = {
-  baseFee: 500,
-  perKmRate: 100,
+  baseFee: 800,
+  perKmRate: 175,
   includedKm: 3,
   surgeMultiplier: 1.0,
 };

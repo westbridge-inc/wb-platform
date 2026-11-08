@@ -39,7 +39,8 @@ import { currentMoverDocuments } from './helpers/current-mover-documents';
 //             800; rounded to the nearest 100. A trip to or from an airport
 //             zone (CJIA, Ogle) pays 295/km after 3 km. Class multipliers
 //             apply. No fixed fares; the server ignores any mover-sent fare.
-//   Delivery  500 covers 3 km, then 100/km, surge 1.0 (rounded up to a whole
+//   Delivery  800 covers 3 km, then 175/km, like a taxi (owner 8 Nov 2026; it
+//             was 500, then 100/km), surge 1.0 (rounded up to a whole
 //             dollar); express adds a flat 1,000 at any distance (owner 1 Nov
 //             2026); pickup orders pay no delivery fee.
 //   Courier   800 + 120/km + the size surcharge, × the speed; nearest dollar.
@@ -206,7 +207,7 @@ describe('the database prices with the owner settings', () => {
     expect(gy.taxiRates, 'GY taxi rates — re-run the seed if this fails').toEqual(spine['taxiRates']);
     expect(gy.taxiRates).toEqual({ base: 800, includedKm: 3, perKm: 175, perMin: 0, minimum: 800 });
     expect(gy.taxiClassRates).toEqual(spine['taxiClassRates']);
-    // Null means the code defaults: delivery 500/3 km/100, courier 800 + 120.
+    // Null means the code defaults: delivery 800/3 km/175 (owner 8 Nov 2026), courier 800 + 120.
     expect([gy.deliveryRates, gy.courierRates]).toEqual([null, null]);
     const airports = await sys(() => app.prisma.zone.findMany({ where: { id: { in: ['cjia-airport', 'ogle-airport'] } }, select: { id: true, taxiPerKm: true, isActive: true } }));
     expect(airports.map((z) => [z.id, Number(z.taxiPerKm), z.isActive]).sort()).toEqual([['cjia-airport', 295, true], ['ogle-airport', 295, true]]);
@@ -370,11 +371,11 @@ describe('delivery — cart quote = order = rider offer = receipt', () => {
 
   // [km, express, fulfillment, the delivery fee the owner's rule gives]
   it.each([
-    ['3 km pays the 500 base', 3, false, 'DELIVERY', 500],
-    ['5 km', 5, false, 'DELIVERY', 700],
-    ['10 km', 10, false, 'DELIVERY', 1200],
-    ['4.37 km (637, a whole dollar)', 4.37, false, 'DELIVERY', 637],
-    ['5 km express (700 + the flat 1,000)', 5, true, 'DELIVERY', 1700],
+    ['3 km pays the 800 base', 3, false, 'DELIVERY', 800],
+    ['5 km (800 + 2 × 175)', 5, false, 'DELIVERY', 1150],
+    ['10 km (800 + 7 × 175)', 10, false, 'DELIVERY', 2025],
+    ['4.37 km (1,039.75 → 1,040, a whole dollar)', 4.37, false, 'DELIVERY', 1040],
+    ['5 km express (1,150 + the flat 1,000)', 5, true, 'DELIVERY', 2150],
     ['pickup: no delivery fee, however far', 10, false, 'PICKUP', 0],
   ] as const)('%s → fee %s', async (_label, km, express, fulfillment, fee) => {
     const drop = at({ lat: 6.8095 + Math.round(km * 100) * 0.00001 + (express ? 0.0005 : 0) + (fulfillment === 'PICKUP' ? 0.001 : 0), lng: -58.159 }, km);

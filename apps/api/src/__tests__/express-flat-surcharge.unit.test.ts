@@ -37,8 +37,8 @@ describe('the express premium is a flat GYD 1,000 [owner 1 Nov 2026]', () => {
   });
 
   it.each([
-    // [km, standard fee on the Georgetown schedule (500 for 3 km, then 100 a km, rounded up)]
-    [0, 500], [1, 500], [3, 500], [3.46, 546], [5, 700], [10.15, 1215], [25, 2700], [60, 6200], [150, 15200],
+    // [km, standard fee on the Georgetown schedule (owner 8 Nov 2026: 800 for 3 km, then 175 a km, rounded up)]
+    [0, 800], [1, 800], [3, 800], [3.46, 881], [5, 1150], [10.15, 2052], [25, 4650], [60, 10775], [150, 26525],
   ])('%s km: express = standard + 1,000 (standard %s)', (km, standard) => {
     expect(deliveryFeeFromRates(km, DEFAULT_DELIVERY_RATES)).toBe(standard);
     expect(expressDeliveryFee(standard)).toBe(standard + 1000);
@@ -49,7 +49,7 @@ describe('the express premium is a flat GYD 1,000 [owner 1 Nov 2026]', () => {
     const standard = deliveryFeeFromRates(5, dear); // 1000 + 4 × 300 = 2200
     expect(standard).toBe(2200);
     expect(expressDeliveryFee(standard)).toBe(3200);
-    expect(expressDeliveryFee(standard) - standard).toBe(expressDeliveryFee(500) - 500);
+    expect(expressDeliveryFee(standard) - standard).toBe(expressDeliveryFee(800) - 800);
   });
 });
 
@@ -63,7 +63,7 @@ describe('the planner the quote and the checkout share', () => {
     vendor, lines: [line(1800)], fulfillment, destination: { lat: 6.81, lng: -58.17 }, deliveryRates: DEFAULT_DELIVERY_RATES, express, routeKm: at(km),
   });
 
-  it.each([[1.2, 500], [3.46, 546], [10.15, 1215], [42, 4400]])('%s km: the express plan charges standard + 1,000 and says so', async (km, standard) => {
+  it.each([[1.2, 800], [3.46, 881], [10.15, 2052], [42, 7625]])('%s km: the express plan charges standard + 1,000 and says so', async (km, standard) => {
     const fast = await plan(km, true);
     expect(fast).toMatchObject({ standardDeliveryFee: standard, deliveryFee: standard + 1000, expressSurcharge: 1000 });
     // The standard quote carries the same surcharge, so the toggle's "+GYD 1,000" is the number checkout adds.
@@ -81,8 +81,8 @@ describe('the planner the quote and the checkout share', () => {
     const near = await plan(2, true);
     const far = await plan(12.5, true);
     const priced = priceBasket({ plans: [near, far], promo: null, tip: 0 });
-    expect(priced.perPlan.map((p) => p.total)).toEqual([1800 + 500 + 1000, 1800 + 1450 + 1000]);
-    expect(priced.grandTotal).toBe(3600 + 500 + 1450 + 2000);
+    expect(priced.perPlan.map((p) => p.total)).toEqual([1800 + 800 + 1000, 1800 + 2463 + 1000]);
+    expect(priced.grandTotal).toBe(3600 + 800 + 2463 + 2000);
   });
 });
 
@@ -171,40 +171,40 @@ describe('a Swift-paid free-delivery code covers the normal fee, never the expre
   });
   const FREE: BasketPromo = { discountType: 'FREE_DELIVERY', discountValue: 0, funder: 'PLATFORM', vendorId: null };
 
-  it('express: the code takes the 500 standard fee; the customer pays goods + 1,000; the order still carries the 1,500 fee', async () => {
+  it('express: the code takes the 800 standard fee; the customer pays goods + 1,000; the order still carries the 1,800 fee', async () => {
     const fast = await plan('a', 2, true);
-    expect(fast).toMatchObject({ standardDeliveryFee: 500, deliveryFee: 1500 });
+    expect(fast).toMatchObject({ standardDeliveryFee: 800, deliveryFee: 1800 });
     const priced = priceBasket({ plans: [fast], promo: FREE, tip: 0 });
-    expect(priced.discount).toBe(500);
-    expect(priced.perPlan[0]).toEqual({ discount: 500, tip: 0, total: 1800 + 1000, allocation: { goods: 0, delivery: 500, tip: 0, total: 500 } });
+    expect(priced.discount).toBe(800);
+    expect(priced.perPlan[0]).toEqual({ discount: 800, tip: 0, total: 1800 + 1000, allocation: { goods: 0, delivery: 800, tip: 0, total: 800 } });
     expect(priced.grandTotal).toBe(2800);
   });
 
   it('standard speed: the code still removes the whole (standard) fee, as before', async () => {
     const plain = await plan('a', 2, false);
     const priced = priceBasket({ plans: [plain], promo: FREE, tip: 0 });
-    expect(priced.discount).toBe(500);
+    expect(priced.discount).toBe(800);
     expect(priced.perPlan[0]!.total).toBe(1800);
   });
 
   it('two express stores: each store’s normal fee is free, each +1,000 is paid', async () => {
     const priced = priceBasket({ plans: [await plan('a', 2, true), await plan('b', 12.5, true)], promo: FREE, tip: 200 });
-    expect(priced.discount).toBe(500 + 1450);
+    expect(priced.discount).toBe(800 + 2463);
     expect(priced.perPlan.map((p) => p.total)).toEqual([1800 + 1000 + 200, 1800 + 1000]);
-    expect(priced.perPlan.map((p) => p.allocation?.delivery)).toEqual([500, 1450]);
+    expect(priced.perPlan.map((p) => p.allocation?.delivery)).toEqual([800, 2463]);
   });
 
   it('a lower cap still caps, and a store-funded free-delivery code still takes nothing from the rider’s fee', async () => {
     const fast = await plan('a', 2, true);
-    expect(priceBasket({ plans: [fast], promo: { ...FREE, maxDiscount: 300 }, tip: 0 }).perPlan[0]!.total).toBe(1800 + 1500 - 300);
+    expect(priceBasket({ plans: [fast], promo: { ...FREE, maxDiscount: 300 }, tip: 0 }).perPlan[0]!.total).toBe(1800 + 1800 - 300);
     expect(priceBasket({ plans: [fast], promo: { ...FREE, funder: 'VENDOR', vendorId: 'a' }, tip: 0 }).discount).toBe(0);
   });
 
   it('[COORD ruling 1 Nov] a Swift amount-off code larger than the order stops at goods + the normal fee: express is still paid', async () => {
     const fast = await plan('a', 2, true);
     const huge = priceBasket({ plans: [fast], promo: { discountType: 'FIXED_AMOUNT', discountValue: 9000, funder: 'PLATFORM', vendorId: null }, tip: 0 });
-    expect(huge.discount).toBe(1800 + 500);
-    expect(huge.perPlan[0]).toMatchObject({ total: 1000, allocation: { goods: 1800, delivery: 500, tip: 0, total: 2300 } });
+    expect(huge.discount).toBe(1800 + 800);
+    expect(huge.perPlan[0]).toMatchObject({ total: 1000, allocation: { goods: 1800, delivery: 800, tip: 0, total: 2600 } });
     // At standard speed the same code still takes goods + the whole (standard) fee, as before.
     const plain = await plan('a', 2, false);
     expect(priceBasket({ plans: [plain], promo: { discountType: 'FIXED_AMOUNT', discountValue: 9000, funder: 'PLATFORM', vendorId: null }, tip: 0 }).perPlan[0]!.total).toBe(0);
@@ -250,10 +250,10 @@ describe('a Swift-paid free-delivery code covers the normal fee, never the expre
 
 describe('LEGAL_VERSION 2026-11-01 for the express Delivery-policy wording [owner 1 Nov 2026]', () => {
   it('is served, and classed non-material exactly once', () => {
-    // served now under 2026-11-05 (the 5 Nov batch: material)
-    expect(LEGAL_VERSION).toBe('2026-11-06');
-    expect(TERMS).toContain('6 November 2026');
-    expect(PRIVACY).toContain('6 November 2026');
+    // served now under 2026-11-08 (the delivery price of 8 Nov: material)
+    expect(LEGAL_VERSION).toBe('2026-11-08');
+    expect(TERMS).toContain('8 November 2026');
+    expect(PRIVACY).toContain('8 November 2026');
     expect(NON_MATERIAL_CHANGES.filter((c) => c.version === '2026-11-01')).toHaveLength(1);
     expect(MATERIAL_CHANGES.map((c) => c.version)).not.toContain('2026-11-01');
     expect(NON_MATERIAL_CHANGES.find((c) => c.version === '2026-11-01')!.why).toMatch(/express/i);
