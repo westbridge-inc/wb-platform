@@ -249,6 +249,9 @@ export async function issueSessionToken(
   const now = deps.now?.() ?? new Date();
   const identity = await sessionIdentity(deps.prisma, deps.config, input.userId, input.sessionId, now);
   if (input.purpose === 'register' && !(await onALiveOrder(deps.prisma, input.userId))) {
+    // [CALLS-REACH follow-up 4] The app asks this when its own reads stop showing a live order: the answer "no" also
+    // takes this phone off the registered list here (best effort), whatever the phone does next.
+    await deps.registry?.clear(identity).catch(() => undefined);
     throw new AppError(403, 'INAPP_NO_LIVE_ORDER', 'In-app calls are for the people on a live order.');
   }
   // [native review S2] The phone asks to register only with the microphone granted; until it does (or after

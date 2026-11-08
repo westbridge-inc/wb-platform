@@ -940,3 +940,14 @@ describe('[CALLS-REACH] nobody for them can take an in-app call: the caller is t
     expect(await session(callId)).toMatchObject({ status: 'NOT_CONNECTED' });
   });
 });
+
+describe('[CALLS-REACH follow-up 4] a register refused for no live order also clears that phone server-side', () => {
+  it('a phone on no live order that asks to register: 403 INAPP_NO_LIVE_ORDER, and its registry entry is gone', async () => {
+    await registered(stranger);
+    expect(await app.redis.get(`${INAPP_REGISTRY_PREFIX}${id(stranger)}`)).not.toBeNull();
+    const res = await regToken(stranger.token);
+    expect(res.statusCode).toBe(403);
+    expect(res.json().error.code).toBe('INAPP_NO_LIVE_ORDER');
+    expect(await app.redis.get(`${INAPP_REGISTRY_PREFIX}${id(stranger)}`)).toBeNull();
+  });
+});

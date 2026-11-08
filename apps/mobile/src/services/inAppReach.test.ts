@@ -343,3 +343,52 @@ describe('[CALLS-REACH · review S2-2] Android without the microphone: once, at 
     expect(cards()).toBe(0);
   });
 });
+
+describe('[CALLS-REACH follow-ups 1 and 3] a sign-out closes the card; no nag without order ids', () => {
+  beforeEach(() => { fx.platform = 'android'; });
+
+  it('reset (a forced sign-out) closes a card still showing, and an answer that lands after it is never stored', async () => {
+    let answer!: (a: CallsMicAnswer) => void;
+    const d = deps();
+    d.ask.mockImplementation(() => new Promise<CallsMicAnswer>((r) => { answer = r; }));
+    d.cancelAsk.mockImplementation(() => { fx.log.push('card-closed'); });
+    const reach = createInAppReach(d);
+    const pending = reach.update(live('o1'));
+    await vi.waitFor(() => expect(answer).toBeTypeOf('function'));
+    reach.reset();
+    expect(fx.log).toContain('card-closed');
+    answer('not-now'); // the old account's "no", too late
+    expect(await pending).toBe('stale');
+    expect(fx.disk).toBeNull();
+  });
+
+  it('a "no" at the system prompt after the sign-out is dropped the same way', async () => {
+    let system!: (a: MicAnswer) => void;
+    const d = deps();
+    d.requestMic = () => new Promise<MicAnswer>((r) => { system = r; });
+    const reach = createInAppReach(d);
+    const pending = reach.update(live('o1'));
+    await vi.waitFor(() => expect(system).toBeTypeOf('function'));
+    reach.reset();
+    system('never_ask_again');
+    expect(await pending).toBe('stale');
+    expect(fx.disk).toBeNull();
+  });
+
+  it('live rows with no ids: a card closed without an answer does not come back every minute this run', async () => {
+    fx.card = 'dismissed';
+    const noIds = reachSignal({ storeOrders: [{ status: 'PENDING' }] });
+    expect(noIds).toMatchObject({ state: 'live', orderIds: [] });
+    const reach = createInAppReach(deps());
+    expect(await reach.update(noIds)).toBe('mic-later');
+    for (let i = 0; i < 3; i++) {
+      fx.now += REACH_RETRY_MS;
+      expect(await reach.update(noIds)).toBe('mic-off');
+    }
+    expect(cards()).toBe(1);
+    reach.reset(); // a new run (or account) may ask once more
+    fx.card = 'allow';
+    expect(await reach.update(noIds)).toBe('registered');
+  });
+});
+
