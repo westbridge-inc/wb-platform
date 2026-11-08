@@ -13,7 +13,7 @@ import { navigationRef, safeNavigate } from '../navigation/navigationRef';
 // the cold-start initial URL work everywhere today.
 
 export { destinationForUrl, type LinkDestination } from '../lib/deepLinkParse';
-import { destinationForUrl, setLinkDecisionObserver, type LinkDestination } from '../lib/deepLinkParse';
+import { destinationForUrl, isWeeklyFeeReturn, setLinkDecisionObserver, type LinkDestination } from '../lib/deepLinkParse';
 import { track } from '../lib/analytics';
 
 /** Fire-and-forget APP_OPEN report (spec 8.2) — the OS intercepted the link,
@@ -105,10 +105,8 @@ async function resolveAndGo(dest: LinkDestination, request: number, fromOutcome 
 let navReady = false;
 let latestRequest = 0;
 
-/** The two fixed fee returns: MMG's page and the card page (CARD-CHECKOUT-API section 7). */
-export function isWeeklyFeeReturn(url: string): boolean {
-  try { const parsed = new URL(url); return parsed.protocol === 'swift:' && parsed.hostname === 'pay' && (parsed.pathname === '/mmg/return' || parsed.pathname === '/card/return'); } catch { return false; }
-}
+/** The two fixed fee returns (now beside the link parser, which is pure, so the launch intro can ask too). */
+export { isWeeklyFeeReturn };
 
 function handleUrl(url: string | null): boolean {
   if (!url) return false;

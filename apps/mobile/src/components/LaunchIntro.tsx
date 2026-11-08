@@ -1,6 +1,6 @@
 /** @jsxImportSource react */
-import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { Pressable, StatusBar, StyleSheet, View } from 'react-native';
+import React, { Component, useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import { Linking, Pressable, StatusBar, StyleSheet, View } from 'react-native';
 import Animated, {
   Easing,
   Extrapolation,
@@ -19,8 +19,11 @@ import { T } from '../kit';
 import { SwiftMark, SwiftWordmark } from './SwiftLogo';
 import { useAuthStore } from '../stores/authStore';
 import { useAppStore } from '../stores/appStore';
+import { reportCrash } from '../lib/crash-reporter';
+import { linkOpensAScreen } from '../lib/deepLinkParse';
 import {
   INTRO_BACKSTOP_GRACE_MS,
+  INTRO_BRAND_GONE_AT,
   INTRO_TIMELINE,
   MARK_SETTLE,
   SPLASH_MARK_PT,
@@ -55,11 +58,40 @@ const LIFT = MARK_SETTLE.lift;
 const SETTLED_SCALE = MARK_SETTLE.scale;
 /** The brand grows this much while it dissolves, so the welcome opens out of it. */
 const REVEAL_GROW = 1.05;
-/** The white brand is gone when the maroon is half lifted. */
-const BRAND_GONE_AT = 0.5;
 
-/** Mounted once the encrypted stores are open (App.tsx), above everything; decides once, from the launch state. */
+/**
+ * Mounted once the encrypted stores are open (App.tsx), above everything. Fenced off: anything the intro throws
+ * (its render, the splash options, a store read) leaves the intro out and the app as it was, never the app's own
+ * error screen over a native splash that would then never be hidden (the root's onLayout would not run).
+ */
 export function LaunchIntro() {
+  return (
+    <IntroBoundary>
+      <LaunchIntroGate />
+    </IntroBoundary>
+  );
+}
+
+class IntroBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
+  override state = { failed: false };
+
+  static getDerivedStateFromError(): { failed: boolean } {
+    return { failed: true };
+  }
+
+  override componentDidCatch(error: Error, info: { componentStack?: string | null }): void {
+    reportCrash(error, { componentStack: info?.componentStack, source: 'launch-intro' });
+    // The rest of the tree still lays out and hides the splash; this is belt and braces.
+    SplashScreen.hideAsync().catch(() => {});
+  }
+
+  override render(): ReactNode {
+    return this.state.failed ? null : this.props.children;
+  }
+}
+
+/** Decides once, from the launch state. */
+function LaunchIntroGate() {
   const [mode, setMode] = useState<IntroMode>(() => {
     const auth = useAuthStore.getState();
     return introModeAtLaunch({
@@ -150,11 +182,26 @@ function BrandIntro({ mode, onDone }: { mode: Exclude<IntroMode, 'none'>; onDone
     );
   }, [cover, done]);
 
+  // [APP-INTRO · review] Opened by a link (a table QR, a shared store, the weekly-fee return): the screen it opens
+  // is the point, so the intro steps aside at once, for the launch link and for one that arrives while it plays.
+  useEffect(() => {
+    let live = true;
+    const opensAScreen = (url: string | null) => {
+      if (live && linkOpensAScreen(url)) skip();
+    };
+    const sub = Linking.addEventListener('url', ({ url }) => opensAScreen(url));
+    Linking.getInitialURL().then(opensAScreen).catch(() => undefined);
+    return () => {
+      live = false;
+      sub.remove();
+    };
+  }, [skip]);
+
   const veil = useAnimatedStyle(() => ({ opacity: cover.value }));
-  // While the maroon lifts, the white brand leaves in the first half of it (growing slightly as it goes), so the
-  // welcome's own words never show through a white logo.
+  // While the maroon lifts, the white brand leaves first (growing slightly as it goes), gone while the maroon is
+  // still three-quarters up, so the welcome's own words never show through a white logo.
   const grow = useAnimatedStyle(() => ({
-    opacity: interpolate(cover.value, [BRAND_GONE_AT, 1], [0, 1], Extrapolation.CLAMP),
+    opacity: interpolate(cover.value, [INTRO_BRAND_GONE_AT, 1], [0, 1], Extrapolation.CLAMP),
     transform: [
       { scale: plan === 'full' ? interpolate(cover.value, [0, 1], [REVEAL_GROW, 1], Extrapolation.CLAMP) : 1 },
     ],

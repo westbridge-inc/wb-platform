@@ -1,6 +1,7 @@
 /** @jsxImportSource react */
 import { Component, type ReactNode } from 'react';
 import { View, Text, Pressable } from 'react-native';
+import * as SplashScreen from 'expo-splash-screen';
 import { color, font } from '@swift/ui';
 import { reportCrash } from '../lib/crash-reporter';
 
@@ -27,6 +28,9 @@ export class ErrorBoundary extends Component<Props, State> {
 
   override componentDidCatch(error: Error, info: { componentStack?: string }): void {
     reportCrash(error, { componentStack: info?.componentStack, source: 'boundary' });
+    // [APP-INTRO · review] This screen replaces the root view whose onLayout hides the native splash. A throw
+    // before that first layout would leave the splash up for good, over a screen nobody can see. Hide it here.
+    SplashScreen.hideAsync().catch(() => {});
   }
 
   private reset = (): void => this.setState({ hasError: false });

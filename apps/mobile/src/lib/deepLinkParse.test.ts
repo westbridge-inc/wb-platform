@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { destinationForUrl, explainUrl, linkDecisionCounters, resetLinkDecisionsForTests, setLinkDecisionObserver, setLinkPolicyForTests } from './deepLinkParse';
+import { destinationForUrl, explainUrl, isWeeklyFeeReturn, linkDecisionCounters, linkOpensAScreen, peekDestinationForUrl, resetLinkDecisionsForTests, setLinkDecisionObserver, setLinkPolicyForTests } from './deepLinkParse';
 import { policyFrom, type LinkDecision } from './linkPolicy';
 
 // Edge row 20's law in miniature: any unrecognized path is null — the app
@@ -140,5 +140,42 @@ describe('[MOB-002] every decision is observable: accepted origins and rejection
   it('a throwing observer never breaks a link', () => {
     setLinkDecisionObserver(() => { throw new Error('boom'); });
     expect(destinationForUrl('https://swiftgy.com/s/BCDFGHJKMN')).toEqual({ kind: 'short', code: 'BCDFGHJKMN' });
+  });
+});
+
+describe('[APP-INTRO] peekDestinationForUrl / linkOpensAScreen: the same answer, nothing counted', () => {
+  const URLS = [
+    'https://swiftgy.com/store/green-bowl-x7k2m9',
+    'https://swiftgy.com/store/green-bowl?src=qr&c=bcdfghjkmn&t=card',
+    'https://www.swiftgy.com/s/bcdfghjkmn',
+    'swift://s/BCDFGHJKMN',
+    'https://attacker.example/store/valid-slug',
+    'http://swiftgy.com/s/BCDFGHJKMN',
+    'https://swiftgy.com/about',
+    'https://swiftgy.com/store/a/b',
+    'not a url',
+  ];
+
+  it('agrees with destinationForUrl on every link, and counts no decision (the router counts it once)', () => {
+    const decisions: LinkDecision[] = [];
+    setLinkDecisionObserver((d) => decisions.push(d));
+    const peeked = URLS.map((url) => peekDestinationForUrl(url));
+    expect(decisions).toEqual([]);
+    expect(linkDecisionCounters()).toEqual({ accepted: {}, rejected: {} });
+    expect(peeked).toEqual(URLS.map((url) => destinationForUrl(url)));
+    expect(decisions).toHaveLength(URLS.length);
+  });
+
+  it('a store, a QR code and the two fee returns open a screen; nothing else does', () => {
+    expect(linkOpensAScreen('https://swiftgy.com/s/bcdfghjkmn')).toBe(true);
+    expect(linkOpensAScreen('https://swiftgy.com/store/green-bowl-x7k2m9')).toBe(true);
+    expect(linkOpensAScreen('swift://pay/mmg/return')).toBe(true);
+    expect(linkOpensAScreen('swift://pay/card/return?x=1')).toBe(true);
+    expect(isWeeklyFeeReturn('swift://pay/other/return')).toBe(false);
+    expect(isWeeklyFeeReturn('https://pay/mmg/return')).toBe(false);
+    for (const url of [null, undefined, '', 'https://swiftgy.com/about', 'https://attacker.example/s/BCDFGHJKMN', 'swift://expo-development-client/?url=x']) {
+      expect(linkOpensAScreen(url), String(url)).toBe(false);
+    }
+    expect(linkDecisionCounters()).toEqual({ accepted: {}, rejected: {} });
   });
 });
