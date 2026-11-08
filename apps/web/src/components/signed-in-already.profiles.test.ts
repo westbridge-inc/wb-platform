@@ -30,7 +30,7 @@ describe('[F29] the signed-in card asks /auth/me whether the account is a pro', 
 
   it('a customer goes to Swift, with no provider request', async () => {
     const asked = server(false);
-    expect(await homeFor({ id: 'c1', roles: ['CUSTOMER'] })).toEqual({ home: '/', label: 'Go to Swift' });
+    expect(await homeFor({ id: 'c1', roles: ['CUSTOMER'] })).toEqual({ home: '/order', label: 'Go to Swift' });
     expect(asked).toEqual(['/api/v1/auth/me']);
   });
 

@@ -18,10 +18,10 @@ import sitemap from './app/sitemap';
 // forbidden even though they also carry noindex. Ordinary noindex pages MUST
 // be crawlable so robots.txt does not hide their metadata from search engines.
 const PUBLIC_PAGES = [
-  '(app)/page.tsx',
+  '(marketing)/page.tsx', // [WEB-APPBAR] the welcome front page at /
   '(app)/explore/page.tsx',
   '(app)/market/page.tsx',
-  '(app)/order/page.tsx', // legacy Home redirect
+  '(app)/order/page.tsx', // [WEB-APPBAR] the ordering Home
   '(app)/order/browse/page.tsx',
   '(app)/order/search/page.tsx',
   '(app)/taxi/page.tsx', // public app handoff + fare estimate (signed in), no web booking

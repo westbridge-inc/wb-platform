@@ -8,7 +8,9 @@ import { TabGlyph, type TabGlyphName } from '@/components/glyphs';
 import { Avatar, Sheet } from '@/components/account-chrome';
 import { LoadingRegion } from '@/components/customer-skeletons';
 import type { SessionStatus } from '@/components/customer-session';
-import { signInPath, signUpPath, type CustomerTab, type SignInDoor as SignInDoorCopy } from '@/lib/customer-routes';
+import { WELCOME_PATH, signInPath, signUpPath, type CustomerTab, type SignInDoor as SignInDoorCopy } from '@/lib/customer-routes';
+// [WEB-APPBAR] The menus' "Get the app" badges come after the page (they ask the stores switch, and show only once live).
+import { GetTheAppLinksLater } from '@/components/get-the-app-later';
 
 /**
  * [Q7b · WEB-REDESIGN] The chrome of the customer app — the parts that stay
@@ -37,7 +39,7 @@ interface TabLink {
 }
 
 const TABS: TabLink[] = [
-  { tab: 'home', href: '/', label: 'Home', glyph: 'home' },
+  { tab: 'home', href: '/order', label: 'Home', glyph: 'home' },
   { tab: 'market', href: '/market', label: 'Market', glyph: 'market' },
   { tab: 'cart', href: '/cart', label: 'Cart', glyph: 'cart' },
   { tab: 'profile', href: '/account', label: 'Profile', glyph: 'profile' },
@@ -49,8 +51,10 @@ export function visibleTabs(marketVisible: boolean): TabLink[] {
   return TABS.filter((tab) => tab.tab !== 'market' || marketVisible);
 }
 
-/** The company pages, one tap from the app: the marketing site still exists. */
+/** The company pages, one tap from the app: the marketing site still exists. [WEB-APPBAR] The welcome page
+ *  first: a returning visitor never lands on it, so this is their way back. */
 export const BUSINESS_LINKS = [
+  { href: WELCOME_PATH, label: 'Welcome' },
   { href: '/vendors', label: 'Sell on Swift' },
   { href: '/drivers', label: 'Drive with Swift' },
   { href: '/about', label: 'About' },
@@ -147,7 +151,7 @@ export function SideRail({
   const badge = cartBadge(cartCount);
   return (
     <header className="hidden wide:sticky wide:top-0 wide:flex wide:h-dvh wide:w-[280px] wide:flex-none wide:flex-col wide:gap-6 wide:overflow-y-auto wide:border-r wide:border-[var(--swift-border)] wide:bg-[var(--swift-card)] wide:px-4 wide:pb-5 wide:pt-[calc(24px_+_env(safe-area-inset-top))]">
-      <Link href="/" aria-label="Swift home" className="flex items-center gap-1.5 self-start px-2">
+      <Link href="/order" aria-label="Swift home" className="flex items-center gap-1.5 self-start px-2">
         <SwiftLogo />
       </Link>
 
@@ -170,6 +174,8 @@ export function SideRail({
       </nav>
 
       <div className="flex-1" />
+
+      <GetTheAppLinksLater className="px-2.5" />
 
       <nav aria-label="Swift for business">
         <ul className="flex flex-wrap gap-x-3 px-2.5 text-[13px] leading-[18px] text-[var(--swift-muted)]">
@@ -271,6 +277,7 @@ export function MoreMenu({ guest, returnPath, onClose }: { guest: boolean; retur
               <li key={link.href}><Link href={link.href} onClick={onClose} className="sw-row sw-label">{link.label}</Link></li>
             ))}
           </ul>
+          <GetTheAppLinksLater className="mt-4" />
           {guest ? (
             <div className="mt-5 grid gap-2">
               <Link href={signInPath(returnPath())} onClick={onClose} className="sw-btn sw-btn-block">Sign in</Link>
@@ -302,7 +309,7 @@ export function SignInDoor({ door, returnPath }: { door: SignInDoorCopy; returnP
       <div className="mt-4 grid w-full gap-2">
         <Link href={signInPath(returnPath)} className="sw-btn sw-btn-block">Sign in</Link>
         <Link href={signUpPath(returnPath)} className="sw-btn sw-btn-block sw-btn-outline">Create an account</Link>
-        <Link href="/" className="sw-link-btn mt-1 py-2 text-center">Keep browsing</Link>
+        <Link href="/order" className="sw-link-btn mt-1 py-2 text-center">Keep browsing</Link>
       </div>
     </section>
   );

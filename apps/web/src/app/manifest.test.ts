@@ -41,18 +41,19 @@ describe('[PWA-1] the web app manifest', () => {
 
   it('starts at the customer home, inside its scope, under a stable id', () => {
     const start = new URL(app.start_url!, SITE);
-    // [Q7b] Home is `/`: the site, and the installed app, open on ordering.
-    expect(start.pathname).toBe('/');
+    // [Q7b] The installed app opens on ordering. [WEB-APPBAR] Home moved back to /order (`/` is the welcome page).
+    expect(start.pathname).toBe('/order');
     expect(start.searchParams.get('source')).toBe('pwa');
     expect(app.scope).toBe('/');
     expect(start.pathname.startsWith(new URL(app.scope!, SITE).pathname)).toBe(true);
-    // The id is the first install's start page, pinned: moving Home to `/`
+    // The id is the first install's start page, pinned: moving Home
     // must not turn one installed app into two.
     expect(app.id).toBe('/order');
     // The start page is a real route of the customer app, not a guess — and
-    // the first installs' start page still resolves (it redirects to /).
-    expect(existsSync(join(WEB_ROOT, 'src/app/(app)/page.tsx'))).toBe(true);
+    // the second installs' start page (`/`) still resolves: the welcome page, whose early check (lib/welcome.ts) sends an
+    // installed app's launch (?source=pwa) straight on to ordering.
     expect(existsSync(join(WEB_ROOT, 'src/app/(app)/order/page.tsx'))).toBe(true);
+    expect(existsSync(join(WEB_ROOT, 'src/app/(marketing)/page.tsx'))).toBe(true);
   });
 
   it('takes its colours from the design tokens', () => {

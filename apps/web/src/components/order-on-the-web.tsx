@@ -13,7 +13,7 @@ export function OrderOnTheWeb({ className }: { className: string }) {
   const open = useWebOrderingOpen();
   if (open) {
     return (
-      <Link href="/" className={className}>
+      <Link href="/order" className={className}>
         Order on the web
       </Link>
     );

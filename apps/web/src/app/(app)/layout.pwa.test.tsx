@@ -5,7 +5,7 @@ import { loadInstallCard } from '@/components/install-prompt';
 import CartPage from './cart/page';
 import * as api from '@/lib/customer';
 
-const state = vi.hoisted(() => ({ pathname: '/', principal: null as string | null, replace: vi.fn(), sessionProbe: vi.fn() }));
+const state = vi.hoisted(() => ({ pathname: '/order', principal: null as string | null, replace: vi.fn(), sessionProbe: vi.fn() }));
 vi.mock('next/navigation', () => ({ usePathname: () => state.pathname, useRouter: () => ({ replace: state.replace, push: vi.fn(), back: vi.fn() }) }));
 vi.mock('@/lib/auth', () => ({
   sessionProbe: state.sessionProbe,
@@ -36,7 +36,7 @@ const card = () => screen.queryByRole('complementary', { name: 'Install Swift' }
 beforeAll(() => loadInstallCard());
 
 beforeEach(() => {
-  state.pathname = '/';
+  state.pathname = '/order';
   state.principal = 'c1';
   state.sessionProbe.mockResolvedValue({ ok: true });
   vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ success: true, data: { visible: false, items: 0, vendors: 0 } }))));
@@ -68,7 +68,7 @@ describe('[PWA-1] the customer shell, installed', () => {
     expect(event.defaultPrevented).toBe(true);
     expect(card()).toBeNull();
 
-    state.pathname = '/';
+    state.pathname = '/order';
     view.rerender(<AppLayout><button>Home page</button></AppLayout>);
     await screen.findByText('Home page');
     fireEvent.click(screen.getByText('Home page'));
@@ -112,7 +112,7 @@ describe('[PWA-1] the customer shell, installed', () => {
     act(() => { window.dispatchEvent(installEvent()); });
     expect(card()).toBeNull();
     // Same engagement and offer: Home is the positive control for suppression.
-    state.pathname = '/';
+    state.pathname = '/order';
     view.rerender(<AppLayout><button>Home page</button></AppLayout>);
     expect(card()).not.toBeNull();
   });

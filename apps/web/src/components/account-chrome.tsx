@@ -43,7 +43,7 @@ export function Sheet({ label, onClose, children }: { label: string; onClose: ()
 export type SwitchAppKey = 'customer' | 'driver' | 'vendor' | 'advertiser';
 
 const SWITCH_ROLES: { key: SwitchAppKey; label: string; sub: string; pictogram: PictogramName; href: string | null }[] = [
-  { key: 'customer', label: 'Swift', sub: 'Order food, groceries and parcels', pictogram: 'food', href: '/' },
+  { key: 'customer', label: 'Swift', sub: 'Order food, groceries and parcels', pictogram: 'food', href: '/order' },
   { key: 'driver', label: 'Swift Driver', sub: 'Your earnings and documents — jobs are taken in the Swift app', pictogram: 'wheel', href: '/portal' },
   { key: 'vendor', label: 'Swift Business', sub: 'Your store’s orders and menu', pictogram: 'shops', href: '/dashboard' },
   { key: 'advertiser', label: 'Swift Ads', sub: 'Advertising is managed in the Swift app', pictogram: 'scan', href: null },

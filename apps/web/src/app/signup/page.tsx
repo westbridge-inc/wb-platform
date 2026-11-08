@@ -48,7 +48,10 @@ type Step = 'role' | 'phone' | 'code' | 'name' | 'business' | 'vehicle';
 
 function safeReturnPath(): string {
   if (typeof window === 'undefined') return '';
-  return storefrontAuthReturn(new URLSearchParams(window.location.search).get('next'));
+  const path = storefrontAuthReturn(new URLSearchParams(window.location.search).get('next'));
+  // [WEB-APPBAR review S2] `/` (the welcome page) is "no deep link", as on sign-in: the account goes to its own home
+  // (a customer to ordering at /order). Sign-up navigates in the browser, so `/`'s early check would never run.
+  return (path.split(/[?#]/)[0] ?? '') === '/' ? '' : path;
 }
 
 const ROLES: { role: Role; title: string; desc: string; pictogram: PictogramName }[] = [
@@ -274,7 +277,8 @@ export default function SignupPage() {
       const destination = safeReturnPath();
       if (destination) continueJourney();
       clearDraft();
-      router.replace(destination || '/');
+      // A customer's home is ordering, /order (the same home roleHome gives an existing customer).
+      router.replace(destination || '/order');
     }
     else setStep(role === 'VENDOR' ? 'business' : 'vehicle');
   });

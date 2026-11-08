@@ -52,8 +52,9 @@ async function signIn(query: string) {
 
 describe('[Q7b] signing in from the customer app', () => {
   it.each([
-    ['Home', '/'],
-    ['Home with its query', '/?source=pwa'],
+    // [WEB-APPBAR] Home is /order (`/` alone is the header's "no deep link": the account goes where it belongs).
+    ['Home', '/order'],
+    ['Home with its query', '/order?source=pwa'],
     ['Market', '/market'],
     ['a store, on one item', '/order/vendor/v1?item=i1'],
     ['the cart', '/cart'],
@@ -88,5 +89,22 @@ describe('[W8] sign-in is accessible', () => {
     render(<LoginPage />);
     await screen.findAllByRole('button');
     expect(await axeViolations(document.body, { page: true })).toEqual([]);
+  });
+});
+
+// [WEB-APPBAR review S2] `/` is the welcome page now, not a page of the customer app: a guest who backs out of a
+// customer sign-in from Home goes to ordering at /order, never to the welcome page.
+describe('[WEB-APPBAR] `/` is no longer a customer route', () => {
+  it('the customer route map treats `/` as outside the app; /order is Home', async () => {
+    const { customerRoute, HOME_PATH } = await import('@/lib/customer-routes');
+    expect(HOME_PATH).toBe('/order');
+    expect(customerRoute('/order')).toMatchObject({ public: true, tab: 'home', parent: null });
+    expect(customerRoute('/').public).toBe(false);
+  });
+
+  it.each([['next=%2F', '/order'], ['next=%2Fmarket', '/market'], ['next=%2Forders', '/order']])('"Keep browsing as a guest" from %s goes to %s', async (query, href) => {
+    mocked.query = query;
+    render(<LoginPage />);
+    expect((await screen.findByRole('link', { name: 'Keep browsing as a guest' })).getAttribute('href')).toBe(href);
   });
 });

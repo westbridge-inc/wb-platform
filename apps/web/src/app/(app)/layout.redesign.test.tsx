@@ -7,7 +7,7 @@ import AppLayout from './layout';
 import { StorefrontPage } from '@/components/storefront/storefront-page';
 import { storefrontFixture } from '@/test/storefront-fixture';
 
-const state = vi.hoisted(() => ({ pathname: '/', params: {} as Record<string, string>, push: vi.fn(), back: vi.fn(), replace: vi.fn() }));
+const state = vi.hoisted(() => ({ pathname: '/order', params: {} as Record<string, string>, push: vi.fn(), back: vi.fn(), replace: vi.fn() }));
 vi.mock('next/navigation', () => ({
   usePathname: () => state.pathname,
   useParams: () => state.params,
@@ -41,8 +41,8 @@ const STORE = {
 
 beforeEach(async () => {
   (await import('@/lib/auth')).clearSession();
-  window.history.replaceState({}, '', '/');
-  state.pathname = '/';
+  window.history.replaceState({}, '', '/order');
+  state.pathname = '/order';
   state.params = {};
   signedIn = true;
   cartFails = false;
@@ -87,7 +87,7 @@ const dock = () => screen.getByRole('navigation', { name: 'Swift tabs' });
 
 describe('[WEB-REDESIGN] one app, two layouts at 760 px', () => {
   it('draws the side rail from 760 px and the bottom dock below it — the same places in both', async () => {
-    shell('/');
+    shell('/order');
     await screen.findByText('Page');
     // The rail lives in the header: hidden on phones, a column from `wide:`.
     const header = rail().closest('header')!;
@@ -99,8 +99,8 @@ describe('[WEB-REDESIGN] one app, two layouts at 760 px', () => {
     expect(css).toMatch(/--breakpoint-wide:\s*47\.5rem/);
     await waitFor(() => expect(within(rail()).getAllByRole('link').map((link) => link.textContent)).toEqual(expect.arrayContaining(['Home', 'Market', 'Profile'])));
     const places = (nav: HTMLElement) => within(nav).getAllByRole('link').map((link) => link.getAttribute('href'));
-    expect(places(rail())).toEqual(['/', '/market', '/cart', '/account']);
-    expect(places(dock())).toEqual(['/', '/market', '/cart', '/account']);
+    expect(places(rail())).toEqual(['/order', '/market', '/cart', '/account']);
+    expect(places(dock())).toEqual(['/order', '/market', '/cart', '/account']);
   });
 
   it('lights the page’s own place in the rail and the dock, and only that one', async () => {
@@ -122,14 +122,14 @@ describe('[WEB-REDESIGN] one app, two layouts at 760 px', () => {
 
 describe('[WEB-REDESIGN] the cart count', () => {
   it('shows how many things are in the account’s cart — the quantities, not the lines — in the rail and the dock', async () => {
-    shell('/');
+    shell('/order');
     await waitFor(() => expect(within(rail()).getByLabelText('3 in your cart').textContent).toBe('3'));
     expect(within(dock()).getByLabelText('3 in your cart').textContent).toBe('3');
   });
 
   it('shows no count for a guest, and never asks for a cart', async () => {
     signedIn = false;
-    shell('/');
+    shell('/order');
     await waitFor(() => expect(calls('/api/v1/auth/me')).toHaveLength(1));
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)); });
     expect(screen.queryByLabelText(/in your cart/)).toBeNull();
@@ -140,7 +140,7 @@ describe('[WEB-REDESIGN] the cart count', () => {
     signedIn = false;
     const { addGuestLine } = await import('@/lib/basket');
     addGuestLine({ vendorId: 'v1', storeSlug: 'shanta-kitchen', vendorName: 'Shanta Kitchen', itemId: 'i1', name: 'Pepperpot bowl', quantity: 2, unitPrice: 1800, selectedOptions: {} });
-    shell('/');
+    shell('/order');
     await waitFor(() => expect(within(rail()).getByLabelText('2 in your cart').textContent).toBe('2'));
     expect(within(dock()).getByLabelText('2 in your cart')).toBeTruthy();
     expect(calls('/api/v1/customer/cart')).toHaveLength(0);
@@ -148,7 +148,7 @@ describe('[WEB-REDESIGN] the cart count', () => {
 
   it('shows no count — never a made-up one — when the cart cannot be read', async () => {
     cartFails = true;
-    shell('/');
+    shell('/order');
     await waitFor(() => expect(calls('/api/v1/customer/cart').length).toBeGreaterThan(0));
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)); });
     expect(screen.queryByLabelText(/in your cart/)).toBeNull();
@@ -156,7 +156,7 @@ describe('[WEB-REDESIGN] the cart count', () => {
 
   it('shows no count for an empty cart', async () => {
     cartLines = [];
-    shell('/');
+    shell('/order');
     await waitFor(() => expect(calls('/api/v1/customer/cart').length).toBeGreaterThan(0));
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 20)); });
     expect(screen.queryByLabelText(/in your cart/)).toBeNull();
@@ -176,7 +176,7 @@ describe('[WEB-REDESIGN] the cart count', () => {
 
 describe('[WEB-REDESIGN] Switch app and the person signed in', () => {
   it('opens Switch app from the rail: the other Swift apps this account can open on the web', async () => {
-    shell('/');
+    shell('/order');
     await screen.findByText('Page');
     fireEvent.click(screen.getByRole('button', { name: /Switch app/ }));
     const sheet = screen.getByRole('dialog', { name: 'Switch app' });
@@ -190,13 +190,13 @@ describe('[WEB-REDESIGN] Switch app and the person signed in', () => {
   });
 
   it('names the person at the foot of the rail, and offers sign-in to a guest instead', async () => {
-    const view = shell('/');
+    const view = shell('/order');
     expect(await screen.findByText('Devi Persaud')).toBeTruthy();
     expect(screen.getByText('+5926001234')).toBeTruthy();
     view.unmount();
     (await import('@/lib/auth')).clearSession();
     signedIn = false;
-    shell('/');
+    shell('/order');
     const header = rail().closest('header')!;
     await waitFor(() => expect(within(header).getByRole('link', { name: 'Sign in' }).getAttribute('href')).toBe('/login?next=%2F'));
     expect(screen.queryByText('Devi Persaud')).toBeNull();

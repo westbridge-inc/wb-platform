@@ -5,7 +5,7 @@ import { CustomerHome } from '@/components/customer-home';
 import { axeViolations } from '@/test/axe';
 
 const state = vi.hoisted(() => ({
-  pathname: '/',
+  pathname: '/order',
   principal: null as string | null,
   push: vi.fn(),
   back: vi.fn(),
@@ -26,7 +26,7 @@ vi.mock('@/lib/auth', () => ({
 vi.mock('@/components/swift-logo', () => ({ SwiftLogo: () => <span>Swift</span> }));
 
 beforeEach(() => {
-  state.pathname = '/';
+  state.pathname = '/order';
   state.principal = 'c1';
   state.marketVisible = false;
   state.sessionProbe.mockImplementation(() => Promise.resolve({ ok: true, user: { id: 'c1' } }));
@@ -90,6 +90,17 @@ describe('[Q7b] the shell stays put while pages change', () => {
   });
 });
 
+describe('[WEB-APPBAR · no cookie] opening ordering is remembered in this site’s own storage', () => {
+  it('the frame records it on any ordering page it draws, so `/` sends this browser straight here next time', async () => {
+    localStorage.clear();
+    state.pathname = '/store/shanta-kitchen';
+    render(<AppLayout><p>Store page</p></AppLayout>);
+    await screen.findByText('Store page');
+    expect(localStorage.getItem('swift.ordering')).toBe('1');
+    expect(document.cookie).not.toMatch(/swift/);
+  });
+});
+
 describe('[Q7b] the phone app’s tabs', () => {
   it('docks Home · Cart · Profile at the bottom on phone widths only, lighting the current one', async () => {
     state.pathname = '/cart';
@@ -103,7 +114,7 @@ describe('[Q7b] the phone app’s tabs', () => {
     expect(dock.className).toContain('bottom-0');
     const links = within(dock).getAllByRole('link');
     expect(links.map((link) => link.textContent)).toEqual(['Home', 'Cart', 'Profile']);
-    expect(links.map((link) => link.getAttribute('href'))).toEqual(['/', '/cart', '/account']);
+    expect(links.map((link) => link.getAttribute('href'))).toEqual(['/order', '/cart', '/account']);
     expect(within(dock).getByRole('link', { name: 'Cart' }).getAttribute('aria-current')).toBe('page');
     expect(within(dock).getByRole('link', { name: 'Home' }).getAttribute('aria-current')).toBeNull();
   });
@@ -127,11 +138,13 @@ describe('[Q7b] the phone app’s tabs', () => {
 });
 
 describe('[Q7b] the marketing site is one tap away', () => {
-  it('links Sell on Swift, Drive with Swift and About from the side rail', async () => {
+  it('links the welcome page, Sell on Swift, Drive with Swift and About from the side rail', async () => {
     render(<AppLayout><p>Home page</p></AppLayout>);
     await screen.findByText('Home page');
     const strip = screen.getByRole('navigation', { name: 'Swift for business' });
     expect(within(strip).getAllByRole('link').map((link) => [link.textContent, link.getAttribute('href')])).toEqual([
+      // [WEB-APPBAR] A returning visitor never lands on the welcome page: this is their way back to it.
+      ['Welcome', '/?welcome'],
       ['Sell on Swift', '/vendors'],
       ['Drive with Swift', '/drivers'],
       ['About', '/about'],
@@ -148,16 +161,16 @@ describe('[Q7b] the marketing site is one tap away', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'More from Swift' }));
     const menu = screen.getByRole('dialog', { name: 'More from Swift' });
     const hrefs = within(menu).getAllByRole('link').map((link) => link.getAttribute('href'));
-    expect(hrefs).toEqual(expect.arrayContaining(['/vendors', '/drivers', '/about', '/welcome']));
+    expect(hrefs).toEqual(expect.arrayContaining(['/?welcome', '/vendors', '/drivers', '/about', '/welcome']));
     await waitFor(() => expect(within(menu).getByRole('link', { name: 'Sign in' }).getAttribute('href')).toBe('/login?next=%2F'));
   });
 });
 
 describe('[Q7b] in-app back buttons — an installed web app has no browser back', () => {
   it.each([
-    ['a store', '/store/shanta-kitchen', '/'],
-    ['a store at its old address', '/order/vendor/v1', '/'],
-    ['the cart and checkout', '/cart', '/'],
+    ['a store', '/store/shanta-kitchen', '/order'],
+    ['a store at its old address', '/order/vendor/v1', '/order'],
+    ['the cart and checkout', '/cart', '/order'],
     ['order tracking', '/orders/o1', '/orders'],
   ])('%s opened directly goes back to its parent page', async (_name, pathname, parent) => {
     state.pathname = pathname;

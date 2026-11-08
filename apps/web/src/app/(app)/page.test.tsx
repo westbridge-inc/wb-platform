@@ -5,7 +5,7 @@ import AppLayout from './layout';
 import { HomeScreen as HomePage } from './home-screen';
 
 const state = vi.hoisted(() => ({ push: vi.fn(), back: vi.fn(), replace: vi.fn(), coords: vi.fn() }));
-vi.mock('next/navigation', () => ({ usePathname: () => '/', useRouter: () => ({ push: state.push, back: state.back, replace: state.replace }) }));
+vi.mock('next/navigation', () => ({ usePathname: () => '/order', useRouter: () => ({ push: state.push, back: state.back, replace: state.replace }) }));
 vi.mock('@/lib/geolocate', () => ({ currentCoords: state.coords }));
 // The real config refuses to load while company details are placeholders.
 vi.mock('@/site.config', () => ({
@@ -69,7 +69,7 @@ function renderHome() {
 // to /welcome; the legal duties `/` carried stay on it, in the site footer.
 // ---------------------------------------------------------------------------
 
-describe('[Q7b] / is the ordering home', () => {
+describe('[Q7b · WEB-APPBAR] /order is the ordering home', () => {
   it('opens on ordering, not on the marketing page', async () => {
     renderHome();
     // [WEB-REDESIGN] The design greets by the time of day (and by name once signed in).

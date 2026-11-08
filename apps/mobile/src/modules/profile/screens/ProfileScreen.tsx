@@ -161,7 +161,7 @@ export function ProfileScreen() {
         <EmptyState
           icon="user"
           title="You’re browsing as a guest"
-          body="Sign in to see your orders, addresses and favorites."
+          body="Sign in to see your orders, addresses and favourites."
           actionLabel="Sign In"
           onAction={promptLogin}
         />

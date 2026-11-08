@@ -22,8 +22,8 @@ import { sendCooldownOf, sendLabel, useSendCooldown } from '@/lib/otp-cooldown';
 
 const CUSTOMER_ROUTES = ['/order', '/cart', '/checkout', '/orders', '/taxi', '/account', '/explore', '/courier', '/store', '/stores', '/selfie', '/market'];
 
-/** [Q7b] The customer app's Home is `/` itself — the one customer address a
- *  prefix cannot name, since every path starts with a slash. */
+/** [Q7b] The customer app's Home is /order ([WEB-APPBAR] `/` is the welcome page, which a returning visitor skips);
+ *  `/` itself still counts as a customer return for older links. */
 function isCustomerReturn(next: string): boolean {
   const path = next.split(/[?#]/)[0] ?? '';
   // Advertiser membership is checked by the existing ads endpoints after normal sign-in.
@@ -34,14 +34,14 @@ function isCustomerReturn(next: string): boolean {
  *  guest may open it (a store, Market), and to Home when it is private. */
 function guestReturn(next: string): string {
   const path = next.split(/[?#]/)[0] ?? '';
-  return next && customerRoute(path).public ? next : '/';
+  return next && customerRoute(path).public ? next : '/order';
 }
 
 /** [FLOW-QA F1] Where a signed-in account belongs: its partner home by roles, a self-employed pro's weekly fee, else Swift. */
 async function accountHome(user: unknown): Promise<string> {
   const { kind, home } = roleHome(user as { roles?: unknown; vendorOwner?: unknown });
   if (kind !== 'customer') return home;
-  try { return (await hasProviderProfile()) ? '/portal/weekly-fee' : '/'; } catch { return '/'; }
+  try { return (await hasProviderProfile()) ? '/portal/weekly-fee' : '/order'; } catch { return '/order'; }
 }
 
 function LoginInner() {

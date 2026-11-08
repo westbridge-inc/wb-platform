@@ -30,8 +30,8 @@ export function FavoritesScreen() {
   if (!isAuthenticated) {
     return (
       <Screen>
-        <Header title="Favorites" />
-        <EmptyState icon="heart" title="Sign in to save favorites" actionLabel="Sign In" onAction={promptLogin} />
+        <Header title="Favourites" />
+        <EmptyState icon="heart" title="Sign in to save favourites" actionLabel="Sign In" onAction={promptLogin} />
       </Screen>
     );
   }
@@ -40,7 +40,7 @@ export function FavoritesScreen() {
 
   return (
     <Screen>
-      <Header title="Favorites" />
+      <Header title="Favourites" />
       {favorites.isLoading ? (
         // [APP-SPEED D] The cards' shapes on the first frame (Home reads the list ahead of this door).
         <GridSkeleton />
