@@ -48,6 +48,12 @@ const fx = vi.hoisted(() => ({
   setOptionsThrows: false,
   markThrows: false,
   crashes: [] as Array<{ message: string; source: unknown }>,
+  // [review 2] The screen reader's answer: given at once, or held until the test answers it (readerLate).
+  readerOn: false,
+  readerLate: false,
+  answerReader: null as null | ((on: boolean) => void),
+  // The animated props each Animated.View was given (by testID): their updaters run on the UI thread.
+  animatedProps: new Map<string, { updater: () => Record<string, unknown> }>(),
 }));
 
 vi.mock('react-native', async () => {
@@ -56,11 +62,17 @@ vi.mock('react-native', async () => {
     R.createElement('div', { 'data-host': tag, 'data-testid': testID, 'aria-label': rest.accessibilityLabel }, children);
   return {
     View: box('View'),
-    Pressable: ({ children, onPress, testID, accessibilityLabel, accessibilityHint, accessibilityRole }: any) =>
+    Text: box('Text'),
+    Pressable: ({ children, onPress, testID, accessibilityLabel, accessibilityHint, accessibilityRole, accessibilityViewIsModal }: any) =>
       R.createElement('div', {
         role: accessibilityRole, 'data-testid': testID, 'aria-label': accessibilityLabel, 'data-hint': accessibilityHint,
-        onClick: () => onPress?.(),
+        'data-modal': String(accessibilityViewIsModal), onClick: () => onPress?.(),
       }, children),
+    AccessibilityInfo: {
+      isScreenReaderEnabled: () => (fx.readerLate
+        ? new Promise<boolean>((resolve) => { fx.answerReader = resolve; })
+        : Promise.resolve(fx.readerOn)),
+    },
     StatusBar: (props: { barStyle?: string }) => {
       R.useEffect(() => {
         const entry = { barStyle: props.barStyle, mounted: true };
@@ -112,7 +124,14 @@ vi.mock('react-native-reanimated', async () => {
   return {
     __esModule: true,
     default: {
-      View: ({ children, testID }: any) => R.createElement('div', { 'data-host': 'Animated.View', 'data-testid': testID }, children),
+      View: ({ children, testID, animatedProps, accessibilityElementsHidden, importantForAccessibility }: any) => {
+        if (testID && animatedProps) fx.animatedProps.set(testID, animatedProps);
+        return R.createElement('div', {
+          'data-host': 'Animated.View', 'data-testid': testID,
+          'data-reader-hidden': accessibilityElementsHidden === undefined ? undefined : String(accessibilityElementsHidden),
+          'data-important': importantForAccessibility,
+        }, children);
+      },
     },
     Easing: { bezier: (...points: number[]) => ({ bezier: points }) },
     Extrapolation: { CLAMP: 'clamp' },
@@ -123,6 +142,8 @@ vi.mock('react-native-reanimated', async () => {
     },
     runOnJS: (fn: (...args: unknown[]) => void) => (...args: unknown[]) => fn(...args),
     useAnimatedStyle: (fn: () => unknown) => fn(),
+    // Kept as the updater: the UI thread re-runs it on every frame; the test runs it to read what the UI thread sees.
+    useAnimatedProps: (updater: () => Record<string, unknown>) => ({ updater }),
     useReducedMotion: () => fx.reduced,
     useSharedValue: (initial: number) => R.useState(() => makeSV(initial))[0],
     withDelay: (delay: number, anim: any, reduceMotion?: unknown) => ({ ...anim, delay: anim.delay + delay, delayReduceMotion: reduceMotion }),
@@ -167,9 +188,13 @@ vi.mock('../lib/storage', () => ({
 }));
 
 import { color } from '@swift/ui';
-import { INTRO_TAGLINE, LaunchIntro } from './LaunchIntro';
+import { INTRO_TAGLINE, LaunchIntro, resetLaunchIntroForTests } from './LaunchIntro';
+import { ErrorBoundary } from './ErrorBoundary';
 import { useAppStore } from '../stores/appStore';
-import { INTRO_BACKSTOP_GRACE_MS, INTRO_BRAND_GONE_AT, INTRO_TIMELINE, SPLASH_IMAGE_PT, SPLASH_MARK_PT } from '../lib/launchIntro';
+import {
+  INTRO_BACKSTOP_GRACE_MS, INTRO_BRAND_GONE_AT, INTRO_TIMELINE, SPLASH_IMAGE_PT, SPLASH_MARK_PT,
+  introDecidedThisSession, markIntroDecided,
+} from '../lib/launchIntro';
 import { linkDecisionCounters, resetLinkDecisionsForTests } from '../lib/deepLinkParse';
 
 let host: HTMLDivElement;
@@ -219,12 +244,16 @@ const endOf = (a: Anim) => a.delay + a.duration;
 /** The animations assigned to mark, wordmark, tagline and cover, in that order. */
 const byValue = (): [Anim[], Anim[], Anim[], Anim[]] => [assignedTo(1), assignedTo(2), assignedTo(3), assignedTo(4)];
 
-beforeEach(() => {
+beforeEach(async () => {
   vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval'] });
   Object.assign(fx, {
     now: 0, anims: [], reduced: false, setOptions: [], statusBars: [], svCount: 0, svs: [],
     initialUrl: null, splashHides: 0, setOptionsThrows: false, markThrows: false, crashes: [],
+    readerOn: false, readerLate: false, answerReader: null,
   });
+  fx.animatedProps.clear();
+  // Every test is a fresh app session: the intro not yet decided, the screen reader asked (and answered: off).
+  await resetLaunchIntroForTests();
   fx.urlListeners.clear();
   resetLinkDecisionsForTests();
   fx.auth = { isAuthenticated: false, wantsAuth: false, intent: null };
@@ -524,5 +553,187 @@ describe('[APP-INTRO · review] the brand leaves before the welcome shows throug
     expect(INTRO_BRAND_GONE_AT).toBeGreaterThanOrEqual(0.75);
     const src = readFileSync(join(process.cwd(), 'src/components/LaunchIntro.tsx'), 'utf8');
     expect(src).toContain('opacity: interpolate(cover.value, [INTRO_BRAND_GONE_AT, 1], [0, 1], Extrapolation.CLAMP),');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// [APP-INTRO · review 2] Three small findings from the second independent review.
+// ---------------------------------------------------------------------------
+
+/** What the UI thread would hand the overlay right now: whether it takes touches. */
+const touchesNow = () => fx.animatedProps.get('launch-intro')!.updater()['pointerEvents'];
+
+describe('[APP-INTRO · review 2] once per app session: a remount never replays the intro', () => {
+  it('after it played, the same session remounting the app (no cold start) shows no intro', async () => {
+    await launch();
+    expect(introDecidedThisSession()).toBe(true);
+    await frames(1040);
+    expect(intro()).toBeNull();
+
+    // The whole tree again, in the same process (what "Try again" and the storage retry do).
+    await act(async () => root.unmount());
+    root = createRoot(host);
+    fx.anims = [];
+    fx.setOptions = [];
+    await launch();
+    expect(intro()).toBeNull();
+    expect(welcome()).not.toBeNull();
+    expect(fx.anims, 'nothing animates').toEqual([]);
+    expect(fx.setOptions, 'the splash options are not touched again').toEqual([]);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('a remount while it is still playing does not start it over', async () => {
+    await launch();
+    await frames(300);
+    await act(async () => root.unmount());
+    root = createRoot(host);
+    fx.anims = [];
+    await launch();
+    expect(intro()).toBeNull();
+    expect(fx.anims).toEqual([]);
+    // It never finished, so the next cold start (a new session) still plays the full intro once.
+    expect(useAppStore.getState().hasSeenIntro).toBe(false);
+  });
+
+  it('the crash screen\'s "Try again": the welcome comes back, the intro does not', async () => {
+    const boom = { on: false };
+    function CrashesOnDemand() {
+      if (boom.on) throw new Error('welcome crashed');
+      return null;
+    }
+    const app = () => React.createElement(ErrorBoundary, null,
+      React.createElement(WelcomeUnderneath), React.createElement(CrashesOnDemand), React.createElement(LaunchIntro));
+    await act(async () => root.render(app()));
+    expect(intro()).not.toBeNull();
+    await frames(1040);
+    expect(intro()).toBeNull();
+
+    // A signed-out user on the welcome hits a crash.
+    boom.on = true;
+    const quiet = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    await act(async () => root.render(app()));
+    quiet.mockRestore();
+    expect(host.textContent).toContain('Something went wrong');
+
+    boom.on = false;
+    fx.anims = [];
+    await act(async () => { (host.querySelector('[role="button"]') as HTMLElement).click(); });
+    expect(welcome()).not.toBeNull();
+    expect(intro(), 'no maroon replay after Try again').toBeNull();
+    expect(fx.anims).toEqual([]);
+  });
+
+  it('a crash before the intro ever mounted: the splash is gone, so "Try again" opens with no intro', async () => {
+    const boom = { on: true };
+    function CrashesFirst() {
+      if (boom.on) throw new Error('first render failed');
+      return null;
+    }
+    const app = () => React.createElement(ErrorBoundary, null, React.createElement(CrashesFirst), React.createElement(LaunchIntro));
+    const quiet = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    await act(async () => root.render(app()));
+    quiet.mockRestore();
+    expect(host.textContent).toContain('Something went wrong');
+    expect(introDecidedThisSession(), 'the crash screen decided it').toBe(true);
+    boom.on = false;
+    await act(async () => { (host.querySelector('[role="button"]') as HTMLElement).click(); });
+    expect(intro()).toBeNull();
+    expect(fx.anims).toEqual([]);
+  });
+
+  it('"Unlock Swift to continue": the storage recovery decided it, so the intro never flashes over the app', async () => {
+    // App.tsx marks it when the recovery screen shows (that screen hides the native splash) ...
+    const app = readFileSync(join(process.cwd(), 'src/App.tsx'), 'utf8');
+    expect(app).toMatch(/catch \(error\) \{[\s\S]*?markIntroDecided\(\);\s*setStorageStatus\('error'\);/);
+    // ... so when the retry opens the stores and the intro mounts for the first time, it renders nothing.
+    markIntroDecided();
+    await launch();
+    expect(intro()).toBeNull();
+    expect(welcome()).not.toBeNull();
+    expect(fx.anims).toEqual([]);
+    expect(fx.setOptions).toEqual([]);
+  });
+});
+
+describe('[APP-INTRO · review 2] a screen reader never loses its place', () => {
+  it('reader on at launch: hidden from the reader (focus goes to the welcome), only the short dissolve', async () => {
+    fx.readerOn = true;
+    await resetLaunchIntroForTests();
+    await launch();
+    const overlay = intro()!;
+    expect(overlay.getAttribute('data-reader-hidden')).toBe('true');
+    expect(overlay.getAttribute('data-important')).toBe('no-hide-descendants');
+    const skip = host.querySelector('[data-testid="launch-intro-skip"]')!;
+    expect(skip.getAttribute('data-modal'), 'never traps the reader on a button about to vanish').toBe('false');
+    // The short plan, like Reduce Motion on a return visit: nothing moves, one quick dissolve.
+    expect(fx.anims).toHaveLength(1);
+    expect(fx.anims[0]).toMatchObject({ to: 0, ...INTRO_TIMELINE.stillQuick.reveal });
+    await frames(INTRO_TIMELINE.stillQuick.reveal.duration);
+    expect(intro()).toBeNull();
+    expect(welcome()).not.toBeNull();
+  });
+
+  it('reader off: the intro is a button the reader can skip, as before', async () => {
+    await launch();
+    expect(intro()!.getAttribute('data-reader-hidden')).toBe('false');
+    expect(intro()!.getAttribute('data-important')).toBe('auto');
+    expect(host.querySelector('[data-testid="launch-intro-skip"]')!.getAttribute('data-modal')).toBe('true');
+  });
+
+  it('the reader answers after the first frame: the intro hides from it and steps aside at once', async () => {
+    fx.readerLate = true;
+    void resetLaunchIntroForTests();
+    await launch();
+    expect(intro()!.getAttribute('data-reader-hidden')).toBe('false');
+    expect(assignedTo(4)).toHaveLength(1);
+    await frames(100);
+    await act(async () => { fx.answerReader!(true); await Promise.resolve(); });
+    expect(intro()!.getAttribute('data-reader-hidden')).toBe('true');
+    const cover = assignedTo(4);
+    expect(cover, 'the reveal was replaced by the skip').toHaveLength(2);
+    expect(cover[1]).toMatchObject({ to: 0, delay: 0, duration: INTRO_TIMELINE.skip.duration });
+    await frames(INTRO_TIMELINE.skip.duration);
+    expect(intro()).toBeNull();
+  });
+
+  it('a late "off" changes nothing: no extra render, the intro plays as usual', async () => {
+    fx.readerLate = true;
+    void resetLaunchIntroForTests();
+    await launch();
+    await act(async () => { fx.answerReader!(false); await Promise.resolve(); });
+    expect(introCommits).toBe(1);
+    expect(assignedTo(4)).toHaveLength(1);
+    await frames(1040);
+    expect(intro()).toBeNull();
+  });
+});
+
+describe('[APP-INTRO · review 2] the overlay never holds touches once it is visually gone', () => {
+  it('takes touches while the maroon is up; lets them through the moment it is gone, even if "done" is lost', async () => {
+    await launch();
+    expect(touchesNow()).toBe('auto');
+    // Drop every completion: the UI thread finishes the dissolve, JS never hears about it.
+    for (const a of fx.anims) a.cb = undefined;
+    await frames(1039);
+    expect(touchesNow(), 'mid-dissolve: still the intro (a tap skips)').toBe('auto');
+    await frames(1);
+    // The maroon is gone; JS's backstop has not fired, so the overlay is still mounted, but it takes no touches.
+    expect(intro()).not.toBeNull();
+    expect(touchesNow()).toBe('none');
+    // The backstop still tidies it away.
+    await act(async () => { vi.advanceTimersByTime(INTRO_BACKSTOP_GRACE_MS); });
+    expect(intro()).toBeNull();
+  });
+
+  it('the same after a tap-skip whose completion is lost', async () => {
+    await launch();
+    await frames(200);
+    await act(async () => { (host.querySelector('[data-testid="launch-intro-skip"]') as HTMLElement).click(); });
+    for (const a of fx.anims) a.cb = undefined;
+    expect(touchesNow()).toBe('auto');
+    await frames(INTRO_TIMELINE.skip.duration);
+    expect(intro()).not.toBeNull();
+    expect(touchesNow()).toBe('none');
   });
 });

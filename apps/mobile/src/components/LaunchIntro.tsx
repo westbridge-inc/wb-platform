@@ -1,12 +1,13 @@
 /** @jsxImportSource react */
 import React, { Component, useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
-import { Linking, Pressable, StatusBar, StyleSheet, View } from 'react-native';
+import { AccessibilityInfo, Linking, Pressable, StatusBar, StyleSheet, View } from 'react-native';
 import Animated, {
   Easing,
   Extrapolation,
   ReduceMotion,
   interpolate,
   runOnJS,
+  useAnimatedProps,
   useAnimatedStyle,
   useReducedMotion,
   useSharedValue,
@@ -27,9 +28,12 @@ import {
   INTRO_TIMELINE,
   MARK_SETTLE,
   SPLASH_MARK_PT,
+  introDecidedThisSession,
   introEndsAtMs,
   introModeAtLaunch,
   introPlan,
+  markIntroDecided,
+  resetIntroSessionForTests,
   type IntroMode,
   type IntroPlan,
 } from '../lib/launchIntro';
@@ -59,6 +63,27 @@ const SETTLED_SCALE = MARK_SETTLE.scale;
 /** The brand grows this much while it dissolves, so the welcome opens out of it. */
 const REVEAL_GROW = 1.05;
 
+// [APP-INTRO · review 2] Is a screen reader on? Asked once, as the app loads (well before the encrypted stores open
+// and the intro mounts), so the intro normally knows at its first frame. Never throws: no answer counts as "off".
+let screenReaderOn: boolean | null = null;
+let screenReaderAnswer: Promise<boolean> = askScreenReader();
+function askScreenReader(): Promise<boolean> {
+  screenReaderOn = null;
+  return Promise.resolve()
+    .then(() => AccessibilityInfo.isScreenReaderEnabled())
+    .then(
+      (on) => (screenReaderOn = on === true),
+      () => (screenReaderOn = false),
+    );
+}
+
+/** Tests only: a fresh app session (the intro not yet decided, the screen reader asked again). */
+export function resetLaunchIntroForTests(): Promise<boolean> {
+  resetIntroSessionForTests();
+  screenReaderAnswer = askScreenReader();
+  return screenReaderAnswer;
+}
+
 /**
  * Mounted once the encrypted stores are open (App.tsx), above everything. Fenced off: anything the intro throws
  * (its render, the splash options, a store read) leaves the intro out and the app as it was, never the app's own
@@ -81,6 +106,7 @@ class IntroBoundary extends Component<{ children: ReactNode }, { failed: boolean
 
   override componentDidCatch(error: Error, info: { componentStack?: string | null }): void {
     reportCrash(error, { componentStack: info?.componentStack, source: 'launch-intro' });
+    markIntroDecided();
     // The rest of the tree still lays out and hides the splash; this is belt and braces.
     SplashScreen.hideAsync().catch(() => {});
   }
@@ -90,9 +116,13 @@ class IntroBoundary extends Component<{ children: ReactNode }, { failed: boolean
   }
 }
 
-/** Decides once, from the launch state. */
+/**
+ * Decides once per app session, from the launch state. [review 2] A remount later in the same session (the crash
+ * screen's "Try again", the storage recovery's retry) renders nothing: the splash it continues is long gone.
+ */
 function LaunchIntroGate() {
   const [mode, setMode] = useState<IntroMode>(() => {
+    if (introDecidedThisSession()) return 'none';
     const auth = useAuthStore.getState();
     return introModeAtLaunch({
       isAuthenticated: auth.isAuthenticated,
@@ -101,6 +131,10 @@ function LaunchIntroGate() {
       hasSeenIntro: useAppStore.getState().hasSeenIntro,
     });
   });
+  // Marked once committed (not in the initializer, which React may run and throw away).
+  useLayoutEffect(() => {
+    markIntroDecided();
+  }, []);
   const firstTime = mode === 'full';
   const finish = useCallback(() => {
     if (firstTime) useAppStore.getState().markIntroSeen();
@@ -112,8 +146,11 @@ function LaunchIntroGate() {
 
 function BrandIntro({ mode, onDone }: { mode: Exclude<IntroMode, 'none'>; onDone: () => void }) {
   const reducedMotion = useReducedMotion();
+  // [review 2] With a screen reader on, the intro hides itself from the reader (its focus goes straight to the
+  // welcome underneath, never to a button that is about to vanish) and takes only the short dissolve.
+  const [readerOn, setReaderOn] = useState(() => screenReaderOn === true);
   // Fixed for this launch: a setting changed mid-intro does not restart it.
-  const [plan] = useState<IntroPlan>(() => introPlan(mode, reducedMotion));
+  const [plan] = useState<IntroPlan>(() => introPlan(mode, reducedMotion, readerOn));
   // Reduce Motion's first visit shows the FINISHED frame, still; every other plan starts on the splash frame.
   const startBuilt = plan === 'still' ? 1 : 0;
   const mark = useSharedValue(startBuilt);
@@ -182,6 +219,20 @@ function BrandIntro({ mode, onDone }: { mode: Exclude<IntroMode, 'none'>; onDone
     );
   }, [cover, done]);
 
+  // [review 2] The reader's answer came after the first frame (rare: it is asked as the app loads): step aside now.
+  useEffect(() => {
+    if (screenReaderOn !== null) return;
+    let live = true;
+    void screenReaderAnswer.then((on) => {
+      if (!live || !on) return;
+      setReaderOn(true);
+      skip();
+    });
+    return () => {
+      live = false;
+    };
+  }, [skip]);
+
   // [APP-INTRO · review] Opened by a link (a table QR, a shared store, the weekly-fee return): the screen it opens
   // is the point, so the intro steps aside at once, for the launch link and for one that arrives while it plays.
   useEffect(() => {
@@ -198,6 +249,11 @@ function BrandIntro({ mode, onDone }: { mode: Exclude<IntroMode, 'none'>; onDone
   }, [skip]);
 
   const veil = useAnimatedStyle(() => ({ opacity: cover.value }));
+  // [review 2] Touches go through to the welcome the moment the maroon is gone, decided on the UI thread from the
+  // same value that draws it. JS "done" (or its backstop) then only removes an overlay nobody can see or touch.
+  const touch = useAnimatedProps<{ pointerEvents: 'auto' | 'none' }>(() => ({
+    pointerEvents: cover.value > 0 ? 'auto' : 'none',
+  }));
   // While the maroon lifts, the white brand leaves first (growing slightly as it goes), gone while the maroon is
   // still three-quarters up, so the welcome's own words never show through a white logo.
   const grow = useAnimatedStyle(() => ({
@@ -222,7 +278,13 @@ function BrandIntro({ mode, onDone }: { mode: Exclude<IntroMode, 'none'>; onDone
   }));
 
   return (
-    <Animated.View testID="launch-intro" style={[StyleSheet.absoluteFill, styles.ground, veil]}>
+    <Animated.View
+      testID="launch-intro"
+      style={[StyleSheet.absoluteFill, styles.ground, veil]}
+      animatedProps={touch}
+      accessibilityElementsHidden={readerOn}
+      importantForAccessibility={readerOn ? 'no-hide-descendants' : 'auto'}
+    >
       {/* White status-bar icons on the maroon; the app's dark ones return when the intro leaves. */}
       <StatusBar barStyle="light-content" />
       <Pressable
@@ -232,7 +294,7 @@ function BrandIntro({ mode, onDone }: { mode: Exclude<IntroMode, 'none'>; onDone
         accessibilityRole="button"
         accessibilityLabel={`Swift. ${INTRO_TAGLINE}`}
         accessibilityHint="Skips the intro"
-        accessibilityViewIsModal
+        accessibilityViewIsModal={!readerOn}
       >
         <Animated.View style={[StyleSheet.absoluteFill, styles.centre, grow]}>
           {/* The splash's mark: centred, SPLASH_MARK_PT square, white on maroon. */}

@@ -95,6 +95,7 @@ vi.mock('react-native-reanimated', async () => {
     interpolate: () => 0,
     runOnJS: (fn: (...args: unknown[]) => void) => (...args: unknown[]) => fn(...args),
     useAnimatedStyle: (fn: () => unknown) => fn(),
+    useAnimatedProps: (fn: () => unknown) => fn(),
     useReducedMotion: () => fx.reduced,
     useSharedValue: (initial: number) => R.useState(() => makeSV(initial))[0],
     withDelay: (delay: number, anim: any) => ({ ...anim, delay: anim.delay + delay }),
@@ -214,7 +215,7 @@ vi.mock('../screens/OpsAlertsScreen', () => ({ OpsAlertsScreen: () => null }));
 import { useAuthStore } from '../stores/authStore';
 import { useAppStore } from '../stores/appStore';
 import { queryClient } from '../lib/queryClient';
-import { INTRO_TIMELINE } from '../lib/launchIntro';
+import { INTRO_TIMELINE, resetIntroSessionForTests } from '../lib/launchIntro';
 import { LaunchIntro } from '../components/LaunchIntro';
 import { WELCOME_DOORS } from '../screens/auth/RolePickerScreen';
 import { navigationRef } from './navigationRef';
@@ -276,6 +277,8 @@ beforeEach(() => {
   queryClient.clear();
   useAuthStore.setState(useAuthStore.getInitialState(), true);
   useAppStore.setState({ hasSeenIntro: false });
+  // Every test is a fresh app session (the intro decides once per session).
+  resetIntroSessionForTests();
   commits = 0;
   host = document.createElement('div'); document.body.append(host); root = createRoot(host);
 });

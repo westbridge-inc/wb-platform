@@ -4,6 +4,7 @@ import { View, Text, Pressable } from 'react-native';
 import * as SplashScreen from 'expo-splash-screen';
 import { color, font } from '@swift/ui';
 import { reportCrash } from '../lib/crash-reporter';
+import { markIntroDecided } from '../lib/launchIntro';
 
 interface Props {
   children: ReactNode;
@@ -31,6 +32,8 @@ export class ErrorBoundary extends Component<Props, State> {
     // [APP-INTRO · review] This screen replaces the root view whose onLayout hides the native splash. A throw
     // before that first layout would leave the splash up for good, over a screen nobody can see. Hide it here.
     SplashScreen.hideAsync().catch(() => {});
+    // [APP-INTRO · review 2] "Try again" remounts the whole tree; the brand intro is for the launch, not for that.
+    markIntroDecided();
   }
 
   private reset = (): void => this.setState({ hasError: false });

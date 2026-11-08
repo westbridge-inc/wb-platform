@@ -2,8 +2,9 @@
 // the screen, then after a second, but fast, not delayed, opens into the choose option … right now it looks like as
 // soon as someone downloads, no intro, straight to sign up, it looks cheap."
 //
-// PURE: who sees the brand intro at launch, and its timeline. The overlay (components/LaunchIntro.tsx) reads these;
-// the tests read them too, so the timing the owner was promised is pinned in one place.
+// Who sees the brand intro at launch, and its timeline: pure, apart from the one session flag below. The overlay
+// (components/LaunchIntro.tsx) reads these; the tests read them too, so the timing the owner was promised is pinned
+// in one place.
 
 export type IntroMode = 'full' | 'quick' | 'none';
 
@@ -34,6 +35,28 @@ export function introModeAtLaunch(state: LaunchIntroState): IntroMode {
   return state.hasSeenIntro ? 'quick' : 'full';
 }
 
+// [APP-INTRO · review 2] The one piece of state here: whether this app session (this process, never persisted) has
+// already made its intro decision. The intro continues the native splash, so it belongs to the launch only. Two
+// paths remount it mid-session and would otherwise play it again over a splash that is long gone: the crash
+// screen's "Try again" (ErrorBoundary resets the whole tree) and "Unlock Swift to continue" (App.tsx's storage
+// recovery, after which the stores open and the intro would mount for the first time). Both mark it decided.
+let introDecided = false;
+
+/** True once this app session has decided (the intro mounted, the splash was hidden by an error screen, ...). */
+export function introDecidedThisSession(): boolean {
+  return introDecided;
+}
+
+/** No intro for the rest of this app session. Never persisted: the next cold start decides afresh. */
+export function markIntroDecided(): void {
+  introDecided = true;
+}
+
+/** Tests only: a fresh app session. */
+export function resetIntroSessionForTests(): void {
+  introDecided = false;
+}
+
 /**
  * The timeline, in ms from the first frame (the frame identical to the native splash). Every value is run on the
  * UI thread by Reanimated (withDelay + withTiming); nothing here is a JS timer.
@@ -61,7 +84,12 @@ export const INTRO_TIMELINE = {
 
 export type IntroPlan = keyof Omit<typeof INTRO_TIMELINE, 'skip'>;
 
-export function introPlan(mode: Exclude<IntroMode, 'none'>, reducedMotion: boolean): IntroPlan {
+/**
+ * [APP-INTRO · review 2] With a screen reader on, only the short dissolve: the brand is not read out as a picture,
+ * and the reader's focus belongs on the welcome (the overlay also hides itself from the reader, LaunchIntro.tsx).
+ */
+export function introPlan(mode: Exclude<IntroMode, 'none'>, reducedMotion: boolean, screenReader = false): IntroPlan {
+  if (screenReader) return 'stillQuick';
   if (reducedMotion) return mode === 'full' ? 'still' : 'stillQuick';
   return mode;
 }
@@ -75,7 +103,8 @@ export function introEndsAtMs(plan: IntroPlan): number {
 /**
  * The one JS timer: a backstop, never a frame driver. If the UI-thread completion never reaches JS (the app was
  * backgrounded mid-intro and the OS dropped the frame callbacks, say), the overlay still leaves, so it can never
- * sit over the welcome screen.
+ * sit over the welcome screen. [review 2] It never holds touches meanwhile: the overlay stops taking them on the UI
+ * thread once the maroon is gone (LaunchIntro.tsx), so this only tidies away an overlay nobody can see or touch.
  */
 export const INTRO_BACKSTOP_GRACE_MS = 1500;
 

@@ -31,6 +31,7 @@ vi.mock('../lib/crash-reporter', () => ({
 }));
 
 import { ErrorBoundary } from './ErrorBoundary';
+import { introDecidedThisSession, resetIntroSessionForTests } from '../lib/launchIntro';
 
 /** The app's first screen; it throws on its first render while `broken` is set. */
 function FirstScreen() {
@@ -42,6 +43,7 @@ let host: HTMLDivElement;
 let root: ReturnType<typeof createRoot>;
 beforeEach(() => {
   Object.assign(fx, { splashHides: 0, crashes: [], broken: true });
+  resetIntroSessionForTests();
   host = document.createElement('div');
   root = createRoot(host);
 });
@@ -55,6 +57,8 @@ describe('[APP-INTRO · review] the root ErrorBoundary never leaves the native s
     expect(host.textContent).toContain('Something went wrong');
     expect(fx.splashHides, 'the boundary hid the splash itself').toBe(1);
     expect(fx.crashes).toEqual([{ message: 'first render failed', source: 'boundary' }]);
+    // [APP-INTRO · review 2] "Try again" remounts everything: the brand intro is not played again this session.
+    expect(introDecidedThisSession()).toBe(true);
 
     // The recovery screen is usable: Try again renders the app again.
     fx.broken = false;
@@ -67,5 +71,6 @@ describe('[APP-INTRO · review] the root ErrorBoundary never leaves the native s
     await act(async () => root.render(React.createElement(ErrorBoundary, null, React.createElement(FirstScreen))));
     expect(host.querySelector('[data-testid="first-screen"]')).not.toBeNull();
     expect(fx.splashHides).toBe(0);
+    expect(introDecidedThisSession(), 'no crash: the intro decides for itself').toBe(false);
   });
 });
