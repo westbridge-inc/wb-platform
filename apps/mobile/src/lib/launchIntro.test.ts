@@ -1,11 +1,16 @@
 import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { rootEntryGate } from '../navigation/rootEntryGate';
 import {
   INTRO_TIMELINE,
+  introDecidedThisSession,
   introEndsAtMs,
   introModeAtLaunch,
   introPlan,
   type IntroPlan,
+  markIntroDecided,
+  resetIntroSessionForTests,
   type LaunchIntroState,
 } from './launchIntro';
 
@@ -60,6 +65,14 @@ describe('introPlan and the timeline', () => {
     expect(introPlan('quick', true)).toBe('stillQuick');
   });
 
+  it('[review 2] a screen reader gets only the short dissolve, first launch or not, Reduce Motion or not', () => {
+    for (const reduced of [false, true]) {
+      expect(introPlan('full', reduced, true)).toBe('stillQuick');
+      expect(introPlan('quick', reduced, true)).toBe('stillQuick');
+    }
+    expect(introPlan('full', false, false)).toBe('full');
+  });
+
   it('every plan is over fast: full about a second, the rest well under', () => {
     const ends = Object.fromEntries((['full', 'quick', 'still', 'stillQuick'] as IntroPlan[]).map((p) => [p, introEndsAtMs(p)]));
     expect(ends['full']).toBeGreaterThanOrEqual(900);
@@ -75,5 +88,23 @@ describe('introPlan and the timeline', () => {
     const arrived = Math.max(...[mark, wordmark, tagline].map((s) => s.delay + s.duration));
     expect(reveal.delay).toBeGreaterThanOrEqual(arrived);
     expect(introEndsAtMs('full')).toBe(reveal.delay + reveal.duration);
+  });
+});
+
+describe('[review 2] the intro is decided once per app session', () => {
+  it('starts undecided, stays decided once marked, and only a new session (a test reset) clears it', () => {
+    resetIntroSessionForTests();
+    expect(introDecidedThisSession()).toBe(false);
+    markIntroDecided();
+    markIntroDecided();
+    expect(introDecidedThisSession()).toBe(true);
+    resetIntroSessionForTests();
+    expect(introDecidedThisSession()).toBe(false);
+  });
+
+  it('is never persisted: no storage behind it', () => {
+    const src = readFileSync(join(process.cwd(), 'src/lib/launchIntro.ts'), 'utf8');
+    expect(src).not.toMatch(/^import /m);
+    expect(src).toContain('let introDecided = false;');
   });
 });

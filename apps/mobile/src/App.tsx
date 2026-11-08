@@ -48,6 +48,7 @@ import { startInAppVoiceIfRegistered } from './services/inAppVoice';
 import { InAppCallReach } from './components/InAppCallReach';
 import { InCallBoundary } from './components/InCallBar';
 import { LaunchIntro } from './components/LaunchIntro';
+import { markIntroDecided } from './lib/launchIntro';
 
 // One app-lifetime cache boundary, before persisted auth hydration or queries.
 // Logout/account switch/token rejection still use the existing auth lifecycle.
@@ -263,6 +264,9 @@ export default function App() {
     } catch (error) {
       console.warn('[secure-storage] init failed', error);
       if (mountedRef.current && attempt === attemptRef.current) {
+        // [APP-INTRO · review 2] The recovery screen hides the native splash; the intro that would continue it is
+        // skipped for this session, so "Unlock Swift to continue" opens straight onto the app, never a maroon flash.
+        markIntroDecided();
         setStorageStatus('error');
       }
     } finally {
