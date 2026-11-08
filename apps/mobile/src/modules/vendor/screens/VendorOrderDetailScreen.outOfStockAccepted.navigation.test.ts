@@ -136,6 +136,25 @@ describe('[OOS-FLOW] after accepting: "Out of stock?" names both ways out', () =
     expect(buttons('Show all items')).toHaveLength(0);
   });
 
+  it('"Show all items" never offers what the server refuses: an item in a substitution group stays in its group', async () => {
+    fx.menu = [{ id: 'cat-1', items: [
+      { id: 'item-l1', name: 'Shirt', basePrice: 1000, isAvailable: true },
+      { id: 'item-l2', name: 'Vest', basePrice: 1000, isAvailable: true, substitutionGroup: 'tops' },
+      { id: 'item-x', name: 'Tank top', basePrice: 1200, isAvailable: true, substitutionGroup: 'tops' },
+    ] }, { id: 'cat-2', items: [
+      { id: 'item-y', name: 'Hoodie', basePrice: 4000, isAvailable: true },
+      { id: 'item-z', name: 'Polo', basePrice: 1500, isAvailable: true, substitutionGroup: 'tops' },
+    ] }];
+    await show(order({}));
+    await click(outOfStock('Vest'));
+    await click(buttons('Show all items')[0]);
+    const offered = [...host.querySelectorAll('button')].map((b) => b.textContent ?? '');
+    expect(offered.some((t) => t.startsWith('Polo · '))).toBe(true); // same group, another section
+    expect(offered.some((t) => t.startsWith('Tank top · '))).toBe(true);
+    expect(offered.some((t) => t.startsWith('Hoodie'))).toBe(false); // WRONG_GROUP on the server
+    expect(offered.some((t) => t.startsWith('Shirt · '))).toBe(false);
+  });
+
   it('not the last item: "Remove item" removes it at once', async () => {
     await show(order({}));
     await click(outOfStock('Vest'));

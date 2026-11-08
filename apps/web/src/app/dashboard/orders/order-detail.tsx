@@ -174,15 +174,16 @@ function PickList({ order, onBusy }: { order: VendorOrder; onBusy: boolean }) {
   };
 
   /** Same substitutionGroup wins; otherwise same category; always in stock. [OOS-FLOW] "Show all items"
-   *  widens it to every item in stock (the server still checks the group, the stock and the rules). */
+   *  widens it to every item in stock it may offer: an item with a substitutionGroup can only be swapped
+   *  within that group (the server refuses WRONG_GROUP), so "all" stays inside the group there. */
   const candidates = (line: OrderLine, everything = false) => {
     const all = items.data ?? [];
     const original = all.find((i) => i.id === line.itemId);
     const pool = all.filter((i) => i.id !== line.itemId && i.isAvailable !== false);
-    if (everything) return pool.slice(0, 24);
     const grouped = original?.substitutionGroup
       ? pool.filter((i) => i.substitutionGroup === original.substitutionGroup)
       : pool.filter((i) => original && i.category?.id === original.category?.id);
+    if (everything) return (original?.substitutionGroup ? grouped : pool).slice(0, 24);
     return grouped.slice(0, 6);
   };
 

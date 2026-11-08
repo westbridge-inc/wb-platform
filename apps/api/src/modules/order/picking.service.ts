@@ -13,6 +13,7 @@ import { hiddenAmong, unhideRestocked } from '../compliance/prohibited-gate';
 import { recomputeOrderVat } from '../store-vat/order-vat';
 import { orderStageRefusal } from './order-status-words';
 import { persistRiderCancellationNotice, drainRiderCancellationNotices } from './rider-cancel-notice';
+import { ORDER_TRANSITIONS } from './order-status';
 
 /** [REPORT-006 F-006-02] MMG order money is immutable in-app — ANY payment
  *  status. CAPTURED is money the store already received; PENDING is only the
@@ -122,7 +123,10 @@ type PickableStatus = import('@prisma/client').OrderStatus;
 
 /** [OOS-FLOW] The accepted stages an out-of-stock close may end: the pick list is open and the goods
  *  are still in the store (a rider may be assigned or on the way, never holding them). */
-const STOCK_OUT_CANCELLABLE = PICKABLE_STATES.filter((st) => st !== 'PENDING') as PickableStatus[];
+const STOCK_OUT_CANCELLABLE = PICKABLE_STATES.filter(
+  // The state machine decides which of them may be cancelled at all (order-status.ts ORDER_TRANSITIONS).
+  (st) => st !== 'PENDING' && (ORDER_TRANSITIONS.CANCELLED as readonly string[]).includes(st),
+) as PickableStatus[];
 
 /** [OOS-FLOW] The line and order facts an out-of-stock close reads. */
 type StockOutLine = {
@@ -356,6 +360,8 @@ export class PickingService {
         data: { orderId, status: order.status as PickableStatus, changedBy, note: `Substitution proposed: ${line.name} → ${substitute.name}` },
       });
     });
+    // [OOS-FLOW] Read after the commit, for the push's words only: is this the only item still coming?
+    const onlyItem = await this.lastItemLeft(orderId, lineId);
     // Only the committed winner speaks.
     await emitToOrderRoom(this.prisma, this.io, orderId, 'order:substitution', {
       orderId,
@@ -373,7 +379,11 @@ export class PickingService {
       userId: line.order.customerId,
       type: 'ORDER_UPDATE',
       title: `${line.name} is out of stock`,
-      body: substitutionNoAnswer(line.order) === 'REMOVE'
+      body: substitutionNoAnswer(line.order) === 'REMOVE' && onlyItem
+        // [OOS-FLOW · owner 8 Nov 2026] The only item left: no answer (or, once accepted, a "no thanks")
+        // cancels the order instead of emptying it, so the push never says it "comes off".
+        ? `The store suggests ${substitute.name} instead of ${line.name}, the only item left on order #${line.order.orderNumber}. Approve it in the app within ${decideMinutes} minutes, or the order is cancelled. Nothing has been charged.`
+        : substitutionNoAnswer(line.order) === 'REMOVE'
         ? `The store suggests ${substitute.name} instead for order #${line.order.orderNumber}. Approve or decline it in the app within ${decideMinutes} minutes. If you don't answer, it comes off your order and your total goes down.`
         : `The store suggests ${substitute.name} instead for order #${line.order.orderNumber}. If it isn't approved in the app within ${decideMinutes} minutes, the store settles this item with you directly.`,
       data: { orderId, kind: 'substitution_pending', lineId },
@@ -1042,7 +1052,7 @@ export class PickingService {
           });
           if (source.riderId) {
             await persistRiderCancellationNotice(tx, source,
-              `The store cancelled order #${source.orderNumber}: it is out of stock. Stop travelling to its pickup and check your current jobs.`);
+              `Order #${source.orderNumber} was cancelled: the store is out of stock. Stop travelling to its pickup and check your current jobs.`);
           }
           facts = { paymentMethod: source.paymentMethod, paymentStatus: source.paymentStatus, riderId: source.riderId };
         },

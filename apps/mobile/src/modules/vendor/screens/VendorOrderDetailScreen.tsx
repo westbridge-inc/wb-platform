@@ -215,15 +215,16 @@ function VendorOrderDetailBody({ navigation, route }: any) {
   const lineResolved = (l: any) => l.picked || l.subStatus === 'REFUNDED' || l.subStatus === 'REJECTED';
   const openLines = pickable ? items.filter((l) => !lineResolved(l)).length : 0;
   /** Same substitutionGroup wins; otherwise same category; always in stock. [OOS-FLOW] "Show all items"
-   *  widens it to every item in stock (the server still checks the group, the stock and the rules). */
+   *  widens it to every item in stock it may offer: an item with a substitutionGroup can only be swapped
+   *  within that group (the server refuses WRONG_GROUP), so "all" stays inside the group there. */
   const substituteCandidates = (line: any, everything = false) => {
     const all: any[] = (menu.data ?? []).flatMap((c: any) => (c.items ?? []).map((i: any) => ({ ...i, categoryId: c.id })));
     const original = all.find((i) => i.id === line.itemId);
     const pool = all.filter((i) => i.id !== line.itemId && i.isAvailable !== false);
-    if (everything) return pool.slice(0, 24);
     const grouped = original?.substitutionGroup
       ? pool.filter((i) => i.substitutionGroup === original.substitutionGroup)
       : pool.filter((i) => original && i.categoryId === original.categoryId);
+    if (everything) return (original?.substitutionGroup ? grouped : pool).slice(0, 24);
     return grouped.slice(0, 6);
   };
   /** [OOS-FLOW] Take a line off. The last item still coming ends the order (the server cancels it as

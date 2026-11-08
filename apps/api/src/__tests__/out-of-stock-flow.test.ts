@@ -233,7 +233,7 @@ describe('the store removes an item as out of stock after accepting', () => {
     expect(freed.currentOrderId).toBeNull();
     expect(Number(freed.committedFloat)).toBe(0);
     const told = await app.prisma.notification.findFirst({ where: { userId: riderUser.userId, title: 'Delivery cancelled' } });
-    expect(told?.body).toContain('The store cancelled order');
+    expect(told?.body).toContain(`Order #${order.orderNumber} was cancelled: the store is out of stock.`);
     await app.prisma.orderOutbox.deleteMany({ where: { orderId: order.id } });
     await app.prisma.rider.delete({ where: { id: rider.id } }).catch(() => undefined);
   });
@@ -286,6 +286,11 @@ describe('the store offers a replacement after accepting', () => {
     const view = (await customerView(order.id)).json().data.items[0].substitution;
     expect(view).toMatchObject({ kind: 'SWAP', lastItem: true, decisions: { approve: true, reject: true }, settlementGuidance: LAST_ITEM_SWAP_COPY, ifNoAnswer: 'CANCEL' });
     expect(typeof view.decideBy).toBe('string');
+    // The push says the same: a yes or the order is cancelled (never "it comes off your order").
+    const asked = await latestNotice(customer.userId);
+    expect(asked?.body).toContain(`the only item left on order #${order.orderNumber}`);
+    expect(asked?.body).toContain('or the order is cancelled. Nothing has been charged.');
+    expect(asked?.body).not.toContain('comes off your order');
 
     const yes = await decide(order.id, order.items[0]!.id, true);
     expect(yes.statusCode, yes.body).toBe(200);
@@ -323,6 +328,7 @@ describe('the store offers a replacement after accepting', () => {
       { itemId: b.id, name: b.name, qty: 1, price: 200 },
     ]);
     expect((await offerSwap(order.id, order.items[1]!.id, sub.id)).statusCode).toBe(200);
+    expect((await latestNotice(customer.userId))?.body).toContain('If you don\'t answer, it comes off your order and your total goes down.');
     const view = (await customerView(order.id)).json().data.items.find((i: { id: string }) => i.id === order.items[1]!.id).substitution;
     expect(view.lastItem).toBeUndefined();
     expect(view.ifNoAnswer).toBe('REMOVE');
