@@ -67,13 +67,19 @@ export function waitingForStore(
   return out;
 }
 
-/** The new-order push's data, when it is one for this store. */
+/** Is this push a store's new-order alert (any store of this account)? Then the board is re-read. */
+export function isStoreAlertPush(data: Record<string, unknown>): boolean {
+  return data['kind'] === 'vendor_order_alert';
+}
+
+/** The new-order push's order, raised at once ONLY when the push names THIS store. [review S3] A
+ *  push naming no store (a one-store owner's first alert, or a re-alert from an older API) could be
+ *  another branch's order: it only re-reads the board, which raises it if it is this store's. */
 export function storeAlertFromPush(data: Record<string, unknown>, vendorId: string): TakeoverEntry | null {
-  if (data['kind'] !== 'vendor_order_alert') return null;
+  if (!isStoreAlertPush(data)) return null;
   const orderId = data['orderId'];
   if (typeof orderId !== 'string' || !orderId) return null;
-  const pushStore = data['vendorId'];
-  if (typeof pushStore === 'string' && pushStore && pushStore !== vendorId) return null;
+  if (data['vendorId'] !== vendorId) return null;
   const orderNumber = data['orderNumber'];
   return { orderId, ...(typeof orderNumber === 'string' && orderNumber ? { orderNumber } : {}) };
 }

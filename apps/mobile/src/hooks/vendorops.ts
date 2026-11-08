@@ -37,7 +37,7 @@ import { usePartnerPricing } from './partnerPricing';
 import { guardVendorOperation, useVendorMutation } from './useVendorMutation';
 import { pendingOrderIds } from '../modules/vendor/boardTaps';
 import { answeredSinceAsked } from '../modules/vendor/storeOrderRules';
-import { markTakeoverHandled, storeAlertFromPush, takeoverHandled, waitingForStore, withRaised } from '../modules/vendor/takeoverRaise';
+import { isStoreAlertPush, markTakeoverHandled, storeAlertFromPush, takeoverHandled, waitingForStore, withRaised } from '../modules/vendor/takeoverRaise';
 import { onAppForeground, onForegroundPush } from '../lib/appSignals';
 import { errorMessage } from '../lib/apiError';
 import type { SaleAnswer, SaleOp } from '../lib/inStoreSale';
@@ -417,9 +417,10 @@ export function useVendorOrdersLive(vendorId: string | undefined, ownsStore = fa
     const reread = () => { void qc.refetchQueries({ queryKey: ['vendor', 'orders'], exact: true }).catch(() => undefined); };
     const stopForeground = onAppForeground(reread);
     const stopPush = onForegroundPush((data) => {
+      if (!isStoreAlertPush(data)) return;
       const alert = storeAlertFromPush(data, vendorId);
-      if (!alert) return;
-      setTakeover((q) => withRaised(q, [alert], (id) => takeoverHandled(vendorId, id)));
+      if (alert) setTakeover((q) => withRaised(q, [alert], (id) => takeoverHandled(vendorId, id)));
+      // A push naming no store (or another branch) only re-reads: the board raises it if it is ours.
       reread();
     });
     return () => { stopForeground(); stopPush(); };
