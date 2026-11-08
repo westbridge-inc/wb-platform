@@ -44,6 +44,7 @@ import { useAppStore } from './stores/appStore';
 import { useDeviceLocation } from './hooks/useDeviceLocation';
 import { PillButton, Screen, T } from './kit';
 import { SwiftMark } from './components/SwiftLogo';
+import { LaunchIntro } from './components/LaunchIntro';
 
 // One app-lifetime cache boundary, before persisted auth hydration or queries.
 // Logout/account switch/token rejection still use the existing auth lifecycle.
@@ -315,6 +316,10 @@ export default function App() {
                 <StoreAlertElsewhere />
                 {/* [Row 3] build 12 on: a build older than the API's minimum is asked to update */}
                 <UpdateRequiredGate />
+                {/* [APP-INTRO] Last, so it covers everything: the brand intro on the launch that opens the welcome
+                    screen (signed out, no door picked yet). It continues the native splash, then dissolves into the
+                    welcome, which is already rendered underneath. Signed-in launches render nothing here. */}
+                <LaunchIntro />
               </QueryClientProvider>
             )}
           </AppSurface>

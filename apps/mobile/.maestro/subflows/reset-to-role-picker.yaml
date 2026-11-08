@@ -10,4 +10,9 @@ appId: gy.swift.app
     visible:
       id: role-picker-screen
     timeout: 90000
+# A fresh install plays the brand intro (about a second) over the welcome; taps wait until it has gone.
+- extendedWaitUntil:
+    notVisible:
+      id: launch-intro
+    timeout: 5000
 - assertVisible: Welcome to Swift
