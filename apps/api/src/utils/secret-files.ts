@@ -56,6 +56,9 @@ export const SECRET_FILE_NAMES = [
   // [EMAIL-HTTPS] Resend's API key (EMAIL_PROVIDER=resend), set by the owner
   // at a hidden prompt into the store.
   'RESEND_API_KEY',
+  // [EXPO-PUSH-AUTH] Optional. The Expo access token every push call carries
+  // once set, so Expo's enhanced push security can be on (expo-access-token.ts).
+  'EXPO_ACCESS_TOKEN',
   // [L04] Non-production SMS recipient allowlist: phone numbers are personal
   // data, so they arrive by file from the store, never in a compose file.
   'SMS_RECIPIENT_ALLOWLIST',
