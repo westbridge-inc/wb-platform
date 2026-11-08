@@ -487,6 +487,10 @@ const config: SwiftExpoConfig = {
     // (no prompt at start, never keeps the screen on), and ONE Firebase receiver that sends Twilio calls to
     // the SDK and every other push to expo-notifications (plugins/withSwiftInAppCalls.js says why).
     './plugins/withSwiftInAppCalls.js',
+    // [ANDROID-R8] Play flagged vc8 "DEX code optimization below threshold" (fix by Feb 2027): R8 minify +
+    // resource shrinking for Android RELEASE builds only, plus the keep rules the native libraries do not
+    // ship themselves (plugins/withAndroidReleaseMinify.js lists each one and its source).
+    './plugins/withAndroidReleaseMinify.js',
   ],
   extra: {
     ...(process.env['EAS_PROJECT_ID'] ? { eas: { projectId: process.env['EAS_PROJECT_ID'] } } : {}),
