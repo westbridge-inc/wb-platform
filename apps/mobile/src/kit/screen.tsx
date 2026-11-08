@@ -110,7 +110,15 @@ export function Header({
     >
       <CircleChip icon="chevron-left" label="Back" light={light} onPress={onBack ?? (() => nav.goBack())} />
       {title ? (
-        <T variant="heading" tone={light ? 'onBrand' : 'ink'}>
+        // One line, shrinking between Back and the right accessory: a long
+        // title (a campaign's own name) ends in "…" instead of pushing the
+        // accessory off the row. A short title lays out exactly as before.
+        <T
+          variant="heading"
+          tone={light ? 'onBrand' : 'ink'}
+          numberOfLines={1}
+          style={{ flexShrink: 1, textAlign: 'center', marginHorizontal: space.md }}
+        >
           {title}
         </T>
       ) : (
