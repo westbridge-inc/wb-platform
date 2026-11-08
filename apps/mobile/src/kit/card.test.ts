@@ -1,7 +1,19 @@
 import React from 'react';
 import { describe, expect, it, vi } from 'vitest';
 
+// A plain function call has no renderer behind it: PopupCard's state keeps its first value and its effects are
+// not run (the keyboard wait is rendered with real React in card.keyboardWait.navigation.test.ts).
+vi.mock('react', async (original) => {
+  const actual = await original<Record<string, any>>();
+  const hooks = {
+    useState: (value: unknown) => [typeof value === 'function' ? (value as () => unknown)() : value, () => {}],
+    useEffect: () => {},
+  };
+  return { ...actual, ...hooks, default: { ...actual['default'], ...hooks } };
+});
+
 vi.mock('react-native', () => ({
+  Keyboard: { isVisible: () => false, dismiss: () => {}, addListener: () => ({ remove: () => {} }) },
   KeyboardAvoidingView: 'KeyboardAvoidingView',
   Modal: 'Modal',
   Platform: { OS: 'ios' },

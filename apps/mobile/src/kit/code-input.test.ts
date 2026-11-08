@@ -28,13 +28,14 @@ const mocks = vi.hoisted(() => ({
   shared: [] as Array<{ value: unknown }>,
 }));
 
-// A plain function call has no renderer behind it, so the two React hooks the
-// component uses are answered here: refs hold their value, effects are kept
-// for the test to run.
+// A plain function call has no renderer behind it, so the React hooks the
+// components use are answered here: refs hold their value, effects are kept
+// for the test to run, state keeps its first value (PopupCard's keyboard wait).
 vi.mock('react', async (original) => {
   const actual = await original<Record<string, any>>();
   const hooks = {
     useRef: (value: unknown) => ({ current: value }),
+    useState: (value: unknown) => [typeof value === 'function' ? (value as () => unknown)() : value, () => {}],
     useEffect: (effect: () => void) => {
       mocks.effects.push(effect);
     },
