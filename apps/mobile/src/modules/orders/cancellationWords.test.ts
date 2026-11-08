@@ -30,6 +30,8 @@ describe('customerCancellationWords', () => {
       expect(customerCancellationWords(order('STORE', 'Out of stock', { paymentMethod: 'MOBILE_MONEY', paymentStatus }))?.money).toBeNull();
     }
     expect(customerCancellationWords(order('STORE', 'Out of stock', { paymentMethod: 'CARD' }))?.money).toBeNull();
+    // Cash is only "not charged" while the order still says it is unpaid.
+    expect(customerCancellationWords(order('STORE', 'Out of stock', { paymentStatus: 'CAPTURED' }))?.money).toBeNull();
     expect(customerCancellationWords(order('STORE', 'Out of stock', { paymentMethod: undefined }))?.money).toBeNull();
   });
 
