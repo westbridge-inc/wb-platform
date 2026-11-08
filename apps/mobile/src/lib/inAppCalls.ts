@@ -71,6 +71,72 @@ export function inAppErrorText(code: string | null | undefined): string {
   }
 }
 
+/**
+ * [CALLS-UX · owner 8 Nov 2026, "A"] In-app first: the dial / "Call via Swift" control shows only as a backup.
+ * These refusals mean the in-app call cannot happen for this person, so the backup control comes back:
+ * - INAPP_NOT_REACHABLE: no phone of theirs can be rung in the app (and Swift cannot ring their phone instead);
+ * - INAPP_NO_ONE: there is no Swift account to ring for them (a web order's customer, for one);
+ * - INAPP_CALLS_TROUBLE: Swift cannot tell which phones can ring right now;
+ * - INAPP_CALLS_OFF: the switch went off since this phone last read it;
+ * - INAPP_NOT_FOR_TARGET: the person has no Swift app (the parcel recipient);
+ * - INAPP_UNAVAILABLE: this phone's app has no calling module;
+ * - MIC_REFUSED: this phone cannot use the microphone for Swift;
+ * - INAPP_CONNECT_FAILED: the server accepted, but this phone's call never reached Twilio (connect threw, or the
+ *   SDK reported connectFailure; services/inAppVoice placeInAppCall);
+ * - CALL_PROVIDER_FAILED: Swift could not set the in-app call up (503); the phone's own dialler does not need it.
+ * Not the caps, a finished order or a call already ringing: those hold for "Call via Swift" too.
+ */
+const BACKUP_CODES: ReadonlySet<string> = new Set([
+  'INAPP_NOT_REACHABLE',
+  'INAPP_NO_ONE',
+  'INAPP_CALLS_TROUBLE',
+  'INAPP_CALLS_OFF',
+  'INAPP_NOT_FOR_TARGET',
+  'INAPP_UNAVAILABLE',
+  'MIC_REFUSED',
+  'INAPP_CONNECT_FAILED',
+  'CALL_PROVIDER_FAILED',
+]);
+
+export function revealsBackup(code: string | null | undefined): boolean {
+  return !!code && BACKUP_CODES.has(code);
+}
+
+/**
+ * [CALLS-UX review S2] The backup control that comes back, exactly as CallParty draws it for this person: today's
+ * dialler ("Call"), the phone bridge ("Call via Swift"), or nothing (bridge off and no number for them: chat only).
+ */
+export type BackupKind = 'dial' | 'bridge' | 'none';
+
+/** What went wrong, in the person's words. Never "right now" for them: they may have refused for good (S3-4). */
+const BACKUP_LEAD: Readonly<Record<string, string>> = {
+  INAPP_NOT_REACHABLE: "They can't take calls in the Swift app.",
+  INAPP_NO_ONE: "They can't take calls in the Swift app.",
+  INAPP_NOT_FOR_TARGET: "They can't take calls in the Swift app.",
+  INAPP_CALLS_TROUBLE: 'Swift calls in the app are having trouble right now.',
+  INAPP_CALLS_OFF: 'In-app calls are not on right now.',
+  INAPP_UNAVAILABLE: "This phone can't make calls in the Swift app.",
+  INAPP_CONNECT_FAILED: "Swift couldn't connect the call in the app.",
+  CALL_PROVIDER_FAILED: "Swift couldn't connect the call in the app.",
+  MIC_REFUSED: 'The microphone is off for Swift, so in-app calls cannot work. You can turn it on in Settings.',
+};
+/** Swift's own trouble: worth trying again in a minute when there is no backup to tap. */
+const PASSING = new Set(['INAPP_CALLS_TROUBLE', 'INAPP_CONNECT_FAILED', 'CALL_PROVIDER_FAILED']);
+
+/**
+ * [CALLS-UX review S2] The words when the in-app call cannot happen and the backup comes back: they point at the
+ * control that really appears (the server's own sentence says "message them in chat instead", which reads wrong
+ * beside a Call button, so it is not shown here).
+ */
+export function backupRevealText(code: string | null | undefined, kind: BackupKind): string {
+  const lead = (code ? BACKUP_LEAD[code] : undefined) ?? "Swift couldn't start the call in the app.";
+  const tail = kind === 'dial' ? 'Tap Call to ring their phone, or message them in chat.'
+    : kind === 'bridge' ? 'Tap Call via Swift to reach them by phone, or message them in chat.'
+    : code && PASSING.has(code) ? 'Try again in a minute, or message them in chat.'
+    : 'Message them in chat.';
+  return `${lead} ${tail}`;
+}
+
 /** The call-screen template the native module fills from the server's `swiftLine` parameter. */
 export const CALL_SCREEN_TEMPLATE = '$' + '{swiftLine}';
 /** What CallKit shows in the phone's recent calls for a call this person placed (never a number). */

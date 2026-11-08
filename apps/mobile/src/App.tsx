@@ -46,6 +46,7 @@ import { PillButton, Screen, T } from './kit';
 import { SwiftMark } from './components/SwiftLogo';
 import { startInAppVoiceIfRegistered } from './services/inAppVoice';
 import { InAppCallReach } from './components/InAppCallReach';
+import { InCallBoundary } from './components/InCallBar';
 import { LaunchIntro } from './components/LaunchIntro';
 
 // One app-lifetime cache boundary, before persisted auth hydration or queries.
@@ -316,9 +317,12 @@ export default function App() {
                 <SessionRefreshAhead />
                 {/* [CALLS-REACH] On a live order, this phone can be rung in the app on any screen (build 13+). */}
                 <InAppCallReach />
-                <ConnectivityBoundary>
-                  <RootNavigator />
-                </ConnectivityBoundary>
+                {/* [CALLS-UX] During an in-app call (build 13+): Mute, Speaker, Hang up and the call's time on top. */}
+                <InCallBoundary>
+                  <ConnectivityBoundary>
+                    <RootNavigator />
+                  </ConnectivityBoundary>
+                </InCallBoundary>
                 <ToastHost />
                 <PermissionPrimeSheet />
                 {/* [STORE-ALERT] A new order for this person's store while another app is open. */}
