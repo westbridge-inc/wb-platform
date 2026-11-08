@@ -6,6 +6,7 @@ import ts from 'typescript';
 import { DEFAULT_DELIVERY_RATES, calculateDeliveryFee, deliveryFeeFromRates, expressDeliveryFee } from '../utils/markup';
 import { canonicalBillableKm } from '../utils/billable-distance';
 import { planVendorGroup } from '../modules/order/cart-plans';
+import { validatePricingConfig } from '../modules/country/pricing-config';
 
 // ---------------------------------------------------------------------------
 // [DELIVERY-ROUND · 8 Nov 2026] The delivery fee is exact whole-dollar maths.
@@ -57,9 +58,10 @@ describe('the delivery fee equals the published price at every distance', () => 
     expect(wrong).toEqual([]);
   });
 
-  it('a raw routed distance is priced like the canonical one checkout freezes (whole metres)', () => {
-    // A road route is not a round number; whatever the float, the fee is the
-    // published price of its distance in whole metres.
+  it('a distance in whole metres is priced exactly (checkout itself freezes 0.01 km)', () => {
+    // calculateDeliveryFee counts whole metres: whatever the float, the fee is
+    // the published price of the distance to the metre. Checkout and every
+    // display price canonicalBillableKm (0.01 km) first, which is exact here.
     for (let m = 3000; m <= 20_000; m += 7) {
       const km = m / 1000;
       const exact = D.baseFee + Math.ceil(((m - D.includedKm * 1000) * D.perKmRate) / 1000);
@@ -99,6 +101,41 @@ describe('a market’s own schedule (surge, other rates) is exact too', () => {
     expect(calculateDeliveryFee(10, 800, 175, 3, 0.5)).toBe(1013); // 2,025 × 0.5 = 1,012.5 → 1,013
     expect(calculateDeliveryFee(1, 800, 175, 3, 0.5)).toBe(800); //    never below the base
     expect(calculateDeliveryFee(-4)).toBe(800);
+  });
+});
+
+describe('[N1] a market’s surge is stored with at most 6 decimals, so the millionths maths is exact', () => {
+  const surge = (surgeMultiplier: number) => validatePricingConfig('DELIVERY_RATES', { surgeMultiplier }).status;
+
+  it.each([1, 1.3, 1.25, 0.5, 10, 1.234567, 2.000001])('surge %s is accepted', (m) => {
+    expect(surge(m)).toBe('VALID');
+  });
+
+  it.each([1.2345678, 4 / 3, 1.0000001])('surge %s (more than 6 decimals) is refused', (m) => {
+    expect(surge(m)).toBe('INVALID');
+  });
+
+  it('every 6-decimal surge the schema accepts prices exactly (sampled)', () => {
+    // 1,829 x surge rounded up, from an integer oracle in millionths.
+    for (let micro = 500_000; micro <= 10_000_000; micro += 7_919) {
+      const m = micro / 1_000_000;
+      expect(surge(m), `${m}`).toBe('VALID');
+      const want = Math.max(800, Number((1829n * BigInt(micro) + 999_999n) / 1_000_000n));
+      expect(calculateDeliveryFee(8.88, 800, 175, 3, m), `${m}`).toBe(want);
+    }
+  });
+});
+
+describe('[N4] the store card and storefront header price the canonical distance, like the cart', () => {
+  // The DB suite (delivery-fee-display-parity) proves card == header == planner on
+  // mounted routes; this pins the source so the raw estimate cannot creep back.
+  const src = readFileSync(join(REPO, 'apps/api/src/modules/user/customer.routes.ts'), 'utf8');
+  const code = src.split('\n').filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l)).join('\n');
+
+  it('every deliveryFeeFromRates call in customer.routes prices canonicalBillableKm (or the fixed 3 km preview)', () => {
+    const calls = [...code.matchAll(/deliveryFeeFromRates\(\s*([^,]+),/g)].map((m) => m[1]!.trim());
+    expect(calls.length).toBeGreaterThanOrEqual(3); // the card, the header, the free-delivery preview
+    for (const arg of calls) expect(arg, arg).toMatch(/^(canonicalBillableKm\(.+\)|3)$/);
   });
 });
 
