@@ -176,8 +176,20 @@ describe('[STORE-ALERT-RECONNECT] a new-order push while the store app is open',
     expect(seen.takeover).toEqual([{ orderId: 'o5', orderNumber: 'O5' }]);
     expect(refetch).toHaveBeenCalledWith({ queryKey: ['vendor', 'orders'], exact: true });
     // The same push again (a duplicate delivery): still one entry.
-    await act(async () => { emitForegroundPush({ kind: 'vendor_order_alert', orderId: 'o5', orderNumber: 'O5' }); });
+    await act(async () => { emitForegroundPush({ kind: 'vendor_order_alert', orderId: 'o5', orderNumber: 'O5', vendorId: 'store-a' }); });
     expect(seen.takeover).toEqual([{ orderId: 'o5', orderNumber: 'O5' }]);
+  });
+
+  it('[review S3] a push naming no store is not raised by itself (it could be branch B\'s): it re-reads, and the board decides', async () => {
+    qc.setQueryData(['vendor', 'orders'], []);
+    await mount();
+    const refetch = vi.spyOn(qc, 'refetchQueries').mockResolvedValue(undefined);
+    await act(async () => { emitForegroundPush({ kind: 'vendor_order_alert', orderId: 'b-order', orderNumber: 'B1' }); });
+    expect(seen.takeover).toEqual([]);
+    expect(refetch).toHaveBeenCalledWith({ queryKey: ['vendor', 'orders'], exact: true });
+    // The re-read shows it is another branch's: still nothing; this store's own waiting order rises.
+    await board([pending('b-order', { vendorId: 'store-b' }), pending('a-order')]);
+    expect(seen.takeover).toEqual([{ orderId: 'a-order', orderNumber: 'A-ORDER' }]);
   });
 
   it('ignores other kinds, another branch\'s order, and an order answered here', async () => {
@@ -188,8 +200,8 @@ describe('[STORE-ALERT-RECONNECT] a new-order push while the store app is open',
     await act(async () => {
       emitForegroundPush({ kind: 'order_update', orderId: 'o2' });
       emitForegroundPush({ kind: 'vendor_order_alert', orderId: 'o3', vendorId: 'store-b' });
-      emitForegroundPush({ kind: 'vendor_order_alert', orderId: 'o1' });
-      emitForegroundPush({ kind: 'vendor_order_alert' });
+      emitForegroundPush({ kind: 'vendor_order_alert', orderId: 'o1', vendorId: 'store-a' });
+      emitForegroundPush({ kind: 'vendor_order_alert', vendorId: 'store-a' });
     });
     expect(seen.takeover).toEqual([]);
   });

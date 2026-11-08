@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import {
   HANDLED_TAKEOVERS_REMEMBERED,
   markTakeoverHandled,
+  isStoreAlertPush,
   resetHandledTakeovers,
   storeAlertFromPush,
   takeoverHandled,
@@ -40,9 +41,13 @@ describe('waitingForStore', () => {
 });
 
 describe('storeAlertFromPush', () => {
-  it('the new-order push of this store (or one naming no store)', () => {
+  it('raises at once only the new-order push that names THIS store', () => {
     expect(storeAlertFromPush({ kind: 'vendor_order_alert', orderId: 'o1', orderNumber: 'N1', vendorId: 'store-a' }, 'store-a')).toEqual({ orderId: 'o1', orderNumber: 'N1' });
-    expect(storeAlertFromPush({ kind: 'vendor_order_alert', orderId: 'o1' }, 'store-a')).toEqual({ orderId: 'o1' });
+  });
+  it('[review S3] a push naming no store could be another branch\'s order: not raised (the board re-read decides)', () => {
+    expect(storeAlertFromPush({ kind: 'vendor_order_alert', orderId: 'o1' }, 'store-a')).toBeNull();
+    expect(isStoreAlertPush({ kind: 'vendor_order_alert', orderId: 'o1' })).toBe(true);
+    expect(isStoreAlertPush({ kind: 'dispatch_offer', orderId: 'o1' })).toBe(false);
   });
   it('never another kind, another branch, or a push with no order', () => {
     expect(storeAlertFromPush({ kind: 'dispatch_offer', orderId: 'o1' }, 'store-a')).toBeNull();

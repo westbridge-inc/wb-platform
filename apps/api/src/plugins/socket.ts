@@ -251,10 +251,16 @@ export const socketPlugin = fp(async (app: FastifyInstance) => {
    *  completely on the server (every room is left, nothing more is sent or
    *  received on it), and lets the client come back through the FULL handshake
    *  above, which re-reads its current credential: a revoked, expired or
-   *  superseded token is refused there, as any new connection is. */
-  const closeTransportReconnectably = (socket: { connected: boolean; client: { conn: { close: () => void } } }) => {
+   *  superseded token is refused there, as any new connection is.
+   *  [review S4] Discarding: whatever is still queued for this connection is
+   *  dropped and the socket leaves every room NOW, not after the queue drains
+   *  (up to the polling close timeout). A room's live listener count (an SOS
+   *  page's "nobody is listening") never counts a connection that is ending.
+   *  The client still sees a transport close (WebSocket close frame) or a
+   *  transport error (polling), both of which Socket.IO retries. */
+  const closeTransportReconnectably = (socket: { connected: boolean; client: { conn: { close: (discard?: boolean) => void } } }) => {
     if (!socket.connected) return;
-    socket.client.conn.close();
+    socket.client.conn.close(true);
   };
 
   const closeForAuthorityStoreFailure = (socketId: string) => {

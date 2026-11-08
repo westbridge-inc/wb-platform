@@ -16,6 +16,7 @@ import {
   transitionUserStatusAuthority,
 } from '../modules/mover-authority';
 import { sessionCredentialDigest } from '../lib/session-credential';
+import { runWithoutTenant } from '../plugins/tenant-context';
 
 // ---------------------------------------------------------------------------
 // SEC-1 regression — Socket.IO connections must present a valid JWT AND a live
@@ -815,6 +816,139 @@ describe('[STORE-ALERT-RECONNECT] a refreshed or lapsed token closes the transpo
       await ready;
       expect(socket.connected).toBe(true);
       expect(app.io.sockets.adapter.rooms.get(`session:${sessionId}`)?.size).toBe(1);
+    } finally {
+      socket.disconnect();
+    }
+  });
+});
+
+describe('[STORE-ALERT-RECONNECT · review S3/S4] every branch of the fallback recheck', () => {
+  /** A connected phone-shaped client and its user, for the cases below. */
+  async function connected(options: Parameters<typeof makeSessionToken>[1] = {}) {
+    const made = await makeSessionToken('ACTIVE', options);
+    const socket = connectLikeThePhone(() => made.token);
+    await nextEvent(socket, 'auth:ready');
+    return { ...made, socket };
+  }
+
+  it('an active-role change on the live session closes the transport reconnectably, and the client is back in the new role', async () => {
+    const { userId, socket } = await connected();
+    try {
+      expect(app.io.sockets.sockets.get(socket.id!)?.data.role).toBe('CUSTOMER');
+      const reason = nextEvent<string>(socket, 'disconnect');
+      const back = nextEvent(socket, 'auth:ready', 6_000);
+      // Straight to the row: no revocation helper runs; only the recheck's role comparison sees it.
+      await app.prisma.user.update({ where: { id: userId }, data: { roles: { set: ['CUSTOMER', 'VENDOR_OWNER'] }, activeRole: 'VENDOR_OWNER' } });
+      expect(await reason).toBe('transport close');
+      await back;
+      expect(app.io.sockets.sockets.get(socket.id!)?.data.role).toBe('VENDOR_OWNER');
+    } finally {
+      socket.disconnect();
+    }
+  });
+
+  it('a database session past its expiry is "io server disconnect", and the client does not come back', async () => {
+    const { sessionId, socket } = await connected();
+    try {
+      const reason = nextEvent<string>(socket, 'disconnect');
+      await app.prisma.session.update({ where: { id: sessionId }, data: { expiresAt: new Date(Date.now() - 1_000) } });
+      expect(await reason).toBe('io server disconnect');
+      expect(await staysQuiet(socket, 'connect', 600)).toBe(true);
+    } finally {
+      socket.disconnect();
+    }
+  });
+
+  it('a session that now belongs to another account is "io server disconnect"', async () => {
+    const { sessionId, socket } = await connected();
+    const other = await makeSessionToken('ACTIVE');
+    try {
+      const reason = nextEvent<string>(socket, 'disconnect');
+      await app.prisma.session.update({ where: { id: sessionId }, data: { userId: other.userId } });
+      expect(await reason).toBe('io server disconnect');
+      expect(await staysQuiet(socket, 'connect', 600)).toBe(true);
+    } finally {
+      socket.disconnect();
+    }
+  });
+
+  it('an account moved to another operator (tenant) is "io server disconnect"', async () => {
+    const { userId, socket } = await connected();
+    const before = await runWithoutTenant(() => app.prisma.user.findUniqueOrThrow({ where: { id: userId }, select: { tenantId: true } }));
+    const tenantB = `sock-tenant-b-${nanoid(6)}`;
+    await runWithoutTenant(() => app.prisma.tenant.create({ data: { id: tenantB, name: 'Socket tenant B', slug: tenantB, isActive: true } }));
+    try {
+      const reason = nextEvent<string>(socket, 'disconnect');
+      await runWithoutTenant(() => app.prisma.user.update({ where: { id: userId }, data: { tenantId: tenantB } }));
+      expect(await reason).toBe('io server disconnect');
+      expect(await staysQuiet(socket, 'connect', 600)).toBe(true);
+    } finally {
+      socket.disconnect();
+      await runWithoutTenant(() => app.prisma.user.update({ where: { id: userId }, data: { tenantId: before.tenantId } }));
+      await runWithoutTenant(() => app.prisma.tenant.delete({ where: { id: tenantB } }));
+    }
+  });
+
+  it('a privileged role without the approved login assurance is "io server disconnect"', async () => {
+    const { userId, socket } = await connected();
+    try {
+      const reason = nextEvent<string>(socket, 'disconnect');
+      await app.prisma.user.update({ where: { id: userId }, data: { roles: { set: ['SUPER_ADMIN', 'CUSTOMER'] } } });
+      expect(await reason).toBe('io server disconnect');
+      expect(await staysQuiet(socket, 'connect', 600)).toBe(true);
+    } finally {
+      socket.disconnect();
+    }
+  });
+
+  it('[S4] on long-polling too (a carrier that blocks WebSockets), the discarding close stays reconnectable', async () => {
+    const { refreshToken, token, sessionId } = await makeSessionToken('ACTIVE');
+    let held = token;
+    const socket = ioClient(url, {
+      auth: (cb) => cb({ token: held }),
+      transports: ['polling'],
+      reconnection: true,
+      reconnectionDelay: 25,
+      reconnectionDelayMax: 50,
+      timeout: 3000,
+    });
+    openSockets.push(socket);
+    try {
+      await nextEvent(socket, 'auth:ready');
+      const reason = nextEvent<string>(socket, 'disconnect', 6_000);
+      const back = nextEvent(socket, 'auth:ready', 8_000);
+      held = (await new AuthService(app).refreshTokens(refreshToken)).accessToken;
+      expect(await reason).not.toBe('io server disconnect');
+      await back;
+      expect(app.io.sockets.adapter.rooms.get(`session:${sessionId}`)?.size).toBe(1);
+    } finally {
+      socket.disconnect();
+    }
+  });
+
+  it('[S4] the ending connection leaves its rooms at once: an emit to them right after the close reaches nobody', async () => {
+    const { userId, sessionId, refreshToken, socket } = await connected();
+    try {
+      const live = app.io.sockets.sockets.get(socket.id!)!;
+      const conn = live.client.conn as unknown as { close: (discard?: boolean) => void };
+      const realClose = conn.close.bind(conn);
+      const probes: unknown[] = [];
+      socket.on('probe', (payload) => probes.push(payload));
+      let roomsRightAfterClose: Array<number | undefined> = [];
+      conn.close = (discard?: boolean) => {
+        // Something is still queued for this connection when it is told to end.
+        live.emit('queued', 'x'.repeat(32 * 1024));
+        live.emit('queued', 'y'.repeat(32 * 1024));
+        realClose(discard);
+        roomsRightAfterClose = [`user:${userId}`, `session:${sessionId}`].map((room) => app.io.sockets.adapter.rooms.get(room)?.size);
+        app.io.to(`user:${userId}`).emit('probe', 'sent while the connection is ending');
+      };
+      const reason = nextEvent<string>(socket, 'disconnect');
+      await new AuthService(app).refreshTokens(refreshToken);
+      expect(await reason).toBe('transport close');
+      expect(roomsRightAfterClose).toEqual([undefined, undefined]); // RED with a draining close: still 1 and 1
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      expect(probes).toEqual([]);
     } finally {
       socket.disconnect();
     }

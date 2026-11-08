@@ -35,7 +35,8 @@ vi.mock('socket.io-client', () => {
       return this;
     }
     off(event: string, cb: (...args: any[]) => void) { this.handlers.get(event)?.delete(cb); return this; }
-    emit() { return this; }
+    sent: unknown[][] = [];
+    emit(...args: unknown[]) { this.sent.push(args); return this; }
     connect() {
       this.connectCalls += 1;
       this.active = true;
@@ -52,6 +53,7 @@ vi.mock('socket.io-client', () => {
     fire(event: string, ...args: any[]) { for (const cb of [...(this.handlers.get(event) ?? [])]) cb(...args); }
     // What Socket.IO does on each server verdict.
     admitted() { this.connected = true; this.active = true; this.fire('connect'); }
+    authorized() { this.fire('auth:ready', { expiresAt: 'later' }); }
     serverDisconnect() { this.connected = false; this.active = false; this.fire('disconnect', 'io server disconnect'); }
     refusedAtHandshake(message: string) { this.connected = false; this.active = false; this.fire('connect_error', new Error(message)); }
   }
@@ -77,8 +79,13 @@ vi.mock('./api', () => ({ API_URL: 'https://api.test', refreshSessionAhead: (s: 
 import {
   connectSocket,
   disconnectSocket,
+  getSocket,
+  reconnectSocketForStoreHandoff,
+  SOCKET_AUTH_READY_FALLBACK_MS,
   SOCKET_CREDENTIAL_RETRIES,
   SOCKET_RETRY_MAX_MS,
+  SOCKET_SERVER_DISCONNECT_RETRIES,
+  SOCKET_SETTLED_MS,
 } from './socket';
 import { emitAppForeground } from '../lib/appSignals';
 
@@ -287,5 +294,122 @@ describe('[STORE-ALERT-RECONNECT] never across a sign-out', () => {
     await vi.advanceTimersByTimeAsync(SOCKET_RETRY_MAX_MS * 2);
     emitAppForeground();
     expect(s.connectCalls).toBe(1);
+  });
+});
+
+// [review S2] A server that admits the handshake and then ends the connection (the early-packet cap,
+// a credential verdict in the post-registration read) must never be asked again once a second.
+describe('[review S2] admitted, then ended: the backoff grows and stops', () => {
+  it('admit -> kick, again and again: each wait is longer, and after the cap nothing more until the screen returns', async () => {
+    signIn(jwt(Date.now() + 24 * 60 * 60_000, 'long-lived'));
+    const s = live();
+    const gaps: number[] = [];
+    let last = Date.now();
+    for (let i = 0; i < SOCKET_SERVER_DISCONNECT_RETRIES + 3; i += 1) {
+      s.serverDisconnect(); // ended before 'auth:ready'
+      const before = s.connectCalls;
+      for (let waited = 0; s.connectCalls === before && waited < 5 * 60_000; waited += 250) await vi.advanceTimersByTimeAsync(250);
+      if (s.connectCalls === before) break;
+      gaps.push(Date.now() - last);
+      last = Date.now();
+      s.admitted(); // the handshake is admitted again (RED before: this reset the backoff)
+    }
+    expect(gaps).toEqual([1_000, 2_000, 4_000, 8_000, 16_000, 30_000]);
+    expect(gaps).toHaveLength(SOCKET_SERVER_DISCONNECT_RETRIES);
+    const parkedAt = s.connectCalls;
+    await vi.advanceTimersByTimeAsync(30 * 60_000);
+    connectSocket(); // a layer mounting does not hurry it
+    expect(s.connectCalls).toBe(parkedAt);
+    emitAppForeground();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(s.connectCalls).toBe(parkedAt + 1);
+  });
+
+  it('a connection that settled (authorized and up 30 s) starts the backoff from the bottom again', async () => {
+    const s = live();
+    s.serverDisconnect();
+    await vi.advanceTimersByTimeAsync(1_000);
+    s.admitted();
+    s.serverDisconnect();
+    await vi.advanceTimersByTimeAsync(2_000);
+    s.admitted();
+    s.authorized();
+    await vi.advanceTimersByTimeAsync(SOCKET_SETTLED_MS - 1);
+    s.serverDisconnect(); // not settled yet: the next wait is 4 s
+    await vi.advanceTimersByTimeAsync(3_999);
+    expect(s.connectCalls).toBe(3);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(s.connectCalls).toBe(4);
+    s.admitted();
+    s.authorized();
+    await vi.advanceTimersByTimeAsync(SOCKET_SETTLED_MS);
+    s.serverDisconnect(); // settled: 1 s again
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(s.connectCalls).toBe(5);
+  });
+
+  it('a backing-off socket is not hurried by a layer calling connectSocket', async () => {
+    const s = live();
+    s.serverDisconnect();
+    connectSocket();
+    connectSocket();
+    expect(s.connectCalls).toBe(1);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(s.connectCalls).toBe(2);
+  });
+});
+
+describe('[review S2] room joins wait for the server\'s auth:ready', () => {
+  it('emits before auth:ready are held (duplicates collapse) and sent once it arrives', () => {
+    const s = live();
+    const sock = getSocket();
+    for (const orderId of ['j1', 'j2', 'j3']) sock.emit('order:subscribe', { orderId });
+    sock.emit('chat:join', { roomId: 'c1' });
+    sock.emit('vendor:subscribe', { vendorId: 'v1' });
+    sock.emit('order:subscribe', { orderId: 'j1' }); // the same join again
+    expect(s.sent).toEqual([]); // RED before: five packets inside the server's four-packet window
+    s.authorized();
+    expect(s.sent).toEqual([
+      ['order:subscribe', { orderId: 'j2' }],
+      ['order:subscribe', { orderId: 'j3' }],
+      ['chat:join', { roomId: 'c1' }],
+      ['vendor:subscribe', { vendorId: 'v1' }],
+      ['order:subscribe', { orderId: 'j1' }],
+    ]);
+    sock.emit('chat:leave', { roomId: 'c1' });
+    expect(s.sent.at(-1)).toEqual(['chat:leave', { roomId: 'c1' }]); // authorized: straight through
+  });
+
+  it('each new connection waits again; an older API that never says auth:ready gets them after the fallback', async () => {
+    const s = live();
+    s.authorized();
+    s.connected = false;
+    s.fire('disconnect', 'transport close');
+    const sock = getSocket();
+    sock.emit('vendor:subscribe', { vendorId: 'v1' });
+    s.admitted();
+    sock.emit('vendor:subscribe', { vendorId: 'v1' });
+    expect(s.sent).toEqual([]);
+    await vi.advanceTimersByTimeAsync(SOCKET_AUTH_READY_FALLBACK_MS);
+    expect(s.sent).toEqual([['vendor:subscribe', { vendorId: 'v1' }]]);
+  });
+
+  it('join -> leave -> join while waiting ends joined (the latest copy keeps its place)', () => {
+    const s = live();
+    const sock = getSocket();
+    sock.emit('chat:join', { roomId: 'c1' });
+    sock.emit('chat:leave', { roomId: 'c1' });
+    sock.emit('chat:join', { roomId: 'c1' });
+    s.authorized();
+    expect(s.sent).toEqual([['chat:leave', { roomId: 'c1' }], ['chat:join', { roomId: 'c1' }]]);
+  });
+
+  it('a store handoff drops the joins held for the retired connection', () => {
+    const s = live();
+    getSocket().emit('vendor:subscribe', { vendorId: 'old-store' });
+    reconnectSocketForStoreHandoff();
+    s.admitted();
+    s.authorized();
+    expect(s.sent).toEqual([]);
   });
 });
