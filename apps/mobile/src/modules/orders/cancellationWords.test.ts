@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { customerCancellationWords, parseCustomerCancellation } from '@swift/types';
+import { customerCancellationWords, parseCustomerCancellation } from '@swift/types/src/customer-cancellation-words';
 
 // ---------------------------------------------------------------------------
 // [owner 8 Nov 2026] The words for a cancelled order, by who closed it (@swift/types order-words.ts): the activity

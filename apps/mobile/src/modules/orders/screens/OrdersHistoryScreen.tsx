@@ -20,7 +20,8 @@ import { toast } from '../../../kit/toast';
 // The single authority for what a status is CALLED — type-aware, so a ride is
 // never described with a store's words. This screen owns tone, never wording.
 import { orderStatusLabel, presentedVertical } from '../../../lib/orderStatus';
-import { customerCancellationWords, type OrderVerticalFacts } from '@swift/types';
+import type { OrderVerticalFacts } from '@swift/types';
+import { customerCancellationWords } from '@swift/types/src/customer-cancellation-words';
 import {
   Header, Photo,
   EmptyState, ErrorState, Money,

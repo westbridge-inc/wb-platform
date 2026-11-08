@@ -53,7 +53,7 @@ import { rideIsOver } from '../../../lib/rideAfterTrip';
 import { pickupShowsCode, pickupWords } from '../pickup-words';
 import { BookingRescheduleCard } from '../BookingRescheduleCard';
 import { appointmentBookingView } from '../../../lib/appointmentBooking';
-import { customerCancellationWords } from '@swift/types';
+import { customerCancellationWords } from '@swift/types/src/customer-cancellation-words';
 
 /** The store kinds Search can filter by (its own chips): a declined order opens Search on the same kind. */
 const SEARCH_TYPES: ReadonlySet<unknown> = new Set(['RESTAURANT', 'SUPERMARKET', 'STORE', 'SERVICE']);
