@@ -113,10 +113,21 @@ export function UpdateRequiredScreen({ platform, country }: { platform: StorePla
   );
 }
 
+/** [CALLS-REACH] Is the update gate covering the app? Nothing else asks the person anything meanwhile. */
+let gateShowing = false;
+export function updateGateShowing(): boolean {
+  return gateShowing;
+}
+
 export function UpdateRequiredGate({ readBuild = nativeBuildNumber }: { readBuild?: () => string | null }) {
   const required = useUpdateRequired(readBuild);
   const country = useAuthStore((s) => s.countryCode);
   const platform = storePlatformOf(Platform.OS);
+  const showing = required && !!platform;
+  useEffect(() => {
+    gateShowing = showing;
+    return () => { gateShowing = false; };
+  }, [showing]);
   if (!required || !platform) return null;
   return (
     <Modal visible animationType="none" transparent={false} onRequestClose={() => {}}>

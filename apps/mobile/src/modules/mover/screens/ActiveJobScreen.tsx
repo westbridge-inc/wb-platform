@@ -44,6 +44,7 @@ import { hasOpenStop, nextStopSequence, rideStops } from '../../../lib/taxiItine
 import { driverMapLine } from '../../../lib/routeLine';
 import { useWaitingClock } from '../../../hooks/useWaitingClock';
 import { useNavigationFocused } from '../../../hooks/useNavigationFocused';
+import { useCallsAskMoment } from '../../../hooks/useCallsAskMoment';
 import { liveWaiting } from '../../../lib/taxiWaiting';
 import { afterDismiss } from '../../../kit/after-dismiss';
 import { moverStatusLabel } from '../../../lib/orderStatus';
@@ -295,6 +296,8 @@ export function ActiveJobScreen({ navigation, route }: any) {
   // screen is in front.
   const waiting = liveWaiting(isDriver ? liveJob : null);
   const shown = useNavigationFocused(navigation);
+  // [CALLS-REACH] The active job in front: a fitting moment for the in-app calls microphone (Android).
+  useCallsAskMoment(shown && !!liveJob);
   // [TAXI multi-stop · part 4] With a stop open, the passenger-didn't-come-back
   // outcome opens only at the server's grace time for that stop.
   const noShowOpen = useNoShowOpen(isDriver ? liveJob : null);

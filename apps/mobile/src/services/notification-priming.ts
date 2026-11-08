@@ -25,17 +25,51 @@ export const PRIME_COPY: Record<PrimeMoment, string> = {
 const store = new MMKV({ id: 'swift-notification-priming' });
 const KEY_ASKED = 'priming.asked';
 
+/** [CALLS-REACH] Android's microphone for in-app calls, asked through this same card slot: one ask at a time. */
+export type CallsMicAudience = 'customer' | 'partner';
+/** allow: go on to the system prompt. not-now: the person said no. dismissed: closed without an answer (back,
+ *  outside, or the wait ran out), never counted as a no. */
+export type CallsMicAnswer = 'allow' | 'not-now' | 'dismissed';
+
 interface PrimeState {
   visibleMoment: PrimeMoment | null;
+  /** The in-app calls microphone card, while it shows (the notifications card waits behind it). */
+  micAsk: CallsMicAudience | null;
   show: (moment: PrimeMoment) => void;
   dismiss: () => void;
 }
 
 export const usePrimeStore = create<PrimeState>((set) => ({
   visibleMoment: null,
+  micAsk: null,
   show: (moment) => set({ visibleMoment: moment }),
   dismiss: () => set({ visibleMoment: null }),
 }));
+
+let micAnswer: ((answer: CallsMicAnswer) => void) | null = null;
+
+/** Is any priming card showing (or waiting to)? Nothing else asks meanwhile. */
+export function primeCardShowing(): boolean {
+  const s = usePrimeStore.getState();
+  return s.visibleMoment != null || s.micAsk != null;
+}
+
+/** [CALLS-REACH] Show the microphone card. Null when another card is showing: never two asks at once. */
+export function askCallsMicrophone(audience: CallsMicAudience): Promise<CallsMicAnswer> | null {
+  if (primeCardShowing() || micAnswer) return null;
+  return new Promise<CallsMicAnswer>((resolve) => {
+    micAnswer = resolve;
+    usePrimeStore.setState({ micAsk: audience });
+  });
+}
+
+/** The card's answer (or a close / a time-out as `dismissed`). Hides the card; the notifications card may follow. */
+export function answerCallsMicrophone(answer: CallsMicAnswer): void {
+  const resolve = micAnswer;
+  micAnswer = null;
+  usePrimeStore.setState({ micAsk: null });
+  resolve?.(answer);
+}
 
 export function markPrimeAsked(): void {
   store.set(KEY_ASKED, true);
@@ -72,5 +106,6 @@ export async function maybePrimeEarnerNotifications(
 export function resetPrimingForTests(): void {
   store.delete(KEY_ASKED);
   earnerAskedThisSession.clear();
-  usePrimeStore.setState({ visibleMoment: null });
+  micAnswer = null;
+  usePrimeStore.setState({ visibleMoment: null, micAsk: null });
 }

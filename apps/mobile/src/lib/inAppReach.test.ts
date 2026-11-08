@@ -28,10 +28,10 @@ describe('[CALLS-REACH] the live-order signal', () => {
     expect(reachSignal({ storeOrders: [{ id: 'd1', status: 'DELIVERED' }, { id: 'p1', status: 'PENDING' }] })).toEqual({ state: 'live', orderIds: ['p1'], audience: 'partner' });
   });
 
-  it('a passenger\'s ride counts; a finished one does not', () => {
+  it('a passenger\'s ride counts; a finished one does not (and alone it never proves "none")', () => {
     expect(reachSignal({ activeRide: { id: 't1', status: 'DRIVER_EN_ROUTE' } }).state).toBe('live');
-    expect(reachSignal({ activeRide: { id: 't1', status: 'COMPLETED' } }).state).toBe('none');
-    expect(reachSignal({ activeRide: null }).state).toBe('none');
+    expect(reachSignal({ activeRide: { id: 't1', status: 'COMPLETED' } }).state).toBe('unknown');
+    expect(reachSignal({ activeRide: null, customerLive: { items: [] } }).state).toBe('none');
   });
 
   it('every finished status is not live (the server\'s TERMINAL_ORDER_STATUSES)', () => {
@@ -43,11 +43,24 @@ describe('[CALLS-REACH] the live-order signal', () => {
     }
   });
 
-  it('nothing read yet is "unknown" (never a reason to unregister); an empty read is "none"', () => {
+  it('nothing read yet is "unknown"; "none" only when every read that matters is loaded and empty', () => {
     expect(reachSignal({})).toEqual({ state: 'unknown', orderIds: [], audience: null });
     expect(reachSignal({ moverActive: [undefined] }).state).toBe('unknown');
     expect(reachSignal({ customerLive: { items: [] } }).state).toBe('none');
-    expect(reachSignal({ storeOrders: [] }).state).toBe('none');
+    // [review S2-1] A partner read alone never says "none" (the customer list is not read yet).
+    expect(reachSignal({ storeOrders: [] }).state).toBe('unknown');
+  });
+
+  it('[review S2-1] a missing or evicted partner read is "unknown", never "no live order"', () => {
+    const emptyCustomer = { customerLive: { items: [] } };
+    // a store owner whose board is not loaded (switched to the customer side, board evicted after 30 min)
+    expect(reachSignal(emptyCustomer, { store: true }).state).toBe('unknown');
+    expect(reachSignal({ ...emptyCustomer, storeOrders: [] }, { store: true }).state).toBe('none');
+    // a mover whose active job is not read
+    expect(reachSignal(emptyCustomer, { mover: true }).state).toBe('unknown');
+    expect(reachSignal({ ...emptyCustomer, moverActive: [null] }, { mover: true }).state).toBe('none');
+    // anyone, before the customer list is read
+    expect(reachSignal({ storeOrders: [], moverActive: [null] }, { store: true, mover: true }).state).toBe('unknown');
   });
 
   it('a person on both sides reads the customer words', () => {
@@ -59,7 +72,7 @@ describe('[CALLS-REACH] the live-order signal', () => {
 describe('[CALLS-REACH] read from the React Query cache, never fetched', () => {
   it('the keys are the hooks\' own keys (census over the hooks\' source)', () => {
     const src = (f: string) => readFileSync(new URL(f, import.meta.url), 'utf8');
-    expect(src('../hooks/customer.ts')).toContain("queryKey: [...customerKeys.orders, 'live'],");
+    expect(src('../hooks/customer.ts')).toContain("queryKey: [...customerKeys.orders, 'live']");
     expect(src('../hooks/customer.ts')).toContain("orders: ['customer', 'orders'] as const,");
     expect(src('../hooks/rides.ts')).toContain("queryKey: ['rides', 'active'],");
     expect(src('../hooks/mover.ts')).toContain("queryKey: ['mover', 'active', kind],");
@@ -72,6 +85,8 @@ describe('[CALLS-REACH] read from the React Query cache, never fetched', () => {
   it('a real QueryClient: what the app holds decides; a stacked rider\'s legs are not a job', () => {
     const client = new QueryClient();
     expect(reachSignalFromCache(client).state).toBe('unknown');
+    client.setQueryData(['vendor', 'orders'], []);
+    expect(reachSignalFromCache(client).state).toBe('unknown');
     client.setQueryData(['customer', 'orders', 'live'], { items: [], total: 0 });
     expect(reachSignalFromCache(client).state).toBe('none');
     client.setQueryData(['mover', 'active', 'RIDER', 'legs'], { legs: [{ id: 'leg' }], run: null });
@@ -81,6 +96,11 @@ describe('[CALLS-REACH] read from the React Query cache, never fetched', () => {
     client.setQueryData(['mover', 'active', 'RIDER'], null);
     client.setQueryData(['customer', 'orders', 'live'], { items: [{ id: 'o9', status: 'READY_FOR_PICKUP' }], total: 1 });
     expect(reachSignalFromCache(client)).toEqual({ state: 'live', orderIds: ['o9'], audience: 'customer' });
+    // a store owner: the board evicted from memory is "unknown", not "none"
+    client.setQueryData(['customer', 'orders', 'live'], { items: [], total: 0 });
+    client.removeQueries({ queryKey: ['vendor', 'orders'] });
+    expect(reachSignalFromCache(client, { store: true }).state).toBe('unknown');
+    expect(reachSignalFromCache(client, { store: false }).state).toBe('none');
   });
 
   it('only those queries move the signal', () => {

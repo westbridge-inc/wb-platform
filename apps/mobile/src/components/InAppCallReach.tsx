@@ -1,12 +1,25 @@
 import { useEffect, useState } from 'react';
-import { Alert, AppState, PermissionsAndroid } from 'react-native';
+import { AppState, PermissionsAndroid } from 'react-native';
 import { useLiveOrders } from '../hooks/customer';
 import { loadInAppConfig } from '../hooks/useInAppCall';
 import { isReachKey, reachSignalFromCache } from '../lib/inAppReach';
 import { queryClient } from '../lib/queryClient';
-import { REACH_RETRY_MS, createInAppReach, type InAppReach, type MicAnswer, type ReachDeps } from '../services/inAppReach';
-import { inAppVoiceAvailable, registerForInAppCalls, unregisterInAppCalls, voicePlatform } from '../services/inAppVoice';
+import { accountHoldsRole } from '../lib/roleLanding';
+import {
+  LAUNCH_QUIET_MS,
+  REACH_RETRY_MS,
+  callsAskMomentOpen,
+  createInAppReach,
+  onCallsAskMoment,
+  sinceLaunch,
+  type InAppReach,
+  type MicAnswer,
+  type ReachDeps,
+} from '../services/inAppReach';
+import { mayBeRegistered, inAppVoiceAvailable, registerForInAppCallsResult, unregisterInAppCalls, voicePlatform } from '../services/inAppVoice';
+import { answerCallsMicrophone, askCallsMicrophone, primeCardShowing } from '../services/notification-priming';
 import { useAuthStore } from '../stores/authStore';
+import { updateGateShowing } from './UpdateRequiredGate';
 
 // ---------------------------------------------------------------------------
 // [CALLS-REACH · live test 8 Nov 2026] App-wide: a phone on a live order can be rung in the app, not only
@@ -44,35 +57,48 @@ function micMemory(): ReachDeps['memory'] {
   };
 }
 
-/** Swift's own words before Android's bare system prompt. Resolves true on "Continue". */
-function explain(title: string, body: string): Promise<boolean> {
-  return new Promise((resolve) => {
-    Alert.alert(title, body, [
-      { text: 'Not now', style: 'cancel', onPress: () => resolve(false) },
-      { text: 'Continue', onPress: () => resolve(true) },
-    ], { cancelable: true, onDismiss: () => resolve(false) });
-  });
-}
-
 async function requestMic(): Promise<MicAnswer> {
   const answer = await PermissionsAndroid.request(PermissionsAndroid.PERMISSIONS.RECORD_AUDIO);
   if (answer === PermissionsAndroid.RESULTS.GRANTED) return 'granted';
   return answer === PermissionsAndroid.RESULTS.NEVER_ASK_AGAIN ? 'never_ask_again' : 'denied';
 }
 
+/** The terms to accept again are on screen, or not yet known for this session: no other question meanwhile. */
+function legalGatePending(): boolean {
+  const reads = queryClient.getQueriesData<{ needsAcceptance?: boolean }>({ queryKey: ['legal-acceptance'] });
+  const generation = useAuthStore.getState().sessionGeneration;
+  const mine = reads.find(([key]) => key[1] === generation);
+  return !mine || !mine[1] || mine[1].needsAcceptance === true;
+}
+
+/** [review S2-2] A fitting moment: a call-relevant screen drawn and in front, settled after launch, signed in, no gate,
+ *  no other card. */
+export function callsAskMomentNow(): boolean {
+  return callsAskMomentOpen()
+    && AppState.currentState === 'active'
+    && sinceLaunch() >= LAUNCH_QUIET_MS
+    && useAuthStore.getState().isAuthenticated
+    && !legalGatePending()
+    && !updateGateShowing()
+    && !primeCardShowing();
+}
+
 export function appReachDeps(): ReachDeps {
   return {
     available: inAppVoiceAvailable,
     enabled: async () => (await loadInAppConfig())?.enabled === true,
-    register: () => registerForInAppCalls(async (platform, purpose) => (await (await calls()).appToken(platform, purpose)).data.data.token),
+    register: (force) => registerForInAppCallsResult(async (platform, purpose) => (await (await calls()).appToken(platform, purpose)).data.data.token, { force }),
     unregister: () => unregisterInAppCalls(async (platform) => (await (await calls()).appToken(platform, 'unregister')).data.data.token),
+    mayBeRegistered,
     platform: voicePlatform,
-    foreground: () => AppState.currentState === 'active',
     micGranted: () => PermissionsAndroid.check(PermissionsAndroid.PERMISSIONS.RECORD_AUDIO),
-    explain,
+    askMoment: callsAskMomentNow,
+    ask: askCallsMicrophone,
+    cancelAsk: () => answerCallsMicrophone('dismissed'),
     requestMic,
     memory: micMemory(),
     now: () => Date.now(),
+    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   };
 }
 
@@ -82,6 +108,9 @@ const appReach = () => (reach ??= createInAppReach(appReachDeps()));
 export function InAppCallReach(): null {
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated);
   const sessionGeneration = useAuthStore((s) => s.sessionGeneration);
+  const user = useAuthStore((s) => s.user) as Parameters<typeof accountHoldsRole>[0];
+  const holdsStore = accountHoldsRole(user, 'vendor');
+  const holdsMover = accountHoldsRole(user, 'mover');
   const available = inAppVoiceAvailable();
   const signedIn = isAuthenticated && available;
   const [enabled, setEnabled] = useState(false);
@@ -109,25 +138,36 @@ export function InAppCallReach(): null {
 
   useEffect(() => {
     if (!signedIn || !enabled) return undefined;
+    const roles = { store: holdsStore, mover: holdsMover };
     // The board and the job reads change every few seconds: the same answer is passed on at most once a minute
     // (the register keeps its own ten-minute rhythm), a changed one at once.
     let last = '';
     let lastAt = 0;
-    const push = () => {
-      const signal = reachSignalFromCache(queryClient);
-      const key = `${signal.state}:${signal.orderIds.join(',')}`;
-      const now = Date.now();
-      if (key === last && now - lastAt < REACH_RETRY_MS) return;
-      last = key;
-      lastAt = now;
-      void appReach().update(signal);
+    let stopped = false;
+    const run = (always: boolean) => {
+      // [review S2-1] Read AFTER the event's own tick: a sign-out or account switch clears the cache before (switch)
+      // or after (sign-out) it changes the session, so a clear's events are seen only once the session has moved
+      // on, and are dropped. Only this session's own reads ever count.
+      setTimeout(() => {
+        const auth = useAuthStore.getState();
+        if (stopped || !auth.isAuthenticated || auth.sessionGeneration !== sessionGeneration) return;
+        const signal = reachSignalFromCache(queryClient, roles);
+        const key = `${signal.state}:${signal.orderIds.join(',')}`;
+        const now = Date.now();
+        if (!always && key === last && now - lastAt < REACH_RETRY_MS) return;
+        last = key;
+        lastAt = now;
+        void appReach().update(signal);
+      }, 0);
     };
-    push();
+    run(true);
     const unsubscribe = queryClient.getQueryCache().subscribe((event) => {
-      if ((event.type === 'updated' || event.type === 'added' || event.type === 'removed') && isReachKey(event.query.queryKey)) push();
+      if ((event.type === 'updated' || event.type === 'added' || event.type === 'removed') && isReachKey(event.query.queryKey)) run(false);
     });
-    return unsubscribe;
-  }, [signedIn, enabled, front, sessionGeneration]);
+    // A fitting screen opened (the Android microphone may be asked now).
+    const offMoment = onCallsAskMoment(() => run(true));
+    return () => { stopped = true; unsubscribe(); offMoment(); };
+  }, [signedIn, enabled, front, sessionGeneration, holdsStore, holdsMover]);
 
   return null;
 }

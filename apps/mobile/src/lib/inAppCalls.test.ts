@@ -17,7 +17,7 @@ describe('[INAPP-CALLS] offerInApp', () => {
 
 describe('[INAPP-CALLS] words', () => {
   it('every refusal is plain words with a way forward, and none shows a number', () => {
-    for (const code of ['INAPP_CALLS_OFF', 'CALL_ORDER_NOT_LIVE', 'CALL_IN_PROGRESS', 'CALL_LIMIT_REACHED', 'INAPP_NO_ONE', 'INAPP_NOT_FOR_TARGET', 'INAPP_NOT_REACHABLE', 'MIC_REFUSED', 'WHATEVER', null]) {
+    for (const code of ['INAPP_CALLS_OFF', 'CALL_ORDER_NOT_LIVE', 'CALL_IN_PROGRESS', 'CALL_LIMIT_REACHED', 'INAPP_NO_ONE', 'INAPP_NOT_FOR_TARGET', 'INAPP_NOT_REACHABLE', 'INAPP_CALLS_TROUBLE', 'MIC_REFUSED', 'WHATEVER', null]) {
       const text = inAppErrorText(code);
       expect(text.length, String(code)).toBeGreaterThan(20);
       expect(text).not.toMatch(/\d{3}/);
@@ -26,7 +26,10 @@ describe('[INAPP-CALLS] words', () => {
   });
 
   it('[CALLS-REACH] nobody for them can take an in-app call: the server\'s own words, never a misleading error', () => {
-    expect(inAppErrorText('INAPP_NOT_REACHABLE')).toBe("They can't take Swift calls right now. Try again soon, or message them in chat.");
+    expect(inAppErrorText('INAPP_NOT_REACHABLE')).toBe("They can't take calls in the Swift app. Message them in chat instead.");
+    expect(INAPP_WORDS.notReachable).not.toMatch(/right now|try again/i); // [review S3-4] they may have refused for good
+    // [review S3-4] Swift's own trouble (the registry down) is never told as theirs.
+    expect(inAppErrorText('INAPP_CALLS_TROUBLE')).toBe('Swift calls are having trouble right now. Try again in a minute, or message them in chat.');
     // Swift rings their phone only while the phone bridge is on: the "calling" note never promises it.
     expect(INAPP_WORDS.callingHow).not.toMatch(/rings their phone/i);
   });

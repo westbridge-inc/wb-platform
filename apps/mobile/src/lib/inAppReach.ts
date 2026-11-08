@@ -21,8 +21,9 @@ const FINISHED = new Set(['DELIVERED', 'COMPLETED', 'CANCELLED', 'REFUNDED', 'FA
 export type ReachAudience = 'customer' | 'partner';
 
 /**
- * live: on at least one live order. none: the reads the app holds say there is none. unknown: nothing read
- * yet (never a reason to unregister).
+ * live: on at least one live order. none: EVERY read that matters for this person is loaded and shows none.
+ * unknown: one of them is not read, or was evicted. Neither "none" nor "unknown" unregisters by itself: the
+ * server is asked (services/inAppReach).
  */
 export interface ReachSignal {
   state: 'live' | 'none' | 'unknown';
@@ -54,8 +55,13 @@ function liveRow(row: unknown): { live: boolean; id: string | null } {
   return { live: !FINISHED.has(status), id };
 }
 
-export function reachSignal(sources: ReachSources): ReachSignal {
-  let known = false;
+/** Which partner reads matter for this person (the account holds the role). The customer list always does. */
+export interface ReachRoles {
+  store?: boolean;
+  mover?: boolean;
+}
+
+export function reachSignal(sources: ReachSources, roles: ReachRoles = {}): ReachSignal {
   const customer: string[] = [];
   const partner: string[] = [];
   let customerLive = false;
@@ -73,27 +79,19 @@ export function reachSignal(sources: ReachSources): ReachSignal {
   };
 
   const list = sources.customerLive as { items?: unknown } | null | undefined;
-  if (list && typeof list === 'object' && Array.isArray(list.items)) {
-    known = true;
-    customerLive = take(list.items, customer) || customerLive;
-  }
-  if (sources.activeRide !== undefined) {
-    known = true;
-    customerLive = take([sources.activeRide], customer) || customerLive;
-  }
-  for (const job of sources.moverActive ?? []) {
-    if (job === undefined) continue;
-    known = true;
-    partnerLive = take([job], partner) || partnerLive;
-  }
-  if (Array.isArray(sources.storeOrders)) {
-    known = true;
-    partnerLive = take(sources.storeOrders, partner) || partnerLive;
-  }
+  const customerKnown = !!list && typeof list === 'object' && Array.isArray(list.items);
+  if (customerKnown) customerLive = take(list.items as unknown[], customer) || customerLive;
+  if (sources.activeRide !== undefined) customerLive = take([sources.activeRide], customer) || customerLive;
+  const jobs = (sources.moverActive ?? []).filter((job) => job !== undefined);
+  for (const job of jobs) partnerLive = take([job], partner) || partnerLive;
+  const storeKnown = Array.isArray(sources.storeOrders);
+  if (storeKnown) partnerLive = take(sources.storeOrders as unknown[], partner) || partnerLive;
 
   const orderIds = [...new Set([...customer, ...partner])];
   if (customerLive || partnerLive) return { state: 'live', orderIds, audience: customerLive ? 'customer' : 'partner' };
-  return { state: known ? 'none' : 'unknown', orderIds: [], audience: null };
+  // "none" only on every read that matters, loaded: a store owner's board, a mover's job, and the customer list.
+  const allKnown = customerKnown && (!roles.store || storeKnown) && (!roles.mover || jobs.length > 0);
+  return { state: allKnown ? 'none' : 'unknown', orderIds: [], audience: null };
 }
 
 /**
@@ -118,7 +116,7 @@ export function isReachKey(key: readonly unknown[]): boolean {
 }
 
 /** The signal from what the app holds in memory now. Reads only (never a fetch). */
-export function reachSignalFromCache(client: Pick<QueryClient, 'getQueryData' | 'getQueriesData'>): ReachSignal {
+export function reachSignalFromCache(client: Pick<QueryClient, 'getQueryData' | 'getQueriesData'>, roles: ReachRoles = {}): ReachSignal {
   return reachSignal({
     customerLive: client.getQueryData([...REACH_KEYS.customerLive]),
     activeRide: client.getQueryData([...REACH_KEYS.activeRide]),
@@ -126,7 +124,7 @@ export function reachSignalFromCache(client: Pick<QueryClient, 'getQueryData' | 
       .filter(([key]) => isMoverActive(key))
       .map(([, data]) => data),
     storeOrders: client.getQueryData([...REACH_KEYS.storeOrders]),
-  });
+  }, roles);
 }
 
 // ---------------------------------------------------------------------------

@@ -71,8 +71,11 @@ export const INAPP_WORDS = {
   notReached: CALL_WORDS.notReached,
   tryingPhone: 'They are not answering in the app. Swift is calling their phone now.',
   /** [CALLS-REACH 8 Nov] Nobody for them can take an in-app call (no phone registered to be rung) and Swift cannot
-   *  ring their phone instead (bridge off, or no number): the caller is told so, never a call that cannot ring. */
-  cannotTake: "They can't take Swift calls right now. Try again soon, or message them in chat.",
+   *  ring their phone instead (bridge off, or no number): the caller is told so, never a call that cannot ring.
+   *  [review S3-4] Not "right now": they may have turned the microphone off for good. */
+  cannotTake: "They can't take calls in the Swift app. Message them in chat instead.",
+  /** [review S3-4] Swift could not read which phones can ring (the registry is down): never blamed on them. */
+  trouble: 'Swift calls are having trouble right now. Try again in a minute, or message them in chat.',
 } as const;
 
 /** The one line the other person's call screen shows. Role words only: never a name, never a number. */
@@ -192,15 +195,29 @@ export async function currentIdentities(prisma: PrismaClient, config: InAppCalls
  * at most INAPP_MAX_CLIENTS. No registry, or it fails: none (the phone bridge takes the call).
  */
 export async function ringableIdentities(deps: Pick<InAppDeps, 'prisma' | 'config' | 'registry'>, userIds: string[], now: Date): Promise<string[]> {
+  return (await ringableCheck(deps, userIds, now)).identities;
+}
+
+/**
+ * [review S3-4] The same, saying whether the registry could be read at all: "nobody registered" is about them,
+ * "the registry is down" is Swift's own trouble and must never be told to the caller as theirs.
+ */
+export async function ringableCheck(
+  deps: Pick<InAppDeps, 'prisma' | 'config' | 'registry'>,
+  userIds: string[],
+  now: Date,
+): Promise<{ identities: string[]; registryOk: boolean }> {
   const identities = await currentIdentities(deps.prisma, deps.config, userIds, now);
-  if (identities.length === 0 || !deps.registry) return [];
-  const at = await deps.registry.registeredAt(identities).catch(() => identities.map(() => null));
-  return identities
+  if (identities.length === 0) return { identities: [], registryOk: true };
+  if (!deps.registry) return { identities: [], registryOk: false };
+  let registryOk = true;
+  const at = await deps.registry.registeredAt(identities).catch(() => { registryOk = false; return identities.map(() => null); });
+  return { registryOk, identities: identities
     .map((identity, i) => ({ identity, at: at[i] ?? null }))
     .filter((x): x is { identity: string; at: number } => typeof x.at === 'number')
     .sort((a, b) => b.at - a.at)
     .slice(0, INAPP_MAX_CLIENTS)
-    .map((x) => x.identity);
+    .map((x) => x.identity) };
 }
 
 /** [server review 6] Only the connect token may place a call: register / unregister tokens carry no outgoing grant. */
@@ -280,7 +297,9 @@ export async function startInAppCall(deps: InAppDeps, input: StartInAppInput): P
   // bridge off. The call was started and only then hung up with "We couldn't reach them", spending one of the
   // order's attempts. Now: no phone of theirs can ring in the app and Swift cannot ring their phone instead ->
   // refused before any row, in plain words (the phone shows them). Checked again when Twilio connects (a race).
-  if ((await ringableIdentities(deps, people, now)).length === 0 && !phoneCanTakeIt(deps, order, input.target)) {
+  const reach = await ringableCheck(deps, people, now);
+  if (reach.identities.length === 0 && !phoneCanTakeIt(deps, order, input.target)) {
+    if (!reach.registryOk) throw new AppError(503, 'INAPP_CALLS_TROUBLE', INAPP_WORDS.trouble);
     throw new AppError(409, 'INAPP_NOT_REACHABLE', INAPP_WORDS.cannotTake);
   }
   const ledger = deps.ledger;
@@ -423,7 +442,7 @@ export async function handleInAppStep(
       const people = order && !isTerminalOrderStatus(order.status)
         ? (await appPeopleFor(deps.prisma, order, session.calleeRole as CallTarget)).filter((id) => id !== session.callerUserId)
         : [];
-      const clients = await ringableIdentities(deps, people, now);
+      const { identities: clients, registryOk } = await ringableCheck(deps, people, now);
       // Single use: the first connect takes the row; a replay of the same call id is hung up.
       const taken = await deps.prisma.callSession.updateMany({
         where: { id: session.id, providerCallId: null, endedAt: null, status: INAPP_STATUS.RINGING_APP },
@@ -440,7 +459,8 @@ export async function handleInAppStep(
       if (!order || clients.length === 0) {
         await deps.prisma.callSession.updateMany({ where: { id: session.id, endedAt: null }, data: notConnected });
         // [CALLS-REACH] A live order with nobody who can take it in the app: the same words the start refuses with.
-        return hangup(order && !isTerminalOrderStatus(order.status) ? INAPP_WORDS.cannotTake : INAPP_WORDS.notReached);
+        // [review S3-4] The registry down is Swift's trouble, never theirs.
+        return hangup(!order || isTerminalOrderStatus(order.status) ? INAPP_WORDS.notReached : registryOk ? INAPP_WORDS.cannotTake : INAPP_WORDS.trouble);
       }
       return {
         step: {

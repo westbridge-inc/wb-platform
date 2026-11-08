@@ -43,8 +43,11 @@ export const INAPP_WORDS = {
   reachTitle: 'Let Swift calls reach you',
   reachWhyCustomer: 'So the store, rider or driver can call you in Swift, allow the microphone. Swift never records calls.',
   reachWhyPartner: 'So the people on your orders can call you in Swift, allow the microphone. Swift never records calls.',
-  /** The caller's words when nobody for them can take an in-app call right now (server code INAPP_NOT_REACHABLE). */
-  notReachable: "They can't take Swift calls right now. Try again soon, or message them in chat.",
+  /** The caller's words when nobody for them can take an in-app call (server code INAPP_NOT_REACHABLE). Not "right
+   *  now": they may have turned the microphone off for good. */
+  notReachable: "They can't take calls in the Swift app. Message them in chat instead.",
+  /** Swift could not tell which phones can ring (server code INAPP_CALLS_TROUBLE): Swift's trouble, never theirs. */
+  callsTrouble: 'Swift calls are having trouble right now. Try again in a minute, or message them in chat.',
 } as const;
 
 /** The server's refusal, in the person's words. Unknown codes get a safe general line. */
@@ -57,6 +60,7 @@ export function inAppErrorText(code: string | null | undefined): string {
     case 'INAPP_NO_ONE': return 'There is no one to call in the app for this. Message them in chat, or ask support.';
     case 'INAPP_NOT_FOR_TARGET': return 'They do not have the Swift app. Use Call via Swift instead.';
     case 'INAPP_NOT_REACHABLE': return INAPP_WORDS.notReachable;
+    case 'INAPP_CALLS_TROUBLE': return INAPP_WORDS.callsTrouble;
     case 'MIC_REFUSED': return INAPP_WORDS.micRefused;
     // [owner 6 Nov] The bridge's daily rules hold for in-app calls too: the bridge's own words.
     case 'CALL_CALLER_BUSY':

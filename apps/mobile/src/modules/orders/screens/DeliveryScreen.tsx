@@ -38,6 +38,7 @@ import { VERTICAL_TINT } from '../../../kit/vertical-tint';
 import { STALE_AFTER_MS } from '../../movement/map/interpolation';
 import { useDeadlineClock } from '../../../hooks/useDeadlineClock';
 import { useScreenLive } from '../../../hooks/useScreenLive';
+import { useCallsAskMoment } from '../../../hooks/useCallsAskMoment';
 import { customerKeys } from '../../../hooks/customer';
 import { orderPrepFacts, orderStepState, orderTimelineIndex } from '../timeline-states';
 import { MmgPaymentClaimCard } from '../MmgPaymentClaimCard';
@@ -547,6 +548,8 @@ export function DeliveryScreen() {
   // passing (promiseLine) — and never while the screen is hidden or Swift is in the background. It used to redraw this
   // whole screen every 3 s, unfocused and on finished orders too. Shown again, the clock is read at once.
   const screenLive = useScreenLive();
+  // [CALLS-REACH] Order tracking, in front, on a live order: a fitting moment for the in-app calls microphone (Android).
+  useCallsAskMoment(screenLive && !!o && !isTerminalOrderSnapshot(o));
   const [nowTs, readClockNow] = useDeadlineClock([
     Date.parse(o?.holdExpiresAt ?? ''),
     lastCourierFixAt != null ? lastCourierFixAt + STALE_AFTER_MS : null,

@@ -152,20 +152,48 @@ async function canBeRung(): Promise<boolean> {
   try { return await PermissionsAndroid.check(PermissionsAndroid.PERMISSIONS.RECORD_AUDIO); } catch { return false; }
 }
 
+/** What a register attempt came to. `not-live`: the server refused it because the person is on no live order
+ *  (403 INAPP_NO_LIVE_ORDER), the one positive answer that this phone should no longer be rung. */
+export type RegisterResult = 'registered' | 'throttled' | 'unavailable' | 'no-mic' | 'not-live' | 'failed' | 'stale';
+
+const errorCode = (e: unknown): string | null =>
+  (e as { response?: { data?: { error?: { code?: unknown } } } })?.response?.data?.error?.code as string | null ?? null;
+
+/**
+ * [CALLS-REACH S3-1] Sign-out / account-switch boundary. Every unregister moves it on; a register that STARTED before
+ * the move never saves its throttle or the launch flag (it would mark the next account, or hold its register back for
+ * ten minutes). `marks` counts saved registrations: an unregister that finishes after a newer registration leaves
+ * that registration's flag and throttle alone.
+ */
+let voiceGeneration = 0;
+let marks = 0;
+
+/** Could this phone still hold an in-app binding (registered this run, or in an earlier one)? */
+export function mayBeRegistered(): boolean {
+  return registeredAt > 0 || registeredOnce();
+}
+
 /**
  * Let this phone be rung in the app. `fetchToken` asks the server (only people on a live order get one; the
- * server rings only phones that registered). At most every ten minutes; a refusal or failure is quiet (the
- * phone bridge still reaches them).
+ * server rings only phones that registered). At most every ten minutes unless `force` (a check with the server
+ * after the app's own reads stopped showing a live order); a failure is quiet (the phone bridge still reaches them).
  * [native review S2] Android without the microphone: never registers (and removes an earlier registration), so
  * the server sends their calls to the phone bridge instead of a ring the SDK would drop.
  */
-export async function registerForInAppCalls(fetchToken: VoiceTokenFetch, now = Date.now(), wait = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))): Promise<boolean> {
+export async function registerForInAppCallsResult(
+  fetchToken: VoiceTokenFetch,
+  opts: { force?: boolean; now?: number; wait?: (ms: number) => Promise<void> } = {},
+): Promise<RegisterResult> {
+  const now = opts.now ?? Date.now();
+  const wait = opts.wait ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
   const v = getVoice();
-  if (!v || now - registeredAt < REGISTER_EVERY_MS) return false;
+  if (!v) return 'unavailable';
+  if (!opts.force && now - registeredAt < REGISTER_EVERY_MS) return 'throttled';
   if (!(await canBeRung())) {
-    if (registeredAt > 0 || registeredOnce()) await unregisterInAppCalls((platform) => fetchToken(platform, 'unregister'));
-    return false;
+    if (mayBeRegistered()) await unregisterInAppCalls((platform) => fetchToken(platform, 'unregister'));
+    return 'no-mic';
   }
+  const gen = voiceGeneration;
   const firstStart = !started;
   await startInAppVoice();
   const attempt = async () => { await v.register(await fetchToken(voicePlatform(), 'register')); };
@@ -173,16 +201,23 @@ export async function registerForInAppCalls(fetchToken: VoiceTokenFetch, now = D
     try {
       await attempt();
     } catch (err) {
-      if (!(firstStart && Platform.OS === 'ios')) throw err;
+      if (errorCode(err) === 'INAPP_NO_LIVE_ORDER' || !(firstStart && Platform.OS === 'ios')) throw err;
       await wait(FIRST_REGISTER_RETRY_MS);
       await attempt();
     }
-    registeredAt = now;
-    setRegisteredOnce(true);
-    return true;
-  } catch {
-    return false;
+  } catch (err) {
+    return errorCode(err) === 'INAPP_NO_LIVE_ORDER' ? 'not-live' : 'failed';
   }
+  if (gen !== voiceGeneration) return 'stale';
+  registeredAt = now;
+  marks += 1;
+  setRegisteredOnce(true);
+  return 'registered';
+}
+
+/** The yes/no form (the "Call in app" control's own registration). */
+export async function registerForInAppCalls(fetchToken: VoiceTokenFetch, now = Date.now(), wait = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))): Promise<boolean> {
+  return (await registerForInAppCallsResult(fetchToken, { now, wait })) === 'registered';
 }
 
 /** Bound so a slow network never holds up a sign-out. */
@@ -194,9 +229,12 @@ export const UNREGISTER_TIMEOUT_MS = 5_000;
  * credentials (the token names that session's identity and no other). The throttle is reset whatever
  * happens, so the next account registers at once under its own identity. If this fails (offline, the session
  * already refused), the server still never rings the old identity: it is per session and the session is gone.
+ * Also used when the phone should no longer be rung (no live order, the microphone taken away).
  */
 export async function unregisterInAppCalls(fetchToken: (platform: 'ios' | 'android') => Promise<string>): Promise<boolean> {
-  const wasRegistered = registeredAt > 0 || registeredOnce();
+  const wasRegistered = mayBeRegistered();
+  voiceGeneration += 1;
+  const mine = marks;
   registeredAt = 0;
   const v = getVoice();
   // [native review 4] Never registered on this phone (in-app calls off, or never offered): nothing to remove,
@@ -204,14 +242,18 @@ export async function unregisterInAppCalls(fetchToken: (platform: 'ios' | 'andro
   if (!v || !wasRegistered) return false;
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
-    const work = (async () => { await v.unregister(await fetchToken(voicePlatform())); setRegisteredOnce(false); return true; })();
+    const work = (async () => {
+      await v.unregister(await fetchToken(voicePlatform()));
+      if (marks === mine) setRegisteredOnce(false);
+      return true;
+    })();
     const timeout = new Promise<boolean>((resolve) => { timer = setTimeout(() => resolve(false), UNREGISTER_TIMEOUT_MS); });
     return await Promise.race([work, timeout]);
   } catch {
     return false;
   } finally {
     if (timer) clearTimeout(timer);
-    registeredAt = 0;
+    if (marks === mine) registeredAt = 0;
   }
 }
 
@@ -272,5 +314,6 @@ export async function endInAppCall(): Promise<void> {
 /** Tests only: forget everything; `loader` stands in for the package (default: the real one). */
 export function resetInAppVoiceForTests(loader: () => unknown = defaultLoad, flagsFactory: () => FlagStore = defaultFlags): void {
   sdk = undefined; voice = null; started = false; registeredAt = 0; active = null; load = loader;
+  voiceGeneration = 0; marks = 0;
   flagStore = undefined; makeFlags = flagsFactory;
 }

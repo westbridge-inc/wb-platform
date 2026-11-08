@@ -20,6 +20,7 @@ import { registerEmptyJsonBodyParser } from '../plugins/empty-json';
 import { callsRoutes, callVoiceRoutes, redisServiceDayLedger } from '../modules/calls/calls.routes';
 import { CALL_DAY_PREFIX, SERVICE_DAY_KEY, type ServiceDayLedger } from '../modules/calls/call-bridge';
 import { INAPP_REGISTRY_PREFIX, inAppCallsRoutes, inAppVoiceRoutes } from '../modules/calls/inapp-calls.routes';
+import type { InAppRegistry } from '../modules/calls/inapp-calls';
 import { inAppIdentity } from '../modules/calls/inapp-calls-switch';
 import type { CallRelayConfig } from '../modules/calls/call-relay-switch';
 import { TwilioVoiceProvider } from '../providers/voice/twilio-voice';
@@ -67,6 +68,11 @@ const faultyLedger: ServiceDayLedger = {
   count: async (since) => { if (ledgerFault === 'count-throws') throw new Error('redis down'); return realLedger().count(since); },
   add: async (member, at) => { if (ledgerFault === 'add-throws') throw new Error('redis down'); return realLedger().add(member, at); },
   remove: async (member) => realLedger().remove(member),
+};
+const brokenRegistry: InAppRegistry = {
+  mark: async () => { throw new Error('redis down'); },
+  clear: async () => { throw new Error('redis down'); },
+  registeredAt: async () => { throw new Error('redis down'); },
 };
 const users: string[] = [];
 const orderIds: string[] = [];
@@ -124,7 +130,10 @@ beforeAll(async () => {
   await app.register(callVoiceRoutes, { prefix: '/api/v1/calls/voice', provider: (c: CallRelayConfig) => provider(c.twilio) });
   await app.register(inAppCallsRoutes, { prefix: '/api/v1/calls/app', provider });
   await app.register(inAppCallsRoutes, { prefix: '/api/v1/calls/app-faulty', provider, ledger: faultyLedger });
+  // [CALLS-REACH · review S3-4] The registered-phones list down (Redis refusing): Swift's trouble, never the callee's.
+  await app.register(inAppCallsRoutes, { prefix: '/api/v1/calls/app-noreg', provider, registry: brokenRegistry });
   await app.register(inAppVoiceRoutes, { prefix: '/api/v1/calls/voice', provider });
+  await app.register(inAppVoiceRoutes, { prefix: '/api/v1/calls/voice-noreg', provider, registry: brokenRegistry });
   await app.ready();
   for (const key of await app.redis.keys(`${CALL_DAY_PREFIX}*`)) await app.redis.del(key);
 
@@ -204,13 +213,13 @@ const regToken = (token: string, platform = 'android') =>
   app.inject({ method: 'POST', url: '/api/v1/calls/app/token', headers: auth(token), payload: { platform } });
 
 /** Post a webhook exactly as Twilio would: form body, signature over the public URL + form. */
-function hook(step: string, form: Record<string, string> = {}, opts: { s?: string; sign?: 'ok' | 'none' | 'wrong-url' } = {}) {
+function hook(step: string, form: Record<string, string> = {}, opts: { s?: string; sign?: 'ok' | 'none' | 'wrong-url'; at?: string } = {}) {
   const fields = Object.fromEntries(Object.entries(form).map(([k, v]) => [k, [v]]));
   const query = opts.s !== undefined ? `?s=${encodeURIComponent(opts.s)}` : '';
   const signedUrl = opts.sign === 'wrong-url' ? `${BASE}/${step}?s=someone-else` : `${BASE}/${step}${query}`;
   const headers: Record<string, string> = { 'content-type': 'application/x-www-form-urlencoded' };
   if (opts.sign !== 'none') headers['x-twilio-signature'] = twilioSignature(TOKEN, signedUrl, fields);
-  return app.inject({ method: 'POST', url: `/api/v1/calls/voice/${step}${query}`, headers, payload: new URLSearchParams(form).toString() });
+  return app.inject({ method: 'POST', url: `${opts.at ?? '/api/v1/calls/voice'}/${step}${query}`, headers, payload: new URLSearchParams(form).toString() });
 }
 const sid = () => `CA${crypto.randomBytes(16).toString('hex')}`;
 /** The caller's phone connecting to the TwiML App with its call id (what voice.connect sends). */
@@ -841,7 +850,8 @@ describe('[INAPP-CALLS] only phones that registered are rung; the rest get the p
 // [CALLS-REACH · live test 8 Nov] The store called a customer on a pickup order (no rider) whose phone had never
 // registered, with the phone bridge off: the call was started, then hung up with "We couldn't reach them".
 describe('[CALLS-REACH] nobody for them can take an in-app call: the caller is told, before any row', () => {
-  const CANNOT_TAKE = "They can't take Swift calls right now. Try again soon, or message them in chat.";
+  const CANNOT_TAKE = "They can't take calls in the Swift app. Message them in chat instead.";
+  const TROUBLE = 'Swift calls are having trouble right now. Try again in a minute, or message them in chat.';
   const pickup = () => order({ orderType: 'FOOD_DELIVERY', fulfillment: 'PICKUP', customerId: diner.id, vendorId, status: 'PREPARING', acceptedAt: new Date() });
 
   it('bridge off, the customer\'s phone never registered: the store\'s start is refused (409 INAPP_NOT_REACHABLE), no row, no attempt spent', async () => {
@@ -886,5 +896,47 @@ describe('[CALLS-REACH] nobody for them can take an in-app call: the caller is t
       expect(r.body).toContain(`<Say>${CANNOT_TAKE}</Say><Hangup/>`);
       expect(await session(callId)).toMatchObject({ status: 'NOT_CONNECTED', durationSeconds: 0 });
     } finally { await registered(riderP); }
+  });
+
+  it('a stranger to the order gets 404 (no oracle), never the "can\'t take calls" answer', async () => {
+    await unregistered(diner);
+    try {
+      const o = await pickup();
+      const res = await start(stranger.token, o.id, 'customer');
+      expect(res.statusCode, res.body).toBe(404);
+      expect(res.json().error.code).toBe('NOT_FOUND');
+      expect(await rowsFor(o.id)).toHaveLength(0);
+    } finally { await registered(diner); }
+  });
+
+  it('bridge on but no number the bridge may dial for them: still refused (409 INAPP_NOT_REACHABLE), no row', async () => {
+    // The bridge never rings Swift's own caller ID: their number as the caller ID leaves nothing it may dial.
+    setEnv({ ...INAPP_ON, ...RELAY_ON, CALL_RELAY_CALLER_ID: diner.phone });
+    await unregistered(diner);
+    try {
+      const o = await pickup();
+      const res = await start(owner.token, o.id, 'customer');
+      expect(res.statusCode, res.body).toBe(409);
+      expect(res.json().error).toMatchObject({ code: 'INAPP_NOT_REACHABLE', message: CANNOT_TAKE });
+      expect(await rowsFor(o.id)).toHaveLength(0);
+    } finally { await registered(diner); }
+  });
+
+  it('the registered-phones list down: 503 INAPP_CALLS_TROUBLE in Swift\'s own words, never blamed on them; no row', async () => {
+    const o = await pickup();
+    const res = await app.inject({ method: 'POST', url: '/api/v1/calls/app-noreg', headers: auth(owner.token), payload: { orderId: o.id, target: 'customer', platform: 'ios' } });
+    expect(res.statusCode, res.body).toBe(503);
+    expect(res.json().error).toMatchObject({ code: 'INAPP_CALLS_TROUBLE', message: TROUBLE });
+    expect(res.body).not.toContain(CANNOT_TAKE);
+    expect(await rowsFor(o.id)).toHaveLength(0);
+  });
+
+  it('the list going down between the start and the connect: the caller hears Swift\'s trouble, not theirs', async () => {
+    const o = await liveFood();
+    const { callId } = (await start(diner.token, o.id, 'rider')).json().data;
+    const r = await hook('app', { CallSid: sid(), From: `client:${id(diner)}`, To: '', callId }, { at: '/api/v1/calls/voice-noreg' });
+    expect(r.body).not.toContain('<Dial');
+    expect(r.body).toContain(`<Say>${TROUBLE}</Say><Hangup/>`);
+    expect(await session(callId)).toMatchObject({ status: 'NOT_CONNECTED' });
   });
 });
