@@ -1,21 +1,22 @@
 import React from 'react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
-const rn = vi.hoisted(() => ({ Platform: { OS: 'ios' }, keyboardUp: false }));
-
-// A plain function call has no renderer behind it: the card's one ref is answered here (a fresh ref per call is
-// a fresh opening, which is what each case below is).
+// A plain function call has no renderer behind it: PopupCard's state keeps its first value and its effects are
+// not run (the keyboard wait is rendered with real React in card.keyboardWait.navigation.test.ts).
 vi.mock('react', async (original) => {
   const actual = await original<Record<string, any>>();
-  const hooks = { useRef: (value: unknown) => ({ current: value }) };
+  const hooks = {
+    useState: (value: unknown) => [typeof value === 'function' ? (value as () => unknown)() : value, () => {}],
+    useEffect: () => {},
+  };
   return { ...actual, ...hooks, default: { ...actual['default'], ...hooks } };
 });
 
 vi.mock('react-native', () => ({
-  Keyboard: { isVisible: () => rn.keyboardUp },
+  Keyboard: { isVisible: () => false, dismiss: () => {}, addListener: () => ({ remove: () => {} }) },
   KeyboardAvoidingView: 'KeyboardAvoidingView',
   Modal: 'Modal',
-  Platform: rn.Platform,
+  Platform: { OS: 'ios' },
   Pressable: 'Pressable',
   ScrollView: 'ScrollView',
   View: 'View',
@@ -36,7 +37,7 @@ vi.mock('@swift/ui', () => ({
 
 vi.mock('./text', () => ({ T: 'T' }));
 
-import { PopupCard, PopupTitle, popupFollowsKeyboard } from './card';
+import { PopupCard, PopupTitle } from './card';
 
 type TestElement = React.ReactElement<Record<string, unknown>, string>;
 
@@ -48,11 +49,6 @@ function onlyElement(value: unknown, expectedType: string): TestElement {
 }
 
 describe('PopupCard', () => {
-  beforeEach(() => {
-    rn.Platform.OS = 'ios';
-    rn.keyboardUp = false;
-  });
-
   it('preserves backdrop dismissal without hiding or activating modal controls', () => {
     const onClose = vi.fn();
     const child = React.createElement('Child', { accessibilityRole: 'button' });
@@ -142,44 +138,5 @@ describe('PopupCard', () => {
       center: true,
       children: 'Order placed',
     });
-  });
-});
-
-describe('[BUG-RATING-SHAKE] the card follows only a keyboard it opened (Android)', () => {
-  beforeEach(() => {
-    rn.Platform.OS = 'android';
-    rn.keyboardUp = false;
-  });
-
-  const layer = () => {
-    const modal = onlyElement(PopupCard({ visible: true, onClose: vi.fn(), children: null }), 'Modal');
-    return modal.props['children'] as TestElement;
-  };
-
-  it('opened over a keyboard (a field on the screen below): a plain full-height layer, no keyboard avoidance', () => {
-    rn.keyboardUp = true;
-    const plain = onlyElement(layer(), 'View');
-    expect(plain.props['style']).toEqual({ flex: 1 });
-    // The same backdrop and card are inside, so taps outside and Android back still close it.
-    const backdrop = onlyElement(plain.props['children'], 'Pressable');
-    expect(backdrop.props['style']).toEqual(expect.objectContaining({ flex: 1, justifyContent: 'center' }));
-  });
-
-  it('opened with no keyboard: it still lifts its own fields above the keyboard they open', () => {
-    const keyboardLayer = onlyElement(layer(), 'KeyboardAvoidingView');
-    expect(keyboardLayer.props).toMatchObject({ behavior: 'height', style: { flex: 1 } });
-  });
-
-  it('iOS is unchanged: always padding, whatever was up when it opened', () => {
-    rn.Platform.OS = 'ios';
-    rn.keyboardUp = true;
-    expect(onlyElement(layer(), 'KeyboardAvoidingView').props).toMatchObject({ behavior: 'padding' });
-  });
-
-  it('the rule itself', () => {
-    expect(popupFollowsKeyboard('android', true)).toBe(false);
-    expect(popupFollowsKeyboard('android', false)).toBe(true);
-    expect(popupFollowsKeyboard('ios', true)).toBe(true);
-    expect(popupFollowsKeyboard('ios', false)).toBe(true);
   });
 });
