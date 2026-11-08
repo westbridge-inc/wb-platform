@@ -101,12 +101,18 @@ describe('RolePickerScreen first-open contract', () => {
 });
 
 describe('[APP-INTRO] the welcome opens the website\'s four doors', () => {
-  // swiftgy.com's front page is the source of the words: a door renamed on one and not the other is caught here.
-  const web = readFileSync(join(process.cwd(), '../web/src/app/(welcome)/page.tsx'), 'utf8');
-  const webDoors = [...web.matchAll(/\{ href: '[^']+', title: '([^']+)', body: '([^']+)'/g)].map((m) => ({ title: m[1], body: m[2] }));
+  // swiftgy.com's front page is the source of the words. This release branch does not carry that page
+  // (apps/web/src/app/(welcome)/page.tsx is on main), so its four doors are written out here exactly as main's
+  // page has them; on main this test reads the page itself.
+  const webDoors = [
+    { title: 'Order with Swift', body: 'Browse every store, menu and price, then order food, groceries and more.' },
+    { title: 'Sell on Swift', body: 'One flat weekly fee. You keep every dollar you sell.' },
+    { title: 'Deliver with Swift', body: 'Every delivery fee and every tip is yours.' },
+    { title: 'Drive with Swift', body: 'Drive a taxi with Swift. Every fare and every tip is yours.' },
+  ];
   const appDoors = [...src.matchAll(/^\s+title: '([^']+)',\n\s+sub: '([^']+)',/gm)].map((m) => ({ title: m[1], body: m[2] }));
 
-  it('reads four doors on both sides (a parse that found nothing would pass forever)', () => {
+  it('reads four doors (a parse that found nothing would pass forever)', () => {
     expect(webDoors).toHaveLength(4);
     expect(appDoors).toHaveLength(4);
   });
