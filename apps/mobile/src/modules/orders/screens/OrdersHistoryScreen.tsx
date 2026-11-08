@@ -256,21 +256,14 @@ export function OrdersHistoryScreen() {
   // the top LEFT, a 44pt target. It used to be a bare back chip inside this
   // column; its 44pt touch box stretched across the column and centred the
   // chip, so Back sat in the top centre of the screen.
-  const backBar = <Header />;
-  // THE PAPER HEADER — ink on the page ground, no slab, no white pill.
-  const header = (
-    <View style={{ paddingTop: space.sm, paddingBottom: space.lg }}>
-      <T variant="micro" tone="muted">ORDERS & RIDES</T>
-      <T variant="title" style={{ marginTop: 2 }}>Your activity</T>
-    </View>
-  );
-  const headerBlock = <View style={{ paddingHorizontal: space['2xl'] }}>{header}</View>;
+  // [UI-HEADERS, owner 7 Nov] The title rides in that same row, centred, like
+  // Favourites: no separate "ORDERS & RIDES" eyebrow and big title below Back.
+  const backBar = <Header title="Your activity" />;
 
   if (!isAuthenticated) {
     return (
       <Screen>
         {backBar}
-        {headerBlock}
         <EmptyState picto="orders" title="Sign in to see orders" body="Your order history lives on your account." actionLabel="Sign in" onAction={promptLogin} />
       </Screen>
     );
@@ -528,42 +521,32 @@ export function OrdersHistoryScreen() {
     <Screen>
       {backBar}
       {orders.isLoading || liveOrders.isLoading ? (
-        <>
-          {headerBlock}
-          <LoadingBlock />
-        </>
+        <LoadingBlock />
       ) : orders.isError && rows.length === 0 && live.length === 0 ? (
         // Only when there is genuinely nothing to show. A history failure must
         // not blank out live orders that loaded fine — those are the ones the
         // customer opened this tab for. [APP-SPEED C] Nor history already on
         // screen: a failed refresh keeps its rows (with a retry line above them).
-        <>
-          {headerBlock}
-          <ErrorState
-            onRetry={() => {
-              void refreshHistory();
-              liveOrders.refetch();
-            }}
-          />
-        </>
+        <ErrorState
+          onRetry={() => {
+            void refreshHistory();
+            liveOrders.refetch();
+          }}
+        />
       ) : rows.length === 0 && live.length === 0 ? (
-        <>
-          {headerBlock}
-          <EmptyState
-            picto="orders"
-            title="No activity yet"
-            body="Orders and rides will show here."
-            actionLabel="Browse Swift"
-            onAction={() => navigation.navigate('Search')}
-          />
-        </>
+        <EmptyState
+          picto="orders"
+          title="No activity yet"
+          body="Orders and rides will show here."
+          actionLabel="Browse Swift"
+          onAction={() => navigation.navigate('Search')}
+        />
       ) : (
         <FlatList
           data={ledger}
           keyExtractor={(it) => it.id}
           ListHeaderComponent={
             <View>
-              {header}
               {liveOrders.isError ? (
                 // The live query failed. Saying nothing here would render an
                 // absence as "nothing is in progress", which is the one thing
@@ -614,7 +597,7 @@ export function OrdersHistoryScreen() {
               tintColor={color.brand[500]}
             />
           }
-          contentContainerStyle={{ paddingHorizontal: space['2xl'], paddingBottom: space['3xl'] }}
+          contentContainerStyle={{ paddingHorizontal: space['2xl'], paddingTop: space.md, paddingBottom: space['3xl'] }}
           onEndReachedThreshold={0.5}
           onEndReached={() => {
             // [APP-SPEED C · review S2-1] Never while a refresh is on its way: fetchNextPage would cancel it (its

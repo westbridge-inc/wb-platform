@@ -4,9 +4,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import * as DocumentPicker from 'expo-document-picker';
 import { Feather } from '@expo/vector-icons';
 import { color, font, fontSize, radius, space } from '@swift/ui';
-import { Card, PillButton, T } from '../../../kit';
-import { PressableScale } from '../../../kit/pressable-scale';
-import { touchTarget } from '../../../kit/touch-target';
+import { Card, Header, PillButton, T } from '../../../kit';
 import { toast } from '../../../kit/toast';
 import { useImportAutomap, useImportItems, useImportFile } from '../../../hooks/vendorops';
 import { importCheckSummary, importPhotoNotesLine } from '../../../lib/catalogueCheck';
@@ -127,13 +125,9 @@ export function VendorBulkImportScreen({ navigation }: any) {
 
   return (
     <SafeAreaView style={{ flex: 1, backgroundColor: color.surface.base }} edges={['top']}>
-      <View style={{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: space.lg, paddingVertical: space.sm }}>
-        {/* [UI-SWEEP U-P2 census] Back is 44pt on its own, not only through hitSlop. */}
-        <PressableScale onPress={() => navigation?.goBack?.()} hitSlop={8} accessibilityRole="button" accessibilityLabel="Back" style={touchTarget(24)}>
-          <Feather name="chevron-left" size={24} color={color.text.primary} />
-        </PressableScale>
-        <T variant="body" weight="bold" style={{ marginLeft: space.md }}>Bulk import</T>
-      </View>
+      {/* [UI-HEADERS, owner 7 Nov] The kit Header every pushed screen uses (Favourites):
+          Back at the top left and the title centred in the same row. */}
+      <Header title="Bulk import" onBack={() => navigation?.goBack?.()} />
       <ScrollView
         style={{ flex: 1 }}
         contentContainerStyle={{ paddingHorizontal: 16, paddingBottom: 32 }}
