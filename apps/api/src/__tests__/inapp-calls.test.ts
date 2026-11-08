@@ -302,7 +302,15 @@ describe('[INAPP-CALLS] tokens: only the people on a live order, opaque identity
     expect(s.statusCode).toBe(403);
     expect(s.json().error.code).toBe('INAPP_NO_LIVE_ORDER');
     await order({ orderType: 'FOOD_DELIVERY', fulfillment: 'DELIVERY', customerId: sender.id, vendorId, status: 'DELIVERED', acceptedAt: new Date() });
-    expect((await regToken(sender.token)).statusCode).toBe(403);
+    try {
+      expect((await regToken(sender.token)).statusCode).toBe(403);
+      // [CALLS-REACH follow-up 4] The refusal also takes this session's phone off the registered list.
+      expect(await app.redis.get(`${INAPP_REGISTRY_PREFIX}${id(sender)}`)).toBeNull();
+    } finally {
+      // Back to the suite's starting state (every party's phone registered): the sender is a callee in later cases,
+      // as a build-13 phone registers again once its next order is live.
+      await registered(sender);
+    }
   });
 
   it('a malformed platform is refused', async () => {
