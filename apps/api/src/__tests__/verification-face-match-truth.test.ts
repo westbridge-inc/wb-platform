@@ -24,7 +24,7 @@ import { authPlugin } from '../plugins/auth';
 import { socketPlugin } from '../plugins/socket';
 import { registerErrorHandler } from '../middleware/error-handler';
 import { verificationRoutes } from '../modules/verification/verification.routes';
-import { VerificationService, identityFaceMatchLeg } from '../modules/verification/verification.service';
+import { VerificationService, identityFaceMatchApplies, identityFaceMatchLeg } from '../modules/verification/verification.service';
 import { NotificationService } from '../modules/notification/notification.service';
 import { ManualReviewKycProvider, SandboxKycProvider, type KycProvider } from '../providers/kyc/kyc-provider';
 import { DiditKycProvider } from '../providers/kyc/didit-provider';
@@ -118,13 +118,16 @@ describe('GET /verification/status names the documents the server compares with 
     }
   });
 
-  it('face-matching on, with an engine that compares faces: exactly the identity documents on the checklist', async () => {
+  it('face-matching on, with an engine that compares faces: exactly the identity documents on the checklist of a person who takes the selfie', async () => {
     vi.stubEnv('FEATURE_BIOMETRIC_FACE_MATCH', '1');
 
     for (const engine of faceEngines()) {
+      // [OWNER-ASKS · owner ruling 9 Nov 2026] A store owner takes no selfie: no face of theirs is compared — the ID is
+      // checked like any other document.
       const business = await service(engine).getStatus(ownerId, 'RESTAURANT');
       expect(business.checklist.length, 'the checklist holds more than the ID').toBeGreaterThan(1);
-      expect(business.faceMatchDocTypes, engine.engine?.name).toEqual(['owner_national_id']);
+      expect(business.checklist).toContain('owner_national_id');
+      expect(business.faceMatchDocTypes, engine.engine?.name).toEqual([]);
 
       const rider = await service(engine).getStatus(riderId, 'MOVER', 'BICYCLE');
       expect(rider.checklist).toEqual(['national_id']);
@@ -144,6 +147,15 @@ describe('GET /verification/status names the documents the server compares with 
     }
   });
 
+  it('[OWNER-ASKS 9 Nov] the face leg runs only for a person who takes the selfie: a mover yes, a store owner no', async () => {
+    const env = { FEATURE_BIOMETRIC_FACE_MATCH: '1' };
+    expect(await identityFaceMatchApplies(app.prisma, 'national_id', 'MOVER', riderId, env)).toBe(true);
+    expect(await identityFaceMatchApplies(app.prisma, 'owner_national_id', 'RESTAURANT', ownerId, env)).toBe(false);
+    expect(await identityFaceMatchApplies(app.prisma, 'owner_national_id', 'STORE', ownerId, env)).toBe(false);
+    // switch off: nobody
+    expect(await identityFaceMatchApplies(app.prisma, 'national_id', 'MOVER', riderId, {})).toBe(false);
+  });
+
   it('one predicate: the submit path takes its face-match leg for exactly the documents the flag can name', () => {
     for (const docType of ['owner_national_id', 'national_id']) {
       expect(identityFaceMatchLeg(docType, { FEATURE_BIOMETRIC_FACE_MATCH: '1' }), docType).toBe(true);
@@ -155,7 +167,9 @@ describe('GET /verification/status names the documents the server compares with 
     }
     // The submit path branches on that same predicate, so the flag cannot drift from what runs.
     const service = readFileSync(join(__dirname, '..', 'modules', 'verification', 'verification.service.ts'), 'utf8');
-    expect(service).toMatch(/if \(identityFaceMatchLeg\(docType\)\) \{\s*const selfieUrl = await resolveSignupSelfie\(this\.prisma, userId\);/);
+    // [OWNER-ASKS 9 Nov 2026] ...narrowed to a person who takes the selfie (identityFaceMatchApplies), the status flag too.
+    expect(service).toMatch(/if \(await identityFaceMatchApplies\(this\.prisma, docType, roleKey, userId\)\) \{\s*const selfieUrl = await resolveSignupSelfie\(this\.prisma, userId\);/);
+    expect(service).toMatch(/if \(await identityFaceMatchApplies\(this\.prisma, docType, roleKey, userId\)\) faceMatchDocTypes\.push\(docType\);/);
     expect(service).not.toMatch(/IDENTITY_FACE_MATCH_DOCS\.has\(docType\) && biometricFaceMatchEnabled\(\)/);
   });
 });

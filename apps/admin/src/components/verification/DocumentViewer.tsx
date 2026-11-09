@@ -27,6 +27,9 @@ export function DocumentViewer({ id, label, onViewed, onRejectMissing }: { id: s
   // [Item 98] Face-matching is off: the server sends the applicant's own signup
   // selfie with an identity document so the reviewer compares the faces by eye.
   const [selfie, setSelfie] = useState<{ url: string; capturedAt: string } | null>(null);
+  // [OWNER-ASKS · owner ruling 9 Nov 2026] Whether this person takes the selfie at all (riders, drivers, businesses that
+  // go to the customer). null = an older server that does not say: nothing extra is drawn.
+  const [selfieExpected, setSelfieExpected] = useState<boolean | null>(null);
   const generation = useRef(0);
   const evidenceViewport = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -38,7 +41,7 @@ export function DocumentViewer({ id, label, onViewed, onRejectMissing }: { id: s
   useEffect(() => () => { generation.current++; }, []);
   const view = async () => {
     const attempt = ++generation.current;
-    setLoading(true); setError(''); setMissing(false); setPdfFailed(false); setPdfInlineLoaded(false); setUrl(''); setLoaded(false); onViewed(false); setSelfie(null);
+    setLoading(true); setError(''); setMissing(false); setPdfFailed(false); setPdfInlineLoaded(false); setUrl(''); setLoaded(false); onViewed(false); setSelfie(null); setSelfieExpected(null);
     setZoom(1); setRotation(0);
     try {
       const signed = await getDocSignedUrl(id);
@@ -70,6 +73,8 @@ export function DocumentViewer({ id, label, onViewed, onRejectMissing }: { id: s
       await response.body?.cancel();
       if (generation.current !== attempt) return;
       setPdf(isPdf); setUrl(proxy);
+      const expected = signed.data?.signupSelfieExpected;
+      setSelfieExpected(typeof expected === 'boolean' ? expected : null);
       const sent = signed.data?.signupSelfie as { url?: unknown; capturedAt?: unknown } | null | undefined;
       if (sent && typeof sent.url === 'string' && sent.url && typeof sent.capturedAt === 'string') {
         // A path is relative to the API origin (local storage); a storage address is already signed.
@@ -94,11 +99,13 @@ export function DocumentViewer({ id, label, onViewed, onRejectMissing }: { id: s
   };
   const evidenceGeneration = generation.current;
   const failed = () => { if (generation.current !== evidenceGeneration) return; setError('The document did not render. Retry the view before approving.'); setLoaded(false); setUrl(''); onViewed(false); };
-  const comparison = selfie && <figure className="rc-selfie">
+  const comparison = selfie ? <figure className="rc-selfie">
     {/* eslint-disable-next-line @next/next/no-img-element -- evidence is rendered directly, never optimized or cached */}
     <img src={selfie.url} alt="Applicant signup selfie" referrerPolicy="no-referrer" />
     <figcaption>Signup selfie, taken {gyDate(selfie.capturedAt)}. Compare the two faces yourself — Swift does not compare faces automatically.</figcaption>
-  </figure>;
+  </figure> : selfieExpected === false ? <p className="rc-selfie rc-muted">ID only. Store owners, store staff and businesses that serve customers only at their own place take no selfie: check the document on its own.</p>
+    : selfieExpected === true ? <p className="rc-selfie rc-muted">No signup selfie on file. Riders, drivers and businesses that go to the customer take one in the Swift app; this person has not yet.</p>
+    : null;
   const evidence = <div ref={evidenceViewport} className="rc-evidence-viewport">
     {pdf ? <>
       <div className="rc-pdf-fallback">

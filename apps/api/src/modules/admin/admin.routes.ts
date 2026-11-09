@@ -45,7 +45,7 @@ import { refuseStaffAccount } from './admin-email-change';
 import { EVIDENCE_REFERENCE_MAX, EVIDENCE_REFERENCE_MIN, EVIDENCE_REFERENCE_SHAPE } from '../billing/evidence-reference';
 import { documentReviewerRequired, holdsDocumentReviewerGrant, setDocumentReviewerGrant, withoutLegacyDocumentPointers } from './document-reviewer';
 import { CATALOGUE_APPROVER_CAPABILITY, catalogueApproverRequired, holdsCatalogueApproverGrant, setCatalogueApproverGrant } from './catalogue-approver';
-import { signupSelfieFor } from '../verification/signup-selfie';
+import { signupSelfieFor, signupSelfieRequired } from '../verification/signup-selfie';
 import { ADMIN_ACTION_CLASSES, ADMIN_REASON_HEADER, ADMIN_ROUTE_AUTHORITY, capabilitiesOf, capabilityMode, decideCapability, holdsCapability, reasonOf, reasonProblem, reasonRefusal, routeTemplateOf } from './admin-authority';
 import {
   APPROVAL_HEADER, approvalRefusalMessage, approvalSubjectOf, decideApproval, fillRouteTemplate,
@@ -130,7 +130,7 @@ import { assertAmountAttested, isDuplicateOn, normaliseReference } from '../mone
 import { MMG_SUPPORT_PAGE_DEFAULT, MMG_SUPPORT_PAGE_MAX, MMG_SUPPORT_STATUSES, decodeSupportCursor, mmgCheckoutSupportDetail, searchMmgCheckouts } from '../billing/mmg-checkout-support';
 import { assertNotBannedGoods, catalogueChecksFor, flaggedItemsInTenant, prohibitedStoreCategory, storeCheckOf, storesHeldInTenant, STORE_WORDS_SELECT, wordsFor } from '../compliance/prohibited-gate';
 import { judgedWordsHash, notAllowedMessage, PROHIBITED_CLASSES, PROHIBITED_CLASS_LABELS, storeWordsHash, type CatalogueCheck } from '../compliance/prohibited-items';
-import { REGISTRATION_KINDS } from '../verification/doc-registry';
+import { REGISTRATION_KINDS, SELFIE_COMPARE_DOC_TYPES } from '../verification/doc-registry';
 import { maskOrderPartyPhones, maskRowUserPhones, ORDER_CONTACT_PARTIES, revealOrderPartyPhone } from './order-contact';
 import { PROOF_PHOTO_NAMES, openProofPhoto } from './order-proof-photo';
 import { moverUserOf, PAYER_INCLUDE, subscriptionTenantWhere } from '../subscription/subscription-owner';
@@ -7417,13 +7417,17 @@ export async function adminRoutes(app: FastifyInstance) {
     // applicant's own signup selfie for the reviewer to compare by eye. Recorded
     // in the same view audit.
     const owner = await tenantPrisma.user.findUnique({ where: { id: doc.userId }, select: { id: true, avatar: true, selfieCapturedAt: true } });
-    const signupSelfie = await signupSelfieFor(doc.docType, owner);
+    // [OWNER-ASKS · owner ruling 9 Nov 2026] Only a person who takes the selfie (a rider, a driver, a business that goes to
+    // the customer) has it shown; a store owner, store staff or an in-shop business is reviewed on the ID alone, and the
+    // console is told so (`signupSelfieExpected`) rather than reading the absence as a missing step.
+    const signupSelfieExpected = SELFIE_COMPARE_DOC_TYPES.has(doc.docType) && await signupSelfieRequired(app.prisma, doc.userId);
+    const signupSelfie = await signupSelfieFor(doc.docType, owner, signupSelfieExpected);
     await audit(request.user.userId, 'VIEW_VERIFICATION_DOC', 'VerificationDocument', id, { docType: doc.docType, ttlSeconds, encrypted: true, signupSelfieShown: !!signupSelfie }, request);
     // [DS110-15] A path RELATIVE to the API origin, on purpose. The console
     // resolves it against its configured API origin and loads it through its
     // own same-origin proxy; an origin built here from the Host header would
     // be client-supplied input, and the console discards it anyway.
-    return { success: true, data: { url: minted.path, expiresInSeconds: minted.expiresInSeconds, signupSelfie } };
+    return { success: true, data: { url: minted.path, expiresInSeconds: minted.expiresInSeconds, signupSelfie, signupSelfieExpected } };
   });
 
   // ─── [VERIFY-DOCS V3] Staff: the document reviewer grant ─────────────────

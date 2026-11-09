@@ -151,6 +151,25 @@ export function identityFaceMatchLeg(docType: string, env: Record<string, string
 }
 
 /**
+ * [OWNER-ASKS · owner ruling 9 Nov 2026] The face-match leg runs only for a person who takes the sign-up selfie: a mover
+ * (rider or driver), or a service business that goes to the customer (signupSelfieRequired). A store owner, store staff
+ * or an in-shop business has the identity document checked like any other document — never asked for a selfie, never
+ * refused for lacking one, and no face of theirs is compared. One predicate for the submit path and the status flag.
+ */
+export async function identityFaceMatchApplies(
+  db: Prisma.TransactionClient | PrismaClient,
+  docType: string,
+  roleKey: ChecklistRole,
+  userId: string,
+  env: Record<string, string | undefined> = process.env,
+): Promise<boolean> {
+  if (!identityFaceMatchLeg(docType, env)) return false;
+  if (roleKey === 'MOVER') return true;
+  const { signupSelfieRequired } = await import('./signup-selfie');
+  return signupSelfieRequired(db, userId);
+}
+
+/**
  * [VERIFY-DOCS] The "Police-cleared" flag: this account holds an approved, current police
  * clearance under THE evidence rule (document records, not images — so the flag survives the
  * image being deleted after review, and lapses with the certificate). Optional for movers; it
@@ -914,7 +933,7 @@ export class VerificationService {
     if (!vatCertificate) assertExternalProcessingPermitted(await this.externalProcessingSubject(user.countryCode, docType), this.kyc.engine);
     if (vatCertificate) {
       result = { status: 'pending_manual' as const, referenceToken: `manual_${randomUUID()}` };
-    } else if (identityFaceMatchLeg(docType)) {
+    } else if (await identityFaceMatchApplies(this.prisma, docType, roleKey, userId)) {
       const selfieUrl = await resolveSignupSelfie(this.prisma, userId);
       // [P21] A thrown or hung adapter is an outage, not a verdict: the submission queues for a human.
       result = await extractWithLadder(() => this.kyc.verifyIdentity({ userId, idDocumentUrl: fileUrl, selfieUrl }));
@@ -2327,7 +2346,9 @@ export class VerificationService {
     // default) or the engine compares none (the on-shore manual review), so the
     // apps never claim a check that does not run. Read-only.
     const facesCompared = FACE_COMPARING_ENGINES.has(this.kyc.engine?.name ?? '');
-    const faceMatchDocTypes: string[] = facesCompared ? [...checklist, ...optional].filter((docType) => identityFaceMatchLeg(docType)) : [];
+    const faceMatchCandidates = facesCompared ? [...checklist, ...optional].filter((docType) => identityFaceMatchLeg(docType)) : [];
+    const faceMatchDocTypes: string[] = [];
+    for (const docType of faceMatchCandidates) if (await identityFaceMatchApplies(this.prisma, docType, roleKey, userId)) faceMatchDocTypes.push(docType);
 
     return {
       roleKey,

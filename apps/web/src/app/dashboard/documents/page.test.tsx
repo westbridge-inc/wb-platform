@@ -37,6 +37,8 @@ interface Setup {
   withdrawAnswer?: Record<string, number>;
   /** [OWNNAME-FIT] the server's per-store own-name answer (GET /verification/status `ownNameFits`); absent = an older server */
   ownNameFits?: Record<string, boolean>;
+  /** [OWNER-ASKS 9 Nov 2026] GET /verification/status `homeVisits` (SERVICE only); absent = an older server or not a service */
+  homeVisits?: { offered: boolean; cleared: boolean; photo?: boolean };
 }
 
 /** The API's police-clearance words for a checklist (police-clearance-consent.ts), synthetic days. */
@@ -77,6 +79,7 @@ function api(s: Setup = {}) {
         documentConsent: { tick: 'document_v1', given: s.consentOnRecord === true, givenAt: s.consentOnRecord ? '2026-10-20T14:00:00.000Z' : null },
         ...(s.police ? { policeClearanceConsent: s.police } : {}),
         ...(s.ownNameFits ? { ownNameFits: s.ownNameFits } : {}),
+        ...(s.homeVisits ? { homeVisits: s.homeVisits } : {}),
         ...(s.food ? { foodHandlerAttestation: { version: 'v1', tick: 'Everyone who handles food here holds a current food handler’s certificate.', stores: [{ vendorId: storeId, name: store.name, attested: false }] } } : {}),
       } } };
     }
@@ -246,6 +249,38 @@ describe('[OPEN-EARLY PR-2] the store’s documents on the website', () => {
     expect(screen.queryByText(/Trade under your own name/)).toBeNull();
     // [#2275 S4-1] the app pointer is gone: the clearance is sent here
     expect(screen.queryByText(/Added in the Swift app/)).toBeNull();
+  });
+
+  // [OWNER-ASKS · owner ruling 9 Nov 2026] The profile photo (sign-up selfie) is asked only of a business that goes to
+  // the customer: never a store, never an in-shop business. The website says so where the server says the photo is
+  // missing for a home-visit listing, and points to the Swift app, where the photo is taken (camera only).
+  it('[owner 9 Nov] a Services business with a home-visit listing and no profile photo is told home visits need it', async () => {
+    (await import('@/lib/auth')).setSelectedStore('salon');
+    api({ store: 'salon', checklist: ['owner_national_id', 'police_clearance'], police: POLICE_WORDS(), homeVisits: { offered: true, cleared: true, photo: false } });
+    renderWithQuery(<DocumentsPage />);
+    expect(await screen.findByText('Home visits need your profile photo')).toBeTruthy();
+    expect(screen.getByText(/Take it in the Swift app/)).toBeTruthy();
+    expect(screen.getByText(/Bookings at your place are not affected/)).toBeTruthy();
+  });
+
+  it('[owner 9 Nov] an in-shop Services business, a store, or a home-visit business that has the photo: never asked', async () => {
+    (await import('@/lib/auth')).setSelectedStore('salon');
+    api({ store: 'salon', checklist: ['owner_national_id'], optional: ['police_clearance'], police: POLICE_WORDS(), homeVisits: { offered: false, cleared: false, photo: false } });
+    const first = renderWithQuery(<DocumentsPage />);
+    await screen.findByText('Owner National ID or Digital ID card');
+    expect(screen.queryByText('Home visits need your profile photo')).toBeNull();
+    first.unmount();
+    api({ store: 'salon', checklist: ['owner_national_id', 'police_clearance'], police: POLICE_WORDS(), homeVisits: { offered: true, cleared: false, photo: true } });
+    const second = renderWithQuery(<DocumentsPage />);
+    await screen.findByText('Owner National ID or Digital ID card');
+    expect(screen.queryByText('Home visits need your profile photo')).toBeNull();
+    second.unmount();
+    (await import('@/lib/auth')).setSelectedStore('shop');
+    api({ store: 'shop' });
+    renderWithQuery(<DocumentsPage />);
+    await screen.findAllByText(/National ID/);
+    expect(screen.queryByText('Home visits need your profile photo')).toBeNull();
+    expect(document.body.textContent).not.toMatch(/selfie|profile photo/i);
   });
 
   it('own name: the declaration is signed here for the selected store, and the store can go back to a registered name', async () => {

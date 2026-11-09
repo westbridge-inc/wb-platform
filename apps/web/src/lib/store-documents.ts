@@ -100,7 +100,24 @@ export interface StoreDocumentStatus {
   /** [POLICE-CLEARANCE CONSENT] The clearance's own consent words for this checklist (read by policeClearanceWordsFrom). */
   policeClearanceConsent?: unknown;
   categoryUnavailable?: boolean;
+  /** [VERIFY-DOCS · OWNER-ASKS 9 Nov 2026] SERVICE only: a listing goes to the customer (`offered`), the owner's police
+   *  clearance lets it be booked (`cleared`), and the owner has the profile photo it also needs (`photo`; older servers omit it). */
+  homeVisits?: { offered?: boolean; cleared?: boolean; photo?: boolean };
 }
+
+/**
+ * [OWNER-ASKS · owner ruling 9 Nov 2026] The profile photo (the sign-up selfie) is asked only of a business that goes to
+ * the customer: a store, store staff and an in-shop business never take one. Shown only where the server says a
+ * home-visit listing is waiting for it; the photo is taken in the Swift app (camera only).
+ */
+export function homeVisitPhotoMissing(status: Pick<StoreDocumentStatus, 'homeVisits'> | null | undefined): boolean {
+  return status?.homeVisits?.offered === true && status.homeVisits.photo === false;
+}
+
+export const HOME_VISIT_PHOTO_WORDS = {
+  title: 'Home visits need your profile photo',
+  body: 'Customers see your profile photo, so they know who is coming to their door. Take it in the Swift app (Account). Until you do, customers cannot book a home visit from you. Bookings at your place are not affected.',
+} as const;
 
 /**
  * The document a checklist row shows (DocumentChecklist latestDoc): a renewal in flight shows as waiting; else the

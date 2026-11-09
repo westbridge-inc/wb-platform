@@ -14,6 +14,7 @@
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import * as homeVisits from '../modules/verification/home-visits';
+import { signupSelfieRequired } from '../modules/verification/signup-selfie';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { nanoid } from 'nanoid';
 import type { UserRole } from '@prisma/client';
@@ -358,5 +359,39 @@ describe('[OWNER-ASKS 9 Nov] the profile photo: only for home visits', () => {
       expect(res.json().error.code).toBe('HOME_VISIT_UNAVAILABLE');
       expect(await app.prisma.order.count({ where: { customerId: c.userId } })).toBe(0);
     } finally { preflight.mockRestore(); }
+  });
+});
+
+// [OWNER-ASKS · owner ruling 9 Nov 2026] WHO takes the selfie, in one server predicate (the admin review panel and the
+// identity check's face leg read it): riders and drivers, and a business that goes to the customer — never a store
+// owner, never an in-shop business, never a customer.
+describe('[OWNER-ASKS 9 Nov] who takes the sign-up selfie', () => {
+  it('a rider or a driver: yes', async () => {
+    const rider = await person(['CUSTOMER', 'MOVER', 'RIDER'], 'RIDER', { selfie: false });
+    const driver = await person(['CUSTOMER', 'MOVER', 'DRIVER'], 'DRIVER', { selfie: false });
+    expect(await signupSelfieRequired(app.prisma, rider.userId)).toBe(true);
+    expect(await signupSelfieRequired(app.prisma, driver.userId)).toBe(true);
+  });
+
+  it('a customer, a store owner and an in-shop business: no', async () => {
+    const shopper = await customer();
+    expect(await signupSelfieRequired(app.prisma, shopper.userId)).toBe(false);
+    const inShop = await serviceStore('AT_BUSINESS', { selfie: false });
+    expect(await signupSelfieRequired(app.prisma, inShop.userId)).toBe(false);
+    const noListing = await serviceStore(null, { selfie: false });
+    expect(await signupSelfieRequired(app.prisma, noListing.userId)).toBe(false);
+  });
+
+  it('a business that goes to the customer (MOBILE or BOTH): yes — from the moment it lists one', async () => {
+    expect(await signupSelfieRequired(app.prisma, (await serviceStore('MOBILE', { selfie: false })).userId)).toBe(true);
+    expect(await signupSelfieRequired(app.prisma, (await serviceStore('BOTH', { selfie: false })).userId)).toBe(true);
+    const later = await serviceStore('AT_BUSINESS', { selfie: false });
+    expect(await signupSelfieRequired(app.prisma, later.userId)).toBe(false);
+    await app.prisma.item.updateMany({ where: { vendorId: later.vendorId }, data: { bookingConfig: { serviceMode: 'MOBILE' } } });
+    expect(await signupSelfieRequired(app.prisma, later.userId)).toBe(true);
+  });
+
+  it('an unknown account: no', async () => {
+    expect(await signupSelfieRequired(app.prisma, 'no-such-user')).toBe(false);
   });
 });

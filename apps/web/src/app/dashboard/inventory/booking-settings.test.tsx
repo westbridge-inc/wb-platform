@@ -142,3 +142,18 @@ describe('[BOOK-S5b] a bookable service’s hours, gap, notice and confirm-autom
     expect(within(within(editor).getByRole('group', { name: 'Minimum notice' })).getByRole('button', { name: 'None' }).getAttribute('aria-pressed')).toBe('true');
   });
 });
+
+// [OWNER-ASKS · owner ruling 9 Nov 2026] A business that goes to the customer takes the profile photo (in the Swift app);
+// one that serves only at its own place never does. The editor says so the moment a home visit is chosen.
+describe('[owner 9 Nov] choosing a home visit says it needs the owner’s profile photo', () => {
+  it('“At my place” says nothing about a photo; “I travel to them” and “Both” say home visits need it', async () => {
+    const editor = await openTrim();
+    expect(within(editor).queryByText(/profile photo/)).toBeNull();
+    await click(within(editor).getByRole('button', { name: 'I travel to them' }));
+    expect(within(editor).getByText(/Home visits need the owner’s profile photo/)).toBeTruthy();
+    await click(within(editor).getByRole('button', { name: 'Both' }));
+    expect(within(editor).getByText(/Home visits need the owner’s profile photo/)).toBeTruthy();
+    await click(within(editor).getByRole('button', { name: 'At my place' }));
+    expect(within(editor).queryByText(/profile photo/)).toBeNull();
+  });
+});

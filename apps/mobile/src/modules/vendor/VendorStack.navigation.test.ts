@@ -26,6 +26,7 @@ const fx = vi.hoisted(() => ({
   }>,
 }));
 vi.mock('../profile/screens/PersonalDataScreen', () => ({ PersonalDataScreen: 'PersonalDataScreen' }));
+vi.mock('../../screens/auth/SelfieCaptureScreen', () => ({ SelfieCaptureScreen: () => null })); // [OWNER-ASKS 9 Nov] the business stack's pushed photo screen
 vi.mock('react-native', async () => {
   const R = await import('react');
   const View = ({ children }: any) => R.createElement('div', null, typeof children === 'function' ? children({ pressed: false }) : children);

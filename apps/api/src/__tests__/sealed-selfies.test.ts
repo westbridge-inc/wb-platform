@@ -208,7 +208,8 @@ describe('[DOC-SECURITY G2] the signup selfie is sealed at rest', () => {
     await postFile('/api/v1/auth/selfie', u.token, REAL_PNG);
     const user = await system(() => app.prisma.user.findUniqueOrThrow({ where: { id: u.userId }, select: { id: true, avatar: true, selfieCapturedAt: true } }));
     expect(user.avatar!.split('/').at(-1)!.startsWith(char)).toBe(true);
-    const shown = await signupSelfieFor('national_id', user);
+    // [OWNER-ASKS 9 Nov 2026] a mover takes the selfie: it is shown beside the ID
+    const shown = await signupSelfieFor('national_id', user, true);
     expect(shown?.url).toMatch(SIGNED_LINK);
     expect((await app.inject({ method: 'GET', url: linkPath(shown!.url) })).statusCode).toBe(200);
   });
