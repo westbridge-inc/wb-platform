@@ -373,6 +373,8 @@ export function serviceBooking(id: string, extra: Row = {}): Row {
     tenantId: 'swift-default',
     orderType: 'FOOD_DELIVERY',
     fulfillment: 'APPOINTMENT',
+    // [OWNER-ASKS 9 Nov 2026] the checkout's home-visit marker: a barbershop booking at the business's place
+    homeVisit: false,
     fulfillmentMode: null,
     fulfillmentModeVersion: 0,
     riderAssignmentVersion: 0,

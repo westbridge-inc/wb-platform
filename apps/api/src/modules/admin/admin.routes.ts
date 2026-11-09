@@ -7546,7 +7546,14 @@ export async function adminRoutes(app: FastifyInstance) {
       const earlier = await selfieChecksFor(tx, doc.userId, { selfieCapturedAt: owner.selfieCapturedAt, avatar: owner.avatar! });
       // [review N1] the authors of a "no match" on ANY earlier photo of this person never decide a later one either
       const refusedBy = new Set([...earlier.filter((row) => row.record.outcome === 'NO_MATCH').map((row) => row.reviewerId), ...(await earlierNoMatchReviewers(tx, doc.userId))]);
-      const overridesEarlier = earlier.some((row) => row.record.outcome === 'NO_MATCH') || refusedBy.size > 0; // [round-4 review 4] an earlier photo's "no match" too
+      // [round-5 review S4] an override is a MATCH over a STANDING "no match": the latest decision about this person (any
+      // photo, (createdAt, id) order) said no. A MATCH after an earlier MATCH that already overrode it is not re-flagged.
+      const latest = await tx.auditLog.findFirst({
+        where: { action: SELFIE_ID_COMPARED_ACTION, entity: 'User', entityId: doc.userId },
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+        select: { changes: true },
+      });
+      const overridesEarlier = (latest?.changes as { outcome?: string } | null)?.outcome === 'NO_MATCH';
       if (body.match && refusedBy.has(request.user.userId)) {
         throw new AppError(409, 'NO_MATCH_STANDS', 'You recorded that these faces do not match. Another reviewer must decide, or the person takes a new photo.');
       }

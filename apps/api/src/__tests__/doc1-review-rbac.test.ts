@@ -395,3 +395,55 @@ describe('[owner 9 Nov] the selfie-check queue and the pro switch', () => {
   });
 });
 
+// [round-5 review S4] The pro "home jobs are paused" notice follows the switch; an override is flagged only over a
+// STANDING "no match".
+describe('[round 5] the pro notice and the override flag', () => {
+  it('a rider who is also a pro: switch off -> no pro notice on a "no match"; switch on -> the pro notice, in the customer inbox', async () => {
+    const shown = new Date('2026-11-09T13:00:00.000Z');
+    await system(async () => {
+      await app.prisma.user.update({ where: { id: subjectId }, data: { roles: ['VENDOR_OWNER', 'MOVER', 'RIDER'], avatar: `/uploads/avatars/${subjectId}/synthetic-r5.jpg`, selfieCapturedAt: shown } });
+      await app.prisma.serviceProvider.create({ data: { userId: subjectId, trade: 'cleaner' } });
+    });
+    const doc = await system(async () => {
+      const fileUrl = await ownedVerificationFixture(app.prisma, subjectId);
+      return app.prisma.verificationDocument.create({ data: { userId: subjectId, role: 'MOVER', docType: 'national_id', fileUrl, status: 'APPROVED', state: 'COMMITTED', reviewedAt: new Date(), reviewedBy: 'synthetic-reviewer', consentAt: new Date(), privacyNoticeVersion: 'v1' } });
+    });
+    const notices = () => system(() => app.prisma.notification.findMany({ where: { userId: subjectId, title: 'Home jobs are paused' } }));
+    const a = await admin([...DOC_REVIEWER_CAPABILITIES, 'documents.review']);
+    vi.stubEnv('PRO_HOME_JOBS_SELFIE', '');
+    try {
+      expect((await call(a.token, 'POST', `/verification/${doc.id}/selfie-check`, { match: false, selfieCapturedAt: shown.toISOString() })).statusCode).toBe(200);
+      expect(await notices()).toHaveLength(0);
+    } finally { vi.unstubAllEnvs(); }
+    const b = await admin([...DOC_REVIEWER_CAPABILITIES, 'documents.review']);
+    vi.stubEnv('PRO_HOME_JOBS_SELFIE', '1');
+    try {
+      expect((await call(b.token, 'POST', `/verification/${doc.id}/selfie-check`, { match: false, selfieCapturedAt: shown.toISOString() })).statusCode).toBe(200);
+      const sent = await notices();
+      expect(sent).toHaveLength(1);
+      expect(sent[0]!.data).toMatchObject({ audience: 'customer' });
+    } finally { vi.unstubAllEnvs(); }
+    await system(() => app.prisma.serviceProvider.deleteMany({ where: { userId: subjectId } }));
+    await system(() => app.prisma.notification.deleteMany({ where: { userId: subjectId } }));
+  });
+
+  it('a match over a standing "no match" is an override; a later match over that match is not', async () => {
+    const shown = new Date('2026-11-09T14:00:00.000Z');
+    await system(() => app.prisma.user.update({ where: { id: subjectId }, data: { roles: ['VENDOR_OWNER', 'MOVER', 'RIDER'], avatar: `/uploads/avatars/${subjectId}/synthetic-r5b.jpg`, selfieCapturedAt: shown } }));
+    const doc = await system(async () => {
+      const fileUrl = await ownedVerificationFixture(app.prisma, subjectId);
+      return app.prisma.verificationDocument.create({ data: { userId: subjectId, role: 'MOVER', docType: 'national_id', fileUrl, status: 'APPROVED', state: 'COMMITTED', reviewedAt: new Date(), reviewedBy: 'synthetic-reviewer', consentAt: new Date(), privacyNoticeVersion: 'v1' } });
+    });
+    const [a, b, c] = [await admin([...DOC_REVIEWER_CAPABILITIES, 'documents.review']), await admin([...DOC_REVIEWER_CAPABILITIES, 'documents.review']), await admin([...DOC_REVIEWER_CAPABILITIES, 'documents.review'])];
+    const decide = (token: string, match: boolean) => call(token, 'POST', `/verification/${doc.id}/selfie-check`, { match, selfieCapturedAt: shown.toISOString() });
+    const last = async () => (await system(() => app.prisma.auditLog.findMany({ where: { action: 'SELFIE_ID_COMPARED', entityId: subjectId }, orderBy: [{ createdAt: 'asc' }, { id: 'asc' }] }))).at(-1)!.changes as Record<string, unknown>;
+    expect((await decide(a.token, false)).statusCode).toBe(200);
+    expect((await decide(b.token, true)).statusCode).toBe(200);
+    expect(await last()).toMatchObject({ outcome: 'MATCH', overridesNoMatch: true });
+    expect((await decide(c.token, true)).statusCode).toBe(200);
+    expect(await last()).toMatchObject({ outcome: 'MATCH' });
+    expect(await last()).not.toHaveProperty('overridesNoMatch');
+    await system(() => app.prisma.user.update({ where: { id: subjectId }, data: { roles: ['VENDOR_OWNER'] } }));
+  });
+});
+
