@@ -51,6 +51,7 @@ import { ServicesScreen } from '../modules/services/screens/ServicesScreen';
 import { ServiceJobsScreen } from '../modules/services/screens/ServiceJobsScreen';
 import { ServiceProviderScreen } from '../modules/services/screens/ServiceProviderScreen';
 import { ProviderWeeklyFeeScreen } from '../modules/services/screens/ProviderWeeklyFeeScreen';
+import { SelfieCaptureScreen } from '../screens/auth/SelfieCaptureScreen';
 import { ProBookingScreen } from '../modules/services/screens/ProBookingScreen';
 import { ProBookableScreen } from '../modules/services/screens/ProBookableScreen';
 
@@ -195,6 +196,9 @@ export function CustomerStack() {
       <Stack.Screen name="ServiceProvider" component={ServiceProviderScreen} />
       {/* [BILL-PRO PR5] A pro's own weekly fee (pros work in the customer app). */}
       <Stack.Screen name="ProviderWeeklyFee" component={ProviderWeeklyFeeScreen} />
+      {/* [OWNER-ASKS · owner ruling 9 Nov 2026 ~20:1xZ (A)] An independent pro's profile photo (home jobs): opened only
+          from the pro's own screen. Customers never take one. Pushed, so "Not now" goes back. */}
+      <Stack.Screen name="ProSelfie" component={SelfieCaptureScreen} />
       <Stack.Screen name="ProBooking" component={ProBookingScreen} />
       <Stack.Screen name="ProBookable" component={ProBookableScreen} />
     </Stack.Navigator>

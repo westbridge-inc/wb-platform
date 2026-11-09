@@ -42,7 +42,8 @@ describe('the public linked-store navigator is registered at every root entry ga
   it.each([
     [null, false, false, 'RolePicker'], ['customer', false, false, 'Main'],
     ['vendor', true, false, 'Main'], ['mover', true, false, 'Main'],
-    ['customer', false, true, 'Auth'], ['vendor', true, false, 'Selfie'],
+    // [OWNER-ASKS 9 Nov 2026] the selfie gate is a mover's door now (a business opens without one)
+    ['customer', false, true, 'Auth'], ['mover', true, false, 'Selfie'],
   ])('intent=%s signedIn=%s requestedAuth=%s gate=%s', (intent, isAuthenticated, wantsAuth, gate) => {
     state.auth = { intent, isAuthenticated, wantsAuth, countryCode: 'GY', user: gate === 'Selfie' ? {} : { selfieCapturedAt: '2026-01-01' }, sessionGeneration: 1 };
     render(<RootNavigator />);

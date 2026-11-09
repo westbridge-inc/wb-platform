@@ -200,6 +200,8 @@ const fx = vi.hoisted(() => {
 });
 
 vi.mock('../../profile/screens/PersonalDataScreen', () => ({ PersonalDataScreen: 'PersonalDataScreen' }));
+vi.mock('../../../screens/auth/SelfieCaptureScreen', () => ({ SelfieCaptureScreen: 'SelfieCaptureScreen' })); // [OWNER-ASKS 9 Nov] the business stack's pushed photo screen
+vi.mock('../HomeVisitPhotoCard', () => ({ HomeVisitPhotoCard: 'HomeVisitPhotoCard' }));
 vi.mock('react', async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown> & { default?: Record<string, unknown> }>();
   const hooks = { ...fx.hooks, useLayoutEffect: fx.hooks.useEffect };

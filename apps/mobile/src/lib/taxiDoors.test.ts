@@ -28,8 +28,14 @@ describe('the taxi screen opens no ID door and no photo door', () => {
     expect(taxi).toMatch(/queueErrMsg \?/);
   });
 
-  it('the customer stack registers no Selfie screen', () => {
+  // [OWNER-ASKS · owner ruling 9 Nov 2026 ~20:1xZ (A)] Customers still never take a photo. An independent service pro
+  // (who signs up from this app and goes to customers' homes) does: the camera screen is registered as "ProSelfie" and
+  // opened only from the pro's own screen — never from the taxi, never as a customer step.
+  it('the customer stack registers the camera only as ProSelfie, opened only from the pro screen', () => {
     const stack = src('navigation/CustomerStack.tsx');
-    expect(stack).not.toMatch(/name="Selfie"|SelfieCaptureScreen/);
+    expect(stack).not.toMatch(/name="Selfie"/);
+    expect(stack.match(/SelfieCaptureScreen\} \/>/g) ?? []).toHaveLength(1);
+    expect(stack).toMatch(/<Stack\.Screen name="ProSelfie" component=\{SelfieCaptureScreen\} \/>/);
+    expect(src('modules/services/screens/ServiceProviderScreen.tsx')).toMatch(/navigate\?\.\('ProSelfie'\)/);
   });
 });

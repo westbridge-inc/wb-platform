@@ -330,6 +330,8 @@ vi.mock('../../stores/locationStore', () => ({
   useLocationStore: () => ({ latitude: 6.8046, longitude: -58.1553, status: 'granted' }),
 }));
 vi.mock('../../components/onboarding/DocumentChecklist', () => ({ DocumentChecklist: 'DocumentChecklist' }));
+vi.mock('../../screens/auth/SelfieCaptureScreen', () => ({ SelfieCaptureScreen: 'SelfieCaptureScreen' })); // [OWNER-ASKS 9 Nov] the business stack's pushed photo screen
+vi.mock('./HomeVisitPhotoCard', () => ({ HomeVisitPhotoCard: 'HomeVisitPhotoCard' }));
 vi.mock('../../components/onboarding/PricingCard', () => ({ PricingCard: 'PricingCard' }));
 // [Q8] The store map: react-native-maps and expo-location are native. Its props are the contract.
 vi.mock('../../components/StoreLocationPicker', () => ({ StoreLocationPicker: 'StoreLocationPicker' }));

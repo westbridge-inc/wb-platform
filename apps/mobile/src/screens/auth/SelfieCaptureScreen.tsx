@@ -25,9 +25,10 @@ const FRAME = 260;
 
 /**
  * Profile selfie (master plan §3) — camera capture ONLY, no gallery.
- * Rendered by RootNavigator for a signed-in earner account without a selfie,
- * and [E27] pushed by the taxi screen when a customer's ride request needs
- * one (customers are not asked merely to browse or order). The photo becomes
+ * Rendered by RootNavigator for a signed-in mover (rider or driver) without a
+ * selfie, and [OWNER-ASKS 9 Nov 2026] pushed by the business app when a service
+ * business offers a home visit (store owners, store staff and in-shop
+ * businesses are never asked; customers are not asked merely to browse or order). The photo becomes
  * the user's public profile picture: drivers see who they pick up, customers
  * see who's coming.
  */
@@ -60,7 +61,8 @@ export function SelfieCaptureScreen() {
   // merely to order [E27].
   const intent = useAuthStore((s) => s.intent);
   const hasUser = useAuthStore((s) => !!s.user);
-  const partnerGate = !stacked && hasUser && (intent === 'vendor' || intent === 'mover');
+  // [OWNER-ASKS 9 Nov] Only a mover meets this screen as the door; a business opens it from inside its app (stacked).
+  const partnerGate = !stacked && hasUser && intent === 'mover';
   const back = useBackToSwift(intent === 'mover' ? 'mover' : 'vendor');
   const gestures = useBackToSwiftGestures(back.leave, partnerGate);
 
