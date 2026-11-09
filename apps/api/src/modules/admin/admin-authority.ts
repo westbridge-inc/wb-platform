@@ -552,7 +552,7 @@ export const ADMIN_ROUTE_AUTHORITY: Readonly<Record<AdminRouteKey, AdminRouteAut
   'GET /billing/card-sessions': c('C0', 'billing.read'),
   'GET /billing/card-sessions/:id': c('C0', 'billing.read'),
   'GET /billing/subscriptions/:subscriptionId/cards': c('C0', 'billing.read'),
-  // [PT-4 · review S2-2] A held card payment: book, refund, record a portal refund, or nothing taken — money, two people.
+  // [PT-4 · review S2-2] A held card payment: book, refund (the API refund), or nothing taken — money, two people.
   'POST /billing/card-sessions/:id/resolve': c('C4', 'billing.card.resolve', E.cardSession),
 
   // ── Algorithms ──────────────────────────────────────────────────────────
