@@ -413,3 +413,83 @@ describe('[review S2] room joins wait for the server\'s auth:ready', () => {
     expect(s.sent).toEqual([]);
   });
 });
+
+// [S4-1] A server refusing the token the app has just been given (a fault on the server's side) is not
+// answered with a refresh per retry: one refresh per wake, then the same token again with backoff.
+describe('[S4-1] at most one refresh per wake for a refused token', () => {
+  it('the token this wake refreshed to is refused again: no second refresh until the app returns to the screen', async () => {
+    const s = live();
+    s.serverDisconnect();
+    await vi.advanceTimersByTimeAsync(1_000);
+    let n = 0;
+    fx.refresh.mockImplementation(async () => {
+      n += 1;
+      rotate(jwt(Date.now() + 15 * 60_000, `minted-${n}`));
+      return { accessToken: fx.session!.accessToken, session: fx.session };
+    });
+    s.refusedAtHandshake('Invalid or expired token');
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(fx.refresh).toHaveBeenCalledTimes(1);
+    const minted = fx.session!.accessToken;
+    expect(s.presented.at(-1)).toBe(minted);
+    for (let i = 0; i < 3; i += 1) {
+      const before = s.connectCalls;
+      s.refusedAtHandshake('Invalid or expired token');
+      for (let waited = 0; s.connectCalls === before && waited < 5 * 60_000; waited += 250) await vi.advanceTimersByTimeAsync(250);
+      expect(s.connectCalls).toBe(before + 1); // still retried, with backoff
+      expect(s.presented.at(-1)).toBe(minted);
+    }
+    expect(fx.refresh).toHaveBeenCalledTimes(1); // RED before: one refresh per refusal
+    s.refusedAtHandshake('Invalid or expired token');
+    emitAppForeground(); // a new wake: shown at once, and one refresh again if it is refused
+    await vi.advanceTimersByTimeAsync(0);
+    expect(s.presented.at(-1)).toBe(minted);
+    s.refusedAtHandshake('Invalid or expired token');
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(fx.refresh).toHaveBeenCalledTimes(2);
+    expect(s.presented.at(-1)).toBe(fx.session!.accessToken);
+    expect(s.presented.at(-1)).not.toBe(minted);
+  });
+});
+
+describe('[review S4] the refreshed token has since lapsed', () => {
+  it('is refreshed again (a lapsed token is refused for certain)', async () => {
+    const s = live();
+    s.serverDisconnect();
+    await vi.advanceTimersByTimeAsync(1_000);
+    let n = 0;
+    fx.refresh.mockImplementation(async () => {
+      n += 1;
+      rotate(jwt(Date.now() + 15 * 60_000, `minted-${n}`));
+      return { accessToken: fx.session!.accessToken, session: fx.session };
+    });
+    s.refusedAtHandshake('Invalid or expired token');
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(fx.refresh).toHaveBeenCalledTimes(1);
+    vi.setSystemTime(Date.now() + 16 * 60_000); // the token this wake refreshed to is now past its exp
+    s.refusedAtHandshake('Invalid or expired token');
+    await vi.advanceTimersByTimeAsync(4_000);
+    expect(fx.refresh).toHaveBeenCalledTimes(2);
+    expect(s.presented.at(-1)).toBe(fx.session!.accessToken);
+  });
+});
+
+// [S4-3] Only the current socket's refusals move the retry state.
+describe('[S4-3] a retired socket\'s connect_error is ignored', () => {
+  it('an "Account not active" from the previous account\'s socket does not stop the new account\'s retry', async () => {
+    const a = live();
+    signInAs2();
+    connectSocket();
+    const b = fx.sockets.at(-1);
+    expect(b).not.toBe(a);
+    b.admitted();
+    b.serverDisconnect();
+    a.fire('connect_error', new Error('Account not active')); // the retired socket, inactive
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(b.connectCalls).toBe(2); // RED before: the retry was cleared and the socket parked
+  });
+});
+
+function signInAs2() {
+  fx.session = { generation: 2, userId: 'second-account', accessToken: jwt(Date.now() + 15 * 60_000, 'second'), refreshToken: 'r2' };
+}

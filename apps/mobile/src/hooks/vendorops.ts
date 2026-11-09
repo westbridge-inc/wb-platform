@@ -38,7 +38,10 @@ import { usePartnerPricing } from './partnerPricing';
 import { guardVendorOperation, useVendorMutation } from './useVendorMutation';
 import { pendingOrderIds } from '../modules/vendor/boardTaps';
 import { answeredSinceAsked } from '../modules/vendor/storeOrderRules';
-import { isStoreAlertPush, markTakeoverHandled, storeAlertFromPush, takeoverHandled, waitingForStore, withRaised } from '../modules/vendor/takeoverRaise';
+import {
+  acceptWindowEnd, HANDLED_TAKEOVER_FALLBACK_MS, isStoreAlertPush, markTakeoverHandled, pruneHandledTakeovers, storeAlertFromPush,
+  takeoverHandled, waitingForStore, withRaised,
+} from '../modules/vendor/takeoverRaise';
 import { onAppForeground, onForegroundPush } from '../lib/appSignals';
 import { errorMessage } from '../lib/apiError';
 import type { SaleAnswer, SaleOp } from '../lib/inStoreSale';
@@ -339,6 +342,11 @@ export function useVendorOrders(enabled: boolean) {
   return pv ? previewQuery(pv.orders) : q;
 }
 
+/** The signed-in account (null when none): the store-alert memory is per account. */
+function signedInUserId(): string | null {
+  return getAuthSessionSnapshot()?.userId ?? null;
+}
+
 /** Live board: join the store's socket room and refresh the order queries the
  *  moment the server says something happened (new order, status change, prep
  *  signal) instead of waiting out the 12s poll — the poll stays as the
@@ -401,8 +409,12 @@ export function useVendorOrdersLive(vendorId: string | undefined, ownsStore = fa
       // the new-order screen, whether or not its order:new arrived (a dropped socket, the app in the
       // background): once each, never one answered here, never one with a store tap in flight.
       const busy = pendingOrderIds(qc.getMutationCache().findAll({ status: 'pending' }).map((m) => m.state.variables));
-      const waiting = waitingForStore(board, vendorId, Date.now(), busy);
-      if (waiting.length > 0) setTakeover((q) => withRaised(q, waiting, (id) => takeoverHandled(vendorId, id)));
+      const now = Date.now();
+      const userId = signedInUserId();
+      // [S4-2] Answered orders are remembered on the device per account until they stop waiting.
+      if (Array.isArray(board)) pruneHandledTakeovers(userId, vendorId, board, now);
+      const waiting = waitingForStore(board, vendorId, now, busy);
+      if (waiting.length > 0) setTakeover((q) => withRaised(q, waiting, (id) => takeoverHandled(userId, vendorId, id)));
     };
     check();
     return qc.getQueryCache().subscribe((event) => {
@@ -420,7 +432,7 @@ export function useVendorOrdersLive(vendorId: string | undefined, ownsStore = fa
     const stopPush = onForegroundPush((data) => {
       if (!isStoreAlertPush(data)) return;
       const alert = storeAlertFromPush(data, vendorId);
-      if (alert) setTakeover((q) => withRaised(q, [alert], (id) => takeoverHandled(vendorId, id)));
+      if (alert) setTakeover((q) => withRaised(q, [alert], (id) => takeoverHandled(signedInUserId(), vendorId, id)));
       // A push naming no store (or another branch) only re-reads: the board raises it if it is ours.
       reread();
     });
@@ -431,10 +443,15 @@ export function useVendorOrdersLive(vendorId: string | undefined, ownsStore = fa
     (orderId: string) => {
       // Answered here (Accept, Reject, "View later", or settled on screen): the board's read and a
       // push do not raise it again. The server's escalation ladder still stands behind "View later".
-      if (vendorId) markTakeoverHandled(vendorId, orderId);
+      if (vendorId) {
+        // Remembered (on this device, for this account) until its accept window ends.
+        const board = qc.getQueryData(['vendor', 'orders']);
+        const row = Array.isArray(board) ? board.find((o) => (o as { id?: unknown } | null)?.id === orderId) : undefined;
+        markTakeoverHandled(signedInUserId(), vendorId, orderId, acceptWindowEnd(row) ?? Date.now() + HANDLED_TAKEOVER_FALLBACK_MS);
+      }
       setTakeover((q) => q.filter((x) => x.orderId !== orderId));
     },
-    [vendorId],
+    [vendorId, qc],
   );
   return { takeover, dismissTakeover };
 }
