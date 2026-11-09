@@ -55,6 +55,9 @@ export function ScanScreen() {
   const [permission, requestPermission] = useCameraPermissions();
   const [failure, setFailure] = useState<ResolveFailure | null>(null);
   const [busy, setBusy] = useState(false);
+  // [pre-build audit 9 Nov 2026] A phone without a working camera: expo-camera cannot start it (CameraX finds no
+  // camera, or another app holds it) and reports onMountError; the frame would otherwise stay dark with no words.
+  const [cameraMissing, setCameraMissing] = useState(false);
   // [E09] While the cart bar floats at the bottom, the centred scanner rises clear of it.
   const cartClearance = useCartBarClearance();
 
@@ -114,6 +117,17 @@ export function ScanScreen() {
       );
     }
 
+    if (cameraMissing) {
+      return (
+        <View style={{ alignItems: 'center', paddingHorizontal: space.xl }}>
+          <Feather name="camera-off" size={40} color={color.text.muted} />
+          <T variant="body" tone="muted" center style={{ marginTop: space.lg }}>
+            This phone’s camera isn’t available. Ask the store for the menu link.
+          </T>
+        </View>
+      );
+    }
+
     if (failure) {
       const copy = FAILURE_COPY[failure];
       return (
@@ -144,6 +158,7 @@ export function ScanScreen() {
             facing="back"
             barcodeScannerSettings={{ barcodeTypes: ['qr'] }}
             onBarcodeScanned={busy ? undefined : onScanned}
+            onMountError={() => { if (alive.current) setCameraMissing(true); }}
           />
         </View>
         <T variant="body" tone="muted" center style={{ marginTop: space.lg, paddingHorizontal: space.xl }}>
