@@ -67,7 +67,8 @@ describe('[CARD-READY] card payments', () => {
     const { user } = renderWithQuery(<CardPaymentsPage />);
     await user.click(await screen.findByRole('button', { name: 'Refund it' }));
     const panel = await screen.findByRole('dialog');
-    expect(panel.textContent).toContain('refund the whole GY$2,100 to the card');
+    expect(panel.textContent).toContain('refund the whole GY$2,100 to the card, never a part of it');
+    expect(panel.textContent).toContain('If the portal shows any other amount, do not refund: escalate to the owner.');
     expect(panel.textContent).toContain('A second admin approves it');
     // Swift's own record, read-only for comparison.
     expect(within(panel).getByText(TXN)).toBeTruthy();
@@ -125,6 +126,22 @@ describe('[CARD-READY] card payments', () => {
     await user.click(within(panel).getByRole('button', { name: 'Nothing was taken' }));
     await waitFor(() => expect(requestsByMethod(fetchMock, 'POST')).toHaveLength(1));
     expect(bodyOf(fetchMock)).toEqual({ action: 'NOTHING_TAKEN', providerReference: TXN });
+  });
+
+  it('[F4] a payment held because the provider\'s amount differs from Swift\'s price offers no booking and no refund: it goes to the owner', async () => {
+    server([{ ...held, failureCode: 'AMOUNT_MISMATCH' }]);
+    renderWithQuery(<CardPaymentsPage />);
+    expect(await screen.findByText(/cannot be booked or refunded whole here\. Check it in the provider's portal and escalate to the owner/)).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Refund it' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Book the week' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Nothing was taken' })).toBeTruthy();
+  });
+
+  it('[REVIEW-1 R2-3] once a refund was sent for a held payment, no decision is offered: it stays for the owner', async () => {
+    server([{ ...held, providerRefundState: 'UNKNOWN' }]);
+    renderWithQuery(<CardPaymentsPage />);
+    expect(await screen.findByText(/A refund was sent for this payment, so money was taken\. It stays here until the owner settles it/)).toBeTruthy();
+    for (const name of ['Nothing was taken', 'Refund it', 'Book the week']) expect(screen.queryByRole('button', { name })).toBeNull();
   });
 
   it('without a recorded provider transaction nothing can be decided here', async () => {

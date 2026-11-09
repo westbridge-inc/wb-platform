@@ -53,7 +53,7 @@ const DECISIONS: { action: CardDecision; label: string; asks: Asks; body: (_amou
   },
   {
     action: 'REFUND', label: 'Refund it', asks: 'amount',
-    body: (amount) => `Swift asks the card provider once to refund the whole ${amount} to the card. Never after the week was booked.`,
+    body: (amount) => `Only when the provider's portal shows exactly ${amount} taken. Swift asks the card provider once to refund the whole ${amount} to the card, never a part of it, and never after the week was booked. If the portal shows any other amount, do not refund: escalate to the owner.`,
     success: 'Refund sent. Check its answer on this payment.',
   },
   {
@@ -204,10 +204,17 @@ export default function CardPaymentsPage() {
                       r.resolution && `Decided: ${RESOLUTION_WORDS[r.resolution] ?? asCode(r.resolution)}${r.resolvedAt ? `, ${gyDateTime(r.resolvedAt)}` : ''}`].filter(Boolean).join(' · ')}
                   </p>
                 )}
-                {open && (r.providerTransactionRef && r.amount !== null ? (
+                {open && r.providerRefundState ? (
+                  // [REVIEW-1 R2-3] A refund was sent: money was taken. No decision closes it here; the owner settles it.
+                  <p className="text-sm mt-3">A refund was sent for this payment, so money was taken. It stays here until the owner settles it with the card provider: escalate it to the owner.</p>
+                ) : open && (r.providerTransactionRef && r.amount !== null ? (
                   queued[r.id] ? <p role="status" className="text-sm mt-3">Waiting for approval: a second admin, on Approvals. Nothing has changed yet.</p> : (
                     <div className="flex flex-wrap gap-2 mt-3">
-                      {DECISIONS.map((d) => <button key={d.action} type="button" className="mc-btn" onClick={() => decide(r, d)}>{d.label}</button>)}
+                      {/* [F4] A payment held because the provider's figure differs from Swift's price cannot be booked or refunded whole here. */}
+                      {r.failureCode === 'AMOUNT_MISMATCH'
+                        ? <p className="text-sm">The card provider&apos;s amount differs from Swift&apos;s price, so this payment cannot be booked or refunded whole here. Check it in the provider&apos;s portal and escalate to the owner. If the portal shows nothing taken, record that.</p>
+                        : null}
+                      {DECISIONS.filter((d) => r.failureCode !== 'AMOUNT_MISMATCH' || d.action === 'NOTHING_TAKEN').map((d) => <button key={d.action} type="button" className="mc-btn" onClick={() => decide(r, d)}>{d.label}</button>)}
                     </div>
                   )
                 ) : <p className="text-sm mt-3">No provider transaction is recorded, so nothing can be decided here. Find it in the provider&apos;s portal and escalate to the owner.</p>)}

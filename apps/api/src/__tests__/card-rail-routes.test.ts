@@ -2259,10 +2259,31 @@ describe('[PT-4] real cards through HTTP: Swift\'s hosted page, the bank\'s chec
       expect(portal.statusCode, portal.body).toBe(400);
       expect(portal.json().error?.code).toBe('INVALID_RESOLUTION');
       expect(portal.json().error?.message).not.toContain('REFUNDED_IN_PORTAL');
+      // [REVIEW-1 R2-3] Choosing REFUND meant a person saw money taken: once a refund was ever sent (its answer lost,
+      // refused or stuck), the payment is never closed as "nothing taken". It stays HELD for the owner.
+      const nothing = await resolve(finance, sessionId, { action: 'NOTHING_TAKEN', providerReference: txnId });
+      expect(nothing.statusCode, nothing.body).toBe(409);
+      expect(nothing.json().error?.code).toBe('REFUND_SENT');
       expect(await rowOf(sessionId)).toMatchObject({ status: 'HELD', resolution: null, providerRefundState: 'UNKNOWN', failureCode: 'APPROVED_UNPROVEN' });
       expect(ACTIVE_CONFIRMATION_STATES).toContain((await confirmationOf(sessionId))?.status);
       expect(sent('/api/refund').filter((b) => b['TransactionIdentifier'] === txnId)).toHaveLength(1);
       expect((await money(p.subId)).successes).toBe(0);
+    });
+
+    it('[REVIEW-1 R2-3] a refund the provider REFUSED: the money may still be on the card, so "nothing was taken" is refused and the payment stays HELD', async () => {
+      const finance = await makeFinance();
+      const p = await makeStore();
+      const { sessionId, txnId } = await heldPayment(p, '203.0.113.45');
+      refundAnswer = () => ({ status: 200, body: { Approved: false, IsoResponseCode: '12', ResponseMessage: 'Invalid refund', TransactionType: 5 } });
+      try {
+        const refused = await resolve(finance, sessionId, { action: 'REFUND', providerReference: txnId, amount: 2100 });
+        expect(refused.statusCode, refused.body).toBe(200);
+        expect((await rowOf(sessionId)).providerRefundState).toBe('FAILED');
+      } finally { refundAnswer = adjusted; }
+      const nothing = await resolve(finance, sessionId, { action: 'NOTHING_TAKEN', providerReference: txnId });
+      expect(nothing.statusCode, nothing.body).toBe(409);
+      expect(nothing.json().error?.code).toBe('REFUND_SENT');
+      expect(await rowOf(sessionId)).toMatchObject({ status: 'HELD', resolution: null });
     });
 
     it('REFUND answered: the session closes FAILED, refunded, its confirmation resolved — and the card choice comes back', async () => {
@@ -2295,6 +2316,45 @@ describe('[PT-4] real cards through HTTP: Swift\'s hosted page, the bank\'s chec
       expect(sent('/api/refund').filter((b) => b['TransactionIdentifier'] === txnId)).toEqual([
         { Refund: true, TransactionIdentifier: txnId, TotalAmount: 2100, CurrencyCode: '328' },
       ]);
+    });
+
+    // Its own return address: the provider's return is rate limited per address, and the cases after these use the default one.
+    const F4_FROM = '203.0.113.44';
+    // [REVIEW-2 round 2 F4] The typed amount is the person's confirmation of what the portal shows, never the refund's amount:
+    // PowerTranz's guide documents no refund smaller than the payment (sec. 5.2), so a HELD payment is refunded whole or not
+    // at all. A typo below the price is refused; a portal showing MORE taken than Swift's price, or a hold kept because the
+    // provider's figure differs from the price, goes to the owner. Nothing is claimed or sent in any of these cases.
+    it('[F4] REFUND is the whole payment only: a typed 210 for 2100 is refused, more taken than the price escalates, and only the whole price is sent', async () => {
+      const finance = await makeFinance();
+      const p = await makeStore();
+      const { sessionId, txnId } = await heldPayment(p, F4_FROM);
+      for (const amount of [210, 2099.99, 1]) {
+        const typo = await resolve(finance, sessionId, { action: 'REFUND', providerReference: txnId, amount });
+        expect(typo.statusCode, typo.body).toBe(409);
+        expect(typo.json().error?.code).toBe('REFUND_NOT_WHOLE');
+      }
+      const more = await resolve(finance, sessionId, { action: 'REFUND', providerReference: txnId, amount: 4200 });
+      expect(more.statusCode, more.body).toBe(409);
+      expect(more.json().error?.message).toContain('escalate to the owner');
+      expect(sent('/api/refund').filter((b) => b['TransactionIdentifier'] === txnId)).toHaveLength(0);
+      expect(await rowOf(sessionId)).toMatchObject({ status: 'HELD', providerRefundState: null, resolution: null });
+      const whole = await resolve(finance, sessionId, { action: 'REFUND', providerReference: txnId, amount: 2100 });
+      expect(whole.json().data, whole.body).toMatchObject({ resolution: 'REFUNDED', refund: 'succeeded' });
+      expect(sent('/api/refund').filter((b) => b['TransactionIdentifier'] === txnId)).toEqual([
+        { Refund: true, TransactionIdentifier: txnId, TotalAmount: 2100, CurrencyCode: '328' },
+      ]);
+    });
+
+    it('[F4] a payment held because the provider\'s figure differs from Swift\'s price is never refunded here: it goes to the owner', async () => {
+      const finance = await makeFinance();
+      const p = await makeStore();
+      const { sessionId, txnId } = await heldPayment(p, F4_FROM);
+      await app.prisma.cardSession.update({ where: { id: sessionId }, data: { failureCode: 'AMOUNT_MISMATCH' } });
+      const refused = await resolve(finance, sessionId, { action: 'REFUND', providerReference: txnId, amount: 2100 });
+      expect(refused.statusCode, refused.body).toBe(409);
+      expect(refused.json().error).toMatchObject({ code: 'REFUND_AMOUNT_UNKNOWN', message: expect.stringContaining('escalate to the owner') });
+      expect(sent('/api/refund').filter((b) => b['TransactionIdentifier'] === txnId)).toHaveLength(0);
+      expect(await rowOf(sessionId)).toMatchObject({ status: 'HELD', providerRefundState: null, resolution: null });
     });
 
     it('[Opus S4-f] with the card rail off (CARD_RAIL_V2 and its drain both off) finance cannot act on a card session; draining it can', async () => {

@@ -1101,11 +1101,23 @@ export class CardRailService {
     if (!/^[A-Za-z0-9_-]{1,64}$/.test(ref)) throw new AppError(400, 'PROVIDER_REFERENCE_INVALID', 'Enter the card provider\'s transaction reference you checked.');
     const amount = input.action === 'NOTHING_TAKEN' ? null : input.amount;
     if (amount !== null && (amount === undefined || !Number.isFinite(amount) || amount <= 0)) throw new AppError(400, 'AMOUNT_INVALID', 'State the amount the provider shows was taken.');
-    // [Opus S3-3] A refund never sends more than the card payment took. A
-    // session has at most ONE refund (its durable claim below), so nothing was
-    // refunded before one can be sent: the cap is the session's own amount.
-    if (input.action === 'REFUND' && Math.round(amount! * 100) > Math.round(Number(session.amount) * 100)) {
-      throw new AppError(409, 'REFUND_ABOVE_PAYMENT', 'A refund can never be more than this card payment took.');
+    // [Opus S3-3 · REVIEW-2 round 2 F4] A HELD payment is refunded WHOLE or not at all: PowerTranz's guide documents
+    // no refund smaller than the payment ("partial voids are not supported. Only partial captures are supported",
+    // sec. 5.2). The typed amount is the person's confirmation of what the portal shows taken, never the refund's
+    // amount: the refund sends the session's own price (one refund per session, so nothing was refunded before).
+    // Anything else (a typo, more taken than Swift's price, a hold kept because the provider's figure differs from
+    // the price) sends nothing and goes to the owner.
+    if (input.action === 'REFUND') {
+      const whole = Math.round(Number(session.amount) * 100);
+      if (session.failureCode === 'AMOUNT_MISMATCH') {
+        throw new AppError(409, 'REFUND_AMOUNT_UNKNOWN', 'The card provider\'s figure for this payment differs from Swift\'s price, so Swift cannot refund exactly what was taken. Nothing was sent: escalate to the owner.');
+      }
+      if (Math.round(amount! * 100) > whole) {
+        throw new AppError(409, 'REFUND_ABOVE_PAYMENT', 'A refund can never be more than this card payment\'s price. If the portal shows more taken than that, nothing is sent: escalate to the owner.');
+      }
+      if (Math.round(amount! * 100) !== whole) {
+        throw new AppError(409, 'REFUND_NOT_WHOLE', `Swift refunds a card payment only whole: ${whole / 100}${session.currencyCode ? ` ${session.currencyCode}` : ''}. Type the amount the portal shows taken; if it is not exactly that, nothing is sent: escalate to the owner.`);
+      }
     }
     if (input.action === 'BOOK') {
       // A TEST system never books a week, whoever asks.
@@ -1181,6 +1193,11 @@ export class CardRailService {
       if (fresh.providerRefundState === 'PENDING') {
         throw new AppError(409, 'REFUND_PENDING', 'A refund of this payment is pending: money was taken. Check it in the provider\'s portal, then escalate it to the owner.');
       }
+      // [REVIEW-1 R2-3] A refund was sent for it (its answer lost, refused, or never recorded): a person saw money taken.
+      // It is never closed as "nothing taken"; it stays HELD for the owner.
+      if (fresh.providerRefundState !== null) {
+        throw new AppError(409, 'REFUND_SENT', 'A refund was sent for this payment, so money was taken: it is never closed as "nothing taken". It stays here: escalate it to the owner.');
+      }
       if (Object.keys(recordRef).length) await tx.cardSession.update({ where: { id: fresh.id }, data: recordRef });
       await this.closeResolvedInTx(tx, fresh, 'NOTHING_TAKEN', input.adminUserId, now);
       await audited(tx);
@@ -1215,7 +1232,8 @@ export class CardRailService {
     const currencyCode = session.currencyCode!;
     const refunded = await provider!.refund({
       binding: provider!.binding, providerRef: ref,
-      amountMinor: toProviderMinor(amount!, currencyCode, 'card.v2.refund'), currencyCode,
+      // The whole payment, at Swift's own price (checked above), never the typed figure.
+      amountMinor: toProviderMinor(Number(session.amount), currencyCode, 'card.v2.refund'), currencyCode,
       idempotencyKey: `refund:${session.id}`,
     }).catch((): CardRefundOutcome => ({ status: 'unknown', reason: 'REFUND_CALL_FAILED', rawSha256: rawDigest({ refund: 'threw' }) }));
     const state = refunded.status === 'succeeded' ? 'REFUNDED' : refunded.status === 'pending' ? 'PENDING' : refunded.status === 'failed' ? 'FAILED' : 'UNKNOWN';
