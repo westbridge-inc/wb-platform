@@ -36,14 +36,16 @@ export default function SelfieChecksPage() {
 function SelfieCheckRow({ check }: { check: SelfieCheck }) {
   const queryClient = useQueryClient();
   const [viewed, setViewed] = useState(false);
+  // [security review 9 Nov, 2nd] the capture the viewer SHOWS; the server refuses the answer if the owner retook since
+  const [shownSelfie, setShownSelfie] = useState<string | null>(null);
   const [reason, setReason] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
-  const ready = viewed && reason.trim().length > 0 && !busy;
+  const ready = viewed && shownSelfie !== null && reason.trim().length > 0 && !busy;
   const decide = async (match: boolean) => {
     setBusy(true); setError('');
     try {
-      await decideSelfieCheck(check.documentId, match, reason.trim());
+      await decideSelfieCheck(check.documentId, match, shownSelfie!, reason.trim());
       await queryClient.invalidateQueries({ queryKey: ['selfie-checks'] });
     } catch (err) {
       setError((err as { message?: string })?.message || 'The answer was not saved. Try again.');
@@ -53,7 +55,7 @@ function SelfieCheckRow({ check }: { check: SelfieCheck }) {
   return (
     <article className="rounded-2xl border border-[var(--border)] p-4 space-y-3" aria-label={label}>
       <p className="font-semibold">{label} · selfie taken {gyDate(check.selfieCapturedAt)}</p>
-      <DocumentViewer id={check.documentId} label={label} onViewed={setViewed} />
+      <DocumentViewer id={check.documentId} label={label} onViewed={setViewed} onSelfie={setShownSelfie} />
       <label className="block">
         <span className="rc-muted">Why (recorded)</span>
         <textarea className="w-full rounded-lg border border-[var(--border)] p-2" value={reason} onChange={(e) => setReason(e.target.value)} />

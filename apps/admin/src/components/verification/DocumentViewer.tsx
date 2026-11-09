@@ -12,7 +12,9 @@ const AWAITING_MALWARE_SCAN_SENTENCE = 'This document is waiting for a malware s
 /** [Row 312 · REVIEW-F S3-1] A rescan found malware (or could not scan it): it never opens; the person re-uploads. */
 const FAILED_MALWARE_SCAN_SENTENCE = 'This document failed its malware scan and was taken out of service. Ask the person to upload it again.';
 
-export function DocumentViewer({ id, label, onViewed, onRejectMissing }: { id: string; label: string; onViewed: (_viewed: boolean) => void; onRejectMissing?: () => void }) {
+/** [security review 9 Nov 2026] `onSelfie`: told which selfie capture is on screen (null = none), so a decision about
+ *  that face names it (the selfie-check page). */
+export function DocumentViewer({ id, label, onViewed, onRejectMissing, onSelfie }: { id: string; label: string; onViewed: (_viewed: boolean) => void; onRejectMissing?: () => void; onSelfie?: (_capturedAt: string | null) => void }) {
   const [url, setUrl] = useState('');
   const [pdf, setPdf] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -41,7 +43,7 @@ export function DocumentViewer({ id, label, onViewed, onRejectMissing }: { id: s
   useEffect(() => () => { generation.current++; }, []);
   const view = async () => {
     const attempt = ++generation.current;
-    setLoading(true); setError(''); setMissing(false); setPdfFailed(false); setPdfInlineLoaded(false); setUrl(''); setLoaded(false); onViewed(false); setSelfie(null); setSelfieExpected(null);
+    setLoading(true); setError(''); setMissing(false); setPdfFailed(false); setPdfInlineLoaded(false); setUrl(''); setLoaded(false); onViewed(false); setSelfie(null); onSelfie?.(null); setSelfieExpected(null);
     setZoom(1); setRotation(0);
     try {
       const signed = await getDocSignedUrl(id);
@@ -79,6 +81,7 @@ export function DocumentViewer({ id, label, onViewed, onRejectMissing }: { id: s
       if (sent && typeof sent.url === 'string' && sent.url && typeof sent.capturedAt === 'string') {
         // A path is relative to the API origin (local storage); a storage address is already signed.
         setSelfie({ url: sent.url.startsWith('/') ? new URL(sent.url, API_URL).toString() : sent.url, capturedAt: sent.capturedAt });
+        onSelfie?.(sent.capturedAt);
       }
     } catch (err) {
       if (generation.current === attempt) {

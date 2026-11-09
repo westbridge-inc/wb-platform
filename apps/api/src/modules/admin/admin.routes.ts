@@ -7491,23 +7491,38 @@ export async function adminRoutes(app: FastifyInstance) {
   // selfie beside it). "match" lets home visits book; "no match" keeps them refused. A person, never a machine.
   app.post('/verification/:id/selfie-check', { preHandler: [adminGuard] }, async (request) => {
     const { id } = request.params as { id: string };
-    const body = z.object({ match: z.boolean(), reason: z.string().trim().min(1).max(500).optional() }).parse(request.body ?? {});
+    // [security review 9 Nov, 2nd] The answer is about the selfie the reviewer was SHOWN: the console sends that capture
+    // time (document-url signupSelfie.capturedAt), and the server refuses unless it is still the owner's selfie.
+    const body = z.object({
+      match: z.boolean(),
+      selfieCapturedAt: z.string().datetime(),
+      reason: z.string().trim().min(1).max(500).optional(),
+    }).parse(request.body ?? {});
     const doc = await tenantPrisma.verificationDocument.findUnique({ where: { id }, select: { id: true, userId: true, docType: true, status: true, state: true, expiresAt: true } });
     if (!doc) throw new NotFoundError('VerificationDocument', id);
     if (!SELFIE_COMPARE_DOC_TYPES.has(doc.docType) || doc.status !== 'APPROVED' || doc.state !== 'COMMITTED' || !isDocumentValidAt(doc.expiresAt, new Date())) {
       throw new AppError(409, 'NOT_AN_APPROVED_PHOTO_ID', 'Compare the selfie with an approved, current photo ID.');
     }
     await assertNotRecused(app.prisma, request.user.userId, doc.userId);
-    const owner = await tenantPrisma.user.findUnique({ where: { id: doc.userId }, select: { id: true, avatar: true, selfieCapturedAt: true } });
-    if (!owner?.selfieCapturedAt || !isOwnSelfiePointer(owner.id, owner.avatar)) {
-      throw new AppError(409, 'NO_SELFIE_ON_FILE', 'This person has no selfie on file to compare.');
-    }
     if (!(await signupSelfieRequired(app.prisma, doc.userId))) {
       throw new AppError(409, 'SELFIE_NOT_TAKEN_BY_THIS_PERSON', 'This person takes no selfie: their ID is reviewed on its own.');
     }
-    const record = { documentId: doc.id, selfieCapturedAt: owner.selfieCapturedAt.toISOString(), outcome: body.match ? 'MATCH' : 'NO_MATCH' } as const;
     const { SELFIE_ID_COMPARED_ACTION } = await import('../verification/home-visits');
-    await audit(request.user.userId, SELFIE_ID_COMPARED_ACTION, 'User', doc.userId, { ...record, docType: doc.docType }, request);
+    // The check and the record in ONE transaction holding the person's row: POST /auth/selfie (the only selfie writer)
+    // updates that row, so a retake waits until the record commits and is then a new, unchecked face.
+    const record = await app.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT "id" FROM "users" WHERE "id" = ${doc.userId} FOR UPDATE`;
+      const owner = await tx.user.findUnique({ where: { id: doc.userId }, select: { id: true, avatar: true, selfieCapturedAt: true } });
+      if (!owner?.selfieCapturedAt || !isOwnSelfiePointer(owner.id, owner.avatar)) {
+        throw new AppError(409, 'NO_SELFIE_ON_FILE', 'This person has no selfie on file to compare.');
+      }
+      if (owner.selfieCapturedAt.toISOString() !== new Date(body.selfieCapturedAt).toISOString()) {
+        throw new AppError(409, 'SELFIE_CHANGED', 'This person took a new selfie after you opened it. Open the document again and compare the new one.');
+      }
+      const answer = { documentId: doc.id, selfieCapturedAt: owner.selfieCapturedAt.toISOString(), outcome: body.match ? 'MATCH' : 'NO_MATCH' } as const;
+      await auditIn(tx, request.user.userId, SELFIE_ID_COMPARED_ACTION, 'User', doc.userId, { ...answer, avatar: owner.avatar, docType: doc.docType }, request);
+      return answer;
+    });
     return { success: true, data: record };
   });
 

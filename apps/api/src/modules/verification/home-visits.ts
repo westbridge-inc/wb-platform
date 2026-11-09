@@ -51,18 +51,19 @@ export async function ownerHasProfilePhoto(db: Db, ownerUserId: string): Promise
  */
 export const SELFIE_ID_COMPARED_ACTION = 'SELFIE_ID_COMPARED';
 
-export interface SelfieIdComparison { documentId: string; selfieCapturedAt: string; outcome: 'MATCH' | 'NO_MATCH' }
+export interface SelfieIdComparison { documentId: string; selfieCapturedAt: string; avatar: string; outcome: 'MATCH' | 'NO_MATCH' }
 
 export async function ownerPhotoMatchedToId(db: Db, ownerUserId: string, now: Date = new Date()): Promise<boolean> {
-  const owner = await db.user.findUnique({ where: { id: ownerUserId }, select: { selfieCapturedAt: true } });
-  if (!owner?.selfieCapturedAt) return false;
+  const owner = await db.user.findUnique({ where: { id: ownerUserId }, select: { selfieCapturedAt: true, avatar: true } });
+  if (!owner?.selfieCapturedAt || !owner.avatar) return false;
   const latest = await db.auditLog.findFirst({
     where: { action: SELFIE_ID_COMPARED_ACTION, entity: 'User', entityId: ownerUserId },
     orderBy: { createdAt: 'desc' },
     select: { changes: true },
   });
   const record = latest?.changes as Partial<SelfieIdComparison> | null | undefined;
-  if (!record || record.outcome !== 'MATCH' || record.selfieCapturedAt !== owner.selfieCapturedAt.toISOString() || typeof record.documentId !== 'string') return false;
+  // [security review 9 Nov, 2nd] the compared photo is named by its capture time AND its stored object
+  if (!record || record.outcome !== 'MATCH' || record.selfieCapturedAt !== owner.selfieCapturedAt.toISOString() || record.avatar !== owner.avatar || typeof record.documentId !== 'string') return false;
   const id = await db.verificationDocument.findFirst({
     where: { id: record.documentId, userId: ownerUserId, status: 'APPROVED', state: 'COMMITTED', docType: { in: [...SELFIE_COMPARE_DOC_TYPES] } },
     select: { expiresAt: true },

@@ -12,7 +12,7 @@ function fixture(pending: unknown[], writes: ApiRequest[] = []) {
   mockApi((r) => {
     if (r.method === 'POST') { writes.push(r); return { body: { success: true, data: { outcome: 'MATCH' } } }; }
     if (r.url.pathname.endsWith('/selfie-checks')) return { body: { success: true, data: { pending } } };
-    if (r.url.pathname.endsWith('/document-url')) return { body: { success: true, data: { url: '/api/v1/verification/render/doc-1?expires=9999999999&reviewer=rev&sig=synthetic-signature-0000', expiresInSeconds: 300, signupSelfie: { url: '/uploads/avatars/u1/selfie.jpg', capturedAt: '2026-11-09T10:00:00.000Z' }, signupSelfieExpected: true } } };
+    if (r.url.pathname.endsWith('/document-url')) return { body: { success: true, data: { url: '/api/v1/verification/render/doc-1?expires=9999999999&reviewer=rev&sig=synthetic-signature-0000', expiresInSeconds: 300, signupSelfie: { url: '/uploads/avatars/u1/selfie.jpg', capturedAt: '2026-11-09T10:05:00.000Z' }, signupSelfieExpected: true } } };
     return { body: {} };
   });
   return writes;
@@ -39,7 +39,8 @@ describe('[security review 9 Nov] Selfie checks', () => {
     await user.click(same);
     await waitFor(() => expect(writes).toHaveLength(1));
     expect(writes[0]!.url.pathname).toBe('/api/v1/admin/verification/doc-1/selfie-check');
-    expect(JSON.parse(String(writes[0]!.init?.body))).toEqual({ match: true });
+    // [security review 9 Nov, 2nd] the answer names the selfie the reviewer was SHOWN (document-url), not the queue's
+    expect(JSON.parse(String(writes[0]!.init?.body))).toEqual({ match: true, selfieCapturedAt: '2026-11-09T10:05:00.000Z' });
     expect((writes[0]!.init?.headers as Record<string, string>)['x-swift-reason']).toBe('Faces match on the approved ID');
   });
 });
