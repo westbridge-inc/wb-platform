@@ -1,8 +1,9 @@
 'use client';
 
-import { useState } from 'react';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useState, type FormEvent } from 'react';
+import { useInfiniteQuery, useQueryClient } from '@tanstack/react-query';
 import { fetchCardPayments, resolveCardPayment, type CardDecision, type CardPaymentsFilter } from '@/lib/api';
+import type { ReasonField } from '@/components/mc/ReasonDialog';
 import { StatusPill } from '@/components/detail';
 import { QueryFailed } from '@/components/mc/QueryFailed';
 import { useActionRunner } from '@/components/mc/useActionRunner';
@@ -10,9 +11,13 @@ import { gyDate, gyDateTime } from '@/lib/dates';
 
 // ---------------------------------------------------------------------------
 // [CARD-READY] Weekly-fee card payments (Pay now). A HELD one is money the card provider may have taken that Swift
-// could not book: a person checks the provider's portal, then books the week, refunds it, records a refund made in
-// the portal, or records that nothing was taken. Each decision needs a second admin, is taken once, and the server
-// refuses anything its own records do not allow (CARD-CHECKOUT-API.md section 8). Nothing here shows card data.
+// could not book: a person checks the provider's portal, then books the week, refunds it (the API refund), or records
+// that nothing was taken. Each decision needs a second admin, is taken once, and the server refuses anything its own
+// records do not allow (CARD-CHECKOUT-API.md section 8). Nothing here shows card data.
+// [R1-5] The page never fills in what the person checked: they TYPE the transaction (and, to book or refund, the
+// amount) as the portal shows it, and for "nothing taken" the order reference they searched. Swift's own record is
+// shown read-only beside it. [REVIEW-2 F3] Each payment shows its order reference, SWIFT-<session id>: the
+// OrderIdentifier Swift sends, which the provider's Merchant Portal and reports use (guide 9.2).
 // ---------------------------------------------------------------------------
 
 const FILTERS: { key: CardPaymentsFilter; label: string }[] = [
@@ -38,28 +43,55 @@ const asCode = (code: string) => `code ${code}`;
 const STATE_WORDS: Record<string, string> = { SENDING: 'being sent', SENT: 'sent', VOIDED: 'done', REFUNDED: 'done', PENDING: 'pending', FAILED: 'refused', UNKNOWN: 'not confirmed' };
 const RESOLUTION_WORDS: Record<string, string> = { BOOKED: 'week booked', REFUNDED: 'refunded', NOTHING_TAKEN: 'nothing taken' };
 
-const DECISIONS: { action: CardDecision; label: string; body: (_amount: string) => string; success: string }[] = [
+/** What the person states from the portal: the amount seen taken (book, refund), or the order reference searched (nothing taken). */
+type Asks = 'amount' | 'order';
+const DECISIONS: { action: CardDecision; label: string; asks: Asks; body: (_amount: string) => string; success: string }[] = [
   {
-    action: 'BOOK', label: 'Book the week',
+    action: 'BOOK', label: 'Book the week', asks: 'amount',
     body: (amount) => `Only when the provider's portal shows ${amount} taken for this payment. Swift books the week once, and only with the provider's own approved answer it stored; without that the server refuses.`,
     success: 'Week booked.',
   },
   {
-    action: 'REFUND', label: 'Refund it',
+    action: 'REFUND', label: 'Refund it', asks: 'amount',
     body: (amount) => `Swift asks the card provider once to refund the whole ${amount} to the card. Never after the week was booked.`,
     success: 'Refund sent. Check its answer on this payment.',
   },
   {
-    action: 'REFUNDED_IN_PORTAL', label: 'Refunded in the portal',
-    body: (amount) => `Records a refund of ${amount} someone already made in the provider's portal. Swift sends nothing.`,
-    success: 'Refund recorded.',
-  },
-  {
-    action: 'NOTHING_TAKEN', label: 'Nothing was taken',
-    body: () => "Records that the provider's portal shows nothing taken for this payment. Swift sends nothing.",
+    action: 'NOTHING_TAKEN', label: 'Nothing was taken', asks: 'order',
+    body: () => "Records that the provider's portal shows nothing taken for this payment. Swift sends nothing, and no amount is stated.",
     success: 'Recorded: nothing taken.',
   },
 ];
+
+/** The shape of a reference the server takes (its ID_SHAPE): letters, digits, _ and -. */
+const ID_SHAPE = /^[A-Za-z0-9_-]{1,64}$/;
+/** The OrderIdentifier Swift sends for a card session (powertranz-provider createSession). */
+const orderRef = (sessionId: string) => `SWIFT-${sessionId}`;
+const escapeRegExp = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const exactly = (text: string) => new RegExp(`^${escapeRegExp(text)}$`);
+
+function fieldsFor(r: CardPaymentRow, asks: Asks): ReasonField[] {
+  const txn: ReasonField = {
+    kind: 'text', name: 'txn', label: 'Transaction reference in the portal', required: true, maxLength: 64, pattern: ID_SHAPE,
+    hint: "Type it as the card provider's portal shows it. Swift's record is above, to compare.",
+    patternMessage: 'That is not a transaction reference: letters, digits, - and _ only, no spaces.',
+  };
+  if (asks === 'amount') {
+    const currency = !r.currencyCode || r.currencyCode === 'GYD' ? 'GYD' : r.currencyCode;
+    return [txn, { kind: 'amount', name: 'amount', label: 'Amount taken in the portal', cents: true, hint: `In ${currency}, as the portal shows it, e.g. 2100` }];
+  }
+  return [txn, {
+    kind: 'text', name: 'order', label: 'Order reference you searched', required: true, maxLength: 80, pattern: exactly(orderRef(r.id)),
+    hint: 'The order reference you looked up in the portal or its reports, as it shows it.',
+    patternMessage: "That is not this payment's order reference. Look the payment up by the order reference shown above.",
+  }];
+}
+
+/** A subscription id as the server takes it, or null when it is not one. */
+const subscriptionIdOf = (raw: string) => {
+  const text = raw.trim();
+  return ID_SHAPE.test(text) ? text : null;
+};
 
 interface CardPaymentRow {
   id: string; subscriptionId: string; status: string; amount: number | null; currencyCode: string | null; periodStart: string | null;
@@ -73,16 +105,44 @@ const money = (amount: number | null, currency: string | null) => (amount === nu
 export default function CardPaymentsPage() {
   const qc = useQueryClient();
   const [filter, setFilter] = useState<CardPaymentsFilter>('HELD');
-  const { data, isLoading, isError, error, refetch, isFetching } = useQuery({ queryKey: ['card-payments', filter], queryFn: () => fetchCardPayments(filter) });
+  // [R1-6] One subscription's card payments (e.g. to find the ones a closing refund pays back): typed, then applied.
+  const [subscriptionText, setSubscriptionText] = useState('');
+  const [subscription, setSubscription] = useState('');
+  const [subscriptionError, setSubscriptionError] = useState<string | null>(null);
+  const { data, isLoading, isError, error, refetch, isFetching, hasNextPage, fetchNextPage, isFetchingNextPage } = useInfiniteQuery({
+    queryKey: ['card-payments', filter, subscription],
+    queryFn: ({ pageParam }) => fetchCardPayments(filter, { subscriptionId: subscription || undefined, before: pageParam }),
+    initialPageParam: null as string | null,
+    getNextPageParam: (last) => (last?.data?.next as string | null | undefined) ?? undefined,
+  });
   const actions = useActionRunner(() => qc.invalidateQueries({ queryKey: ['card-payments'] }));
   const [queued, setQueued] = useState<Record<string, true>>({});
-  const rows: CardPaymentRow[] = data?.data?.sessions ?? [];
+  const rows: CardPaymentRow[] = data?.pages.flatMap((page) => (page?.data?.sessions ?? []) as CardPaymentRow[]) ?? [];
+
+  const find = (event: FormEvent) => {
+    event.preventDefault();
+    const text = subscriptionText.trim();
+    const id = subscriptionIdOf(text);
+    if (text && !id) { setSubscriptionError('That is not a subscription id: letters, digits, - and _ only, no spaces.'); return; }
+    setSubscriptionError(null);
+    setSubscription(id ?? '');
+  };
+  const clearSubscription = () => { setSubscriptionText(''); setSubscriptionError(null); setSubscription(''); };
 
   const decide = (r: CardPaymentRow, d: (typeof DECISIONS)[number]) => void actions.run({
     title: `${d.label}: ${money(r.amount, r.currencyCode)} card payment?`,
-    body: <p>{d.body(money(r.amount, r.currencyCode))} Provider transaction {r.providerTransactionRef}. A second admin approves it.</p>,
+    body: (
+      <>
+        <p>{d.body(money(r.amount, r.currencyCode))} A second admin approves it.</p>
+        <p className="text-sm mt-2">
+          Swift&apos;s record: provider transaction <span className="font-mono break-all">{r.providerTransactionRef}</span>
+          {' · '}order <span className="font-mono break-all">{orderRef(r.id)}</span>
+        </p>
+      </>
+    ),
     confirmLabel: d.label,
-    submit: ({ reason }) => resolveCardPayment(r.id, d.action, r.providerTransactionRef!, r.amount!, reason),
+    fields: fieldsFor(r, d.asks),
+    submit: ({ reason, values }) => resolveCardPayment(r.id, d.action, String(values['txn']), d.asks === 'amount' ? Number(values['amount']) : null, reason),
     success: () => d.success,
   }).then((outcome) => {
     if (outcome?.tone === 'queued') setQueued((all) => ({ ...all, [r.id]: true }));
@@ -95,8 +155,21 @@ export default function CardPaymentsPage() {
           <button key={f.key} type="button" onClick={() => setFilter(f.key)} aria-pressed={filter === f.key} className="mc-tab">{f.label}</button>
         ))}
       </div>
+      <form className="flex flex-wrap items-end gap-2 mb-1" onSubmit={find} role="search" aria-label="One subscription">
+        <label className="text-sm">
+          <span className="block mc-muted">Subscription</span>
+          <input
+            value={subscriptionText} onChange={(e) => setSubscriptionText(e.target.value)} placeholder="Subscription id"
+            className="mc-input font-mono" autoComplete="off" aria-invalid={subscriptionError ? true : undefined}
+          />
+        </label>
+        <button type="submit" className="mc-btn">Find</button>
+        {(subscription || subscriptionText) && <button type="button" className="mc-btn" onClick={clearSubscription}>Clear</button>}
+      </form>
+      {subscriptionError && <p role="alert" className="text-sm mc-text-warn mb-1">{subscriptionError}</p>}
+      {subscription && <p className="text-sm mb-1">Showing subscription <span className="font-mono">{subscription}</span> only.</p>}
       <p className="mc-muted text-sm mb-6">
-        Weekly-fee card payments. One that needs a person may have been taken by the card provider without Swift booking it: check the provider&apos;s portal first, then decide. No card number is ever shown here.
+        Weekly-fee card payments. One that needs a person may have been taken by the card provider without Swift booking it: check the provider&apos;s portal first, then decide. Look each one up there by its order reference or its transaction. No card number is ever shown here. A refund recorded later on the Subscriptions page is not shown here: find it on that page.
       </p>
       {actions.banner}
       <div className="space-y-3">
@@ -120,6 +193,7 @@ export default function CardPaymentsPage() {
                 </div>
                 <p className="text-sm mt-2">
                   {r.providerTransactionRef ? <>Provider transaction <span className="font-mono break-all">{r.providerTransactionRef}</span></> : 'No provider transaction recorded.'}
+                  {' · '}Order <span className="font-mono break-all">{orderRef(r.id)}</span>
                   <span className="mc-muted"> · Subscription <span className="font-mono">{r.subscriptionId}</span></span>
                 </p>
                 {r.status === 'HELD' && r.failureCode && <p className="text-sm mc-muted mt-1">{HELD_WHY[r.failureCode] ?? `Held for a reason without words yet (${asCode(r.failureCode)}).`}</p>}
@@ -142,6 +216,14 @@ export default function CardPaymentsPage() {
           })
         )}
       </div>
+      {hasNextPage && (
+        <div className="mt-4 flex flex-wrap items-center gap-3">
+          <p className="text-sm">Showing the newest {rows.length}. There are older ones.</p>
+          <button type="button" className="mc-btn" onClick={() => void fetchNextPage()} disabled={isFetchingNextPage}>
+            {isFetchingNextPage ? 'Loading…' : 'Show older'}
+          </button>
+        </div>
+      )}
     </div>
   );
 }

@@ -605,12 +605,23 @@ export const resetDeliveryPin = (id: string, reason: string) =>
 /** [CARD-READY] Weekly-fee card payments (Pay now), newest first. HELD: the provider may have taken the money and Swift
  *  could not book it; a person decides each one. Views carry no card data and nothing that could move money. */
 export type CardPaymentsFilter = 'HELD' | 'SUCCEEDED' | 'ALL';
-export const fetchCardPayments = (filter: CardPaymentsFilter) =>
-  apiFetch(`/api/v1/admin/billing/card-sessions?purpose=PAY_NOW&limit=50${filter === 'ALL' ? '' : `&status=${filter}`}`);
-/** Finance's decision on a HELD card payment after checking the provider's portal. Two people (C4). */
-export type CardDecision = 'BOOK' | 'REFUND' | 'REFUNDED_IN_PORTAL' | 'NOTHING_TAKEN';
-export const resolveCardPayment = (id: string, action: CardDecision, providerReference: string, amount: number, reason: string) =>
-  apiFetch(`/api/v1/admin/billing/card-sessions/${encodeURIComponent(id)}/resolve`, { method: 'POST', body: JSON.stringify({ action, providerReference, amount }), reason });
+/** [R1-6] One page of 50; `subscriptionId` narrows it to one partner; `before` (the server's `next`) is the older page. */
+export const CARD_PAYMENTS_PAGE = 50;
+export const fetchCardPayments = (filter: CardPaymentsFilter, opts: { subscriptionId?: string; before?: string | null } = {}) => {
+  const q = new URLSearchParams({ purpose: 'PAY_NOW', limit: String(CARD_PAYMENTS_PAGE) });
+  if (filter !== 'ALL') q.set('status', filter);
+  if (opts.subscriptionId) q.set('subscriptionId', opts.subscriptionId);
+  if (opts.before) q.set('before', opts.before);
+  return apiFetch(`/api/v1/admin/billing/card-sessions?${q.toString()}`);
+};
+/** Finance's decision on a HELD card payment after checking the provider's portal. Two people (C4). [R1-5] The
+ *  reference and the amount are what the person TYPED from the portal (the server checks them against its record);
+ *  NOTHING_TAKEN states no amount (null): nothing was seen taken. [REVIEW-2 F1] No portal-refund decision. */
+export type CardDecision = 'BOOK' | 'REFUND' | 'NOTHING_TAKEN';
+export const resolveCardPayment = (id: string, action: CardDecision, providerReference: string, amount: number | null, reason: string) =>
+  apiFetch(`/api/v1/admin/billing/card-sessions/${encodeURIComponent(id)}/resolve`, {
+    method: 'POST', body: JSON.stringify({ action, providerReference, ...(amount === null ? {} : { amount }) }), reason,
+  });
 /** [BUG-HUNT-2 G08] What stores owe customers back by MMG. Swift holds none of it: these are records. */
 export const fetchMmgRefunds = (filter: 'open' | 'overdue' | 'disputed') =>
   apiFetch(`/api/v1/admin/mmg-refunds?limit=50&filter=${filter}`);

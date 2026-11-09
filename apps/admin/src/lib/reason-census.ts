@@ -65,7 +65,7 @@ export const REASONED_CALLERS: readonly ReasonCaller[] = [
     requiredBodyKeys: ['resolution', 'note', 'expectedClaimRevision'], reply: { orderId: 'ord_1', resolution: 'CUSTOMER_PAID', mismatch: false } },
   { route: 'POST /orders/:id/close-store-refund', helper: 'closeStoreRefund', args: ['ord_1', 2], requiredBodyKeys: ['expectedClaimRevision'], reply: { orderId: 'ord_1', status: 'CANCELLED' } },
   { route: 'POST /mmg-refunds/sends/:id/resolve', helper: 'resolveMmgRefund', args: ['snd_1', true, 'Checked the statement'], requiredBodyKeys: ['received', 'note'], reply: { sendId: 'snd_1', received: true } },
-  { route: 'POST /billing/card-sessions/:id/resolve', helper: 'resolveCardPayment', args: ['cs_1', 'NOTHING_TAKEN', 'TXN-1', 2100], requiredBodyKeys: ['action', 'providerReference', 'amount'] },
+  { route: 'POST /billing/card-sessions/:id/resolve', helper: 'resolveCardPayment', args: ['cs_1', 'NOTHING_TAKEN', 'TXN-1', null], requiredBodyKeys: ['action', 'providerReference'] },
   { route: 'POST /mmg-refunds/:id/void', helper: 'voidMmgRefund', args: ['obl_1', 'Settled in cash'], requiredBodyKeys: ['note'], reply: { id: 'obl_1', status: 'VOIDED' } },
   { route: 'POST /orders/:id/door-cash-return/resolve', helper: 'resolveHeldDoorCash', args: ['ord_1'], reply: { orderId: 'ord_1', doorCashReturn: { status: 'RESOLVED' } } },
 

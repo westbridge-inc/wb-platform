@@ -762,6 +762,8 @@ const adminListQuery = z.object({
   purpose: z.enum(['ENROLL', 'PAY_NOW']).optional(),
   subscriptionId: z.string().regex(ID_SHAPE).optional(),
   limit: z.coerce.number().int().min(1).max(200).default(50),
+  /** [R1-6] Paging: a session id from this list; only sessions strictly older than it (in the list's order) come back. */
+  before: z.string().regex(ID_SHAPE).optional(),
 });
 
 const boundTenant = (): string => {
@@ -772,16 +774,28 @@ const boundTenant = (): string => {
 
 const withAmount = <T extends { amount: unknown }>(row: T) => ({ ...row, amount: row.amount === null ? null : Number(row.amount) });
 
-/** GET /billing/card-sessions — newest first; `status=HELD` is the review queue. */
+/** GET /billing/card-sessions — newest first; `status=HELD` is the review queue.
+ *  [R1-6] Paged: `next` is the id to pass as `before` for the older ones, or null when there are none. */
 export async function adminCardSessions(prisma: PrismaClient, query: unknown) {
-  const q = adminListQuery.parse(query ?? {});
+  const parsed = adminListQuery.safeParse(query ?? {});
+  if (!parsed.success) throw new AppError(400, 'INVALID_QUERY', 'Send status, purpose, subscriptionId, limit (1 to 200) or before (a card session id).');
+  const q = parsed.data;
+  const tenantId = boundTenant();
+  // The cursor is a session of this tenant; older means (createdAt, id) below it, the list's own order.
+  const cursor = q.before ? await prisma.cardSession.findFirst({ where: { id: q.before, tenantId }, select: { id: true, createdAt: true } }) : null;
+  if (q.before && !cursor) throw new AppError(400, 'INVALID_CURSOR', 'There is no such card session to page from.');
   const rows = await prisma.cardSession.findMany({
-    where: { tenantId: boundTenant(), ...(q.status ? { status: q.status } : {}), ...(q.purpose ? { purpose: q.purpose } : {}), ...(q.subscriptionId ? { subscriptionId: q.subscriptionId } : {}) },
+    where: {
+      tenantId, ...(q.status ? { status: q.status } : {}), ...(q.purpose ? { purpose: q.purpose } : {}), ...(q.subscriptionId ? { subscriptionId: q.subscriptionId } : {}),
+      ...(cursor ? { OR: [{ createdAt: { lt: cursor.createdAt } }, { createdAt: cursor.createdAt, id: { lt: cursor.id } }] } : {}),
+    },
     orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
-    take: q.limit,
+    take: q.limit + 1,
     select: ADMIN_SESSION_SELECT,
   });
-  return { sessions: rows.map(withAmount) };
+  const more = rows.length > q.limit;
+  const page = more ? rows.slice(0, q.limit) : rows;
+  return { sessions: page.map(withAmount), next: more ? page[page.length - 1]!.id : null };
 }
 
 /** GET /billing/card-sessions/:id — one session and its evidence (hashes, never payloads). */
@@ -800,7 +814,8 @@ export async function adminCardSession(prisma: PrismaClient, id: string) {
 const resolveBody = z.object({
   action: z.enum(CARD_RESOLVE_ACTIONS),
   providerReference: z.string().trim().min(1).max(64),
-  amount: z.number().positive().max(99_999_999),
+  /** [R1-5] What finance saw taken: BOOK and REFUND need it (the service refuses them without it); NOTHING_TAKEN states none. */
+  amount: z.number().positive().max(99_999_999).optional(),
   /** The stated reason may come in the body as well as the header (ADM-006). */
   reason: z.string().trim().max(2000).optional(),
 }).strict();
@@ -808,8 +823,8 @@ const resolveBody = z.object({
 /**
  * [Review S2-2] POST /billing/card-sessions/:id/resolve — finance decides a
  * HELD card payment after checking the provider's portal: book it (exactly
- * this week's price), refund it (one refund, durably claimed), record a
- * refund made in the portal, or record that nothing was taken. Declared C4 in
+ * this week's price), refund it (one API refund, durably claimed), or record
+ * that nothing was taken. Declared C4 in
  * admin-authority.ts: two people. The session must be in the admin's tenant.
  */
 export async function adminResolveCardSession(app: FastifyInstance, id: string, body: unknown, adminUserId: string, onAudit?: OnAudit) {
@@ -819,7 +834,7 @@ export async function adminResolveCardSession(app: FastifyInstance, id: string, 
   if (!cardRailV2Enabled() && !cardRailV2DrainEnabled()) throw new AppError(404, 'CARD_RAIL_UNAVAILABLE', 'Card payments are not available.');
   if (!ID_SHAPE.test(id)) throw notFound('CARD_SESSION_NOT_FOUND', 'There is no such card session.');
   const parsed = resolveBody.safeParse(body ?? {});
-  if (!parsed.success) throw new AppError(400, 'INVALID_RESOLUTION', `Send { action: ${CARD_RESOLVE_ACTIONS.join(' | ')}, providerReference, amount }.`);
+  if (!parsed.success) throw new AppError(400, 'INVALID_RESOLUTION', `Send { action: ${CARD_RESOLVE_ACTIONS.join(' | ')}, providerReference, amount (BOOK and REFUND) }.`);
   const tenantId = boundTenant();
   const owned = await app.prisma.cardSession.findFirst({ where: { id, tenantId }, select: { id: true } });
   if (!owned) throw notFound('CARD_SESSION_NOT_FOUND', 'There is no such card session.');

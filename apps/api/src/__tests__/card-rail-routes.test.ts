@@ -1091,6 +1091,47 @@ describe('admin read views: evidence as hashes, never anything that moves money'
     expect((await call('/api/v1/admin/billing/card-sessions/no-such-session')).statusCode).toBe(404);
   });
 
+  it('[R1-6] the sessions list pages: `before` returns strictly older rows in the same order, and `next` only while more exist', async () => {
+    const p = await makeRider();
+    const session = (await startSession(p, 'ENROLL')).json().data;
+    expect(pageState((await follow(await press(session.hostedUrl, 'APPROVE'))).body)).toBe('SUCCEEDED');
+    const admin = await makeAdmin();
+    const call = (url: string) => app.inject({ method: 'GET', url, headers: { authorization: `Bearer ${admin.token}` } });
+    const base = await app.prisma.cardSession.findUniqueOrThrow({ where: { id: session.sessionId } });
+    // Five more sessions of the same subscription: two share one createdAt (the id breaks the tie).
+    const t0 = base.createdAt.getTime();
+    const stamps = [t0 - 1000, t0 - 2000, t0 - 2000, t0 - 3000, t0 - 4000];
+    for (const [i, at] of stamps.entries()) {
+      await app.prisma.cardSession.create({ data: {
+        tenantId: base.tenantId, subscriptionId: base.subscriptionId, userId: base.userId, purpose: 'ENROLL', status: 'EXPIRED',
+        provider: base.provider, environment: base.environment, providerAccount: base.providerAccount, stateHash: `${i}`.repeat(64).slice(0, 64),
+        consentVersion: base.consentVersion, consentAt: base.consentAt, expiresAt: new Date(at + 60_000), createdAt: new Date(at),
+      } });
+    }
+    const all = (await call(`/api/v1/admin/billing/card-sessions?subscriptionId=${p.subId}`)).json().data;
+    expect(all.sessions).toHaveLength(6);
+    expect(all.next).toBeNull();
+    const order = all.sessions.map((s: { id: string }) => s.id);
+    const pages: string[][] = [];
+    let before: string | null = null;
+    do {
+      const res = await call(`/api/v1/admin/billing/card-sessions?subscriptionId=${p.subId}&limit=2${before ? `&before=${before}` : ''}`);
+      expect(res.statusCode, res.body).toBe(200);
+      const page = res.json().data as { sessions: Array<{ id: string }>; next: string | null };
+      pages.push(page.sessions.map((s) => s.id));
+      before = page.next;
+      if (before) expect(before).toBe(page.sessions[page.sessions.length - 1]!.id);
+    } while (before && pages.length < 10);
+    expect(pages).toEqual([order.slice(0, 2), order.slice(2, 4), order.slice(4, 6)]);
+    // A page exactly full with nothing older says so: no `next`.
+    const tail = (await call(`/api/v1/admin/billing/card-sessions?subscriptionId=${p.subId}&limit=2&before=${order[3]}`)).json().data;
+    expect(tail.sessions.map((s: { id: string }) => s.id)).toEqual(order.slice(4, 6));
+    expect(tail.next).toBeNull();
+    // A cursor that is not a session of this tenant, or not an id, is refused; nothing is listed.
+    expect((await call('/api/v1/admin/billing/card-sessions?before=no-such-session')).statusCode).toBe(400);
+    expect((await call('/api/v1/admin/billing/card-sessions?before=not%20an%20id')).statusCode).toBe(400);
+  });
+
   it('a partner token is refused the admin views', async () => {
     const p = await makeRider();
     const res = await app.inject({ method: 'GET', url: '/api/v1/admin/billing/card-sessions', headers: { authorization: `Bearer ${p.token}` } });
@@ -1180,15 +1221,16 @@ describe('[PT-4] real cards through HTTP: Swift\'s hosted page, the bank\'s chec
     const row = await app.prisma.cardSession.findUniqueOrThrow({ where: { id: sessionId } });
     return redis.hgetall(`${PTZ_PREFIX}s:${row.providerSessionRef}`);
   }
-  /** The bank's frame posts the authentication result "as Json" (Appendix 2), as a form can: text/plain. */
-  async function bankFramePosts(sessionId: string, status: string, extra: Record<string, unknown> = {}) {
+  /** The bank's frame posts the authentication result "as Json" (Appendix 2), as a form can: text/plain.
+   *  `from`: the posting address (the merchant response is limited per source address, per minute). */
+  async function bankFramePosts(sessionId: string, status: string, extra: Record<string, unknown> = {}, from?: string) {
     const held = await heldOf(sessionId);
     const result = {
       TransactionType: 2, Approved: false, TransactionIdentifier: held['txnId'], IsoResponseCode: '3D0', OrderIdentifier: held['orderId'], SpiToken: held['spiToken'],
       CardBrand: 'Visa', RiskManagement: { ThreeDSecure: { Eci: '05', AuthenticationStatus: status, ResponseCode: '3D0' } },
       BillingAddress: { EmailAddress: 'cardholder@example.test' }, ...extra,
     };
-    return ptz.inject({ method: 'POST', url: merchantResponsePath(), headers: { 'content-type': 'text/plain' }, payload: JSON.stringify(result) });
+    return ptz.inject({ method: 'POST', url: merchantResponsePath(), headers: { 'content-type': 'text/plain' }, payload: JSON.stringify(result), ...(from ? { remoteAddress: from } : {}) });
   }
   const completions = () => calls.filter((c) => c.path === '/api/spi/payment').length;
   const sent = (path: '/api/void' | '/api/refund') => calls.filter((c) => c.path === path).map((c) => JSON.parse(c.body) as Record<string, unknown>);
@@ -1205,11 +1247,11 @@ describe('[PT-4] real cards through HTTP: Swift\'s hosted page, the bank\'s chec
     payload: payload as never,
   });
   /** A Pay now whose approval Swift could not book and whose void the gateway refused: HELD for a person. */
-  async function heldPayment(p: Partner) {
+  async function heldPayment(p: Partner, from?: string) {
     payment = approve({ RiskManagement: undefined });
     voidAnswer = () => ({ status: 200, body: { Approved: false, IsoResponseCode: '12', ResponseMessage: 'Invalid transaction' } });
     const session = (await open(p)).json().data;
-    expect(pageState((await bankFramePosts(session.sessionId, 'Y')).body)).toBe('PENDING');
+    expect(pageState((await bankFramePosts(session.sessionId, 'Y', {}, from)).body)).toBe('PENDING');
     const row = await rowOf(session.sessionId);
     expect(row).toMatchObject({ status: 'HELD', failureCode: 'APPROVED_UNPROVEN', providerVoidState: 'FAILED' });
     payment = approve();
@@ -2208,14 +2250,17 @@ describe('[PT-4] real cards through HTTP: Swift\'s hosted page, the bank\'s chec
         { Refund: true, TransactionIdentifier: txnId, TotalAmount: 2100, CurrencyCode: '328' },
       ]);
       expect((await money(p.subId)).successes).toBe(0);
-      // A refund that may have gone through is never booked; finance records what the portal shows.
+      // A refund that may have gone through is never booked.
       const book = await resolve(finance, sessionId, { action: 'BOOK', providerReference: txnId, amount: 2100 });
       expect(book.json().error?.code, book.body).toBe('REFUND_SENT');
-      const recorded = await resolve(finance, sessionId, { action: 'REFUNDED_IN_PORTAL', providerReference: txnId, amount: 2100 });
-      expect(recorded.statusCode, recorded.body).toBe(200);
-      expect(recorded.json().data).toMatchObject({ status: 'FAILED', resolution: 'REFUNDED' });
-      expect(await rowOf(sessionId)).toMatchObject({ failureCode: 'REFUNDED_IN_PORTAL', resolvedBy: finance.userId });
-      expect((await confirmationOf(sessionId))?.status).toBe('PROVEN_UNPAID');
+      // [REVIEW-2 F1] A refund made by hand in the provider's portal is not in the provider's guide (it documents only
+      // the API refund): there is no decision that records one. The route refuses it as an unknown action.
+      const portal = await resolve(finance, sessionId, { action: 'REFUNDED_IN_PORTAL', providerReference: txnId, amount: 2100 });
+      expect(portal.statusCode, portal.body).toBe(400);
+      expect(portal.json().error?.code).toBe('INVALID_RESOLUTION');
+      expect(portal.json().error?.message).not.toContain('REFUNDED_IN_PORTAL');
+      expect(await rowOf(sessionId)).toMatchObject({ status: 'HELD', resolution: null, providerRefundState: 'UNKNOWN', failureCode: 'APPROVED_UNPROVEN' });
+      expect(ACTIVE_CONFIRMATION_STATES).toContain((await confirmationOf(sessionId))?.status);
       expect(sent('/api/refund').filter((b) => b['TransactionIdentifier'] === txnId)).toHaveLength(1);
       expect((await money(p.subId)).successes).toBe(0);
     });
@@ -2257,7 +2302,7 @@ describe('[PT-4] real cards through HTTP: Swift\'s hosted page, the bank\'s chec
       const p = await makeStore();
       const { sessionId, txnId } = await heldPayment(p);
       process.env['CARD_RAIL_V2'] = '0';
-      for (const action of ['BOOK', 'REFUND', 'REFUNDED_IN_PORTAL', 'NOTHING_TAKEN'] as const) {
+      for (const action of ['BOOK', 'REFUND', 'NOTHING_TAKEN'] as const) {
         const off = await resolve(finance, sessionId, { action, providerReference: txnId, amount: 2100 });
         expect(off.statusCode, `${action} ${off.body}`).toBe(404);
         expect(off.json().error?.code).toBe('CARD_RAIL_UNAVAILABLE');
@@ -2285,7 +2330,7 @@ describe('[PT-4] real cards through HTTP: Swift\'s hosted page, the bank\'s chec
         const booking = service.resolveHeld({ ...base, action: 'BOOK' });
         for (let i = 0; i < 50 && !(await rowOf(sessionId)).bookClaimedAt; i += 1) await new Promise((r) => setTimeout(r, 20));
         expect((await rowOf(sessionId)).bookClaimedAt).not.toBeNull();
-        for (const action of ['REFUND', 'NOTHING_TAKEN', 'REFUNDED_IN_PORTAL'] as const) {
+        for (const action of ['REFUND', 'NOTHING_TAKEN'] as const) {
           await expect(service.resolveHeld({ ...base, action }), action).rejects.toMatchObject({ code: 'BOOKING_IN_PROGRESS' });
         }
         release();
@@ -2320,7 +2365,7 @@ describe('[PT-4] real cards through HTTP: Swift\'s hosted page, the bank\'s chec
         const refunding = service.resolveHeld({ ...base, action: 'REFUND' });
         for (let i = 0; i < 50 && (await rowOf(sessionId)).providerRefundState !== 'SENDING'; i += 1) await new Promise((r) => setTimeout(r, 20));
         expect((await rowOf(sessionId)).providerRefundState).toBe('SENDING');
-        for (const action of ['BOOK', 'NOTHING_TAKEN', 'REFUNDED_IN_PORTAL'] as const) {
+        for (const action of ['BOOK', 'NOTHING_TAKEN'] as const) {
           await expect(service.resolveHeld({ ...base, action }), action).rejects.toMatchObject({ code: 'REFUND_IN_FLIGHT' });
         }
         release();
@@ -2411,6 +2456,52 @@ describe('[PT-4] real cards through HTTP: Swift\'s hosted page, the bank\'s chec
       expect(JSON.stringify(rows[0]!.changes)).toContain('NOTHING_TAKEN');
       expect(JSON.stringify(rows[0]!.changes)).toContain(txnId);
       expect(sent('/api/refund').filter((b) => b['TransactionIdentifier'] === txnId)).toHaveLength(0);
+    });
+
+    it('[R1-5] NOTHING_TAKEN states no amount (nothing was seen taken); BOOK and REFUND without the amount seen taken change nothing', async () => {
+      const finance = await makeFinance();
+      const p = await makeStore();
+      // Its own source address: these added cases never use up the per-address allowance the cases after them need.
+      const { sessionId, txnId } = await heldPayment(p, '198.51.100.21');
+      for (const action of ['BOOK', 'REFUND'] as const) {
+        const bare = await resolve(finance, sessionId, { action, providerReference: txnId });
+        expect(bare.statusCode, `${action} ${bare.body}`).toBe(400);
+        expect(bare.json().error?.code).toBe('AMOUNT_INVALID');
+      }
+      expect(await rowOf(sessionId)).toMatchObject({ status: 'HELD', resolution: null, providerRefundState: null, bookClaimedAt: null });
+      expect(sent('/api/refund').filter((b) => b['TransactionIdentifier'] === txnId)).toHaveLength(0);
+      // The transaction is still checked: another one is refused.
+      const wrongRef = await resolve(finance, sessionId, { action: 'NOTHING_TAKEN', providerReference: '00000000-0000-4000-8000-000000000000' });
+      expect(wrongRef.json().error?.code, wrongRef.body).toBe('PROVIDER_REFERENCE_MISMATCH');
+      const done = await resolve(finance, sessionId, { action: 'NOTHING_TAKEN', providerReference: txnId });
+      expect(done.statusCode, done.body).toBe(200);
+      expect(done.json().data).toMatchObject({ status: 'FAILED', resolution: 'NOTHING_TAKEN' });
+      // Its audit row names the decision and the transaction, and no amount anyone saw.
+      const [audit] = await app.prisma.auditLog.findMany({ where: { entityId: sessionId, action: { startsWith: 'ADMIN POST' } } });
+      expect(JSON.stringify(audit!.changes)).toContain('NOTHING_TAKEN');
+      expect(JSON.stringify(audit!.changes)).not.toMatch(/"amount":\s*\d/);
+      expect((await money(p.subId)).successes).toBe(0);
+    });
+
+    it('[REVIEW-2 F1] a payment of another card provider setup is never refunded here, and the refusal sends nobody to a portal refund', async () => {
+      const finance = await makeFinance();
+      const p = await makeStore();
+      const { sessionId, txnId } = await heldPayment(p, '198.51.100.22');
+      const row = await rowOf(sessionId);
+      // The card provider setup changed after this payment was taken (the session's own binding never changes).
+      const service = serviceOf() as unknown as { rail: () => CardRailProvider };
+      const realRail = service.rail;
+      const current = realRail.call(service);
+      service.rail = () => ({ ...current, binding: { ...current.binding, account: 'another-setup' } }) as CardRailProvider;
+      const refused = await serviceOf().resolveHeld({ sessionId, tenantId: row.tenantId, action: 'REFUND', providerReference: txnId, amount: 2100, adminUserId: finance.userId })
+        .then(() => null, (e: { code?: string; message?: string }) => e)
+        .finally(() => { service.rail = realRail; });
+      expect(refused?.code).toBe('CARD_PROVIDER_SETUP_CHANGED');
+      expect(refused?.message).not.toMatch(/portal/i);
+      expect(refused?.message).toMatch(/only through the setup that took it/);
+      expect(refused?.message).toMatch(/owner/);
+      expect(sent('/api/refund').filter((b) => b['TransactionIdentifier'] === txnId)).toHaveLength(0);
+      expect(await rowOf(sessionId)).toMatchObject({ status: 'HELD', resolution: null, providerRefundState: null });
     });
   });
 

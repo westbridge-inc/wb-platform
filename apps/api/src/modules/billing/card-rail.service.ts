@@ -68,7 +68,9 @@ export const VOID_ANSWER_WAIT_MS = 2 * 60 * 1000;
  *  the provider's refund answer, well inside it). */
 export const FINANCE_CLAIM_WAIT_MS = 2 * 60 * 1000;
 /** What finance may decide on a HELD Pay now (admin route, C4). */
-export const CARD_RESOLVE_ACTIONS = ['BOOK', 'REFUND', 'REFUNDED_IN_PORTAL', 'NOTHING_TAKEN'] as const;
+// [REVIEW-2 F1] No "refunded in the provider's portal" decision: the provider's guide documents only the API refund
+// (sec. 5.2 / 7.5), never a refund made by hand in its Merchant Portal, so Swift records none.
+export const CARD_RESOLVE_ACTIONS = ['BOOK', 'REFUND', 'NOTHING_TAKEN'] as const;
 export type CardResolveAction = (typeof CARD_RESOLVE_ACTIONS)[number];
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 const LIVE: CardSessionStatus[] = ['OPEN', 'UNKNOWN'];
@@ -1058,8 +1060,8 @@ export class CardRailService {
   // -------------------------------------------------------------------------
   // [Review S2-2] Finance resolves a HELD Pay now (two people: the admin route
   // is C4 dual control). Money the provider may have taken is never left
-  // silent: a person checks the provider's portal, then books it, refunds it,
-  // records a refund made in the portal, or records that nothing was taken.
+  // silent: a person checks the provider's portal, then books it, refunds it
+  // (the API refund, guide sec. 5.2 / 7.5), or records that nothing was taken.
   //
   // ONE decision, ONE money movement. Every decision is taken under the
   // session lock (billing authority -> the session row), reads what has
@@ -1067,7 +1069,7 @@ export class CardRailService {
   //   - BOOK only while no void or refund can have moved the money (each is
   //     either never sent or refused by the provider); it writes bookClaimedAt
   //     (once) and its payment row before booking;
-  //   - REFUND, REFUNDED_IN_PORTAL and NOTHING_TAKEN never once the week is
+  //   - REFUND and NOTHING_TAKEN never once the week is
   //     booked, nor while a BOOK may still be booking;
   //   - a REFUND is sent at most once (providerRefundState NULL -> SENDING),
   //     and BOOK / NOTHING_TAKEN wait while it may still be in flight.
@@ -1083,8 +1085,9 @@ export class CardRailService {
     action: CardResolveAction;
     /** The provider transaction finance checked (must match one already recorded). */
     providerReference: string;
-    /** What finance saw taken, in the session's currency (BOOK: exactly the session's price). */
-    amount: number;
+    /** What finance saw taken, in the session's currency (BOOK: exactly the session's price; REFUND: at most the
+     *  payment). [R1-5] NOTHING_TAKEN states no amount: nothing was seen taken, and any amount sent is ignored. */
+    amount?: number;
     adminUserId: string;
     /** [ADM-002] The admin audit row, written INSIDE the decision's transaction
      *  (the claim or the closure commits with its record, or not at all). */
@@ -1096,11 +1099,12 @@ export class CardRailService {
     if (!session || session.tenantId !== input.tenantId || session.purpose !== 'PAY_NOW') throw new NotFoundError('Card session', input.sessionId);
     const ref = input.providerReference.trim();
     if (!/^[A-Za-z0-9_-]{1,64}$/.test(ref)) throw new AppError(400, 'PROVIDER_REFERENCE_INVALID', 'Enter the card provider\'s transaction reference you checked.');
-    if (!Number.isFinite(input.amount) || input.amount <= 0) throw new AppError(400, 'AMOUNT_INVALID', 'State the amount the provider shows was taken.');
+    const amount = input.action === 'NOTHING_TAKEN' ? null : input.amount;
+    if (amount !== null && (amount === undefined || !Number.isFinite(amount) || amount <= 0)) throw new AppError(400, 'AMOUNT_INVALID', 'State the amount the provider shows was taken.');
     // [Opus S3-3] A refund never sends more than the card payment took. A
     // session has at most ONE refund (its durable claim below), so nothing was
     // refunded before one can be sent: the cap is the session's own amount.
-    if (input.action === 'REFUND' && Math.round(input.amount * 100) > Math.round(Number(session.amount) * 100)) {
+    if (input.action === 'REFUND' && Math.round(amount! * 100) > Math.round(Number(session.amount) * 100)) {
       throw new AppError(409, 'REFUND_ABOVE_PAYMENT', 'A refund can never be more than this card payment took.');
     }
     if (input.action === 'BOOK') {
@@ -1108,16 +1112,16 @@ export class CardRailService {
       if (session.environment !== 'live' && !cardTestSubscriptions().has(session.subscriptionId)) {
         throw new AppError(409, 'TEST_SYSTEM_NEVER_BOOKS', 'A payment on a test card system is never booked to a partner.');
       }
-      if (Math.round(input.amount * 100) !== Math.round(Number(session.amount) * 100)) {
+      if (Math.round(amount! * 100) !== Math.round(Number(session.amount) * 100)) {
         throw new AppError(409, 'AMOUNT_NOT_THE_PRICE', 'Only a payment of exactly this week\'s price can be booked. Refund any other amount.');
       }
     }
     const provider = input.action === 'REFUND' ? this.rail() : null;
     if (provider && !sameBinding(bindingOf(session), provider.binding)) {
-      throw new AppError(409, 'CARD_PROVIDER_SETUP_CHANGED', 'This payment belongs to another card provider setup. Refund it in the provider\'s portal, then record that refund here.');
+      throw new AppError(409, 'CARD_PROVIDER_SETUP_CHANGED', 'This payment belongs to another card provider setup. Swift can refund a card payment only through the setup that took it: escalate it to the owner.');
     }
 
-    const audited = (tx: Prisma.TransactionClient) => input.onAudit?.(tx, { resolveAction: input.action, providerTransactionRef: ref, amount: input.amount });
+    const audited = (tx: Prisma.TransactionClient) => input.onAudit?.(tx, { resolveAction: input.action, providerTransactionRef: ref, ...(amount === null ? {} : { amount }) });
     // The decision, under the lock: what has happened, and the durable claim.
     const decided = await this.prisma.$transaction(async (tx) => {
       const fresh = await this.lockSession(tx, session.id);
@@ -1166,19 +1170,19 @@ export class CardRailService {
 
       if (input.action === 'REFUND') {
         if (fresh.providerRefundState !== null) {
-          throw new AppError(409, 'REFUND_ALREADY_SENT', 'A refund for this payment was already sent; its answer is recorded on the session. If the provider\'s portal shows it refunded, record that refund.');
+          throw new AppError(409, 'REFUND_ALREADY_SENT', 'A refund for this payment was already sent; its answer is recorded on the session. Check it in the provider\'s portal, then escalate it to the owner.');
         }
         await tx.cardSession.update({ where: { id: fresh.id }, data: { ...recordRef, providerRefundState: 'SENDING', providerRefundAt: now } });
         await audited(tx);
         return { next: 'refund' as const };
       }
 
-      // REFUNDED_IN_PORTAL / NOTHING_TAKEN: a person's record of what the portal shows.
-      if (input.action === 'NOTHING_TAKEN' && fresh.providerRefundState === 'PENDING') {
-        throw new AppError(409, 'REFUND_PENDING', 'A refund of this payment is pending: money was taken. Record the refund once the provider\'s portal shows it.');
+      // NOTHING_TAKEN: a person's record of what the portal shows.
+      if (fresh.providerRefundState === 'PENDING') {
+        throw new AppError(409, 'REFUND_PENDING', 'A refund of this payment is pending: money was taken. Check it in the provider\'s portal, then escalate it to the owner.');
       }
       if (Object.keys(recordRef).length) await tx.cardSession.update({ where: { id: fresh.id }, data: recordRef });
-      await this.closeResolvedInTx(tx, fresh, input.action === 'NOTHING_TAKEN' ? 'NOTHING_TAKEN' : 'REFUNDED_IN_PORTAL', input.adminUserId, now);
+      await this.closeResolvedInTx(tx, fresh, 'NOTHING_TAKEN', input.adminUserId, now);
       await audited(tx);
       return { next: 'closed' as const };
     });
@@ -1211,7 +1215,7 @@ export class CardRailService {
     const currencyCode = session.currencyCode!;
     const refunded = await provider!.refund({
       binding: provider!.binding, providerRef: ref,
-      amountMinor: toProviderMinor(input.amount, currencyCode, 'card.v2.refund'), currencyCode,
+      amountMinor: toProviderMinor(amount!, currencyCode, 'card.v2.refund'), currencyCode,
       idempotencyKey: `refund:${session.id}`,
     }).catch((): CardRefundOutcome => ({ status: 'unknown', reason: 'REFUND_CALL_FAILED', rawSha256: rawDigest({ refund: 'threw' }) }));
     const state = refunded.status === 'succeeded' ? 'REFUNDED' : refunded.status === 'pending' ? 'PENDING' : refunded.status === 'failed' ? 'FAILED' : 'UNKNOWN';
@@ -1232,12 +1236,12 @@ export class CardRailService {
   private async closeResolvedInTx(
     tx: Prisma.TransactionClient,
     fresh: CardSession,
-    how: 'REFUNDED' | 'REFUNDED_IN_PORTAL' | 'NOTHING_TAKEN',
+    how: 'REFUNDED' | 'NOTHING_TAKEN',
     adminUserId: string,
     now: Date,
   ): Promise<void> {
     const resolution = how === 'NOTHING_TAKEN' ? 'NOTHING_TAKEN' : 'REFUNDED';
-    const failureCode = how === 'REFUNDED' ? 'REFUNDED_BY_FINANCE' : how;
+    const failureCode = how === 'REFUNDED' ? 'REFUNDED_BY_FINANCE' : 'NOTHING_TAKEN';
     await tx.cardSession.update({
       where: { id: fresh.id },
       data: { status: 'FAILED', failureCode, ...(fresh.confirmedAt ? {} : { confirmedAt: now }), resolution, resolvedBy: adminUserId, resolvedAt: now },
