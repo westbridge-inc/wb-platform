@@ -14,8 +14,10 @@
  *   the API also takes typed text), as one clean line of at most 140 characters;
  * - an automatic close: only the system's own known words (a code with words, the
  *   only-item-left sentence, or the customer's sentence for an unpaid-MMG close);
+ * - Swift support's close: only the fixed customer reason its operator picked (a
+ *   SUPPORT_… code the apps word);
  * - nothing else. A customer's own note, a driver's or store's no-show record and
- *   Swift support's note are never sent here.
+ *   Swift support's internal note are never sent here.
  *
  * Additive on every read: older apps ignore the field and keep their words.
  */
@@ -91,8 +93,40 @@ export interface CancelledOrderFacts {
   fulfillment?: string | null;
 }
 
-/** The reason Swift support's cancel records when the operator gives none (admin.routes PUT /orders/:id/cancel). */
+/** The reason Swift support's cancel recorded, before the fixed customer reasons, when the operator gave none. */
 export const ADMIN_CANCEL_DEFAULT_REASON = 'Cancelled by admin';
+
+/**
+ * [COORD ruling 8 Nov 2026 on #2412] What the customer is told when Swift support
+ * cancels: one of a fixed list the operator picks (admin PUT /orders/:id/cancel,
+ * POST /orders/:id/close-store-refund). The order's `cancellationReason` records
+ * the code; the operator's typed words are an internal note kept only on Swift's
+ * audit record. Same list and words as @swift/types SUPPORT_CANCELLATION_REASONS
+ * (pinned equal by customer-cancellation.unit.test.ts); the compiled API cannot load
+ * that package at run time.
+ */
+export const SUPPORT_CANCELLATION_PHRASES: Readonly<Record<string, string | null>> = {
+  SUPPORT_STORE_CLOSED: 'the store is closed',
+  SUPPORT_ITEM_UNAVAILABLE: 'an item is unavailable',
+  SUPPORT_DELIVERY_NOT_POSSIBLE: 'the delivery is not possible',
+  SUPPORT_PAYMENT_PROBLEM: 'there is a problem with the payment',
+  SUPPORT_SAFETY: 'of a safety concern',
+  SUPPORT_OTHER: null,
+};
+export const SUPPORT_CANCELLATION_CODES = Object.keys(SUPPORT_CANCELLATION_PHRASES) as [string, ...string[]];
+/** What an older console (or any caller naming no customer reason) gets: the customer is told only that Swift support cancelled it. */
+export const SUPPORT_CANCELLATION_DEFAULT = 'SUPPORT_OTHER';
+
+const isSupportCode = (raw: string | null): raw is string => typeof raw === 'string' && Object.prototype.hasOwnProperty.call(SUPPORT_CANCELLATION_PHRASES, raw);
+
+/** The customer's sentence for a Swift support cancel ("Swift support cancelled this ride because …"), as the apps word it. */
+export function supportCancellationSentence(code: string | null, noun = 'order'): string {
+  const phrase = isSupportCode(code) ? SUPPORT_CANCELLATION_PHRASES[code] : null;
+  return phrase ? `Swift support cancelled this ${noun} because ${phrase}.` : `Swift support cancelled this ${noun}.`;
+}
+
+/** Swift support's close as the customer reads it: the fixed reason it picked (a code the apps word), never its note. */
+const swiftClose = (raw: string | null): CustomerCancellation => ({ by: 'SWIFT', reason: isSupportCode(raw) ? raw : null });
 
 /**
  * What tells the people behind an order apart, read once for a page (see
@@ -147,12 +181,12 @@ export function customerCancellation(
     if (raw === MMG_ACCEPT_EXPIRY_REASON) return { by: 'SYSTEM', reason: mmgAcceptExpiryNotice(order, storeName) };
     return { by: 'SYSTEM', reason: systemReason(raw) };
   }
-  if (people.closedBySwift(order.id, by)) return { by: 'SWIFT', reason: null };
+  if (people.closedBySwift(order.id, by)) return swiftClose(raw);
   if (order.vendorId && people.storeMember(order.vendorId, by)) return { by: 'STORE', reason: customerSafeReason(raw) };
-  if (people.consoleStaff(by) || raw === ADMIN_CANCEL_DEFAULT_REASON) return { by: 'SWIFT', reason: null };
+  if (people.consoleStaff(by) || raw === ADMIN_CANCEL_DEFAULT_REASON) return swiftClose(raw);
   if (order.vendorId) return { by: 'STORE', reason: customerSafeReason(raw) };
   // A ride or a parcel has no store; the only other person who closes one is Swift support.
-  return { by: 'SWIFT', reason: null };
+  return swiftClose(raw);
 }
 
 /** The console actions that close an order as Swift support (audit `action`; admin.routes, mmg-store-close). */

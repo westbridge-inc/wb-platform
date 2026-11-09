@@ -77,7 +77,10 @@ export interface MmgStoreCloseInput {
   adminUserId: string;
   /** The claim revision the admin reviewed; a different one on the locked row is refused. */
   expectedClaimRevision: number;
+  /** Swift's internal note (the operator's stated reason): the obligation's record and the audit row, never the order's reason. */
   reason: string;
+  /** [COORD 8 Nov 2026] What the customer is told: a SUPPORT_… code (customer-cancellation.ts SUPPORT_CANCELLATION_PHRASES). */
+  customerReason: string;
   /** [BUG-HUNT-2 G08] Who may close it: nobody on the order, on the people the locked row names. */
   authorize: (tx: Prisma.TransactionClient, parties: { customerId: string; vendorId: string }) => Promise<void>;
   /** The admin audit row, written inside the same transaction. */
@@ -99,7 +102,9 @@ export async function closeMmgOrderAsStoreRefund(orderService: Pick<OrderService
     allowedFrom: ORDER_TRANSITIONS.CANCELLED,
     changedBy: input.adminUserId,
     note: 'Closed by Swift support: the store cannot fulfil this order and refunds the customer directly from its own MMG. Record only — Swift moved no money.',
-    cancellation: { by: input.adminUserId, reason: input.reason },
+    // [COORD 8 Nov 2026] The order records the customer's fixed reason; the operator's stated reason is Swift's
+    // internal note (the audit row and the obligation's own record), never the store's or the customer's to read.
+    cancellation: { by: input.adminUserId, reason: input.customerReason },
     releaseStaleMoverPointer: true,
     paidMmgStoreRefundClosure: true,
     invalidStatus: (current) => new AppError(409, 'MMG_STORE_CLOSE_NOT_ELIGIBLE', `This order is ${current} and cannot be closed as "refund handled by the store".`),

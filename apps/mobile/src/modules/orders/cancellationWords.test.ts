@@ -68,6 +68,15 @@ describe('customerCancellationWords', () => {
     expect(customerCancellationWords(order('SYSTEM', 'SOME_CODE'))?.headline).toBe('This order was cancelled.');
   });
 
+  it('[COORD 8 Nov 2026] Swift support’s close says the fixed reason it picked, in the order’s own noun, and nothing typed', () => {
+    expect(customerCancellationWords(order('SWIFT', 'SUPPORT_STORE_CLOSED'))?.headline).toBe('Swift support cancelled this order because the store is closed.');
+    expect(customerCancellationWords(order('SWIFT', 'SUPPORT_SAFETY', { orderType: 'TAXI' }))?.headline).toBe('Swift support cancelled this ride because of a safety concern.');
+    expect(customerCancellationWords(order('SWIFT', 'SUPPORT_OTHER', { orderType: 'COURIER' }))?.headline).toBe('Swift support cancelled this request.');
+    // Anything else (a newer code, typed words from an older server) is never read out.
+    expect(customerCancellationWords(order('SWIFT', 'Store owner says you are a scammer'))?.headline).toBe('Swift support cancelled this order.');
+    expect(customerCancellationWords(order('SWIFT', 'SUPPORT_SOMETHING_NEW'))?.headline).toBe('Swift support cancelled this order.');
+  });
+
   it('a ride and a parcel: their own nouns, and never a money line (paid to the driver or rider at the end)', () => {
     expect(customerCancellationWords(order('SYSTEM', 'NO_DRIVERS_AVAILABLE', { orderType: 'TAXI' }))).toEqual({
       label: 'No driver found', headline: 'No drivers came online in time, so your request was released. Nothing to pay.', money: null,

@@ -1,10 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
 import { customerRoutes } from '../modules/user/customer.routes';
-import { SYSTEM_CANCELLATION_WORDS } from '@swift/types';
+import { SUPPORT_CANCELLATION_REASONS, SYSTEM_CANCELLATION_WORDS, supportCancellationSentence as appsSupportSentence } from '@swift/types';
 import {
   CUSTOMER_REASON_MAX,
+  SUPPORT_CANCELLATION_PHRASES,
   SYSTEM_CANCELLATION_CODES,
   VENDOR_NO_RESPONSE_REASON,
+  supportCancellationSentence,
   customerCancellation,
   NO_ORDER_PEOPLE,
   customerSafeReason,
@@ -368,6 +370,24 @@ describe('customerCancellation — who closed it, in the customer’s terms', ()
     // The codes the closes really write.
     expect(SYSTEM_CANCELLATION_CODES.has(FOOD_TOO_OLD_REASON)).toBe(true);
     expect(SYSTEM_CANCELLATION_CODES.has(NO_RIDER_FOR_PARCEL_REASON)).toBe(true);
+  });
+
+  it('[COORD 8 Nov 2026] Swift support’s close carries only the fixed customer reason it picked, never typed words', () => {
+    expect(view('admin', 'SUPPORT_STORE_CLOSED')).toEqual({ by: 'SWIFT', reason: 'SUPPORT_STORE_CLOSED' });
+    expect(view('admin', 'Store owner says the customer is a scammer')).toEqual({ by: 'SWIFT', reason: null });
+    expect(view('someone', 'SUPPORT_SAFETY', { vendorId: null })).toEqual({ by: 'SWIFT', reason: 'SUPPORT_SAFETY' });
+    // A code-shaped word the list does not hold is not passed on.
+    expect(view('admin', 'SUPPORT_SOMETHING_NEW')).toEqual({ by: 'SWIFT', reason: null });
+  });
+
+  it('[COORD 8 Nov 2026] the API’s fixed customer reasons are the apps’ list, word for word (the API cannot load @swift/types values)', () => {
+    expect(Object.keys(SUPPORT_CANCELLATION_PHRASES).sort()).toEqual(Object.keys(SUPPORT_CANCELLATION_REASONS).sort());
+    for (const [code, words] of Object.entries(SUPPORT_CANCELLATION_REASONS)) {
+      expect(SUPPORT_CANCELLATION_PHRASES[code], code).toBe(words.phrase);
+      for (const noun of ['order', 'ride', 'request', 'booking']) expect(supportCancellationSentence(code, noun)).toBe(appsSupportSentence(code, noun));
+    }
+    expect(supportCancellationSentence('SUPPORT_OTHER', 'ride')).toBe('Swift support cancelled this ride.');
+    expect(supportCancellationSentence('SUPPORT_STORE_CLOSED')).toBe('Swift support cancelled this order because the store is closed.');
   });
 
   it('an unpaid-MMG close carries the customer’s sentence, never the store’s', () => {
