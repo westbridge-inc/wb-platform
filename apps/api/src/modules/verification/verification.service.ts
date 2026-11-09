@@ -2276,7 +2276,7 @@ export class VerificationService {
     // police clearance in its checklist — build 9 uploads only what `checklist` names — but the
     // store's gate is unchanged: only its home-visit bookings wait for the clearance.
     let checklist = gate;
-    let homeVisits: { offered: boolean; cleared: boolean; photo: boolean } | undefined;
+    let homeVisits: { offered: boolean; cleared: boolean; photo: boolean; photoChecked: boolean } | undefined;
     // [ROLE-DOCS · owner 21 Oct 2026] A store says on what its name stands: its owner's OWN name (the declaration in
     // place of a business registration) or a registered business name. Additive field. [CHECKLIST-LEGAL · owner 1 Nov
     // 2026 (a)] Never the self-declared tier: it is removed.
@@ -2295,10 +2295,11 @@ export class VerificationService {
       ])
       : [undefined, undefined];
     if (roleKey === 'SERVICE') {
-      const { homeVisitsCleared, ownerHasProfilePhoto, ownerOffersHomeVisits } = await import('./home-visits');
-      const [offered, cleared, photo] = await Promise.all([ownerOffersHomeVisits(this.prisma, userId), homeVisitsCleared(this.prisma, userId), ownerHasProfilePhoto(this.prisma, userId)]);
+      const { homeVisitsCleared, ownerHasProfilePhoto, ownerOffersHomeVisits, ownerPhotoMatchedToId } = await import('./home-visits');
+      const [offered, cleared, photo, photoChecked] = await Promise.all([ownerOffersHomeVisits(this.prisma, userId), homeVisitsCleared(this.prisma, userId), ownerHasProfilePhoto(this.prisma, userId), ownerPhotoMatchedToId(this.prisma, userId)]);
       // [OWNER-ASKS 9 Nov] `photo` (additive): home visits also need the owner's profile photo; an in-shop business never does.
-      homeVisits = { offered, cleared, photo };
+      // [security review 9 Nov] `photoChecked` (additive): a person has compared that photo with the approved ID.
+      homeVisits = { offered, cleared, photo, photoChecked };
       if (homeVisits.offered && !checklist.includes(POLICE_CLEARANCE_DOC_TYPE)) {
         checklist = [...checklist, POLICE_CLEARANCE_DOC_TYPE];
         optional = optional.filter((docType) => docType !== POLICE_CLEARANCE_DOC_TYPE);

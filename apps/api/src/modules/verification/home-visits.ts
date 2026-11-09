@@ -15,7 +15,8 @@ import type { Prisma, PrismaClient } from '@prisma/client';
 import { AppError } from '../../utils/errors';
 import { guyanaDayKey, startOfGuyanaDay } from '../../utils/guyana-day';
 import { approvedEvidenceFor } from './evidence';
-import { POLICE_CLEARANCE_DOC_TYPE } from './doc-registry';
+import { POLICE_CLEARANCE_DOC_TYPE, SELFIE_COMPARE_DOC_TYPES } from './doc-registry';
+import { isDocumentValidAt } from './document-validity';
 import { ownerWallSystem } from '../../lib/owner-rls';
 
 type Db = Prisma.TransactionClient | PrismaClient;
@@ -37,6 +38,36 @@ export async function homeVisitsCleared(db: Db, ownerUserId: string, now: Date =
 export async function ownerHasProfilePhoto(db: Db, ownerUserId: string): Promise<boolean> {
   const owner = await db.user.findUnique({ where: { id: ownerUserId }, select: { selfieCapturedAt: true } });
   return !!owner?.selfieCapturedAt;
+}
+
+/**
+ * [OWNER-ASKS · security review 9 Nov 2026] THE SELFIE MUST HAVE BEEN COMPARED WITH THE APPROVED ID. An in-shop owner's ID
+ * is approved with no selfie beside it; if that owner later turns on home visits and takes the photo, nothing ties the
+ * new face to the ID — anyone could take it. So a home visit books only once a PERSON on the verification team has
+ * compared THIS selfie (the capture `selfieCapturedAt` names) with the owner's approved, current photo ID and recorded a
+ * match (POST /admin/verification/:id/selfie-check, the reviewer grant, a stated reason). The record is the append-only
+ * audit row SELFIE_ID_COMPARED; a retaken selfie, a "no match", or an ID that is no longer approved and current
+ * un-authorizes it (fail closed). Automatic face matching is off (FD-D5) and never stands in for this check.
+ */
+export const SELFIE_ID_COMPARED_ACTION = 'SELFIE_ID_COMPARED';
+
+export interface SelfieIdComparison { documentId: string; selfieCapturedAt: string; outcome: 'MATCH' | 'NO_MATCH' }
+
+export async function ownerPhotoMatchedToId(db: Db, ownerUserId: string, now: Date = new Date()): Promise<boolean> {
+  const owner = await db.user.findUnique({ where: { id: ownerUserId }, select: { selfieCapturedAt: true } });
+  if (!owner?.selfieCapturedAt) return false;
+  const latest = await db.auditLog.findFirst({
+    where: { action: SELFIE_ID_COMPARED_ACTION, entity: 'User', entityId: ownerUserId },
+    orderBy: { createdAt: 'desc' },
+    select: { changes: true },
+  });
+  const record = latest?.changes as Partial<SelfieIdComparison> | null | undefined;
+  if (!record || record.outcome !== 'MATCH' || record.selfieCapturedAt !== owner.selfieCapturedAt.toISOString() || typeof record.documentId !== 'string') return false;
+  const id = await db.verificationDocument.findFirst({
+    where: { id: record.documentId, userId: ownerUserId, status: 'APPROVED', state: 'COMMITTED', docType: { in: [...SELFIE_COMPARE_DOC_TYPES] } },
+    select: { expiresAt: true },
+  });
+  return !!id && isDocumentValidAt(id.expiresAt, now);
 }
 
 /** Does any store this person owns list a service that comes to the customer? */
@@ -84,10 +115,12 @@ export async function tellOwnerHomeVisitsPaused(
   }));
   if (already) return false;
   // [OWNER-ASKS 9 Nov] Name exactly what is missing: the police clearance, the profile photo, or both.
-  const [cleared, photo] = await Promise.all([homeVisitsCleared(db, ownerUserId, now), ownerHasProfilePhoto(db, ownerUserId)]);
+  const [cleared, photo, matched] = await Promise.all([homeVisitsCleared(db, ownerUserId, now), ownerHasProfilePhoto(db, ownerUserId), ownerPhotoMatchedToId(db, ownerUserId, now)]);
   const needs = [
     ...(cleared ? [] : ['your police clearance, approved and current (upload it under Documents)']),
     ...(photo ? [] : ['your profile photo, so customers see who is coming (take it in the Swift app)']),
+    // [security review 9 Nov] the photo is there but not yet checked against the approved ID: nothing for the owner to do
+    ...(photo && !matched ? ['our team to check your profile photo against your approved ID (we do this; nothing to send)'] : []),
   ];
   const what = needs.length ? needs.join(', and ') : 'your police clearance, approved and current (upload it under Documents)';
   await notifications.send({

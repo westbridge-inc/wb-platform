@@ -1384,8 +1384,9 @@ export class OrderService {
           const owner = await this.prisma.vendorOwner.findUnique({ where: { id: vendor.ownerId }, select: { userId: true } });
           // [OWNER-ASKS · owner ruling 9 Nov 2026] ...and while the owner has a profile photo: the selfie is asked of a
           // business only where it comes to the customer's door.
-          const { homeVisitRefusal, homeVisitsCleared, ownerHasProfilePhoto, tellOwnerHomeVisitsPaused } = await import('../verification/home-visits');
-          if (!owner || !(await homeVisitsCleared(this.prisma, owner.userId)) || !(await ownerHasProfilePhoto(this.prisma, owner.userId))) {
+          // [security review 9 Nov] ...and only once a person compared THAT photo with the owner's approved ID.
+          const { homeVisitRefusal, homeVisitsCleared, ownerHasProfilePhoto, ownerPhotoMatchedToId, tellOwnerHomeVisitsPaused } = await import('../verification/home-visits');
+          if (!owner || !(await homeVisitsCleared(this.prisma, owner.userId)) || !(await ownerHasProfilePhoto(this.prisma, owner.userId)) || !(await ownerPhotoMatchedToId(this.prisma, owner.userId))) {
             if (owner) await tellOwnerHomeVisitsPaused(this.prisma, this.notifications, owner.userId, vendor.name).catch(() => false);
             throw homeVisitRefusal(vendor.name, offered === 'BOTH');
           }
@@ -1668,8 +1669,8 @@ export class OrderService {
         const visit = plans.find((plan) => plan.vendor.id === planVendorId)?.homeVisit;
         if (visit) {
           const owner = await tx.vendorOwner.findUnique({ where: { id: lockedVendor.ownerId }, select: { userId: true } });
-          const { homeVisitRefusal, homeVisitsCleared, ownerHasProfilePhoto } = await import('../verification/home-visits');
-          if (!owner || !(await homeVisitsCleared(tx, owner.userId)) || !(await ownerHasProfilePhoto(tx, owner.userId))) throw homeVisitRefusal(lockedVendor.name, visit.inShopAvailable);
+          const { homeVisitRefusal, homeVisitsCleared, ownerHasProfilePhoto, ownerPhotoMatchedToId } = await import('../verification/home-visits');
+          if (!owner || !(await homeVisitsCleared(tx, owner.userId)) || !(await ownerHasProfilePhoto(tx, owner.userId)) || !(await ownerPhotoMatchedToId(tx, owner.userId))) throw homeVisitRefusal(lockedVendor.name, visit.inShopAvailable);
         }
         const lockedSub = await tx.subscription.findFirst({
           where: { vendorId: planVendorId },

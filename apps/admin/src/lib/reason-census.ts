@@ -88,6 +88,8 @@ export const REASONED_CALLERS: readonly ReasonCaller[] = [
 
   // ── Verification ───────────────────────────────────────────────────────
   { route: 'PUT /verification/:id/approve', helper: 'approveDoc', args: ['doc_1', undefined] },
+  // [OWNER-ASKS · security review 9 Nov 2026] the selfie compared with the approved ID
+  { route: 'POST /verification/:id/selfie-check', helper: 'decideSelfieCheck', args: ['doc_1', true] },
   { route: 'PUT /verification/:id/reject', helper: 'rejectDoc', args: ['doc_1'], requiredBodyKeys: ['reason'] },
   { route: 'PUT /verification/:id/revoke', helper: 'revokeDoc', args: ['doc_1'], requiredBodyKeys: ['reason'] },
   // [STORE-VAT · owner O-5] A store's VAT: the reviewer types what the GRA certificate says; a refusal or withdrawal says why.

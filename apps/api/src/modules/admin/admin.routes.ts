@@ -46,7 +46,9 @@ import { refuseStaffAccount } from './admin-email-change';
 import { EVIDENCE_REFERENCE_MAX, EVIDENCE_REFERENCE_MIN, EVIDENCE_REFERENCE_SHAPE } from '../billing/evidence-reference';
 import { documentReviewerRequired, holdsDocumentReviewerGrant, setDocumentReviewerGrant, withoutLegacyDocumentPointers } from './document-reviewer';
 import { CATALOGUE_APPROVER_CAPABILITY, catalogueApproverRequired, holdsCatalogueApproverGrant, setCatalogueApproverGrant } from './catalogue-approver';
-import { signupSelfieFor, signupSelfieRequired } from '../verification/signup-selfie';
+import { isOwnSelfiePointer, signupSelfieFor, signupSelfieRequired } from '../verification/signup-selfie';
+import { isDocumentValidAt } from '../verification/document-validity';
+import { assertNotRecused } from '../verification/recusal';
 import { ADMIN_ACTION_CLASSES, ADMIN_REASON_HEADER, ADMIN_ROUTE_AUTHORITY, capabilitiesOf, capabilityMode, decideCapability, holdsCapability, reasonOf, reasonProblem, reasonRefusal, routeTemplateOf } from './admin-authority';
 import {
   APPROVAL_HEADER, approvalRefusalMessage, approvalSubjectOf, decideApproval, fillRouteTemplate,
@@ -7450,6 +7452,63 @@ export async function adminRoutes(app: FastifyInstance) {
     // own same-origin proxy; an origin built here from the Host header would
     // be client-supplied input, and the console discards it anyway.
     return { success: true, data: { url: minted.path, expiresInSeconds: minted.expiresInSeconds, signupSelfie, signupSelfieExpected } };
+  });
+
+  // ─── [OWNER-ASKS · security review 9 Nov 2026] The selfie checked against the approved ID ─────────────
+  //
+  // A business that goes to the customer takes the profile photo, often long after its owner's ID was approved
+  // on its own (an in-shop owner never takes one). Home visits book only once a person compared THAT photo with
+  // the approved ID (home-visits ownerPhotoMatchedToId). The queue is computed, never stored: an owner appears
+  // the moment they list a home visit or take (or retake) the photo, and leaves once a match is recorded.
+  app.get('/verification/selfie-checks', { preHandler: [adminGuard] }, async () => {
+    const tenantId = requireTenantId();
+    const { ownerPhotoMatchedToId } = await import('../verification/home-visits');
+    const listings = await app.prisma.item.findMany({
+      where: {
+        vendor: { tenantId },
+        fulfillment: 'APPOINTMENT',
+        OR: [{ bookingConfig: { path: ['serviceMode'], equals: 'MOBILE' } }, { bookingConfig: { path: ['serviceMode'], equals: 'BOTH' } }],
+      },
+      select: { vendor: { select: { owner: { select: { userId: true } } } } },
+    });
+    const owners = [...new Set(listings.map((l) => l.vendor.owner.userId))];
+    const pending: Array<{ userId: string; documentId: string; docType: string; selfieCapturedAt: string }> = [];
+    for (const userId of owners) {
+      const user = await tenantPrisma.user.findUnique({ where: { id: userId }, select: { id: true, avatar: true, selfieCapturedAt: true } });
+      if (!user?.selfieCapturedAt || !isOwnSelfiePointer(user.id, user.avatar)) continue;
+      if (await ownerPhotoMatchedToId(app.prisma, userId)) continue;
+      const ids = await tenantPrisma.verificationDocument.findMany({
+        where: { userId, status: 'APPROVED', state: 'COMMITTED', docType: { in: [...SELFIE_COMPARE_DOC_TYPES] } },
+        orderBy: { reviewedAt: 'desc' }, select: { id: true, docType: true, expiresAt: true },
+      });
+      const current = ids.find((d) => isDocumentValidAt(d.expiresAt, new Date()));
+      if (current) pending.push({ userId, documentId: current.id, docType: current.docType, selfieCapturedAt: user.selfieCapturedAt.toISOString() });
+    }
+    return { success: true, data: { pending } };
+  });
+
+  // The decision: :id is the approved photo ID the reviewer opened (GET /verification/:id/document-url shows THIS
+  // selfie beside it). "match" lets home visits book; "no match" keeps them refused. A person, never a machine.
+  app.post('/verification/:id/selfie-check', { preHandler: [adminGuard] }, async (request) => {
+    const { id } = request.params as { id: string };
+    const body = z.object({ match: z.boolean(), reason: z.string().trim().min(1).max(500).optional() }).parse(request.body ?? {});
+    const doc = await tenantPrisma.verificationDocument.findUnique({ where: { id }, select: { id: true, userId: true, docType: true, status: true, state: true, expiresAt: true } });
+    if (!doc) throw new NotFoundError('VerificationDocument', id);
+    if (!SELFIE_COMPARE_DOC_TYPES.has(doc.docType) || doc.status !== 'APPROVED' || doc.state !== 'COMMITTED' || !isDocumentValidAt(doc.expiresAt, new Date())) {
+      throw new AppError(409, 'NOT_AN_APPROVED_PHOTO_ID', 'Compare the selfie with an approved, current photo ID.');
+    }
+    await assertNotRecused(app.prisma, request.user.userId, doc.userId);
+    const owner = await tenantPrisma.user.findUnique({ where: { id: doc.userId }, select: { id: true, avatar: true, selfieCapturedAt: true } });
+    if (!owner?.selfieCapturedAt || !isOwnSelfiePointer(owner.id, owner.avatar)) {
+      throw new AppError(409, 'NO_SELFIE_ON_FILE', 'This person has no selfie on file to compare.');
+    }
+    if (!(await signupSelfieRequired(app.prisma, doc.userId))) {
+      throw new AppError(409, 'SELFIE_NOT_TAKEN_BY_THIS_PERSON', 'This person takes no selfie: their ID is reviewed on its own.');
+    }
+    const record = { documentId: doc.id, selfieCapturedAt: owner.selfieCapturedAt.toISOString(), outcome: body.match ? 'MATCH' : 'NO_MATCH' } as const;
+    const { SELFIE_ID_COMPARED_ACTION } = await import('../verification/home-visits');
+    await audit(request.user.userId, SELFIE_ID_COMPARED_ACTION, 'User', doc.userId, { ...record, docType: doc.docType }, request);
+    return { success: true, data: record };
   });
 
   // ─── [VERIFY-DOCS V3] Staff: the document reviewer grant ─────────────────

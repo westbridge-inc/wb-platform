@@ -112,9 +112,22 @@ async function approved(ownerId: string, docType: string, expiresAt?: Date) {
   return doc.id;
 }
 
-/** A live store's owner: their ID approved (the store's own gate), then the police clearance. */
+/** [security review 9 Nov] A reviewer's recorded comparison of the owner's CURRENT selfie with an approved photo ID (the
+ *  row POST /admin/verification/:id/selfie-check writes). */
+async function selfieChecked(ownerId: string, idDocId: string, outcome: 'MATCH' | 'NO_MATCH' = 'MATCH') {
+  const owner = await app.prisma.user.findUniqueOrThrow({ where: { id: ownerId }, select: { selfieCapturedAt: true } });
+  await app.prisma.auditLog.create({ data: {
+    userId: adminId, action: homeVisits.SELFIE_ID_COMPARED_ACTION, entity: 'User', entityId: ownerId,
+    changes: { documentId: idDocId, selfieCapturedAt: owner.selfieCapturedAt!.toISOString(), outcome, docType: 'owner_national_id' },
+  } });
+}
+
+/** A live store's owner: their ID approved (the store's own gate), then the police clearance. An owner who already has
+ *  a selfie has it compared with that ID by a person (as the reviewer does when both are on file). */
 async function clearOwner(ownerId: string, expiresAt: Date) {
-  await approved(ownerId, 'owner_national_id');
+  const id = await approved(ownerId, 'owner_national_id');
+  const owner = await app.prisma.user.findUniqueOrThrow({ where: { id: ownerId }, select: { selfieCapturedAt: true } });
+  if (owner.selfieCapturedAt) await selfieChecked(ownerId, id);
   return approved(ownerId, 'police_clearance', expiresAt);
 }
 
@@ -168,7 +181,7 @@ describe('[home visits] what the owner is shown', () => {
     const status = await service.getStatus(store.userId, 'SERVICE');
     expect(status.checklist).toEqual(['owner_national_id']);
     expect(status.optional).toContain('police_clearance');
-    expect(status.homeVisits).toEqual({ offered: false, cleared: false, photo: true });
+    expect(status.homeVisits).toEqual({ offered: false, cleared: false, photo: true, photoChecked: false });
   });
 
   it('a business that offers home visits sees the police clearance in its checklist (build 9 can upload it) — but it never gates the store', async () => {
@@ -176,7 +189,7 @@ describe('[home visits] what the owner is shown', () => {
     const status = await service.getStatus(store.userId, 'SERVICE');
     expect(status.checklist).toEqual(['owner_national_id', 'police_clearance']);
     expect(status.optional).not.toContain('police_clearance');
-    expect(status.homeVisits).toEqual({ offered: true, cleared: false, photo: true });
+    expect(status.homeVisits).toEqual({ offered: true, cleared: false, photo: true, photoChecked: false });
     // the store's gate is the owner's ID alone
     expect(await service.isRoleVerified(store.userId, 'SERVICE')).toBe(false);
     await approved(store.userId, 'owner_national_id');
@@ -284,7 +297,7 @@ describe('[home visits] booking', () => {
     const pc = await clearOwner(store.userId, new Date(Date.now() + 200 * DAY));
     const c = await customer();
     expect((await book(c, store, 10)).statusCode).toBe(200);
-    expect((await service.getStatus(store.userId, 'SERVICE')).homeVisits).toEqual({ offered: true, cleared: true, photo: true });
+    expect((await service.getStatus(store.userId, 'SERVICE')).homeVisits).toEqual({ offered: true, cleared: true, photo: true, photoChecked: true });
     await app.prisma.verificationDocument.update({ where: { id: pc }, data: { expiresAt: new Date(Date.now() - DAY) } });
     expect((await book(c, store, 12)).statusCode).toBe(409);
   });
@@ -298,7 +311,7 @@ describe('[OWNER-ASKS 9 Nov] the profile photo: only for home visits', () => {
   it('an in-shop business whose owner never took a selfie opens on the ID and takes bookings', async () => {
     const store = await serviceStore('AT_BUSINESS', { selfie: false });
     const status = await service.getStatus(store.userId, 'SERVICE');
-    expect(status.homeVisits).toEqual({ offered: false, cleared: false, photo: false });
+    expect(status.homeVisits).toEqual({ offered: false, cleared: false, photo: false, photoChecked: false });
     await approved(store.userId, 'owner_national_id');
     expect(await service.isRoleVerified(store.userId, 'SERVICE')).toBe(true);
     expect((await book(await customer(), store, 10)).statusCode).toBe(200);
@@ -307,7 +320,7 @@ describe('[OWNER-ASKS 9 Nov] the profile photo: only for home visits', () => {
   it('a home visit is refused while the owner has no profile photo, even with a current police clearance; the owner is told to add the photo', async () => {
     const store = await serviceStore('MOBILE', { selfie: false });
     await clearOwner(store.userId, new Date(Date.now() + 200 * DAY));
-    expect((await service.getStatus(store.userId, 'SERVICE')).homeVisits).toEqual({ offered: true, cleared: true, photo: false });
+    expect((await service.getStatus(store.userId, 'SERVICE')).homeVisits).toEqual({ offered: true, cleared: true, photo: false, photoChecked: false });
     const c = await customer();
     const res = await book(c, store, 10);
     expect(res.statusCode, res.body).toBe(409);
@@ -334,12 +347,16 @@ describe('[OWNER-ASKS 9 Nov] the profile photo: only for home visits', () => {
     expect((await book(c, store, 12, 'AT_BUSINESS')).statusCode).toBe(200);
   });
 
-  it('once the owner adds the photo, the home visit books', async () => {
+  it('once the owner adds the photo AND a person has compared it with the approved ID, the home visit books', async () => {
     const store = await serviceStore('MOBILE', { selfie: false });
     await clearOwner(store.userId, new Date(Date.now() + 200 * DAY));
     const c = await customer();
     expect((await book(c, store, 10)).statusCode).toBe(409);
     await app.prisma.user.update({ where: { id: store.userId }, data: { selfieCapturedAt: new Date() } });
+    // [security review 9 Nov] the photo alone is not enough: nobody has compared it with the ID yet
+    expect((await book(c, store, 11)).statusCode).toBe(409);
+    const id = await app.prisma.verificationDocument.findFirstOrThrow({ where: { userId: store.userId, docType: 'owner_national_id', status: 'APPROVED' } });
+    await selfieChecked(store.userId, id.id);
     expect((await book(c, store, 12)).statusCode).toBe(200);
   });
 
@@ -393,5 +410,77 @@ describe('[OWNER-ASKS 9 Nov] who takes the sign-up selfie', () => {
 
   it('an unknown account: no', async () => {
     expect(await signupSelfieRequired(app.prisma, 'no-such-user')).toBe(false);
+  });
+});
+
+// [OWNER-ASKS · security review 9 Nov 2026] The ID is approved with no selfie (an in-shop owner never takes one). When the
+// owner later turns on home visits and takes a photo, nothing tied that face to the ID — anyone could take it. A home
+// visit books only once a person compared THIS selfie with the approved ID; a retake, a "no match", or a lapsed ID
+// refuses again. In-shop bookings are never affected.
+describe('[security review 9 Nov] the new selfie must be compared with the approved ID before a home visit books', () => {
+  it('in-shop owner, ID approved with no selfie; turns on home visits and takes a selfie: refused until compared', async () => {
+    const store = await serviceStore('AT_BUSINESS', { selfie: false });
+    const idDoc = await approved(store.userId, 'owner_national_id');
+    await approved(store.userId, 'police_clearance', new Date(Date.now() + 200 * DAY));
+    await app.prisma.item.updateMany({ where: { vendorId: store.vendorId }, data: { bookingConfig: { durationMinutes: 60, slots: [0, 1, 2, 3, 4, 5, 6].map((dayOfWeek) => ({ dayOfWeek, start: '08:00', end: '18:00' })), serviceMode: 'MOBILE', serviceRadiusKm: 25 } } });
+    await app.prisma.user.update({ where: { id: store.userId }, data: { selfieCapturedAt: new Date() } });
+    const c = await customer();
+    const refused = await book(c, store, 10);
+    expect(refused.statusCode, refused.body).toBe(409);
+    expect(refused.json().error.code).toBe('HOME_VISIT_UNAVAILABLE');
+    expect(await app.prisma.order.count({ where: { customerId: c.userId } })).toBe(0);
+    expect((await service.getStatus(store.userId, 'SERVICE')).homeVisits).toEqual({ offered: true, cleared: true, photo: true, photoChecked: false });
+    const notice = await app.prisma.notification.findFirstOrThrow({ where: { userId: store.userId, title: 'Home visits are paused' } });
+    expect(notice.body).toContain('check your profile photo against your approved ID');
+    // a "no match" keeps it refused
+    await selfieChecked(store.userId, idDoc, 'NO_MATCH');
+    expect((await book(c, store, 11)).statusCode).toBe(409);
+    // a person records a match for THIS selfie: it books
+    await selfieChecked(store.userId, idDoc);
+    expect(await homeVisits.ownerPhotoMatchedToId(app.prisma, store.userId)).toBe(true);
+    expect((await book(c, store, 12)).statusCode).toBe(200);
+  });
+
+  it('a retaken selfie is a new face: refused again until it is compared', async () => {
+    const store = await serviceStore('MOBILE');
+    await clearOwner(store.userId, new Date(Date.now() + 200 * DAY));
+    expect(await homeVisits.ownerPhotoMatchedToId(app.prisma, store.userId)).toBe(true);
+    await app.prisma.user.update({ where: { id: store.userId }, data: { selfieCapturedAt: new Date(Date.now() + 1000) } });
+    expect(await homeVisits.ownerPhotoMatchedToId(app.prisma, store.userId)).toBe(false);
+    expect((await book(await customer(), store, 10)).statusCode).toBe(409);
+  });
+
+  it('a comparison with an ID that is no longer approved does not count', async () => {
+    const store = await serviceStore('MOBILE');
+    await clearOwner(store.userId, new Date(Date.now() + 200 * DAY));
+    const id = await app.prisma.verificationDocument.findFirstOrThrow({ where: { userId: store.userId, docType: 'owner_national_id', status: 'APPROVED' } });
+    await app.prisma.verificationDocument.update({ where: { id: id.id }, data: { expiresAt: new Date(Date.now() - DAY) } });
+    expect(await homeVisits.ownerPhotoMatchedToId(app.prisma, store.userId)).toBe(false);
+  });
+
+  it('a comparison recorded inside the commit is re-read: one recorded after the preflight for an old photo cannot authorize', async () => {
+    const store = await serviceStore('MOBILE');
+    await clearOwner(store.userId, new Date(Date.now() + 200 * DAY));
+    const c = await customer();
+    const check = homeVisits.ownerPhotoMatchedToId;
+    const preflight = vi.spyOn(homeVisits, 'ownerPhotoMatchedToId').mockImplementation(async (db, ownerId, now) => {
+      const ok = await check(db, ownerId, now);
+      if (db === app.prisma && ownerId === store.userId && ok) await app.prisma.user.update({ where: { id: store.userId }, data: { selfieCapturedAt: new Date(Date.now() + 5000) } });
+      return ok;
+    });
+    try {
+      const res = await book(c, store, 10);
+      expect(res.statusCode, res.body).toBe(409);
+      expect(await app.prisma.order.count({ where: { customerId: c.userId } })).toBe(0);
+    } finally { preflight.mockRestore(); }
+  });
+
+  it('in-shop bookings never wait for the check', async () => {
+    const store = await serviceStore('BOTH', { selfie: false });
+    await clearOwner(store.userId, new Date(Date.now() + 200 * DAY));
+    await app.prisma.user.update({ where: { id: store.userId }, data: { selfieCapturedAt: new Date() } });
+    const c = await customer();
+    expect((await book(c, store, 10, 'MOBILE')).statusCode).toBe(409);
+    expect((await book(c, store, 12, 'AT_BUSINESS')).statusCode).toBe(200);
   });
 });

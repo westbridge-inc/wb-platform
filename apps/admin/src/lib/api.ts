@@ -1061,6 +1061,13 @@ export const fetchVerificationCounts = () => apiFetch('/api/v1/admin/verificatio
 export const fetchDocumentCustody = (id: string) => apiFetch(`/api/v1/admin/verification/${encodeURIComponent(id)}/custody`);
 export const getDocSignedUrl = (id: string) =>
   apiFetch(`/api/v1/admin/verification/${id}/document-url`);
+// [OWNER-ASKS · security review 9 Nov 2026] Home visits book only after a person compared the owner's selfie with the
+// approved photo ID: the computed queue, and the decision (a stated reason in the header, ADM-006).
+export interface SelfieCheck { userId: string; documentId: string; docType: string; selfieCapturedAt: string }
+export const fetchSelfieChecks = () =>
+  apiFetch('/api/v1/admin/verification/selfie-checks').then((r) => ((r as { data?: { pending?: SelfieCheck[] } }).data?.pending ?? []));
+export const decideSelfieCheck = (documentId: string, match: boolean, reason: string) =>
+  apiFetch(`/api/v1/admin/verification/${documentId}/selfie-check`, { method: 'POST', body: JSON.stringify({ match }), reason });
 export const approveDoc = (id: string, body: { expiresAt?: string; insurance?: InsuranceCheck; documentNumber?: string; issuedOn?: string; certificateYear?: number; registrationKind?: 'BUSINESS_NAME' | 'COMPANY'; ownNameConfirmed?: boolean } | undefined, reason: string) =>
   apiFetch(`/api/v1/admin/verification/${id}/approve`, { method: 'PUT', body: JSON.stringify(body ?? {}), reason });
 // [ADMIN-CONSOLE] The route's whole body (admin.routes.ts rejectDocSchema): the
