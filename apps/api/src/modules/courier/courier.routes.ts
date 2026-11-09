@@ -36,6 +36,7 @@ import { withCounterpartPhones } from '../calls/counterpart-phone';
 import { courierRiderAnswer } from './courier-rider-answer';
 import { assertParcelHasRiders } from '../dispatch/delivery-capacity';
 import { orderPeople, senderCancellationView } from '../order/customer-cancellation';
+import { personTypedReason } from '../order/typed-reason';
 import { DISPATCH_LOCATION_FRESH_SECONDS, DISPATCH_WIDEST_RADIUS_KM } from '../dispatch/dispatch.service';
 import { readOrderPlacementBudget, refundOrderPlacement, reserveOrderPlacement, type OrderPlacementReservation } from '../integrity/velocity';
 
@@ -503,7 +504,8 @@ export default async function courierRoutes(app: FastifyInstance) {
     if ((COURIER_CUSTODY_STATUSES as readonly OrderStatus[]).includes(order.status)) {
       throw courierNotCancellable(order.status);
     }
-    const reason = body.reason ?? 'Cancelled by sender';
+    // [#2412 security review] Never a code-shaped reason (typed-reason.ts): the sender's own words or the default.
+    const reason = personTypedReason(body.reason) ?? 'Cancelled by sender';
     // Status/cancellation evidence + search/booking closure + float/mover
     // release + immutable log are one commit. Proof races on the same row lock.
     const { order: updated } = await orderService.transitionOrderAtomically({

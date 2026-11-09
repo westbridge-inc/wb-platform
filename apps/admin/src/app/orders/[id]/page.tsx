@@ -13,7 +13,6 @@ import { HeldDoorCash } from '@/components/mc/HeldDoorCash';
 import { useActionRunner } from '@/components/mc/useActionRunner';
 import { gyDateTime, gyTime } from '@/lib/dates';
 import { CUSTOMER_REASON_FIELD, INTERNAL_NOTE_WORDS, customerReasonOf } from '@/lib/support-cancel';
-import { cancellationReasonWords } from '@swift/types/src/order-words';
 
 const gyd = (n: unknown) => `$${Number(n || 0).toLocaleString()}`;
 const clock = (iso: string | null | undefined) =>
@@ -579,8 +578,7 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
               {o.cancellationReason && (
                 <div className="flex justify-between gap-4">
                   <span className="mc-muted shrink-0">Cancelled</span>
-                  {/* A fixed customer reason reads as its words (what the customer and the store were told). */}
-                  <span className="text-right mc-text-bad">{cancellationReasonWords(o.cancellationReason, 'store') ?? o.cancellationReason}</span>
+                  <span className="text-right mc-text-bad">{o.cancellationReason}</span>
                 </div>
               )}
             </div>

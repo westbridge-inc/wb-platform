@@ -1,3 +1,4 @@
+import { personTypedReason } from '../order/typed-reason';
 import { closeStoreSilentMmgCase, mmgAcceptedPayBy, mmgPayByStoreLine } from '../order/mmg-accept-expiry';
 import { drainPushesAfterResponse, pushAfterResponse } from '../../lib/push-after-response';
 import { emitToOrderRoom, emitToStoreRoom } from '../order/order-room-emission.service';
@@ -3752,7 +3753,10 @@ export async function vendorRoutes(app: FastifyInstance) {
       throw new AppError(400, 'INVALID_STATUS', orderStageRefusal(order.status, 'it cannot be rejected'));
     }
     const body = rejectOrderSchema.parse(request.body ?? {});
-    const reason = body.reason;
+    // [#2412 security review] A store's reason is words, never a code the apps would read out as the system's or
+    // Swift support's (typed-reason.ts). The store's apps send fixed words, so a code here is refused, not rewritten.
+    const reason = personTypedReason(body.reason);
+    if (!reason) throw new AppError(400, 'REASON_NOT_WORDS', 'Say why in words, as the customer will read it.');
     await ackVendorAlert(app, request.user.userId, order.id); // rejecting acknowledges too
 
     // The locked transition re-reads the current status, then commits status,

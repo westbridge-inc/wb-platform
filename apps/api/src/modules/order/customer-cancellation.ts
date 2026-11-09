@@ -60,7 +60,7 @@ export function customerSafeReason(raw: unknown): string | null {
   if (typeof raw !== 'string') return null;
   // eslint-disable-next-line no-control-regex
   const text = raw.replace(/[\u0000-\u001F\u007F-\u009F\u200B-\u200F\u2028-\u202E\u2066-\u2069\uFEFF]/g, ' ').replace(/\s+/g, ' ').trim();
-  if (!text || /^[A-Z0-9_]+$/.test(text)) return null;
+  if (!text || /^[A-Z0-9_]+$/.test(text) || /^support_/i.test(text)) return null;
   return text.length > CUSTOMER_REASON_MAX ? `${text.slice(0, CUSTOMER_REASON_MAX - 1).trimEnd()}…` : text;
 }
 

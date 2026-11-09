@@ -19,6 +19,7 @@ import { NO_SHOW_REASON } from '../modules/booking/appointment-no-show';
 import { PASSENGER_NO_SHOW_REASON } from '../modules/rides/passenger-no-show';
 import { MMG_ACCEPT_EXPIRY_REASON } from '../modules/order/mmg-accept-expiry';
 import { FOOD_TOO_OLD_REASON, NO_RIDER_FOR_PARCEL_REASON } from '../modules/dispatch/rescue';
+import { personTypedReason } from '../modules/order/typed-reason';
 import {
   foodDelivery,
   hostRoutes,
@@ -378,6 +379,24 @@ describe('customerCancellation — who closed it, in the customer’s terms', ()
     expect(view('someone', 'SUPPORT_SAFETY', { vendorId: null })).toEqual({ by: 'SWIFT', reason: 'SUPPORT_SAFETY' });
     // A code-shaped word the list does not hold is not passed on.
     expect(view('admin', 'SUPPORT_SOMETHING_NEW')).toEqual({ by: 'SWIFT', reason: null });
+  });
+
+  it('[#2412 security review] a Swift support code is passed on ONLY when Swift support closed it: a store, customer or system close never reads as Swift', () => {
+    // The store's person typed a support code: still the store's decline, and the code is never passed on.
+    expect(view('staff', 'SUPPORT_SAFETY')).toEqual({ by: 'STORE', reason: null });
+    expect(view('staff', 'support_store_closed')).toEqual({ by: 'STORE', reason: null });
+    expect(view('cust', 'SUPPORT_SAFETY')).toEqual({ by: 'CUSTOMER', reason: null });
+    expect(view(null, 'SUPPORT_SAFETY')).toEqual({ by: 'SYSTEM', reason: null });
+    expect(view('system', 'SUPPORT_STORE_CLOSED', { vendorId: null })).toEqual({ by: 'SYSTEM', reason: null });
+  });
+
+  it('[#2412 security review] a person’s reason is words: code-shaped values and SUPPORT_… are dropped (typed-reason.ts)', () => {
+    for (const forged of ['SUPPORT_SAFETY', 'SUPPORT_STORE_CLOSED', 'support_safety', 'Support_Other: gone', 'NO_DRIVERS_AVAILABLE', 'FOOD_TOO_OLD', '  OUT_OF_STOCK  ', '', '   ']) {
+      expect(personTypedReason(forged), forged).toBeNull();
+    }
+    expect(personTypedReason(undefined)).toBeNull();
+    expect(personTypedReason('  Out of stock ')).toBe('Out of stock');
+    expect(personTypedReason('Closing soon: SUPPORT_SAFETY')).toBe('Closing soon: SUPPORT_SAFETY');
   });
 
   it('[COORD 8 Nov 2026] the API’s fixed customer reasons are the apps’ list, word for word (the API cannot load @swift/types values)', () => {

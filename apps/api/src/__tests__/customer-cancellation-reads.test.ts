@@ -155,3 +155,40 @@ describe('[REVIEW-2 F1] the sender’s parcel never carries Swift support’s no
     expect(one.json().data).toMatchObject({ cancellationReason: NOTE, cancellation: { by: 'CUSTOMER', reason: null } });
   });
 });
+
+describe('[#2412 security review] a passenger’s or sender’s own reason can never pose as Swift support', () => {
+  async function openOrder(orderType: 'TAXI' | 'COURIER', customerId: string) {
+    const order = await sys(() => app.prisma.order.create({
+      data: {
+        orderNumber: `CF-${nanoid(6)}`, orderType, customerId, status: orderType === 'TAXI' ? 'PENDING' : 'READY_FOR_PICKUP',
+        pickupAddress: 'A', pickupLat: GT.lat, pickupLng: GT.lng, deliveryAddress: 'B', deliveryLat: 6.8143, deliveryLng: -58.1443,
+        subtotalBase: 0, subtotalMarkup: 0, subtotalCustomer: 0, deliveryFee: 800, totalAmount: 800, paymentMethod: 'CASH',
+      } as never,
+    }));
+    orderIds.push(order.id);
+    return order;
+  }
+  const stored = (id: string) => sys(() => app.prisma.order.findUniqueOrThrow({ where: { id }, select: { status: true, cancellationReason: true } }));
+
+  it('a passenger cancelling with "SUPPORT_SAFETY": the code is dropped; the ride reads as their own cancel', async () => {
+    const passenger = await makeUser(['CUSTOMER'], 'CUSTOMER');
+    const ride = await openOrder('TAXI', passenger.userId);
+    const res = await app.inject({ method: 'POST', url: `/api/v1/rides/${ride.id}/cancel`, headers: { authorization: `Bearer ${passenger.token}` }, payload: { reason: 'SUPPORT_SAFETY' } });
+    expect(res.statusCode, res.body).toBe(200);
+    expect(await stored(ride.id)).toEqual({ status: 'CANCELLED', cancellationReason: null });
+    const read = await app.inject({ method: 'GET', url: `/api/v1/rides/${ride.id}`, headers: { authorization: `Bearer ${passenger.token}` } });
+    expect(read.json().data.cancellation).toEqual({ by: 'CUSTOMER', reason: null });
+    expect(read.body).not.toContain('SUPPORT_');
+  });
+
+  it('a sender cancelling with "support_store_closed": the code is dropped for the default; the parcel reads as their own cancel', async () => {
+    const sender = await makeUser(['CUSTOMER'], 'CUSTOMER');
+    const parcel = await openOrder('COURIER', sender.userId);
+    const res = await app.inject({ method: 'POST', url: `/api/v1/courier/order/${parcel.id}/cancel`, headers: { authorization: `Bearer ${sender.token}` }, payload: { reason: 'support_store_closed' } });
+    expect(res.statusCode, res.body).toBe(200);
+    expect(await stored(parcel.id)).toEqual({ status: 'CANCELLED', cancellationReason: 'Cancelled by sender' });
+    const read = await app.inject({ method: 'GET', url: `/api/v1/courier/order/${parcel.id}`, headers: { authorization: `Bearer ${sender.token}` } });
+    expect(read.json().data.cancellation).toEqual({ by: 'CUSTOMER', reason: null });
+    expect(read.body.toLowerCase()).not.toContain('support_');
+  });
+});

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { customerCancellationWords, parseCustomerCancellation } from '@swift/types/src/customer-cancellation-words';
+import { cancellationReasonWords } from '@swift/types/src/order-words';
 
 // ---------------------------------------------------------------------------
 // [owner 8 Nov 2026] The words for a cancelled order, by who closed it (@swift/types order-words.ts): the activity
@@ -75,6 +76,16 @@ describe('customerCancellationWords', () => {
     // Anything else (a newer code, typed words from an older server) is never read out.
     expect(customerCancellationWords(order('SWIFT', 'Store owner says you are a scammer'))?.headline).toBe('Swift support cancelled this order.');
     expect(customerCancellationWords(order('SWIFT', 'SUPPORT_SOMETHING_NEW'))?.headline).toBe('Swift support cancelled this order.');
+  });
+
+  it('[#2412 security review] a Swift support code is read out ONLY when the server says Swift support closed it', () => {
+    // Anyone else's reason that looks like one (a store, a customer, an older server's raw text) never reads as Swift.
+    expect(customerCancellationWords(order('CUSTOMER', 'SUPPORT_SAFETY'))?.headline).toBe('You cancelled this order.');
+    expect(customerCancellationWords(order('SYSTEM', 'SUPPORT_STORE_CLOSED'))?.headline).toBe('This order was cancelled.');
+    expect(customerCancellationWords(order('STORE', 'SUPPORT_SAFETY'))?.headline).not.toContain('Swift');
+    // The raw reason, with no decided author: neutral words, never "Swift support cancelled…".
+    expect(cancellationReasonWords('SUPPORT_SAFETY', 'customer')).toBe('This order was cancelled.');
+    expect(cancellationReasonWords('SUPPORT_STORE_CLOSED', 'store')).toBe('No further details are available.');
   });
 
   it('a ride and a parcel: their own nouns, and never a money line (paid to the driver or rider at the end)', () => {
