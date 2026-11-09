@@ -2170,10 +2170,28 @@ describe('[PT-4] real cards through HTTP: Swift\'s hosted page, the bank\'s chec
       expect(sent('/api/refund').filter((b) => b['TransactionIdentifier'] === txnId)).toHaveLength(0);
       expect(await rowOf(row.id)).toMatchObject({ status: 'HELD', resolution: null, paymentId: null });
       expect((await money(p.subId)).successes).toBe(0);
+      // [REVIEW-2460-DELTA D4] Held for the owner: no new payment starts meanwhile (the runbook in CARD-CHECKOUT-API.md).
+      const again = await open(p);
+      expect(again.statusCode, again.body).toBe(409);
+      expect(again.json().error?.code).toBe('PAYMENT_CONFIRMING');
+    });
+
+    it('[REVIEW-2460-DELTA D2] a credit that contradicts the capture (more than captured, or nothing captured) is unreadable: never a hold without a void — today\'s void is sent', async () => {
+      for (const summary of [{ TotalCreditAmount: 2200 }, { TotalCaptureAmount: 0, TotalCreditAmount: 100 }]) {
+        const p = await makeStore();
+        const { row, txnId, orderId, lost } = await lostCompletion(p, { proof: true });
+        lookupAnswer = recordOf(txnId, orderId, {}, summary);
+        expect((await serviceOf().confirm(row.id, { now: lost })).status, JSON.stringify(summary)).toBe('FAILED');
+        expect(lookups(txnId)).toBe(1);
+        expect(voidsOf(txnId)).toBe(1);
+        expect(await rowOf(row.id)).toMatchObject({ status: 'FAILED', failureCode: 'VOIDED_UNPROVEN', providerVoidState: 'VOIDED', paymentId: null });
+        expect((await money(p.subId)).successes).toBe(0);
+      }
     });
 
     it('[REVIEW-2460 S2-1 · B2] a VoidDateTime that is not a real date of this payment (a default "0001-01-01", one before the payment existed, a placeholder) is no reversal: unreadable, so today\'s void is still sent', async () => {
-      for (const VoidDateTime of ['0001-01-01T00:00:00', '2020-01-01T00:00:00', 'N/A']) {
+      // [REVIEW-2460-DELTA D1] ... and none dated after the read (a "no date" maximum, a date two days ahead).
+      for (const VoidDateTime of ['0001-01-01T00:00:00', '2020-01-01T00:00:00', 'N/A', '9999-12-31T23:59:59.9999999', new Date(Date.now() + 2 * 86_400_000).toISOString().slice(0, 19)]) {
         const p = await makeStore();
         const { row, txnId, orderId, lost } = await lostCompletion(p, { proof: true });
         lookupAnswer = recordOf(txnId, orderId, { VoidDateTime });

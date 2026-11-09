@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import Redis from 'ioredis';
 import { nanoid } from 'nanoid';
 import {
@@ -746,6 +746,27 @@ describe('[CARD-LOOKUP] the transaction lookup: read strictly, judged against wh
     expect(LOOKUP_TIMEOUT_MS).toBeLessThanOrEqual(10_000);
   });
 
+  it('[REVIEW-2460-DELTA D3] the read is aborted at LOOKUP_TIMEOUT_MS (10 s), not the 15 s of the other calls', async () => {
+    const delays: number[] = [];
+    const real = globalThis.setTimeout;
+    const spy = vi.spyOn(globalThis, 'setTimeout').mockImplementation(((fn: () => void, ms?: number) => {
+      delays.push(Number(ms));
+      return real(fn, ms);
+    }) as unknown as typeof setTimeout);
+    let signal: AbortSignal | undefined;
+    const slow = (async (_url: string | URL, init?: Parameters<typeof globalThis.fetch>[1]) => {
+      signal = init?.signal ?? undefined;
+      return new Response(JSON.stringify(record()), { status: 200 });
+    }) as unknown as typeof globalThis.fetch;
+    try {
+      const p = new PowerTranzCardRailProvider(redis, { ...CONFIG, account: `lk-${nanoid(6).replace(/[^A-Za-z0-9]/g, '0')}` }, { fetch: slow, keyPrefix: PREFIX });
+      expect(await ask(p)).toMatchObject({ status: 'confirmed' });
+    } finally { spy.mockRestore(); }
+    expect(signal).toBeDefined();
+    expect(delays).toContain(LOOKUP_TIMEOUT_MS);
+    expect(delays).not.toContain(15_000);
+  });
+
   it('VoidDateTime present (a real date) = reversed; a credit of the whole capture = reversed; a smaller credit = part refunded: never confirmed', async () => {
     expect(await ask(fresh(at({ status: 200, body: record({ VoidDateTime: '2026-11-09T12:00:00' }) })))).toMatchObject({ status: 'reversed', reason: 'LOOKUP_VOIDED' });
     expect(await ask(fresh(at({ status: 200, body: record({ VoidDateTime: '2026-11-09 12:00:00.123' }) })))).toMatchObject({ status: 'reversed', reason: 'LOOKUP_VOIDED' });
@@ -792,6 +813,14 @@ describe('[CARD-LOOKUP] the transaction lookup: read strictly, judged against wh
       [{ status: 200, body: record({ VoidDateTime: 'garbage' }) }, 'LOOKUP_UNREADABLE'],
       [{ status: 200, body: record({ VoidDateTime: '1' }) }, 'LOOKUP_UNREADABLE'],
       [{ status: 200, body: record({ VoidDateTime: '2026-13-45T99:99:99' }) }, 'LOOKUP_UNREADABLE'],
+      // [REVIEW-2460-DELTA D1] ... nor a date later than a day after the read (.NET's "no date" maximum, SQL's
+      // smalldatetime maximum, any future date).
+      [{ status: 200, body: record({ VoidDateTime: '9999-12-31T23:59:59.9999999' }) }, 'LOOKUP_UNREADABLE'],
+      [{ status: 200, body: record({ VoidDateTime: '2079-06-06T23:59:00' }) }, 'LOOKUP_UNREADABLE'],
+      [{ status: 200, body: record({ VoidDateTime: new Date(Date.now() + 2 * 86_400_000).toISOString() }) }, 'LOOKUP_UNREADABLE'],
+      // [REVIEW-2460-DELTA D2] A credit that contradicts the capture (more than captured; nothing captured) is unknown.
+      [{ status: 200, body: record({}, { TotalCreditAmount: 2200 }) }, 'LOOKUP_CREDIT_UNREADABLE'],
+      [{ status: 200, body: record({}, { TotalCaptureAmount: 0, TotalCreditAmount: 100 }) }, 'LOOKUP_CREDIT_UNREADABLE'],
       [{ status: 200, body: [record()] }, 'LOOKUP_UNREADABLE'],
       [{ status: 200, body: 'not json at all' }, 'LOOKUP_UNREADABLE'],
       [{ status: 404, body: 'not found' }, 'LOOKUP_HTTP_404'],

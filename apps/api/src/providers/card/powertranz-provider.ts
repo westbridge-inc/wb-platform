@@ -115,9 +115,9 @@ const LOOKUP_GATE_TTL_MS = 24 * 60 * 60_000;
 /** [REVIEW-2460-B B7] The lookup runs inside a partner's request (after a completion that may have taken 30 s):
  *  shorter than the other calls, so the page answers well inside any proxy's patience. */
 export const LOOKUP_TIMEOUT_MS = 10_000;
-/** [REVIEW-2460-A S2-1 · B B2] A VoidDateTime counts only when it is a real date on or after the session began, less
- *  this margin: the answer names no time zone, and a day covers every zone. Earlier dates ("0001-01-01", a default)
- *  are not a reversal. */
+/** [REVIEW-2460-A S2-1 · B B2 · DELTA D1] A VoidDateTime counts only when it is a real date between the session's start
+ *  and the read, each widened by this margin: the answer names no time zone, and a day covers every zone. Earlier
+ *  dates ("0001-01-01", a default) and later ones ("9999-12-31", a "no date" maximum) are not a reversal. */
 export const VOID_DATE_SKEW_MS = 24 * 60 * 60_000;
 
 const REQUEST_TIMEOUT_MS = 15_000;
@@ -501,7 +501,8 @@ export function readCompletion(json: unknown, held: HeldCompletion): CompletionR
  * TotalAmount. If they are not, every answer reads as unreadable and Swift takes the path it took before the lookup.
  * Every field must be present and of its type (SettledAmount may be absent); a missing, mistyped or
  * finer-than-the-currency field makes the whole answer unreadable — null, never a guess. A VoidDateTime is a
- * reversal only when it is a real date on or after `voidNotBeforeMs` (voidDateOf); any other value is unreadable.
+ * reversal only when it is a real date between `voidNotBeforeMs` and `voidNotAfterMs` (voidDateOf); any other value is
+ * unreadable.
  */
 export interface PowerTranzTransactionRecord {
   transactionIdentifier: string;
@@ -527,7 +528,7 @@ export function voidDateOf(text: string): number | null {
   return Number.isFinite(ms) ? ms : null;
 }
 
-export function readTransactionRecord(json: unknown, voidNotBeforeMs = Date.UTC(2000, 0, 1)): PowerTranzTransactionRecord | null {
+export function readTransactionRecord(json: unknown, voidNotBeforeMs = Date.UTC(2000, 0, 1), voidNotAfterMs = Date.now() + VOID_DATE_SKEW_MS): PowerTranzTransactionRecord | null {
   if (!isObject(json)) return null;
   const transactionIdentifier = str(json['TransactionIdentifier'])?.trim();
   const orderIdentifier = str(json['OrderIdentifier'])?.trim();
@@ -544,7 +545,9 @@ export function readTransactionRecord(json: unknown, voidNotBeforeMs = Date.UTC(
   // Absent or null: no reversal. A real date on or after the session began: reversed. Anything else cannot be read.
   if (voidAt !== undefined && voidAt !== null) {
     const at = typeof voidAt === 'string' ? voidDateOf(voidAt) : null;
-    if (at === null || at < voidNotBeforeMs) return null;
+    // [REVIEW-2460-DELTA D1] ... and never after the read (plus the zone margin): a "no date" maximum
+    // ("9999-12-31T23:59:59.9999999", "2079-06-06") or any future date is no reversal.
+    if (at === null || at < voidNotBeforeMs || at > voidNotAfterMs) return null;
   }
   const totalCaptureMinor = minorOfTotalAmount(summary['TotalCaptureAmount'], currencyCode);
   const totalCreditMinor = minorOfTotalAmount(summary['TotalCreditAmount'], currencyCode);
@@ -1075,7 +1078,7 @@ export class PowerTranzCardRailProvider implements CardRailProvider {
     const answer = await this.call(`${PATH.transactions}${encodeURIComponent(input.providerRef)}`, { method: 'GET', headers, timeoutMs: LOOKUP_TIMEOUT_MS });
     if (answer.shape === 'transport') return { status: 'unknown', reason: `LOOKUP_NO_ANSWER_${answer.reason.toUpperCase()}`, rawSha256: digest({ transport: answer.reason }) };
     if (answer.status < 200 || answer.status >= 300) return { status: 'unknown', reason: `LOOKUP_HTTP_${answer.status}`, rawSha256: digest({ http: answer.status }) };
-    const record = answer.shape === 'json' ? readTransactionRecord(answer.json, input.notBefore?.getTime()) : null;
+    const record = answer.shape === 'json' ? readTransactionRecord(answer.json, input.notBefore?.getTime(), this.now().getTime() + VOID_DATE_SKEW_MS) : null;
     const rawSha256 = answer.shape === 'json' ? blindedDigest(answer.json) : digest({ unreadable: true });
     if (!record) return { status: 'unknown', reason: 'LOOKUP_UNREADABLE', rawSha256 };
     const verdict = judgeTransactionRecord(record, { txnId: input.providerRef, orderId: input.orderRef, amountMinor: input.amountMinor, currencyCode: input.currencyCode });
