@@ -27,7 +27,7 @@ import { instantSwitch } from '@/lib/instant-toggle';
 import { confirmedOrderFields } from '@/lib/vendor-order-view';
 // The app's own O-4 rules and words (plain file, imported as is).
 import { OUT_OF_STOCK_WORDS, customerDeciding, nothingToAccept } from '../../../mobile/src/modules/vendor/storeOrderRules';
-import { HANDOVER_WORDS, withHandoverSteps } from '../../../mobile/src/modules/vendor/storeHandover';
+import { HANDOVER_WORDS, boardStepLabel, withHandoverSteps } from '../../../mobile/src/modules/vendor/storeHandover';
 import { handedToRider } from '@/lib/store-handover-api';
 import { RiderHandoverLine } from './rider-handover-line';
 import { billingHeadline, billingPill } from '@/lib/subscription-words';
@@ -543,6 +543,8 @@ export function OrderCardActions({ order, onOpen }: { order: VendorOrder; onOpen
       {/* [STORE-DASH · O-2] What the store checks before a one-tap hand-over (the app card's line): the
           customer's name and order number with the pickup code off; the rider. Then that it went. */}
       {actions.some((a) => a.action === 'handed-to-customer') && <p className="sw-caption font-semibold">{HANDOVER_WORDS.checkName(order.customer?.firstName, order.orderNumber)}</p>}
+      {/* [owner 9 Nov 2026] The code is on: whom to ask; the button opens the window, where the code is typed. */}
+      {actions.some((a) => a.action === 'complete-pickup') && <p className="sw-caption font-semibold">{HANDOVER_WORDS.askCode(order.customer?.firstName)}</p>}
       {/* [REVIEW-F S3-1/S4-1 on #2054] Only beside "Handed to rider" (never before ready, never while paused), as on the phone. */}
       {actions.some((a) => a.action === 'handed-to-rider') && <RiderHandoverLine rider={order.rider} />}
       {order.handedToRiderAt && <p className="sw-caption font-semibold">{HANDOVER_WORDS.handedToRider}</p>}
@@ -582,7 +584,7 @@ export function OrderCardActions({ order, onOpen }: { order: VendorOrder; onOpen
             <button key={a.action} type="button" disabled={busy} aria-busy={act.isPending && act.variables === a.action}
               onClick={() => (a.action === 'reject' ? setRejecting(true) : a.action === 'delivered' ? setConfirmingDelivered(true) : ['complete-pickup', 'confirm-payment'].includes(a.action) ? onOpen() : act.mutate(a.action))}
               className={`sw-btn sw-btn-md flex-1 ${a.action === 'reject' ? 'sw-btn-outline' : ''}`}>
-              {a.label}
+              {boardStepLabel(a)}
             </button>
           ))}
         </div>

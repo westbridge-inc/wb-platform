@@ -98,23 +98,29 @@ describe('[O-2] the card: one-tap hand-overs (#2033 F S4-2)', () => {
     expect(within(c).queryByTestId('rider-handover-line')).toBeNull();
   });
 
-  it('control: pickup code on — "Mark picked up" opens the window for the code', async () => {
+  // [owner 9 Nov 2026] With the code ON the card never offers a hand-over tap: it says whom to ask for the code, and its
+  // button ("Enter their code") opens the window where the code is typed. Nothing is sent from the card.
+  it('pickup code on: "Ask Asha for their code", and "Enter their code" opens the window — no hand-over tap on the card', async () => {
     api([takeaway({ id: 'o-4', orderNumber: 'SW-6004', pickupCodeRequired: true })]);
     const view = renderWithQuery(<OrdersPage />);
     const c = await card('SW-6004', view);
+    expect(within(c).getByText('Ask Asha for their code')).toBeTruthy();
     expect(within(c).queryByRole('button', { name: 'Handed to customer' })).toBeNull();
-    await view.user.click(within(c).getByRole('button', { name: 'Mark picked up' }));
-    expect(await screen.findByRole('dialog', { name: 'Order details' })).toBeTruthy();
+    expect(within(c).queryByRole('button', { name: 'Mark picked up' })).toBeNull();
+    await view.user.click(within(c).getByRole('button', { name: 'Enter their code' }));
+    const dialog = await screen.findByRole('dialog', { name: 'Order details' });
+    expect(within(dialog).getByRole('textbox', { name: 'Pickup code' })).toBeTruthy();
     expect(writes).toEqual([]);
   });
 
-  it('control: an older server (no new fields) — today\'s card: "Mark picked up", no rider check', async () => {
+  it('control: an older server (no new fields) — the code is still needed: "Enter their code", no rider check', async () => {
     const oldDelivery: Record<string, unknown> = riderDelivery({ id: 'o-6', orderNumber: 'SW-6006' });
     delete oldDelivery['handedToRiderAt'];
     api([takeaway({ id: 'o-5', orderNumber: 'SW-6005' }), oldDelivery]);
     const view = renderWithQuery(<OrdersPage />);
     const t = await card('SW-6005', view);
-    expect(within(t).getByRole('button', { name: 'Mark picked up' })).toBeTruthy();
+    expect(within(t).getByRole('button', { name: 'Enter their code' })).toBeTruthy();
+    expect(within(t).queryByRole('button', { name: 'Mark picked up' })).toBeNull();
     expect(within(t).queryByText(/Check the name before you hand it over/)).toBeNull();
     const d = await card('SW-6006', view);
     expect(within(d).queryByRole('button', { name: 'Handed to rider' })).toBeNull();

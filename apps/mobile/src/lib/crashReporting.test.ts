@@ -130,3 +130,19 @@ describe('boot wiring', () => {
     expect(crashEnvironment(undefined, false)).toBe('other');
   });
 });
+
+// [OTA-CATCH-UP · REVIEW-2 L3 on #2431] Which JavaScript a crash came from: the update id, or "embedded". Never more.
+describe('otaUpdateTag', () => {
+  it('the update id for an over-the-air launch, "embedded" for the built-in JS, "unknown" otherwise', async () => {
+    const { otaUpdateTag } = await import('./crashReporting');
+    expect(otaUpdateTag({ updateId: 'f7965e90-1234-4abc-9def-0123456789ab', isEmbeddedLaunch: false })).toBe('f7965e90-1234-4abc-9def-0123456789ab');
+    expect(otaUpdateTag({ updateId: 'f7965e90-1234-4abc-9def-0123456789ab', isEmbeddedLaunch: true })).toBe('embedded');
+    expect(otaUpdateTag({ updateId: null })).toBe('embedded');
+    expect(otaUpdateTag({ updateId: 'not an id <script>' })).toBe('unknown');
+    expect(otaUpdateTag(null)).toBe('unknown');
+  });
+  it('the boot sets it as a tag, after crash reporting is on', () => {
+    const boot = readFileSync(join(__dirname, 'crashReportingBoot.ts'), 'utf8');
+    expect(boot).toMatch(/if \(crashReportingOn\) \{[^]*Sentry\.setTag\('ota_update_id', otaUpdateTag\(require\('expo-updates'\)\)\);/);
+  });
+});

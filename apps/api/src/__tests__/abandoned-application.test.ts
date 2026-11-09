@@ -375,6 +375,173 @@ describe('[Row 249 · REVIEW-M S4-3 · COORD] an open fraud, safety, compliance 
     expect(await sweep(later(41), u)).toMatchObject({ purged: 1 });
   });
 
+  // [#2118 · REVIEW-M #2011 S4-1] The re-check also runs for EACH document, inside the transaction that destroys its key,
+  // under the person's lock. The check before the loop runs once, outside any lock: a case opened after it (before the
+  // first key is destroyed, or while an earlier document's bytes are being deleted) must still keep what is not yet gone.
+  /** The document is whole: its row is not purged, its bytes are stored and its key is not shredded. */
+  const expectWhole = async (d: { id: string; fileUrl: string }) => {
+    expect((await docOf(d.id)).purgedAt).toBeNull();
+    expect(await stored(d.fileUrl)).toBe(true);
+    expect(await system(() => app.prisma.encryptedObject.findUniqueOrThrow({ where: { fileKey: d.fileUrl }, select: { wrappedDek: true, shreddedAt: true } })))
+      .toMatchObject({ wrappedDek: expect.anything(), shreddedAt: null });
+  };
+
+  it('a case opened after the check before the loop, before any key is destroyed, keeps every document', async () => {
+    const u = await person('DRIVER');
+    const first = await doc(u, 'DRIVER', 'REJECTED', 100);
+    const second = await doc(u, 'DRIVER', 'REJECTED', 100, 'vehicle_insurance');
+    expect(await sweep(new Date(), u)).toMatchObject({ noticed: 1, purged: 0 });
+    const svc = service([u]);
+    const purgeOne = svc.purgeDocumentNow.bind(svc);
+    // the sweep has passed its check before the loop; a compliance review opens before the first document is destroyed
+    vi.spyOn(svc, 'purgeDocumentNow').mockImplementationOnce(async (...args) => {
+      await system(() => app.prisma.complianceReviewCase.create({ data: { userId: u, dueAt: later(5) } }));
+      return purgeOne(...args);
+    });
+    expect(await system(() => svc.sweepAbandonedApplications(later(14.01)))).toMatchObject({ noticed: 0, purged: 0 });
+    await expectWhole(first);
+    await expectWhole(second);
+    expect(await system(() => app.prisma.deletionReceipt.count({ where: { submissionId: { in: [first.id, second.id] } } }))).toBe(0);
+  });
+
+  /** An extraction of the document: its run key and one extracted value (the ID number, name, date of birth...). */
+  const extraction = (submissionId: string) => system(() => app.prisma.extractionRun.create({ data: {
+    submissionId, profileCode: 'UNPROFILED', engineName: 'synthetic', engineVersion: '1', startedAt: new Date(), outcome: 'OK', wrappedDek: Buffer.alloc(60, 4),
+    fields: { create: { submissionId, fieldCode: 'doc_number', valueCt: Buffer.from('synthetic field ciphertext'), source: 'PROVIDER' } },
+  } }));
+  const extracted = (submissionId: string) => system(async () => ({
+    runKeys: (await app.prisma.extractionRun.findMany({ where: { submissionId }, select: { wrappedDek: true } })).map((r) => r.wrappedDek !== null),
+    values: (await app.prisma.extractedField.findMany({ where: { submissionId }, select: { valueCt: true } })).map((f) => f.valueCt !== null),
+  }));
+  /** While a document's bytes are deleted from storage (after its key is shredded, no lock held), a case opens. */
+  const caseOpensDuringDelete = (u: string) => {
+    const remove = storage.delete.bind(storage);
+    return vi.spyOn(storage, 'delete').mockImplementationOnce(async (key: string) => {
+      await incident(u);
+      return remove(key);
+    });
+  };
+
+  it('a case opened while an earlier document is being deleted keeps every record; the one already shredded is finished after the case closes', async () => {
+    const u = await person('RIDER');
+    const first = await doc(u, 'RIDER', 'REJECTED', 100);
+    const second = await doc(u, 'RIDER', 'REJECTED', 100, 'vehicle_insurance');
+    expect(await sweep(new Date(), u)).toMatchObject({ noticed: 1, purged: 0 });
+    const deleting = caseOpensDuringDelete(u);
+    try {
+      expect(await sweep(later(14.01), u)).toMatchObject({ noticed: 0, purged: 0 });
+    } finally {
+      deleting.mockRestore();
+    }
+    // the one being deleted had its key shredded before the case opened: keyless, but its record is NOT purged (no
+    // receipt) while the case is open; the other is kept whole: its row, its bytes and its key
+    const keyless = await Promise.all([first, second].map(async (d) => ({ d,
+      shredded: (await system(() => app.prisma.encryptedObject.findUniqueOrThrow({ where: { fileKey: d.fileUrl }, select: { shreddedAt: true } }))).shreddedAt !== null })));
+    expect(keyless.filter((x) => x.shredded)).toHaveLength(1);
+    const gone = keyless.find((x) => x.shredded)!.d;
+    expect((await docOf(gone.id)).purgedAt).toBeNull();
+    await expectWhole(keyless.find((x) => !x.shredded)!.d);
+    expect(await system(() => app.prisma.deletionReceipt.count({ where: { submissionId: { in: [first.id, second.id] } } }))).toBe(0);
+    // the case closes: the next run finishes the shredded one and purges the other, each with a receipt
+    await system(() => app.prisma.incidentCase.updateMany({ where: { subjectUserId: u }, data: { status: 'CLOSED', closedAt: new Date() } }));
+    expect(await sweep(later(14.02), u)).toMatchObject({ noticed: 0, purged: 2 });
+    expect(await system(() => app.prisma.deletionReceipt.count({ where: { submissionId: { in: [first.id, second.id] }, deletedBy: ABANDON_PURGE_ACTOR } }))).toBe(2);
+  });
+
+  // [#2427 REVIEW-1 S2] The record transaction destroys the extracted values' keys (the sweep shreds fields): it must not
+  // do so while a case is open, even for a document whose file key was destroyed a moment before the case opened.
+  it('a case opened while the document’s bytes are being deleted keeps its extracted values; after the case closes they go with it', async () => {
+    const u = await person('RIDER');
+    const d = await doc(u, 'RIDER', 'REJECTED', 100);
+    await extraction(d.id);
+    expect(await sweep(new Date(), u)).toMatchObject({ noticed: 1, purged: 0 });
+    const deleting = caseOpensDuringDelete(u);
+    try {
+      expect(await sweep(later(14.01), u)).toMatchObject({ noticed: 0, purged: 0 });
+    } finally {
+      deleting.mockRestore();
+    }
+    expect((await docOf(d.id)).purgedAt).toBeNull();
+    expect(await extracted(d.id)).toEqual({ runKeys: [true], values: [true] });
+    await system(() => app.prisma.incidentCase.updateMany({ where: { subjectUserId: u }, data: { status: 'CLOSED', closedAt: new Date() } }));
+    expect(await sweep(later(14.02), u)).toMatchObject({ noticed: 0, purged: 1 });
+    expect((await docOf(d.id)).purgedAt).not.toBeNull();
+    expect(await extracted(d.id)).toEqual({ runKeys: [false], values: [false] });
+  });
+
+  // [#2427 REVIEW-1 L3] A document kept because a case is open is counted (ids only in the log), so a case that never
+  // closes shows up in operations instead of reading as nothing to do.
+  it('documents kept because a case is open are counted: at the check before the loop and inside it', async () => {
+    const before = await person('RIDER');
+    await doc(before, 'RIDER', 'REJECTED', 100);
+    await doc(before, 'RIDER', 'REJECTED', 100, 'vehicle_insurance');
+    expect(await sweep(new Date(), before)).toMatchObject({ noticed: 1, kept: 0 });
+    await incident(before);
+    expect(await sweep(later(14.01), before)).toMatchObject({ noticed: 0, purged: 0, kept: 2 });
+
+    const during = await person('RIDER');
+    await doc(during, 'RIDER', 'REJECTED', 100);
+    await doc(during, 'RIDER', 'REJECTED', 100, 'vehicle_insurance');
+    expect(await sweep(new Date(), during)).toMatchObject({ noticed: 1, kept: 0 });
+    const deleting = caseOpensDuringDelete(during);
+    try {
+      expect(await sweep(later(14.01), during)).toMatchObject({ noticed: 0, purged: 0, kept: 2 });
+    } finally {
+      deleting.mockRestore();
+    }
+  });
+
+  it('the caller’s check runs while the person’s row is locked, before the key is destroyed; true destroys nothing', async () => {
+    const u = await person('RIDER');
+    const d = await doc(u, 'RIDER', 'REJECTED', 100);
+    let lockedWhenChecked = -1;
+    const outcome = await system(() => service([u]).purgeDocumentNow(
+      { id: d.id, userId: u, fileUrl: d.fileUrl, docType: d.docType, user: { tenantId: 'swift-default' } },
+      ABANDON_PURGE_ACTOR, { requireRetentionElapsed: false, shredFields: true, keeps: async (tx) => {
+        // the person's row lock (FOR UPDATE) shows as this backend's row-share lock on users
+        lockedWhenChecked = (await tx.$queryRaw<Array<{ n: number }>>`
+          SELECT count(*)::int AS n FROM pg_locks WHERE pid = pg_backend_pid() AND relation = 'users'::regclass AND mode = 'RowShareLock'`)[0]!.n;
+        return true;
+      } },
+    ));
+    expect(lockedWhenChecked).toBe(1);
+    expect(outcome).toBe('NOT_PURGED');
+    await expectWhole(d);
+  });
+
+  // The contract for any caller's check: one that THROWS destroys nothing (the purge fails loudly; the bytes, the key and
+  // the row stay). The sweep's openCaseKeeps never throws (an error reads as an open case).
+  it('a caller’s check that throws destroys nothing: the purge fails, the document stays whole', async () => {
+    const u = await person('RIDER');
+    const d = await doc(u, 'RIDER', 'REJECTED', 100);
+    await expect(system(() => service([u]).purgeDocumentNow(
+      { id: d.id, userId: u, fileUrl: d.fileUrl, docType: d.docType, user: { tenantId: 'swift-default' } },
+      ABANDON_PURGE_ACTOR, { requireRetentionElapsed: false, shredFields: true, keeps: async () => { throw new Error('synthetic check failure'); } },
+    ))).rejects.toThrow('synthetic check failure');
+    await expectWhole(d);
+  });
+
+  it('a document with no stored file: the check runs in the purge transaction itself, under the lock (true keeps it, false purges it)', async () => {
+    const u = await person('RIDER');
+    const d = await system(() => app.prisma.verificationDocument.create({ data: {
+      userId: u, role: 'RIDER', docType: 'driver_license', fileUrl: '', state: 'REJECTED', createdAt: new Date(Date.now() - 100 * DAY), reviewedAt: new Date(Date.now() - 100 * DAY), reviewedBy: 'abandon-test',
+    } }));
+    const locks: number[] = [];
+    const purge = (keeps: boolean) => system(() => service([u]).purgeDocumentNow(
+      { id: d.id, userId: u, fileUrl: '', docType: d.docType, user: { tenantId: 'swift-default' } },
+      ABANDON_PURGE_ACTOR, { requireRetentionElapsed: false, shredFields: true, keeps: async (tx) => {
+        locks.push((await tx.$queryRaw<Array<{ n: number }>>`
+          SELECT count(*)::int AS n FROM pg_locks WHERE pid = pg_backend_pid() AND relation = 'users'::regclass AND mode = 'RowShareLock'`)[0]!.n);
+        return keeps;
+      } },
+    ));
+    expect(await purge(true)).toBe('NOT_PURGED');
+    expect((await docOf(d.id)).purgedAt).toBeNull();
+    expect(await purge(false)).toBe('PURGED');
+    expect((await docOf(d.id)).purgedAt).not.toBeNull();
+    expect(locks).toEqual([1, 1]);
+  });
+
   it('an unreadable case census reads as an open case: nothing is noticed or deleted', async () => {
     const u = await person('RIDER');
     const d = await doc(u, 'RIDER', 'REJECTED', 100);
@@ -421,6 +588,31 @@ describe('[Row 249 · COORD security review] the open-case census: every case, r
     return fn(tx);
   }));
   const other = () => `other-${nanoid(8)}`;
+  const refundOwed = (customerId: string, status: 'OWED' | 'SENT' | 'CONFIRMED' | 'DISPUTED' | 'SETTLED' | 'VOIDED', vendorId = other()) => raw((tx) => tx.mmgRefundObligation.create({ data: {
+    orderId: `o-${nanoid(8)}`, vendorId, customerId, kind: 'CANCELLATION', causeKey: `order:${nanoid(10)}:cancel`, status, amount: 100,
+    // a send-carrying state names its send (the table's shape check); the send itself need not exist for a read-only census
+    sendId: ['SENT', 'CONFIRMED', 'DISPUTED', 'SETTLED'].includes(status) ? `s-${nanoid(8)}` : null,
+    basis: 'synthetic', deadlineHours: 72, dueAt: later(3),
+  } }).then((r) => cleanups.push(() => raw((t) => t.mmgRefundObligation.delete({ where: { id: r.id } })))));
+  /** The rider's subscription (one per rider). */
+  const subscriptionOf = (riderId: string) => raw(async (tx) => await tx.subscription.findUnique({ where: { riderId } })
+    ?? tx.subscription.create({ data: { riderId, type: 'DELIVERY_RIDER', weeklyRate: 1000, currentPeriodStart: new Date(), currentPeriodEnd: later(7), nextBillingDate: later(7) } }));
+  const feeRefundCase = async (riderId: string, state: 'OPEN' | 'REFUNDED') => {
+    const sub = await subscriptionOf(riderId);
+    const r = await raw((tx) => tx.feeRefundCase.create({ data: {
+      tenantId: 'swift-default', subscriptionId: sub.id, checkoutId: `c-${nanoid(10)}`, kind: 'DUPLICATE', reason: 'synthetic', openedByUserId: other(),
+      amount: 1000, currencyCode: 'GYD', dueBy: later(5), state,
+      ...(state === 'REFUNDED' ? { reversalId: `rv-${nanoid(8)}`, refundedAt: new Date() } : {}), // the table's closed-shape check
+    } }));
+    cleanups.push(() => raw((t) => t.feeRefundCase.delete({ where: { id: r.id } })));
+  };
+  const subscriptionRefund = async (riderId: string, status: string) => {
+    const sub = await subscriptionOf(riderId);
+    const r = await raw((tx) => tx.subscriptionRefund.create({ data: {
+      subscriptionId: sub.id, paymentId: `p-${nanoid(8)}`, amount: 1000, refundType: 'FULL', reason: 'synthetic', processedBy: other(), refundDestination: 'synthetic', status,
+    } }));
+    cleanups.push(() => raw((t) => t.subscriptionRefund.delete({ where: { id: r.id } })));
+  };
   const fixtures: Record<OpenCaseKind, (u: string, docId: string, riderId: string) => Promise<unknown>> = {
     fraud_case: (u, docId) => raw((tx) => tx.fraudCase.create({ data: { subjectUserId: other(), submissionId: docId, caseId: randomUUID(), reasonCode: 'SYNTHETIC', confirmedBy: 'test', linkedAccountIds: [] } })
       .then((r) => cleanups.push(() => raw((t) => t.fraudCase.delete({ where: { id: r.id } }))))),
@@ -476,6 +668,11 @@ describe('[Row 249 · COORD security review] the open-case census: every case, r
       const r = await tx.paymentConfirmationHold.create({ data: { tenantId: 'swift-default', subscriptionId: sub.id, clockId: `c-${nanoid(6)}`, sourceEpoch: 1, paymentId: `p-${nanoid(8)}`, reason: 'synthetic', beganAt: new Date(), reviewDueAt: later(2) } });
       cleanups.push(() => raw(async (t) => { await t.paymentConfirmationHold.delete({ where: { id: r.id } }); }));
     }),
+    // [#2427 REVIEW-1 L4] Money owed back and money disputes: a store's refund owed to the person (as the customer) ...
+    mmg_refund_obligation: (u) => refundOwed(u, 'OWED'),
+    // ... and a weekly-fee payment the person asked back, or a fee refund not yet processed, on their subscription.
+    fee_refund_case: (u, docId, riderId) => feeRefundCase(riderId, 'OPEN'),
+    subscription_refund: (u, docId, riderId) => subscriptionRefund(riderId, 'PENDING'),
   };
 
   it('the census names every kind, and each kind has a fixture here', () => {
@@ -495,6 +692,35 @@ describe('[Row 249 · COORD security review] the open-case census: every case, r
       expect((await docOf(d.id)).purgedAt).toBeNull();
     });
   }
+
+  it('[#2427 REVIEW-1 L4] a refund that is settled, confirmed, voided, refunded or processed is no open case', async () => {
+    const u = await person('RIDER');
+    const riderId = (await riderOf(u, 'MOTORCYCLE')).id;
+    for (const status of ['CONFIRMED', 'SETTLED', 'VOIDED'] as const) await refundOwed(u, status);
+    await refundOwed(other(), 'OWED'); // owed to somebody else
+    await feeRefundCase(riderId, 'REFUNDED');
+    for (const status of ['COMPLETED', 'FAILED', 'REJECTED']) await subscriptionRefund(riderId, status);
+    expect(await system(() => openCasesOf(app.prisma, u))).toEqual([]);
+    for (const status of ['SENT', 'DISPUTED'] as const) {
+      const v = await person('RIDER');
+      await refundOwed(v, status);
+      expect(await system(() => openCasesOf(app.prisma, v))).toEqual(['mmg_refund_obligation']);
+    }
+    // a refund the person's STORE owes a customer names them too
+    const owner = await person('VENDOR_OWNER');
+    const vendorId = await raw(async (tx) => {
+      const vo = await tx.vendorOwner.create({ data: { userId: owner } });
+      const v = await tx.vendor.create({ data: {
+        ownerId: vo.id, name: `Abandon Mart ${NUM}`, slug: `abandon-mart-${NUM}-${nanoid(6).toLowerCase()}`, vendorType: 'SUPERMARKET', phone: '+5926001234',
+        addressLine1: '1 Store Street', city: 'Georgetown', region: 'Demerara-Mahaica', latitude: 6.8, longitude: -58.15,
+      } });
+      cleanups.push(() => raw(async (t) => { await t.vendor.delete({ where: { id: v.id } }); await t.vendorOwner.delete({ where: { id: vo.id } }); }));
+      return v.id;
+    });
+    expect(await system(() => openCasesOf(app.prisma, owner))).toEqual([]);
+    await refundOwed(other(), 'OWED', vendorId);
+    expect(await system(() => openCasesOf(app.prisma, owner))).toEqual(['mmg_refund_obligation']);
+  });
 
   it('[REVIEW-G S3-1] fraud_case: a confirmed case naming the person only as a LINKED account (founder decision pending) keeps their documents', async () => {
     const u = await person('RIDER');

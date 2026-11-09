@@ -69,6 +69,23 @@ export function pickupCheckWords(order: HandoverOrder, paused: boolean): string 
   return HANDOVER_WORDS.checkName(order?.customer?.firstName, order?.orderNumber);
 }
 
+/**
+ * [owner 9 Nov 2026] What a BOARD card's button says. With the store's code on (or an older server that does not
+ * say), the takeaway step is never a hand-over tap on the card: the code is typed on the order screen, so the button
+ * says that and opens it (boardTaps: complete-pickup = 'open'). Every other step keeps its words ("Handed to
+ * customer" with the code off is still one tap).
+ */
+export function boardStepLabel(step: { label: string; action: string }): string {
+  return step.action === 'complete-pickup' ? HANDOVER_WORDS.enterCode : step.label;
+}
+
+/** [owner 9 Nov 2026] The board card's takeaway line: the name check (code off), whom to ask for the code (code on),
+ *  and never a hand-over prompt on an order paused for an MMG payment review. */
+export function pickupBoardWords(order: HandoverOrder, paused: boolean): string {
+  if (paused) return HANDOVER_WORDS.collects;
+  return pickupCheckWords(order, paused) ?? HANDOVER_WORDS.askCode(order?.customer?.firstName);
+}
+
 type RiderLike = { user?: { firstName?: unknown } | null; vehicleType?: unknown; vehicleMake?: unknown; vehicleModel?: unknown; vehicleColor?: unknown; licensePlate?: unknown; photoUrl?: unknown } | null | undefined;
 const word = (v: unknown) => (typeof v === 'string' && v.trim() ? v.trim() : null);
 /** An order number as words (the server may send a string or a number). */
@@ -124,6 +141,12 @@ export const HANDOVER_WORDS = {
     return 'Check who is collecting before you hand it over.';
   },
   collects: 'The customer collects this order.',
+  // [owner 9 Nov 2026] The code is on: whom to ask, and the card's button that opens the order to type it.
+  askCode: (firstName: unknown) => {
+    const name = word(firstName);
+    return name ? `Ask ${name} for their code` : 'Ask the customer for their code';
+  },
+  enterCode: 'Enter their code',
   checkRider: 'Check the rider before you hand it over:',
   handedToRider: 'Handed to the rider',
   settingTitle: 'Ask for the pickup code',
