@@ -56,6 +56,7 @@ function SelfieCheckRow({ check }: { check: SelfieCheck }) {
     <article className="rounded-2xl border border-[var(--border)] p-4 space-y-3" aria-label={label}>
       <p className="font-semibold">{label} · selfie taken {gyDate(check.selfieCapturedAt)}</p>
       {check.noMatchStanding ? <p className="rc-muted">Another reviewer recorded that these faces do not match. Only a different reviewer can record a match; that is flagged to ops.</p> : null}
+      {check.earlierNoMatch ? <p className="rc-muted">An earlier photo of this person was ruled not to match their ID. The reviewer who said so cannot decide this one.</p> : null}
       <DocumentViewer id={check.documentId} label={label} onViewed={setViewed} onSelfie={setShownSelfie} />
       <label className="block">
         <span className="rc-muted">Why (recorded)</span>
