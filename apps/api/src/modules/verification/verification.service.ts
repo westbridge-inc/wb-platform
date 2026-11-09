@@ -3518,9 +3518,13 @@ export class VerificationService {
     if (now.getTime() < abandonPurgeDueAt(lastActivityAt, notice.createdAt).getTime()) return none;
     // [COORD 18:5xZ] Checked AGAIN immediately before the purge: a case opened after the notice still keeps everything.
     if (await openCaseKeeps(this.prisma, userId)) return none;
+    // [#2118 · REVIEW-M #2011 S4-1] ...and once more for EACH document, inside the transaction that destroys its key,
+    // under the person's lock: a case opened after the check above (before the first key is destroyed, or while an
+    // earlier document's bytes are being deleted, storage calls with no lock held) keeps every document not yet destroyed.
+    const keeps = (tx: Prisma.TransactionClient) => openCaseKeeps(tx, userId);
     let purged = 0;
     for (const doc of candidates) {
-      const outcome = await this.purgeDocumentNow(doc, ABANDON_PURGE_ACTOR, { requireRetentionElapsed: false, shredFields: true, now, still: stillAbandoned(lastActivityAt) });
+      const outcome = await this.purgeDocumentNow(doc, ABANDON_PURGE_ACTOR, { requireRetentionElapsed: false, shredFields: true, now, still: stillAbandoned(lastActivityAt), keeps });
       if (outcome === 'PURGED') purged += 1;
     }
     return { noticed: 0, purged };
@@ -3538,7 +3542,7 @@ export class VerificationService {
   async purgeDocumentNow(
     doc: { id: string; userId: string; fileUrl: string; docType: string; user: { tenantId: string } },
     deletedBy: string,
-    opts: { requireRetentionElapsed: boolean; shredFields: boolean; now?: Date; still?: Prisma.VerificationDocumentWhereInput },
+    opts: { requireRetentionElapsed: boolean; shredFields: boolean; now?: Date; still?: Prisma.VerificationDocumentWhereInput; keeps?: (tx: Prisma.TransactionClient) => Promise<boolean> },
   ): Promise<'PURGED' | 'PROBE_FAILED' | 'NOT_PURGED'> {
     const now = opts.now ?? new Date();
     const storage = getStorageProvider();
@@ -3548,7 +3552,7 @@ export class VerificationService {
     // [Row 243] The bytes are destroyed only under the person's lock and only while still unheld.
     const evidence = doc.fileUrl
       ? await shredUnlessHeld(this.prisma, storage, { fileKey: doc.fileUrl, userId: doc.userId, documentId: doc.id },
-        { purgedAt: null, ...(opts.requireRetentionElapsed ? { retentionExpiresAt: { lt: now } } : {}), ...still })
+        { purgedAt: null, ...(opts.requireRetentionElapsed ? { retentionExpiresAt: { lt: now } } : {}), ...still }, opts.keeps)
       : NOTHING_STORED;
     if (!evidence) return 'NOT_PURGED';
     const receipt = { submissionId: doc.id, subjectId: doc.userId, tenantId: doc.user.tenantId, docTypeCode: doc.docType, deletedBy, evidence };
@@ -3565,6 +3569,10 @@ export class VerificationService {
       if (!users[0]) return false;
       // [SEC-PII · COORD] The same backstop for the record (and for a document with no bytes): an open identity review.
       if (await identityReviewOpenFor(tx, doc.userId)) return false;
+      // [#2118] With no stored file this transaction IS the destruction (the extracted values are shredded here), so the
+      // caller's check runs here, under the same lock. With a file it already ran when the key was destroyed: the bytes
+      // are gone, and the record must say so.
+      if (!doc.fileUrl && opts.keeps && (await opts.keeps(tx))) return false;
       const won = await tx.verificationDocument.updateMany({
         where: { id: doc.id, userId: doc.userId, purgedAt: null, legalHoldId: null, ...(opts.requireRetentionElapsed ? { retentionExpiresAt: { lt: now } } : {}), ...still },
         data: { purgedAt: new Date(), fileUrl: '' },
