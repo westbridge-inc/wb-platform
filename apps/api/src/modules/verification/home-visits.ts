@@ -28,6 +28,17 @@ export async function homeVisitsCleared(db: Db, ownerUserId: string, now: Date =
   return (await approvedEvidenceFor(db, ownerUserId, [POLICE_CLEARANCE_DOC_TYPE], now)).length > 0;
 }
 
+/**
+ * [OWNER-ASKS · owner ruling 9 Nov 2026] The profile photo (the signup selfie) is asked only where a stranger comes to the
+ * customer: riders and drivers (go-online gates), and a service business's HOME VISITS. A store owner, store staff and a
+ * business that serves customers only at its own place never need one. A home visit books only while the owner has the
+ * photo, beside the police clearance; in-shop bookings are never affected.
+ */
+export async function ownerHasProfilePhoto(db: Db, ownerUserId: string): Promise<boolean> {
+  const owner = await db.user.findUnique({ where: { id: ownerUserId }, select: { selfieCapturedAt: true } });
+  return !!owner?.selfieCapturedAt;
+}
+
 /** Does any store this person owns list a service that comes to the customer? */
 export async function ownerOffersHomeVisits(db: Db, ownerUserId: string): Promise<boolean> {
   const listing = await db.item.findFirst({
@@ -72,11 +83,18 @@ export async function tellOwnerHomeVisitsPaused(
     select: { id: true },
   }));
   if (already) return false;
+  // [OWNER-ASKS 9 Nov] Name exactly what is missing: the police clearance, the profile photo, or both.
+  const [cleared, photo] = await Promise.all([homeVisitsCleared(db, ownerUserId, now), ownerHasProfilePhoto(db, ownerUserId)]);
+  const needs = [
+    ...(cleared ? [] : ['your police clearance, approved and current (upload it under Documents)']),
+    ...(photo ? [] : ['your profile photo, so customers see who is coming (take it in the Swift app)']),
+  ];
+  const what = needs.length ? needs.join(', and ') : 'your police clearance, approved and current (upload it under Documents)';
   await notifications.send({
     userId: ownerUserId,
     type: 'SYSTEM_ANNOUNCEMENT',
     title: HOME_VISITS_PAUSED_TITLE,
-    body: `A customer tried to book a home visit from ${vendorName}. Home visits need your police clearance, approved and current. Upload it under Documents; bookings at your place are not affected.`,
+    body: `A customer tried to book a home visit from ${vendorName}. Home visits need ${what}. Bookings at your place are not affected.`,
     audience: 'business',
     dedupeKey: `home-visits-paused:${guyanaDayKey(now)}`,
   });
