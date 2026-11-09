@@ -79,5 +79,7 @@ it('only the permission-aware client opts into the swap response', async () => {
   // [O-4] v2: this build renders the pre-accept removal question too (a v1 client is served a legacy line).
   // [PICKUP · owner 30 Oct 2026] pickupHandover=v1: this build tells the customer the name + order number when the
   // store's code is off, so the server sends it no code then.
-  expect(seen[0]?.params).toEqual({ swapDecisions: 'v2', pickupHandover: 'v1' });
+  // [TRANSFORMED 8 Nov (OOS-FLOW · REVIEW-1 S3-1): lastItemDecline=1, beside v2 (which an older server still reads):
+  // this build labels the only item's decline "No thanks, cancel order" and sends endsOrder with it.]
+  expect(seen[0]?.params).toEqual({ swapDecisions: 'v2', lastItemDecline: '1', pickupHandover: 'v1' });
 });

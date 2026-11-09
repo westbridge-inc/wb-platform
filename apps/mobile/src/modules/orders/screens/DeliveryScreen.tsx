@@ -43,7 +43,7 @@ import { MmgPaymentClaimCard } from '../MmgPaymentClaimCard';
 import { MmgRefundCard } from '../MmgRefundCard';
 import { MMG_REFUND_WORDS, parseMmgRefundView } from '../mmgRefund';
 import { errorMessage } from '../../../lib/apiError';
-import { isRemovalQuestion, removalChangeText, swapChangeText, swapDeadlineText, swapDecisionPermissions } from '../substitutionCopy';
+import { isRemovalQuestion, lineRemoved, removalChangeText, swapChangeText, swapDeadlineText, swapDecisionPermissions } from '../substitutionCopy';
 import { CustodyRecoveryNotice } from '../CustodyRecoveryNotice';
 import { parsePartyCaseView, partyCaseWorthShowing } from '../../../lib/custodyRecovery';
 import { boundMmgClaim, parseMmgClaimView, sendBoundMmgClaim, type PendingMmgClaim } from '../mmgClaim';
@@ -1229,7 +1229,7 @@ export function DeliveryScreen() {
                 </View>
                 <T variant="caption" tone="muted" style={{ marginTop: space.xs }}>
                   {o.vendor?.name ?? 'The store'} suggests {it.substituteName} ({money(Number(it.substitutePrice ?? 0))}
-                  {it.quantity > 1 ? ` × ${it.quantity}` : ''}) instead.{swapDecisionPermissions(it.substitution, o.paymentMethod).reject ? ' Rejecting removes the item and lowers your total.' : ''}
+                  {it.quantity > 1 ? ` × ${it.quantity}` : ''}) instead.{swapDecisionPermissions(it.substitution, o.paymentMethod).reject && !it.substitution?.lastItem ? ' Rejecting removes the item and lowers your total.' : ''}
                 </T>
                 {/* [L09 · M028] What approving changes, from the server's own
                     numbers: the total (paid options included), and the chosen
@@ -1260,13 +1260,14 @@ export function DeliveryScreen() {
                     disabled={decideSub.isPending || !swapDecisionPermissions(it.substitution, o.paymentMethod).approve}
                     onPress={() => decideSub.mutate({ orderId, lineId: it.id, approve: true })}
                   />
+                  {/* [OOS-FLOW · REVIEW-2 F5] On the only item left a "no" cancels the order: the button says so. */}
                   <PillButton
-                    label="No thanks"
+                    label={it.substitution?.lastItem ? 'No thanks, cancel order' : 'No thanks'}
                     variant="soft"
                     size="md"
                     style={{ flex: 1 }}
                     disabled={decideSub.isPending || !swapDecisionPermissions(it.substitution, o.paymentMethod).reject}
-                    onPress={() => decideSub.mutate({ orderId, lineId: it.id, approve: false })}
+                    onPress={() => decideSub.mutate({ orderId, lineId: it.id, approve: false, endsOrder: it.substitution?.lastItem === true })}
                   />
                 </View>
               </View>
@@ -1568,15 +1569,16 @@ export function DeliveryScreen() {
             {items.map((it: any, i: number) => (
               <InfoRow
                 key={it.id ?? i}
-                label={`${it.quantity} ${it.item?.name ?? it.name}`}
-                value={money(it.totalPrice ?? it.lineTotal ?? Number(it.unitPrice ?? 0) * (it.quantity ?? 1))}
+                label={`${it.quantity} ${it.item?.name ?? it.name}${lineRemoved(it) ? ' (out of stock, removed)' : ''}`}
+                value={money(lineRemoved(it) ? 0 : it.totalPrice ?? it.lineTotal ?? Number(it.unitPrice ?? 0) * (it.quantity ?? 1))}
               />
             ))}
             {Number(o.deliveryFee ?? 0) > 0 ? <InfoRow label="Delivery" value={money(o.deliveryFee)} /> : null}
             {Number(o.tipAmount ?? 0) > 0 ? <InfoRow label="Tip" value={money(o.tipAmount)} /> : null}
             {Number(o.discount ?? 0) > 0 ? <InfoRow label="Discount" value={`−${money(o.discount)}`} /> : null}
             <View style={{ height: StyleSheet.hairlineWidth, backgroundColor: color.border.subtle, marginVertical: space.sm }} />
-            <InfoRow label="Total" value={money(o.totalAmount ?? o.total)} strong />
+            {/* [OOS-FLOW · REVIEW-2 F8] A cancelled order keeps the total it had, beside lines now at $0: it says it was cancelled. */}
+            <InfoRow label={String(o.status ?? '').toUpperCase() === 'CANCELLED' ? 'Order total (cancelled)' : 'Total'} value={money(o.totalAmount ?? o.total)} strong />
             {/* [STORE-VAT · owner O-5] The VAT a person-approved VAT store's goods included, frozen on the order (inside the total). */}
             {orderVatLine(o) ? (
               <T variant="caption" tone="muted" style={{ marginTop: 2 }}>

@@ -34,12 +34,22 @@ describe('the order screen follows a substitution as it happens', () => {
 
   it('the customer reads what approving changes before the buttons, and decides through the hook bound to this order', () => {
     // [TRANSFORMED 17 Oct: the import gains swapDeadlineText. O-4 22 Oct: and the removal question's two helpers.]
-    expect(SCREEN).toContain("import { isRemovalQuestion, removalChangeText, swapChangeText, swapDeadlineText, swapDecisionPermissions } from '../substitutionCopy';");
+    // [TRANSFORMED 8 Nov (OOS-FLOW): the import gains lineRemoved, for the removed lines of the order list.]
+    expect(SCREEN).toContain("import { isRemovalQuestion, lineRemoved, removalChangeText, swapChangeText, swapDeadlineText, swapDecisionPermissions } from '../substitutionCopy';");
     expect(CARD.indexOf('swapChangeText(it.substitution, o.paymentMethod)')).toBeGreaterThan(CARD.indexOf('Rejecting removes the item and lowers your total.'));
     // [TRANSFORMED after #1707: the order travels with each decision, never the render's closure.]
     expect(SCREEN).toContain('const decideSub = useDecideSubstitution();');
     expect(SCREEN).toContain('decideSub.mutate({ orderId, lineId: it.id, approve: true })');
-    expect(SCREEN).toContain('decideSub.mutate({ orderId, lineId: it.id, approve: false })');
+    // [TRANSFORMED 8 Nov (OOS-FLOW · REVIEW-1 S3-1): a "no" on the only item left says it ends the order (endsOrder).]
+    expect(SCREEN).toContain('decideSub.mutate({ orderId, lineId: it.id, approve: false, endsOrder: it.substitution?.lastItem === true })');
+  });
+
+  it('[OOS-FLOW · REVIEW-2 F5] on the only item left the decline button says it cancels the order', () => {
+    expect(SCREEN).toContain("label={it.substitution?.lastItem ? 'No thanks, cancel order' : 'No thanks'}");
+  });
+
+  it('[OOS-FLOW · REVIEW-2 F8] a cancelled order\'s total says it was cancelled (its lines read $0)', () => {
+    expect(SCREEN).toContain("label={String(o.status ?? '').toUpperCase() === 'CANCELLED' ? 'Order total (cancelled)' : 'Total'}");
   });
 });
 
@@ -79,4 +89,17 @@ it('[REVIEW-F S3-1] the only item left: the card drops "Continue without it" and
   expect(removal).toContain('{it.substitution?.lastItem ? null : (');
   expect(removal.indexOf('{it.substitution?.lastItem ? null : (')).toBeLessThan(removal.indexOf('label="Continue without it"'));
   expect(removal).toContain('label="Cancel order"');
+});
+
+// [OOS-FLOW · owner 8 Nov 2026] A removed line is shown as removed and at nothing, so the list adds up to the
+// total the customer pays at the counter; and the swap for the only item left never says "No thanks" just
+// removes it (the server's guidance says the order is cancelled instead).
+describe('[OOS-FLOW] removed lines and the only item left', () => {
+  it('the order list shows a removed line as removed, charged at nothing', () => {
+    expect(SCREEN).toContain("label={`${it.quantity} ${it.item?.name ?? it.name}${lineRemoved(it) ? ' (out of stock, removed)' : ''}`}");
+    expect(SCREEN).toContain('value={money(lineRemoved(it) ? 0 : it.totalPrice ?? it.lineTotal ?? Number(it.unitPrice ?? 0) * (it.quantity ?? 1))}');
+  });
+  it('the swap card says a decline lowers the total only when it is not the only item left', () => {
+    expect(CARD).toContain("swapDecisionPermissions(it.substitution, o.paymentMethod).reject && !it.substitution?.lastItem ? ' Rejecting removes the item and lowers your total.' : ''");
+  });
 });
