@@ -346,7 +346,10 @@ export function VendorMyQrScreen({ navigation }: any) {
           </View>
           <T variant="caption" tone={isPubliclyLive ? 'muted' : 'warning'} center style={{ marginTop: space.xs }}>
             {publicState === 'live'
-              ? 'Customers scan this to open your live web menu — no app install'
+              // [STORE-WORDS sweep] "menu" only for a restaurant; any other store's page is its store on the web.
+              ? profile.store?.vendorType === 'RESTAURANT' || !profile.store?.vendorType
+                ? 'Customers scan this to open your live web menu — no app install'
+                : 'Customers scan this to open your store on the web — no app install'
               : publicState === 'checking'
                 ? 'Checking whether this store link is live…'
                 : publicState === 'unavailable'
@@ -381,7 +384,7 @@ export function VendorMyQrScreen({ navigation }: any) {
 
         <View style={{ flexDirection: compact ? 'column' : 'row', gap: space.sm, marginBottom: space.lg }}>
           <PillButton label="Share link" icon="share-2" disabled={!isPubliclyLive} onPress={shareLink} style={{ flex: 1 }} />
-          <PillButton label="Open web menu" icon="external-link" variant="outline" disabled={!isPubliclyLive} onPress={openStore} style={{ flex: 1 }} />
+          <PillButton label={profile.store?.vendorType === 'RESTAURANT' || !profile.store?.vendorType ? 'Open web menu' : 'Open web store'} icon="external-link" variant="outline" disabled={!isPubliclyLive} onPress={openStore} style={{ flex: 1 }} />
         </View>
 
         {isPubliclyLive ? (

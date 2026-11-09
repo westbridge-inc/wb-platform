@@ -44,10 +44,10 @@ function VendorLiveOrderLayer({ vendorId, ownsStore }: { vendorId: string; ownsS
   return takeover.length > 0 ? <NewOrderTakeover queue={takeover} onDismiss={dismissTakeover} /> : null;
 }
 
-function VendorWentLiveLayer({ status }: { status: string }) {
+function VendorWentLiveLayer({ status, vendorType }: { status: string; vendorType?: string | null }) {
   const approvalLive = status === 'ACTIVE' ? true : status === 'PENDING_APPROVAL' ? false : undefined;
   const live = useWentLive(approvalLive);
-  return <WentLivePopup visible={live.celebrate} onClose={live.dismiss} kind="vendor" />;
+  return <WentLivePopup visible={live.celebrate} onClose={live.dismiss} kind="vendor" vendorType={vendorType} />;
 }
 
 function VendorRoot() {
@@ -152,7 +152,7 @@ function VendorRoot() {
           bare store id they collide with each other on every vendor session, and
           React's response to duplicate sibling keys is explicitly unspecified —
           which would put the remount this comment relies on at its mercy. */}
-      <VendorWentLiveLayer key={`went-live-${store.id}`} status={String(store.status ?? '')} />
+      <VendorWentLiveLayer key={`went-live-${store.id}`} status={String(store.status ?? '')} vendorType={store.vendorType} />
       {/* Keying this layer by store also clears queued alerts during a store
           handoff; the old socket is disconnected before the cache reset. */}
       {store.status === 'ACTIVE' ? <VendorLiveOrderLayer key={`live-orders-${store.id}`} vendorId={store.id} ownsStore={myRole === 'OWNER'} /> : null}

@@ -6,7 +6,8 @@ import { Feather } from '@expo/vector-icons';
 import { color, font, fontSize, radius, space } from '@swift/ui';
 import { Card, Header, PillButton, T } from '../../../kit';
 import { toast } from '../../../kit/toast';
-import { useImportAutomap, useImportItems, useImportFile } from '../../../hooks/vendorops';
+import { useImportAutomap, useImportItems, useImportFile, useVendorProfile } from '../../../hooks/vendorops';
+import { catalogueMeta } from '../shared';
 import { importCheckSummary, importPhotoNotesLine } from '../../../lib/catalogueCheck';
 import {
   AuthSessionBoundaryError,
@@ -20,6 +21,9 @@ import { useVendorPreview } from '../../../stores/vendorPreview';
 const RECOMMENDED = 'category, name, basePrice, sku, unit, stockQuantity, description';
 
 export function VendorBulkImportScreen({ navigation }: any) {
+  // [STORE-WORDS sweep] The store's own word for its items: "menu" only for a restaurant.
+  const catalogue = catalogueMeta(useVendorProfile().store?.vendorType).label;
+  const isMenu = catalogue === 'Menu';
   const previewType = useVendorPreview((state) => state.previewType);
   const automap = useImportAutomap();
   const importFile = useImportFile();
@@ -149,7 +153,7 @@ export function VendorBulkImportScreen({ navigation }: any) {
         ) : null}
 
         <PillButton
-          label="Pick a file (CSV, Excel, or PDF menu)"
+          label={isMenu ? 'Pick a file (CSV, Excel, or PDF menu)' : 'Pick a file (CSV, Excel, or PDF price list)'}
           loading={importFile.isPending}
           disabled={!!previewType}
           onPress={pickFile}
@@ -196,7 +200,7 @@ export function VendorBulkImportScreen({ navigation }: any) {
           <Card style={{ marginTop: space.md }}>
             <T variant="body" weight="semibold">
               {mapped.rowCount} item{mapped.rowCount === 1 ? '' : 's'} found
-              {mapped.source === 'menu-pdf' ? ' in your menu' : ''}
+              {mapped.source === 'menu-pdf' ? (isMenu ? ' in your menu' : ' in your price list') : ''}
             </T>
             {mapped.mapping ? (
               <T variant="micro" tone="muted" style={{ marginTop: space.xs }}>
@@ -253,7 +257,7 @@ export function VendorBulkImportScreen({ navigation }: any) {
             {importPhotoNotesLine(result) ? (
               <T variant="caption" tone="muted" style={{ marginTop: space.xs }}>{importPhotoNotesLine(result)}</T>
             ) : null}
-            <PillButton label="Back to menu" variant="outline" style={{ marginTop: space.md }} onPress={() => navigation?.goBack?.()} />
+            <PillButton label={`Back to ${catalogue.toLowerCase()}`} variant="outline" style={{ marginTop: space.md }} onPress={() => navigation?.goBack?.()} />
           </Card>
         ) : null}
       </ScrollView>
