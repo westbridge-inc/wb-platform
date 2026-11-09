@@ -48,7 +48,8 @@ describe('[E10] the board collects a reason before it rejects', () => {
 
   it('the order screen and the takeover use the same reasons for the same kind of order', () => {
     expect(detail).toMatch(/rejectReasonsFor\(order\.fulfillment, order\.vendor\?\.vendorType\)\.map/);
-    expect(takeover).toMatch(/rejectReasonsFor\(o\?\.fulfillment, o\?\.vendor\?\.vendorType\)\.map/);
+    expect(takeover).toMatch(/rejectReasonsFor\(o\?\.fulfillment, o\?\.vendor\?\.vendorType \?\? storeKind\)\.map/);
+    expect(takeover).toMatch(/const storeKind = useVendorProfile\(\)\.store\?\.vendorType;/);
     for (const src of [board, detail, takeover]) expect(src).not.toMatch(/\['Out of stock', 'Kitchen is too busy', 'Closing soon'\] as const\)\.map/);
   });
 

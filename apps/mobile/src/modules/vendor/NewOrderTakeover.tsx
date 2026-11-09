@@ -6,7 +6,7 @@ import { Feather } from '@expo/vector-icons';
 import { color, motion, radius, space } from '@swift/ui';
 import { T, Money, PillButton } from '../../kit';
 import { haptic } from '../../lib/haptics';
-import { useVendorOrder, useOrderAction, usePickingActions } from '../../hooks/vendorops';
+import { useVendorOrder, useOrderAction, usePickingActions, useVendorProfile } from '../../hooks/vendorops';
 import { OUT_OF_STOCK_WORDS, canMarkOutOfStock, lastLineStanding, lineStockWords, nothingToAccept } from './storeOrderRules';
 import { rejectReasonsFor } from './rejectReasons';
 import { orderLineOptionsText } from './orderLineOptions';
@@ -48,6 +48,9 @@ export function NewOrderTakeover({
   // that fires late lands on the true remainder, never a stale decrement.
   const [nowTs, setNowTs] = useState(() => Date.now());
   const order = useVendorOrder(orderId);
+  // [STORE-WORDS sweep · REVIEW F3] The board's copy of an order (shown until the detail read answers) may not name its
+  // store's kind on an older API: the store's own kind words it meanwhile.
+  const storeKind = useVendorProfile().store?.vendorType;
   const act = useOrderAction();
   // [STORE-DASH · O-4] "Out of stock" right on the takeover: one tap asks the customer.
   const picking = usePickingActions();
@@ -290,7 +293,7 @@ export function NewOrderTakeover({
               in a rush. */}
           {rejecting ? (
             <>
-              {rejectReasonsFor(o?.fulfillment, o?.vendor?.vendorType).map((why) => (
+              {rejectReasonsFor(o?.fulfillment, o?.vendor?.vendorType ?? storeKind).map((why) => (
                 <PillButton
                   key={why}
                   label={why}
