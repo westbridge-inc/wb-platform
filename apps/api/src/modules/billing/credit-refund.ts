@@ -433,11 +433,14 @@ export async function releaseCreditRefund(prisma: PrismaClient, input: {
       where: { action: PAID_ACTION, entityId: input.subscriptionId, bodySnapshot: { path: ['body', 'setAsideId'], equals: open.opened.id } },
       select: { id: true },
     });
-    // [CARD-READY] A refund to the card asked for this set-aside: its money may be on its way back to the card.
+    // [CARD-READY] A refund to the card of this set-aside that may still go out (an ask waiting for approval or to be
+    // applied), or that the provider did not plainly refuse (sent, pending, answer lost, or refunded): its money may be
+    // on its way back to the card. [REVIEW-1 R2-1] One the provider REFUSED moved nothing, and a refused or expired ask
+    // can never apply: those alone do not keep the money from going back to the partner's credit.
     const toCard = await tx.privilegedApproval.findFirst({
-      where: { action: CARD_REFUND_ACTION, entityId: input.subscriptionId, bodySnapshot: { path: ['body', 'setAsideId'], equals: open.opened.id } },
+      where: { action: CARD_REFUND_ACTION, entityId: input.subscriptionId, status: { in: ['PENDING', 'APPROVED'] }, bodySnapshot: { path: ['body', 'setAsideId'], equals: open.opened.id } },
       select: { id: true },
-    }) ?? await tx.cardCreditRefund.findFirst({ where: { setAsideId: open.opened.id }, select: { id: true } });
+    }) ?? await tx.cardCreditRefund.findFirst({ where: { setAsideId: open.opened.id, state: { not: 'FAILED' } }, select: { id: true } });
     if (toCard) {
       throw new AppError(409, 'REFUND_PAYOUT_REPORTED', 'A refund of this money to the card was asked, so it cannot go back to the partner\'s fee money. Finish paying it back. Nothing was released.');
     }

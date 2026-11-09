@@ -1094,6 +1094,31 @@ describe('[CARD-READY] card money set aside at closing goes back to its card thr
     expect(lost.calls).toHaveLength(1);
   });
 
+  // [REVIEW-1 R2-2] A refund to the card that is asked and approved but not yet applied may still go out: the set-aside
+  // is never released beside it.
+  it('[R2-2] while a refund to the card is asked (waiting for approval or to be applied), the set-aside is never released', async () => {
+    const { p, s1, setAsideId } = await twoCardWeeksSetAside();
+    await approval(CARD_REFUND_ACTION, p.subId, 'admin-c', 'admin-b', { setAsideId, cardSessionId: s1, amount: WEEKLY });
+    const free = await approval('POST /subscriptions/:id/refund-credit/release', p.subId, 'admin-c', 'admin-b');
+    await expect(releaseCreditRefund(app.prisma, { adminId: 'admin-c', approvalId: free, subscriptionId: p.subId, amount: 2 * WEEKLY, setAsideId })).rejects.toMatchObject({ code: 'REFUND_PAYOUT_REPORTED' });
+    expect((await creditRefundSources(app.prisma, p.subId)).setAside).toMatchObject({ amount: 2 * WEEKLY });
+  });
+
+  // [REVIEW-1 R2-1] A refund to the card the provider REFUSED moved nothing, and an ask that was refused or expired can
+  // never apply: with nothing else live, the set-aside can go back to the partner's credit.
+  it('[R2-1] once every refund to the card was refused and no ask is live, the set-aside can be released', async () => {
+    const { p, s1, setAsideId } = await twoCardWeeksSetAside();
+    const refused = refunding(async () => ({ status: 'failed', reason: 'REFUND_REFUSED_12_384', rawSha256: 'e'.repeat(64) }));
+    const asked = await approval(CARD_REFUND_ACTION, p.subId, 'admin-c', 'admin-b', { setAsideId, cardSessionId: s1, amount: WEEKLY });
+    expect(await toCard(p, setAsideId, s1, refused.provider, asked)).toMatchObject({ state: 'FAILED' });
+    // The gate marks an approval it applied (here the service is called directly).
+    await app.prisma.privilegedApproval.update({ where: { id: asked }, data: { status: 'APPLIED', appliedAt: new Date() } });
+    const lapsed = await approval(CARD_REFUND_ACTION, p.subId, 'admin-c', 'admin-b', { setAsideId, cardSessionId: s1, amount: WEEKLY });
+    await app.prisma.privilegedApproval.update({ where: { id: lapsed }, data: { status: 'REJECTED' } });
+    const free = await approval('POST /subscriptions/:id/refund-credit/release', p.subId, 'admin-c', 'admin-b');
+    expect(await releaseCreditRefund(app.prisma, { adminId: 'admin-c', approvalId: free, subscriptionId: p.subId, amount: 2 * WEEKLY, setAsideId })).toMatchObject({ amount: 2 * WEEKLY, refundSetAside: 0, balance: 2 * WEEKLY });
+  });
+
   it('the person who asked for the set-aside never approves its refund to the card', async () => {
     const { p, s1, setAsideId } = await twoCardWeeksSetAside();
     const { provider, calls } = refunding(async () => ({ status: 'succeeded', providerRef: REFUND_GUID, rawSha256: 'd'.repeat(64) }));
