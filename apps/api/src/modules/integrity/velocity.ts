@@ -172,6 +172,13 @@ export async function assertVelocity(app: FastifyInstance, request: FastifyReque
  * nothing and a shared cluster budget is never touched by one person's refused taps; the caller gives a reservation
  * back when the order was CONFIRMED rolled back, and never when its outcome is unknown or after it committed.
  */
+/** [OWNER-ASKS · owner 9 Nov 2026] "Pickup orders can be unlimited, only delivery has the cap". A pickup order (the
+ *  customer collects it at the store) never counts toward the limit and is never refused by it; a delivery, a parcel
+ *  and a booking count as before (5 Nov ruling). The store's own kitchen cap (maxConcurrentOrders) is not this limit. */
+export function orderLimitCounts(fulfillment: string): boolean {
+  return fulfillment !== 'PICKUP';
+}
+
 export interface OrderPlacementBudget {
   limit: VelocityLimit;
   userId: string;
