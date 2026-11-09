@@ -18,8 +18,8 @@ import { testPhone } from './helpers/fixture-ids';
 // and appeals. The customer's order view already cuts it (customerTimeline);
 // the passenger's own ride, GET /rides/:id, still returned the raw notes, so a
 // passenger read the driver's recorded coordinates. The ride's timeline now
-// goes through the same cut. Every other field of a row is unchanged (the
-// shape old builds read), and a note without evidence is returned as written.
+// goes through the same cut, and a note without evidence is returned as written.
+// [REVIEW-2 F1 on #2412] A row is now { status, note, createdAt }: never who wrote it.
 // ---------------------------------------------------------------------------
 
 const DAY = 86_400_000;
@@ -97,7 +97,8 @@ describe('[REVIEW-F S4-2 on #2055] the passenger\'s ride timeline never carries 
     expect(res.body).not.toContain('no GPS fix');
     const rows = res.json().data.statusHistory as Array<Record<string, unknown>>;
     expect(rows.map((r) => r['note'])).toEqual(['Ride requested — fixed fare $1500', 'Driver arrived at the pickup', 'Arrived at stop 1', null]);
-    expect(Object.keys(rows[1]!).sort()).toEqual(['changedBy', 'createdAt', 'id', 'note', 'orderId', 'status']);
+    // [REVIEW-2 F1 on #2412] A step is when and what: never who wrote it (a user id). No app reads the row's other keys.
+    expect(Object.keys(rows[1]!).sort()).toEqual(['createdAt', 'note', 'status']);
     expect(rows.map((r) => r['status'])).toEqual(['PENDING', 'RIDE_IN_PROGRESS', 'RIDE_IN_PROGRESS', 'RIDE_IN_PROGRESS']);
   });
 });

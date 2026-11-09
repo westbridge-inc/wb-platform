@@ -805,7 +805,7 @@ jobs:
       - name: No server secret reached the mobile bundles
         run: node scripts/secret-canary.js --scan apps/mobile/dist
       - name: No secret-shaped value in the mobile bundles
-        run: bash scripts/fetch-gitleaks.sh && ./gitleaks detect --no-git --source apps/mobile/dist --redact --exit-code 1
+        run: bash scripts/fetch-gitleaks.sh && ./gitleaks detect --no-git --source apps/mobile/dist --config .gitleaks.toml --redact --exit-code 1
       # The standard runner (private repo since 5 Nov 2026) ran out of disk in
       # :app:packageReleaseBundle ("No space left on device"). The image carries
       # toolchains this job never uses; remove them before the NDK, Gradle

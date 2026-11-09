@@ -49,6 +49,7 @@ import { enterOwner, enterTenant, getTenantId } from '../../plugins/prisma';
 import { invalidateHomeCache } from '../user/home-cache';
 import { counterpartPhone } from '../calls/counterpart-phone';
 import { withoutPositionEvidence } from '../order/customer-timeline';
+import { customerCancellation, customerStepNote, orderPeople } from '../order/customer-cancellation';
 
 // ---------------------------------------------------------------------------
 // Taxi: the fare is computed and SHOWN before any driver
@@ -574,10 +575,6 @@ export async function ridesRoutes(app: FastifyInstance) {
       },
     });
     if (!ride) throw new NotFoundError('Ride', request.params.id);
-    // [REVIEW-F S4-2 on #2055] The driver's recorded position (a step note's ' — gps:…' evidence, kept
-    // for support and appeals) is never the passenger's to read: the same cut as the customer's
-    // order timeline. Every other field of a row is unchanged.
-    ride.statusHistory = ride.statusHistory.map((row) => ({ ...row, note: withoutPositionEvidence(row.note) }));
     if (ride.driver) {
       const shown = await shownRatingFor(app.prisma, 'DRIVER', ride.driver.userId);
       Object.assign(ride.driver as object, { displayRating: shown.displayRating, averageRating: shown.average });
@@ -601,7 +598,23 @@ export async function ridesRoutes(app: FastifyInstance) {
     const rated = finished
       ? { hasBeenRated: await app.prisma.rating.count({ where: { orderId: ride.id, raterId: request.user.userId } }) > 0 }
       : null;
-    return { success: true, data: itinerary || waiting.waiting || waiting.fareBreakdown || rated ? { ...ride, ...rated, ...itinerary, ...waiting } : ride };
+    // [owner 8 Nov 2026] Who closed a cancelled ride, in the passenger's terms (never the raw code or a support note).
+    // A ride has no store. Null unless CANCELLED; additive.
+    // A ride closed by anyone but its passenger, its driver's no-show record or the system is Swift support's.
+    const people = await orderPeople(app.prisma, [ride]);
+    const cancellation = customerCancellation(ride, people, 'The driver');
+    // Never the canceller's user id (no app reads it), and never Swift support's own note.
+    const owned = (({ cancelledBy: _cancelledBy, ...rest }) => rest)(ride);
+    // The ride's steps as the passenger may read them: when and what, never who wrote a step (a user id) nor a note
+    // Swift support wrote; the CANCELLED step says only the passenger's words for the close. [REVIEW-F S4-2 on #2055]
+    // The driver's recorded position (a step note's ' — gps:…' evidence, kept for support and appeals) is cut too.
+    const statusHistory = ride.statusHistory.map((row) => ({
+      status: row.status,
+      note: withoutPositionEvidence(customerStepNote(ride, row, people, cancellation)),
+      createdAt: row.createdAt,
+    }));
+    const shown = { ...owned, statusHistory, cancellationReason: cancellation?.by === 'SWIFT' ? null : ride.cancellationReason, cancellation };
+    return { success: true, data: itinerary || waiting.waiting || waiting.fareBreakdown || rated ? { ...shown, ...rated, ...itinerary, ...waiting } : shown };
   });
 
   /** POST /:id/cancel — rides ride the same state machine as everything else. */

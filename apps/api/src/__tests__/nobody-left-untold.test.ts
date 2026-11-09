@@ -218,14 +218,17 @@ describe('[G10] support cancels a ride', () => {
     expect(passenger[0]!.body).not.toContain('Order');
   });
 
-  it('a store order keeps its words and its reason', async () => {
+  // [COORD ruling 8 Nov 2026 on #2412] The operator's words are Swift's internal note: the customer is told the
+  // fixed reason picked for them (an older console naming none: only that Swift support cancelled it), never the note.
+  it('a store order keeps its words and the fixed customer reason, never the support note', async () => {
     vendorId = await shop();
     const buyer = await actor(['CUSTOMER'], 'CUSTOMER');
     const order = await storeOrder(buyer, 'ACCEPTED');
     expect((await adminCancel(order.id, 'The store called us')).statusCode).toBe(200);
     const told = await notices(buyer.id, order.id);
     expect(told[0]).toMatchObject({ title: 'Order Cancelled' });
-    expect(told[0]!.body).toContain('The store called us');
+    expect(told[0]!.body).toContain('Swift support cancelled this order.');
+    expect(told[0]!.body).not.toContain('The store called us');
   });
 });
 

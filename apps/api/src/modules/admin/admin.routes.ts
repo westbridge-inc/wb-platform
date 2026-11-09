@@ -60,6 +60,7 @@ import { tellCustomersOfStoreSuspension } from '../vendor/store-suspension-notic
 import { taxiNotificationData } from '../rides/taxi-notification';
 import { assertMayDecideRefund, openMmgRefundOnReturn, openRefundWhere, refundResolvedNotice, refundVoidedNotice, resolveMmgRefundDispute, tellBothOfRefund, tellOfReturnRefund, voidMmgRefundObligation, type ReturnOutcome } from '../order/mmg-refund-rail';
 import { closeMmgOrderAsStoreRefund, mmgStoreCloseNotices, mmgStoreCloseRefusal, MMG_STORE_CLOSE_DISPOSITION } from '../order/mmg-store-close';
+import { SUPPORT_CANCELLATION_CODES, SUPPORT_CANCELLATION_DEFAULT, supportCancellationSentence } from '../order/customer-cancellation';
 import { getKycProvider } from '../../providers/kyc/kyc-provider';
 import { getPaymentProvider } from '../../providers/payment/payment-provider';
 import { getStorageProvider } from '../../providers/storage/storage-provider';
@@ -156,8 +157,14 @@ const rideClassSchema = z.object({
   rideClass: z.nativeEnum(RideClass),
 });
 
+/** The history step Swift support's cancel writes (the store and the console read it): never the operator's note. */
+const SUPPORT_CANCEL_STEP_NOTE = 'Cancelled by Swift support';
+
 const cancelOrderSchema = z.object({
+  /** [COORD 8 Nov 2026] Swift's internal note (Swift only). The stated reason header is the same note; neither reaches the customer or the store. */
   reason: z.string().max(500).optional(),
+  /** [COORD 8 Nov 2026] What the customer is told: one of the fixed reasons. An older console that names none: SUPPORT_OTHER. */
+  customerReason: z.enum(SUPPORT_CANCELLATION_CODES).optional(),
   refund: z.boolean().optional(),
 });
 
@@ -3649,7 +3656,13 @@ export async function adminRoutes(app: FastifyInstance) {
 
   app.put('/orders/:id/cancel', { preHandler: [adminGuard] }, async (request) => {
     const { id } = request.params as { id: string };
-    const { reason, refund } = cancelOrderSchema.parse(request.body ?? {});
+    const { reason, refund, customerReason } = cancelOrderSchema.parse(request.body ?? {});
+    // [COORD 8 Nov 2026] Two things, kept apart: the operator's own words are Swift's INTERNAL note (the audit
+    // record only: never the order's reason, its history, a push, a notification row, the store or the customer);
+    // the customer is told one fixed reason. An older console sends only `reason`: that is the internal note, and
+    // the customer is told only that Swift support cancelled it.
+    const internalNote = reasonOf(request.body, request.headers) ?? reason ?? null;
+    const customerCode = customerReason ?? SUPPORT_CANCELLATION_DEFAULT;
 
     const order = await app.prisma.order.findUnique({
       where: { id },
@@ -3688,7 +3701,8 @@ export async function adminRoutes(app: FastifyInstance) {
     const newStatus: OrderStatus = 'CANCELLED';
     const allowedFrom = Object.values(OrderStatus)
       .filter((status) => !(TERMINAL_ORDER_STATUSES as string[]).includes(status)) as OrderStatus[];
-    const cancellationReason = reason || 'Cancelled by admin';
+    // The order records the customer's fixed reason (a code every app words), never the operator's note.
+    const cancellationReason = customerCode;
 
     // The fresh source status, order mutation, status evidence, explicit admin
     // audit, booking/search closure, stock, float, and mover release share one
@@ -3699,7 +3713,7 @@ export async function adminRoutes(app: FastifyInstance) {
       target: newStatus,
       allowedFrom,
       changedBy: request.user.userId,
-      note: reason || 'Admin cancellation',
+      note: SUPPORT_CANCEL_STEP_NOTE,
       cancellation: { by: request.user.userId, reason: cancellationReason },
       releaseStaleMoverPointer: true,
       operatorAudit: {
@@ -3707,7 +3721,7 @@ export async function adminRoutes(app: FastifyInstance) {
         action: 'CANCEL_ORDER',
         entity: 'Order',
         entityId: id,
-        changes: (previousStatus) => ({ reason: reason ?? null, refund: !!refund, previousStatus }),
+        changes: (previousStatus) => ({ reason: internalNote, customerReason: customerCode, refund: !!refund, previousStatus }),
         ipAddress: request.ip,
         userAgent: request.headers['user-agent'],
       },
@@ -3753,15 +3767,19 @@ export async function adminRoutes(app: FastifyInstance) {
     // [BUG-HUNT-2 G10] A ride is a ride: its own words, never the support note, and the driver is told. A driver with the app
     // in the background kept driving to a pickup nobody was at.
     const isRide = order.orderType === 'TAXI';
+    // [COORD 8 Nov 2026] The customer is told the fixed reason the operator picked, in the apps' own words; the
+    // operator's internal note never reaches a push, a notification row, an SMS or an email.
+    const noun = isRide ? 'ride' : order.orderType === 'COURIER' ? 'request' : order.fulfillment === 'APPOINTMENT' ? 'booking' : 'order';
+    const toldWhy = supportCancellationSentence(customerCode, noun);
     await notifications.send({
       userId: order.customerId,
       type: 'ORDER_UPDATE',
       title: isRide ? 'Ride cancelled' : 'Order Cancelled',
       body: isRide
-        ? 'Swift support cancelled your ride. There is no fee. If you have a question, open Get Help.'
+        ? `${toldWhy} There is no fee. If you have a question, open Get Help.`
         : refund
-          ? `Your order ${order.orderNumber} has been cancelled. Any cash you paid will be refunded — our team will follow up.`
-          : `Your order ${order.orderNumber} has been cancelled. ${reason || ''}${mmgGuidance}`.trim(),
+          ? `Order ${order.orderNumber}: ${toldWhy} Any cash you paid will be refunded — our team will follow up.`
+          : `Order ${order.orderNumber}: ${toldWhy}${mmgGuidance}`,
       data: isRide ? taxiNotificationData(id, { status: newStatus }) : { orderId: id, status: newStatus },
     });
     if (isRide && order.driverId) {
@@ -3818,14 +3836,16 @@ export async function adminRoutes(app: FastifyInstance) {
     const body = z.object({
       expectedClaimRevision: z.number().int().min(0),
       reason: z.string().optional(),
+      /** [COORD 8 Nov 2026] What the customer is told (a fixed reason); the stated reason is Swift's internal note. */
+      customerReason: z.enum(SUPPORT_CANCELLATION_CODES).optional(),
     }).parse(request.body ?? {});
-    const reason = reasonOf(request.body, request.headers) ?? '';
+    // The stated reason is Swift's internal note: auditWithin records it on this route's audit row, and nowhere else.
     const approvalId = (request as unknown as { privilegedApprovalId?: string }).privilegedApprovalId ?? null;
     const { order, amount } = await closeMmgOrderAsStoreRefund(orderService, {
       orderId: id,
       adminUserId: request.user.userId,
       expectedClaimRevision: body.expectedClaimRevision,
-      reason,
+      customerReason: body.customerReason ?? SUPPORT_CANCELLATION_DEFAULT,
       authorize: (tx, parties) => assertMayDecideRefund(tx, request.user.userId, parties, approvalId),
       audit: (tx, facts) => auditWithin(tx, request as unknown as AuditRequestLike, app.prefix, { extra: { ...facts, approvalId } }),
     });

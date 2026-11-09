@@ -86,16 +86,22 @@ describe('order list money controls', () => {
 
     await user.click(refundButton);
     dialog = screen.getByRole('dialog', { name: 'Cancel order ORDER-TARGET and record a refund owed?' });
-    await user.type(within(dialog).getByRole('textbox', { name: 'Reason' }), REASON);
+    // [COORD 8 Nov 2026] Two fields: what the customer sees (a fixed reason, picked) and Swift's internal note.
+    expect(within(dialog).getByRole('group', { name: 'What the customer sees' })).toBeTruthy();
+    expect(dialog.textContent).not.toContain('The customer is owed the real reason');
+    expect(dialog.textContent).toContain('Never sent to the customer or the store.');
+    await user.type(within(dialog).getByRole('textbox', { name: 'Internal note (Swift only)' }), REASON);
+    // Nothing is sent until the operator picks what the customer sees.
+    await user.click(within(dialog).getByRole('button', { name: 'Cancel and record refund owed' }));
+    expect(requestsByMethod(fetchMock, 'PUT')).toHaveLength(0);
+    await user.click(within(dialog).getByRole('radio', { name: 'Delivery is not possible' }));
     await user.click(within(dialog).getByRole('button', { name: 'Cancel and record refund owed' }));
     await waitFor(() => expect(requestsByMethod(fetchMock, 'PUT')).toHaveLength(1));
     const [url, init] = requestsByMethod(fetchMock, 'PUT')[0]!;
     expect(url).toBe(`${API_ORIGIN}/api/v1/admin/orders/order-target/cancel`);
     expect(init?.method).toBe('PUT');
-    expect(JSON.parse(String(init?.body))).toEqual({
-      reason: REASON,
-      refund: true,
-    });
+    expect(JSON.parse(String(init?.body))).toEqual({ refund: true, customerReason: 'SUPPORT_DELIVERY_NOT_POSSIBLE' });
+    expect(new Headers(init?.headers).get('x-swift-reason')).toBe(REASON);
     expect((await screen.findByRole('status')).textContent).toContain('Target Store owes the customer a refund.');
     expect(confirm).not.toHaveBeenCalled();
     expect(prompt).not.toHaveBeenCalled();
