@@ -455,7 +455,8 @@ describe('GOLD-5 · NOTIF-02 — SMS fallback and escalation', () => {
       { title: 'New Order!', body: alert.body, data: alertData },
       {
         title: 'Order still waiting!', body: alert.body,
-        data: { kind: 'vendor_order_alert', orderId: o2.orderId, orderNumber: o2.orderNumber, audience: 'business', respondBy },
+        // [STORE-ALERT-RECONNECT] The re-alert names its store too, so an open store app raises it on that store only.
+        data: { kind: 'vendor_order_alert', orderId: o2.orderId, orderNumber: o2.orderNumber, audience: 'business', respondBy, vendorId: store.vendorId },
       },
     ]);
     expect(smsTo(owner.phone)).toHaveLength(0);

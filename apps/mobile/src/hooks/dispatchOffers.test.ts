@@ -100,6 +100,7 @@ vi.mock('../stores/moverPreview', () => ({
 }));
 
 import { useDispatchOffers, type DispatchOffer } from './dispatchOffers';
+import { emitAppForeground, emitForegroundPush } from '../lib/appSignals';
 
 /** The mover home screen's use of the hook, as a component: called as a plain
  *  function once per render pass, the kit tests' way (card.test.ts). */
@@ -149,6 +150,8 @@ const deadlineOf = (offer: DispatchOffer | null) => (offer as (DispatchOffer & {
 beforeEach(() => {
   vi.useFakeTimers();
   vi.setSystemTime(new Date('2026-09-30T02:00:00.000Z'));
+  // Unmount the previous case's host: its effects' cleanups run (app-wide signal listeners included).
+  for (const slot of h.rt.slots) if (typeof slot.cleanup === 'function') slot.cleanup();
   h.rt.slots = [];
   h.handlers.clear();
   seenCalls = [];
@@ -338,5 +341,61 @@ describe('[CARS-DELIVER PR4] taxi rides and deliveries: recovery and render proo
     expect(view.offer?.orderId).toBe('D2');
     expect(riderSeen).toEqual(['D2:d2']);
     expect(seenCalls).toEqual(['T:t1']);
+  });
+});
+
+// [STORE-ALERT-RECONNECT] An offer the socket did not deliver (dropped at a token refresh by older
+// APIs, or stale after the background) is recovered when the app returns to the screen and when the
+// offer's push arrives while the app is open, with the server's real remaining seconds.
+describe('[STORE-ALERT-RECONNECT] the offer card recovers on the screen\'s return and on a foreground push', () => {
+  const live = { orderId: 'F', offerAttemptId: 'f1', expiresInSeconds: 15 };
+
+  it('the app returns to the screen: the live offer is asked for and shown', async () => {
+    render();
+    await settle();
+    let asked = 0;
+    h.api.currentOffer = () => { asked += 1; return Promise.resolve({ data: { data: { offer: live } } }); };
+    emitAppForeground();
+    const view = await settle();
+    expect(asked).toBe(1);
+    expect([view.offer?.orderId, view.offer?.offerAttemptId]).toEqual(['F', 'f1']);
+  });
+
+  it('an offer push while the app is open: recovered; any other push asks nothing', async () => {
+    render();
+    await settle();
+    let asked = 0;
+    h.api.currentOffer = () => { asked += 1; return Promise.resolve({ data: { data: { offer: live } } }); };
+    emitForegroundPush({ kind: 'order_update', orderId: 'X' });
+    await settle();
+    expect(asked).toBe(0);
+    emitForegroundPush({ kind: 'dispatch_offer', orderId: 'F' });
+    const view = await settle();
+    expect(asked).toBe(1);
+    expect(view.offer?.orderId).toBe('F');
+  });
+
+  it('a card the mover already answered is not brought back by it', async () => {
+    render();
+    await settle();
+    h.server('dispatch:offer', live);
+    let view = render();
+    expect(view.offer?.orderId).toBe('F');
+    view.dismiss();
+    render();
+    h.api.currentOffer = () => Promise.resolve({ data: { data: { offer: live } } });
+    emitAppForeground();
+    view = await settle();
+    expect(view.offer).toBeNull();
+  });
+
+  it('offline (or unmounted): the signals ask nothing', async () => {
+    let asked = 0;
+    h.api.currentOffer = () => { asked += 1; return Promise.resolve({ data: { data: { offer: null } } }); };
+    render('DRIVER', false);
+    emitAppForeground();
+    emitForegroundPush({ kind: 'dispatch_offer', orderId: 'F' });
+    for (let i = 0; i < 4; i += 1) await Promise.resolve();
+    expect(asked).toBe(0);
   });
 });

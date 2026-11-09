@@ -245,13 +245,29 @@ export const socketPlugin = fp(async (app: FastifyInstance) => {
     return rows[0];
   }
 
+  /** [STORE-ALERT-RECONNECT] Fail closed, but RECONNECTABLY. `socket.disconnect(true)`
+   *  sends Socket.IO's "io server disconnect", which tells a client never to
+   *  reconnect by itself. A transport close ends this connection exactly as
+   *  completely on the server (every room is left, nothing more is sent or
+   *  received on it), and lets the client come back through the FULL handshake
+   *  above, which re-reads its current credential: a revoked, expired or
+   *  superseded token is refused there, as any new connection is.
+   *  [review S4] Discarding: whatever is still queued for this connection is
+   *  dropped and the socket leaves every room NOW, not after the queue drains
+   *  (up to the polling close timeout). A room's live listener count (an SOS
+   *  page's "nobody is listening") never counts a connection that is ending.
+   *  The client still sees a transport close (WebSocket close frame) or a
+   *  transport error (polling), both of which Socket.IO retries. */
+  const closeTransportReconnectably = (socket: { connected: boolean; client: { conn: { close: (discard?: boolean) => void } } }) => {
+    if (!socket.connected) return;
+    socket.client.conn.close(true);
+  };
+
   const closeForAuthorityStoreFailure = (socketId: string) => {
     const socket = io.sockets.sockets.get(socketId);
-    if (!socket?.connected) return;
-    // This is fail-closed but reconnectable. `socket.disconnect(true)` tells a
-    // Socket.IO client never to reconnect; a transport close lets it retry once
-    // the authority store recovers, while removing every room immediately.
-    socket.client.conn.close();
+    if (!socket) return;
+    // The store recovers; the client retries then, and every room is gone now.
+    closeTransportReconnectably(socket);
   };
 
   const authorityRecheckTimer = setInterval(() => {
@@ -280,16 +296,29 @@ export const socketPlugin = fp(async (app: FastifyInstance) => {
               ? !requiresPrivilegedSessionAssurance(session.activeRole, session.roles)
                 || hasPrivilegedSessionAssurance(session.authMethod)
               : false;
-            if (
+            // The session itself ended (revoked, expired), or the account may no
+            // longer hold it: a decided end, and the client is told not to retry.
+            const sessionEnded = (
               !session
-              || session.token !== authority.tokenDigest
               || session.expiresAt.getTime() <= now
               || session.userId !== authority.userId
               || session.tenantId !== authority.tenantId
-              || session.activeRole !== authority.role
               || ['SUSPENDED', 'BANNED', 'DEACTIVATED'].includes(session.userStatus)
               || !privilegedAssuranceValid
-            ) {
+            );
+            // [STORE-ALERT-RECONNECT] The SAME live session moved on: its access
+            // token was rotated by a refresh (about every 14 minutes on a phone
+            // that is open), or its active role changed. This connection was
+            // authorized by the old token and ends now, as before; but the person
+            // is still signed in, so the client must come back with the token it
+            // holds now. disconnect(true) here left every installed app without a
+            // socket after its first refresh: a store's ringing new-order screen
+            // and a mover's live offers went silent ~14 minutes after opening.
+            const sessionMovedOn = !sessionEnded && (
+              session.token !== authority.tokenDigest
+              || session.activeRole !== authority.role
+            );
+            if (sessionEnded) {
               app.log.warn(
                 {
                   socketId: authority.socketId,
@@ -299,6 +328,16 @@ export const socketPlugin = fp(async (app: FastifyInstance) => {
                 'Socket authority fallback recheck failed; disconnecting transport',
               );
               liveSocket.disconnect(true);
+            } else if (sessionMovedOn) {
+              app.log.info(
+                {
+                  socketId: authority.socketId,
+                  userId: authority.userId,
+                  sessionId: authority.sessionId,
+                },
+                'Socket credential superseded on a live session; closing transport for re-authorization',
+              );
+              closeTransportReconnectably(liveSocket);
             }
           }
         } catch (error) {
@@ -809,9 +848,14 @@ export const socketPlugin = fp(async (app: FastifyInstance) => {
         authorizationExpiryTimer = setTimeout(() => {
           app.log.info(
             { socketId: socket.id, userId, authSessionId },
-            'Socket authorization expired; disconnecting transport',
+            'Socket authorization expired; closing transport for re-authorization',
           );
-          socket.disconnect(true);
+          // [STORE-ALERT-RECONNECT] The access token this connection was
+          // authorized with has lapsed (the 15-minute JWT, almost always long
+          // before the 7-day session). The connection ends now, as before; the
+          // client reconnects with its current token, and the handshake refuses
+          // it if that one is expired or revoked too.
+          closeTransportReconnectably(socket);
         }, expiryDelayMs);
         authorizationExpiryTimer.unref();
 

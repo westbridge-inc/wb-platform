@@ -164,6 +164,9 @@ export async function escalateVendorAlert(
       ...(orderNumber ? { orderNumber } : {}),
       audience: 'business',
       ...(typeof data?.respondBy === 'string' ? { respondBy: data.respondBy } : {}),
+      // [STORE-ALERT-RECONNECT · review S3] Which store the order is at (additive), so an open store
+      // app raises the re-alert on that store's new-order screen only, never another branch's.
+      ...(order.vendorId ? { vendorId: order.vendorId } : {}),
     };
     for (const alert of current) {
       io.to(`user:${alert.userId}`).emit('vendor:order_alert', {
