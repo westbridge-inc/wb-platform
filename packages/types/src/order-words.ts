@@ -105,7 +105,9 @@ export const SUPPORT_CANCELLATION_REASONS: Readonly<Record<string, Readonly<{ la
   SUPPORT_OTHER: { label: 'Other (the customer is told only that Swift support cancelled it)', phrase: null },
 };
 
-/** The sentence for a Swift support cancel with this code ("Swift support cancelled this ride because …"). Null for any other reason. */
+/** The sentence for a Swift support cancel with this code ("Swift support cancelled this ride because …"). Null for any
+ *  other reason. Only for a close the SERVER attributed to Swift support (`cancellation.by === 'SWIFT'`), never for a
+ *  raw `cancellationReason`, which a person may have typed. */
 export function supportCancellationSentence(reason: unknown, noun = 'order'): string | null {
   if (typeof reason !== 'string' || !own(SUPPORT_CANCELLATION_REASONS, reason)) return null;
   const phrase = SUPPORT_CANCELLATION_REASONS[reason]!.phrase;
@@ -132,7 +134,8 @@ export function cancellationReasonWords(reason: unknown, reader: CancellationRea
   const text = reason.trim();
   if (!text) return null;
   if (own(SYSTEM_CANCELLATION_WORDS, text)) return SYSTEM_CANCELLATION_WORDS[text]![reader];
-  const support = supportCancellationSentence(text);
-  if (support) return support;
+  // [#2412 security review] A SUPPORT_… code is never read out here: this reason has no decided author, and a
+  // store, a customer or a sender must not be able to type one and read as Swift support. Its words are given only
+  // where the server decided Swift support closed it (customerCancellationWords, by SWIFT).
   return SYSTEM_CODE.test(text) ? UNKNOWN_CANCELLATION_WORDS[reader] : text;
 }
