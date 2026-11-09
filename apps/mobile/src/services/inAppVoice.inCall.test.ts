@@ -42,6 +42,7 @@ const sdk = vi.hoisted(() => ({
   devices: [] as Array<ReturnType<typeof device>>,
   selected: 'earpiece',
   held: [] as FakeCall[],
+  invites: [] as Emitter[],
 }));
 
 function makeSdk() {
@@ -53,6 +54,7 @@ function makeSdk() {
     connect = vi.fn(async () => sdk.nextCall ?? new FakeCall());
     getAudioDevices = vi.fn(async () => ({ audioDevices: sdk.devices, selectedDevice: sdk.devices.find((d) => d.type === sdk.selected) }));
     getCalls = vi.fn(async () => new Map(sdk.held.map((c, i) => [`u${i}`, c])));
+    getCallInvites = vi.fn(async () => new Map(sdk.invites.map((c, i) => [`i${i}`, c])));
     showAvRoutePickerView = vi.fn(async () => undefined);
     constructor() { super(); sdk.voice = this; }
   }
@@ -76,6 +78,7 @@ beforeEach(() => {
   sdk.devices = [device('earpiece'), device('speaker')];
   sdk.selected = 'earpiece';
   sdk.held = [];
+  sdk.invites = [];
 });
 
 describe('[CALLS-UX] no call, no bar', () => {
@@ -451,6 +454,7 @@ describe('[CALLS-UX delta review] same call, new object; a native answer that ne
 describe('[OTA-CATCH-UP] a ringing in-app call invite', () => {
   it('rings from the invite until it is answered, rejected or cancelled', async () => {
     await voice.startInAppVoice();
+    await flush(); // the SDK has said it holds no invite
     expect(voice.inAppCallRinging()).toBe(false);
     const a = new Emitter();
     sdk.voice.emit('callInvite', a);
@@ -469,6 +473,7 @@ describe('[OTA-CATCH-UP] a ringing in-app call invite', () => {
 
   it('two invites at once: still ringing until both are settled', async () => {
     await voice.startInAppVoice();
+    await flush();
     const a = new Emitter();
     const b = new Emitter();
     sdk.voice.emit('callInvite', a);
@@ -490,5 +495,65 @@ describe('[OTA-CATCH-UP] a ringing in-app call invite', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+// [OTA-CATCH-UP · REVIEW-2 S2-1 on #2431] The invite that WOKE a closed app arrives before Swift's listener exists: the
+// voice start asks the SDK for the invites and calls it already holds, and until it has the answer the phone counts as
+// ringing (a restart then would drop the call).
+describe('[OTA-CATCH-UP] calls the SDK already holds at start', () => {
+  it('an invite already ringing when the voice starts counts until it is settled', async () => {
+    const waiting = new Emitter();
+    sdk.invites = [waiting];
+    await voice.startInAppVoice();
+    await flush();
+    expect(voice.inAppCallRinging()).toBe(true);
+    waiting.emit('cancelled');
+    expect(voice.inAppCallRinging()).toBe(false);
+  });
+
+  it('a call answered on the system screen before the start is found (an answered call is busy too)', async () => {
+    const answered = new FakeCall('CA31');
+    answered.state = 'connected';
+    sdk.held = [answered];
+    await voice.startInAppVoice();
+    await flush();
+    expect(voice.inAppCallActive()).toBe(true);
+  });
+
+  it('while the start has not heard back from the SDK, the phone may be ringing; nothing held = not ringing', async () => {
+    let answer!: (m: Map<string, Emitter>) => void;
+    rn.os = 'ios';
+    const starting = voice.startInAppVoice();
+    sdk.voice.getCallInvites.mockImplementationOnce(() => new Promise((r) => { answer = r; }));
+    expect(voice.inAppCallRinging()).toBe(true); // the push registry is starting
+    await starting;
+    expect(voice.inAppCallRinging()).toBe(true); // the SDK has not answered yet
+    answer(new Map());
+    await flush();
+    expect(voice.inAppCallRinging()).toBe(false);
+  });
+
+  it('a start that never hears back stops counting after SEED_MAX_MS', async () => {
+    const now = Date.now();
+    sdk.invites = [];
+    let answer!: (m: Map<string, Emitter>) => void;
+    const starting = voice.startInAppVoice();
+    sdk.voice.getCallInvites.mockImplementationOnce(() => new Promise((r) => { answer = r; }));
+    await starting;
+    expect(voice.inAppCallRinging(now)).toBe(true);
+    expect(voice.inAppCallRinging(now + voice.SEED_MAX_MS + 1)).toBe(false);
+    answer(new Map());
+  });
+
+  it('the same invite from the event and from the SDK list counts once and settles once', async () => {
+    const one = new Emitter();
+    sdk.invites = [one];
+    await voice.startInAppVoice();
+    sdk.voice.emit('callInvite', one);
+    await flush();
+    expect(one.count('cancelled')).toBe(1);
+    one.emit('cancelled');
+    expect(voice.inAppCallRinging()).toBe(false);
   });
 });

@@ -1,6 +1,6 @@
 import { createRequire } from 'node:module';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { flushPendingDeepLink, installDeepLinkHandler, resetDeepLinksForTests, retryQrDestination } from './deep-links';
+import { LINK_SETTLE_MS, deepLinkBusy, flushPendingDeepLink, installDeepLinkHandler, resetDeepLinksForTests, retryQrDestination } from './deep-links';
 import { setLinkPolicyForTests } from '../lib/deepLinkParse';
 import { policyFrom } from '../lib/linkPolicy';
 
@@ -185,5 +185,34 @@ describe('QR-04 retry keeps scan context', () => {
     mock.listener!({ url }); await flush();
     expect(mock.navigate).toHaveBeenLastCalledWith('QrOutcome', expect.objectContaining({ reason }));
     expect(JSON.stringify(mock.navigate.mock.calls)).not.toContain('private');
+  });
+});
+
+// [OTA-CATCH-UP · REVIEW-2 S3-1 on #2431] A restart while a Swift link lands would lose it (the next JavaScript reads
+// the launch URL, not this scan): waiting for navigation, being resolved (a table QR), or handled moments ago.
+describe('[OTA-CATCH-UP] a link still landing', () => {
+  it('waiting for navigation, then being resolved, then just handled: busy; LINK_SETTLE_MS later: not', async () => {
+    expect(deepLinkBusy()).toBe(false);
+    mock.initial.mockResolvedValue('https://swiftgy.com/s/BCDFGHJKMN');
+    let answer!: (v: unknown) => void;
+    mock.get.mockImplementationOnce(() => new Promise((r) => { answer = r; }));
+    uninstall = installDeepLinkHandler();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(deepLinkBusy()).toBe(true); // waiting for navigation
+    flushPendingDeepLink();
+    vi.advanceTimersByTime(LINK_SETTLE_MS * 2);
+    expect(deepLinkBusy()).toBe(true); // the table QR's store is being resolved
+    answer({ data: { data: { verdict: 'WEB_RENDER', vendorId: 'short-store' } } });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(mock.navigate).toHaveBeenCalledExactlyOnceWith(...storeRoute('short-store'));
+    expect(deepLinkBusy()).toBe(true); // just handled
+    vi.advanceTimersByTime(LINK_SETTLE_MS);
+    expect(deepLinkBusy()).toBe(false);
+  });
+
+  it('a link that is not Swift\'s never holds a restart', async () => {
+    uninstall = installDeepLinkHandler(); flushPendingDeepLink(); await flush();
+    mock.listener!({ url: 'https://example.com/elsewhere' });
+    expect(deepLinkBusy()).toBe(false);
   });
 });

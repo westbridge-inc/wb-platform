@@ -22,6 +22,7 @@ export type SdkShapeChecks = [
   // The members the in-call bar needs are really there (not only allowed by the optional shapes).
   Assert<Fits<Voice['getAudioDevices'], () => Promise<{ audioDevices: AudioDevice[]; selectedDevice?: AudioDevice }>>>,
   Assert<Fits<Voice['getCalls'], () => Promise<ReadonlyMap<string, Call>>>>,
+  Assert<Fits<Voice['getCallInvites'], () => Promise<ReadonlyMap<string, CallInvite>>>>,
   Assert<Fits<Voice['showAvRoutePickerView'], () => Promise<void>>>,
   Assert<Fits<Call['mute'], (mute: boolean) => Promise<boolean>>>,
   // [CALLS-UX review S4] The bar takes its listeners off a call it stops following.

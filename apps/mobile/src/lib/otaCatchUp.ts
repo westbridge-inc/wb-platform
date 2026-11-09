@@ -17,11 +17,17 @@
 //   offer card is never cut);
 // - the screen in front is a resting one (customer home, the role doors, the
 //   store's orders board) or no screen is up yet;
+// - the app is on the screen (never in the background: a call that woke a
+//   closed app is never cut), and the first seconds after a launch or a return
+//   have passed (what brought the person here lands first);
 // - nothing is in flight or half-done: no in-app call (answered or still
-//   ringing), no write on its way, no text being typed, and nothing holding the
-//   screen (the store's new-order alert, a reference typed on the board).
+//   ringing, including one the calling SDK still holds from before the app
+//   started), no write on its way, no text being typed, no notification tap or
+//   link landing, and nothing holding the screen (the store's new-order alert,
+//   the store alert shown in another app, a reference typed on the board).
 // A foreground after a while away also asks the update server (at most every
-// 30 minutes), so a phone that is never closed still catches up.
+// 30 minutes). Known limit: a store tablet kept awake and never left does not
+// check until it is next opened from cold.
 //
 // Pure: no React, no native module (services/otaCatchUp.ts wires it).
 // ---------------------------------------------------------------------------
@@ -75,14 +81,19 @@ export interface OtaCatchUpDeps {
   now(): number;
   /** An update is downloaded and waits for a restart. */
   pending(): boolean;
-  /** Something the person is doing must not be cut (an in-app call, a write on its way). */
+  /** Something the person is doing must not be cut (an in-app call, a write on its way, a tap or link landing). */
   busy(): boolean;
+  /** [REVIEW-2 S2-1 on #2431] The app is on the screen (AppState 'active'). Never a restart in the background: a
+   *  call that woke a closed app (CallKit, ConnectionService) or a lock-screen answer keeps the app out of 'active'. */
+  active(): boolean;
   /** The screen in front; null before the first screen is up. */
   route(): string | null;
   /** Restart into the downloaded update. */
   reload(): Promise<void>;
   /** Ask the update server, and download a newer update if there is one. */
   checkAndFetch(): Promise<void>;
+  /** Run `fn` after `ms`; returns the cancel. */
+  later(ms: number, fn: () => void): () => void;
 }
 
 export interface OtaCatchUp {
@@ -91,8 +102,15 @@ export interface OtaCatchUp {
   /** An earner just signed in. */
   earnerSignedIn(): boolean;
   backgrounded(): void;
+  /** Back on the screen: never restarts at once (see SETTLE_MS); true when a window opened. */
   foregrounded(): boolean;
+  /** Uninstalled: nothing more runs. */
+  dispose(): void;
 }
+
+/** [REVIEW-2 S3-1 on #2431] After launch and after a return, the app first lets what brought the person here land
+ *  (the tapped notification, the scanned link, the store's new-order alert) before it may restart. */
+export const SETTLE_MS = 4_000;
 
 export function createOtaCatchUp(deps: OtaCatchUpDeps): OtaCatchUp {
   let windowEnds = deps.now() + LAUNCH_WINDOW_MS;
@@ -100,12 +118,15 @@ export function createOtaCatchUp(deps: OtaCatchUpDeps): OtaCatchUp {
   let lastCheck = deps.now();
   let awaySince: number | null = null;
   let restarting = false;
+  let settleEnds = 0;
+  let cancelSettle: (() => void) | null = null;
 
   const open = (ms: number) => { windowEnds = Math.max(windowEnds, deps.now() + ms); };
 
   const evaluate = (): boolean => {
     if (restarting || !deps.pending()) return false;
-    if (deps.now() > windowEnds) return false;
+    if (deps.now() > windowEnds || deps.now() < settleEnds) return false;
+    if (!deps.active()) return false;
     const route = deps.route();
     if (route !== null && !REST_ROUTES.includes(route)) return false;
     if (deps.busy()) return false;
@@ -115,6 +136,16 @@ export function createOtaCatchUp(deps: OtaCatchUpDeps): OtaCatchUp {
     return true;
   };
 
+  const settle = () => {
+    cancelSettle?.();
+    settleEnds = deps.now() + SETTLE_MS;
+    cancelSettle = deps.later(SETTLE_MS, () => {
+      cancelSettle = null;
+      evaluate();
+    });
+  };
+  settle(); // launch: a cold start's tapped notification or link lands first
+
   return {
     evaluate,
     earnerSignedIn() {
@@ -123,6 +154,9 @@ export function createOtaCatchUp(deps: OtaCatchUpDeps): OtaCatchUp {
     },
     backgrounded() {
       if (awaySince === null) awaySince = deps.now();
+      // Left again before the settle ended: no restart for that return.
+      cancelSettle?.();
+      cancelSettle = null;
     },
     foregrounded() {
       const away = awaySince === null ? 0 : deps.now() - awaySince;
@@ -134,7 +168,13 @@ export function createOtaCatchUp(deps: OtaCatchUpDeps): OtaCatchUp {
         // The download's end is a pending change: services/otaCatchUp.ts evaluates it then.
         void deps.checkAndFetch().catch(() => undefined);
       }
-      return evaluate();
+      settle();
+      return true;
+    },
+    dispose() {
+      cancelSettle?.();
+      cancelSettle = null;
+      restarting = true;
     },
   };
 }

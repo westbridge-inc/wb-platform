@@ -106,3 +106,13 @@ export function crashEnvironment(apiUrl: string | undefined, isDev: boolean): st
   if (host === 'api-staging.swiftgy.com') return 'staging';
   return 'other';
 }
+
+/**
+ * [OTA-CATCH-UP · REVIEW-2 L3 on #2431] The JavaScript a crash came from: the over-the-air update's id, or
+ * "embedded" for the JS built into the binary (a release alone cannot tell them apart). An id, never personal data.
+ */
+export function otaUpdateTag(updates: { updateId?: string | null; isEmbeddedLaunch?: boolean } | null | undefined): string {
+  if (!updates) return 'unknown';
+  if (updates.isEmbeddedLaunch === true || !updates.updateId) return 'embedded';
+  return /^[0-9a-f-]{8,64}$/i.test(updates.updateId) ? updates.updateId : 'unknown';
+}

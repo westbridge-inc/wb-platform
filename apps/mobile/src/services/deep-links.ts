@@ -91,7 +91,14 @@ function replaceOutcomeWithStore(params: Record<string, unknown>): boolean {
 }
 
 async function resolveAndGo(dest: LinkDestination, request: number, fromOutcome = false): Promise<void> {
-  const outcome = await resolveDestination(dest);
+  resolving += 1;
+  let outcome: ResolveOutcome;
+  try {
+    outcome = await resolveDestination(dest);
+  } finally {
+    resolving -= 1;
+    lastLinkAt = Date.now();
+  }
   if (request !== latestRequest) return;
   if (outcome.ok) {
     const store = { screen: 'Restaurant', params: { vendorId: outcome.vendorId } };
@@ -105,12 +112,23 @@ async function resolveAndGo(dest: LinkDestination, request: number, fromOutcome 
 let navReady = false;
 let latestRequest = 0;
 
+/** [OTA-CATCH-UP · REVIEW-2 S3-1 on #2431] How long a handled link counts as still landing. */
+export const LINK_SETTLE_MS = 10_000;
+let resolving = 0;
+let lastLinkAt = 0;
+/** A Swift link is still landing: waiting for navigation, being resolved (a table QR's store), or handled in the
+ *  last few seconds. A restart now would lose it (the next JavaScript reads the launch URL, not this one). */
+export function deepLinkBusy(now: number = Date.now()): boolean {
+  return pendingUrl !== null || resolving > 0 || (lastLinkAt > 0 && now - lastLinkAt < LINK_SETTLE_MS);
+}
+
 /** The two fixed fee returns (now beside the link parser, which is pure, so the launch intro can ask too). */
 export { isWeeklyFeeReturn };
 
 function handleUrl(url: string | null): boolean {
   if (!url) return false;
   if (isWeeklyFeeReturn(url)) {
+    lastLinkAt = Date.now();
     // A newer fee return supersedes pending scans and discards all parameters.
     latestRequest += 1;
     pendingUrl = null;
@@ -119,6 +137,7 @@ function handleUrl(url: string | null): boolean {
   }
   const dest = destinationForUrl(url);
   if (!dest) return false; // not ours — the app opens normally
+  lastLinkAt = Date.now();
   const request = ++latestRequest;
   if (!navReady) {
     pendingUrl = url;
@@ -182,6 +201,8 @@ export function installDeepLinkHandler(): () => void {
 /** Test seam. */
 export function resetDeepLinksForTests(): void {
   pendingUrl = null;
+  resolving = 0;
+  lastLinkAt = 0;
   navReady = false;
   installed = false;
   latestRequest = 0;
