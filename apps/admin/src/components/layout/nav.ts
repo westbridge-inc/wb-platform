@@ -78,6 +78,8 @@ export const NAV_GROUPS: NavGroup[] = [
       { label: 'Revenue', href: '/finance', icon: DollarSign, blurb: "What Swift is owed and paid — never the partners' money", keywords: 'finance settlements ledger' },
       { label: 'MMG payments', href: '/mmg-payments', icon: Receipt, blurb: 'Find a weekly-fee payment by any reference', keywords: 'checkout mobile money' },
       { label: 'Payment confirmations', href: '/payment-confirmations', icon: ShieldCheck, blurb: 'Weekly-fee payments waiting for a PAID or NOT PAID decision', keywords: 'mmg confirmation hold weekly fee review' },
+      // [CARD-READY] A weekly-fee card payment the provider may have taken that Swift could not book waits here for a person.
+      { label: 'Card payments', href: '/card-payments', icon: Receipt, blurb: 'Weekly-fee card payments, and the ones a person must decide', keywords: 'card held refund void book weekly fee' },
       { label: 'Received agent cash', href: '/cash', icon: Banknote, blurb: 'Attach or refund cash already received', keywords: 'agent san collections' },
       { label: 'Promos', href: '/promos', icon: Tag, blurb: 'Discount codes', keywords: 'discounts codes', founderOnly: true },
     ],
