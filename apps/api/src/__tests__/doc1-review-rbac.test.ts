@@ -347,3 +347,29 @@ describe('[security review 9 Nov] a person compares the selfie with the approved
   });
 });
 
+// [review F3/F6 · 9 Nov 2026] A "no match" stands against its own author; another reviewer's match is an override; the
+// stated reason is inside the decision record.
+describe('[review] a standing "no match", and the reason in the record', () => {
+  it('reviewer A says no match (reason recorded); A cannot then say match; B can, recorded as an override', async () => {
+    const shown = new Date('2026-11-09T12:00:00.000Z');
+    await system(() => app.prisma.user.update({ where: { id: subjectId }, data: { roles: ['VENDOR_OWNER', 'MOVER', 'RIDER'], avatar: `/uploads/avatars/${subjectId}/synthetic-f3.jpg`, selfieCapturedAt: shown } }));
+    const doc = await system(async () => {
+      const fileUrl = await ownedVerificationFixture(app.prisma, subjectId);
+      return app.prisma.verificationDocument.create({ data: { userId: subjectId, role: 'MOVER', docType: 'national_id', fileUrl, status: 'APPROVED', state: 'COMMITTED', reviewedAt: new Date(), reviewedBy: 'synthetic-reviewer', consentAt: new Date(), privacyNoticeVersion: 'v1' } });
+    });
+    const a = await admin([...DOC_REVIEWER_CAPABILITIES, 'documents.review']);
+    const b = await admin([...DOC_REVIEWER_CAPABILITIES, 'documents.review']);
+    const no = await call(a.token, 'POST', `/verification/${doc.id}/selfie-check`, { match: false, selfieCapturedAt: shown.toISOString() });
+    expect(no.statusCode, no.body).toBe(200);
+    const rows = () => system(() => app.prisma.auditLog.findMany({ where: { action: 'SELFIE_ID_COMPARED', entityId: subjectId }, orderBy: [{ createdAt: 'asc' }, { id: 'asc' }] }));
+    expect((await rows()).at(-1)!.changes).toMatchObject({ outcome: 'NO_MATCH', reason: REASON });
+    const again = await call(a.token, 'POST', `/verification/${doc.id}/selfie-check`, { match: true, selfieCapturedAt: shown.toISOString() });
+    expect(again.statusCode, again.body).toBe(409);
+    expect(again.json().error.code).toBe('NO_MATCH_STANDS');
+    const override = await call(b.token, 'POST', `/verification/${doc.id}/selfie-check`, { match: true, selfieCapturedAt: shown.toISOString() });
+    expect(override.statusCode, override.body).toBe(200);
+    expect((await rows()).at(-1)!.changes).toMatchObject({ outcome: 'MATCH', overridesNoMatch: true, reason: REASON });
+    await system(() => app.prisma.user.update({ where: { id: subjectId }, data: { roles: ['VENDOR_OWNER'] } }));
+  });
+});
+

@@ -28,7 +28,7 @@ function guyanaOnlyGate(state: RootEntryState) {
   // [Owner 16 Oct] customers take no photos. [Owner 9 Nov] nor do store owners, store staff or in-shop
   // businesses: only movers (and advertisers) meet the selfie gate at the door;
   // [MOB-007] a signed-in state with no user holds on the sign-out hold, never a camera
-  if (needsSelfie && (intent === 'mover' || intent === 'advertiser')) return 'selfie';
+  if (needsSelfie && intent === 'mover') return 'selfie';
   if (needsSelfie && !hasUser) return 'hold';
   return 'main';
 }
@@ -113,7 +113,15 @@ describe('rootEntryGate', () => {
     expect(rootEntryGate({ ...fresh, isAuthenticated: true, intent: 'vendor', countryCode: 'GY', needsSelfie: true, hasUser: false })).toBe('hold');
   });
 
-  it.each(['mover', 'advertiser'] as const)(
+  // [OWNER-ASKS · owner ruling 9 Nov 2026 ~20:1xZ (B)] Advertisers no longer take the selfie.
+  it('[owner 9 Nov (B)] an advertiser is never sent to the selfie gate', () => {
+    const b = [false, true];
+    for (const isAuthenticated of b) for (const wantsAuth of b) for (const anyPreview of b) for (const needsSelfie of b) for (const hasUser of b) {
+      expect(rootEntryGate({ ...fresh, isAuthenticated, wantsAuth, intent: 'advertiser', countryCode: 'GY', anyPreview, needsSelfie, hasUser })).not.toBe('selfie');
+    }
+  });
+
+  it.each(['mover'] as const)(
     '[E27] the %s still takes the selfie before the app opens',
     (intent) => {
       expect(

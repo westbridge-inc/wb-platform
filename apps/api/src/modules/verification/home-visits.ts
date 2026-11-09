@@ -53,22 +53,109 @@ export const SELFIE_ID_COMPARED_ACTION = 'SELFIE_ID_COMPARED';
 
 export interface SelfieIdComparison { documentId: string; selfieCapturedAt: string; avatar: string; outcome: 'MATCH' | 'NO_MATCH' }
 
+export interface SelfieCheckRow { reviewerId: string | null; record: Partial<SelfieIdComparison> }
+
+/** [review F3/F5] Every recorded answer about THIS selfie (capture time + stored object), oldest first, ties by id. */
+export async function selfieChecksFor(db: Db, ownerUserId: string, selfie: { selfieCapturedAt: Date; avatar: string }): Promise<SelfieCheckRow[]> {
+  const rows = await db.auditLog.findMany({
+    where: { action: SELFIE_ID_COMPARED_ACTION, entity: 'User', entityId: ownerUserId },
+    orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+    select: { userId: true, changes: true },
+  });
+  const at = selfie.selfieCapturedAt.toISOString();
+  return rows
+    .map((row) => ({ reviewerId: row.userId, record: (row.changes ?? {}) as Partial<SelfieIdComparison> }))
+    .filter((row) => row.record.selfieCapturedAt === at && row.record.avatar === selfie.avatar);
+}
+
+/**
+ * [review F3] A NO_MATCH is final for that selfie: only a MATCH recorded AFTER the last NO_MATCH, by a reviewer who
+ * never said NO_MATCH about it, counts (the override is flagged to ops when it is recorded); otherwise the person
+ * retakes the photo. Without a NO_MATCH, any MATCH counts. Deterministic: (createdAt, id) order, never "the latest".
+ */
+export function standingMatch(rows: readonly SelfieCheckRow[]): SelfieCheckRow | null {
+  let lastNo = -1;
+  const refusers = new Set<string | null>();
+  rows.forEach((row, i) => { if (row.record.outcome === 'NO_MATCH') { lastNo = i; refusers.add(row.reviewerId); } });
+  return rows.slice(lastNo + 1).find((row) => row.record.outcome === 'MATCH' && !refusers.has(row.reviewerId)) ?? null;
+}
+
 export async function ownerPhotoMatchedToId(db: Db, ownerUserId: string, now: Date = new Date()): Promise<boolean> {
   const owner = await db.user.findUnique({ where: { id: ownerUserId }, select: { selfieCapturedAt: true, avatar: true } });
   if (!owner?.selfieCapturedAt || !owner.avatar) return false;
-  const latest = await db.auditLog.findFirst({
-    where: { action: SELFIE_ID_COMPARED_ACTION, entity: 'User', entityId: ownerUserId },
-    orderBy: { createdAt: 'desc' },
-    select: { changes: true },
-  });
-  const record = latest?.changes as Partial<SelfieIdComparison> | null | undefined;
   // [security review 9 Nov, 2nd] the compared photo is named by its capture time AND its stored object
-  if (!record || record.outcome !== 'MATCH' || record.selfieCapturedAt !== owner.selfieCapturedAt.toISOString() || record.avatar !== owner.avatar || typeof record.documentId !== 'string') return false;
+  const match = standingMatch(await selfieChecksFor(db, ownerUserId, { selfieCapturedAt: owner.selfieCapturedAt, avatar: owner.avatar }));
+  if (!match || typeof match.record.documentId !== 'string') return false;
   const id = await db.verificationDocument.findFirst({
-    where: { id: record.documentId, userId: ownerUserId, status: 'APPROVED', state: 'COMMITTED', docType: { in: [...SELFIE_COMPARE_DOC_TYPES] } },
+    where: { id: match.record.documentId, userId: ownerUserId, status: 'APPROVED', state: 'COMMITTED', docType: { in: [...SELFIE_COMPARE_DOC_TYPES] } },
     select: { expiresAt: true },
   });
   return !!id && isDocumentValidAt(id.expiresAt, now);
+}
+
+/**
+ * [review F1] THE FULL HOME-VISIT GATE, for a moment after checkout: a business accepting a requested home visit, or a
+ * home visit being moved. Clearance + photo + a standing MATCH + a current ID, read through `db` (the caller's
+ * transaction). An APPOINTMENT order is a home visit when the order went to the customer's address: the checkout
+ * freezes `billableKm` only then (the same `distanceKm > 0` predicate that chose the address).
+ */
+export function isHomeVisitOrder(order: { fulfillment: string | null; billableKm: unknown }): boolean {
+  return order.fulfillment === 'APPOINTMENT' && order.billableKm !== null && order.billableKm !== undefined && Number(order.billableKm) > 0;
+}
+
+export async function assertOwnerHomeVisitsOpen(db: Db, ownerUserId: string, audience: 'business' | 'customer', vendorName: string): Promise<void> {
+  const [cleared, photo, matched] = [await homeVisitsCleared(db, ownerUserId), await ownerHasProfilePhoto(db, ownerUserId), await ownerPhotoMatchedToId(db, ownerUserId)];
+  if (cleared && photo && matched) return;
+  if (audience === 'customer') throw homeVisitRefusal(vendorName, false);
+  throw new AppError(409, HOME_VISIT_UNAVAILABLE, `Home visits are paused for ${vendorName}: they need ${homeVisitNeeds(cleared, photo, matched)}. Bookings at your place are not affected.`);
+}
+
+function homeVisitNeeds(cleared: boolean, photo: boolean, matched: boolean): string {
+  const needs = [
+    ...(cleared ? [] : ['your police clearance, approved and current (upload it under Documents)']),
+    ...(photo ? [] : ['your profile photo, so customers see who is coming (take it in the Swift app)']),
+    ...(photo && !matched ? ['our team to check your profile photo against your approved ID (we do this; nothing to send)'] : []),
+  ];
+  return needs.length ? needs.join(', and ') : 'your police clearance, approved and current (upload it under Documents)';
+}
+
+/**
+ * [review F1 · COORD ruling pending the owner's confirmation] When the check is lost (a "no match"), home visits the
+ * business already CONFIRMED are not cancelled: they stay, and the owner is told that new home visits are paused and why.
+ * One small function so the rule can change in one place.
+ */
+export async function tellOwnerHomeVisitCheckLost(
+  notifications: { send: (input: { userId: string; type: 'SYSTEM_ANNOUNCEMENT'; title: string; body: string; audience: 'business' }) => Promise<unknown> },
+  ownerUserId: string,
+): Promise<void> {
+  await notifications.send({
+    userId: ownerUserId, type: 'SYSTEM_ANNOUNCEMENT', audience: 'business', title: HOME_VISITS_PAUSED_TITLE,
+    body: 'Our team could not match your profile photo with your approved ID, so new home visits are paused. Take a new profile photo in the Swift app; we will check it again. Home visits you already confirmed are not cancelled, and bookings at your place are not affected.',
+  });
+}
+
+/**
+ * [OWNER-ASKS · owner ruling 9 Nov 2026 ~20:1xZ (A)] AN INDEPENDENT SERVICE PRO (the services marketplace, signed up from
+ * the customer app) goes to customers' homes: like a home-visit business, the pro takes new home work only with the
+ * profile photo AND a person's recorded check of THAT photo against the approved ID (ownerPhotoMatchedToId). Read at
+ * every "new work" door, beside the weekly-fee door (assertProFeeAllowsNewWork): a request, a booking, a quote, an
+ * acceptance, a confirmation. A pro without it is paused from home jobs, fail closed, and told what to add.
+ */
+export const PRO_HOME_JOBS_PAUSED = 'PRO_HOME_JOBS_PAUSED';
+export const PRO_HOME_JOBS_ADD_PHOTO = 'Home jobs are paused: add your profile photo in the Swift app (Profile, then Services). Customers see who is coming to their home.';
+export const PRO_HOME_JOBS_PHOTO_CHECKING = 'Home jobs are paused while our team checks your profile photo against your approved ID. There is nothing to send; you will be told when it is done.';
+
+export async function proHomeJobsReady(db: Db, providerUserId: string): Promise<{ photo: boolean; photoChecked: boolean }> {
+  const photo = await ownerHasProfilePhoto(db, providerUserId);
+  return { photo, photoChecked: photo && (await ownerPhotoMatchedToId(db, providerUserId)) };
+}
+
+export async function assertProHomeJobsAllowed(db: Db, providerUserId: string, who: 'customer' | 'provider'): Promise<void> {
+  const ready = await proHomeJobsReady(db, providerUserId);
+  if (ready.photo && ready.photoChecked) return;
+  throw new AppError(409, PRO_HOME_JOBS_PAUSED, who === 'provider'
+    ? (ready.photo ? PRO_HOME_JOBS_PHOTO_CHECKING : PRO_HOME_JOBS_ADD_PHOTO)
+    : 'This provider can\u2019t take home jobs right now. Choose another provider, or try again later.');
 }
 
 /** Does any store this person owns list a service that comes to the customer? */
@@ -77,6 +164,7 @@ export async function ownerOffersHomeVisits(db: Db, ownerUserId: string): Promis
     where: {
       vendor: { owner: { userId: ownerUserId } },
       fulfillment: 'APPOINTMENT',
+      archivedAt: null, // [review F2] an archived listing offers nothing
       OR: [
         { bookingConfig: { path: ['serviceMode'], equals: 'MOBILE' } },
         { bookingConfig: { path: ['serviceMode'], equals: 'BOTH' } },
@@ -117,13 +205,7 @@ export async function tellOwnerHomeVisitsPaused(
   if (already) return false;
   // [OWNER-ASKS 9 Nov] Name exactly what is missing: the police clearance, the profile photo, or both.
   const [cleared, photo, matched] = await Promise.all([homeVisitsCleared(db, ownerUserId, now), ownerHasProfilePhoto(db, ownerUserId), ownerPhotoMatchedToId(db, ownerUserId, now)]);
-  const needs = [
-    ...(cleared ? [] : ['your police clearance, approved and current (upload it under Documents)']),
-    ...(photo ? [] : ['your profile photo, so customers see who is coming (take it in the Swift app)']),
-    // [security review 9 Nov] the photo is there but not yet checked against the approved ID: nothing for the owner to do
-    ...(photo && !matched ? ['our team to check your profile photo against your approved ID (we do this; nothing to send)'] : []),
-  ];
-  const what = needs.length ? needs.join(', and ') : 'your police clearance, approved and current (upload it under Documents)';
+  const what = homeVisitNeeds(cleared, photo, matched);
   await notifications.send({
     userId: ownerUserId,
     type: 'SYSTEM_ANNOUNCEMENT',

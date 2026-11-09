@@ -1,4 +1,5 @@
 import type { FastifyInstance } from 'fastify';
+import { assertProHomeJobsAllowed, proHomeJobsReady } from '../verification/home-visits';
 import { shownRatingTotals, shownRatingsFor, shownSurface } from '../rating/rating-groups';
 import type { Prisma, ServiceJob } from '@prisma/client';
 import { z } from '../../lib/zod';
@@ -399,6 +400,9 @@ export async function servicesRoutes(app: FastifyInstance) {
         // and, with PRO_WEEKLY_FEE on, the agreement accepted and the fee operable). Builds 9-12 ignore both.
         fee: standing,
         listed: provider.isVerified && standing.operable,
+        // [owner ruling 9 Nov ~20:1xZ (A)] Home jobs need the pro's profile photo, checked by a person against the
+        // approved ID: what is missing, so the app says what to add (additive; older builds ignore it).
+        homeJobs: await proHomeJobsReady(app.prisma, request.user.userId),
       },
     };
   });
@@ -692,6 +696,7 @@ export async function servicesRoutes(app: FastifyInstance) {
       }
       // [BILL-PRO PR3 · owner B2] No new quote while the pro's weekly fee is unpaid (PRO_WEEKLY_FEE on only).
       await assertProFeeAllowsNewWork(tx, request.user.userId, 'provider');
+      await assertProHomeJobsAllowed(tx, request.user.userId, 'provider'); // [owner 9 Nov ~20:1xZ (A)]
       return transitionServiceJob(tx, {
         jobId: id,
         actorUserId: request.user.userId,
@@ -746,6 +751,7 @@ export async function servicesRoutes(app: FastifyInstance) {
     const transitioned = await executeTenantBoundServiceJobTransaction(app.prisma, async (boundTx) => {
       // [BILL-PRO PR3 · owner B2] A pro whose weekly fee is unpaid takes no new booking (PRO_WEEKLY_FEE on only).
       await assertProFeeAllowsNewWork(boundTx, job.provider.userId, 'customer');
+      await assertProHomeJobsAllowed(boundTx, job.provider.userId, 'customer'); // [owner 9 Nov ~20:1xZ (A)]
       return transitionServiceJob(boundTx, {
         jobId: id,
         actorUserId: request.user.userId,
@@ -800,6 +806,7 @@ export async function servicesRoutes(app: FastifyInstance) {
       }
       // [BILL-PRO PR3 · owner B2] No new confirm while the pro's weekly fee is unpaid (PRO_WEEKLY_FEE on only).
       await assertProFeeAllowsNewWork(tx, request.user.userId, 'provider');
+      await assertProHomeJobsAllowed(tx, request.user.userId, 'provider'); // [owner 9 Nov ~20:1xZ (A)]
       const confirmedAt = new Date();
       return transitionServiceJob(tx, {
         jobId: id,

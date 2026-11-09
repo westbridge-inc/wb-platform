@@ -19,7 +19,7 @@ import {
 } from '../modules/services/services.service';
 import { registerErrorHandler } from '../middleware/error-handler';
 import { purgeAuditLogs } from '../lib/audit-immutability';
-import { ownedVerificationFixture } from './helpers/verification-object';
+import { ownedVerificationFixture, homeWorkReadyFixture } from './helpers/verification-object';
 
 // ---------------------------------------------------------------------------
 // Services (spec §4.6). Provider profile + qualification badge +
@@ -71,6 +71,8 @@ async function makeVerifiedProvider(trade: string, tenantId = 'swift-default') {
   await inject('POST', '/api/v1/services/providers', { trade, bio: 'Experienced' }, u.token);
   await approveProviderDocs(u.userId, await providerChecklist(app.prisma, u.userId));
   const res = await inject('POST', '/api/v1/services/providers', { trade, bio: 'Experienced' }, u.token);
+  // [owner ruling 9 Nov ~20:1xZ (A)] a pro takes home work only with a selfie a person checked against the approved ID
+  await runWithoutTenant(() => homeWorkReadyFixture(app.prisma, u.userId));
   const provider = res.json().data;
   return { ...u, providerId: provider.id, isVerified: provider.isVerified };
 }

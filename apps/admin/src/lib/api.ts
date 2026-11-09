@@ -1063,7 +1063,7 @@ export const getDocSignedUrl = (id: string) =>
   apiFetch(`/api/v1/admin/verification/${id}/document-url`);
 // [OWNER-ASKS · security review 9 Nov 2026] Home visits book only after a person compared the owner's selfie with the
 // approved photo ID: the computed queue, and the decision (a stated reason in the header, ADM-006).
-export interface SelfieCheck { userId: string; documentId: string; docType: string; selfieCapturedAt: string }
+export interface SelfieCheck { userId: string; documentId: string; docType: string; selfieCapturedAt: string; /** [review F3] another reviewer said no match */ noMatchStanding?: boolean }
 export const fetchSelfieChecks = () =>
   apiFetch('/api/v1/admin/verification/selfie-checks').then((r) => ((r as { data?: { pending?: SelfieCheck[] } }).data?.pending ?? []));
 export const decideSelfieCheck = (documentId: string, match: boolean, selfieCapturedAt: string, reason: string) =>

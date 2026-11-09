@@ -1,5 +1,6 @@
 /** @jsxImportSource react */
 import React, { useCallback, useEffect, useState } from 'react';
+import { proHomeJobsCard, type ProHomeJobs } from '../proHomeJobs';
 import { useFocusEffect } from '@react-navigation/native';
 import { ScrollView, View } from 'react-native';
 import { color, space } from '@swift/ui';
@@ -50,6 +51,8 @@ interface ProviderProfile {
   /** [BILL-PRO PR5] whether customers can find the pro now, and the weekly-fee standing (older servers omit both) */
   listed?: boolean;
   fee?: ProFeeStanding;
+  /** [owner ruling 9 Nov ~20:1xZ (A)] whether home jobs have their photo and its check (older servers omit it) */
+  homeJobs?: ProHomeJobs;
 }
 
 function ProviderProfileForm({
@@ -152,6 +155,7 @@ function ProviderDashboard({
   const status = statusQuery.data;
   const presentation = providerVerificationPresentation(status, provider.isVerified, provider.listed);
   const banner = proFeeBanner(provider);
+  const homeJobs = proHomeJobsCard(provider.homeJobs);
   const qc = useQueryClient();
   const bookableQ = useMyBookable<{ bookable?: boolean }>();
 
@@ -199,6 +203,16 @@ function ProviderDashboard({
           ) : null}
         </View>
       </Card>
+
+      {homeJobs ? (
+        <Card>
+          <T variant="label" weight="semibold">{homeJobs.title}</T>
+          <T variant="caption" tone="muted" style={{ marginTop: 4 }}>{homeJobs.body}</T>
+          {homeJobs.action === 'TAKE_PHOTO' ? (
+            <PillButton label="Take your photo" onPress={() => navigation?.navigate?.('ProSelfie')} style={{ marginTop: space.md }} />
+          ) : null}
+        </Card>
+      ) : null}
 
       {banner ? (
         <Card>

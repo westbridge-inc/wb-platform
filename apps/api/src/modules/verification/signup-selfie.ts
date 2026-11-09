@@ -17,8 +17,8 @@ import { SELFIE_COMPARE_DOC_TYPES } from './doc-registry';
 import { ownerOffersHomeVisits } from './home-visits';
 
 /**
- * [OWNER-ASKS · owner ruling 9 Nov 2026] WHO TAKES THE SIGN-UP SELFIE: riders and drivers, and a service business that
- * goes to the customer (a listing that comes to the customer's home: MOBILE or BOTH). A store owner, store staff and a
+ * [OWNER-ASKS · owner ruling 9 Nov 2026] WHO TAKES THE SIGN-UP SELFIE: riders and drivers, an independent service pro
+ * (owner ruling 9 Nov ~20:1xZ (A); never an advertiser, (B)), and a service business that goes to the customer (a listing that comes to the customer's home: MOBILE or BOTH). A store owner, store staff and a
  * business that serves customers only at its own place never take one; customers never do. Identity-document checks are
  * unchanged. A photo already on file stays stored and protected exactly as before; it is simply not asked for, compared
  * or shown to a reviewer where the person is not one who needs it.
@@ -29,6 +29,8 @@ export async function signupSelfieRequired(db: Prisma.TransactionClient | Prisma
   const user = await db.user.findUnique({ where: { id: userId }, select: { roles: true } });
   if (!user) return false;
   if (user.roles.some((role) => SELFIE_ROLES.has(role))) return true;
+  // [owner ruling 9 Nov ~20:1xZ (A)] an independent service pro goes to customers' homes
+  if ((await db.serviceProvider.count({ where: { userId } })) > 0) return true;
   return ownerOffersHomeVisits(db, userId);
 }
 

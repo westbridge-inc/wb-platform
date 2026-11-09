@@ -1,4 +1,5 @@
 import { isNeverAcceptedDocType, OPTIONAL_LIST_SUFFIX, TRADE_LICENCE_DOC_TYPES } from '../verification/doc-registry';
+import { assertProHomeJobsAllowed } from '../verification/home-visits';
 import { DEFAULT_DOCUMENT_CHECKLISTS, SERVICE_TRADE_LAUNCH_FLOOR } from '../ops/platform-config';
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { Prisma, type PrismaClient } from '@prisma/client';
@@ -585,6 +586,8 @@ export async function createServiceJobWithLiveAuthority(
     // [BILL-PRO PR3 · owner B2] A pro whose weekly fee is unpaid (or who has not accepted the agreement) takes no
     // new requests (PRO_WEEKLY_FEE on only).
     await assertProFeeAllowsNewWork(tx, provider.userId, 'customer');
+    // [owner ruling 9 Nov ~20:1xZ (A)] home work needs the pro's photo, checked against the approved ID
+    await assertProHomeJobsAllowed(tx, provider.userId, 'customer');
 
     await observer?.afterAuthorityChecked?.({
       providerId: provider.id,

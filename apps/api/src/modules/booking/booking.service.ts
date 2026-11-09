@@ -406,7 +406,8 @@ export class BookingService {
           await tx.$queryRaw`SELECT id FROM "orders" WHERE id = ${booking.orderId} FOR UPDATE`;
           // [L09 · M018] A finished appointment is not reopened by moving its
           // booking: read the parent under its own lock and refuse.
-          const parent = await tx.order.findUniqueOrThrow({ where: { id: booking.orderId }, select: { status: true } });
+          // [review F1] the same read carries what the home-visit gate needs (one statement, the lock order unchanged)
+          const parent = await tx.order.findUniqueOrThrow({ where: { id: booking.orderId }, select: { status: true, fulfillment: true, billableKm: true, vendor: { select: { name: true, owner: { select: { userId: true } } } } } });
           if (FINISHED_APPOINTMENT_ORDER_STATUSES.has(parent.status)) {
             throw new AppError(400, 'NOT_RESCHEDULABLE', 'This appointment is completed and cannot be moved');
           }
@@ -415,6 +416,10 @@ export class BookingService {
           if (!LIVE_APPOINTMENT_ORDER_STATUSES.has(parent.status)) {
             throw new AppError(409, 'BOOKING_MOVED', 'This booking just changed — reload and try again');
           }
+          // [review F1 · owner ruling 9 Nov 2026] A HOME visit moves only while the full home-visit gate still holds.
+          const { assertOwnerHomeVisitsOpen, isHomeVisitOrder } = await import('../verification/home-visits');
+          // fail closed: a home visit with no readable owner is refused (an unknown id holds no photo)
+          if (isHomeVisitOrder(parent)) await assertOwnerHomeVisitsOpen(tx, parent.vendor?.owner.userId ?? '', actor.vendorId && !actor.customerId ? 'business' : 'customer', parent.vendor?.name ?? 'This business');
         }
         await lockBusinessTime(tx, vendorId);
         // Guarded: if the booking died while we were validating, abort whole.

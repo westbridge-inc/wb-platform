@@ -15,6 +15,7 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import * as homeVisits from '../modules/verification/home-visits';
 import { signupSelfieRequired } from '../modules/verification/signup-selfie';
+import { createServiceJobWithLiveAuthority } from '../modules/services/services.service';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { nanoid } from 'nanoid';
 import type { UserRole } from '@prisma/client';
@@ -24,6 +25,8 @@ import { authPlugin } from '../plugins/auth';
 import { socketPlugin } from '../plugins/socket';
 import { registerErrorHandler } from '../middleware/error-handler';
 import { customerRoutes } from '../modules/user/customer.routes';
+import { vendorRoutes } from '../modules/vendor/vendor.routes';
+import { BookingService } from '../modules/booking/booking.service';
 import { verificationRoutes } from '../modules/verification/verification.routes';
 import { VerificationService } from '../modules/verification/verification.service';
 import { NotificationService } from '../modules/notification/notification.service';
@@ -116,10 +119,10 @@ async function approved(ownerId: string, docType: string, expiresAt?: Date) {
 
 /** [security review 9 Nov] A reviewer's recorded comparison of the owner's CURRENT selfie with an approved photo ID (the
  *  row POST /admin/verification/:id/selfie-check writes). */
-async function selfieChecked(ownerId: string, idDocId: string, outcome: 'MATCH' | 'NO_MATCH' = 'MATCH') {
+async function selfieChecked(ownerId: string, idDocId: string, outcome: 'MATCH' | 'NO_MATCH' = 'MATCH', reviewerId = adminId) {
   const owner = await app.prisma.user.findUniqueOrThrow({ where: { id: ownerId }, select: { selfieCapturedAt: true, avatar: true } });
   await app.prisma.auditLog.create({ data: {
-    userId: adminId, action: homeVisits.SELFIE_ID_COMPARED_ACTION, entity: 'User', entityId: ownerId,
+    userId: reviewerId, action: homeVisits.SELFIE_ID_COMPARED_ACTION, entity: 'User', entityId: ownerId,
     changes: { documentId: idDocId, selfieCapturedAt: owner.selfieCapturedAt!.toISOString(), avatar: owner.avatar, outcome, docType: 'owner_national_id' },
   } });
 }
@@ -142,6 +145,7 @@ beforeAll(async () => {
   await app.register(prismaPlugin); await app.register(redisPlugin); await app.register(authPlugin); await app.register(socketPlugin);
   await app.register(customerRoutes, { prefix: '/api/v1/customer' });
   await app.register(verificationRoutes, { prefix: '/api/v1/verification' });
+  await app.register(vendorRoutes, { prefix: '/api/v1/vendor' });
   await app.ready();
   service = new VerificationService(app.prisma, new NotificationService(app.prisma, app.io), new ManualReviewKycProvider());
   adminId = (await person(['ADMIN'], 'ADMIN')).userId;
@@ -155,6 +159,8 @@ afterAll(async () => {
   await app.prisma.cart.deleteMany({ where: { customerId: { in: users } } }).catch(() => {});
   await cleanupPayerBillingClocks(app.prisma, users).catch(() => {});
   await app.prisma.notification.deleteMany({ where: { userId: { in: users } } }).catch(() => {});
+  await app.prisma.serviceJob.deleteMany({ where: { customerId: { in: users } } }).catch(() => {});
+  await app.prisma.serviceProvider.deleteMany({ where: { userId: { in: users } } }).catch(() => {});
   await app.prisma.user.deleteMany({ where: { id: { in: users } } }).catch(() => {});
   await app.close();
 });
@@ -437,8 +443,12 @@ describe('[security review 9 Nov] the new selfie must be compared with the appro
     // a "no match" keeps it refused
     await selfieChecked(store.userId, idDoc, 'NO_MATCH');
     expect((await book(c, store, 11)).statusCode).toBe(409);
-    // a person records a match for THIS selfie: it books
+    // [review F3] the same reviewer cannot turn their own "no match" around
     await selfieChecked(store.userId, idDoc);
+    expect(await homeVisits.ownerPhotoMatchedToId(app.prisma, store.userId)).toBe(false);
+    expect((await book(c, store, 11)).statusCode).toBe(409);
+    // a DIFFERENT person records a match for THIS selfie: it books
+    await selfieChecked(store.userId, idDoc, 'MATCH', 'second-reviewer');
     expect(await homeVisits.ownerPhotoMatchedToId(app.prisma, store.userId)).toBe(true);
     expect((await book(c, store, 12)).statusCode).toBe(200);
   });
@@ -495,3 +505,117 @@ describe('[security review 9 Nov] the new selfie must be compared with the appro
     expect((await book(c, store, 12, 'AT_BUSINESS')).statusCode).toBe(200);
   });
 });
+
+// [OWNER-ASKS · owner ruling 9 Nov 2026 ~20:1xZ (A)] An INDEPENDENT service pro (the services marketplace) goes to
+// customers' homes: the selfie plus a person's recorded check of it against the approved ID, before any new home job.
+// A pro without it is paused from home jobs (fail closed) and told what to add.
+describe('[owner 9 Nov (A)] an independent service pro takes home jobs only with a checked selfie', () => {
+  async function pro(opts: { selfie?: boolean } = {}) {
+    const p = await person(['CUSTOMER'], 'CUSTOMER', opts);
+    const provider = await app.prisma.serviceProvider.create({ data: { userId: p.userId, trade: 'cleaner' } });
+    const id = await approved(p.userId, 'national_id');
+    await approved(p.userId, 'police_clearance', new Date(Date.now() + 200 * DAY));
+    const { refreshProviderVerification } = await import('../modules/services/services.service');
+    await refreshProviderVerification(app.prisma, p.userId);
+    return { ...p, providerId: provider.id, idDocId: id };
+  }
+  const request = (customerId: string, providerId: string) => createServiceJobWithLiveAuthority(app.prisma, {
+    customerId, tenantId: 'swift-default', providerId, description: 'Fix the kitchen tap', photos: [],
+  });
+
+  it('an independent pro takes the selfie (who-takes-it rule)', async () => {
+    const p = await pro({ selfie: false });
+    expect(await signupSelfieRequired(app.prisma, p.userId)).toBe(true);
+  });
+
+  it('no photo: no home job; the pro is told to add the photo', async () => {
+    const p = await pro({ selfie: false });
+    expect((await app.prisma.serviceProvider.findUniqueOrThrow({ where: { id: p.providerId } })).isVerified).toBe(true);
+    const c = await customer();
+    await expect(request(c.userId, p.providerId)).rejects.toMatchObject({ statusCode: 409, code: homeVisits.PRO_HOME_JOBS_PAUSED });
+    expect(await app.prisma.serviceJob.count({ where: { providerId: p.providerId } })).toBe(0);
+    await expect(homeVisits.assertProHomeJobsAllowed(app.prisma, p.userId, 'provider')).rejects.toMatchObject({ message: homeVisits.PRO_HOME_JOBS_ADD_PHOTO });
+    expect(await homeVisits.proHomeJobsReady(app.prisma, p.userId)).toEqual({ photo: false, photoChecked: false });
+  });
+
+  it('photo not yet checked against the ID: still paused, and told the team is checking', async () => {
+    const p = await pro();
+    const c = await customer();
+    await expect(request(c.userId, p.providerId)).rejects.toMatchObject({ statusCode: 409, code: homeVisits.PRO_HOME_JOBS_PAUSED });
+    await expect(homeVisits.assertProHomeJobsAllowed(app.prisma, p.userId, 'provider')).rejects.toMatchObject({ message: homeVisits.PRO_HOME_JOBS_PHOTO_CHECKING });
+  });
+
+  it('photo checked by a person against the approved ID: the home job goes through; a retake pauses again', async () => {
+    const p = await pro();
+    await selfieChecked(p.userId, p.idDocId);
+    expect(await homeVisits.proHomeJobsReady(app.prisma, p.userId)).toEqual({ photo: true, photoChecked: true });
+    const c = await customer();
+    await request(c.userId, p.providerId);
+    expect(await app.prisma.serviceJob.count({ where: { providerId: p.providerId } })).toBe(1);
+    await app.prisma.user.update({ where: { id: p.userId }, data: { selfieCapturedAt: new Date(Date.now() + 1000) } });
+    const c2 = await customer();
+    await expect(request(c2.userId, p.providerId)).rejects.toMatchObject({ code: homeVisits.PRO_HOME_JOBS_PAUSED });
+  });
+});
+
+// [review F1/F2/F3 · 9 Nov 2026] The gate holds after checkout too; an archived listing offers nothing; a "no match" stands.
+describe('[review] the home-visit gate after checkout, archived listings, and a standing "no match"', () => {
+  const accept = (store: { token: string; vendorId: string }, orderId: string) => app.inject({
+    method: 'PUT', url: `/api/v1/vendor/orders/${orderId}/accept`, headers: { authorization: `Bearer ${store.token}`, 'x-vendor-id': store.vendorId }, payload: {},
+  });
+
+  it('F1: a home visit requested while matched cannot be accepted after the owner retakes the selfie (refused, no booking)', async () => {
+    const store = await serviceStore('MOBILE');
+    await clearOwner(store.userId, new Date(Date.now() + 200 * DAY));
+    const placed = await book(await customer(), store, 10);
+    expect(placed.statusCode, placed.body).toBe(200);
+    const orderId = placed.json().data.order.id as string;
+    await app.prisma.user.update({ where: { id: store.userId }, data: { selfieCapturedAt: new Date(Date.now() + 1000), avatar: `avatars/${store.userId}/retake.jpg` } });
+    const res = await accept(store, orderId);
+    expect(res.statusCode, res.body).toBe(409);
+    expect(res.json().error.code).toBe('HOME_VISIT_UNAVAILABLE');
+    expect(res.json().error.message).toContain('check your profile photo against your approved ID');
+    expect(await app.prisma.booking.count({ where: { orderId, status: 'CONFIRMED' } })).toBe(0);
+    expect((await app.prisma.order.findUniqueOrThrow({ where: { id: orderId } })).status).toBe('PENDING');
+  });
+
+  it('F1: an in-shop booking is accepted whatever the photo', async () => {
+    const store = await serviceStore('AT_BUSINESS', { selfie: false });
+    await approved(store.userId, 'owner_national_id');
+    const placed = await book(await customer(), store, 10);
+    expect(placed.statusCode, placed.body).toBe(200);
+    expect((await accept(store, placed.json().data.order.id)).statusCode).toBe(200);
+  });
+
+  it('F1: an accepted home visit cannot be moved once the check is lost; it is not cancelled either', async () => {
+    const store = await serviceStore('MOBILE');
+    await clearOwner(store.userId, new Date(Date.now() + 200 * DAY));
+    const placed = await book(await customer(), store, 10);
+    const orderId = placed.json().data.order.id as string;
+    expect((await accept(store, orderId)).statusCode).toBe(200);
+    const booking = await app.prisma.booking.findFirstOrThrow({ where: { orderId } });
+    await app.prisma.user.update({ where: { id: store.userId }, data: { selfieCapturedAt: new Date(Date.now() + 1000), avatar: `avatars/${store.userId}/retake.jpg` } });
+    const bookings = new BookingService(app.prisma);
+    await expect(bookings.rescheduleBooking(booking.id, tomorrowAt(14), { vendorId: store.vendorId })).rejects.toMatchObject({ statusCode: 409, code: 'HOME_VISIT_UNAVAILABLE' });
+    expect((await app.prisma.booking.findUniqueOrThrow({ where: { id: booking.id } })).status).toBe('CONFIRMED');
+  });
+
+  it('F2: an archived home-visit listing offers nothing: no selfie asked, no "offered"', async () => {
+    const store = await serviceStore('MOBILE', { selfie: false });
+    expect(await signupSelfieRequired(app.prisma, store.userId)).toBe(true);
+    await app.prisma.item.update({ where: { id: store.itemId }, data: { archivedAt: new Date(), isAvailable: false } });
+    expect(await signupSelfieRequired(app.prisma, store.userId)).toBe(false);
+    expect((await service.getStatus(store.userId, 'SERVICE')).homeVisits?.offered).toBe(false);
+  });
+
+  it('F3: a "no match" stands; only a later match by a DIFFERENT reviewer counts; order is (createdAt, id)', () => {
+    const at = '2026-11-09T10:00:00.000Z';
+    const row = (reviewerId: string, outcome: 'MATCH' | 'NO_MATCH') => ({ reviewerId, record: { documentId: 'd', selfieCapturedAt: at, avatar: 'a', outcome } });
+    expect(homeVisits.standingMatch([row('A', 'MATCH')])).not.toBeNull();
+    expect(homeVisits.standingMatch([row('A', 'NO_MATCH'), row('A', 'MATCH')])).toBeNull();
+    expect(homeVisits.standingMatch([row('A', 'NO_MATCH'), row('B', 'MATCH')])?.reviewerId).toBe('B');
+    expect(homeVisits.standingMatch([row('B', 'MATCH'), row('A', 'NO_MATCH')])).toBeNull();
+    expect(homeVisits.standingMatch([row('A', 'NO_MATCH'), row('B', 'NO_MATCH'), row('B', 'MATCH')])).toBeNull();
+  });
+});
+

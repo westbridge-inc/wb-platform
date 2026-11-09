@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach, beforeEach, vi } from 'vitest';
+import { homeWorkReadyFixture } from './helpers/verification-object';
 
 // [BILL-PRO PR7] The agreement version with the advance-acceptance clause is the real one now: the Business
 // Agreement's section 12 (PRO_AGREEMENT_VERSION, which PRO_MENU_AGREEMENT.sinceVersion names). No mock.
@@ -94,6 +95,8 @@ async function makePro(trade = 'tutor', opts: { hours?: unknown; tenantId?: stri
       data: { userId: u.userId, role: 'CUSTOMER', docType, fileUrl: `storage://t/${docType}.jpg`, status: 'APPROVED', consentAt: new Date(), privacyNoticeVersion: 'v1' },
     }));
   }
+  // [owner ruling 9 Nov ~20:1xZ (A)] a pro takes home work only with a selfie a person checked against the approved ID
+  await runWithoutTenant(() => homeWorkReadyFixture(app.prisma, u.userId));
   const agreed = opts.agreed === undefined ? AGREEMENT_VERSION : opts.agreed;
   if (agreed) await consent(u.userId, agreed, 'granted');
   return { ...u, providerId: provider.id, checklist };

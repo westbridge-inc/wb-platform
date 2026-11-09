@@ -7462,17 +7462,20 @@ export async function adminRoutes(app: FastifyInstance) {
   // the moment they list a home visit or take (or retake) the photo, and leaves once a match is recorded.
   app.get('/verification/selfie-checks', { preHandler: [adminGuard] }, async () => {
     const tenantId = requireTenantId();
-    const { ownerPhotoMatchedToId } = await import('../verification/home-visits');
+    const { ownerPhotoMatchedToId, selfieChecksFor } = await import('../verification/home-visits');
     const listings = await app.prisma.item.findMany({
       where: {
         vendor: { tenantId },
         fulfillment: 'APPOINTMENT',
+        archivedAt: null, // [review F2]
         OR: [{ bookingConfig: { path: ['serviceMode'], equals: 'MOBILE' } }, { bookingConfig: { path: ['serviceMode'], equals: 'BOTH' } }],
       },
       select: { vendor: { select: { owner: { select: { userId: true } } } } },
     });
-    const owners = [...new Set(listings.map((l) => l.vendor.owner.userId))];
-    const pending: Array<{ userId: string; documentId: string; docType: string; selfieCapturedAt: string }> = [];
+    // [owner ruling 9 Nov ~20:1xZ (A)] independent service pros go to customers' homes too
+    const pros = await app.prisma.serviceProvider.findMany({ where: { user: { tenantId } }, select: { userId: true } });
+    const owners = [...new Set([...listings.map((l) => l.vendor.owner.userId), ...pros.map((p) => p.userId)])];
+    const pending: Array<{ userId: string; documentId: string; docType: string; selfieCapturedAt: string; noMatchStanding: boolean }> = [];
     for (const userId of owners) {
       const user = await tenantPrisma.user.findUnique({ where: { id: userId }, select: { id: true, avatar: true, selfieCapturedAt: true } });
       if (!user?.selfieCapturedAt || !isOwnSelfiePointer(user.id, user.avatar)) continue;
@@ -7482,10 +7485,27 @@ export async function adminRoutes(app: FastifyInstance) {
         orderBy: { reviewedAt: 'desc' }, select: { id: true, docType: true, expiresAt: true },
       });
       const current = ids.find((d) => isDocumentValidAt(d.expiresAt, new Date()));
-      if (current) pending.push({ userId, documentId: current.id, docType: current.docType, selfieCapturedAt: user.selfieCapturedAt.toISOString() });
+      // [review F3] a standing "no match" is shown: only a different reviewer may record a match now
+      const noMatchStanding = (await selfieChecksFor(app.prisma, userId, { selfieCapturedAt: user.selfieCapturedAt, avatar: user.avatar! })).some((row) => row.record.outcome === 'NO_MATCH');
+      if (current) pending.push({ userId, documentId: current.id, docType: current.docType, selfieCapturedAt: user.selfieCapturedAt.toISOString(), noMatchStanding });
     }
     return { success: true, data: { pending } };
   });
+
+  // [review F3] Ops hear of every "no match" and every override of one: an in-app notice to the operator's
+  // super-admins (no name, no face, no document in it; the console's Selfie checks page holds the case).
+  const flagSelfieCheckToOps = async (trigger: 'NO_MATCH_RECORDED' | 'NO_MATCH_OVERRIDDEN') => {
+    const admins = await app.prisma.user.findMany({ where: { tenantId: requireTenantId(), roles: { has: 'SUPER_ADMIN' }, status: 'ACTIVE' }, select: { id: true } });
+    for (const admin of admins) {
+      await notifications.send({
+        userId: admin.id, type: 'SYSTEM_ANNOUNCEMENT',
+        title: trigger === 'NO_MATCH_OVERRIDDEN' ? 'Selfie check overridden' : 'Selfie check: faces do not match',
+        body: trigger === 'NO_MATCH_OVERRIDDEN'
+          ? 'A reviewer recorded a match after another reviewer said the faces do not match. Look at it in Selfie checks.'
+          : 'A reviewer recorded that a home-visit selfie does not match the approved ID. Look at it in Selfie checks.',
+      });
+    }
+  };
 
   // The decision: :id is the approved photo ID the reviewer opened (GET /verification/:id/document-url shows THIS
   // selfie beside it). "match" lets home visits book; "no match" keeps them refused. A person, never a machine.
@@ -7507,7 +7527,7 @@ export async function adminRoutes(app: FastifyInstance) {
     if (!(await signupSelfieRequired(app.prisma, doc.userId))) {
       throw new AppError(409, 'SELFIE_NOT_TAKEN_BY_THIS_PERSON', 'This person takes no selfie: their ID is reviewed on its own.');
     }
-    const { SELFIE_ID_COMPARED_ACTION } = await import('../verification/home-visits');
+    const { SELFIE_ID_COMPARED_ACTION, selfieChecksFor, tellOwnerHomeVisitCheckLost } = await import('../verification/home-visits');
     // The check and the record in ONE transaction holding the person's row: POST /auth/selfie (the only selfie writer)
     // updates that row, so a retake waits until the record commits and is then a new, unchecked face.
     const record = await app.prisma.$transaction(async (tx) => {
@@ -7519,11 +7539,29 @@ export async function adminRoutes(app: FastifyInstance) {
       if (owner.selfieCapturedAt.toISOString() !== new Date(body.selfieCapturedAt).toISOString()) {
         throw new AppError(409, 'SELFIE_CHANGED', 'This person took a new selfie after you opened it. Open the document again and compare the new one.');
       }
+      // [review F3] A NO_MATCH stands for this selfie: its own author never overrides it, and another reviewer's MATCH
+      // is recorded as an override and flagged to ops (home-visits standingMatch decides what counts).
+      const earlier = await selfieChecksFor(tx, doc.userId, { selfieCapturedAt: owner.selfieCapturedAt, avatar: owner.avatar! });
+      const refusedBy = new Set(earlier.filter((row) => row.record.outcome === 'NO_MATCH').map((row) => row.reviewerId));
+      if (body.match && refusedBy.has(request.user.userId)) {
+        throw new AppError(409, 'NO_MATCH_STANDS', 'You recorded that these faces do not match. Another reviewer must decide, or the person takes a new photo.');
+      }
+      const overridesNoMatch = body.match && refusedBy.size > 0;
       const answer = { documentId: doc.id, selfieCapturedAt: owner.selfieCapturedAt.toISOString(), outcome: body.match ? 'MATCH' : 'NO_MATCH' } as const;
-      await auditIn(tx, request.user.userId, SELFIE_ID_COMPARED_ACTION, 'User', doc.userId, { ...answer, avatar: owner.avatar, docType: doc.docType }, request);
-      return answer;
+      // [review F6] The stated reason rides IN the decision record, in this transaction; the canonical admin row too.
+      const reason = reasonOf(request.body, request.headers as never);
+      await auditIn(tx, request.user.userId, SELFIE_ID_COMPARED_ACTION, 'User', doc.userId, { ...answer, avatar: owner.avatar, docType: doc.docType, reason, ...(overridesNoMatch ? { overridesNoMatch: true } : {}) }, request);
+      await auditWithin(tx, request as unknown as AuditRequestLike, app.prefix, { entityId: doc.id, extra: { outcome: answer.outcome, overridesNoMatch } });
+      return { answer, overridesNoMatch };
     });
-    return { success: true, data: record };
+    // After the commit: who is told. Never inside the decision (a failed notice must not undo it).
+    if (record.answer.outcome === 'NO_MATCH') {
+      await tellOwnerHomeVisitCheckLost(notifications, doc.userId).catch((err) => request.log.warn({ err }, 'selfie-check: owner notice failed'));
+    }
+    if (record.answer.outcome === 'NO_MATCH' || record.overridesNoMatch) {
+      await flagSelfieCheckToOps(record.overridesNoMatch ? 'NO_MATCH_OVERRIDDEN' : 'NO_MATCH_RECORDED').catch((err) => request.log.warn({ err }, 'selfie-check: ops flag failed'));
+    }
+    return { success: true, data: record.answer };
   });
 
   // ─── [VERIFY-DOCS V3] Staff: the document reviewer grant ─────────────────

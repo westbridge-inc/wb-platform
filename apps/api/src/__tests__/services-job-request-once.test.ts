@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { homeWorkReadyFixture } from './helpers/verification-object';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { nanoid } from 'nanoid';
 import type { UserRole } from '@prisma/client';
@@ -82,6 +83,8 @@ async function makeVerifiedProvider(trade: string) {
   }
   const res = await inject('POST', '/api/v1/services/providers', { trade, bio: 'Experienced' }, u.token);
   expect(res.json().data.isVerified).toBe(true);
+  // [owner ruling 9 Nov ~20:1xZ (A)] a pro takes home work only with a selfie a person checked against the approved ID
+  await runWithoutTenant(() => homeWorkReadyFixture(app.prisma, u.userId));
   return { ...u, providerId: res.json().data.id as string };
 }
 

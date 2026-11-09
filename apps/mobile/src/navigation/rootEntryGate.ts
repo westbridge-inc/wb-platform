@@ -64,7 +64,8 @@ export function rootEntryGate(state: RootEntryState): RootEntryGate {
   // opens without a photo. A business that goes to the customer is asked inside
   // the app when it offers a home visit (modules/vendor/homeVisitPhoto), and the
   // server refuses home-visit bookings until it is taken.
-  if (needsSelfie && (intent === 'mover' || intent === 'advertiser')) return 'selfie';
+  // [owner ruling 9 Nov 2026 ~20:1xZ (B)] Advertisers no longer take the selfie either: only riders and drivers here.
+  if (needsSelfie && intent === 'mover') return 'selfie';
   // [MOB-007] An authenticated state with no user never opens the app for
   // anyone. A customer holds on the sign-out hold (no camera); its "Sign out"
   // is the way back. (needsSelfie is true whenever there is no user.)
