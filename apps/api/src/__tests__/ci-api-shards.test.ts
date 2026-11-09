@@ -162,6 +162,18 @@ describe('[CI-SPLIT] the workflow keeps one honest "API Tests" verdict', () => {
     expect(shardJob).toContain('--shard=${{ matrix.shard }}/${{ matrix.total }}');
   });
 
+  // [CI-SPEED] The merge queue on main waits for the required checks on a run
+  // of the merge_group event. A workflow without that trigger never reports
+  // them, and every queued PR sits until the queue times it out.
+  it('the workflow runs for the merge queue, and no job depends on pull-request-only context', () => {
+    const on = WORKFLOW.slice(WORKFLOW.indexOf('\non:\n'), WORKFLOW.indexOf('\nconcurrency:'));
+    expect(on).toMatch(/^ {2}merge_group:\n {4}types: \[checks_requested\]\s*$/m);
+    expect(on).toMatch(/^ {2}pull_request:\s*$/m);
+    // A merge group has no pull request: a job keyed to one would skip there,
+    // and a skipped required check never satisfies the queue.
+    expect(WORKFLOW).not.toMatch(/github\.event\.pull_request|github\.head_ref|github\.base_ref|event_name\s*[!=]=\s*'pull_request'/);
+  });
+
   it('every shard is a full copy of the old job: its own database and redis, real migrations, the seed', () => {
     expect(shardJob).toContain('image: postgis/postgis');
     expect(shardJob).toContain('image: redis:');
