@@ -117,6 +117,7 @@ vi.mock('../modules/services/screens/ServiceProviderScreen', () => ({ ServicePro
 vi.mock('../modules/services/screens/ProviderWeeklyFeeScreen', () => ({ ProviderWeeklyFeeScreen: () => null }));
 vi.mock('../modules/services/screens/ProBookingScreen', () => ({ ProBookingScreen: () => null }));
 vi.mock('../modules/services/screens/ProBookableScreen', () => ({ ProBookableScreen: () => null }));
+vi.mock('../screens/auth/SelfieCaptureScreen', () => ({ SelfieCaptureScreen: () => null })); // [owner 9 Nov (A)] the pro's ProSelfie
 
 import { WARM_TAB_QUIET_MS } from './warmTabs';
 import { CustomerStack } from './CustomerStack';
