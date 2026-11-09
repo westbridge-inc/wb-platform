@@ -222,7 +222,8 @@ describe('[TAP-AUDIT] the web adds and edits items like the app', () => {
     const rice = await screen.findByRole('article', { name: 'Rice 20 kg' });
     await click(await within(rice).findByRole('button', { name: 'Delete' }));
     const ask = await dialog();
-    expect(within(ask).getByText('Remove "Rice 20 kg" from your menu.')).toBeTruthy();
+    // [STORE-WORDS sweep] A supermarket's items are its inventory, never "your menu".
+    expect(within(ask).getByText('Remove "Rice 20 kg" from your inventory.')).toBeTruthy();
     await click(within(ask).getByRole('button', { name: 'Delete' }));
     await waitFor(() => expect(screen.queryByRole('article', { name: 'Rice 20 kg' })).toBeNull());
     expect(writes.map((w) => `${w.method} ${w.url.pathname}`)).toEqual(['DELETE /api/v1/vendor/items/rice']);
@@ -309,7 +310,7 @@ describe('[TAP-AUDIT] sections like the app: chips with counts, add, rename, del
 
     await click(screen.getByRole('button', { name: 'Delete Staples' }));
     box = await dialog();
-    expect(within(box).getByText('This removes the section AND its 1 item from your menu.')).toBeTruthy();
+    expect(within(box).getByText('This removes the section AND its 1 item from your inventory.')).toBeTruthy();
     await click(within(box).getByRole('button', { name: 'Delete section + 1 item' }));
     await waitFor(() => expect(screen.queryByRole('region', { name: 'Staples' })).toBeNull());
     expect(screen.queryByRole('article', { name: 'Rice 20 kg' })).toBeNull();
@@ -423,7 +424,7 @@ describe('[REVIEW-F #2142 S4-2] a removed item or section is said in plain words
     await click(await within(rice).findByRole('button', { name: 'Delete' }));
     const ask = await dialog();
     await click(within(ask).getByRole('button', { name: 'Delete' }));
-    expect((await within(ask).findByRole('alert')).textContent).toBe('This section or item was removed on another phone. Go back and open the menu again.');
+    expect((await within(ask).findByRole('alert')).textContent).toBe('This section or item was removed on another phone. Go back and open the catalogue again.');
   });
 });
 

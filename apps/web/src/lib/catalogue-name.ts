@@ -28,11 +28,18 @@ export function catalogueName(vendorType: string | null | undefined): CatalogueN
  *  "Your products", "Your services" (a supermarket's page said "Your menu"). */
 export const yourCatalogue = (name: CatalogueName): string => `Your ${name.toLowerCase()}`;
 
-/** The selected store's items-tab name, from the same stores read the console shell makes. */
-export function useCatalogueName(): CatalogueName {
+/** [STORE-WORDS sweep] The selected store's kind, from the same stores read the console shell makes (undefined while
+ *  it loads). An order that names its own store's kind is worded by that; this is the fallback. `cachedOnly`: read
+ *  the shell's copy and never start a request of its own (an order popup must not add a read). */
+export function useStoreKind({ cachedOnly = false }: { cachedOnly?: boolean } = {}): string | undefined {
   const storeId = useStoreId();
-  const stores = useQuery({ queryKey: ['stores'], queryFn: getStores });
+  const stores = useQuery({ queryKey: ['stores'], queryFn: getStores, enabled: !cachedOnly });
   const list = stores.data?.stores ?? [];
   const store = list.find((s) => s.id === storeId) ?? list.find((s) => s.id === stores.data?.selectedId);
-  return catalogueName(store?.vendorType);
+  return store?.vendorType;
+}
+
+/** The selected store's items-tab name, from the same stores read the console shell makes. */
+export function useCatalogueName(): CatalogueName {
+  return catalogueName(useStoreKind());
 }

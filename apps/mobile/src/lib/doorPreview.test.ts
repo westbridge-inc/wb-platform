@@ -12,6 +12,12 @@ describe('a card’s own facts, handed to the next screen', () => {
     expect(storePreviewOf(null)).toBeUndefined();
   });
 
+  it('[STORE-WORDS sweep · review note 1] a card that names its store kind passes it on, so a restaurant opens "Loading the menu"', () => {
+    expect(storePreviewOf({ name: 'Store a', vendorType: 'RESTAURANT' })).toEqual({ name: 'Store a', coverImageUrl: null, logoUrl: null, vendorType: 'RESTAURANT' });
+    expect(readStorePreview({ name: 'Store a', vendorType: 'STORE' })?.vendorType).toBe('STORE');
+    expect(readStorePreview({ name: 'Store a', vendorType: 4 })).toEqual({ name: 'Store a', coverImageUrl: null, logoUrl: null });
+  });
+
   it('a dish card: its name and photo key, never its price', () => {
     expect(itemPreviewOf({ id: 'i', name: 'Curry chicken', imageUrl: 'items/a/curry', price: 1000 })).toEqual({ name: 'Curry chicken', imageUrl: 'items/a/curry' });
   });

@@ -12,6 +12,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowUpRight, BarChart3, BookOpen, CalendarClock, Check, History, QrCode, Receipt, ToggleRight, UserCog } from 'lucide-react';
 import { apiFetch } from '@/lib/auth';
 import { rejectReasonsFor } from '@/lib/reject-reasons';
+import { catalogueName, useStoreKind } from '@/lib/catalogue-name';
 import { storeKey, useStoreId } from '@/lib/store-scope';
 import {
   DAY_LABELS, canAttestPayment, financialDeltaLabel, fmtWhen, guyanaDate, guyanaDayKey, hasTrailingGuyanaDays, hoursSummary,
@@ -255,7 +256,9 @@ export function ManageGrid({ store, owner, onOrderHistory }: { store: HubStore |
   const schedule = hoursSummary(hoursQ.data ?? store?.operatingHours);
   const sub = subQ.data;
   const rollingOrders = analyticsStale ? null : numericFact(analytics?.week?.orders);
-  const menuDetail = itemsQ.isError && !itemsQ.data ? 'Menu unavailable' : itemsQ.isLoading && !itemsQ.data ? 'Checking your menu…' : `${active} active · ${soldOut} sold out${itemsQ.isError && itemsQ.data ? ' · last loaded' : ''}`;
+  // [STORE-WORDS sweep] The store's own word for its items ("Menu" only for a restaurant), as the app's tile.
+  const catalogue = catalogueName(store?.vendorType);
+  const menuDetail = itemsQ.isError && !itemsQ.data ? `${catalogue} unavailable` : itemsQ.isLoading && !itemsQ.data ? `Checking your ${catalogue.toLowerCase()}…` : `${active} active · ${soldOut} sold out${itemsQ.isError && itemsQ.data ? ' · last loaded' : ''}`;
   const revenueDetail = revenueKnown
     ? `7d ${money(revenueWindow.cur.revenue)}`
     : revenueBehindAnalytics && revenueQ.isError
@@ -271,7 +274,7 @@ export function ManageGrid({ store, owner, onOrderHistory }: { store: HubStore |
       <p className={micro}>MANAGE</p>
       <h2 className="sw-heading mt-1">The whole business</h2>
       <div className="mt-4 grid grid-cols-2 gap-3 wide:grid-cols-3">
-        <Tile icon={BookOpen} label="Menu & inventory" detail={menuDetail} href="/dashboard/inventory"
+        <Tile icon={BookOpen} label={catalogue === 'Menu' ? 'Menu & inventory' : catalogue} detail={menuDetail} href="/dashboard/inventory"
           badge={soldOut > 0 ? <Pill tone="warning">{soldOut} SOLD OUT</Pill> : undefined} badgeLabel={soldOut > 0 ? `${soldOut} sold out` : undefined} />
         <Tile icon={BarChart3} label="Insights" detail={revenueDetail} href="/dashboard/insights"
           badge={revenueKnown ? <DeltaBadge cur={revenueWindow.cur.revenue} prev={revenueWindow.prev?.revenue ?? null} /> : undefined}
@@ -295,11 +298,11 @@ export function ManageGrid({ store, owner, onOrderHistory }: { store: HubStore |
 }
 
 /** VendorStaffAvailability: the floor's one tile. */
-export function StaffAvailability() {
+export function StaffAvailability({ vendorType }: { vendorType?: string | null } = {}) {
   const itemsQ = useItems();
   const items = itemsQ.data ?? [];
   const soldOut = items.filter((item) => item.isAvailable === false).length;
-  const detail = itemsQ.isError && !itemsQ.data ? 'Availability unavailable' : itemsQ.isLoading && !itemsQ.data ? 'Checking your menu…' : `${soldOut} sold out · one-tap updates`;
+  const detail = itemsQ.isError && !itemsQ.data ? 'Availability unavailable' : itemsQ.isLoading && !itemsQ.data ? `Checking your ${catalogueName(vendorType).toLowerCase()}…` : `${soldOut} sold out · one-tap updates`;
   return (
     <section aria-label="Floor tools">
       <p className={micro}>FLOOR TOOLS</p>
@@ -480,6 +483,9 @@ export function SelfDeliveryCard({ store, readFailed = false, onRetryRead = () =
  */
 export function OrderCardActions({ order, onOpen }: { order: VendorOrder; onOpen: () => void }) {
   const storeId = useStoreId();
+  // [STORE-WORDS sweep · REVIEW F3] An order from an API that does not yet name its store's kind falls back to
+  // the selected store's kind, as the app's board does.
+  const storeKind = useStoreKind({ cachedOnly: true });
   const client = useQueryClient();
   const [rejecting, setRejecting] = useState(false);
   const [confirmingDelivered, setConfirmingDelivered] = useState(false);
@@ -563,7 +569,7 @@ export function OrderCardActions({ order, onOpen }: { order: VendorOrder; onOpen
         <div className="rounded-xl bg-[var(--swift-red-50)] p-3">
           <p className="text-[13px] font-semibold text-[var(--swift-red-600)]">{order.fulfillment === 'APPOINTMENT' ? 'Decline this booking?' : 'Reject this order?'}</p>
           <div className="mt-2 flex flex-wrap gap-2">
-            {rejectReasonsFor(order.fulfillment).map((why) => (
+            {rejectReasonsFor(order.fulfillment, order.vendor?.vendorType ?? storeKind).map((why) => (
               <button key={why} type="button" disabled={busy} onClick={() => reject.mutate(why)} className="sw-btn sw-btn-md sw-btn-outline">{why}</button>
             ))}
             <button type="button" disabled={busy} onClick={() => setRejecting(false)} className="sw-btn sw-btn-md">Keep it</button>

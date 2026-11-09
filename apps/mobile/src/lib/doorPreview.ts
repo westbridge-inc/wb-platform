@@ -19,6 +19,8 @@ export interface StorePreview {
   name: string;
   coverImageUrl: string | null;
   logoUrl: string | null;
+  /** [STORE-WORDS sweep] The store's kind when the card had it: the opening says "Loading the menu" only for a restaurant. */
+  vendorType?: string;
 }
 
 /** What a dish card showed: enough to draw the dish's header while its store's menu loads. */
@@ -34,7 +36,8 @@ export function storePreviewOf(row: unknown): StorePreview | undefined {
   const r = (row ?? {}) as Record<string, unknown>;
   const name = text(r['name']);
   if (!name) return undefined;
-  return { name, coverImageUrl: text(r['coverImageUrl']), logoUrl: text(r['logoUrl']) };
+  const vendorType = text(r['vendorType']);
+  return { name, coverImageUrl: text(r['coverImageUrl']), logoUrl: text(r['logoUrl']), ...(vendorType ? { vendorType } : {}) };
 }
 
 /** The dish card's own facts (from the server's feed row), or nothing when it has no name. */

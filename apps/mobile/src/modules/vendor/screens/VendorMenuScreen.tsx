@@ -45,6 +45,7 @@ import { MENU_LIST_WINDOW } from '../../../lib/listPerformance';
 export const OUTSIDE_PHOTO_NOTE = "Its old photo link isn't shown to customers. Upload the photo again.";
 import { Switch as AvailabilitySwitch } from '../../../kit/switch';
 import { catalogueMeta, safeVendorRole, numericFact } from '../shared';
+import { storeKindWords } from '../../../lib/storeKindWords';
 import { catalogueCheckLine } from '../../../lib/catalogueCheck';
 
 export function MenuItemRow({
@@ -402,6 +403,8 @@ export function CategoryHeader({ cat, canEdit }: { cat: any; canEdit: boolean })
   const [name, setName] = useState<string>(cat.name);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const itemCount = (cat.items ?? []).length;
+  // [STORE-WORDS sweep] The store's own word for its items: "menu" only for a restaurant.
+  const yourCatalogue = `your ${storeKindWords(useVendorProfile().store?.vendorType).catalogue.replace(/^the /, '')}`;
   // [IMAGES-E2E PR4/PR5] The section's own photo: above the section on the store page, and Home can show it.
   const [photoOpen, setPhotoOpen] = useState(false);
   const [photoError, setPhotoError] = useState<string | null>(null);
@@ -587,8 +590,8 @@ export function CategoryHeader({ cat, canEdit }: { cat: any; canEdit: boolean })
         </PopupTitle>
         <T variant="body" tone="muted" center style={{ marginTop: space.sm }}>
           {itemCount > 0
-            ? `This removes the section AND its ${itemCount} item${itemCount === 1 ? '' : 's'} from your menu.`
-            : 'This removes the empty section from your menu.'}
+            ? `This removes the section AND its ${itemCount} item${itemCount === 1 ? '' : 's'} from ${yourCatalogue}.`
+            : `This removes the empty section from ${yourCatalogue}.`}
         </T>
         <PillButton
           label={itemCount > 0 ? `Delete section + ${itemCount} item${itemCount === 1 ? '' : 's'}` : 'Delete section'}
@@ -692,7 +695,7 @@ export function VendorMenuScreen({ navigation }: any) {
       {menuQ.isLoading ? (
         <LoadingBlock />
       ) : menuQ.isError && !menuQ.data ? (
-        <ErrorState message="We couldn't load your menu. Check your connection and try again." onRetry={() => menuQ.refetch()} />
+        <ErrorState message={`We couldn't load your ${cat.label.toLowerCase()}. Check your connection and try again.`} onRetry={() => menuQ.refetch()} />
       ) : (
         <FlatList
           data={rows}

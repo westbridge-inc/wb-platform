@@ -7,6 +7,8 @@ import { acceptOrder, money, refundLine, rejectOrder, type VendorOrder } from '@
 // The app's own O-4 rules and words (plain file, imported as is).
 import { OUT_OF_STOCK_WORDS, canMarkOutOfStock, customerDeciding, lastLineStanding, lineStockWords, nothingToAccept } from '../../../mobile/src/modules/vendor/storeOrderRules';
 import { rejectReasonsFor } from '@/lib/reject-reasons';
+import { readyTimeLabel } from '@/lib/store-kind-words';
+import { useStoreKind } from '@/lib/catalogue-name';
 // The app's own clock wording (plain file, imported as is).
 import { acceptClockLabel } from '../../../mobile/src/modules/vendor/acceptClock';
 import { formatAppointmentSlot } from '@/lib/appointmentTime';
@@ -61,6 +63,9 @@ function audioContext(ref: { current: AudioContext | null }): AudioContext | nul
 export default function NewOrderTakeover({ orders, onOpenOrder }: { orders: VendorOrder[]; onOpenOrder?: (_id: string) => void }) {
   const queryClient = useQueryClient();
   const storeId = useStoreId();
+  // [STORE-WORDS sweep · REVIEW F3] An order from an API that does not yet name its store's kind falls back to
+  // the selected store's kind, as the app's board does.
+  const storeKind = useStoreKind({ cachedOnly: true });
   const [seen, setSeen] = useState<Set<string> | null>(null); // null until first poll
   const [queue, setQueue] = useState<VendorOrder[]>([]);
   const [prepTime, setPrepTime] = useState(20);
@@ -362,7 +367,7 @@ export default function NewOrderTakeover({ orders, onOpenOrder }: { orders: Vend
             className="min-h-11 w-full min-w-0 rounded-lg border border-black/10 px-2 py-3 text-sm min-[400px]:w-auto"
           >
             {[10, 15, 20, 30, 45, 60].map((m) => (
-              <option key={m} value={m}>{m} min prep</option>
+              <option key={m} value={m}>{readyTimeLabel(current.vendor?.vendorType ?? storeKind, m)}</option>
             ))}
           </select>}
           <button
@@ -387,7 +392,7 @@ export default function NewOrderTakeover({ orders, onOpenOrder }: { orders: Vend
         {rejecting && (
           <div role="group" aria-label={booking ? 'Why are you declining?' : 'Why are you rejecting?'} className="mt-3 flex flex-col items-stretch gap-2">
             <p className="text-sm font-semibold">{booking ? 'Why are you declining? The customer is told.' : 'Why are you rejecting? The customer is told.'}</p>
-            {rejectReasonsFor(current.fulfillment).map((why) => (
+            {rejectReasonsFor(current.fulfillment, current.vendor?.vendorType ?? storeKind).map((why) => (
               <button
                 key={why}
                 onClick={() => reject.mutate({ id: current.id, reason: why })}

@@ -14,6 +14,7 @@ import {
   BRANCH_COPY, awaitingApproval, bulkOutcomeLine, forEachBranch, goLiveOf, menuCopyLines, newCopyKey, ownerStepWords, refusalWords, storeLabel, type MenuCopyResult,
 } from '../../../lib/branches';
 import { orderStatusLabel } from '../../../lib/orderStatus';
+import { catalogueMeta } from '../shared';
 
 const TERMINAL = new Set(['DELIVERED', 'COMPLETED', 'CANCELLED', 'REJECTED', 'FAILED', 'REFUNDED', 'RETURNED']);
 
@@ -26,6 +27,8 @@ const TERMINAL = new Set(['DELIVERED', 'COMPLETED', 'CANCELLED', 'REJECTED', 'FA
 export function VendorBranchesScreen({ navigation }: { navigation?: { navigate?: (s: string, p?: Record<string, unknown>) => void; goBack?: () => void } }) {
   const qc = useQueryClient();
   const { store, myRole } = useVendorProfile();
+  // [STORE-WORDS sweep] The store's own word for its items: "menu" only for a restaurant.
+  const catalogueLower = catalogueMeta(store?.vendorType).label.toLowerCase();
   const isOwner = myRole === 'OWNER';
   const canManage = myRole === 'OWNER' || myRole === 'MANAGER';
   const storesQ = useBranchStores();
@@ -195,9 +198,9 @@ export function VendorBranchesScreen({ navigation }: { navigation?: { navigate?:
 
         {canManage && stores.length > 1 ? (
           <Card>
-            <T variant="title">Copy a menu</T>
+            <T variant="title">{catalogueLower === 'menu' ? 'Copy a menu' : `Copy ${catalogueLower}`}</T>
             <T variant="caption" tone="muted" style={{ marginTop: 4 }}>
-              Into a branch whose menu is still empty. Prices, options and photos come across; stock counts don’t (each branch counts its own).
+              {`Into a branch whose ${catalogueLower} ${catalogueLower === 'menu' ? 'is' : 'are'} still empty.`} Prices, options and photos come across; stock counts don’t (each branch counts its own).
             </T>
             <T variant="label" weight="semibold" style={{ marginTop: space.md }}>From</T>
             <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: space.sm, marginTop: 4 }}>
@@ -208,13 +211,13 @@ export function VendorBranchesScreen({ navigation }: { navigation?: { navigate?:
               {stores.filter((s) => s.id !== copyFrom).map((s) => <Chip key={s.id} label={s.name} selected={copyTo === s.id} onPress={() => pickCopy(copyFrom, s.id)} />)}
             </View>
             <PillButton
-              label={!copyFrom || !copyTo ? 'Choose both branches' : `Copy ${nameOf(copyFrom)}’s menu`}
+              label={!copyFrom || !copyTo ? 'Choose both branches' : `Copy ${nameOf(copyFrom)}’s ${catalogueLower}`}
               style={{ marginTop: space.md }}
               disabled={!copyFrom || !copyTo || copyFrom === copyTo}
               loading={copyMenu.isPending}
               onPress={() => copyFrom && copyTo && copyMenu.mutate({ toStoreId: copyTo, fromStoreId: copyFrom, copyKey })}
             />
-            {copyMenu.isError ? <T variant="caption" tone="error" style={{ marginTop: space.sm }}>{refusalWords(copyMenu.error, 'Couldn’t copy the menu. Try again.')}</T> : null}
+            {copyMenu.isError ? <T variant="caption" tone="error" style={{ marginTop: space.sm }}>{refusalWords(copyMenu.error, `Couldn’t copy the ${catalogueLower}. Try again.`)}</T> : null}
             {copied ? menuCopyLines(copied).map((line) => <T key={line} variant="caption" style={{ marginTop: 4 }}>{line}</T>) : null}
           </Card>
         ) : null}

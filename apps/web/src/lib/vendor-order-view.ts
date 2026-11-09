@@ -7,6 +7,7 @@
 import { formatAppointmentSlot } from './appointmentTime';
 import { storeOrderStatusWords } from '@swift/types/src/order-words';
 import type { VendorOrder } from './vendor-api';
+import { promisedTimeName } from './store-kind-words';
 
 /** The phone's pill words, from the one shared map (@swift/types order-words).
  *  A status this build does not know reads "Status unavailable", never the code. */
@@ -51,7 +52,8 @@ export function telHref(phone: string | null | undefined): string | null {
   return /^\+?\d{5,}$/.test(digits) ? `tel:${digits}` : null;
 }
 
-/** "Quoted prep time: 20 min · actual 18 min (ready 1:05 PM)" — the phone's line. */
+/** "Quoted prep time: 20 min · actual 18 min (ready 1:05 PM)" — the phone's line. [STORE-WORDS sweep] "prep time" only
+ *  for a restaurant; any other store quoted a "ready time". */
 export function prepTimeLine(o: VendorOrder): string | null {
   if (!o.estimatedPrepTime) return null;
   const ready = o.readyAt ? Date.parse(o.readyAt) : NaN;
@@ -59,7 +61,7 @@ export function prepTimeLine(o: VendorOrder): string | null {
   const actual = Number.isFinite(ready) && Number.isFinite(accepted)
     ? ` · actual ${Math.max(1, Math.round((ready - accepted) / 60000))} min (ready ${new Date(ready).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', timeZone: 'America/Guyana' })})`
     : '';
-  return `Quoted prep time: ${o.estimatedPrepTime} min${actual}`;
+  return `Quoted ${promisedTimeName(o.vendor?.vendorType)}: ${o.estimatedPrepTime} min${actual}`;
 }
 
 /** "18 Oct, 1:05 PM" for the timeline and the cancellation line. */

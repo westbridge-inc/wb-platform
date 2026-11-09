@@ -57,8 +57,8 @@ describe('[RIDER-SAFE 4] How many orders at once', () => {
   // minutes"); nothing queues. The card says exactly that, and counts one order as one.
   it('says what happens at the limit: customers cannot order until one is collected or cancelled', () => {
     expect(kitchenCapacityLine(null)).toBe('No limit. Set one if too many orders at once would make every order late: customers are asked to try again in a few minutes.');
-    expect(kitchenCapacityLine(1)).toBe('Up to 1 order at a time (new, cooking or ready). Once you have that many, customers cannot order from you until one is collected or cancelled: they are asked to try again in a few minutes.');
-    expect(kitchenCapacityLine(12)).toBe('Up to 12 orders at a time (new, cooking or ready). Once you have that many, customers cannot order from you until one is collected or cancelled: they are asked to try again in a few minutes.');
+    expect(kitchenCapacityLine(1, 'RESTAURANT')).toBe('Up to 1 order at a time (new, cooking or ready). Once you have that many, customers cannot order from you until one is collected or cancelled: they are asked to try again in a few minutes.');
+    expect(kitchenCapacityLine(12, 'RESTAURANT')).toBe('Up to 12 orders at a time (new, cooking or ready). Once you have that many, customers cannot order from you until one is collected or cancelled: they are asked to try again in a few minutes.');
     for (const n of [null, 1, 12]) expect(kitchenCapacityLine(n)).not.toMatch(/wait|queue/i);
   });
 

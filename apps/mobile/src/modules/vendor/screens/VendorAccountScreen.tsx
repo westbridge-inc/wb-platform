@@ -337,6 +337,7 @@ export function VendorAccountScreen() {
         {isManager && store && !samplePreview && store.vendorType !== 'SERVICE' ? (
           <KitchenCapacityCard
             value={storedKitchenCapacity(store)}
+            vendorType={store.vendorType}
             saving={saveKitchen.isPending}
             error={kitchenError}
             onSave={(n) => saveKitchen.mutate(n)}

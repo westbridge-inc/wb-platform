@@ -101,7 +101,9 @@ describe('[REVIEW-F #2142 S4-2] a refusal in plain words', () => {
     expect(refusalWords(new ApiRequestError('Swift doesn\'t allow this item: alcohol.', 409, 'PROHIBITED_ITEM'))).toBe('Swift doesn\'t allow this item: alcohol.');
   });
   it('an item or section deleted on another device: plain words, never the internal id', () => {
-    expect(refusalWords(new ApiRequestError('Category with id cm0abc123 not found', 404, 'NOT_FOUND'))).toBe(ITEM_GONE_WORDS);
+    expect(refusalWords(new ApiRequestError('Category with id cm0abc123 not found', 404, 'NOT_FOUND'), 'RESTAURANT')).toBe(ITEM_GONE_WORDS);
+    // [STORE-WORDS sweep] A store whose kind is not known gets plain words, never a kitchen's, and never the id.
+    expect(refusalWords(new ApiRequestError('Category with id cm0abc123 not found', 404, 'NOT_FOUND'))).toBe('This section or item was removed on another phone. Go back and open the catalogue again.');
   });
   it.each(['VALIDATION_ERROR', 'DUPLICATE', 'INTERNAL_ERROR'])('%s: no words for a person (the caller keeps its sentence)', (code) => {
     expect(refusalWords(new ApiRequestError('Unique constraint failed on the fields: (`sku`)', 409, code))).toBeNull();

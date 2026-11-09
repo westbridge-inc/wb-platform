@@ -2534,7 +2534,8 @@ export async function vendorRoutes(app: FastifyInstance) {
           rider: { select: riderCounterpartySelect({ withPhone: true }) },
           // Franchise roll-up: the board aggregates every store the owner has, so each
           // order needs to say which store it belongs to.
-          vendor: { select: { id: true, name: true, selfDeliveryEnabled: true, requirePickupCode: true } },
+          // [STORE-WORDS sweep] vendorType: each order speaks its own store's kind (a chain may run a restaurant and a shop).
+          vendor: { select: { id: true, name: true, vendorType: true, selfDeliveryEnabled: true, requirePickupCode: true } },
         },
         orderBy: { placedAt: 'desc' },
         skip: pagination.skip,
@@ -3205,8 +3206,8 @@ export async function vendorRoutes(app: FastifyInstance) {
     if (alert) {
       // After the commit, never failing the tap: the sale stands whether or not the alert goes out.
       void (async () => {
-        const vendor = await app.prisma.vendor.findUnique({ where: { id: item.vendorId }, select: { owner: { select: { userId: true } } } });
-        if (vendor?.owner?.userId) await notifications.lowStock(vendor.owner.userId, alert);
+        const vendor = await app.prisma.vendor.findUnique({ where: { id: item.vendorId }, select: { vendorType: true, owner: { select: { userId: true } } } });
+        if (vendor?.owner?.userId) await notifications.lowStock(vendor.owner.userId, alert, vendor.vendorType);
       })().catch((err) => request.log.warn({ err, itemId: item.id }, '[IN-STORE-SALE] low-stock alert failed; the sale stands'));
     }
     return saleAnswer(item.id, receipt, false);

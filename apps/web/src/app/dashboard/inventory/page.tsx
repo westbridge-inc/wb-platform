@@ -281,7 +281,7 @@ export default function InventoryPage() {
       await (await import('@/lib/menu-export')).downloadMenuCsv(storeId);
       setExportState({ busy: false, error: null });
     } catch (e) {
-      setExportState({ busy: false, error: e instanceof Error && e.message ? e.message : 'Couldn\u2019t export the menu. Try again.' });
+      setExportState({ busy: false, error: e instanceof Error && e.message ? e.message : `Couldn\u2019t export the ${catalogue.toLowerCase()}. Try again.` });
     }
   };
 
@@ -304,7 +304,7 @@ export default function InventoryPage() {
           {manager && !emptyMenu && (
             <button type="button" disabled={exportState.busy} onClick={() => void exportMenu()}
               className="rounded-lg border border-[var(--swift-border)] px-4 py-2 text-sm font-semibold hover:bg-[var(--swift-subtle)]">
-              {exportState.busy ? 'Exporting…' : 'Export menu (CSV)'}
+              {exportState.busy ? 'Exporting…' : `Export ${catalogue.toLowerCase()} (CSV)`}
             </button>
           )}
           {manager && (
@@ -346,11 +346,11 @@ export default function InventoryPage() {
         {manager && <button type="button" className="sw-chip" onClick={() => setDialog({ kind: 'section', mode: 'add', section: null })}>+ Add section</button>}
       </div>
 
-      {items.isError && <DataUnavailable what="your menu" error={items.error} onRetry={() => void items.refetch()} />}
-      {categories.isError && <DataUnavailable what="your menu categories" error={categories.error} onRetry={() => void categories.refetch()} />}
+      {items.isError && <DataUnavailable what={yourCatalogue(catalogue).toLowerCase()} error={items.error} onRetry={() => void items.refetch()} />}
+      {categories.isError && <DataUnavailable what={`${yourCatalogue(catalogue).toLowerCase()} categories`} error={categories.error} onRetry={() => void categories.refetch()} />}
       {vat.isError && <DataUnavailable what="your VAT settings" error={vat.error} onRetry={() => void vat.refetch()} />}
       {vatRate != null && <VatNote />}
-      {items.isLoading && <div className="sw-empty" role="status"><span className="sw-skeleton h-24 w-full" />Loading your menu…</div>}
+      {items.isLoading && <div className="sw-empty" role="status"><span className="sw-skeleton h-24 w-full" />Loading {yourCatalogue(catalogue).toLowerCase()}…</div>}
       {!items.isLoading && !items.isError && !list.length && <p className="sw-board-empty">No items match.</p>}
       {groups.map(({ section, rows }) => (
         <section key={section?.id ?? 'other'} aria-label={section?.name ?? 'Other items'}>

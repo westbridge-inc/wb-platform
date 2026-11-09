@@ -166,7 +166,7 @@ export default function OrdersPage() {
         {other.some(b => b.key === bucket) && <div className="grid gap-4 wide:grid-cols-2">{(byBucket.get(bucket) ?? []).map(row)}{!orders.isError && !byBucket.get(bucket)?.length && <p className="sw-board-empty">Nothing in “{BUCKETS.find(b => b.key === bucket)?.label}”.</p>}</div>}
       </section>
     </>}
-    {manager ? <ManageGrid store={store.data} owner={role === 'OWNER'} onOrderHistory={() => setBucket('done')} /> : <StaffAvailability />}
+    {manager ? <ManageGrid store={store.data} owner={role === 'OWNER'} onOrderHistory={() => setBucket('done')} /> : <StaffAvailability vendorType={store.data?.vendorType} />}
     {store.data && <div className="grid gap-4 wide:grid-cols-2">
       <StoreStatusCard store={store.data} manager={manager} owner={role === 'OWNER'} readFailed={store.isError} onRetryRead={() => void store.refetch()} />
       {manager && storeLive && <SelfDeliveryCard store={store.data} readFailed={store.isError} onRetryRead={() => void store.refetch()} />}

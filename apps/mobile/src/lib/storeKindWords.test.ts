@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest';
-import { orderReadyEstimate, ratingTagFitsStore, readyTimeLabel, searchItemsHeading, storeKindWords } from './storeKindWords';
+import {
+  itemGoneWords, orderReadyEstimate, promisedTimeName, ratingTagFitsStore, readyTimeLabel, searchItemsHeading, storeKindWords, tooBusyReason,
+  workingOrderWord,
+} from './storeKindWords';
 
 // [STORE-WORDS · owner 9 Nov 2026] A store's words follow its kind. Only a restaurant speaks of onions,
 // prep and a menu; a kind this build does not know gets neutral words, never a kitchen's.
@@ -14,7 +17,22 @@ describe('storeKindWords', () => {
       itemGoneTitle: 'This item is no longer on the menu.',
       itemGoneBody: 'The store took it off. Pick something else from its menu.',
       qrWelcome: 'Dining in? Browse our menu here and place your order with your server.',
+      allItemsChip: 'Full menu',
     });
+  });
+
+  it('[sweep] the "every section" chip: "Full menu" only for a restaurant', () => {
+    for (const kind of ['SUPERMARKET', 'STORE', 'SERVICE', 'SOMETHING_NEW', undefined]) {
+      expect(storeKindWords(kind).allItemsChip, String(kind)).toBe('All');
+    }
+  });
+
+  it('[sweep · review note 2] a service business reads "services", never "list", and books at the counter', () => {
+    const words = storeKindWords('SERVICE');
+    expect(words.catalogue).toBe('the services');
+    expect(words.itemGoneBody).toBe('The business took it off. Pick something else from its services.');
+    expect(words.qrWelcome).toBe('Here in person? Browse what this business offers and book at the counter.');
+    expect(Object.values(words).join(' | ')).not.toMatch(/\blist\b|sells/);
   });
 
   it('each store kind gets its own note hint', () => {
@@ -83,5 +101,30 @@ describe('searchItemsHeading', () => {
     expect(searchItemsHeading('SUPERMARKET')).toBe('Products');
     expect(searchItemsHeading(undefined)).toBe('Dishes and products');
     expect(searchItemsHeading('STORE')).toBe('Dishes and products');
+  });
+});
+
+describe('[sweep] itemGoneWords', () => {
+  it('a restaurant keeps its sentence; any other store reads its own word for its items', () => {
+    expect(itemGoneWords('RESTAURANT')).toBe('This section or item was removed on another phone. Go back and open the menu again.');
+    expect(itemGoneWords('SUPERMARKET')).toBe('This section or item was removed on another phone. Go back and open the catalogue again.');
+    for (const kind of ['STORE', 'SERVICE', undefined]) expect(itemGoneWords(kind)).not.toMatch(KITCHEN);
+  });
+});
+
+describe('[sweep] the store\'s own order words', () => {
+  it('a restaurant keeps its kitchen words exactly', () => {
+    expect(tooBusyReason('RESTAURANT')).toBe('Kitchen is too busy');
+    expect(promisedTimeName('RESTAURANT')).toBe('prep time');
+    expect(workingOrderWord('RESTAURANT')).toBe('cooking');
+  });
+
+  it('any other store (unknown and missing kinds included) gets counter words', () => {
+    for (const kind of ['SUPERMARKET', 'STORE', 'SERVICE', 'SOMETHING_NEW', null, undefined]) {
+      expect(tooBusyReason(kind), String(kind)).toBe('Too busy right now');
+      expect(promisedTimeName(kind), String(kind)).toBe('ready time');
+      expect(workingOrderWord(kind), String(kind)).toBe('being prepared');
+      expect([tooBusyReason(kind), promisedTimeName(kind), workingOrderWord(kind)].join(' ')).not.toMatch(KITCHEN);
+    }
   });
 });

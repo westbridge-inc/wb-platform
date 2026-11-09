@@ -486,7 +486,8 @@ export default function OrderDetailPage() {
   const holdExpiryMs = holdExpiresAt ? new Date(holdExpiresAt).getTime() : 0;
   const holdActive = !stopped && !order.rider && order.status === 'PENDING' && Number.isFinite(holdExpiryMs) && holdExpiryMs > now;
   const isTaxi = order.orderType === 'TAXI';
-  const readyEstimate = orderReadyEstimate(order.vendor?.vendorType, order.estimatedPrepTime);
+  // [STORE-WORDS sweep · review note 3] A booking is never "ready": it has its appointment time instead.
+  const readyEstimate = order.fulfillment === 'APPOINTMENT' ? null : orderReadyEstimate(order.vendor?.vendorType, order.estimatedPrepTime);
   // [BUG-HUNT-2 G04] At the pickup the server decides (nobody aboard, 15 minutes after the arrival): it read the code, this page cannot.
   const taxiCancellationUnknown = isTaxi && order.status === 'RIDE_IN_PROGRESS';
   const canOfferCancellation = Boolean(order.canCancel) && !stopped && !taxiCancellationUnknown;

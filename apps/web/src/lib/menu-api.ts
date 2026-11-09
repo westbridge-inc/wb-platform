@@ -1,5 +1,6 @@
 import { apiFetch, ApiRequestError } from '@/lib/auth';
 import type { CatalogItem } from '@/lib/vendor-api';
+import { itemGoneWords } from '@/lib/store-kind-words';
 
 // [TAP-AUDIT 27 Oct · owner rule 11 Oct: the website copies the app] The menu writes the phone's item editor and
 // Products tab make (apps/mobile/src/services/api.ts vendorApi, same routes, same bodies), so the web dashboard can add
@@ -54,12 +55,15 @@ export const deleteOption = (id: string) => apiFetch(`${V}/options/${id}`, { met
  *  "Category with id … not found" names an internal id, so the store reads this instead. */
 export const ITEM_GONE_WORDS = 'This section or item was removed on another phone. Go back and open the menu again.';
 
+/** [STORE-WORDS sweep] The same words in the store's kind, from the app's word list ("the menu" only for a restaurant). */
+export { itemGoneWords };
+
 /** Why the server refused, in its own words (a banned word, documents not yet checked). A refusal with no words for a
  *  person (the form's shape, a duplicate, a server fault) gives null, so the caller keeps its own sentence; a missing
  *  item or section says so in plain words. */
-export function refusalWords(error: unknown): string | null {
+export function refusalWords(error: unknown, vendorType?: string | null): string | null {
   if (!(error instanceof ApiRequestError)) return null;
-  if (error.code === 'NOT_FOUND') return ITEM_GONE_WORDS;
+  if (error.code === 'NOT_FOUND') return itemGoneWords(vendorType);
   if (error.code === 'VALIDATION_ERROR' || error.code === 'DUPLICATE' || error.code === 'INTERNAL_ERROR' || !error.message.trim()) return null;
   return error.message;
 }
