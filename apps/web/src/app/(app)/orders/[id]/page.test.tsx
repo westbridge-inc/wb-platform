@@ -898,3 +898,23 @@ describe('[owner 8 Nov 2026] the order page says the store declined it, and why'
     expect(screen.queryByRole('link', { name: 'Order from another store' })).toBeNull();
   });
 });
+
+describe('[STORE-WORDS · owner 9 Nov 2026] the order\'s ready estimate speaks the store\'s kind', () => {
+  const estimate = async (vendorType: string | undefined) => {
+    vi.spyOn(orders, 'getOrder').mockResolvedValue({
+      ...ORDER, paymentAction: null, estimatedPrepTime: 20, vendor: { id: 'v1', name: 'Westbridge Inc.', vendorType },
+    } as never);
+    render(<OrderDetailPage />);
+    return (await screen.findByRole('heading', { name: 'From order to handover' })).closest('section')!.textContent ?? '';
+  };
+
+  it('a shop\'s order: "Ready in about 20 min", never "prep"', async () => {
+    const text = await estimate('STORE');
+    expect(text).toContain('Ready in about 20 min');
+    expect(text).not.toMatch(/\bprep\b/);
+  });
+
+  it('a restaurant\'s order is unchanged: "About 20 min prep"', async () => {
+    expect(await estimate('RESTAURANT')).toContain('About 20 min prep');
+  });
+});

@@ -10,6 +10,7 @@ import { DARK_BLURHASH, vendorPhoto } from '../../../lib/images';
 import { Chip, ErrorState, Header, IconChip, LoadingBlock, PillButton, PopupCard, PopupTitle, Screen, Stars, T } from '../../../kit';
 import { afterDismiss } from '../../../kit/after-dismiss';
 import { useRowHold } from '../../../lib/useRowHold';
+import { ratingTagFitsStore } from '../../../lib/storeKindWords';
 
 const GUTTER = space['2xl'];
 
@@ -44,19 +45,22 @@ function TextArea({ value, onChangeText, placeholder }: { value: string; onChang
 const RATING_MAX_TAGS = 4;
 const BRIDGE_TAGS = ['missing-items', 'wrong-item', 'cold-food', 'not-as-described'];
 
-function TagChips({
+export function TagChips({
   score,
   sets,
   selected,
   onToggle,
+  vendorType,
 }: {
   score: number;
   sets: { positive: Array<{ slug: string; label: string }>; negative: Array<{ slug: string; label: string }> } | undefined;
   selected: string[];
   onToggle: (slug: string) => void;
+  /** [STORE-WORDS] The store's kind: a shop or a service business is never offered "Tasty food" or "Arrived cold". */
+  vendorType?: string | null;
 }) {
   if (!score || !sets) return null;
-  const band = score <= 3 ? sets.negative : sets.positive;
+  const band = (score <= 3 ? sets.negative : sets.positive).filter((t) => ratingTagFitsStore(t.slug, vendorType));
   if (band.length === 0) return null;
   return (
     <View style={{ alignSelf: 'stretch', marginTop: space['2xl'] }}>
@@ -235,7 +239,7 @@ export function FeedbackScreen() {
           ) : null}
           {step === 0 ? (
             <>
-              <TagChips score={vendorScore} sets={tags.data?.['VENDOR']} selected={vendorTags} onToggle={toggle(setVendorTags)} />
+              <TagChips score={vendorScore} sets={tags.data?.['VENDOR']} selected={vendorTags} onToggle={toggle(setVendorTags)} vendorType={o?.vendor?.vendorType} />
 
               {/* Low-star bridge (R5): a rating is a signal; a case is a
                   remedy — route real problems into the existing help flow. */}

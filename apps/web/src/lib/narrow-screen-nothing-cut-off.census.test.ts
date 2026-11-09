@@ -222,7 +222,7 @@ const PENDING_ELSEWHERE: Record<string, string> = {
 /** Reviewed: it fits at 360px. Every entry must still match a real hit. */
 const KNOWN: Record<string, string> = {
   'components/advertiser-campaigns.tsx | R2 <span "sw-status"> no-wrap value, no ellipsis': 'Two rows (campaign card title, creative review): the pill shows a campaign/creative status in words, the longest "pending payment" (~130px at 13px with padding), beside a flex-1 name that wraps; it fits in 312px.',
-  'app/(app)/orders/[id]/page.tsx | R2 <span {styles.estimate}> no-wrap value, no ellipsis': 'A short fixed phrase ("About N min prep", ~120px at 13px) beside a heading block that wraps (it has no no-wrap or min-width rule), so the heading takes the line break, not the estimate.',
+  'app/(app)/orders/[id]/page.tsx | R2 <span {styles.estimate}> no-wrap value, no ellipsis': 'A short fixed phrase ("About N min prep", or "Ready in about N min" for a store that is not a restaurant, ~135px at 13px) beside a heading block that wraps (it has no no-wrap or min-width rule), so the heading takes the line break, not the estimate.',
 };
 
 const RESULT = census(Object.fromEntries([...sources(SRC), join(SRC, GLOBALS)].map((p) => [relative(SRC, p), readFileSync(p, 'utf8')])));
