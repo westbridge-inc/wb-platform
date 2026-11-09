@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { HANDOVER_WORDS, canMarkHandedToRider, handoverNeedsNoCode, pickupCheckWords, riderHandoverLine, riderPhotoUrl, withHandoverSteps } from './storeHandover';
+import { HANDOVER_WORDS, boardStepLabel, canMarkHandedToRider, handoverNeedsNoCode, pickupBoardWords, pickupCheckWords, riderHandoverLine, riderPhotoUrl, withHandoverSteps } from './storeHandover';
 import { cardTapFor } from './boardTaps';
 
 // ---------------------------------------------------------------------------
@@ -152,7 +152,7 @@ describe('[O-2] the phone sends the right request for each', () => {
   it('[REVIEW-F S3-1/S4-1 on #2054] the board card shows the rider check only beside its "Handed to rider" button, and the takeaway line through pickupCheckWords', () => {
     const board = read('src/modules/vendor/screens/VendorOps.tsx');
     expect(board).toMatch(/\{actions\.some\(\(a\) => a\.action === 'handed-to-rider'\) \? <RiderHandoverLine rider=\{order\.rider\} \/> : null\}/);
-    expect(board).toMatch(/\{pickupCheckWords\(order, mmgDisputePaused\(order\)\) \?\? 'Ask the customer for their code at collection'\}/);
+    expect(board).toMatch(/\{pickupBoardWords\(order, mmgDisputePaused\(order\)\)\}/);
     expect(board).not.toMatch(/canMarkHandedToRider\(order\) \? <RiderHandoverLine/);
   });
   it('the tap\'s answer writes handedToRiderAt into the order\'s caches', () => {
@@ -203,3 +203,43 @@ describe('[O-2] the hand-overs ride on top of the shared steps (withHandoverStep
   });
 });
 
+
+// [owner 9 Nov 2026] With the store's code ON, a board card never offers a tap that hands the order over: it says whom
+// to ask for the code and its button opens the order, where the code is typed. With the code OFF, today's one tap stays.
+describe('[owner 9 Nov] the board card with the pickup code on: ask for the code, open the order', () => {
+  const takeaway = (extra: Record<string, unknown> = {}) => ({ status: 'READY_FOR_PICKUP', fulfillment: 'PICKUP', orderNumber: 'SW-6004', customer: { firstName: 'Asha' }, ...extra });
+  const pickedUp = [{ label: 'Mark picked up', action: 'complete-pickup' as const }];
+  it('code on: the button says what it does ("Enter their code"), and it opens the order', () => {
+    const steps = withHandoverSteps(takeaway({ pickupCodeRequired: true }), pickedUp, false);
+    expect(steps.map(boardStepLabel)).toEqual(['Enter their code']);
+    expect(steps.map((s) => s.label)).not.toContain('Handed to customer');
+    expect(cardTapFor(steps[0]!.action)).toBe('open');
+  });
+  it('an older server (no field): the same (the code is still needed)', () => {
+    expect(withHandoverSteps(takeaway(), pickedUp, false).map(boardStepLabel)).toEqual(['Enter their code']);
+  });
+  it('code off: today\'s one tap "Handed to customer", sent from the card', () => {
+    const steps = withHandoverSteps(takeaway({ pickupCodeRequired: false }), pickedUp, false);
+    expect(steps.map(boardStepLabel)).toEqual(['Handed to customer']);
+    expect(cardTapFor(steps[0]!.action)).toBe('send');
+  });
+  it('every other step keeps its own words', () => {
+    expect(boardStepLabel({ label: 'Ready for pickup', action: 'ready' })).toBe('Ready for pickup');
+    expect(boardStepLabel({ label: 'Reject', action: 'reject' })).toBe('Reject');
+  });
+  it('the card\'s line: whom to ask for the code (code on), the name check (code off), never a prompt on a paused order', () => {
+    expect(pickupBoardWords(takeaway({ pickupCodeRequired: true }), false)).toBe('Ask Asha for their code');
+    expect(pickupBoardWords(takeaway({ customer: null }), false)).toBe('Ask the customer for their code');
+    expect(pickupBoardWords(takeaway({ pickupCodeRequired: false }), false)).toBe('Check the name before you hand it over: Asha · order #SW-6004');
+    expect(pickupBoardWords(takeaway({ pickupCodeRequired: true }), true)).toBe(HANDOVER_WORDS.collects);
+    expect(pickupBoardWords(takeaway({ pickupCodeRequired: false }), true)).toBe(HANDOVER_WORDS.collects);
+  });
+  it('the phone card and the web card use them (button words and the line)', () => {
+    const board = read('src/modules/vendor/screens/VendorOps.tsx');
+    expect(board).toMatch(/label=\{boardStepLabel\(a\)\}/);
+    expect(board).not.toMatch(/for their code at collection/);
+    const card = read('../web/src/components/orders-home.tsx');
+    expect(card).toMatch(/\{boardStepLabel\(a\)\}/);
+    expect(card).toMatch(/actions\.some\(\(a\) => a\.action === 'complete-pickup'\) && <p className="sw-caption font-semibold">\{HANDOVER_WORDS\.askCode\(order\.customer\?\.firstName\)\}<\/p>/);
+  });
+});
