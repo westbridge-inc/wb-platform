@@ -67,9 +67,16 @@ describe('[customers take no photos] the words say a customer never needs a phot
     expect(TERMS).toContain('An account requires a phone number verified by SMS code. A customer never needs an ID or a photo to use Swift, and Swift does not ask a customer for either.');
   });
 
-  it('Privacy: the registration selfie is for partners and advertisers; a customer is never shown by photo', () => {
-    expect(PRIVACY).toContain('<li><b>A registration selfie (partners and advertisers):</b>');
-    expect(PRIVACY).toContain('A customer never needs a photo.');
+  // [OWNER-ASKS · owner ruling 9 Nov 2026 · LEGAL_VERSION 2026-11-09.2] The selfie is for riders, drivers, advertisers and
+  // service businesses that go to customers; store owners, store staff, premises-only businesses and customers never.
+  it('Privacy: the registration selfie names who takes it — and who never does; a customer is never shown by photo', () => {
+    expect(PRIVACY).toContain('<li><b>A registration selfie (riders, drivers, advertisers and businesses that visit customers):</b>');
+    expect(PRIVACY).toContain('a service business takes one when it offers to go to customers (home or mobile visits)');
+    expect(PRIVACY).toContain('A store owner, store staff, a business that serves customers only at its own place, and a customer never need one.');
+    expect(PRIVACY).toContain('A selfie taken before this change stays your in-app photo and is protected as described in this policy.');
+    expect(PRIVACY).not.toMatch(/businesses, service providers and advertisers take one/);
+    expect(PRIVACY).toContain("for a partner who takes a selfie, compares that partner's identity document with their selfie.");
+    expect(PRIVACY).not.toMatch(/compares a partner's identity document with that partner's selfie/);
     expect(PRIVACY).not.toMatch(/see each other's first names, photos and ratings/);
     expect(PRIVACY).toContain('A mover or business is never shown your last name or a photo of you.');
     // Only a taxi driver is served the passenger's rating (driver.routes ratingSurfaces CUSTOMER); a

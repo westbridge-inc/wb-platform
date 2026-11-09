@@ -235,7 +235,14 @@ import { OPERATOR, OPERATOR_ADDRESS } from './operator';
 // reads it] Terms section 5: the hourly order limit names what it counts (delivery orders, parcels and bookings) and says
 // a pickup order has no such limit (integrity/velocity orderLimitCounts). The same day, so LAST_UPDATED is unchanged and
 // the Privacy Policy and the partner agreements are byte-identical to 2026-11-09.
-export const LEGAL_VERSION = '2026-11-09.1';
+// [2026-11-09.2 · OWNER-ASKS · owner ruling 9 Nov 2026 "the selfie is only for riders and drivers, and for service pros
+// who go to the customer; store owners, store staff, premises-only pros and customers never" · NON-material: Swift asks
+// fewer people for a selfie and asks no one for more (reaccept.ts NON_MATERIAL_CHANGES) · DRAFT until the owner approves the
+// words and a Guyana attorney reads them] Privacy section (what we collect): the registration selfie names who takes it,
+// and the verification line compares a selfie only for a partner who takes one (verification/signup-selfie
+// signupSelfieRequired). The same day, so LAST_UPDATED is unchanged; the Terms and the partner agreements are
+// byte-identical to 2026-11-09.1.
+export const LEGAL_VERSION = '2026-11-09.2';
 const LAST_UPDATED = '9 November 2026'; // human form of LEGAL_VERSION
 
 function page(title: string, body: string): string {
@@ -346,10 +353,10 @@ export const PRIVACY = page(
 <h2>1. What we collect</h2>
 <ul>
 <li><b>Account:</b> your phone number (verified by SMS code), name, and optional email.</li>
-<li><b>A registration selfie (partners and advertisers):</b> riders, drivers, businesses, service providers and advertisers take one when they sign up, to deter account fraud; it becomes their in-app photo. A customer never needs a photo.</li>
+<li><b>A registration selfie (riders, drivers, advertisers and businesses that visit customers):</b> riders, drivers and advertisers take one when they sign up, and a service business takes one when it offers to go to customers (home or mobile visits), to deter account fraud; it becomes their in-app photo. A store owner, store staff, a business that serves customers only at its own place, and a customer never need one. A selfie taken before this change stays your in-app photo and is protected as described in this policy.</li>
 <li><b>Orders, rides and bookings:</b> what you ordered, addresses you save or enter, delivery instructions, and the trip/delivery history tied to your account. If you pay by MMG, your order also keeps the payment references section 2 describes.</li>
 <li><b>Location:</b> your device location while you use the app to set pickup/delivery points. For movers, live location while online or on a job — that is what powers dispatch and customer tracking. Background collection for movers happens only after a separate, explicit in-app consent, and stops when you go offline. We do not keep a lasting record of where a mover has been. We keep only: your latest position on your mover profile; a short trail of your recent positions, used to work out a job's distance and to check for false positions, and deleted 3 hours after your last position; a job's distance, never its route; a single position with the order's record at certain steps of a job, or when a problem is recorded on it, such as arrival, pickup, handover or a failed delivery; positions that look false, kept for up to 400 days so a person can review them; and, while an SOS is open on a trip, the positions added to that safety record.</li>
-<li><b>Verification documents (partners only):</b> government ID and, for movers, licence, insurance and related documents. These are stored privately; in the app they are viewable only by our verification team through short-lived signed links, each access logged. Identity verification is done by people: our verification team checks each partner document and compares a partner's identity document with that partner's selfie. Swift does not ask a customer for an ID and does not keep one. No outside identity-verification provider receives them.</li>
+<li><b>Verification documents (partners only):</b> government ID and, for movers, licence, insurance and related documents. These are stored privately; in the app they are viewable only by our verification team through short-lived signed links, each access logged. Identity verification is done by people: our verification team checks each partner document and, for a partner who takes a selfie, compares that partner's identity document with their selfie. Swift does not ask a customer for an ID and does not keep one. No outside identity-verification provider receives them.</li>
 <li><b>Messages, ratings and reports:</b> order-scoped chat messages, the ratings and review tags you give and receive, reports you file, and your block list.</li>
 <li><b>Emergency contacts:</b> if you add one, their name and phone number. We text them a verification code immediately, use the number only for your safety alerts, and never for marketing. If someone added you and you want the number removed, email <b>privacy@swiftgy.com</b>.</li>
 <li><b>Support and consent records:</b> your Help &amp; Support tickets, and the consent ledger — a tamper-evident record of each policy version you agreed to, when, and on what surface. At consent we may also store a keyed cryptographic digest of your network address as evidence of the event; the address itself cannot be read back from it.</li>

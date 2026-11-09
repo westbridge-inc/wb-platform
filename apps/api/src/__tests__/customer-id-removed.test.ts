@@ -455,7 +455,7 @@ describe('[CHECKLIST-LEGAL (b) · Q2] L2 is retired', () => {
 
 describe('[CHECKLIST-LEGAL (b)] the legal words', () => {
   it('the Terms and the Privacy Policy say Swift takes no customer ID, under 2026-11-01.1, classed non-material', () => {
-    expect(LEGAL_VERSION).toBe('2026-11-09.1'); // [LEGAL-CALLS · owner 9 Nov 2026] served now under 2026-11-09 (in-app calls in the Privacy Policy: material)
+    expect(LEGAL_VERSION).toBe('2026-11-09.2'); // [LEGAL-CALLS · owner 9 Nov 2026] served now under 2026-11-09 (in-app calls in the Privacy Policy: material)
     expect(TERMS).toContain('A customer never needs an ID or a photo to use Swift, and Swift does not ask a customer for either.');
     expect(TERMS).not.toMatch(/asks for a government-issued ID on file/);
     expect(PRIVACY).toContain('<li><b>Verification documents (partners only):</b>');
