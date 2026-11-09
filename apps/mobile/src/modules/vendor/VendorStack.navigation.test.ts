@@ -154,6 +154,8 @@ vi.mock('socket.io-client', () => ({ io: () => {
       socket.active = true; socket.connected = true; socket.connections++;
       for (const [, payload] of socket.sendBuffer.splice(0)) socket.rooms.add(payload.vendorId);
       socket.fire('connect');
+      // SWIFT's server authorizes the connection, then says so (services/socket holds room joins until then).
+      socket.fire('auth:ready');
     }),
     disconnect: vi.fn(() => {
       const was = socket.connected;

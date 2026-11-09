@@ -27,6 +27,8 @@ const fx = vi.hoisted(() => {
         socket.active = true; socket.connected = true; socket.connections++;
         for (const [event, payload] of socket.sendBuffer.splice(0)) socket.apply(event, payload);
         fire('connect');
+        // SWIFT's server authorizes the connection, then says so (services/socket holds room joins until then).
+        fire('auth:ready');
       }),
       disconnect: vi.fn(() => {
         const was = socket.connected;
@@ -91,7 +93,8 @@ describe('R3 a same-account store handoff keeps every mounted listener', () => {
     const s = fx.sockets[0]!;
     s.drop();
     s.emit('vendor:subscribe', { vendorId: 'store-a' });
-    expect(s.sendBuffer).toHaveLength(1);
+    // [STORE-ALERT-RECONNECT] Held by services/socket for the next connection's auth:ready (not in
+    // socket.io's sendBuffer, which would flush it before the server's authorization).
     reconnectSocketForStoreHandoff();
     expect(s.connected).toBe(true);
     expect([...s.rooms]).toEqual([]);

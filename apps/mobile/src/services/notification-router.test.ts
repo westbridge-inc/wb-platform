@@ -311,6 +311,10 @@ describe('store pushes land on the store’s order desk, never the customer scre
     expect(destinationFor({
       kind: 'vendor_order_alert', orderId: 'o1', orderNumber: 'SW-1001', audience: 'business', respondBy: '2026-09-24T20:10:00.000Z',
     })).toEqual({ screen: 'VendorOrderDetail', params: { orderId: 'o1', orderNumber: 'SW-1001' } });
+    // [STORE-ALERT-RECONNECT] The re-alert now names its store too, as the first alert does: same destination.
+    expect(destinationFor({
+      kind: 'vendor_order_alert', orderId: 'o1', orderNumber: 'SW-1001', audience: 'business', respondBy: '2026-09-24T20:10:00.000Z', vendorId: 'store-a',
+    })).toEqual({ screen: 'VendorOrderDetail', params: { orderId: 'o1', orderNumber: 'SW-1001' } });
   });
 });
 

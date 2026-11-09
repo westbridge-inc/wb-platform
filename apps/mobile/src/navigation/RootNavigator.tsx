@@ -21,6 +21,7 @@ import { VendorStack } from '../modules/vendor/VendorStack';
 import { AdvertiserStack } from '../modules/advertiser/AdvertiserStack';
 import { navigationRef, safeNavigate } from './navigationRef';
 import { installNotificationTapRouter, flushPendingNavigation, settleTapAfterSignIn } from '../services/notification-router';
+import { installAppSignals } from '../services/appSignals';
 import { installDeepLinkHandler, flushPendingDeepLink } from '../services/deep-links';
 import { ensureFirstLaunchClaim, flushAttributedDestination } from '../services/attribution';
 import { previewBypassForIntent, rootEntryGate, rootNavigatorBoundaryKey } from './rootEntryGate';
@@ -74,6 +75,11 @@ export function RootNavigator() {
   // The tap-router [first-open 2.4]: every notification tap lands on its
   // exact screen — cold starts flush via onReady below.
   React.useEffect(() => installNotificationTapRouter(), []);
+
+  // [STORE-ALERT-RECONNECT] The app returning to the screen and a push arriving
+  // while it is open: the socket, the store's new-order screen and a mover's
+  // offer card act on both (lib/appSignals).
+  React.useEffect(() => installAppSignals(), []);
 
   // QR deep links (/store/{slug}, /s/{code}) + the one-time install claim
   // [qr spec Part 6]: same queue-and-flush contract as the tap-router.
