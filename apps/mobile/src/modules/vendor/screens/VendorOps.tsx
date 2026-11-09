@@ -64,8 +64,9 @@ import {
 } from '../../../hooks/vendorops';
 import { DeliveryStatusNote } from '../../../components/DeliveryStatusNote';
 import { cardTapFor } from '../boardTaps';
+import { useOtaRestartHold } from '../../../hooks/useOtaRestartHold';
 import { OUT_OF_STOCK_WORDS, customerDeciding, nothingToAccept } from '../storeOrderRules';
-import { HANDOVER_WORDS, pickupCheckWords, withHandoverSteps } from '../storeHandover';
+import { HANDOVER_WORDS, boardStepLabel, pickupBoardWords, withHandoverSteps } from '../storeHandover';
 import { mmgDisputePaused } from '../order-dispute';
 import { RiderHandoverLine } from '../RiderHandoverLine';
 import { BoardNames } from '../BoardNames';
@@ -129,6 +130,8 @@ const VendorOrderCard = React.memo(function VendorOrderCard({
   const canConfirm = attestable && order.canConfirmPayment === true;
   const payBlockedReason = isMmg && !mmgPaid && !attestable ? paymentAttestBlockedReason(order.paymentStatus) : null;
   const [mmgRef, setMmgRef] = useState('');
+  // [OTA-CATCH-UP · REVIEW-1 L1 on #2431] A typed MMG reference is never lost to a restart into an update.
+  useOtaRestartHold(mmgRef.trim().length > 0);
   const items = order.itemCount ?? order.items?.length ?? 0;
   const lines: any[] = order.items ?? [];
   const isPickup = order.fulfillment === 'PICKUP';
@@ -219,9 +222,9 @@ const VendorOrderCard = React.memo(function VendorOrderCard({
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: space.sm }}>
           <MaterialCommunityIcons name="form-textbox-password" size={13} color={color.text.muted} />
           <T variant="label" tone="muted">
-            {/* [STORE-DASH · O-2] With the store's pickup code off: check the name and the order number
-                (never a hand-over prompt on a paused order — REVIEW-F S3-1 on #2054). */}
-            {pickupCheckWords(order, mmgDisputePaused(order)) ?? 'Ask the customer for their code at collection'}
+            {/* [STORE-DASH · O-2] With the store's pickup code off: check the name and the order number; on: whom
+                to ask for the code [owner 9 Nov] (never a hand-over prompt on a paused order — REVIEW-F S3-1 on #2054). */}
+            {pickupBoardWords(order, mmgDisputePaused(order))}
           </T>
         </View>
       ) : !isPickup && order.deliveryAddress ? (
@@ -317,7 +320,7 @@ const VendorOrderCard = React.memo(function VendorOrderCard({
           {actions.map((a) => (
             <PillButton
               key={a.action}
-              label={a.label}
+              label={boardStepLabel(a)}
               variant={a.action === 'reject' ? 'outline' : 'primary'}
               size="md"
               style={{ flex: 1 }}
@@ -884,6 +887,8 @@ export function VendorOps({ store, navigation }: any) {
   // as the order screen: the API refuses a rejection without a reason, so a
   // bare tap used to fail with nothing on screen.
   const [rejecting, setRejecting] = useState<{ id: string; fulfillment?: string | null } | null>(null);
+  // [OTA-CATCH-UP] Nor the reject question (its reason is being chosen).
+  useOtaRestartHold(rejecting !== null);
   const toggleOpen = useToggleOpen();
   const toggleOrders = useToggleOrders();
   const deliveryStatus = useDeliveryStatus(true);

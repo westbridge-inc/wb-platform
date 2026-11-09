@@ -58,6 +58,7 @@ export interface SdkVoice {
   connect(token: string, options?: { params?: Record<string, string>; contactHandle?: string; notificationDisplayName?: string }): Promise<SdkCall>;
   on?(event: string, listener: (...args: never[]) => void): unknown;
   getCalls?(): Promise<ReadonlyMap<string, SdkCall>>;
+  getCallInvites?(): Promise<ReadonlyMap<string, SdkCallInvite>>;
   getAudioDevices?(): Promise<{ audioDevices: SdkAudioDevice[]; selectedDevice?: SdkAudioDevice }>;
   showAvRoutePickerView?(): Promise<void>;
 }
@@ -76,6 +77,8 @@ export const SDK_EVENTS = {
   voiceCallInvite: 'callInvite',
   voiceAudioDevicesUpdated: 'audioDevicesUpdated',
   inviteAccepted: 'accepted',
+  inviteRejected: 'rejected',
+  inviteCancelled: 'cancelled',
 } as const;
 
 const NATIVE_NAME = 'TwilioVoiceReactNative';
@@ -155,12 +158,15 @@ export async function startInAppVoiceIfRegistered(): Promise<void> {
 }
 
 let started = false;
+let startedAt = 0;
+let seeded = false;
 /** The PushKit registry (iPhone) and the call-screen template. Never throws. */
 export async function startInAppVoice(): Promise<void> {
   if (started) return;
   const v = getVoice();
   if (!v) return;
   started = true;
+  startedAt = Date.now();
   try {
     if (Platform.OS === 'ios') await v.initializePushRegistry();
   } catch { /* the next start tries again */ }
@@ -378,6 +384,10 @@ async function readRoute(call: SdkCall): Promise<void> {
  */
 function trackCall(call: SdkCall, onEnded?: () => void, onFailed?: () => void): void {
   if (current?.call === call) return;
+  // [OTA-CATCH-UP · REVIEW-2 S4-b on #2431] One call seen as two objects (the invite event and the SDK's own list both
+  // answered it; a sync found it first) is tracked once: the listeners move to the newer object, and what the bar
+  // already knows (its phase, start time, speaker) stays — never a second start, never a reset Speaker.
+  const sameCall = !!current && !!sidOf(call) && sidOf(current.call) === sidOf(call);
   let phase: InCallSnapshot['phase'] = 'connecting';
   try { phase = phaseOf(call.getState?.()) ?? 'connecting'; } catch { /* connecting */ }
   let muted = false;
@@ -417,13 +427,17 @@ function trackCall(call: SdkCall, onEnded?: () => void, onFailed?: () => void): 
   };
   // One call on the bar at a time: the newest. The same call under a new object (a sync found it before the
   // answer's own object arrived) only moves the listeners over.
-  if (current) { const sid = sidOf(call); release(current, !!sid && sidOf(current.call) === sid); }
-  current = { call, onEnded, off, snap: { phase, connectedAt, muted, speaker: false, routePicker: false } };
+  const before = current;
+  if (before) release(before, sameCall);
+  current = sameCall && before
+    ? { call, onEnded: onEnded ?? before.onEnded, off, snap: before.snap.muted === muted ? before.snap : { ...before.snap, muted } }
+    : { call, onEnded, off, snap: { phase, connectedAt, muted, speaker: false, routePicker: false } };
   try {
     for (const pair of listeners) { call.on(pair[0], pair[1]); added.push(pair); }
   } catch { /* the call still runs; Hang up and the system's own screen still end it */ }
+  if (sameCall && before && current.snap === before.snap) return;
   emitInCall();
-  void readRoute(call);
+  if (!sameCall) void readRoute(call);
 }
 
 let watched: SdkVoice | null = null;
@@ -432,9 +446,7 @@ function watchVoice(v: SdkVoice): void {
   if (watched === v || typeof v.on !== 'function') return;
   watched = v;
   try {
-    v.on(SDK_EVENTS.voiceCallInvite, (invite: SdkCallInvite) => {
-      try { invite.on(SDK_EVENTS.inviteAccepted, (call: SdkCall) => trackCall(call)); } catch { /* the sync on return to the app finds it */ }
-    });
+    v.on(SDK_EVENTS.voiceCallInvite, followInvite);
     v.on(SDK_EVENTS.voiceAudioDevicesUpdated, (devices: SdkAudioDevice[], selected?: SdkAudioDevice) => {
       if (!current) return;
       patch(current.call, {
@@ -443,7 +455,34 @@ function watchVoice(v: SdkVoice): void {
       });
     });
   } catch { /* no listener: the bar still shows calls placed here */ }
-  void syncInAppCalls();
+  void seedFromSdk(v);
+}
+
+/** [OTA-CATCH-UP · REVIEW-1 S3-2 on #2431] Ringing until answered, rejected or cancelled (or the longest ring). */
+function followInvite(invite: SdkCallInvite): void {
+  if (ringing.has(invite)) return;
+  ringing.add(invite);
+  const settled = () => { ringing.delete(invite); };
+  setTimeout(settled, INVITE_RING_MAX_MS);
+  try {
+    invite.on(SDK_EVENTS.inviteAccepted, (call: SdkCall) => { settled(); trackCall(call); });
+    invite.on(SDK_EVENTS.inviteRejected, settled);
+    invite.on(SDK_EVENTS.inviteCancelled, settled);
+  } catch { settled(); /* the sync on return to the app finds an answered call */ }
+}
+
+/**
+ * [OTA-CATCH-UP · REVIEW-2 S2-1 on #2431] A call can ring (or be answered on the system's screen) before Swift's
+ * listener exists: the invite that WOKE a closed app arrives while the push registry starts. Ask the SDK for the
+ * invites and calls it already holds; until that answer is in, the phone counts as ringing.
+ */
+async function seedFromSdk(v: SdkVoice): Promise<void> {
+  try {
+    const invites = await v.getCallInvites?.();
+    for (const invite of invites?.values() ?? []) followInvite(invite);
+  } catch { /* the events still arrive */ }
+  try { await syncInAppCalls(); } catch { /* the next return asks again */ }
+  seeded = true;
 }
 
 /**
@@ -536,6 +575,20 @@ export function inAppCallActive(): boolean {
   return current !== null;
 }
 
+/** [OTA-CATCH-UP · REVIEW-1 S3-2 on #2431] The longest an unanswered invite counts as ringing (an invite the SDK never
+ *  settles must not hold the app for ever; a real ring ends well before). */
+export const INVITE_RING_MAX_MS = 90_000;
+const ringing = new Set<SdkCallInvite>();
+/** [REVIEW-2 S2-1 on #2431] The longest the voice start counts as "may be ringing" before the SDK has said what it
+ *  holds (a start that never finishes must not hold the app for ever). */
+export const SEED_MAX_MS = 15_000;
+/** Is an in-app call ringing on this phone (an invite not yet answered, rejected or cancelled), or may one be: the
+ *  calling SDK started and has not yet said which invites and calls it already holds? */
+export function inAppCallRinging(now: number = Date.now()): boolean {
+  if (ringing.size > 0) return true;
+  return started && !seeded && now - startedAt < SEED_MAX_MS;
+}
+
 export interface PlaceDeps {
   start: (orderId: string, target: CallTarget, platform: 'ios' | 'android') => Promise<{ callId: string; token: string }>;
   cancel: (callId: string) => Promise<unknown>;
@@ -580,8 +633,8 @@ export async function endInAppCall(): Promise<void> {
 
 /** Tests only: forget everything; `loader` stands in for the package (default: the real one). */
 export function resetInAppVoiceForTests(loader: () => unknown = defaultLoad, flagsFactory: () => FlagStore = defaultFlags): void {
-  sdk = undefined; voice = null; started = false; registeredAt = 0; current = null; watched = null; load = loader;
-  inCallListeners.clear(); endedSids.clear(); muteInFlight = null; speakerInFlight = null;
+  sdk = undefined; voice = null; started = false; startedAt = 0; seeded = false; registeredAt = 0; current = null; watched = null; load = loader;
+  inCallListeners.clear(); endedSids.clear(); ringing.clear(); muteInFlight = null; speakerInFlight = null;
   voiceGeneration = 0; marks = 0;
   flagStore = undefined; makeFlags = flagsFactory;
 }
