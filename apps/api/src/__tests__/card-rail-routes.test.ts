@@ -2354,6 +2354,10 @@ describe('[PT-4] real cards through HTTP: Swift\'s hosted page, the bank\'s chec
       expect(refused.statusCode, refused.body).toBe(409);
       expect(refused.json().error).toMatchObject({ code: 'REFUND_AMOUNT_UNKNOWN', message: expect.stringContaining('escalate to the owner') });
       expect(sent('/api/refund').filter((b) => b['TransactionIdentifier'] === txnId)).toHaveLength(0);
+      // [REVIEW-1 R3-2] The provider's own answer said money was taken (another amount or currency): never "nothing taken".
+      const nothing = await resolve(finance, sessionId, { action: 'NOTHING_TAKEN', providerReference: txnId });
+      expect(nothing.statusCode, nothing.body).toBe(409);
+      expect(nothing.json().error).toMatchObject({ code: 'PROVIDER_SAYS_TAKEN', message: expect.stringContaining('escalate to the owner') });
       expect(await rowOf(sessionId)).toMatchObject({ status: 'HELD', providerRefundState: null, resolution: null });
     });
 

@@ -69,6 +69,8 @@ describe('[CARD-READY] card payments', () => {
     const panel = await screen.findByRole('dialog');
     expect(panel.textContent).toContain('refund the whole GY$2,100 to the card, never a part of it');
     expect(panel.textContent).toContain('If the portal shows any other amount, do not refund: escalate to the owner.');
+    // [REVIEW-2 round 3 advisory] The currency is checked too, not only the figure.
+    expect(panel.textContent).toContain('Check the portal shows the currency GYD.');
     expect(panel.textContent).toContain('A second admin approves it');
     // Swift's own record, read-only for comparison.
     expect(within(panel).getByText(TXN)).toBeTruthy();
@@ -131,10 +133,9 @@ describe('[CARD-READY] card payments', () => {
   it('[F4] a payment held because the provider\'s amount differs from Swift\'s price offers no booking and no refund: it goes to the owner', async () => {
     server([{ ...held, failureCode: 'AMOUNT_MISMATCH' }]);
     renderWithQuery(<CardPaymentsPage />);
-    expect(await screen.findByText(/cannot be booked or refunded whole here\. Check it in the provider's portal and escalate to the owner/)).toBeTruthy();
-    expect(screen.queryByRole('button', { name: 'Refund it' })).toBeNull();
-    expect(screen.queryByRole('button', { name: 'Book the week' })).toBeNull();
-    expect(screen.getByRole('button', { name: 'Nothing was taken' })).toBeTruthy();
+    expect(await screen.findByText(/The card provider says money was taken, but its amount or currency differs from Swift's price\. It stays here until the owner settles it/)).toBeTruthy();
+    // [REVIEW-1 R3-2] No decision at all: the provider's own answer said money was taken.
+    for (const name of ['Nothing was taken', 'Refund it', 'Book the week']) expect(screen.queryByRole('button', { name })).toBeNull();
   });
 
   it('[REVIEW-1 R2-3] once a refund was sent for a held payment, no decision is offered: it stays for the owner', async () => {

@@ -1109,9 +1109,6 @@ export class CardRailService {
     // the price) sends nothing and goes to the owner.
     if (input.action === 'REFUND') {
       const whole = Math.round(Number(session.amount) * 100);
-      if (session.failureCode === 'AMOUNT_MISMATCH') {
-        throw new AppError(409, 'REFUND_AMOUNT_UNKNOWN', 'The card provider\'s figure for this payment differs from Swift\'s price, so Swift cannot refund exactly what was taken. Nothing was sent: escalate to the owner.');
-      }
       if (Math.round(amount! * 100) > whole) {
         throw new AppError(409, 'REFUND_ABOVE_PAYMENT', 'A refund can never be more than this card payment\'s price. If the portal shows more taken than that, nothing is sent: escalate to the owner.');
       }
@@ -1138,6 +1135,15 @@ export class CardRailService {
     const decided = await this.prisma.$transaction(async (tx) => {
       const fresh = await this.lockSession(tx, session.id);
       if (!fresh || fresh.status !== 'HELD' || fresh.resolution) throw notHeld();
+      // [REVIEW-2 round 2 F4 · REVIEW-1 R3-2/R3-3] Held because the provider APPROVED a different amount or currency than
+      // Swift's price: its own answer says money was taken, but not what Swift can refund whole. Read under the lock: it
+      // is never refunded here and never closed as "nothing taken". It stays HELD for the owner.
+      if (fresh.failureCode === 'AMOUNT_MISMATCH' && input.action === 'REFUND') {
+        throw new AppError(409, 'REFUND_AMOUNT_UNKNOWN', 'The card provider\'s figure for this payment differs from Swift\'s price, so Swift cannot refund exactly what was taken. Nothing was sent: escalate to the owner.');
+      }
+      if (fresh.failureCode === 'AMOUNT_MISMATCH' && input.action === 'NOTHING_TAKEN') {
+        throw new AppError(409, 'PROVIDER_SAYS_TAKEN', 'The card provider\'s own answer says money was taken for this payment (another amount or currency than Swift\'s price): it is never closed as "nothing taken". It stays here: escalate to the owner.');
+      }
       if (fresh.providerTransactionRef && fresh.providerTransactionRef.toLowerCase() !== ref.toLowerCase()) {
         throw new AppError(409, 'PROVIDER_REFERENCE_MISMATCH', 'That is not the transaction recorded for this card payment.');
       }

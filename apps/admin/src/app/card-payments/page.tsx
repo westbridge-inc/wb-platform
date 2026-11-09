@@ -133,7 +133,7 @@ export default function CardPaymentsPage() {
     title: `${d.label}: ${money(r.amount, r.currencyCode)} card payment?`,
     body: (
       <>
-        <p>{d.body(money(r.amount, r.currencyCode))} A second admin approves it.</p>
+        <p>{d.body(money(r.amount, r.currencyCode))}{d.asks === 'amount' ? ` Check the portal shows the currency ${r.currencyCode ?? 'GYD'}.` : ''} A second admin approves it.</p>
         <p className="text-sm mt-2">
           Swift&apos;s record: provider transaction <span className="font-mono break-all">{r.providerTransactionRef}</span>
           {' · '}order <span className="font-mono break-all">{orderRef(r.id)}</span>
@@ -204,17 +204,16 @@ export default function CardPaymentsPage() {
                       r.resolution && `Decided: ${RESOLUTION_WORDS[r.resolution] ?? asCode(r.resolution)}${r.resolvedAt ? `, ${gyDateTime(r.resolvedAt)}` : ''}`].filter(Boolean).join(' · ')}
                   </p>
                 )}
-                {open && r.providerRefundState ? (
+                {open && r.failureCode === 'AMOUNT_MISMATCH' ? (
+                  // [REVIEW-1 R3-2] The provider's own answer says money was taken, at another amount or currency: no decision here.
+                  <p className="text-sm mt-3">The card provider says money was taken, but its amount or currency differs from Swift&apos;s price. It stays here until the owner settles it with the card provider: escalate it to the owner.</p>
+                ) : open && r.providerRefundState ? (
                   // [REVIEW-1 R2-3] A refund was sent: money was taken. No decision closes it here; the owner settles it.
                   <p className="text-sm mt-3">A refund was sent for this payment, so money was taken. It stays here until the owner settles it with the card provider: escalate it to the owner.</p>
                 ) : open && (r.providerTransactionRef && r.amount !== null ? (
                   queued[r.id] ? <p role="status" className="text-sm mt-3">Waiting for approval: a second admin, on Approvals. Nothing has changed yet.</p> : (
                     <div className="flex flex-wrap gap-2 mt-3">
-                      {/* [F4] A payment held because the provider's figure differs from Swift's price cannot be booked or refunded whole here. */}
-                      {r.failureCode === 'AMOUNT_MISMATCH'
-                        ? <p className="text-sm">The card provider&apos;s amount differs from Swift&apos;s price, so this payment cannot be booked or refunded whole here. Check it in the provider&apos;s portal and escalate to the owner. If the portal shows nothing taken, record that.</p>
-                        : null}
-                      {DECISIONS.filter((d) => r.failureCode !== 'AMOUNT_MISMATCH' || d.action === 'NOTHING_TAKEN').map((d) => <button key={d.action} type="button" className="mc-btn" onClick={() => decide(r, d)}>{d.label}</button>)}
+                      {DECISIONS.map((d) => <button key={d.action} type="button" className="mc-btn" onClick={() => decide(r, d)}>{d.label}</button>)}
                     </div>
                   )
                 ) : <p className="text-sm mt-3">No provider transaction is recorded, so nothing can be decided here. Find it in the provider&apos;s portal and escalate to the owner.</p>)}
