@@ -18,3 +18,7 @@ export function ownNameSigningFor(storeName: string | null | undefined): string 
   const name = storeName?.trim();
   return name ? `You sign this for “${name}” only.` : null;
 }
+
+/** [OWNER-ASKS 9 Nov 2026] The choices' words, the tick's words and how the declaration is shown: the phone's own
+ *  (apps/mobile lib/ownNameCopy), one source for both sign-ups. */
+export { BUSINESS_NAME_CHOICE, OWN_NAME_CHOICE, OWN_NAME_TICK, ownNameDeclarationDisplay } from '../../../mobile/src/lib/ownNameCopy';

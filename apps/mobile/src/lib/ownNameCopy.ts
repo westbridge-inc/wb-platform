@@ -18,10 +18,28 @@ I declare that:
 
 /** The sign-up's question, in the owner's words. */
 export const OWN_NAME_QUESTION = 'What name does your store use?';
-export const OWN_NAME_CHOICE = 'My own name — just my surname, with or without my first names or initials (for example “Persaud” or “R. Persaud”)';
-export const BUSINESS_NAME_CHOICE = 'A business name, or a company';
+// [OWNER-ASKS 9 Nov 2026] Each choice says what it is; the declaration's tick says what ticking it means.
+export const OWN_NAME_CHOICE = 'My own name — I’m one person trading under just my surname, with or without my first names or initials (for example “Persaud” or “R. Persaud”)';
+export const BUSINESS_NAME_CHOICE = 'A registered business name or a company (I have the DCRA certificate)';
 export const OWN_NAME_HINT = 'The law does not ask you to register your own name as a business name, so you sign a short declaration instead of uploading a business registration. A person on our team checks it against your ID.';
-export const OWN_NAME_TICK = 'I have read the declaration above and I sign it.';
+export const OWN_NAME_TICK = 'I have read and agree to this declaration.';
+
+/** [OWNER-ASKS 9 Nov 2026] The plain title shown in place of the declaration's raw first line. */
+export const OWN_NAME_DECLARATION_TITLE = 'Declaration: I trade under my own name';
+
+/**
+ * [OWNER-ASKS 9 Nov 2026] How the declaration is SHOWN: its raw first line ("I TRADE UNDER MY OWN NAME (v1)") becomes
+ * a plain title and a "Version N" line; the body is the signed words unchanged. Presentation only: what is signed and
+ * versioned is still OWN_NAME_DECLARATION_V1 (and the server's words), and `heading` + a blank line + `body` is
+ * exactly that text. Words with no such first line are shown whole.
+ */
+export function ownNameDeclarationDisplay(text: string): { heading: string; title: string; version: string | null; body: string } {
+  const split = text.indexOf('\n\n');
+  const heading = split > 0 ? text.slice(0, split) : '';
+  const version = /\(v(\d+)\)\s*$/.exec(heading);
+  if (!heading || !version) return { heading: '', title: OWN_NAME_DECLARATION_TITLE, version: null, body: text };
+  return { heading, title: OWN_NAME_DECLARATION_TITLE, version: `Version ${version[1]}`, body: text.slice(split + 2) };
+}
 
 /** The vendor types whose checklist asks for a business registration (a service business is never asked). */
 export function ownNameApplies(vendorType: string): boolean {
