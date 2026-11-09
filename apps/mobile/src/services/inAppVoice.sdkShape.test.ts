@@ -22,6 +22,7 @@ export type SdkShapeChecks = [
   // The members the in-call bar needs are really there (not only allowed by the optional shapes).
   Assert<Fits<Voice['getAudioDevices'], () => Promise<{ audioDevices: AudioDevice[]; selectedDevice?: AudioDevice }>>>,
   Assert<Fits<Voice['getCalls'], () => Promise<ReadonlyMap<string, Call>>>>,
+  Assert<Fits<Voice['getCallInvites'], () => Promise<ReadonlyMap<string, CallInvite>>>>,
   Assert<Fits<Voice['showAvRoutePickerView'], () => Promise<void>>>,
   Assert<Fits<Call['mute'], (mute: boolean) => Promise<boolean>>>,
   // [CALLS-UX review S4] The bar takes its listeners off a call it stops following.
@@ -39,6 +40,8 @@ export type SdkShapeChecks = [
   Assert<Same<typeof SDK_EVENTS.voiceCallInvite, `${Voice.Event.CallInvite}`>>,
   Assert<Same<typeof SDK_EVENTS.voiceAudioDevicesUpdated, `${Voice.Event.AudioDevicesUpdated}`>>,
   Assert<Same<typeof SDK_EVENTS.inviteAccepted, `${CallInvite.Event.Accepted}`>>,
+  Assert<Same<typeof SDK_EVENTS.inviteRejected, `${CallInvite.Event.Rejected}`>>,
+  Assert<Same<typeof SDK_EVENTS.inviteCancelled, `${CallInvite.Event.Cancelled}`>>,
   Assert<Same<'speaker' | 'earpiece' | 'bluetooth' | 'unknown', `${AudioDevice.Type}`>>,
   Assert<Same<'connecting' | 'ringing' | 'connected' | 'reconnecting' | 'disconnected', `${Call.State}`>>,
 ];
@@ -55,6 +58,8 @@ describe('[CALLS-UX] the SDK members and events Swift uses', () => {
       voiceCallInvite: 'callInvite',
       voiceAudioDevicesUpdated: 'audioDevicesUpdated',
       inviteAccepted: 'accepted',
+      inviteRejected: 'rejected',
+      inviteCancelled: 'cancelled',
     });
   });
 });

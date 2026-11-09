@@ -784,7 +784,7 @@ describe('disputed MMG orders pause the web dashboard', () => {
     // the customer is disputing the payment (review S4-1).
     expect(within(dialog).getByText("The store's and the customer's MMG payment reports don't match. Swift support is checking it and will tell you when the order can move. Don’t hand anything over until then.")).toBeTruthy();
     expect(screen.queryByText(/customer disputes/i)).toBeNull();
-    for (const name of ['Accept', 'Start preparing', 'Ready for delivery', 'Ready for pickup', 'Mark picked up', 'Confirm delivered', 'Search for a rider again', 'Find a rider', 'We’ll deliver', 'Get a Swift rider']) {
+    for (const name of ['Accept', 'Start preparing', 'Ready for delivery', 'Ready for pickup', 'Mark picked up', 'Enter their code', 'Handed to customer', 'Confirm delivered', 'Search for a rider again', 'Find a rider', 'We’ll deliver', 'Get a Swift rider']) {
       expect(screen.queryByRole('button', { name }), name).toBeNull();
     }
     expect(screen.queryByRole('checkbox')).toBeNull();

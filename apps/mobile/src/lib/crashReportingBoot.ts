@@ -3,7 +3,7 @@
  * Does nothing when the build carries no crash-report address.
  */
 import * as Sentry from '@sentry/react-native';
-import { crashEnvironment, startCrashReporting, type CrashSdk } from './crashReporting';
+import { crashEnvironment, otaUpdateTag, startCrashReporting, type CrashSdk } from './crashReporting';
 
 declare const __DEV__: boolean | undefined;
 
@@ -12,7 +12,7 @@ const sdk: CrashSdk = {
   captureException: (error, hint) => Sentry.captureException(error, hint),
 };
 
-startCrashReporting(sdk, {
+const crashReportingOn = startCrashReporting(sdk, {
   // @ts-expect-error Expo statically inlines this declared public build-time variable.
   dsn: process.env.EXPO_PUBLIC_SENTRY_DSN,
   environment: crashEnvironment(
@@ -21,3 +21,11 @@ startCrashReporting(sdk, {
     typeof __DEV__ !== 'undefined' && __DEV__ === true,
   ),
 });
+
+// [OTA-CATCH-UP · REVIEW-2 L3 on #2431] Every crash says which JavaScript it came from (an update id, or "embedded").
+if (crashReportingOn) {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports -- read once, after crash reporting is on
+    Sentry.setTag('ota_update_id', otaUpdateTag(require('expo-updates')));
+  } catch { /* no updates module: the tag is left out */ }
+}

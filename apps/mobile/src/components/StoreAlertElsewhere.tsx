@@ -9,6 +9,7 @@ import { accountHoldsRole, type Intent } from '../lib/roleLanding';
 import { connectSocket, getSocket } from '../services/socket';
 import { routeNotificationData, setBusinessTapElsewhereHandler } from '../services/notification-router';
 import { useRoleSwitch } from './RoleSwitcherSheet';
+import { useOtaRestartHold } from '../hooks/useOtaRestartHold';
 
 // ---------------------------------------------------------------------------
 // [STORE-ALERT 18 Oct 2026] A new order for the person's store while another
@@ -45,6 +46,8 @@ export function StoreAlertElsewhere() {
   const user = useAuthStore((s) => s.user);
   const ownsStore = isAuthenticated && accountHoldsRole(user as Parameters<typeof accountHoldsRole>[0], 'vendor');
   const [alert, setAlert] = React.useState<StoreAlert | null>(null);
+  // [OTA-CATCH-UP · REVIEW-2 S3-1 on #2431] Never restart into an update while the store's alert is up here.
+  useOtaRestartHold(alert !== null && intent !== 'vendor' && ownsStore);
   // The app switcher knows three apps; the advertiser console switches like the customer app.
   const { switchTo, switching } = useRoleSwitch(intent === 'mover' || intent === 'vendor' ? intent : 'customer');
 
