@@ -7,6 +7,7 @@
 import './boot/secret-files';
 import { buildApp } from './app';
 import { assertSafeBootConfig, assertProductionData } from './utils/boot-config';
+import { expoPushTokenBootLine } from './providers/notifications/expo-access-token';
 import { attestTenantWallAtBoot } from './boot/tenant-wall';
 import { attestSystemLoginAtBoot } from './boot/system-login';
 import { runAsSystem } from './plugins/tenant-context';
@@ -44,6 +45,8 @@ async function start() {
 
     await app.listen({ port: PORT, host: HOST });
     console.warn(`Swift API running on http://${HOST}:${PORT}`);
+    // [EXPO-PUSH-AUTH] Whether pushes carry the Expo access token (set / not set, never the value).
+    app.log.info(expoPushTokenBootLine());
     // The PUBLIC half only (never the key): the owner pins it in the app
     // (apps/mobile/src/lib/emergencyPolicyPins.ts) — deploy/PILOT-RUNBOOK.md.
     if (emergencyPolicyKey) app.log.info({ kid: emergencyPolicyKey.kid, ed25519: emergencyPolicyKey.publicKeyHex }, '[AUD-G7-023] emergency policy signing: public key to pin in the app');
