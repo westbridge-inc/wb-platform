@@ -71,6 +71,13 @@ describe('what the store reads while it waits on the customer', () => {
   it.each([null, undefined, '', 'nope'])('no usable deadline: nothing is said (%s)', (raw) => {
     expect(storeSwapWaitText(raw, 'CASH', clock)).toBeNull();
   });
+  // [OOS-FLOW · REVIEW-2 F1] The only item left: no answer cancels the order (MMG still withdraws the question).
+  it('cash, the only item left: no answer cancels the order', () => {
+    expect(storeSwapWaitText('2026-10-17T21:23:00.000Z', 'CASH', clock, true)).toBe('No answer by 21:23 cancels the order: it is the only item left.');
+  });
+  it('MMG, the only item left: the question still just closes', () => {
+    expect(storeSwapWaitText('2026-10-17T21:23:00.000Z', 'MOBILE_MONEY', clock, true)).toBe('No answer by 21:23 closes the question; settle the item with the customer directly.');
+  });
 });
 
 // [O-4 · owner 22 Oct 2026] Nothing to swap, asked before the store accepted: the customer continues

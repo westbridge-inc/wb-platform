@@ -99,6 +99,7 @@ import { ATTESTABLE_PAYMENT_STATUSES } from '../vendor/mmg-attestation';
 import { lineVatClass, orderVatAmountFields, orderVatCreateFields, recomputeOrderVat, vatTermsForCheckout } from '../store-vat/order-vat';
 import { isExpiredUnpaidMmgAcceptance, isUnpaidMmgAcceptance, mmgAcceptedClaimedPushCopy, mmgAcceptedPayBy, mmgAcceptedPushCopy, mmgOrderNoun } from './mmg-accept-expiry';
 import { orderStageRefusal, STEP_GONE } from './order-status-words';
+import { personTypedReason } from './typed-reason';
 
 interface CheckoutInput {
   userId: string;
@@ -2890,7 +2891,10 @@ export class OrderService {
     return committed;
   }
 
-  async cancelOrder(orderId: string, userId: string, reason?: string) {
+  async cancelOrder(orderId: string, userId: string, givenReason?: string) {
+    // [#2412 security review] The customer's own words, never a code-shaped value (typed-reason.ts): a code would be
+    // read out by the apps as the system's or Swift support's. Dropped, as no reason at all.
+    const reason = personTypedReason(givenReason) ?? undefined;
     // Fast authorization/existence read. The transaction below deliberately
     // re-locks and re-reads the order: a direct rider assignment may commit
     // between these two reads, and cancellation must release THAT fresh

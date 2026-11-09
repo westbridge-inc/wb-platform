@@ -45,7 +45,7 @@ import { MmgPaymentClaimCard } from '../MmgPaymentClaimCard';
 import { MmgRefundCard } from '../MmgRefundCard';
 import { MMG_REFUND_WORDS, parseMmgRefundView } from '../mmgRefund';
 import { errorMessage } from '../../../lib/apiError';
-import { isRemovalQuestion, removalChangeText, swapChangeText, swapDeadlineText, swapDecisionPermissions } from '../substitutionCopy';
+import { isRemovalQuestion, lineRemoved, removalChangeText, swapChangeText, swapDeadlineText, swapDecisionPermissions } from '../substitutionCopy';
 import { CustodyRecoveryNotice } from '../CustodyRecoveryNotice';
 import { parsePartyCaseView, partyCaseWorthShowing } from '../../../lib/custodyRecovery';
 import { boundMmgClaim, parseMmgClaimView, sendBoundMmgClaim, type PendingMmgClaim } from '../mmgClaim';
@@ -55,6 +55,10 @@ import { rideIsOver } from '../../../lib/rideAfterTrip';
 import { pickupShowsCode, pickupWords } from '../pickup-words';
 import { BookingRescheduleCard } from '../BookingRescheduleCard';
 import { appointmentBookingView } from '../../../lib/appointmentBooking';
+import { customerCancellationWords } from '@swift/types/src/customer-cancellation-words';
+
+/** The store kinds Search can filter by (its own chips): a declined order opens Search on the same kind. */
+const SEARCH_TYPES: ReadonlySet<unknown> = new Set(['RESTAURANT', 'SUPERMARKET', 'STORE', 'SERVICE']);
 
 const GUTTER = space['2xl'];
 const ORDER_TINT = VERTICAL_TINT.orders ?? { bg: color.brand[50], ink: color.brand[600] };
@@ -983,6 +987,17 @@ export function DeliveryScreen() {
   // booking a booking. Food, pickup and courier keep their exact words.
   const refundParty = o.fulfillment === 'APPOINTMENT' ? 'the provider' : 'the store';
   const cancelledNoun = o.fulfillment === 'APPOINTMENT' ? 'booking' : 'order';
+  // [owner 8 Nov 2026] Who closed a cancelled order and why, from the server's `cancellation` (null from an older
+  // server, or on any order that is not CANCELLED: the card keeps its own words then).
+  const closedWords = customerCancellationWords(o);
+  // A store that declined (or never answered) sends the customer elsewhere: the same kind of store, one tap.
+  const findElsewhere = closedWords && (o.cancellation?.by === 'STORE' || o.cancellation?.by === 'NO_RESPONSE')
+    && o.orderType !== 'TAXI' && o.orderType !== 'COURIER'
+    ? {
+      label: o.fulfillment === 'APPOINTMENT' ? 'Book with another provider' : 'Order from another store',
+      params: SEARCH_TYPES.has(o.vendor?.vendorType) ? { type: o.vendor.vendorType } : undefined,
+    }
+    : null;
   let etaCopy = pendingSummary;
   if (cancelled) etaCopy = 'Cancelled';
   else if (failed) etaCopy = 'Couldn’t complete this order';
@@ -1233,7 +1248,7 @@ export function DeliveryScreen() {
                 </View>
                 <T variant="caption" tone="muted" style={{ marginTop: space.xs }}>
                   {o.vendor?.name ?? 'The store'} suggests {it.substituteName} ({money(Number(it.substitutePrice ?? 0))}
-                  {it.quantity > 1 ? ` × ${it.quantity}` : ''}) instead.{swapDecisionPermissions(it.substitution, o.paymentMethod).reject ? ' Rejecting removes the item and lowers your total.' : ''}
+                  {it.quantity > 1 ? ` × ${it.quantity}` : ''}) instead.{swapDecisionPermissions(it.substitution, o.paymentMethod).reject && !it.substitution?.lastItem ? ' Rejecting removes the item and lowers your total.' : ''}
                 </T>
                 {/* [L09 · M028] What approving changes, from the server's own
                     numbers: the total (paid options included), and the chosen
@@ -1264,13 +1279,14 @@ export function DeliveryScreen() {
                     disabled={decideSub.isPending || !swapDecisionPermissions(it.substitution, o.paymentMethod).approve}
                     onPress={() => decideSub.mutate({ orderId, lineId: it.id, approve: true })}
                   />
+                  {/* [OOS-FLOW · REVIEW-2 F5] On the only item left a "no" cancels the order: the button says so. */}
                   <PillButton
-                    label="No thanks"
+                    label={it.substitution?.lastItem ? 'No thanks, cancel order' : 'No thanks'}
                     variant="soft"
                     size="md"
                     style={{ flex: 1 }}
                     disabled={decideSub.isPending || !swapDecisionPermissions(it.substitution, o.paymentMethod).reject}
-                    onPress={() => decideSub.mutate({ orderId, lineId: it.id, approve: false })}
+                    onPress={() => decideSub.mutate({ orderId, lineId: it.id, approve: false, endsOrder: it.substitution?.lastItem === true })}
                   />
                 </View>
               </View>
@@ -1417,32 +1433,51 @@ export function DeliveryScreen() {
           ) : null}
 
           {cancelled || failed ? (
-            <View
-              style={{
-                flexDirection: 'row',
-                alignItems: 'center',
-                gap: space.md,
-                marginTop: rider ? space.xl : 0,
-                padding: space.lg,
-                borderRadius: radius.md,
-                backgroundColor: color.soft.danger,
-              }}
-            >
-              <Feather name={failed ? 'alert-triangle' : 'x-circle'} size={18} color={color.error} />
-              <View style={{ flex: 1 }}>
-                <T variant="body" weight="semibold" tone="error">
-                  {/* Server's authoritative result first — it knows the real
-                      final cost/refund outcome the client clock cannot. */}
-                  {failed
-                    ? 'This order could not continue. Report a problem for help with what happens next.'
-                    : cancelMessage
-                      ?? (typeof o.cancellationNotice === 'string' && o.cancellationNotice.trim() ? o.cancellationNotice : null) /* [owner 18 Oct 2026] why an unpaid MMG order closed by itself */
-                      ?? (mmgCancellationAmbiguous
-                        ? `This ${cancelledNoun} was cancelled. If you already sent the MMG payment, ${refundParty} refunds you directly.`
-                        : `This ${cancelledNoun} was cancelled.`)}
-                </T>
+            <>
+              <View
+                style={{
+                  flexDirection: 'row',
+                  alignItems: 'center',
+                  gap: space.md,
+                  marginTop: rider ? space.xl : 0,
+                  padding: space.lg,
+                  borderRadius: radius.md,
+                  backgroundColor: color.soft.danger,
+                }}
+              >
+                <Feather name={failed ? 'alert-triangle' : 'x-circle'} size={18} color={color.error} />
+                <View style={{ flex: 1 }} testID="order-closed-card">
+                  <T variant="body" weight="semibold" tone="error">
+                    {/* Server's authoritative result first — it knows the real
+                        final cost/refund outcome the client clock cannot. */}
+                    {failed
+                      ? 'This order could not continue. Report a problem for help with what happens next.'
+                      : cancelMessage
+                        ?? (typeof o.cancellationNotice === 'string' && o.cancellationNotice.trim() ? o.cancellationNotice : null) /* [owner 18 Oct 2026] why an unpaid MMG order closed by itself */
+                        ?? closedWords?.headline /* [owner 8 Nov 2026] who closed it and why ("The store declined your order: Out of stock.") */
+                        ?? (mmgCancellationAmbiguous
+                          ? `This ${cancelledNoun} was cancelled. If you already sent the MMG payment, ${refundParty} refunds you directly.`
+                          : `This ${cancelledNoun} was cancelled.`)}
+                  </T>
+                  {/* What happens to the money, only where it is certainly true (cash: never charged; MMG still
+                      waiting for the store: the store refunds it directly). Not under the customer's own cancel. */}
+                  {!failed && !cancelMessage && !(typeof o.cancellationNotice === 'string' && o.cancellationNotice.trim()) && closedWords?.money ? (
+                    <T variant="body" tone="muted" style={{ marginTop: space.xs }}>
+                      {closedWords.money}
+                    </T>
+                  ) : null}
+                </View>
               </View>
-            </View>
+              {!failed && findElsewhere ? (
+                <PillButton
+                  label={findElsewhere.label}
+                  variant="outline"
+                  size="md"
+                  style={{ marginTop: space.md }}
+                  onPress={() => navigation.navigate('Search', findElsewhere.params)}
+                />
+              ) : null}
+            </>
           ) : (
             <>
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.sm, marginTop: rider ? space.xl : 0 }}>
@@ -1596,15 +1631,16 @@ export function DeliveryScreen() {
             {items.map((it: any, i: number) => (
               <InfoRow
                 key={it.id ?? i}
-                label={`${it.quantity} ${it.item?.name ?? it.name}`}
-                value={money(it.totalPrice ?? it.lineTotal ?? Number(it.unitPrice ?? 0) * (it.quantity ?? 1))}
+                label={`${it.quantity} ${it.item?.name ?? it.name}${lineRemoved(it) ? ' (out of stock, removed)' : ''}`}
+                value={money(lineRemoved(it) ? 0 : it.totalPrice ?? it.lineTotal ?? Number(it.unitPrice ?? 0) * (it.quantity ?? 1))}
               />
             ))}
             {Number(o.deliveryFee ?? 0) > 0 ? <InfoRow label="Delivery" value={money(o.deliveryFee)} /> : null}
             {Number(o.tipAmount ?? 0) > 0 ? <InfoRow label="Tip" value={money(o.tipAmount)} /> : null}
             {Number(o.discount ?? 0) > 0 ? <InfoRow label="Discount" value={`−${money(o.discount)}`} /> : null}
             <View style={{ height: StyleSheet.hairlineWidth, backgroundColor: color.border.subtle, marginVertical: space.sm }} />
-            <InfoRow label="Total" value={money(o.totalAmount ?? o.total)} strong />
+            {/* [OOS-FLOW · REVIEW-2 F8] A cancelled order keeps the total it had, beside lines now at $0: it says it was cancelled. */}
+            <InfoRow label={String(o.status ?? '').toUpperCase() === 'CANCELLED' ? 'Order total (cancelled)' : 'Total'} value={money(o.totalAmount ?? o.total)} strong />
             {/* [STORE-VAT · owner O-5] The VAT a person-approved VAT store's goods included, frozen on the order (inside the total). */}
             {orderVatLine(o) ? (
               <T variant="caption" tone="muted" style={{ marginTop: 2 }}>

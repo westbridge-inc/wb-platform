@@ -87,6 +87,7 @@ import { updateCustomerProfile } from './profile-update';
 import { transitionUserRoleAuthority } from '../mover-authority';
 import { safeMmgPayUrl } from '../../utils/mmg-pay-url';
 import { mmgAcceptedPayBy, mmgAcceptExpiryNotice, mmgOrderNoun, mmgPayByCustomerLine } from '../order/mmg-accept-expiry';
+import { customerCancellation, customerStepNote, orderPeople } from '../order/customer-cancellation';
 import { displayMmgNumber, safeMmgNumber } from '../../utils/mmg-number';
 import { formatMoney } from '../../utils/currency-amount';
 import { validateOfferedStoreMmgPayUrl } from '../../utils/store-mmg';
@@ -840,7 +841,8 @@ export async function customerRoutes(app: FastifyInstance) {
     // the store, and stacked riders only where the stacking rules pass for it.
     (probe) => dispatchForAvailability.getDeliveryCapacity(probe),
   );
-  const picking = new PickingService(app.prisma, app.io);
+  // [OOS-FLOW] With the canonical seam: "No thanks" to a swap for the only item left ends the order.
+  const picking = new PickingService(app.prisma, app.io, orderService);
   const ratingService = new RatingService(app.prisma, app.io, (vendorId) => scheduleVendorSearchSync(app, vendorId));
   const notificationService = new NotificationService(app.prisma, app.io);
   const bookingService = new BookingService(app.prisma, app.io);
@@ -2766,6 +2768,8 @@ export async function customerRoutes(app: FastifyInstance) {
     // every distinct one first (signing is local, and duplicates collapse),
     // then map — one pass, no per-row await.
     const riderAvatars = await resolveAvatarUrls(orders.map((o) => o.rider?.user?.avatar));
+    // [owner 8 Nov 2026] Who closed each cancelled row (Swift support's people, read once for the page).
+    const people = await orderPeople(app.prisma, orders);
     const enrichedOrders = orders.map((o) => ({
       id: o.id,
       orderNumber: o.orderNumber,
@@ -2803,6 +2807,9 @@ export async function customerRoutes(app: FastifyInstance) {
       placedAt: o.placedAt,
       deliveredAt: o.deliveredAt,
       scheduledFor: o.scheduledFor,
+      // [owner 8 Nov 2026] A cancelled row says who closed it and why ("Declined by store · Out of stock"); null on
+      // every other row. Additive: older apps ignore it.
+      cancellation: customerCancellation(o, people, o.vendor?.name ?? 'The store'),
       // LIFECYCLE_V2: while in the future, the free-cancel window is open
       // (the server clock decides; any app countdown is cosmetic).
       holdExpiresAt: o.holdExpiresAt,
@@ -2861,6 +2868,10 @@ export async function customerRoutes(app: FastifyInstance) {
     // (nothing) instead": for it a removal question is served in the truthful legacy shape below.
     const supportsSwapDecisions = swapDecisionsLevel === 'v1' || swapDecisionsLevel === 'v2';
     const supportsRemovalQuestion = swapDecisionsLevel === 'v2';
+    // [OOS-FLOW · REVIEW-1 S3-1 · COORD ruling] A client that labels the only item's decline "No thanks, cancel
+    // order" and sends endsOrder says so with lastItemDecline=1 (beside v2, which an older server still reads).
+    // Every other client gets no decline on that item, and the "approve, or the order is cancelled" words.
+    const lastItemDecline = (request.query as { lastItemDecline?: unknown }).lastItemDecline === '1';
 
     const order = await app.prisma.order.findFirst({
       where: { id, customerId: userId },
@@ -3034,8 +3045,13 @@ export async function customerRoutes(app: FastifyInstance) {
         }
       : null;
 
+    // [owner 8 Nov 2026] Who closed it and why, in the customer's terms (customer-cancellation.ts): the order
+    // screen's "The store declined your order: Out of stock." Null unless CANCELLED. Additive.
+    const people = await orderPeople(app.prisma, [order]);
+    const cancellation = customerCancellation(order, people, order.vendor?.name ?? 'The store');
     // Timeline — [O-2 · REVIEW-F S3-2] the customer's projection (no store-tap row, no position evidence).
-    const timeline = customerTimeline(order.statusHistory);
+    // [owner 8 Nov 2026] Never a note Swift support wrote; the CANCELLED step says only the customer's words.
+    const timeline = customerTimeline(order.statusHistory, (row) => customerStepNote(order, row, people, cancellation));
 
     // [BOOK-S6a · owner B2] With INSTANT_BOOKING on, the live booking behind an appointment and
     // whether the customer may move it now — the same verdict the move itself applies
@@ -3074,7 +3090,7 @@ export async function customerRoutes(app: FastifyInstance) {
             subStatus: i.subStatus,
             substituteName: i.substituteName,
             substitutePrice: i.substitutePrice == null ? null : Number(i.substitutePrice),
-            substitution: substitutionView(i, order, { onlyItemLeft: onlyItemLeft(i, order.items, order.status) }),
+            substitution: substitutionView(i, order, { onlyItemLeft: onlyItemLeft(i, order.items, order.status), lastItemDecline }),
           } : legacySwapItemFields(i, order, { onlyItemLeft: onlyItemLeft(i, order.items, order.status) })),
         })),
         itemCount: order.items.reduce((sum, i) => sum + i.quantity, 0),
@@ -3180,9 +3196,12 @@ export async function customerRoutes(app: FastifyInstance) {
         pickedUpAt: order.pickedUpAt,
         deliveredAt: order.deliveredAt,
         cancelledAt: order.cancelledAt,
-        cancellationReason: order.cancellationReason,
+        // [owner 8 Nov 2026] Swift support's own note stays with Swift: blank when support closed it (every app
+        // reads `cancellation` first; an older app shows its own "This order was cancelled.").
+        cancellationReason: cancellation?.by === 'SWIFT' ? null : order.cancellationReason,
         // [owner 18 Oct 2026] Why an unpaid MMG order closed, in the customer's words (null otherwise).
         cancellationNotice: mmgAcceptExpiryNotice(order, order.vendor?.name ?? 'The store'),
+        cancellation,
         scheduledFor: order.scheduledFor,
         hasBeenRated,
         canCancel,
@@ -3555,8 +3574,9 @@ export async function customerRoutes(app: FastifyInstance) {
    *  becomes the substitute (totals adjust); reject = the line is refunded. */
   app.post('/orders/:id/items/:lineId/substitution', async (request: AuthRequest) => {
     const { id, lineId } = request.params as { id: string; lineId: string };
-    const { approve } = z.object({ approve: z.boolean() }).parse(request.body);
-    const line = await picking.decideSubstitution(id, lineId, request.user.userId, approve);
+    // [OOS-FLOW · REVIEW-1 S3-1] endsOrder: the app showed "No thanks, cancel order" on the only item left.
+    const { approve, endsOrder } = z.object({ approve: z.boolean(), endsOrder: z.boolean().optional() }).parse(request.body);
+    const line = await picking.decideSubstitution(id, lineId, request.user.userId, approve, { endsOrder });
     return { success: true, data: line };
   });
 

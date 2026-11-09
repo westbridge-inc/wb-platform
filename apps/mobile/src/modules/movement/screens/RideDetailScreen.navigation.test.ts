@@ -90,6 +90,27 @@ describe('[G06] the finished ride', () => {
     expect(host.textContent).not.toContain('GY$1,100');
   });
 
+  // [owner 8 Nov 2026] Who closed a cancelled ride, in words: never the raw code (NO_DRIVERS_AVAILABLE was printed as
+  // is) and never Swift support's own note.
+  it('a cancelled ride says who closed it, in words: the server’s `cancellation`', async () => {
+    await show(finished({ status: 'CANCELLED', cancellationReason: 'NO_DRIVERS_AVAILABLE', cancellation: { by: 'SYSTEM', reason: 'NO_DRIVERS_AVAILABLE' } }));
+    expect(host.textContent).toContain('No drivers came online in time, so your request was released. Nothing to pay.');
+    expect(host.textContent).not.toContain('NO_DRIVERS_AVAILABLE');
+    client.clear();
+    await show(finished({ status: 'CANCELLED', cancellationReason: 'Driver reported rude passenger', cancellation: { by: 'SWIFT', reason: null } }));
+    expect(host.textContent).toContain('Swift support cancelled this ride.');
+    expect(host.textContent).not.toContain('rude passenger');
+    client.clear();
+    await show(finished({ status: 'CANCELLED', cancellationReason: 'Passenger did not come, as recorded by the driver at the pickup.', cancellation: { by: 'NO_SHOW', reason: null } }));
+    expect(host.textContent).toContain('The driver recorded that you didn’t come to the pickup, so the ride was cancelled.');
+  });
+
+  it('an older server (no `cancellation`): a system code still never shows as a code', async () => {
+    await show(finished({ status: 'CANCELLED', cancellationReason: 'NO_DRIVERS_AVAILABLE' }));
+    expect(host.textContent).toContain('No drivers came online in time');
+    expect(host.textContent).not.toContain('NO_DRIVERS_AVAILABLE');
+  });
+
   it('help goes with the ride attached', async () => {
     await show(finished());
     await act(async () => { button('Get help with this ride')!.click(); });

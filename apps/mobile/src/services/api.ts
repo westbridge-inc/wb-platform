@@ -454,8 +454,9 @@ export const customerApi = {
   tipOrder: (id: string, amount: number, session?: AuthSessionSnapshot) =>
     api.post(`/customer/orders/${id}/tip`, { amount }, capturedAuthConfig(session)),
   // Live verdict on an out-of-stock substitution the store proposed (§5.3).
-  decideSubstitution: (orderId: string, lineId: string, approve: boolean) =>
-    api.post(`/customer/orders/${orderId}/items/${lineId}/substitution`, { approve }),
+  // [OOS-FLOW · REVIEW-1 S3-1] endsOrder: the card said "No thanks, cancel order" (the only item left).
+  decideSubstitution: (orderId: string, lineId: string, approve: boolean, endsOrder = false) =>
+    api.post(`/customer/orders/${orderId}/items/${lineId}/substitution`, endsOrder ? { approve, endsOrder: true } : { approve }),
   // [ORDER-SPINE S1-6] The customer's own words about a direct-MMG payment:
   // "I paid" (optionally with the wallet's reference) or "I didn't pay". The
   // server records them beside the store's claim and holds the order when the
@@ -522,7 +523,8 @@ export const customerApi = {
   // This client renders the server's swap permissions and refusal guidance.
   // [O-4] v2 = renders the removal question. [PICKUP · owner 30 Oct 2026] pickupHandover=v1 = tells the customer the
   // first name + order number when the store's code is off (the server then sends no code).
-  getOrder: (id: string) => api.get(`/customer/orders/${id}`, { params: { swapDecisions: 'v2', pickupHandover: 'v1' } }),
+  // [OOS-FLOW · REVIEW-1 S3-1] lastItemDecline: this app labels the only item's decline "No thanks, cancel order".
+  getOrder: (id: string) => api.get(`/customer/orders/${id}`, { params: { swapDecisions: 'v2', lastItemDecline: '1', pickupHandover: 'v1' } }),
   // [REPORT-012 F-012-03] Unwrap the API envelope AT THE SEAM: the server
   // returns { success, data: { message } } inside the axios body — reading one
   // level short silently discarded the authoritative cancellation outcome.
@@ -1376,8 +1378,9 @@ export const vendorApi = {
     api.put(`/vendor/orders/${orderId}/items/${lineId}/picked`, { picked }),
   proposeSubstitution: (orderId: string, lineId: string, substituteItemId: string) =>
     api.post(`/vendor/orders/${orderId}/items/${lineId}/substitute`, { substituteItemId }),
-  refundLine: (orderId: string, lineId: string) =>
-    api.post(`/vendor/orders/${orderId}/items/${lineId}/refund-line`, {}),
+  // [OOS-FLOW · REVIEW-1 S3-2] endsOrder: the store confirmed that removing the last item cancels the order.
+  refundLine: (orderId: string, lineId: string, endsOrder = false) =>
+    api.post(`/vendor/orders/${orderId}/items/${lineId}/refund-line`, endsOrder ? { endsOrder: true } : {}),
   /** [MASTER-025] `commandKey` names ONE adjustment: a retry with the same key
    *  returns the committed movement instead of moving stock again. */
   adjustStock: (itemId: string, body: { delta: number; reason: string; note?: string }, commandKey?: string) =>

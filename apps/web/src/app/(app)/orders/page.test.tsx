@@ -173,3 +173,19 @@ describe('[U17] reorder a finished store order', () => {
     expect(offered[0]!.getAttribute('aria-label')).toMatch(/^Reorder Fixture Kitchen 4\b/);
   });
 });
+
+// [owner 8 Nov 2026] A cancelled history row says who closed it and why, as the phone ("Declined by store · Out of
+// stock"); an older server's row (no `cancellation`) keeps "Cancelled".
+describe('[owner 8 Nov 2026] a cancelled row says who closed it and why', () => {
+  it('the store declined it as out of stock; the customer cancelled another; an older server says "Cancelled"', async () => {
+    ordersApi({ pages: [[
+      done(1, { status: 'CANCELLED', cancellation: { by: 'STORE', reason: 'Out of stock' } }),
+      done(2, { status: 'CANCELLED', cancellation: { by: 'CUSTOMER', reason: null } }),
+      done(3, { status: 'CANCELLED' }),
+    ]] });
+    renderWithQuery(<OrdersPage />);
+    expect(await screen.findByText('Declined by store · Out of stock')).toBeTruthy();
+    expect(screen.getByText('Cancelled by you')).toBeTruthy();
+    expect(screen.getByText('Cancelled')).toBeTruthy();
+  });
+});
