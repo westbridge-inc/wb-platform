@@ -30,6 +30,8 @@ export type NameBasis = 'OWN_NAME' | 'REGISTERED';
  * it, so they sign a declaration instead. The server checks the name; a person checks the ID.
  * [OWNER-ASKS 9 Nov 2026] Every box says what it is: the two choices are radio buttons with their words, and the
  * declaration's tick reads "I have read and agree to this declaration."
+ * A tap on the choice already chosen reports nothing: the sign-up clears the declaration's tick on every reported
+ * choice, so re-tapping "My own name" must not silently untick it (the website's radio does not fire either).
  */
 export function OwnNameChoiceCard({ storeName, nameBasis, ownNameTick, onNameBasis, onToggleTick }: {
   storeName: string;
@@ -47,7 +49,7 @@ export function OwnNameChoiceCard({ storeName, nameBasis, ownNameTick, onNameBas
           key={basis}
           kind="radio"
           checked={nameBasis === basis}
-          onToggle={() => onNameBasis(basis)}
+          onToggle={() => { if (nameBasis !== basis) onNameBasis(basis); }}
           label={basis === 'OWN_NAME' ? OWN_NAME_CHOICE : BUSINESS_NAME_CHOICE}
         />
       ))}
