@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { nanoid } from 'nanoid';
 import type { UserRole } from '@prisma/client';
@@ -1017,3 +1017,43 @@ describe('P-24 the provider is told a customer wants to hire them', () => {
     expect(after.length, 'a rejected request must not ring anyone').toBe(before.length);
   });
 });
+
+// [OWNER-ASKS · round-4 review 3] The pro home-jobs rule waits for PRO_HOME_JOBS_SELFIE: off, /providers/me carries no
+// `homeJobs` and a pro whose photo is not checked is still listed; on, browse hides a pro whose home jobs are paused (a
+// customer is never sent into a 409).
+describe('[owner 9 Nov] the pro home-jobs switch at /providers/me and browse', () => {
+  async function pausedAndReady(trade: string) {
+    const ready = await makeVerifiedProvider(trade);
+    const paused = await makeVerifiedProvider(trade);
+    // a retake: the checked photo is no longer the pro's photo
+    await runWithoutTenant(() => app.prisma.user.update({ where: { id: paused.userId }, data: { selfieCapturedAt: new Date(Date.now() + 1000) } }));
+    return { ready, paused };
+  }
+  const listed = async (trade: string, token: string) => (await inject('GET', `/api/v1/services/providers?trade=${trade}`, undefined, token)).json().data.providers.map((row: { id: string }) => row.id) as string[];
+
+  it('switch off: no homeJobs on /providers/me, and a paused pro is still listed', async () => {
+    vi.stubEnv('PRO_HOME_JOBS_SELFIE', '');
+    try {
+      const { ready, paused } = await pausedAndReady('painter');
+      const me = await inject('GET', '/api/v1/services/providers/me', undefined, paused.token);
+      expect(me.statusCode, me.body).toBe(200);
+      expect(me.json().data).not.toHaveProperty('homeJobs');
+      const customer = await makeUserWithSession(['CUSTOMER'], 'CUSTOMER');
+      expect(await listed('painter', customer.token)).toEqual(expect.arrayContaining([ready.providerId, paused.providerId]));
+    } finally { vi.unstubAllEnvs(); }
+  });
+
+  it('switch on: /providers/me says what home jobs need, and browse hides the paused pro', async () => {
+    vi.stubEnv('PRO_HOME_JOBS_SELFIE', '1');
+    try {
+      const { ready, paused } = await pausedAndReady('mason');
+      const me = await inject('GET', '/api/v1/services/providers/me', undefined, paused.token);
+      expect(me.json().data.homeJobs).toEqual({ photo: true, photoChecked: false });
+      const customer = await makeUserWithSession(['CUSTOMER'], 'CUSTOMER');
+      const ids = await listed('mason', customer.token);
+      expect(ids).toContain(ready.providerId);
+      expect(ids).not.toContain(paused.providerId);
+    } finally { vi.unstubAllEnvs(); }
+  });
+});
+

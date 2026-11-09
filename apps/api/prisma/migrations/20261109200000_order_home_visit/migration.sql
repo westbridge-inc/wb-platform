@@ -3,10 +3,11 @@
 -- on accept and reschedule from this marker, never from the billable distance. NULL = not known: read as a home visit
 -- (fail closed, isHomeVisitOrder).
 -- [review M1] orders and items FORCE row-level security: a migration binds no tenant, so the backfill runs with row
--- security off (precedent: 20261005210300_qr_token_identity). Under a role that may not bypass it, this errors instead
+-- security off, inside one transaction (the 20261005210300_qr_token_identity shape: BEGIN; SET LOCAL ...). Under a role that may not bypass it, this errors instead
 -- of silently updating nothing.
-SET row_security = off;
-SET lock_timeout = '10s';
+BEGIN;
+SET LOCAL lock_timeout = '10s';
+SET LOCAL row_security = off;
 ALTER TABLE "orders" ADD COLUMN "homeVisit" BOOLEAN;
 
 -- BACKFILL 1: clearly a home visit: a frozen billable distance, a listing that only travels, or an address that is not
@@ -24,3 +25,4 @@ WHERE o."fulfillment" = 'APPOINTMENT'
 UPDATE "orders" o SET "homeVisit" = false
 WHERE o."fulfillment" = 'APPOINTMENT' AND o."homeVisit" IS NULL
   AND NOT EXISTS (SELECT 1 FROM "order_items" oi JOIN "items" i ON i."id" = oi."itemId" WHERE oi."orderId" = o."id" AND COALESCE(i."bookingConfig"->>'serviceMode', 'AT_BUSINESS') <> 'AT_BUSINESS');
+COMMIT;

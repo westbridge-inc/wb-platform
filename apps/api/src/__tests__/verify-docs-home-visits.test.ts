@@ -673,8 +673,9 @@ describe('[review M1] the home-visit marker backfill', () => {
   const updates = sql.split(/;\s*\n/).map((part) => part.split('\n').filter((l) => !l.trim().startsWith('--')).join('\n').trim()).filter((part) => part.startsWith('UPDATE'));
 
   it('the migration turns row security off before it backfills, and has exactly two backfills', () => {
-    expect(sql).toMatch(/^SET row_security = off;$/m);
-    expect(sql.indexOf('SET row_security = off;')).toBeLessThan(sql.indexOf('UPDATE'));
+    expect(sql).toMatch(/^SET LOCAL row_security = off;$/m);
+    expect(sql.indexOf('SET LOCAL row_security = off;')).toBeLessThan(sql.indexOf('UPDATE'));
+    expect(sql.trim().startsWith('--') && /^BEGIN;$/m.test(sql) && /^COMMIT;$/m.test(sql)).toBe(true);
     expect(updates).toHaveLength(2);
   });
 

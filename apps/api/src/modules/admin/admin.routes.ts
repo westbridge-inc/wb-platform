@@ -7546,7 +7546,7 @@ export async function adminRoutes(app: FastifyInstance) {
       const earlier = await selfieChecksFor(tx, doc.userId, { selfieCapturedAt: owner.selfieCapturedAt, avatar: owner.avatar! });
       // [review N1] the authors of a "no match" on ANY earlier photo of this person never decide a later one either
       const refusedBy = new Set([...earlier.filter((row) => row.record.outcome === 'NO_MATCH').map((row) => row.reviewerId), ...(await earlierNoMatchReviewers(tx, doc.userId))]);
-      const overridesEarlier = earlier.some((row) => row.record.outcome === 'NO_MATCH');
+      const overridesEarlier = earlier.some((row) => row.record.outcome === 'NO_MATCH') || refusedBy.size > 0; // [round-4 review 4] an earlier photo's "no match" too
       if (body.match && refusedBy.has(request.user.userId)) {
         throw new AppError(409, 'NO_MATCH_STANDS', 'You recorded that these faces do not match. Another reviewer must decide, or the person takes a new photo.');
       }
@@ -7560,8 +7560,12 @@ export async function adminRoutes(app: FastifyInstance) {
     });
     // After the commit: who is told. Never inside the decision (a failed notice must not undo it).
     if (record.answer.outcome === 'NO_MATCH') {
-      const isPro = (await app.prisma.serviceProvider.count({ where: { userId: doc.userId } })) > 0 && !(await (await import('../verification/home-visits')).ownerOffersHomeVisits(app.prisma, doc.userId));
-      await tellOwnerHomeVisitCheckLost(notifications, doc.userId, isPro ? 'provider' : 'business').catch((err) => request.log.warn({ err }, 'selfie-check: owner notice failed'));
+      // [round-4 review N2] who is told: a home-visit business owner as a business; a pro only while the pro rule is on
+      // (PRO_HOME_JOBS_SELFIE); a rider or driver who is also a pro hears nothing untrue while it is off.
+      const hv = await import('../verification/home-visits');
+      const business = await hv.ownerOffersHomeVisits(app.prisma, doc.userId);
+      const pro = !business && hv.proHomeJobsSelfieEnabled() && (await app.prisma.serviceProvider.count({ where: { userId: doc.userId } })) > 0;
+      if (business || pro) await tellOwnerHomeVisitCheckLost(notifications, doc.userId, pro ? 'provider' : 'business').catch((err) => request.log.warn({ err }, 'selfie-check: owner notice failed'));
     }
     if (record.answer.outcome === 'NO_MATCH' || record.overridesNoMatch) {
       await flagSelfieCheckToOps(record.overridesNoMatch ? 'NO_MATCH_OVERRIDDEN' : 'NO_MATCH_RECORDED').catch((err) => request.log.warn({ err }, 'selfie-check: ops flag failed'));

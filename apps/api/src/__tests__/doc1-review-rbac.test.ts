@@ -8,7 +8,7 @@
  * administers no registry; DOC_SENIOR adds the clearance outcome; DOC_ADMIN
  * holds everything under verification.
  */
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { nanoid } from 'nanoid';
 import { prismaPlugin } from '../plugins/prisma';
@@ -370,6 +370,28 @@ describe('[review] a standing "no match", and the reason in the record', () => {
     expect(override.statusCode, override.body).toBe(200);
     expect((await rows()).at(-1)!.changes).toMatchObject({ outcome: 'MATCH', overridesNoMatch: true, reason: REASON });
     await system(() => app.prisma.user.update({ where: { id: subjectId }, data: { roles: ['VENDOR_OWNER'] } }));
+  });
+});
+
+// [OWNER-ASKS · round-4 review 3] Off, the selfie-check queue leaves independent pros out (the live phones cannot take
+// their photo); on, a pro with a photo and an approved ID waits there for a person.
+describe('[owner 9 Nov] the selfie-check queue and the pro switch', () => {
+  it('switch off: a pro is not queued; switch on: the pro is queued', async () => {
+    const proUser = await runWithTenant('swift-default', () => app.prisma.user.create({ data: { phone: `+59281${NUM}7`, firstName: `Pro${RUN}`, lastName: 'Queue', activeRole: 'CUSTOMER', roles: ['CUSTOMER'], countryCode: 'GY', status: 'ACTIVE', isPhoneVerified: true, avatar: '/uploads/avatars/PLACEHOLDER/synthetic-pro.jpg', selfieCapturedAt: new Date() } }));
+    users.push(proUser.id);
+    await system(async () => {
+      await app.prisma.user.update({ where: { id: proUser.id }, data: { avatar: `/uploads/avatars/${proUser.id}/synthetic-pro.jpg` } });
+      await app.prisma.serviceProvider.create({ data: { userId: proUser.id, trade: 'cleaner' } });
+      const fileUrl = await ownedVerificationFixture(app.prisma, proUser.id);
+      await app.prisma.verificationDocument.create({ data: { userId: proUser.id, role: 'CUSTOMER', docType: 'national_id', fileUrl, status: 'APPROVED', state: 'COMMITTED', reviewedAt: new Date(), reviewedBy: 'synthetic-reviewer', consentAt: new Date(), privacyNoticeVersion: 'v1' } });
+    });
+    const reviewer = await admin([...DOC_REVIEWER_CAPABILITIES, 'documents.review']);
+    const queued = async () => ((await call(reviewer.token, 'GET', '/verification/selfie-checks')).json().data.pending as Array<{ userId: string }>).map((p) => p.userId);
+    vi.stubEnv('PRO_HOME_JOBS_SELFIE', '');
+    try { expect(await queued()).not.toContain(proUser.id); } finally { vi.unstubAllEnvs(); }
+    vi.stubEnv('PRO_HOME_JOBS_SELFIE', '1');
+    try { expect(await queued()).toContain(proUser.id); } finally { vi.unstubAllEnvs(); }
+    await system(() => app.prisma.serviceProvider.deleteMany({ where: { userId: proUser.id } }));
   });
 });
 

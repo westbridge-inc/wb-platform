@@ -68,11 +68,6 @@ export async function selfieChecksFor(db: Db, ownerUserId: string, selfie: { sel
     .filter((row) => row.record.selfieCapturedAt === at && row.record.avatar === selfie.avatar);
 }
 
-/**
- * [review F3] A NO_MATCH is final for that selfie: only a MATCH recorded AFTER the last NO_MATCH, by a reviewer who
- * never said NO_MATCH about it, counts (the override is flagged to ops when it is recorded); otherwise the person
- * retakes the photo. Without a NO_MATCH, any MATCH counts. Deterministic: (createdAt, id) order, never "the latest".
- */
 /** [review N1] Has a reviewer ever ruled a photo of this person not to match (any selfie, retakes included)? Shown to
  *  the next reviewer; the authors of those answers never decide this person's next photo either (the decision route). */
 export async function earlierNoMatchReviewers(db: Db, ownerUserId: string): Promise<Set<string | null>> {
@@ -83,6 +78,11 @@ export async function earlierNoMatchReviewers(db: Db, ownerUserId: string): Prom
   return new Set(rows.filter((row) => (row.changes as Partial<SelfieIdComparison> | null)?.outcome === 'NO_MATCH').map((row) => row.userId));
 }
 
+/**
+ * [review F3] A NO_MATCH is final for that selfie: only a MATCH recorded AFTER the last NO_MATCH, by a reviewer who
+ * never said NO_MATCH about it, counts (the override is flagged to ops when it is recorded); otherwise the person
+ * retakes the photo. Without a NO_MATCH, any MATCH counts. Deterministic: (createdAt, id) order, never "the latest".
+ */
 export function standingMatch(rows: readonly SelfieCheckRow[]): SelfieCheckRow | null {
   let lastNo = -1;
   const refusers = new Set<string | null>();
@@ -136,14 +136,15 @@ function homeVisitNeeds(cleared: boolean, photo: boolean, matched: boolean): str
  * One small function so the rule can change in one place.
  */
 export async function tellOwnerHomeVisitCheckLost(
-  notifications: { send: (input: { userId: string; type: 'SYSTEM_ANNOUNCEMENT'; title: string; body: string; audience: 'business' | 'provider' }) => Promise<unknown> },
+  notifications: { send: (input: { userId: string; type: 'SYSTEM_ANNOUNCEMENT'; title: string; body: string; audience: 'business' | 'customer' }) => Promise<unknown> },
   ownerUserId: string,
   who: 'business' | 'provider' = 'business',
 ): Promise<void> {
-  // [review N2] a pro hears it as a pro (the provider audience, the pro's own words); a business as a business
+  // [review N2] a pro hears it in a pro's words; a business as a business. A pro lives in the customer app, whose inbox
+  // shows only customer-tagged rows (NotificationsScreen), so the pro's notice is tagged 'customer' to be seen there.
   await notifications.send(who === 'provider'
     ? {
-      userId: ownerUserId, type: 'SYSTEM_ANNOUNCEMENT', audience: 'provider', title: 'Home jobs are paused',
+      userId: ownerUserId, type: 'SYSTEM_ANNOUNCEMENT', audience: 'customer', title: 'Home jobs are paused',
       body: 'Our team could not match your profile photo with your approved ID, so new home jobs are paused. Take a new profile photo in the Swift app (Profile, then Services); we will check it again. Jobs you already confirmed are not cancelled.',
     }
     : {
