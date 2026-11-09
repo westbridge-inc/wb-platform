@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { View } from 'react-native';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { space } from '@swift/ui';
-import { BrandCheckbox, Card, PillButton, T } from '../../kit';
+import { Card, CheckRow, PillButton, T } from '../../kit';
 import { vendorApi } from '../../services/api';
 import { storeFeeAck, storeFeeCardEnabled, storeFeeCardView, storeFeeKey, storeFeeMoney, tickHolds, type StoreFeeToTick } from './storeWeeklyFee';
 
@@ -69,7 +69,7 @@ export function StoreWeeklyFeeCard({ role, scope }: { role: string; scope?: Stor
         <T key={item.heading} variant="caption"><T variant="caption" weight="bold">{item.heading}: </T>{item.text}</T>
       ))}
       <View style={{ gap: space.sm }}>
-        <BrandCheckbox checked={checked} onToggle={() => setTickedKey(checked ? null : key)} label={fee.tick} />
+        <CheckRow checked={checked} onToggle={() => setTickedKey(checked ? null : key)} label={fee.tick} />
         <PillButton label="Confirm" disabled={!checked} loading={save.isPending} onPress={() => { if (checked) save.mutate(fee); }} />
         {save.isError ? <T variant="caption" tone="error">{errorCopy(save.error)}</T> : null}
       </View>

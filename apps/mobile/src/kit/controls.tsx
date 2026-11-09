@@ -101,6 +101,56 @@ export function BrandCheckbox({ checked, onToggle, label }: { checked: boolean; 
   );
 }
 
+/**
+ * [OWNER-ASKS 9 Nov 2026] A tick box WITH its words beside it. BrandCheckbox's `label` is only what a screen reader
+ * says, so a box standing alone on a form explained nothing ("it doesn't really explain the box"). Here the words are
+ * always drawn, they wrap, and the whole row (box and words, at least 44 px tall) is the control. `kind="radio"` is
+ * one of several exclusive choices: a round box, announced as a radio button.
+ */
+export function CheckRow({
+  checked,
+  onToggle,
+  label,
+  kind = 'checkbox',
+  testID,
+}: {
+  checked: boolean;
+  onToggle: () => void;
+  label: string;
+  kind?: 'checkbox' | 'radio';
+  testID?: string;
+}) {
+  const radio = kind === 'radio';
+  return (
+    <Pressable
+      onPress={onToggle}
+      accessibilityRole={kind}
+      accessibilityLabel={label}
+      accessibilityState={radio ? { checked, selected: checked } : { checked }}
+      testID={testID}
+      style={{ flexDirection: 'row', alignItems: 'flex-start', gap: space.md, minHeight: 44, paddingVertical: space.xs }}
+    >
+      <View
+        style={{
+          width: 24,
+          height: 24,
+          borderRadius: radio ? 12 : 8,
+          backgroundColor: checked ? color.brand[500] : color.border.subtle,
+          alignItems: 'center',
+          justifyContent: 'center',
+        }}
+      >
+        {checked ? (
+          radio
+            ? <View style={{ width: 10, height: 10, borderRadius: 5, backgroundColor: color.white }} />
+            : <Feather name="check" size={15} color={color.white} />
+        ) : null}
+      </View>
+      <T style={{ flex: 1 }}>{label}</T>
+    </Pressable>
+  );
+}
+
 /** Floating heart chip over imagery. */
 export function HeartBadge({
   active,

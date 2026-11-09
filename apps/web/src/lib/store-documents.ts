@@ -18,7 +18,7 @@ export type { PoliceClearanceWords } from '../../../mobile/src/components/onboar
 export { FOOD_HANDLERS_DOC } from '../../../mobile/src/components/onboarding/foodHandlers';
 export { DOCUMENT_CONSENT_TEXT } from '../../../mobile/src/lib/uploadConsentCopy';
 export {
-  OWN_NAME_DECLARATION_V1, OWN_NAME_DECLARATION_VERSION, OWN_NAME_HINT, OWN_NAME_TICK, ownNameApplies, ownNameOfferFits, ownNameSigningFor,
+  OWN_NAME_DECLARATION_V1, OWN_NAME_DECLARATION_VERSION, OWN_NAME_HINT, OWN_NAME_TICK, ownNameApplies, ownNameDeclarationDisplay, ownNameOfferFits, ownNameSigningFor,
 } from '../../../mobile/src/lib/ownNameCopy';
 
 /** The roles whose checklist is a store's (a Services business included): the API's store roles on /verification. */
