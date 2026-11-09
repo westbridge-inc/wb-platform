@@ -2248,7 +2248,10 @@ export class BillingService {
         // early, refunded at closing for every week that has not started, partner-wind-down FEE_CREDIT) and spent
         // on that week when it starts. It never moves the next fee date. Decided when the money is booked: a week
         // that began while the bank was confirming is paid at once.
-        const aheadOfItsWeek = payNowSessionId !== null && payment.periodStart.getTime() > now.getTime();
+        // [REVIEW-1 R1-2] The same "due" as the Pay now quote: a week of a PAST_DUE, SUSPENDED or CHURNED account is
+        // owed now, whatever its date says, and is paid, never kept.
+        const aheadOfItsWeek = payNowSessionId !== null && payment.periodStart.getTime() > now.getTime()
+          && !['PAST_DUE', 'SUSPENDED', 'CHURNED'].includes(authority.status);
         const bankedAnyway = mmgHeld || covered || forgiven || returning || !allowsAdvance;
         const bankCapture = bankedAnyway || aheadOfItsWeek;
         if (bankCapture && await this.holdWalletCurrencyMismatch(tx, payment, currencyCode, paymentRef)) return 'held';

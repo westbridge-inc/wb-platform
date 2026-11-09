@@ -121,13 +121,12 @@ async function moveCanonicalClockInTx(tx: Tx, clock: BillingDunningClock, author
   if (!sameDue) {
     if (next.currentPeriodStart > clock.dueAt || next.currentPeriodEnd <= clock.dueAt
       || next.currentPeriodEnd.getTime() !== next.nextBillingDate.getTime()) throw refuse();
-    const payment = await tx.subscriptionPayment.findFirst({ where: { subscriptionId: next.id, status: 'CAPTURED', paidAt: { not: null },
-      periodStart: next.currentPeriodStart, periodEnd: next.currentPeriodEnd, externalRef: { not: null } } });
-    const event = payment && await tx.billingEvent.findFirst({ where: { subscriptionId: next.id, type: 'CHARGE_SUCCESS',
-      amount: payment.amount, currencyCode: next.currencyCode, paymentRef: payment.externalRef } });
-    if (!payment || !event) throw refuse();
-    paymentProof = payment.id;
-    covered = { payment, event };
+    // [REVIEW-1 R1-4] The payment that PAID the week, matched by its success event: a card payment kept as fee credit
+    // for the same week is a CAPTURED row too, and must never be taken for it.
+    const settled = await settledFeePeriodInTx(tx, next, next.currentPeriodStart, next.currentPeriodEnd, next.currencyCode);
+    if (!settled) throw refuse();
+    paymentProof = settled.payment.id;
+    covered = settled;
   }
   const snapshot = JSON.parse(JSON.stringify(clock, (_key, value) => typeof value === 'bigint' ? value.toString() : value)) as Prisma.InputJsonObject;
   await tx.auditLog.create({ data: { action: 'BILLING_CLOCK_CANONICAL_CHANGED', entity: 'BillingDunningClock', entityId: clock.id,

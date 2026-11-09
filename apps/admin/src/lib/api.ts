@@ -524,11 +524,29 @@ export const setAsideSubscriptionCredit = (id: string, amount: number, reason: s
   });
 // [Sol r2 S1] A payout record and a release name the set-aside they are for
 // (refundSetAsideId from the list), so an approval acts only on that one.
-export type RefundPaidMethod = 'MMG' | 'BANK_TRANSFER' | 'CHEQUE' | 'CASH' | 'CARD';
+export type RefundPaidMethod = 'MMG' | 'BANK_TRANSFER' | 'CHEQUE' | 'CASH';
 export const recordSubscriptionRefundPaid = (id: string, amount: number, method: RefundPaidMethod, reference: string, setAsideId: string, reason: string) =>
   apiFetch(`/api/v1/admin/subscriptions/${id}/refund-credit/paid`, {
     method: 'POST',
     body: JSON.stringify({ amount, method, reference, setAsideId }),
+    reason,
+  });
+// [CARD-READY] How the money in a refund was paid, and the card payments that can go back to their card.
+export interface RefundSources {
+  setAside: { id: string; amount: number; stillToPay: number; currencyCode: string } | null;
+  byRail: Array<{ rail: 'CARD' | 'MMG' | 'IN_PERSON' | 'OTHER' | 'NOT_RECORDED'; amount: number }>;
+  cardPayments: Array<{
+    cardSessionId: string; orderReference: string; providerTransactionRef: string | null; amount: number; currencyCode: string;
+    inSetAside: number; paidAt: string | null; refund: { state: string; providerRefundRef: string | null } | null; refundable: boolean;
+  }>;
+}
+export const fetchRefundSources = (id: string): Promise<{ data: RefundSources }> => apiFetch(`/api/v1/admin/subscriptions/${id}/refund-credit/sources`);
+/** [CARD-READY] Card money goes back to the same card only through the card provider's refund: Swift asks it once for the
+ *  whole card payment, and it counts as paid back only on the provider's approval. Two people (C4). */
+export const refundCreditToCard = (id: string, setAsideId: string, cardSessionId: string, amount: number, reason: string) =>
+  apiFetch(`/api/v1/admin/subscriptions/${id}/refund-credit/card`, {
+    method: 'POST',
+    body: JSON.stringify({ setAsideId, cardSessionId, amount }),
     reason,
   });
 export const releaseSubscriptionRefund = (id: string, amount: number, setAsideId: string, reason: string) =>

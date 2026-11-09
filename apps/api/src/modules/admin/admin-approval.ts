@@ -1,7 +1,8 @@
 import { createHash } from 'node:crypto';
 import type { Prisma, PrismaClient } from '@prisma/client';
 import { ADMIN_ACTION_CLASSES, type AdminActionClass, type AdminRouteAuthority } from './admin-authority';
-import { lockCreditRefundAsks, PAID_ACTION, validatePaidAsk } from '../billing/credit-refund';
+import { CARD_REFUND_ACTION, lockCreditRefundAsks, PAID_ACTION, validatePaidAsk } from '../billing/credit-refund';
+import { validateCardRefundAsk } from '../billing/card-credit-refund';
 import { IN_PERSON_ACTION, validateInPersonAsk } from '../billing/in-person-payment';
 import { lockClaimPaymentAsks, validateClaimPayAsk } from '../cash/claim-payout';
 import { SOLO_ROLE, isSoleApprover } from './solo-approval';
@@ -347,7 +348,7 @@ export async function resolveApproval(
     // [DS1122 S1] A refund payout-record ask is the "payout reported" marker:
     // it is written under that refund's ask lock, so a release applying at the
     // same moment either sees it or has finished before it.
-    const refundEntity = data.action === PAID_ACTION ? data.entityId : null;
+    const refundEntity = data.action === PAID_ACTION || data.action === CARD_REFUND_ACTION ? data.entityId : null;
     // An ask to record a payment on a case is the same kind of marker, under that case's lock: a reject either sees it
     // or has finished, and then the ask is refused.
     const claimEntity = data.action === PAY_ASK_ACTION ? data.entityId : null;
@@ -363,7 +364,9 @@ export async function resolveApproval(
       if (standing) return { askState: 'standing', standing };
       // [Review S2-1] Checked before it is written: an ask that could never be recorded is
       // refused now and never becomes a "payout reported" marker.
-      if (refundEntity) await validatePaidAsk(tx, refundEntity, subject.body);
+      if (refundEntity && data.action === PAID_ACTION) await validatePaidAsk(tx, refundEntity, subject.body);
+      // [CARD-READY] A refund to the card that could never be sent is refused now, never a "refund asked" marker.
+      if (refundEntity && data.action === CARD_REFUND_ACTION) await validateCardRefundAsk(tx, refundEntity, subject.body);
       if (claimEntity) await validateClaimPayAsk(tx, claimEntity);
       return { askState: 'created', created: await write(tx) };
     });

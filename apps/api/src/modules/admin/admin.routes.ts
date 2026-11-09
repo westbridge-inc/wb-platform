@@ -2,7 +2,8 @@ import { emitToOrderRoom, emitToStoreRoom } from '../order/order-room-emission.s
 import { scanUpload } from '../../lib/malware-scan';
 import { documentScanState, uploadScanRefusal, retryHeldEvidenceScan } from '../../lib/upload-scan-debt';
 import { vatTracker } from '../billing/vat-tracker';
-import { adminCardSession, adminCardSessions, adminResolveCardSession, adminSubscriptionCards } from '../billing/card-rail.routes';
+import { adminCardSession, adminCardSessions, adminResolveCardSession, adminSubscriptionCards, cardRailRuntimeOf } from '../billing/card-rail.routes';
+import { cardRailV2DrainEnabled, cardRailV2Enabled } from '../../utils/card-rail';
 import { listCases, caseDetail, claimCase, directCase, assignRelay, confirmReturn } from '../custody/custody-recovery';
 import { CUSTODY_CASE_DIRECTABLE, CUSTODY_CASE_OPEN_STATES } from '../order/order-status';
 import { identityAuthority, IdentityReviewRequiredError, lockIdentityAuthority, stageIdentityReviewCases, retainIdentityReview } from '../integrity/identity-review';
@@ -110,6 +111,7 @@ import { isUsableTopUpKey, TOPUP_KEY_MAX, TOPUP_KEY_MIN } from '../billing/billi
 import { recoveryFor, requeueRefusal } from '../../jobs/recovery-policy';
 import { isOutboxDeadLetterName, listOutboxDeadLetters, OUTBOX_RECOVERY, requeueOutboxDeadLetter } from '../../jobs/outbox-dead-letter';
 import { weeklyFeeAmount, billableWeeklyFee, waivedWeeklyFee } from '../billing/subscription-fee';
+import { CARD_REFUND_BODY, creditRefundSources, refundCardCreditToCard } from '../billing/card-credit-refund';
 import { openCreditRefunds, openSetAsideIds, PAID_REFUND_BODY, payoutAskStateFor, recordCreditRefundPaid, REFUND_AMOUNT, REFUND_SET_ASIDE_ID, refundReferenceOf, releaseCreditRefund, setAsideCreditRefund } from '../billing/credit-refund';
 import { csaeClosureProblems } from '../moderation/csae-closure';
 import { isDateOnly, startOfGuyanaDay, endOfGuyanaDay } from '../../utils/guyana-day';
@@ -5244,6 +5246,26 @@ export async function adminRoutes(app: FastifyInstance) {
       amount: body.amount, method: body.method, reference, setAsideId: body.setAsideId,
       onAudit: (tx, facts) => auditWithin(tx, request as unknown as AuditRequestLike, app.prefix, { extra: facts }),
     }));
+  });
+
+  // [CARD-READY] How the money in a refund was paid, and the card payments that can go back to their card.
+  app.get('/subscriptions/:id/refund-credit/sources', { preHandler: [adminGuard] }, async (request) => {
+    const id = await refundSubject(request);
+    return { success: true, data: await creditRefundSources(app.prisma, id) };
+  });
+
+  // [CARD-READY · REVIEW-2 F1] Card money goes back to the same card only through the card provider's documented
+  // refund (guide v2.7 sec. 5.2 / 7.5), sent once and recorded only on its own approved answer. C4: two people.
+  app.post('/subscriptions/:id/refund-credit/card', { preHandler: [adminGuard] }, async (request) => {
+    const id = await refundSubject(request);
+    if (!cardRailV2Enabled() && !cardRailV2DrainEnabled()) throw new AppError(404, 'CARD_RAIL_UNAVAILABLE', 'Card payments are not available on this server: nothing can be refunded to a card here.');
+    const body = CARD_REFUND_BODY.parse(request.body);
+    const done = await refundCardCreditToCard(app.prisma, cardRailRuntimeOf(app).rail, {
+      adminId: request.user.userId, approvalId: approvalOf(request), subscriptionId: id,
+      setAsideId: body.setAsideId, cardSessionId: body.cardSessionId, amount: body.amount,
+      onAudit: (tx, facts) => auditWithin(tx, request as unknown as AuditRequestLike, app.prefix, { extra: facts }),
+    });
+    return { success: true, replayed: done.replayed, data: done };
   });
 
   app.post('/subscriptions/:id/refund-credit/release', { preHandler: [adminGuard] }, async (request) => {

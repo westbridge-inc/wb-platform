@@ -172,8 +172,9 @@ export function refundSetAsidePostings(subscriptionId: string, amount: number): 
 }
 
 /** How a set-aside refund was paid back, and the account the money left. */
-/** CARD [CARD-READY]: refunded to the card in the card provider's own portal, a refund of the original card
- *  transaction (Swift sends nothing; a person records it, as every payout here). */
+/** CARD [CARD-READY]: paid back to the same card through the card provider's documented refund (PowerTranz guide
+ *  v2.7 sec. 5.2 / 7.5: POST /api/refund naming the original TransactionIdentifier), recorded only on the provider's
+ *  own approved answer (card-credit-refund.ts). Never a part a person types. */
 export type RefundMethod = 'MMG' | 'BANK_TRANSFER' | 'CHEQUE' | 'CASH' | 'CARD';
 const REFUND_ACCOUNT: Record<RefundMethod, string> = { MMG: 'CLEARING_MMG', BANK_TRANSFER: 'BANK_LOCAL', CHEQUE: 'BANK_LOCAL', CASH: 'CASH_ON_HAND', CARD: 'CLEARING_CARD' };
 

@@ -329,7 +329,8 @@ Pressing a button sends the browser to the return page, exactly as a real provid
 - **What the real provider (PT-4) does and does not do**, from its own guide v2.7 only:
   - Pay now by card, on its hosted page with 3-D Secure; Swift completes the payment only when the bank's check passed (verified or attempted), and only the provider's answer to that completion books the week, once.
   - No saved cards: the guide documents no weekly charge without the partner present and returns no last 4 or expiry. `addCard` is `false` with it, whatever the switch says.
-  - Refund and void of a payment exist in the provider; the two-person admin flow that uses them is not in this contract yet.
+  - Refund (sec. 3 "Refund a previously authorized transaction", 5.2, 7.5: POST /api/refund naming the ORIGINAL TransactionIdentifier, with TotalAmount and Refund true) and void (5.2, 7.6). Swift uses the refund twice, each a two-person admin action sent once: a HELD Pay now (section 8, REFUND) and, at closing, weekly-fee money paid ahead by card going back to its card (Subscriptions "Refund to card", `POST /api/v1/admin/subscriptions/{id}/refund-credit/card`; whole card payments only, recorded only on the provider's approved answer).
+  - Not in the guide, so not done: a refund made by hand in the merchant portal (the guide names the portal only for page names, 5.1, and order references in reports, 9.2), and a refund smaller than the payment (5.2: "partial voids are not supported. Only partial captures are supported").
 - **Questions for PowerTranz** (asked through the coordinator):
   - how a saved card is charged each week without the partner present (a merchant-initiated or recurring indicator, and the 3-D Secure and CVV rules);
   - GYD (ISO 4217 `328`) acceptance and settlement;
@@ -338,7 +339,11 @@ Pressing a button sends the browser to the return page, exactly as a real provid
   - whether the payment completion's answer carries the original `TransactionIdentifier`, and how to look up a completion whose answer was lost (the guide documents no inquiry call);
   - whether the hosted page works inside an iframe in iPhone Safari (third-party cookies) and Android in-app browsers;
   - the production API root (the guide says it is provided after staging is validated);
-  - enabling `PanToken` on a Pay now.
+  - enabling `PanToken` on a Pay now;
+  - can a person refund a payment in the Merchant Portal, and if so which refund reference does the portal show (Swift records refunds only from the API answer until this is answered);
+  - can a refund be smaller than the original payment (a partial refund), and with which answer when it cannot (sec. 5.2 documents partial captures only);
+  - does the Merchant Portal find a payment by its TransactionIdentifier, or only by the OrderIdentifier (`SWIFT-<card payment id>`, sec. 9.2);
+  - is the refund's own TransactionIdentifier (sec. 7.5 answer) shown in the portal and on the settlement report, so finance can match a refund Swift recorded.
 - The UI (a separate lane builds it against this contract and the simulator).
 - The credential setup tool (PT-5, for MMG and the card provider together): `deploy/owner/swift-payments-setup.command`. Its server self-check prints OK / FAIL lines naming only known settings (`SELF_CHECK_SETTING_NAMES`); the sandbox page it sets up (Redis prefix `ptz:selfcheck:`) is abandoned at once and its record expires after one hour (`SELF_CHECK_RECORD_TTL_MS`).
 
