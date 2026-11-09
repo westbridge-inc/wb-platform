@@ -14,7 +14,7 @@ import { sealReviewChannels } from './review-seal';
 import { guardNonProductionSms } from './sms-recipient-allowlist';
 import { SMS_REF_HANDOFF_SUPPRESSED } from './sms-outcome';
 import { expoErrorClass, httpFailureReason, recordPushFailure, recordPushFailureClasses } from './push-outcome';
-import { expoAccessToken, withoutToken } from './expo-access-token';
+import { DEFAULT_EXPO_PUSH_URL, assertExpoPushUrlCarriesToken, expoAccessToken, withoutToken } from './expo-access-token';
 import { gsm7Sms } from '../../utils/sms-text';
 
 export type NotificationHandoff = <T>(part: string, effect: () => Promise<T>) => Promise<T | undefined>;
@@ -323,7 +323,7 @@ export class ExpoPushProvider implements PushProvider {
   readonly supportsHandoff = true;
   private static CHUNK = 100; // Expo's documented max messages per request
   private static RECEIPT_CHUNK = 1000; // Expo's documented max ids per receipt request
-  private url = process.env['EXPO_PUSH_URL'] ?? 'https://exp.host/--/api/v2/push/send';
+  private url = process.env['EXPO_PUSH_URL'] ?? DEFAULT_EXPO_PUSH_URL;
   // The receipts endpoint sits beside the send endpoint (same host, same API).
   private receiptsUrl = /\/send$/.test(this.url) ? this.url.replace(/\/send$/, '/getReceipts') : 'https://exp.host/--/api/v2/push/getReceipts';
   /** [EXPO-PUSH-AUTH] A true private field: never in a JSON dump or an
@@ -339,6 +339,9 @@ export class ExpoPushProvider implements PushProvider {
 
   constructor(options: { receiptCheckDelayMs?: number | null } = {}) {
     this.receiptCheckDelayMs = options.receiptCheckDelayMs ?? null;
+    // [EXPO-PUSH-AUTH] The token only ever travels over https (the receipts
+    // URL sits on the same host and scheme as this one).
+    assertExpoPushUrlCarriesToken(this.url, this.#accessToken);
   }
 
   async sendPush(deviceTokens: string[], title: string, body: string, data?: Record<string, unknown>, options: PushOptions = STANDARD_PUSH): Promise<{ sent: number; invalidTokens?: string[] }> {

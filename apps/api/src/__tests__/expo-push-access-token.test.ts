@@ -1,7 +1,9 @@
 import { inspect } from 'node:util';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ExpoPushProvider, getPushProvider } from '../providers/notifications/channels';
-import { expoAccessToken } from '../providers/notifications/expo-access-token';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { expoAccessToken, expoPushTokenBootLine } from '../providers/notifications/expo-access-token';
 import { applySecretFiles } from '../utils/secret-files';
 import { assertSafeBootConfig } from '../utils/boot-config';
 import { setAppLogger } from '../utils/logger';
@@ -155,28 +157,54 @@ describe('[EXPO-PUSH-AUTH] the token never leaks', () => {
 });
 
 describe('[EXPO-PUSH-AUTH] a set token must be usable', () => {
-  it.each([
+  // The SAME list is run against the owner's prompt helpers' local check
+  // (swift-coordination owner tools): keep the two rules identical.
+  const REFUSED: Array<[string, string]> = [
     ['an inner space', 'abc def'],
     ['a line break', 'abc\ndef'],
-    ['a quote', 'abc"def'],
-    ['a colon', 'abc:def'],
-  ])('refused with %s, naming the setting and never the value — at boot in every mode, and by the adapter', (_label, value) => {
+    ['a tab', 'abc\tdef'],
+    ['a no-break space inside', 'abc def'],
+    ['a zero-width space', 'abc​def'],
+    ['smart quotes', '“abcdef”'],
+    ['a non-ASCII letter', 'abcédef'],
+    ['double quotes around it', '"abcdef"'],
+    ['single quotes around it', "'abcdef'"],
+    ['a backtick at the end', 'abcdef`'],
+    ['a "Bearer " prefix', 'Bearer abcdef'],
+    ['a "bearer:" prefix', 'bearer:abcdef'],
+    ['a NAME=value line', 'EXPO_ACCESS_TOKEN=abcdef'],
+    ['another NAME=value line', 'TOKEN=abcdef'],
+    ['an empty NAME= line', 'EXPO_ACCESS_TOKEN='],
+    ['a control character', 'abc\u0007def'],
+  ];
+
+  it.each(REFUSED)('refused with %s, naming the setting and never the value: at boot in every mode, and by the adapter', (_label, value) => {
     for (const mode of ['production', 'development', 'test']) {
       let message = '';
       try { assertSafeBootConfig({ NODE_ENV: mode, EXPO_ACCESS_TOKEN: value }); } catch (e) { message = (e as Error).message; }
       expect(message, mode).toContain('EXPO_ACCESS_TOKEN');
-      expect(message, mode).not.toContain(value);
+      expect(message, mode).not.toContain(value.trim());
+      expect(message, mode).not.toContain('abcdef');
     }
     process.env['EXPO_ACCESS_TOKEN'] = value;
     expect(() => new ExpoPushProvider()).toThrow('EXPO_ACCESS_TOKEN');
   });
 
-  it('accepts a bearer token, and unset/empty is no token at all', () => {
-    expect(expoAccessToken({ EXPO_ACCESS_TOKEN: ACCESS })).toBe(ACCESS);
-    expect(expoAccessToken({ EXPO_ACCESS_TOKEN: 'a.b-c_d~e+f/g==' })).toBe('a.b-c_d~e+f/g==');
+  it.each([
+    ['a plain token', ACCESS],
+    ['the base64 alphabet with padding', 'a.b-c_d~e+f/g=='],
+    ['any other printable ASCII (the rule never depends on Expo\'s alphabet)', 'abc:def!#$%&*()[]{}<>?@^|\\'],
+    ['a quote inside, not around it', 'abc"def'],
+    ['a token that only starts like the word', 'bearerless123'],
+  ])('accepts %s', (_label, value) => {
+    expect(expoAccessToken({ EXPO_ACCESS_TOKEN: value })).toBe(value);
+    expect(() => assertSafeBootConfig({ NODE_ENV: 'development', EXPO_ACCESS_TOKEN: value })).not.toThrow();
+  });
+
+  it('unset, empty and blank are no token at all (pushes go as before)', () => {
     expect(expoAccessToken({})).toBeNull();
     expect(expoAccessToken({ EXPO_ACCESS_TOKEN: '' })).toBeNull();
-    expect(() => assertSafeBootConfig({ NODE_ENV: 'development', EXPO_ACCESS_TOKEN: ACCESS })).not.toThrow();
+    expect(expoAccessToken({ EXPO_ACCESS_TOKEN: ' \n\t' })).toBeNull();
   });
 
   it('deployed hosts deliver it as a secret file (EXPO_ACCESS_TOKEN_FILE), read into memory at boot', () => {
@@ -188,5 +216,58 @@ describe('[EXPO-PUSH-AUTH] a set token must be usable', () => {
     expect(env['EXPO_ACCESS_TOKEN']).toBe(ACCESS);
     expect(env['EXPO_ACCESS_TOKEN_FILE']).toBeUndefined();
     expect(expoAccessToken(env)).toBe(ACCESS);
+  });
+});
+
+describe('[EXPO-PUSH-AUTH] the token only travels over https', () => {
+  it.each([
+    ['plain http to another host', 'http://exp.host/--/api/v2/push/send'],
+    ['another scheme', 'ftp://exp.host/--/api/v2/push/send'],
+    ['not a URL', 'exp.host/send'],
+  ])('with a token set, %s is refused at boot (every mode) and by the adapter, naming EXPO_PUSH_URL', (_label, url) => {
+    for (const mode of ['production', 'development', 'test']) {
+      let message = '';
+      try { assertSafeBootConfig({ NODE_ENV: mode, EXPO_ACCESS_TOKEN: ACCESS, EXPO_PUSH_URL: url }); } catch (e) { message = (e as Error).message; }
+      expect(message, mode).toContain('EXPO_PUSH_URL');
+      expect(message, mode).not.toContain(ACCESS);
+    }
+    process.env['EXPO_ACCESS_TOKEN'] = ACCESS;
+    vi.stubEnv('EXPO_PUSH_URL', url);
+    expect(() => new ExpoPushProvider()).toThrow('EXPO_PUSH_URL');
+  });
+
+  it.each([
+    ['the default (https)', undefined],
+    ['another https endpoint', 'https://push.example.test/--/api/v2/push/send'],
+    ['plain http to this machine (tests)', 'http://127.0.0.1:4010/--/api/v2/push/send'],
+    ['plain http to localhost (tests)', 'http://localhost:4010/--/api/v2/push/send'],
+  ])('with a token set, %s is allowed', (_label, url) => {
+    const env: Record<string, string | undefined> = { NODE_ENV: 'development', EXPO_ACCESS_TOKEN: ACCESS, EXPO_PUSH_URL: url };
+    expect(() => assertSafeBootConfig(env)).not.toThrow();
+    process.env['EXPO_ACCESS_TOKEN'] = ACCESS;
+    if (url) vi.stubEnv('EXPO_PUSH_URL', url);
+    expect(() => new ExpoPushProvider()).not.toThrow();
+  });
+
+  it('with no token, the URL rule does not apply (nothing secret travels): as before', () => {
+    expect(() => assertSafeBootConfig({ NODE_ENV: 'development', EXPO_PUSH_URL: 'http://exp.host/--/api/v2/push/send' })).not.toThrow();
+    vi.stubEnv('EXPO_PUSH_URL', 'http://exp.host/--/api/v2/push/send');
+    expect(() => new ExpoPushProvider()).not.toThrow();
+  });
+});
+
+describe('[EXPO-PUSH-AUTH] the boot log says whether a token is set, never the value', () => {
+  it('set / not set', () => {
+    expect(expoPushTokenBootLine({ EXPO_ACCESS_TOKEN: ACCESS })).toBe('expo push token: set');
+    expect(expoPushTokenBootLine({})).toBe('expo push token: not set');
+    expect(expoPushTokenBootLine({ EXPO_ACCESS_TOKEN: '  ' })).toBe('expo push token: not set');
+    expect(expoPushTokenBootLine({ EXPO_ACCESS_TOKEN: ACCESS })).not.toContain(ACCESS.slice(0, 6));
+  });
+
+  it('both processes that send pushes print it at start (api server and worker)', () => {
+    for (const file of ['server.ts', 'worker.ts']) {
+      const text = readFileSync(join(__dirname, '..', file), 'utf8');
+      expect(text, file).toMatch(/\.info\(expoPushTokenBootLine\(\)\);/);
+    }
   });
 });

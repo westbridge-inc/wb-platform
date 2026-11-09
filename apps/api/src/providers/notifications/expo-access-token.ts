@@ -7,26 +7,74 @@
  *
  * The token is a secret: deployed hosts get it as EXPO_ACCESS_TOKEN_FILE from
  * the encrypted store (utils/secret-files.ts), never as a value in a settings
- * file. It is OPTIONAL: unset (or empty) sends no Authorization header, exactly
- * as before, so nothing changes until the owner adds it. A value that is set
- * but cannot travel as a bearer token (RFC 6750 b64token: letters, digits and
- * - . _ ~ + / with optional trailing =) is refused, naming the setting only,
- * never guessed at: sent anyway it would either fail every push or be cut.
+ * file. It is OPTIONAL: unset (or blank) sends no Authorization header,
+ * exactly as before, so nothing changes until the owner adds it.
+ *
+ * The format rule is deliberately loose, so a server never depends on Expo's
+ * own alphabet: after trimming, any printable ASCII without spaces. Refused,
+ * naming the setting and never the value, are only the shapes of a bad paste
+ * that can never work: a space, line break, control or non-ASCII character
+ * (a smart quote, a zero-width character from a web page), a value wrapped in
+ * quotes, a "Bearer " prefix, or a NAME=value line. The owner's prompt helpers
+ * check a value with this SAME rule before sending it, so a bad paste is
+ * caught at the prompt rather than at the next boot.
  */
-const BEARER_TOKEN = /^[A-Za-z0-9\-._~+/]+=*$/;
+const PRINTABLE_NO_SPACE = /^[\x21-\x7E]+$/;
+const QUOTE = /^["'`]|["'`]$/;
+const BEARER_PREFIX = /^bearer(?:\s|$|:)/i;
+/** An `=` before the end that is not trailing padding (`NAME=value`). */
+const ASSIGNMENT = /=[^=]|^EXPO_ACCESS_TOKEN=/;
 
-export function expoAccessToken(env: Record<string, string | undefined> = process.env): string | null {
+type Env = Record<string, string | undefined>;
+
+/** Why a non-blank, trimmed value is not usable, or null when it is. Words only, never the value. */
+export function expoAccessTokenProblem(token: string): string | null {
+  if (BEARER_PREFIX.test(token)) return 'it starts with "Bearer"; store the token alone';
+  if (!PRINTABLE_NO_SPACE.test(token)) return 'it has a space, a line break or a character that is not plain ASCII';
+  if (QUOTE.test(token)) return 'it is wrapped in quotes; store the token alone';
+  if (ASSIGNMENT.test(token)) return 'it looks like NAME=value; store the token alone';
+  return null;
+}
+
+/** The token, or null when unset or blank. A set value that is not usable is refused. */
+export function expoAccessToken(env: Env = process.env): string | null {
   const token = (env['EXPO_ACCESS_TOKEN'] ?? '').trim();
   if (token === '') return null;
-  if (!BEARER_TOKEN.test(token)) {
-    throw new Error('FATAL: EXPO_ACCESS_TOKEN is set but is not an Expo access token (letters, digits and - . _ ~ + / only). Fix the secret or remove it. Refusing to start.');
+  const problem = expoAccessTokenProblem(token);
+  if (problem) {
+    throw new Error(`FATAL: EXPO_ACCESS_TOKEN is set but is not usable (${problem}). Fix the secret or remove it. Refusing to start.`);
   }
   return token;
 }
 
-/** Boot check, every mode: a set token must be usable (see expoAccessToken). */
-export function assertExpoAccessTokenConfig(env: Record<string, string | undefined>): void {
-  expoAccessToken(env);
+const LOOPBACK = new Set(['127.0.0.1', 'localhost', '[::1]']);
+
+/** The push URL the token travels to must be https (plain http only to this
+ *  machine, for tests): a token is never sent in clear text. Refused, naming
+ *  the setting, only while a token is set. */
+export function assertExpoPushUrlCarriesToken(url: string, token: string | null): void {
+  if (!token) return;
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    throw new Error('FATAL: EXPO_PUSH_URL is not a URL, and EXPO_ACCESS_TOKEN is set. Refusing to start.');
+  }
+  if (parsed.protocol === 'https:') return;
+  if (parsed.protocol === 'http:' && LOOPBACK.has(parsed.hostname)) return;
+  throw new Error('FATAL: EXPO_PUSH_URL must be https while EXPO_ACCESS_TOKEN is set (the token is never sent in clear text). Refusing to start.');
+}
+
+export const DEFAULT_EXPO_PUSH_URL = 'https://exp.host/--/api/v2/push/send';
+
+/** Boot check, every mode: a set token must be usable and travel over https. */
+export function assertExpoAccessTokenConfig(env: Env): void {
+  assertExpoPushUrlCarriesToken(env['EXPO_PUSH_URL'] ?? DEFAULT_EXPO_PUSH_URL, expoAccessToken(env));
+}
+
+/** The boot log line: whether a token is set, never any part of it. */
+export function expoPushTokenBootLine(env: Env = process.env): string {
+  return `expo push token: ${(env['EXPO_ACCESS_TOKEN'] ?? '').trim() ? 'set' : 'not set'}`;
 }
 
 /** The text of an error with every copy of the token replaced, for messages
