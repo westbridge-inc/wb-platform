@@ -202,6 +202,14 @@ export function SearchScreen() {
   // and maroon is now reserved (law 3). A darker hairline carries it instead.
   const [focused, setFocused] = useState(false);
 
+  // [owner 8 Nov 2026] A screen that sends the customer here with a store kind (a declined order's "Order from
+  // another store") may find Search already open under it: navigate then updates the params of the screen that is
+  // there, so the kind it asks for is applied, not only the one Search first opened with.
+  const handedType: unknown = route.params?.type;
+  useEffect(() => {
+    if (typeof handedType === 'string' && handedType) setType(handedType);
+  }, [handedType]);
+
   useEffect(() => {
     const t = setTimeout(() => setDebounced(q), 300);
     return () => clearTimeout(t);

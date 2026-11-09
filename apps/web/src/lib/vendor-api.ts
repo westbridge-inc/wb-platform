@@ -344,8 +344,9 @@ export const setPicked = (orderId: string, lineId: string, picked: boolean) =>
   apiFetch(`${V}/orders/${orderId}/items/${lineId}/picked`, { method: 'PUT', body: JSON.stringify({ picked }) });
 export const proposeSubstitution = (orderId: string, lineId: string, substituteItemId: string) =>
   apiFetch(`${V}/orders/${orderId}/items/${lineId}/substitute`, { method: 'POST', body: JSON.stringify({ substituteItemId }) });
-export const refundLine = (orderId: string, lineId: string) =>
-  apiFetch(`${V}/orders/${orderId}/items/${lineId}/refund-line`, { method: 'POST', body: '{}' });
+// [OOS-FLOW · REVIEW-1 S3-2] endsOrder: the store confirmed that removing the last item cancels the order.
+export const refundLine = (orderId: string, lineId: string, endsOrder = false) =>
+  apiFetch(`${V}/orders/${orderId}/items/${lineId}/refund-line`, { method: 'POST', body: endsOrder ? JSON.stringify({ endsOrder: true }) : '{}' });
 
 // ── Catalogue ────────────────────────────────────────────────────────────────
 export const getItems = (

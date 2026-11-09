@@ -310,7 +310,8 @@ describe('switched off (the default): every payload is today\'s, nothing is writ
       const keys = Object.keys(res.json().data).filter((k) => k in raw);
       expect(keys, url).toEqual(Object.keys(raw).filter((k) => keys.includes(k)));
       // [owner #50, 14 Oct] The passenger's active ride also carries the one cancel verdict (additive; not the waiting's).
-      expect(Object.keys(res.json().data).filter((k) => !(k in raw)).every((k) => ['driver', 'customer', 'statusHistory', 'canCancel', 'freeCancellationExpiresAt', 'cancellationMessage', 'cancelUnavailable'].includes(k)), url).toBe(true);
+      // [owner 8 Nov 2026] The passenger's ride also says who closed it once CANCELLED (`cancellation`, null before; additive; not the waiting's).
+      expect(Object.keys(res.json().data).filter((k) => !(k in raw)).every((k) => ['driver', 'customer', 'statusHistory', 'canCancel', 'freeCancellationExpiresAt', 'cancellationMessage', 'cancelUnavailable', 'cancellation'].includes(k)), url).toBe(true);
     }
   });
 

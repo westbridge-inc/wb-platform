@@ -512,7 +512,9 @@ describe('[#15] every publication to a store room goes through the team gate', (
     // order:status_changed instead of order:new (which sounds the new-order alarm), through the gate.
     // + [BOOK-FU2 · owner B3] "Customer didn't come": the store board hears its closed appointment, through the gate.
     // + [BUG-HUNT-2 G20] a pickup the customer never collected, cancelled free: the store board hears it, through the gate.
-    expect(publishers).toBe(19);
+    // + [OOS-FLOW · owner 8 Nov 2026] an accepted order ended because its last item is out of stock: the store
+    //   board hears it (picking.service cancelForStockOut, through the gate).
+    expect(publishers).toBe(20);
   });
 });
 

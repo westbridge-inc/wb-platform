@@ -18,6 +18,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 const fx = vi.hoisted(() => ({
   socketHandlers: new Map<string, Set<(payload?: any) => void>>(),
   renders: 0,
+  session: null as null | { userId: string },
 }));
 
 vi.mock('react-native', () => ({ Vibration: { vibrate: vi.fn() } }));
@@ -33,7 +34,7 @@ vi.mock('../services/socket', () => ({
 }));
 vi.mock('../stores/authStore', () => ({
   useAuthStore: (selector: (s: unknown) => unknown) => selector({}),
-  getAuthSessionSnapshot: () => null, requireAuthSessionForPrincipal: () => null, requireAuthSessionSnapshot: () => null,
+  getAuthSessionSnapshot: () => fx.session, requireAuthSessionForPrincipal: () => null, requireAuthSessionSnapshot: () => null,
 }));
 vi.mock('../lib/billingMutation', () => ({ runBillingMutation: vi.fn() }));
 vi.mock('./cashSettlement', () => ({ confirmVendorCashSettlement: vi.fn() }));
@@ -47,6 +48,7 @@ vi.mock('../stores/vendorPreview', () => ({ useVendorPreview: (selector: (s: { p
 
 import { useVendorOrdersLive } from './vendorops';
 import { resetHandledTakeovers } from '../modules/vendor/takeoverRaise';
+import { bindHandledTakeoverStorage, forgetHandledTakeovers } from '../lib/handledTakeovers';
 import { emitAppForeground, emitForegroundPush } from '../lib/appSignals';
 
 type Entry = { orderId: string; orderNumber?: string };
@@ -78,12 +80,14 @@ beforeEach(() => {
   seen.takeover = [];
   fx.renders = 0;
   fx.socketHandlers.clear();
+  fx.session = null;
   resetHandledTakeovers();
 });
 afterEach(() => {
   act(() => root?.unmount());
   host?.remove();
   root = null; host = null;
+  bindHandledTakeoverStorage(null);
   vi.restoreAllMocks();
 });
 
@@ -216,5 +220,105 @@ describe('[STORE-ALERT-RECONNECT] the store room comes back', () => {
     invalidate.mockClear();
     await fireSocket('connect');
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ['vendor', 'orders'] });
+  });
+});
+
+// [S4-2] What the store answered is kept on the device per signed-in account: a restart (cold start,
+// app update) does not ring again for an order put off with "View later"; another account does.
+describe('[S4-2] the store\'s answer survives a restart, per account', () => {
+  const restart = async () => {
+    act(() => root?.unmount());
+    host?.remove();
+    root = null; host = null;
+    resetHandledTakeovers(); // this run's memory is gone; the device keeps its copy
+    qc = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: Infinity } } });
+  };
+
+  it('"View later", then a restart: the board does not raise it again; another account would', async () => {
+    const kv = new Map<string, string>();
+    bindHandledTakeoverStorage({ getItem: (k) => kv.get(k) ?? null, setItem: (k, v) => { kv.set(k, v); }, removeItem: (k) => { kv.delete(k); } });
+    fx.session = { userId: 'owner-1' };
+    const respondBy = new Date(Date.now() + 10 * 60_000).toISOString();
+    qc.setQueryData(['vendor', 'orders'], [pending('o1', { respondBy })]);
+    await mount();
+    expect(seen.takeover).toEqual([{ orderId: 'o1', orderNumber: 'O1' }]);
+    await act(async () => { seen.dismiss('o1'); });
+    expect(seen.takeover).toEqual([]);
+
+    await restart();
+    qc.setQueryData(['vendor', 'orders'], [pending('o1', { respondBy })]);
+    await mount();
+    expect(seen.takeover).toEqual([]); // RED before: rang again after every restart
+
+    await restart();
+    fx.session = { userId: 'owner-2' };
+    qc.setQueryData(['vendor', 'orders'], [pending('o1', { respondBy })]);
+    await mount();
+    expect(seen.takeover).toEqual([{ orderId: 'o1', orderNumber: 'O1' }]); // never shared across accounts
+  });
+
+  it('[review S3-1] "Out of stock" asked, the app restarts, the customer answers: it rings again', async () => {
+    const kv = new Map<string, string>();
+    bindHandledTakeoverStorage({ getItem: (k) => kv.get(k) ?? null, setItem: (k, v) => { kv.set(k, v); }, removeItem: (k) => { kv.delete(k); } });
+    fx.session = { userId: 'owner-1' };
+    const r1 = new Date(Date.now() + 10 * 60_000).toISOString();
+    const asked = { items: [{ id: 'o1-l1', subStatus: 'PENDING', substituteName: null }] };
+    qc.setQueryData(['vendor', 'orders'], [pending('o1', { respondBy: r1 })]);
+    await mount();
+    await board([pending('o1', { respondBy: r1, ...asked })]); // the store asked: the takeover settles
+    await act(async () => { seen.dismiss('o1'); });
+    expect(kv.size).toBe(1);
+
+    await restart(); // the phone killed the app while the customer decides
+    const r2 = new Date(Date.now() + 25 * 60_000).toISOString(); // answered: the store's clock restarted
+    qc.setQueryData(['vendor', 'orders'], [pending('o1', { respondBy: r2 })]);
+    await mount();
+    expect(seen.takeover).toEqual([{ orderId: 'o1', orderNumber: 'O1' }]); // RED before: silent until auto-cancel
+  });
+
+  it('[review S3-1] while the customer decides, a restart forgets the answer; their reply rings even with the same window', async () => {
+    const kv = new Map<string, string>();
+    bindHandledTakeoverStorage({ getItem: (k) => kv.get(k) ?? null, setItem: (k, v) => { kv.set(k, v); }, removeItem: (k) => { kv.delete(k); } });
+    fx.session = { userId: 'owner-1' };
+    const r1 = new Date(Date.now() + 10 * 60_000).toISOString();
+    const asked = { items: [{ id: 'o1-l1', subStatus: 'PENDING', substituteName: null }] };
+    qc.setQueryData(['vendor', 'orders'], [pending('o1', { respondBy: r1 })]);
+    await mount();
+    await act(async () => { seen.dismiss('o1'); });
+    await restart();
+    qc.setQueryData(['vendor', 'orders'], [pending('o1', { respondBy: r1, ...asked })]);
+    await mount();
+    expect(seen.takeover).toEqual([]); // waiting on the customer: not the store's turn
+    expect(kv.size).toBe(0); // ...and no longer remembered as answered
+    await board([pending('o1', { respondBy: r1 })]);
+    expect(seen.takeover).toEqual([{ orderId: 'o1', orderNumber: 'O1' }]);
+  });
+
+  it('signed out and back in: it rings again (sign-out wipes the memory)', async () => {
+    const kv = new Map<string, string>();
+    bindHandledTakeoverStorage({ getItem: (k) => kv.get(k) ?? null, setItem: (k, v) => { kv.set(k, v); }, removeItem: (k) => { kv.delete(k); } });
+    fx.session = { userId: 'owner-1' };
+    qc.setQueryData(['vendor', 'orders'], [pending('o1')]);
+    await mount();
+    await act(async () => { seen.dismiss('o1'); });
+    expect(kv.size).toBe(1);
+    await restart();
+    forgetHandledTakeovers();
+    expect(kv.size).toBe(0);
+    qc.setQueryData(['vendor', 'orders'], [pending('o1')]);
+    await mount();
+    expect(seen.takeover).toEqual([{ orderId: 'o1', orderNumber: 'O1' }]);
+  });
+
+  it('an order the board shows left PENDING is forgotten on the device', async () => {
+    const kv = new Map<string, string>();
+    bindHandledTakeoverStorage({ getItem: (k) => kv.get(k) ?? null, setItem: (k, v) => { kv.set(k, v); }, removeItem: (k) => { kv.delete(k); } });
+    fx.session = { userId: 'owner-1' };
+    qc.setQueryData(['vendor', 'orders'], [pending('o1')]);
+    await mount();
+    await act(async () => { seen.dismiss('o1'); });
+    expect(kv.size).toBe(1);
+    await board([{ ...pending('o1'), status: 'ACCEPTED' }]);
+    expect(kv.size).toBe(0);
   });
 });

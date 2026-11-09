@@ -11,6 +11,8 @@ import { fareBreakdownOf } from '../../../lib/taxiWaiting';
 import { rideCanBeRated, rideOverTitle, ridePaidAmount } from '../../../lib/rideAfterTrip';
 import { rideApi } from '../../../services/api';
 import { cachedOrderRow } from '../../../lib/doorPreview';
+import { cancellationReasonWords } from '@swift/types';
+import { customerCancellationWords } from '@swift/types/src/customer-cancellation-words';
 
 /**
  * [BUG-HUNT-2 G06] A ride that is over. The post-trip sheet shows only if the ride screen was open when the socket event landed,
@@ -42,6 +44,8 @@ export function RideDetailScreen({ navigation, route }: any) {
   if (ride.isError || !ride.data) return <Screen><Header title="Your ride" /><ErrorState onRetry={() => void ride.refetch()} /></Screen>;
 
   const r = ride.data;
+  // This screen is a ride's own: its words are a ride's, whatever the row carries.
+  const closedLine = customerCancellationWords({ ...r, orderType: 'TAXI' })?.headline ?? cancellationReasonWords(r.cancellationReason, 'customer');
   const breakdown = checking ? null : fareBreakdownOf(r);
   const paid = checking ? null : ridePaidAmount(r);
   const stops = rideStops(r);
@@ -60,7 +64,9 @@ export function RideDetailScreen({ navigation, route }: any) {
       <ScrollView contentContainerStyle={{ padding: space.lg }}>
         <IconChip icon="check-circle" size={56} />
         <T variant="title" accessibilityRole="header" style={{ marginTop: space.md }}>{checking ? 'Checking your ride…' : rideOverTitle(r.status)}</T>
-        {!checking && r.cancellationReason ? <T variant="body" tone="muted" style={{ marginTop: space.xs }}>{r.cancellationReason}</T> : null}
+        {/* [owner 8 Nov 2026] Who closed a cancelled ride, in words: the server's `cancellation`, else (an older
+            server) its reason through the shared words map, so a code like NO_DRIVERS_AVAILABLE never shows. */}
+        {!checking && closedLine ? <T variant="body" tone="muted" style={{ marginTop: space.xs }}>{closedLine}</T> : null}
         <View style={{ borderRadius: radius.lg, backgroundColor: color.surface.subtle, padding: space.md, marginTop: space.lg }}>
           {line('Order', r.orderNumber)}
           {line('Driver', driverName)}

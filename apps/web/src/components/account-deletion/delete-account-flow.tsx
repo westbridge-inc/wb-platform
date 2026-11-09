@@ -6,7 +6,7 @@ import { useQuery } from '@tanstack/react-query';
 import { ApiRequestError } from '@/lib/auth';
 import { isStepUpDismissed, useStepUp } from '@/lib/step-up';
 import { DataUnavailable } from '@/components/data-unavailable';
-import { storeOrderStatusWords } from '@swift/types';
+import { storeOrderStatusWords } from '@swift/types/src/order-words';
 import { orderStatusLabel } from '@/lib/order-words';
 import {
   DELETED_PAGE, cancelAccountClosure, deleteMyAccount, getDeletionCheck, requestAccountClosure, stashDeletionReceipt,
