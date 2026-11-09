@@ -1,9 +1,25 @@
 import { cardRailProviderNames } from '../providers/card/card-rail-factory';
 
-/** Explicit provider disablement and the operational kill switch both stop new
- * card instructions. A live provider may still reconcile while killed. */
+/** [CARD-DECOUPLE] The operational kill switch, CARD_RAIL_KILL exactly '1',
+ * stops NEW card instructions on card rail v2 (hosted Pay now, enrolment,
+ * instrument charges). Reconciliation of what the provider already did keeps
+ * running. Only this switch kills v2: PAYMENT_PROVIDER names the LEGACY card
+ * seam (providers/payment) and has no say over v2, so the PowerTranz
+ * credentials are entered once (POWERTRANZ_*) and a test server can run v2
+ * against the provider's sandbox while the legacy seam stays disabled.
+ * Production keeps CARD_RAIL_KILL=1 by its launch lock
+ * (assertProductionCardKillSwitch, below). */
 export function cardRailKilled(env: Record<string, string | undefined> = process.env): boolean {
-  return env['PAYMENT_PROVIDER'] === 'disabled' || env['CARD_RAIL_KILL'] === '1';
+  return env['CARD_RAIL_KILL'] === '1';
+}
+
+/** [CARD-DECOUPLE] The LEGACY card seam (a bare token on the subscription,
+ * charged through providers/payment) issues no new instruction while the
+ * kill switch is on OR its provider is explicitly disabled: the disabled
+ * provider refuses every instruction, and billing defers rather than turn
+ * that refusal into a decline. Never consulted for card rail v2. */
+export function legacyCardSeamOff(env: Record<string, string | undefined> = process.env): boolean {
+  return env['PAYMENT_PROVIDER'] === 'disabled' || cardRailKilled(env);
 }
 
 /** [PT-1] Card rail v2 — hosted enrolment, bound instruments, hosted Pay now —
@@ -16,15 +32,21 @@ export function cardRailV2Enabled(env: Record<string, string | undefined> = proc
 
 /** [PROD-PATH] A partner can pay the weekly fee by card on this server: card
  * rail v2 (hosted Pay now and enrolment, the only card paths a partner can
- * open) is on, neither the kill switch nor a disabled provider stops it, and
- * a REAL provider is configured. The simulator never counts: it serves only
- * the test subscriptions it lists and moves no money, so it is no way for a
- * real partner to pay (card-pay-action.ts cardSessionsAllowed). Server
- * switches only: nothing about a partner (their card on file, their billing
- * method, their app) enters it. */
+ * open) is on, the kill switch does not stop it (the legacy PAYMENT_PROVIDER
+ * has no say over v2 [CARD-DECOUPLE]), a REAL provider is configured, and it
+ * takes REAL cards (CARD_RAIL_ENVIRONMENT exactly live). A TEST card system
+ * never counts — the simulator, or a provider's sandbox: it serves only the
+ * test subscriptions listed in CARD_RAIL_TEST_SUBSCRIPTIONS and moves no
+ * money, so it is no way for a real partner to pay (card-pay-action.ts
+ * cardSessionsAllowed). [Review #2453 A-F1 / B-1] Counting the sandbox lifted
+ * the fee pause for EVERY partner on a test server, who then had no way to
+ * pay. Live cards run only on production (boot-config.ts), so off production
+ * this is always false. Server switches only: nothing about a partner (their
+ * card on file, their billing method, their app) enters it. */
 export function weeklyFeeCardLive(env: Record<string, string | undefined> = process.env): boolean {
   const provider = env['CARD_RAIL_PROVIDER'] ?? '';
-  return cardRailV2Enabled(env) && !cardRailKilled(env) && provider !== 'simulator' && cardRailProviderNames().includes(provider);
+  return cardRailV2Enabled(env) && !cardRailKilled(env) && provider !== 'simulator' && cardRailProviderNames().includes(provider)
+    && env['CARD_RAIL_ENVIRONMENT'] === 'live';
 }
 
 /** [PT-1 · AX297 F5] With CARD_RAIL_V2 off, drain what v2 left in flight:
@@ -71,10 +93,17 @@ export function cardTestSubscriptions(env: Record<string, string | undefined> = 
  * name (boot-config.ts). */
 export const PUBLIC_API_HOSTS: readonly string[] = ['api.swiftgy.com', 'api-live.swiftgy.com'];
 
-/** No implicit OFF state: disabling the provider also requires the billing
- * kill switch, so boot and provider construction enforce the same contract. */
-export function assertDisabledCardRailConfig(env: Record<string, string | undefined>): void {
-  if (env['PAYMENT_PROVIDER'] === 'disabled' && env['CARD_RAIL_KILL'] !== '1') {
-    throw new Error('FATAL: PAYMENT_PROVIDER=disabled requires CARD_RAIL_KILL=1. Refusing to start.');
+/** [LAUNCH-LOCK · owner ruling 13 Oct · CARD-DECOUPLE] PRODUCTION ONLY (the
+ * callers check the mode): the card kill switch is exactly '1'. Until
+ * 9 Nov 2026 this rode on "PAYMENT_PROVIDER=disabled requires
+ * CARD_RAIL_KILL=1" in every mode; card rail v2 no longer reads
+ * PAYMENT_PROVIDER, so production holds the switch itself, explicitly — the
+ * API boot guard (boot-config.ts assertProductionLaunchLocks), the legacy
+ * provider factory (getPaymentProvider) and pilot-up.sh. Turning cards on in
+ * production is a reviewed change to these, never a deploy/.env edit.
+ * Names the setting, never a value. */
+export function assertProductionCardKillSwitch(env: Record<string, string | undefined>): void {
+  if (env['CARD_RAIL_KILL'] !== '1') {
+    throw new Error('FATAL: CARD_RAIL_KILL must be exactly 1 in production — no card payment until an attorney signs off (owner ruling, 13 Oct); turning cards on is a reviewed code change, not a setting. Refusing to start.');
   }
 }

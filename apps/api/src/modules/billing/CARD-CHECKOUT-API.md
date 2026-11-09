@@ -308,7 +308,11 @@ Pressing a button sends the browser to the return page, exactly as a real provid
   - `CARD_RAIL_ENVIRONMENT` (`sandbox` | `live`);
   - `CARD_RAIL_ACCOUNT`: a label, never a merchant number;
   - `API_PUBLIC_URL`: where the return page lives;
-  - `CARD_RAIL_KILL=1`: stops new sessions and charges, never reconciliation.
+  - `CARD_RAIL_KILL=1`: stops new sessions and charges, never reconciliation. It is the only switch that kills card rail v2.
+  - `PAYMENT_PROVIDER` is the **legacy** card seam (a bare token charged through `providers/payment`), not card rail v2. `disabled` turns off that seam alone: its provider refuses every instruction and billing defers it. It does not stop v2 (until 9 Nov 2026 it did, and a disabled provider required `CARD_RAIL_KILL=1` everywhere).
+  - Credentials: card rail v2 reads only `POWERTRANZ_ID`, `POWERTRANZ_PASSWORD` and the optional `POWERTRANZ_GATEWAY_KEY` (and the non-secret `POWERTRANZ_API_URL`, `POWERTRANZ_PAGE_SET`, `POWERTRANZ_PAGE_NAME`). `PAYMENT_GATEWAY_KEY` / `PAYMENT_GATEWAY_SECRET` belong to the legacy seam and stay unset.
+  - A test server runs v2 on the provider's sandbox with `PAYMENT_PROVIDER=disabled`, `CARD_RAIL_KILL=0`, `CARD_RAIL_V2=1`, `CARD_RAIL_PROVIDER=powertranz`, `CARD_RAIL_ENVIRONMENT=sandbox` and `CARD_RAIL_TEST_SUBSCRIPTIONS` (only the listed test subscriptions can open a sandbox page). The sandbox shows the card choice as a test by itself; `CARD_RAIL_SIMULATOR_LIVE` is for the simulator only.
+  - **Production (launch lock):** the API boot guard and `pilot-up.sh` refuse production unless `PAYMENT_PROVIDER=disabled`, `CARD_RAIL_KILL=1`, and `CARD_RAIL_V2`, `CARD_RAIL_V2_DRAIN`, `CARD_RAIL_ENROLL` are unset or 0. The kill-switch lock is explicit (`assertProductionCardKillSwitch`, also held by the legacy provider factory in production). Turning cards on in production is a reviewed code change to these, never a setting.
 - **The per-platform switch** is the card's own platform-config key, `billing.cardCheckout.platforms`: `{ "ios": true, "android": true, "web": true }`. It is separate from MMG's (`billing.feeCheckout.platforms`), so either can be closed alone.
   - iOS is **off** unless the row says `"ios": true` (owner ruling 6 Oct: Apple 3.1.1, iOS off by default).
   - Android and web are on unless the row says `false`.

@@ -41,7 +41,7 @@ import { weeklyFeeAmount } from './subscription-fee';
 import { payInfo } from './agent-cash.service';
 import { assertPayAheadRoom, readPayAhead, PAY_AHEAD_MAX_WEEKS, PAY_AHEAD_MAX_WEEKS_WORD } from './pay-ahead';
 import { claimProviderPaymentInTx, ProviderIdentityError, subscriptionTenantInTx } from './provider-identity';
-import { cardRailKilled, cardRailV2Enabled } from '../../utils/card-rail';
+import { cardRailKilled, cardRailV2Enabled, legacyCardSeamOff } from '../../utils/card-rail';
 import {
   assertNever, bindingOf, chargeMatchesIntent, describeBinding, sameBinding,
   type CardChargeOutcome, type CardRailBinding, type CardRailProvider, type CardRailSource, type ChargedAmount,
@@ -1924,7 +1924,9 @@ export class BillingService {
     if (sub.billingMethod === 'CARD' && sub.paymentToken) {
       // [M-01] The kill switch stops NEW instructions only; the reconciler
       // that settles what the processor already did never stops.
-      if (cardRailKilled()) return { ok: false, deferred: true };
+      // [CARD-DECOUPLE] The legacy seam is also off while its provider is
+      // disabled (PAYMENT_PROVIDER=disabled): deferred, never a decline.
+      if (legacyCardSeamOff()) return { ok: false, deferred: true };
 
       // [M-01 / M-02] THE INTENT BEFORE THE EFFECT, on the card rail. Before,
       // the processor was asked with nothing durable on our side: a process

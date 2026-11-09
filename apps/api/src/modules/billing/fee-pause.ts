@@ -36,8 +36,9 @@ import { feeCheckoutEveryPlatformOn } from './fee-checkout-switch';
 // boot MMG_DRIVER=live without MMG_CHECKOUT_ENABLED=1 (utils/boot-config.ts).
 //
 // The card rail counts as a live way to pay only when a partner can open it
-// (weeklyFeeCardLive: v2 on, not killed, a real provider; never the
-// simulator, which serves only listed test subscriptions). With it live, a
+// (weeklyFeeCardLive: v2 on, not killed, a real provider taking real cards;
+// never a test system — the simulator or a provider's sandbox — which serves
+// only listed test subscriptions). With it live, a
 // partner can pay now by card, so nobody is paused, MMG on or off. When the
 // first real provider lands, its per-platform switch (card-pay-action.ts;
 // iOS off unless switched on) decides which apps show the card, so switch

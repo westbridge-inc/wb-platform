@@ -407,6 +407,32 @@ describe('[M-01 · operations] the kill switch and the unreachable processor', (
     expect(await app.prisma.paymentConfirmationHold.findUniqueOrThrow({ where: { paymentId: planted.id } })).toMatchObject({ status: 'PAID' });
   });
 
+  // [CARD-DECOUPLE · review #2453 B-4] Off production, PAYMENT_PROVIDER=disabled no longer needs the kill
+  // switch (card rail v2 reads only CARD_RAIL_KILL). The LEGACY saved-token charge must still defer on the
+  // disabled provider alone: nothing sent, and no subscription_payments intent row minted under the week's
+  // key (a stray row would hold that key for the week). The processor double here would capture if it were asked.
+  it('[CARD-DECOUPLE] PAYMENT_PROVIDER=disabled, kill switch 0, v2 off: the legacy token charge defers — nothing sent, no intent row, no failure', async () => {
+    const due = new Date(Date.now() - DAY); const periodKey = due.toISOString().slice(0, 10);
+    const legacy = process.env['PAYMENT_PROVIDER'];
+    expect(process.env['CARD_RAIL_V2'] ?? '').not.toBe('1');
+    process.env['PAYMENT_PROVIDER'] = 'disabled';
+    process.env['CARD_RAIL_KILL'] = '0';
+    try {
+      const sub = await makeCardSub(due);
+      const before = await facts(sub, periodKey);
+      const sent = fake.keysSeen.length;
+      expect(await bill(sub)).toBe('pending');
+      expect(fake.keysSeen).toHaveLength(sent);
+      expect(fake.captures.size).toBe(0);
+      // The week's CHARGE_ATTEMPT reservation is the only new record (as on every deferral, the kill switch's
+      // too); no failure, no failed attempt, no ledger line, the due date unmoved.
+      expect(await facts(sub, periodKey)).toEqual({ ...before, attempts: before.attempts + 1, payments: [] });
+      expect(await app.prisma.subscriptionPayment.count({ where: { subscriptionId: sub } })).toBe(0);
+    } finally {
+      if (legacy === undefined) delete process.env['PAYMENT_PROVIDER']; else process.env['PAYMENT_PROVIDER'] = legacy;
+    }
+  });
+
   it('CARD_RAIL_KILL=1 stops new instructions — and never the reconciler', async () => {
     const due = new Date(Date.now() - DAY); const periodKey = due.toISOString().slice(0, 10);
     const captured = await makeCardSub(due);

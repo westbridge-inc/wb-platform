@@ -1381,6 +1381,38 @@ describe('[LAUNCH-LOCK] production refuses to boot with card payments or ads on'
     }
   });
 
+  // [CARD-DECOUPLE · 9 Nov] Card rail v2 no longer reads PAYMENT_PROVIDER (a
+  // test server runs v2 on the sandbox with the legacy seam disabled), so the
+  // card kill switch is a launch lock of its own, by its own message — never
+  // inferred from PAYMENT_PROVIDER=disabled.
+  it('[CARD-DECOUPLE] refuses the card kill switch off by its own launch-lock message', () => {
+    for (const kill of [undefined, '', '0', 'true', ' 1', '01']) {
+      expect(() => assertSafeBootConfig({ ...good, CARD_RAIL_KILL: kill }), String(kill)).toThrow(/^FATAL: CARD_RAIL_KILL must be exactly 1 in production/);
+    }
+  });
+
+  it('[CARD-DECOUPLE] refuses every card-on combination, including a test server\'s v2 set', () => {
+    const cases: Array<[string, Record<string, string | undefined>, RegExp]> = [
+      ['kill switch off, v2 off', { CARD_RAIL_KILL: '0' }, /^FATAL: CARD_RAIL_KILL must be exactly 1 in production/],
+      ['v2 on, kill switch on', { ...liveCardRail, CARD_RAIL_V2: '1' }, /^FATAL: CARD_RAIL_V2 must be unset or 0 in production/],
+      ['v2 on, kill switch off', { ...liveCardRail, CARD_RAIL_V2: '1', CARD_RAIL_KILL: '0' }, /^FATAL: CARD_RAIL_KILL must be exactly 1 in production/],
+      ['v2 on, kill switch unset', { ...liveCardRail, CARD_RAIL_V2: '1', CARD_RAIL_KILL: undefined }, /^FATAL: CARD_RAIL_KILL must be exactly 1 in production/],
+      ['drain on, kill switch off', { ...liveCardRail, CARD_RAIL_V2_DRAIN: '1', CARD_RAIL_KILL: '0' }, /^FATAL: CARD_RAIL_KILL must be exactly 1 in production/],
+      ['saving cards on, kill switch off', { CARD_RAIL_ENROLL: '1', CARD_RAIL_KILL: '0' }, /^FATAL: CARD_RAIL_KILL must be exactly 1 in production/],
+      ['legacy PowerTranz, kill switch off', { ...livePowerTranz, CARD_RAIL_KILL: '0' }, /^FATAL: PAYMENT_PROVIDER must be exactly disabled in production/],
+      ['legacy Stripe, kill switch off', { ...liveStripe, CARD_RAIL_KILL: '0' }, /^FATAL: PAYMENT_PROVIDER must be exactly disabled in production/],
+      ['legacy PowerTranz beside v2', { ...livePowerTranz, ...liveCardRail, CARD_RAIL_V2: '1' }, /^FATAL: PAYMENT_PROVIDER must be exactly disabled in production/],
+      ['a test server\'s v2 set (sandbox)', {
+        PAYMENT_PROVIDER: 'disabled', CARD_RAIL_KILL: '0', CARD_RAIL_V2: '1', CARD_RAIL_PROVIDER: 'powertranz', CARD_RAIL_ENVIRONMENT: 'sandbox',
+        CARD_RAIL_ACCOUNT: 'swift-gy', POWERTRANZ_ID: 'TESTID01', POWERTRANZ_PASSWORD: 'not-a-real-password',
+        POWERTRANZ_PAGE_SET: 'PTZ/Swift', POWERTRANZ_PAGE_NAME: 'Weekly', API_PUBLIC_URL: 'https://api.example.com',
+      }, /^FATAL: /],
+    ];
+    for (const [label, env, refusal] of cases) {
+      expect(() => assertSafeBootConfig({ ...good, ...env }), label).toThrow(refusal);
+    }
+  });
+
   it('refuses card rail v2, its drain and saving cards with the real provider fully set up for live cards (each passed every card check before)', () => {
     expect(() => assertSafeBootConfig({ ...good, ...liveCardRail, CARD_RAIL_V2: '1' })).toThrow(/^FATAL: CARD_RAIL_V2 must be unset or 0 in production/);
     expect(() => assertSafeBootConfig({ ...good, ...liveCardRail, CARD_RAIL_V2_DRAIN: '1' })).toThrow(/^FATAL: CARD_RAIL_V2_DRAIN must be unset or 0 in production/);

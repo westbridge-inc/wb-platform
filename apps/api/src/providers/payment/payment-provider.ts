@@ -1,7 +1,7 @@
 import { toProviderMinor } from '../../utils/currency-amount';
 import { nanoid } from 'nanoid';
 import { isProduction } from '../../utils/runtime-mode';
-import { assertDisabledCardRailConfig } from '../../utils/card-rail';
+import { assertProductionCardKillSwitch } from '../../utils/card-rail';
 import { AppError } from '../../utils/errors';
 
 // ---------------------------------------------------------------------------
@@ -494,7 +494,11 @@ export function getPaymentProvider(): PaymentProvider {
   }
   switch (provider) {
     case 'disabled':
-      assertDisabledCardRailConfig(process.env);
+      // [CARD-DECOUPLE] Disabled is the legacy seam's own OFF: it refuses every
+      // instruction, and billing defers it (legacyCardSeamOff). Off production
+      // it no longer drags card rail v2 down with it, so CARD_RAIL_KILL may be
+      // 0 here. Production keeps the launch lock: the kill switch exactly 1.
+      if (isProduction()) assertProductionCardKillSwitch(process.env);
       return new DisabledPaymentProvider();
     case 'sandbox':
       return new SandboxPaymentProvider();

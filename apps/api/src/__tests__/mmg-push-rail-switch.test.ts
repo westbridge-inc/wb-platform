@@ -212,7 +212,7 @@ describe('[Option A] the billing run never pushes while the switch is off', () =
   it('the partner is told: the payment-failed notice is written and delivered, and names only a way to pay that exists today', async () => {
     const subId = await makeVendorSub('MOBILE_MONEY');
     // The MMG checkout is off; a live card rail is the way to pay that keeps the fee unpaused.
-    stubLive({ MMG_REFERENCE_ROUNDTRIP_VERIFIED: '1', CARD_RAIL_V2: '1', CARD_RAIL_KILL: '0', PAYMENT_PROVIDER: 'sandbox', CARD_RAIL_PROVIDER: 'powertranz' });
+    stubLive({ MMG_REFERENCE_ROUNDTRIP_VERIFIED: '1', CARD_RAIL_V2: '1', CARD_RAIL_KILL: '0', PAYMENT_PROVIDER: 'sandbox', CARD_RAIL_PROVIDER: 'powertranz', CARD_RAIL_ENVIRONMENT: 'live' });
     vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('the push rail is off: MMG must not be contacted'));
     expect(await billing.billSubscription((await withRelations(subId)) as any)).toBe('failed');
     const owner = (await withRelations(subId)).vendor!.owner.userId;
