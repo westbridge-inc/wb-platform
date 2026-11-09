@@ -170,4 +170,22 @@ describe('[STORE-ALERT-RECONNECT] the board is re-read when the feed comes back'
     expect(refresh).toHaveBeenCalledTimes(1);
     off();
   });
+
+  it('[S4-1] the first auth:ready after a drop reads the board again (the room join waits for it); none without a drop', () => {
+    const socket = fakeSocket();
+    const refresh = vi.fn();
+    const off = bindVendorOrderFeed(socket, 'store-a', () => true, { onNew: noop, refresh, refreshBookings: noop }, { serverAdmits: true });
+    socket.fire('connect');
+    socket.fire('auth:ready');
+    expect(refresh).not.toHaveBeenCalled();
+    socket.fire('disconnect');
+    socket.fire('connect');
+    expect(refresh).toHaveBeenCalledTimes(1);
+    socket.fire('auth:ready'); // the join reaches the server now: an order placed meanwhile is read here
+    expect(refresh).toHaveBeenCalledTimes(2);
+    socket.fire('auth:ready');
+    expect(refresh).toHaveBeenCalledTimes(2);
+    off();
+    expect(socket.count()).toBe(0);
+  });
 });
