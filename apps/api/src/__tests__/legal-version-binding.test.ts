@@ -403,6 +403,17 @@ const PUBLISHED: Record<
     driver_agreement: 'dc5cf4cdc720f9e259765546c805461da13e6772b93bab66a49013a95aa6cb5b',
     vendor_agreement: '881dcf40cf3067f9930ea7e4a3720602848aebbd7e6b3ff1d1a2eebf870be920',
   },
+  // [2026-11-09 · LEGAL-CALLS · owner ruling 9 Nov 2026 · MATERIAL (a new processor flow: Twilio carries in-app calls) ·
+  // DRAFT until a Guyana attorney reads it] The Privacy Policy states in-app calls (sections 1, 3, 5 and 6). Checked
+  // mechanically before pinning: putting "8 November 2026" back in place of "9 November 2026" reproduces the 2026-11-08
+  // Terms, Mover Agreement and Business Agreement pins above exactly, and doing the same to the Privacy Policy and also
+  // taking out the ten inserted passages (every change to it is an insertion) reproduces its 2026-11-08 pin exactly.
+  '2026-11-09': {
+    terms: '3dd54112f0c5372ad8603207af28dda8bb20c1330c2412eda0f516cc6c5abdac',
+    privacy: '9d2ed0d73463a0d7264d8f0d66f603c2a5524174d5c4af3a67e495996deaade5',
+    driver_agreement: 'f5ae81359f8d2d0cb0df17b9e18e68ca37cfc12682ed8630d29d81ff932aa7a6',
+    vendor_agreement: '340314a81c7db7f8ce31971a314cd563d528e8d7f125bc0001e6536930c25ac7',
+  },
 };
 
 describe('legal version binding [F-035-08]', () => {

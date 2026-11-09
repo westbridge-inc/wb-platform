@@ -116,6 +116,16 @@ export const MATERIAL_CHANGES: ReadonlyArray<MaterialChange> = [
       'Delivery on food, grocery and shop orders now costs GY$800 for the first 3 km, then GY$175 per km (it was GY$500 for the first 3 km, then GY$100 per km). Express still adds GY$1,000 for each store. Your cart always shows the fee before you order, and an order already placed keeps its fee.',
     ],
   },
+  {
+    // [LEGAL-CALLS · owner ruling 9 Nov 2026 · MATERIAL: a new processor flow (Twilio carries in-app calls), as
+    // 2026-10-25.1 and 2026-10-27. Everyone: customers, riders, drivers and stores all call and are called]
+    version: '2026-11-09',
+    summary: [
+      'Privacy: when Swift’s in-app calls are switched on, you can call the other people on an order inside the Swift app, over the internet. Their phone shows Swift and your role on the order, never your name or your number.',
+      'Privacy: Twilio carries these calls. It receives your phone’s push token for calls, so it can ring your phone; a code for your phone that is not your name, number or account; the call’s sound, live; the call’s times; and technical details of the connection. Calls are never recorded.',
+      'Privacy: the app uses your microphone only during an in-app call you place or answer, once you allow it. Without it, you can still call through Swift’s phone line where it is on, or message in the order chat.',
+    ],
+  },
 ];
 
 /** [BILL-PRO · COORD 29 Oct 16:13Z] The first version whose Business Agreement covers a Provider (s.12), including
