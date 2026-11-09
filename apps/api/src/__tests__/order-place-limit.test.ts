@@ -26,6 +26,8 @@ import { testPhone } from './helpers/fixture-ids';
 // many cash orders on many stores at once. 6 an hour for a person, 12 across a linked identity cluster, a store order
 // and a parcel alike. Only an order that gets through counts, a replay never pays twice, and the IP is never counted:
 // Guyana's carriers put many customers behind one address. Every request here comes from the same injected IP.
+// [OWNER-ASKS · owner 9 Nov 2026] "Pickup orders can be unlimited, only delivery has the cap": a pickup order is never
+// counted and never refused by this limit. So the limit's own proofs below place DELIVERY orders.
 // ---------------------------------------------------------------------------
 
 const RUN = nanoid(6).toLowerCase();
@@ -50,6 +52,8 @@ async function makeUser(roles: UserRole[], activeRole: UserRole): Promise<Actor>
       phone: testPhone(), firstName: 'Limit', lastName: `L${RUN}`, roles, activeRole, status: 'ACTIVE',
       isPhoneVerified: true, selfieCapturedAt: new Date(), trustLevel: 'L2',
       ...(roles.includes('CUSTOMER') ? { customer: { create: {} } } : {}),
+      // [OWNER-ASKS 9 Nov] The limit is a delivery limit: a customer here orders delivery to a door near the store.
+      ...(roles.includes('CUSTOMER') ? { addresses: { create: { label: 'Home', addressLine1: '3 Savannah Road', city: 'Aishalton', region: 'Upper Takutu', latitude: AT.lat + 0.005, longitude: AT.lng, isDefault: true } } } : {}),
     },
   }));
   userIds.push(user.id);
@@ -84,10 +88,10 @@ const call = (method: 'GET' | 'POST', url: string, token: string, payload?: Reco
   headers: { authorization: `Bearer ${token}`, ...(payload ? { 'content-type': 'application/json' } : {}), ...headers },
 });
 
-async function pickupCheckout(c: Actor, at = store, headers: Record<string, string> = {}) {
+async function deliveryCheckout(c: Actor, at = store, headers: Record<string, string> = {}) {
   const added = await call('POST', '/api/v1/customer/cart/items', c.token, { vendorId: at.vendorId, itemId: at.itemId, quantity: 1 });
   expect([200, 201], added.body).toContain(added.statusCode);
-  return call('POST', '/api/v1/customer/checkout', c.token, { paymentMethod: 'CASH', fulfillmentSelections: { [at.vendorId]: 'PICKUP' } }, headers);
+  return call('POST', '/api/v1/customer/checkout', c.token, { paymentMethod: 'CASH', fulfillmentSelections: { [at.vendorId]: 'DELIVERY' } }, headers);
 }
 
 const placed = (c: Actor) => sys(() => app.prisma.order.count({ where: { customerId: c.userId } }));
@@ -109,7 +113,13 @@ const hourStart = () => { const s = Math.floor(Date.now() / 1000); return Math.f
 const spentBy = async (dimension: 'actor' | 'cluster', id: string) => Number(await app.redis.get(velocityKey(dimension, id, ORDER_PLACE_ACTION, hourStart())) ?? 0);
 const spent = (c: Actor) => spentBy('actor', c.userId);
 const clearCart = (c: Actor) => sys(() => app.prisma.cart.deleteMany({ where: { customerId: c.userId } }));
+const deliveryBody = (at = store) => ({ paymentMethod: 'CASH', fulfillmentSelections: { [at.vendorId]: 'DELIVERY' } });
 const pickupBody = (at = store) => ({ paymentMethod: 'CASH', fulfillmentSelections: { [at.vendorId]: 'PICKUP' } });
+async function pickupCheckout(c: Actor, at = store) {
+  const added = await call('POST', '/api/v1/customer/cart/items', c.token, { vendorId: at.vendorId, itemId: at.itemId, quantity: 1 });
+  expect([200, 201], added.body).toContain(added.statusCode);
+  return call('POST', '/api/v1/customer/checkout', c.token, pickupBody(at));
+}
 const REDIS_FAILS_AFTER_MS = 4_000; // plugins/redis.ts: how long a command waits while Redis is down.
 
 async function dropVelocity() {
@@ -166,9 +176,9 @@ describe('[FULL-LAUNCH] the figures', () => {
 describe('[FULL-LAUNCH] one person', () => {
   it('places up to the limit; the next is refused in plain words, nothing is written, the cart stays', async () => {
     const c = await makeUser(['CUSTOMER'], 'CUSTOMER');
-    for (let i = 0; i < LIMIT.max; i++) expect((await pickupCheckout(c)).statusCode, `order ${i + 1}`).toBe(200);
+    for (let i = 0; i < LIMIT.max; i++) expect((await deliveryCheckout(c)).statusCode, `order ${i + 1}`).toBe(200);
     expect(await placed(c)).toBe(LIMIT.max);
-    const over = await pickupCheckout(c);
+    const over = await deliveryCheckout(c);
     expect(over.statusCode, over.body).toBe(429);
     expect(over.json().error.code).toBe('VELOCITY_LIMIT');
     expect(over.json().error.message).toMatch(/^Too many orders in a short time — wait \d+ minutes? and try again\.$/);
@@ -182,22 +192,22 @@ describe('[FULL-LAUNCH] one person', () => {
     await sys(() => app.prisma.vendor.update({ where: { id: otherStore.vendorId }, data: { acceptingOrders: false } }));
     try {
       for (let i = 0; i < 12; i++) {
-        const refused = await (i === 0 ? pickupCheckout(c, otherStore) : call('POST', '/api/v1/customer/checkout', c.token, { paymentMethod: 'CASH', fulfillmentSelections: { [otherStore.vendorId]: 'PICKUP' } }));
+        const refused = await (i === 0 ? deliveryCheckout(c, otherStore) : call('POST', '/api/v1/customer/checkout', c.token, { paymentMethod: 'CASH', fulfillmentSelections: { [otherStore.vendorId]: 'DELIVERY' } }));
         expect(refused.statusCode, refused.body).toBe(400);
         expect(refused.json().error.code).toBe('VENDOR_CLOSED');
       }
     } finally {
       await sys(() => app.prisma.vendor.update({ where: { id: otherStore.vendorId }, data: { acceptingOrders: true } }));
     }
-    expect((await call('POST', '/api/v1/customer/checkout', c.token, { paymentMethod: 'CASH', fulfillmentSelections: { [otherStore.vendorId]: 'PICKUP' } })).statusCode).toBe(200);
+    expect((await call('POST', '/api/v1/customer/checkout', c.token, { paymentMethod: 'CASH', fulfillmentSelections: { [otherStore.vendorId]: 'DELIVERY' } })).statusCode).toBe(200);
   });
 
   it('a replay of a placed order still answers past the limit, and it spends nothing', async () => {
     const c = await makeUser(['CUSTOMER'], 'CUSTOMER');
     const key = `pl-idem-${nanoid(10)}`;
-    const first = await pickupCheckout(c, store, { 'idempotency-key': key });
+    const first = await deliveryCheckout(c, store, { 'idempotency-key': key });
     expect(first.statusCode).toBe(200);
-    const body = { paymentMethod: 'CASH', fulfillmentSelections: { [store.vendorId]: 'PICKUP' } };
+    const body = { paymentMethod: 'CASH', fulfillmentSelections: { [store.vendorId]: 'DELIVERY' } };
     // The same command again and again: one order, and the budget still holds five more.
     for (let i = 0; i < LIMIT.max + 2; i++) {
       const replay = await call('POST', '/api/v1/customer/checkout', c.token, body, { 'idempotency-key': key });
@@ -205,8 +215,8 @@ describe('[FULL-LAUNCH] one person', () => {
       expect(replay.json().replayed).toBe(true);
     }
     expect(await placed(c)).toBe(1);
-    for (let i = 1; i < LIMIT.max; i++) expect((await pickupCheckout(c)).statusCode, `order ${i + 1}`).toBe(200);
-    expect((await pickupCheckout(c)).statusCode).toBe(429);
+    for (let i = 1; i < LIMIT.max; i++) expect((await deliveryCheckout(c)).statusCode, `order ${i + 1}`).toBe(200);
+    expect((await deliveryCheckout(c)).statusCode).toBe(429);
     // Refused or not, the placed order's own key still replays.
     const replay = await call('POST', '/api/v1/customer/checkout', c.token, body, { 'idempotency-key': key });
     expect(replay.statusCode, replay.body).toBe(200);
@@ -215,28 +225,28 @@ describe('[FULL-LAUNCH] one person', () => {
 
   it('the refused command gives its key back: the same key places the order once the window has passed', async () => {
     const c = await makeUser(['CUSTOMER'], 'CUSTOMER');
-    for (let i = 0; i < LIMIT.max; i++) expect((await pickupCheckout(c)).statusCode).toBe(200);
+    for (let i = 0; i < LIMIT.max; i++) expect((await deliveryCheckout(c)).statusCode).toBe(200);
     const key = `pl-later-${nanoid(10)}`;
-    expect((await pickupCheckout(c, store, { 'idempotency-key': key })).statusCode).toBe(429);
+    expect((await deliveryCheckout(c, store, { 'idempotency-key': key })).statusCode).toBe(429);
     await dropVelocity();
-    const later = await call('POST', '/api/v1/customer/checkout', c.token, { paymentMethod: 'CASH', fulfillmentSelections: { [store.vendorId]: 'PICKUP' } }, { 'idempotency-key': key });
+    const later = await call('POST', '/api/v1/customer/checkout', c.token, { paymentMethod: 'CASH', fulfillmentSelections: { [store.vendorId]: 'DELIVERY' } }, { 'idempotency-key': key });
     expect(later.statusCode, later.body).toBe(200);
     expect(later.json().replayed).toBeUndefined();
   });
 
   it('a multi-store cart that would pass the limit places nothing and spends nothing: the order that fits still goes', async () => {
     const c = await makeUser(['CUSTOMER'], 'CUSTOMER');
-    for (let i = 0; i < LIMIT.max - 1; i++) expect((await pickupCheckout(c)).statusCode).toBe(200);
+    for (let i = 0; i < LIMIT.max - 1; i++) expect((await deliveryCheckout(c)).statusCode).toBe(200);
     for (const at of [store, otherStore]) {
       const added = await call('POST', '/api/v1/customer/cart/items', c.token, { vendorId: at.vendorId, itemId: at.itemId, quantity: 1 });
       expect([200, 201], added.body).toContain(added.statusCode);
     }
-    const both = await call('POST', '/api/v1/customer/checkout', c.token, { paymentMethod: 'CASH', fulfillmentSelections: { [store.vendorId]: 'PICKUP', [otherStore.vendorId]: 'PICKUP' } });
+    const both = await call('POST', '/api/v1/customer/checkout', c.token, { paymentMethod: 'CASH', fulfillmentSelections: { [store.vendorId]: 'DELIVERY', [otherStore.vendorId]: 'DELIVERY' } });
     expect(both.statusCode, both.body).toBe(429);
     expect(await placed(c)).toBe(LIMIT.max - 1);
     expect(await spent(c)).toBe(LIMIT.max - 1);
     await clearCart(c);
-    const single = await pickupCheckout(c);
+    const single = await deliveryCheckout(c);
     expect(single.statusCode, single.body).toBe(200);
     expect(await spent(c)).toBe(LIMIT.max);
   });
@@ -246,7 +256,7 @@ describe('[FULL-LAUNCH] one person', () => {
     for (const at of [store, otherStore]) {
       expect([200, 201]).toContain((await call('POST', '/api/v1/customer/cart/items', c.token, { vendorId: at.vendorId, itemId: at.itemId, quantity: 1 })).statusCode);
     }
-    const both = await call('POST', '/api/v1/customer/checkout', c.token, { paymentMethod: 'CASH', fulfillmentSelections: { [store.vendorId]: 'PICKUP', [otherStore.vendorId]: 'PICKUP' } });
+    const both = await call('POST', '/api/v1/customer/checkout', c.token, { paymentMethod: 'CASH', fulfillmentSelections: { [store.vendorId]: 'DELIVERY', [otherStore.vendorId]: 'DELIVERY' } });
     expect(both.statusCode, both.body).toBe(200);
     expect(await spent(c)).toBe(2);
   });
@@ -267,7 +277,7 @@ describe('[FULL-LAUNCH] one person', () => {
     await holding;
     try {
       for (let i = 0; i < LIMIT.max + 2; i++) {
-        const busy = await call('POST', '/api/v1/customer/checkout', c.token, pickupBody(otherStore), { 'idempotency-key': key });
+        const busy = await call('POST', '/api/v1/customer/checkout', c.token, deliveryBody(otherStore), { 'idempotency-key': key });
         expect(busy.statusCode, busy.body).toBe(409);
         expect(busy.json().error.code).toBe('STORE_BUSY');
       }
@@ -276,7 +286,7 @@ describe('[FULL-LAUNCH] one person', () => {
       await holder;
     }
     expect(await spent(c)).toBe(0);
-    const placedNow = await call('POST', '/api/v1/customer/checkout', c.token, pickupBody(otherStore), { 'idempotency-key': key });
+    const placedNow = await call('POST', '/api/v1/customer/checkout', c.token, deliveryBody(otherStore), { 'idempotency-key': key });
     expect(placedNow.statusCode, placedNow.body).toBe(200);
     expect(await spent(c)).toBe(1);
   }, 60_000);
@@ -285,12 +295,12 @@ describe('[FULL-LAUNCH] one person', () => {
     const c = await makeUser(['CUSTOMER'], 'CUSTOMER');
     expect([200, 201]).toContain((await call('POST', '/api/v1/customer/cart/items', c.token, { vendorId: store.vendorId, itemId: store.itemId, quantity: 1 })).statusCode);
     for (let i = 0; i < LIMIT.max + 2; i++) {
-      const moved = await call('POST', '/api/v1/customer/checkout', c.token, { ...pickupBody(), expectedTotal: 1 });
+      const moved = await call('POST', '/api/v1/customer/checkout', c.token, { ...deliveryBody(), expectedTotal: 1 });
       expect(moved.statusCode, moved.body).toBe(409);
       expect(moved.json().error.code).toBe('PRICE_CHANGED');
     }
     expect(await spent(c)).toBe(0);
-    expect((await call('POST', '/api/v1/customer/checkout', c.token, pickupBody())).statusCode).toBe(200);
+    expect((await call('POST', '/api/v1/customer/checkout', c.token, deliveryBody())).statusCode).toBe(200);
     expect(await spent(c)).toBe(1);
   });
 
@@ -301,7 +311,7 @@ describe('[FULL-LAUNCH] one person', () => {
       throw new CheckoutOutcomeUnknownError(null);
     });
     try {
-      const res = await call('POST', '/api/v1/customer/checkout', c.token, pickupBody());
+      const res = await call('POST', '/api/v1/customer/checkout', c.token, deliveryBody());
       expect(res.statusCode, res.body).toBe(503);
       expect(res.json().error.code).toBe('CHECKOUT_OUTCOME_UNKNOWN');
     } finally {
@@ -319,7 +329,7 @@ describe('[FULL-LAUNCH] one person', () => {
       throw new Error('a failure after the commit point');
     });
     try {
-      expect((await call('POST', '/api/v1/customer/checkout', c.token, pickupBody())).statusCode).toBe(200);
+      expect((await call('POST', '/api/v1/customer/checkout', c.token, deliveryBody())).statusCode).toBe(200);
     } finally {
       spy.mockRestore();
     }
@@ -328,7 +338,7 @@ describe('[FULL-LAUNCH] one person', () => {
 
   it('a parcel spends the same budget, and the seventh order of any kind is refused before anything is written', async () => {
     const c = await makeUser(['CUSTOMER'], 'CUSTOMER');
-    for (let i = 0; i < LIMIT.max - 1; i++) expect((await pickupCheckout(c)).statusCode).toBe(200);
+    for (let i = 0; i < LIMIT.max - 1; i++) expect((await deliveryCheckout(c)).statusCode).toBe(200);
     const parcel = await sendParcel(c);
     expect(parcel.statusCode, parcel.body).toBe(201);
     const over = await sendParcel(c);
@@ -353,7 +363,7 @@ describe('[FULL-LAUNCH] one person', () => {
     resetKeyProviderForTests();
     try {
       const c = await makeUser(['CUSTOMER'], 'CUSTOMER');
-      for (let i = 0; i < LIMIT.max - 1; i++) expect((await pickupCheckout(c)).statusCode).toBe(200);
+      for (let i = 0; i < LIMIT.max - 1; i++) expect((await deliveryCheckout(c)).statusCode).toBe(200);
       const key = `pl-race-${nanoid(10)}`;
       const answers = await Promise.all([sendParcel(c, key), sendParcel(c, key), sendParcel(c, key)]);
       // The last slot, three sends: nobody is told "too many orders" for a parcel that exists.
@@ -413,8 +423,8 @@ describe('[FULL-LAUNCH] one person', () => {
       const c = await makeUser(['CUSTOMER'], 'CUSTOMER');
       const key = `pl-parcel-${nanoid(10)}`;
       expect((await sendParcel(c, key)).statusCode).toBe(201);
-      for (let i = 1; i < LIMIT.max; i++) expect((await pickupCheckout(c)).statusCode).toBe(200);
-      expect((await pickupCheckout(c)).statusCode).toBe(429);
+      for (let i = 1; i < LIMIT.max; i++) expect((await deliveryCheckout(c)).statusCode).toBe(200);
+      expect((await deliveryCheckout(c)).statusCode).toBe(429);
       expect((await sendParcel(c, key)).statusCode).toBe(201);
       expect(await placed(c)).toBe(LIMIT.max);
     } finally {
@@ -431,7 +441,7 @@ describe('[FULL-LAUNCH] never the IP', () => {
     for (let person = 0; person < 3; person++) {
       const c = await makeUser(['CUSTOMER'], 'CUSTOMER');
       for (let i = 0; i < LIMIT.max; i++) {
-        expect((await pickupCheckout(c)).statusCode, `person ${person} order ${i + 1}`).toBe(200);
+        expect((await deliveryCheckout(c)).statusCode, `person ${person} order ${i + 1}`).toBe(200);
         total += 1;
       }
     }
@@ -457,8 +467,8 @@ describe('[FULL-LAUNCH] one identity cluster', () => {
     const b = await makeUser(['CUSTOMER'], 'CUSTOMER');
     const clusterId = await link(a, b);
     await spend(clusterId, LIMIT.clusterMax! - 1);
-    expect((await pickupCheckout(a)).statusCode).toBe(200);
-    const refused = await pickupCheckout(b);
+    expect((await deliveryCheckout(a)).statusCode).toBe(200);
+    const refused = await deliveryCheckout(b);
     expect(refused.statusCode, refused.body).toBe(429);
     expect(await placed(b)).toBe(0);
     // All or nothing: a full cluster charges the person nothing either.
@@ -469,13 +479,13 @@ describe('[FULL-LAUNCH] one identity cluster', () => {
     const a = await makeUser(['CUSTOMER'], 'CUSTOMER');
     const b = await makeUser(['CUSTOMER'], 'CUSTOMER');
     const clusterId = await link(a, b);
-    for (let i = 0; i < LIMIT.max; i++) expect((await pickupCheckout(a)).statusCode).toBe(200);
+    for (let i = 0; i < LIMIT.max; i++) expect((await deliveryCheckout(a)).statusCode).toBe(200);
     for (let i = 0; i < LIMIT.max; i++) {
-      const res = i === 0 ? await pickupCheckout(a) : await call('POST', '/api/v1/customer/checkout', a.token, pickupBody());
+      const res = i === 0 ? await deliveryCheckout(a) : await call('POST', '/api/v1/customer/checkout', a.token, deliveryBody());
       expect(res.statusCode, res.body).toBe(429);
     }
     expect(await spentBy('cluster', clusterId)).toBe(LIMIT.max);
-    expect((await pickupCheckout(b)).statusCode).toBe(200);
+    expect((await deliveryCheckout(b)).statusCode).toBe(200);
   });
 
   it('an account whose cluster needs a person’s review keeps its own limit and charges nobody else', async () => {
@@ -483,7 +493,7 @@ describe('[FULL-LAUNCH] one identity cluster', () => {
     const clusterId = await link(a);
     await sys(() => app.prisma.identityCluster.update({ where: { id: clusterId }, data: { authorityReviewRequired: true } }));
     await spend(clusterId, LIMIT.clusterMax!);
-    expect((await pickupCheckout(a)).statusCode).toBe(200);
+    expect((await deliveryCheckout(a)).statusCode).toBe(200);
     const keys = await app.redis.keys(`vel:${ORDER_PLACE_ACTION}:actor:*`);
     expect(keys.length).toBe(1);
   });
@@ -542,7 +552,7 @@ describe('[FULL-LAUNCH] a control that is down', () => {
     const c = await makeUser(['CUSTOMER'], 'CUSTOMER');
     const spy = reserveFails();
     try {
-      expect((await pickupCheckout(c)).statusCode).toBe(200);
+      expect((await deliveryCheckout(c)).statusCode).toBe(200);
     } finally {
       spy.mockRestore();
     }
@@ -560,4 +570,59 @@ describe('[FULL-LAUNCH] a control that is down', () => {
     }
     expect(await placed(c)).toBe(1);
   }, 30_000);
+});
+
+describe('[OWNER-ASKS · owner 9 Nov 2026] pickup orders are never limited; delivery keeps the limit', () => {
+  it('a person places more pickup orders in an hour than the limit, every one goes through, and none is counted', async () => {
+    const c = await makeUser(['CUSTOMER'], 'CUSTOMER');
+    for (let i = 0; i < LIMIT.max + 3; i++) {
+      const res = await pickupCheckout(c);
+      expect(res.statusCode, `pickup ${i + 1}: ${res.body}`).toBe(200);
+    }
+    expect(await placed(c)).toBe(LIMIT.max + 3);
+    expect(await spent(c)).toBe(0);
+  });
+
+  it('pickups past the limit leave the delivery budget whole: the deliveries up to the limit go, the next is refused', async () => {
+    const c = await makeUser(['CUSTOMER'], 'CUSTOMER');
+    for (let i = 0; i < LIMIT.max + 1; i++) expect((await pickupCheckout(c)).statusCode, `pickup ${i + 1}`).toBe(200);
+    for (let i = 0; i < LIMIT.max; i++) expect((await deliveryCheckout(c)).statusCode, `delivery ${i + 1}`).toBe(200);
+    const over = await deliveryCheckout(c);
+    expect(over.statusCode, over.body).toBe(429);
+    expect(over.json().error.code).toBe('VELOCITY_LIMIT');
+  });
+
+  it('a person at the delivery limit can still order for pickup, and a parcel is still refused', async () => {
+    const c = await makeUser(['CUSTOMER'], 'CUSTOMER');
+    for (let i = 0; i < LIMIT.max; i++) expect((await deliveryCheckout(c)).statusCode, `delivery ${i + 1}`).toBe(200);
+    expect((await deliveryCheckout(c)).statusCode).toBe(429);
+    await clearCart(c);
+    const pickup = await pickupCheckout(c);
+    expect(pickup.statusCode, pickup.body).toBe(200);
+    expect(await spent(c)).toBe(LIMIT.max);
+    const parcel = await sendParcel(c);
+    expect(parcel.statusCode, parcel.body).toBe(429);
+    expect(parcel.json().error.code).toBe('VELOCITY_LIMIT');
+  });
+
+  it('a cart with one store for pickup and one for delivery counts only the delivery', async () => {
+    const c = await makeUser(['CUSTOMER'], 'CUSTOMER');
+    for (const at of [store, otherStore]) {
+      expect([200, 201]).toContain((await call('POST', '/api/v1/customer/cart/items', c.token, { vendorId: at.vendorId, itemId: at.itemId, quantity: 1 })).statusCode);
+    }
+    const both = await call('POST', '/api/v1/customer/checkout', c.token, { paymentMethod: 'CASH', fulfillmentSelections: { [store.vendorId]: 'PICKUP', [otherStore.vendorId]: 'DELIVERY' } });
+    expect(both.statusCode, both.body).toBe(200);
+    expect(await placed(c)).toBe(2);
+    expect(await spent(c)).toBe(1);
+  });
+
+  it('a linked cluster whose budget is spent still orders for pickup', async () => {
+    const a = await makeUser(['CUSTOMER'], 'CUSTOMER');
+    const clusterId = await link(a);
+    for (let i = 0; i < LIMIT.clusterMax!; i++) await checkVelocity({ redis: app.redis }, { action: ORDER_PLACE_ACTION, actor: { clusterId } });
+    expect((await deliveryCheckout(a)).statusCode).toBe(429);
+    await clearCart(a);
+    const pickup = await pickupCheckout(a);
+    expect(pickup.statusCode, pickup.body).toBe(200);
+  });
 });
