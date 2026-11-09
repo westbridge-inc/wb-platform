@@ -1,3 +1,4 @@
+import { color } from '@swift/ui';
 import { createOtaCatchUp, onOtaHoldsReleased, otaRestartHeld, type OtaCatchUp } from '../lib/otaCatchUp';
 
 /** The native pieces the catch-up reads, loaded when it is installed (never at import: tests and
@@ -41,7 +42,7 @@ const loadNative = (): OtaCatchUpNative => ({
 /* eslint-enable @typescript-eslint/no-require-imports */
 
 /** [REVIEW-2 L2 on #2431] The restart looks like Swift's own launch: app.config.ts splash (brand maroon, the icon). */
-export const RESTART_SCREEN_BACKGROUND = '#803B3B';
+export const RESTART_SCREEN_BACKGROUND: string = color.brand[500];
 
 /** Earner intents: their sign-in is the app's front door, never the middle of an order. */
 const EARNER_INTENTS: readonly string[] = ['vendor', 'mover', 'advertiser'];
