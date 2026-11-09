@@ -83,7 +83,7 @@ Otherwise it is `off`. Reading the subscription never fails because of the card 
 
 **`payNow`** buttons read `Pay <currency> <amount, grouped> by card`.
 - When a week is owed, the amount is that week.
-- When nothing is due, it is the next week (four weeks ahead at most, owner 6 Nov 2026).
+- When nothing is due, it is the next week (four weeks ahead at most, owner 6 Nov 2026). A payment for a week that has not started when the provider's answer is booked is kept as fee credit (settlement `banked`), exactly like money paid ahead through MMG: the next fee date does not move, the credit pays that week when it starts, and at closing it is refunded like every week that has not started (`PAY-AHEAD-AND-REFUNDS.md` section 5). A week that began while the bank was confirming is paid at once (settlement `advanced`).
 
 ## 4. Cards
 
@@ -321,7 +321,7 @@ Pressing a button sends the browser to the return page, exactly as a real provid
 - **A weekly charge the bank wants the partner to confirm (3-D Secure):** kind `billing_card_action_required`.
   - It is not a penalty.
   - The words name only the ways to pay that exist today.
-- **A Pay now kept for the next weekly fee** (settlement `banked`): kind `billing_banked`.
+- **A Pay now kept for the next weekly fee** (settlement `banked`: a week that has not started, or a payment that could not move the plan): kind `billing_banked`.
 - No new notification kind is introduced by PT-2.
 
 ## 11. Not in this contract yet

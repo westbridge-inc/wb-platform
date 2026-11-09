@@ -8,7 +8,7 @@ Swift holds no money for anyone. Partners may pay **up to four weeks ahead** (ow
 
 ## 1. The limit: four weeks ahead
 
-What counts as ahead (`pay-ahead.ts`, `PAY_AHEAD_MAX_WEEKS = 4`, a fixed rule in code, not a setting): money received for coming weeks (`prepaidBalance`) plus whole weeks already paid beyond the running week (a card Pay now pays the next week by moving `nextBillingDate`). Weeks of a free trial were not paid and never count. A week that is due now is not "ahead": money that pays it is allowed on top of the limit.
+What counts as ahead (`pay-ahead.ts`, `PAY_AHEAD_MAX_WEEKS = 4`, a fixed rule in code, not a setting): money received for coming weeks (`prepaidBalance`) plus whole weeks already booked beyond the running week by date. Every door pays ahead into `prepaidBalance`, a card Pay now included (a card payment for a week that has not started is kept as fee credit and spent on that week when it starts; it never moves `nextBillingDate`). Weeks of a free trial were not paid and never count. A week that is due now is not "ahead": money that pays it is allowed on top of the limit.
 
 | Path | What happens past the limit |
 | --- | --- |
@@ -23,7 +23,7 @@ What counts as ahead (`pay-ahead.ts`, `PAY_AHEAD_MAX_WEEKS = 4`, a fixed rule in
 ## 2. Refunding money above the limit
 
 1. Confirm the page's amount on the account (money received for coming weeks, and the next billing date).
-2. Return the amount above the limit to the partner through MMG (or another way the partner agrees to in writing), within the support reply time on the refunds page.
+2. Return the amount above the limit to the partner through MMG (or another way the partner agrees to in writing), within the support reply time on the refunds page. Money that came by card goes back to the card: refund the original card payment in the card provider's own portal (the admin card-session list, `GET /api/v1/admin/billing/card-sessions?subscriptionId=…`, names each one's provider transaction reference), then record the payout as **Card** with the provider's refund reference. If several card payments are refunded for one set-aside, record the first refund's reference and name the others in the reason.
 3. Record the refund with the admin refund action for fee credit (two admins, a reason, an audit row). Until that action is live, do **not** change balances in the database: leave the page open and escalate to the owner.
 
 ## 3. Agent money held for a person
@@ -55,7 +55,7 @@ Account deletion waits while any money received for weeks that have not started 
 
 Until the admin refund action for fee credit is live, a refund at closing is done by hand: return the unstarted weeks through MMG, keep the MMG reference, and escalate to the owner to record it (do not edit balances in the database). The deletion stays blocked until then.
 
-Before card payments are switched on: the deletion blocker counts `prepaidBalance` only; a week paid ahead by card (a moved `nextBillingDate`) must be added to it first, and an open card Pay now must count toward the four weeks at the door (today a capture that lands past the cap is kept and paged, section 1).
+Weeks paid ahead by card are in the same credit (a card Pay now for a week that has not started is kept as fee credit), so the blocker counts them too; they are refunded to the card (section 2, step 2, **Card**). A card Pay now still open blocks deletion on its own (`FEE_PAYMENT_PENDING`), and one that lands past the limit anyway is kept and paged (section 1).
 
 ## 6. Paid in person, directly to the company (owner 5 Nov 2026)
 

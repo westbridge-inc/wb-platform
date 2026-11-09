@@ -23,6 +23,7 @@ import { resetKeyProviderForTests } from '../providers/storage/envelope';
 import { runWithTenant, runWithoutTenant } from '../plugins/tenant-context';
 import { deleteRunKeys, runKeyPrefix } from './helpers/card-sim-keys';
 import { testPhone } from './helpers/fixture-ids';
+import { partnerObligations, verdictFor } from '../modules/user/partner-wind-down';
 
 // ---------------------------------------------------------------------------
 // [PT-1] The hosted card loop, end to end, on the real simulator and the real
@@ -381,6 +382,17 @@ describe('PAY_NOW: server-priced, booked ONCE through applySuccessfulCharge, whi
     expect([after.successes, after.ledger, after.payments.length, after.bank]).toEqual([1, 1, 1, 0]);
   });
 
+  it('[credit once] confirmations racing for a week that has not started keep the money once, as fee credit', async () => {
+    const p = await partner({ due: new Date(Date.now() + 3 * DAY) });
+    const session = await start(p, 'PAY_NOW');
+    await returnWith(await press(session.sessionId, 'APPROVE'));
+    const results = await Promise.all([card.confirm(session.sessionId), card.confirm(session.sessionId), cardWith(sim).confirm(session.sessionId)]);
+    expect(results.map((r) => r.status)).toEqual(['SUCCEEDED', 'SUCCEEDED', 'SUCCEEDED']);
+    const after = await money(p.subId);
+    expect([after.successes, after.ledger, after.payments.length, after.bank]).toEqual([0, 0, 1, 1]);
+    expect(Number((await app.prisma.prepaidBalance.findUniqueOrThrow({ where: { subscriptionId: p.subId } })).balance)).toBe(WEEKLY);
+  });
+
   it('a decline books nothing and is not a strike', async () => {
     const p = await partner({ status: 'PAST_DUE', due: new Date(Date.now() - DAY), failedAttempts: 1 });
     const session = await start(p, 'PAY_NOW');
@@ -391,13 +403,42 @@ describe('PAY_NOW: server-priced, booked ONCE through applySuccessfulCharge, whi
     expect(after.sub).toMatchObject({ status: 'PAST_DUE', failedAttempts: 1 });
   });
 
-  it('nothing due: Pay now pays the NEXT week ahead (one week, server-priced)', async () => {
+  // [CARD-READY · REVIEW-G21 S3-2] A week that has not started is paid ahead the way every other door pays
+  // ahead: the money is kept as fee credit (Swift's own fee paid early, refunded at closing for every week
+  // that has not started) and the coming week is paid from it when it starts. It never moves the next fee
+  // date, so the closing refund, the four-week limit and a told rise all read it where they read the rest.
+  it('nothing due: Pay now pays the NEXT week ahead (one week, server-priced), kept as fee credit until that week starts', async () => {
     const due = new Date(Date.now() + 4 * DAY);
     const p = await partner({ due });
     const session = await start(p, 'PAY_NOW');
     expect(session.amount).toBe(WEEKLY);
     await returnWith(await press(session.sessionId, 'APPROVE'));
-    expect(await card.confirm(session.sessionId)).toMatchObject({ settlement: 'advanced' });
+    expect(await card.confirm(session.sessionId)).toMatchObject({ status: 'SUCCEEDED', settlement: 'banked' });
+    const kept = await money(p.subId);
+    expect(kept.sub.nextBillingDate.getTime(), 'a week paid ahead by card moved the next fee date').toBe(due.getTime());
+    expect(kept.successes).toBe(0);
+    expect(kept.bank).toBe(1);
+    expect(Number((await app.prisma.prepaidBalance.findUniqueOrThrow({ where: { subscriptionId: p.subId } })).balance)).toBe(WEEKLY);
+    // Closing now: the week has not started, so it is refunded (FEE_CREDIT), with its amount.
+    const owed = await app.prisma.$transaction((tx) => partnerObligations(tx, p.userId));
+    expect(verdictFor(owed).blockers).toContain('FEE_CREDIT');
+    expect(owed.feeCreditAmount).toBe(WEEKLY);
+    // When the week starts, the credit pays it: once, at its price, and the date moves then.
+    expect(await billing.billSubscription(await billable(p.subId), new Date(due.getTime() + 60_000))).toBe('succeeded');
+    const paid = await money(p.subId);
+    expect(paid.sub.nextBillingDate.getTime()).toBe(due.getTime() + 7 * DAY);
+    expect(paid.successes).toBe(1);
+    expect(Number((await app.prisma.prepaidBalance.findUniqueOrThrow({ where: { subscriptionId: p.subId } })).balance)).toBe(0);
+  });
+
+  it('a Pay now quoted before its week started and approved after it began pays that running week at once (it has started)', async () => {
+    const due = new Date(Date.now() + 60_000);
+    const p = await partner({ due });
+    const session = await start(p, 'PAY_NOW');
+    const back = await press(session.sessionId, 'APPROVE');
+    const later = new Date(due.getTime() + 60_000);
+    await returnWith(back, { now: later });
+    expect(await card.confirm(session.sessionId, { now: later })).toMatchObject({ status: 'SUCCEEDED', settlement: 'advanced' });
     expect((await money(p.subId)).sub.nextBillingDate.getTime()).toBe(due.getTime() + 7 * DAY);
   });
 
@@ -1076,7 +1117,8 @@ describe('[owner 6 Nov] a card Pay now never takes an account past four weeks ah
     // Meanwhile four coming weeks were paid another way.
     await app.prisma.prepaidBalance.upsert({ where: { subscriptionId: three.subId }, create: { subscriptionId: three.subId, balance: 4 * WEEKLY }, update: { balance: 4 * WEEKLY } });
     await returnWith(await press(session.sessionId, 'APPROVE'));
-    expect(await card.confirm(session.sessionId)).toMatchObject({ status: 'SUCCEEDED', settlement: 'advanced' });
+    // The coming week has not started: the capture is kept as fee credit, over the limit, and paged.
+    expect(await card.confirm(session.sessionId)).toMatchObject({ status: 'SUCCEEDED', settlement: 'banked' });
     const pages = (await app.prisma.notification.findMany({ where: { data: { path: ['alert'], equals: 'pay-ahead-over-cap' } } }))
       .filter((n) => (n.data as Record<string, unknown>)['subscriptionId'] === three.subId);
     expect(pages.length).toBeGreaterThan(0);

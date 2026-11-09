@@ -22,7 +22,9 @@ import { recordSetAsideReleasedInTx, recordWalletDebitInTx } from './fee-receipt
 //      credit, so nothing that happens next can change what is owed back.
 //      Nothing is paid before this step has happened.
 //   2. PAY, outside Swift. [OWNER 5 Nov 2026] Money paid in person goes back the
-//      same way the partner agrees: MMG, bank transfer, cheque or cash.
+//      same way the partner agrees: MMG, bank transfer, cheque or cash. [CARD-READY]
+//      Weeks paid ahead by card go back to the card: a refund of the original card
+//      transaction in the card provider's own portal (CARD).
 //   3. RECORD THE PAYOUT (two admins). The set-aside amount and the transfer
 //      reference. One transfer reference records one refund across every
 //      account (the event key is the reference alone, under a unique index),
@@ -246,10 +248,10 @@ export const REFUND_AMOUNT = z.number().positive().max(9_999_999_999.99)
   .refine((n) => new Prisma.Decimal(n).decimalPlaces() <= 2, 'At most two decimal places');
 export const REFUND_SET_ASIDE_ID = z.string().min(1, 'Name the set-aside this step is for.').max(64);
 /** The payout record's body: one schema for the approval gate's ask check and the route. */
-export const PAID_REFUND_BODY = z.object({ amount: REFUND_AMOUNT, method: z.enum(['MMG', 'BANK_TRANSFER', 'CHEQUE', 'CASH']), reference: z.string().max(200), setAsideId: REFUND_SET_ASIDE_ID });
+export const PAID_REFUND_BODY = z.object({ amount: REFUND_AMOUNT, method: z.enum(['MMG', 'BANK_TRANSFER', 'CHEQUE', 'CASH', 'CARD']), reference: z.string().max(200), setAsideId: REFUND_SET_ASIDE_ID });
 export const refundReferenceOf = (raw: unknown) => normaliseReference(raw, {
-  required: 'Enter the MMG or bank reference, cheque number or receipt number of the refund you paid. It is the only proof the money went back.',
-  invalid: 'That does not look like a reference. Copy it from the MMG or bank record, the cheque, or the receipt the partner signed.',
+  required: 'Enter the MMG or bank reference, cheque number, receipt number or card refund reference of the refund you paid. It is the only proof the money went back.',
+  invalid: 'That does not look like a reference. Copy it from the MMG or bank record, the cheque, the receipt the partner signed, or the card provider\'s refund.',
 }, 'REFUND_REFERENCE');
 
 const REFERENCE_REUSED = 'This transfer reference already recorded a refund. One transfer pays one refund: check the reference.';

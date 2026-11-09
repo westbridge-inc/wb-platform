@@ -295,6 +295,16 @@ describe('fee credit refund: set aside, pay, record, and every answer is shown',
     expect((await screen.findByRole('status')).textContent).toContain('Payout recorded');
   });
 
+  it('[CARD-READY] weeks paid ahead by card are paid back to the card: the payout is recorded as CARD with the card refund reference', async () => {
+    const fetchMock = refundServer(setAsideRow, () => ({ body: { success: true, replayed: false, data: { amount: 5000, currencyCode: 'GYD', balance: 0, refundSetAside: 0 } } }));
+    const { user } = renderWithQuery(<SubscriptionsPage />);
+    expect(await screen.findByText('Shanta Kitchen')).toBeTruthy();
+    await confirmPanel(user, await answerPanel(user, 'Record payout', { choose: "Card (refunded in the card provider's portal)", fields: { 'Reference of the refund you paid': 'CARDREFUND77' }, reason: REASON }), 'Record payout');
+    await waitFor(() => expect(requestsByMethod(fetchMock, 'POST')).toHaveLength(1));
+    const [, init] = requestsByMethod(fetchMock, 'POST')[0]!;
+    expect(JSON.parse(String(init?.body))).toEqual({ amount: 5000, method: 'CARD', reference: 'CARDREFUND77', setAsideId: 'evt-aside-1' });
+  });
+
   it('a replay of an earlier payout does not say a new set-aside is complete', async () => {
     refundServer(setAsideRow, () => ({ body: { success: true, replayed: true, data: { amount: 5000, currencyCode: 'GYD', balance: 0, refundSetAside: 5000 } } }));
     const { user } = renderWithQuery(<SubscriptionsPage />);

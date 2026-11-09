@@ -118,7 +118,10 @@ async function makeUser(roles: UserRole[], activeRole: UserRole, tenantId?: stri
  *  confirmation clock has not mapped the subscription yet ([#1393]; reading never maps it). */
 type SubOpts = { status?: SubscriptionStatus; due?: Date; tenantId?: string; mapped?: boolean; simulatorTest?: boolean };
 function period(opts: SubOpts) {
-  const due = opts.due ?? new Date(Date.now() + 3 * DAY);
+  // [CARD-READY] By default the week being paid has started (its fee fell due a minute ago, before the billing
+  // run): a Pay now books THAT week and moves the next fee date, which is what these money-movement cases count.
+  // A Pay now for a week that has not started is kept as fee credit instead (card-rail-service.test.ts).
+  const due = opts.due ?? new Date(Date.now() - 60_000);
   return { currentPeriodStart: new Date(due.getTime() - 7 * DAY), currentPeriodEnd: due, nextBillingDate: due };
 }
 /** [Review S2] The simulator serves only listed TEST subscriptions: fixtures are listed unless a test says
@@ -767,7 +770,8 @@ describe('payActions CARD: the server alone decides, per platform, whether the P
     expect((await cardActionOf(await makeStore({ due: new Date(Date.now() + 24 * DAY) })))['state']).toBe('live');
     const paidByCard = await makeStore({ due: new Date(Date.now() + 31 * DAY) });
     expect(await cardActionOf(paidByCard)).toEqual({ id: 'CARD', state: 'off' });
-    const part = await makeStore();
+    const runs = () => ({ due: new Date(Date.now() + 3 * DAY) });
+    const part = await makeStore(runs());
     await app.prisma.prepaidBalance.update({ where: { subscriptionId: part.subId }, data: { balance: 3 * 2100 + 600 } });
     expect(await cardActionOf(part)).toEqual({ id: 'CARD', state: 'off' });
     // and the door says so truthfully, never "already paid"
@@ -776,7 +780,7 @@ describe('payActions CARD: the server alone decides, per platform, whether the P
     expect(res.json().error).toMatchObject({ code: 'PAY_AHEAD_LIMIT' });
     expect(res.json().error.message).toBe('Swift takes the weekly fee up to four weeks ahead. GY$6,900 is already paid toward weeks that have not started, so you can pay at most GY$1,500 now.');
     // nothing held while a week runs: the coming week can be paid by card
-    expect((await cardActionOf(await makeStore()))['state']).toBe('live');
+    expect((await cardActionOf(await makeStore(runs())))['state']).toBe('live');
   });
 
   it('[staging] CARD_RAIL_SIMULATOR_LIVE: the simulator shows the card choice, labelled as a test — never to the store-review demo', async () => {

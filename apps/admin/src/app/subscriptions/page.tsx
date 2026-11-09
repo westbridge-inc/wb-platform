@@ -361,7 +361,7 @@ export default function SubscriptionsPage() {
                                     body: <p>Only once the refund has really been paid outside Swift. The reference, cheque number or signed receipt number is the proof the money went back. A second admin approves the record.</p>,
                                     confirmLabel: 'Record payout',
                                     fields: [
-                                      { kind: 'choice', name: 'method', label: 'Paid back by', options: [{ value: 'MMG', label: 'MMG' }, { value: 'BANK_TRANSFER', label: 'Bank transfer' }, { value: 'CHEQUE', label: 'Cheque' }, { value: 'CASH', label: 'Cash' }] },
+                                      { kind: 'choice', name: 'method', label: 'Paid back by', options: [{ value: 'MMG', label: 'MMG' }, { value: 'BANK_TRANSFER', label: 'Bank transfer' }, { value: 'CHEQUE', label: 'Cheque' }, { value: 'CASH', label: 'Cash' }, { value: 'CARD', label: 'Card (refunded in the card provider\'s portal)' }] },
                                       { kind: 'reference', name: 'reference', label: 'Reference of the refund you paid', hint: 'Never the reference the money came in on.' },
                                     ],
                                   });

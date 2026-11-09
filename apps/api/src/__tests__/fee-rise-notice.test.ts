@@ -397,6 +397,26 @@ describe('[F2] a held weekly-fee rise is told 14 days ahead and applies only fro
     expect(Number((await capturedFor(rider.subId, later))!.amount)).toBe(8000);
   });
 
+  // [REVIEW-M16-R2 S4-R2-1 · CARD-READY] Only a week paid FROM the credit uses an old-fee week. A card payment kept
+  // as fee credit (a Pay now for a week that has not started, or a late approval) is its own CAPTURED row for the
+  // coming week, yet it spent nothing: counting it would let the rise reach a week paid before the notice.
+  it('[REVIEW-M16-R2 S4-R2-1] a card payment that spent no credit never counts as a used old-fee week', async () => {
+    const { rider, due, later } = await fourPaidThenDeferred();
+    const third = new Date(due.getTime() + 2 * WEEK);
+    await app.prisma.subscriptionPayment.create({ data: {
+      subscriptionId: rider.subId, amount: 6000, status: 'CAPTURED', paymentMethod: 'CARD', externalRef: `card-kept-${rider.subId}`,
+      purpose: 'CARD_PAY_NOW', periodStart: third, periodEnd: new Date(third.getTime() + WEEK), paidAt: new Date(),
+    } });
+    await topUp(rider.subId, 3 * 6000);
+    // Stopped, then resumed after the date: both weeks paid at the old fee are still held.
+    const resumed = new Date(later.getTime() + 3 * WEEK);
+    await app.prisma.subscription.update({ where: { id: rider.subId }, data: { nextBillingDate: resumed } });
+    await billing.sweepFeeRises(new Date(resumed.getTime() + 60_000));
+    expect(await rate(rider.subId)).toBe(6000);
+    expect(await heldOf(rider.subId)).toMatchObject({ deferredOnce: true, oldWeeksLeft: 2, appliesFrom: new Date(resumed.getTime() + 2 * WEEK).toISOString() });
+    expect((await audits(rider.subId, 'BILLING_FEE_RISE_DEFERRED')).map((a) => (a.changes as Record<string, unknown>)['weeksKeepOldPrice'])).toEqual([2, 2]);
+  });
+
   it('[owner 6 Nov] once a rise is told, a new payment reaches only weeks that start before its date', async () => {
     const t = new Date();
     const due = new Date(t.getTime() + 3 * DAY);

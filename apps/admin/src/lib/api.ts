@@ -524,7 +524,7 @@ export const setAsideSubscriptionCredit = (id: string, amount: number, reason: s
   });
 // [Sol r2 S1] A payout record and a release name the set-aside they are for
 // (refundSetAsideId from the list), so an approval acts only on that one.
-export type RefundPaidMethod = 'MMG' | 'BANK_TRANSFER' | 'CHEQUE' | 'CASH';
+export type RefundPaidMethod = 'MMG' | 'BANK_TRANSFER' | 'CHEQUE' | 'CASH' | 'CARD';
 export const recordSubscriptionRefundPaid = (id: string, amount: number, method: RefundPaidMethod, reference: string, setAsideId: string, reason: string) =>
   apiFetch(`/api/v1/admin/subscriptions/${id}/refund-credit/paid`, {
     method: 'POST',

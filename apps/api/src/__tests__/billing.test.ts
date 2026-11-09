@@ -942,7 +942,9 @@ describe('fee credit refund — set aside, then paid, recorded once, two people,
     other = await makeUserWithSession(['ADMIN'], 'ADMIN');
   });
 
-  it.each(['MMG', 'BANK_TRANSFER'] as const)('set aside, then paid by %s: the credit leaves once, the reference is recorded, the books agree at every step', async (method) => {
+  // [CARD-READY] CARD: a week paid ahead by card is refunded to the card in the card provider's own portal (a refund
+  // of the original transaction); the payout leaves the card clearing account, never MMG's or the bank's.
+  it.each(['MMG', 'BANK_TRANSFER', 'CARD'] as const)('set aside, then paid by %s: the credit leaves once, the reference is recorded, the books agree at every step', async (method) => {
     const fx = await storeWithCredit(15000);
     expect(await wallet(fx.subId)).toBe(15000);
 
@@ -966,7 +968,7 @@ describe('fee credit refund — set aside, then paid, recorded once, two people,
     expect(done[0]).toMatchObject({ paymentRef: stored });
     expect(Number(done[0]!.amount)).toBe(15000);
     expect(await subledger('REFUND_PAYABLE', fx.subId)).toBe(0);
-    const out = await app.prisma.ledgerEntry.findFirst({ where: { accountCode: method === 'MMG' ? 'CLEARING_MMG' : 'BANK_LOCAL', credit: 15000, transaction: { idempotencyKey: { contains: stored } } } });
+    const out = await app.prisma.ledgerEntry.findFirst({ where: { accountCode: ({ MMG: 'CLEARING_MMG', BANK_TRANSFER: 'BANK_LOCAL', CARD: 'CLEARING_CARD' } as const)[method], credit: 15000, transaction: { idempotencyKey: { contains: stored } } } });
     expect(out).not.toBeNull();
     // One audit row per step, written in that step's own transaction.
     expect(await app.prisma.auditLog.count({ where: { entityId: fx.subId, action: { contains: 'refund-credit/paid' }, changes: { path: ['reference'], equals: stored } } })).toBe(1);
