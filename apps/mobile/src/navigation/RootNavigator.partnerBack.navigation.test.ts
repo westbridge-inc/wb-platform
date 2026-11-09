@@ -186,6 +186,7 @@ vi.mock('../kit', async () => {
     EmptyState: ({ title, body }: any) => R.createElement('div', null, title, ' ', body),
     PillButton: ({ label, onPress, disabled, testID }: any) => control(label, onPress, disabled, testID),
     BrandCheckbox: ({ checked, onToggle }: any) => R.createElement('div', { role: 'checkbox', 'aria-checked': checked ? 'true' : 'false', onClick: onToggle }),
+    CheckRow: ({ checked, onToggle, label, kind }: any) => R.createElement('div', { role: kind ?? 'checkbox', 'aria-checked': checked ? 'true' : 'false', onClick: onToggle }, label),
     LinkText: ({ label, onPress }: any) => control(label, onPress),
     LabeledInput: ({ value, placeholder, onChangeText }: any) =>
       R.createElement('input', { placeholder, value: value ?? '', onInput: (event: any) => onChangeText?.(event.target.value), onChange: () => undefined }),

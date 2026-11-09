@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { View } from 'react-native';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { space } from '@swift/ui';
-import { BrandCheckbox, Card, PillButton, T } from '../../kit';
+import { Card, CheckRow, PillButton, T } from '../../kit';
 import { vendorApi } from '../../services/api';
 import { foodHandlerStoresToTick, foodHandlerTickFrom, type FoodHandlerStore } from './foodHandlers';
 
@@ -22,7 +22,7 @@ function StoreTick({ role, store, tick, version, named }: { role: string; store:
   return (
     <View style={{ gap: space.sm }}>
       {named ? <T variant="caption" weight="bold">{store.name}</T> : null}
-      <BrandCheckbox checked={ticked} onToggle={() => setTicked((t) => !t)} label={tick} />
+      <CheckRow checked={ticked} onToggle={() => setTicked((t) => !t)} label={tick} />
       <PillButton label="Confirm" disabled={!ticked} loading={save.isPending} onPress={() => save.mutate()} />
       {save.isError ? <T variant="caption" tone="error">{errorCopy(save.error)}</T> : null}
     </View>
