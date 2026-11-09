@@ -257,6 +257,43 @@ describe('[S4-2] the store\'s answer survives a restart, per account', () => {
     expect(seen.takeover).toEqual([{ orderId: 'o1', orderNumber: 'O1' }]); // never shared across accounts
   });
 
+  it('[review S3-1] "Out of stock" asked, the app restarts, the customer answers: it rings again', async () => {
+    const kv = new Map<string, string>();
+    bindHandledTakeoverStorage({ getItem: (k) => kv.get(k) ?? null, setItem: (k, v) => { kv.set(k, v); }, removeItem: (k) => { kv.delete(k); } });
+    fx.session = { userId: 'owner-1' };
+    const r1 = new Date(Date.now() + 10 * 60_000).toISOString();
+    const asked = { items: [{ id: 'o1-l1', subStatus: 'PENDING', substituteName: null }] };
+    qc.setQueryData(['vendor', 'orders'], [pending('o1', { respondBy: r1 })]);
+    await mount();
+    await board([pending('o1', { respondBy: r1, ...asked })]); // the store asked: the takeover settles
+    await act(async () => { seen.dismiss('o1'); });
+    expect(kv.size).toBe(1);
+
+    await restart(); // the phone killed the app while the customer decides
+    const r2 = new Date(Date.now() + 25 * 60_000).toISOString(); // answered: the store's clock restarted
+    qc.setQueryData(['vendor', 'orders'], [pending('o1', { respondBy: r2 })]);
+    await mount();
+    expect(seen.takeover).toEqual([{ orderId: 'o1', orderNumber: 'O1' }]); // RED before: silent until auto-cancel
+  });
+
+  it('[review S3-1] while the customer decides, a restart forgets the answer; their reply rings even with the same window', async () => {
+    const kv = new Map<string, string>();
+    bindHandledTakeoverStorage({ getItem: (k) => kv.get(k) ?? null, setItem: (k, v) => { kv.set(k, v); }, removeItem: (k) => { kv.delete(k); } });
+    fx.session = { userId: 'owner-1' };
+    const r1 = new Date(Date.now() + 10 * 60_000).toISOString();
+    const asked = { items: [{ id: 'o1-l1', subStatus: 'PENDING', substituteName: null }] };
+    qc.setQueryData(['vendor', 'orders'], [pending('o1', { respondBy: r1 })]);
+    await mount();
+    await act(async () => { seen.dismiss('o1'); });
+    await restart();
+    qc.setQueryData(['vendor', 'orders'], [pending('o1', { respondBy: r1, ...asked })]);
+    await mount();
+    expect(seen.takeover).toEqual([]); // waiting on the customer: not the store's turn
+    expect(kv.size).toBe(0); // ...and no longer remembered as answered
+    await board([pending('o1', { respondBy: r1 })]);
+    expect(seen.takeover).toEqual([{ orderId: 'o1', orderNumber: 'O1' }]);
+  });
+
   it('signed out and back in: it rings again (sign-out wipes the memory)', async () => {
     const kv = new Map<string, string>();
     bindHandledTakeoverStorage({ getItem: (k) => kv.get(k) ?? null, setItem: (k, v) => { kv.set(k, v); }, removeItem: (k) => { kv.delete(k); } });

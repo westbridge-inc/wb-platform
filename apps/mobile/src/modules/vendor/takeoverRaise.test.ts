@@ -116,27 +116,67 @@ describe('handled orders', () => {
     expect(takeoverHandled('u1', 'store-a', 'o1', NOW)).toBe(false);
   });
 
-  it('[S4-2] forgotten once its accept window ends, or once the board shows it left PENDING; a moved window is followed', () => {
+  it('[S4-2] forgotten once its accept window ends, or once the board shows it left PENDING; an earlier window shortens it', () => {
     const device = deviceStorage();
     bindHandledTakeoverStorage(device);
     markTakeoverHandled('u1', 'store-a', 'gone', LATER);
     markTakeoverHandled('u1', 'store-a', 'accepted', LATER);
     markTakeoverHandled('u1', 'store-a', 'waiting', LATER);
-    markTakeoverHandled('u1', 'store-a', 'moved', LATER);
+    markTakeoverHandled('u1', 'store-a', 'sooner', LATER);
     expect(takeoverHandled('u1', 'store-a', 'gone', LATER)).toBe(false); // the window is over
-    const moved = NOW + 60 * 60_000;
+    const sooner = NOW + 60_000;
     pruneHandledTakeovers('u1', 'store-a', [
       row('accepted', { status: 'ACCEPTED' }),
       row('waiting'),
-      row('moved', { respondBy: new Date(moved).toISOString() }),
+      row('sooner', { respondBy: new Date(sooner).toISOString() }),
     ], NOW);
     expect(takeoverHandled('u1', 'store-a', 'accepted', NOW)).toBe(false);
     expect(takeoverHandled('u1', 'store-a', 'waiting', NOW)).toBe(true);
-    expect(takeoverHandled('u1', 'store-a', 'moved', LATER + 1)).toBe(true);
+    expect(takeoverHandled('u1', 'store-a', 'sooner', NOW)).toBe(true);
+    expect(takeoverHandled('u1', 'store-a', 'sooner', sooner)).toBe(false);
+    pruneHandledTakeovers('u1', 'store-a', [], sooner);
+    expect(Object.keys(JSON.parse(device.kv.get(HANDLED_TAKEOVERS_STORAGE_KEY)!).s['store-a']).sort()).toEqual(['gone', 'waiting']); // 'sooner' left at its window's end
     pruneHandledTakeovers('u1', 'store-a', [], LATER);
-    expect(Object.keys(JSON.parse(device.kv.get(HANDLED_TAKEOVERS_STORAGE_KEY)!).s['store-a']).sort()).toEqual(['moved']);
-    pruneHandledTakeovers('u1', 'store-a', [], moved);
     expect(device.kv.has(HANDLED_TAKEOVERS_STORAGE_KEY)).toBe(false); // nothing left: nothing kept
+  });
+
+  it('[review S3-1] a new decision for the store is never suppressed: waiting on the customer, or a window moved later', () => {
+    const device = deviceStorage();
+    bindHandledTakeoverStorage(device);
+    markTakeoverHandled('u1', 'store-a', 'asked', LATER); // "Out of stock" asked: the takeover settled
+    markTakeoverHandled('u1', 'store-a', 'answered', LATER);
+    pruneHandledTakeovers('u1', 'store-a', [
+      row('asked', { respondBy: new Date(LATER).toISOString(), items: [{ id: 'l', subStatus: 'PENDING', substituteName: null }] }),
+      // The customer answered: the store's clock restarted, its window now ends later.
+      row('answered', { respondBy: new Date(LATER + 5 * 60_000).toISOString() }),
+    ], NOW);
+    expect(takeoverHandled('u1', 'store-a', 'asked', NOW)).toBe(false);
+    expect(takeoverHandled('u1', 'store-a', 'answered', NOW)).toBe(false); // RED before: extended to the new window
+    expect(waitingForStore([row('answered', { respondBy: new Date(LATER + 5 * 60_000).toISOString() })], 'store-a', NOW).map((e) => e.orderId)).toEqual(['answered']);
+  });
+
+  it('[review S4] a sign-out that cannot remove the device copy still never reads it back', () => {
+    const kv = new Map<string, string>();
+    bindHandledTakeoverStorage({ getItem: (k) => kv.get(k) ?? null, setItem: (k, v) => { kv.set(k, v); }, removeItem: () => { throw new Error('locked'); } });
+    markTakeoverHandled('u1', 'store-a', 'o1', LATER);
+    forgetHandledTakeovers();
+    expect(takeoverHandled('u1', 'store-a', 'o1', NOW)).toBe(false); // the same account signing back in
+    expect(JSON.parse(kv.get(HANDLED_TAKEOVERS_STORAGE_KEY)!)).toEqual({ u: null, s: {} });
+  });
+
+  it('[review S4] ...even when the device refuses every write at sign-out (the old copy stays unread)', () => {
+    const kv = new Map<string, string>();
+    let locked = false;
+    bindHandledTakeoverStorage({
+      getItem: (k) => kv.get(k) ?? null,
+      setItem: (k, v) => { if (locked) throw new Error('locked'); kv.set(k, v); },
+      removeItem: () => { throw new Error('locked'); },
+    });
+    markTakeoverHandled('u1', 'store-a', 'o1', LATER);
+    locked = true;
+    forgetHandledTakeovers();
+    expect(kv.has(HANDLED_TAKEOVERS_STORAGE_KEY)).toBe(true); // still on the device...
+    expect(takeoverHandled('u1', 'store-a', 'o1', NOW)).toBe(false); // ...never read back in this run
   });
 
   it('[S4-2] an unreadable device copy starts empty', () => {
