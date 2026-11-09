@@ -1,5 +1,6 @@
 import { moneyExact } from '../../lib/money';
 import { orderLineOptionsText, type OrderLineOption } from '../vendor/orderLineOptions';
+import { ACCEPTED_OUT_OF_STOCK_WORDS } from '../vendor/acceptedOutOfStock';
 
 /** The server's open swap on a line (customer order detail, `items[].substitution`). */
 export interface SubstitutionView {
@@ -97,11 +98,20 @@ export function swapDeadlineText(substitution: SubstitutionView | null | undefin
  * question stops waiting and what then happens to the line, so the store knows
  * it is never stuck. Null without a usable deadline.
  */
-export function storeSwapWaitText(decideBy: string | null | undefined, paymentMethod?: string | null, clock: (d: Date) => string = clockOf): string | null {
+export function storeSwapWaitText(decideBy: string | null | undefined, paymentMethod?: string | null, clock: (d: Date) => string = clockOf, lastItem = false): string | null {
   if (!decideBy) return null;
   const at = new Date(decideBy);
   if (Number.isNaN(at.getTime())) return null;
+  // [OOS-FLOW · REVIEW-2 F1] The only item left (a server that ends such orders: acceptedOutOfStock
+  // removalEndsOrder): no answer cancels the order. MMG withdraws the question instead, as below.
+  if (lastItem && paymentMethod !== 'MOBILE_MONEY') return ACCEPTED_OUT_OF_STOCK_WORDS.lastItemWait(clock(at));
   return paymentMethod === 'MOBILE_MONEY'
     ? `No answer by ${clock(at)} closes the question; settle the item with the customer directly.`
     : `No answer by ${clock(at)} removes the item and lowers the total.`;
+}
+
+/** [OOS-FLOW · owner 8 Nov 2026] A line the store took off (out of stock) or whose swap was declined: it is not
+ *  charged, so the order's list shows it at nothing and the lines add up to the total (as the web order page). */
+export function lineRemoved(line: { subStatus?: string | null } | null | undefined): boolean {
+  return line?.subStatus === 'REFUNDED' || line?.subStatus === 'REJECTED';
 }

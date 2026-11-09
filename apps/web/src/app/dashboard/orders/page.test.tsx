@@ -417,7 +417,7 @@ describe('[W-27] removing a line is not a refund', () => {
     const { user } = await openDetail({ paymentMethod: 'CASH' });
     // The line controls open behind "Out of stock?".
     await user.click((await screen.findAllByRole('button', { name: 'Out of stock?' }))[0]!);
-    expect(await screen.findByRole('button', { name: /No substitute — remove line/ })).toBeTruthy();
+    expect(await screen.findByRole('button', { name: /^Remove item$/ })).toBeTruthy();
     expect(screen.queryByRole('button', { name: /refund line/ })).toBeNull();
   });
 
@@ -433,7 +433,7 @@ describe('[W-27] removing a line is not a refund', () => {
   it('an MMG order cannot change its totals here, and the store is told instead of clicking into a 409', async () => {
     const { user } = await openDetail({ paymentMethod: 'MOBILE_MONEY' });
     await user.click((await screen.findAllByRole('button', { name: 'Out of stock?' }))[0]!);
-    const remove = await screen.findByRole('button', { name: /No substitute — remove line/ });
+    const remove = await screen.findByRole('button', { name: /^Remove item$/ });
     expect((remove as HTMLButtonElement).disabled).toBe(true);
     expect(screen.getAllByText(/settle item changes with the customer directly/).length).toBeGreaterThan(0);
   });
@@ -595,12 +595,12 @@ describe('store picking uses the server substitution status', () => {
   it('a pending proposal on another device closes an already-open substitute panel', async () => {
     const { user, queryClient, detail } = await openLine('NONE');
     await user.click(screen.getByRole('button', { name: 'Out of stock?' }));
-    expect(screen.getByRole('button', { name: 'No substitute — remove line' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Remove item' })).toBeTruthy();
     const pending = { ...detail, items: [wireOrderLine({ subStatus: 'PENDING', substituteName: 'Replacement rice' })] };
     mockApi(boardHandler([pending], pending));
     await queryClient.invalidateQueries({ predicate: (query) => query.queryKey.includes('order') });
     await screen.findByText('Waiting on customer: Replacement rice');
-    expect(screen.queryByRole('button', { name: 'No substitute — remove line' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Remove item' })).toBeNull();
   });
 
   it('an APPROVED swap is picked and no longer waits on the customer', async () => {
@@ -614,7 +614,9 @@ describe('store picking uses the server substitution status', () => {
     await openLine(status);
     expect((screen.getByRole('checkbox') as HTMLInputElement).disabled).toBe(true);
     expect(screen.queryByRole('button', { name: 'Out of stock?' })).toBeNull();
-    expect(screen.getByText('Nothing left to hand over — cancel this order')).toBeTruthy();
+    expect(screen.getByText('Nothing left to hand over')).toBeTruthy();
+    // [OOS-FLOW] What to do instead, with the way out (an order emptied on an older server).
+    expect(screen.getByRole('button', { name: 'Reject: out of stock' })).toBeTruthy();
   });
 });
 
@@ -645,6 +647,10 @@ describe('pending and approved line removal remains available', () => {
       expect((screen.getByRole('checkbox') as HTMLInputElement).disabled).toBe(false);
     }
     await user.click(screen.getByRole('button', { name: 'Remove unavailable line' }));
+    // [TRANSFORMED 8 Nov (OOS-FLOW): the only item still coming asks once first (removing it cancels the order).]
+    expect(fetchMock.mock.calls.some(([url]) => String(url).includes('/refund-line'))).toBe(false);
+    expect(screen.getByText(/This is the last item on the order\. Removing it cancels the order as out of stock/)).toBeTruthy();
+    await user.click(screen.getByRole('button', { name: 'Remove and cancel the order' }));
     await waitFor(() => expect(fetchMock.mock.calls.some(([url, init]) =>
       String(url).includes('/refund-line') && init?.method === 'POST')).toBe(true));
     expect(fetchMock.mock.calls.some(([url]) => String(url).includes('/substitute'))).toBe(false);
