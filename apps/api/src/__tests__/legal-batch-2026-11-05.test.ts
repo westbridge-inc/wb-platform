@@ -8,6 +8,7 @@ import { MATERIAL_CHANGES, NON_MATERIAL_CHANGES, acceptanceStatus } from '../mod
 import { LIVE_RETENTION_DAYS } from '../modules/algo/decisions';
 import { TRACE_TTL_S } from '../modules/dispatch/gps-plausibility';
 import { ALGO_DEFAULTS } from '../modules/algo/algo-config';
+import { orderLimitCounts } from '../modules/integrity/velocity';
 import { ORDER_HOLD_DEFAULT_MIN } from '../modules/order/hold-minutes';
 import { FREE_CANCEL_WINDOW_MIN } from '../modules/order/cancel-policy';
 import { RETENTION_DEFAULTS } from '../modules/compliance/retention.service';
@@ -171,7 +172,16 @@ describe('[5 Nov read] what ships now, in the words', () => {
   it('the order limit in the words is the limit in the code, and the second figure stays out of them', () => {
     const limit = (ALGO_DEFAULTS['velocity.limits'] as Record<string, { max: number; perSeconds: number; clusterMax?: number }>)['order.place']!;
     expect(limit).toMatchObject({ max: 6, perSeconds: 3600 });
-    expect(section(TERMS, /<h2>5\. /)).toContain('You can place at most 6 store orders and parcels in an hour; after that the app asks you to wait, and accounts that appear to belong to one person share a limit.');
+    // [OWNER-ASKS · owner 9 Nov 2026 · LEGAL_VERSION 2026-11-09.1] pickup orders are never limited (integrity/velocity
+    // orderLimitCounts): the words name what counts, and say a pickup does not.
+    expect(orderLimitCounts('PICKUP')).toBe(false);
+    for (const counted of ['DELIVERY', 'APPOINTMENT']) expect(orderLimitCounts(counted)).toBe(true);
+    expect(section(TERMS, /<h2>5\. /)).toContain('You can place at most 6 delivery orders, parcels and bookings in an hour; after that the app asks you to wait, and accounts that appear to belong to one person share a limit. Orders you collect yourself (pickup) have no such limit.');
+    expect(TERMS).not.toContain('at most 6 store orders and parcels in an hour');
+    // The 5 Nov summary is still shown to anyone who accepted before it: it states today's rule.
+    const summary = MATERIAL_CHANGES.find((c) => c.version === '2026-11-05')!.summary.join(' ');
+    expect(summary).toContain('at most 6 delivery orders, parcels and bookings in an hour (pickup orders have no limit)');
+    expect(summary).not.toContain('store orders and parcels in an hour');
     expect(TERMS).not.toMatch(/\b12 (store )?orders\b/);
   });
   it('no rider near: refused before it is placed; no rider in time: cancelled and told', () => {
@@ -228,7 +238,7 @@ describe('[5 Nov read] what ships now, in the words', () => {
 
 describe('classification', () => {
   it('2026-11-05 is material, and classed once (served now under 2026-11-06, partner-only)', () => {
-    expect(LEGAL_VERSION).toBe('2026-11-09'); // [LEGAL-CALLS · owner 9 Nov 2026] served now under 2026-11-09 (in-app calls in the Privacy Policy: material)
+    expect(LEGAL_VERSION).toBe('2026-11-09.1'); // [LEGAL-CALLS · owner 9 Nov 2026] served now under 2026-11-09 (in-app calls in the Privacy Policy: material)
     expect(MATERIAL_CHANGES.filter((c) => c.version === '2026-11-05')).toHaveLength(1);
     expect(NON_MATERIAL_CHANGES.map((c) => c.version)).not.toContain('2026-11-05');
   });

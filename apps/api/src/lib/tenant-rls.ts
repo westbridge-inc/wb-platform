@@ -121,6 +121,8 @@ export const TENANT_TABLES = [
   // [MMG REVERSAL] returning a whole weekly-fee payment: the payer's operator's money.
   'mmg_fee_reversals',
   'fee_refund_cases',
+  // [CARD-READY] A partner's card money paid back to their card: the payer's operator's money.
+  'card_credit_refunds',
   'billing_dunning_clocks', 'payment_confirmation_holds', 'billing_fee_notices', 'billing_notice_handoffs',
   // [#1393] Consumed weekly-fee coverage: the paid or resumed obligation a clock moved past.
   'billing_obligation_transitions',

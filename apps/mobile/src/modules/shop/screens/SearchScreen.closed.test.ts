@@ -21,7 +21,7 @@ function block(from: string, to: string): string {
 
 describe('closed stores in the Search tab', () => {
   it('a dish row of the search results is drawn closed when its store is closed', () => {
-    const dishes = block('<SectionHeader title="Dishes"', '</ScrollView>');
+    const dishes = block('<SectionHeader title={searchItemsHeading(type)}', '</ScrollView>');
     expect(dishes).toMatch(/closed=\{it\.vendorIsCurrentlyOpen === false\}/);
   });
 

@@ -35,6 +35,7 @@ import { appointmentBookingView } from '@/lib/booking-rules';
 import styles from './tracking.module.css';
 import { pickupCodeWords } from './pickup-words';
 import { lazyRetry } from '@/lib/chunk-retry';
+import { orderReadyEstimate } from '@/lib/store-kind-words';
 
 /** The store kinds the web search filters by (its own chips): a declined order opens search on the same kind. */
 const SEARCH_TYPES: ReadonlySet<string> = new Set(['RESTAURANT', 'SUPERMARKET', 'STORE', 'SERVICE']);
@@ -485,6 +486,7 @@ export default function OrderDetailPage() {
   const holdExpiryMs = holdExpiresAt ? new Date(holdExpiresAt).getTime() : 0;
   const holdActive = !stopped && !order.rider && order.status === 'PENDING' && Number.isFinite(holdExpiryMs) && holdExpiryMs > now;
   const isTaxi = order.orderType === 'TAXI';
+  const readyEstimate = orderReadyEstimate(order.vendor?.vendorType, order.estimatedPrepTime);
   // [BUG-HUNT-2 G04] At the pickup the server decides (nobody aboard, 15 minutes after the arrival): it read the code, this page cannot.
   const taxiCancellationUnknown = isTaxi && order.status === 'RIDE_IN_PROGRESS';
   const canOfferCancellation = Boolean(order.canCancel) && !stopped && !taxiCancellationUnknown;
@@ -793,7 +795,8 @@ export default function OrderDetailPage() {
               <p className={styles.eyebrow}>Live status</p>
               <h2 id="progress-title" className={styles.cardTitle}>{isTaxi ? 'From request to drop-off' : 'From order to handover'}</h2>
             </div>
-            {order.estimatedPrepTime ? <span className={styles.estimate}>About {order.estimatedPrepTime} min prep</span> : null}
+            {/* [STORE-WORDS · owner 9 Nov 2026] "About 20 min prep" is a restaurant's line; a shop's order reads "Ready in about 20 min". */}
+            {readyEstimate ? <span className={styles.estimate}>{readyEstimate}</span> : null}
           </div>
           <ol className={styles.statusRail} style={{ '--swift-stage-count': stages.length } as CSSProperties}>
             {railSteps(order, stages, currentStage, holdActive).map((stage, index) => {

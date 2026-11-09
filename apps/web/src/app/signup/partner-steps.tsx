@@ -115,7 +115,7 @@ export interface BusinessDraft {
   storePin: StorePin | null;
 }
 /** [FLOW-QA F19] The server refused an own-name store whose name is not just the owner's surname: what to do next. */
-export const OWN_NAME_NEXT = 'Choose “A business name, or a company” and add your business registration under Documents, or use just your surname as the store name.';
+export const OWN_NAME_NEXT = 'Choose “A registered business name or a company (I have the DCRA certificate)” and add your business registration under Documents, or use just your surname as the store name.';
 /** [FLOW-QA F26] A Services business is not a shop: it is asked where it is based. */
 const PIN_WORDS = {
   store: { place: 'Place your store on the map', move: 'Move the store pin', confirmed: 'Store location confirmed' },

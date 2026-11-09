@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import { useMutation } from '@tanstack/react-query';
 import { dropStoreOwnName, signStoreOwnName } from '@/lib/store-documents-api';
-import { OWN_NAME_DECLARATION_V1, OWN_NAME_HINT, OWN_NAME_TICK, ownNameSigningFor } from '@/lib/store-documents';
+import { OWN_NAME_DECLARATION_V1, OWN_NAME_HINT, OWN_NAME_TICK, ownNameDeclarationDisplay, ownNameSigningFor } from '@/lib/store-documents';
 
 /** The server's message for a refused signature, or the phone's retry line. */
 const errorWords = (error: unknown, fallback: string) => (error instanceof Error && error.message.trim() ? error.message : fallback);
@@ -22,6 +22,7 @@ export function OwnNameCard({ mode, storeName, onDone }: { mode: 'sign' | 'offer
   const sign = useMutation({ mutationFn: signStoreOwnName, onSuccess: () => onDone() });
   const drop = useMutation({ mutationFn: dropStoreOwnName, onSuccess: () => onDone() });
   const forStore = ownNameSigningFor(storeName);
+  const shown = ownNameDeclarationDisplay(OWN_NAME_DECLARATION_V1);
 
   if (mode === 'drop') {
     return (
@@ -40,7 +41,12 @@ export function OwnNameCard({ mode, storeName, onDone }: { mode: 'sign' | 'offer
       {forStore && <p className="text-sm font-semibold">{forStore}</p>}
       {open ? (
         <>
-          <pre className="whitespace-pre-wrap rounded-lg bg-[var(--swift-subtle)] p-3 font-sans text-sm">{OWN_NAME_DECLARATION_V1}</pre>
+          {/* [OWNER-ASKS 9 Nov 2026] a plain title and its version in place of the raw first line; the signed words unchanged */}
+          <div className="rounded-lg bg-[var(--swift-subtle)] p-3">
+            <p className="text-sm font-semibold" data-own-name-title>{shown.title}</p>
+            {shown.version && <p className="text-xs text-[var(--swift-muted)]">{shown.version}</p>}
+            <pre className="mt-2 whitespace-pre-wrap font-sans text-sm">{shown.body}</pre>
+          </div>
           <label className="flex items-start gap-2 text-sm">
             <input type="checkbox" checked={ticked} onChange={(e) => setTicked(e.target.checked)} className="mt-0.5 h-4 w-4 accent-[var(--swift-red)]" />
             <span>{OWN_NAME_TICK}</span>

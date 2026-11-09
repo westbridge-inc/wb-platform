@@ -308,7 +308,7 @@ const MartTile = React.memo(function MartTile({
  *  visible Back, and the menu loading below. Drawn only from what the server sent the card. */
 function StoreOpening({ preview, top, onBack }: { preview: StorePreview; top: number; onBack: () => void }) {
   return (
-    <View style={{ flex: 1, backgroundColor: color.surface.subtle }} accessibilityLabel={`${preview.name}. Loading the menu`}>
+    <View style={{ flex: 1, backgroundColor: color.surface.subtle }} accessibilityLabel={`${preview.name}. Loading the store`}>
       <View>
         <Photo
           uri={vendorPhoto(preview, HERO_PHOTO_WIDTH)}

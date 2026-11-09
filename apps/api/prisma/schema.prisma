@@ -4133,6 +4133,44 @@ model FeeRefundCase {
   @@map("fee_refund_cases")
 }
 
+/// [CARD-READY] Weekly-fee money a partner paid ahead by card, paid back to the SAME card through the card provider's
+/// documented refund (PowerTranz Ecommerce API Guide v2.7 sec. 5.2 / 7.5: POST /api/refund naming the ORIGINAL
+/// TransactionIdentifier, with TotalAmount and Refund true). Asked by a person, approved by a second (C4), sent ONCE
+/// (the row is the durable claim, written before the call), and counted as paid back only on the provider's own
+/// approved answer for exactly this transaction, type and amount. The guide documents partial captures only, so a
+/// card payment is refunded whole or not at all: one row per original card payment, ever.
+model CardCreditRefund {
+  id                String    @id @default(cuid())
+  tenantId          String
+  subscriptionId    String
+  /// The original card payment (a Pay now kept as fee credit). One refund per payment, ever.
+  cardSessionId     String    @unique
+  /// The open refund set-aside (its PREPAID_REFUND_RESERVED event) this refund pays part of.
+  setAsideId        String
+  /// The whole card payment, frozen when asked.
+  amount            Decimal   @db.Decimal(12, 2)
+  currencyCode      String    @db.Char(3)
+  /// SENDING -> REFUNDED | FAILED | UNKNOWN | PENDING. Forward only (database trigger).
+  state             String    @default("SENDING")
+  /// The refund's own TransactionIdentifier from the provider's approved answer (guide sec. 6 / 7.5).
+  providerRefundRef String?
+  /// Why it is FAILED, UNKNOWN or PENDING, in the provider driver's terms (never card data).
+  outcomeReason     String?
+  /// SHA-256 of the provider's answer (evidence, never the payload).
+  answerSha256      String?
+  requestedByUserId String
+  approvalId        String    @unique
+  createdAt         DateTime  @default(now())
+  answeredAt        DateTime?
+  /// The fee-credit refund record (PREPAID_REFUND event) written on the approved answer.
+  billingEventId    String?   @unique
+
+  @@index([tenantId])
+  @@index([subscriptionId])
+  @@index([setAsideId])
+  @@map("card_credit_refunds")
+}
+
 model MmgFeeReversal {
   id                String            @id @default(cuid())
   tenantId          String

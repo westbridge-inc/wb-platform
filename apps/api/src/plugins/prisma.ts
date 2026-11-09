@@ -101,6 +101,8 @@ const TENANT_QUERY_EXTENSIONS = {
   // [MMG REVERSAL] A fee payment returned to the payer: their operator's money.
   mmgFeeReversal: scoped,
   feeRefundCase: scoped,
+  // [CARD-READY] A partner's card money paid back to their card.
+  cardCreditRefund: scoped,
   billingDunningClock: scoped, billingObligationTransition: scoped, paymentConfirmationHold: scoped, billingFeeNotice: scoped, billingNoticeHandoff: scoped,
   tenantBillingCurrency: scoped, trialGrant: scoped,
   moverFeeAuthority: scoped, moverFeeSubscription: scoped,

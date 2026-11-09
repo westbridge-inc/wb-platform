@@ -902,7 +902,7 @@ describe('fee credit refund — set aside, then paid, recorded once, two people,
     const creditRef = credit > 0 ? await topUp(fx.subId, credit) : null;
     return { ...fx, creditRef };
   }
-  const url = (subId: string, step: 'set-aside' | 'paid' | 'release') => `/api/v1/admin/subscriptions/${subId}/refund-credit/${step}`;
+  const url = (subId: string, step: 'set-aside' | 'paid' | 'release' | 'card') => `/api/v1/admin/subscriptions/${subId}/refund-credit/${step}`;
   const setAside = (subId: string, amount: number) => injectWithApproval(app, { method: 'POST', url: url(subId, 'set-aside'), payload: { amount }, headers: headers() });
   /** [Sol r2 S1] The set-aside the console shows as open now (its own event id), as the console sends it. */
   const openSetAsideIdOf = async (subId: string) => {
@@ -940,6 +940,28 @@ describe('fee credit refund — set aside, then paid, recorded once, two people,
   beforeAll(async () => {
     admin = await makeUserWithSession(['ADMIN'], 'ADMIN');
     other = await makeUserWithSession(['ADMIN'], 'ADMIN');
+  });
+
+  // [CARD-READY · REVIEW-2 F1] Card money goes back only through the card provider's documented refund, recorded on its
+  // own answer (card-credit-refund.ts): a person never records a CARD payout, and a refund to the card that could never
+  // be sent is refused when it is asked, before any approval exists.
+  it('a person cannot record a card payout; an impossible refund to the card is refused when asked', async () => {
+    const fx = await storeWithCredit(6000);
+    expect((await setAside(fx.subId, 6000)).statusCode).toBe(200);
+    const typed = await paid(fx.subId, { amount: 6000, method: 'CARD', reference: ref('TYPED') });
+    expect(typed.statusCode, typed.payload).toBe(400);
+    const setAsideId = await openSetAsideIdOf(fx.subId);
+    const asks = () => app.prisma.privilegedApproval.count({ where: { action: 'POST /subscriptions/:id/refund-credit/card', entityId: fx.subId } });
+    process.env['CARD_RAIL_V2'] = '1';
+    try {
+      const toCard = await app.inject({ method: 'POST', url: url(fx.subId, 'card'), payload: { setAsideId, cardSessionId: 'no_such_session', amount: 6000 }, headers: headers() });
+      expect(toCard.statusCode, toCard.payload).toBe(409);
+      expect(toCard.json().error.code).toBe('CARD_PAYMENT_NOT_FOUND');
+      expect(await asks()).toBe(0);
+    } finally {
+      delete process.env['CARD_RAIL_V2'];
+    }
+    expect(await wallet(fx.subId)).toBe(0);
   });
 
   it.each(['MMG', 'BANK_TRANSFER'] as const)('set aside, then paid by %s: the credit leaves once, the reference is recorded, the books agree at every step', async (method) => {
@@ -1462,7 +1484,7 @@ describe('fee credit refund — set aside, then paid, recorded once, two people,
     const inbound = await app.inject({ method: 'POST', url: url(fx.subId, 'paid'), payload: { amount: 5000, method: 'MMG', reference: fx.creditRef!, setAsideId }, headers: headers() });
     expect(inbound.statusCode, inbound.payload).toBe(409);
     expect(inbound.json().error.code).toBe('REFUND_REFERENCE_IS_A_PAYMENT');
-    const wrongAmount = await app.inject({ method: 'POST', url: url(fx.subId, 'paid'), payload: { amount: 4000, method: 'MMG', reference: ref('WRONGAMT'), setAsideId }, headers: headers() });
+    const wrongAmount = await app.inject({ method: 'POST', url: url(fx.subId, 'paid'), payload: { amount: 5000.01, method: 'MMG', reference: ref('WRONGAMT'), setAsideId }, headers: headers() });
     expect(wrongAmount.statusCode, wrongAmount.payload).toBe(409);
     expect(await asks()).toBe(before);
     // nothing became a marker: the release is still possible
@@ -1485,13 +1507,39 @@ describe('fee credit refund — set aside, then paid, recorded once, two people,
     await booksAgree(fx.subId);
   });
 
+  // [CARD-READY · REVIEW-1 R1-1] Money that came in several ways goes back in several parts: each with its method,
+  // its own reference (each one enters the reference census) and its amount, never more than is still to pay back.
+  it('a set-aside is paid back in parts: each part its own method, reference and amount; never more than is left', async () => {
+    const fx = await storeWithCredit(8000);
+    expect((await setAside(fx.subId, 8000)).statusCode).toBe(200);
+    const first = await paid(fx.subId, { amount: 5000, method: 'MMG', reference: ref('PART1') });
+    expect(first.statusCode, first.payload).toBe(200);
+    expect(first.json().data).toMatchObject({ amount: 5000, refundSetAside: 3000 });
+    const over = await paid(fx.subId, { amount: 3000.01, method: 'BANK_TRANSFER', reference: ref('PART2X') });
+    expect(over.statusCode, over.payload).toBe(409);
+    expect(over.json().error.code).toBe('REFUND_AMOUNT_MISMATCH');
+    const firstRef = (await events(fx.subId, 'PREPAID_REFUND'))[0]!.paymentRef!;
+    const reused = await paid(fx.subId, { amount: 3000, method: 'BANK_TRANSFER', reference: firstRef });
+    expect(reused.statusCode, reused.payload).toBe(409);
+    expect(reused.json().error.code).toBe('REFUND_REFERENCE_REUSED');
+    const second = await paid(fx.subId, { amount: 3000, method: 'BANK_TRANSFER', reference: ref('PART2') });
+    expect(second.statusCode, second.payload).toBe(200);
+    expect(second.json().data).toMatchObject({ amount: 3000, refundSetAside: 0 });
+    const parts = await events(fx.subId, 'PREPAID_REFUND');
+    expect(parts.map((e) => Number(e.amount)).sort()).toEqual([3000, 5000]);
+    expect(await subledger('REFUND_PAYABLE', fx.subId)).toBe(0);
+    await booksAgree(fx.subId);
+    const after = await paid(fx.subId, { amount: 1, method: 'CASH', reference: ref('PART3') });
+    expect(after.json().error.code).toBe('NO_REFUND_SET_ASIDE');
+  });
+
   it('a payout is recorded only for what is set aside, and only one set-aside is open at a time', async () => {
     const fx = await storeWithCredit(8000);
     const none = await paid(fx.subId, { amount: 8000, method: 'MMG', reference: ref('EARLY') });
     expect(none.statusCode, none.payload).toBe(409);
     expect(none.json().error.code).toBe('NO_REFUND_SET_ASIDE');
     expect((await setAside(fx.subId, 8000)).statusCode).toBe(200);
-    const wrong = await paid(fx.subId, { amount: 5000, method: 'MMG', reference: ref('WRONG') });
+    const wrong = await paid(fx.subId, { amount: 8000.01, method: 'MMG', reference: ref('WRONG') });
     expect(wrong.statusCode, wrong.payload).toBe(409);
     expect(wrong.json().error.code).toBe('REFUND_AMOUNT_MISMATCH');
     await topUp(fx.subId, 3000);

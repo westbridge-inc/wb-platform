@@ -54,6 +54,7 @@ import { SellerInfo } from './seller-info';
 import { AddPlusGlyph } from '@/components/add-plus';
 import { STORE_PICK } from '@/lib/store-pick';
 import { markTableQrVisit } from '@/lib/table-qr';
+import { readyTimeLabel, storeKindWords } from '@/lib/store-kind-words';
 import type { CartTaps, CartTapsIO } from '@/lib/cart-taps';
 
 export type DisplayItem = MenuItem & {
@@ -185,9 +186,10 @@ function selectedDefaults(groups: OptionGroup[]): Record<string, string[]> {
   );
 }
 
-/** What the person is told when the validator refuses their choices. */
-function choiceProblem(item: DisplayItem, error: unknown): { message: string; groupId: string | null } {
-  if (!(error instanceof OptionSelectionError)) return { message: 'These choices have changed. Close this panel and check the menu again.', groupId: null };
+/** What the person is told when the validator refuses their choices. [STORE-WORDS] `catalogue` is the
+ *  store's own word for its items ("the menu" only for a restaurant). */
+function choiceProblem(item: DisplayItem, error: unknown, catalogue: string): { message: string; groupId: string | null } {
+  if (!(error instanceof OptionSelectionError)) return { message: `These choices have changed. Close this panel and check ${catalogue} again.`, groupId: null };
   const group = (item.optionGroups ?? []).find((candidate) => candidate.name === error.groupName) ?? null;
   if (error.reason === 'OPTION_REQUIRED' && group) {
     if (!group.options.some((option) => option.isAvailable !== false)) return { message: `“${group.name}” is sold out right now.`, groupId: group.id };
@@ -195,7 +197,7 @@ function choiceProblem(item: DisplayItem, error: unknown): { message: string; gr
     return { message: `Choose ${needed === 1 ? 'an option' : `${needed} options`} for ${group.name}.`, groupId: group.id };
   }
   if (error.reason === 'OPTION_UNAVAILABLE' || error.reason === 'OPTION_LIMIT') return { message: `${error.message}.`, groupId: group?.id ?? null };
-  return { message: 'These choices have changed. Close this panel and check the menu again.', groupId: group?.id ?? null };
+  return { message: `These choices have changed. Close this panel and check ${catalogue} again.`, groupId: group?.id ?? null };
 }
 
 /** The menu section the person is reading: the last whose heading has passed the chips. */
@@ -310,6 +312,11 @@ export function StorefrontExperience({ store, returnPath, fromQr = false, initia
     return adoptingServerHtml || Date.now() - liveMenu.at <= LIVE_MENU_MAX_AGE_MS ? liveMenu : null;
   });
   const [catalog, setCatalog] = useState<DisplayVendor>(() => (serverMenu ? liveCatalog(store, serverMenu.vendor) : publicCatalog(store)));
+  // [STORE-WORDS · owner 9 Nov 2026] The page speaks the store's kind: "menu" only for a restaurant.
+  const words = storeKindWords(catalog.vendorType);
+  const catalogueNoun = words.catalogue.replace(/^the /, '');
+  const catalogueTitle = `${catalogueNoun.charAt(0).toUpperCase()}${catalogueNoun.slice(1)}`;
+  const anItem = catalogueNoun === 'menu' ? 'a menu item' : 'an item';
   const [catalogState, setCatalogState] = useState<'loading' | 'ready' | 'unavailable'>(serverMenu ? 'ready' : 'loading');
   const [catalogCheckedAt, setCatalogCheckedAt] = useState<Date | null>(null);
   const [signedIn, setSignedIn] = useState(false);
@@ -742,7 +749,7 @@ export function StorefrontExperience({ store, returnPath, fromQr = false, initia
     }
     if (!catalog.isCurrentlyOpen || !catalog.acceptingOrders || !item?.isAvailable
       || item.fulfillment !== 'DELIVERY' || itemPrice(item) === null) {
-      setError('This item is not available to order right now. Please check the menu.');
+      setError(`This item is not available to order right now. Please check ${storeKindWords(catalog.vendorType).catalogue}.`);
       return;
     }
     // Reopen even items without options: resuming sign-in never silently
@@ -819,7 +826,7 @@ export function StorefrontExperience({ store, returnPath, fromQr = false, initia
     if (cartHydrationPending) { setModalError('Your cart is still loading. Keep this item open and try again.'); return; }
     const liveItem = categoryItems.find((item) => item.id === modalItem.id);
     if (!orderable || !liveItem?.isAvailable || liveItem.fulfillment !== 'DELIVERY' || optionPrice(liveItem, selectedOptions) === null) {
-      setModalError('This item is no longer verified as orderable on the live menu. Close this panel and check the menu again.');
+      setModalError(`This item is no longer verified as orderable on the live ${catalogueNoun}. Close this panel and check ${words.catalogue} again.`);
       return;
     }
     // [W6] Required choices block the Add: the API's own validator (the one
@@ -833,7 +840,7 @@ export function StorefrontExperience({ store, returnPath, fromQr = false, initia
         return [groupId, single && Array.isArray(ids) ? ids[0]! : ids];
       }));
     } catch (choiceError) {
-      const problem = choiceProblem(liveItem, choiceError);
+      const problem = choiceProblem(liveItem, choiceError, words.catalogue);
       setModalError(problem.message);
       if (problem.groupId) {
         window.requestAnimationFrame(() => document.querySelector<HTMLInputElement>(`[data-option-group="${problem.groupId}"] input:not(:disabled)`)?.focus());
@@ -855,7 +862,9 @@ export function StorefrontExperience({ store, returnPath, fromQr = false, initia
     );
   };
 
-  const minutes = catalog.etaMin ? `About ${catalog.etaMin} min` : `${catalog.estimatedPrepTime} min prep`;
+  // [STORE-WORDS · owner 9 Nov 2026] "20 min prep" is a kitchen's word: any other store reads "Ready in about
+  // 20 min", and a store with no time shows no line rather than "null min prep".
+  const minutes = catalog.etaMin ? `About ${catalog.etaMin} min` : readyTimeLabel(catalog.vendorType, catalog.estimatedPrepTime);
   const rating = catalog.displayRating !== null ? `${catalog.displayRating.toFixed(1)} ${catalog.ratingBucket}`.trim() : 'No ratings yet';
   const storeMeta = [catalog.cuisineTypes?.[0], storeLabel, rating].filter(Boolean).join(' · ');
   const modalUnitPrice = modalItem ? optionPrice(modalItem, selectedOptions) : null;
@@ -889,7 +898,7 @@ export function StorefrontExperience({ store, returnPath, fromQr = false, initia
               {catalog.isCurrentlyOpen ? 'Open' : 'Closed'}
             </li>
             {!catalog.acceptingOrders ? <li className={`${styles.fact} ${styles.factPaused}`}>Orders paused</li> : null}
-            <li className={styles.fact}><Clock3 size={14} aria-hidden="true" />{minutes}</li>
+            {minutes ? <li className={styles.fact}><Clock3 size={14} aria-hidden="true" />{minutes}</li> : null}
             {Number(catalog.minOrderAmount ?? 0) > 0 ? (
               <li className={styles.fact}>Minimum {gyMoney(Number(catalog.minOrderAmount))}</li>
             ) : null}
@@ -902,11 +911,11 @@ export function StorefrontExperience({ store, returnPath, fromQr = false, initia
           // Present in the server render. Hiding keeps its space, so neither
           // hydration nor dismissal moves the menu under a visitor's finger.
           <div className={styles.diningNotice} aria-hidden={diningNoticeDismissed ? true : undefined}>
-            <p role="status" aria-live="polite">Dining in? Browse our menu here and place your order with your server.</p>
+            <p role="status" aria-live="polite">{words.qrWelcome}</p>
             <button
               type="button"
               className={styles.diningDismiss}
-              aria-label="Dismiss dining-in message"
+              aria-label={catalog.vendorType === 'RESTAURANT' ? 'Dismiss dining-in message' : 'Dismiss in-store message'}
               onClick={() => {
                 setDismissedDiningStore(store.id);
                 try {
@@ -931,8 +940,8 @@ export function StorefrontExperience({ store, returnPath, fromQr = false, initia
         {catalogState === 'ready' ? (
           <p className={styles.menuFreshness}>
             {catalogCheckedAt
-              ? `Live menu checked at ${catalogCheckedAt.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', second: '2-digit' })}`
-              : 'Live menu checked'}
+              ? `Live ${catalogueNoun} checked at ${catalogCheckedAt.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', second: '2-digit' })}`
+              : `Live ${catalogueNoun} checked`}
           </p>
         ) : null}
 
@@ -942,13 +951,13 @@ export function StorefrontExperience({ store, returnPath, fromQr = false, initia
             role={catalogState === 'unavailable' ? 'alert' : 'status'}
           >
             {catalogState === 'loading'
-              ? 'Checking this live menu’s required choices before ordering…'
-              : 'The live menu is available to browse, but Swift could not verify its required choices. Ordering is paused on this page; no incomplete item will be added.'}
+              ? `Checking this live ${catalogueNoun}’s required choices before ordering…`
+              : `The live ${catalogueNoun} is available to browse, but Swift could not verify its required choices. Ordering is paused on this page; no incomplete item will be added.`}
           </p>
         ) : null}
 
         {sections.length > 0 ? (
-          <nav className={styles.categoryNav} aria-label="Menu sections">
+          <nav className={styles.categoryNav} aria-label={`${catalogueTitle} sections`}>
             {sections.map((category) => (
               <a
                 key={category.id}
@@ -964,10 +973,10 @@ export function StorefrontExperience({ store, returnPath, fromQr = false, initia
         ) : null}
 
         <div className={styles.layout}>
-          <div ref={menu} className={styles.menu} role="region" aria-label="Menu" tabIndex={-1}>
+          <div ref={menu} className={styles.menu} role="region" aria-label={catalogueTitle} tabIndex={-1}>
             {catalog.categories.length === 0 || categoryItems.length === 0 ? (
               <p className={styles.emptyMenu}>
-                This store has no orderable menu items right now. Check again later.
+                {catalogueNoun === 'menu' ? 'This store has no orderable menu items right now. Check again later.' : 'This store has no orderable items right now. Check again later.'}
               </p>
             ) : null}
             {sections.map((category, index) => (
@@ -1042,7 +1051,7 @@ export function StorefrontExperience({ store, returnPath, fromQr = false, initia
                                   disabled={cartHydrationPending || !bookable || !priced}
                                   aria-label={bookable ? `Book ${item.name}` : !catalog.acceptingOrders
                                     ? `${item.name} can’t be booked while the store has paused orders`
-                                    : `${item.name} can’t be booked until the live menu is checked`}
+                                    : `${item.name} can’t be booked until the live ${catalogueNoun} is checked`}
                                 >
                                   Book
                                 </button>
@@ -1088,7 +1097,7 @@ export function StorefrontExperience({ store, returnPath, fromQr = false, initia
                                 aria-label={!fulfillmentVerified
                                   ? `${item.name} unavailable because fulfilment could not be verified`
                                   : storeAcceptsOrders && !catalogVerified
-                                  ? `${item.name} unavailable until menu choices are verified`
+                                  ? `${item.name} unavailable until ${catalogueNoun} choices are verified`
                                   : orderable
                                     ? quantity > 0 ? `Add another ${item.name}` : `Add ${item.name}`
                                     : !catalog.isCurrentlyOpen
@@ -1124,7 +1133,7 @@ export function StorefrontExperience({ store, returnPath, fromQr = false, initia
                 <p className={styles.emptyRail} role="status" aria-busy="true">Checking your basket…</p>
               ) : cartItems.length === 0 ? (
                 <p className={styles.emptyRail}>
-                  {signedIn ? 'Add a menu item to start your order.' : 'Add a menu item to start your order. No account needed to fill your basket.'}
+                  {signedIn ? `Add ${anItem} to start your order.` : `Add ${anItem} to start your order. No account needed to fill your basket.`}
                 </p>
               ) : (
                 <>

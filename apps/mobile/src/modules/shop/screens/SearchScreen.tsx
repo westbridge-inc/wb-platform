@@ -28,6 +28,7 @@ import {
 } from '../../../kit';
 import { touchTarget } from '../../../kit/touch-target';
 import { brandLine, brandTitle, type BrandCard } from '../../../lib/brandCard';
+import { searchItemsHeading } from '../../../lib/storeKindWords';
 import { useVendorPrefetch } from '../../../hooks/storeDoor';
 import { itemPreviewOf, storePreviewOf } from '../../../lib/doorPreview';
 import { engineSearchRows, searchRowKey } from '../../../lib/searchRows';
@@ -541,7 +542,7 @@ export function SearchScreen() {
                   if (row.kind === 'dishes') {
                     return (
                       <View style={{ marginBottom: space.sm }}>
-                        <SectionHeader title="Dishes" style={{ marginTop: results.length ? space['2xl'] : 0 }} />
+                        <SectionHeader title={searchItemsHeading(type)} style={{ marginTop: results.length ? space['2xl'] : 0 }} />
                       </View>
                     );
                   }

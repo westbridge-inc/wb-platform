@@ -100,6 +100,7 @@ export const MONEY_COLUMNS: readonly MoneyColumn[] = [
   // [MMG REVERSAL] A returned payment: always the whole checkout amount.
   { model: 'MmgFeeReversal', field: 'amount', unit: 'MAJOR_WHOLE' },
   { model: 'FeeRefundCase', field: 'amount', unit: 'MAJOR_WHOLE' },
+  { model: 'CardCreditRefund', field: 'amount', unit: 'MAJOR_WHOLE' },
   { model: 'Option', field: 'additionalPrice', unit: 'MAJOR_WHOLE' },
   { model: 'Option', field: 'vatListedAdditionalPrice', unit: 'MAJOR_WHOLE' },
   { model: 'Order', field: 'deliveryFee', unit: 'MAJOR_WHOLE' },
