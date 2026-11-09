@@ -414,6 +414,17 @@ const PUBLISHED: Record<
     driver_agreement: 'f5ae81359f8d2d0cb0df17b9e18e68ca37cfc12682ed8630d29d81ff932aa7a6',
     vendor_agreement: '340314a81c7db7f8ce31971a314cd563d528e8d7f125bc0001e6536930c25ac7',
   },
+  // [2026-11-09.1 · OWNER-ASKS · owner ruling 9 Nov 2026 "pickup orders can be unlimited, only delivery has the cap" ·
+  // NON-material · DRAFT until a Guyana attorney reads it] Terms section 5 names what the hourly order limit counts and
+  // says pickup orders have none. Checked mechanically before pinning: putting the old sentence ("You can place at most 6
+  // store orders and parcels in an hour; ... share a limit.") back in place of the new two reproduces the 2026-11-09
+  // Terms pin above exactly; the Privacy Policy and both agreements are byte-identical to 2026-11-09 (same day).
+  '2026-11-09.1': {
+    terms: '0a201339c92a5131bc69ad38d790d19a8b58b7b52009ea6885cba82139645d22',
+    privacy: '9d2ed0d73463a0d7264d8f0d66f603c2a5524174d5c4af3a67e495996deaade5',
+    driver_agreement: 'f5ae81359f8d2d0cb0df17b9e18e68ca37cfc12682ed8630d29d81ff932aa7a6',
+    vendor_agreement: '340314a81c7db7f8ce31971a314cd563d528e8d7f125bc0001e6536930c25ac7',
+  },
 };
 
 describe('legal version binding [F-035-08]', () => {

@@ -337,7 +337,7 @@ describe('GET/POST /auth/legal-acceptance', () => {
     // [LEGAL-CALLS · owner 9 Nov 2026] served now under 2026-11-09 (in-app calls in the Privacy Policy: material for
     // everyone), so every customer below it also gets its summary, last; a customer at 2026-11-08 gets it alone.
     const v1109 = MATERIAL_CHANGES.find((c) => c.version === '2026-11-09')!.summary;
-    expect(LEGAL_VERSION).toBe('2026-11-09');
+    expect(LEGAL_VERSION).toBe('2026-11-09.1');
     expect(materialVersion('2026-11-04')).toBe('2026-10-28.1');
     expect(materialVersion('2026-11-06')).toBe('2026-11-05');
     expect(materialVersion('2026-11-08')).toBe('2026-11-08');
