@@ -1,7 +1,6 @@
 import type { PrismaClient } from '@prisma/client';
 import { applySeedPlan, buildSeedPlan, type ApplyOptions, type ApplyResult, type DesiredConfig, type RequestContext, type SeedPlan } from './seed-plan';
 import { isProduction } from '../../utils/runtime-mode';
-import { DEFAULT_DELIVERY_RATES } from '../../utils/markup';
 import { DEFAULT_TAXI_RATES } from '../country/pricing-config';
 import { GUYANA_RIDER_CASH_LIMIT } from '../dispatch/cash-limit';
 
@@ -455,6 +454,9 @@ export function desiredPlatformConfig(): DesiredConfig {
       // [owner 7 Nov 2026 ~01:55Z] A store has 10 minutes (was 5) to accept a new order before it cancels by itself
       // (order/response-sla.ts reads it; the store's alert and text state the moment from the order's own clock).
       { key: 'order_auto_reject_minutes', value: 10 },
+      // Not a price: nothing reads this key (admin-config-truth.test.ts allows it only as the admin-audit test's write
+      // fixture). The delivery fee is CountryConfig.deliveryRates, else DEFAULT_DELIVERY_RATES (utils/markup.ts; owner
+      // 8 Nov 2026: 800 for the first 3 km, then 175/km). Left as signed so this seed's digest does not move.
       { key: 'delivery_base_fee', value: 500 },
       // Owner ruling, 13 Oct: the Market tab ALWAYS shows at launch. The tab's
       // depth gate (market/launch-depth.ts) reads these two; 0 is the explicit
@@ -477,11 +479,15 @@ export function desiredPlatformConfig(): DesiredConfig {
           name: 'Georgetown Central',
           description: 'Central Georgetown delivery zone',
           boundary: { type: 'Polygon', coordinates: [[[-58.18, 6.78], [-58.13, 6.78], [-58.13, 6.83], [-58.18, 6.83], [-58.18, 6.78]]] },
-          // No price reads these two zone columns (delivery prices from
-          // CountryConfig.deliveryRates, else DEFAULT_DELIVERY_RATES); a fresh
-          // zone still shows the same schedule, read from that one place.
-          deliveryBaseFee: DEFAULT_DELIVERY_RATES.baseFee,
-          deliveryPerKm: DEFAULT_DELIVERY_RATES.perKmRate,
+          // No price reads these two zone columns: delivery prices from
+          // CountryConfig.deliveryRates, else DEFAULT_DELIVERY_RATES (utils/
+          // markup.ts), and no screen shows them. [Owner 8 Nov 2026: delivery
+          // 800 + 175/km] They stay the values production's zone was created
+          // with (zones are create-if-missing, so a seed never rewrites them):
+          // a delivery price change then leaves this seed's data, its digest
+          // and its version (PLATFORM_CONFIG_VERSION) exactly as signed.
+          deliveryBaseFee: 500,
+          deliveryPerKm: 100,
         },
       },
       {

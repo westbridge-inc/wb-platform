@@ -13,6 +13,7 @@ import { assertQrConfig, scanRawRetentionDays } from '../modules/qr/qr-config';
 import { identitySalt } from '../modules/integrity/normalize';
 import { smtpConfigFromEnv } from '../providers/notifications/smtp-email';
 import { resendConfigFromEnv } from '../providers/notifications/resend-email';
+import { assertExpoAccessTokenConfig } from '../providers/notifications/expo-access-token';
 import { assertDurableStorageConfig } from '../providers/storage/storage-config';
 
 /**
@@ -207,6 +208,9 @@ export function assertSafeBootConfig(env: Record<string, string | undefined> = p
   assertCallRelayConfig(env);
   // [INAPP-CALLS] INAPP_CALLS=1 needs the TwiML App, both push credentials, the identity key and the Twilio account.
   assertInAppCallsConfig(env);
+  // [EXPO-PUSH-AUTH] The Expo access token is optional (unset = no header, as
+  // before), but a set one must be usable, in every mode.
+  assertExpoAccessTokenConfig(env);
   // Validate the documented retention setting in every mode. Production
   // salts are checked below after the existing configuration guards.
   scanRawRetentionDays(env);

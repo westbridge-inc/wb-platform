@@ -121,7 +121,7 @@ describe('the law (pure, property-style over every boundary and every partial)',
   });
   it('a valid partial merges over the defaults and the WHOLE payload is the answer; an unknown key is refused; one bad field poisons the whole', () => {
     expect(validatePricingConfig('TAXI_RATES', { base: 2000 })).toMatchObject({ status: 'VALID', payload: { base: 2000, perKm: 175, perMin: 0, minimum: 800 } });
-    expect(validatePricingConfig('DELIVERY_RATES', { includedKm: 0 })).toMatchObject({ status: 'VALID', payload: { baseFee: 500, perKmRate: 100, includedKm: 0, surgeMultiplier: 1 } });
+    expect(validatePricingConfig('DELIVERY_RATES', { includedKm: 0 })).toMatchObject({ status: 'VALID', payload: { baseFee: 800, perKmRate: 175, includedKm: 0, surgeMultiplier: 1 } }); // the defaults: 800 / 175 [owner 8 Nov 2026]
     expect(validatePricingConfig('COURIER_RATES', { sizeSurcharge: { LARGE: 1500 } }).payload).toMatchObject({ sizeSurcharge: { SMALL: 0, MEDIUM: 500, LARGE: 1500, EXTRA_LARGE: 2000 } });
     expect(validatePricingConfig('TAXI_RATES', { base: 2000, perKmRate: 300 }).status).toBe('INVALID'); // a typo'd key can no longer silently do nothing
     expect(validatePricingConfig('TAXI_RATES', { base: 2000, perKm: -1 }).status).toBe('INVALID');    // never "keep the valid parts"

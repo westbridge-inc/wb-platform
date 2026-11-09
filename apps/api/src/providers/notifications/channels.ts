@@ -14,7 +14,9 @@ import { sealReviewChannels } from './review-seal';
 import { guardNonProductionSms } from './sms-recipient-allowlist';
 import { SMS_REF_HANDOFF_SUPPRESSED } from './sms-outcome';
 import { expoErrorClass, httpFailureReason, recordPushFailure, recordPushFailureClasses } from './push-outcome';
+import { DEFAULT_EXPO_PUSH_URL, assertExpoPushUrlCarriesToken, expoAccessToken, withoutToken } from './expo-access-token';
 import { gsm7Sms } from '../../utils/sms-text';
+import { log } from '../../utils/logger';
 
 export type NotificationHandoff = <T>(part: string, effect: () => Promise<T>) => Promise<T | undefined>;
 export interface SmsOptions { handoff?: NotificationHandoff }
@@ -311,18 +313,23 @@ function expoMessage(
 
 /**
  * Expo Push adapter — one API for both stores (Expo relays to APNs/FCM using
- * the push credentials attached to the EAS build; the server itself needs NO
- * key). Dependency-free like the Twilio adapter: chunked POSTs to exp.host
- * with global fetch. Tokens Expo reports as DeviceNotRegistered come back as
- * `invalidTokens` for deactivation.
+ * the push credentials attached to the EAS build). Dependency-free like the
+ * Twilio adapter: chunked POSTs to exp.host with global fetch. Tokens Expo
+ * reports as DeviceNotRegistered come back as `invalidTokens` for deactivation.
+ * [EXPO-PUSH-AUTH] With EXPO_ACCESS_TOKEN set (a secret file) every send and
+ * receipts call carries it as a bearer token, so Expo's enhanced push security
+ * can be on; unset, no Authorization header goes, as before.
  */
 export class ExpoPushProvider implements PushProvider {
   readonly supportsHandoff = true;
   private static CHUNK = 100; // Expo's documented max messages per request
   private static RECEIPT_CHUNK = 1000; // Expo's documented max ids per receipt request
-  private url = process.env['EXPO_PUSH_URL'] ?? 'https://exp.host/--/api/v2/push/send';
+  private url = process.env['EXPO_PUSH_URL'] ?? DEFAULT_EXPO_PUSH_URL;
   // The receipts endpoint sits beside the send endpoint (same host, same API).
   private receiptsUrl = /\/send$/.test(this.url) ? this.url.replace(/\/send$/, '/getReceipts') : 'https://exp.host/--/api/v2/push/getReceipts';
+  /** [EXPO-PUSH-AUTH] A true private field: never in a JSON dump or an
+   *  inspect of the adapter. Null = no Authorization header. */
+  readonly #accessToken: string | null = expoAccessToken();
   /** [STORE-ALERT] How long after a send its receipts are read (null = never).
    *  Receipts carry the failures APNs/FCM report after Expo accepted the
    *  message — InvalidCredentials (the store's push key), DeviceNotRegistered —
@@ -333,6 +340,9 @@ export class ExpoPushProvider implements PushProvider {
 
   constructor(options: { receiptCheckDelayMs?: number | null } = {}) {
     this.receiptCheckDelayMs = options.receiptCheckDelayMs ?? null;
+    // [EXPO-PUSH-AUTH] The token only ever travels over https (the receipts
+    // URL sits on the same host and scheme as this one).
+    assertExpoPushUrlCarriesToken(this.url, this.#accessToken);
   }
 
   async sendPush(deviceTokens: string[], title: string, body: string, data?: Record<string, unknown>, options: PushOptions = STANDARD_PUSH): Promise<{ sent: number; invalidTokens?: string[] }> {
@@ -378,19 +388,19 @@ export class ExpoPushProvider implements PushProvider {
             try {
               res = await fetch(this.url, {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+                headers: this.headers(),
                 body: JSON.stringify(chunk.map((to) => expoMessage(to, title, body, data, options, window))),
                 signal: controller.signal,
               });
             } catch (error) {
               // An abort is the deadline above, already recorded as a timeout.
               if (!controller.signal.aborted) recordPushFailure('request', 'network', chunk.length, { kind });
-              throw new Error(`Expo push request failed: ${(error as Error).message}`);
+              throw new Error(withoutToken(`Expo push request failed: ${(error as Error).message}`, this.#accessToken));
             }
             if (!res.ok) {
               recordPushFailure('request', httpFailureReason(res.status), chunk.length, { kind });
               const detail = await res.text().catch(() => '');
-              throw new Error(`Expo push failed (${res.status}): ${detail.slice(0, 200)}`);
+              throw new Error(`Expo push failed (${res.status}): ${withoutToken(detail, this.#accessToken).slice(0, 200)}`);
             }
             // Tickets come back in message order — index maps ticket -> token.
             return await res.json() as Tickets;
@@ -433,9 +443,14 @@ export class ExpoPushProvider implements PushProvider {
   /** [STORE-ALERT] Read the receipts of accepted tickets and record every
    *  failure by its class (InvalidCredentials = the app's push credentials,
    *  DeviceNotRegistered = an uninstalled app, ...). Ids Expo does not know
-   *  yet are skipped. Never throws; returns the classes it saw, for tests. */
-  async checkReceipts(ids: string[], context: { kind?: unknown } = {}): Promise<{ ok: number; failed: string[] }> {
+   *  yet are skipped. Never throws; returns the classes it saw, for tests.
+   *  [STORE-ALERT-RECONNECT] One `push_receipts` line per check says how many
+   *  were delivered to Apple/Google (ok), not ready yet, failed or unread, by
+   *  push kind: counts only, never a token, a person or the message. */
+  async checkReceipts(ids: string[], context: { kind?: unknown } = {}): Promise<{ ok: number; notReady: number; failed: string[] }> {
     let ok = 0;
+    let notReady = 0;
+    let unread = 0;
     const failed: string[] = [];
     for (let i = 0; i < ids.length; i += ExpoPushProvider.RECEIPT_CHUNK) {
       const chunk = ids.slice(i, i + ExpoPushProvider.RECEIPT_CHUNK);
@@ -445,12 +460,13 @@ export class ExpoPushProvider implements PushProvider {
       try {
         const res = await fetch(this.receiptsUrl, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+          headers: this.headers(),
           body: JSON.stringify({ ids: chunk }),
           signal: controller.signal,
         });
         if (!res.ok) {
           recordPushFailure('receipt', httpFailureReason(res.status), chunk.length, context);
+          unread += chunk.length;
           continue;
         }
         const body = await res.json() as { data?: Record<string, { status?: string; details?: { error?: string } } | undefined> };
@@ -458,7 +474,7 @@ export class ExpoPushProvider implements PushProvider {
         const errors: unknown[] = [];
         for (const id of chunk) {
           const receipt = receipts[id];
-          if (!receipt) continue; // not ready yet
+          if (!receipt) { notReady += 1; continue; } // not ready yet
           if (receipt.status === 'ok') ok += 1;
           else errors.push(receipt.details?.error);
         }
@@ -466,11 +482,26 @@ export class ExpoPushProvider implements PushProvider {
         failed.push(...errors.map(expoErrorClass));
       } catch {
         recordPushFailure('receipt', controller.signal.aborted ? 'timeout' : 'network', chunk.length, context);
+        unread += chunk.length;
       } finally {
         clearTimeout(timer);
       }
     }
-    return { ok, failed };
+    const kind = typeof context.kind === 'string' ? context.kind.slice(0, 64) : undefined;
+    log().info(
+      { event: 'push_receipts', ...(kind ? { kind } : {}), ok, notReady, failed: failed.length, unread },
+      'push receipts read',
+    );
+    return { ok, notReady, failed };
+  }
+
+  /** The headers of every call to Expo: the bearer token only when one is set. */
+  private headers(): Record<string, string> {
+    return {
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+      ...(this.#accessToken ? { Authorization: `Bearer ${this.#accessToken}` } : {}),
+    };
   }
 }
 

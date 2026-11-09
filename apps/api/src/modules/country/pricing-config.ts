@@ -53,6 +53,10 @@ export const DEFAULT_CLASS_RATES: ClassRates = { ECONOMY: 1.0, COMFORT: 1.35, XL
 /** Whole local-currency units (GYD today) — never fractional, never negative. */
 const money = z.number().int().min(0).max(PRICING_MONEY_MAX);
 const multiplier = z.number().finite().min(0.5).max(10);
+/** [DELIVERY-ROUND N1] The delivery surge is priced in exact millionths
+ *  (utils/markup.ts calculateDeliveryFee), so it may carry at most 6 decimals:
+ *  1.25 or 1.234567, never 4/3. */
+const deliverySurge = multiplier.refine((m) => Number(m.toFixed(6)) === m, { message: 'at most 6 decimal places' });
 const km = z.number().finite().min(0).max(10_000);
 /** [TAXI waiting charge] A waiting block: whole minutes, at least one, at most a day. */
 const blockMinutes = z.number().int().min(1).max(1440);
@@ -65,7 +69,7 @@ const SCHEMAS: Record<PricingKind, z.ZodTypeAny> = {
     waitingChargePerBlock: money.optional(), waitingBlockMinutes: blockMinutes.optional(),
   }).strict(),
   TAXI_CLASS_RATES: z.object({ ECONOMY: z.literal(1), COMFORT: multiplier, XL: multiplier, GROUP: multiplier }).strict(),
-  DELIVERY_RATES: z.object({ baseFee: money, perKmRate: money, includedKm: km, surgeMultiplier: multiplier }).strict(),
+  DELIVERY_RATES: z.object({ baseFee: money, perKmRate: money, includedKm: km, surgeMultiplier: deliverySurge }).strict(),
   COURIER_RATES: z.object({
     baseFee: money,
     perKmRate: money,

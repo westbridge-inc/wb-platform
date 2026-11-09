@@ -16,12 +16,13 @@ import { pricingConfigCounter } from '../plugins/observability';
 import type { LatLng, MapsProvider, RouteEstimate, RouteLeg, RouteLegsEstimate } from '../providers/maps/maps-provider';
 
 // ---------------------------------------------------------------------------
-// [PRICING-GY-OCT] The owner's Georgetown fares (1 Oct 2026) are the code
-// defaults, and a fresh database starts on them.
+// [PRICING-GY-OCT] The owner's Georgetown fares (1 Oct 2026; delivery 8 Nov
+// 2026) are the code defaults, and a fresh database starts on them.
 //
 //   Taxi (Guyana): 800 covers the first 3 km, then 175 a km. No per-minute
 //     charge, and no minimum above the base. Class multipliers unchanged.
-//   Delivery: 500 covers the first 3 km, then 100 a km. No surge.
+//   Delivery [owner 8 Nov 2026, priced like a taxi]: 800 covers the first
+//     3 km, then 175 a km (was 500, then 100). No surge.
 //   Courier: 800 + 120 a km. Size surcharges and speed multipliers unchanged.
 //
 // The worked examples are the owner's, through the code's own rounding: a taxi
@@ -112,8 +113,12 @@ describe('the owner’s Georgetown fares are the declared defaults', () => {
     expect(DEFAULT_CLASS_RATES).toEqual({ ECONOMY: 1, COMFORT: 1.35, XL: 1.8, GROUP: 2.5 });
   });
 
-  it('delivery: 500 covers the first 3 km, then 100 a km; no surge', () => {
-    expect(DEFAULT_DELIVERY_RATES).toEqual({ baseFee: 500, perKmRate: 100, includedKm: 3, surgeMultiplier: 1 });
+  it('delivery: 800 covers the first 3 km, then 175 a km, like a taxi; no surge [owner 8 Nov 2026]', () => {
+    expect(DEFAULT_DELIVERY_RATES).toEqual({ baseFee: 800, perKmRate: 175, includedKm: 3, surgeMultiplier: 1 });
+    // The taxi's own schedule, number for number (the taxi alone rounds its fare to the nearest 100).
+    expect([DEFAULT_DELIVERY_RATES.baseFee, DEFAULT_DELIVERY_RATES.includedKm, DEFAULT_DELIVERY_RATES.perKmRate])
+      .toEqual([DEFAULT_TAXI_RATES.base, DEFAULT_TAXI_RATES.includedKm, DEFAULT_TAXI_RATES.perKm]);
+    expect(calculateDeliveryFee(5)).toBe(1150); // 800 + 2 × 175
   });
 
   it('courier: 800 + 120 a km; the size surcharges and speed multipliers are unchanged', () => {
@@ -140,9 +145,13 @@ describe('a fresh database starts on them: the seed spine', () => {
     expect(PLATFORM_CONFIG_VERSION).not.toBe('2026-09-29.1');
   });
 
-  it('Georgetown Central is created with the delivery default (no price reads these two zone columns)', () => {
+  it('Georgetown Central is created with the signed 500 / 100 (no price reads these two zone columns), so a delivery price change never moves the seed [owner 8 Nov 2026]', () => {
+    // Zones are create-if-missing and nothing reads these columns: delivery prices from CountryConfig.deliveryRates,
+    // else DEFAULT_DELIVERY_RATES. Kept at the values production's zone was created with, the delivery price lives in
+    // code alone, and the owner-signed seed (data, digest and PLATFORM_CONFIG_VERSION) stays exactly as signed.
     const central = SPINE.zones.find((z) => z.id === 'georgetown-central')!.create;
-    expect([central['deliveryBaseFee'], central['deliveryPerKm']]).toEqual([DEFAULT_DELIVERY_RATES.baseFee, DEFAULT_DELIVERY_RATES.perKmRate]);
+    expect([central['deliveryBaseFee'], central['deliveryPerKm']]).toEqual([500, 100]);
+    expect(SPINE.platformConfig.find((c) => c.key === 'delivery_base_fee')?.value).toBe(500);
   });
 
   it('re-pricing Guyana re-prices Guyana alone: the inactive USD-pegged markets keep their taxi rates', () => {
@@ -235,7 +244,8 @@ describe('TAXI_RATES.includedKm: a distance, validated; a config that does not n
 });
 
 describe('delivery: the owner’s worked examples, through the cart planner', () => {
-  it.each([[2, 500], [3, 500], [5, 700], [8, 1000], [10, 1200]])('%s km → %s', async (km, fee) => {
+  // [owner 8 Nov 2026] 800 for the first 3 km, then 175 a km: 5 km = 800 + 2 × 175 = 1,150.
+  it.each([[2, 800], [3, 800], [5, 1150], [8, 1675], [10, 2025]])('%s km → %s', async (km, fee) => {
     const plan = await planVendorGroup({
       vendor: { id: 'v-gy', name: 'Georgetown Kitchen', latitude: PICKUP.lat, longitude: PICKUP.lng, minOrderAmount: 0 },
       lines: [],

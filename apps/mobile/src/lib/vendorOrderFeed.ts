@@ -54,7 +54,9 @@ export function bindVendorOrderFeed(
   // the reconnect after a drop catches up on what the room said while it was down.
   let dropped = false;
   const onDrop = () => { dropped = true; refreshOverview(); };
-  const onBack = () => { if (!dropped) return; dropped = false; refreshOverview(); };
+  // [STORE-ALERT-RECONNECT] ...and re-reads the board: an order:new sent while the room was down
+  // is never replayed, so the board's own read raises the new-order screen for it.
+  const onBack = () => { if (!dropped) return; dropped = false; refreshOverview(); refresh(); };
   join();
   socket.on('connect', join);
   socket.on('connect', onBack);

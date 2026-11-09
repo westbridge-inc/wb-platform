@@ -11,6 +11,9 @@ import { site, launch } from '@/site.config';
  *    distance, from the country's delivery-fee schedule (utils/markup.ts). The
  *    live figures can come from configuration; the cart shows the exact fee
  *    before checkout;
+ *  - [owner 8 Nov 2026] the schedule is priced like a taxi: GYD 800 for the
+ *    first 3 km, then GYD 175 per km (utils/markup.ts DEFAULT_DELIVERY_RATES;
+ *    apps/api delivery-price-800.unit.test.ts holds this page to it);
  *  - [owner 1 Nov 2026] express adds a flat amount to each delivered store's
  *    fee, whatever the distance (utils/markup.ts EXPRESS_DELIVERY_SURCHARGE;
  *    apps/api express-flat-surcharge.unit.test.ts holds this page to it);
@@ -21,7 +24,7 @@ import { site, launch } from '@/site.config';
  * countries Swift serves is data, not code). Approved by the owner, 1 Oct 2026.
  */
 
-const UPDATED = '5 November 2026';
+const UPDATED = '8 November 2026';
 
 export const metadata = policyMetadata(
   'Delivery policy',
@@ -58,7 +61,7 @@ export default function DeliveryPage() {
       <h2>What delivery costs</h2>
       <ul>
         <li>
-          The delivery fee depends on distance: GYD 500 for the first 3 km, then GYD 100 per km; express adds GYD 1,000
+          The delivery fee depends on distance: GYD 800 for the first 3 km, then GYD 175 per km; express adds GYD 1,000
           to the standard fee, whatever the distance. You see the exact fee in your cart and at checkout, before you
           place the order.
         </li>

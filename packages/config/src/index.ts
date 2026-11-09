@@ -4,8 +4,9 @@
 export const PLATFORM_DEFAULTS = {
   markupPercentage: 5,
   delivery: {
-    baseFee: 500,
-    perKmRate: 100,
+    // [owner 8 Nov 2026] priced like a taxi: 800 for the first 3 km, then 175 a km (was 500, then 100).
+    baseFee: 800,
+    perKmRate: 175,
     includedKm: 3,
   },
   courier: {

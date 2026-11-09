@@ -25,8 +25,8 @@ describe('deliveryFeeFromRates default-preservation (characterization)', () => {
     }
   });
 
-  it('the code defaults are the owner’s Georgetown schedule (500 / 100 / 3 / 1.0), which the function defaults read', () => {
-    expect(DEFAULT_DELIVERY_RATES).toEqual({ baseFee: 500, perKmRate: 100, includedKm: 3, surgeMultiplier: 1.0 });
+  it('the code defaults are the owner’s Georgetown schedule (800 / 175 / 3 / 1.0, owner 8 Nov 2026), which the function defaults read', () => {
+    expect(DEFAULT_DELIVERY_RATES).toEqual({ baseFee: 800, perKmRate: 175, includedKm: 3, surgeMultiplier: 1.0 });
   });
 });
 

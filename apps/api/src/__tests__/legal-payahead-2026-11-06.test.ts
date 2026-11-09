@@ -14,6 +14,9 @@ const ROOT = resolve(__dirname, '../../../..');
 const REFUNDS = readFileSync(resolve(ROOT, 'apps/web/src/app/legal/refunds/page.tsx'), 'utf8').replace(/\s+/g, ' ');
 const feeParagraph = (doc: string) => /<p>You pay Swift a flat weekly subscription[\s\S]*?<\/p>/.exec(doc)?.[0] ?? '';
 const SUMMARY = MATERIAL_CHANGES.find((c) => c.version === '2026-11-06')!;
+/** [DELIVERY-800] The version this classification was made under: 2026-11-08 (the delivery price, material for
+ *  everyone) is served on top, so the who-is-asked answers below are read as served at 2026-11-06. */
+const SERVED = '2026-11-06';
 
 describe('[owner 6 Nov] the four weeks in the words are the four weeks in the code', () => {
   it('the limit is four weeks, one constant', () => {
@@ -45,18 +48,19 @@ describe('[owner 6 Nov] the four weeks in the words are the four weeks in the co
 
 describe('classification: material for partners, and only partners are asked', () => {
   it('2026-11-06 is served, material once, for partners only; the version everyone answers to stays 2026-11-05', () => {
-    expect(LEGAL_VERSION).toBe('2026-11-06');
+    expect(LEGAL_VERSION).toBe('2026-11-08'); // [DELIVERY-800] served now under 2026-11-08 (material for everyone)
     expect(MATERIAL_CHANGES.filter((c) => c.version === '2026-11-06')).toHaveLength(1);
     expect(SUMMARY.audience).toBe('partner');
     expect(NON_MATERIAL_CHANGES.map((c) => c.version)).not.toContain('2026-11-06');
-    expect(materialVersion(LEGAL_VERSION)).toBe('2026-11-05');
+    expect(materialVersion(SERVED)).toBe('2026-11-05');
+    expect(partnerMaterialVersion(SERVED)).toBe('2026-11-06');
     expect(partnerMaterialVersion(LEGAL_VERSION)).toBe('2026-11-06');
     expect(partnerMaterialVersion('2026-11-05')).toBeNull();
   });
 
   it('a customer at 2026-11-05 is not asked; a customer further back sees no partner lines', () => {
-    expect(acceptanceStatus({ tosVersion: '2026-11-05', roles: ['CUSTOMER'] as UserRole[] })).toMatchObject({ needsAcceptance: false, summary: [] });
-    const behind = acceptanceStatus({ tosVersion: '2026-11-04', roles: ['CUSTOMER'] as UserRole[] });
+    expect(acceptanceStatus({ tosVersion: '2026-11-05', roles: ['CUSTOMER'] as UserRole[] }, SERVED)).toMatchObject({ needsAcceptance: false, summary: [] });
+    const behind = acceptanceStatus({ tosVersion: '2026-11-04', roles: ['CUSTOMER'] as UserRole[] }, SERVED);
     expect(behind.needsAcceptance).toBe(true);
     expect(behind.summary).toEqual(MATERIAL_CHANGES.find((c) => c.version === '2026-11-05')!.summary);
   });
@@ -64,16 +68,16 @@ describe('classification: material for partners, and only partners are asked', (
   it.each([
     ['a rider', ['MOVER', 'CUSTOMER']], ['a legacy driver', ['DRIVER']], ['a store owner', ['VENDOR_OWNER', 'CUSTOMER']],
   ] as const)('%s at 2026-11-05 is asked, with the four-week summary; at 2026-11-06 is not', (_who, roles) => {
-    const at1105 = acceptanceStatus({ tosVersion: '2026-11-05', roles: [...roles] as UserRole[] });
+    const at1105 = acceptanceStatus({ tosVersion: '2026-11-05', roles: [...roles] as UserRole[] }, SERVED);
     expect(at1105).toMatchObject({ needsAcceptance: true, summary: SUMMARY.summary });
-    expect(acceptanceStatus({ tosVersion: '2026-11-06', roles: [...roles] as UserRole[] })).toMatchObject({ needsAcceptance: false, summary: [] });
+    expect(acceptanceStatus({ tosVersion: '2026-11-06', roles: [...roles] as UserRole[] }, SERVED)).toMatchObject({ needsAcceptance: false, summary: [] });
     // Further back: every material change since, the partner's own included, oldest first.
-    const at1104 = acceptanceStatus({ tosVersion: '2026-11-04', roles: [...roles] as UserRole[] });
+    const at1104 = acceptanceStatus({ tosVersion: '2026-11-04', roles: [...roles] as UserRole[] }, SERVED);
     expect(at1104.summary).toEqual([...MATERIAL_CHANGES.find((c) => c.version === '2026-11-05')!.summary, ...SUMMARY.summary]);
   });
 
   it('a pro (a provider profile, no partner role) is asked too', () => {
-    const pro = acceptanceStatus({ tosVersion: '2026-11-05', roles: ['CUSTOMER'] as UserRole[], pro: { acceptedVersion: '2026-11-05' } });
+    const pro = acceptanceStatus({ tosVersion: '2026-11-05', roles: ['CUSTOMER'] as UserRole[], pro: { acceptedVersion: '2026-11-05' } }, SERVED);
     expect(pro).toMatchObject({ needsAcceptance: true, summary: SUMMARY.summary });
   });
 

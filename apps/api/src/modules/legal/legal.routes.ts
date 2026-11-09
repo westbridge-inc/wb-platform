@@ -205,8 +205,15 @@ import { OPERATOR, OPERATOR_ADDRESS } from './operator';
 // and the difference counts toward later fees (applyCardPriceCuts moves the rate; credit is charged at the rate of the
 // week it pays). The closing refund of unstarted weeks is unchanged and holds for up to four weeks (partner-wind-down
 // FEE_CREDIT counts the whole credit). Terms, Privacy and Child Safety change only by their date.
-export const LEGAL_VERSION = '2026-11-06';
-const LAST_UPDATED = '6 November 2026'; // human form of LEGAL_VERSION
+// [2026-11-08 · DELIVERY-800 · owner ruling 8 Nov 2026 · MATERIAL: a price rise after launch, so a fresh tick with the
+// in-app notice (GUARDRAILS standing rule 1; reaccept.ts MATERIAL_CHANGES) · DRAFT until a Guyana attorney reads it] A
+// store or food delivery is priced like a taxi: GYD 800 for the first 3 km, then GYD 175 per km (it was GYD 500, then
+// GYD 100 per km; utils/markup.ts DEFAULT_DELIVERY_RATES), and the website's Delivery policy says so
+// (apps/web/src/app/legal/delivery/page.tsx). Express (+GYD 1,000 per store), parcels and taxi fares are unchanged.
+// None of the texts served here states the delivery schedule, so each changes only by its "Last updated" date (a new
+// day: LAST_UPDATED moves), as at 2026-11-01.
+export const LEGAL_VERSION = '2026-11-08';
+const LAST_UPDATED = '8 November 2026'; // human form of LEGAL_VERSION
 
 function page(title: string, body: string): string {
   return `<!doctype html>

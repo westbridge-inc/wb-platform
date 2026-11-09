@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => {
   };
   const socket = {
     connected: false,
+    on: vi.fn(),
     connect: vi.fn(() => {
       socket.connected = true;
     }),

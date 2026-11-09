@@ -42,10 +42,11 @@ const FIXTURE = 'gold2-orders-fixture';
 const DAY = 24 * 60 * 60 * 1000;
 // The delivery fee of each vendor's leg to the customer below (haversine
 // distance, the seeded Guyana delivery rates): A is inside the included km.
-// [PRICING-GY-OCT] B's leg is 7.16 km: 500 + (7.16 − 3) × 100 = 916 (was
-// 500 + (7.16 − 2) × 200 = 1532 under the previous schedule).
-const FEE_A = 500;
-const FEE_B = 916;
+// [Owner 8 Nov 2026] B's leg is 7.16 km: 800 + (7.16 − 3) × 175 = 1528 (was
+// 500 + (7.16 − 3) × 100 = 916 from 1 Oct, and 500 + (7.16 − 2) × 200 = 1532
+// before that). A, inside the included km, pays the 800 base (was 500).
+const FEE_A = 800;
+const FEE_B = 1528;
 
 let app: FastifyInstance;
 let seq = 0;

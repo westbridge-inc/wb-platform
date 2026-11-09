@@ -88,7 +88,7 @@ describe('GOLD-7 · CUST-04 — rate, report and tip refusal', () => {
     expect(await h.sys(() => h.app.prisma.ratingReport.count({ where: { ratingId: rating.id } }))).toBe(1);
     const before = await h.sys(() => h.app.prisma.order.findUniqueOrThrow({ where: { id } }));
     const earningsBefore = await h.sys(() => h.app.prisma.earning.findMany({ where: { orderId: id }, select: { id: true, type: true, amount: true } }));
-    expect(earningsBefore.map((e) => [e.type, Number(e.amount)])).toEqual([['DELIVERY_FEE', 500]]);
+    expect(earningsBefore.map((e) => [e.type, Number(e.amount)])).toEqual([['DELIVERY_FEE', 800]]); // the 800 base [owner 8 Nov 2026]
     for (let attempt = 0; attempt < 2; attempt += 1) {
       const tip = await h.call('POST', `/api/v1/customer/orders/${id}/tip`, customer.token, { amount: 300 });
       expect(tip.statusCode).toBe(409);
