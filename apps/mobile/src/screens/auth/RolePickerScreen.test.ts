@@ -55,7 +55,7 @@ describe('RolePickerScreen first-open contract', () => {
     expect(src).not.toMatch(/VERTICAL_TINT\[/);
   });
 
-  it('exposes button semantics for the trio, sign-in, and all lower actions', () => {
+  it('exposes button semantics for the doors, sign-in, and all lower actions', () => {
     const quietRow = src.slice(src.indexOf('function QuietRow'), src.indexOf('export function RolePickerScreen'));
     const roleCard = src.slice(src.indexOf('<PressableScale'), src.indexOf('</PressableScale>'));
 
@@ -68,8 +68,9 @@ describe('RolePickerScreen first-open contract', () => {
     expect(quietRow).not.toMatch(/hitSlop/);
 
     expect(roleCard).toMatch(/accessibilityRole="button"/);
-    expect(roleCard).toMatch(/accessibilityLabel=\{`\$\{o\.title\}\. \$\{o\.sub\}`\}/);
-    expect(roleCard).toMatch(/accessibilityHint=\{o\.hint\}/);
+    expect(roleCard).toMatch(/accessibilityLabel=\{`\$\{d\.title\}\. \$\{d\.sub\}`\}/);
+    expect(roleCard).toMatch(/accessibilityHint=\{d\.hint\}/);
+    expect(roleCard).toMatch(/minHeight: 44/);
 
     expect(src).toMatch(/accessibilityLabel="Already have an account\? Sign in"/);
     expect(src).toMatch(/accessibilityHint="Open phone sign in"/);
@@ -86,9 +87,61 @@ describe('RolePickerScreen first-open contract', () => {
     expect(src).toContain("onPress={() => {\n                setCountry(DEFAULT_COUNTRY);\n                setIntent('advertiser');");
   });
 
-  it('makes clear that Driver starts provider sign-up rather than booking a taxi', () => {
-    expect(src).toContain("title: 'Become a Swift Driver'");
-    expect(src).toContain("sub: 'Sign up to deliver orders or drive taxi trips — you keep 100%'");
-    expect(src).toContain("hint: 'Start driver sign-up'");
+  it('makes clear that Deliver and Drive start partner sign-up rather than booking a delivery or a taxi', () => {
+    // [APP-INTRO] The old single "Become a Swift Driver" door is now the website's two doors. Both sit under
+    // "EARN WITH SWIFT", both say what the partner keeps, and both are announced as a sign-up.
+    expect(src).toContain('EARN WITH SWIFT');
+    expect(src).toContain("title: 'Deliver with Swift'");
+    expect(src).toContain("hint: 'Start delivery rider sign-up'");
+    expect(src).toContain("title: 'Drive with Swift'");
+    expect(src).toContain("sub: 'Drive a taxi with Swift. Every fare and every tip is yours.'");
+    expect(src).toContain("hint: 'Start taxi driver sign-up'");
+    expect(src.indexOf('EARN WITH SWIFT')).toBeLessThan(src.indexOf('{PARTNER_DOORS.map('));
+  });
+});
+
+describe('[APP-INTRO] the welcome opens the website\'s four doors', () => {
+  // swiftgy.com's front page is the source of the words. This release branch does not carry that page
+  // (apps/web/src/app/(welcome)/page.tsx is on main), so its four doors are written out here exactly as main's
+  // page has them; on main this test reads the page itself.
+  const webDoors = [
+    { title: 'Order with Swift', body: 'Browse every store, menu and price, then order food, groceries and more.' },
+    { title: 'Sell on Swift', body: 'One flat weekly fee. You keep every dollar you sell.' },
+    { title: 'Deliver with Swift', body: 'Every delivery fee and every tip is yours.' },
+    { title: 'Drive with Swift', body: 'Drive a taxi with Swift. Every fare and every tip is yours.' },
+  ];
+  const appDoors = [...src.matchAll(/^\s+title: '([^']+)',\n\s+sub: '([^']+)',/gm)].map((m) => ({ title: m[1], body: m[2] }));
+
+  it('reads four doors (a parse that found nothing would pass forever)', () => {
+    expect(webDoors).toHaveLength(4);
+    expect(appDoors).toHaveLength(4);
+  });
+
+  it('uses the website\'s titles and lines, in the website\'s order', () => {
+    expect(appDoors).toEqual(webDoors);
+    expect(webDoors.map((d) => d.title)).toEqual(['Order with Swift', 'Sell on Swift', 'Deliver with Swift', 'Drive with Swift']);
+  });
+
+  it('sends each door down a role choice the app already had (no new sign-up path)', () => {
+    const door = (key: string) => {
+      const at = src.indexOf(`key: '${key}',`);
+      return src.slice(at, src.indexOf('},', at));
+    };
+    expect(door('customer')).toMatch(/intent: 'customer',\s+moverPreset: null,/);
+    expect(door('vendor')).toMatch(/intent: 'vendor',\s+moverPreset: null,/);
+    expect(door('delivery')).toMatch(/intent: 'mover',\s+moverPreset: 'delivery',/);
+    expect(door('taxi')).toMatch(/intent: 'mover',\s+moverPreset: 'taxi',/);
+    // The pick is the old one: preset, market, intent. Nothing else is written, and nothing is fetched.
+    const pickStart = src.indexOf('const pick =');
+    const pick = src.slice(pickStart, src.indexOf('};', pickStart));
+    expect(pick).toContain('setMoverPreset(door.moverPreset)');
+    expect(pick).toContain('setIntent(door.intent)');
+    expect(pick).not.toMatch(/api\.|fetch\(|await /);
+  });
+
+  it('keeps ONE flagship: only "Order with Swift" wears the brand tile', () => {
+    expect(src).toMatch(/\{door\(ORDER, true\)\}/);
+    expect(src).toMatch(/\{door\(d, false\)\}/);
+    expect(src.match(/door\([A-Za-z]+, true\)/g) ?? []).toHaveLength(1);
   });
 });

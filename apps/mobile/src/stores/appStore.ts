@@ -6,6 +6,10 @@ interface AppState {
   // First-run gate: the 3-slide onboarding shows once, then never again.
   hasOnboarded: boolean;
   setOnboarded: () => void;
+  // [APP-INTRO] The full brand intro has played on this phone; a return to the welcome gets the quick one.
+  // Device-local on purpose: it is about this phone's first launch, not about an account.
+  hasSeenIntro: boolean;
+  markIntroSeen: () => void;
   // Device-local search history (kit "Your search history" chips).
   recentSearches: string[];
   pushSearch: (q: string) => void;
@@ -17,6 +21,8 @@ export const useAppStore = create<AppState>()(
     (set) => ({
       hasOnboarded: false,
       setOnboarded: () => set({ hasOnboarded: true }),
+      hasSeenIntro: false,
+      markIntroSeen: () => set({ hasSeenIntro: true }),
       recentSearches: [],
       pushSearch: (q) =>
         set((s) => {
