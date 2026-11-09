@@ -23,9 +23,29 @@ export function calculateDeliveryFee(
   includedKm: number = DEFAULT_DELIVERY_RATES.includedKm,
   surgeMultiplier: number = DEFAULT_DELIVERY_RATES.surgeMultiplier,
 ): number {
-  const distanceFee = Math.max(0, distanceKm - includedKm) * Math.max(0, perKmRate);
-  const subtotal = baseFee + distanceFee;
-  return Math.max(baseFee, Math.ceil(subtotal * surgeMultiplier));
+  // [DELIVERY-ROUND, 8 Nov 2026] Exact integer maths, then ONE round-up to a
+  // whole dollar. In floating point a fee that is exactly whole could land a
+  // hair above it and round up a dollar (8.88 km: 800 + 5.88 × 175 = 1,829,
+  // but the float said 1829.0000000000002 and charged 1,830). The published
+  // price is unchanged: the base, then the per-km rate pro rata past the
+  // included distance, times the surge, rounded up to a whole dollar.
+  // Distances are whole metres (checkout's canonical km is 0.01 km, so this
+  // is exact for every charged fee), money whole cents, surge millionths.
+  if (![distanceKm, baseFee, perKmRate, includedKm, surgeMultiplier].every(Number.isFinite)) return NaN;
+  const metresOver = BigInt(Math.max(0, Math.round(distanceKm * 1000) - Math.round(includedKm * 1000)));
+  const baseCents = BigInt(Math.round(baseFee * 100));
+  const rateCentsPerKm = BigInt(Math.round(Math.max(0, perKmRate) * 100));
+  const surgeMicro = BigInt(Math.round(surgeMultiplier * 1_000_000));
+  // In thousandths of a cent: base × 1,000 + metres × cents-per-km.
+  const subtotal = baseCents * 1000n + metresOver * rateCentsPerKm;
+  const fee = Number(ceilDiv(subtotal * surgeMicro, 1000n * 100n * 1_000_000n));
+  return Math.max(baseFee, fee);
+}
+
+/** ceil(a / b) for b > 0, exactly (BigInt division truncates toward zero). */
+function ceilDiv(a: bigint, b: bigint): bigint {
+  const q = a / b;
+  return a > 0n && q * b !== a ? q + 1n : q;
 }
 
 /**
