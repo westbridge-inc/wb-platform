@@ -135,6 +135,10 @@ async function revokeCapturedSession(session: AuthSessionSnapshot): Promise<void
   } catch {
     // Server-side rotation still makes the old binding unreachable.
   }
+  // [CALLS-ERASE · legal review F1] When the session was already ended elsewhere ("sign out other devices", a
+  // deletion, a refused refresh, an expired session) the token fetch above is refused and the phone cannot remove
+  // its binding: the Twilio SDK has no token-free, local unregister to fall back on (services/callsErase.ts). That is
+  // why deleting or closing an account from this phone unregisters FIRST, while the session still works.
 
   let pushToken: string | null = null;
   try {

@@ -266,6 +266,10 @@ export const UNREGISTER_TIMEOUT_MS = 5_000;
  * happens, so the next account registers at once under its own identity. If this fails (offline, the session
  * already refused), the server still never rings the old identity: it is per session and the session is gone.
  * Also used when the phone should no longer be rung (no live order, the microphone taken away).
+ * [CALLS-ERASE] There is no local fallback: the SDK's only unregister (iOS unregisterWithAccessToken, Android
+ * Voice.unregister) is a request to Twilio that needs this server token, so a refused fetch leaves the binding with
+ * Twilio until its own expiry. Account deletion and closure therefore run this BEFORE the server call
+ * (services/callsErase.ts), while the session is still live.
  */
 export async function unregisterInAppCalls(fetchToken: (platform: 'ios' | 'android') => Promise<string>): Promise<boolean> {
   const wasRegistered = mayBeRegistered();
