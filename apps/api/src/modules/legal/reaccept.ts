@@ -203,7 +203,7 @@ export const NON_MATERIAL_CHANGES: ReadonlyArray<{ version: string; why: string 
     // [OWNER-ASKS · owner ruling 9 Nov 2026 · non-material: Swift asks fewer people for a selfie, like 2026-10-22.1 and
     // 2026-11-01.1 (Swift asks for less)] Privacy, what we collect.
     version: '2026-11-09.2',
-    why: 'Swift asks fewer people for a selfie: the Privacy Policy now says riders, drivers, individual service providers and service businesses that go to customers take one (riders, drivers and service providers already did), and that store owners, store staff, businesses that serve customers only at their own place, advertisers and customers never need one. A selfie taken before stays the person\u2019s in-app photo, protected as before. No one is asked for more and nothing is taken from anyone, so nobody is asked again.',
+    why: 'Swift asks fewer people for a selfie: the Privacy Policy now says riders, drivers, individual service providers and service businesses that go to customers take one (the policy already named riders, drivers and service providers), and that store owners, store staff, businesses that serve customers only at their own place, advertisers and customers never need one. A selfie taken before stays the person\u2019s in-app photo, protected as before. No one is asked for more and nothing is taken from anyone, so nobody is asked again.',
   },
 ];
 

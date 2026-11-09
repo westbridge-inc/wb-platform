@@ -72,7 +72,8 @@ describe('[customers take no photos] the words say a customer never needs a phot
   it('Privacy: the registration selfie names who takes it — and who never does; a customer is never shown by photo', () => {
     expect(PRIVACY).toContain('<li><b>A registration selfie (riders, drivers, and service providers and businesses that visit customers):</b>');
     // [owner ~20:1xZ (A)(B)] individual service providers take it; advertisers never
-    expect(PRIVACY).toContain('riders, drivers and individual service providers take one when they sign up');
+    expect(PRIVACY).toContain('riders and drivers take one when they sign up, an individual service provider takes one before their first home job, and a service business takes one when it offers to go to customers (home or mobile visits)');
+    expect(PRIVACY).not.toMatch(/individual service providers take one when they sign up/);
     expect(PRIVACY).toContain('a service business takes one when it offers to go to customers (home or mobile visits)');
     expect(PRIVACY).toContain('A store owner, store staff, a business that serves customers only at its own place, an advertiser, and a customer never need one.');
     expect(PRIVACY).not.toMatch(/riders, drivers and advertisers take one/);
