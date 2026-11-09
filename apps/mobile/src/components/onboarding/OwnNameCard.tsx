@@ -2,9 +2,10 @@ import { useState } from 'react';
 import { View } from 'react-native';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { space } from '@swift/ui';
-import { BrandCheckbox, Card, PillButton, T } from '../../kit';
+import { Card, CheckRow, PillButton, T } from '../../kit';
 import { vendorApi } from '../../services/api';
-import { OWN_NAME_DECLARATION_V1, OWN_NAME_HINT, OWN_NAME_TICK, ownNameSigningFor } from '../../lib/ownNameCopy';
+import { OWN_NAME_HINT, OWN_NAME_TICK, ownNameSigningFor } from '../../lib/ownNameCopy';
+import { OwnNameDeclarationText } from './OwnNameChoiceCard';
 
 /** The server's message for a refused signature, or a plain retry line. */
 function errorCopy(error: unknown): string {
@@ -44,8 +45,8 @@ export function OwnNameCard({ role, mode, storeName }: { role: string; mode: 'si
       {forStore ? <T variant="caption" weight="bold">{forStore}</T> : null}
       {open ? (
         <>
-          <T variant="caption">{OWN_NAME_DECLARATION_V1}</T>
-          <BrandCheckbox checked={ticked} onToggle={() => setTicked((t) => !t)} label={OWN_NAME_TICK} />
+          <OwnNameDeclarationText />
+          <CheckRow checked={ticked} onToggle={() => setTicked((t) => !t)} label={OWN_NAME_TICK} />
           <PillButton label="Sign the declaration" disabled={!ticked} loading={sign.isPending} onPress={() => sign.mutate()} />
           {sign.isError ? <T variant="caption" tone="error">{errorCopy(sign.error)}</T> : null}
         </>

@@ -256,7 +256,11 @@ describe('[OPEN-EARLY PR-2] the store’s documents on the website', () => {
     expect(screen.getByText('You sign this for “Persaud” only.')).toBeTruthy();
     const sign = screen.getByRole('button', { name: 'Sign the declaration' }) as HTMLButtonElement;
     expect(sign.disabled).toBe(true);
-    fireEvent.click(screen.getByRole('checkbox', { name: 'I have read the declaration above and I sign it.' }));
+    // [OWNER-ASKS 9 Nov 2026] a plain title and its version in place of the raw first line
+    expect(screen.getByText('Declaration: I trade under my own name')).toBeTruthy();
+    expect(screen.getByText('Version 1')).toBeTruthy();
+    expect(screen.queryByText(/I TRADE UNDER MY OWN NAME \(v1\)/)).toBeNull();
+    fireEvent.click(screen.getByRole('checkbox', { name: 'I have read and agree to this declaration.' }));
     fireEvent.click(sign);
     await waitFor(() => expect(writes).toContainEqual({ method: 'POST', path: '/vendor/onboarding/own-name', store: 'grocer', body: { accept: true, attestationVersion: 'v1' } }));
     fireEvent.click(screen.getByRole('button', { name: 'I use a registered business name instead' }));
