@@ -68,7 +68,7 @@ describe('the website’s Delivery policy states the schedule from the one const
 describe('LEGAL_VERSION 2026-11-08 for the delivery-price wording: material, so everyone ticks again', () => {
   it('is served, and classed material exactly once, for everyone', () => {
     // [LEGAL-CALLS · owner 9 Nov 2026] served now under 2026-11-09 (in-app calls: material); 2026-11-08 stays material
-    expect(LEGAL_VERSION).toBe('2026-11-09.1');
+    expect(LEGAL_VERSION).toBe('2026-11-09.2');
     const entry = MATERIAL_CHANGES.filter((c) => c.version === '2026-11-08');
     expect(entry).toHaveLength(1);
     expect(entry[0]!.audience).toBeUndefined();

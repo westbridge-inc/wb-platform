@@ -238,7 +238,7 @@ describe('[5 Nov read] what ships now, in the words', () => {
 
 describe('classification', () => {
   it('2026-11-05 is material, and classed once (served now under 2026-11-06, partner-only)', () => {
-    expect(LEGAL_VERSION).toBe('2026-11-09.1'); // [LEGAL-CALLS · owner 9 Nov 2026] served now under 2026-11-09 (in-app calls in the Privacy Policy: material)
+    expect(LEGAL_VERSION).toBe('2026-11-09.2'); // [LEGAL-CALLS · owner 9 Nov 2026] served now under 2026-11-09 (in-app calls in the Privacy Policy: material)
     expect(MATERIAL_CHANGES.filter((c) => c.version === '2026-11-05')).toHaveLength(1);
     expect(NON_MATERIAL_CHANGES.map((c) => c.version)).not.toContain('2026-11-05');
   });

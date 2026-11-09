@@ -24,7 +24,7 @@ const flat = (s: string) => s.replace(/\s+/g, ' ');
 
 describe('LEGAL_VERSION 2026-11-09 for the in-app call wording: material, so everyone ticks again', () => {
   it('is served, and classed material exactly once, for everyone', () => {
-    expect(LEGAL_VERSION).toBe('2026-11-09.1');
+    expect(LEGAL_VERSION).toBe('2026-11-09.2');
     const entry = MATERIAL_CHANGES.filter((c) => c.version === '2026-11-09');
     expect(entry).toHaveLength(1);
     expect(entry[0]!.audience).toBeUndefined();
