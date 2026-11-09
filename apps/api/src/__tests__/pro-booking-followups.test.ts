@@ -344,6 +344,25 @@ describe('[X S4-2] the times to move a booking to: its booked length, its own ti
     expect((await reschedule(c.token, id, at(10))).statusCode).toBe(200);
   });
 
+  // [review P2 · owner rulings 9 Nov 2026] With the pro home-jobs switch on, a booked home job moves only while the pro
+  // may take home work: once the pro's photo is no longer the checked one (a retake), the move is refused.
+  it('[review P2] switch on: a booked job cannot be moved once the pro\u2019s photo is no longer the checked one', async () => {
+    on();
+    vi.stubEnv('PRO_HOME_JOBS_SELFIE', '1');
+    try {
+      const pro = await makePro('tutor', { hours: [{ dayOfWeek: WEEKDAY, start: '09:00', end: '15:00' }] });
+      const c = await makeUser();
+      const one = await makeOffering(pro.providerId, 60);
+      const booked = await book(c.token, pro, one, at(9));
+      expect(booked.statusCode, booked.body).toBeLessThan(300);
+      const id = booked.json().data.id as string;
+      await runWithoutTenant(() => app.prisma.user.update({ where: { id: pro.userId }, data: { selfieCapturedAt: new Date(Date.now() + 1000) } }));
+      const moved = await reschedule(c.token, id, at(11));
+      expect(moved.statusCode, moved.body).toBe(409);
+      expect(moved.json().error.code).toBe('PRO_HOME_JOBS_PAUSED');
+    } finally { vi.unstubAllEnvs(); on(); }
+  });
+
   it('refused to a third account (403), for a quote job (400), to the customer inside two hours (409, the move\'s own words), with the switch off (404), for a bad date (400)', async () => {
     on();
     const pro = await makePro('tutor');

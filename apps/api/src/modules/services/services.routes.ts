@@ -1,5 +1,5 @@
 import type { FastifyInstance } from 'fastify';
-import { assertProHomeJobsAllowed, proHomeJobsReady } from '../verification/home-visits';
+import { assertProHomeJobsAllowed, proHomeJobsReady, proHomeJobsSelfieEnabled } from '../verification/home-visits';
 import { shownRatingTotals, shownRatingsFor, shownSurface } from '../rating/rating-groups';
 import type { Prisma, ServiceJob } from '@prisma/client';
 import { z } from '../../lib/zod';
@@ -402,7 +402,7 @@ export async function servicesRoutes(app: FastifyInstance) {
         listed: provider.isVerified && standing.operable,
         // [owner ruling 9 Nov ~20:1xZ (A)] Home jobs need the pro's profile photo, checked by a person against the
         // approved ID: what is missing, so the app says what to add (additive; older builds ignore it).
-        homeJobs: await proHomeJobsReady(app.prisma, request.user.userId),
+        ...(proHomeJobsSelfieEnabled() ? { homeJobs: await proHomeJobsReady(app.prisma, request.user.userId) } : {}),
       },
     };
   });
@@ -504,7 +504,9 @@ export async function servicesRoutes(app: FastifyInstance) {
     const live = await Promise.all(pageCandidates.map(async (provider) => {
       // [BILL-PRO PR3 · owner A3/B2] Listed only while the pro may take new work: documents approved AND (PRO_WEEKLY_FEE
       // on) the agreement accepted and the fee operable.
-      const verified = await isProviderVerified(app.prisma, provider.userId) && (await proFeeStanding(app.prisma, provider.userId)).operable;
+      // [review P1] with the pro home-jobs switch on, a pro whose home jobs are paused is not listed (no 409 dead end)
+      const homeReady = !proHomeJobsSelfieEnabled() || Object.values(await proHomeJobsReady(app.prisma, provider.userId)).every(Boolean);
+      const verified = await isProviderVerified(app.prisma, provider.userId) && (await proFeeStanding(app.prisma, provider.userId)).operable && homeReady;
       // [ROLE-DOCS · PR 3] the licence the trade REQUIRES, approved by a person (read only for a listed provider)
       const licence = verified ? await requiredLicenceStatus(app.prisma, provider.userId) : { required: false, checkedOn: null };
       return { provider, verified, licenceOn: licence.checkedOn, licenceRequired: licence.required };

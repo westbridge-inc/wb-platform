@@ -12,10 +12,12 @@
  *  - Build 9 shows and uploads only `checklist`: an owner who offers home visits sees the police
  *    clearance there, so a build-9 owner can upload it — but it never gates the store.
  */
-import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as homeVisits from '../modules/verification/home-visits';
 import { signupSelfieRequired } from '../modules/verification/signup-selfie';
 import { createServiceJobWithLiveAuthority } from '../modules/services/services.service';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { nanoid } from 'nanoid';
 import type { UserRole } from '@prisma/client';
@@ -510,6 +512,8 @@ describe('[security review 9 Nov] the new selfie must be compared with the appro
 // customers' homes: the selfie plus a person's recorded check of it against the approved ID, before any new home job.
 // A pro without it is paused from home jobs (fail closed) and told what to add.
 describe('[owner 9 Nov (A)] an independent service pro takes home jobs only with a checked selfie', () => {
+  beforeEach(() => { vi.stubEnv('PRO_HOME_JOBS_SELFIE', '1'); });
+  afterEach(() => { vi.unstubAllEnvs(); });
   async function pro(opts: { selfie?: boolean } = {}) {
     const p = await person(['CUSTOMER'], 'CUSTOMER', opts);
     const provider = await app.prisma.serviceProvider.create({ data: { userId: p.userId, trade: 'cleaner' } });
@@ -640,6 +644,66 @@ describe('[review] the home-visit gate after checkout, archived listings, and a 
     expect(homeVisits.standingMatch([row('A', 'NO_MATCH'), row('B', 'MATCH')])?.reviewerId).toBe('B');
     expect(homeVisits.standingMatch([row('B', 'MATCH'), row('A', 'NO_MATCH')])).toBeNull();
     expect(homeVisits.standingMatch([row('A', 'NO_MATCH'), row('B', 'NO_MATCH'), row('B', 'MATCH')])).toBeNull();
+  });
+});
+
+// [review P1 · store-build compatibility] The pro rule is behind PRO_HOME_JOBS_SELFIE (off unless '1'): the live phones
+// have no pro camera door, so with the switch off every pro behaves exactly as before.
+describe('[review P1] the pro home-jobs rule waits for its switch', () => {
+  it('switch off: a pro with no photo takes home jobs as before, and is asked nothing new', async () => {
+    vi.stubEnv('PRO_HOME_JOBS_SELFIE', '');
+    try {
+      const p = await person(['CUSTOMER'], 'CUSTOMER', { selfie: false });
+      await app.prisma.serviceProvider.create({ data: { userId: p.userId, trade: 'cleaner' } });
+      expect(homeVisits.proHomeJobsSelfieEnabled()).toBe(false);
+      await expect(homeVisits.assertProHomeJobsAllowed(app.prisma, p.userId, 'provider')).resolves.toBeUndefined();
+      expect(await signupSelfieRequired(app.prisma, p.userId)).toBe(false);
+    } finally { vi.unstubAllEnvs(); }
+  });
+  it('only an explicit 1 turns it on', () => {
+    expect(homeVisits.proHomeJobsSelfieEnabled({ PRO_HOME_JOBS_SELFIE: '1' })).toBe(true);
+    for (const v of [undefined, '', '0', 'true', 'on']) expect(homeVisits.proHomeJobsSelfieEnabled({ PRO_HOME_JOBS_SELFIE: v })).toBe(false);
+  });
+});
+
+// [review M1] The backfill of the marker: clearly home -> true, clearly in-shop -> false, anything unsure stays NULL and
+// is read as a home visit (fail closed). Runs the migration's own two UPDATEs.
+describe('[review M1] the home-visit marker backfill', () => {
+  const sql = readFileSync(join(__dirname, '..', '..', 'prisma', 'migrations', '20261109200000_order_home_visit', 'migration.sql'), 'utf8');
+  const updates = sql.split(/;\s*\n/).map((part) => part.split('\n').filter((l) => !l.trim().startsWith('--')).join('\n').trim()).filter((part) => part.startsWith('UPDATE'));
+
+  it('the migration turns row security off before it backfills, and has exactly two backfills', () => {
+    expect(sql).toMatch(/^SET row_security = off;$/m);
+    expect(sql.indexOf('SET row_security = off;')).toBeLessThan(sql.indexOf('UPDATE'));
+    expect(updates).toHaveLength(2);
+  });
+
+  it('in-shop -> false; MOBILE -> true; a BOTH visit at the business\u2019s own pin stays NULL and is read as a home visit', async () => {
+    const shop = await serviceStore('AT_BUSINESS');
+    await approved(shop.userId, 'owner_national_id');
+    const mobile = await serviceStore('MOBILE');
+    await clearOwner(mobile.userId, new Date(Date.now() + 200 * DAY));
+    const both = await serviceStore('BOTH');
+    await clearOwner(both.userId, new Date(Date.now() + 200 * DAY));
+    const near = await person(['CUSTOMER'], 'CUSTOMER');
+    await app.prisma.address.create({ data: { userId: near.userId, label: 'Home', addressLine1: '3 Salon Street', city: 'Georgetown', region: 'Demerara-Mahaica', latitude: 6.801, longitude: -58.156, isDefault: true } });
+    const ids = [
+      (await book(await customer(), shop, 10)).json().data.order.id as string,
+      (await book(await customer(), mobile, 10)).json().data.order.id as string,
+      (await book(near, both, 10, 'MOBILE')).json().data.order.id as string,
+    ];
+    await app.prisma.order.updateMany({ where: { id: { in: ids } }, data: { homeVisit: null } });
+    for (const update of updates) await app.prisma.$executeRawUnsafe(update);
+    const after = await Promise.all(ids.map((id) => app.prisma.order.findUniqueOrThrow({ where: { id }, select: { homeVisit: true, fulfillment: true } })));
+    expect(after.map((o) => o.homeVisit)).toEqual([false, true, null]);
+    expect(after.map((o) => homeVisits.isHomeVisitOrder(o))).toEqual([false, true, true]);
+  });
+
+  it('the rollback refuses while live home visits exist and removes its migration-history row', () => {
+    const rollback = readFileSync(join(__dirname, '..', '..', 'prisma', 'migrations', '20261109200000_order_home_visit', 'rollback.sql'), 'utf8');
+    expect(rollback).toMatch(/RAISE EXCEPTION 'order_home_visit rollback refused: live home visits exist'/);
+    expect(rollback).toMatch(/"status" IN \('PENDING', 'ACCEPTED'\) AND "homeVisit" IS DISTINCT FROM false/);
+    expect(rollback).toMatch(/DELETE FROM "_prisma_migrations" WHERE "migration_name" = '20261109200000_order_home_visit';/);
   });
 });
 

@@ -73,6 +73,16 @@ export async function selfieChecksFor(db: Db, ownerUserId: string, selfie: { sel
  * never said NO_MATCH about it, counts (the override is flagged to ops when it is recorded); otherwise the person
  * retakes the photo. Without a NO_MATCH, any MATCH counts. Deterministic: (createdAt, id) order, never "the latest".
  */
+/** [review N1] Has a reviewer ever ruled a photo of this person not to match (any selfie, retakes included)? Shown to
+ *  the next reviewer; the authors of those answers never decide this person's next photo either (the decision route). */
+export async function earlierNoMatchReviewers(db: Db, ownerUserId: string): Promise<Set<string | null>> {
+  const rows = await db.auditLog.findMany({
+    where: { action: SELFIE_ID_COMPARED_ACTION, entity: 'User', entityId: ownerUserId },
+    select: { userId: true, changes: true },
+  });
+  return new Set(rows.filter((row) => (row.changes as Partial<SelfieIdComparison> | null)?.outcome === 'NO_MATCH').map((row) => row.userId));
+}
+
 export function standingMatch(rows: readonly SelfieCheckRow[]): SelfieCheckRow | null {
   let lastNo = -1;
   const refusers = new Set<string | null>();
@@ -99,8 +109,9 @@ export async function ownerPhotoMatchedToId(db: Db, ownerUserId: string, now: Da
  * transaction). [security review 9 Nov] An APPOINTMENT order is a home visit when checkout marked it so (`homeVisit`,
  * from the listing's mode and the customer's choice); the distance never decides it (a 0-km visit is still a visit).
  */
-export function isHomeVisitOrder(order: { fulfillment: string | null; homeVisit: boolean }): boolean {
-  return order.fulfillment === 'APPOINTMENT' && order.homeVisit === true;
+export function isHomeVisitOrder(order: { fulfillment: string | null; homeVisit: boolean | null }): boolean {
+  // [review M1] NULL (not known) is a home visit: fail closed
+  return order.fulfillment === 'APPOINTMENT' && order.homeVisit !== false;
 }
 
 export async function assertOwnerHomeVisitsOpen(db: Db, ownerUserId: string, audience: 'business' | 'customer', vendorName: string): Promise<void> {
@@ -125,13 +136,20 @@ function homeVisitNeeds(cleared: boolean, photo: boolean, matched: boolean): str
  * One small function so the rule can change in one place.
  */
 export async function tellOwnerHomeVisitCheckLost(
-  notifications: { send: (input: { userId: string; type: 'SYSTEM_ANNOUNCEMENT'; title: string; body: string; audience: 'business' }) => Promise<unknown> },
+  notifications: { send: (input: { userId: string; type: 'SYSTEM_ANNOUNCEMENT'; title: string; body: string; audience: 'business' | 'provider' }) => Promise<unknown> },
   ownerUserId: string,
+  who: 'business' | 'provider' = 'business',
 ): Promise<void> {
-  await notifications.send({
-    userId: ownerUserId, type: 'SYSTEM_ANNOUNCEMENT', audience: 'business', title: HOME_VISITS_PAUSED_TITLE,
-    body: 'Our team could not match your profile photo with your approved ID, so new home visits are paused. Take a new profile photo in the Swift app; we will check it again. Home visits you already confirmed are not cancelled, and bookings at your place are not affected.',
-  });
+  // [review N2] a pro hears it as a pro (the provider audience, the pro's own words); a business as a business
+  await notifications.send(who === 'provider'
+    ? {
+      userId: ownerUserId, type: 'SYSTEM_ANNOUNCEMENT', audience: 'provider', title: 'Home jobs are paused',
+      body: 'Our team could not match your profile photo with your approved ID, so new home jobs are paused. Take a new profile photo in the Swift app (Profile, then Services); we will check it again. Jobs you already confirmed are not cancelled.',
+    }
+    : {
+      userId: ownerUserId, type: 'SYSTEM_ANNOUNCEMENT', audience: 'business', title: HOME_VISITS_PAUSED_TITLE,
+      body: 'Our team could not match your profile photo with your approved ID, so new home visits are paused. Take a new profile photo in the Swift app; we will check it again. Home visits you already confirmed are not cancelled, and bookings at your place are not affected.',
+    });
 }
 
 /**
@@ -142,6 +160,17 @@ export async function tellOwnerHomeVisitCheckLost(
  * acceptance, a confirmation. A pro without it is paused from home jobs, fail closed, and told what to add.
  */
 export const PRO_HOME_JOBS_PAUSED = 'PRO_HOME_JOBS_PAUSED';
+
+/**
+ * [review P1 · store-build compatibility] The pro home-jobs selfie rule is behind a server switch, OFF unless
+ * PRO_HOME_JOBS_SELFIE=1: the live store builds have no camera door for a pro, so the switch goes on only once the
+ * phone that has it (ProSelfie) is live and the existing pros' photos are checked (owner-approved sequence). OFF, pros
+ * behave exactly as before (no gate, no `homeJobs`, not in the selfie-check queue). A plain env read: boot-safe.
+ * Business home visits are NOT behind it (business owners already had the photo flow).
+ */
+export function proHomeJobsSelfieEnabled(env: Record<string, string | undefined> = process.env): boolean {
+  return (env['PRO_HOME_JOBS_SELFIE'] ?? '').trim() === '1';
+}
 export const PRO_HOME_JOBS_ADD_PHOTO = 'Home jobs are paused: add your profile photo in the Swift app (Profile, then Services). Customers see who is coming to their home.';
 export const PRO_HOME_JOBS_PHOTO_CHECKING = 'Home jobs are paused while our team checks your profile photo against your approved ID. There is nothing to send; you will be told when it is done.';
 
@@ -151,6 +180,7 @@ export async function proHomeJobsReady(db: Db, providerUserId: string): Promise<
 }
 
 export async function assertProHomeJobsAllowed(db: Db, providerUserId: string, who: 'customer' | 'provider'): Promise<void> {
+  if (!proHomeJobsSelfieEnabled()) return;
   const ready = await proHomeJobsReady(db, providerUserId);
   if (ready.photo && ready.photoChecked) return;
   throw new AppError(409, PRO_HOME_JOBS_PAUSED, who === 'provider'

@@ -14,7 +14,7 @@ import type { Prisma, PrismaClient } from '@prisma/client';
 import { isStoredName } from '../../providers/storage/stored-name';
 import { resolveAvatarUrl } from '../../utils/avatar-url';
 import { SELFIE_COMPARE_DOC_TYPES } from './doc-registry';
-import { ownerOffersHomeVisits } from './home-visits';
+import { ownerOffersHomeVisits, proHomeJobsSelfieEnabled } from './home-visits';
 
 /**
  * [OWNER-ASKS · owner ruling 9 Nov 2026] WHO TAKES THE SIGN-UP SELFIE: riders and drivers, an independent service pro
@@ -30,7 +30,8 @@ export async function signupSelfieRequired(db: Prisma.TransactionClient | Prisma
   if (!user) return false;
   if (user.roles.some((role) => SELFIE_ROLES.has(role))) return true;
   // [owner ruling 9 Nov ~20:1xZ (A)] an independent service pro goes to customers' homes
-  if ((await db.serviceProvider.count({ where: { userId } })) > 0) return true;
+  // (behind the PRO_HOME_JOBS_SELFIE switch, review P1: off, a pro is asked nothing new)
+  if (proHomeJobsSelfieEnabled() && (await db.serviceProvider.count({ where: { userId } })) > 0) return true;
   return ownerOffersHomeVisits(db, userId);
 }
 
