@@ -85,6 +85,33 @@ export const SYSTEM_CANCELLATION_WORDS: Readonly<Record<string, Readonly<Record<
   },
 };
 
+/**
+ * [COORD ruling 8 Nov 2026 on #2412] What the customer is told when Swift support
+ * cancels: one of a short fixed list, picked by the operator in the console. The
+ * operator's own words are an INTERNAL note (Swift only: the audit record), never
+ * sent to the customer or the store. The order records the code; every app words it.
+ * `phrase` completes "Swift support cancelled this order because …"; OTHER says
+ * only that Swift support cancelled it.
+ * The API keeps the same list (it cannot load this package at run time):
+ * apps/api/src/modules/order/customer-cancellation.ts SUPPORT_CANCELLATION_PHRASES,
+ * pinned equal by customer-cancellation.unit.test.ts.
+ */
+export const SUPPORT_CANCELLATION_REASONS: Readonly<Record<string, Readonly<{ label: string; phrase: string | null }>>> = {
+  SUPPORT_STORE_CLOSED: { label: 'The store is closed', phrase: 'the store is closed' },
+  SUPPORT_ITEM_UNAVAILABLE: { label: 'An item is unavailable', phrase: 'an item is unavailable' },
+  SUPPORT_DELIVERY_NOT_POSSIBLE: { label: 'Delivery is not possible', phrase: 'the delivery is not possible' },
+  SUPPORT_PAYMENT_PROBLEM: { label: 'A problem with the payment', phrase: 'there is a problem with the payment' },
+  SUPPORT_SAFETY: { label: 'Safety', phrase: 'of a safety concern' },
+  SUPPORT_OTHER: { label: 'Other (the customer is told only that Swift support cancelled it)', phrase: null },
+};
+
+/** The sentence for a Swift support cancel with this code ("Swift support cancelled this ride because …"). Null for any other reason. */
+export function supportCancellationSentence(reason: unknown, noun = 'order'): string | null {
+  if (typeof reason !== 'string' || !own(SUPPORT_CANCELLATION_REASONS, reason)) return null;
+  const phrase = SUPPORT_CANCELLATION_REASONS[reason]!.phrase;
+  return phrase ? `Swift support cancelled this ${noun} because ${phrase}.` : `Swift support cancelled this ${noun}.`;
+}
+
 /** Neutral words for a code-shaped reason this build does not know (never the code). */
 export const UNKNOWN_CANCELLATION_WORDS: Readonly<Record<CancellationReader, string>> = {
   customer: ORDER_CANCELLED_WORDS,
@@ -105,5 +132,7 @@ export function cancellationReasonWords(reason: unknown, reader: CancellationRea
   const text = reason.trim();
   if (!text) return null;
   if (own(SYSTEM_CANCELLATION_WORDS, text)) return SYSTEM_CANCELLATION_WORDS[text]![reader];
+  const support = supportCancellationSentence(text);
+  if (support) return support;
   return SYSTEM_CODE.test(text) ? UNKNOWN_CANCELLATION_WORDS[reader] : text;
 }

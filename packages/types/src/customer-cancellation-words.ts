@@ -10,7 +10,7 @@
  * its list of system codes in apps/api/src/modules/order/customer-cancellation.ts,
  * pinned to SYSTEM_CANCELLATION_WORDS by customer-cancellation.unit.test.ts.
  */
-import { cancellationReasonWords } from './order-words';
+import { cancellationReasonWords, supportCancellationSentence } from './order-words';
 
 const own = (table: object, key: string) => Object.prototype.hasOwnProperty.call(table, key);
 
@@ -139,7 +139,8 @@ export function customerCancellationWords(order: CustomerCancellationFacts | nul
           ? { label: 'Marked as missed', headline: 'The provider recorded that you didn’t come, so the booking was closed.', money: null }
           : { label: 'Not collected', headline: 'The store recorded that this order wasn’t collected, so it was closed.', money: null };
     case 'SWIFT':
-      return { label: 'Cancelled by Swift', headline: `Swift support cancelled this ${noun}.`, money: money() };
+      // [COORD ruling 8 Nov 2026] The reason Swift support picked for the customer (a fixed list), never its own note.
+      return { label: 'Cancelled by Swift', headline: supportCancellationSentence(reason, noun) ?? `Swift support cancelled this ${noun}.`, money: money() };
     case 'SYSTEM': {
       const code = typeof reason === 'string' ? reason : '';
       return {
