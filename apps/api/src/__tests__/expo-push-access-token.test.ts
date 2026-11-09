@@ -140,9 +140,9 @@ describe('[EXPO-PUSH-AUTH] the token never leaks', () => {
   it('a refused receipts call is logged without it', async () => {
     process.env['EXPO_ACCESS_TOKEN'] = ACCESS;
     vi.stubGlobal('fetch', vi.fn(async () => ({ ok: false, status: 401, text: async () => ACCESS, json: async () => ({ token: ACCESS }) })));
-    expect(await new ExpoPushProvider().checkReceipts(['r-1'])).toEqual({ ok: 0, failed: [] });
+    expect(await new ExpoPushProvider().checkReceipts(['r-1'])).toEqual({ ok: 0, notReady: 0, failed: [] });
     vi.stubGlobal('fetch', vi.fn(async () => { throw new Error(ACCESS); }));
-    expect(await new ExpoPushProvider().checkReceipts(['r-1'])).toEqual({ ok: 0, failed: [] });
+    expect(await new ExpoPushProvider().checkReceipts(['r-1'])).toEqual({ ok: 0, notReady: 0, failed: [] });
     expect(lines.length).toBeGreaterThan(0);
     expect(JSON.stringify(lines)).not.toContain(ACCESS);
   });
