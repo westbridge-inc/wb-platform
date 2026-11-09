@@ -236,7 +236,8 @@ describe('[Q10] the "still waiting" push opens the order on the store desk', () 
     // for this order (notification-router.test.ts). It used to be { orderId }.
     expect({ title: again.title, data: again.data, options: again.options }).toEqual({
       title: 'Order still waiting!',
-      data: { kind: 'vendor_order_alert', orderId: o.orderId, orderNumber: o.orderNumber, audience: 'business', respondBy: o.respondBy.toISOString() },
+      // [STORE-ALERT-RECONNECT · review S3] ...and the store's id, as the first alert carries it.
+      data: { kind: 'vendor_order_alert', orderId: o.orderId, orderNumber: o.orderNumber, audience: 'business', respondBy: o.respondBy.toISOString(), vendorId },
       options: { alertClass: 'ring_order', priority: 'high', sound: 'default', deadlineMs: o.respondBy.getTime() },
     });
   });

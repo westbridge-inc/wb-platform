@@ -29,6 +29,7 @@ import { deliveryPausedAt } from '../dispatch/delivery-pause';
 import { getTenantContext, getTenantId, enterPublicBrowse } from '../../plugins/tenant-context';
 import { VendorType, OrderStatus, NotificationType } from '@prisma/client';
 import { EXPRESS_DELIVERY_SURCHARGE, deliveryFeeFromRates, type DeliveryRates } from '../../utils/markup';
+import { canonicalBillableKm } from '../../utils/billable-distance';
 import { customerPoint } from '../discovery/customer-point';
 import { CountryConfigService } from '../country/country-config.service';
 import { storeVatEffective } from '../store-vat/store-vat';
@@ -779,7 +780,10 @@ function enrichVendor<T extends { latitude: number; longitude: number; estimated
     // pricing — quoted one computed from the exact distance. Same vendor, same
     // buyer, two different fees, and the difference is real money at 350/km.
     // Display rounding is a display concern; it had leaked into the money.
-    deliveryFee = deliveryFeeFromRates(exactKm, deliveryRates);
+    // [DELIVERY-ROUND N4] "Exact" is the canonical billable distance (0.01 km)
+    // the cart and checkout price (cart-plans), not the raw float: priced raw,
+    // the card could read GY$1 off the cart for the same trip.
+    deliveryFee = deliveryFeeFromRates(canonicalBillableKm(exactKm), deliveryRates);
     distanceKm = Math.round(exactKm * 10) / 10;
   }
   return { ...vendor, distanceKm, etaMin, deliveryFee };
@@ -1846,7 +1850,8 @@ export async function customerRoutes(app: FastifyInstance) {
           ? (await app.prisma.user.findUnique({ where: { id: request.user.userId }, select: { countryCode: true } }))?.countryCode
           : null) ?? 'GY',
       );
-      deliveryFee = deliveryFeeFromRates(distanceKm, detailRates);
+      // [DELIVERY-ROUND N4] The canonical distance the cart prices, like the card.
+      deliveryFee = deliveryFeeFromRates(canonicalBillableKm(distanceKm), detailRates);
       etaMin = (vendor.estimatedPrepTime || 30) + estimateDeliveryMinutes(distanceKm);
       distanceKm = Math.round(distanceKm * 10) / 10;
     }

@@ -10,6 +10,8 @@ import { customerRoutes } from '../modules/user/customer.routes';
 import { registerErrorHandler } from '../middleware/error-handler';
 import { calculateDeliveryFee, deliveryFeeFromRates, mergeDeliveryRates } from '../utils/markup';
 import { estimateDrivingDistance } from '../utils/distance';
+import { canonicalBillableKm } from '../utils/billable-distance';
+import { planVendorGroup } from '../modules/order/cart-plans';
 import { testPhone, wordFreeTag } from './helpers/fixture-ids';
 
 // ---------------------------------------------------------------------------
@@ -160,7 +162,7 @@ describe('a vendor CARD quotes the buyer’s own schedule', () => {
     const row = rows.find((r) => r.id === vendorId);
     expect(row, 'the seeded vendor should appear in browse').toBeTruthy();
 
-    const km = distanceKm();
+    const km = canonicalBillableKm(distanceKm());
     expect(row!.deliveryFee).toBe(deliveryFeeFromRates(km, mergeDeliveryRates(SECOND_MARKET)));
     expect(row!.deliveryFee).not.toBe(calculateDeliveryFee(km));
   });
@@ -187,8 +189,35 @@ describe('the STOREFRONT HEADER quotes the same schedule', () => {
     // display site, the one most likely to be remembered and compared.
     const res = await get(`/api/v1/customer/vendors/${vendorId}?lat=${BUYER.lat}&lng=${BUYER.lng}`);
     expect(res.statusCode).toBe(200);
-    const km = distanceKm();
+    const km = canonicalBillableKm(distanceKm());
     expect(res.json().data.deliveryFee).toBe(deliveryFeeFromRates(km, mergeDeliveryRates(SECOND_MARKET)));
+  });
+});
+
+describe('[DELIVERY-ROUND N4] the CARD and the HEADER quote what the CART will charge', () => {
+  // The cart and checkout price the canonical distance (0.01 km, cart-plans);
+  // the card and header used to price the raw estimate. At this market's
+  // 350/km that is GY$1 apart for this very trip: raw 4.2418 km quotes 2,035,
+  // the cart's 4.24 km charges 2,034.
+  it('this trip is one where the raw and the canonical distance price differently (or this proves nothing)', () => {
+    const rates = mergeDeliveryRates(SECOND_MARKET);
+    expect(deliveryFeeFromRates(distanceKm(), rates)).not.toBe(deliveryFeeFromRates(canonicalBillableKm(distanceKm()), rates));
+  });
+
+  it('card fee == header fee == the planner’s fee for the same route', async () => {
+    const [browse, detail] = await Promise.all([
+      get(`/api/v1/customer/vendors?lat=${BUYER.lat}&lng=${BUYER.lng}&limit=50`),
+      get(`/api/v1/customer/vendors/${vendorId}?lat=${BUYER.lat}&lng=${BUYER.lng}`),
+    ]);
+    const card = (browse.json().data as Array<{ id: string; deliveryFee: number | null }>).find((r) => r.id === vendorId);
+    // The cart's planner, fed the same estimate the haversine maps provider returns.
+    const plan = await planVendorGroup({
+      vendor: { id: vendorId, name: 'x', latitude: VENDOR.lat, longitude: VENDOR.lng, minOrderAmount: '0' },
+      lines: [], fulfillment: 'DELIVERY', destination: BUYER, deliveryRates: mergeDeliveryRates(SECOND_MARKET), express: false,
+      routeKm: async (from, to) => ({ km: estimateDrivingDistance(from.lat, from.lng, to.lat, to.lng), source: 'haversine' as const }),
+    });
+    expect(card!.deliveryFee).toBe(plan.standardDeliveryFee);
+    expect(detail.json().data.deliveryFee).toBe(plan.standardDeliveryFee);
   });
 });
 
