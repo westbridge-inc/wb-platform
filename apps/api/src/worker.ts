@@ -24,6 +24,7 @@ import { pino } from 'pino';
 import { loggerRedactConfig, loggerSerializers } from './utils/logger-config';
 import { initializeJobRuntime, type JobRuntime } from './jobs/runtime';
 import { assertSafeBootConfig } from './utils/boot-config';
+import { expoPushTokenBootLine } from './providers/notifications/expo-access-token';
 import { initSentry } from './plugins/observability';
 import { closeResourcesBounded, idempotentAsync, positiveDurationMs, withTimeout } from './utils/async-lifecycle';
 import { resolveDatabaseUrl } from './utils/db-pool';
@@ -48,6 +49,8 @@ async function main() {
   // until a process hands it a logger (app.ts does for the API). Without this
   // every log() line inside a job printed raw error text with no redaction.
   setAppLogger(log);
+  // [EXPO-PUSH-AUTH] Whether pushes carry the Expo access token (set / not set, never the value).
+  log.info(expoPushTokenBootLine());
   const redis = new Redis(process.env['REDIS_URL'] ?? 'redis://localhost:6379', {
     maxRetriesPerRequest: null,
   });

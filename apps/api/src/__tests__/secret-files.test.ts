@@ -45,6 +45,8 @@ describe('the allowlist', () => {
       'TWILIO_API_KEY_SECRET', 'SMTP_PASS',
       // [EMAIL-HTTPS] Resend's API key (EMAIL_PROVIDER=resend).
       'RESEND_API_KEY',
+      // [EXPO-PUSH-AUTH] The Expo access token every push call carries once set.
+      'EXPO_ACCESS_TOKEN',
       // [R22] The token Twilio signs inbound STOP requests with (verification only).
       'TWILIO_WEBHOOK_AUTH_TOKEN',
       'MMG_API_KEY', 'MMG_PASSWORD', 'MMG_MKEY', 'MMG_MSECRET',

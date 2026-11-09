@@ -93,6 +93,8 @@ services:
       PUSH_PROVIDER: ${PUSH_PROVIDER:-}
       EXPO_PUSH_URL: ${EXPO_PUSH_URL:-}
       EXPO_PUSH_RECEIPT_DELAY_MS: ${EXPO_PUSH_RECEIPT_DELAY_MS:-}
+      # [EXPO-PUSH-AUTH] Optional: the Expo access token, as a file from the store.
+      EXPO_ACCESS_TOKEN_FILE: ${EXPO_ACCESS_TOKEN_FILE:-}
     volumes:
       - /run/swift-secrets:/run/secrets:ro
     networks: [private]
