@@ -47,6 +47,8 @@ import { SwiftMark } from './components/SwiftLogo';
 import { startInAppVoiceIfRegistered } from './services/inAppVoice';
 import { InAppCallReach } from './components/InAppCallReach';
 import { InCallBoundary } from './components/InCallBar';
+import { LaunchIntro } from './components/LaunchIntro';
+import { markIntroDecided } from './lib/launchIntro';
 
 // One app-lifetime cache boundary, before persisted auth hydration or queries.
 // Logout/account switch/token rejection still use the existing auth lifecycle.
@@ -262,6 +264,9 @@ export default function App() {
     } catch (error) {
       console.warn('[secure-storage] init failed', error);
       if (mountedRef.current && attempt === attemptRef.current) {
+        // [APP-INTRO · review 2] The recovery screen hides the native splash; the intro that would continue it is
+        // skipped for this session, so "Unlock Swift to continue" opens straight onto the app, never a maroon flash.
+        markIntroDecided();
         setStorageStatus('error');
       }
     } finally {
@@ -328,6 +333,10 @@ export default function App() {
                 <StoreAlertElsewhere />
                 {/* [Row 3] build 12 on: a build older than the API's minimum is asked to update */}
                 <UpdateRequiredGate />
+                {/* [APP-INTRO] Last, so it covers everything: the brand intro on the launch that opens the welcome
+                    screen (signed out, no door picked yet). It continues the native splash, then dissolves into the
+                    welcome, which is already rendered underneath. Signed-in launches render nothing here. */}
+                <LaunchIntro />
               </QueryClientProvider>
             )}
           </AppSurface>
