@@ -27,6 +27,7 @@ const I = plugin.internals as {
   CALL_ACTIONS: string[];
   OVER_LOCK_ACTIONS: string[];
   CALL_UUID_EXTRA: string;
+  OPTIONAL_FEATURES: string[];
   FIREBASE_MESSAGING_VERSION: string;
   VOICE_ANDROID_VERSION: string;
   TWILIO_FCM_SERVICE: string;
@@ -260,12 +261,17 @@ describe('[INAPP-CALLS] ONE Firebase receiver: Twilio calls to the SDK, every ot
   });
 });
 
-describe('[BUILD-14] a phone with no microphone can still install Swift (calls are optional)', () => {
-  // Play implies android.hardware.microphone REQUIRED from RECORD_AUDIO unless the manifest says otherwise, so
-  // vc11 dropped 14 no-microphone devices from the catalogue. Calls are one feature, not the app.
+describe('[BUILD-14] a phone with no microphone or no camera can still install Swift', () => {
+  // Play implies android.hardware.microphone REQUIRED from RECORD_AUDIO, and android.hardware.camera +
+  // camera.autofocus REQUIRED from CAMERA, unless the manifest says otherwise: vc11 dropped 14 no-microphone
+  // devices from the catalogue. Calls, QR scans and photos are features, not the app (a missing camera fails
+  // softly: expo-camera reports a mount error, expo-image-picker rejects, and the photo library stays offered).
   const MIC = 'android.hardware.microphone';
+  const OPTIONAL = [MIC, 'android.hardware.camera', 'android.hardware.camera.autofocus'];
+  const notRequired = (name: string) => ({ $: { 'android:name': name, 'android:required': 'false' } });
   type Feature = { $: Record<string, string> };
   const features = (m: unknown) => ((m as { manifest: { 'uses-feature'?: Feature[] } }).manifest['uses-feature'] ?? []);
+  const named = (m: unknown, name: string) => features(m).filter((f) => f.$['android:name'] === name);
   const manifest = () => ({
     manifest: {
       $: { 'xmlns:android': 'http://schemas.android.com/apk/res/android' },
@@ -274,28 +280,31 @@ describe('[BUILD-14] a phone with no microphone can still install Swift (calls a
     },
   });
 
-  it('declares the microphone NOT required, exactly once, keeps other features; idempotent', () => {
-    const out = I.wireManifest(manifest());
-    const mic = features(out).filter((f) => f.$['android:name'] === MIC);
-    expect(mic).toEqual([{ $: { 'android:name': MIC, 'android:required': 'false' } }]);
-    expect(features(out)).toContainEqual({ $: { 'android:glEsVersion': '0x00020000', 'android:required': 'true' } });
-    const again = I.wireManifest(out);
-    expect(features(again).filter((f) => f.$['android:name'] === MIC)).toHaveLength(1);
-    expect(features(again)).toHaveLength(2);
+  it('the plugin names exactly these optional features', () => {
+    expect(I.OPTIONAL_FEATURES).toEqual(OPTIONAL);
   });
 
-  it('a manifest with no uses-feature yet: the new element goes BEFORE <application> (which must stay last)', () => {
+  it('declares the microphone and the camera (+ autofocus) NOT required, each exactly once, keeps other features; idempotent', () => {
+    const out = I.wireManifest(manifest());
+    for (const name of OPTIONAL) expect(named(out, name), name).toEqual([notRequired(name)]);
+    expect(features(out)).toContainEqual({ $: { 'android:glEsVersion': '0x00020000', 'android:required': 'true' } });
+    const again = I.wireManifest(out);
+    for (const name of OPTIONAL) expect(named(again, name), name).toHaveLength(1);
+    expect(features(again)).toHaveLength(1 + OPTIONAL.length);
+  });
+
+  it('a manifest with no uses-feature yet: the new elements go BEFORE <application> (which must stay last)', () => {
     const m = { manifest: { $: {}, 'uses-permission': [], application: [{ $: {}, service: [] }] } };
     const out = I.wireManifest(m) as unknown as { manifest: Record<string, unknown> };
     expect(Object.keys(out.manifest)).toEqual(['$', 'uses-permission', 'uses-feature', 'application']);
-    expect(features(out)).toEqual([{ $: { 'android:name': MIC, 'android:required': 'false' } }]);
+    expect(features(out)).toEqual(OPTIONAL.map(notRequired));
   });
 
-  it('replaces a microphone feature another step marked required', () => {
+  it('replaces a microphone / camera / autofocus feature another step marked required', () => {
     const m = manifest();
-    m.manifest['uses-feature'].push({ $: { 'android:name': MIC, 'android:required': 'true' } } as never);
-    const mic = features(I.wireManifest(m)).filter((f) => f.$['android:name'] === MIC);
-    expect(mic).toEqual([{ $: { 'android:name': MIC, 'android:required': 'false' } }]);
+    for (const name of OPTIONAL) m.manifest['uses-feature'].push({ $: { 'android:name': name, 'android:required': 'true' } } as never);
+    const out = I.wireManifest(m);
+    for (const name of OPTIONAL) expect(named(out, name), name).toEqual([notRequired(name)]);
   });
 });
 
@@ -365,8 +374,10 @@ describe('[INAPP-CALLS] what an EAS build of this config really carries', () => 
       features: Array<{ name?: string; required?: string }>;
       services: Array<{ name: string; node?: string; fcm: boolean }>;
     };
-    // [BUILD-14] RECORD_AUDIO stays, but the microphone is not a device requirement on Play.
-    expect(out.features.filter((f) => f.name === 'android.hardware.microphone')).toEqual([{ name: 'android.hardware.microphone', required: 'false' }]);
+    // [BUILD-14] RECORD_AUDIO and CAMERA stay, but neither the microphone nor the camera is a device requirement on Play.
+    for (const name of ['android.hardware.microphone', 'android.hardware.camera', 'android.hardware.camera.autofocus']) {
+      expect(out.features.filter((f) => f.name === name), name).toEqual([{ name, required: 'false' }]);
+    }
     expect(out.plist['NSMicrophoneUsageDescription']).toMatch(/only during in-app calls.*never records calls/);
     expect(out.plist['UIBackgroundModes']).toEqual(expect.arrayContaining(['voip', 'audio']));
     expect(out.permissions).not.toContainEqual({ name: 'android.permission.RECORD_AUDIO', node: 'remove' });
