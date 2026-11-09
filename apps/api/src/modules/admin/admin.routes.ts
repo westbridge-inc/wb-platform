@@ -3839,13 +3839,12 @@ export async function adminRoutes(app: FastifyInstance) {
       /** [COORD 8 Nov 2026] What the customer is told (a fixed reason); the stated reason is Swift's internal note. */
       customerReason: z.enum(SUPPORT_CANCELLATION_CODES).optional(),
     }).parse(request.body ?? {});
-    const reason = reasonOf(request.body, request.headers) ?? '';
+    // The stated reason is Swift's internal note: auditWithin records it on this route's audit row, and nowhere else.
     const approvalId = (request as unknown as { privilegedApprovalId?: string }).privilegedApprovalId ?? null;
     const { order, amount } = await closeMmgOrderAsStoreRefund(orderService, {
       orderId: id,
       adminUserId: request.user.userId,
       expectedClaimRevision: body.expectedClaimRevision,
-      reason,
       customerReason: body.customerReason ?? SUPPORT_CANCELLATION_DEFAULT,
       authorize: (tx, parties) => assertMayDecideRefund(tx, request.user.userId, parties, approvalId),
       audit: (tx, facts) => auditWithin(tx, request as unknown as AuditRequestLike, app.prefix, { extra: { ...facts, approvalId } }),

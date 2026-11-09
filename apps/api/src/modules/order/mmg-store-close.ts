@@ -77,9 +77,9 @@ export interface MmgStoreCloseInput {
   adminUserId: string;
   /** The claim revision the admin reviewed; a different one on the locked row is refused. */
   expectedClaimRevision: number;
-  /** Swift's internal note (the operator's stated reason): the obligation's record and the audit row, never the order's reason. */
-  reason: string;
-  /** [COORD 8 Nov 2026] What the customer is told: a SUPPORT_… code (customer-cancellation.ts SUPPORT_CANCELLATION_PHRASES). */
+  /** [COORD 8 Nov 2026] What the customer is told: a SUPPORT_… code (customer-cancellation.ts SUPPORT_CANCELLATION_PHRASES).
+   *  The operator's own words (the stated reason) are not an input here: they live only on the route's audit row, never on
+   *  the order, the obligation (which is in the customer's data export) or any notice. */
   customerReason: string;
   /** [BUG-HUNT-2 G08] Who may close it: nobody on the order, on the people the locked row names. */
   authorize: (tx: Prisma.TransactionClient, parties: { customerId: string; vendorId: string }) => Promise<void>;
@@ -134,7 +134,9 @@ export async function closeMmgOrderAsStoreRefund(orderService: Pick<OrderService
           amount,
           currencyCode: 'GYD',
           basis: 'ATTESTED_REMAINDER',
-          reason: input.reason,
+          // [COORD ruling R1, 8 Nov 2026] The customer's fixed reason, as on the order: the obligation is in the
+          // customer's data export, so the operator's internal note is never written here (only on the audit row).
+          reason: input.customerReason,
           createdById: input.adminUserId,
         }, await mmgRefundPolicy(tx), new Date()),
         select: { id: true },
