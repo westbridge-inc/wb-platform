@@ -170,7 +170,7 @@ export interface CheckoutCommit {
 }
 
 /** An order as the checkout transaction creates it (the post-commit notices read these fields). */
-type CheckoutCreatedOrder = Prisma.OrderGetPayload<{ include: { items: true; vendor: { select: { id: true; name: true; ownerId: true } } } }>;
+type CheckoutCreatedOrder = Prisma.OrderGetPayload<{ include: { items: true; vendor: { select: { id: true; name: true; ownerId: true; vendorType: true } } } }>;
 
 /** What the checkout transaction's body hands to COMMIT. */
 interface CheckoutStaged {
@@ -1970,7 +1970,7 @@ export class OrderService {
             },
           },
           // [PICKUP] requirePickupCode: the checkout answer gives the takeaway code only when the store asks for it.
-          include: { items: true, vendor: { select: { id: true, name: true, ownerId: true, requirePickupCode: true } } },
+          include: { items: true, vendor: { select: { id: true, name: true, ownerId: true, requirePickupCode: true, vendorType: true } } },
         });
 
         // [BOOK-S2 · owner B4] With INSTANT_BOOKING on, the customer's slot is
@@ -2233,7 +2233,7 @@ export class OrderService {
           if (order.vendorId) {
             if (!held) {
               for (const ev of stockEventsByVendor.get(order.vendorId) ?? []) {
-                await this.notifications.lowStock(vendorOwner.userId, ev);
+                await this.notifications.lowStock(vendorOwner.userId, ev, order.vendor?.vendorType);
               }
             }
             stockEventsByVendor.delete(order.vendorId);
@@ -3374,7 +3374,7 @@ export class OrderService {
         where: { id },
         include: {
           items: { select: { id: true } },
-          vendor: { select: { id: true, name: true, ownerId: true } },
+          vendor: { select: { id: true, name: true, ownerId: true, vendorType: true } },
         },
       });
       if (!order) continue;
@@ -3411,7 +3411,7 @@ export class OrderService {
             );
             // [Q12] The low-stock notices checkout held back for this order.
             for (const ev of await this.lowStockEarnedBy(id)) {
-              await this.notifications.lowStock(vendorOwner.userId, ev);
+              await this.notifications.lowStock(vendorOwner.userId, ev, order.vendor.vendorType);
             }
           }
         } catch (err) {

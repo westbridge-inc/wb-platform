@@ -290,7 +290,7 @@ export function NewOrderTakeover({
               in a rush. */}
           {rejecting ? (
             <>
-              {rejectReasonsFor(o?.fulfillment).map((why) => (
+              {rejectReasonsFor(o?.fulfillment, o?.vendor?.vendorType).map((why) => (
                 <PillButton
                   key={why}
                   label={why}

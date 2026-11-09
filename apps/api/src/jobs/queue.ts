@@ -2494,16 +2494,17 @@ export async function createWorkers(ctx: JobContext, queues: SwiftQueues) {
         // The backfill movement (#17 CAT-I): admin-triggered, once per tenant.
         // Idempotent — a re-run writes nothing new and never re-notifies.
         const { runCategoryBackfill } = await import('../modules/discovery/backfill');
+        const { categoryReviewTitle } = await import('../modules/notification/store-kind-notice-words');
         const { NotificationService } = await import('../modules/notification/notification.service');
         const notifications = new NotificationService(ctx.prisma, ctx.io);
         const tenantId = await requireActiveDiscoveryTenant(ctx.prisma, job.data);
         const report = await runWithTenant(tenantId, () =>
           runCategoryBackfill(ctx.prisma, {
             tenantId,
-            notify: (userId: string) => notifications.send({
+            notify: (userId: string, vendorType?: string | null) => notifications.send({
               userId,
               type: 'SYSTEM_ANNOUNCEMENT',
-              title: 'Your menu just got easier to find',
+              title: categoryReviewTitle(vendorType),
               body: 'Review your categories — takes about 2 minutes.',
               data: { kind: 'category_backfill_review' },
             }).then(() => undefined),

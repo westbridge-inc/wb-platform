@@ -14,6 +14,7 @@ import { TYPES_FOR_ROLE, type SubjectRef } from './rating-stats.service';
 import { surfaceOf, NEW_ACTOR_SURFACE, type RatingSurface } from './rating-surface';
 import { getTenantId } from '../../plugins/tenant-context';
 import { RATING_GROUP_SIZE, groupRatings, shownRating, type PersonRatingRole } from './rating-groups';
+import { storeCoachingLine } from '../notification/store-kind-notice-words';
 
 type Role = SubjectRef['role'];
 
@@ -119,10 +120,11 @@ async function rankedTags(prisma: PrismaClient, role: Role, rows: ReadonlyArray<
   return { topPositive, topNegative };
 }
 
-function coachingFor(role: Role, standing: string, topNegative: Array<{ tag: string; label: string }>) {
+function coachingFor(role: Role, standing: string, topNegative: Array<{ tag: string; label: string }>, vendorType?: string | null) {
   return standing === 'ATTENTION' || standing === 'AT_RISK'
     ? topNegative.slice(0, 3)
-        .map((t) => ({ tag: t.tag, label: t.label, line: COACHING[role][t.tag] }))
+        // [STORE-WORDS sweep] A store is coached in its kind's words ("prep time", "a dish" only for a restaurant).
+        .map((t) => ({ tag: t.tag, label: t.label, line: role === 'VENDOR' ? storeCoachingLine(t.tag, COACHING[role][t.tag], vendorType) : COACHING[role][t.tag] }))
         .filter((c): c is { tag: string; label: string; line: string } => !!c.line)
     : [];
 }
@@ -172,7 +174,12 @@ export async function actorStandingView(prisma: PrismaClient, role: Role, subjec
   const { topPositive, topNegative } = await rankedTags(prisma, role, rows);
 
   const standing = stat?.standing ?? 'NEW';
-  const coaching = coachingFor(role, standing, topNegative);
+  // [STORE-WORDS sweep] The store's kind, read only when there is a coaching card to word.
+  const coachingDue = (standing === 'ATTENTION' || standing === 'AT_RISK') && topNegative.length > 0;
+  const vendorType = coachingDue
+    ? (await prisma.vendor.findUnique({ where: { id: subjectId }, select: { vendorType: true } }))?.vendorType
+    : null;
+  const coaching = coachingFor(role, standing, topNegative, vendorType);
 
   return {
     standing,

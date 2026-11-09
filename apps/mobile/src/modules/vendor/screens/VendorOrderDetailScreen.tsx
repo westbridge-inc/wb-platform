@@ -12,6 +12,7 @@ import { mmgDisputePaused } from '../order-dispute';
 import { RiderHandoverLine } from '../RiderHandoverLine';
 import { orderLineOptionsText } from '../orderLineOptions';
 import { rejectReasonsFor } from '../rejectReasons';
+import { promisedTimeName } from '../../../lib/storeKindWords';
 import { orderPaymentLine } from '../storeWords';
 import { storeTimelineLabel } from '../../../lib/orderStatus';
 import { useOrderAction, useRetryDispatch, useSetOrderFulfillmentMode, useVendorOrder, usePickingActions, usePendingPickLines, useVendorMenu, useReturnReceived } from '../../../hooks/vendorops';
@@ -813,7 +814,8 @@ function VendorOrderDetailBody({ navigation, route }: any) {
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: space.md }}>
             <Feather name="clock" size={13} color={color.text.muted} />
             <T variant="caption" tone="muted">
-              Quoted prep time: {order.estimatedPrepTime} min
+              {/* [STORE-WORDS sweep] "prep time" is a kitchen's word: any other store quoted a "ready time". */}
+              Quoted {promisedTimeName(order.vendor?.vendorType)}: {order.estimatedPrepTime} min
               {order.readyAt && order.acceptedAt
                 ? ` · actual ${Math.max(1, Math.round((new Date(order.readyAt).getTime() - new Date(order.acceptedAt).getTime()) / 60000))} min (ready ${fmtClock(order.readyAt)})`
                 : ''}
@@ -893,7 +895,7 @@ function VendorOrderDetailBody({ navigation, route }: any) {
             was recorded as the default "Rejected by vendor". Same presets,
             one tap, and the reason reaches the customer's cancellation
             record. */}
-        {rejectReasonsFor(order.fulfillment).map((why) => (
+        {rejectReasonsFor(order.fulfillment, order.vendor?.vendorType).map((why) => (
           <PillButton
             key={why}
             label={why}

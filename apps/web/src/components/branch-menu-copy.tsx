@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import type { Store } from '@/lib/vendor-api';
 import { copyMenu, type MenuCopyResult } from '@/lib/branches-api';
+import { catalogueName } from '@/lib/catalogue-name';
 import { copyResultWords, newCopyKey } from '@/lib/branch-menu-copy-words';
 
 /**
@@ -12,6 +13,8 @@ import { copyResultWords, newCopyKey } from '@/lib/branch-menu-copy-words';
  * of a business with more than one store.
  */
 export default function BranchMenuCopy({ storeId, stores, onCopied }: { storeId: string; stores: Store[]; onCopied: () => void }) {
+  // [STORE-WORDS sweep] This branch's own word for its items: "menu" only for a restaurant.
+  const catalogue = catalogueName(stores.find((s) => s.id === storeId)?.vendorType);
   // [REVIEW-F #2220 N2] Any other branch of the business, live or not yet (the phone offers the same; the server
   // decides who may copy from where).
   const sources = stores.filter((s) => s.id !== storeId);
@@ -35,7 +38,7 @@ export default function BranchMenuCopy({ storeId, stores, onCopied }: { storeId:
       setKey(null);
       onCopied();
     } catch (e) {
-      setError(e instanceof Error && e.message ? e.message : 'The menu wasn’t copied. Try again.');
+      setError(e instanceof Error && e.message ? e.message : `The ${catalogue.toLowerCase()} wasn’t copied. Try again.`);
     } finally {
       setBusy(false);
     }
@@ -44,14 +47,14 @@ export default function BranchMenuCopy({ storeId, stores, onCopied }: { storeId:
   if (result) {
     return (
       <section aria-labelledby="menu-copied" className="sw-card space-y-1 p-5">
-        <h2 id="menu-copied" className="text-base font-bold">Menu copied</h2>
+        <h2 id="menu-copied" className="text-base font-bold">{catalogue} copied</h2>
         {copyResultWords(result).map((line) => <p key={line} className="text-sm">{line}</p>)}
       </section>
     );
   }
   return (
     <section aria-labelledby="menu-copy" className="sw-card space-y-3 p-5">
-      <h2 id="menu-copy" className="text-base font-bold">Copy the menu from another branch</h2>
+      <h2 id="menu-copy" className="text-base font-bold">Copy the {catalogue.toLowerCase()} from another branch</h2>
       <p className="text-sm text-[var(--swift-muted)]">Its sections, items, options, prices and photos come here. Stock counts stay per branch. You can change anything after.</p>
       <label className="block text-sm font-semibold">Copy from
         <select className="mt-1 w-full rounded-lg border border-[var(--swift-border)] bg-[var(--swift-card)] px-3 py-2 text-sm" value={from}
@@ -61,7 +64,7 @@ export default function BranchMenuCopy({ storeId, stores, onCopied }: { storeId:
       </label>
       {error && <p role="alert" className="text-sm font-semibold text-[var(--swift-red)]">{error}</p>}
       <button type="button" className="sw-btn sw-btn-md" disabled={!from || busy} onClick={() => void copy()}>
-        {busy ? 'Copying…' : `Copy ${source?.name ?? 'that branch'}’s menu here`}
+        {busy ? 'Copying…' : `Copy ${source?.name ?? 'that branch'}’s ${catalogue.toLowerCase()} here`}
       </button>
     </section>
   );

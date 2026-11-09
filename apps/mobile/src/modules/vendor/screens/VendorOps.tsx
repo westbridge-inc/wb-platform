@@ -400,8 +400,9 @@ function VendorBoardEmpty({ store, navigation, reachable, canManage }: any) {
       {canManage && !menuKnown ? (
         <BoardFirstRunRow
           index={1}
-          label={menuQ.isError ? 'Menu status unavailable' : 'Checking your menu'}
-          detail={menuQ.isError ? 'Open the menu to check its items' : 'Loading your menu details'}
+          // [STORE-WORDS sweep] The store's own word for its items: "menu" only for a restaurant.
+          label={menuQ.isError ? `${catalogueMeta(store.vendorType).label} status unavailable` : `Checking your ${catalogueMeta(store.vendorType).label.toLowerCase()}`}
+          detail={menuQ.isError ? `Open the ${catalogueMeta(store.vendorType).label.toLowerCase()} to check its items` : `Loading your ${catalogueMeta(store.vendorType).label.toLowerCase()} details`}
           onPress={() => openMenuList(navigation)}
         />
       ) : canManage && items.length === 0 ? (
@@ -737,10 +738,12 @@ function VendorManagerManageGrid({ navigation, store, myRole, analytics, analyti
   const hoursStale = hoursQ.isError && !!hoursQ.data;
   const qrStale = qrQ.isError && !!qrQ.data;
   const subStale = subQ.isError && !!sub;
+  // [STORE-WORDS sweep] The store's own word for its items ("Menu" only for a restaurant).
+  const catalogue = catalogueMeta(store?.vendorType).label;
   const menuDetail = menuQ.isError && !menuQ.data
-    ? 'Menu unavailable'
+    ? `${catalogue} unavailable`
     : menuQ.isLoading && !menuQ.data
-      ? 'Checking your menu…'
+      ? `Checking your ${catalogue.toLowerCase()}…`
       : `${active} active · ${soldOut} sold out${menuStale ? ' · last loaded' : ''}`;
   const revenueDetail = revenueKnown
     ? `7d ${money(revenueWindow.cur.revenue)}`
@@ -774,7 +777,7 @@ function VendorManagerManageGrid({ navigation, store, myRole, analytics, analyti
       <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: space.md }}>
         <ManageTile
           icon="book-open-outline"
-          label="Menu & inventory"
+          label={catalogue === 'Menu' ? 'Menu & inventory' : catalogue}
           detail={menuDetail}
           badge={soldOut > 0 ? <TonePill label={`${soldOut} SOLD OUT`} tone="warning" /> : undefined}
           badgeLabel={soldOut > 0 ? `${soldOut} sold out` : undefined}
@@ -849,14 +852,14 @@ function VendorManagerManageGrid({ navigation, store, myRole, analytics, analyti
   );
 }
 
-function VendorStaffAvailability({ navigation }: any) {
+function VendorStaffAvailability({ navigation, store }: any) {
   const menuQ = useVendorMenu();
   const items = ((menuQ.data ?? []) as any[]).flatMap((category: any) => category.items ?? []);
   const soldOut = items.filter((item: any) => item.isAvailable === false).length;
   const detail = menuQ.isError && !menuQ.data
     ? 'Availability unavailable'
     : menuQ.isLoading && !menuQ.data
-      ? 'Checking your menu…'
+      ? `Checking your ${catalogueMeta(store?.vendorType).label.toLowerCase()}…`
       : `${soldOut} sold out · one-tap updates${menuQ.isError && menuQ.data ? ' · last loaded' : ''}`;
   return (
     <View style={{ marginTop: space.lg, marginBottom: space.xl }}>
@@ -886,7 +889,7 @@ export function VendorOps({ store, navigation }: any) {
   // [E10 · DS200 D1] The board's Reject/Decline opens the same reason chooser
   // as the order screen: the API refuses a rejection without a reason, so a
   // bare tap used to fail with nothing on screen.
-  const [rejecting, setRejecting] = useState<{ id: string; fulfillment?: string | null } | null>(null);
+  const [rejecting, setRejecting] = useState<{ id: string; fulfillment?: string | null; vendorType?: string | null } | null>(null);
   // [OTA-CATCH-UP] Nor the reject question (its reason is being chosen).
   useOtaRestartHold(rejecting !== null);
   const toggleOpen = useToggleOpen();
@@ -957,7 +960,7 @@ export function VendorOps({ store, navigation }: any) {
   const openOrder = (o: any) => navigation.navigate('VendorOrderDetail', { orderId: o.id, orderNumber: o.orderNumber });
   const onCardAction = (o: any, action: VendorOrderActionKind, code?: string) => {
     const tap = cardTapFor(action);
-    if (tap === 'reject') setRejecting({ id: o.id, fulfillment: o.fulfillment });
+    if (tap === 'reject') setRejecting({ id: o.id, fulfillment: o.fulfillment, vendorType: o.vendor?.vendorType });
     else if (tap === 'open') openOrder(o);
     else orderAction.mutate({ id: o.id, action, code });
   };
@@ -1241,7 +1244,7 @@ export function VendorOps({ store, navigation }: any) {
             analyticsUpdatedAt={analyticsQ.dataUpdatedAt}
           />
         ) : (
-          <VendorStaffAvailability navigation={navigation} />
+          <VendorStaffAvailability navigation={navigation} store={store} />
         )}
 
         {/* Store status. In §B preview the controls are honestly locked — the
@@ -1374,7 +1377,7 @@ export function VendorOps({ store, navigation }: any) {
         <T variant="body" tone="muted" center style={{ marginTop: space.sm }}>
           The customer is told right away — pick what happened. This can’t be undone.
         </T>
-        {rejectReasonsFor(rejecting?.fulfillment).map((why) => (
+        {rejectReasonsFor(rejecting?.fulfillment, rejecting?.vendorType ?? store?.vendorType).map((why) => (
           <PillButton
             key={why}
             label={why}

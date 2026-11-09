@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { useMutation, useQueryClient, type QueryClient, type QueryKey } from '@tanstack/react-query';
 import { Modal } from '@/components/modal';
 import { storeKey } from '@/lib/store-scope';
+import { catalogueName } from '@/lib/catalogue-name';
 import Image from 'next/image';
 import { photo as storePhoto } from '@/lib/media';
 import { GRA_VAT_URL } from '@/lib/gra-vat-url';
@@ -502,7 +503,7 @@ export function ItemEditor({
             {stock.trim() !== '' ? <p className="sw-caption">Tracked items sell down automatically and hide at 0. You’ll get an alert at your low-stock level.</p>
               : <p className="sw-caption">{SOLD_IN_STORE.untracked}</p>}
           </div>
-          <OptionsSection storeId={storeId} item={item} drafts={draftGroups} setDrafts={setDraftGroups} vatPricing={vatPricing} />
+          <OptionsSection storeId={storeId} item={item} drafts={draftGroups} setDrafts={setDraftGroups} vatPricing={vatPricing} vendorType={vendorType} />
         </>
       )}
 
@@ -516,7 +517,7 @@ export function ItemEditor({
       </div>
 
       {save.isError ? (
-        <p role="alert" className="mt-4 text-sm font-semibold text-[var(--swift-red)]">{refusalWords(save.error) ?? "Couldn't save. Check the details and try again."}</p>
+        <p role="alert" className="mt-4 text-sm font-semibold text-[var(--swift-red)]">{refusalWords(save.error, vendorType) ?? "Couldn't save. Check the details and try again."}</p>
       ) : null}
       {notice ? <p role="status" className="mt-4 text-sm font-semibold text-amber-700">{notice}</p> : null}
       <div className="mt-5 flex gap-3">
@@ -548,12 +549,13 @@ function Chip({ label, on, onClick }: { label: string; on: boolean; onClick: () 
 
 /** Options & add-ons (sizes, toppings, extras). A new item keeps them here and sends them with it; an existing item's
  *  changes go one at a time, each shown from the server's answer (as the app's ModifiersSection). */
-function OptionsSection({ storeId, item, drafts, setDrafts, vatPricing = null }: {
+function OptionsSection({ storeId, item, drafts, setDrafts, vatPricing = null, vendorType }: {
   storeId: string | null;
   item: MenuItem | null;
   drafts: DraftGroup[];
   setDrafts: (_update: (_groups: DraftGroup[]) => DraftGroup[]) => void;
   vatPricing?: VatPricing;
+  vendorType?: string;
 }) {
   // [security review #2256] The same word as the item's price field: the wording and the payload never disagree.
   const vatAdded = vatPricing?.adds === true;
@@ -573,7 +575,7 @@ function OptionsSection({ storeId, item, drafts, setDrafts, vatPricing = null }:
     setSaved(next);
     if (item) qc.setQueryData<CatalogItem[]>(keys.itemsAll, (rows) => rows?.map((r) => (r.id === item.id ? { ...r, optionGroups: next } as CatalogItem : r)));
   };
-  const failed = (e: unknown) => setError(refusalWords(e) ?? "That didn't save. Check your connection and try again.");
+  const failed = (e: unknown) => setError(refusalWords(e, vendorType) ?? "That didn't save. Check your connection and try again.");
 
   const addGroup = useMutation({
     mutationFn: (body: { name: string; isRequired: boolean; minSelect: number; maxSelect: number }) => addOptionGroup(item!.id, body),
@@ -725,13 +727,14 @@ export function SectionDialog({ storeId, vendorType, section, itemCount, mode, o
       onClose();
     },
   });
-  const failure = write.isError ? refusalWords(write.error) ?? "That didn't save. Check your connection and try again." : null;
+  const failure = write.isError ? refusalWords(write.error, vendorType) ?? "That didn't save. Check your connection and try again." : null;
   if (mode === 'delete' && section) {
     return (
       <Modal labelledBy="section-delete-title" onClose={onClose} className="bg-[var(--swift-card)] px-6 pb-6 pt-5">
         <h2 id="section-delete-title" className="sw-title text-center">Delete “{section.name}”?</h2>
         <p className="sw-caption mt-2 text-center">
-          {itemCount > 0 ? `This removes the section AND its ${itemCount} item${itemCount === 1 ? '' : 's'} from your menu.` : 'This removes the empty section from your menu.'}
+          {/* [STORE-WORDS sweep] The store's own word for its items: "menu" only for a restaurant. */}
+          {itemCount > 0 ? `This removes the section AND its ${itemCount} item${itemCount === 1 ? '' : 's'} from your ${catalogueName(vendorType).toLowerCase()}.` : `This removes the empty section from your ${catalogueName(vendorType).toLowerCase()}.`}
         </p>
         {failure ? <p role="alert" className="mt-2 text-center text-sm font-semibold text-[var(--swift-red)]">{failure}</p> : null}
         <button type="button" className="sw-btn sw-btn-md sw-btn-block mt-5" disabled={write.isPending} onClick={() => write.mutate()}>
@@ -758,7 +761,7 @@ export function SectionDialog({ storeId, vendorType, section, itemCount, mode, o
 }
 
 /** "Delete item?" — the app's ask (an item is archived: off the menu for good). */
-export function DeleteItemDialog({ storeId, item, onClose }: { storeId: string | null; item: { id: string; name: string }; onClose: () => void }) {
+export function DeleteItemDialog({ storeId, item, vendorType, onClose }: { storeId: string | null; item: { id: string; name: string }; vendorType?: string; onClose: () => void }) {
   const qc = useQueryClient();
   const keys = keysFor(storeId);
   const del = useMutation({
@@ -772,8 +775,8 @@ export function DeleteItemDialog({ storeId, item, onClose }: { storeId: string |
   return (
     <Modal labelledBy="item-delete-title" onClose={onClose} className="bg-[var(--swift-card)] px-6 pb-6 pt-5">
       <h2 id="item-delete-title" className="sw-title text-center">Delete item?</h2>
-      <p className="sw-caption mt-2 text-center">Remove &quot;{item.name}&quot; from your menu.</p>
-      {del.isError ? <p role="alert" className="mt-2 text-center text-sm font-semibold text-[var(--swift-red)]">{refusalWords(del.error) ?? "That didn't go through. Try again."}</p> : null}
+      <p className="sw-caption mt-2 text-center">Remove &quot;{item.name}&quot; from your {catalogueName(vendorType).toLowerCase()}.</p>
+      {del.isError ? <p role="alert" className="mt-2 text-center text-sm font-semibold text-[var(--swift-red)]">{refusalWords(del.error, vendorType) ?? "That didn't go through. Try again."}</p> : null}
       <button type="button" className="sw-btn sw-btn-md sw-btn-block mt-5" disabled={del.isPending} onClick={() => del.mutate()}>Delete</button>
       <button type="button" className="sw-btn-outline mt-3 min-h-11 w-full rounded-lg text-sm font-semibold" onClick={onClose} data-modal-initial-focus>Cancel</button>
     </Modal>
@@ -805,5 +808,5 @@ export function MenuDialog({ dialog, storeId, sections, counts, vendorType, inst
     return <SectionDialog storeId={storeId} vendorType={vendorType} section={dialog.section} mode={dialog.mode}
       itemCount={dialog.section ? counts.get(dialog.section.id) ?? 0 : 0} onClose={onClose} />;
   }
-  return <DeleteItemDialog storeId={storeId} item={dialog.item} onClose={onClose} />;
+  return <DeleteItemDialog storeId={storeId} item={dialog.item} vendorType={vendorType} onClose={onClose} />;
 }

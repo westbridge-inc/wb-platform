@@ -44,7 +44,7 @@ export function FirstOrderGuide({ store, manager, listening }: { store: HubStore
       <p className="mt-2 opacity-90">Orders land here the second they&apos;re placed, with a sound you can&apos;t miss. These bring the first one sooner:</p>
       <div className="mt-4 space-y-2">
         {manager && !itemsQ.isSuccess ? (
-          <GuideRow index={1} label={itemsQ.isError ? 'Menu status unavailable' : 'Checking your menu'} detail={itemsQ.isError ? 'Open the menu to check its items' : 'Loading your menu details'} href="/dashboard/inventory" />
+          <GuideRow index={1} label={itemsQ.isError ? `${catalogueName(store.vendorType)} status unavailable` : `Checking your ${catalogue}`} detail={itemsQ.isError ? `Open the ${catalogue} to check its items` : `Loading your ${catalogue} details`} href="/dashboard/inventory" />
         ) : manager && items.length === 0 ? (
           <GuideRow index={1} label="Add your first item" detail={`Your ${catalogue} is empty — nothing to order yet`} href="/dashboard/inventory" />
         ) : manager ? (

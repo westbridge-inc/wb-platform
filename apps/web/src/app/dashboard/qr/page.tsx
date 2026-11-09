@@ -5,6 +5,7 @@ import { useQuery } from '@tanstack/react-query';
 import { Check, CheckCircle2, ChevronDown, ChevronRight, Copy, ExternalLink, Maximize, PhoneOff, Share2, ShoppingBag } from 'lucide-react';
 import { storeKey, useStoreId } from '@/lib/store-scope';
 import { useStoreRole } from '@/lib/store-role';
+import { useCatalogueName } from '@/lib/catalogue-name';
 import { getQr, getQrPublicState } from '@/lib/vendor-api';
 
 /**
@@ -64,6 +65,8 @@ function HowItWorks() {
 
 export default function StoreQrPage() {
   const storeId = useStoreId();
+  // [STORE-WORDS sweep] "web menu" only for a restaurant: any other store's page is its store on the web.
+  const webMenu = useCatalogueName() === 'Menu';
   const { manager, known } = useStoreRole();
   // The phone re-reads the code every minute and when the app comes back; here, every minute and on focus.
   const qr = useQuery({ queryKey: storeKey(storeId, 'qr'), queryFn: getQr, enabled: manager, refetchInterval: 60_000 });
@@ -148,7 +151,7 @@ export default function StoreQrPage() {
                 <p className="font-bold">{vendorName}</p>
                 <span className="whitespace-nowrap rounded-full bg-[var(--swift-sunken)] px-3 py-1 text-[12px] font-semibold text-[var(--swift-muted)]">v{data.version}</span>
               </div>
-              <p className={`mt-1 text-[13px] ${live ? 'text-[var(--swift-muted)]' : 'text-[var(--swift-warning)]'}`}>{STATE_WORDS[publicState]}</p>
+              <p className={`mt-1 text-[13px] ${live ? 'text-[var(--swift-muted)]' : 'text-[var(--swift-warning)]'}`}>{publicState === 'live' && !webMenu ? 'Customers scan this to open your store on the web — no app install' : STATE_WORDS[publicState]}</p>
               <button
                 type="button"
                 onClick={() => void copyLink()}
@@ -180,11 +183,11 @@ export default function StoreQrPage() {
                 )}
                 {live ? (
                   <a href={data.canonicalUrl ?? undefined} target="_blank" rel="noopener noreferrer" className="sw-btn sw-btn-md sw-btn-outline flex-1">
-                    <ExternalLink size={16} aria-hidden="true" />Open web menu
+                    <ExternalLink size={16} aria-hidden="true" />{webMenu ? 'Open web menu' : 'Open web store'}
                   </a>
                 ) : (
                   <button type="button" disabled className={`sw-btn sw-btn-md sw-btn-outline flex-1 ${disabledLook}`}>
-                    <ExternalLink size={16} aria-hidden="true" />Open web menu
+                    <ExternalLink size={16} aria-hidden="true" />{webMenu ? 'Open web menu' : 'Open web store'}
                   </button>
                 )}
               </div>

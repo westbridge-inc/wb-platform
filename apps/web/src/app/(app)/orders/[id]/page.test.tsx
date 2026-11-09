@@ -918,3 +918,15 @@ describe('[STORE-WORDS · owner 9 Nov 2026] the order\'s ready estimate speaks t
     expect(await estimate('RESTAURANT')).toContain('About 20 min prep');
   });
 });
+
+describe('[STORE-WORDS sweep · review note 3] a booking is never "ready"', () => {
+  it('a service booking that carries a time shows its appointment, never "Ready in about N min"', async () => {
+    vi.spyOn(orders, 'getOrder').mockResolvedValue({
+      ...ORDER, paymentAction: null, fulfillment: 'APPOINTMENT', appointmentSlot: '2026-09-24T13:00:00.000Z', estimatedPrepTime: 20,
+      vendor: { id: 'v1', name: 'Westbridge Inc.', vendorType: 'SERVICE' },
+    } as never);
+    render(<OrderDetailPage />);
+    expect(await screen.findByText(/Thu, Sep 24, 9:00 AM/)).toBeTruthy();
+    expect(document.body.textContent ?? '').not.toMatch(/Ready in about|min prep/);
+  });
+});

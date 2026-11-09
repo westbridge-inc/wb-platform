@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { getProfile, updateProfile } from '@/lib/vendor-api';
 import { storeKey } from '@/lib/store-scope';
+import { workingOrderWord } from '@/lib/store-kind-words';
 
 /** The most the web card offers; the server takes up to 1000. */
 export const KITCHEN_CAPACITY_MAX = 100;
@@ -22,9 +23,10 @@ export function storedKitchenCapacity(store: unknown): number | null {
  * minutes"); nothing queues. A slot frees when an order is collected
  * (PICKED_UP) or cancelled. The phone card says the same (lib/kitchenCapacity.ts).
  */
-export function kitchenCapacityLine(count: number | null): string {
+export function kitchenCapacityLine(count: number | null, vendorType?: string | null): string {
   if (count == null) return 'No limit. Set one if too many orders at once would make every order late: customers are asked to try again in a few minutes.';
-  return `Up to ${count} ${count === 1 ? 'order' : 'orders'} at a time (new, cooking or ready). Once you have that many, customers cannot order from you until one is collected or cancelled: they are asked to try again in a few minutes.`;
+  // [STORE-WORDS sweep] "cooking" only in a kitchen; a shop's orders are "being prepared".
+  return `Up to ${count} ${count === 1 ? 'order' : 'orders'} at a time (new, ${workingOrderWord(vendorType)} or ready). Once you have that many, customers cannot order from you until one is collected or cancelled: they are asked to try again in a few minutes.`;
 }
 
 /**
@@ -58,7 +60,7 @@ export function KitchenCapacityCard({ storeId }: { storeId: string | null }) {
     <div className="sw-card p-6">
       <h2 className="font-bold" id="kitchen-capacity-title">How many orders at once</h2>
       <p className="mt-1 text-sm text-[var(--swift-muted)]">
-        {kitchenCapacityLine(count)}
+        {kitchenCapacityLine(count, store.vendorType)}
       </p>
       <div className="mt-3 flex flex-wrap items-center gap-3" role="group" aria-labelledby="kitchen-capacity-title">
         <button type="button" className="sw-chip" disabled={count == null || save.isPending} onClick={() => { save.reset(); setCount((c) => (c == null || c <= 1 ? null : c - 1)); }}>Fewer</button>

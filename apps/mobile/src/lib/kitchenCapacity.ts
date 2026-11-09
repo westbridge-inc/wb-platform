@@ -1,3 +1,5 @@
+import { workingOrderWord } from './storeKindWords';
+
 // [RIDER-SAFE 4 · FUL-007] "How many orders at once" (the store's maxConcurrentOrders): the card's pure rules.
 
 /** The most the card offers; the server takes up to 1000. */
@@ -20,9 +22,10 @@ export function nextKitchenCapacity(current: number | null, step: 'fewer' | 'mor
  * checkout REFUSES new orders (VENDOR_AT_CAPACITY, "try again in a few
  * minutes"); nothing queues. The website's card says the same.
  */
-export function kitchenCapacityLine(count: number | null): string {
+export function kitchenCapacityLine(count: number | null, vendorType?: string | null): string {
   if (count == null) return 'No limit. Set one if too many orders at once would make every order late: customers are asked to try again in a few minutes.';
-  return `Up to ${count} ${count === 1 ? 'order' : 'orders'} at a time (new, cooking or ready). Once you have that many, customers cannot order from you until one is collected or cancelled: they are asked to try again in a few minutes.`;
+  // [STORE-WORDS sweep] "cooking" only in a kitchen; a shop's orders are "being prepared".
+  return `Up to ${count} ${count === 1 ? 'order' : 'orders'} at a time (new, ${workingOrderWord(vendorType)} or ready). Once you have that many, customers cannot order from you until one is collected or cancelled: they are asked to try again in a few minutes.`;
 }
 
 /** [RIDER-SAFE 4/5] What the store is told, from GET /vendor/vendor/delivery-status; null while delivery is open or unknown. */

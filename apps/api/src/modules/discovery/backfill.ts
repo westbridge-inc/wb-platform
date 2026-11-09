@@ -30,7 +30,8 @@ export async function runCategoryBackfill(
   opts: {
     tenantId: string;
     /** Send the review notification to vendors with pending suggestions. */
-    notify?: (userId: string) => Promise<void>;
+    /** [STORE-WORDS sweep] The store's kind rides along, so the notice is worded for it. */
+    notify?: (userId: string, vendorType?: string | null) => Promise<void>;
     batchSize?: number;
   },
 ): Promise<BackfillReport> {
@@ -101,10 +102,10 @@ export async function runCategoryBackfill(
       if (already.has(vendorId)) continue;
       const vendor = await prisma.vendor.findFirst({
         where: { id: vendorId, tenantId, owner: { user: { tenantId } } },
-        select: { owner: { select: { userId: true } } },
+        select: { vendorType: true, owner: { select: { userId: true } } },
       });
       if (!vendor) continue;
-      await opts.notify(vendor.owner.userId).catch(() => undefined);
+      await opts.notify(vendor.owner.userId, vendor.vendorType).catch(() => undefined);
       already.add(vendorId);
       vendorsNotified += 1;
     }

@@ -20,6 +20,7 @@ import { PAYER_INCLUDE, payerUserIdOf } from '../subscription/subscription-owner
 import { providerFeeNotice } from './provider-fee-kinds';
 import { formatGuyanaTime } from '../../utils/guyana-day';
 import { orderDeliveredWords, orderReadyWords, type OrderReadyFacts } from '../order/order-notice-words';
+import { lowStockNoticeWords } from './store-kind-notice-words';
 
 /** Per-user channel switches; the vendor order alert ignores these. */
 interface NotificationPrefs {
@@ -1062,14 +1063,13 @@ export class NotificationService {
   async lowStock(
     userId: string,
     ev: { itemId: string; name: string; remaining: number; kind: 'low' | 'out' },
+    /** [STORE-WORDS sweep] The store's kind: "hidden from your menu" only for a restaurant. */
+    vendorType?: string | null,
   ): Promise<void> {
     await this.send({
       userId,
       type: 'LOW_STOCK',
-      title: ev.kind === 'out' ? 'Item sold out' : 'Low stock',
-      body: ev.kind === 'out'
-        ? `${ev.name} sold out and was hidden from your menu. Restock to bring it back.`
-        : `${ev.name} is down to ${ev.remaining} in stock.`,
+      ...lowStockNoticeWords(ev, vendorType),
       data: { kind: 'low_stock', itemId: ev.itemId, remaining: ev.remaining },
     });
   }
