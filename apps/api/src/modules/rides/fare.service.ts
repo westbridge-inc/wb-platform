@@ -2,6 +2,7 @@ import type { PrismaClient, RideClass } from '@prisma/client';
 import { isRideClassServed } from '../../config/vehicle-classes';
 import { assertRoadQuoteAvailable, getMapsProvider, isRoadQuote, type MapsProvider, type RouteLegsEstimate, type RouteSource } from '../../providers/maps/maps-provider';
 import { canonicalBillableKm } from '../../utils/billable-distance';
+import { allFinite, centsOf, divRoundHalfUp, metresOf, millionthsOf } from '../../utils/fare-integer';
 import { AppError } from '../../utils/errors';
 import { type GeoPoint } from '../../utils/geo';
 import { resolveFareZonePath, resolveFareZones, zonePricedPairs, zoneTaxiPerKm, DEFAULT_TENANT_ID } from './fare-zones';
@@ -68,12 +69,15 @@ export function classesAtOrBelow(driverClass: RideClass): RideClass[] {
  * Apply a tier multiplier to the base (Economy) fare. Economy (×1.0) is returned
  * unchanged so existing fares never move. Other tiers scale the fare and the
  * per-class minimum, with the same cash-friendly 100-unit rounding as the formula.
+ * [FARE-INTEGER] Exact: cents × the multiplier in millionths, rounded once to the
+ * nearest 100 (a half up). In floating point 5,000 × 0.57 = 2,850 came out a hair
+ * under and rounded DOWN to 2,800; the live multipliers never hit such an edge.
  */
 export function applyClassMultiplier(baseFare: number, multiplier: number, baseMinimum: number): number {
   if (multiplier === 1) return baseFare;
-  const scaled = Math.round((baseFare * multiplier) / 100) * 100;
-  const scaledMin = Math.round((baseMinimum * multiplier) / 100) * 100;
-  return Math.max(scaledMin, scaled);
+  if (!allFinite(baseFare, multiplier, baseMinimum)) return NaN;
+  const toHundred = (fare: number) => Number(divRoundHalfUp(centsOf(fare) * millionthsOf(multiplier), 10_000n * 1_000_000n)) * 100;
+  return Math.max(toHundred(baseMinimum), toHundred(baseFare));
 }
 
 /**
@@ -83,10 +87,26 @@ export function applyClassMultiplier(baseFare: number, multiplier: number, baseM
  * whole route: it comes here once, never once per leg — no fee per stop,
  * none for waiting. With no included kilometres (0, or unnamed) the formula
  * is exactly what it was before they existed.
+ *
+ * [FARE-INTEGER, 8 Nov 2026] Exact integer maths (whole metres, cents,
+ * thousandths of a minute), then ONE rounding to the nearest 100 (a half up).
+ * In floating point a fare exactly half way could land a hair below and round
+ * a hundred DOWN (a zone per-km of 250, 129.2 km: 800 + 126.2 × 250 = 32,350 →
+ * 32,400, but the float charged 32,300). Georgetown's 175 and the airports'
+ * 295 never land on such an edge; any rate the pricing screen accepts now
+ * prices exactly. The fare rule is unchanged.
  */
 export function formulaFare(rates: TaxiRates, billableKm: number, durationMin: number): number {
-  const raw = rates.base + rates.perKm * Math.max(0, billableKm - (rates.includedKm ?? 0)) + rates.perMin * durationMin;
-  return assertSaneFare(Math.max(rates.minimum, Math.round(raw / 100) * 100), 'formula');
+  const includedKm = rates.includedKm ?? 0;
+  let fare = NaN; // a non-finite input stays unpriceable: assertSaneFare refuses it, as before
+  if (allFinite(rates.base, rates.perKm, rates.perMin, billableKm, includedKm, durationMin)) {
+    const metresOver = metresOf(billableKm) - metresOf(includedKm);
+    // Thousandths of a cent: the base, metres past the included distance × cents per km, thousandths of a minute × cents per minute.
+    const units = centsOf(rates.base) * 1000n + (metresOver > 0n ? metresOver : 0n) * centsOf(rates.perKm)
+      + BigInt(Math.round(durationMin * 1000)) * centsOf(rates.perMin);
+    fare = Number(divRoundHalfUp(units, 100n * 100_000n)) * 100;
+  }
+  return assertSaneFare(Math.max(rates.minimum, fare), 'formula');
 }
 
 export interface TierEstimate {

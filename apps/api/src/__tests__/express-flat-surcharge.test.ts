@@ -134,8 +134,9 @@ describe('express = the delivery fee + GYD 1,000, quoted, charged and paid to th
     expect(stdRes.statusCode, stdRes.body).toBe(200);
     const std = stdRes.json().data;
     const standardFee: number = std.standardDeliveryFee;
-    if (feeKind === 'base') expect(standardFee).toBe(500);
-    else expect(standardFee).toBeGreaterThan(500); // further away costs more; the premium does not
+    // [owner 8 Nov 2026] the base is 800 (was 500).
+    if (feeKind === 'base') expect(standardFee).toBe(800);
+    else expect(standardFee).toBeGreaterThan(800); // further away costs more; the premium does not
     expect(std).toMatchObject({ express: false, deliveryFee: standardFee, expressSurcharge: 1000, expressTotal: std.totalAmount + 1000 });
 
     // The express quote: the fee and the total are each exactly 1,000 more.
@@ -187,7 +188,7 @@ describe('a Swift-paid free-delivery code covers the normal fee only [owner 1 No
     expect(quoted.statusCode, quoted.body).toBe(200);
     const q = quoted.json().data;
     const standardFee: number = q.standardDeliveryFee;
-    expect(standardFee).toBeGreaterThan(500);
+    expect(standardFee).toBeGreaterThan(800); // beyond the 800 base [owner 8 Nov 2026]
     expect(q).toMatchObject({ express: true, deliveryFee: standardFee + 1000, expressSurcharge: 1000, discount: standardFee, totalAmount: ITEM_PRICE + 1000 });
 
     const placed = await inject('POST', '/api/v1/customer/checkout', { paymentMethod: 'MOBILE_MONEY', express: true, promoCode: promo.code, tipAmount: 0, expectedTotal: q.totalAmount }, c.token);

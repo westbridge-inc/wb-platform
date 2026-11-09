@@ -435,7 +435,7 @@ describe('GOLD-2 · VEND-03 / MONEY-02 / CUST-02 — an MMG order end to end', (
 
     const { order, paymentAction } = await dinerOrder();
     // One MMG Pepperpot plus the delivery leg (inside the included distance).
-    expect({ total: order.total, deliveryFee: order.deliveryFee }).toEqual({ total: 3000, deliveryFee: 500 });
+    expect({ total: order.total, deliveryFee: order.deliveryFee }).toEqual({ total: 3300, deliveryFee: 800 }); // the 800 base [owner 8 Nov 2026]
     expect(paymentAction).toEqual({
       kind: 'OPEN_EXTERNAL_URL', method: 'MOBILE_MONEY', provider: 'MMG', fundsFlow: 'DIRECT_TO_VENDOR',
       orderId: order.id, recipientName: 'Gold MMG Diner', amount: order.total, url: DINER_LINK,

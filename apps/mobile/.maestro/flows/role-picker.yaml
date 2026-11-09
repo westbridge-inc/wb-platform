@@ -7,9 +7,11 @@ tags:
 - assertVisible:
     id: role-picker-customer
 - assertVisible:
-    id: role-picker-mover
-- assertVisible:
     id: role-picker-vendor
+- assertVisible:
+    id: role-picker-delivery
+- assertVisible:
+    id: role-picker-taxi
 - assertVisible:
     id: role-picker-sign-in
 - assertVisible:

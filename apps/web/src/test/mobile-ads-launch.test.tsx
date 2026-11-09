@@ -63,7 +63,7 @@ describe('advertising launch entry', () => {
     mount();
     await waitFor(() => expect(mocks.get).toHaveBeenCalledWith('/public/capabilities'));
     expect(screen.queryByTestId('role-picker-advertiser')).toBeNull();
-    expect(screen.getByText('Swift Business')).toBeTruthy();
+    expect(screen.getByText('Sell on Swift')).toBeTruthy();
   });
   it('hides advertising while loading and after an unavailable capability read', async () => {
     mocks.get.mockRejectedValue(new Error('offline'));
@@ -91,7 +91,7 @@ describe('saved advertising surfaces', () => {
     render(<QueryClientProvider client={client}><AdvertiserStack /></QueryClientProvider>);
     await waitFor(() => expect(screen.queryByText('Advertiser registration')).toBeNull());
     expect(mocks.myAdvertisers).not.toHaveBeenCalled();
-    expect(screen.getByText('Swift Business')).toBeTruthy();
+    expect(screen.getByText('Sell on Swift')).toBeTruthy();
   });
   it('still reaches advertiser registration when enabled', async () => {
     mocks.get.mockResolvedValue({ data: { success: true, data: { adsEnabled: true } } });
