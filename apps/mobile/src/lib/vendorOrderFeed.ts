@@ -56,10 +56,16 @@ export function bindVendorOrderFeed(
   const onDrop = () => { dropped = true; refreshOverview(); };
   // [STORE-ALERT-RECONNECT] ...and re-reads the board: an order:new sent while the room was down
   // is never replayed, so the board's own read raises the new-order screen for it.
-  const onBack = () => { if (!dropped) return; dropped = false; refreshOverview(); refresh(); };
+  // [S4-1] The room join itself waits for the server's 'auth:ready' (services/socket.ts holds it), so an
+  // order created between the read on 'connect' and the join reaching the server would be in neither:
+  // the first 'auth:ready' after a drop reads the board once more.
+  let readOnReady = false;
+  const onBack = () => { if (!dropped) return; dropped = false; readOnReady = true; refreshOverview(); refresh(); };
+  const onReady = () => { if (!readOnReady) return; readOnReady = false; refresh(); };
   join();
   socket.on('connect', join);
   socket.on('connect', onBack);
+  socket.on('auth:ready', onReady);
   socket.on('disconnect', onDrop);
   socket.on('order:new', onNew);
   socket.on('order:status_changed', onStatus);
@@ -76,6 +82,7 @@ export function bindVendorOrderFeed(
     if (trailing) { clearTimeout(trailing); trailing = null; }
     socket.off('connect', join);
     socket.off('connect', onBack);
+    socket.off('auth:ready', onReady);
     socket.off('disconnect', onDrop);
     socket.off('order:new', onNew);
     socket.off('order:status_changed', onStatus);

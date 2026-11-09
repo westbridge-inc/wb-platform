@@ -5437,6 +5437,8 @@ model AuditLog {
   userAgent String?
   createdAt DateTime @default(now())
 
+  // [#2412] customer reads look up Swift support's audit rows by order (migration 20261108120000).
+  @@index([entityId])
   @@map("audit_logs")
 }
 

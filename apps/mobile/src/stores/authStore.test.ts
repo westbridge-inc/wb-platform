@@ -59,6 +59,7 @@ import { readFileSync } from 'node:fs';
 import { logoutAndSwitchExperience } from '../modules/advertiser/advertiserExit';
 import { useBookingStore } from './bookingStore';
 import { useVendorPreview } from './vendorPreview';
+import { HANDLED_TAKEOVERS_STORAGE_KEY, markTakeoverHandled, takeoverHandled } from '../lib/handledTakeovers';
 
 const priorIntents = ['customer', 'mover', 'vendor', 'advertiser'] as const;
 
@@ -715,6 +716,20 @@ describe('the account whose session ended last (owner of a tap made while signed
     expect(useAuthStore.getState().logoutIfCurrent(a)).toBe(false);
     expect(getLastSignedOutUserId()).toBe('a'); // A's stale 401 ends nothing
     await teardownFinished('refresh-last-a');
+  });
+
+  // [STORE-ALERT-RECONNECT · S4-2] The store's answered new-order screens are kept in the encrypted
+  // device storage for the signed-in account; a session end wipes them, there and in memory. (One
+  // session, its teardown awaited like every case here; "another account never reads it" is covered
+  // by hooks/vendorops.takeoverRaise.navigation.test.ts.)
+  it('wipes the store alerts answered on this phone, on the device too', async () => {
+    useAuthStore.getState().setAuth(user('s'), 'access-s', 'refresh-last-s');
+    markTakeoverHandled('s', 'store-a', 'o1', Date.now() + 60_000);
+    expect(storageData.has(HANDLED_TAKEOVERS_STORAGE_KEY)).toBe(true);
+    useAuthStore.getState().logout();
+    expect(storageData.has(HANDLED_TAKEOVERS_STORAGE_KEY)).toBe(false);
+    expect(takeoverHandled('s', 'store-a', 'o1')).toBe(false);
+    await teardownFinished('refresh-last-s');
   });
 
   it('is the account a 401 logout ended', async () => {

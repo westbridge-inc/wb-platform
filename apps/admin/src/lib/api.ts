@@ -621,8 +621,8 @@ export const resolveMmgRefund = (sendId: string, received: boolean, note: string
 export const voidMmgRefund = (id: string, note: string, reason: string) =>
   apiFetch(`/api/v1/admin/mmg-refunds/${id}/void`, { method: 'POST', body: JSON.stringify({ note }), reason });
 /** Close a store-claimed MMG order as "refund handled by the store". Two people, bound to the claim revision on screen. */
-export const closeStoreRefund = (id: string, expectedClaimRevision: number, reason: string) =>
-  apiFetch(`/api/v1/admin/orders/${id}/close-store-refund`, { method: 'POST', body: JSON.stringify({ expectedClaimRevision }), reason });
+export const closeStoreRefund = (id: string, expectedClaimRevision: number, reason: string, customerReason: string) =>
+  apiFetch(`/api/v1/admin/orders/${id}/close-store-refund`, { method: 'POST', body: JSON.stringify({ expectedClaimRevision, customerReason }), reason });
 
 export const fetchReturns = (status?: string) =>
   apiFetch(`/api/v1/admin/returns?limit=50${status ? `&status=${status}` : ''}`);
@@ -898,8 +898,10 @@ export const setDriverRideClass = (id: string, rideClass: string, reason: string
   apiFetch(`/api/v1/admin/drivers/${id}/ride-class`, { method: 'PUT', body: JSON.stringify({ rideClass }), reason });
 // [A-14] `refund: true` records that a refund is OWED. It does not mark
 // anything refunded — settleOrderRefund below is the only thing that can.
-export const cancelOrder = (id: string, body: { refund?: boolean }, reason: string) =>
-  apiFetch(`/api/v1/admin/orders/${id}/cancel`, { method: 'PUT', body: JSON.stringify({ ...body, reason }), reason });
+/** [COORD 8 Nov 2026] `customerReason` is what the customer is told (a fixed code); `reason` is Swift's internal note,
+ *  sent only as the stated reason (the audit record), never in the body the order is built from. */
+export const cancelOrder = (id: string, body: { refund?: boolean; customerReason: string }, reason: string) =>
+  apiFetch(`/api/v1/admin/orders/${id}/cancel`, { method: 'PUT', body: JSON.stringify(body), reason });
 
 /** [BUG-HUNT-2 G01] A ride in progress that cannot finish: closed with no fare, and both sides told. */
 export const endStuckRide = (id: string, reason: string) =>

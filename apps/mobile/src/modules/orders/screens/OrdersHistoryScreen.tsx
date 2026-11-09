@@ -21,6 +21,7 @@ import { toast } from '../../../kit/toast';
 // never described with a store's words. This screen owns tone, never wording.
 import { orderStatusLabel, presentedVertical } from '../../../lib/orderStatus';
 import type { OrderVerticalFacts } from '@swift/types';
+import { customerCancellationWords } from '@swift/types/src/customer-cancellation-words';
 import {
   Header, Photo,
   EmptyState, ErrorState, Money,
@@ -428,7 +429,9 @@ export function OrdersHistoryScreen() {
     // No order number: on one line it was cut off ("#SW-261020-00..."), and
     // the row already names the day, time, store and items. Details shows it
     // in full.
-    const meta = [st.label, timeOfDay(o.placedAt)]
+    // [owner 8 Nov 2026] A cancelled row says who closed it and why ("Declined by store · Out of stock"), from the
+    // server's `cancellation`; an older server's row keeps the plain status word.
+    const meta = [customerCancellationWords(o)?.label ?? st.label, timeOfDay(o.placedAt)]
       .filter(Boolean)
       .join(' · ');
     const inner = (

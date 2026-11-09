@@ -5,7 +5,7 @@
 // ---------------------------------------------------------------------------
 
 import { formatAppointmentSlot } from './appointmentTime';
-import { storeOrderStatusWords } from '@swift/types';
+import { storeOrderStatusWords } from '@swift/types/src/order-words';
 import type { VendorOrder } from './vendor-api';
 
 /** The phone's pill words, from the one shared map (@swift/types order-words).
