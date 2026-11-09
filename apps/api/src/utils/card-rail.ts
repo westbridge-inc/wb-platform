@@ -33,14 +33,20 @@ export function cardRailV2Enabled(env: Record<string, string | undefined> = proc
 /** [PROD-PATH] A partner can pay the weekly fee by card on this server: card
  * rail v2 (hosted Pay now and enrolment, the only card paths a partner can
  * open) is on, the kill switch does not stop it (the legacy PAYMENT_PROVIDER
- * has no say over v2 [CARD-DECOUPLE]), and a REAL provider is configured. The simulator never counts: it serves only
- * the test subscriptions it lists and moves no money, so it is no way for a
- * real partner to pay (card-pay-action.ts cardSessionsAllowed). Server
- * switches only: nothing about a partner (their card on file, their billing
- * method, their app) enters it. */
+ * has no say over v2 [CARD-DECOUPLE]), a REAL provider is configured, and it
+ * takes REAL cards (CARD_RAIL_ENVIRONMENT exactly live). A TEST card system
+ * never counts — the simulator, or a provider's sandbox: it serves only the
+ * test subscriptions listed in CARD_RAIL_TEST_SUBSCRIPTIONS and moves no
+ * money, so it is no way for a real partner to pay (card-pay-action.ts
+ * cardSessionsAllowed). [Review #2453 A-F1 / B-1] Counting the sandbox lifted
+ * the fee pause for EVERY partner on a test server, who then had no way to
+ * pay. Live cards run only on production (boot-config.ts), so off production
+ * this is always false. Server switches only: nothing about a partner (their
+ * card on file, their billing method, their app) enters it. */
 export function weeklyFeeCardLive(env: Record<string, string | undefined> = process.env): boolean {
   const provider = env['CARD_RAIL_PROVIDER'] ?? '';
-  return cardRailV2Enabled(env) && !cardRailKilled(env) && provider !== 'simulator' && cardRailProviderNames().includes(provider);
+  return cardRailV2Enabled(env) && !cardRailKilled(env) && provider !== 'simulator' && cardRailProviderNames().includes(provider)
+    && env['CARD_RAIL_ENVIRONMENT'] === 'live';
 }
 
 /** [PT-1 · AX297 F5] With CARD_RAIL_V2 off, drain what v2 left in flight:

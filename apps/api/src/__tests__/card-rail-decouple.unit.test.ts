@@ -5,6 +5,7 @@ import { cardSessionsAllowed } from '../modules/billing/card-pay-action';
 import type { CardRailProvider } from '../providers/card/card-provider';
 import { assertSafeBootConfig } from '../utils/boot-config';
 import { getPaymentProvider } from '../providers/payment/payment-provider';
+import { noLivePayPath } from '../modules/billing/fee-pause';
 
 // [CARD-DECOUPLE · 9 Nov 2026] Card rail v2 (the PowerTranz hosted page) is
 // killed ONLY by CARD_RAIL_KILL=1. PAYMENT_PROVIDER names the LEGACY card seam
@@ -30,7 +31,8 @@ const STAGING_V2 = {
 describe('[CARD-DECOUPLE] the legacy PAYMENT_PROVIDER has no say over card rail v2', () => {
   it('PAYMENT_PROVIDER=disabled, CARD_RAIL_KILL=0, CARD_RAIL_V2=1, non-production: the v2 card rail is not killed', () => {
     expect(cardRailKilled(STAGING_V2)).toBe(false);
-    expect(weeklyFeeCardLive(STAGING_V2)).toBe(true);
+    // Not killed, but the sandbox is no way to pay for the fee pause (below).
+    expect(weeklyFeeCardLive({ ...STAGING_V2, CARD_RAIL_ENVIRONMENT: 'live' })).toBe(true);
   });
 
   it('only CARD_RAIL_KILL exactly 1 kills v2, whatever PAYMENT_PROVIDER says', () => {
@@ -40,7 +42,7 @@ describe('[CARD-DECOUPLE] the legacy PAYMENT_PROVIDER has no say over card rail 
         expect(cardRailKilled({ PAYMENT_PROVIDER: provider, CARD_RAIL_KILL: kill }), `${provider} ${kill}`).toBe(false);
       }
     }
-    expect(weeklyFeeCardLive({ ...STAGING_V2, CARD_RAIL_KILL: '1' })).toBe(false);
+    expect(weeklyFeeCardLive({ ...STAGING_V2, CARD_RAIL_ENVIRONMENT: 'live', CARD_RAIL_KILL: '1' })).toBe(false);
   });
 
   it('the legacy seam stays off while its provider is disabled, or while the kill switch is on', () => {
@@ -72,5 +74,35 @@ describe('[CARD-DECOUPLE] the legacy PAYMENT_PROVIDER has no say over card rail 
 
   it('the sandbox is still never on the public API host (unchanged)', () => {
     expect(() => assertSafeBootConfig({ ...STAGING_V2, API_PUBLIC_URL: 'https://api.swiftgy.com' })).toThrow(/public API host/);
+  });
+});
+
+// [Review #2453-A F1] A TEST card system (the simulator, or the provider's
+// sandbox) opens pages only for the subscriptions listed in
+// CARD_RAIL_TEST_SUBSCRIPTIONS. So it is never "a live way to pay" for the fee
+// pause: counting it lifted the pause for EVERY partner on a test server
+// (the store-review demo partner included), with no way to pay, toward
+// dunning and suspension. Only real cards (CARD_RAIL_ENVIRONMENT=live) count.
+// The listed test subscriptions still see CARD live, labelled a test
+// (card-rail-routes.test.ts [CARD-DECOUPLE]).
+describe('[Review #2453-A F1] the provider sandbox never lifts the fee pause', () => {
+  const noMmg = { MMG_DRIVER: 'disabled' };
+  const reader = { platformConfig: { findUnique: async () => null } } as never;
+
+  it('v2 on the sandbox, not killed, MMG off: no live way to pay, so the fee stays paused', async () => {
+    for (const environment of ['sandbox', undefined, '', 'Live', 'LIVE', 'production']) {
+      const env = { ...STAGING_V2, ...noMmg, CARD_RAIL_ENVIRONMENT: environment };
+      expect(weeklyFeeCardLive(env), String(environment)).toBe(false);
+      expect(await noLivePayPath(reader, env), String(environment)).toBe(true);
+    }
+  });
+
+  it('only real cards count: v2 on, not killed, the real provider, CARD_RAIL_ENVIRONMENT exactly live', async () => {
+    const live = { ...STAGING_V2, ...noMmg, CARD_RAIL_ENVIRONMENT: 'live' };
+    expect(weeklyFeeCardLive(live)).toBe(true);
+    expect(await noLivePayPath(reader, live)).toBe(false);
+    expect(weeklyFeeCardLive({ ...live, CARD_RAIL_KILL: '1' })).toBe(false);
+    expect(weeklyFeeCardLive({ ...live, CARD_RAIL_V2: '0' })).toBe(false);
+    expect(weeklyFeeCardLive({ ...live, CARD_RAIL_PROVIDER: 'simulator' })).toBe(false);
   });
 });

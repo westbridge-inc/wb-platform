@@ -177,7 +177,8 @@ async function whileOff<T>(fn: () => Promise<T>): Promise<T> {
 /** Run `fn` with MMG switched off but the card rail live: partners have a live way to pay (a card). */
 // This build has no real provider yet. These positive-path cases explicitly
 // supply future factory support; merely configuring an unknown name must fail.
-const CARD_LIVE = { MMG_DRIVER: 'disabled', CARD_RAIL_V2: '1', CARD_RAIL_KILL: '0', PAYMENT_PROVIDER: 'sandbox', CARD_RAIL_PROVIDER: 'powertranz' };
+// [Review #2453 A-F1] Real cards: a TEST card system (the sandbox) is never a live way to pay.
+const CARD_LIVE = { MMG_DRIVER: 'disabled', CARD_RAIL_V2: '1', CARD_RAIL_KILL: '0', PAYMENT_PROVIDER: 'sandbox', CARD_RAIL_PROVIDER: 'powertranz', CARD_RAIL_ENVIRONMENT: 'live' };
 async function whileCardLive<T>(fn: () => Promise<T>): Promise<T> {
   const supported = vi.spyOn(cardFactory, 'cardRailProviderNames').mockReturnValue(['simulator', 'powertranz']);
   for (const [k, v] of Object.entries(CARD_LIVE)) vi.stubEnv(k, v);
@@ -647,6 +648,9 @@ describe('[PROD-PATH] the pause is decided by server facts only: nothing a partn
     });
     // The card simulator (test pages for listed test subscriptions, no money) or no provider at all is no way to pay.
     expect(await noLivePayPath(app.prisma, { ...CARD_LIVE, CARD_RAIL_PROVIDER: 'simulator' })).toBe(true);
+    // [Review #2453 A-F1] Nor is the provider's sandbox: it too serves only the listed test subscriptions.
+    expect(await noLivePayPath(app.prisma, { ...CARD_LIVE, CARD_RAIL_ENVIRONMENT: 'sandbox' })).toBe(true);
+    expect(await noLivePayPath(app.prisma, { ...CARD_LIVE, CARD_RAIL_ENVIRONMENT: undefined })).toBe(true);
     expect(await noLivePayPath(app.prisma, { ...CARD_LIVE, CARD_RAIL_PROVIDER: '' })).toBe(true);
     expect(await noLivePayPath(app.prisma, { ...CARD_LIVE, CARD_RAIL_PROVIDER: undefined })).toBe(true);
     // [22 Oct, COORD ruling on REVIEW-M's note] "MMG driver live" alone is no longer a way to pay: with

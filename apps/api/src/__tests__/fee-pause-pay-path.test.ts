@@ -193,9 +193,21 @@ describe('the pay-path truth table (no database)', () => {
 
   it('a live card rail is a way to pay whatever MMG is', async () => {
     const reader = rowReader({ ios: false });
-    const cardLive = { CARD_RAIL_V2: '1', CARD_RAIL_KILL: '0', PAYMENT_PROVIDER: 'sandbox', CARD_RAIL_PROVIDER: 'powertranz' };
+    const cardLive = { CARD_RAIL_V2: '1', CARD_RAIL_KILL: '0', PAYMENT_PROVIDER: 'sandbox', CARD_RAIL_PROVIDER: 'powertranz', CARD_RAIL_ENVIRONMENT: 'live' };
     expect(await paused(reader, test({ ...LIVE, ...cardLive }))).toBe(false);
     expect(await paused(reader, test({ ...LIVE, ...cardLive, CARD_RAIL_KILL: '1' }))).toBe(true);
+  });
+
+  // [Review #2453 A-F1 / B-1] The provider's SANDBOX opens pages only for the listed test subscriptions, so
+  // with the MMG pay path off it is no way to pay: every other partner stays paused (never billed toward
+  // dunning with nothing to pay with). The legacy seam disabled, as on a test server.
+  it('the provider sandbox (v2 on, not killed) with the MMG pay path off: partners stay paused', async () => {
+    const reader = rowReader({ ios: false });
+    const sandbox = { CARD_RAIL_V2: '1', CARD_RAIL_KILL: '0', PAYMENT_PROVIDER: 'disabled', CARD_RAIL_PROVIDER: 'powertranz', CARD_RAIL_ENVIRONMENT: 'sandbox' };
+    expect(await paused(reader, test({ ...LIVE, ...sandbox }))).toBe(true);
+    expect(await paused(reader, test({ ...LIVE, ...sandbox, CARD_RAIL_ENVIRONMENT: undefined }))).toBe(true);
+    // Only real cards lift it.
+    expect(await paused(reader, test({ ...LIVE, ...sandbox, CARD_RAIL_ENVIRONMENT: 'live' }))).toBe(false);
   });
 });
 
