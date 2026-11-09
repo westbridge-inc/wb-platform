@@ -21,6 +21,8 @@ export interface StoreKindWords {
   itemGoneBody: string;
   /** The line a table or counter QR opens the storefront with. */
   qrWelcome: string;
+  /** The chip that shows every section of the store at once. */
+  allItemsChip: string;
 }
 
 const RESTAURANT: StoreKindWords = {
@@ -29,6 +31,7 @@ const RESTAURANT: StoreKindWords = {
   itemGoneTitle: 'This item is no longer on the menu.',
   itemGoneBody: 'The store took it off. Pick something else from its menu.',
   qrWelcome: 'Dining in? Browse our menu here and place your order with your server.',
+  allItemsChip: 'Full menu',
 };
 
 const NOT_A_KITCHEN = {
@@ -36,6 +39,7 @@ const NOT_A_KITCHEN = {
   itemGoneTitle: 'This item is no longer for sale.',
   itemGoneBody: 'The store took it off. Pick something else from the store.',
   qrWelcome: 'In the store? Browse what it sells here and order at the counter.',
+  allItemsChip: 'All',
 } as const;
 
 const WORDS: Record<StoreKind, StoreKindWords> = {
@@ -46,8 +50,9 @@ const WORDS: Record<StoreKind, StoreKindWords> = {
     ...NOT_A_KITCHEN,
     itemNotePlaceholder: 'e.g. what you need, and anything that helps',
     itemGoneTitle: 'This is no longer offered.',
-    itemGoneBody: 'The business took it off. Pick something else from its list.',
-    catalogue: 'the list',
+    itemGoneBody: 'The business took it off. Pick something else from its services.',
+    catalogue: 'the services',
+    qrWelcome: 'Here in person? Browse what this business offers and book at the counter.',
   },
 };
 
@@ -98,4 +103,31 @@ export const FOOD_ONLY_RATING_TAGS: readonly string[] = ['tasty-food', 'cold-foo
 export function ratingTagFitsStore(slug: string, vendorType: string | null | undefined): boolean {
   if (vendorType !== 'STORE' && vendorType !== 'SERVICE') return true;
   return !FOOD_ONLY_RATING_TAGS.includes(slug);
+}
+
+// ---------------------------------------------------------------------------
+// [STORE-WORDS sweep · 9 Nov 2026] The store's own screens (the Swift Business app and the website's
+// store console) follow the same rule about its ORDERS: a restaurant keeps its kitchen words exactly;
+// every other store gets words that fit a counter. What a store calls its items is the store console's
+// catalogue name (app: CATALOGUE_META in modules/vendor/shared.tsx; website: lib/catalogue-name.ts).
+// ---------------------------------------------------------------------------
+
+/** An item or section the store deleted on another device, told to the store: "the menu" only for a restaurant. */
+export function itemGoneWords(vendorType: string | null | undefined): string {
+  return `This section or item was removed on another phone. Go back and open ${storeKindWords(vendorType).catalogue} again.`;
+}
+
+/** The reject reason for a store too busy to take an order. The customer is shown this reason too. */
+export function tooBusyReason(vendorType: string | null | undefined): string {
+  return vendorType === 'RESTAURANT' ? 'Kitchen is too busy' : 'Too busy right now';
+}
+
+/** What a store calls the time it promised for an order: "prep time" in a kitchen, "ready time" anywhere else. */
+export function promisedTimeName(vendorType: string | null | undefined): string {
+  return vendorType === 'RESTAURANT' ? 'prep time' : 'ready time';
+}
+
+/** An order a store is still working on, as "How many orders at once" names it: "cooking" only in a kitchen. */
+export function workingOrderWord(vendorType: string | null | undefined): string {
+  return vendorType === 'RESTAURANT' ? 'cooking' : 'being prepared';
 }

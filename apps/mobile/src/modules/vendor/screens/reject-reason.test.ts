@@ -37,7 +37,8 @@ describe('[E10] the board collects a reason before it rejects', () => {
   });
 
   it('the chooser sends the chosen preset as the reason', () => {
-    expect(board).toMatch(/rejectReasonsFor\(rejecting\?\.fulfillment\)\.map/);
+    expect(board).toMatch(/rejectReasonsFor\(rejecting\?\.fulfillment, rejecting\?\.vendorType \?\? store\?\.vendorType\)\.map/);
+    expect(board).toMatch(/setRejecting\(\{ id: o\.id, fulfillment: o\.fulfillment, vendorType: o\.vendor\?\.vendorType \}\)/);
     expect(board).toMatch(/orderAction\.mutate\(\{ id: target\.id, action: 'reject', reason: why \}\)/);
   });
 
@@ -46,8 +47,8 @@ describe('[E10] the board collects a reason before it rejects', () => {
   });
 
   it('the order screen and the takeover use the same reasons for the same kind of order', () => {
-    expect(detail).toMatch(/rejectReasonsFor\(order\.fulfillment\)\.map/);
-    expect(takeover).toMatch(/rejectReasonsFor\(o\?\.fulfillment\)\.map/);
+    expect(detail).toMatch(/rejectReasonsFor\(order\.fulfillment, order\.vendor\?\.vendorType\)\.map/);
+    expect(takeover).toMatch(/rejectReasonsFor\(o\?\.fulfillment, o\?\.vendor\?\.vendorType\)\.map/);
     for (const src of [board, detail, takeover]) expect(src).not.toMatch(/\['Out of stock', 'Kitchen is too busy', 'Closing soon'\] as const\)\.map/);
   });
 
@@ -64,7 +65,16 @@ describe('[E10 · DS200 D3] the reasons fit the order', () => {
     expect(rejectReasonsFor('APPOINTMENT').join(' ')).not.toMatch(/kitchen|stock/i);
   });
 
-  it('delivery and pickup orders keep the three order presets', () => {
-    for (const f of ['DELIVERY', 'PICKUP', undefined, null]) expect(rejectReasonsFor(f)).toEqual(ORDER_REJECT_REASONS);
+  it('a restaurant\'s delivery and pickup orders keep the three order presets exactly', () => {
+    for (const f of ['DELIVERY', 'PICKUP', undefined, null]) expect(rejectReasonsFor(f, 'RESTAURANT')).toEqual(ORDER_REJECT_REASONS);
+  });
+
+  it('[STORE-WORDS sweep] a shop, a supermarket or an unknown kind never tells its customer the kitchen is busy', () => {
+    for (const kind of ['STORE', 'SUPERMARKET', 'SERVICE', undefined, null]) {
+      for (const f of ['DELIVERY', 'PICKUP']) {
+        expect(rejectReasonsFor(f, kind), `${f} ${String(kind)}`).toEqual(['Out of stock', 'Too busy right now', 'Closing soon']);
+      }
+    }
+    expect(rejectReasonsFor('APPOINTMENT', 'SERVICE')).toEqual(BOOKING_REJECT_REASONS);
   });
 });

@@ -20,8 +20,11 @@ export function KitchenCapacityCard({
   saving,
   error,
   onSave,
+  vendorType,
 }: {
   value: number | null;
+  /** The store's kind: only a restaurant's orders are "cooking". */
+  vendorType?: string | null;
   saving?: boolean;
   error?: string | null;
   onSave: (capacity: number | null) => void;
@@ -37,7 +40,7 @@ export function KitchenCapacityCard({
         <T variant="label" weight="semibold">How many orders at once</T>
       </View>
       <T variant="caption" tone="muted" style={{ marginTop: 4 }}>
-        {kitchenCapacityLine(count)}
+        {kitchenCapacityLine(count, vendorType)}
       </T>
       <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.md, marginTop: space.md }}>
         <Chip label="Fewer" selected={false} onPress={() => setCount((c) => nextKitchenCapacity(c, 'fewer'))} style={{ height: 40, minWidth: 48 }} />
