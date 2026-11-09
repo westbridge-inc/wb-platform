@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { installOtaCatchUp, otaSignedIn, type OtaCatchUpNative } from './otaCatchUp';
-import { LAUNCH_WINDOW_MS } from '../lib/otaCatchUp';
+import { LAUNCH_WINDOW_MS, holdOtaRestart, resetOtaHoldsForTests } from '../lib/otaCatchUp';
 
 // [OTA-CATCH-UP] The wiring: expo-updates' own state (an update downloaded = isUpdatePending), the app going away
 // and coming back, the screen in front, and a sign-in. Native pieces are fakes with the real shapes.
@@ -13,6 +15,10 @@ function fakeNative(over: { isEnabled?: boolean } = {}) {
     route: null as string | null,
     mutating: 0,
     inCall: false,
+    ringing: false,
+    focused: false,
+    found: { isAvailable: false, isRollBackToEmbedded: false } as Record<string, boolean>,
+    fetches: 0,
     reloads: 0,
     checks: 0,
     removed: [] as string[],
@@ -22,13 +28,15 @@ function fakeNative(over: { isEnabled?: boolean } = {}) {
       isEnabled: over.isEnabled ?? true,
       get latestContext() { return fx.context as never; },
       reloadAsync: async () => { fx.reloads += 1; },
-      checkForUpdateAsync: async () => { fx.checks += 1; return { isAvailable: false } as never; },
-      fetchUpdateAsync: async () => ({}) as never,
+      checkForUpdateAsync: async () => { fx.checks += 1; return fx.found as never; },
+      fetchUpdateAsync: async () => { fx.fetches += 1; return {} as never; },
       addUpdatesStateChangeListener: (cb: () => void) => { fx.updateListeners.add(cb); return { remove: () => { fx.updateListeners.delete(cb); fx.removed.push('updates'); } }; },
     } as unknown as OtaCatchUpNative['Updates'],
     AppState: { addEventListener: ((_: string, cb: (s: string) => void) => { fx.appState = cb; return { remove: () => fx.removed.push('appState') }; }) as never },
     isMutating: () => fx.mutating,
     inAppCallActive: () => fx.inCall,
+    inAppCallRinging: () => fx.ringing,
+    inputFocused: () => fx.focused,
     navigation: {
       isReady: () => fx.route !== null,
       getCurrentRoute: () => (fx.route ? { name: fx.route } : undefined),
@@ -44,6 +52,7 @@ let stop: (() => void) | null = null;
 afterEach(() => {
   stop?.();
   stop = null;
+  resetOtaHoldsForTests();
   vi.useRealTimers();
 });
 
@@ -126,5 +135,101 @@ describe('installOtaCatchUp', () => {
     stop();
     stop = null;
     expect(on.fx.removed.sort()).toEqual(['appState', 'nav', 'updates']);
+  });
+});
+
+// [REVIEW-1 on #2431] Never cut the store's new-order alert (S3-1), a call still ringing (S3-2) or text being typed
+// (L1); a roll-back to the built-in JS is fetched like an update (L2).
+describe('installOtaCatchUp: what must never be cut', () => {
+  it('the store\'s new-order alert is up on the board: no restart; it closes inside the window: restart then', () => {
+    const { fx, native, downloaded, navigate } = fakeNative();
+    stop = installOtaCatchUp(() => native, false);
+    navigate('Orders');
+    const release = holdOtaRestart(); // VendorLiveOrderLayer, while the takeover shows
+    downloaded();
+    navigate('Orders');
+    expect(fx.reloads).toBe(0);
+    release();
+    expect(fx.reloads).toBe(1);
+  });
+
+  it('an in-app call still ringing (not answered yet): no restart', () => {
+    const { fx, native, downloaded, navigate } = fakeNative();
+    stop = installOtaCatchUp(() => native, false);
+    navigate('Orders');
+    fx.ringing = true;
+    downloaded();
+    navigate('Orders');
+    expect(fx.reloads).toBe(0);
+    fx.ringing = false;
+    navigate('Orders');
+    expect(fx.reloads).toBe(1);
+  });
+
+  it('a text box has the keyboard: no restart', () => {
+    const { fx, native, downloaded, navigate } = fakeNative();
+    stop = installOtaCatchUp(() => native, false);
+    navigate('Home');
+    fx.focused = true;
+    downloaded();
+    expect(fx.reloads).toBe(0);
+    fx.focused = false;
+    navigate('Home');
+    expect(fx.reloads).toBe(1);
+  });
+
+  it('a hold released outside any window does not restart', () => {
+    vi.useFakeTimers();
+    const { fx, native, downloaded, navigate } = fakeNative();
+    stop = installOtaCatchUp(() => native, false);
+    navigate('Orders');
+    const release = holdOtaRestart();
+    downloaded();
+    vi.advanceTimersByTime(LAUNCH_WINDOW_MS + 1);
+    release();
+    expect(fx.reloads).toBe(0);
+  });
+
+  it('back after a while away: a roll-back to the built-in JS is fetched like a newer update', async () => {
+    vi.useFakeTimers();
+    const { fx, native } = fakeNative();
+    stop = installOtaCatchUp(() => native, false);
+    fx.found = { isAvailable: false, isRollBackToEmbedded: true };
+    vi.advanceTimersByTime(30 * 60_000);
+    fx.appState!('background');
+    vi.advanceTimersByTime(5 * 60_000);
+    fx.appState!('active');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fx.checks).toBe(1);
+    expect(fx.fetches).toBe(1);
+  });
+
+  it('nothing new on the server: nothing is fetched', async () => {
+    vi.useFakeTimers();
+    const { fx, native } = fakeNative();
+    stop = installOtaCatchUp(() => native, false);
+    vi.advanceTimersByTime(30 * 60_000);
+    fx.appState!('background');
+    vi.advanceTimersByTime(5 * 60_000);
+    fx.appState!('active');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fx.checks).toBe(1);
+    expect(fx.fetches).toBe(0);
+  });
+});
+
+describe('the holds are taken where the review asked', () => {
+  const read = (p: string) => readFileSync(join(process.cwd(), p), 'utf8');
+  it('the store\'s new-order alert, a typed MMG reference and the reject question hold restarts', () => {
+    expect(read('src/modules/vendor/VendorStack.tsx')).toMatch(/useOtaRestartHold\(takeover\.length > 0\);\n\s*return takeover\.length > 0 \? <NewOrderTakeover/);
+    const board = read('src/modules/vendor/screens/VendorOps.tsx');
+    expect(board).toMatch(/const \[mmgRef, setMmgRef\] = useState\(''\);\n[^\n]*\n\s*useOtaRestartHold\(mmgRef\.trim\(\)\.length > 0\);/);
+    expect(board).toMatch(/useOtaRestartHold\(rejecting !== null\);/);
+  });
+  it('the real wiring reads a ringing call, a focused text box and the holds', () => {
+    const svc = read('src/services/otaCatchUp.ts');
+    expect(svc).toMatch(/inAppCallRinging: \(\) => \(require\('\.\/inAppVoice'\)[^\n]*\.inAppCallRinging\(\)/);
+    expect(svc).toMatch(/currentlyFocusedInput\?\.\(\) != null/);
+    expect(svc).toMatch(/native\.inAppCallRinging\(\) \|\| native\.isMutating\(\) > 0 \|\| otaRestartHeld\(\)/);
   });
 });

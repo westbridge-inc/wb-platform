@@ -1,4 +1,4 @@
-import { createOtaCatchUp, type OtaCatchUp } from '../lib/otaCatchUp';
+import { createOtaCatchUp, onOtaHoldsReleased, otaRestartHeld, type OtaCatchUp } from '../lib/otaCatchUp';
 
 /** The native pieces the catch-up reads, loaded when it is installed (never at import: tests and
  *  screens that import the root navigator load no native module through this file). */
@@ -7,6 +7,10 @@ export interface OtaCatchUpNative {
   AppState: Pick<typeof import('react-native').AppState, 'addEventListener'>;
   isMutating: () => number;
   inAppCallActive: () => boolean;
+  /** [REVIEW-1 S3-2 on #2431] An in-app call still ringing (not answered yet). */
+  inAppCallRinging: () => boolean;
+  /** [REVIEW-1 L1 on #2431] A text box has the keyboard (someone is typing). */
+  inputFocused: () => boolean;
   navigation: { isReady(): boolean; getCurrentRoute(): { name: string } | undefined; addListener(event: 'state', cb: () => void): () => void };
 }
 
@@ -16,6 +20,11 @@ const loadNative = (): OtaCatchUpNative => ({
   AppState: require('react-native').AppState,
   isMutating: () => (require('../lib/queryClient') as typeof import('../lib/queryClient')).queryClient.isMutating(),
   inAppCallActive: () => (require('./inAppVoice') as typeof import('./inAppVoice')).inAppCallActive(),
+  inAppCallRinging: () => (require('./inAppVoice') as typeof import('./inAppVoice')).inAppCallRinging(),
+  inputFocused: () => {
+    const rn = require('react-native') as typeof import('react-native');
+    return rn.TextInput?.State?.currentlyFocusedInput?.() != null;
+  },
   navigation: (require('../navigation/navigationRef') as typeof import('../navigation/navigationRef')).navigationRef as unknown as OtaCatchUpNative['navigation'],
 });
 /* eslint-enable @typescript-eslint/no-require-imports */
@@ -44,12 +53,14 @@ export function installOtaCatchUp(load: () => OtaCatchUpNative = loadNative, dev
   const c = createOtaCatchUp({
     now: () => Date.now(),
     pending: () => Updates.latestContext?.isUpdatePending === true,
-    busy: () => native.inAppCallActive() || native.isMutating() > 0 || Updates.latestContext?.isRestarting === true,
+    busy: () => native.inAppCallActive() || native.inAppCallRinging() || native.isMutating() > 0 || otaRestartHeld()
+      || native.inputFocused() || Updates.latestContext?.isRestarting === true,
     route: () => (navigation.isReady() ? navigation.getCurrentRoute()?.name ?? null : null),
     reload: () => Updates.reloadAsync(),
     checkAndFetch: async () => {
       const found = await Updates.checkForUpdateAsync();
-      if (found.isAvailable) await Updates.fetchUpdateAsync();
+      // [REVIEW-1 L2 on #2431] A roll-back to the built-in JS is fetched (and applied) like a newer update.
+      if (found.isAvailable || found.isRollBackToEmbedded) await Updates.fetchUpdateAsync();
     },
   });
   controller = c;
@@ -65,6 +76,8 @@ export function installOtaCatchUp(load: () => OtaCatchUpNative = loadNative, dev
     });
     stops.push(() => sub.remove());
   } catch { /* no AppState: launch and sign-in still apply */ }
+  // The new-order alert closed, the typed reference was cleared: look again (inside a window only).
+  stops.push(onOtaHoldsReleased(() => { c.evaluate(); }));
   try {
     // Reaching a resting screen inside a window (the store's board after sign-in) is a moment too.
     stops.push(navigation.addListener('state', () => { c.evaluate(); }));
@@ -76,7 +89,8 @@ export function installOtaCatchUp(load: () => OtaCatchUpNative = loadNative, dev
   };
 }
 
-/** A sign-in finished: an earner's opens a window (a customer's may be mid-checkout, so it does not). */
+/** A sign-in finished: an earner's opens a window (a customer's may be mid-checkout, so it does not). Only a store's
+ *  first screen (the orders board) is a resting one, so in practice only a store restarts there. */
 export function otaSignedIn(intent: string | null | undefined): void {
   if (controller && intent && EARNER_INTENTS.includes(intent)) controller.earnerSignedIn();
 }

@@ -39,6 +39,8 @@ export type SdkShapeChecks = [
   Assert<Same<typeof SDK_EVENTS.voiceCallInvite, `${Voice.Event.CallInvite}`>>,
   Assert<Same<typeof SDK_EVENTS.voiceAudioDevicesUpdated, `${Voice.Event.AudioDevicesUpdated}`>>,
   Assert<Same<typeof SDK_EVENTS.inviteAccepted, `${CallInvite.Event.Accepted}`>>,
+  Assert<Same<typeof SDK_EVENTS.inviteRejected, `${CallInvite.Event.Rejected}`>>,
+  Assert<Same<typeof SDK_EVENTS.inviteCancelled, `${CallInvite.Event.Cancelled}`>>,
   Assert<Same<'speaker' | 'earpiece' | 'bluetooth' | 'unknown', `${AudioDevice.Type}`>>,
   Assert<Same<'connecting' | 'ringing' | 'connected' | 'reconnecting' | 'disconnected', `${Call.State}`>>,
 ];
@@ -55,6 +57,8 @@ describe('[CALLS-UX] the SDK members and events Swift uses', () => {
       voiceCallInvite: 'callInvite',
       voiceAudioDevicesUpdated: 'audioDevicesUpdated',
       inviteAccepted: 'accepted',
+      inviteRejected: 'rejected',
+      inviteCancelled: 'cancelled',
     });
   });
 });

@@ -1,8 +1,10 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   AWAY_MS, CHECK_EVERY_MS, LAUNCH_WINDOW_MS, RETURN_WINDOW_MS, SIGN_IN_WINDOW_MS,
-  createOtaCatchUp, type OtaCatchUpDeps,
+  createOtaCatchUp, holdOtaRestart, onOtaHoldsReleased, otaRestartHeld, resetOtaHoldsForTests, type OtaCatchUpDeps,
 } from './otaCatchUp';
+
+afterEach(() => resetOtaHoldsForTests());
 
 // [OTA-CATCH-UP · 9 Nov 2026] A store iPad installed from the App Store ran build 12's embedded JS (cut before the
 // O-2 hand-overs) and asked for a pickup code the customer was never given. A downloaded update now applies at the
@@ -132,5 +134,28 @@ describe('a downloaded update applies at a moment that cuts nothing', () => {
     s.pending = true;
     expect(c.evaluate()).toBe(true);
     await new Promise((r) => setTimeout(r, 0));
+  });
+});
+
+// [REVIEW-1 S3-1/L1 on #2431] A screen part that must not be cut (the store's new-order alert, a typed reference)
+// holds restarts while it is up.
+describe('holds', () => {
+  it('held while any hold is taken; the last release tells the listeners, once', () => {
+    const released = vi.fn();
+    const off = onOtaHoldsReleased(released);
+    expect(otaRestartHeld()).toBe(false);
+    const a = holdOtaRestart();
+    const b = holdOtaRestart();
+    expect(otaRestartHeld()).toBe(true);
+    a();
+    a(); // idempotent
+    expect(otaRestartHeld()).toBe(true);
+    expect(released).not.toHaveBeenCalled();
+    b();
+    expect(otaRestartHeld()).toBe(false);
+    expect(released).toHaveBeenCalledTimes(1);
+    off();
+    holdOtaRestart()();
+    expect(released).toHaveBeenCalledTimes(1);
   });
 });

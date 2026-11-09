@@ -64,6 +64,7 @@ import {
 } from '../../../hooks/vendorops';
 import { DeliveryStatusNote } from '../../../components/DeliveryStatusNote';
 import { cardTapFor } from '../boardTaps';
+import { useOtaRestartHold } from '../../../hooks/useOtaRestartHold';
 import { OUT_OF_STOCK_WORDS, customerDeciding, nothingToAccept } from '../storeOrderRules';
 import { HANDOVER_WORDS, boardStepLabel, pickupBoardWords, withHandoverSteps } from '../storeHandover';
 import { mmgDisputePaused } from '../order-dispute';
@@ -129,6 +130,8 @@ const VendorOrderCard = React.memo(function VendorOrderCard({
   const canConfirm = attestable && order.canConfirmPayment === true;
   const payBlockedReason = isMmg && !mmgPaid && !attestable ? paymentAttestBlockedReason(order.paymentStatus) : null;
   const [mmgRef, setMmgRef] = useState('');
+  // [OTA-CATCH-UP · REVIEW-1 L1 on #2431] A typed MMG reference is never lost to a restart into an update.
+  useOtaRestartHold(mmgRef.trim().length > 0);
   const items = order.itemCount ?? order.items?.length ?? 0;
   const lines: any[] = order.items ?? [];
   const isPickup = order.fulfillment === 'PICKUP';
@@ -884,6 +887,8 @@ export function VendorOps({ store, navigation }: any) {
   // as the order screen: the API refuses a rejection without a reason, so a
   // bare tap used to fail with nothing on screen.
   const [rejecting, setRejecting] = useState<{ id: string; fulfillment?: string | null } | null>(null);
+  // [OTA-CATCH-UP] Nor the reject question (its reason is being chosen).
+  useOtaRestartHold(rejecting !== null);
   const toggleOpen = useToggleOpen();
   const toggleOrders = useToggleOrders();
   const deliveryStatus = useDeliveryStatus(true);

@@ -445,3 +445,50 @@ describe('[CALLS-UX delta review] same call, new object; a native answer that ne
     expect(await voice.setInCallMuted(true)).toBe(true);
   });
 });
+
+// [OTA-CATCH-UP · REVIEW-1 S3-2 on #2431] A call still RINGING (not answered yet) counts: a restart of the app's
+// JavaScript would recreate the SDK and drop or orphan the ringing call.
+describe('[OTA-CATCH-UP] a ringing in-app call invite', () => {
+  it('rings from the invite until it is answered, rejected or cancelled', async () => {
+    await voice.startInAppVoice();
+    expect(voice.inAppCallRinging()).toBe(false);
+    const a = new Emitter();
+    sdk.voice.emit('callInvite', a);
+    expect(voice.inAppCallRinging()).toBe(true);
+    a.emit('accepted', new FakeCall('CA21'));
+    expect(voice.inAppCallRinging()).toBe(false);
+    expect(voice.inAppCallActive()).toBe(true);
+    for (const end of ['rejected', 'cancelled']) {
+      const b = new Emitter();
+      sdk.voice.emit('callInvite', b);
+      expect(voice.inAppCallRinging(), end).toBe(true);
+      b.emit(end);
+      expect(voice.inAppCallRinging(), end).toBe(false);
+    }
+  });
+
+  it('two invites at once: still ringing until both are settled', async () => {
+    await voice.startInAppVoice();
+    const a = new Emitter();
+    const b = new Emitter();
+    sdk.voice.emit('callInvite', a);
+    sdk.voice.emit('callInvite', b);
+    a.emit('cancelled');
+    expect(voice.inAppCallRinging()).toBe(true);
+    b.emit('rejected');
+    expect(voice.inAppCallRinging()).toBe(false);
+  });
+
+  it('an invite the SDK never settles stops counting after the longest ring', async () => {
+    vi.useFakeTimers();
+    try {
+      await voice.startInAppVoice();
+      sdk.voice.emit('callInvite', new Emitter());
+      expect(voice.inAppCallRinging()).toBe(true);
+      vi.advanceTimersByTime(voice.INVITE_RING_MAX_MS);
+      expect(voice.inAppCallRinging()).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

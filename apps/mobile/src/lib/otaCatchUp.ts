@@ -11,11 +11,15 @@
 //
 // What: once an update is downloaded (pending), the app restarts into it at a
 // moment that cuts nothing — and only then:
-// - a window is open: just launched, just back after a while away, or an
-//   earner (store, mover) just signed in;
+// - a window is open: just launched, just back after a while away, or a store
+//   just signed in (a mover's or advertiser's sign-in opens one too, but their
+//   first screens are not resting ones, so it never restarts them: a mover's
+//   offer card is never cut);
 // - the screen in front is a resting one (customer home, the role doors, the
 //   store's orders board) or no screen is up yet;
-// - nothing is in flight: no in-app call, no write on its way.
+// - nothing is in flight or half-done: no in-app call (answered or still
+//   ringing), no write on its way, no text being typed, and nothing holding the
+//   screen (the store's new-order alert, a reference typed on the board).
 // A foreground after a while away also asks the update server (at most every
 // 30 minutes), so a phone that is never closed still catches up.
 //
@@ -35,6 +39,37 @@ export const CHECK_EVERY_MS = 30 * 60_000;
 
 /** The resting screens: nothing typed or half-done is lost by a restart there. */
 export const REST_ROUTES: readonly string[] = ['Home', 'RolePicker', 'Orders'];
+
+// ─── Holds [REVIEW-1 S3-1/L1 on #2431] ─────────────────────────────────────────
+// A screen part that must not be cut takes a hold while it is up (the store's
+// new-order alert, a typed MMG reference, the reject question). Releasing the
+// last hold lets the catch-up look again (inside its window only).
+const holds = new Set<symbol>();
+const releaseListeners = new Set<() => void>();
+
+/** Holds restarts until the returned release is called (idempotent). */
+export function holdOtaRestart(): () => void {
+  const hold = Symbol('ota-hold');
+  holds.add(hold);
+  return () => {
+    if (!holds.delete(hold) || holds.size > 0) return;
+    for (const l of [...releaseListeners]) { try { l(); } catch { /* one listener never stops the rest */ } }
+  };
+}
+/** Is anything holding restarts now? */
+export function otaRestartHeld(): boolean {
+  return holds.size > 0;
+}
+/** Called when the last hold is released. Returns the unsubscribe. */
+export function onOtaHoldsReleased(listener: () => void): () => void {
+  releaseListeners.add(listener);
+  return () => { releaseListeners.delete(listener); };
+}
+/** Tests only. */
+export function resetOtaHoldsForTests(): void {
+  holds.clear();
+  releaseListeners.clear();
+}
 
 export interface OtaCatchUpDeps {
   now(): number;

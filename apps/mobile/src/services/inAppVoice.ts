@@ -76,6 +76,8 @@ export const SDK_EVENTS = {
   voiceCallInvite: 'callInvite',
   voiceAudioDevicesUpdated: 'audioDevicesUpdated',
   inviteAccepted: 'accepted',
+  inviteRejected: 'rejected',
+  inviteCancelled: 'cancelled',
 } as const;
 
 const NATIVE_NAME = 'TwilioVoiceReactNative';
@@ -433,7 +435,15 @@ function watchVoice(v: SdkVoice): void {
   watched = v;
   try {
     v.on(SDK_EVENTS.voiceCallInvite, (invite: SdkCallInvite) => {
-      try { invite.on(SDK_EVENTS.inviteAccepted, (call: SdkCall) => trackCall(call)); } catch { /* the sync on return to the app finds it */ }
+      // [OTA-CATCH-UP · REVIEW-1 S3-2 on #2431] Ringing until answered, rejected or cancelled (or the longest ring).
+      ringing.add(invite);
+      const settled = () => { ringing.delete(invite); };
+      setTimeout(settled, INVITE_RING_MAX_MS);
+      try {
+        invite.on(SDK_EVENTS.inviteAccepted, (call: SdkCall) => { settled(); trackCall(call); });
+        invite.on(SDK_EVENTS.inviteRejected, settled);
+        invite.on(SDK_EVENTS.inviteCancelled, settled);
+      } catch { settled(); /* the sync on return to the app finds an answered call */ }
     });
     v.on(SDK_EVENTS.voiceAudioDevicesUpdated, (devices: SdkAudioDevice[], selected?: SdkAudioDevice) => {
       if (!current) return;
@@ -536,6 +546,15 @@ export function inAppCallActive(): boolean {
   return current !== null;
 }
 
+/** [OTA-CATCH-UP · REVIEW-1 S3-2 on #2431] The longest an unanswered invite counts as ringing (an invite the SDK never
+ *  settles must not hold the app for ever; a real ring ends well before). */
+export const INVITE_RING_MAX_MS = 90_000;
+const ringing = new Set<SdkCallInvite>();
+/** Is an in-app call ringing on this phone (an invite not yet answered, rejected or cancelled)? */
+export function inAppCallRinging(): boolean {
+  return ringing.size > 0;
+}
+
 export interface PlaceDeps {
   start: (orderId: string, target: CallTarget, platform: 'ios' | 'android') => Promise<{ callId: string; token: string }>;
   cancel: (callId: string) => Promise<unknown>;
@@ -581,7 +600,7 @@ export async function endInAppCall(): Promise<void> {
 /** Tests only: forget everything; `loader` stands in for the package (default: the real one). */
 export function resetInAppVoiceForTests(loader: () => unknown = defaultLoad, flagsFactory: () => FlagStore = defaultFlags): void {
   sdk = undefined; voice = null; started = false; registeredAt = 0; current = null; watched = null; load = loader;
-  inCallListeners.clear(); endedSids.clear(); muteInFlight = null; speakerInFlight = null;
+  inCallListeners.clear(); endedSids.clear(); ringing.clear(); muteInFlight = null; speakerInFlight = null;
   voiceGeneration = 0; marks = 0;
   flagStore = undefined; makeFlags = flagsFactory;
 }
