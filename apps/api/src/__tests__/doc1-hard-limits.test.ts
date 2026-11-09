@@ -137,11 +137,34 @@ describe('[DOC-1 §0.5] hard limits', () => {
     expect(biometricFaceMatchEnabled({})).toBe(false);
     expect(biometricFaceMatchEnabled({ FEATURE_BIOMETRIC_FACE_MATCH: '1' })).toBe(true);
     expect(biometricFaceMatchEnabled({ FEATURE_BIOMETRIC_FACE_MATCH: '0' })).toBe(false);
+    // [OWNER-ASKS · owner ruling 9 Nov 2026] The face leg is for a person who takes the selfie: here the store's owner is
+    // also a rider. A store owner who is nothing else takes no selfie and has the ID checked as a document (below).
+    await runWithTenant('swift-default', () => app.prisma.user.update({ where: { id: userId }, data: { roles: ['CUSTOMER', 'VENDOR_OWNER', 'MOVER', 'RIDER'] } }));
     const on = new SpyKyc();
     process.env['FEATURE_BIOMETRIC_FACE_MATCH'] = '1';
-    await submitOwnerId(on, 'on');
-    expect(on.calls).toEqual(['verifyIdentity']);
+    try {
+      await submitOwnerId(on, 'on');
+      expect(on.calls).toEqual(['verifyIdentity']);
+    } finally {
+      await runWithTenant('swift-default', () => app.prisma.user.update({ where: { id: userId }, data: { roles: ['CUSTOMER', 'VENDOR_OWNER'] } }));
+    }
     await runWithTenant('swift-default', () => app.prisma.verificationDocument.deleteMany({ where: { userId } }));
+    // [OWNER-ASKS 9 Nov] switch on, a store owner only: the ID goes document-only, no face leaves, no selfie is asked for.
+    const storeOnly = new SpyKyc();
+    await submitOwnerId(storeOnly, 'on-store');
+    expect(storeOnly.calls).toEqual(['verifyDocument']);
+    await runWithTenant('swift-default', () => app.prisma.verificationDocument.deleteMany({ where: { userId } }));
+    // ...and with no selfie on file at all, the store owner is still never refused for lacking one.
+    const kept = await runWithTenant('swift-default', () => app.prisma.user.findUniqueOrThrow({ where: { id: userId }, select: { avatar: true, selfieCapturedAt: true } }));
+    await runWithTenant('swift-default', () => app.prisma.user.update({ where: { id: userId }, data: { avatar: null, selfieCapturedAt: null } }));
+    try {
+      const noPhoto = new SpyKyc();
+      await submitOwnerId(noPhoto, 'on-store-nophoto');
+      expect(noPhoto.calls).toEqual(['verifyDocument']);
+    } finally {
+      await runWithTenant('swift-default', () => app.prisma.user.update({ where: { id: userId }, data: kept }));
+      await runWithTenant('swift-default', () => app.prisma.verificationDocument.deleteMany({ where: { userId } }));
+    }
     const off = new SpyKyc();
     delete process.env['FEATURE_BIOMETRIC_FACE_MATCH'];
     try {

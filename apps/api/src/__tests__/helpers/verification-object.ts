@@ -29,3 +29,25 @@ export async function signupSelfieFixture(db: PrismaClient, userId: string): Pro
   await db.user.update({ where: { id: userId }, data: { avatar, selfieCapturedAt: new Date() } });
   return avatar;
 }
+
+/**
+ * [OWNER-ASKS · owner ruling 9 Nov 2026 ~20:1xZ (A)] A pro (or a home-visit owner) ready for home work: their own selfie
+ * (as POST /auth/selfie writes it) and a person's recorded MATCH of THAT selfie against an approved, current photo ID
+ * (as POST /admin/verification/:id/selfie-check writes it). An approved ID already on file is used; otherwise a review
+ * fixture ID (no stored image) is committed. Callers own the tenant binding.
+ */
+export async function homeWorkReadyFixture(db: PrismaClient, userId: string, reviewerId = 'synthetic-reviewer'): Promise<void> {
+  const avatar = `avatars/${userId}/${nanoid(16)}.jpg`;
+  const user = await db.user.update({ where: { id: userId }, data: { avatar, selfieCapturedAt: new Date() }, select: { selfieCapturedAt: true } });
+  const id = await db.verificationDocument.findFirst({
+    where: { userId, status: 'APPROVED', state: 'COMMITTED', docType: { in: ['national_id', 'owner_national_id', 'passport', 'drivers_licence'] } },
+    orderBy: { reviewedAt: 'desc' }, select: { id: true },
+  }) ?? await db.verificationDocument.create({ data: {
+    userId, role: 'CUSTOMER', docType: 'national_id', fileUrl: '', status: 'APPROVED', state: 'COMMITTED',
+    reviewedAt: new Date(), reviewedBy: reviewerId, consentAt: new Date(), privacyNoticeVersion: 'v1',
+  }, select: { id: true } });
+  await db.auditLog.create({ data: {
+    userId: reviewerId, action: 'SELFIE_ID_COMPARED', entity: 'User', entityId: userId,
+    changes: { documentId: id.id, selfieCapturedAt: user.selfieCapturedAt!.toISOString(), avatar, outcome: 'MATCH', docType: 'national_id', reason: 'synthetic fixture' },
+  } });
+}

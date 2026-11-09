@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { homeWorkReadyFixture } from './helpers/verification-object';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { nanoid } from 'nanoid';
 import type { UserRole } from '@prisma/client';
@@ -112,10 +113,12 @@ beforeAll(async () => {
   const provider = await app.prisma.serviceProvider.create({
     data: { userId: providerUser.userId, trade: 'Plumber', isVerified: true },
   });
+
   // [STRAND-8] Quote/confirm re-prove LIVE document authority — a cached
   // isVerified flag with no evidence is exactly what the gate refuses, so the
   // fixture carries its real checklist (SERVICE_PROVIDER base: ID + clearance).
   await approveProviderChecklist(providerUser.userId);
+  await homeWorkReadyFixture(app.prisma, providerUser.userId); // [owner 9 Nov ~20:1xZ (A)]
   const job = await app.prisma.serviceJob.create({
     data: {
       customerId: customer.userId,
@@ -226,6 +229,7 @@ describe('Reminders — once per side inside 24h', () => {
     const cust = await makeUser(['CUSTOMER'], 'CUSTOMER');
     const proUser = await makeUser(['CUSTOMER'], 'CUSTOMER');
     const pro = await app.prisma.serviceProvider.create({ data: { userId: proUser.userId, trade: 'Painter', isVerified: true } });
+    await homeWorkReadyFixture(app.prisma, proUser.userId); // [owner 9 Nov ~20:1xZ (A)]
     const job = await app.prisma.serviceJob.create({
       data: {
         customerId: cust.userId, providerId: pro.id, description: 'Paint the front gallery, two coats',
@@ -266,6 +270,7 @@ describe('Reminders — once per side inside 24h', () => {
     const provider2 = await app.prisma.serviceProvider.create({
       data: { userId: provider2User.userId, trade: 'Mason', isVerified: true },
     });
+    await homeWorkReadyFixture(app.prisma, provider2User.userId); // [owner 9 Nov ~20:1xZ (A)]
     await app.prisma.serviceJob.create({
       data: {
         customerId: other.userId,

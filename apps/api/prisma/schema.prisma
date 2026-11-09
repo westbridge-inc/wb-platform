@@ -2401,6 +2401,11 @@ model Order {
   /// at once). For APPOINTMENT_MOVED_FREE_CANCEL_MIN after it the customer cancels free in the app, even
   /// inside the 2-hour cut-off (cancel-policy.ts; Terms s7). Null = never moved by the business.
   appointmentMovedAt DateTime?
+  /// [OWNER-ASKS · security review 9 Nov 2026] An APPOINTMENT that goes to the customer (a home visit), decided once at
+  /// checkout from the listing's mode and the customer's choice (MOBILE, or BOTH chosen at home). The home-visit gate
+  /// re-runs on accept and reschedule only from this; never derived from the distance (a 0-km visit is still a visit).
+  /// NULL = not known (an order placed before the marker that the backfill could not call in-shop): read as a home visit.
+  homeVisit Boolean?
   /// Takeaway: 4-digit code the customer shows to collect a PICKUP order; the
   /// vendor verifies it to close the order (no rider involved). Null otherwise.
   pickupCode      String?

@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { homeWorkReadyFixture } from './helpers/verification-object';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { nanoid } from 'nanoid';
 import type { UserRole } from '@prisma/client';
@@ -54,6 +55,8 @@ async function pro() {
       await app.prisma.verificationDocument.create({ data: { userId: u.userId, role: 'CUSTOMER', docType, fileUrl: `storage://t/${docType}.jpg`, status: 'APPROVED', consentAt: new Date(), privacyNoticeVersion: 'v1' } });
     }
     await refreshProviderVerification(app.prisma, u.userId);
+    // [owner ruling 9 Nov ~20:1xZ (A)] a pro takes home work only with a selfie a person checked against the approved ID
+    await homeWorkReadyFixture(app.prisma, u.userId);
     return created;
   });
   return { ...u, providerId: provider.id };

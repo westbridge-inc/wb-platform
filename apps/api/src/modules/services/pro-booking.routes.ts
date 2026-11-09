@@ -1,4 +1,5 @@
 import type { FastifyInstance } from 'fastify';
+import { assertProHomeJobsAllowed } from '../verification/home-visits';
 import { Prisma, type PrismaClient, type ServiceJob } from '@prisma/client';
 import { z } from '../../lib/zod';
 import { AppError, NotFoundError } from '../../utils/errors';
@@ -519,6 +520,8 @@ export function registerProBookingRoutes(app: FastifyInstance): void {
     try {
       moved = await executeTenantBoundServiceJobTransaction(app.prisma, async (tx) => {
         await lockProviderTime(tx, job.providerId);
+        // [review P2] a home job moves only while the pro may take home work (the pro home-jobs switch on only)
+        await assertProHomeJobsAllowed(tx, job.provider.userId, byCustomer ? 'customer' : 'provider');
         // [BOOK-P3 · M S4-3] The pro's hours as they are now, read under the pro-time lock their own
         // edits take too (not the copy read before the lock).
         const hours = await tx.serviceProvider.findUniqueOrThrow({ where: { id: job.providerId }, select: { weeklyHours: true } });

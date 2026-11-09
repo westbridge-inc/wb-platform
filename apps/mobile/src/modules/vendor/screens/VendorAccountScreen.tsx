@@ -69,6 +69,8 @@ import { feeStatusPill } from '../../../lib/feeStatusPill';
 import { mediaUrl } from '../../../lib/images';
 import { safeVendorRole, TabHeader, VendorBillingNotice } from '../shared';
 import { useAuthStore } from '../../../stores/authStore';
+import { homeVisitPhotoNeededFromStatus } from '../homeVisitPhoto';
+import { HomeVisitPhotoCard } from '../HomeVisitPhotoCard';
 import { useVendorPreview } from '../../../stores/vendorPreview';
 import { BillingStopControl } from '../../../components/billing/BillingSurfaces';
 import { resumeBillingMethod } from '../../../lib/billing';
@@ -501,8 +503,13 @@ function StoreLocationCard({ store }: { store: any }) {
  */
 function VendorDocumentsSection({ vendorType, storeName, storeId, storeFee }: { vendorType: string; storeName?: string | null; storeId?: string | null; storeFee?: StoreFeeScope | null }) {
   const { data: status, isLoading, isError, refetch } = useVerificationStatus<any>(vendorType);
+  // [OWNER-ASKS · owner ruling 9 Nov 2026] Only a service business with a home-visit listing is asked for the profile
+  // photo (owner-only section); a store or an in-shop business never is.
+  const hasPhoto = useAuthStore((s) => !!s.user?.selfieCapturedAt);
+  const askHomeVisitPhoto = vendorType === 'SERVICE' && homeVisitPhotoNeededFromStatus(status, hasPhoto);
   return (
     <View style={{ marginBottom: space.lg }}>
+      {askHomeVisitPhoto ? <HomeVisitPhotoCard /> : null}
       <DocumentChecklist
         role={vendorType} status={status} isLoading={isLoading} isError={isError} onRetry={refetch} storeName={storeName} storeId={storeId}
         // [VAT-DOCS · owner 30 Oct 2026] the owner's optional "VAT certificate (only if VAT-registered)" row (this section is owner-only)

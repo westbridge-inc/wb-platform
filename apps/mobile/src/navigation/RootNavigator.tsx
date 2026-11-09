@@ -113,9 +113,9 @@ export function RootNavigator() {
   const vendorSamplePreview = useVendorPreview((s) => s.previewType) != null;
   // Each preview opens only its own stack (see previewBypassForIntent).
   const anyPreview = previewBypassForIntent(intent, { moverPreview, vendorSamplePreview });
-  // Profile selfie (master plan §3): a signed-in EARNER account (mover,
-  // business, advertiser) carries a camera-captured profile photo before using
-  // the app. [Owner ruling 16 Oct 2026] Customers take no photos, taxi
+  // Profile selfie (master plan §3): a signed-in MOVER account (rider or driver) carries a camera-captured profile photo
+  // before using the app ([OWNER-ASKS 9 Nov 2026] never a business or an advertiser at the door: rootEntryGate; a pro or
+  // a home-visit business is asked inside its own screens). [Owner ruling 16 Oct 2026] Customers take no photos, taxi
   // included: the API enforces the photo only on going online.
   // [MOB-007] Not conditional on a user being present: the store's hydration
   // law guarantees an authenticated state carries a user, and if it ever did

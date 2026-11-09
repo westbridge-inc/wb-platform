@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach, beforeEach, vi } from 'vitest';
+import { homeWorkReadyFixture } from './helpers/verification-object';
 
 // [BILL-PRO PR7] The agreement version with the advance-acceptance clause is the real one now: the Business
 // Agreement's section 12 (PRO_AGREEMENT_VERSION, which PRO_MENU_AGREEMENT.sinceVersion names). No mock.
@@ -94,6 +95,8 @@ async function makePro(trade = 'tutor', opts: { hours?: unknown; tenantId?: stri
       data: { userId: u.userId, role: 'CUSTOMER', docType, fileUrl: `storage://t/${docType}.jpg`, status: 'APPROVED', consentAt: new Date(), privacyNoticeVersion: 'v1' },
     }));
   }
+  // [owner ruling 9 Nov ~20:1xZ (A)] a pro takes home work only with a selfie a person checked against the approved ID
+  await runWithoutTenant(() => homeWorkReadyFixture(app.prisma, u.userId));
   const agreed = opts.agreed === undefined ? AGREEMENT_VERSION : opts.agreed;
   if (agreed) await consent(u.userId, agreed, 'granted');
   return { ...u, providerId: provider.id, checklist };
@@ -339,6 +342,25 @@ describe('[X S4-2] the times to move a booking to: its booked length, its own ti
     const res = await inject('GET', `/api/v1/services/jobs/${id}/slots?date=${DATE}`, c.token);
     expect((res.json().data.slots as string[]).map(hhmm)).toEqual(['10:00', '12:00', '14:00']);
     expect((await reschedule(c.token, id, at(10))).statusCode).toBe(200);
+  });
+
+  // [review P2 · owner rulings 9 Nov 2026] With the pro home-jobs switch on, a booked home job moves only while the pro
+  // may take home work: once the pro's photo is no longer the checked one (a retake), the move is refused.
+  it('[review P2] switch on: a booked job cannot be moved once the pro\u2019s photo is no longer the checked one', async () => {
+    on();
+    vi.stubEnv('PRO_HOME_JOBS_SELFIE', '1');
+    try {
+      const pro = await makePro('tutor', { hours: [{ dayOfWeek: WEEKDAY, start: '09:00', end: '15:00' }] });
+      const c = await makeUser();
+      const one = await makeOffering(pro.providerId, 60);
+      const booked = await book(c.token, pro, one, at(9));
+      expect(booked.statusCode, booked.body).toBeLessThan(300);
+      const id = booked.json().data.id as string;
+      await runWithoutTenant(() => app.prisma.user.update({ where: { id: pro.userId }, data: { selfieCapturedAt: new Date(Date.now() + 1000) } }));
+      const moved = await reschedule(c.token, id, at(11));
+      expect(moved.statusCode, moved.body).toBe(409);
+      expect(moved.json().error.code).toBe('PRO_HOME_JOBS_PAUSED');
+    } finally { vi.unstubAllEnvs(); on(); }
   });
 
   it('refused to a third account (403), for a quote job (400), to the customer inside two hours (409, the move\'s own words), with the switch off (404), for a bad date (400)', async () => {

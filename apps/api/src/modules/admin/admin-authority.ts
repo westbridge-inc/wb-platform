@@ -586,6 +586,11 @@ export const ADMIN_ROUTE_AUTHORITY: Readonly<Record<AdminRouteKey, AdminRouteAut
   // [VAT-DOCS · owner ruling 31 Oct 2026] An approved store's change of price choice: decided by the same reviewers.
   'POST /store-vat/:vendorId/mode': reviewed(c('C3', 'verification.decide', E.storeVat)),
   'GET /verification/:id/document-url': reviewed(c('C1', 'verification.document.read')),
+  // [OWNER-ASKS · security review 9 Nov 2026] The home-visit selfie checked against the approved ID: the queue lists
+  // people's identity papers (a reviewer's sensitive read, like the queue above); the decision lets a stranger's
+  // home visits book or keeps them refused (consequential: a reason is owed).
+  'GET /verification/selfie-checks': reviewed(c('C1', 'verification.read')),
+  'POST /verification/:id/selfie-check': reviewed(c('C3', 'verification.decide')),
   // [DOC-1 §20.2 · P20-2] the custody narrative is metadata about a document, never its content — still a logged read
   'GET /verification/:id/custody': c('C1', 'verification.custody.read'),
   // [DOC-1 §9.4 · P9-4] Legal holds on a person's documents: placing or releasing
@@ -944,6 +949,8 @@ export function reasonOf(body: unknown, headers?: Record<string, unknown>): stri
 export const ADMIN_ROUTES_WITHOUT_ENTITY: Readonly<Record<AdminRouteKey, string>> = {
   'GET /legal/processors': 'code-declared register (DGP-1); no row to name',
   'POST /promos': 'creates the row; there is no before state to digest',
+  // [OWNER-ASKS · security review 9 Nov 2026] the comparison IS the append-only audit row (SELFIE_ID_COMPARED)
+  'POST /verification/:id/selfie-check': 'writes no row but its own audit record; the audit facts carry the ID document, the selfie capture time and the outcome',
   // [MMG REVERSAL] the claim row is the record; the audit facts name it
   'POST /billing/mmg-checkouts/:id/reverse': 'creates the reversal claim row; the audit facts carry the reversal id, the checkout, the amount and the MMG transaction',
   // [Row 156] the case row is the record; the audit facts name it

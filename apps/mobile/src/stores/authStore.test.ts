@@ -186,8 +186,9 @@ describe('authStore session boundaries', () => {
 
   it('returns sign-out from the mandatory selfie gate to the experience picker', () => {
     useAuthStore.getState().setAuth(user('selfie'), 'access-selfie', 'refresh-selfie');
+    // [OWNER-ASKS 9 Nov 2026] The selfie gate is a mover's door now (a business opens without one: rootEntryGate.test).
     useAuthStore.setState({
-      intent: 'vendor',
+      intent: 'mover',
       countryCode: 'GY',
       dialCode: '+592',
       currencyCode: 'GYD',

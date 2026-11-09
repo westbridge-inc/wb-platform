@@ -8,7 +8,7 @@
  * administers no registry; DOC_SENIOR adds the clearance outcome; DOC_ADMIN
  * holds everything under verification.
  */
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { nanoid } from 'nanoid';
 import { prismaPlugin } from '../plugins/prisma';
@@ -181,12 +181,14 @@ describe('[Item 98] the signup selfie accompanies a granted identity-document vi
 
   it('supplies the applicant-owned captured selfie with an identity document, audited once with the view', async () => {
     const capturedAt = new Date('2026-10-07T00:00:00.000Z');
-    await system(() => app.prisma.user.update({ where: { id: subjectId }, data: { avatar: `/uploads/avatars/${subjectId}/synthetic-selfie.jpg`, selfieCapturedAt: capturedAt } }));
+    // [OWNER-ASKS 9 Nov 2026] shown for a person who takes the selfie (here a rider who also owns a store)
+    await system(() => app.prisma.user.update({ where: { id: subjectId }, data: { roles: ['VENDOR_OWNER', 'MOVER', 'RIDER'], avatar: `/uploads/avatars/${subjectId}/synthetic-selfie.jpg`, selfieCapturedAt: capturedAt } }));
     const doc = await identityDoc();
     const reviewer = await admin([...DOC_REVIEWER_CAPABILITIES, 'documents.review']);
     const viewed = await call(reviewer.token, 'GET', `/verification/${doc.id}/document-url`);
     expect(viewed.statusCode, viewed.body).toBe(200);
     expect(viewed.json().data.signupSelfie).toEqual({ url: `/uploads/avatars/${subjectId}/synthetic-selfie.jpg`, capturedAt: capturedAt.toISOString() });
+    expect(viewed.json().data.signupSelfieExpected).toBe(true);
     const audits = await system(() => app.prisma.auditLog.findMany({ where: { userId: reviewer.id, action: 'VIEW_VERIFICATION_DOC', entityId: doc.id } }));
     expect(audits).toHaveLength(1);
     expect(audits[0]!.changes).toMatchObject({ signupSelfieShown: true });
@@ -200,7 +202,7 @@ describe('[Item 98] the signup selfie accompanies a granted identity-document vi
   it('never substitutes a pointer outside the applicant\'s own selfie folder, an uncaptured photo, or a non-identity document', async () => {
     const reviewer = await admin([...DOC_REVIEWER_CAPABILITIES, 'documents.review']);
     const doc = await identityDoc();
-    await system(() => app.prisma.user.update({ where: { id: subjectId }, data: { avatar: '/uploads/avatars/someone-else/synthetic.jpg', selfieCapturedAt: new Date() } }));
+    await system(() => app.prisma.user.update({ where: { id: subjectId }, data: { roles: ['VENDOR_OWNER', 'MOVER', 'RIDER'], avatar: '/uploads/avatars/someone-else/synthetic.jpg', selfieCapturedAt: new Date() } }));
     expect((await call(reviewer.token, 'GET', `/verification/${doc.id}/document-url`)).json().data.signupSelfie).toBeNull();
     await system(() => app.prisma.user.update({ where: { id: subjectId }, data: { avatar: `/uploads/avatars/${subjectId}/../someone-else/x.jpg`, selfieCapturedAt: new Date() } }));
     expect((await call(reviewer.token, 'GET', `/verification/${doc.id}/document-url`)).json().data.signupSelfie).toBeNull();
@@ -220,7 +222,7 @@ describe('[Item 98] the signup selfie accompanies a granted identity-document vi
   // passport or a driver's licence (a motorised mover's licence is their photo ID). A vehicle paper is not one.
   it('a passport or a driver\'s licence carries the selfie too; a vehicle paper does not', async () => {
     const capturedAt = new Date('2026-10-08T00:00:00.000Z');
-    await system(() => app.prisma.user.update({ where: { id: subjectId }, data: { avatar: `/uploads/avatars/${subjectId}/synthetic-selfie.jpg`, selfieCapturedAt: capturedAt } }));
+    await system(() => app.prisma.user.update({ where: { id: subjectId }, data: { roles: ['VENDOR_OWNER', 'MOVER', 'RIDER'], avatar: `/uploads/avatars/${subjectId}/synthetic-selfie.jpg`, selfieCapturedAt: capturedAt } }));
     const reviewer = await admin([...DOC_REVIEWER_CAPABILITIES, 'documents.review']);
     const docOf = (docType: string) => system(async () => {
       const fileUrl = await ownedVerificationFixture(app.prisma, subjectId);
@@ -234,5 +236,214 @@ describe('[Item 98] the signup selfie accompanies a granted identity-document vi
     const paper = await call(reviewer.token, 'GET', `/verification/${(await docOf('vehicle_registration')).id}/document-url`);
     expect(paper.statusCode, paper.body).toBe(200);
     expect(paper.json().data.signupSelfie).toBeNull();
+    expect(paper.json().data.signupSelfieExpected).toBe(false);
+  });
+
+  // [OWNER-ASKS · owner ruling 9 Nov 2026] A store owner (and store staff, and an in-shop business) takes no selfie: the
+  // reviewer checks the ID alone. A photo an owner took before stays stored and protected as it was — it is simply not
+  // put beside the ID, and the console is told the ID is the whole review (`signupSelfieExpected: false`).
+  it('[owner 9 Nov] a store owner is reviewed on the ID alone, even with an older selfie on file', async () => {
+    await system(() => app.prisma.user.update({ where: { id: subjectId }, data: { roles: ['VENDOR_OWNER'], avatar: `/uploads/avatars/${subjectId}/synthetic-selfie.jpg`, selfieCapturedAt: new Date('2026-10-09T00:00:00.000Z') } }));
+    const reviewer = await admin([...DOC_REVIEWER_CAPABILITIES, 'documents.review']);
+    const doc = await identityDoc();
+    const viewed = await call(reviewer.token, 'GET', `/verification/${doc.id}/document-url`);
+    expect(viewed.statusCode, viewed.body).toBe(200);
+    expect(viewed.json().data.url).toBeTruthy();
+    expect(viewed.json().data.signupSelfie).toBeNull();
+    expect(viewed.json().data.signupSelfieExpected).toBe(false);
+    expect(viewed.body).not.toContain('avatars');
+    const audits = await system(() => app.prisma.auditLog.findMany({ where: { userId: reviewer.id, action: 'VIEW_VERIFICATION_DOC', entityId: doc.id } }));
+    expect(audits).toHaveLength(1);
+    expect(audits[0]!.changes).toMatchObject({ signupSelfieShown: false });
+    // The stored photo is untouched.
+    const kept = await system(() => app.prisma.user.findUniqueOrThrow({ where: { id: subjectId }, select: { avatar: true, selfieCapturedAt: true } }));
+    expect(kept.avatar).toBe(`/uploads/avatars/${subjectId}/synthetic-selfie.jpg`);
+    expect(kept.selfieCapturedAt).not.toBeNull();
+  });
+
+  it('[owner 9 Nov] a rider with no selfie on file: the console is told one is expected', async () => {
+    await system(() => app.prisma.user.update({ where: { id: subjectId }, data: { roles: ['VENDOR_OWNER', 'MOVER', 'RIDER'], avatar: null, selfieCapturedAt: null } }));
+    const reviewer = await admin([...DOC_REVIEWER_CAPABILITIES, 'documents.review']);
+    const doc = await identityDoc();
+    const viewed = await call(reviewer.token, 'GET', `/verification/${doc.id}/document-url`);
+    expect(viewed.statusCode, viewed.body).toBe(200);
+    expect(viewed.json().data.signupSelfie).toBeNull();
+    expect(viewed.json().data.signupSelfieExpected).toBe(true);
+    await system(() => app.prisma.user.update({ where: { id: subjectId }, data: { roles: ['VENDOR_OWNER'] } }));
   });
 });
+
+// [OWNER-ASKS · security review 9 Nov 2026] A selfie taken after the ID was approved is compared with that ID by a PERSON
+// before home visits book: the reviewer's decision door, with the reviewer grant and a stated reason, records which
+// selfie (by its capture time) was compared with which approved ID.
+describe('[security review 9 Nov] a person compares the selfie with the approved ID', () => {
+  async function approvedId() {
+    return system(async () => {
+      const fileUrl = await ownedVerificationFixture(app.prisma, subjectId);
+      return app.prisma.verificationDocument.create({ data: { userId: subjectId, role: 'MOVER', docType: 'national_id', fileUrl, status: 'APPROVED', state: 'COMMITTED', reviewedAt: new Date(), reviewedBy: 'synthetic-reviewer', consentAt: new Date(), privacyNoticeVersion: 'v1' } });
+    });
+  }
+
+  it('the reviewer records a match for THIS selfie; the record names the ID and the capture', async () => {
+    const capturedAt = new Date('2026-11-09T10:00:00.000Z');
+    await system(() => app.prisma.user.update({ where: { id: subjectId }, data: { roles: ['VENDOR_OWNER', 'MOVER', 'RIDER'], avatar: `/uploads/avatars/${subjectId}/synthetic-selfie.jpg`, selfieCapturedAt: capturedAt } }));
+    const doc = await approvedId();
+    const reviewer = await admin([...DOC_REVIEWER_CAPABILITIES, 'documents.review']);
+    const queue = await call(reviewer.token, 'GET', '/verification/selfie-checks');
+    expect(queue.statusCode, queue.body).toBe(200);
+    const res = await call(reviewer.token, 'POST', `/verification/${doc.id}/selfie-check`, { match: true, selfieCapturedAt: capturedAt.toISOString() });
+    expect(res.statusCode, res.body).toBe(200);
+    expect(res.json().data).toEqual({ documentId: doc.id, selfieCapturedAt: capturedAt.toISOString(), outcome: 'MATCH' });
+    const rows = await system(() => app.prisma.auditLog.findMany({ where: { action: 'SELFIE_ID_COMPARED', entityId: subjectId } }));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.userId).toBe(reviewer.id);
+    expect(rows[0]!.changes).toMatchObject({ documentId: doc.id, selfieCapturedAt: capturedAt.toISOString(), avatar: `/uploads/avatars/${subjectId}/synthetic-selfie.jpg`, outcome: 'MATCH' });
+  });
+
+  // [security review 9 Nov, 2nd] The decision binds to the selfie the reviewer was SHOWN: a retake between the view and
+  // the answer is refused, and nothing is recorded for the unseen face.
+  it('the owner retakes the selfie between the reviewer’s view and the answer: refused 409, no MATCH recorded', async () => {
+    const shown = new Date('2026-11-09T11:00:00.000Z');
+    await system(() => app.prisma.user.update({ where: { id: subjectId }, data: { roles: ['VENDOR_OWNER', 'MOVER', 'RIDER'], avatar: `/uploads/avatars/${subjectId}/synthetic-selfie.jpg`, selfieCapturedAt: shown } }));
+    const doc = await approvedId();
+    const reviewer = await admin([...DOC_REVIEWER_CAPABILITIES, 'documents.review']);
+    const viewed = await call(reviewer.token, 'GET', `/verification/${doc.id}/document-url`);
+    expect(viewed.json().data.signupSelfie.capturedAt).toBe(shown.toISOString());
+    // the retake lands after the view
+    await system(() => app.prisma.user.update({ where: { id: subjectId }, data: { avatar: `/uploads/avatars/${subjectId}/synthetic-retake.jpg`, selfieCapturedAt: new Date('2026-11-09T11:05:00.000Z') } }));
+    const before = await system(() => app.prisma.auditLog.count({ where: { action: 'SELFIE_ID_COMPARED', entityId: subjectId } }));
+    const res = await call(reviewer.token, 'POST', `/verification/${doc.id}/selfie-check`, { match: true, selfieCapturedAt: shown.toISOString() });
+    expect(res.statusCode, res.body).toBe(409);
+    expect(res.json().error.code).toBe('SELFIE_CHANGED');
+    expect(await system(() => app.prisma.auditLog.count({ where: { action: 'SELFIE_ID_COMPARED', entityId: subjectId } }))).toBe(before);
+    // and a decision that names no shown selfie is refused outright
+    expect((await call(reviewer.token, 'POST', `/verification/${doc.id}/selfie-check`, { match: true })).statusCode).toBe(400);
+  });
+
+  it('without the reviewer grant: refused, nothing recorded', async () => {
+    const doc = await approvedId();
+    const presetOnly = await admin(DOC_REVIEWER_CAPABILITIES);
+    const before = await system(() => app.prisma.auditLog.count({ where: { action: 'SELFIE_ID_COMPARED', entityId: subjectId } }));
+    expect((await call(presetOnly.token, 'POST', `/verification/${doc.id}/selfie-check`, { match: true, selfieCapturedAt: new Date().toISOString() })).statusCode).toBe(403);
+    expect((await call(presetOnly.token, 'GET', '/verification/selfie-checks')).statusCode).toBe(403);
+    expect(await system(() => app.prisma.auditLog.count({ where: { action: 'SELFIE_ID_COMPARED', entityId: subjectId } }))).toBe(before);
+  });
+
+  it('a person who takes no selfie (a store owner), a document that is not an approved photo ID, or no selfie on file: refused', async () => {
+    const reviewer = await admin([...DOC_REVIEWER_CAPABILITIES, 'documents.review']);
+    const doc = await approvedId();
+    await system(() => app.prisma.user.update({ where: { id: subjectId }, data: { roles: ['VENDOR_OWNER'], avatar: `/uploads/avatars/${subjectId}/synthetic-selfie.jpg`, selfieCapturedAt: new Date() } }));
+    const storeOnly = await call(reviewer.token, 'POST', `/verification/${doc.id}/selfie-check`, { match: true, selfieCapturedAt: new Date().toISOString() });
+    expect(storeOnly.statusCode, storeOnly.body).toBe(409);
+    expect(storeOnly.json().error.code).toBe('SELFIE_NOT_TAKEN_BY_THIS_PERSON');
+    await system(() => app.prisma.user.update({ where: { id: subjectId }, data: { roles: ['VENDOR_OWNER', 'MOVER', 'RIDER'], selfieCapturedAt: null } }));
+    expect((await call(reviewer.token, 'POST', `/verification/${doc.id}/selfie-check`, { match: true, selfieCapturedAt: new Date().toISOString() })).json().error.code).toBe('NO_SELFIE_ON_FILE');
+    const pending = await system(async () => {
+      const fileUrl = await ownedVerificationFixture(app.prisma, subjectId);
+      return app.prisma.verificationDocument.create({ data: { userId: subjectId, role: 'MOVER', docType: 'national_id', fileUrl, status: 'PENDING', consentAt: new Date(), privacyNoticeVersion: 'v1' } });
+    });
+    expect((await call(reviewer.token, 'POST', `/verification/${pending.id}/selfie-check`, { match: true, selfieCapturedAt: new Date().toISOString() })).json().error.code).toBe('NOT_AN_APPROVED_PHOTO_ID');
+    await system(() => app.prisma.user.update({ where: { id: subjectId }, data: { roles: ['VENDOR_OWNER'] } }));
+  });
+});
+
+// [review F3/F6 · 9 Nov 2026] A "no match" stands against its own author; another reviewer's match is an override; the
+// stated reason is inside the decision record.
+describe('[review] a standing "no match", and the reason in the record', () => {
+  it('reviewer A says no match (reason recorded); A cannot then say match; B can, recorded as an override', async () => {
+    const shown = new Date('2026-11-09T12:00:00.000Z');
+    await system(() => app.prisma.user.update({ where: { id: subjectId }, data: { roles: ['VENDOR_OWNER', 'MOVER', 'RIDER'], avatar: `/uploads/avatars/${subjectId}/synthetic-f3.jpg`, selfieCapturedAt: shown } }));
+    const doc = await system(async () => {
+      const fileUrl = await ownedVerificationFixture(app.prisma, subjectId);
+      return app.prisma.verificationDocument.create({ data: { userId: subjectId, role: 'MOVER', docType: 'national_id', fileUrl, status: 'APPROVED', state: 'COMMITTED', reviewedAt: new Date(), reviewedBy: 'synthetic-reviewer', consentAt: new Date(), privacyNoticeVersion: 'v1' } });
+    });
+    const a = await admin([...DOC_REVIEWER_CAPABILITIES, 'documents.review']);
+    const b = await admin([...DOC_REVIEWER_CAPABILITIES, 'documents.review']);
+    const no = await call(a.token, 'POST', `/verification/${doc.id}/selfie-check`, { match: false, selfieCapturedAt: shown.toISOString() });
+    expect(no.statusCode, no.body).toBe(200);
+    const rows = () => system(() => app.prisma.auditLog.findMany({ where: { action: 'SELFIE_ID_COMPARED', entityId: subjectId }, orderBy: [{ createdAt: 'asc' }, { id: 'asc' }] }));
+    expect((await rows()).at(-1)!.changes).toMatchObject({ outcome: 'NO_MATCH', reason: REASON });
+    const again = await call(a.token, 'POST', `/verification/${doc.id}/selfie-check`, { match: true, selfieCapturedAt: shown.toISOString() });
+    expect(again.statusCode, again.body).toBe(409);
+    expect(again.json().error.code).toBe('NO_MATCH_STANDS');
+    const override = await call(b.token, 'POST', `/verification/${doc.id}/selfie-check`, { match: true, selfieCapturedAt: shown.toISOString() });
+    expect(override.statusCode, override.body).toBe(200);
+    expect((await rows()).at(-1)!.changes).toMatchObject({ outcome: 'MATCH', overridesNoMatch: true, reason: REASON });
+    await system(() => app.prisma.user.update({ where: { id: subjectId }, data: { roles: ['VENDOR_OWNER'] } }));
+  });
+});
+
+// [OWNER-ASKS · round-4 review 3] Off, the selfie-check queue leaves independent pros out (the live phones cannot take
+// their photo); on, a pro with a photo and an approved ID waits there for a person.
+describe('[owner 9 Nov] the selfie-check queue and the pro switch', () => {
+  it('switch off: a pro is not queued; switch on: the pro is queued', async () => {
+    const proUser = await runWithTenant('swift-default', () => app.prisma.user.create({ data: { phone: `+59281${NUM}7`, firstName: `Pro${RUN}`, lastName: 'Queue', activeRole: 'CUSTOMER', roles: ['CUSTOMER'], countryCode: 'GY', status: 'ACTIVE', isPhoneVerified: true, avatar: '/uploads/avatars/PLACEHOLDER/synthetic-pro.jpg', selfieCapturedAt: new Date() } }));
+    users.push(proUser.id);
+    await system(async () => {
+      await app.prisma.user.update({ where: { id: proUser.id }, data: { avatar: `/uploads/avatars/${proUser.id}/synthetic-pro.jpg` } });
+      await app.prisma.serviceProvider.create({ data: { userId: proUser.id, trade: 'cleaner' } });
+      const fileUrl = await ownedVerificationFixture(app.prisma, proUser.id);
+      await app.prisma.verificationDocument.create({ data: { userId: proUser.id, role: 'CUSTOMER', docType: 'national_id', fileUrl, status: 'APPROVED', state: 'COMMITTED', reviewedAt: new Date(), reviewedBy: 'synthetic-reviewer', consentAt: new Date(), privacyNoticeVersion: 'v1' } });
+    });
+    const reviewer = await admin([...DOC_REVIEWER_CAPABILITIES, 'documents.review']);
+    const queued = async () => ((await call(reviewer.token, 'GET', '/verification/selfie-checks')).json().data.pending as Array<{ userId: string }>).map((p) => p.userId);
+    vi.stubEnv('PRO_HOME_JOBS_SELFIE', '');
+    try { expect(await queued()).not.toContain(proUser.id); } finally { vi.unstubAllEnvs(); }
+    vi.stubEnv('PRO_HOME_JOBS_SELFIE', '1');
+    try { expect(await queued()).toContain(proUser.id); } finally { vi.unstubAllEnvs(); }
+    await system(() => app.prisma.serviceProvider.deleteMany({ where: { userId: proUser.id } }));
+  });
+});
+
+// [round-5 review S4] The pro "home jobs are paused" notice follows the switch; an override is flagged only over a
+// STANDING "no match".
+describe('[round 5] the pro notice and the override flag', () => {
+  it('a rider who is also a pro: switch off -> no pro notice on a "no match"; switch on -> the pro notice, in the customer inbox', async () => {
+    const shown = new Date('2026-11-09T13:00:00.000Z');
+    await system(async () => {
+      await app.prisma.user.update({ where: { id: subjectId }, data: { roles: ['VENDOR_OWNER', 'MOVER', 'RIDER'], avatar: `/uploads/avatars/${subjectId}/synthetic-r5.jpg`, selfieCapturedAt: shown } });
+      await app.prisma.serviceProvider.create({ data: { userId: subjectId, trade: 'cleaner' } });
+    });
+    const doc = await system(async () => {
+      const fileUrl = await ownedVerificationFixture(app.prisma, subjectId);
+      return app.prisma.verificationDocument.create({ data: { userId: subjectId, role: 'MOVER', docType: 'national_id', fileUrl, status: 'APPROVED', state: 'COMMITTED', reviewedAt: new Date(), reviewedBy: 'synthetic-reviewer', consentAt: new Date(), privacyNoticeVersion: 'v1' } });
+    });
+    const notices = () => system(() => app.prisma.notification.findMany({ where: { userId: subjectId, title: 'Home jobs are paused' } }));
+    const a = await admin([...DOC_REVIEWER_CAPABILITIES, 'documents.review']);
+    vi.stubEnv('PRO_HOME_JOBS_SELFIE', '');
+    try {
+      expect((await call(a.token, 'POST', `/verification/${doc.id}/selfie-check`, { match: false, selfieCapturedAt: shown.toISOString() })).statusCode).toBe(200);
+      expect(await notices()).toHaveLength(0);
+    } finally { vi.unstubAllEnvs(); }
+    const b = await admin([...DOC_REVIEWER_CAPABILITIES, 'documents.review']);
+    vi.stubEnv('PRO_HOME_JOBS_SELFIE', '1');
+    try {
+      expect((await call(b.token, 'POST', `/verification/${doc.id}/selfie-check`, { match: false, selfieCapturedAt: shown.toISOString() })).statusCode).toBe(200);
+      const sent = await notices();
+      expect(sent).toHaveLength(1);
+      expect(sent[0]!.data).toMatchObject({ audience: 'customer' });
+    } finally { vi.unstubAllEnvs(); }
+    await system(() => app.prisma.serviceProvider.deleteMany({ where: { userId: subjectId } }));
+    await system(() => app.prisma.notification.deleteMany({ where: { userId: subjectId } }));
+  });
+
+  it('a match over a standing "no match" is an override; a later match over that match is not', async () => {
+    const shown = new Date('2026-11-09T14:00:00.000Z');
+    await system(() => app.prisma.user.update({ where: { id: subjectId }, data: { roles: ['VENDOR_OWNER', 'MOVER', 'RIDER'], avatar: `/uploads/avatars/${subjectId}/synthetic-r5b.jpg`, selfieCapturedAt: shown } }));
+    const doc = await system(async () => {
+      const fileUrl = await ownedVerificationFixture(app.prisma, subjectId);
+      return app.prisma.verificationDocument.create({ data: { userId: subjectId, role: 'MOVER', docType: 'national_id', fileUrl, status: 'APPROVED', state: 'COMMITTED', reviewedAt: new Date(), reviewedBy: 'synthetic-reviewer', consentAt: new Date(), privacyNoticeVersion: 'v1' } });
+    });
+    const [a, b, c] = [await admin([...DOC_REVIEWER_CAPABILITIES, 'documents.review']), await admin([...DOC_REVIEWER_CAPABILITIES, 'documents.review']), await admin([...DOC_REVIEWER_CAPABILITIES, 'documents.review'])];
+    const decide = (token: string, match: boolean) => call(token, 'POST', `/verification/${doc.id}/selfie-check`, { match, selfieCapturedAt: shown.toISOString() });
+    const last = async () => (await system(() => app.prisma.auditLog.findMany({ where: { action: 'SELFIE_ID_COMPARED', entityId: subjectId }, orderBy: [{ createdAt: 'asc' }, { id: 'asc' }] }))).at(-1)!.changes as Record<string, unknown>;
+    expect((await decide(a.token, false)).statusCode).toBe(200);
+    expect((await decide(b.token, true)).statusCode).toBe(200);
+    expect(await last()).toMatchObject({ outcome: 'MATCH', overridesNoMatch: true });
+    expect((await decide(c.token, true)).statusCode).toBe(200);
+    expect(await last()).toMatchObject({ outcome: 'MATCH' });
+    expect(await last()).not.toHaveProperty('overridesNoMatch');
+    await system(() => app.prisma.user.update({ where: { id: subjectId }, data: { roles: ['VENDOR_OWNER'] } }));
+  });
+});
+

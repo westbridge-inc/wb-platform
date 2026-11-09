@@ -9,9 +9,9 @@ import { mockApi, renderWithQuery } from '@/test/test-utils';
 
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
-function fixture(signupSelfie: unknown) {
+function fixture(signupSelfie: unknown, extra: Record<string, unknown> = {}) {
   return mockApi((r) => r.url.pathname.endsWith('/document-url')
-    ? { body: { success: true, data: { url: '/api/v1/verification/render/synthetic?expires=9999999999&reviewer=rev&sig=synthetic-signature-0000', expiresInSeconds: 300, signupSelfie } } }
+    ? { body: { success: true, data: { url: '/api/v1/verification/render/synthetic?expires=9999999999&reviewer=rev&sig=synthetic-signature-0000', expiresInSeconds: 300, signupSelfie, ...extra } } }
     : { body: {} });
 }
 
@@ -40,5 +40,37 @@ describe('[Item 98] the reviewer compares the signup selfie with the ID by eye',
     await user.click(screen.getByRole('button', { name: /View document/ }));
     await screen.findByAltText('National ID evidence');
     expect(screen.queryByAltText('Applicant signup selfie')).toBeNull();
+  });
+});
+
+// [OWNER-ASKS · owner ruling 9 Nov 2026] Riders, drivers and businesses that go to the customer take the selfie; a store
+// owner, store staff and an in-shop business do not. The server says which (`signupSelfieExpected`): the console reviews
+// a store owner on the ID alone and never reads the absence as a missing step.
+describe('[OWNER-ASKS 9 Nov] the ID alone for a person who takes no selfie', () => {
+  it('a store owner: "ID only" — no selfie, no missing-selfie warning', async () => {
+    fixture(null, { signupSelfieExpected: false });
+    const { user } = renderWithQuery(<DocumentViewer id="synthetic" label="Owner's national ID" onViewed={vi.fn()} />);
+    await user.click(screen.getByRole('button', { name: /View document/ }));
+    await screen.findByAltText("Owner's national ID evidence");
+    expect(screen.queryByAltText('Applicant signup selfie')).toBeNull();
+    expect(screen.getByText(/ID only/)).toBeTruthy();
+    expect(document.body.textContent).not.toMatch(/No signup selfie on file/);
+  });
+
+  it('a rider, driver or home-visit business with no selfie on file: the reviewer is told one is missing', async () => {
+    fixture(null, { signupSelfieExpected: true });
+    const { user } = renderWithQuery(<DocumentViewer id="synthetic" label="National ID" onViewed={vi.fn()} />);
+    await user.click(screen.getByRole('button', { name: /View document/ }));
+    await screen.findByAltText('National ID evidence');
+    expect(screen.getByText(/No signup selfie on file/)).toBeTruthy();
+    expect(document.body.textContent).not.toMatch(/ID only/);
+  });
+
+  it('an older server that does not say: nothing extra is drawn', async () => {
+    fixture(null);
+    const { user } = renderWithQuery(<DocumentViewer id="synthetic" label="National ID" onViewed={vi.fn()} />);
+    await user.click(screen.getByRole('button', { name: /View document/ }));
+    await screen.findByAltText('National ID evidence');
+    expect(document.body.textContent).not.toMatch(/ID only|No signup selfie on file/);
   });
 });

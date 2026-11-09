@@ -1,4 +1,5 @@
 import type { Prisma, PrismaClient } from '@prisma/client';
+import { assertProHomeJobsAllowed } from '../verification/home-visits';
 import { AppError } from '../../utils/errors';
 import { isProviderVerified } from './services.service';
 import { assertProFeeAllowsNewWork } from './pro-fee';
@@ -33,4 +34,6 @@ export async function assertProviderCanOperate(db: OperateDb, provider: { userId
   }
   // [BILL-PRO PR3] The pro weekly fee (PRO_WEEKLY_FEE on only): the agreement accepted and the fee operable.
   await assertProFeeAllowsNewWork(db, provider.userId, 'customer');
+  // [owner ruling 9 Nov ~20:1xZ (A)] home work needs the pro's photo, checked against the approved ID
+  await assertProHomeJobsAllowed(db, provider.userId, 'customer');
 }

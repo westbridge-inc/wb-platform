@@ -57,9 +57,15 @@ export function rootEntryGate(state: RootEntryState): RootEntryGate {
   if (isEarner && !isAuthenticated && !anyPreview) return 'auth';
   // [Owner ruling 16 Oct 2026 — CUSTOMERS TAKE NO PHOTOS] A signed-in customer
   // goes straight in and is never sent to the camera, taxi included (a ride
-  // needs only the ID on file). Earners keep this gate, since a mover cannot
+  // needs only the ID on file). Movers keep this gate, since a mover cannot
   // go online without the photo.
-  if (needsSelfie && intent !== 'customer') return 'selfie';
+  // [OWNER-ASKS · owner ruling 9 Nov 2026] Nor do store owners, store staff or
+  // businesses that serve customers only at their own place: the business app
+  // opens without a photo. A business that goes to the customer is asked inside
+  // the app when it offers a home visit (modules/vendor/homeVisitPhoto), and the
+  // server refuses home-visit bookings until it is taken.
+  // [owner ruling 9 Nov 2026 ~20:1xZ (B)] Advertisers no longer take the selfie either: only riders and drivers here.
+  if (needsSelfie && intent === 'mover') return 'selfie';
   // [MOB-007] An authenticated state with no user never opens the app for
   // anyone. A customer holds on the sign-out hold (no camera); its "Sign out"
   // is the way back. (needsSelfie is true whenever there is no user.)

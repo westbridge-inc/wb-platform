@@ -463,6 +463,8 @@ export function ItemEditor({
             <Chip label="I travel to them" on={mode === 'MOBILE'} onClick={() => setMode('MOBILE')} />
             <Chip label="Both" on={mode === 'BOTH'} onClick={() => setMode('BOTH')} />
           </div>
+          {/* [OWNER-ASKS · owner ruling 9 Nov 2026] Only a business that goes to the customer takes the profile photo. */}
+          {mode !== 'AT_BUSINESS' ? <p className="mt-2 text-xs text-[var(--swift-muted)]">{HOME_VISIT_EDITOR_NOTE}</p> : null}
           {mode !== 'AT_BUSINESS' ? (
             <label className="mt-3 block">
               <span className="sw-field-label">How far will you travel from your store? (km)</span>
@@ -542,6 +544,9 @@ export function ItemEditor({
     </Modal>
   );
 }
+
+/** [OWNER-ASKS · owner ruling 9 Nov 2026] What a home visit needs before customers can book it (the server refuses it until then). */
+const HOME_VISIT_EDITOR_NOTE = 'Home visits need the owner’s profile photo (taken in the Swift app) and an approved police clearance before customers can book them. Bookings at your place are not affected.';
 
 function Chip({ label, on, onClick }: { label: string; on: boolean; onClick: () => void }) {
   return <button type="button" className="sw-chip" aria-pressed={on} onClick={onClick}>{label}</button>;

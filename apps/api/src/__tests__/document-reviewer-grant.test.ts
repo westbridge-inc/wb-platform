@@ -181,6 +181,9 @@ describe('[V3] the grant is explicit-only: `*`, a wildcard or a role default nev
       'POST /store-vat/:vendorId/approve', 'POST /store-vat/:vendorId/reject', 'POST /store-vat/:vendorId/revoke',
       // [VAT-DOCS · owner ruling 31 Oct 2026] An approved store's change of price choice: the same VAT reviewers.
       'POST /store-vat/:vendorId/mode',
+      // [OWNER-ASKS · security review 9 Nov 2026] The home-visit selfie compared with the approved ID: its queue and its
+      // decision show and judge a person's ID beside their face, so the same reviewers.
+      'GET /verification/selfie-checks', 'POST /verification/:id/selfie-check',
     ];
     for (const door of doors) expect((authority.ADMIN_ROUTE_AUTHORITY[door] as { requires?: string } | undefined)?.requires, door).toBe(GRANT);
     const others = Object.entries(authority.ADMIN_ROUTE_AUTHORITY).filter(([k, a]) => !doors.includes(k) && (a as { requires?: string }).requires);

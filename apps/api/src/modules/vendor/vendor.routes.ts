@@ -2670,6 +2670,12 @@ export async function vendorRoutes(app: FastifyInstance) {
           select: { name: true, subStatus: true, substituteDecideBy: true },
         }));
         if (appointmentItemId && order.appointmentSlot) {
+          // [review F1 · owner ruling 9 Nov 2026] A requested HOME visit is confirmed only while the full home-visit gate
+          // still holds (clearance, photo, a standing match with a current ID), re-read on the locked order.
+          const { assertOwnerHomeVisitsOpen, isHomeVisitOrder } = await import('../verification/home-visits');
+          const visit = await tx.order.findUniqueOrThrow({ where: { id: order.id }, select: { fulfillment: true, homeVisit: true, vendor: { select: { name: true, owner: { select: { userId: true } } } } } });
+          // fail closed: a home visit with no readable owner is refused (an unknown id holds no photo)
+          if (isHomeVisitOrder(visit)) await assertOwnerHomeVisitsOpen(tx, visit.vendor?.owner.userId ?? '', 'business', visit.vendor?.name ?? 'This business');
           // Switch off: the call it always was (no cap argument).
           await bookingService.reserveSlot(appointmentItemId, order.customerId, order.appointmentSlot, order.id, tx, ...(bookingLimits ? [bookingLimits] : []));
         }

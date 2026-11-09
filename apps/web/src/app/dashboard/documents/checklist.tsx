@@ -11,7 +11,7 @@ import { getStoreDocumentStatus, type StoreUploadConsentVia } from '@/lib/store-
 import { getStoreVat } from '@/lib/store-vat-read';
 import { VAT_DOCUMENT_ROW } from '@/lib/store-vat-words';
 import {
-  DOCUMENT_CONSENT_TEXT, DOCUMENT_PHOTO_HINT, DOCUMENT_REVIEW_PROMISE, DOCUMENTS_FOOTNOTE, FOOD_HANDLERS_DOC, OPTIONAL_HEADING, OPTIONAL_INTRO,
+  DOCUMENT_CONSENT_TEXT, HOME_VISIT_PHOTO_WORDS, homeVisitPhotoMissing, DOCUMENT_PHOTO_HINT, DOCUMENT_REVIEW_PROMISE, DOCUMENTS_FOOTNOTE, FOOD_HANDLERS_DOC, OPTIONAL_HEADING, OPTIONAL_INTRO,
   OWN_NAME_DOC, POLICE_CLEARANCE_DOC, POLICE_CLEARANCE_HOME_VISITS, POLICE_CLEARANCE_NO_WORDS, POLICE_CLEARANCE_STORE_TYPES, REQUIRED_HEADING,
   REQUIRED_INTRO, docLabel, documentConsentGivenLine, documentConsentOnRecord, emptyChecklistCopy, latestDocument, optionalDocHint,
   optionalDocTypes, ownNameApplies, ownNameOfferFits, policeClearanceWordsFrom, vatDocumentStatusWord,
@@ -109,6 +109,13 @@ export function StoreDocumentChecklist({ storeId, vendorType, storeName }: { sto
 
   return (
     <div className="space-y-4">
+      {/* [OWNER-ASKS · owner ruling 9 Nov 2026] Only a home-visit business is ever asked for the profile photo. */}
+      {homeVisitPhotoMissing(d) ? (
+        <section role="status" className="rounded-2xl border border-[var(--swift-border)] p-4">
+          <p className="font-semibold">{HOME_VISIT_PHOTO_WORDS.title}</p>
+          <p className="mt-1 text-sm text-[var(--swift-muted)]">{HOME_VISIT_PHOTO_WORDS.body}</p>
+        </section>
+      ) : null}
       <section aria-labelledby="documents-required" className="space-y-3">
         <div>
           <h2 id="documents-required" className="text-lg font-bold">{REQUIRED_HEADING}</h2>

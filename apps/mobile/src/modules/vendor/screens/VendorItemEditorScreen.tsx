@@ -59,6 +59,9 @@ import { useStoreVat } from '../../../hooks/storeVat';
 import { isKeptPhoto, storePhotoUrl, HERO_PHOTO_WIDTH } from '../../../lib/images';
 import { STORE_PICK } from '../../../lib/storePick';
 import { BULK_WORDS } from '../../../lib/bulkWords';
+import { useAuthStore } from '../../../stores/authStore';
+import { homeVisitPhotoNeeded } from '../homeVisitPhoto';
+import { HomeVisitPhotoCard } from '../HomeVisitPhotoCard';
 import {
   BUFFER_CHOICES, NOTICE_CHOICES, choicesWith, instantBookingAvailable, minutesLabel, nextWindow, openingBookingSettings,
   slotsFromWeekHours, weekHoursFromSlots, weekHoursProblem, type WeekHours,
@@ -476,6 +479,11 @@ export function VendorItemEditorScreen({ navigation, route }: any) {
     setWeek((w) => w.map((windows, d) => (d === day ? update(windows) : windows)));
   const [mode, setMode] = useState<'AT_BUSINESS' | 'MOBILE' | 'BOTH'>(existingBooking.serviceMode ?? 'AT_BUSINESS');
   const [radiusKm, setRadiusKm] = useState<string>(existingBooking.serviceRadiusKm != null ? String(existingBooking.serviceRadiusKm) : '5');
+  // [OWNER-ASKS · owner ruling 9 Nov 2026] A business that goes to the customer takes the profile photo: asked here, the
+  // moment it offers a home visit without one. In-shop listings never ask. The photo is the OWNER's (the server reads
+  // the owner's): staff editing a listing are never asked for their own.
+  const hasPhoto = useAuthStore((s) => !!s.user?.selfieCapturedAt);
+  const askHomeVisitPhoto = myRole === 'OWNER' && !samplePreview && homeVisitPhotoNeeded({ mode, hasPhoto });
 
   // [UI-SWEEP U67] Typed, unsaved changes are never thrown away silently.
   // Back, a swipe, or a board door to the menu list (navigate + pop) stops on
@@ -782,6 +790,8 @@ export function VendorItemEditorScreen({ navigation, route }: any) {
               <Chip label="I travel to them" selected={mode === 'MOBILE'} onPress={() => setMode('MOBILE')} style={{ height: 38, paddingHorizontal: space.md }} />
               <Chip label="Both" selected={mode === 'BOTH'} onPress={() => setMode('BOTH')} style={{ height: 38, paddingHorizontal: space.md }} />
             </View>
+
+            {askHomeVisitPhoto ? <HomeVisitPhotoCard /> : null}
 
             {mode !== 'AT_BUSINESS' ? (
               <View>
