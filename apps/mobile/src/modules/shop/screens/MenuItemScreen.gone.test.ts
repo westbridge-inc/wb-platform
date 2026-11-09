@@ -82,7 +82,7 @@ function nodes(node: any, out: any[] = []): any[] {
   nodes(node.props?.children, out);
   return out;
 }
-const STORE = { name: 'Sharp Cuts', categories: [{ items: [{ id: 'other-item', name: 'Shave', basePrice: 1_000, optionGroups: [], isAvailable: true }] }] };
+const STORE = { name: 'Sharp Cuts', vendorType: 'SERVICE', categories: [{ items: [{ id: 'other-item', name: 'Shave', basePrice: 1_000, optionGroups: [], isAvailable: true }] }] };
 const render = () => nodes(MenuItemScreen());
 const ofType = (tree: any[], type: string) => tree.filter((n) => n.type === type);
 
@@ -119,7 +119,7 @@ describe('[UI-SWEEP U32] the item page never strands the customer', () => {
     expect(ofType(tree, 'Header')).toHaveLength(1);
     expect(ofType(tree, 'ErrorState')).toEqual([]);
     const [gone] = ofType(tree, 'EmptyState');
-    expect(gone?.props).toMatchObject({ title: 'This item is no longer on the menu.', actionLabel: 'Go back' });
+    expect(gone?.props).toMatchObject({ title: 'This is no longer offered.', actionLabel: 'Go back' }); // [STORE-WORDS] a barber's words, not a menu's
     gone.props.onAction();
     expect(mocks.goBack).toHaveBeenCalledTimes(1);
   });
