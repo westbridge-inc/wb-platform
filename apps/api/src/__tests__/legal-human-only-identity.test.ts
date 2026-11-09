@@ -70,9 +70,12 @@ describe('[customers take no photos] the words say a customer never needs a phot
   // [OWNER-ASKS · owner ruling 9 Nov 2026 · LEGAL_VERSION 2026-11-09.2] The selfie is for riders, drivers, advertisers and
   // service businesses that go to customers; store owners, store staff, premises-only businesses and customers never.
   it('Privacy: the registration selfie names who takes it — and who never does; a customer is never shown by photo', () => {
-    expect(PRIVACY).toContain('<li><b>A registration selfie (riders, drivers, advertisers and businesses that visit customers):</b>');
+    expect(PRIVACY).toContain('<li><b>A registration selfie (riders, drivers, and service providers and businesses that visit customers):</b>');
+    // [owner ~20:1xZ (A)(B)] individual service providers take it; advertisers never
+    expect(PRIVACY).toContain('riders, drivers and individual service providers take one when they sign up');
     expect(PRIVACY).toContain('a service business takes one when it offers to go to customers (home or mobile visits)');
-    expect(PRIVACY).toContain('A store owner, store staff, a business that serves customers only at its own place, and a customer never need one.');
+    expect(PRIVACY).toContain('A store owner, store staff, a business that serves customers only at its own place, an advertiser, and a customer never need one.');
+    expect(PRIVACY).not.toMatch(/riders, drivers and advertisers take one/);
     expect(PRIVACY).toContain('A selfie taken before this change stays your in-app photo and is protected as described in this policy.');
     expect(PRIVACY).not.toMatch(/businesses, service providers and advertisers take one/);
     expect(PRIVACY).toContain("for a partner who takes a selfie, compares that partner's identity document with their selfie.");
