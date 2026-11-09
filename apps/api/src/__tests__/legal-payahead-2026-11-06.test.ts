@@ -48,7 +48,7 @@ describe('[owner 6 Nov] the four weeks in the words are the four weeks in the co
 
 describe('classification: material for partners, and only partners are asked', () => {
   it('2026-11-06 is served, material once, for partners only; the version everyone answers to stays 2026-11-05', () => {
-    expect(LEGAL_VERSION).toBe('2026-11-09'); // [LEGAL-CALLS · owner 9 Nov 2026] served now under 2026-11-09 (in-app calls in the Privacy Policy: material)
+    expect(LEGAL_VERSION).toBe('2026-11-09.1'); // [LEGAL-CALLS · owner 9 Nov 2026] served now under 2026-11-09 (in-app calls in the Privacy Policy: material)
     expect(MATERIAL_CHANGES.filter((c) => c.version === '2026-11-06')).toHaveLength(1);
     expect(SUMMARY.audience).toBe('partner');
     expect(NON_MATERIAL_CHANGES.map((c) => c.version)).not.toContain('2026-11-06');

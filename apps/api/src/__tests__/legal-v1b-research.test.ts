@@ -187,6 +187,6 @@ describe('one version for the whole batch', () => {
   // [EXPRESS-FEE · owner 1 Nov 2026, non-material] the bump for the express Delivery-policy wording, as 2026-11-01.
   it('is 2026-11-01', () => {
     // served now under 2026-11-05 (the 5 Nov batch: material)
-    expect(LEGAL_VERSION).toBe('2026-11-09'); // [LEGAL-CALLS · owner 9 Nov 2026] served now under 2026-11-09 (in-app calls in the Privacy Policy: material)
+    expect(LEGAL_VERSION).toBe('2026-11-09.1'); // [LEGAL-CALLS · owner 9 Nov 2026] served now under 2026-11-09 (in-app calls in the Privacy Policy: material)
   });
 });
