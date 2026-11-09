@@ -52,12 +52,17 @@ afterEach(async () => {
   host?.remove(); host = undefined; root = undefined;
 });
 
+/** Every choice the card reports, in order. */
+const chosen: Array<'OWN_NAME' | 'REGISTERED'> = [];
+afterEach(() => { chosen.length = 0; });
+
+/** The store sign-up's own wiring (BusinessSetup.tsx): a choice reported to it sets the basis and clears the tick. */
 function Harness({ storeName }: { storeName: string }) {
   const [nameBasis, setNameBasis] = React.useState<'OWN_NAME' | 'REGISTERED'>('REGISTERED');
   const [tick, setTick] = React.useState(false);
   return React.createElement(OwnNameChoiceCard, {
     storeName, nameBasis, ownNameTick: tick,
-    onNameBasis: (basis: 'OWN_NAME' | 'REGISTERED') => { setNameBasis(basis); setTick(false); },
+    onNameBasis: (basis: 'OWN_NAME' | 'REGISTERED') => { chosen.push(basis); setNameBasis(basis); setTick(false); },
     onToggleTick: () => setTick((t) => !t),
   });
 }
@@ -96,6 +101,23 @@ describe('[OWNER-ASKS 9 Nov] "What name does your store use?" explains every box
     expect(tick!.textContent).toContain('I have read and agree to this declaration.');
     await act(async () => tick!.click());
     expect(control('checkbox', OWN_NAME_TICK)!.getAttribute('data-checked')).toBe('true');
+  });
+
+  it('tapping the choice already chosen keeps the declaration ticked: only a real change is reported', async () => {
+    await mount();
+    await act(async () => control('radio', OWN_NAME_CHOICE)!.click());
+    await act(async () => control('checkbox', OWN_NAME_TICK)!.click());
+    expect(control('checkbox', OWN_NAME_TICK)!.getAttribute('data-checked')).toBe('true');
+    await act(async () => control('radio', OWN_NAME_CHOICE)!.click());
+    expect(control('radio', OWN_NAME_CHOICE)!.getAttribute('data-checked')).toBe('true');
+    expect(control('checkbox', OWN_NAME_TICK)!.getAttribute('data-checked')).toBe('true');
+    expect(chosen).toEqual(['OWN_NAME']);
+    // Control: a real change is still reported, and the sign-up still clears the tick for it.
+    await act(async () => control('radio', BUSINESS_NAME_CHOICE)!.click());
+    await act(async () => control('radio', BUSINESS_NAME_CHOICE)!.click());
+    expect(chosen).toEqual(['OWN_NAME', 'REGISTERED']);
+    await act(async () => control('radio', OWN_NAME_CHOICE)!.click());
+    expect(control('checkbox', OWN_NAME_TICK)!.getAttribute('data-checked')).toBe('false');
   });
 
   it('the copy is the owner’s', () => {

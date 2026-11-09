@@ -120,6 +120,45 @@ async function pickupCheckout(c: Actor, at = store) {
   expect([200, 201], added.body).toContain(added.statusCode);
   return call('POST', '/api/v1/customer/checkout', c.token, pickupBody(at));
 }
+/** A business that takes bookings: one listing, 60 minutes, every hour of every day. */
+let salon = { vendorId: '', itemId: '' };
+async function makeServiceBusiness(name: string) {
+  const owner = await makeUser(['VENDOR_OWNER'], 'VENDOR_OWNER');
+  const ids = await sys(async () => {
+    const vo = await app.prisma.vendorOwner.create({ data: { userId: owner.userId } });
+    const vendor = await app.prisma.vendor.create({
+      data: {
+        ownerId: vo.id, name, slug: `pl-${nanoid(8).toLowerCase()}`, vendorType: 'SERVICE', phone: '+5926990001',
+        addressLine1: '2 Savannah Road', city: 'Aishalton', region: 'Upper Takutu', latitude: AT.lat, longitude: AT.lng,
+        status: 'ACTIVE', acceptingOrders: true, isCurrentlyOpen: true, isVerified: true, minOrderAmount: 0,
+      },
+    });
+    const cat = await app.prisma.category.create({ data: { vendorId: vendor.id, name: 'Chair', sortOrder: 0 } });
+    const item = await app.prisma.item.create({
+      data: {
+        vendorId: vendor.id, categoryId: cat.id, name: 'Haircut', basePrice: 2000, isAvailable: true, fulfillment: 'APPOINTMENT',
+        bookingConfig: { durationMinutes: 60, slots: [0, 1, 2, 3, 4, 5, 6].map((dayOfWeek) => ({ dayOfWeek, start: '00:00', end: '24:00' })) },
+      },
+    });
+    return { vendorId: vendor.id, itemId: item.id };
+  });
+  vendorIds.push(ids.vendorId);
+  return ids;
+}
+/** Each booking takes its own hour, two days out (whole UTC hours are whole Guyana hours). */
+let bookingHour = 0;
+const nextBookingSlot = () => new Date((Math.floor(Date.now() / 3_600_000) + 48 + ++bookingHour) * 3_600_000);
+/** A booking checkout. `fulfillment` is what the client CLAIMS for the business; the server decides it is a booking. */
+async function bookingCheckout(c: Actor, fulfillment?: 'PICKUP' | 'DELIVERY') {
+  await clearCart(c);
+  const added = await call('POST', '/api/v1/customer/cart/items', c.token, { vendorId: salon.vendorId, itemId: salon.itemId, quantity: 1 });
+  expect([200, 201], added.body).toContain(added.statusCode);
+  return call('POST', '/api/v1/customer/checkout', c.token, {
+    paymentMethod: 'CASH',
+    appointments: [{ itemId: salon.itemId, slotStart: nextBookingSlot().toISOString() }],
+    ...(fulfillment ? { fulfillmentSelections: { [salon.vendorId]: fulfillment } } : {}),
+  });
+}
 const REDIS_FAILS_AFTER_MS = 4_000; // plugins/redis.ts: how long a command waits while Redis is down.
 
 async function dropVelocity() {
@@ -140,6 +179,7 @@ beforeAll(async () => {
   await app.ready();
   store = await makeStore('Limit Kitchen');
   otherStore = await makeStore('Limit Bakery');
+  salon = await makeServiceBusiness('Limit Salon');
 }, 120_000);
 
 beforeEach(dropVelocity);
@@ -150,6 +190,7 @@ afterAll(async () => {
     const orders = await app.prisma.order.findMany({ where: { OR: [{ customerId: { in: userIds } }, { vendorId: { in: vendorIds } }] }, select: { id: true } });
     const ids = orders.map((o) => o.id);
     await app.prisma.dispatchSearch.deleteMany({ where: { subjectId: { in: ids } } });
+    await app.prisma.booking.deleteMany({ where: { OR: [{ orderId: { in: ids } }, { vendorId: { in: vendorIds } }] } });
     await app.prisma.order.deleteMany({ where: { id: { in: ids } } });
     await app.prisma.checkoutReceipt.deleteMany({ where: { userId: { in: userIds } } });
     await app.prisma.cart.deleteMany({ where: { customerId: { in: userIds } } });
@@ -624,5 +665,39 @@ describe('[OWNER-ASKS · owner 9 Nov 2026] pickup orders are never limited; deli
     await clearCart(a);
     const pickup = await pickupCheckout(a);
     expect(pickup.statusCode, pickup.body).toBe(200);
+  });
+});
+
+describe('[OWNER-ASKS · owner 9 Nov 2026] a booking keeps the limit: only pickup is unlimited', () => {
+  it('a booking spends one order from the hour, as a delivery does', async () => {
+    const c = await makeUser(['CUSTOMER'], 'CUSTOMER');
+    const res = await bookingCheckout(c);
+    expect(res.statusCode, res.body).toBe(200);
+    expect(await sys(() => app.prisma.order.findFirstOrThrow({ where: { customerId: c.userId }, select: { fulfillment: true } }))).toEqual({ fulfillment: 'APPOINTMENT' });
+    expect(await spent(c)).toBe(1);
+  });
+
+  it('a person at the delivery limit is refused a booking, even one the client sends as a pickup', async () => {
+    const c = await makeUser(['CUSTOMER'], 'CUSTOMER');
+    for (let i = 0; i < LIMIT.max; i++) expect((await deliveryCheckout(c)).statusCode, `delivery ${i + 1}`).toBe(200);
+    for (const claim of [undefined, 'PICKUP'] as const) {
+      const booking = await bookingCheckout(c, claim);
+      expect(booking.statusCode, `${claim ?? 'no claim'}: ${booking.body}`).toBe(429);
+      expect(booking.json().error.code).toBe('VELOCITY_LIMIT');
+    }
+    expect(await placed(c)).toBe(LIMIT.max);
+    expect(await spent(c)).toBe(LIMIT.max);
+  });
+
+  it('bookings fill the hour like deliveries: after the limit in bookings, the next delivery is refused', async () => {
+    const c = await makeUser(['CUSTOMER'], 'CUSTOMER');
+    for (let i = 0; i < LIMIT.max; i++) {
+      const res = await bookingCheckout(c, 'PICKUP');
+      expect(res.statusCode, `booking ${i + 1}: ${res.body}`).toBe(200);
+    }
+    await clearCart(c);
+    const over = await deliveryCheckout(c);
+    expect(over.statusCode, over.body).toBe(429);
+    expect(over.json().error.code).toBe('VELOCITY_LIMIT');
   });
 });
