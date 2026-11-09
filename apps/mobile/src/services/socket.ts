@@ -148,7 +148,8 @@ async function reconnectNow(s: Socket, mode: RetryMode): Promise<void> {
   // Signed out, or another account: connectSocket/disconnectSocket own that.
   if (!current) return;
   const refused = mode === 'credential' && current.accessToken === presentedToken;
-  const alreadyRefreshed = refreshedTo !== null && current.accessToken === refreshedTo;
+  // [review S4] ...unless that token has since lapsed: a lapsed token is refused for certain.
+  const alreadyRefreshed = refreshedTo !== null && current.accessToken === refreshedTo && !tokenLapsed(current.accessToken);
   if (!alreadyRefreshed && (refused || tokenLapsed(current.accessToken))) {
     // The app's one refresh (single-flight with the 401 path and the refresh
     // ahead). A refresh the server refuses signs the session out, and the

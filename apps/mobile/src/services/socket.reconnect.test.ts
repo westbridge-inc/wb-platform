@@ -452,6 +452,28 @@ describe('[S4-1] at most one refresh per wake for a refused token', () => {
   });
 });
 
+describe('[review S4] the refreshed token has since lapsed', () => {
+  it('is refreshed again (a lapsed token is refused for certain)', async () => {
+    const s = live();
+    s.serverDisconnect();
+    await vi.advanceTimersByTimeAsync(1_000);
+    let n = 0;
+    fx.refresh.mockImplementation(async () => {
+      n += 1;
+      rotate(jwt(Date.now() + 15 * 60_000, `minted-${n}`));
+      return { accessToken: fx.session!.accessToken, session: fx.session };
+    });
+    s.refusedAtHandshake('Invalid or expired token');
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(fx.refresh).toHaveBeenCalledTimes(1);
+    vi.setSystemTime(Date.now() + 16 * 60_000); // the token this wake refreshed to is now past its exp
+    s.refusedAtHandshake('Invalid or expired token');
+    await vi.advanceTimersByTimeAsync(4_000);
+    expect(fx.refresh).toHaveBeenCalledTimes(2);
+    expect(s.presented.at(-1)).toBe(fx.session!.accessToken);
+  });
+});
+
 // [S4-3] Only the current socket's refusals move the retry state.
 describe('[S4-3] a retired socket\'s connect_error is ignored', () => {
   it('an "Account not active" from the previous account\'s socket does not stop the new account\'s retry', async () => {

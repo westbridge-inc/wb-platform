@@ -10,6 +10,8 @@
 // The server's own reminders behind "View later" are unchanged.
 // ---------------------------------------------------------------------------
 
+import { customerDeciding } from '../modules/vendor/storeOrderRules';
+
 /** A synchronous key-value store (the app's encrypted device storage). */
 export type HandledTakeoverStorage = {
   getItem: (key: string) => string | null;
@@ -27,15 +29,19 @@ type Memory = { userId: string | null; stores: Map<string, Map<string, number>> 
 
 let storage: HandledTakeoverStorage | null = null;
 let memory: Memory | null = null;
+/** A sign-out could not remove the device copy: this run never reads it back (not even for the same account). */
+let staleOnDevice = false;
 
 /** Wires the device storage (stores/authStore, which also owns sign-out). Without it: this run only. */
 export function bindHandledTakeoverStorage(next: HandledTakeoverStorage | null): void {
   storage = next;
   memory = null;
+  staleOnDevice = false;
 }
 
 function readStored(userId: string): Map<string, Map<string, number>> {
   const stores = new Map<string, Map<string, number>>();
+  if (staleOnDevice) return stores;
   let raw: string | null = null;
   try {
     raw = storage?.getItem(HANDLED_TAKEOVERS_STORAGE_KEY) ?? null;
@@ -76,6 +82,7 @@ function save(m: Memory): void {
   try {
     if (Object.keys(s).length === 0) storage.removeItem(HANDLED_TAKEOVERS_STORAGE_KEY);
     else storage.setItem(HANDLED_TAKEOVERS_STORAGE_KEY, JSON.stringify({ u: m.userId, s }));
+    staleOnDevice = false; // the device copy is this account's own again
   } catch {
     // Best effort: losing a write costs one more ring after a restart, never a missed order.
   }
@@ -100,8 +107,10 @@ export function takeoverHandled(userId: string | null, vendorId: string, orderId
   return until !== undefined && until > now;
 }
 
-/** Forget what no longer waits: an order the board shows outside PENDING, or past its accept window.
- *  An order still waiting is kept until the end of its (possibly moved) accept window. */
+/** Forget what no longer waits for the answer the store gave: an order the board shows outside
+ *  PENDING, past its accept window, waiting on the customer ("Out of stock" asked), or whose window
+ *  moved later (the customer answered and the store's clock restarted: a new decision, so it rings
+ *  again, even after a restart). An earlier window only shortens the memory. */
 export function pruneHandledTakeovers(userId: string | null, vendorId: string, board: unknown, now: number): void {
   const m = memoryFor(userId);
   const orders = m.stores.get(vendorId);
@@ -116,14 +125,14 @@ export function pruneHandledTakeovers(userId: string | null, vendorId: string, b
   let changed = false;
   for (const [orderId, until] of [...orders]) {
     const row = rows.get(orderId);
-    if (row && row['status'] !== 'PENDING') {
+    if (row && (row['status'] !== 'PENDING' || customerDeciding(row as never))) {
       orders.delete(orderId);
       changed = true;
       continue;
     }
     const windowEnd = row ? acceptWindowEnd(row) : null;
     const end = windowEnd ?? until;
-    if (end <= now) {
+    if (end <= now || end > until) {
       orders.delete(orderId);
       changed = true;
     } else if (end !== until) {
@@ -149,7 +158,14 @@ export function forgetHandledTakeovers(): void {
   try {
     storage?.removeItem(HANDLED_TAKEOVERS_STORAGE_KEY);
   } catch {
-    // Unreadable storage holds nothing another account can read (the account is checked on read).
+    // [review S4] Not removed: overwrite it with an empty memory owned by no account, and never read
+    // it back in this run. Another account can never read it either way (the account is checked).
+    staleOnDevice = true;
+    try {
+      storage?.setItem(HANDLED_TAKEOVERS_STORAGE_KEY, JSON.stringify({ u: null, s: {} }));
+    } catch {
+      // Storage refuses every write: nothing more to do.
+    }
   }
 }
 

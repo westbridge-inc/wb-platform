@@ -718,30 +718,24 @@ describe('the account whose session ended last (owner of a tap made while signed
     await teardownFinished('refresh-last-a');
   });
 
+  // [STORE-ALERT-RECONNECT · S4-2] The store's answered new-order screens are kept in the encrypted
+  // device storage for the signed-in account; a session end wipes them, there and in memory. (One
+  // session, its teardown awaited like every case here; "another account never reads it" is covered
+  // by hooks/vendorops.takeoverRaise.navigation.test.ts.)
+  it('wipes the store alerts answered on this phone, on the device too', async () => {
+    useAuthStore.getState().setAuth(user('s'), 'access-s', 'refresh-last-s');
+    markTakeoverHandled('s', 'store-a', 'o1', Date.now() + 60_000);
+    expect(storageData.has(HANDLED_TAKEOVERS_STORAGE_KEY)).toBe(true);
+    useAuthStore.getState().logout();
+    expect(storageData.has(HANDLED_TAKEOVERS_STORAGE_KEY)).toBe(false);
+    expect(takeoverHandled('s', 'store-a', 'o1')).toBe(false);
+    await teardownFinished('refresh-last-s');
+  });
+
   it('is the account a 401 logout ended', async () => {
     useAuthStore.getState().setAuth(user('c'), 'access-c', 'refresh-last-c');
     expect(useAuthStore.getState().logoutIfCurrent(getAuthSessionSnapshot()!)).toBe(true);
     expect(getLastSignedOutUserId()).toBe('c');
     await teardownFinished('refresh-last-c');
-  });
-});
-
-// [STORE-ALERT-RECONNECT · S4-2] The store's answered new-order screens are kept in the encrypted
-// device storage for the signed-in account; ending the session wipes them, there and in memory.
-describe('[S4-2] store alerts answered on this phone', () => {
-  it('are written to the device storage, and sign-out and an account switch wipe them', () => {
-    const until = Date.now() + 60_000;
-    useAuthStore.getState().setAuth(user('a'), 'access-a', 'refresh-a');
-    markTakeoverHandled('a', 'store-a', 'o1', until);
-    expect(storageData.has(HANDLED_TAKEOVERS_STORAGE_KEY)).toBe(true);
-    useAuthStore.getState().logout();
-    expect(storageData.has(HANDLED_TAKEOVERS_STORAGE_KEY)).toBe(false);
-    expect(takeoverHandled('a', 'store-a', 'o1')).toBe(false);
-
-    useAuthStore.getState().setAuth(user('a'), 'access-a2', 'refresh-a2');
-    markTakeoverHandled('a', 'store-a', 'o2', until);
-    useAuthStore.getState().setAuth(user('b'), 'access-b', 'refresh-b'); // another account signs in over it
-    expect(storageData.has(HANDLED_TAKEOVERS_STORAGE_KEY)).toBe(false);
-    expect(takeoverHandled('a', 'store-a', 'o2')).toBe(false);
   });
 });
