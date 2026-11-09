@@ -28,7 +28,7 @@ vi.mock('./own-name-loader', async () => {
 
 const DOOR = { placeId: 'door', primary: '12 Regent Street', secondary: 'Georgetown', lat: 6.812, lng: -58.163 };
 const loadMap = () => screen.getByRole('application').querySelectorAll('img').forEach((tile) => fireEvent.load(tile));
-const OWN = /My own name — just my surname/;
+const OWN = /My own name — I’m one person trading under just my surname/;
 
 beforeEach(() => {
   vi.resetAllMocks();
@@ -65,12 +65,15 @@ describe('[ROLE-DOCS] the web sign-up offers and signs the own-name declaration'
     const user = await businessStep();
     const own = (await screen.findByRole('radio', { name: OWN })) as HTMLInputElement;
     expect(own.checked).toBe(false);
-    expect((screen.getByRole('radio', { name: 'A business name, or a company' }) as HTMLInputElement).checked).toBe(true);
+    expect((screen.getByRole('radio', { name: 'A registered business name or a company (I have the DCRA certificate)' }) as HTMLInputElement).checked).toBe(true);
     expect(screen.queryByText(/I TRADE UNDER MY OWN NAME/)).toBeNull();
     await user.click(own);
-    expect(document.querySelector('pre')?.textContent).toBe(OWN_NAME_DECLARATION_WEB);
+    // [OWNER-ASKS 9 Nov 2026] a plain title and its version, then the signed words unchanged: title line + body = the text
+    expect(document.querySelector('[data-own-name-title]')?.textContent).toBe('Declaration: I trade under my own nameVersion 1');
+    expect(screen.queryByText(/I TRADE UNDER MY OWN NAME \(v1\)/)).toBeNull();
+    expect(`I TRADE UNDER MY OWN NAME (v1)\n\n${document.querySelector('pre')?.textContent}`).toBe(OWN_NAME_DECLARATION_WEB);
     expect(screen.getByText('You sign this for “Persaud” only.')).toBeTruthy();
-    expect((screen.getByRole('checkbox', { name: 'I have read the declaration above and I sign it.' }) as HTMLInputElement).checked).toBe(false);
+    expect((screen.getByRole('checkbox', { name: 'I have read and agree to this declaration.' }) as HTMLInputElement).checked).toBe(false);
   });
 
   it('own name without the tick creates nothing; with the tick the store is created as own-name, then signed', async () => {
@@ -82,7 +85,7 @@ describe('[ROLE-DOCS] the web sign-up offers and signs the own-name declaration'
     expect(fx.become).not.toHaveBeenCalled();
     expect(fx.sign).not.toHaveBeenCalled();
 
-    await user.click(screen.getByRole('checkbox', { name: 'I have read the declaration above and I sign it.' }));
+    await user.click(screen.getByRole('checkbox', { name: 'I have read and agree to this declaration.' }));
     await user.click(screen.getByRole('button', { name: 'Create business' }));
     expect(fx.become).toHaveBeenCalledTimes(1);
     expect(fx.become.mock.calls[0]![0]).toMatchObject({ role: 'VENDOR', business: { name: 'Persaud', nameBasis: 'OWN_NAME' } });
