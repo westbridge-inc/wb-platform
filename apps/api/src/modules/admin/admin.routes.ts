@@ -2,7 +2,7 @@ import { emitToOrderRoom, emitToStoreRoom } from '../order/order-room-emission.s
 import { scanUpload } from '../../lib/malware-scan';
 import { documentScanState, uploadScanRefusal, retryHeldEvidenceScan } from '../../lib/upload-scan-debt';
 import { vatTracker } from '../billing/vat-tracker';
-import { adminCardSession, adminCardSessions, adminResolveCardSession, adminSubscriptionCards, cardRailRuntimeOf } from '../billing/card-rail.routes';
+import { adminCardSession, adminCardSessions, adminCheckCardProvider, adminResolveCardSession, adminSubscriptionCards, cardRailRuntimeOf } from '../billing/card-rail.routes';
 import { cardRailV2DrainEnabled, cardRailV2Enabled } from '../../utils/card-rail';
 import { listCases, caseDetail, claimCase, directCase, assignRelay, confirmReturn } from '../custody/custody-recovery';
 import { CUSTODY_CASE_DIRECTABLE, CUSTODY_CASE_OPEN_STATES } from '../order/order-status';
@@ -8782,6 +8782,13 @@ export async function adminRoutes(app: FastifyInstance) {
   app.post<{ Params: { id: string } }>('/billing/card-sessions/:id/resolve', { preHandler: [adminGuard] }, async (request) => ({
     success: true,
     data: await adminResolveCardSession(app, request.params.id, request.body, request.user.userId,
+      (tx, facts) => auditWithin(tx, request as unknown as AuditRequestLike, app.prefix, { extra: facts })),
+  }));
+  // [CARD-REFUND-LOOKUP] "Check with the card provider": a refund whose answer is not known, read against the
+  // provider's own record (C4: two people — it may record the money as refunded). Never sends a refund.
+  app.post<{ Params: { id: string } }>('/billing/card-sessions/:id/check-provider', { preHandler: [adminGuard] }, async (request) => ({
+    success: true,
+    data: await adminCheckCardProvider(app, request.params.id, request.body, request.user.userId,
       (tx, facts) => auditWithin(tx, request as unknown as AuditRequestLike, app.prefix, { extra: facts })),
   }));
 }

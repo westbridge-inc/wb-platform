@@ -7,6 +7,7 @@ import {
   rawDigest,
   type CardChargeOutcome,
   type CardLookupOutcome,
+  type CardRefundLookupOutcome,
   COMPLETION_CLAIM_WAIT_MS,
   type CardCompletionEvidence,
   type CardRailBinding,
@@ -68,6 +69,14 @@ import {
 //      as the normal flow; VoidDateTime present = reversed; OrderSummary has
 //      SettledAmount, TotalCaptureAmount, TotalCreditAmount. lookupTransaction
 //      reads it strictly; the service decides what it may book.
+//   6. [CARD-REFUND-LOOKUP] PowerTranz's written answer to Swift (9 Nov 2026):
+//      the lookup "is supported for all transaction types", and refunds
+//      (partial ones and Merchant Portal ones included) are supported. So a
+//      refund Swift sent whose answer is not known is checked by reading the
+//      ORIGINAL transaction's record (lookupRefund): its OrderSummary
+//      TotalCreditAmount (or VoidDateTime) says whether the whole payment went
+//      back. Only when a person asks (two people), never as the normal flow;
+//      the refund is never sent again.
 //
 // What the guide does NOT document, so this provider does not do it:
 //   - charging a saved card without the cardholder present: a token charge
@@ -76,8 +85,13 @@ import {
 //     requires_action (no penalty, "Confirm your card") without any call;
 //   - a card's last 4 digits or expiry in any response (sec. 6);
 //   - whether the transaction lookup (5.) carries the 3-D Secure proof
-//     (RiskManagement.ThreeDSecure), or covers refunds: until PowerTranz says,
-//     the lookup alone never books, and refund answers are not looked up;
+//     (RiskManagement.ThreeDSecure): until PowerTranz says, the lookup alone
+//     never books;
+//   - whether the original transaction's record lists the refunds made on it,
+//     each with its own TransactionIdentifier (asked): Swift reads no refund
+//     id from it. A refund confirmed by the lookup (6.) is recorded under a
+//     reference Swift makes from the original transaction (ASSUMED enough for
+//     the books until PowerTranz says; the portal shows the refund's own id);
 //   - the lookup's other fields: its top-level TransactionIdentifier,
 //     OrderIdentifier, TransactionType, Approved, IsoResponseCode and
 //     CurrencyCode, the unit of the OrderSummary amounts, and what VoidDateTime
@@ -588,6 +602,32 @@ export function judgeTransactionRecord(record: PowerTranzTransactionRecord, held
   return { status: 'confirmed' };
 }
 
+type RefundVerdict = { status: 'refunded'; how: 'credit' | 'void'; reason: string } | { status: 'part_credited' | 'not_refunded' | 'unknown'; reason: string };
+
+/**
+ * [CARD-REFUND-LOOKUP] The ORIGINAL transaction's record, judged for a refund Swift sent whose answer is not known
+ * (PowerTranz's written answer to Swift, 9 Nov 2026: the lookup covers every transaction type; refunds, partial and
+ * portal ones included, are supported):
+ *   - another transaction, order or currency: the answer is not about this payment — unknown;
+ *   - VoidDateTime a real date (voidDateOf, the same window as the completion lookup): voided — refunded (void);
+ *   - no credit on it: not refunded (yet);
+ *   - a credit above the capture, or with nothing captured: contradicts itself — unknown;
+ *   - not an approved Sale ("00", TransactionType 2): a credit on it cannot be read as this payment's — unknown;
+ *   - TotalCreditAmount = TotalCaptureAmount = Swift's price, to the minor unit: the WHOLE payment went back — refunded;
+ *   - any other credit (part of it, or a capture that is not Swift's price): never "refunded" — held for the owner.
+ */
+export function judgeRefundRecord(record: PowerTranzTransactionRecord, held: HeldCompletion): RefundVerdict {
+  if (record.transactionIdentifier.toLowerCase() !== held.txnId.toLowerCase()) return { status: 'unknown', reason: 'LOOKUP_OTHER_TRANSACTION' };
+  if (record.orderIdentifier !== held.orderId) return { status: 'unknown', reason: 'LOOKUP_OTHER_ORDER' };
+  if (record.currencyCode !== held.currencyCode) return { status: 'unknown', reason: 'LOOKUP_CURRENCY_MISMATCH' };
+  if (record.voided) return { status: 'refunded', how: 'void', reason: 'LOOKUP_VOIDED' };
+  if (record.totalCreditMinor === 0) return { status: 'not_refunded', reason: 'LOOKUP_NO_CREDIT' };
+  if (record.totalCaptureMinor <= 0 || record.totalCreditMinor > record.totalCaptureMinor) return { status: 'unknown', reason: 'LOOKUP_CREDIT_UNREADABLE' };
+  if (!record.approved || record.isoResponseCode !== '00' || record.transactionType !== '2') return { status: 'unknown', reason: 'LOOKUP_NOT_AN_APPROVED_SALE' };
+  if (record.totalCreditMinor === record.totalCaptureMinor && record.totalCaptureMinor === held.amountMinor) return { status: 'refunded', how: 'credit', reason: 'LOOKUP_CREDITED' };
+  return { status: 'part_credited', reason: record.totalCreditMinor < record.totalCaptureMinor ? 'LOOKUP_PARTIAL_CREDIT' : 'LOOKUP_CREDIT_NOT_THE_PAYMENT' };
+}
+
 // ---------------------------------------------------------------------------
 // The provider
 // ---------------------------------------------------------------------------
@@ -604,6 +644,8 @@ export interface PowerTranzDeps {
   /** Redis namespace: `ptz:` (default) or `ptz:<name>:` for a test run. */
   keyPrefix?: string;
 }
+
+type LookupInput = { binding: CardRailBinding; providerRef: string; orderRef: string; amountMinor: number; currencyCode: string; notBefore?: Date };
 
 const KEY_PREFIX_SHAPE = /^ptz:(?:[A-Za-z0-9_-]{1,64}:)?$/;
 const REF_SHAPE = /^ptz_[0-9a-f]{24}$/;
@@ -1013,8 +1055,8 @@ export class PowerTranzCardRailProvider implements CardRailProvider {
     if (Number(await this.redis.hsetnx(k, 'state', 'sending')) !== 1) {
       const rec = await this.redis.hgetall(k);
       if (rec['state'] === 'done' && rec['result']) return JSON.parse(rec['result']) as CardRefundOutcome;
-      // Sent once already and its answer never arrived: never sent again blindly. Whether PowerTranz's transaction
-      // lookup covers refunds and voids is not yet known (asked of PowerTranz), so a person settles it.
+      // Sent once already and its answer never arrived: never sent again. A person checks it with the card provider
+      // (lookupRefund, two people) or settles it with PowerTranz.
       return { status: 'unknown', reason: `${action.toUpperCase()}_SENT_ANSWER_LOST`, rawSha256: rawDigest({ [action]: idempotencyKey }) };
     }
     await this.redis.pexpire(k, RECORD_RETAIN_MS);
@@ -1062,7 +1104,31 @@ export class PowerTranzCardRailProvider implements CardRailProvider {
    * (LOOKUP_BACKOFF_*), shared by every server; inside the window the answer is `unknown` with `backoff`, and no
    * call is made. Any answer that is not a readable record of THIS transaction and order is `unknown`.
    */
-  async lookupTransaction(input: { binding: CardRailBinding; providerRef: string; orderRef: string; amountMinor: number; currencyCode: string; notBefore?: Date }): Promise<CardLookupOutcome> {
+  async lookupTransaction(input: LookupInput): Promise<CardLookupOutcome> {
+    const read = await this.readRecord(input);
+    if (!('record' in read)) return read;
+    const { record, rawSha256 } = read;
+    const verdict = judgeTransactionRecord(record, { txnId: input.providerRef, orderId: input.orderRef, amountMinor: input.amountMinor, currencyCode: input.currencyCode });
+    if (verdict.status === 'confirmed') {
+      return { status: 'confirmed', providerRef: input.providerRef, amountMinor: record.totalCaptureMinor, currencyCode: record.currencyCode, rawSha256 };
+    }
+    return { status: verdict.status, reason: verdict.reason, rawSha256 };
+  }
+
+  /**
+   * [CARD-REFUND-LOOKUP] The same read (GET <root>/api/Transactions/{the ORIGINAL TransactionIdentifier}, the same
+   * backoff window per transaction), judged for a refund Swift sent whose answer is not known (judgeRefundRecord).
+   * Called only when a person asks, two people; it never sends a refund or anything else.
+   */
+  async lookupRefund(input: LookupInput): Promise<CardRefundLookupOutcome> {
+    const read = await this.readRecord(input);
+    if (!('record' in read)) return read;
+    const verdict = judgeRefundRecord(read.record, { txnId: input.providerRef, orderId: input.orderRef, amountMinor: input.amountMinor, currencyCode: input.currencyCode });
+    return { ...verdict, rawSha256: read.rawSha256 };
+  }
+
+  /** One read of a transaction's record, gated and read strictly: the record, or why there is none (unknown). */
+  private async readRecord(input: LookupInput): Promise<{ record: PowerTranzTransactionRecord; rawSha256: string } | { status: 'unknown'; reason: string; backoff?: true; rawSha256: string }> {
     assertBinding(this.binding, input.binding);
     const digest = (extra: Record<string, unknown>) => rawDigest({ lookup: input.providerRef, ...extra });
     if (!GUID.test(input.providerRef) || !CURRENCY_NUMERIC[input.currencyCode] || !Number.isSafeInteger(input.amountMinor) || input.amountMinor <= 0) {
@@ -1081,11 +1147,7 @@ export class PowerTranzCardRailProvider implements CardRailProvider {
     const record = answer.shape === 'json' ? readTransactionRecord(answer.json, input.notBefore?.getTime(), this.now().getTime() + VOID_DATE_SKEW_MS) : null;
     const rawSha256 = answer.shape === 'json' ? blindedDigest(answer.json) : digest({ unreadable: true });
     if (!record) return { status: 'unknown', reason: 'LOOKUP_UNREADABLE', rawSha256 };
-    const verdict = judgeTransactionRecord(record, { txnId: input.providerRef, orderId: input.orderRef, amountMinor: input.amountMinor, currencyCode: input.currencyCode });
-    if (verdict.status === 'confirmed') {
-      return { status: 'confirmed', providerRef: input.providerRef, amountMinor: record.totalCaptureMinor, currencyCode: record.currencyCode, rawSha256 };
-    }
-    return { status: verdict.status, reason: verdict.reason, rawSha256 };
+    return { record, rawSha256 };
   }
 
   // -------------------------------------------------------------------------

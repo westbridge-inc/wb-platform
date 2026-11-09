@@ -16,12 +16,13 @@ import { sealVaultToken } from './card-vault';
 import { observedStatus, recordCardObservation } from './card-observations';
 import {
   assertNever, bindingOf, COMPLETION_CLAIM_WAIT_MS, describeBinding, rawDigest, sameBinding,
-  type CardLookupOutcome, type CardRailProvider, type CardRailSource, type CardRefundOutcome, type CardReturnObservation, type CardSessionOutcome, type CardSessionPurpose,
+  type CardLookupOutcome, type CardRailProvider, type CardRefundLookupOutcome, type CardRailSource, type CardRefundOutcome, type CardReturnObservation, type CardSessionOutcome, type CardSessionPurpose,
   type CompletionClaim, type CreateCardSessionOutcome,
 } from '../../providers/card/card-provider';
 import { POWERTRANZ_PROVIDER, VOID_DATE_SKEW_MS, readCompletion } from '../../providers/card/powertranz-provider';
 import { SIMULATOR_PAGE, SIMULATOR_PROVIDER } from '../../providers/card/simulator-provider';
 import { PAYER_INCLUDE, payerAudienceOf, payerUserIdOf } from '../subscription/subscription-owner';
+import { checkCardCreditRefund, heldRefundCheckable, providerCheckOf, type CreditRefundCheckAnswer, type ProviderCheck } from './card-credit-refund';
 
 // ---------------------------------------------------------------------------
 // [PT-1 · AH.10.9.2] The card rail v2 service: hosted sessions and enrolled
@@ -1240,7 +1241,7 @@ export class CardRailService {
         throw new AppError(409, 'PROVIDER_SAYS_REVERSED', 'The card provider\'s own record shows this payment voided or refunded in full: it is never booked or refunded again. Check the portal, then record that nothing was taken.');
       }
       // [REVIEW-2460 S3-1 · B3] Part refunded, the rest still taken: not bookable, not refundable whole, not "nothing taken".
-      if (fresh.failureCode === 'LOOKUP_PARTIAL_CREDIT') {
+      if (fresh.failureCode === 'LOOKUP_PARTIAL_CREDIT' || fresh.failureCode === 'LOOKUP_REFUND_NOT_WHOLE') {
         throw new AppError(409, 'PROVIDER_SAYS_PART_REFUNDED', 'The card provider\'s own record shows part of this payment refunded and the rest still taken. Nothing was sent or recorded: it stays here for the owner.');
       }
       if (fresh.providerTransactionRef && fresh.providerTransactionRef.toLowerCase() !== ref.toLowerCase()) {
@@ -1351,6 +1352,95 @@ export class CardRailService {
       });
     }
     return { ...(await this.resolvedView(session.id)), refund: refunded.status };
+  }
+
+  // -------------------------------------------------------------------------
+  // [CARD-REFUND-LOOKUP] "Check with the card provider" (two people: the admin
+  // route is C4). For a refund Swift sent whose answer is not known — a HELD
+  // Pay now's refund (resolveHeld) UNKNOWN or PENDING, or a refund of
+  // set-aside credit to its card (card-credit-refund.ts) — and for a refund
+  // claim stuck SENDING past REFUND_CHECK_GRACE_MS. Swift reads the ORIGINAL
+  // transaction's record once and records REFUNDED only when it shows the
+  // WHOLE payment back (judgeRefundRecord); a credit that is not the whole
+  // payment is held for the owner; anything else records nothing. Never a
+  // second refund: nothing here sends one.
+  // -------------------------------------------------------------------------
+
+  async checkWithCardProvider(input: { sessionId: string; tenantId: string; adminUserId: string; onAudit?: OnAudit; now?: Date }): Promise<
+    | ({ kind: 'HELD_PAYMENT'; check: ProviderCheck; reason: string; status: CardSessionStatus; resolution: string | null; failureCode: string | null })
+    | ({ kind: 'CARD_CREDIT_REFUND' } & CreditRefundCheckAnswer)
+  > {
+    const now = input.now ?? new Date();
+    const session = await this.prisma.cardSession.findUnique({ where: { id: input.sessionId } });
+    if (!session || session.tenantId !== input.tenantId || session.purpose !== 'PAY_NOW') throw new NotFoundError('Card session', input.sessionId);
+    if (session.status !== 'HELD') {
+      const answer = await checkCardCreditRefund(this.prisma, this.rail, {
+        adminId: input.adminUserId, tenantId: input.tenantId, cardSessionId: session.id, now, ...(input.onAudit ? { onAudit: input.onAudit } : {}),
+        alertOwner: (body) => notifyAdmins(this.prisma, this.notifications, {
+          tenantId: session.tenantId, title: 'Card refund needs the owner', body,
+          data: { kind: 'billing_invariants', alert: 'card-refund-not-whole', subscriptionId: session.subscriptionId, sessionId: session.id },
+          dedupeKey: `card-refund-not-whole:${session.id}`,
+        }).then(() => undefined),
+      });
+      return { kind: 'CARD_CREDIT_REFUND', ...answer };
+    }
+    if (!heldRefundCheckable(session, now)) {
+      throw new AppError(409, 'NOTHING_TO_CHECK', 'This payment has no refund whose answer is unknown (or it was sent moments ago: wait ten minutes). Nothing was read or recorded.');
+    }
+    const provider = this.rail();
+    if (!sameBinding(bindingOf(session), provider.binding)) {
+      throw new AppError(409, 'CARD_PROVIDER_SETUP_CHANGED', 'This payment belongs to another card provider setup. Nothing was read or recorded: escalate it to the owner.');
+    }
+    if (!provider.lookupRefund) {
+      throw new AppError(409, 'PROVIDER_CANNOT_LOOK_UP', 'This card provider gives Swift no way to look a payment up. Check its portal and escalate to the owner. Nothing was recorded.');
+    }
+    const ref = session.providerTransactionRef!;
+    const orderRef = `SWIFT-${session.id}`;
+    const looked: CardRefundLookupOutcome = await provider.lookupRefund({
+      binding: provider.binding, providerRef: ref, orderRef,
+      amountMinor: toProviderMinor(Number(session.amount), session.currencyCode!, 'card.v2.refund-check'), currencyCode: session.currencyCode!,
+      notBefore: new Date(session.createdAt.getTime() - VOID_DATE_SKEW_MS),
+    }).catch((): CardRefundLookupOutcome => ({ status: 'unknown', reason: 'LOOKUP_CALL_FAILED', rawSha256: rawDigest({ lookup: 'threw', ref }) }));
+    const check = providerCheckOf(looked);
+    log().warn({ sessionId: session.id, refund: session.providerRefundState, lookup: looked.status, why: looked.reason }, '[CARD-REFUND-LOOKUP] a held card payment\'s refund was checked with the provider');
+    const audited = (tx: Prisma.TransactionClient) => input.onAudit?.(tx, { check, lookup: looked.status, lookupReason: looked.reason, providerTransactionRef: ref, refundWas: session.providerRefundState });
+    const changed = () => new AppError(409, 'NOTHING_TO_CHECK', 'This payment changed while it was being checked. Nothing was recorded: look at it again.');
+
+    if (looked.status === 'refunded') {
+      // The provider's own record shows the whole payment back: the refund Swift sent took effect. Closed as REFUNDED,
+      // once, through the same closing path a refund's own approved answer takes.
+      const closed = await this.prisma.$transaction(async (tx) => {
+        const fresh = await this.lockSession(tx, session.id);
+        if (!fresh || !heldRefundCheckable(fresh, now)) return false;
+        await tx.cardSession.update({ where: { id: fresh.id }, data: { providerRefundState: 'REFUNDED' } });
+        await this.closeResolvedInTx(tx, fresh, 'REFUNDED', input.adminUserId, now);
+        await audited(tx);
+        return true;
+      });
+      if (!closed) throw changed();
+    } else if (looked.status === 'part_credited') {
+      // A credit that is not the whole payment: never "refunded". Held for the owner (finance has no decision on it).
+      const held = await this.prisma.$transaction(async (tx) => {
+        const fresh = await this.lockSession(tx, session.id);
+        if (!fresh || !heldRefundCheckable(fresh, now)) return false;
+        await tx.cardSession.update({ where: { id: fresh.id }, data: { failureCode: 'LOOKUP_REFUND_NOT_WHOLE' } });
+        await audited(tx);
+        return true;
+      });
+      if (!held) throw changed();
+      await notifyAdmins(this.prisma, this.notifications, {
+        tenantId: session.tenantId,
+        title: 'Card refund needs the owner',
+        body: `Card payment ${session.id} (order ${orderRef}, transaction ${ref}): PowerTranz's record shows a refund that is not the whole ${Number(session.amount)} ${session.currencyCode} payment (${looked.reason}). Nothing was recorded or sent. The owner settles it with PowerTranz.`,
+        data: { kind: 'billing_invariants', alert: 'card-refund-not-whole', subscriptionId: session.subscriptionId, sessionId: session.id },
+        dedupeKey: `card-refund-not-whole:${session.id}`,
+      }).catch(() => {});
+    } else {
+      // No credit yet, unreadable, or asked moments ago: nothing is recorded, nothing is sent again.
+      await this.prisma.$transaction(async (tx) => { await audited(tx); });
+    }
+    const after = await this.prisma.cardSession.findUniqueOrThrow({ where: { id: session.id }, select: { status: true, resolution: true, failureCode: true } });
+    return { kind: 'HELD_PAYMENT', check, reason: looked.reason, status: after.status, resolution: after.resolution, failureCode: after.failureCode };
   }
 
   /** Closed by finance, under the caller's lock: FAILED (the partner was not

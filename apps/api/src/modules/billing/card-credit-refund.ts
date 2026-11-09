@@ -5,7 +5,8 @@ import { AppError } from '../../utils/errors';
 import { log } from '../../utils/logger';
 import { toProviderMinor } from '../../utils/currency-amount';
 import { cardTestSubscriptions } from '../../utils/card-rail';
-import { bindingOf, rawDigest, sameBinding, type CardRailSource, type CardRefundOutcome } from '../../providers/card/card-provider';
+import { bindingOf, rawDigest, sameBinding, type CardRailSource, type CardRefundLookupOutcome, type CardRefundOutcome } from '../../providers/card/card-provider';
+import { VOID_DATE_SKEW_MS } from '../../providers/card/powertranz-provider';
 import {
   CARD_REFUND_ACTION, PAID_KEY, REFUND_AMOUNT, REFUND_SET_ASIDE_ID, assertPayoutPairRule, audit, cents, creditRefundState,
   lockCreditRefundAsks, lockPayer, namedOpenSetAside, openCreditRefunds, openSetAsideIds, recordPayoutPartInTx, refuseInboundReference,
@@ -30,10 +31,12 @@ import {
 //     back (an open question for PowerTranz, CARD-CHECKOUT-API.md section 11);
 //   - a refund made by hand in the merchant portal (the guide names the portal only for page names, sec. 5.1, and
 //     order references in reports, sec. 9.2): nothing here records one;
-//   - a way to look a lost refund answer up. PowerTranz's written answer to Swift (4 Nov 2026) gives a transaction
-//     lookup (GET /api/Transactions/{id}) for unknown outcomes, but not yet whether it shows a refund and its own
-//     reference (asked of PowerTranz). Until then a refund whose answer is lost is never sent again; it is held for a
-//     person.
+//   - the refund's own reference in the transaction lookup. PowerTranz's written answers to Swift (4 and 9 Nov 2026)
+//     give a transaction lookup (GET /api/Transactions/{id}) for unknown outcomes that "is supported for all
+//     transaction types", with OrderSummary.TotalCreditAmount on the original transaction — but not whether it lists
+//     each refund with its own TransactionIdentifier (asked). A refund whose answer is lost is never sent again: a
+//     person asks Swift to check it with the card provider (checkCardCreditRefund below, two people), and only the
+//     WHOLE payment credited back on the provider's own record closes it.
 //
 // The law, in order:
 //   1. A person asks, with a reason; a second admin approves (C4); the asker of the set-aside never approves it.
@@ -296,6 +299,141 @@ export async function creditRefundSources(db: PrismaClient | Tx, subscriptionId:
       };
     }),
   };
+}
+
+// ---------------------------------------------------------------------------
+// [CARD-REFUND-LOOKUP] "Check with the card provider" — a refund Swift sent whose answer is not known
+//
+// PowerTranz's written answers to Swift: the transaction lookup is for unknown outcomes only, never the normal flow
+// (4 Nov 2026), and "is supported for all transaction types"; refunds, partial and Merchant Portal ones included, are
+// supported (9 Nov 2026). Swift reads the ORIGINAL transaction's record (lookupRefund) when a person asks and a second
+// admin approves (C4). What it may record:
+//   - the record shows TotalCreditAmount = TotalCaptureAmount = the whole payment, or a real VoidDateTime: REFUNDED,
+//     once, through the closing paths that already exist (a HELD Pay now: closed REFUNDED; a refund of set-aside
+//     credit: its CARD payout part, REFUND_PAYABLE -> CLEARING_CARD);
+//   - any other credit (part of it): held for the owner, never "refunded";
+//   - no credit yet, an unreadable or missing answer, or a read made moments ago (its backoff): nothing is recorded.
+// A refund is NEVER sent again here: nothing in this path calls the provider's refund or void.
+// ---------------------------------------------------------------------------
+
+/** What a check found, in the console's words. */
+export type ProviderCheck = 'REFUNDED' | 'OWNER_HOLD' | 'NO_REFUND_ON_RECORD' | 'NOT_KNOWN' | 'ASKED_RECENTLY';
+export function providerCheckOf(outcome: CardRefundLookupOutcome): ProviderCheck {
+  switch (outcome.status) {
+    case 'refunded': return 'REFUNDED';
+    case 'part_credited': return 'OWNER_HOLD';
+    case 'not_refunded': return 'NO_REFUND_ON_RECORD';
+    case 'unknown': return outcome.backoff ? 'ASKED_RECENTLY' : 'NOT_KNOWN';
+    default: { const never: never = outcome; throw new Error(`card refund lookup outcome ${String(never)}`); }
+  }
+}
+
+/** [COORD 9 Nov 2026] A refund claim still SENDING (its process stopped mid-call) is checked like a lost answer only
+ *  well after the refund call's own deadline (15 s): ten minutes after the send began. It is never sent again. */
+export const REFUND_CHECK_GRACE_MS = 10 * 60_000;
+const UNANSWERED = ['UNKNOWN', 'PENDING'];
+const stuck = (state: string | null, since: Date | null, now: Date) => state === 'SENDING' && !!since && now.getTime() - since.getTime() >= REFUND_CHECK_GRACE_MS;
+
+/** A HELD Pay now whose refund (resolveHeld) has no known answer, and that nothing has closed. */
+export function heldRefundCheckable(s: Pick<CardSession, 'purpose' | 'status' | 'resolution' | 'providerRefundState' | 'providerRefundAt' | 'providerTransactionRef' | 'amount' | 'currencyCode'>, now: Date): boolean {
+  if (s.purpose !== 'PAY_NOW' || s.status !== 'HELD' || s.resolution || !s.providerTransactionRef || s.amount === null || !s.currencyCode) return false;
+  return UNANSWERED.includes(s.providerRefundState ?? '') || stuck(s.providerRefundState, s.providerRefundAt, now);
+}
+
+/** A refund of set-aside credit to its card whose answer is not known. */
+export function creditRefundCheckable(r: { state: string; createdAt: Date }, now: Date): boolean {
+  return UNANSWERED.includes(r.state) || stuck(r.state, r.createdAt, now);
+}
+
+/** [ASSUMED until PowerTranz says the record lists refunds with their own ids] The reference a lookup-confirmed refund
+ *  is recorded under: Swift's, made from the ORIGINAL transaction (one refund per card payment, ever), never a
+ *  provider id Swift did not read. The portal shows the refund's own id beside the original. */
+export const lookupCreditReference = (original: string) => `LOOKUP-CREDIT-${original.trim().toUpperCase()}`;
+
+export interface CreditRefundCheckAnswer {
+  check: ProviderCheck;
+  reason: string;
+  refund: { state: CardRefundState; providerRefundRef: string | null };
+}
+
+/**
+ * Check a refund of set-aside credit to its card with the card provider (two people: the route is C4). Reads the
+ * original transaction's record once (its backoff permitting); records REFUNDED only on the WHOLE payment credited
+ * back, as the payout part the provider's own approved answer would have recorded. `alertOwner` is told of a credit
+ * that is not the whole payment.
+ */
+export async function checkCardCreditRefund(prisma: PrismaClient, rail: CardRailSource, input: {
+  adminId: string; tenantId: string; cardSessionId: string; onAudit?: OnAudit; now?: Date;
+  alertOwner?: (message: string) => Promise<void>;
+}): Promise<CreditRefundCheckAnswer> {
+  const now = input.now ?? new Date();
+  const row = await prisma.cardCreditRefund.findUnique({ where: { cardSessionId: input.cardSessionId } });
+  if (!row || row.tenantId !== input.tenantId || !creditRefundCheckable(row, now)) {
+    refuse('NOTHING_TO_CHECK', 'There is no refund of this card payment whose answer is unknown. Nothing was read or recorded.');
+  }
+  const session = await prisma.cardSession.findUnique({ where: { id: row.cardSessionId } });
+  const payment = session?.paymentId
+    ? await prisma.subscriptionPayment.findUnique({ where: { id: session.paymentId }, select: { status: true, externalRef: true, paymentMethod: true } })
+    : null;
+  const original = payment?.status === 'CAPTURED' && payment.paymentMethod === 'CARD' ? payment.externalRef?.trim() ?? '' : '';
+  if (!session || !original || (session.providerTransactionRef && session.providerTransactionRef.trim().toLowerCase() !== original.toLowerCase())) {
+    refuse('CARD_PAYMENT_NOT_REFUNDABLE', 'Swift cannot name this card payment\'s original transaction with certainty. Nothing was read or recorded: escalate to the owner.');
+  }
+  const provider = rail();
+  if (!sameBinding(bindingOf(session), provider.binding)) {
+    refuse('CARD_PROVIDER_SETUP_CHANGED', 'This card payment was taken through another card provider setup. Nothing was read or recorded: escalate to the owner.');
+  }
+  if (!provider.lookupRefund) refuse('PROVIDER_CANNOT_LOOK_UP', 'This card provider gives Swift no way to look a payment up. Check its portal and escalate to the owner. Nothing was recorded.');
+  const orderRef = orderReferenceOf(session.id);
+  const looked: CardRefundLookupOutcome = await provider.lookupRefund({
+    binding: provider.binding, providerRef: original, orderRef,
+    amountMinor: toProviderMinor(Number(row.amount), row.currencyCode, 'card.v2.credit-refund-check'), currencyCode: row.currencyCode,
+    notBefore: new Date(session.createdAt.getTime() - VOID_DATE_SKEW_MS),
+  }).catch((): CardRefundLookupOutcome => ({ status: 'unknown', reason: 'LOOKUP_CALL_FAILED', rawSha256: rawDigest({ lookup: 'threw', ref: original }) }));
+  const check = providerCheckOf(looked);
+  const facts = { step: `CARD_REFUND_CHECK_${check}`, cardSessionId: session.id, cardRefundId: row.id, orderReference: orderRef, providerTransactionRef: original, lookup: looked.status, lookupReason: looked.reason, amount: Number(row.amount), currencyCode: row.currencyCode };
+  const who = { adminId: input.adminId, subscriptionId: row.subscriptionId, ...(input.onAudit ? { onAudit: input.onAudit } : {}) };
+  const answer = (state: CardRefundState, providerRefundRef: string | null, c: ProviderCheck = check): CreditRefundCheckAnswer => ({ check: c, reason: looked.reason, refund: { state, providerRefundRef } });
+
+  if (looked.status !== 'refunded') {
+    await prisma.$transaction(async (tx) => { await audit(tx, who, facts); });
+    if (looked.status === 'part_credited') {
+      log().error({ cardRefundId: row.id, reason: looked.reason }, '[CARD-REFUND-LOOKUP] the provider record shows a credit that is not the whole card payment — held for the owner');
+      await input.alertOwner?.(`The card provider's record of order ${orderRef} (transaction ${original}) shows a refund that is not the whole ${Number(row.amount)} ${row.currencyCode} card payment (${looked.reason}). Nothing was recorded or sent. The owner settles it with PowerTranz.`).catch(() => {});
+    }
+    return answer(row.state as CardRefundState, row.providerRefundRef);
+  }
+
+  const reference = lookupCreditReference(original);
+  const done = await prisma.$transaction(async (tx) => {
+    await lockPayer(tx, row.subscriptionId);
+    await lockCreditRefundAsks(tx, row.subscriptionId);
+    await tx.$queryRaw`SELECT "id" FROM "card_credit_refunds" WHERE "id" = ${row.id} FOR UPDATE`;
+    const fresh = await tx.cardCreditRefund.findUniqueOrThrow({ where: { id: row.id } });
+    if (!creditRefundCheckable(fresh, now)) return { changed: fresh };
+    // The money is recorded against the set-aside it was asked from, and only while that set-aside is still open for
+    // at least this payment (an unconfirmed refund holds it: nothing else can pay or release that part).
+    const [openMap, idMap] = await Promise.all([openCreditRefunds(tx, [row.subscriptionId]), openSetAsideIds(tx, [row.subscriptionId])]);
+    if (idMap.get(row.subscriptionId) !== fresh.setAsideId || cents(openMap.get(row.subscriptionId) ?? 0) < cents(fresh.amount)) {
+      refuse('REFUND_SET_ASIDE_CHANGED', 'The refund set aside for this card payment is no longer open for it. Nothing was recorded: escalate to the owner.');
+    }
+    if (await refusedReference(tx, reference)) refuse('REFUND_REFERENCE_IS_A_PAYMENT', 'Swift already has this payment\'s refund reference on record. Nothing was recorded: escalate to the owner.');
+    const event = await recordPayoutPartInTx(tx, {
+      subscriptionId: row.subscriptionId, amount: Number(fresh.amount), currencyCode: fresh.currencyCode, method: 'CARD', reference,
+      eventKey: `${PAID_KEY}${reference}`,
+      note: `Set-aside fee credit refunded to the card that paid it: the card provider's own record of transaction ${original} (order ${orderRef}) shows the whole payment ${looked.how === 'void' ? 'voided' : 'credited back'} (checked by ${input.adminId}; the refund's own answer had been ${fresh.state})`,
+    });
+    const refunded = await tx.cardCreditRefund.update({ where: { id: row.id }, data: {
+      state: 'REFUNDED', providerRefundRef: reference, billingEventId: event.id, answeredAt: now, answerSha256: looked.rawSha256,
+      outcomeReason: `${fresh.outcomeReason ?? fresh.state}+${looked.reason}`.slice(0, 200),
+    } });
+    await audit(tx, who, { ...facts, reference, billingEventId: event.id, was: fresh.state });
+    return { refunded };
+  });
+  if (!done.refunded) {
+    refuse('NOTHING_TO_CHECK', `This refund was answered while it was being checked (${done.changed?.state ?? 'changed'}). Nothing more was recorded.`);
+  }
+  return answer('REFUNDED', done.refunded.providerRefundRef);
 }
 
 export { CARD_REFUND_ACTION };

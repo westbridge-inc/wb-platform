@@ -17,6 +17,7 @@ import type { OnAudit } from '../../lib/audit-writer';
 import { SIMULATOR_PAGE, SimulatorCardRailProvider, SimulatorRefusal } from '../../providers/card/simulator-provider';
 import { PowerTranzCardRailProvider, type PowerTranzHostedPage } from '../../providers/card/powertranz-provider';
 import { BillingService } from './billing.service';
+import { creditRefundCheckable, heldRefundCheckable } from './card-credit-refund';
 import { CARD_ON_FILE_CONSENT_VERSION, CARD_RESOLVE_ACTIONS, CARD_SANDBOX_TEST_LABEL, CardRailService, INSTRUMENT_DTO_SELECT, cardTestLabel, type CardSessionDto, type PaymentInstrumentDto } from './card-rail.service';
 import { CARD_OFF, cardPayAction, cardSessionsAllowed, type CardPayAction } from './card-pay-action';
 import { clientPlatform, type PayAction } from './fee-pay-actions';
@@ -764,6 +765,9 @@ const adminListQuery = z.object({
   limit: z.coerce.number().int().min(1).max(200).default(50),
   /** [R1-6] Paging: a session id from this list; only sessions strictly older than it (in the list's order) come back. */
   before: z.string().regex(ID_SHAPE).optional(),
+  /** [CARD-REFUND-LOOKUP] UNCONFIRMED: only payments with a refund Swift sent whose answer is not known (a HELD
+   *  payment's refund, or a refund of set-aside credit to the card) — the ones to check with the card provider. */
+  refund: z.enum(['UNCONFIRMED']).optional(),
 });
 
 const boundTenant = (): string => {
@@ -784,18 +788,41 @@ export async function adminCardSessions(prisma: PrismaClient, query: unknown) {
   // The cursor is a session of this tenant; older means (createdAt, id) below it, the list's own order.
   const cursor = q.before ? await prisma.cardSession.findFirst({ where: { id: q.before, tenantId }, select: { id: true, createdAt: true } }) : null;
   if (q.before && !cursor) throw new AppError(400, 'INVALID_CURSOR', 'There is no such card session to page from.');
+  const unanswered = ['UNKNOWN', 'PENDING', 'SENDING'];
+  const creditRefundSessions = q.refund
+    ? (await prisma.cardCreditRefund.findMany({ where: { tenantId, state: { in: unanswered } }, select: { cardSessionId: true } })).map((r) => r.cardSessionId)
+    : [];
   const rows = await prisma.cardSession.findMany({
     where: {
       tenantId, ...(q.status ? { status: q.status } : {}), ...(q.purpose ? { purpose: q.purpose } : {}), ...(q.subscriptionId ? { subscriptionId: q.subscriptionId } : {}),
-      ...(cursor ? { OR: [{ createdAt: { lt: cursor.createdAt } }, { createdAt: cursor.createdAt, id: { lt: cursor.id } }] } : {}),
+      AND: [
+        ...(cursor ? [{ OR: [{ createdAt: { lt: cursor.createdAt } }, { createdAt: cursor.createdAt, id: { lt: cursor.id } }] }] : []),
+        ...(q.refund ? [{ OR: [{ status: 'HELD' as const, resolution: null, providerRefundState: { in: unanswered } }, { id: { in: creditRefundSessions } }] }] : []),
+      ],
     },
     orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
     take: q.limit + 1,
-    select: ADMIN_SESSION_SELECT,
+    select: { ...ADMIN_SESSION_SELECT, providerRefundAt: true },
   });
   const more = rows.length > q.limit;
   const page = more ? rows.slice(0, q.limit) : rows;
-  return { sessions: page.map(withAmount), next: more ? page[page.length - 1]!.id : null };
+  // [CARD-REFUND-LOOKUP] Beside each payment: its refund of set-aside credit to the card (if any), and whether a
+  // refund of it can be checked with the card provider now ("Check with the card provider", two people).
+  const refunds = page.length
+    ? await prisma.cardCreditRefund.findMany({ where: { tenantId, cardSessionId: { in: page.map((r) => r.id) } }, select: { cardSessionId: true, state: true, providerRefundRef: true, createdAt: true } })
+    : [];
+  const now = new Date();
+  return {
+    sessions: page.map(({ providerRefundAt, ...row }) => {
+      const credit = refunds.find((r) => r.cardSessionId === row.id);
+      return {
+        ...withAmount(row),
+        cardRefund: credit ? { state: credit.state, providerRefundRef: credit.providerRefundRef } : null,
+        providerCheck: heldRefundCheckable({ ...row, providerRefundAt }, now) || (row.status !== 'HELD' && !!credit && creditRefundCheckable(credit, now)),
+      };
+    }),
+    next: more ? page[page.length - 1]!.id : null,
+  };
 }
 
 /** GET /billing/card-sessions/:id — one session and its evidence (hashes, never payloads). */
@@ -841,6 +868,30 @@ export async function adminResolveCardSession(app: FastifyInstance, id: string, 
   const { action, providerReference, amount } = parsed.data;
   return mapNotFound(
     cardRailRuntimeOf(app).service.resolveHeld({ sessionId: id, tenantId, action, providerReference, amount, adminUserId, ...(onAudit ? { onAudit } : {}) }),
+    'CARD_SESSION_NOT_FOUND', 'There is no such card session.',
+  );
+}
+
+const checkBody = z.object({
+  /** The stated reason may come in the body as well as the header (ADM-006). */
+  reason: z.string().trim().max(2000).optional(),
+}).strict();
+
+/**
+ * [CARD-REFUND-LOOKUP] POST /billing/card-sessions/:id/check-provider — "Check with the card provider": a refund Swift
+ * sent for this card payment whose answer is not known (a HELD payment's refund, or a refund of set-aside credit to
+ * the card) is checked against the provider's own record of the payment. Declared C4 in admin-authority.ts: two
+ * people, because it may record money as refunded. It never sends a refund.
+ */
+export async function adminCheckCardProvider(app: FastifyInstance, id: string, body: unknown, adminUserId: string, onAudit?: OnAudit) {
+  if (!cardRailV2Enabled() && !cardRailV2DrainEnabled()) throw new AppError(404, 'CARD_RAIL_UNAVAILABLE', 'Card payments are not available.');
+  if (!ID_SHAPE.test(id)) throw notFound('CARD_SESSION_NOT_FOUND', 'There is no such card session.');
+  if (!checkBody.safeParse(body ?? {}).success) throw new AppError(400, 'INVALID_CHECK', 'Send no fields: the check names only the card payment.');
+  const tenantId = boundTenant();
+  const owned = await app.prisma.cardSession.findFirst({ where: { id, tenantId }, select: { id: true } });
+  if (!owned) throw notFound('CARD_SESSION_NOT_FOUND', 'There is no such card session.');
+  return mapNotFound(
+    cardRailRuntimeOf(app).service.checkWithCardProvider({ sessionId: id, tenantId, adminUserId, ...(onAudit ? { onAudit } : {}) }),
     'CARD_SESSION_NOT_FOUND', 'There is no such card session.',
   );
 }

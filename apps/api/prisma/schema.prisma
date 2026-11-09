@@ -4150,9 +4150,11 @@ model CardCreditRefund {
   /// The whole card payment, frozen when asked.
   amount            Decimal   @db.Decimal(12, 2)
   currencyCode      String    @db.Char(3)
-  /// SENDING -> REFUNDED | FAILED | UNKNOWN | PENDING. Forward only (database trigger).
+  /// SENDING -> REFUNDED | FAILED | UNKNOWN | PENDING; UNKNOWN | PENDING -> REFUNDED only when the provider's own
+  /// record shows the whole payment back (CARD-REFUND-LOOKUP). Forward only (database trigger).
   state             String    @default("SENDING")
-  /// The refund's own TransactionIdentifier from the provider's approved answer (guide sec. 6 / 7.5).
+  /// The refund's own TransactionIdentifier from the provider's approved answer (guide sec. 6 / 7.5) — or, when the
+  /// provider's transaction record confirmed it instead (it names no refund id), Swift's LOOKUP-CREDIT-<original>.
   providerRefundRef String?
   /// Why it is FAILED, UNKNOWN or PENDING, in the provider driver's terms (never card data).
   outcomeReason     String?
@@ -4803,7 +4805,8 @@ model CardSession {
   /// SENDING -> VOIDED | FAILED | UNKNOWN (forward only, trigger-guarded).
   providerVoidState  String?
   providerVoidAt     DateTime?
-  /// [PT-4] A refund a second person approved: SENDING -> PENDING -> REFUNDED | FAILED | UNKNOWN.
+  /// [PT-4] A refund a second person approved: SENDING -> PENDING -> REFUNDED | FAILED | UNKNOWN; UNKNOWN -> REFUNDED
+  /// only when the provider's own record shows the whole payment back (CARD-REFUND-LOOKUP).
   providerRefundState String?
   providerRefundAt   DateTime?
   /// [PT-4] Finance's decision to BOOK a HELD session, claimed (once) before the week is booked.

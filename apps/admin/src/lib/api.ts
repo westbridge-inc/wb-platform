@@ -622,12 +622,14 @@ export const resetDeliveryPin = (id: string, reason: string) =>
   apiFetch(`/api/v1/admin/orders/${id}/handover-secret/reset-delivery-pin`, { method: 'POST', body: JSON.stringify({ reason }), reason });
 /** [CARD-READY] Weekly-fee card payments (Pay now), newest first. HELD: the provider may have taken the money and Swift
  *  could not book it; a person decides each one. Views carry no card data and nothing that could move money. */
-export type CardPaymentsFilter = 'HELD' | 'SUCCEEDED' | 'ALL';
+/** [CARD-REFUND-LOOKUP] REFUND_CHECK: payments with a refund whose answer is not known (the server's refund=UNCONFIRMED). */
+export type CardPaymentsFilter = 'HELD' | 'SUCCEEDED' | 'ALL' | 'REFUND_CHECK';
 /** [R1-6] One page of 50; `subscriptionId` narrows it to one partner; `before` (the server's `next`) is the older page. */
 export const CARD_PAYMENTS_PAGE = 50;
 export const fetchCardPayments = (filter: CardPaymentsFilter, opts: { subscriptionId?: string; before?: string | null } = {}) => {
   const q = new URLSearchParams({ purpose: 'PAY_NOW', limit: String(CARD_PAYMENTS_PAGE) });
-  if (filter !== 'ALL') q.set('status', filter);
+  if (filter === 'REFUND_CHECK') q.set('refund', 'UNCONFIRMED');
+  else if (filter !== 'ALL') q.set('status', filter);
   if (opts.subscriptionId) q.set('subscriptionId', opts.subscriptionId);
   if (opts.before) q.set('before', opts.before);
   return apiFetch(`/api/v1/admin/billing/card-sessions?${q.toString()}`);
@@ -640,6 +642,11 @@ export const resolveCardPayment = (id: string, action: CardDecision, providerRef
   apiFetch(`/api/v1/admin/billing/card-sessions/${encodeURIComponent(id)}/resolve`, {
     method: 'POST', body: JSON.stringify({ action, providerReference, ...(amount === null ? {} : { amount }) }), reason,
   });
+/** [CARD-REFUND-LOOKUP] "Check with the card provider": a refund Swift sent whose answer is not known, read against the
+ *  provider's own record. Two people (C4); it never sends a refund. The answer's `check` says what was found. */
+export type ProviderCheck = 'REFUNDED' | 'OWNER_HOLD' | 'NO_REFUND_ON_RECORD' | 'NOT_KNOWN' | 'ASKED_RECENTLY';
+export const checkCardProvider = (id: string, reason: string) =>
+  apiFetch(`/api/v1/admin/billing/card-sessions/${encodeURIComponent(id)}/check-provider`, { method: 'POST', body: JSON.stringify({}), reason });
 /** [BUG-HUNT-2 G08] What stores owe customers back by MMG. Swift holds none of it: these are records. */
 export const fetchMmgRefunds = (filter: 'open' | 'overdue' | 'disputed') =>
   apiFetch(`/api/v1/admin/mmg-refunds?limit=50&filter=${filter}`);

@@ -554,6 +554,9 @@ export const ADMIN_ROUTE_AUTHORITY: Readonly<Record<AdminRouteKey, AdminRouteAut
   'GET /billing/subscriptions/:subscriptionId/cards': c('C0', 'billing.read'),
   // [PT-4 · review S2-2] A held card payment: book, refund (the API refund), or nothing taken — money, two people.
   'POST /billing/card-sessions/:id/resolve': c('C4', 'billing.card.resolve', E.cardSession),
+  // [CARD-REFUND-LOOKUP] A refund whose answer is not known, checked with the card provider: it may record the
+  // money as refunded (a HELD payment closed, or a refund of set-aside credit paid out) — money, two people.
+  'POST /billing/card-sessions/:id/check-provider': c('C4', 'billing.card.resolve', E.cardSession),
 
   // ── Algorithms ──────────────────────────────────────────────────────────
   'GET /algo/eta/report': c('C0', 'algo.read'),
