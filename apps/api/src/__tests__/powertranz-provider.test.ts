@@ -707,3 +707,141 @@ describe('the card-save consent (owner sign-off, 7 Oct 2026)', () => {
     expect(createHash('sha256').update(CARD_ON_FILE_CONSENT_TEXT).digest('hex')).toBe(CARD_ON_FILE_CONSENT_SHA256);
   });
 });
+
+// ---------------------------------------------------------------------------
+// [CARD-LOOKUP] PowerTranz's transaction lookup (PowerTranz's written answer to Swift, 4 Nov 2026):
+// GET <root>/api/Transactions/{TransactionIdentifier} with the PowerTranz-PowerTranzId / -PowerTranzPassword
+// headers, ONLY when an outcome is unknown, never as the normal flow; VoidDateTime present = reversed; OrderSummary
+// carries SettledAmount, TotalCaptureAmount and TotalCreditAmount. The double answers with those field names and the
+// guide's sec. 6 response fields only. Every value is synthetic.
+// ---------------------------------------------------------------------------
+
+describe('[CARD-LOOKUP] the transaction lookup: read strictly, judged against what Swift asked, never the normal flow', () => {
+  const txn = 'd7b3c1a2-5e6f-4a8b-9c0d-1e2f3a4b5c6d';
+  const order = 'SWIFT-cs_lookup_synthetic';
+  const ask = (p: PowerTranzCardRailProvider, providerRef = txn) =>
+    p.lookupTransaction({ binding: p.binding, providerRef, orderRef: order, amountMinor: 210_000, currencyCode: 'GYD' });
+  /** A transaction record in PowerTranz's own field names (sec. 6 fields; OrderSummary and VoidDateTime per the written answer). */
+  const record = (fields: Record<string, unknown> = {}, summary: Record<string, unknown> = {}) => ({
+    TransactionType: 2, Approved: true, IsoResponseCode: '00', ResponseMessage: 'Transaction is approved.', TransactionIdentifier: txn,
+    OrderIdentifier: order, TotalAmount: 2100, CurrencyCode: '328', AuthorizationCode: '123456', RRN: '000000000001',
+    OrderSummary: { SettledAmount: 0, TotalCaptureAmount: 2100, TotalCreditAmount: 0, ...summary },
+    ...fields,
+  });
+  const at = (answer: ReturnType<Responder>) => gateway({ [`/api/Transactions/${txn}`]: () => answer });
+  /** Each case its own merchant label, so one case's backoff never gates another. */
+  const fresh = (gw: ReturnType<typeof gateway>, now?: () => Date) => provider(gw, { config: { account: `lk-${nanoid(6).replace(/[^A-Za-z0-9]/g, '0')}` }, ...(now ? { now } : {}) });
+
+  it('GET <root>/api/Transactions/{id}, credentials in the headers, no body; an approved sale of this transaction and order at Swift\'s price, not reversed, not refunded -> confirmed', async () => {
+    const gw = at({ status: 200, body: record() });
+    const p = fresh(gw);
+    expect(await ask(p)).toMatchObject({ status: 'confirmed', providerRef: txn, amountMinor: 210_000, currencyCode: 'GYD' });
+    expect(gw.calls).toHaveLength(1);
+    expect(gw.calls[0]).toMatchObject({ url: `${POWERTRANZ_SANDBOX_ROOT}/api/Transactions/${txn}`, method: 'GET', body: undefined });
+    expect(gw.calls[0]!.headers['powertranz-powertranzid']).toBe('TESTID01');
+    expect(gw.calls[0]!.headers['powertranz-powertranzpassword']).toBe('test-password-not-real');
+  });
+
+  it('VoidDateTime present = reversed; any credit = reversed: never confirmed', async () => {
+    expect(await ask(fresh(at({ status: 200, body: record({ VoidDateTime: '2026-11-09T12:00:00' }) })))).toMatchObject({ status: 'reversed', reason: 'LOOKUP_VOIDED' });
+    expect(await ask(fresh(at({ status: 200, body: record({}, { TotalCreditAmount: 2100 }) })))).toMatchObject({ status: 'reversed', reason: 'LOOKUP_CREDITED' });
+    expect(await ask(fresh(at({ status: 200, body: record({}, { TotalCreditAmount: 1 }) })))).toMatchObject({ status: 'reversed', reason: 'LOOKUP_CREDITED' });
+    // An absent or null VoidDateTime is no reversal.
+    expect(await ask(fresh(at({ status: 200, body: record({ VoidDateTime: null }) })))).toMatchObject({ status: 'confirmed' });
+  });
+
+  it('readable but not a confirmed sale at Swift\'s price -> not_bookable (another capture amount, another currency, declined, not a sale)', async () => {
+    const cases: Array<[Record<string, unknown>, Record<string, unknown>, string]> = [
+      [{}, { TotalCaptureAmount: 2000 }, 'LOOKUP_AMOUNT_MISMATCH'],
+      [{}, { TotalCaptureAmount: 0 }, 'LOOKUP_AMOUNT_MISMATCH'],
+      [{ CurrencyCode: '840' }, {}, 'LOOKUP_CURRENCY_MISMATCH'],
+      [{ Approved: false, IsoResponseCode: '05' }, { TotalCaptureAmount: 0 }, 'LOOKUP_NOT_APPROVED_05'],
+      [{ Approved: true, IsoResponseCode: '96' }, {}, 'LOOKUP_NOT_APPROVED_96'],
+      [{ TransactionType: 1 }, {}, 'LOOKUP_NOT_A_SALE'],
+    ];
+    for (const [fields, summary, reason] of cases) {
+      expect(await ask(fresh(at({ status: 200, body: record(fields, summary) }))), JSON.stringify({ fields, summary })).toMatchObject({ status: 'not_bookable', reason });
+    }
+  });
+
+  it('an unreadable answer is unknown, never success: another transaction or order, missing or mistyped fields, HTTP errors, no answer', async () => {
+    const noSummary: Record<string, unknown> = record();
+    delete noSummary['OrderSummary'];
+    const cases: Array<[ReturnType<Responder>, string]> = [
+      [{ status: 200, body: record({ TransactionIdentifier: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb' }) }, 'LOOKUP_OTHER_TRANSACTION'],
+      [{ status: 200, body: record({ OrderIdentifier: 'SWIFT-someone-else' }) }, 'LOOKUP_OTHER_ORDER'],
+      [{ status: 200, body: noSummary }, 'LOOKUP_UNREADABLE'],
+      [{ status: 200, body: record({}, { TotalCreditAmount: undefined }) }, 'LOOKUP_UNREADABLE'],
+      [{ status: 200, body: record({}, { TotalCaptureAmount: '21.005' }) }, 'LOOKUP_UNREADABLE'],
+      [{ status: 200, body: record({ Approved: 'true' }) }, 'LOOKUP_UNREADABLE'],
+      [{ status: 200, body: record({ CurrencyCode: '999' }) }, 'LOOKUP_UNREADABLE'],
+      [{ status: 200, body: record({ VoidDateTime: '' }) }, 'LOOKUP_UNREADABLE'],
+      [{ status: 200, body: record({ VoidDateTime: 17 }) }, 'LOOKUP_UNREADABLE'],
+      [{ status: 200, body: [record()] }, 'LOOKUP_UNREADABLE'],
+      [{ status: 200, body: 'not json at all' }, 'LOOKUP_UNREADABLE'],
+      [{ status: 404, body: 'not found' }, 'LOOKUP_HTTP_404'],
+      [{ status: 500, body: record() }, 'LOOKUP_HTTP_500'],
+      ['network', 'LOOKUP_NO_ANSWER_NETWORK'],
+      ['timeout', 'LOOKUP_NO_ANSWER_TIMEOUT'],
+    ];
+    for (const [answer, reason] of cases) {
+      const outcome = await ask(fresh(at(answer)));
+      expect(outcome, `${JSON.stringify(answer)}`).toMatchObject({ status: 'unknown', reason });
+      expect(outcome.status).not.toBe('confirmed');
+    }
+  });
+
+  it('a reference that is not a transaction id is never asked about; another binding is refused before any call', async () => {
+    const gw = at({ status: 200, body: record() });
+    const p = fresh(gw);
+    expect(await ask(p, 'not-a-guid')).toMatchObject({ status: 'unknown', reason: 'LOOKUP_REQUEST_INVALID' });
+    await expect(p.lookupTransaction({ binding: { ...p.binding, account: 'someone-else' }, providerRef: txn, orderRef: order, amountMinor: 210_000, currencyCode: 'GYD' }))
+      .rejects.toBeInstanceOf(CardBindingMismatchError);
+    expect(gw.calls).toHaveLength(0);
+  });
+
+  it('at most one read per transaction per backoff window, and the window doubles (1, 2, 4 ... minutes, at most 30)', async () => {
+    let clock = Date.now();
+    const gw = at('timeout');
+    const p = fresh(gw, () => new Date(clock));
+    const reads = () => gw.calls.length;
+    expect(await ask(p)).toMatchObject({ status: 'unknown', reason: 'LOOKUP_NO_ANSWER_TIMEOUT' });
+    expect(reads()).toBe(1);
+    expect(await ask(p)).toMatchObject({ status: 'unknown', reason: 'LOOKUP_BACKOFF', backoff: true });
+    clock += 59_999;
+    expect(await ask(p)).toMatchObject({ status: 'unknown', backoff: true });
+    expect(reads()).toBe(1);
+    clock += 1;
+    await ask(p);
+    expect(reads()).toBe(2);
+    clock += 60_000; // the second window is two minutes
+    expect(await ask(p)).toMatchObject({ backoff: true });
+    clock += 60_000;
+    await ask(p);
+    expect(reads()).toBe(3);
+    for (let i = 0; i < 8; i += 1) { clock += 30 * 60_000; await ask(p); }
+    expect(reads()).toBe(11); // capped at 30 minutes: one read per half hour, never fewer
+  });
+
+  it('never the normal flow: a page made, completed, declined, refunded or voided reads no transaction record', async () => {
+    let page!: Awaited<ReturnType<typeof openPage>>;
+    const original = 'cab173a7-f75e-444b-ac42-cc6a367b8b6b';
+    const gw = gateway({
+      '/api/spi/sale': preprocessed, '/api/spi/payment': () => completion({})(page),
+      '/api/refund': () => ({ status: 200, body: { OriginalTrxnIdentifier: original, TransactionType: 5, Approved: true, TransactionIdentifier: '0446a902-311d-4868-8247-e9dfbd8ea0a6', TotalAmount: 2100, CurrencyCode: '328', IsoResponseCode: '00' } }),
+      '/api/void': () => 'timeout',
+    });
+    const p = provider(gw);
+    page = await openPage(p);
+    await p.confirm({ binding: p.binding, providerSessionRef: page.ref, purpose: 'PAY_NOW' });
+    await p.noteReturn({ binding: p.binding, providerSessionRef: page.ref, params: authResult(page, {}) });
+    expect(await p.confirm({ binding: p.binding, providerSessionRef: page.ref, purpose: 'PAY_NOW' })).toMatchObject({ status: 'succeeded' });
+    const declined = await openPage(p);
+    await p.noteReturn({ binding: p.binding, providerSessionRef: declined.ref, params: authResult(declined, { AuthenticationStatus: 'N' }) });
+    await p.confirm({ binding: p.binding, providerSessionRef: declined.ref, purpose: 'PAY_NOW' });
+    await p.refund({ binding: p.binding, providerRef: original, amountMinor: 210_000, currencyCode: 'GYD', idempotencyKey: `refund-${nanoid(6)}` });
+    await p.voidPayment({ binding: p.binding, providerRef: original, idempotencyKey: `void-${nanoid(6)}` });
+    expect(gw.paths().filter((x) => x.toLowerCase().startsWith('/api/transactions'))).toEqual([]);
+    expect(gw.calls.every((c) => c.method === 'POST')).toBe(true);
+  });
+});

@@ -16,7 +16,7 @@ import { sealVaultToken } from './card-vault';
 import { observedStatus, recordCardObservation } from './card-observations';
 import {
   assertNever, bindingOf, COMPLETION_CLAIM_WAIT_MS, describeBinding, rawDigest, sameBinding,
-  type CardRailProvider, type CardRailSource, type CardRefundOutcome, type CardReturnObservation, type CardSessionOutcome, type CardSessionPurpose,
+  type CardLookupOutcome, type CardRailProvider, type CardRailSource, type CardRefundOutcome, type CardReturnObservation, type CardSessionOutcome, type CardSessionPurpose,
   type CompletionClaim, type CreateCardSessionOutcome,
 } from '../../providers/card/card-provider';
 import { POWERTRANZ_PROVIDER, readCompletion } from '../../providers/card/powertranz-provider';
@@ -131,6 +131,16 @@ const notHeld = () => new AppError(409, 'CARD_SESSION_NOT_HELD', 'Only a card pa
  *  is not known" (sent, or possibly sent, and not recorded): before voiding,
  *  the durable claim decides whether it was sent and whether it may still answer. */
 const ANSWER_NOT_KNOWN = new Set(['COMPLETION_SENT_ANSWER_LOST', 'COMPLETION_ALREADY_CLAIMED', 'COMPLETION_STATE_CHANGING', 'NO_RECORD_OF_THIS_PAGE', 'COMPLETION_RECORD_UNREADABLE']);
+
+/** [CARD-LOOKUP] A completion's outcome is not known ("timeout, interruption", PowerTranz): its answer is not known
+ *  (ANSWER_NOT_KNOWN), or it came back without saying what happened — no answer, an unreadable one, a server error,
+ *  a code that is not the bank's answer, a possible duplicate, no Approved flag (powertranz-provider.ts). An answer
+ *  that DID say (an approval without its proof, for another amount or transaction; a decline) is not looked up. */
+export function unsaidCompletion(reason: string): boolean {
+  return ANSWER_NOT_KNOWN.has(reason)
+    || ['COMPLETION_TIMEOUT', 'COMPLETION_NETWORK', 'COMPLETION_UNREADABLE', 'NO_APPROVED_FLAG'].includes(reason)
+    || /^(COMPLETION_HTTP_|NOT_THE_BANKS_ANSWER_|POSSIBLE_DUPLICATE_)/.test(reason);
+}
 
 /** [Review S2-2] Did this session's payment book the week (captured, or banked
  *  to the balance)? Read under the session lock. */
@@ -539,19 +549,25 @@ export class CardRailService {
         if (expired) return this.close(session, 'EXPIRED', outcome.status === 'pending' ? 'EXPIRED_UNUSED' : 'EXPIRED_UNAUTHENTICATED', outcome, now);
         return this.observeOnly(session, outcome);
       case 'unknown': {
+        // [CARD-LOOKUP] A completion was sent and its answer does not say what
+        // happened: the provider's own record of the transaction is read first
+        // (it books only with full proof); otherwise the paths below, as before.
+        const looked = await this.lookUpUnsaidCompletion(session, outcome, now);
+        if ('result' in looked) return looked.result;
+        const unsaid = looked.outcome;
         // [Review S2-2] The provider may have taken money Swift cannot book:
         // void it now, under a durable claim; hold it for a person otherwise.
-        if (outcome.voidable) return this.voidUnbookable(session, outcome, outcome.voidable.providerRef, now, { answerUnknown: ANSWER_NOT_KNOWN.has(outcome.reason) });
+        if (unsaid.voidable) return this.voidUnbookable(session, unsaid, unsaid.voidable.providerRef, now, { answerUnknown: ANSWER_NOT_KNOWN.has(outcome.reason) });
         // [CARDS S1] A completion was durably claimed (so it may have been
         // sent) and the provider can no longer say what became of it: past its
         // deadline it is treated as possibly taken — voided under the recorded
         // transaction, or held for a person. Never left open for a "not paid".
         const lost = this.lostCompletionRef(session, now);
-        if (lost) return this.voidUnbookable(session, outcome, lost, now, { answerUnknown: true });
-        if (!expired) return this.observeOnly(session, outcome);
+        if (lost) return this.voidUnbookable(session, unsaid, lost, now, { answerUnknown: true });
+        if (!expired) return this.observeOnly(session, unsaid);
         // A Pay now may have moved money: it stays UNKNOWN and keeps being
         // asked. An enrolment moved none: it closes, and the card is added again.
-        return session.purpose === 'PAY_NOW' ? this.markUnknown(session, outcome, now) : this.close(session, 'EXPIRED', 'PROVIDER_UNKNOWN', outcome, now);
+        return session.purpose === 'PAY_NOW' ? this.markUnknown(session, unsaid, now) : this.close(session, 'EXPIRED', 'PROVIDER_UNKNOWN', unsaid, now);
       }
       default:
         return assertNever(outcome, 'card session outcome');
@@ -578,6 +594,69 @@ export class CardRailService {
       });
       return 'send' as const;
     });
+  }
+
+  /**
+   * [CARD-LOOKUP] PowerTranz's written answer to Swift (4 Nov 2026): when an outcome is unknown (a timeout, an
+   * interruption) — and only then, never as the normal flow — read the transaction's record (GET
+   * /api/Transactions/{id}). Asked here only for a Pay now whose completion was durably claimed (so it may have been
+   * sent), whose answer does not say what happened (unsaidCompletion), past the claim's deadline when the answer
+   * may still arrive, and before any void or booking. The read itself moves no money, so it runs while the card
+   * rail is killed too: booking from it only records money the provider already took (like confirm and the sweep,
+   * which drain while killed [C7]); a void it leads to is the same void as before.
+   *
+   * What the record decides (COORD ruling, 9 Nov 2026):
+   *   - BOOKED only when the record confirms an approved sale of THIS transaction and order (SWIFT-<session>), at
+   *     Swift's exact price and currency, not voided and with no credit, AND the session already holds the
+   *     provider's approved completion with its own 3-D Secure proof (readCompletion — the existing proof rule;
+   *     the record is not documented to carry that proof). Then settlePayNow books it once, with every check it
+   *     always makes (price, test system, a void already sent).
+   *   - Voided or refunded on the record: HELD for a person (LOOKUP_SHOWS_REVERSED); no void is sent.
+   *   - Anything else — a confirmed sale without the stored proof, another amount or currency, a decline, an
+   *     unreadable or missing answer — goes on to the path it always took (one void, then HELD when the void is
+   *     not confirmed). The completion is never sent again.
+   *   - The read was made moments ago (its backoff window): nothing is done now; the session is asked again later.
+   */
+  private async lookUpUnsaidCompletion(
+    stale: CardSession, outcome: Extract<CardSessionOutcome, { status: 'unknown' }>, now: Date,
+  ): Promise<{ result: CardConfirmResult } | { outcome: Extract<CardSessionOutcome, { status: 'unknown' }> }> {
+    const keep = { outcome };
+    if (stale.purpose !== 'PAY_NOW' || !unsaidCompletion(outcome.reason)) return keep;
+    // Read again: the durable claim is written during the provider's confirm, after the caller's read.
+    const session = await this.prisma.cardSession.findUnique({ where: { id: stale.id } });
+    if (!session || !LIVE.includes(session.status)) return keep;
+    if (!session.completionClaimedAt || session.providerVoidState !== null || session.paymentId) return keep;
+    // The answer may still be arriving: nothing is read inside the durable claim's deadline.
+    if (ANSWER_NOT_KNOWN.has(outcome.reason) && now.getTime() <= session.completionClaimedAt.getTime() + COMPLETION_CLAIM_WAIT_MS) return keep;
+    const ref = (session.providerTransactionRef ?? outcome.voidable?.providerRef ?? '').trim();
+    const provider = this.rail();
+    if (!ref || !session.currencyCode || !provider.lookupTransaction || !sameBinding(bindingOf(session), provider.binding)) return keep;
+    const held = { txnId: ref, orderId: `SWIFT-${session.id}`, amountMinor: toProviderMinor(Number(session.amount), session.currencyCode, 'card.v2.lookup'), currencyCode: session.currencyCode };
+    const looked = await provider.lookupTransaction({ binding: provider.binding, providerRef: ref, orderRef: held.orderId, amountMinor: held.amountMinor, currencyCode: held.currencyCode })
+      .catch((): CardLookupOutcome => ({ status: 'unknown', reason: 'LOOKUP_CALL_FAILED', rawSha256: rawDigest({ lookup: 'threw', ref }) }));
+    if (looked.status === 'unknown' && looked.backoff) return { result: await this.resultOf(session) };
+    log().warn({ sessionId: session.id, completion: outcome.reason, lookup: looked.status, why: 'reason' in looked ? looked.reason : undefined }, '[CARD-LOOKUP] card completion outcome unknown — provider transaction record read');
+    const voidable = { providerRef: ref };
+    switch (looked.status) {
+      case 'confirmed': {
+        const proof = readCompletion(session.completionEvidence, held);
+        if (proof.status === 'succeeded' && looked.amountMinor === proof.amountMinor && looked.currencyCode === proof.currencyCode) {
+          return { result: await this.settlePayNow(session, {
+            status: 'succeeded', purpose: 'PAY_NOW', providerRef: ref, amountMinor: proof.amountMinor, currencyCode: proof.currencyCode,
+            completionEvidence: proof.completionEvidence, rawSha256: looked.rawSha256,
+          }, now) };
+        }
+        return { outcome: { status: 'unknown', reason: `${outcome.reason}+LOOKUP_CONFIRMED_WITHOUT_3DS_PROOF`, voidable, rawSha256: looked.rawSha256 } };
+      }
+      case 'reversed':
+        return { result: await this.hold(session, { status: 'unknown', reason: looked.reason, rawSha256: looked.rawSha256 }, 'LOOKUP_SHOWS_REVERSED', now,
+          `PowerTranz's transaction record shows this payment ${looked.reason === 'LOOKUP_VOIDED' ? 'voided' : 'refunded'} (${outcome.reason}). Nothing was booked and no void was sent. Provider transaction ${ref}. Check it in the provider's portal, then record that nothing was taken (two people).`, ref) };
+      case 'not_bookable':
+      case 'unknown':
+        return { outcome: { status: 'unknown', reason: `${outcome.reason}+${looked.reason}`, voidable, rawSha256: looked.rawSha256 } };
+      default:
+        return assertNever(looked, 'card lookup outcome');
+    }
   }
 
   /** [CARDS S1] The transaction of a completion claimed on this session whose

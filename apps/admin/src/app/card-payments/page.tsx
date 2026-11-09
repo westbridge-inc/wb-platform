@@ -32,6 +32,7 @@ const HELD_WHY: Record<string, string> = {
   AMOUNT_MISMATCH: "The provider's amount is not this week's price.",
   TEST_SYSTEM_FOR_A_REAL_PARTNER: 'A test card system answered for a real partner: it moved no real money.',
   LATE_PROVIDER_APPROVAL: 'The provider approved it after Swift had closed the payment page.',
+  LOOKUP_SHOWS_REVERSED: "The payment's answer was lost, and PowerTranz's record of it shows it voided or refunded. Nothing was booked.",
   NOT_SETTLED: 'The payment was taken but could not be booked to the week.',
   WALLET_CURRENCY_MISMATCH: 'The fee credit is held in another currency.',
   CURRENCY_UNPINNED: 'The currency it was charged in cannot be confirmed.',
