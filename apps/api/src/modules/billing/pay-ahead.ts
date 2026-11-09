@@ -29,8 +29,10 @@ import { feeRiseKey, readHeldFeeRise } from './fee-rise-notice';
 //     the operators to refund the part above it.
 //
 // What counts as "ahead": the fee paid ahead (prepaidBalance) plus whole weeks
-// already paid beyond the week that is running (a card Pay now pays the next
-// week by moving nextBillingDate). A free trial's weeks were not paid, so they
+// already booked beyond the week that is running, by date. Every door pays
+// ahead into prepaidBalance (a card Pay now for a week that has not started is
+// kept as fee credit, billing.service applySuccessfulChargeInTx, CARD-READY);
+// the date term stays so a week booked ahead any other way still counts. A free trial's weeks were not paid, so they
 // never count. A week that is due now is not ahead: money that will pay it is
 // allowed on top of the limit.
 //

@@ -3,7 +3,7 @@
 import { Fragment, useState, useRef } from 'react';
 import Link from 'next/link';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { fetchSubscriptions, waiveSubscriptionFee, topUpSubscription, setAsideSubscriptionCredit, fetchInPersonDoor, recordInPersonFeePayment, recordSubscriptionRefundPaid, releaseSubscriptionRefund, fetchBillingEvents, type InPersonDoor, type InPersonPaymentBody, type RefundPaidMethod } from '@/lib/api';
+import { fetchSubscriptions, waiveSubscriptionFee, topUpSubscription, setAsideSubscriptionCredit, fetchInPersonDoor, recordInPersonFeePayment, recordSubscriptionRefundPaid, releaseSubscriptionRefund, fetchBillingEvents, fetchRefundSources, refundCreditToCard, type RefundSources, type InPersonDoor, type InPersonPaymentBody, type RefundPaidMethod } from '@/lib/api';
 import { outcomeOfThrown, type MoneyActionOutcome } from '@/lib/cashRail';
 import { outcomeOf } from '@/lib/outcome';
 import { StatusPill, gyd } from '@/components/detail';
@@ -82,12 +82,23 @@ const DONE_COPY = {
   'set-aside': 'Set aside. Pay it now outside Swift, then record the payout here.',
   paid: 'Payout recorded. The refund is complete.',
   release: 'Returned to the credit. Nothing is set aside.',
+  card: 'Sent to the card provider. See its answer on this refund.',
 } as const;
 const QUEUED_COPY = {
   'set-aside': 'Do not pay anything yet. Once a second admin approves, apply it from the approvals queue; the credit is then set aside and you pay it.',
   paid: 'Payment reported. A second admin must approve its record in the approvals queue. Do not pay again or release this refund.',
   release: 'Once a second admin approves, apply it from the approvals queue to return the money to the credit.',
+  card: 'Once a second admin approves, apply it from the approvals queue: Swift then asks the card provider once to refund this card payment. Do not refund it any other way.',
 } as const;
+
+// [CARD-READY] How the money in a refund came in: money goes back the way it came (partner agreements s2).
+const RAIL_WORDS: Record<RefundSources['byRail'][number]['rail'], string> = {
+  CARD: 'card', MMG: 'MMG', IN_PERSON: 'in person', OTHER: 'another way', NOT_RECORDED: 'not recorded (paid before Swift kept this)',
+};
+const sourcesLine = (view: RefundSources) => view.byRail.length
+  ? `How this money was paid: ${view.byRail.map((r) => `GY$${r.amount.toLocaleString()} ${RAIL_WORDS[r.rail]}`).join(', ')}.`
+  : '';
+const CARD_REFUND_STATE: Record<string, string> = { SENDING: 'being sent', REFUNDED: 'refunded', FAILED: 'refused by the card provider', UNKNOWN: 'answer not confirmed: ask the owner', PENDING: 'pending at the card provider' };
 
 /** What happened to the last refund step on this row: done, queued for a
  *  second admin (with the approval id), or refused with the server's words. */
@@ -162,7 +173,7 @@ export default function SubscriptionsPage() {
   const [refundOutcome, setRefundOutcome] = useState<Record<string, MoneyActionOutcome>>({});
   const [reportedRefunds, setReportedRefunds] = useState<Record<string, boolean>>({});
   const told = (id: string, outcome: MoneyActionOutcome) => setRefundOutcome((all) => ({ ...all, [id]: outcome }));
-  const refundStep = (step: 'set-aside' | 'paid' | 'release') => ({
+  const refundStep = (step: 'set-aside' | 'paid' | 'release' | 'card') => ({
     onSuccess: (res: unknown, v: { id: string }) => {
       const answer = res as { replayed?: boolean; data?: { refundSetAside?: number } };
       const message = step === 'paid' && Number(answer.data?.refundSetAside ?? 0) > 0
@@ -195,7 +206,21 @@ export default function SubscriptionsPage() {
     mutationFn: ({ id, amount, setAsideId, reason }: { id: string; amount: number; setAsideId: string; reason: string }) => releaseSubscriptionRefund(id, amount, setAsideId, reason),
     ...refundStep('release'),
   });
-  const refundBusy = setAside.isPending || recordPaid.isPending || release.isPending;
+  const toCard = useMutation({
+    mutationFn: ({ id, setAsideId, cardSessionId, amount, reason }: { id: string; setAsideId: string; cardSessionId: string; amount: number; reason: string }) =>
+      refundCreditToCard(id, setAsideId, cardSessionId, amount, reason),
+    ...refundStep('card'),
+  });
+  const refundBusy = setAside.isPending || recordPaid.isPending || release.isPending || toCard.isPending;
+  /** The refund's sources, read before any payout is asked; a failed read is shown and nothing is asked. */
+  const sourcesOf = async (id: string): Promise<RefundSources | null> => {
+    try {
+      return (await fetchRefundSources(id)).data;
+    } catch (error) {
+      told(id, outcomeOfThrown(error));
+      return null;
+    }
+  };
 
   const rows: any[] = data?.data ?? [];
   // [OWNER 8 Oct (4)] Production holds the top-up (BILLING_TOPUP_HOLD), so its
@@ -355,24 +380,60 @@ export default function SubscriptionsPage() {
                               <button
                                 type="button"
                                 onClick={async () => {
-                                  const owed = Number(s.refundSetAside);
+                                  const view = await sourcesOf(s.id);
+                                  if (!view) return;
+                                  const left = view.setAside?.stillToPay ?? Number(s.refundSetAside);
                                   const answer = await dialog.askWith({
-                                    title: `Record that GY$${owed.toLocaleString()} was paid back to ${h.name}?`,
-                                    body: <p>Only once the refund has really been paid outside Swift. The reference, cheque number or signed receipt number is the proof the money went back. A second admin approves the record.</p>,
+                                    title: `Record a payout to ${h.name}? GY$${left.toLocaleString()} is still to pay back.`,
+                                    body: <><p>{sourcesLine(view)} Money paid by card goes back to the card: use Refund to card for it.</p>
+                                      <p>Record each payout once it has really been paid outside Swift, with its own reference: the reference, cheque number or signed receipt number is the proof the money went back. Several payouts may pay one refund, never more than is left. A second admin approves each record.</p></>,
                                     confirmLabel: 'Record payout',
                                     fields: [
                                       { kind: 'choice', name: 'method', label: 'Paid back by', options: [{ value: 'MMG', label: 'MMG' }, { value: 'BANK_TRANSFER', label: 'Bank transfer' }, { value: 'CHEQUE', label: 'Cheque' }, { value: 'CASH', label: 'Cash' }] },
+                                      { kind: 'amount', name: 'amount', label: 'Amount paid back in this payout' },
                                       { kind: 'reference', name: 'reference', label: 'Reference of the refund you paid', hint: 'Never the reference the money came in on.' },
                                     ],
                                   });
                                   if (!answer) return;
                                   const method = answer.values['method'] as RefundPaidMethod;
-                                  recordPaid.mutate({ id: s.id, amount: owed, method, reference: String(answer.values['reference']), setAsideId: String(s.refundSetAsideId ?? ''), reason: answer.reason });
+                                  recordPaid.mutate({ id: s.id, amount: Number(answer.values['amount']), method, reference: String(answer.values['reference']), setAsideId: String(s.refundSetAsideId ?? ''), reason: answer.reason });
                                 }}
                                 disabled={refundBusy || payoutReported}
                                 className="mc-btn"
                               >
                                 Record payout
+                              </button>
+                              <button
+                                type="button"
+                                onClick={async () => {
+                                  const view = await sourcesOf(s.id);
+                                  if (!view?.setAside) return;
+                                  const ready = view.cardPayments.filter((c) => c.refundable);
+                                  const others = view.cardPayments.filter((c) => !c.refundable);
+                                  const otherLines = others.map((c) => `Order ${c.orderReference}: ${c.refund ? `refund ${CARD_REFUND_STATE[c.refund.state] ?? c.refund.state}` : c.inSetAside < c.amount ? `only GY$${c.inSetAside.toLocaleString()} of GY$${c.amount.toLocaleString()} is in this refund (the rest paid weekly fees): ask the owner` : 'cannot be refunded to its card now'}.`);
+                                  if (ready.length === 0) {
+                                    told(s.id, { kind: 'error', message: ['No card payment in this refund can go back to its card now.', sourcesLine(view), ...otherLines].filter(Boolean).join(' ') });
+                                    return;
+                                  }
+                                  const answer = await dialog.askWith({
+                                    title: `Refund a card payment to ${h.name}'s card?`,
+                                    body: <><p>{sourcesLine(view)}</p>
+                                      <p>Swift asks the card provider once to refund the whole card payment to the card it came from. It counts as paid back only when the card provider approves it. A second admin approves first. Never refund it any other way.</p>
+                                      {otherLines.length > 0 && <p>{otherLines.join(' ')}</p>}</>,
+                                    confirmLabel: 'Refund to card',
+                                    fields: [
+                                      { kind: 'choice', name: 'payment', label: 'Card payment', options: ready.map((c) => ({ value: c.cardSessionId, label: `Order ${c.orderReference} · GY$${c.amount.toLocaleString()}${c.paidAt ? ` · paid ${gyDate(c.paidAt)}` : ''}` })) },
+                                    ],
+                                  });
+                                  if (!answer) return;
+                                  const chosen = ready.find((c) => c.cardSessionId === answer.values['payment']);
+                                  if (!chosen) return;
+                                  toCard.mutate({ id: s.id, setAsideId: view.setAside.id, cardSessionId: chosen.cardSessionId, amount: chosen.amount, reason: answer.reason });
+                                }}
+                                disabled={refundBusy}
+                                className="mc-btn"
+                              >
+                                Refund to card
                               </button>
                               <button
                                 type="button"

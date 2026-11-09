@@ -245,9 +245,12 @@ describe('fee credit refund: set aside, pay, record, and every answer is shown',
   const withCredit = { ...subscription, prepaidBalance: { balance: 5000, currencyCode: 'GYD' }, refundSetAside: 0 };
   const setAsideRow = { ...subscription, prepaidBalance: { balance: 0, currencyCode: 'GYD' }, refundSetAside: 5000, refundSetAsideId: 'evt-aside-1' };
   const REASON = 'Partner asked to close their account and get the credit back';
-  function refundServer(row: unknown, reply: (_r: ApiRequest) => { status?: number; body: unknown }) {
+  // [CARD-READY] What the refund's sources read answers by default: MMG money only, nothing to refund to a card.
+  const mmgOnly = { setAside: { id: 'evt-aside-1', amount: 5000, stillToPay: 5000, currencyCode: 'GYD' }, byRail: [{ rail: 'MMG', amount: 5000 }], cardPayments: [] };
+  function refundServer(row: unknown, reply: (_r: ApiRequest) => { status?: number; body: unknown }, sources: unknown = mmgOnly) {
     return mockApi((request: ApiRequest) => {
       if (request.url.pathname === '/api/v1/admin/subscriptions') return { body: { success: true, data: [row] } };
+      if (request.method === 'GET' && request.url.pathname === '/api/v1/admin/subscriptions/sub-1/refund-credit/sources') return { body: { success: true, data: sources } };
       if (request.method === 'POST' && request.url.pathname.startsWith('/api/v1/admin/subscriptions/sub-1/refund-credit/')) return reply(request);
       throw new Error(`Unexpected request: ${request.method} ${request.url}`);
     });
@@ -286,7 +289,7 @@ describe('fee credit refund: set aside, pay, record, and every answer is shown',
     expect(await screen.findByText('Shanta Kitchen')).toBeTruthy();
     expect(screen.getByText(/set aside: pay it outside Swift, then record the payout/)).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Refund credit' })).toBeNull();
-    await confirmPanel(user, await answerPanel(user, 'Record payout', { choose: 'MMG', fields: { 'Reference of the refund you paid': 'REFUND9001' }, reason: REASON }), 'Record payout');
+    await confirmPanel(user, await answerPanel(user, 'Record payout', { choose: 'MMG', fields: { 'Amount paid back in this payout': '5000', 'Reference of the refund you paid': 'REFUND9001' }, reason: REASON }), 'Record payout');
     await waitFor(() => expect(requestsByMethod(fetchMock, 'POST')).toHaveLength(1));
     const [url, init] = requestsByMethod(fetchMock, 'POST')[0]!;
     expect(url).toBe(`${API_ORIGIN}/api/v1/admin/subscriptions/sub-1/refund-credit/paid`);
@@ -295,11 +298,57 @@ describe('fee credit refund: set aside, pay, record, and every answer is shown',
     expect((await screen.findByRole('status')).textContent).toContain('Payout recorded');
   });
 
+  it('[CARD-READY] a payout says how the money was paid and offers no card choice: card money goes back only through Refund to card', async () => {
+    refundServer(setAsideRow, () => ({ body: { success: true, data: {} } }), { ...mmgOnly, byRail: [{ rail: 'MMG', amount: 3000 }, { rail: 'CARD', amount: 2000 }] });
+    const { user } = renderWithQuery(<SubscriptionsPage />);
+    expect(await screen.findByText('Shanta Kitchen')).toBeTruthy();
+    const panel = await answerPanel(user, 'Record payout', {});
+    expect(panel.textContent).toContain('How this money was paid: GY$3,000 MMG, GY$2,000 card.');
+    expect(panel.textContent).toContain('Money paid by card goes back to the card: use Refund to card for it.');
+    expect(within(panel).queryByLabelText(/Card/)).toBeNull();
+  });
+
+  it('[CARD-READY] Refund to card names the card payment and its order, sends the whole payment once it is approved, and says it is waiting', async () => {
+    const view = {
+      setAside: { id: 'evt-aside-1', amount: 5000, stillToPay: 5000, currencyCode: 'GYD' }, byRail: [{ rail: 'CARD', amount: 5000 }],
+      cardPayments: [
+        { cardSessionId: 'cs_9', orderReference: 'SWIFT-cs_9', providerTransactionRef: 'T-9', amount: 5000, currencyCode: 'GYD', inSetAside: 5000, paidAt: '2026-11-01T12:00:00.000Z', refund: null, refundable: true },
+      ],
+    };
+    const fetchMock = refundServer(setAsideRow, () => queued, view);
+    const { user } = renderWithQuery(<SubscriptionsPage />);
+    expect(await screen.findByText('Shanta Kitchen')).toBeTruthy();
+    const panel = await answerPanel(user, 'Refund to card', { choose: /Order SWIFT-cs_9 · GY\$5,000/ as unknown as string, reason: REASON });
+    expect(panel.textContent).toContain('Swift asks the card provider once to refund the whole card payment to the card it came from.');
+    await confirmPanel(user, panel, 'Refund to card');
+    await waitFor(() => expect(requestsByMethod(fetchMock, 'POST')).toHaveLength(1));
+    const [url, init] = requestsByMethod(fetchMock, 'POST')[0]!;
+    expect(url).toBe(`${API_ORIGIN}/api/v1/admin/subscriptions/sub-1/refund-credit/card`);
+    expect(JSON.parse(String(init?.body))).toEqual({ setAsideId: 'evt-aside-1', cardSessionId: 'cs_9', amount: 5000 });
+    expect((await screen.findByRole('status')).textContent).toContain('Do not refund it any other way');
+  });
+
+  it('[CARD-READY] when no card payment can go back to its card, Refund to card says why and asks nothing', async () => {
+    const view = {
+      setAside: { id: 'evt-aside-1', amount: 5000, stillToPay: 5000, currencyCode: 'GYD' }, byRail: [{ rail: 'CARD', amount: 5000 }],
+      cardPayments: [
+        { cardSessionId: 'cs_7', orderReference: 'SWIFT-cs_7', providerTransactionRef: 'T-7', amount: 8000, currencyCode: 'GYD', inSetAside: 5000, paidAt: null, refund: null, refundable: false },
+      ],
+    };
+    const fetchMock = refundServer(setAsideRow, () => queued, view);
+    const { user } = renderWithQuery(<SubscriptionsPage />);
+    expect(await screen.findByText('Shanta Kitchen')).toBeTruthy();
+    await user.click(screen.getByRole('button', { name: 'Refund to card' }));
+    expect((await screen.findByRole('alert')).textContent).toContain('Order SWIFT-cs_7: only GY$5,000 of GY$8,000 is in this refund (the rest paid weekly fees): ask the owner.');
+    expect(screen.queryByRole('dialog')).toBeNull();
+    expect(requestsByMethod(fetchMock, 'POST')).toHaveLength(0);
+  });
+
   it('a replay of an earlier payout does not say a new set-aside is complete', async () => {
     refundServer(setAsideRow, () => ({ body: { success: true, replayed: true, data: { amount: 5000, currencyCode: 'GYD', balance: 0, refundSetAside: 5000 } } }));
     const { user } = renderWithQuery(<SubscriptionsPage />);
     await screen.findByText('Shanta Kitchen');
-    await confirmPanel(user, await answerPanel(user, 'Record payout', { choose: 'MMG', fields: { 'Reference of the refund you paid': 'EARLIER9001' }, reason: REASON }), 'Record payout');
+    await confirmPanel(user, await answerPanel(user, 'Record payout', { choose: 'MMG', fields: { 'Amount paid back in this payout': '5000', 'Reference of the refund you paid': 'EARLIER9001' }, reason: REASON }), 'Record payout');
     const message = (await screen.findByRole('status')).textContent;
     expect(message).toContain('earlier payout');
     expect(message).toContain('still set aside');
@@ -310,7 +359,7 @@ describe('fee credit refund: set aside, pay, record, and every answer is shown',
     refundServer(setAsideRow, () => queued);
     const { user } = renderWithQuery(<SubscriptionsPage />);
     await screen.findByText('Shanta Kitchen');
-    await confirmPanel(user, await answerPanel(user, 'Record payout', { choose: 'MMG', fields: { 'Reference of the refund you paid': 'SENT9001' }, reason: REASON }), 'Record payout');
+    await confirmPanel(user, await answerPanel(user, 'Record payout', { choose: 'MMG', fields: { 'Amount paid back in this payout': '5000', 'Reference of the refund you paid': 'SENT9001' }, reason: REASON }), 'Record payout');
     const message = (await screen.findByRole('status')).textContent;
     expect(message).toContain('Payment reported');
     expect(message).not.toContain('Nothing has moved');
@@ -332,12 +381,13 @@ describe('fee credit refund: set aside, pay, record, and every answer is shown',
     let row: unknown = setAsideRow;
     mockApi((request: ApiRequest) => {
       if (request.url.pathname === '/api/v1/admin/subscriptions') return { body: { success: true, data: [row] } };
+      if (request.method === 'GET' && request.url.pathname === '/api/v1/admin/subscriptions/sub-1/refund-credit/sources') return { body: { success: true, data: mmgOnly } };
       if (request.method === 'POST' && request.url.pathname.startsWith('/api/v1/admin/subscriptions/sub-1/refund-credit/')) return queued;
       throw new Error(`Unexpected request: ${request.method} ${request.url}`);
     });
     const { user, queryClient } = renderWithQuery(<SubscriptionsPage />);
     await screen.findByText('Shanta Kitchen');
-    await confirmPanel(user, await answerPanel(user, 'Record payout', { choose: 'MMG', fields: { 'Reference of the refund you paid': 'SENT9002' }, reason: REASON }), 'Record payout');
+    await confirmPanel(user, await answerPanel(user, 'Record payout', { choose: 'MMG', fields: { 'Amount paid back in this payout': '5000', 'Reference of the refund you paid': 'SENT9002' }, reason: REASON }), 'Record payout');
     await waitFor(() => expect((screen.getByRole('button', { name: 'Release' }) as HTMLButtonElement).disabled).toBe(true));
     // That payout is recorded; credit is later set aside again (a new set-aside).
     row = { ...setAsideRow, refundSetAsideId: 'evt-aside-2' };
@@ -361,7 +411,7 @@ describe('fee credit refund: set aside, pay, record, and every answer is shown',
     refundServer(setAsideRow, () => ({ status: 400, body: { success: false, error: { code: 'REFUND_REFERENCE_INVALID', message: 'That does not look like a transfer reference. Copy it from the MMG or bank record.' } } }));
     const { user } = renderWithQuery(<SubscriptionsPage />);
     expect(await screen.findByText('Shanta Kitchen')).toBeTruthy();
-    await confirmPanel(user, await answerPanel(user, 'Record payout', { choose: 'Bank transfer', fields: { 'Reference of the refund you paid': 'X1Y2' }, reason: REASON }), 'Record payout');
+    await confirmPanel(user, await answerPanel(user, 'Record payout', { choose: 'Bank transfer', fields: { 'Amount paid back in this payout': '5000', 'Reference of the refund you paid': 'X1Y2' }, reason: REASON }), 'Record payout');
     expect((await screen.findByRole('alert')).textContent).toContain('That does not look like a transfer reference');
   });
 

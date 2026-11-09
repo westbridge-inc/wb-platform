@@ -8,7 +8,7 @@ Swift holds no money for anyone. Partners may pay **up to four weeks ahead** (ow
 
 ## 1. The limit: four weeks ahead
 
-What counts as ahead (`pay-ahead.ts`, `PAY_AHEAD_MAX_WEEKS = 4`, a fixed rule in code, not a setting): money received for coming weeks (`prepaidBalance`) plus whole weeks already paid beyond the running week (a card Pay now pays the next week by moving `nextBillingDate`). Weeks of a free trial were not paid and never count. A week that is due now is not "ahead": money that pays it is allowed on top of the limit.
+What counts as ahead (`pay-ahead.ts`, `PAY_AHEAD_MAX_WEEKS = 4`, a fixed rule in code, not a setting): money received for coming weeks (`prepaidBalance`) plus whole weeks already booked beyond the running week by date. Every door pays ahead into `prepaidBalance`, a card Pay now included (a card payment for a week that has not started is kept as fee credit and spent on that week when it starts; it never moves `nextBillingDate`). Weeks of a free trial were not paid and never count. A week that is due now is not "ahead": money that pays it is allowed on top of the limit.
 
 | Path | What happens past the limit |
 | --- | --- |
@@ -23,8 +23,12 @@ What counts as ahead (`pay-ahead.ts`, `PAY_AHEAD_MAX_WEEKS = 4`, a fixed rule in
 ## 2. Refunding money above the limit
 
 1. Confirm the page's amount on the account (money received for coming weeks, and the next billing date).
-2. Return the amount above the limit to the partner through MMG (or another way the partner agrees to in writing), within the support reply time on the refunds page.
-3. Record the refund with the admin refund action for fee credit (two admins, a reason, an audit row). Until that action is live, do **not** change balances in the database: leave the page open and escalate to the owner.
+2. Pay it back the way it came in, within the support reply time on the refunds page. The refund panel says how the money was paid (card, MMG, in person). One refund may be paid back in several payouts, never more than is left.
+   - **Money paid by card** goes back to the same card only with **Refund to card** (Subscriptions). Swift asks the card provider ONCE to refund the whole original card payment, through the provider's documented refund (PowerTranz Ecommerce API Guide v2.7, sec. 5.2 and 7.5: the refund names the original transaction). It counts as paid back only when the provider's own answer approves it; its refund reference is recorded for you. Never refund a card payment in any other way: a refund made by hand in the provider's portal is not in the provider's guide, and Swift cannot record it.
+   - The guide documents no refund smaller than the payment ("Only partial captures are supported", sec. 5.2). So a card payment of which part already paid a week cannot go back to its card: stop and ask the owner (a question for PowerTranz is open).
+   - The provider refused: nothing was paid back and that card payment is never sent again; ask the owner how to pay it back. If nothing else is waiting (no other refund to the card asked, sent or unconfirmed, and no payout recorded), the refund may instead be **released** back to the partner's credit and set aside again later. No answer, or "pending": the money may be on its way; never pay it another way and never release the refund; escalate to the owner and PowerTranz support with the order reference (`SWIFT-<card payment id>`, the value the provider's Merchant Portal and reports use, guide sec. 9.2).
+   - **Everything else** goes back through MMG (or another way the partner agrees to in writing), then **Record payout**: its method, its amount and its own reference.
+3. Each payout is a two-admin action with a reason and an audit row; the admin who set the money aside never approves how it is paid back. Do **not** change balances in the database.
 
 ## 3. Agent money held for a person
 
@@ -55,7 +59,7 @@ Account deletion waits while any money received for weeks that have not started 
 
 Until the admin refund action for fee credit is live, a refund at closing is done by hand: return the unstarted weeks through MMG, keep the MMG reference, and escalate to the owner to record it (do not edit balances in the database). The deletion stays blocked until then.
 
-Before card payments are switched on: the deletion blocker counts `prepaidBalance` only; a week paid ahead by card (a moved `nextBillingDate`) must be added to it first, and an open card Pay now must count toward the four weeks at the door (today a capture that lands past the cap is kept and paged, section 1).
+Weeks paid ahead by card are in the same credit (a card Pay now for a week that has not started is kept as fee credit), so the blocker counts them too; they go back to the card with **Refund to card** (section 2, step 2). A card Pay now still open blocks deletion on its own (`FEE_PAYMENT_PENDING`), and one that lands past the limit anyway is kept and paged (section 1).
 
 ## 6. Paid in person, directly to the company (owner 5 Nov 2026)
 

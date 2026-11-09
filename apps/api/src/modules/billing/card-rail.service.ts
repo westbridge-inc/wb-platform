@@ -1036,7 +1036,7 @@ export class CardRailService {
       userId: session.userId,
       type: 'SYSTEM_ANNOUNCEMENT',
       title: 'Card payment received — kept for your next weekly fee',
-      body: `Your card payment of $${Number(session.amount).toLocaleString()} ${session.currencyCode} was received and kept for your next weekly fee. It did not change your plan.`,
+      body: `Your card payment of $${Number(session.amount).toLocaleString()} ${session.currencyCode} was received. It pays your next weekly fee that is not yet paid.`,
       audience: payerAudienceOf({ vendorId: sub?.vendorId, serviceProviderId: sub?.serviceProviderId }),
       data: { kind: 'billing_banked', subscriptionId: session.subscriptionId },
       dedupeKey: `card-paynow-banked:${paymentId}`,

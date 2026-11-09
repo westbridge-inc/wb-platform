@@ -2243,7 +2243,17 @@ export class BillingService {
         // [BILLING-REANCHOR] A capture that brings a suspended partner back is
         // their return: kept as fee credit and spent at once on the return week.
         const returning = !mmgHeld && !covered && !forgiven && allowsAdvance && await this.returnsInTx(tx, authority.status, sub.id, now);
-        const bankCapture = mmgHeld || covered || forgiven || returning || !allowsAdvance;
+        // [CARD-READY · REVIEW-G21 S3-2 · owner 6 Nov 2026, up to four weeks ahead] A Pay now for a week that has
+        // not started is paid ahead the way every other door pays ahead: kept as fee credit (Swift's own fee paid
+        // early, refunded at closing for every week that has not started, partner-wind-down FEE_CREDIT) and spent
+        // on that week when it starts. It never moves the next fee date. Decided when the money is booked: a week
+        // that began while the bank was confirming is paid at once.
+        // [REVIEW-1 R1-2] The same "due" as the Pay now quote: a week of a PAST_DUE, SUSPENDED or CHURNED account is
+        // owed now, whatever its date says, and is paid, never kept.
+        const aheadOfItsWeek = payNowSessionId !== null && payment.periodStart.getTime() > now.getTime()
+          && !['PAST_DUE', 'SUSPENDED', 'CHURNED'].includes(authority.status);
+        const bankedAnyway = mmgHeld || covered || forgiven || returning || !allowsAdvance;
+        const bankCapture = bankedAnyway || aheadOfItsWeek;
         if (bankCapture && await this.holdWalletCurrencyMismatch(tx, payment, currencyCode, paymentRef)) return 'held';
         const claimed = await tx.subscriptionPayment.updateMany({
           where: { id: payment.id, subscriptionId: sub.id, paymentMethod: 'CARD', status: payment.status, externalRef: payment.externalRef },
@@ -2260,10 +2270,12 @@ export class BillingService {
         if (bankCapture) {
           await this.creditWalletInTx(tx, {
             subscriptionId: sub.id, amount, currencyCode: sub.currencyCode,
-            eventKey: `bank:${payment.id}`, channel: returning ? 'CARD_RETURN' : 'CARD_LATE_APPROVAL', rail: 'CARD',
+            eventKey: `bank:${payment.id}`, channel: returning ? 'CARD_RETURN' : bankedAnyway ? 'CARD_LATE_APPROVAL' : 'CARD_PAY_AHEAD', rail: 'CARD',
             note: returning
               ? `Card payment received for ${periodKey} from a suspended partner: their return; spent on the return week (the time suspended is not billed) (payment ${payment.id})`
-              : `Card payment received for ${periodKey}; banked without changing subscription lifecycle (payment ${payment.id})`,
+              : bankedAnyway
+                ? `Card payment received for ${periodKey}; banked without changing subscription lifecycle (payment ${payment.id})`
+                : `Card payment received ahead for the week of ${periodKey}, which has not started: kept as fee credit and spent on that week when it starts (payment ${payment.id})`,
           });
           if (!returning) return 'banked';
           // The credit buys the return week through the prepaid path below, at
@@ -5691,9 +5703,11 @@ export class BillingService {
       // and never for more than the credit still holds, so it only falls; once told, no door takes a payment for a week from the told date
       // (pay-ahead.ts), and money that arrives later cannot stretch it.
       const wholeOld = credit && credit.currencyCode === sub!.currencyCode ? Math.floor(Number(credit.balance) / held.from + 1e-9) : 0;
-      // Weeks charged since the count was taken each used one of them (a row per paid week, whatever the calendar did).
+      // Weeks charged FROM THE CREDIT since the count was taken each used one of them (a row per paid week, whatever the
+      // calendar did). [REVIEW-M16-R2 S4-R2-1 · CARD-READY] Only those: a card payment kept as fee credit, or a week paid
+      // by another rail, spent none of the credit, and counting it would let the rise reach a week paid before the notice.
       const usedSince = held.deferredOnce && held.oldWeeksFrom
-        ? await tx.subscriptionPayment.count({ where: { subscriptionId, status: 'CAPTURED', periodStart: { gte: new Date(held.oldWeeksFrom) } } })
+        ? await tx.subscriptionPayment.count({ where: { subscriptionId, status: 'CAPTURED', externalRef: 'prepaid', periodStart: { gte: new Date(held.oldWeeksFrom) } } })
         : 0;
       const counted = held.deferredOnce ? (held.oldWeeksLeft ?? 0) - usedSince : PAY_AHEAD_MAX_WEEKS + 1;
       const weeksHeld = Math.max(0, Math.min(counted, wholeOld));
