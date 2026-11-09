@@ -1182,6 +1182,9 @@ describe('[PT-4] real cards through HTTP: Swift\'s hosted page, the bank\'s chec
   let payment: (held: { txnId: string; orderId: string }) => Answer | Promise<Answer>;
   let voidAnswer: (body: Record<string, unknown>) => Answer;
   let refundAnswer: (body: Record<string, unknown>) => Answer;
+  /** [CARD-LOOKUP] GET /api/Transactions/{id}. Default: no such route (as before the lookup existed). */
+  const noLookup = (): Answer => ({ status: 404, body: 'not found' });
+  let lookupAnswer: (txnId: string) => Answer = noLookup;
 
   const fakeFetch = (async (url: string | URL, init?: Parameters<typeof globalThis.fetch>[1]) => {
     const path = new URL(String(url)).pathname;
@@ -1201,6 +1204,7 @@ describe('[PT-4] real cards through HTTP: Swift\'s hosted page, the bank\'s chec
       answer = await payment({ txnId, orderId });
     } else if (path === '/api/void') answer = voidAnswer(JSON.parse(body) as Record<string, unknown>);
     else if (path === '/api/refund') answer = refundAnswer(JSON.parse(body) as Record<string, unknown>);
+    else if (path.startsWith('/api/Transactions/')) answer = lookupAnswer(decodeURIComponent(path.slice('/api/Transactions/'.length)));
     else answer = { status: 404, body: 'not found' };
     if (answer === 'network') throw new TypeError('fetch failed');
     return new Response(typeof answer.body === 'string' ? answer.body : JSON.stringify(answer.body), { status: answer.status });
@@ -1333,6 +1337,7 @@ describe('[PT-4] real cards through HTTP: Swift\'s hosted page, the bank\'s chec
     payment = approve();
     voidAnswer = adjusted;
     refundAnswer = adjusted;
+    lookupAnswer = noLookup;
   });
 
   afterAll(async () => {
@@ -2015,6 +2020,263 @@ describe('[PT-4] real cards through HTTP: Swift\'s hosted page, the bank\'s chec
       expect(await app.prisma.notification.count({ where: { userId: finance.userId, dedupeKey: `card-session-late-approval:${row.id}` } })).toBe(1);
       expect(await rowOf(row.id)).toMatchObject({ status: 'FAILED', providerVoidState: 'VOIDED', paymentId: null });
       expect((await money(p.subId)).successes).toBe(0);
+    });
+  });
+
+  // [CARD-LOOKUP] PowerTranz's transaction lookup (its written answer to Swift, 4 Nov 2026): asked ONLY when a
+  // completion's outcome is not known, never as the normal flow. Booked from it only when it confirms an approved sale
+  // of THIS transaction and order at Swift's price and currency, not voided and not refunded, AND the session holds the
+  // provider's own approved completion with its 3-D Secure proof. Anything else: today's void-then-hold path, or HELD.
+  describe('[CARD-LOOKUP] a completion whose outcome is not known is looked up, never booked without proof, never resent', () => {
+    const lookups = (txnId: string) => calls.filter((c) => c.path === `/api/Transactions/${txnId}`).length;
+    const allLookups = () => calls.filter((c) => c.path.startsWith('/api/Transactions/')).length;
+    /** The merchant response is limited per source address, per minute: each post here comes from its own test address (TEST-NET-1). */
+    let addr = 0;
+    const from = () => `192.0.2.${(addr += 1)}`;
+    const voidsOf = (txnId: string) => sent('/api/void').filter((b) => b['TransactionIdentifier'] === txnId).length;
+    const refusedVoid = (): Answer => ({ status: 200, body: { Approved: false, IsoResponseCode: '12', ResponseMessage: 'Invalid transaction' } });
+    /** PowerTranz's record of the transaction, in its own field names (sec. 6; OrderSummary and VoidDateTime per its answer). */
+    const recordOf = (txnId: string, orderId: string, fields: Record<string, unknown> = {}, summary: Record<string, unknown> = {}) => (id: string): Answer =>
+      id.toLowerCase() !== txnId.toLowerCase() ? { status: 404, body: 'not found' } : {
+        status: 200,
+        body: {
+          TransactionType: 2, Approved: true, IsoResponseCode: '00', ResponseMessage: 'Transaction is approved.', TransactionIdentifier: txnId, OrderIdentifier: orderId,
+          TotalAmount: 2100, CurrencyCode: '328', AuthorizationCode: '123456', RRN: '000000000001',
+          OrderSummary: { SettledAmount: 0, TotalCaptureAmount: 2100, TotalCreditAmount: 0, ...summary },
+          ...fields,
+        },
+      };
+    /** A Pay now whose completion was durably claimed (so it may have been sent) and whose answer is lost: the provider
+     *  store lost its record of the page. `proof`: the session already holds the provider's approved completion with its
+     *  own 3-D Secure proof (written before a crash, before the week was booked). */
+    async function lostCompletion(p: Partner, opts: { proof: boolean }) {
+      const session = (await open(p)).json().data;
+      const realConfirm = real.confirm.bind(real);
+      real.confirm = async () => ({ status: 'pending' as const, rawSha256: 'synthetic-pending' });
+      try { await bankFramePosts(session.sessionId, 'Y', {}, from()); } finally { real.confirm = realConfirm; }
+      const row = await rowOf(session.sessionId);
+      const held = await heldOf(row.id);
+      const txnId = held['txnId']!;
+      const orderId = held['orderId']!;
+      expect(orderId).toBe(`SWIFT-${row.id}`);
+      let completionEvidence: object | undefined;
+      if (opts.proof) {
+        const reading = readCompletion((approve()({ txnId, orderId }) as { body: unknown }).body, { txnId, orderId, amountMinor: 210_000, currencyCode: 'GYD' });
+        if (reading.status !== 'succeeded') throw new Error('fixture: the approval must carry its own proof');
+        completionEvidence = reading.completionEvidence;
+      }
+      const claimedAt = new Date();
+      await app.prisma.cardSession.update({ where: { id: row.id }, data: { completionClaimedAt: claimedAt, providerTransactionRef: txnId, ...(completionEvidence ? { completionEvidence } : {}) } });
+      await redis.del(`${PTZ_PREFIX}s:${row.providerSessionRef}`);
+      return { row, txnId, orderId, lost: new Date(claimedAt.getTime() + 36_000) };
+    }
+
+    it('the lookup confirms a sale and the session holds the provider\'s own 3-D Secure proof: booked ONCE; asked again, nothing more is read, sent or booked', async () => {
+      const p = await makeStore();
+      const { row, txnId, orderId, lost } = await lostCompletion(p, { proof: true });
+      const before = completions();
+      lookupAnswer = recordOf(txnId, orderId);
+      // Inside the durable claim's deadline the completion may still be answering: nothing is read yet.
+      await serviceOf().confirm(row.id, { now: new Date(lost.getTime() - 2_000) });
+      expect(lookups(txnId)).toBe(0);
+      expect((await serviceOf().confirm(row.id, { now: lost })).status).toBe('SUCCEEDED');
+      expect(lookups(txnId)).toBe(1);
+      await serviceOf().confirm(row.id, { now: new Date(lost.getTime() + 1_000) });
+      await serviceOf().sweepSessions(new Date(lost.getTime() + 20 * 60_000));
+      expect(lookups(txnId)).toBe(1);
+      expect(voidsOf(txnId)).toBe(0);
+      expect(completions() - before).toBe(0);
+      expect(await rowOf(row.id)).toMatchObject({ status: 'SUCCEEDED', providerVoidState: null });
+      expect((await money(p.subId)).successes).toBe(1);
+    });
+
+    it('with the kill switch on, the lookup still books money already taken (draining, like confirm and the sweep) — and sends nothing new', async () => {
+      const p = await makeStore();
+      const { row, txnId, orderId, lost } = await lostCompletion(p, { proof: true });
+      const before = completions();
+      lookupAnswer = recordOf(txnId, orderId);
+      process.env['CARD_RAIL_KILL'] = '1';
+      expect((await serviceOf().confirm(row.id, { now: lost })).status).toBe('SUCCEEDED');
+      expect((await money(p.subId)).successes).toBe(1);
+      expect(lookups(txnId)).toBe(1);
+      expect(voidsOf(txnId)).toBe(0);
+      expect(completions() - before).toBe(0);
+      // Killed: no new card payment can start.
+      expect((await open(p)).statusCode).toBe(503);
+    });
+
+    it('[COORD ruling] the lookup confirms a sale but the session holds NO 3-D Secure proof: never booked — today\'s void-then-hold path', async () => {
+      const voided = await makeStore();
+      const a = await lostCompletion(voided, { proof: false });
+      lookupAnswer = recordOf(a.txnId, a.orderId);
+      expect((await serviceOf().confirm(a.row.id, { now: a.lost })).status).toBe('FAILED');
+      expect(lookups(a.txnId)).toBe(1);
+      expect(voidsOf(a.txnId)).toBe(1);
+      expect(await rowOf(a.row.id)).toMatchObject({ status: 'FAILED', failureCode: 'VOIDED_UNPROVEN', providerVoidState: 'VOIDED', paymentId: null });
+      expect((await money(voided.subId)).successes).toBe(0);
+
+      const refused = await makeStore();
+      const b = await lostCompletion(refused, { proof: false });
+      lookupAnswer = recordOf(b.txnId, b.orderId);
+      voidAnswer = refusedVoid;
+      expect((await serviceOf().confirm(b.row.id, { now: b.lost })).status).toBe('HELD');
+      expect(await rowOf(b.row.id)).toMatchObject({ status: 'HELD', failureCode: 'APPROVED_UNPROVEN', providerVoidState: 'FAILED', paymentId: null });
+      expect((await money(refused.subId)).successes).toBe(0);
+    });
+
+    it('the lookup shows the payment reversed (a real VoidDateTime) or refunded in full: nothing booked, no void sent, HELD; finance can never BOOK or REFUND it, only record nothing taken', async () => {
+      const finance = await makeFinance();
+      const voidedAt = new Date().toISOString().slice(0, 19); // PowerTranz's answer names no zone
+      for (const [fields, summary] of [[{ VoidDateTime: voidedAt }, {}], [{}, { TotalCreditAmount: 2100 }]] as const) {
+        const p = await makeStore();
+        const { row, txnId, orderId, lost } = await lostCompletion(p, { proof: true });
+        lookupAnswer = recordOf(txnId, orderId, fields, summary);
+        expect((await serviceOf().confirm(row.id, { now: lost })).status).toBe('HELD');
+        expect(lookups(txnId)).toBe(1);
+        expect(voidsOf(txnId)).toBe(0);
+        expect(await rowOf(row.id)).toMatchObject({ status: 'HELD', failureCode: 'LOOKUP_SHOWS_REVERSED', providerTransactionRef: txnId, paymentId: null, providerVoidState: null });
+        // [REVIEW-2460 S3-1 · B1] The stored proof would pass BOOK's own check: the reversal refuses it, under the lock.
+        const book = await resolve(finance, row.id, { action: 'BOOK', providerReference: txnId, amount: 2100 });
+        expect(book.statusCode, book.body).toBe(409);
+        expect(book.json().error?.code).toBe('PROVIDER_SAYS_REVERSED');
+        const refund = await resolve(finance, row.id, { action: 'REFUND', providerReference: txnId, amount: 2100 });
+        expect(refund.json().error?.code, refund.body).toBe('PROVIDER_SAYS_REVERSED');
+        expect(sent('/api/refund').filter((b) => b['TransactionIdentifier'] === txnId)).toHaveLength(0);
+        expect(await rowOf(row.id)).toMatchObject({ status: 'HELD', paymentId: null, bookClaimedAt: null, providerRefundState: null });
+        expect((await money(p.subId)).successes).toBe(0);
+        const none = await resolve(finance, row.id, { action: 'NOTHING_TAKEN', providerReference: txnId });
+        expect(none.statusCode, none.body).toBe(200);
+        expect(await rowOf(row.id)).toMatchObject({ status: 'FAILED', resolution: 'NOTHING_TAKEN' });
+      }
+    });
+
+    it('[REVIEW-2460 S3-1 · B3] the lookup shows PART of the payment refunded: the rest is still taken — HELD for the owner, no void, and no decision (BOOK, REFUND, NOTHING_TAKEN all refused)', async () => {
+      const finance = await makeFinance();
+      const p = await makeStore();
+      const { row, txnId, orderId, lost } = await lostCompletion(p, { proof: true });
+      lookupAnswer = recordOf(txnId, orderId, {}, { TotalCreditAmount: 1000 });
+      expect((await serviceOf().confirm(row.id, { now: lost })).status).toBe('HELD');
+      expect(voidsOf(txnId)).toBe(0);
+      expect(await rowOf(row.id)).toMatchObject({ status: 'HELD', failureCode: 'LOOKUP_PARTIAL_CREDIT', paymentId: null, providerVoidState: null });
+      for (const payload of [
+        { action: 'BOOK', providerReference: txnId, amount: 2100 },
+        { action: 'REFUND', providerReference: txnId, amount: 2100 },
+        { action: 'NOTHING_TAKEN', providerReference: txnId },
+      ]) {
+        const answer = await resolve(finance, row.id, payload);
+        expect(answer.statusCode, answer.body).toBe(409);
+        expect(answer.json().error?.code).toBe('PROVIDER_SAYS_PART_REFUNDED');
+      }
+      expect(sent('/api/refund').filter((b) => b['TransactionIdentifier'] === txnId)).toHaveLength(0);
+      expect(await rowOf(row.id)).toMatchObject({ status: 'HELD', resolution: null, paymentId: null });
+      expect((await money(p.subId)).successes).toBe(0);
+      // [REVIEW-2460-DELTA D4] Held for the owner: no new payment starts meanwhile (the runbook in CARD-CHECKOUT-API.md).
+      const again = await open(p);
+      expect(again.statusCode, again.body).toBe(409);
+      expect(again.json().error?.code).toBe('PAYMENT_CONFIRMING');
+    });
+
+    it('[REVIEW-2460-DELTA D2] a credit that contradicts the capture (more than captured, or nothing captured) is unreadable: never a hold without a void — today\'s void is sent', async () => {
+      for (const summary of [{ TotalCreditAmount: 2200 }, { TotalCaptureAmount: 0, TotalCreditAmount: 100 }]) {
+        const p = await makeStore();
+        const { row, txnId, orderId, lost } = await lostCompletion(p, { proof: true });
+        lookupAnswer = recordOf(txnId, orderId, {}, summary);
+        expect((await serviceOf().confirm(row.id, { now: lost })).status, JSON.stringify(summary)).toBe('FAILED');
+        expect(lookups(txnId)).toBe(1);
+        expect(voidsOf(txnId)).toBe(1);
+        expect(await rowOf(row.id)).toMatchObject({ status: 'FAILED', failureCode: 'VOIDED_UNPROVEN', providerVoidState: 'VOIDED', paymentId: null });
+        expect((await money(p.subId)).successes).toBe(0);
+      }
+    });
+
+    it('[REVIEW-2460 S2-1 · B2] a VoidDateTime that is not a real date of this payment (a default "0001-01-01", one before the payment existed, a placeholder) is no reversal: unreadable, so today\'s void is still sent', async () => {
+      // [REVIEW-2460-DELTA D1] ... and none dated after the read (a "no date" maximum, a date two days ahead).
+      for (const VoidDateTime of ['0001-01-01T00:00:00', '2020-01-01T00:00:00', 'N/A', '9999-12-31T23:59:59.9999999', new Date(Date.now() + 2 * 86_400_000).toISOString().slice(0, 19)]) {
+        const p = await makeStore();
+        const { row, txnId, orderId, lost } = await lostCompletion(p, { proof: true });
+        lookupAnswer = recordOf(txnId, orderId, { VoidDateTime });
+        expect((await serviceOf().confirm(row.id, { now: lost })).status, VoidDateTime).toBe('FAILED');
+        expect(lookups(txnId)).toBe(1);
+        expect(voidsOf(txnId)).toBe(1);
+        expect(await rowOf(row.id)).toMatchObject({ status: 'FAILED', failureCode: 'VOIDED_UNPROVEN', providerVoidState: 'VOIDED', paymentId: null });
+        expect((await money(p.subId)).successes).toBe(0);
+      }
+    });
+
+    it('the lookup shows another amount than Swift\'s price: never booked, even with the proof — the void path, HELD when the void is refused', async () => {
+      const p = await makeStore();
+      const { row, txnId, orderId, lost } = await lostCompletion(p, { proof: true });
+      lookupAnswer = recordOf(txnId, orderId, {}, { TotalCaptureAmount: 2000 });
+      voidAnswer = refusedVoid;
+      expect((await serviceOf().confirm(row.id, { now: lost })).status).toBe('HELD');
+      expect(lookups(txnId)).toBe(1);
+      expect(await rowOf(row.id)).toMatchObject({ status: 'HELD', failureCode: 'APPROVED_UNPROVEN', paymentId: null });
+      expect((await money(p.subId)).successes).toBe(0);
+    });
+
+    it('the lookup cannot be reached: never booked, the completion never resent — the void path, HELD when the void goes unanswered too', async () => {
+      const p = await makeStore();
+      const { row, txnId, lost } = await lostCompletion(p, { proof: true });
+      const before = completions();
+      lookupAnswer = () => 'network';
+      voidAnswer = () => 'network';
+      expect((await serviceOf().confirm(row.id, { now: lost })).status).toBe('HELD');
+      expect(lookups(txnId)).toBe(1);
+      expect(completions() - before).toBe(0);
+      expect(await rowOf(row.id)).toMatchObject({ status: 'HELD', failureCode: 'APPROVED_UNPROVEN', providerVoidState: 'UNKNOWN', paymentId: null });
+      expect((await money(p.subId)).successes).toBe(0);
+    });
+
+    it('the completion itself timed out: read at once (the call is over), one read; with no proof it is voided, never booked', async () => {
+      const p = await makeStore();
+      payment = () => 'network';
+      const session = (await open(p)).json().data;
+      const held = await heldOf(session.sessionId);
+      lookupAnswer = recordOf(held['txnId']!, held['orderId']!);
+      const before = completions();
+      await bankFramePosts(session.sessionId, 'Y', {}, from());
+      expect(completions() - before).toBe(1);
+      expect(lookups(held['txnId']!)).toBe(1);
+      expect(voidsOf(held['txnId']!)).toBe(1);
+      expect(await rowOf(session.sessionId)).toMatchObject({ status: 'FAILED', providerVoidState: 'VOIDED', paymentId: null });
+      expect((await money(p.subId)).successes).toBe(0);
+    });
+
+    it('one read per transaction per backoff window: a read already made holds every caller (nothing voided or booked on a guess); after the window the sweep reads once and acts', async () => {
+      const p = await makeStore();
+      const { row, txnId, orderId, lost } = await lostCompletion(p, { proof: true });
+      lookupAnswer = recordOf(txnId, orderId);
+      // Another server has just read it (and stopped before acting).
+      await real.lookupTransaction!({ binding: real.binding, providerRef: txnId, orderRef: orderId, amountMinor: 210_000, currencyCode: 'GYD' });
+      expect(lookups(txnId)).toBe(1);
+      await serviceOf().confirm(row.id, { now: lost });
+      await serviceOf().confirm(row.id, { now: new Date(lost.getTime() + 1_000) });
+      expect(lookups(txnId)).toBe(1);
+      expect(voidsOf(txnId)).toBe(0);
+      expect(await rowOf(row.id)).toMatchObject({ status: 'OPEN', providerVoidState: null, paymentId: null });
+      // The window passes (its gate expires): the next sweep reads once and books.
+      for (const k of await redis.keys(`${PTZ_PREFIX}l:*`)) if (k.endsWith(txnId.toLowerCase())) await redis.del(k);
+      const sweep = new Date(row.expiresAt.getTime() + 60_000);
+      await serviceOf().sweepSessions(sweep);
+      expect(lookups(txnId)).toBe(2);
+      await serviceOf().sweepSessions(new Date(sweep.getTime() + 20 * 60_000));
+      expect(lookups(txnId)).toBe(2);
+      expect((await rowOf(row.id)).status).toBe('SUCCEEDED');
+      expect((await money(p.subId)).successes).toBe(1);
+    });
+
+    it('never the normal flow: a booked approval, a held approval without proof, and a declined page read no transaction record', async () => {
+      const before = allLookups();
+      const paid = await makeStore();
+      const s = (await open(paid)).json().data;
+      expect(pageState((await bankFramePosts(s.sessionId, 'Y', {}, from())).body)).toBe('SUCCEEDED');
+      await serviceOf().confirm(s.sessionId);
+      await heldPayment(await makeStore(), from());
+      const declined = await makeStore();
+      payment = () => ({ status: 200, body: { Approved: false, IsoResponseCode: '05', ResponseMessage: 'Do not honour' } });
+      const d = (await open(declined)).json().data;
+      expect(pageState((await bankFramePosts(d.sessionId, 'Y', {}, from())).body)).toBe('FAILED');
+      expect(allLookups() - before).toBe(0);
     });
   });
 

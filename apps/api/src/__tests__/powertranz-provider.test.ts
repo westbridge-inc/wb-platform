@@ -1,7 +1,8 @@
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import Redis from 'ioredis';
 import { nanoid } from 'nanoid';
 import {
+  LOOKUP_TIMEOUT_MS,
   POWERTRANZ_SANDBOX_ROOT,
   PowerTranzCardRailProvider,
   PowerTranzConfigError,
@@ -705,5 +706,190 @@ describe('the card-save consent (owner sign-off, 7 Oct 2026)', () => {
     expect(CARD_ON_FILE_CONSENT_VERSION).toBe('card-on-file-v1');
     expect(CARD_ON_FILE_CONSENT_TEXT).toBe('Swift will charge the card you add for your weekly fee each week, when it is due, until you remove it. Your bank may ask you to confirm a charge. You can remove the card here at any time.');
     expect(createHash('sha256').update(CARD_ON_FILE_CONSENT_TEXT).digest('hex')).toBe(CARD_ON_FILE_CONSENT_SHA256);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// [CARD-LOOKUP] PowerTranz's transaction lookup (PowerTranz's written answer to Swift, 4 Nov 2026):
+// GET <root>/api/Transactions/{TransactionIdentifier} with the PowerTranz-PowerTranzId / -PowerTranzPassword
+// headers, ONLY when an outcome is unknown, never as the normal flow; VoidDateTime present = reversed; OrderSummary
+// carries SettledAmount, TotalCaptureAmount and TotalCreditAmount. The double answers with those field names and the
+// guide's sec. 6 response fields only. Every value is synthetic.
+// ---------------------------------------------------------------------------
+
+describe('[CARD-LOOKUP] the transaction lookup: read strictly, judged against what Swift asked, never the normal flow', () => {
+  const txn = 'd7b3c1a2-5e6f-4a8b-9c0d-1e2f3a4b5c6d';
+  const order = 'SWIFT-cs_lookup_synthetic';
+  const ask = (p: PowerTranzCardRailProvider, providerRef = txn) =>
+    p.lookupTransaction({ binding: p.binding, providerRef, orderRef: order, amountMinor: 210_000, currencyCode: 'GYD' });
+  /** A transaction record in PowerTranz's own field names (sec. 6 fields; OrderSummary and VoidDateTime per the written answer). */
+  const record = (fields: Record<string, unknown> = {}, summary: Record<string, unknown> = {}) => ({
+    TransactionType: 2, Approved: true, IsoResponseCode: '00', ResponseMessage: 'Transaction is approved.', TransactionIdentifier: txn,
+    OrderIdentifier: order, TotalAmount: 2100, CurrencyCode: '328', AuthorizationCode: '123456', RRN: '000000000001',
+    OrderSummary: { SettledAmount: 0, TotalCaptureAmount: 2100, TotalCreditAmount: 0, ...summary },
+    ...fields,
+  });
+  const at = (answer: ReturnType<Responder>) => gateway({ [`/api/Transactions/${txn}`]: () => answer });
+  /** Each case its own merchant label, so one case's backoff never gates another. */
+  const fresh = (gw: ReturnType<typeof gateway>, now?: () => Date) => provider(gw, { config: { account: `lk-${nanoid(6).replace(/[^A-Za-z0-9]/g, '0')}` }, ...(now ? { now } : {}) });
+
+  it('GET <root>/api/Transactions/{id}, credentials in the headers, no body; an approved sale of this transaction and order at Swift\'s price, not reversed, not refunded -> confirmed', async () => {
+    const gw = at({ status: 200, body: record() });
+    const p = fresh(gw);
+    expect(await ask(p)).toMatchObject({ status: 'confirmed', providerRef: txn, amountMinor: 210_000, currencyCode: 'GYD' });
+    expect(gw.calls).toHaveLength(1);
+    expect(gw.calls[0]).toMatchObject({ url: `${POWERTRANZ_SANDBOX_ROOT}/api/Transactions/${txn}`, method: 'GET', body: undefined });
+    expect(gw.calls[0]!.headers['powertranz-powertranzid']).toBe('TESTID01');
+    expect(gw.calls[0]!.headers['powertranz-powertranzpassword']).toBe('test-password-not-real');
+    // [REVIEW-2460-B B7 · B8] A GET with no body carries no content-type; the read waits at most 10 s.
+    expect(gw.calls[0]!.headers).not.toHaveProperty('content-type');
+    expect(LOOKUP_TIMEOUT_MS).toBeLessThanOrEqual(10_000);
+  });
+
+  it('[REVIEW-2460-DELTA D3] the read is aborted at LOOKUP_TIMEOUT_MS (10 s), not the 15 s of the other calls', async () => {
+    const delays: number[] = [];
+    const real = globalThis.setTimeout;
+    const spy = vi.spyOn(globalThis, 'setTimeout').mockImplementation(((fn: () => void, ms?: number) => {
+      delays.push(Number(ms));
+      return real(fn, ms);
+    }) as unknown as typeof setTimeout);
+    let signal: AbortSignal | undefined;
+    const slow = (async (_url: string | URL, init?: Parameters<typeof globalThis.fetch>[1]) => {
+      signal = init?.signal ?? undefined;
+      return new Response(JSON.stringify(record()), { status: 200 });
+    }) as unknown as typeof globalThis.fetch;
+    try {
+      const p = new PowerTranzCardRailProvider(redis, { ...CONFIG, account: `lk-${nanoid(6).replace(/[^A-Za-z0-9]/g, '0')}` }, { fetch: slow, keyPrefix: PREFIX });
+      expect(await ask(p)).toMatchObject({ status: 'confirmed' });
+    } finally { spy.mockRestore(); }
+    expect(signal).toBeDefined();
+    expect(delays).toContain(LOOKUP_TIMEOUT_MS);
+    expect(delays).not.toContain(15_000);
+  });
+
+  it('VoidDateTime present (a real date) = reversed; a credit of the whole capture = reversed; a smaller credit = part refunded: never confirmed', async () => {
+    expect(await ask(fresh(at({ status: 200, body: record({ VoidDateTime: '2026-11-09T12:00:00' }) })))).toMatchObject({ status: 'reversed', reason: 'LOOKUP_VOIDED' });
+    expect(await ask(fresh(at({ status: 200, body: record({ VoidDateTime: '2026-11-09 12:00:00.123' }) })))).toMatchObject({ status: 'reversed', reason: 'LOOKUP_VOIDED' });
+    expect(await ask(fresh(at({ status: 200, body: record({}, { TotalCreditAmount: 2100 }) })))).toMatchObject({ status: 'reversed', reason: 'LOOKUP_CREDITED' });
+    // [REVIEW-2460-A S3-1] Part of it refunded: the rest WAS taken. Never "reversed", never confirmed.
+    expect(await ask(fresh(at({ status: 200, body: record({}, { TotalCreditAmount: 1 }) })))).toMatchObject({ status: 'part_credited', reason: 'LOOKUP_PARTIAL_CREDIT' });
+    expect(await ask(fresh(at({ status: 200, body: record({}, { TotalCreditAmount: 2099.99 }) })))).toMatchObject({ status: 'part_credited', reason: 'LOOKUP_PARTIAL_CREDIT' });
+    // An absent or null VoidDateTime is no reversal.
+    expect(await ask(fresh(at({ status: 200, body: record({ VoidDateTime: null }) })))).toMatchObject({ status: 'confirmed' });
+  });
+
+  it('readable but not a confirmed sale at Swift\'s price -> not_bookable (another capture amount, another currency, declined, not a sale)', async () => {
+    const cases: Array<[Record<string, unknown>, Record<string, unknown>, string]> = [
+      [{}, { TotalCaptureAmount: 2000 }, 'LOOKUP_AMOUNT_MISMATCH'],
+      [{}, { TotalCaptureAmount: 0 }, 'LOOKUP_AMOUNT_MISMATCH'],
+      [{ CurrencyCode: '840' }, {}, 'LOOKUP_CURRENCY_MISMATCH'],
+      [{ Approved: false, IsoResponseCode: '05' }, { TotalCaptureAmount: 0 }, 'LOOKUP_NOT_APPROVED_05'],
+      [{ Approved: true, IsoResponseCode: '96' }, {}, 'LOOKUP_NOT_APPROVED_96'],
+      [{ TransactionType: 1 }, {}, 'LOOKUP_NOT_A_SALE'],
+    ];
+    for (const [fields, summary, reason] of cases) {
+      expect(await ask(fresh(at({ status: 200, body: record(fields, summary) }))), JSON.stringify({ fields, summary })).toMatchObject({ status: 'not_bookable', reason });
+    }
+  });
+
+  it('an unreadable answer is unknown, never success: another transaction or order, missing or mistyped fields, HTTP errors, no answer', async () => {
+    const noSummary: Record<string, unknown> = record();
+    delete noSummary['OrderSummary'];
+    const cases: Array<[ReturnType<Responder>, string]> = [
+      [{ status: 200, body: record({ TransactionIdentifier: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb' }) }, 'LOOKUP_OTHER_TRANSACTION'],
+      [{ status: 200, body: record({ OrderIdentifier: 'SWIFT-someone-else' }) }, 'LOOKUP_OTHER_ORDER'],
+      [{ status: 200, body: noSummary }, 'LOOKUP_UNREADABLE'],
+      [{ status: 200, body: record({}, { TotalCreditAmount: undefined }) }, 'LOOKUP_UNREADABLE'],
+      [{ status: 200, body: record({}, { TotalCaptureAmount: '21.005' }) }, 'LOOKUP_UNREADABLE'],
+      [{ status: 200, body: record({ Approved: 'true' }) }, 'LOOKUP_UNREADABLE'],
+      [{ status: 200, body: record({ CurrencyCode: '999' }) }, 'LOOKUP_UNREADABLE'],
+      [{ status: 200, body: record({ VoidDateTime: '' }) }, 'LOOKUP_UNREADABLE'],
+      [{ status: 200, body: record({ VoidDateTime: 17 }) }, 'LOOKUP_UNREADABLE'],
+      // [REVIEW-2460-A S2-1] A VoidDateTime that is not a real date (a "no date" sentinel, a placeholder) is never
+      // read as a reversal: unreadable, so today's void is still sent.
+      [{ status: 200, body: record({ VoidDateTime: '0001-01-01T00:00:00' }) }, 'LOOKUP_UNREADABLE'],
+      [{ status: 200, body: record({ VoidDateTime: '1900-01-01T00:00:00' }) }, 'LOOKUP_UNREADABLE'],
+      [{ status: 200, body: record({ VoidDateTime: 'N/A' }) }, 'LOOKUP_UNREADABLE'],
+      [{ status: 200, body: record({ VoidDateTime: 'garbage' }) }, 'LOOKUP_UNREADABLE'],
+      [{ status: 200, body: record({ VoidDateTime: '1' }) }, 'LOOKUP_UNREADABLE'],
+      [{ status: 200, body: record({ VoidDateTime: '2026-13-45T99:99:99' }) }, 'LOOKUP_UNREADABLE'],
+      // [REVIEW-2460-DELTA D1] ... nor a date later than a day after the read (.NET's "no date" maximum, SQL's
+      // smalldatetime maximum, any future date).
+      [{ status: 200, body: record({ VoidDateTime: '9999-12-31T23:59:59.9999999' }) }, 'LOOKUP_UNREADABLE'],
+      [{ status: 200, body: record({ VoidDateTime: '2079-06-06T23:59:00' }) }, 'LOOKUP_UNREADABLE'],
+      [{ status: 200, body: record({ VoidDateTime: new Date(Date.now() + 2 * 86_400_000).toISOString() }) }, 'LOOKUP_UNREADABLE'],
+      // [REVIEW-2460-DELTA D2] A credit that contradicts the capture (more than captured; nothing captured) is unknown.
+      [{ status: 200, body: record({}, { TotalCreditAmount: 2200 }) }, 'LOOKUP_CREDIT_UNREADABLE'],
+      [{ status: 200, body: record({}, { TotalCaptureAmount: 0, TotalCreditAmount: 100 }) }, 'LOOKUP_CREDIT_UNREADABLE'],
+      [{ status: 200, body: [record()] }, 'LOOKUP_UNREADABLE'],
+      [{ status: 200, body: 'not json at all' }, 'LOOKUP_UNREADABLE'],
+      [{ status: 404, body: 'not found' }, 'LOOKUP_HTTP_404'],
+      [{ status: 500, body: record() }, 'LOOKUP_HTTP_500'],
+      ['network', 'LOOKUP_NO_ANSWER_NETWORK'],
+      ['timeout', 'LOOKUP_NO_ANSWER_TIMEOUT'],
+    ];
+    for (const [answer, reason] of cases) {
+      const outcome = await ask(fresh(at(answer)));
+      expect(outcome, `${JSON.stringify(answer)}`).toMatchObject({ status: 'unknown', reason });
+      expect(outcome.status).not.toBe('confirmed');
+    }
+  });
+
+  it('a reference that is not a transaction id is never asked about; another binding is refused before any call', async () => {
+    const gw = at({ status: 200, body: record() });
+    const p = fresh(gw);
+    expect(await ask(p, 'not-a-guid')).toMatchObject({ status: 'unknown', reason: 'LOOKUP_REQUEST_INVALID' });
+    await expect(p.lookupTransaction({ binding: { ...p.binding, account: 'someone-else' }, providerRef: txn, orderRef: order, amountMinor: 210_000, currencyCode: 'GYD' }))
+      .rejects.toBeInstanceOf(CardBindingMismatchError);
+    expect(gw.calls).toHaveLength(0);
+  });
+
+  it('at most one read per transaction per backoff window, timed by Redis\'s own clock (one clock for every server); the window doubles (1, 2, 4 ... minutes, at most 30)', async () => {
+    // [REVIEW-2460-A S4-2] The server's own clock is not the gate's clock: even a server whose clock runs an hour
+    // ahead is held inside the window.
+    const gw = at('timeout');
+    const p = fresh(gw, () => new Date(Date.now() + 60 * 60_000));
+    const reads = () => gw.calls.length;
+    const gate = `${PREFIX}l:${p.binding.account}:${txn}`;
+    const windowMs = async () => {
+      const [sec, micro] = await redis.time();
+      return Number(await redis.hget(gate, 'nextAtMs')) - (Number(sec) * 1000 + Math.floor(Number(micro) / 1000));
+    };
+    expect(await ask(p)).toMatchObject({ status: 'unknown', reason: 'LOOKUP_NO_ANSWER_TIMEOUT' });
+    expect(reads()).toBe(1);
+    expect(await ask(p)).toMatchObject({ status: 'unknown', reason: 'LOOKUP_BACKOFF', backoff: true });
+    expect(reads()).toBe(1);
+    const windows: number[] = [await windowMs()];
+    for (let i = 0; i < 7; i += 1) {
+      await redis.hset(gate, 'nextAtMs', '0'); // the window has passed
+      await ask(p);
+      windows.push(await windowMs());
+      expect(await ask(p)).toMatchObject({ backoff: true });
+    }
+    expect(reads()).toBe(8);
+    const minutes = windows.map((w) => Math.round(w / 60_000));
+    expect(minutes).toEqual([1, 2, 4, 8, 16, 30, 30, 30]);
+  });
+
+  it('never the normal flow: a page made, completed, declined, refunded or voided reads no transaction record', async () => {
+    let page!: Awaited<ReturnType<typeof openPage>>;
+    const original = 'cab173a7-f75e-444b-ac42-cc6a367b8b6b';
+    const gw = gateway({
+      '/api/spi/sale': preprocessed, '/api/spi/payment': () => completion({})(page),
+      '/api/refund': () => ({ status: 200, body: { OriginalTrxnIdentifier: original, TransactionType: 5, Approved: true, TransactionIdentifier: '0446a902-311d-4868-8247-e9dfbd8ea0a6', TotalAmount: 2100, CurrencyCode: '328', IsoResponseCode: '00' } }),
+      '/api/void': () => 'timeout',
+    });
+    const p = provider(gw);
+    page = await openPage(p);
+    await p.confirm({ binding: p.binding, providerSessionRef: page.ref, purpose: 'PAY_NOW' });
+    await p.noteReturn({ binding: p.binding, providerSessionRef: page.ref, params: authResult(page, {}) });
+    expect(await p.confirm({ binding: p.binding, providerSessionRef: page.ref, purpose: 'PAY_NOW' })).toMatchObject({ status: 'succeeded' });
+    const declined = await openPage(p);
+    await p.noteReturn({ binding: p.binding, providerSessionRef: declined.ref, params: authResult(declined, { AuthenticationStatus: 'N' }) });
+    await p.confirm({ binding: p.binding, providerSessionRef: declined.ref, purpose: 'PAY_NOW' });
+    await p.refund({ binding: p.binding, providerRef: original, amountMinor: 210_000, currencyCode: 'GYD', idempotencyKey: `refund-${nanoid(6)}` });
+    await p.voidPayment({ binding: p.binding, providerRef: original, idempotencyKey: `void-${nanoid(6)}` });
+    expect(gw.paths().filter((x) => x.toLowerCase().startsWith('/api/transactions'))).toEqual([]);
+    expect(gw.calls.every((c) => c.method === 'POST')).toBe(true);
   });
 });

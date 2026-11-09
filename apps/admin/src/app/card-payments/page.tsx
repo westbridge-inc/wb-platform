@@ -32,6 +32,8 @@ const HELD_WHY: Record<string, string> = {
   AMOUNT_MISMATCH: "The provider's amount is not this week's price.",
   TEST_SYSTEM_FOR_A_REAL_PARTNER: 'A test card system answered for a real partner: it moved no real money.',
   LATE_PROVIDER_APPROVAL: 'The provider approved it after Swift had closed the payment page.',
+  LOOKUP_SHOWS_REVERSED: "Swift could not tell what happened to this payment, and PowerTranz's record shows it voided or refunded in full. Nothing was booked.",
+  LOOKUP_PARTIAL_CREDIT: "Swift could not tell what happened to this payment, and PowerTranz's record shows part of it refunded: the rest is still taken. Nothing was booked.",
   NOT_SETTLED: 'The payment was taken but could not be booked to the week.',
   WALLET_CURRENCY_MISMATCH: 'The fee credit is held in another currency.',
   CURRENCY_UNPINNED: 'The currency it was charged in cannot be confirmed.',
@@ -204,7 +206,10 @@ export default function CardPaymentsPage() {
                       r.resolution && `Decided: ${RESOLUTION_WORDS[r.resolution] ?? asCode(r.resolution)}${r.resolvedAt ? `, ${gyDateTime(r.resolvedAt)}` : ''}`].filter(Boolean).join(' · ')}
                   </p>
                 )}
-                {open && r.failureCode === 'AMOUNT_MISMATCH' ? (
+                {open && r.failureCode === 'LOOKUP_PARTIAL_CREDIT' ? (
+                  // [REVIEW-2460 S3-1 · B3] Part refunded, the rest still taken: no decision here.
+                  <p className="text-sm mt-3">Part of this payment was refunded and the rest is still taken. Check it in PowerTranz&apos;s portal. It stays here until the owner settles it with the card provider: escalate it to the owner.</p>
+                ) : open && r.failureCode === 'AMOUNT_MISMATCH' ? (
                   // [REVIEW-1 R3-2] The provider's own answer says money was taken, at another amount or currency: no decision here.
                   <p className="text-sm mt-3">The card provider says money was taken, but its amount or currency differs from Swift&apos;s price. It stays here until the owner settles it with the card provider: escalate it to the owner.</p>
                 ) : open && r.providerRefundState ? (
@@ -213,7 +218,9 @@ export default function CardPaymentsPage() {
                 ) : open && (r.providerTransactionRef && r.amount !== null ? (
                   queued[r.id] ? <p role="status" className="text-sm mt-3">Waiting for approval: a second admin, on Approvals. Nothing has changed yet.</p> : (
                     <div className="flex flex-wrap gap-2 mt-3">
-                      {DECISIONS.map((d) => <button key={d.action} type="button" className="mc-btn" onClick={() => decide(r, d)}>{d.label}</button>)}
+                      {/* [REVIEW-2460 S3-1 · B1] Voided or refunded in full on PowerTranz's record: only "nothing taken". */}
+                      {DECISIONS.filter((d) => r.failureCode !== 'LOOKUP_SHOWS_REVERSED' || d.action === 'NOTHING_TAKEN')
+                        .map((d) => <button key={d.action} type="button" className="mc-btn" onClick={() => decide(r, d)}>{d.label}</button>)}
                     </div>
                   )
                 ) : <p className="text-sm mt-3">No provider transaction is recorded, so nothing can be decided here. Find it in the provider&apos;s portal and escalate to the owner.</p>)}

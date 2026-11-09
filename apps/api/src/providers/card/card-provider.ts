@@ -191,6 +191,22 @@ export type CardRefundOutcome = Evidence & (
   | { status: 'unknown'; reason: string }
 );
 
+/** [CARD-LOOKUP] What the provider's own record of ONE transaction says, judged against what Swift asked for. Asked
+ *  ONLY when a completion's outcome is not known (its answer was lost, timed out or could not be read), never as the
+ *  normal flow. `confirmed` is an approved sale of this transaction and order, at Swift's price and currency, not
+ *  reversed and not refunded — and it is still not booking authority by itself (the service also needs the stored
+ *  completion's own 3-D Secure proof). `reversed`: the record shows it voided or refunded in full. `part_credited`:
+ *  part of it refunded, the rest still taken. `not_bookable`: readable,
+ *  but not a confirmed sale at Swift's price. `unknown`: no readable answer, or (`backoff`) not asked this time. */
+export type CardLookupOutcome = Evidence & (
+  | { status: 'confirmed'; providerRef: string; amountMinor: number; currencyCode: string }
+  | { status: 'reversed'; reason: string }
+  /** [REVIEW-2460] A credit smaller than the capture: part was refunded, the rest is still taken. */
+  | { status: 'part_credited'; reason: string }
+  | { status: 'not_bookable'; reason: string }
+  | { status: 'unknown'; reason: string; backoff?: true }
+);
+
 /** What the browser brought back — recorded, never trusted as money [C5]. */
 export interface CardReturnObservation {
   rawSha256: string;
@@ -268,6 +284,10 @@ export interface CardRailProvider {
   /** [PT-4] Optional: cancel an approved payment before it settles, the whole
    *  amount only. Same four outcomes and the same one-call-per-key rule as refund. */
   voidPayment?(input: { binding: CardRailBinding; providerRef: string; idempotencyKey: string }): Promise<CardRefundOutcome>;
+
+  /** [CARD-LOOKUP] Optional: read the provider's record of one transaction (no money moves, nothing is sent but the
+   *  read). Only for a completion whose outcome is not known; at most one read per transaction per backoff window. */
+  lookupTransaction?(input: { binding: CardRailBinding; providerRef: string; orderRef: string; amountMinor: number; currencyCode: string; notBefore?: Date }): Promise<CardLookupOutcome>;
 }
 
 /** Where a v2 provider comes from, resolved lazily: only v2 work ever asks. */

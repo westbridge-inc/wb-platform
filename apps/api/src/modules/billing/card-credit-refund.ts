@@ -30,7 +30,10 @@ import {
 //     back (an open question for PowerTranz, CARD-CHECKOUT-API.md section 11);
 //   - a refund made by hand in the merchant portal (the guide names the portal only for page names, sec. 5.1, and
 //     order references in reports, sec. 9.2): nothing here records one;
-//   - an inquiry call (sec. 3 lists none): a refund whose answer is lost is never sent again; it is held for a person.
+//   - a way to look a lost refund answer up. PowerTranz's written answer to Swift (4 Nov 2026) gives a transaction
+//     lookup (GET /api/Transactions/{id}) for unknown outcomes, but not yet whether it shows a refund and its own
+//     reference (asked of PowerTranz). Until then a refund whose answer is lost is never sent again; it is held for a
+//     person.
 //
 // The law, in order:
 //   1. A person asks, with a reason; a second admin approves (C4); the asker of the set-aside never approves it.
