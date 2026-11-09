@@ -260,6 +260,45 @@ describe('[INAPP-CALLS] ONE Firebase receiver: Twilio calls to the SDK, every ot
   });
 });
 
+describe('[BUILD-14] a phone with no microphone can still install Swift (calls are optional)', () => {
+  // Play implies android.hardware.microphone REQUIRED from RECORD_AUDIO unless the manifest says otherwise, so
+  // vc11 dropped 14 no-microphone devices from the catalogue. Calls are one feature, not the app.
+  const MIC = 'android.hardware.microphone';
+  type Feature = { $: Record<string, string> };
+  const features = (m: unknown) => ((m as { manifest: { 'uses-feature'?: Feature[] } }).manifest['uses-feature'] ?? []);
+  const manifest = () => ({
+    manifest: {
+      $: { 'xmlns:android': 'http://schemas.android.com/apk/res/android' },
+      'uses-feature': [{ $: { 'android:glEsVersion': '0x00020000', 'android:required': 'true' } }],
+      application: [{ $: {}, service: [] }],
+    },
+  });
+
+  it('declares the microphone NOT required, exactly once, keeps other features; idempotent', () => {
+    const out = I.wireManifest(manifest());
+    const mic = features(out).filter((f) => f.$['android:name'] === MIC);
+    expect(mic).toEqual([{ $: { 'android:name': MIC, 'android:required': 'false' } }]);
+    expect(features(out)).toContainEqual({ $: { 'android:glEsVersion': '0x00020000', 'android:required': 'true' } });
+    const again = I.wireManifest(out);
+    expect(features(again).filter((f) => f.$['android:name'] === MIC)).toHaveLength(1);
+    expect(features(again)).toHaveLength(2);
+  });
+
+  it('a manifest with no uses-feature yet: the new element goes BEFORE <application> (which must stay last)', () => {
+    const m = { manifest: { $: {}, 'uses-permission': [], application: [{ $: {}, service: [] }] } };
+    const out = I.wireManifest(m) as unknown as { manifest: Record<string, unknown> };
+    expect(Object.keys(out.manifest)).toEqual(['$', 'uses-permission', 'uses-feature', 'application']);
+    expect(features(out)).toEqual([{ $: { 'android:name': MIC, 'android:required': 'false' } }]);
+  });
+
+  it('replaces a microphone feature another step marked required', () => {
+    const m = manifest();
+    m.manifest['uses-feature'].push({ $: { 'android:name': MIC, 'android:required': 'true' } } as never);
+    const mic = features(I.wireManifest(m)).filter((f) => f.$['android:name'] === MIC);
+    expect(mic).toEqual([{ $: { 'android:name': MIC, 'android:required': 'false' } }]);
+  });
+});
+
 type AppConfig = {
   ios: { infoPlist?: Record<string, unknown> };
   android: { blockedPermissions?: string[] };
@@ -305,6 +344,7 @@ const { compileModsAsync } = fromExpo('@expo/config-plugins');
   process.stdout.write('\\n@@OUT@@' + JSON.stringify({
     plist: r.ios.infoPlist,
     permissions: (manifest['uses-permission'] || []).map((p) => ({ name: p.$['android:name'], node: p.$['tools:node'] })),
+    features: (manifest['uses-feature'] || []).map((f) => ({ name: f.$['android:name'], required: f.$['android:required'] })),
     services: (manifest.application[0].service || []).map((s) => ({ name: s.$['android:name'], node: s.$['tools:node'], fcm: JSON.stringify(s['intent-filter'] || []).includes('MESSAGING_EVENT') })),
   }));
 })().catch((e) => { console.error(e); process.exit(1); });
@@ -322,8 +362,11 @@ describe('[INAPP-CALLS] what an EAS build of this config really carries', () => 
     const out = JSON.parse(raw.slice(raw.lastIndexOf('@@OUT@@') + 7)) as {
       plist: Record<string, unknown>;
       permissions: Array<{ name: string; node?: string }>;
+      features: Array<{ name?: string; required?: string }>;
       services: Array<{ name: string; node?: string; fcm: boolean }>;
     };
+    // [BUILD-14] RECORD_AUDIO stays, but the microphone is not a device requirement on Play.
+    expect(out.features.filter((f) => f.name === 'android.hardware.microphone')).toEqual([{ name: 'android.hardware.microphone', required: 'false' }]);
     expect(out.plist['NSMicrophoneUsageDescription']).toMatch(/only during in-app calls.*never records calls/);
     expect(out.plist['UIBackgroundModes']).toEqual(expect.arrayContaining(['voip', 'audio']));
     expect(out.permissions).not.toContainEqual({ name: 'android.permission.RECORD_AUDIO', node: 'remove' });
