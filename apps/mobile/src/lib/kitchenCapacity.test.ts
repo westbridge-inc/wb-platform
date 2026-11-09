@@ -23,12 +23,19 @@ describe('[RIDER-SAFE 4] How many orders at once', () => {
   // [REVIEW-F #2214 S3-1] At the cap the server REFUSES new orders (VENDOR_AT_CAPACITY); nothing queues.
   it('says what happens at the limit, the same words as the website, one order as one', () => {
     expect(kitchenCapacityLine(null)).toBe('No limit. Set one if too many orders at once would make every order late: customers are asked to try again in a few minutes.');
-    expect(kitchenCapacityLine(1)).toBe('Up to 1 order at a time (new, cooking or ready). Once you have that many, customers cannot order from you until one is collected or cancelled: they are asked to try again in a few minutes.');
-    expect(kitchenCapacityLine(12)).toBe('Up to 12 orders at a time (new, cooking or ready). Once you have that many, customers cannot order from you until one is collected or cancelled: they are asked to try again in a few minutes.');
+    expect(kitchenCapacityLine(1, 'RESTAURANT')).toBe('Up to 1 order at a time (new, cooking or ready). Once you have that many, customers cannot order from you until one is collected or cancelled: they are asked to try again in a few minutes.');
+    expect(kitchenCapacityLine(12, 'RESTAURANT')).toBe('Up to 12 orders at a time (new, cooking or ready). Once you have that many, customers cannot order from you until one is collected or cancelled: they are asked to try again in a few minutes.');
     for (const n of [null, 1, 12]) expect(kitchenCapacityLine(n)).not.toMatch(/wait|queue/i);
     const card = readFileSync(join(__dirname, '..', 'components', 'KitchenCapacityCard.tsx'), 'utf8');
-    expect(card).toMatch(/\{kitchenCapacityLine\(count\)\}/);
+    expect(card).toMatch(/\{kitchenCapacityLine\(count, vendorType\)\}/);
     expect(card).not.toMatch(/More wait/);
+  });
+  it('[STORE-WORDS sweep] a shop or a supermarket is never told its orders are "cooking"', () => {
+    for (const kind of ['STORE', 'SUPERMARKET', undefined]) {
+      expect(kitchenCapacityLine(3, kind), String(kind)).toBe('Up to 3 orders at a time (new, being prepared or ready). Once you have that many, customers cannot order from you until one is collected or cancelled: they are asked to try again in a few minutes.');
+    }
+    const screen = readFileSync(join(__dirname, '..', 'modules', 'vendor', 'screens', 'VendorAccountScreen.tsx'), 'utf8');
+    expect(screen).toMatch(/<KitchenCapacityCard\s+value=\{storedKitchenCapacity\(store\)\}\s+vendorType=\{store\.vendorType\}/);
   });
   it('the store account screen offers it to managers of stores that cook or pack, and saves null for no limit', () => {
     const screen = readFileSync(join(__dirname, '..', 'modules', 'vendor', 'screens', 'VendorAccountScreen.tsx'), 'utf8');

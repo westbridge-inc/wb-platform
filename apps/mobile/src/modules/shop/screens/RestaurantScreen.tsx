@@ -20,6 +20,7 @@ import { money } from '../../../lib/money';
 import { itemVatNote, storefrontVat, storefrontVatLine, type StorefrontVat } from '../../../lib/storeVat';
 import { formatPhoneForDisplay } from '../../../lib/phoneDisplay';
 import { readStorePreview, type StorePreview } from '../../../lib/doorPreview';
+import { storeKindWords } from '../../../lib/storeKindWords';
 import { SellerInfo } from '../../../components/SellerInfo';
 import { SectionPhotoHeader } from '../../../components/SectionPhotoHeader';
 import { toast } from '../../../kit/toast';
@@ -308,7 +309,7 @@ const MartTile = React.memo(function MartTile({
  *  visible Back, and the menu loading below. Drawn only from what the server sent the card. */
 function StoreOpening({ preview, top, onBack }: { preview: StorePreview; top: number; onBack: () => void }) {
   return (
-    <View style={{ flex: 1, backgroundColor: color.surface.subtle }} accessibilityLabel={`${preview.name}. Loading the store`}>
+    <View style={{ flex: 1, backgroundColor: color.surface.subtle }} accessibilityLabel={`${preview.name}. ${preview.vendorType === 'RESTAURANT' ? 'Loading the menu' : 'Loading the store'}`}>
       <View>
         <Photo
           uri={vendorPhoto(preview, HERO_PHOTO_WIDTH)}
@@ -892,7 +893,7 @@ function RestaurantStore() {
               style={{ marginTop: space['2xl'], flexGrow: 0 }}
               contentContainerStyle={{ paddingHorizontal: GUTTER, gap: space.md }}
             >
-              <Chip label="Full menu" selected={!menuCatId} onPress={() => setMenuCatId(null)} style={{ height: 44, paddingHorizontal: space.lg }} />
+              <Chip label={storeKindWords(v?.vendorType).allItemsChip} selected={!menuCatId} onPress={() => setMenuCatId(null)} style={{ height: 44, paddingHorizontal: space.lg }} />
               {categories.map((c: any) => (
                 <Chip
                   key={c.id}
