@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { RESTART_SCREEN_BACKGROUND, installOtaCatchUp, otaSignedIn, type OtaCatchUpNative } from './otaCatchUp';
+import { RESTART_SCREEN_BACKGROUND, SPLASH_IMAGE_WIDTH, installOtaCatchUp, otaSignedIn, restartScreenImage, type OtaCatchUpNative } from './otaCatchUp';
 import { LAUNCH_WINDOW_MS, SETTLE_MS, holdOtaRestart, resetOtaHoldsForTests } from '../lib/otaCatchUp';
 
 // [OTA-CATCH-UP] The wiring: expo-updates' own state (an update downloaded = isUpdatePending), the app going away
@@ -45,7 +45,7 @@ function fakeNative(over: { isEnabled?: boolean } = {}) {
     tapRoutingBusy: () => fx.tap,
     deepLinkBusy: () => fx.link,
     track: (event, properties) => { fx.tracked.push([event, properties]); },
-    splashImage: 7,
+    splashImage: { url: 'file:///icon.png', width: 140, height: 140, scale: 1 },
     isMutating: () => fx.mutating,
     inAppCallActive: () => fx.inCall,
     inAppCallRinging: () => fx.ringing,
@@ -345,7 +345,7 @@ describe('installOtaCatchUp: how the restart looks and is counted', () => {
     stop = installOtaCatchUp(() => native, false);
     settle();
     downloaded('cccccccc-9999-0000-1111-222222222222');
-    expect(fx.reloadOptions).toEqual([{ reloadScreenOptions: { backgroundColor: RESTART_SCREEN_BACKGROUND, image: 7, imageResizeMode: 'contain', fade: true } }]);
+    expect(fx.reloadOptions).toEqual([{ reloadScreenOptions: { backgroundColor: RESTART_SCREEN_BACKGROUND, image: { url: 'file:///icon.png', width: 140, height: 140, scale: 1 }, imageResizeMode: 'contain', fade: true } }]);
     expect(fx.tracked).toEqual([['ota_catch_up', { from: 'aaaaaaaa-1111-2222-3333-444444444444', to: 'cccccccc-9999-0000-1111-222222222222' }]]);
   });
 
@@ -354,7 +354,17 @@ describe('installOtaCatchUp: how the restart looks and is counted', () => {
     expect(config).toMatch(new RegExp(`const brandMaroon = '${RESTART_SCREEN_BACKGROUND}';`));
     expect(config).toMatch(/const splashBackgroundColor = brandMaroon;/);
     expect(config).toMatch(/const splashImage = '\.\/assets\/icon\.png';/);
-    expect(readFileSync(join(process.cwd(), 'src/services/otaCatchUp.ts'), 'utf8')).toMatch(/splashImage: require\('\.\.\/\.\.\/assets\/icon\.png'\)/);
+    expect(readFileSync(join(process.cwd(), 'src/services/otaCatchUp.ts'), 'utf8')).toMatch(/splashImage: restartScreenImage\([^\n]*resolveAssetSource\(require\('\.\.\/\.\.\/assets\/icon\.png'\)\)\)/);
+  });
+
+  // [REVIEW-2 S4-a on #2431] The icon is drawn at the splash's size, not the 1024 px asset's own size.
+  it('the restart screen draws the icon at the splash\'s width (app.config imageWidth), keeping its proportions', () => {
+    const config = readFileSync(join(process.cwd(), 'app.config.ts'), 'utf8');
+    expect(config).toMatch(new RegExp(`image: splashImage,\\s*imageWidth: ${SPLASH_IMAGE_WIDTH},`));
+    expect(restartScreenImage({ uri: 'file:///icon.png', width: 1024, height: 1024 })).toEqual({ url: 'file:///icon.png', width: 140, height: 140, scale: 1 });
+    expect(restartScreenImage({ uri: 'file:///wide.png', width: 2048, height: 1024 })).toEqual({ url: 'file:///wide.png', width: 140, height: 70, scale: 1 });
+    expect(restartScreenImage({ uri: 'file:///unknown.png' })).toEqual({ url: 'file:///unknown.png', width: 140, height: 140, scale: 1 });
+    expect(restartScreenImage(null)).toBeUndefined();
   });
 
   it('"downloaded" is read from the state-change event itself, not only latestContext', () => {

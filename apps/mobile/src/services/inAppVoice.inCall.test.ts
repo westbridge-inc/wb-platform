@@ -557,3 +557,77 @@ describe('[OTA-CATCH-UP] calls the SDK already holds at start', () => {
     expect(voice.inAppCallRinging()).toBe(false);
   });
 });
+
+// [OTA-CATCH-UP · REVIEW-2 S4-b on #2431] One call seen as two objects (the invite event and the SDK's own invite list
+// both answered it) is tracked once: no second start, no reset Speaker, listeners on one object only.
+describe('[OTA-CATCH-UP] one call, two objects', () => {
+  it('the second object of the same call keeps the bar as it was and moves the listeners', async () => {
+    await voice.startInAppVoice();
+    await flush();
+    const viaEvent = new Emitter();
+    const viaList = new Emitter();
+    sdk.voice.emit('callInvite', viaEvent);
+    const first = new FakeCall('CA40', new Date(Date.now() - 5_000));
+    first.state = 'connected';
+    viaEvent.emit('accepted', first);
+    await flush();
+    await voice.setInCallSpeaker(true);
+    const before = voice.inCallSnapshot();
+    expect(before).toMatchObject({ phase: 'connected', speaker: true });
+    const reads = sdk.voice.getAudioDevices.mock.calls.length;
+    const changes = vi.fn();
+    const unsubscribe = voice.subscribeInCall(changes);
+    sdk.voice.emit('callInvite', viaList);
+    const second = new FakeCall('CA40');
+    second.state = 'connected';
+    viaList.emit('accepted', second);
+    await flush();
+    expect(voice.inCallSnapshot()).toBe(before); // the same snapshot: nothing restarted or reset
+    expect(changes).not.toHaveBeenCalled();
+    expect(sdk.voice.getAudioDevices.mock.calls.length).toBe(reads); // no second route read
+    expect(first.total()).toBe(0);
+    expect(second.total()).toBeGreaterThan(0);
+    second.emit('disconnected');
+    expect(voice.inCallSnapshot()).toBeNull();
+    unsubscribe();
+  });
+
+  it('the second object says Mute is on: only Mute changes (Speaker, start time kept; no second route read)', async () => {
+    await voice.startInAppVoice();
+    await flush();
+    const viaEvent = new Emitter();
+    sdk.voice.emit('callInvite', viaEvent);
+    const first = new FakeCall('CA43', new Date(Date.now() - 5_000));
+    first.state = 'connected';
+    viaEvent.emit('accepted', first);
+    await flush();
+    await voice.setInCallSpeaker(true);
+    const before = voice.inCallSnapshot()!;
+    const reads = sdk.voice.getAudioDevices.mock.calls.length;
+    const viaList = new Emitter();
+    sdk.voice.emit('callInvite', viaList);
+    const second = new FakeCall('CA43');
+    second.state = 'connected';
+    second.muted = true;
+    viaList.emit('accepted', second);
+    await flush();
+    expect(voice.inCallSnapshot()).toEqual({ ...before, muted: true });
+    expect(sdk.voice.getAudioDevices.mock.calls.length).toBe(reads);
+  });
+
+  it('a different call replaces the bar as before', async () => {
+    await voice.startInAppVoice();
+    await flush();
+    const a = new Emitter();
+    sdk.voice.emit('callInvite', a);
+    const one = new FakeCall('CA41');
+    one.state = 'connected';
+    a.emit('accepted', one);
+    const b = new Emitter();
+    sdk.voice.emit('callInvite', b);
+    const two = new FakeCall('CA42');
+    b.emit('accepted', two);
+    expect(voice.inCallSnapshot()?.phase).toBe('connecting');
+    expect(one.total()).toBe(0);
+  });
+});

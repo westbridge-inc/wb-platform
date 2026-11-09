@@ -11,8 +11,8 @@ export interface OtaCatchUpNative {
   deepLinkBusy: () => boolean;
   /** [REVIEW-2 L3] The one analytics seam (lib/analytics: no data leaves the phone today). */
   track: (event: string, properties: Record<string, string>) => void;
-  /** [REVIEW-2 L2] The splash image (the bundled asset), for the restart screen. */
-  splashImage: number | string;
+  /** [REVIEW-2 L2 / S4-a] The splash image (the bundled asset) at the splash's own size, for the restart screen. */
+  splashImage: RestartImage | undefined;
   isMutating: () => number;
   inAppCallActive: () => boolean;
   /** [REVIEW-1 S3-2 on #2431] An in-app call still ringing (not answered yet). */
@@ -32,7 +32,7 @@ const loadNative = (): OtaCatchUpNative => ({
   tapRoutingBusy: () => (require('./notification-router') as typeof import('./notification-router')).tapRoutingBusy(),
   deepLinkBusy: () => (require('./deep-links') as typeof import('./deep-links')).deepLinkBusy(),
   track: (event, properties) => (require('../lib/analytics') as typeof import('../lib/analytics')).track(event, properties),
-  splashImage: require('../../assets/icon.png') as number,
+  splashImage: restartScreenImage((require('react-native') as typeof import('react-native')).Image.resolveAssetSource(require('../../assets/icon.png'))),
   inputFocused: () => {
     const rn = require('react-native') as typeof import('react-native');
     return rn.TextInput?.State?.currentlyFocusedInput?.() != null;
@@ -43,6 +43,17 @@ const loadNative = (): OtaCatchUpNative => ({
 
 /** [REVIEW-2 L2 on #2431] The restart looks like Swift's own launch: app.config.ts splash (brand maroon, the icon). */
 export const RESTART_SCREEN_BACKGROUND: string = color.brand[500];
+
+/** [REVIEW-2 S4-a on #2431] The splash draws the icon 140 wide (app.config expo-splash-screen imageWidth); the restart
+ *  screen sizes an image by the size it is given (points on iPhone, dp on Android), so it is given the same width. */
+export const SPLASH_IMAGE_WIDTH = 140;
+export type RestartImage = { url: string; width: number; height: number; scale: number };
+/** The bundled icon, resolved, at the splash's width (its own proportions kept). */
+export function restartScreenImage(resolved: { uri?: string; width?: number; height?: number } | null | undefined): RestartImage | undefined {
+  if (!resolved?.uri) return undefined;
+  const ratio = resolved.width && resolved.height ? resolved.height / resolved.width : 1;
+  return { url: resolved.uri, width: SPLASH_IMAGE_WIDTH, height: Math.round(SPLASH_IMAGE_WIDTH * ratio), scale: 1 };
+}
 
 /** Earner intents: their sign-in is the app's front door, never the middle of an order. */
 const EARNER_INTENTS: readonly string[] = ['vendor', 'mover', 'advertiser'];

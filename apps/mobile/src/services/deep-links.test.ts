@@ -1,6 +1,6 @@
 import { createRequire } from 'node:module';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { LINK_SETTLE_MS, deepLinkBusy, flushPendingDeepLink, installDeepLinkHandler, resetDeepLinksForTests, retryQrDestination } from './deep-links';
+import { LINK_SETTLE_MS, deepLinkBusy, flushPendingDeepLink, installDeepLinkHandler, resetDeepLinksForTests, restartedInProcess, retryQrDestination } from './deep-links';
 import { setLinkPolicyForTests } from '../lib/deepLinkParse';
 import { policyFrom } from '../lib/linkPolicy';
 
@@ -214,5 +214,49 @@ describe('[OTA-CATCH-UP] a link still landing', () => {
     uninstall = installDeepLinkHandler(); flushPendingDeepLink(); await flush();
     mock.listener!({ url: 'https://example.com/elsewhere' });
     expect(deepLinkBusy()).toBe(false);
+  });
+});
+
+// [OTA-CATCH-UP · REVIEW-2 N1 on #2431] The URL that launched the app survives an in-process restart (iOS
+// launchOptions, Android's launch intent). After the catch-up restarts into an update, the new JavaScript never
+// replays it: the person stays where they were, and a NEW link still opens.
+describe('[OTA-CATCH-UP] after an in-process restart the launch link is not replayed', () => {
+  it.each([
+    ['a table QR', 'https://swiftgy.com/s/BCDFGHJKMN'],
+    ['a store link', 'https://swiftgy.com/store/garden-kitchen'],
+    ['the MMG fee return', 'swift://pay/mmg/return'],
+  ])('%s that launched the app is not opened again', async (_name, url) => {
+    mock.initial.mockResolvedValue(url);
+    uninstall = installDeepLinkHandler(() => true);
+    flushPendingDeepLink();
+    await flush();
+    expect(mock.initial).not.toHaveBeenCalled();
+    expect(mock.get).not.toHaveBeenCalled();
+    expect(mock.navigate).not.toHaveBeenCalled();
+    expect(deepLinkBusy()).toBe(false);
+  });
+
+  it('a new link after the restart still opens its store', async () => {
+    uninstall = installDeepLinkHandler(() => true);
+    flushPendingDeepLink();
+    await flush();
+    mock.listener!({ url: 'https://swiftgy.com/s/BCDFGHJKMN' });
+    await flush();
+    expect(mock.navigate).toHaveBeenCalledExactlyOnceWith(...storeRoute('short-store'));
+  });
+
+  it('control: a cold launch (no restart) still opens the link it was launched with, the fee return too', async () => {
+    mock.initial.mockResolvedValue('swift://pay/mmg/return');
+    uninstall = installDeepLinkHandler(() => false);
+    flushPendingDeepLink();
+    await flush();
+    expect(mock.navigate).toHaveBeenCalledWith('WeeklyFee');
+  });
+
+  it('"restarted" is expo-updates\' restartCount; unknown or zero = a cold launch', () => {
+    expect(restartedInProcess(() => ({ latestContext: { restartCount: 1 } }))).toBe(true);
+    expect(restartedInProcess(() => ({ latestContext: { restartCount: 0 } }))).toBe(false);
+    expect(restartedInProcess(() => ({ latestContext: {} }))).toBe(false);
+    expect(restartedInProcess(() => { throw new Error('no updates module'); })).toBe(false);
   });
 });

@@ -384,6 +384,10 @@ async function readRoute(call: SdkCall): Promise<void> {
  */
 function trackCall(call: SdkCall, onEnded?: () => void, onFailed?: () => void): void {
   if (current?.call === call) return;
+  // [OTA-CATCH-UP · REVIEW-2 S4-b on #2431] One call seen as two objects (the invite event and the SDK's own list both
+  // answered it; a sync found it first) is tracked once: the listeners move to the newer object, and what the bar
+  // already knows (its phase, start time, speaker) stays — never a second start, never a reset Speaker.
+  const sameCall = !!current && !!sidOf(call) && sidOf(current.call) === sidOf(call);
   let phase: InCallSnapshot['phase'] = 'connecting';
   try { phase = phaseOf(call.getState?.()) ?? 'connecting'; } catch { /* connecting */ }
   let muted = false;
@@ -423,13 +427,17 @@ function trackCall(call: SdkCall, onEnded?: () => void, onFailed?: () => void): 
   };
   // One call on the bar at a time: the newest. The same call under a new object (a sync found it before the
   // answer's own object arrived) only moves the listeners over.
-  if (current) { const sid = sidOf(call); release(current, !!sid && sidOf(current.call) === sid); }
-  current = { call, onEnded, off, snap: { phase, connectedAt, muted, speaker: false, routePicker: false } };
+  const before = current;
+  if (before) release(before, sameCall);
+  current = sameCall && before
+    ? { call, onEnded: onEnded ?? before.onEnded, off, snap: before.snap.muted === muted ? before.snap : { ...before.snap, muted } }
+    : { call, onEnded, off, snap: { phase, connectedAt, muted, speaker: false, routePicker: false } };
   try {
     for (const pair of listeners) { call.on(pair[0], pair[1]); added.push(pair); }
   } catch { /* the call still runs; Hang up and the system's own screen still end it */ }
+  if (sameCall && before && current.snap === before.snap) return;
   emitInCall();
-  void readRoute(call);
+  if (!sameCall) void readRoute(call);
 }
 
 let watched: SdkVoice | null = null;
