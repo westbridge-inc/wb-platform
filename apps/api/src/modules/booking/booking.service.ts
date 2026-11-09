@@ -407,7 +407,7 @@ export class BookingService {
           // [L09 · M018] A finished appointment is not reopened by moving its
           // booking: read the parent under its own lock and refuse.
           // [review F1] the same read carries what the home-visit gate needs (one statement, the lock order unchanged)
-          const parent = await tx.order.findUniqueOrThrow({ where: { id: booking.orderId }, select: { status: true, fulfillment: true, billableKm: true, vendor: { select: { name: true, owner: { select: { userId: true } } } } } });
+          const parent = await tx.order.findUniqueOrThrow({ where: { id: booking.orderId }, select: { status: true, fulfillment: true, homeVisit: true, vendor: { select: { name: true, owner: { select: { userId: true } } } } } });
           if (FINISHED_APPOINTMENT_ORDER_STATUSES.has(parent.status)) {
             throw new AppError(400, 'NOT_RESCHEDULABLE', 'This appointment is completed and cannot be moved');
           }

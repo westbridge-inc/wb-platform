@@ -96,11 +96,11 @@ export async function ownerPhotoMatchedToId(db: Db, ownerUserId: string, now: Da
 /**
  * [review F1] THE FULL HOME-VISIT GATE, for a moment after checkout: a business accepting a requested home visit, or a
  * home visit being moved. Clearance + photo + a standing MATCH + a current ID, read through `db` (the caller's
- * transaction). An APPOINTMENT order is a home visit when the order went to the customer's address: the checkout
- * freezes `billableKm` only then (the same `distanceKm > 0` predicate that chose the address).
+ * transaction). [security review 9 Nov] An APPOINTMENT order is a home visit when checkout marked it so (`homeVisit`,
+ * from the listing's mode and the customer's choice); the distance never decides it (a 0-km visit is still a visit).
  */
-export function isHomeVisitOrder(order: { fulfillment: string | null; billableKm: unknown }): boolean {
-  return order.fulfillment === 'APPOINTMENT' && order.billableKm !== null && order.billableKm !== undefined && Number(order.billableKm) > 0;
+export function isHomeVisitOrder(order: { fulfillment: string | null; homeVisit: boolean }): boolean {
+  return order.fulfillment === 'APPOINTMENT' && order.homeVisit === true;
 }
 
 export async function assertOwnerHomeVisitsOpen(db: Db, ownerUserId: string, audience: 'business' | 'customer', vendorName: string): Promise<void> {

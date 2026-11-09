@@ -579,6 +579,30 @@ describe('[review] the home-visit gate after checkout, archived listings, and a 
     expect((await app.prisma.order.findUniqueOrThrow({ where: { id: orderId } })).status).toBe('PENDING');
   });
 
+  it('[security review] a 0-km home visit (the customer at the business\u2019s own pin) is still a home visit: accept re-runs the gate', async () => {
+    const store = await serviceStore('MOBILE');
+    await clearOwner(store.userId, new Date(Date.now() + 200 * DAY));
+    const near = await person(['CUSTOMER'], 'CUSTOMER');
+    await app.prisma.address.create({ data: { userId: near.userId, label: 'Home', addressLine1: '3 Salon Street', city: 'Georgetown', region: 'Demerara-Mahaica', latitude: 6.801, longitude: -58.156, isDefault: true } });
+    const placed = await book(near, store, 10);
+    expect(placed.statusCode, placed.body).toBe(200);
+    const orderId = placed.json().data.order.id as string;
+    const order = await app.prisma.order.findUniqueOrThrow({ where: { id: orderId } });
+    expect(order.billableKm).toBeNull();
+    expect(order.homeVisit).toBe(true);
+    await app.prisma.user.update({ where: { id: store.userId }, data: { selfieCapturedAt: new Date(Date.now() + 1000), avatar: `avatars/${store.userId}/retake0.jpg` } });
+    const res = await accept(store, orderId);
+    expect(res.statusCode, res.body).toBe(409);
+    expect(res.json().error.code).toBe('HOME_VISIT_UNAVAILABLE');
+  });
+
+  it('[security review] an in-shop booking carries no home-visit marker', async () => {
+    const store = await serviceStore('AT_BUSINESS');
+    await approved(store.userId, 'owner_national_id');
+    const placed = await book(await customer(), store, 10);
+    expect((await app.prisma.order.findUniqueOrThrow({ where: { id: placed.json().data.order.id } })).homeVisit).toBe(false);
+  });
+
   it('F1: an in-shop booking is accepted whatever the photo', async () => {
     const store = await serviceStore('AT_BUSINESS', { selfie: false });
     await approved(store.userId, 'owner_national_id');

@@ -1894,6 +1894,8 @@ export class OrderService {
             deliveryFee: plan.deliveryFee,
             // [ALG-18] The distance the fee was priced from, frozen with its source.
             billableKm: plan.distanceKm > 0 ? plan.distanceKm : null,
+            // [security review 9 Nov] the home-visit marker, from the same mode decision as the gate above (never the km)
+            homeVisit: plan.fulfillment === 'APPOINTMENT' && plan.homeVisit !== undefined,
             billableKmSource: plan.distanceKm > 0 ? plan.distanceSource : null,
             isExpress: input.express === true && plan.fulfillment === 'DELIVERY',
             // LIFECYCLE_V2: born held (hidden from the vendor, free-cancel
