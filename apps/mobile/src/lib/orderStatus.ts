@@ -1,5 +1,5 @@
 import type { OrderStatus, OrderVertical as SharedOrderVertical, OrderVerticalFacts } from '@swift/types';
-import { storeOrderStatusWords } from '@swift/types';
+import { storeOrderStatusWords } from '@swift/types/src/order-words';
 
 /**
  * What an order's status is called, in words, for the person waiting on it.
