@@ -37,6 +37,7 @@ import { afterDismiss } from '../../../kit/after-dismiss';
 import { STORE_PICK } from '../../../lib/storePick';
 import { ItemDescription } from '../components/ItemDescription';
 import { readItemPreview, type ItemPreview } from '../../../lib/doorPreview';
+import { readyTimeLabel, storeKindWords } from '../../../lib/storeKindWords';
 
 /** [P35 · board 4b] "Craft & Kind · Georgetown": the store's name, and its city when it has one. */
 export function storeLine(store: { name?: string | null; city?: string | null }): string {
@@ -146,6 +147,10 @@ export function MenuItemScreen() {
   const daySlots: string[] = useMemo(() => slotsQ.data?.slots ?? [], [slotsQ.data]);
   // [BOOK-S6a · owner A4] Only the server's own answer (switch on + the business's setting) earns the badge.
   const instantConfirmation = isBooking && listingConfirmsInstantly(slotsQ.data);
+  // [STORE-WORDS · owner 9 Nov 2026] The clock chip in the store's own words (a booking keeps its service length).
+  const readyLine = isBooking
+    ? `${slotsQ.data?.durationMinutes ?? 30} min service`
+    : readyTimeLabel(vendor.data?.vendorType, vendor.data?.estimatedPrepTime);
 
   // A slot can disappear during the 20-second freshness poll because another
   // customer won it. Never leave a now-unavailable selection armed in the
@@ -265,8 +270,9 @@ export function MenuItemScreen() {
           // The store answered and the item is gone: Retry cannot bring it back.
           <EmptyState
             icon="slash"
-            title="This item is no longer on the menu."
-            body="The store took it off. Pick something else from its menu."
+            // [STORE-WORDS] "on the menu" is a restaurant's line; a shop's item is "no longer for sale".
+            title={storeKindWords(vendor.data?.vendorType).itemGoneTitle}
+            body={storeKindWords(vendor.data?.vendorType).itemGoneBody}
             // [#1915 review S4-1] Opened from Home, Market or Search, Back does not lead to the store.
             actionLabel="Go back"
             onAction={() => navigation.goBack()}
@@ -361,6 +367,8 @@ export function MenuItemScreen() {
               flexDirection: 'row',
               alignItems: 'center',
               justifyContent: 'space-between',
+              // [STORE-WORDS] "Ready in about 30 min" is longer than "30 min prep": a gap keeps it off its neighbours.
+              gap: space.md,
               backgroundColor: color.brand[50],
               borderRadius: radius.md,
               paddingHorizontal: space.lg,
@@ -368,12 +376,16 @@ export function MenuItemScreen() {
               marginTop: space.lg,
             }}
           >
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-              <Feather name="clock" size={14} color={color.brand[600]} />
-              <T variant="label" tone="deep">
-                {isBooking ? `${slotsQ.data?.durationMinutes ?? 30} min service` : `${vendor.data?.estimatedPrepTime ?? 30} min prep`}
-              </T>
-            </View>
+            {/* [STORE-WORDS] "20 min prep" is a kitchen's word: any other store reads "Ready in about 20 min",
+                and a store that sent no time shows no chip rather than an invented one. */}
+            {readyLine ? (
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flexShrink: 1 }}>
+                <Feather name="clock" size={14} color={color.brand[600]} />
+                <T variant="label" tone="deep" style={{ flexShrink: 1 }}>
+                  {readyLine}
+                </T>
+              </View>
+            ) : null}
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
               <Feather name="star" size={14} color={color.star} />
               <T variant="label" tone="deep">
@@ -577,7 +589,7 @@ export function MenuItemScreen() {
           {!isBooking ? (
             <LabeledInput
               label="Note for the store"
-              placeholder="e.g. no onions, extra pepper"
+              placeholder={storeKindWords(vendor.data?.vendorType).itemNotePlaceholder}
               value={note}
               onChangeText={setNote}
               maxLength={500}
