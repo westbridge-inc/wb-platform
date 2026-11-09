@@ -384,11 +384,11 @@ export default function OrderDetailPage() {
 
   // [SUBSTITUTION · owner 17 Oct 2026] The customer answers the store's swap
   // question here too; the page then reloads the server's truth either way.
-  const decideSwap = useCallback(async (lineId: string, approve: boolean) => {
+  const decideSwap = useCallback(async (lineId: string, approve: boolean, endsOrder = false) => {
     setSwapBusy(lineId);
     setSwapError(null);
     try {
-      await decideSubstitution(id, lineId, approve);
+      await decideSubstitution(id, lineId, approve, endsOrder);
     } catch (decideError) {
       setSwapError(decideError instanceof Error ? decideError.message : 'That did not go through. Try again.');
     } finally {
@@ -754,8 +754,9 @@ export default function OrderDetailPage() {
                 <button type="button" className={styles.primaryButton} disabled={swapBusy !== null || !allowed.approve} onClick={() => void decideSwap(lineId, true)}>
                   Approve swap
                 </button>
-                <button type="button" className={styles.secondaryButton} disabled={swapBusy !== null || !allowed.reject} onClick={() => void decideSwap(lineId, false)}>
-                  Decline
+                {/* [OOS-FLOW · REVIEW-2 F5] On the only item left a "no" cancels the order: the button says so. */}
+                <button type="button" className={styles.secondaryButton} disabled={swapBusy !== null || !allowed.reject} onClick={() => void decideSwap(lineId, false, view?.lastItem === true)}>
+                  {view?.lastItem ? 'No thanks, cancel order' : 'Decline'}
                 </button>
               </div>
             </div>

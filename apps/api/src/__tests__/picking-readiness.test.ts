@@ -188,8 +188,10 @@ describe('[W-28] an emptied order cannot be marked ready', () => {
       { itemId: b.id, name: b.name, qty: 1, price: 800 },
     ]);
 
-    for (const line of order.items) {
-      const refunded = await inject('POST', `/api/v1/vendor/orders/${order.id}/items/${line.id}/refund-line`, owner.token);
+    // [TRANSFORMED 8 Nov (OOS-FLOW · REVIEW-1 S3-2): the last one ends the order, so the store confirms it (endsOrder).]
+    for (const [i, line] of order.items.entries()) {
+      const last = i === order.items.length - 1;
+      const refunded = await inject('POST', `/api/v1/vendor/orders/${order.id}/items/${line.id}/refund-line`, owner.token, last ? { endsOrder: true } : undefined);
       expect(refunded.statusCode).toBe(200);
     }
 
@@ -233,7 +235,8 @@ describe('[W-28] an emptied order cannot be marked ready', () => {
 
     const offered = await inject('POST', `/api/v1/vendor/orders/${order.id}/items/${line.id}/substitute`, owner.token, { substituteItemId: sub.id });
     expect(offered.statusCode).toBe(200);
-    const decided = await inject('POST', `/api/v1/customer/orders/${order.id}/items/${line.id}/substitution`, customer.token, { approve: false });
+    // [TRANSFORMED 8 Nov (OOS-FLOW · REVIEW-1 S3-1): "No thanks, cancel order" says it ends the order (endsOrder).]
+    const decided = await inject('POST', `/api/v1/customer/orders/${order.id}/items/${line.id}/substitution`, customer.token, { approve: false, endsOrder: true });
     expect(decided.statusCode).toBe(200);
 
     const stored = await app.prisma.orderItem.findUniqueOrThrow({ where: { id: line.id }, select: { subStatus: true, picked: true } });

@@ -26,7 +26,7 @@ import {
 import { statusChip, timeAgo } from './order-chip';
 // The app's own O-4 rules and words (plain file, imported as is).
 import { OUT_OF_STOCK_WORDS, canMarkOutOfStock, customerDeciding, lastLineStanding, lineStockWords, nothingToAccept } from '../../../../../mobile/src/modules/vendor/storeOrderRules';
-import { ACCEPTED_OUT_OF_STOCK_WORDS, lastItemAfterAccept, nothingLeftToHandOver, storeCanReject } from '../../../../../mobile/src/modules/vendor/acceptedOutOfStock';
+import { ACCEPTED_OUT_OF_STOCK_WORDS, LAST_ITEM_ENDS_ORDER, SHOW_ALL_LIMIT, mmgRemovalLocked, nothingLeftToHandOver, removalEndsOrder, serverErrorCode, storeCanReject } from '../../../../../mobile/src/modules/vendor/acceptedOutOfStock';
 import { HANDOVER_WORDS, canMarkHandedToRider, handoverNeedsNoCode, pickupCheckWords } from '../../../../../mobile/src/modules/vendor/storeHandover';
 import { handedToRider } from '@/lib/store-handover-api';
 import { RiderHandoverLine } from '@/components/rider-handover-line';
@@ -128,9 +128,15 @@ function PickList({ order, onBusy }: { order: VendorOrder; onBusy: boolean }) {
   // on the last item still coming that waits for a yes (it cancels the order as out of stock).
   const [allFor, setAllFor] = useState<string | null>(null);
   const [lastRemoveFor, setLastRemoveFor] = useState<string | null>(null);
-  const [ended, setEnded] = useState(false);
+  // [REVIEW-2 F4] The ask replaces the button the store just clicked: focus moves to its yes, inside the dialog.
+  const confirmEndRef = useRef<HTMLButtonElement | null>(null);
+  useEffect(() => {
+    if (!lastRemoveFor) return undefined;
+    const frame = requestAnimationFrame(() => confirmEndRef.current?.focus());
+    return () => cancelAnimationFrame(frame);
+  }, [lastRemoveFor]);
 
-  const MMG_LINE_LOCK = 'MMG order — settle item changes with the customer directly.';
+  const MMG_LINE_LOCK = ACCEPTED_OUT_OF_STOCK_WORDS.mmgLocked;
   // [TAP-AUDIT] A pick tick shows at the tap and only that line waits for its answer (one tick used to freeze every
   // box on the order until the write AND a re-read of the order and the whole board had come back). A refusal puts the
   // box back and says why; the order alone is read again once, after the last tick.
@@ -163,15 +169,29 @@ function PickList({ order, onBusy }: { order: VendorOrder; onBusy: boolean }) {
     mutationFn: (v: { lineId: string; substituteItemId: string }) => proposeSubstitution(order.id, v.lineId, v.substituteItemId),
     onSettled: () => { setSubFor(null); refresh(); },
   });
+  // [OOS-FLOW · REVIEW-1 S3-2] endsOrder only after the store's yes. A removal the server finds to be the last
+  // item after all (another device took the other one off) comes back as the question, not as an error.
+  // [REVIEW-2 F6] No line of its own after the close: the order reads Cancelled, with the reason "Out of stock".
   const refundMut = useMutation({
-    mutationFn: (v: { lineId: string; ends: boolean }) => refundLine(order.id, v.lineId),
-    onSuccess: (_answer, v) => { if (v.ends) setEnded(true); },
-    onSettled: () => { setSubFor(null); setLastRemoveFor(null); refresh(); },
+    mutationFn: async (v: { lineId: string; endsOrder: boolean }) => {
+      try {
+        return await refundLine(order.id, v.lineId, v.endsOrder);
+      } catch (error) {
+        if (serverErrorCode(error) === LAST_ITEM_ENDS_ORDER) return { needsConfirm: true as const };
+        throw error;
+      }
+    },
+    onSuccess: (answer, v) => {
+      setSubFor(null);
+      setLastRemoveFor(answer && typeof answer === 'object' && 'needsConfirm' in answer ? v.lineId : null);
+    },
+    onError: () => { setSubFor(null); setLastRemoveFor(null); },
+    onSettled: () => { refresh(); },
   });
-  /** [OOS-FLOW] "Remove item": asked once first when it is the last item still coming (that cancels the order). */
+  /** [OOS-FLOW] "Remove item": asked once first when removing it cancels the order (a server that does so). */
   const removeOrAsk = (line: OrderLine) => {
-    if (lastItemAfterAccept(order, line) && lastRemoveFor !== line.id) { setLastRemoveFor(line.id); return; }
-    refundMut.mutate({ lineId: line.id, ends: lastItemAfterAccept(order, line) });
+    if (removalEndsOrder(order, line)) { setLastRemoveFor(line.id); return; }
+    refundMut.mutate({ lineId: line.id, endsOrder: false });
   };
 
   /** Same substitutionGroup wins; otherwise same category; always in stock. [OOS-FLOW] "Show all items"
@@ -184,9 +204,11 @@ function PickList({ order, onBusy }: { order: VendorOrder; onBusy: boolean }) {
     const grouped = original?.substitutionGroup
       ? pool.filter((i) => i.substitutionGroup === original.substitutionGroup)
       : pool.filter((i) => original && i.category?.id === original.category?.id);
-    if (everything) return (original?.substitutionGroup ? grouped : pool).slice(0, 24);
+    if (everything) return original?.substitutionGroup ? grouped : pool;
     return grouped.slice(0, 6);
   };
+  /** [REVIEW-2 F9] "Show all items" lists SHOW_ALL_LIMIT at most, and says so when there are more. */
+  const shown = (line: OrderLine) => candidates(line, allFor === line.id).slice(0, SHOW_ALL_LIMIT);
 
   // [W-28] Settled is not fulfilled. A refunded or rejected line has been
   // REMOVED from the order — the money came off and the stock went back — so
@@ -213,13 +235,13 @@ function PickList({ order, onBusy }: { order: VendorOrder; onBusy: boolean }) {
   // [W-27] An MMG order's totals cannot change in-app — the server refuses with
   // MMG_ADJUSTMENT_UNAVAILABLE, because the money went straight to the store
   // and Swift never held it. Saying so beats letting the store click into a 409.
-  const mmgLocked = order.paymentMethod === 'MOBILE_MONEY';
+  // [REVIEW-2 F9] The server's rule, as on the phone: the last MMG line may come off (cancelling the order) while unpaid.
+  const mmgLocked = (line: OrderLine) => mmgRemovalLocked(order, line);
 
   return (
     <div className="mt-4 rounded-xl border border-[var(--swift-border)] bg-[var(--swift-subtle)] p-4">
       <p className={`text-sm font-bold${open === 0 && fulfilled === 0 ? ' text-[var(--swift-red)]' : ''}`}>{pickingSummary}</p>
       <MutationNotice errors={[pickedMut.error, subMut.error, refundMut.error]} className="mt-2" />
-      {ended && <p role="status" className="mt-2 text-sm font-semibold text-[var(--swift-ink)]">{ACCEPTED_OUT_OF_STOCK_WORDS.orderEnded}</p>}
       <div className="mt-2 space-y-2">
         {order.items.map((it) => (
           <div key={it.id} className="rounded-lg bg-[var(--swift-card)] p-3">
@@ -247,8 +269,8 @@ function PickList({ order, onBusy }: { order: VendorOrder; onBusy: boolean }) {
               {!it.picked && (it.subStatus === 'PENDING' || it.subStatus === 'APPROVED') && (
                 <button
                   onClick={() => removeOrAsk(it)}
-                  disabled={busy || mmgLocked}
-                  title={mmgLocked ? MMG_LINE_LOCK : undefined}
+                  disabled={busy || mmgLocked(it)}
+                  title={mmgLocked(it) ? MMG_LINE_LOCK : undefined}
                   className="text-xs font-semibold text-[var(--swift-red)] disabled:opacity-50"
                 >
                   Remove unavailable line
@@ -265,10 +287,10 @@ function PickList({ order, onBusy }: { order: VendorOrder; onBusy: boolean }) {
               )}
             </div>
             {lastRemoveFor === it.id && (
-              <div role="group" aria-label="Remove the last item" className="mt-2 rounded-lg bg-[var(--swift-red)]/5 p-3">
-                <p className="text-sm font-semibold text-[var(--swift-red)]">{ACCEPTED_OUT_OF_STOCK_WORDS.lastRemoveAsk}</p>
+              <div role="alertdialog" aria-label="Remove the last item" aria-describedby={`last-remove-${it.id}`} className="mt-2 rounded-lg bg-[var(--swift-red)]/5 p-3">
+                <p id={`last-remove-${it.id}`} className="text-sm font-semibold text-[var(--swift-red)]">{ACCEPTED_OUT_OF_STOCK_WORDS.lastRemoveAsk}</p>
                 <div className="mt-2 flex flex-wrap gap-2">
-                  <button type="button" disabled={busy} onClick={() => removeOrAsk(it)} className="min-h-11 rounded-lg bg-[var(--swift-red)] px-4 text-sm font-semibold text-white disabled:opacity-50">{ACCEPTED_OUT_OF_STOCK_WORDS.lastRemoveYes}</button>
+                  <button ref={confirmEndRef} type="button" disabled={busy} onClick={() => refundMut.mutate({ lineId: it.id, endsOrder: true })} className="min-h-11 rounded-lg bg-[var(--swift-red)] px-4 text-sm font-semibold text-white disabled:opacity-50">{ACCEPTED_OUT_OF_STOCK_WORDS.lastRemoveYes}</button>
                   <button type="button" disabled={busy} onClick={() => setLastRemoveFor(null)} className="min-h-11 rounded-lg border border-[var(--swift-border)] px-4 text-sm font-semibold disabled:opacity-50">{ACCEPTED_OUT_OF_STOCK_WORDS.lastRemoveKeep}</button>
                 </div>
               </div>
@@ -279,7 +301,10 @@ function PickList({ order, onBusy }: { order: VendorOrder; onBusy: boolean }) {
                     customer approves or declines in the app. */}
                 <p className="text-xs font-semibold text-[var(--swift-muted)]">{ACCEPTED_OUT_OF_STOCK_WORDS.menuTitle}</p>
                 <p className="mt-1 text-xs text-[var(--swift-muted)]">{ACCEPTED_OUT_OF_STOCK_WORDS.offerTitle}</p>
-                {candidates(it, allFor === it.id).length === 0 && <p className="mt-1 text-xs text-[var(--swift-muted)]">{ACCEPTED_OUT_OF_STOCK_WORDS.noReplacement}</p>}
+                {shown(it).length === 0 && <p className="mt-1 text-xs text-[var(--swift-muted)]">{ACCEPTED_OUT_OF_STOCK_WORDS.noReplacement}</p>}
+                {allFor === it.id && candidates(it, true).length > SHOW_ALL_LIMIT && (
+                  <p className="mt-1 text-xs text-[var(--swift-muted)]">{ACCEPTED_OUT_OF_STOCK_WORDS.showingSome(SHOW_ALL_LIMIT, candidates(it, true).length)}</p>
+                )}
                 <div className="mt-1 flex flex-wrap gap-1.5">
                   {allFor !== it.id && (
                     <button
@@ -291,7 +316,7 @@ function PickList({ order, onBusy }: { order: VendorOrder; onBusy: boolean }) {
                       {ACCEPTED_OUT_OF_STOCK_WORDS.showAll}
                     </button>
                   )}
-                  {candidates(it, allFor === it.id).map((c) => (
+                  {shown(it).map((c) => (
                     <button
                       key={c.id}
                       onClick={() => subMut.mutate({ lineId: it.id, substituteItemId: c.id })}
@@ -307,13 +332,13 @@ function PickList({ order, onBusy }: { order: VendorOrder; onBusy: boolean }) {
                       control says so instead of leading the store into a 409. */}
                   <button
                     onClick={() => removeOrAsk(it)}
-                    disabled={busy || mmgLocked}
-                    title={mmgLocked ? MMG_LINE_LOCK : undefined}
+                    disabled={busy || mmgLocked(it)}
+                    title={mmgLocked(it) ? MMG_LINE_LOCK : undefined}
                     className="rounded-full bg-black/5 px-2.5 py-1 text-xs font-semibold disabled:opacity-50"
                   >
                     {ACCEPTED_OUT_OF_STOCK_WORDS.removeItem}
                   </button>
-                  {mmgLocked && (
+                  {mmgLocked(it) && (
                     <span className="text-xs text-[var(--swift-muted)]">{MMG_LINE_LOCK}</span>
                   )}
                 </div>

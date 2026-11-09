@@ -1264,13 +1264,14 @@ export function DeliveryScreen() {
                     disabled={decideSub.isPending || !swapDecisionPermissions(it.substitution, o.paymentMethod).approve}
                     onPress={() => decideSub.mutate({ orderId, lineId: it.id, approve: true })}
                   />
+                  {/* [OOS-FLOW · REVIEW-2 F5] On the only item left a "no" cancels the order: the button says so. */}
                   <PillButton
-                    label="No thanks"
+                    label={it.substitution?.lastItem ? 'No thanks, cancel order' : 'No thanks'}
                     variant="soft"
                     size="md"
                     style={{ flex: 1 }}
                     disabled={decideSub.isPending || !swapDecisionPermissions(it.substitution, o.paymentMethod).reject}
-                    onPress={() => decideSub.mutate({ orderId, lineId: it.id, approve: false })}
+                    onPress={() => decideSub.mutate({ orderId, lineId: it.id, approve: false, endsOrder: it.substitution?.lastItem === true })}
                   />
                 </View>
               </View>
@@ -1604,7 +1605,8 @@ export function DeliveryScreen() {
             {Number(o.tipAmount ?? 0) > 0 ? <InfoRow label="Tip" value={money(o.tipAmount)} /> : null}
             {Number(o.discount ?? 0) > 0 ? <InfoRow label="Discount" value={`−${money(o.discount)}`} /> : null}
             <View style={{ height: StyleSheet.hairlineWidth, backgroundColor: color.border.subtle, marginVertical: space.sm }} />
-            <InfoRow label="Total" value={money(o.totalAmount ?? o.total)} strong />
+            {/* [OOS-FLOW · REVIEW-2 F8] A cancelled order keeps the total it had, beside lines now at $0: it says it was cancelled. */}
+            <InfoRow label={String(o.status ?? '').toUpperCase() === 'CANCELLED' ? 'Order total (cancelled)' : 'Total'} value={money(o.totalAmount ?? o.total)} strong />
             {/* [STORE-VAT · owner O-5] The VAT a person-approved VAT store's goods included, frozen on the order (inside the total). */}
             {orderVatLine(o) ? (
               <T variant="caption" tone="muted" style={{ marginTop: 2 }}>

@@ -4,7 +4,9 @@
  * (the new-order takeover), and these are only for the order screen (perf budget).
  */
 
-type OrderLike = { status?: unknown; items?: unknown } | null | undefined;
+import { MMG_MONEY_MOVED } from './storeOrderRules';
+
+type OrderLike = { status?: unknown; items?: unknown; paymentMethod?: unknown; paymentStatus?: unknown; outOfStockEndsOrder?: unknown } | null | undefined;
 type LineLike = { subStatus?: unknown } | null | undefined;
 
 const linesOf = (order: OrderLike): LineLike[] => (Array.isArray(order?.items) ? (order!.items as LineLike[]) : []);
@@ -38,9 +40,49 @@ export function nothingLeftToHandOver(order: OrderLike): boolean {
   return lines.length > 0 && lines.every(REMOVED);
 }
 
-/** [OOS-FLOW] The store may still reject this order itself (else only Swift support closes it). */
+const mmgPaid = (order: OrderLike) =>
+  order?.paymentMethod === 'MOBILE_MONEY' && (MMG_MONEY_MOVED as readonly unknown[]).includes(order?.paymentStatus);
+
+/** [OOS-FLOW] The store may still reject this order itself (else only Swift support closes it).
+ *  [REVIEW-2 F7] An MMG order already paid is closed by Swift support, never by an in-app Reject. */
 export function storeCanReject(order: OrderLike): boolean {
-  return STORE_REJECTABLE.includes(String(order?.status ?? '').toUpperCase());
+  return STORE_REJECTABLE.includes(String(order?.status ?? '').toUpperCase()) && !mmgPaid(order);
+}
+
+/**
+ * [OOS-FLOW · REVIEW-2 F2] The server this order came from ends an accepted order whose last item comes off
+ * (it says so on the order: outOfStockEndsOrder). Only then does the app ask "remove and cancel the order?",
+ * send the confirmation, and word a swap's wait as a cancellation: an app update that reaches phones before
+ * that server never promises a cancellation that will not happen.
+ */
+export function serverEndsOrderOnLastItem(order: OrderLike): boolean {
+  return order?.outOfStockEndsOrder === true;
+}
+
+/** [OOS-FLOW] Removing this line cancels the order: the store is asked once, and the removal says so. */
+export function removalEndsOrder(order: OrderLike, line: LineLike): boolean {
+  return serverEndsOrderOnLastItem(order) && lastItemAfterAccept(order, line);
+}
+
+/**
+ * [OOS-FLOW · REVIEW-2 F9] The server's rule for taking an item off an MMG order (phone and web alike): its total
+ * cannot change in the app, so a line never comes off; the LAST item may (that cancels the order) while the
+ * payment has not moved yet. True = the store settles it with the customer directly instead.
+ */
+export function mmgRemovalLocked(order: OrderLike, line: LineLike): boolean {
+  if (order?.paymentMethod !== 'MOBILE_MONEY') return false;
+  return !(removalEndsOrder(order, line) && !mmgPaid(order));
+}
+
+/** [OOS-FLOW · REVIEW-1 S3-2] The server's answer to a removal sent without the store's confirmation, because it
+ *  was the last item still coming (another device took the other one off): the app asks instead. */
+export const LAST_ITEM_ENDS_ORDER = 'LAST_ITEM_ENDS_ORDER';
+
+/** The server's error code on a refused request (axios or fetch shapes), or undefined. */
+export function serverErrorCode(error: unknown): string | undefined {
+  const e = error as { response?: { data?: { error?: { code?: unknown } } }; code?: unknown } | null | undefined;
+  const code = e?.response?.data?.error?.code ?? e?.code;
+  return typeof code === 'string' ? code : undefined;
 }
 
 /** The store's words for it, phone and web alike. */
@@ -60,4 +102,13 @@ export const ACCEPTED_OUT_OF_STOCK_WORDS = {
   emptied: 'Every item on this order came off as out of stock, so there is nothing to hand over. Reject it with the reason “Out of stock”: the customer is told right away.',
   emptiedSupport: 'Every item on this order came off as out of stock, so there is nothing to hand over. Contact Swift support to close it.',
   emptiedButton: 'Reject: out of stock',
+  /** [REVIEW-2 F9] An MMG line cannot come off in the app (its total cannot change there). */
+  mmgLocked: 'MMG order — settle item changes with the customer directly.',
+  /** [REVIEW-2 F1] A swap's wait on the only item left (not MMG): no answer cancels the order. */
+  lastItemWait: (at: string) => `No answer by ${at} cancels the order: it is the only item left.`,
+  /** [REVIEW-2 F9] "Show all items" shows at most this many: it says so when there are more. */
+  showingSome: (shown: number, total: number) => `Showing ${shown} of ${total} items in stock.`,
 } as const;
+
+/** [REVIEW-2 F9] How many replacements "Show all items" lists at once. */
+export const SHOW_ALL_LIMIT = 24;

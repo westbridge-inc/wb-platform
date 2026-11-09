@@ -2857,6 +2857,10 @@ export async function customerRoutes(app: FastifyInstance) {
     // (nothing) instead": for it a removal question is served in the truthful legacy shape below.
     const supportsSwapDecisions = swapDecisionsLevel === 'v1' || swapDecisionsLevel === 'v2';
     const supportsRemovalQuestion = swapDecisionsLevel === 'v2';
+    // [OOS-FLOW · REVIEW-1 S3-1 · COORD ruling] A client that labels the only item's decline "No thanks, cancel
+    // order" and sends endsOrder says so with lastItemDecline=1 (beside v2, which an older server still reads).
+    // Every other client gets no decline on that item, and the "approve, or the order is cancelled" words.
+    const lastItemDecline = (request.query as { lastItemDecline?: unknown }).lastItemDecline === '1';
 
     const order = await app.prisma.order.findFirst({
       where: { id, customerId: userId },
@@ -3070,7 +3074,7 @@ export async function customerRoutes(app: FastifyInstance) {
             subStatus: i.subStatus,
             substituteName: i.substituteName,
             substitutePrice: i.substitutePrice == null ? null : Number(i.substitutePrice),
-            substitution: substitutionView(i, order, { onlyItemLeft: onlyItemLeft(i, order.items, order.status) }),
+            substitution: substitutionView(i, order, { onlyItemLeft: onlyItemLeft(i, order.items, order.status), lastItemDecline }),
           } : legacySwapItemFields(i, order, { onlyItemLeft: onlyItemLeft(i, order.items, order.status) })),
         })),
         itemCount: order.items.reduce((sum, i) => sum + i.quantity, 0),
@@ -3551,8 +3555,9 @@ export async function customerRoutes(app: FastifyInstance) {
    *  becomes the substitute (totals adjust); reject = the line is refunded. */
   app.post('/orders/:id/items/:lineId/substitution', async (request: AuthRequest) => {
     const { id, lineId } = request.params as { id: string; lineId: string };
-    const { approve } = z.object({ approve: z.boolean() }).parse(request.body);
-    const line = await picking.decideSubstitution(id, lineId, request.user.userId, approve);
+    // [OOS-FLOW · REVIEW-1 S3-1] endsOrder: the app showed "No thanks, cancel order" on the only item left.
+    const { approve, endsOrder } = z.object({ approve: z.boolean(), endsOrder: z.boolean().optional() }).parse(request.body);
+    const line = await picking.decideSubstitution(id, lineId, request.user.userId, approve, { endsOrder });
     return { success: true, data: line };
   });
 

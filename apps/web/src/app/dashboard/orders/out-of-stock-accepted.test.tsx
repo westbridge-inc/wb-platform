@@ -15,15 +15,24 @@ import { wireOrderLine, wireVendorOrder } from '@/test/vendor-wire-fixtures';
 //   - an order emptied on an older server says what to do, with the way out.
 // ---------------------------------------------------------------------------
 
-const writes: Array<{ method: string; path: string }> = [];
+const writes: Array<{ method: string; path: string; body?: unknown }> = [];
 const lines = (...over: Array<Record<string, unknown>>) => over.map((o, i) => wireOrderLine({ id: `line-${i + 1}`, itemId: `item-${i + 1}`, name: `Item ${i + 1}`, ...o }));
-const shop = { vendor: { vendorType: 'STORE', selfDeliveryEnabled: false }, status: 'PREPARING', paymentMethod: 'CASH' };
+// [REVIEW-2 F2] A current server: its order detail says it ends an order whose last item comes off.
+const shop = { vendor: { vendorType: 'STORE', selfDeliveryEnabled: false }, status: 'PREPARING', paymentMethod: 'CASH', outOfStockEndsOrder: true };
 
-function api(orders: unknown[]) {
+/** confirmFirst: the server answers an unconfirmed removal as the last item (another device took the other one off). */
+function api(orders: unknown[], opts: { confirmFirst?: boolean } = {}) {
   return mockApi((request: ApiRequest) => {
     const { method, url } = request;
     const path = url.pathname.replace('/api/v1', '');
-    if (method !== 'GET') { writes.push({ method, path }); return { body: { success: true, data: {} } }; }
+    if (method !== 'GET') {
+      const body = typeof request.init?.body === 'string' ? JSON.parse(request.init.body) as Record<string, unknown> : undefined;
+      writes.push({ method, path, body });
+      if (opts.confirmFirst && path.endsWith('/refund-line') && body?.['endsOrder'] !== true) {
+        return { status: 409, body: { success: false, error: { code: 'LAST_ITEM_ENDS_ORDER', message: 'only item left' } } };
+      }
+      return { body: { success: true, data: {} } };
+    }
     if (path === '/vendor/orders') return { body: { success: true, data: orders, meta: { total: orders.length } } };
     if (path.startsWith('/vendor/orders/')) return { body: { success: true, data: orders[0] } };
     return { status: 404, body: { success: false } };
@@ -66,8 +75,35 @@ describe('[OOS-FLOW] an accepted order: remove it, or offer a replacement', () =
     await view.user.click(within(dialog).getByRole('button', { name: 'Keep it' }));
     expect(writes).toEqual([]);
     await view.user.click(within(dialog).getByRole('button', { name: 'Remove item' }));
+    // [REVIEW-2 F4] Focus lands on the yes, inside the order window (never lost to the page).
+    await waitFor(() => expect(document.activeElement?.textContent).toBe('Remove and cancel the order'));
+    expect(within(dialog).getByRole('alertdialog', { name: 'Remove the last item' })).toBeTruthy();
     await view.user.click(within(dialog).getByRole('button', { name: 'Remove and cancel the order' }));
     await waitFor(() => expect(writes.map((w) => w.path)).toEqual(['/vendor/orders/o-2/items/line-2/refund-line']));
+    // [REVIEW-1 S3-2] Only the yes carries the confirmation the server needs to end the order.
+    expect(writes[0]!.body).toEqual({ endsOrder: true });
+  });
+
+  it('[REVIEW-1 S3-2] another device took the other item off: the server\'s question comes back as the ask', async () => {
+    api([wireVendorOrder({ ...shop, id: 'o-4', orderNumber: 'SW-9104', items: lines({ name: 'Shirt' }, { name: 'Vest' }) })], { confirmFirst: true });
+    const view = renderWithQuery(<OrdersPage />);
+    const dialog = await openWindow('SW-9104', view);
+    await view.user.click(within(dialog).getAllByRole('button', { name: 'Out of stock?' })[1]!);
+    await view.user.click(within(dialog).getByRole('button', { name: 'Remove item' }));
+    expect(await within(dialog).findByText(/This is the last item on the order\. Removing it cancels the order/)).toBeTruthy();
+    expect(writes[0]!.body).toEqual({});
+    await view.user.click(within(dialog).getByRole('button', { name: 'Remove and cancel the order' }));
+    await waitFor(() => expect(writes[1]?.body).toEqual({ endsOrder: true }));
+  });
+
+  it('[REVIEW-2 F2] a server that does not end such orders: no ask, no promise', async () => {
+    api([wireVendorOrder({ ...shop, outOfStockEndsOrder: undefined, id: 'o-5', orderNumber: 'SW-9105', items: lines({ name: 'Shirt', subStatus: 'REFUNDED' }, { name: 'Vest' }) })]);
+    const view = renderWithQuery(<OrdersPage />);
+    const dialog = await openWindow('SW-9105', view);
+    await view.user.click(within(dialog).getByRole('button', { name: 'Out of stock?' }));
+    await view.user.click(within(dialog).getByRole('button', { name: 'Remove item' }));
+    await waitFor(() => expect(writes.map((w) => w.path)).toEqual(['/vendor/orders/o-5/items/line-2/refund-line']));
+    expect(within(dialog).queryByText(/Removing it cancels the order/)).toBeNull();
   });
 });
 

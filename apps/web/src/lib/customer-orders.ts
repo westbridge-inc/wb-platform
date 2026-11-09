@@ -36,10 +36,12 @@ export async function reorder(id: string): Promise<{ unavailableItems?: number |
 // permitted answers and deadline), so it opts in to swap decisions.
 // [PICKUP · owner 30 Oct 2026] pickupHandover=v1: the order page tells the customer the first name + order number when
 // the store's code is off, so the server sends no code then.
-export async function getOrder(id: string): Promise<any> { return (await apiFetch(`/api/v1/customer/orders/${id}?swapDecisions=v2&pickupHandover=v1`)).data; }
+// [OOS-FLOW · REVIEW-1 S3-1] lastItemDecline=1: this page labels the only item's decline "No thanks, cancel order".
+export async function getOrder(id: string): Promise<any> { return (await apiFetch(`/api/v1/customer/orders/${id}?swapDecisions=v2&lastItemDecline=1&pickupHandover=v1`)).data; }
 /** The customer's answer to the store's swap question (approve = take the substitute). */
-export async function decideSubstitution(orderId: string, lineId: string, approve: boolean): Promise<any> {
-  return (await apiFetch(`/api/v1/customer/orders/${orderId}/items/${lineId}/substitution`, { method: 'POST', body: JSON.stringify({ approve }) })).data;
+export async function decideSubstitution(orderId: string, lineId: string, approve: boolean, endsOrder = false): Promise<any> {
+  // [OOS-FLOW · REVIEW-1 S3-1] endsOrder: the button said "No thanks, cancel order" (the only item left).
+  return (await apiFetch(`/api/v1/customer/orders/${orderId}/items/${lineId}/substitution`, { method: 'POST', body: JSON.stringify(endsOrder ? { approve, endsOrder: true } : { approve }) })).data;
 }
 /** [BUG-HUNT-2 G08] The customer's word on a "Refund sent": it arrived, or it did not. */
 export async function answerMmgRefund(orderId: string, sendId: string, received: boolean): Promise<void> {

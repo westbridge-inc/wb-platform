@@ -40,7 +40,16 @@ describe('the order screen follows a substitution as it happens', () => {
     // [TRANSFORMED after #1707: the order travels with each decision, never the render's closure.]
     expect(SCREEN).toContain('const decideSub = useDecideSubstitution();');
     expect(SCREEN).toContain('decideSub.mutate({ orderId, lineId: it.id, approve: true })');
-    expect(SCREEN).toContain('decideSub.mutate({ orderId, lineId: it.id, approve: false })');
+    // [TRANSFORMED 8 Nov (OOS-FLOW · REVIEW-1 S3-1): a "no" on the only item left says it ends the order (endsOrder).]
+    expect(SCREEN).toContain('decideSub.mutate({ orderId, lineId: it.id, approve: false, endsOrder: it.substitution?.lastItem === true })');
+  });
+
+  it('[OOS-FLOW · REVIEW-2 F5] on the only item left the decline button says it cancels the order', () => {
+    expect(SCREEN).toContain("label={it.substitution?.lastItem ? 'No thanks, cancel order' : 'No thanks'}");
+  });
+
+  it('[OOS-FLOW · REVIEW-2 F8] a cancelled order\'s total says it was cancelled (its lines read $0)', () => {
+    expect(SCREEN).toContain("label={String(o.status ?? '').toUpperCase() === 'CANCELLED' ? 'Order total (cancelled)' : 'Total'}");
   });
 });
 

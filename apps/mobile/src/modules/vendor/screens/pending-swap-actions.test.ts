@@ -19,18 +19,21 @@ const detail = strip(readFileSync(join(process.cwd(), 'src/modules/vendor/screen
 describe('the store is never stuck waiting on a swap answer', () => {
   it('a pending line says when the wait ends and what then happens', () => {
     expect(detail).toContain("import { storeSwapWaitText } from '../../orders/substitutionCopy';");
-    expect(detail).toContain('{pending && storeSwapWaitText(it.substituteDecideBy, order.paymentMethod) ? (');
+    // [TRANSFORMED 8 Nov (OOS-FLOW · REVIEW-2 F1): the only item left words its wait as the order's cancellation.]
+    expect(detail).toContain('{pending && storeSwapWaitText(it.substituteDecideBy, order.paymentMethod, undefined, removalEndsOrder(order, it)) ? (');
   });
 
   it('a pending line offers Remove item instead, through the same line-removal call, never on MMG', () => {
-    const at = detail.indexOf("{pickable && pending && order.paymentMethod !== 'MOBILE_MONEY' ? (");
+    // [TRANSFORMED 8 Nov (OOS-FLOW · REVIEW-2 F9): the server's MMG rule, shared with the web (mmgRemovalLocked):
+    // never on MMG, except the last item while unpaid (that cancels the order).]
+    const at = detail.indexOf('{pickable && pending && !mmgRemovalLocked(order, it) ? (');
     expect(at).toBeGreaterThan(-1);
     const block = detail.slice(at);
     const action = block.slice(0, block.indexOf(') : null}'));
     // [TRANSFORMED 8 Nov (OOS-FLOW): the tap goes through askOrRemove, which asks once on the last item still
     // coming (removing it cancels the order) and otherwise removes through the same line-removal call.]
     expect(action).toContain('onPress={() => askOrRemove(it)}');
-    expect(detail).toMatch(/const removeLine = \(line: any\) => \{[\s\S]*?picking\.refundLine\.mutate\(\s*\{ orderId: order\.id, lineId: line\.id \}/);
+    expect(detail).toMatch(/const removeLine = \(line: any, confirmed: boolean\) => \{[\s\S]*?picking\.refundLine\.mutate\(\s*\{ orderId: order\.id, lineId: line\.id, endsOrder: confirmed \}/);
     expect(action).toContain('Remove item instead');
     expect(action).toContain('disabled={picking.refundLine.isPending}');
   });

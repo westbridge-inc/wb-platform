@@ -12,7 +12,7 @@ import { registerErrorHandler } from '../middleware/error-handler';
 import { registerEmptyJsonBodyParser } from '../plugins/empty-json';
 import { OUT_OF_STOCK_REASON, PickingService, sweepSubstitutionDeadlines } from '../modules/order/picking.service';
 import { OrderService } from '../modules/order/order.service';
-import { LAST_ITEM_SWAP_COPY } from '../modules/order/substitution-view';
+import { LAST_ITEM_SWAP_APPROVE_COPY, LAST_ITEM_SWAP_COPY } from '../modules/order/substitution-view';
 
 // ---------------------------------------------------------------------------
 // [OOS-FLOW · owner 8 Nov 2026] "i said out of stock in dashboard but customer
@@ -107,12 +107,17 @@ function inject(method: 'GET' | 'POST' | 'PUT', url: string, token: string, payl
   });
 }
 
-const removeLine = (orderId: string, lineId: string) => inject('POST', `/api/v1/vendor/orders/${orderId}/items/${lineId}/refund-line`, owner.token, {});
+const removeLine = (orderId: string, lineId: string, body: Record<string, unknown> = {}) => inject('POST', `/api/v1/vendor/orders/${orderId}/items/${lineId}/refund-line`, owner.token, body);
+/** The store's confirmed removal of the last item (an app that asked once first). */
+const removeLast = (orderId: string, lineId: string) => removeLine(orderId, lineId, { endsOrder: true });
 const offerSwap = (orderId: string, lineId: string, substituteItemId: string) =>
   inject('POST', `/api/v1/vendor/orders/${orderId}/items/${lineId}/substitute`, owner.token, { substituteItemId });
-const decide = (orderId: string, lineId: string, approve: boolean) =>
-  inject('POST', `/api/v1/customer/orders/${orderId}/items/${lineId}/substitution`, customer.token, { approve });
-const customerView = (orderId: string) => inject('GET', `/api/v1/customer/orders/${orderId}?swapDecisions=v2`, customer.token);
+const decide = (orderId: string, lineId: string, approve: boolean, extra: Record<string, unknown> = {}) =>
+  inject('POST', `/api/v1/customer/orders/${orderId}/items/${lineId}/substitution`, customer.token, { approve, ...extra });
+/** A current app: it labels the only item's decline "No thanks, cancel order" (lastItemDecline=1). */
+const customerView = (orderId: string) => inject('GET', `/api/v1/customer/orders/${orderId}?swapDecisions=v2&lastItemDecline=1`, customer.token);
+/** An app without that button (1.0.0 before its update, build 13's own bundle). */
+const olderCustomerView = (orderId: string) => inject('GET', `/api/v1/customer/orders/${orderId}?swapDecisions=v2`, customer.token);
 
 async function latestNotice(userId: string) {
   return app.prisma.notification.findFirst({ where: { userId }, orderBy: { createdAt: 'desc' } });
@@ -167,7 +172,7 @@ describe('the store removes an item as out of stock after accepting', () => {
     const vest = await makeItem(itemName('Vest'), 1500, 4);
     const order = await makeOrder([{ itemId: vest.id, name: vest.name, qty: 1, price: 1500 }], { fulfillment: 'PICKUP' });
 
-    const res = await removeLine(order.id, order.items[0]!.id);
+    const res = await removeLast(order.id, order.items[0]!.id);
     expect(res.statusCode, res.body).toBe(200);
     expect(res.json().data.subStatus).toBe('REFUNDED');
 
@@ -214,7 +219,21 @@ describe('the store removes an item as out of stock after accepting', () => {
     expect(Number(storeSeen.json().data.totalAmount)).toBe(2000);
 
     // The second (now last) item: the order ends instead of going out empty.
-    const last = await removeLine(order.id, order.items[0]!.id);
+    // Sent without the store's confirmation (an older app, or a second device that did not know it was the
+    // last one): nothing changes and the store reads what removing it does.
+    const unasked = await removeLine(order.id, order.items[0]!.id);
+    expect(unasked.statusCode).toBe(409);
+    expect(unasked.json().error.code).toBe('LAST_ITEM_ENDS_ORDER');
+    expect(unasked.json().error.message).toContain('is the only item left on this order, so removing it cancels the order');
+    expect(unasked.json().error.message).toContain('reject the order with the reason "Out of stock"');
+    const still = await app.prisma.order.findUniqueOrThrow({ where: { id: order.id }, include: { items: true } });
+    expect(still.status).toBe('PREPARING');
+    expect(still.items.find((i) => i.id === order.items[0]!.id)?.subStatus).toBe('NONE');
+    expect(Number(still.totalAmount)).toBe(2000);
+    // The store's server says it ends such an order, so the app asks once first.
+    expect(storeSeen.json().data.outOfStockEndsOrder).toBe(true);
+
+    const last = await removeLast(order.id, order.items[0]!.id);
     expect(last.statusCode, last.body).toBe(200);
     expect((await app.prisma.order.findUniqueOrThrow({ where: { id: order.id } })).status).toBe('CANCELLED');
   });
@@ -226,7 +245,7 @@ describe('the store removes an item as out of stock after accepting', () => {
     const order = await makeOrder([{ itemId: item.id, name: item.name, qty: 1, price: 800 }], { status: 'RIDER_ASSIGNED', riderId: rider.id });
     await app.prisma.rider.update({ where: { id: rider.id }, data: { floatLimit: 100_000, committedFloat: 800, currentOrderId: order.id } });
 
-    const res = await removeLine(order.id, order.items[0]!.id);
+    const res = await removeLast(order.id, order.items[0]!.id);
     expect(res.statusCode, res.body).toBe(200);
     expect((await app.prisma.order.findUniqueOrThrow({ where: { id: order.id } })).status).toBe('CANCELLED');
     const freed = await app.prisma.rider.findUniqueOrThrow({ where: { id: rider.id } });
@@ -238,10 +257,25 @@ describe('the store removes an item as out of stock after accepting', () => {
     await app.prisma.rider.delete({ where: { id: rider.id } }).catch(() => undefined);
   });
 
+  it('a rider already at the store is told there is nothing to collect (never "stop travelling")', async () => {
+    const item = await makeItem(itemName('Mitt'), 700, 3);
+    const riderUser = await makeUser(['MOVER', 'CUSTOMER'], 'MOVER');
+    const rider = await app.prisma.rider.create({ data: { userId: riderUser.userId, riderType: 'DELIVERY', vehicleType: 'MOTORCYCLE', isAvailable: false } });
+    const order = await makeOrder([{ itemId: item.id, name: item.name, qty: 1, price: 700 }], { status: 'RIDER_ARRIVED_PICKUP', riderId: rider.id });
+    await app.prisma.rider.update({ where: { id: rider.id }, data: { floatLimit: 100_000, committedFloat: 700, currentOrderId: order.id } });
+
+    const res = await removeLast(order.id, order.items[0]!.id);
+    expect(res.statusCode, res.body).toBe(200);
+    const told = await app.prisma.notification.findFirst({ where: { userId: riderUser.userId, title: 'Delivery cancelled' } });
+    expect(told?.body).toBe(`Order #${order.orderNumber} was cancelled: the store is out of stock. There is nothing to collect; check your current jobs.`);
+    await app.prisma.orderOutbox.deleteMany({ where: { orderId: order.id } });
+    await app.prisma.rider.delete({ where: { id: rider.id } }).catch(() => undefined);
+  });
+
   it('paid MMG: the last item cannot end the order in the app (the reject rule), and nothing changes', async () => {
     const item = await makeItem(itemName('Belt'), 900);
     const order = await makeOrder([{ itemId: item.id, name: item.name, qty: 1, price: 900 }], { method: 'MOBILE_MONEY', payStatus: 'CAPTURED' });
-    const res = await removeLine(order.id, order.items[0]!.id);
+    const res = await removeLast(order.id, order.items[0]!.id);
     expect(res.statusCode).toBe(409);
     expect(res.json().error.code).toBe('MMG_CANCEL_UNAVAILABLE');
     const after = await app.prisma.order.findUniqueOrThrow({ where: { id: order.id }, include: { items: true } });
@@ -252,7 +286,7 @@ describe('the store removes an item as out of stock after accepting', () => {
   it('without the cancellation seam the service never empties an order: it tells the store to reject instead', async () => {
     const item = await makeItem(itemName('Scarf'), 700);
     const order = await makeOrder([{ itemId: item.id, name: item.name, qty: 1, price: 700 }]);
-    await expect(new PickingService(app.prisma, app.io).refundLine(order.id, order.items[0]!.id, owner.userId))
+    await expect(new PickingService(app.prisma, app.io).refundLine(order.id, order.items[0]!.id, owner.userId, { endsOrder: true }))
       .rejects.toMatchObject({ code: 'REJECT_INSTEAD' });
     const after = await app.prisma.order.findUniqueOrThrow({ where: { id: order.id }, include: { items: true } });
     expect(after.status).toBe('PREPARING');
@@ -273,6 +307,16 @@ describe('the store removes an item as out of stock after accepting', () => {
     const rejected = await inject('PUT', `/api/v1/vendor/orders/${order.id}/reject`, owner.token, { reason: OUT_OF_STOCK_REASON });
     expect(rejected.statusCode, rejected.body).toBe(200);
   });
+
+  it('an emptied order already paid by MMG: Ready sends the store to Swift support, never to a Reject that refuses', async () => {
+    const item = await makeItem(itemName('Glove'), 600);
+    const order = await makeOrder([{ itemId: item.id, name: item.name, qty: 1, price: 600 }], { fulfillment: 'PICKUP', method: 'MOBILE_MONEY', payStatus: 'CAPTURED' });
+    await app.prisma.orderItem.update({ where: { id: order.items[0]!.id }, data: { subStatus: 'REFUNDED' } });
+    const ready = await inject('PUT', `/api/v1/vendor/orders/${order.id}/ready`, owner.token, {});
+    expect(ready.statusCode).toBe(409);
+    expect(ready.json().error.message).toContain('Contact Swift support to close it.');
+    expect(ready.json().error.message).not.toContain('Reject');
+  });
 });
 
 describe('the store offers a replacement after accepting', () => {
@@ -286,6 +330,10 @@ describe('the store offers a replacement after accepting', () => {
     const view = (await customerView(order.id)).json().data.items[0].substitution;
     expect(view).toMatchObject({ kind: 'SWAP', lastItem: true, decisions: { approve: true, reject: true }, settlementGuidance: LAST_ITEM_SWAP_COPY, ifNoAnswer: 'CANCEL' });
     expect(typeof view.decideBy).toBe('string');
+    // An app without "No thanks, cancel order" (its card reads "Rejecting removes the item") gets no decline on it,
+    // and words true for what it can do.
+    const older = (await olderCustomerView(order.id)).json().data.items[0].substitution;
+    expect(older).toMatchObject({ kind: 'SWAP', lastItem: true, decisions: { approve: true, reject: false }, settlementGuidance: LAST_ITEM_SWAP_APPROVE_COPY, ifNoAnswer: 'CANCEL' });
     // The push says the same: a yes or the order is cancelled (never "it comes off your order").
     const asked = await latestNotice(customer.userId);
     expect(asked?.body).toContain(`the only item left on order #${order.orderNumber}`);
@@ -306,17 +354,50 @@ describe('the store offers a replacement after accepting', () => {
     const order = await makeOrder([{ itemId: orig.id, name: orig.name, qty: 1, price: 1200 }]);
     expect((await offerSwap(order.id, order.items[0]!.id, sub.id)).statusCode).toBe(200);
 
-    const no = await decide(order.id, order.items[0]!.id, false);
+    // A "no" from an app that did not say it cancels the order: nothing changes, the customer reads why.
+    const unlabelled = await decide(order.id, order.items[0]!.id, false);
+    expect(unlabelled.statusCode).toBe(409);
+    expect(unlabelled.json().error.code).toBe('LAST_ITEM_ENDS_ORDER');
+    expect(unlabelled.json().error.message).toContain('saying no thanks cancels the order');
+    expect((await app.prisma.order.findUniqueOrThrow({ where: { id: order.id } })).status).toBe('PREPARING');
+
+    const no = await decide(order.id, order.items[0]!.id, false, { endsOrder: true });
     expect(no.statusCode, no.body).toBe(200);
-    const after = await app.prisma.order.findUniqueOrThrow({ where: { id: order.id }, include: { items: true } });
+    const after = await app.prisma.order.findUniqueOrThrow({ where: { id: order.id }, include: { items: true, statusHistory: true } });
     expect(after.status).toBe('CANCELLED');
     expect(after.cancelledBy).toBeNull();
+    // The log names who decided; the cancellation is still never counted against the customer.
+    expect(after.statusHistory.find((row) => row.status === 'CANCELLED')?.changedBy).toBe(customer.userId);
     expect(after.cancellationReason).toContain('Out of stock');
     expect(after.items[0]!.subStatus).toBe('REJECTED');
     const push = await latestNotice(customer.userId);
     expect(push?.title).toBe(`Order #${order.orderNumber} cancelled`);
     expect(push?.body).toContain('Nothing was charged.');
     expect((await latestNotice(owner.userId))?.title).toBe(`Order #${order.orderNumber} cancelled`);
+  });
+
+  it('[REVIEW-1 S4-1] a dearer swap refused because a rider holds the cash order: the only item\'s words say a no cancels it', async () => {
+    const orig = await makeItem(itemName('Scarf'), 1000);
+    const sub = await makeItem(itemName('Shawl'), 1500);
+    const riderUser = await makeUser(['MOVER', 'CUSTOMER'], 'MOVER');
+    const rider = await app.prisma.rider.create({ data: { userId: riderUser.userId, riderType: 'DELIVERY', vehicleType: 'MOTORCYCLE', isAvailable: false } });
+    const order = await makeOrder([{ itemId: orig.id, name: orig.name, qty: 1, price: 1000 }], { status: 'RIDER_ASSIGNED', riderId: rider.id });
+    await app.prisma.rider.update({ where: { id: rider.id }, data: { floatLimit: 100_000, committedFloat: 1000, currentOrderId: order.id } });
+    expect((await offerSwap(order.id, order.items[0]!.id, sub.id)).statusCode).toBe(200);
+
+    const yes = await decide(order.id, order.items[0]!.id, true);
+    expect(yes.statusCode).toBe(409);
+    expect(yes.json().error.code).toBe('SUBSTITUTE_RAISES_RIDER_CASH');
+    expect(yes.json().error.message).toContain('It is the only item left: say no thanks to cancel the order');
+    expect(yes.json().error.message).not.toContain('the item comes off your order');
+    const told = await latestNotice(owner.userId);
+    expect(told?.body).toContain('It is the only item left, so removing it cancels the order.');
+    expect(told?.body).not.toContain('refund the item');
+
+    await app.prisma.order.update({ where: { id: order.id }, data: { status: 'CANCELLED', riderId: null } });
+    await app.prisma.rider.update({ where: { id: rider.id }, data: { currentOrderId: null } });
+    await app.prisma.orderOutbox.deleteMany({ where: { orderId: order.id } });
+    await app.prisma.rider.delete({ where: { id: rider.id } }).catch(() => undefined);
   });
 
   it('not the only item: "No thanks" removes just that line and lowers the total', async () => {

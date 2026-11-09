@@ -1122,7 +1122,8 @@ describe('[SUBSTITUTION] the customer is always told; no order waits forever', (
     const order = await makeOrderWithLines([{ itemId: original.id, name: original.name, qty: 1, price: 1500 }]);
     const line = order.items[0]!;
     expect((await inject('POST', `/api/v1/vendor/orders/${order.id}/items/${line.id}/substitute`, owner.token, { substituteItemId: replacement.id })).statusCode).toBe(200);
-    const removed = await inject('POST', `/api/v1/vendor/orders/${order.id}/items/${line.id}/refund-line`, owner.token, {});
+    // [TRANSFORMED 8 Nov (OOS-FLOW · REVIEW-1 S3-2): the only line ends the order, so the store confirms it (endsOrder).]
+    const removed = await inject('POST', `/api/v1/vendor/orders/${order.id}/items/${line.id}/refund-line`, owner.token, { endsOrder: true });
     expect(removed.statusCode, removed.body).toBe(200);
     const after = await app.prisma.orderItem.findUniqueOrThrow({ where: { id: line.id } });
     expect(after).toMatchObject({ subStatus: 'REFUNDED', substituteDecideBy: null });
