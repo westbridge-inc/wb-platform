@@ -174,8 +174,8 @@ export async function actorStandingView(prisma: PrismaClient, role: Role, subjec
   const { topPositive, topNegative } = await rankedTags(prisma, role, rows);
 
   const standing = stat?.standing ?? 'NEW';
-  // [STORE-WORDS sweep] The store's kind, read only when there is a coaching card to word.
-  const coachingDue = (standing === 'ATTENTION' || standing === 'AT_RISK') && topNegative.length > 0;
+  // [STORE-WORDS sweep] The store's kind, read only for a store with a coaching card to word.
+  const coachingDue = role === 'VENDOR' && (standing === 'ATTENTION' || standing === 'AT_RISK') && topNegative.length > 0;
   const vendorType = coachingDue
     ? (await prisma.vendor.findUnique({ where: { id: subjectId }, select: { vendorType: true } }))?.vendorType
     : null;

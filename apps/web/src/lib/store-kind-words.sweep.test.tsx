@@ -91,6 +91,22 @@ describe('[STORE-WORDS sweep] the store console screens a shop sees', () => {
     expect(screen.getByRole('button', { name: 'Kitchen is too busy' })).toBeTruthy();
   });
 
+  it('[REVIEW F3] an order from an older API that does not name its kind is worded by the selected store\'s kind', async () => {
+    for (const [kind, busy, time] of [['STORE', 'Too busy right now', 'Ready in about 20 min'], ['RESTAURANT', 'Kitchen is too busy', '20 min prep']] as const) {
+      mockApi(() => ({ status: 404, body: { success: false } }));
+      // The console shell has already read the stores; the popup reads only that copy.
+      const { rerender, user, unmount, queryClient } = renderWithQuery(<NewOrderTakeover orders={[]} />);
+      queryClient.setQueryData(['stores'], { stores: [{ id: 'store-1', name: 'Store', vendorType: kind, isCurrentlyOpen: true, acceptingOrders: true, city: null, isVerified: true }], selectedId: 'store-1', myRole: 'OWNER' });
+      const noKind = wireVendorOrder({ vendor: { id: 'store-1', name: 'Store', selfDeliveryEnabled: false } });
+      rerender(<NewOrderTakeover orders={[normalizeVendorOrder(noKind)]} />);
+      await screen.findByText('NEW ORDER');
+      await screen.findByRole('option', { name: time });
+      await user.click(screen.getByRole('button', { name: 'Reject — tell us why' }));
+      expect(screen.getByRole('button', { name: busy })).toBeTruthy();
+      unmount();
+    }
+  });
+
   it('"How many orders at once" on a shop\'s settings never says "cooking"', async () => {
     mockApi((r: ApiRequest) => {
       if (r.url.pathname === '/api/v1/vendor/profile') return { body: { success: true, data: { myRole: 'OWNER', vendors: [{ id: 'store-1', vendorType: 'STORE', maxConcurrentOrders: 4 }] } } };

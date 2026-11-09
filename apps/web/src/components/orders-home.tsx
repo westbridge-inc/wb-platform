@@ -12,7 +12,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ArrowUpRight, BarChart3, BookOpen, CalendarClock, Check, History, QrCode, Receipt, ToggleRight, UserCog } from 'lucide-react';
 import { apiFetch } from '@/lib/auth';
 import { rejectReasonsFor } from '@/lib/reject-reasons';
-import { catalogueName } from '@/lib/catalogue-name';
+import { catalogueName, useStoreKind } from '@/lib/catalogue-name';
 import { storeKey, useStoreId } from '@/lib/store-scope';
 import {
   DAY_LABELS, canAttestPayment, financialDeltaLabel, fmtWhen, guyanaDate, guyanaDayKey, hasTrailingGuyanaDays, hoursSummary,
@@ -483,6 +483,9 @@ export function SelfDeliveryCard({ store, readFailed = false, onRetryRead = () =
  */
 export function OrderCardActions({ order, onOpen }: { order: VendorOrder; onOpen: () => void }) {
   const storeId = useStoreId();
+  // [STORE-WORDS sweep · REVIEW F3] An order from an API that does not yet name its store's kind falls back to
+  // the selected store's kind, as the app's board does.
+  const storeKind = useStoreKind({ cachedOnly: true });
   const client = useQueryClient();
   const [rejecting, setRejecting] = useState(false);
   const [confirmingDelivered, setConfirmingDelivered] = useState(false);
@@ -566,7 +569,7 @@ export function OrderCardActions({ order, onOpen }: { order: VendorOrder; onOpen
         <div className="rounded-xl bg-[var(--swift-red-50)] p-3">
           <p className="text-[13px] font-semibold text-[var(--swift-red-600)]">{order.fulfillment === 'APPOINTMENT' ? 'Decline this booking?' : 'Reject this order?'}</p>
           <div className="mt-2 flex flex-wrap gap-2">
-            {rejectReasonsFor(order.fulfillment, order.vendor?.vendorType).map((why) => (
+            {rejectReasonsFor(order.fulfillment, order.vendor?.vendorType ?? storeKind).map((why) => (
               <button key={why} type="button" disabled={busy} onClick={() => reject.mutate(why)} className="sw-btn sw-btn-md sw-btn-outline">{why}</button>
             ))}
             <button type="button" disabled={busy} onClick={() => setRejecting(false)} className="sw-btn sw-btn-md">Keep it</button>

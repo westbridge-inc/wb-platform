@@ -7,6 +7,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { rejectReasonsFor } from '@/lib/reject-reasons';
 import { readyTimeLabel } from '@/lib/store-kind-words';
+import { useStoreKind } from '@/lib/catalogue-name';
 import { cancellationReasonWords } from '@swift/types/src/order-words';
 import { useIsMutating, useMutation, useMutationState, useQuery, useQueryClient } from '@tanstack/react-query';
 import { mmgDisputePaused, MMG_DISPUTE_NOTICE } from '@/lib/mmg-dispute';
@@ -355,6 +356,9 @@ function PickList({ order, onBusy }: { order: VendorOrder; onBusy: boolean }) {
 export function OrderDetail({ id, onClose }: { id: string; onClose: () => void }) {
   const queryClient = useQueryClient();
   const storeId = useStoreId();
+  // [STORE-WORDS sweep · REVIEW F3] An order from an API that does not yet name its store's kind falls back to
+  // the selected store's kind, as the app's board does.
+  const storeKind = useStoreKind({ cachedOnly: true });
   // [PERF row 8] The store's live feed re-reads this order on its events; the poll is the fallback.
   const orderPoll = useFeedPollInterval(storeId, 10_000, 30_000);
   const order = useQuery({
@@ -864,7 +868,7 @@ export function OrderDetail({ id, onClose }: { id: string; onClose: () => void }
                   aria-label="Preparation time"
                   className="rounded-lg border border-[var(--swift-border)] px-2 py-2 text-sm"
                 >
-                  {[10, 15, 20, 30, 45, 60].map((m) => <option key={m} value={m}>{readyTimeLabel(o.vendor?.vendorType, m)}</option>)}
+                  {[10, 15, 20, 30, 45, 60].map((m) => <option key={m} value={m}>{readyTimeLabel(o.vendor?.vendorType ?? storeKind, m)}</option>)}
                 </select>
               )}
               {a.kind === 'complete-pickup' && (
@@ -929,7 +933,7 @@ export function OrderDetail({ id, onClose }: { id: string; onClose: () => void }
               <p className="text-sm font-semibold text-[var(--swift-red)]">{order.data?.fulfillment === 'APPOINTMENT' ? 'Decline this booking?' : 'Reject this order?'}</p>
               <p className="mt-1 text-sm text-[var(--swift-muted)]">The customer is told right away — pick what happened. This can’t be undone.</p>
               <div className="mt-3 flex flex-wrap gap-2">
-                {rejectReasonsFor(order.data?.fulfillment, order.data?.vendor?.vendorType).map((why) => (
+                {rejectReasonsFor(order.data?.fulfillment, order.data?.vendor?.vendorType ?? storeKind).map((why) => (
                   <button
                     key={why}
                     onClick={() => reject.mutate(why)}

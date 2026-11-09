@@ -214,14 +214,15 @@ describe('[IN-STORE-SALE] one tap takes one sold-in-person item off the Swift st
     const item = await makeItem(4, { lowStockThreshold: 3 });
     await sell(item.id, tapKey()); // 4 -> 3: crosses the level
     await vi.waitFor(() => expect(lowStock).toHaveBeenCalledTimes(1));
-    expect(lowStock).toHaveBeenLastCalledWith(ownerUserId, { itemId: item.id, name: item.name, remaining: 3, kind: 'low' });
+    // [STORE-WORDS sweep] The store's kind rides along, so the notice is worded for a supermarket, not a kitchen.
+    expect(lowStock).toHaveBeenLastCalledWith(ownerUserId, { itemId: item.id, name: item.name, remaining: 3, kind: 'low' }, 'SUPERMARKET');
     await sell(item.id, tapKey()); // 3 -> 2: already below, no second alert
     await sell(item.id, tapKey()); // 2 -> 1
     await new Promise((resolve) => setTimeout(resolve, 150));
     expect(lowStock).toHaveBeenCalledTimes(1);
     await sell(item.id, tapKey()); // 1 -> 0: sold out
     await vi.waitFor(() => expect(lowStock).toHaveBeenCalledTimes(2));
-    expect(lowStock).toHaveBeenLastCalledWith(ownerUserId, { itemId: item.id, name: item.name, remaining: 0, kind: 'out' });
+    expect(lowStock).toHaveBeenLastCalledWith(ownerUserId, { itemId: item.id, name: item.name, remaining: 0, kind: 'out' }, 'SUPERMARKET');
   });
 
   it('a replayed tap alerts nobody again', async () => {
