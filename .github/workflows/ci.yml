@@ -5,6 +5,16 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  # [CI-SPEED] The merge queue on main tests each queued group (main + the
+  # queued PRs ahead of it + this PR) before it lands. It reports the required
+  # checks only on runs of this event, so every job here runs for it too; no
+  # job reads PR-only context (number, base/head refs, paths), so each behaves
+  # on a merge group exactly as on a pull request. The concurrency group below
+  # keys on github.ref, which is unique per merge group
+  # (refs/heads/gh-readonly-queue/main/pr-<n>-<sha>), so groups never cancel
+  # each other, and the main-only cache saves stay main-only.
+  merge_group:
+    types: [checks_requested]
   # A repo nobody pushes to for two weeks can still rot — a registry retires an
   # endpoint (it retired pnpm audit's), an action deprecates, a cert expires.
   # Monday's run makes decay visible the week it happens, not the day it blocks
@@ -73,11 +83,14 @@ jobs:
         run: pnpm --filter @swift/desktop test
 
   # [CI-SPLIT] The API suite was one ~28-minute job behind Lint (~36 minutes a
-  # round). It now runs as 4 shards, each a full copy of the old job: its OWN
-  # Postgres and Redis, the real migrations and the seed, then its quarter of
-  # the files, one after another on that database as before. Shards start at
-  # once (no wait for Lint, which is still its own required check); the
-  # "API Tests" job below gives the single verdict branch protection reads.
+  # round). It now runs as 8 shards (4 until 9 Nov 2026: ~14-21 minutes per
+  # shard), each a full copy of the old job: its OWN Postgres and Redis, the
+  # real migrations and the seed, then its eighth of the files, one after
+  # another on that database as before. A shard's own setup (containers,
+  # install, migrations, seed) is ~1.5 minutes, so halving each shard's files
+  # roughly halves its time. Shards start at once (no wait for Lint, which
+  # is still its own required check); the "API Tests" job below gives the
+  # single verdict branch protection reads.
   # Changing the shard count = the `shard` list, `total`, and the aggregate's
   # --count together (ci-api-shards.test.ts holds them in lockstep).
   api-test-shard:
@@ -87,8 +100,8 @@ jobs:
       # Every shard runs to the end, so one red shard still shows every failure.
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4]
-        total: [4]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8]
+        total: [8]
     services:
       postgres:
         image: postgis/postgis:16-3.4
@@ -229,12 +242,12 @@ jobs:
         working-directory: apps/api
         run: |
           npx vitest list --filesOnly --json=ci-shard-report/expected-files.json
-          node ../../scripts/ci-api-shard-partition.mjs --root "$PWD" --expected ci-shard-report/expected-files.json --junit-dir ci-shard-report/junit --blob-dir ci-shard-report/blob --count 4
+          node ../../scripts/ci-api-shard-partition.mjs --root "$PWD" --expected ci-shard-report/expected-files.json --junit-dir ci-shard-report/junit --blob-dir ci-shard-report/blob --count 8
       # The merge replays every shard's results (red if any test failed) and
       # merges their coverage into the one suite-wide number.
       - name: Merge the shard results and coverage
         working-directory: apps/api
-        # Four shards' results and V8 coverage in one process, on the 8 GB
+        # Every shard's results and V8 coverage in one process, on the 8 GB
         # standard runner (Node's default heap there is ~2 GB).
         env:
           NODE_OPTIONS: --max-old-space-size=6144
