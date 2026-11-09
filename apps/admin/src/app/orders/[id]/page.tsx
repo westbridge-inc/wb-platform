@@ -12,6 +12,7 @@ import { PaymentDispute } from '@/components/mc/PaymentDispute';
 import { HeldDoorCash } from '@/components/mc/HeldDoorCash';
 import { useActionRunner } from '@/components/mc/useActionRunner';
 import { gyDateTime, gyTime } from '@/lib/dates';
+import { CUSTOMER_REASON_FIELD, INTERNAL_NOTE_WORDS, customerReasonOf } from '@/lib/support-cancel';
 
 const gyd = (n: unknown) => `$${Number(n || 0).toLocaleString()}`;
 const clock = (iso: string | null | undefined) =>
@@ -207,8 +208,11 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
                     : <p>The customer, the store and any mover on it are told.</p>,
                   confirmLabel: 'Cancel order',
                   dismissLabel: 'Keep the order',
-                  // [ADM-006] the operator's words, not a template
-                  submit: ({ reason }) => cancelOrder(id, { refund: false }, reason),
+                  // [ADM-006] the operator's words, not a template: Swift's internal note. [COORD 8 Nov 2026] The customer
+                  // sees only the fixed reason picked here.
+                  fields: [CUSTOMER_REASON_FIELD],
+                  reason: INTERNAL_NOTE_WORDS,
+                  submit: ({ reason, values }) => cancelOrder(id, { refund: false, customerReason: customerReasonOf(values) }, reason),
                   success: () => `Order ${o.orderNumber} cancelled.`,
                 })}
                 className="mc-btn"
@@ -224,7 +228,9 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
                     body: <p>{refundingStore} owes the customer what it received by MMG. Swift records that and moves no money. The customer and the store are told, and the refund shows under MMG refunds until it is confirmed.</p>,
                     confirmLabel: 'Close it',
                     dismissLabel: 'Keep the order',
-                    submit: ({ reason }) => closeStoreRefund(id, Number(o.mmgClaimRevision ?? 0), reason),
+                    fields: [CUSTOMER_REASON_FIELD],
+                    reason: INTERNAL_NOTE_WORDS,
+                    submit: ({ reason, values }) => closeStoreRefund(id, Number(o.mmgClaimRevision ?? 0), reason, customerReasonOf(values)),
                     success: () => `Order ${o.orderNumber} closed. The refund is recorded as owed by ${refundingStore}.`,
                   })}
                   className="mc-btn mc-btn-primary"
@@ -240,7 +246,9 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
                     body: <p>This does not mark anything refunded. The order stays in the outstanding list until someone records the reference and the amount actually handed back.</p>,
                     confirmLabel: 'Cancel and record refund owed',
                     dismissLabel: 'Keep the order',
-                    submit: ({ reason }) => cancelOrder(id, { refund: true }, reason),
+                    fields: [CUSTOMER_REASON_FIELD],
+                    reason: INTERNAL_NOTE_WORDS,
+                    submit: ({ reason, values }) => cancelOrder(id, { refund: true, customerReason: customerReasonOf(values) }, reason),
                     success: () => `Order ${o.orderNumber} cancelled; a refund is recorded as owed.`,
                   })}
                   className="mc-btn mc-btn-primary"

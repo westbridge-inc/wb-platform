@@ -3,7 +3,7 @@
 import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { getDriverProfile, getDriverRides, getRiderDeliveries, getRiderProfile } from '@/lib/mover-api';
-import { OrderStatus } from '@swift/types';
+import { OrderStatus } from '@swift/types/src/order';
 import { DataUnavailable } from '@/components/data-unavailable';
 import { formatMoney as money, parseAmount } from '@/lib/money';
 import { NoEarnerProfile } from '@/components/pro-office-note';

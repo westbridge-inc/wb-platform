@@ -151,3 +151,23 @@ describe('search chip rows are never clipped (owner screenshot 17 Oct)', () => {
     expect(sized!.paddingHorizontal).toBe(12);
   });
 });
+
+// [owner 8 Nov 2026] A declined order's "Order from another store" opens Search on the order's store kind. When Search
+// is already open under the order screen, navigate only updates its params: the kind asked for must still apply.
+describe('a store kind handed to an open Search applies', () => {
+  const chipBackground = (label: string) => {
+    const button = [...host.querySelectorAll('button')].find((b) => b.textContent === label);
+    expect(button, label).toBeTruthy();
+    return style(button!.querySelector('[data-rn="view"]')!) as { backgroundColor?: unknown };
+  };
+
+  it('Search opened on Restaurants, then handed Groceries: Groceries is the chosen kind', async () => {
+    await renderSearch({ type: 'RESTAURANT' });
+    const unselected = chipBackground('Groceries').backgroundColor;
+    expect(chipBackground('Restaurants').backgroundColor).not.toEqual(unselected);
+    fx.params = { type: 'SUPERMARKET' };
+    await act(async () => root!.render(React.createElement(QueryClientProvider, { client: new QueryClient() }, React.createElement(SearchScreen))));
+    expect(chipBackground('Groceries').backgroundColor).not.toEqual(unselected);
+    expect(chipBackground('Restaurants').backgroundColor).toEqual(unselected);
+  });
+});

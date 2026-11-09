@@ -26,6 +26,7 @@ import { seedSecondApproval } from './helpers/admin-approval';
 import { TERMINAL_ORDER_STATUSES, MOVER_HOLDING_STATUSES } from '../modules/order/order-status';
 import { assertOrderMayProceed } from '../modules/compliance/prohibited-gate';
 import { wordFreeTag } from './helpers/fixture-ids';
+import { exportPersonalData } from '../modules/user/data-export';
 
 const RUN = wordFreeTag(8);
 const REASON = 'The store cannot fulfil this order; support is following up with the store about its direct refund.';
@@ -153,6 +154,53 @@ describe('record-only closure of store-claimed MMG orders', () => {
       expect(notice.body).toMatch(/Swift.*(never|does not).*money/i);
       expect(notice.body).not.toMatch(/refund (is confirmed|has arrived)|Swift refunded/);
     }
+  });
+
+  // [COORD ruling R1 on #2412, 8 Nov 2026] The operator's stated reason is Swift's internal note. The order and the
+  // refund obligation carry only the customer's fixed reason (the obligation is in the customer's data export); the
+  // note lives on the route's audit row and nowhere a customer or a store can read it.
+  it('the internal note stays on Swift’s audit row: the order and the obligation carry only the customer’s fixed reason', async () => {
+    const before = await order();
+    const closeWith = (approval?: string) => app.inject({
+      method: 'POST', url: `/api/v1/admin/orders/${before.id}/close-store-refund`,
+      headers: { authorization: `Bearer ${people['ADMIN']!.token}`, 'x-swift-reason': REASON, ...(approval ? { [APPROVAL_HEADER]: approval } : {}) },
+      payload: { expectedClaimRevision: 3, customerReason: 'SUPPORT_PAYMENT_PROBLEM' },
+    });
+    const ask = await closeWith();
+    expect(ask.statusCode, ask.body).toBe(202);
+    const approval = ask.json().error.details.approvalId as string;
+    const decided = await app.inject({ method: 'POST', url: `/api/v1/admin/approvals/${approval}/decide`,
+      headers: { authorization: `Bearer ${people['SUPER_ADMIN']!.token}`, 'x-swift-reason': REASON }, payload: { approve: true } });
+    expect(decided.statusCode, decided.body).toBe(200);
+    const res = await closeWith(approval);
+    expect(res.statusCode, res.body).toBe(200);
+    expect(res.body).not.toContain(REASON);
+
+    const after = await read(before.id);
+    expect(after.cancellationReason).toBe('SUPPORT_PAYMENT_PROBLEM');
+    const obligation = await sys(() => app.prisma.mmgRefundObligation.findFirstOrThrow({ where: { orderId: before.id } }));
+    expect(obligation.reason).toBe('SUPPORT_PAYMENT_PROBLEM');
+    const steps = await sys(() => app.prisma.orderStatusLog.findMany({ where: { orderId: before.id }, select: { note: true } }));
+    expect(JSON.stringify(steps)).not.toContain(REASON);
+    const notices = await sys(() => app.prisma.notification.findMany({ where: { userId: { in: [customerId, ownerId] }, data: { path: ['orderId'], equals: before.id } }, select: { title: true, body: true } }));
+    expect(notices.length).toBeGreaterThan(0);
+    expect(JSON.stringify(notices)).not.toContain(REASON);
+    // The customer's data export (DSAR) carries the obligation: never the note.
+    const exported = await sys(() => exportPersonalData(app.prisma, customerId));
+    expect(JSON.stringify(exported)).toContain('SUPPORT_PAYMENT_PROBLEM');
+    expect(JSON.stringify(exported)).not.toContain(REASON);
+    // The one place it is kept.
+    const audit = await sys(() => app.prisma.auditLog.findFirstOrThrow({ where: { entityId: before.id, action: 'ADMIN POST /api/v1/admin/orders/:id/close-store-refund' } }));
+    expect(audit.changes).toMatchObject({ reason: REASON });
+  });
+
+  it('an older console naming no customer reason: the order and the obligation say only that Swift support closed it', async () => {
+    const before = await order();
+    const approval = await approve(before.id);
+    expect((await close(before.id, 'ADMIN', 3, approval)).statusCode).toBe(200);
+    expect((await read(before.id)).cancellationReason).toBe('SUPPORT_OTHER');
+    const obligation = await sys(() => app.prisma.mmgRefundObligation.findFirstOrThrow({ where: { orderId: before.id } }));
+    expect(obligation.reason).toBe('SUPPORT_OTHER');
   });
 
   it('requires a reason and refuses customer and store actors', async () => {

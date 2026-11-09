@@ -4,6 +4,7 @@ import { useState } from 'react';
 import Link from 'next/link';
 import { keepPreviousData, useQuery, useQueryClient } from '@tanstack/react-query';
 import { fetchOrders, cancelOrder } from '@/lib/api';
+import { CUSTOMER_REASON_FIELD, INTERNAL_NOTE_WORDS, customerReasonOf } from '@/lib/support-cancel';
 import { HeldOrders } from '@/components/mc/HeldOrders';
 import { ENUM_LABELS, label } from '@/lib/labels';
 import { EMPTY_LIST_STATE, listQueryString, type ListState } from '@/lib/list-query';
@@ -76,8 +77,10 @@ export default function OrdersPage() {
       ),
       confirmLabel: refund ? 'Cancel and record refund owed' : 'Cancel order',
       dismissLabel: 'Keep the order',
-      reason: { hint: 'The customer is owed the real reason; it is kept on the permanent record.' },
-      submit: ({ reason }) => cancelOrder(o.id, { refund }, reason),
+      // [COORD 8 Nov 2026] The customer sees one fixed reason; the operator's words are Swift's internal note.
+      fields: [CUSTOMER_REASON_FIELD],
+      reason: INTERNAL_NOTE_WORDS,
+      submit: ({ reason, values }) => cancelOrder(o.id, { refund, customerReason: customerReasonOf(values) }, reason),
       success: () => (refund ? `Order ${o.orderNumber} is cancelled; ${store} owes the customer a refund.` : `Order ${o.orderNumber} is cancelled.`),
     });
     if (!outcome) return;

@@ -8,4 +8,11 @@ regexes = [
   # The canonical jwt.io example token ({"sub":"1234"}, dummy HMAC) used by the
   # PII-scrubber test to prove tokens are stripped before any AI prompt.
   '''eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9\.eyJzdWIiOiIxMjM0In0\.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJVadQssw5c''',
+  # Sentry's OWN public DSN key for its SDK self-diagnosis project, hard-coded by the vendor in
+  # @sentry/browser build/npm/*/diagnose-sdk.js (the URL o447951.ingest.sentry.io/api/4509632503087104).
+  # A DSN public key is public by Sentry's design and this one is not Swift's. It reaches the mobile
+  # Hermes bundle through the Sentry SDK; whether generic-api-key matches it depends only on how
+  # Hermes packs its string table, so any unrelated string change can flip the mobile gate. Only this
+  # exact key: every other value still fails the gate.
+  '''c1dfb07d783ad5325c245c1fd37253''',
 ]

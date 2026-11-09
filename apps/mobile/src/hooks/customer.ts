@@ -1110,7 +1110,7 @@ export function useTipOrder(orderId: string) {
 }
 
 /** Approve/reject the store's out-of-stock substitution, live (§5.3). */
-type SubstitutionDecision = { orderId: string; lineId: string; approve: boolean };
+type SubstitutionDecision = { orderId: string; lineId: string; approve: boolean; endsOrder?: boolean };
 
 export function useDecideSubstitution() {
   const qc = useQueryClient();
@@ -1125,8 +1125,8 @@ export function useDecideSubstitution() {
       if (error?.response?.status === 409) return qc.invalidateQueries({ queryKey: customerKeys.order(orderId) });
       return undefined;
     },
-    mutationFn: ({ orderId, lineId, approve }: SubstitutionDecision) =>
-      customerApi.decideSubstitution(orderId, lineId, approve),
+    mutationFn: ({ orderId, lineId, approve, endsOrder }: SubstitutionDecision) =>
+      customerApi.decideSubstitution(orderId, lineId, approve, endsOrder === true),
     // [L09 · M028] The order screen reads customerKeys.order(id); refreshing
     // any other key left it showing the old proposal after a decision. The
     // order is the decision's own (#1707), never the render's.

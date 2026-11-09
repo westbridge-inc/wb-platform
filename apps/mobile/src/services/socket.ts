@@ -75,6 +75,10 @@ let authFallbackTimer: ReturnType<typeof setTimeout> | null = null;
 let sendNow: ((event: string, ...args: unknown[]) => unknown) | null = null;
 /** The access token the last handshake presented (to tell a refused token from a newer one). */
 let presentedToken: string | null = null;
+/** [S4-1] The token this wake's refresh produced. Refused too, it is shown again with backoff, never
+ *  refreshed again: a server refusing tokens it just issued (a fault on its side) costs one refresh
+ *  per wake, not one per retry. A wake = a new socket, the screen, a new token, a settled connection. */
+let refreshedTo: string | null = null;
 let stopForeground: (() => void) | null = null;
 let stopTokenWatch: (() => void) | null = null;
 
@@ -89,6 +93,7 @@ function resetRetries() {
   credentialRefusals = 0;
   serverDisconnects = 0;
   parked = false;
+  refreshedTo = null;
 }
 
 function clearConnectionTimers() {
@@ -143,7 +148,9 @@ async function reconnectNow(s: Socket, mode: RetryMode): Promise<void> {
   // Signed out, or another account: connectSocket/disconnectSocket own that.
   if (!current) return;
   const refused = mode === 'credential' && current.accessToken === presentedToken;
-  if (refused || tokenLapsed(current.accessToken)) {
+  // [review S4] ...unless that token has since lapsed: a lapsed token is refused for certain.
+  const alreadyRefreshed = refreshedTo !== null && current.accessToken === refreshedTo && !tokenLapsed(current.accessToken);
+  if (!alreadyRefreshed && (refused || tokenLapsed(current.accessToken))) {
     // The app's one refresh (single-flight with the 401 path and the refresh
     // ahead). A refresh the server refuses signs the session out, and the
     // sign-out retires this socket; one that could not be reached is retried.
@@ -155,6 +162,7 @@ async function reconnectNow(s: Socket, mode: RetryMode): Promise<void> {
       scheduleReconnect(s, 'credential');
       return;
     }
+    if (outcome) refreshedTo = current.accessToken;
   }
   s.connect();
 }
@@ -235,6 +243,7 @@ function watchSocket(s: Socket) {
     if (reason === 'io server disconnect') scheduleReconnect(s, 'plain', 'server');
   });
   s.on('connect_error', (error: Error) => {
+    if (s !== socket) return;
     // Still active = Socket.IO is retrying the network itself.
     if (s.active) return;
     if (ACCOUNT_REFUSALS.has(error?.message)) {

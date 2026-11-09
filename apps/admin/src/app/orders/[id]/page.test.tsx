@@ -56,7 +56,11 @@ async function openPanel(user: User, opener: string) {
   return screen.findByRole('dialog');
 }
 async function giveReason(user: User, panel: HTMLElement, reason = REASON) {
-  await user.type(within(panel).getByRole('textbox', { name: 'Reason' }), reason);
+  // [COORD 8 Nov 2026] A support cancel asks two things: what the customer sees (a fixed reason) and Swift's
+  // internal note (the stated reason, ADM-006). Other actions keep the one "Reason" box.
+  const customerSees = within(panel).queryByRole('group', { name: 'What the customer sees' });
+  if (customerSees) await user.click(within(customerSees).getByRole('radio', { name: 'The store is closed' }));
+  await user.type(within(panel).getByRole('textbox', { name: customerSees ? 'Internal note (Swift only)' : 'Reason' }), reason);
 }
 
 describe('order cancel and refund mutations', () => {
@@ -86,7 +90,9 @@ describe('order cancel and refund mutations', () => {
     const [url, init] = requestsByMethod(fetchMock, 'PUT')[0]!;
     expect(url).toBe(`${API_ORIGIN}/api/v1/admin/orders/order-1/cancel`);
     expect(init?.method).toBe('PUT');
-    expect(JSON.parse(String(init?.body))).toEqual({ reason: REASON, refund: false });
+    expect(JSON.parse(String(init?.body))).toEqual({ refund: false, customerReason: 'SUPPORT_STORE_CLOSED' });
+    // The operator's words go only as the stated reason (Swift's record), never in the body the order is built from.
+    expect(new Headers(init?.headers).get('x-swift-reason')).toBe(REASON);
     expect(await screen.findByText('Order ORDER-TEST-1 cancelled.')).toBeTruthy();
   });
 
@@ -116,7 +122,8 @@ describe('order cancel and refund mutations', () => {
     const [url, init] = requestsByMethod(fetchMock, 'PUT')[0]!;
     expect(url).toBe(`${API_ORIGIN}/api/v1/admin/orders/order-1/cancel`);
     expect(init?.method).toBe('PUT');
-    expect(JSON.parse(String(init?.body))).toEqual({ reason: REASON, refund: true });
+    expect(JSON.parse(String(init?.body))).toEqual({ refund: true, customerReason: 'SUPPORT_STORE_CLOSED' });
+    expect(new Headers(init?.headers).get('x-swift-reason')).toBe(REASON);
   });
 
   it.each([['Cancel order', 'Cancel order'], ['Record refund owed', 'Cancel and record refund owed']])(

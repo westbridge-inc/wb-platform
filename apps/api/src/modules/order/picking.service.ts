@@ -12,6 +12,8 @@ import { storeTeam, ringRecipients } from '../notification/store-team';
 import { hiddenAmong, unhideRestocked } from '../compliance/prohibited-gate';
 import { recomputeOrderVat } from '../store-vat/order-vat';
 import { orderStageRefusal } from './order-status-words';
+import { persistRiderCancellationNotice, drainRiderCancellationNotices } from './rider-cancel-notice';
+import { ORDER_TRANSITIONS, STORE_REJECTABLE_STATUSES } from './order-status';
 
 /** [REPORT-006 F-006-02] MMG order money is immutable in-app — ANY payment
  *  status. CAPTURED is money the store already received; PENDING is only the
@@ -57,6 +59,37 @@ function assertMmgMoneyAdjustable(order: AdjustableOrder): void {
 // for the CAS winner.
 // ---------------------------------------------------------------------------
 
+/** [OOS-FLOW · owner 8 Nov 2026] The reason a store's out-of-stock close records: the store's own
+ *  "Out of stock" reject preset (mobile rejectReasons.ts, web reject-reasons.ts), so every app words
+ *  it exactly as the store's decline ("The store declined your order: Out of stock."). */
+export const OUT_OF_STOCK_REASON = 'Out of stock';
+
+/** [OOS-FLOW] closeLine's refusal to take off the last item still coming on an accepted order. Internal:
+ *  every caller turns it into the order's end (cancelForStockOut), never into an empty order. */
+const LAST_ITEM_LEFT = 'LAST_ITEM_LEFT' as const;
+
+/** [OOS-FLOW · REVIEW-1 S3-2] The store's removal of the last item still coming, sent without its confirmation
+ *  (endsOrder): refused before anything is written. Apps that ask once read this code and ask. */
+export const LAST_ITEM_ENDS_ORDER = 'LAST_ITEM_ENDS_ORDER' as const;
+
+/** [OOS-FLOW] closeLine's last-item refusal as a value its caller ends the order on; anything else is rethrown. */
+function lastItemLeftOr(error: unknown): typeof LAST_ITEM_LEFT {
+  if (error instanceof AppError && error.code === LAST_ITEM_LEFT) return LAST_ITEM_LEFT;
+  throw error;
+}
+
+/** [OOS-FLOW] What a stock-out close says about money, only where it is certainly true. Cash is paid at
+ *  the door or the counter, and every stock-out close happens before pickup: nothing was charged. An
+ *  MMG payment still waiting for the store's "Paid by MMG" may already have been sent: the store refunds
+ *  it directly (Swift never holds it). Any other rail: nothing is claimed. */
+function stockOutMoneyWords(order: { paymentMethod: string | null; paymentStatus?: string | null }): string {
+  if (order.paymentMethod === 'CASH') return ' Nothing was charged.';
+  if (order.paymentMethod === 'MOBILE_MONEY' && order.paymentStatus === 'PENDING') {
+    return ' If you already sent the MMG payment, the store refunds you directly.';
+  }
+  return '';
+}
+
 /** Order states where the pick list is editable by the vendor.
  *  [O-4 · owner 22 Oct 2026] PENDING too: BEFORE accepting, the store marks a
  *  line "Out of stock" (a swap or a removal question the customer answers);
@@ -91,6 +124,21 @@ const questionGateTarget = (status: string) => (status === 'PENDING' ? 'ACCEPTED
 const closedQuestionStamp = (status: string, at: Date) => (status === 'PENDING' ? at : null);
 
 type PickableStatus = import('@prisma/client').OrderStatus;
+
+/** [OOS-FLOW] The accepted stages an out-of-stock close may end: the pick list is open and the goods
+ *  are still in the store (a rider may be assigned or on the way, never holding them). */
+const STOCK_OUT_CANCELLABLE = PICKABLE_STATES.filter(
+  // The state machine decides which of them may be cancelled at all (order-status.ts ORDER_TRANSITIONS).
+  (st) => st !== 'PENDING' && (ORDER_TRANSITIONS.CANCELLED as readonly string[]).includes(st),
+) as PickableStatus[];
+
+/** [OOS-FLOW] The line and order facts an out-of-stock close reads. */
+type StockOutLine = {
+  id: string;
+  orderId: string;
+  name: string;
+  order: { customerId: string; orderNumber: string; vendorId: string | null };
+};
 
 export class PickingService {
   private notifications: NotificationService;
@@ -316,6 +364,8 @@ export class PickingService {
         data: { orderId, status: order.status as PickableStatus, changedBy, note: `Substitution proposed: ${line.name} → ${substitute.name}` },
       });
     });
+    // [OOS-FLOW] Read after the commit, for the push's words only: is this the only item still coming?
+    const onlyItem = await this.lastItemLeft(orderId, lineId);
     // Only the committed winner speaks.
     await emitToOrderRoom(this.prisma, this.io, orderId, 'order:substitution', {
       orderId,
@@ -333,7 +383,11 @@ export class PickingService {
       userId: line.order.customerId,
       type: 'ORDER_UPDATE',
       title: `${line.name} is out of stock`,
-      body: substitutionNoAnswer(line.order) === 'REMOVE'
+      body: substitutionNoAnswer(line.order) === 'REMOVE' && onlyItem
+        // [OOS-FLOW · owner 8 Nov 2026] The only item left: no answer (or, once accepted, a "no thanks")
+        // cancels the order instead of emptying it, so the push never says it "comes off".
+        ? `The store suggests ${substitute.name} instead of ${line.name}, the only item left on order #${line.order.orderNumber}. Approve it in the app within ${decideMinutes} minutes, or the order is cancelled. Nothing has been charged.`
+        : substitutionNoAnswer(line.order) === 'REMOVE'
         ? `The store suggests ${substitute.name} instead for order #${line.order.orderNumber}. Approve or decline it in the app within ${decideMinutes} minutes. If you don't answer, it comes off your order and your total goes down.`
         : `The store suggests ${substitute.name} instead for order #${line.order.orderNumber}. If it isn't approved in the app within ${decideMinutes} minutes, the store settles this item with you directly.`,
       data: { orderId, kind: 'substitution_pending', lineId },
@@ -344,7 +398,7 @@ export class PickingService {
   /** No substitute possible → refund the line: totals shrink, stock returns.
    *  [O-4] Before the store accepts, the line is not removed yet: the CUSTOMER
    *  is asked (askRemoval) — continue without it, or cancel the order. */
-  async refundLine(orderId: string, lineId: string, changedBy: string) {
+  async refundLine(orderId: string, lineId: string, changedBy: string, opts: { endsOrder?: boolean } = {}) {
     const line = await this.getLine(orderId, lineId);
     if (line.order.status === 'PENDING') return this.askRemoval(line, changedBy);
     if (line.picked) throw new AppError(409, 'ALREADY_PICKED', 'This line is already picked');
@@ -352,11 +406,19 @@ export class PickingService {
     // rejection also closes the line — refunding it again double-decremented
     // totals and double-restocked.
     if (line.subStatus === 'REFUNDED' || line.subStatus === 'REJECTED') return line;
+    // [OOS-FLOW · owner 8 Nov 2026] The last item still coming: taking it off left an accepted order
+    // with nothing in it, stuck in preparation (Ready refused, nothing to cancel). The order ends
+    // instead, as the store's decline "Out of stock". (Preview; closeLine decides again on the lock.)
+    // [OOS-FLOW · REVIEW-1 S3-2 · COORD ruling] Only when the store CONFIRMED it (endsOrder, sent by an app
+    // that asked once first): an older app's one tap, or a second device that did not know it was the last
+    // item, gets the question back in words instead of a silent cancel.
+    if (await this.lastItemLeft(orderId, lineId)) return this.storeStockOutCloseIfConfirmed(line, changedBy, opts.endsOrder === true);
     // [F-006-02] Fail-fast preview for honest copy; the authoritative check
     // re-runs inside closeLine's locked transaction.
     assertMmgMoneyAdjustable(line.order);
 
-    const closed = await this.closeLine(line, 'REFUNDED', changedBy);
+    const closed = await this.closeLine(line, 'REFUNDED', changedBy).catch(lastItemLeftOr);
+    if (closed === LAST_ITEM_LEFT) return this.storeStockOutCloseIfConfirmed(line, changedBy, opts.endsOrder === true);
     // [REPORT-006 F-006-05] Only the CAS winner speaks: a lost duplicate race
     // must not send the customer a second "removed from your order" push.
     if (closed) {
@@ -442,7 +504,7 @@ export class PickingService {
   }
 
   /** The customer's verdict on a pending substitution. */
-  async decideSubstitution(orderId: string, lineId: string, customerId: string, approve: boolean) {
+  async decideSubstitution(orderId: string, lineId: string, customerId: string, approve: boolean, opts: { endsOrder?: boolean } = {}) {
     const line = await this.prisma.orderItem.findFirst({
       where: { id: lineId, orderId, order: { customerId } },
       include: { order: { select: {
@@ -478,7 +540,26 @@ export class PickingService {
       // MMG that is an unrecorded refund [F-006-02]. Preview fail-fast; the
       // locked transaction inside closeLine re-asserts from the live row.
       assertMmgMoneyAdjustable(line.order);
-      const closed = await this.closeLine(line, 'REJECTED', customerId, { requireOthersLeft: true });
+      const closed = await this.closeLine(line, 'REJECTED', customerId, { requireOthersLeft: true }).catch(lastItemLeftOr);
+      // [OOS-FLOW · owner 8 Nov 2026] "No thanks" to a swap for the only item left on an accepted order:
+      // there is nothing to go ahead with, so the order is cancelled (never counted against the customer).
+      if (closed === LAST_ITEM_LEFT) {
+        // [OOS-FLOW · REVIEW-1 S3-1 · COORD ruling] Only a client that showed "No thanks, cancel order" may end
+        // the order this way (it says so with endsOrder); any other answer gets the question back in words.
+        if (opts.endsOrder !== true) {
+          throw new AppError(409, LAST_ITEM_ENDS_ORDER,
+            `${line.name} is the only item left on your order, so saying no thanks cancels the order. Approve the swap, or cancel the order (update the app to do it in one step). Nothing has been charged.`);
+        }
+        await this.declinedOrUnansweredStockOutClose(line, {
+          changedBy: customerId,
+          closeAs: 'REJECTED',
+          lineWhere: { subStatus: 'PENDING', picked: false },
+          reason: `Out of stock: ${line.name} was the only item and the suggested swap was declined`,
+          customerBody: `You said no thanks to the swap for ${line.name}, the only item left on order #${line.order.orderNumber}, so the order was cancelled.`,
+          storeBody: `The customer said no thanks to the swap for ${line.name}, the only item left, so the order was cancelled. Nothing more to do.`,
+        });
+        return this.prisma.orderItem.findUnique({ where: { id: lineId } });
+      }
       if (closed) {
         await this.tellStoreTheCustomerAnswered(line.order, `${line.name}: the customer declined the swap, so it comes off`);
         return this.prisma.orderItem.findUnique({ where: { id: lineId } });
@@ -623,8 +704,11 @@ export class PickingService {
       // say (before a rider holds it, the claim checks the shown amount instead: cash-limit assertCashShown). The
       // whole approval rolls back; the customer is told why here, the store by the notice after the transaction.
       if (order.paymentMethod === 'CASH' && order.riderId && delta > 0) {
-        throw new AppError(409, 'SUBSTITUTE_RAISES_RIDER_CASH',
-          'A rider has already taken this order and agreed to pay the store the amount they were shown, so a dearer swap cannot be added. Decline this swap (the item comes off your order), or ask the store for a same-price option.');
+        // [OOS-FLOW · REVIEW-1 S4-1] Declining the only item left cancels the order: the words say so.
+        const others = await tx.orderItem.count({ where: { orderId, id: { not: lineId }, ...PICK_ALIVE_WHERE } });
+        throw new AppError(409, 'SUBSTITUTE_RAISES_RIDER_CASH', others === 0
+          ? 'A rider has already taken this order and agreed to pay the store the amount they were shown, so a dearer swap cannot be added. It is the only item left: say no thanks to cancel the order (nothing has been charged), or ask the store for a same-price option.'
+          : 'A rider has already taken this order and agreed to pay the store the amount they were shown, so a dearer swap cannot be added. Decline this swap (the item comes off your order), or ask the store for a same-price option.');
       }
       if (order.paymentMethod === 'CASH' && order.riderId && delta < 0) {
         await new FloatService(tx).release(tx, order.riderId, -delta);
@@ -638,7 +722,7 @@ export class PickingService {
       // [O1 · reviewer B S2] The store is told why the swap it offered did not go through (the customer has the
       // refusal itself); nothing changed, the question stays open for a refund or a same-price option.
       if (error instanceof AppError && error.code === 'SUBSTITUTE_RAISES_RIDER_CASH') {
-        await this.tellStoreSwapRefusedForRider(line.order, line.name);
+        await this.tellStoreSwapRefusedForRider(line.order, line.name, await this.lastItemLeft(orderId, lineId).catch(() => false));
       }
       throw error;
     });
@@ -680,9 +764,16 @@ export class PickingService {
       // [O-4 · REVIEW-F S3-1] On a waiting order a customer's answer never empties it: the only
       // item left is not removed by "continue" or a declined swap (the customer cancels instead).
       // Decided on the LOCKED rows: two answers racing on the last two lines cannot both remove.
-      if (opts.requireOthersLeft && ord.status === 'PENDING') {
+      // [OOS-FLOW · owner 8 Nov 2026] After acceptance NO removal empties the order (the store's
+      // "Remove item", a declined swap, no answer): the last item still coming is refused here, before
+      // anything is written, and the caller ends the order instead (cancelForStockOut). Two removals
+      // racing on the last two lines: the second waits for this lock and sees none left.
+      if (ord.status !== 'PENDING' || opts.requireOthersLeft) {
         const others = await tx.orderItem.count({ where: { orderId: line.order.id, id: { not: line.id }, ...PICK_ALIVE_WHERE } });
-        if (others === 0) throw new AppError(409, 'ONLY_ITEM_LEFT', ONLY_ITEM_LEFT_COPY);
+        if (others === 0) {
+          if (ord.status === 'PENDING') throw new AppError(409, 'ONLY_ITEM_LEFT', ONLY_ITEM_LEFT_COPY);
+          throw new AppError(409, LAST_ITEM_LEFT, `${line.name} is the only item left on this order.`);
+        }
       }
 
       // Floor the order totals at 0. On a discounted order the stored discount
@@ -809,7 +900,20 @@ export class PickingService {
     const closed = await this.closeLine(line, 'REFUNDED', changedBy, {
       decidedBefore: now,
       note: removal ? `Line removed, no answer to the out-of-stock question in time: ${line.name}` : `Line removed, no answer to the swap in time: ${line.name}`,
-    });
+    }).catch(lastItemLeftOr);
+    // [OOS-FLOW · owner 8 Nov 2026] No answer about the only item left on an accepted order: the order
+    // can't go ahead, so it is cancelled (a system close, never the customer's fault), as on a waiting one.
+    if (closed === LAST_ITEM_LEFT) {
+      const ended = await this.declinedOrUnansweredStockOutClose(line, {
+        changedBy: null,
+        closeAs: 'REFUNDED',
+        lineWhere: { subStatus: 'PENDING', picked: false, substituteDecideBy: { lte: now } },
+        reason: `Out of stock: ${line.name} was the only item and the customer did not answer in time`,
+        customerBody: `${line.name} is out of stock and was the only item left on order #${line.order.orderNumber}. The store's swap question got no answer in time, so the order was cancelled.`,
+        storeBody: `${line.name}: the swap question got no answer in time and it was the only item left, so the order was cancelled. Nothing more to do.`,
+      });
+      return ended ? 'cancelled' : 'skipped';
+    }
     if (!closed) return 'skipped';
     if (line.order.status === 'PENDING') await this.tellStoreTheCustomerAnswered(line.order, `${line.name}: no answer in time, so it came off`);
     await this.notifications.send({
@@ -869,9 +973,169 @@ export class PickingService {
     return 'cancelled';
   }
 
+  /** [OOS-FLOW] Is this the last item still coming on the order (every other line came off, or is on its
+   *  way off)? A preview: the locked transaction decides again (closeLine, cancelForStockOut). */
+  private async lastItemLeft(orderId: string, lineId: string): Promise<boolean> {
+    const others = await this.prisma.orderItem.count({ where: { orderId, id: { not: lineId }, ...PICK_ALIVE_WHERE } });
+    return others === 0;
+  }
+
+  /**
+   * [OOS-FLOW · owner 8 Nov 2026] The store took off the last item still coming on an accepted order
+   * ("Out of stock" → remove). The order used to stay in preparation with nothing in it: the customer saw
+   * the item marked out of stock and nothing else happened, and Ready was refused. Now it ends exactly
+   * as the store's decline with the reason "Out of stock" (cancelledBy the store's user, the reject
+   * route's push and live events), through the one canonical seam: stock back, rider and float
+   * released, the live offer withdrawn. Paid MMG is refused there, as a reject is.
+   */
+  /** [OOS-FLOW · REVIEW-1 S3-2 · COORD ruling] The last item still coming ends the order only when the store
+   *  confirmed exactly that (endsOrder). Otherwise nothing is written and the store reads what removing it does
+   *  (a new app shows its ask on LAST_ITEM_ENDS_ORDER; an older app shows these words). */
+  private async storeStockOutCloseIfConfirmed(line: PickLine, changedBy: string, endsOrder: boolean) {
+    if (!endsOrder) {
+      const rejectable = (STORE_REJECTABLE_STATUSES as readonly string[]).includes(line.order.status);
+      throw new AppError(409, LAST_ITEM_ENDS_ORDER,
+        `${line.name} is the only item left on this order, so removing it cancels the order. Update the app to confirm it there, ${rejectable ? 'or reject the order with the reason "Out of stock"' : 'or contact Swift support to close it'}.`);
+    }
+    return this.storeStockOutClose(line, changedBy);
+  }
+
+  private async storeStockOutClose(line: PickLine, changedBy: string) {
+    const ended = await this.cancelForStockOut(line, {
+      by: changedBy,
+      reason: OUT_OF_STOCK_REASON,
+      note: `Out of stock: ${line.name} was the only item left, so the store declined the order`,
+      closeAs: 'REFUNDED',
+      lineWhere: { subStatus: line.subStatus, picked: false },
+    });
+    if (!ended) {
+      // A concurrent change (another line came back, or this one closed): nothing was written.
+      throw new AppError(409, 'LINE_CHANGED', 'This order just changed — refresh it');
+    }
+    await this.notifications.send({
+      userId: line.order.customerId,
+      type: 'ORDER_UPDATE',
+      title: 'Order declined',
+      body: `Your order ${line.order.orderNumber} was declined by the store. ${OUT_OF_STOCK_REASON}: ${line.name} was the only item left.${stockOutMoneyWords(ended)}`,
+      data: { orderId: line.orderId, status: 'CANCELLED' },
+    });
+    return this.prisma.orderItem.findUnique({ where: { id: line.id } });
+  }
+
+  /** [OOS-FLOW] The customer's "No thanks", or no answer, about the only item left on an accepted order:
+   *  a system close (cancelledBy unset: never counted against the customer). Both sides are told. */
+  private async declinedOrUnansweredStockOutClose(
+    line: StockOutLine,
+    input: { changedBy: string | null; closeAs: 'REFUNDED' | 'REJECTED'; lineWhere: Prisma.OrderItemWhereInput; reason: string; customerBody: string; storeBody: string },
+  ): Promise<boolean> {
+    // [REVIEW-1 S4-2] The status log names who decided (the customer's "No thanks"); cancelledBy stays unset
+    // (a system close, never counted against the customer).
+    const ended = await this.cancelForStockOut(line, { by: null, changedBy: input.changedBy, reason: input.reason, note: input.reason, closeAs: input.closeAs, lineWhere: input.lineWhere });
+    if (!ended) return false;
+    await this.notifications.send({
+      userId: line.order.customerId,
+      type: 'ORDER_UPDATE',
+      title: `Order #${line.order.orderNumber} cancelled`,
+      body: `${input.customerBody}${stockOutMoneyWords(ended)}`,
+      data: { orderId: line.orderId, status: 'CANCELLED' },
+    });
+    await this.tellStoreOrderEnded(line.order, line.orderId, input.storeBody);
+    return true;
+  }
+
+  /**
+   * [OOS-FLOW · owner 8 Nov 2026] THE out-of-stock end of an accepted order whose last item cannot be
+   * supplied. One canonical locked transition (OrderService.transitionOrderAtomically, the seam every
+   * cancellation uses; never a new path): accepted stages only, re-decided on the locked rows (the line
+   * is still in the state the caller decided on, and no other line is still coming), the line closed
+   * in the same commit. The seam puts the stock back (this line included, once), releases an assigned
+   * rider and their cash float, closes the dispatch search, withdraws a live offer and refuses paid MMG.
+   * The order's totals stay as they were: a cancelled order is owed nothing. An assigned rider is told
+   * through the durable rider notice. Returns the payment facts of the closed order, or null when the
+   * order changed first (nothing written). Without the seam (a caller that did not pass it) nothing is
+   * ever emptied: the store is told to reject instead.
+   */
+  private async cancelForStockOut(
+    line: StockOutLine,
+    input: { by: string | null; changedBy?: string | null; reason: string; note: string; closeAs: 'REFUNDED' | 'REJECTED'; lineWhere: Prisma.OrderItemWhereInput },
+  ): Promise<{ paymentMethod: string; paymentStatus: string } | null> {
+    if (!this.orderService) {
+      throw new AppError(409, 'REJECT_INSTEAD', `${line.name} is the only item left on this order. Reject the order instead, with the reason "Out of stock".`);
+    }
+    let facts: { paymentMethod: string; paymentStatus: string; riderId: string | null } | null = null;
+    try {
+      await this.orderService.transitionOrderAtomically({
+        orderId: line.orderId,
+        target: 'CANCELLED',
+        allowedFrom: STOCK_OUT_CANCELLABLE,
+        changedBy: input.changedBy === undefined ? input.by : input.changedBy,
+        note: input.note,
+        cancellation: { by: input.by, reason: input.reason },
+        releaseStaleMoverPointer: true,
+        withinTransaction: async (tx, source) => {
+          const still = await tx.orderItem.count({ where: { ...input.lineWhere, id: line.id, orderId: line.orderId } });
+          const others = await tx.orderItem.count({ where: { orderId: line.orderId, id: { not: line.id }, ...PICK_ALIVE_WHERE } });
+          if (still === 0 || others > 0) throw new AppError(409, 'NOT_ONLY_ITEM_LEFT', 'The order changed; the item is handled the usual way');
+          // The seam already put this line's goods back (restockCancelledOrder runs before this hook and
+          // skips only lines closed earlier), so closing it here returns nothing a second time.
+          await tx.orderItem.update({
+            where: { id: line.id },
+            data: { subStatus: input.closeAs, substituteItemId: null, substituteName: null, substitutePrice: null, substituteDecideBy: null },
+          });
+          if (source.riderId) {
+            await persistRiderCancellationNotice(tx, source,
+              source.status === 'RIDER_ARRIVED_PICKUP'
+              // [REVIEW-1 S4-3] Already at the counter: nothing to collect, free to go.
+              ? `Order #${source.orderNumber} was cancelled: the store is out of stock. There is nothing to collect; check your current jobs.`
+              : `Order #${source.orderNumber} was cancelled: the store is out of stock. Stop travelling to its pickup and check your current jobs.`);
+          }
+          facts = { paymentMethod: source.paymentMethod, paymentStatus: source.paymentStatus, riderId: source.riderId };
+        },
+        invalidStatus: (current) => new AppError(409, 'NOT_PICKABLE', orderStageRefusal(current, 'the pick list is closed')),
+        // [BUG-HUNT-2 G08] The reject route's own words: the store is told who closes it, and what it then owes.
+        paidMmgRefusal: () => new AppError(409, 'MMG_CANCEL_UNAVAILABLE', 'This order is already paid by MMG, so it cannot be rejected in the app. Contact Swift support: they close it and record the refund you owe the customer. Swift never holds the money.'),
+      });
+    } catch (error) {
+      if (error instanceof AppError && error.code === 'NOT_ONLY_ITEM_LEFT') return null;
+      throw error;
+    }
+    const closed = facts as { paymentMethod: string; paymentStatus: string; riderId: string | null } | null;
+    if (!closed) return null;
+    if (closed.riderId) {
+      await drainRiderCancellationNotices({ prisma: this.prisma, notifications: this.notifications }, { orderId: line.orderId })
+        .catch(() => undefined); // the durable notice stays pending; the sweep retries it
+    }
+    const event = { orderId: line.orderId, status: 'CANCELLED', reason: input.reason, timestamp: new Date().toISOString() };
+    await emitToOrderRoom(this.prisma, this.io, line.orderId, 'order:status_changed', event);
+    if (line.order.vendorId) await emitToStoreRoom(this.prisma, this.io, line.order.vendorId, 'order:status_changed', event);
+    await emitToOrderRoom(this.prisma, this.io, line.orderId, 'order:substitution', { orderId: line.orderId, lineId: line.id, status: input.closeAs });
+    return { paymentMethod: closed.paymentMethod, paymentStatus: closed.paymentStatus };
+  }
+
+  /** [OOS-FLOW] The store team hears that an order it was preparing ended on the customer's side of a
+   *  stock-out (a declined swap, or no answer). A notice, never the decision. */
+  private async tellStoreOrderEnded(order: { vendorId: string | null; orderNumber: string }, orderId: string, body: string): Promise<void> {
+    if (!order.vendorId) return;
+    try {
+      const team = await storeTeam(this.prisma, order.vendorId);
+      if (!team) return;
+      for (const userId of ringRecipients(team)) {
+        await this.notifications.send({
+          userId,
+          type: 'ORDER_UPDATE',
+          title: `Order #${order.orderNumber} cancelled`,
+          body,
+          data: { kind: 'vendor_customer_answered', orderId, orderNumber: order.orderNumber, audience: 'business' },
+        });
+      }
+    } catch {
+      // A notice, never the decision: the close already committed.
+    }
+  }
+
   /** [O1 · reviewer B S2] A dearer swap the customer said yes to was refused because a rider already holds the cash
    *  order: the store hears why, so it offers a same-price option or the item comes off. A notice, never the decision. */
-  private async tellStoreSwapRefusedForRider(order: { id?: string; vendorId: string | null; orderNumber: string }, itemName: string): Promise<void> {
+  private async tellStoreSwapRefusedForRider(order: { id?: string; vendorId: string | null; orderNumber: string }, itemName: string, onlyItem = false): Promise<void> {
     if (!order.vendorId || !order.id) return;
     try {
       const team = await storeTeam(this.prisma, order.vendorId);
@@ -881,7 +1145,10 @@ export class PickingService {
           userId,
           type: 'ORDER_UPDATE',
           title: `Order #${order.orderNumber}: the swap could not be added`,
-          body: `${itemName}: the customer said yes to the dearer swap, but a rider has already taken this cash order and agreed to pay you the amount they were shown. Offer a same-price option or refund the item.`,
+          body: onlyItem
+            // [OOS-FLOW · REVIEW-1 S4-1] Removing the only item left cancels the order.
+            ? `${itemName}: the customer said yes to the dearer swap, but a rider has already taken this cash order and agreed to pay you the amount they were shown. Offer a same-price option. It is the only item left, so removing it cancels the order.`
+            : `${itemName}: the customer said yes to the dearer swap, but a rider has already taken this cash order and agreed to pay you the amount they were shown. Offer a same-price option or refund the item.`,
           data: { kind: 'vendor_customer_answered', orderId: order.id, orderNumber: order.orderNumber, audience: 'business' },
         });
       }

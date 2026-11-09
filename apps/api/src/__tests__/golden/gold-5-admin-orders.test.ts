@@ -488,16 +488,18 @@ describe('GOLD-5 · ADMIN-03 — admin cancel and refund settlement', () => {
 
     const row = await orderRow(o1.orderId);
     expect({ status: row.status, by: row.cancelledBy, why: row.cancellationReason, owedBy: row.refundOwedById, paid: row.refundPaidAmount, ref: row.refundRef, settledAt: row.refundSettledAt })
-      .toEqual({ status: 'CANCELLED', by: ops.userId, why: reason, owedBy: ops.userId, paid: null, ref: null, settledAt: null });
+      // [COORD 8 Nov 2026] The order records the customer's fixed reason (an older caller naming none: SUPPORT_OTHER);
+      // the operator's words are Swift's internal note, kept on the audit row below and nowhere else.
+      .toEqual({ status: 'CANCELLED', by: ops.userId, why: 'SUPPORT_OTHER', owedBy: ops.userId, paid: null, ref: null, settledAt: null });
     expect(Number(row.refundOwedAmount)).toBe(owed1);
     expect(row.refundOwedAt!.getTime()).toBeGreaterThanOrEqual(cancelAt - 1_000);
     expect(row.refundOwedAt!.getTime()).toBeLessThanOrEqual(Date.now() + 1_000);
     const log = await sys(() => app.prisma.orderStatusLog.findMany({ where: { orderId: o1.orderId, status: 'CANCELLED' } }));
-    expect(log.map((l) => ({ by: l.changedBy, note: l.note }))).toEqual([{ by: ops.userId, note: reason }]);
+    expect(log.map((l) => ({ by: l.changedBy, note: l.note }))).toEqual([{ by: ops.userId, note: 'Cancelled by Swift support' }]);
     const told = await sys(() => app.prisma.notification.findMany({ where: { userId: customer.userId, title: 'Order Cancelled' } }));
-    expect(told.map((n) => n.body)).toEqual([`Your order ${o1.orderNumber} has been cancelled. Any cash you paid will be refunded — our team will follow up.`]);
+    expect(told.map((n) => n.body)).toEqual([`Order ${o1.orderNumber}: Swift support cancelled this order. Any cash you paid will be refunded — our team will follow up.`]);
     const trail = await sys(() => app.prisma.auditLog.findMany({ where: { entityId: o1.orderId, action: 'CANCEL_ORDER' } }));
-    expect(trail.map((t) => ({ by: t.userId, changes: t.changes }))).toEqual([{ by: ops.userId, changes: { reason, refund: true, previousStatus: 'PREPARING' } }]); // [O-3]
+    expect(trail.map((t) => ({ by: t.userId, changes: t.changes }))).toEqual([{ by: ops.userId, changes: { reason, customerReason: 'SUPPORT_OTHER', refund: true, previousStatus: 'PREPARING' } }]); // [O-3]
   });
 
   it('settling is a C4 money action: the ask waits for a SECOND admin, the requester cannot approve it, and nothing moves meanwhile', async () => {
