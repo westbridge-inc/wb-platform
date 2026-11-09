@@ -1,4 +1,5 @@
 import { POLL } from '../lib/pollPolicy';
+import { LAST_ITEM_ENDS_ORDER, serverErrorCode } from '../modules/vendor/acceptedOutOfStock';
 import { prepareUploadImage } from '../lib/uploadImage';
 import { bindVendorOrderFeed } from '../lib/vendorOrderFeed';
 import { runBillingMutation } from '../lib/billingMutation';
@@ -809,8 +810,16 @@ export function usePickingActions() {
     onSuccess: (_d, v) => invalidate(v.orderId),
   });
   const refundLine = usePreviewSafeMutation({
-    mutationFn: ({ orderId, lineId }: { orderId: string; lineId: string }) =>
-      unwrap(vendorApi.refundLine(orderId, lineId)),
+    // [OOS-FLOW · REVIEW-1 S3-2] The server refuses a removal of the last item still coming that the store did not
+    // confirm (another device took the other one off): that is the question to ask, not an error to show.
+    mutationFn: async ({ orderId, lineId, endsOrder = false }: { orderId: string; lineId: string; endsOrder?: boolean }) => {
+      try {
+        return await unwrap(vendorApi.refundLine(orderId, lineId, endsOrder));
+      } catch (error) {
+        if (serverErrorCode(error) === LAST_ITEM_ENDS_ORDER) return { needsConfirm: true as const };
+        throw error;
+      }
+    },
     onSuccess: (_d, v) => invalidate(v.orderId),
   });
   return { setPicked, substitute, refundLine };

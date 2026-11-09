@@ -23,6 +23,10 @@ const fx = vi.hoisted(() => ({
   refund: { mutate: vi.fn(), isPending: false, isError: false, error: null } as any,
   substitute: { mutate: vi.fn(), isPending: false, isError: false, error: null } as any,
   act: { mutate: vi.fn(), isPending: false, isError: false, error: null } as any,
+  // The order's own read again (after a confirmed removal): what it answers.
+  refetched: undefined as any,
+  announce: vi.fn(),
+  toast: vi.fn(),
   token: new Proxy({}, { get: (_target, key): unknown => key === Symbol.toPrimitive ? () => 0 : fx.token }),
 }));
 
@@ -31,7 +35,7 @@ vi.mock('react-native', async () => {
   const View = (p: any) => R.createElement('div', null, typeof p.children === 'function' ? p.children({ pressed: false }) : p.children);
   // A pressable is a real button here, named by its accessibility label when it has one.
   const Pressable = (p: any) => R.createElement('button', { type: 'button', onClick: p.onPress, 'aria-label': p.accessibilityLabel }, p.children);
-  return { View, ScrollView: View, Pressable, Linking: { openURL: vi.fn() } };
+  return { View, ScrollView: View, Pressable, Linking: { openURL: vi.fn() }, AccessibilityInfo: { announceForAccessibility: (t: string) => fx.announce(t) } };
 });
 vi.mock('@expo/vector-icons', () => ({ Feather: () => null, MaterialCommunityIcons: () => null }));
 vi.mock('@swift/ui', () => ({ color: fx.token, radius: fx.token, space: fx.token }));
@@ -48,7 +52,7 @@ vi.mock('../../../kit', async () => {
     PopupCard: (p: any) => p.visible ? h('div', { role: 'dialog' }, p.children) : null,
   };
 });
-vi.mock('../../../kit/toast', () => ({ toast: { success: vi.fn(), error: vi.fn(), show: vi.fn() } }));
+vi.mock('../../../kit/toast', () => ({ toast: { success: vi.fn(), error: vi.fn(), show: (...a: unknown[]) => fx.toast(...a) } }));
 vi.mock('../../../lib/openExternal', () => ({ openExternal: vi.fn() }));
 vi.mock('../../orders/CustodyRecoveryNotice', () => ({ CustodyRecoveryNotice: () => null }));
 vi.mock('../shared', async () => {
@@ -65,7 +69,7 @@ vi.mock('../shared', async () => {
 vi.mock('../../../hooks/vendorops', () => {
   const idle = () => ({ mutate: vi.fn(), isPending: false, isError: false, error: null });
   return {
-    useVendorOrder: (id?: string) => { fx.reads += 1; return { data: id ? fx.orders[id] : undefined, isLoading: false, isError: false, refetch: vi.fn() }; },
+    useVendorOrder: (id?: string) => { fx.reads += 1; return { data: id ? fx.orders[id] : undefined, isLoading: false, isError: false, refetch: async () => ({ data: fx.refetched }) }; },
     useOrderAction: () => fx.act, useRetryDispatch: idle, useSetOrderFulfillmentMode: idle, useReturnReceived: idle,
     usePickingActions: () => ({ setPicked: idle(), substitute: fx.substitute, refundLine: fx.refund }),
     usePendingPickLines: () => new Set(),
@@ -79,6 +83,8 @@ const line = (id: string, name: string, extra: Record<string, unknown> = {}) => 
 const order = (extra: Record<string, unknown>) => ({
   id: 'a', orderNumber: 'A', statusHistory: [], customer: { firstName: 'Customer' },
   vendor: { vendorType: 'STORE' }, paymentMethod: 'CASH', fulfillment: 'PICKUP', status: 'PREPARING',
+  // [REVIEW-2 F2] The server says it ends an order whose last item comes off (current servers do).
+  outOfStockEndsOrder: true,
   items: [line('l1', 'Shirt'), line('l2', 'Vest')], ...extra,
 });
 
@@ -100,6 +106,9 @@ beforeEach(() => {
   fx.substitute.mutate = vi.fn();
   fx.act.mutate = vi.fn();
   fx.reads = 0;
+  fx.refetched = undefined;
+  fx.announce = vi.fn();
+  fx.toast = vi.fn();
   fx.menu = [{ id: 'cat-1', items: [
     { id: 'item-l1', name: 'Shirt', basePrice: 1000, isAvailable: true },
     { id: 'item-l2', name: 'Vest', basePrice: 1000, isAvailable: true },
@@ -160,7 +169,7 @@ describe('[OOS-FLOW] after accepting: "Out of stock?" names both ways out', () =
     await click(outOfStock('Vest'));
     await click(buttons('Remove item')[0]);
     expect(fx.refund.mutate).toHaveBeenCalledTimes(1);
-    expect(fx.refund.mutate).toHaveBeenCalledWith({ orderId: 'a', lineId: 'l2' }, undefined);
+    expect(fx.refund.mutate.mock.calls[0]![0]).toEqual({ orderId: 'a', lineId: 'l2', endsOrder: false });
   });
 
   it('the last item still coming: asked once (it cancels the order), "Keep it" sends nothing, yes removes it', async () => {
@@ -176,8 +185,85 @@ describe('[OOS-FLOW] after accepting: "Out of stock?" names both ways out', () =
     await click(buttons('Remove item')[0]);
     await click(buttons('Remove and cancel the order')[0]);
     expect(fx.refund.mutate).toHaveBeenCalledTimes(1);
-    expect(fx.refund.mutate.mock.calls[0]![0]).toEqual({ orderId: 'a', lineId: 'l2' });
+    // [REVIEW-1 S3-2] Only the yes carries the confirmation the server needs to end the order.
+    expect(fx.refund.mutate.mock.calls[0]![0]).toEqual({ orderId: 'a', lineId: 'l2', endsOrder: true });
     expect(typeof fx.refund.mutate.mock.calls[0]![1]?.onSuccess).toBe('function');
+  });
+
+  it('[REVIEW-2 F4] the ask is announced to a screen reader', async () => {
+    await show(order({ items: [line('l1', 'Shirt', { subStatus: 'REFUNDED' }), line('l2', 'Vest')] }));
+    await click(outOfStock('Vest'));
+    await click(buttons('Remove item')[0]);
+    expect(fx.announce).toHaveBeenCalledWith(expect.stringContaining('This is the last item on the order. Removing it cancels the order'));
+  });
+
+  it('[REVIEW-2 F2] "order cancelled" is said only when the order\'s own read says CANCELLED', async () => {
+    await show(order({ items: [line('l1', 'Shirt', { subStatus: 'REFUNDED' }), line('l2', 'Vest')] }));
+    await click(outOfStock('Vest'));
+    await click(buttons('Remove item')[0]);
+    await click(buttons('Remove and cancel the order')[0]);
+    const onSuccess = fx.refund.mutate.mock.calls[0]![1].onSuccess;
+    fx.refetched = { status: 'PREPARING' };
+    await act(async () => { await onSuccess({ id: 'l2', subStatus: 'REFUNDED' }); });
+    expect(fx.toast).not.toHaveBeenCalled();
+    fx.refetched = { status: 'CANCELLED' };
+    await act(async () => { await onSuccess({ id: 'l2', subStatus: 'REFUNDED' }); });
+    expect(fx.toast).toHaveBeenCalledWith('The order was cancelled as out of stock. The customer has been told.');
+  });
+
+  it('[REVIEW-2 F2] a server that does not end such orders: no ask, no promise; the line just comes off', async () => {
+    await show(order({ outOfStockEndsOrder: undefined, items: [line('l1', 'Shirt', { subStatus: 'REFUNDED' }), line('l2', 'Vest')] }));
+    await click(outOfStock('Vest'));
+    await click(buttons('Remove item')[0]);
+    expect(host.textContent).not.toContain('Removing it cancels the order');
+    expect(fx.refund.mutate.mock.calls[0]![0]).toEqual({ orderId: 'a', lineId: 'l2', endsOrder: false });
+  });
+
+  it('[REVIEW-1 S3-2] another device took the other item off: the server\'s question comes back as the ask', async () => {
+    await show(order({}));
+    await click(outOfStock('Vest'));
+    await click(buttons('Remove item')[0]);
+    expect(fx.refund.mutate.mock.calls[0]![0]).toEqual({ orderId: 'a', lineId: 'l2', endsOrder: false });
+    await act(async () => { await fx.refund.mutate.mock.calls[0]![1].onSuccess({ needsConfirm: true }); });
+    expect(host.textContent).toContain('This is the last item on the order. Removing it cancels the order');
+    await click(buttons('Remove and cancel the order')[0]);
+    expect(fx.refund.mutate.mock.calls[1]![0]).toEqual({ orderId: 'a', lineId: 'l2', endsOrder: true });
+  });
+
+  it('[REVIEW-2 F1] a swap waiting on the only item left: the store reads that no answer cancels the order', async () => {
+    const text = await show(order({ items: [line('l1', 'Shirt', { subStatus: 'REFUNDED' }), line('l2', 'Vest', { subStatus: 'PENDING', substituteName: 'Tank top', substituteDecideBy: '2026-11-08T21:23:00.000Z' })] }));
+    expect(text).toContain('cancels the order: it is the only item left.');
+    expect(text).not.toContain('removes the item and lowers the total');
+  });
+
+  it('[REVIEW-2 F9] MMG: a line never comes off (the server refuses); the last one may while unpaid', async () => {
+    await show(order({ paymentMethod: 'MOBILE_MONEY', paymentStatus: 'PENDING' }));
+    await click(outOfStock('Vest'));
+    expect(buttons('Remove item')).toHaveLength(0);
+    expect(host.textContent).toContain('MMG order — settle item changes with the customer directly.');
+    await act(async () => root.unmount());
+    root = createRoot(host);
+    await show(order({ paymentMethod: 'MOBILE_MONEY', paymentStatus: 'PENDING', items: [line('l1', 'Shirt', { subStatus: 'REFUNDED' }), line('l2', 'Vest')] }));
+    await click(outOfStock('Vest'));
+    expect(buttons('Remove item')).toHaveLength(1);
+    await act(async () => root.unmount());
+    root = createRoot(host);
+    await show(order({ paymentMethod: 'MOBILE_MONEY', paymentStatus: 'CAPTURED', items: [line('l1', 'Shirt', { subStatus: 'REFUNDED' }), line('l2', 'Vest')] }));
+    await click(outOfStock('Vest'));
+    expect(buttons('Remove item')).toHaveLength(0);
+  });
+
+  it('[REVIEW-2 F9] "Show all items" says when it shows only some', async () => {
+    fx.menu = [{ id: 'cat-1', items: [
+      { id: 'item-l1', name: 'Shirt', basePrice: 1000, isAvailable: true },
+      { id: 'item-l2', name: 'Vest', basePrice: 1000, isAvailable: true },
+      ...Array.from({ length: 30 }, (_, i) => ({ id: `item-n${i}`, name: `Top ${i}`, basePrice: 900, isAvailable: true })),
+    ] }];
+    await show(order({}));
+    await click(outOfStock('Vest'));
+    await click(buttons('Show all items')[0]);
+    expect(host.textContent).toContain('Showing 24 of 31 items in stock.');
+    expect([...host.querySelectorAll('button')].filter((b) => b.textContent?.startsWith('Top ')).length + ([...host.querySelectorAll('button')].some((b) => b.textContent?.startsWith('Shirt · ')) ? 1 : 0)).toBe(24);
   });
 
   it('a swap waiting on the customer for the last item: "Remove item instead" asks once too', async () => {
@@ -205,6 +291,12 @@ describe('[OOS-FLOW] an order emptied on an older server is never a silent Ready
 
   it('past the stages a store may reject from: Swift support closes it, and no button pretends otherwise', async () => {
     const text = await show(order({ status: 'RIDER_ASSIGNED', fulfillment: 'DELIVERY', items: [line('l1', 'Shirt', { subStatus: 'REFUNDED' })] }));
+    expect(text).toContain('Contact Swift support to close it.');
+    expect(buttons('Reject: out of stock')).toHaveLength(0);
+  });
+
+  it('[REVIEW-2 F7] paid by MMG: Swift support closes it, never a Reject that refuses', async () => {
+    const text = await show(order({ paymentMethod: 'MOBILE_MONEY', paymentStatus: 'CAPTURED', items: [line('l1', 'Shirt', { subStatus: 'REFUNDED' })] }));
     expect(text).toContain('Contact Swift support to close it.');
     expect(buttons('Reject: out of stock')).toHaveLength(0);
   });

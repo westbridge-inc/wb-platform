@@ -1,12 +1,12 @@
 /** @jsxImportSource react */
-import React, { useState } from 'react';
-import { Pressable, ScrollView, View } from 'react-native';
+import React, { useEffect, useState } from 'react';
+import { AccessibilityInfo, Pressable, ScrollView, View } from 'react-native';
 import { Feather, MaterialCommunityIcons } from '@expo/vector-icons';
 import { color, radius, space } from '@swift/ui';
 import { cancellationReasonWords } from '@swift/types';
 import { Card, Chip, CodeInput, IconChip, InfoRow, LoadingBlock, ErrorState, PillButton, PopupCard, PopupTitle, Screen, T } from '../../../kit';
 import { OUT_OF_STOCK_WORDS, canMarkOutOfStock, customerDeciding, lastLineStanding, lineQuestion, nothingToAccept } from '../storeOrderRules';
-import { ACCEPTED_OUT_OF_STOCK_WORDS, lastItemAfterAccept, nothingLeftToHandOver, storeCanReject } from '../acceptedOutOfStock';
+import { ACCEPTED_OUT_OF_STOCK_WORDS, SHOW_ALL_LIMIT, mmgRemovalLocked, nothingLeftToHandOver, removalEndsOrder, storeCanReject } from '../acceptedOutOfStock';
 import { HANDOVER_WORDS, handoverNeedsNoCode, withHandoverSteps } from '../storeHandover';
 import { mmgDisputePaused } from '../order-dispute';
 import { RiderHandoverLine } from '../RiderHandoverLine';
@@ -160,6 +160,10 @@ function VendorOrderDetailBody({ navigation, route }: any) {
   // item" on the last item still coming that waits for a yes (it cancels the order): per line, by id.
   const [allFor, setAllFor] = useState<string | null>(null);
   const [lastRemoveFor, setLastRemoveFor] = useState<string | null>(null);
+  // [OOS-FLOW · REVIEW-2 F4] The ask replaces the chip the store just pressed: a screen reader hears it.
+  useEffect(() => {
+    if (lastRemoveFor) AccessibilityInfo.announceForAccessibility?.(ACCEPTED_OUT_OF_STOCK_WORDS.lastRemoveAsk);
+  }, [lastRemoveFor]);
   const picking = usePickingActions();
   // [TAP-AUDIT] Each line's tick waits alone: a second tap on a box whose tick is still on its way sends nothing.
   const pickPending = usePendingPickLines(orderId);
@@ -219,26 +223,37 @@ function VendorOrderDetailBody({ navigation, route }: any) {
     const grouped = original?.substitutionGroup
       ? pool.filter((i) => i.substitutionGroup === original.substitutionGroup)
       : pool.filter((i) => original && i.categoryId === original.categoryId);
-    if (everything) return (original?.substitutionGroup ? grouped : pool).slice(0, 24);
+    if (everything) return (original?.substitutionGroup ? grouped : pool);
     return grouped.slice(0, 6);
   };
-  /** [OOS-FLOW] Take a line off. The last item still coming ends the order (the server cancels it as
-   *  out of stock and tells the customer): the store hears that it happened. */
-  const removeLine = (line: any) => {
-    const ends = lastItemAfterAccept(order, line);
+  /** [REVIEW-2 F9] "Show all items" lists SHOW_ALL_LIMIT at most, and says so when there are more. */
+  const shownCandidates = (line: any) => substituteCandidates(line, allFor === line.id).slice(0, SHOW_ALL_LIMIT);
+  /** [OOS-FLOW] Take a line off. `confirmed` = the store said yes to "remove and cancel the order" (the server
+   *  ends the order only then). [REVIEW-1 S3-2] A removal the server finds to be the last item after all (another
+   *  device took the other one off) comes back as the question. [REVIEW-2 F2] The store hears the order ended
+   *  only when its own read says CANCELLED. */
+  const removeLine = (line: any, confirmed: boolean) => {
     setSubFor(null);
     setLastRemoveFor(null);
     picking.refundLine.mutate(
-      { orderId: order.id, lineId: line.id },
-      ends ? { onSuccess: () => toast.show(ACCEPTED_OUT_OF_STOCK_WORDS.orderEnded) } : undefined,
+      { orderId: order.id, lineId: line.id, endsOrder: confirmed },
+      {
+        onSuccess: async (answer: any) => {
+          if (answer?.needsConfirm) { setLastRemoveFor(line.id); return; }
+          if (!confirmed) return;
+          const fresh = await refetch();
+          if (String(fresh?.data?.status ?? '').toUpperCase() === 'CANCELLED') toast.show(ACCEPTED_OUT_OF_STOCK_WORDS.orderEnded);
+        },
+      },
     );
   };
-  /** [OOS-FLOW] "Remove item": asked once first when it is the last item still coming. */
+  /** [OOS-FLOW] "Remove item": asked once first when removing it cancels the order. */
   const askOrRemove = (line: any) => {
-    if (lastItemAfterAccept(order, line)) setLastRemoveFor(line.id);
-    else removeLine(line);
+    if (removalEndsOrder(order, line)) setLastRemoveFor(line.id);
+    else removeLine(line, false);
   };
-  const emptied = nothingLeftToHandOver(order);
+  // [REVIEW-2 F7] Not while an MMG disagreement pauses the order (support decides it).
+  const emptied = nothingLeftToHandOver(order) && !mmgDisputePaused(order);
   const isPickup = order.fulfillment === 'PICKUP';
   const isAppt = order.fulfillment === 'APPOINTMENT';
   const apptMobile = isAppt && !!order.deliveryAddress && order.deliveryAddress !== order.pickupAddress;
@@ -485,9 +500,10 @@ function VendorOrderDetailBody({ navigation, route }: any) {
                         {lineQuestion(it) === 'removal' ? OUT_OF_STOCK_WORDS.removalAsked : `Waiting on the customer: ${it.substituteName}`}
                       </T>
                     ) : null}
-                    {pending && storeSwapWaitText(it.substituteDecideBy, order.paymentMethod) ? (
+                    {/* [REVIEW-2 F1] The only item left: no answer cancels the order, and the store reads that. */}
+                    {pending && storeSwapWaitText(it.substituteDecideBy, order.paymentMethod, undefined, removalEndsOrder(order, it)) ? (
                       <T variant="caption" tone="muted" style={{ marginTop: 2 }}>
-                        {storeSwapWaitText(it.substituteDecideBy, order.paymentMethod)}
+                        {storeSwapWaitText(it.substituteDecideBy, order.paymentMethod, undefined, removalEndsOrder(order, it))}
                       </T>
                     ) : null}
                     {closed ? (
@@ -542,9 +558,9 @@ function VendorOrderDetailBody({ navigation, route }: any) {
                   <View style={{ marginLeft: 64 }}>
                     {lastRemoveFor === it.id ? (
                       <View style={{ marginTop: space.sm, gap: space.xs }}>
-                        <T variant="caption" weight="semibold" tone="error">{ACCEPTED_OUT_OF_STOCK_WORDS.lastRemoveAsk}</T>
+                        <T variant="caption" weight="semibold" tone="error" accessibilityLiveRegion="assertive">{ACCEPTED_OUT_OF_STOCK_WORDS.lastRemoveAsk}</T>
                         <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: space.sm }}>
-                          <PillButton label={ACCEPTED_OUT_OF_STOCK_WORDS.lastRemoveYes} variant="primary" size="sm" disabled={picking.refundLine.isPending || busy} onPress={() => removeLine(it)} />
+                          <PillButton label={ACCEPTED_OUT_OF_STOCK_WORDS.lastRemoveYes} variant="primary" size="sm" disabled={picking.refundLine.isPending || busy} onPress={() => removeLine(it, true)} />
                           <PillButton label={ACCEPTED_OUT_OF_STOCK_WORDS.lastRemoveKeep} variant="soft" size="sm" onPress={() => setLastRemoveFor(null)} />
                         </View>
                       </View>
@@ -552,19 +568,29 @@ function VendorOrderDetailBody({ navigation, route }: any) {
                       <View style={{ marginTop: space.sm, gap: space.xs }}>
                         <T variant="caption" weight="semibold" tone="muted">{ACCEPTED_OUT_OF_STOCK_WORDS.menuTitle}</T>
                         <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: space.sm }}>
-                          <Chip
-                            label={ACCEPTED_OUT_OF_STOCK_WORDS.removeItem}
-                            onPress={() => askOrRemove(it)}
-                            style={{ height: 32, paddingHorizontal: space.md }}
-                          />
+                          {/* [REVIEW-2 F9] The server's MMG rule, as on the web: an MMG line never comes off (its
+                              total cannot change in the app); the last one may, cancelling the order, while unpaid. */}
+                          {mmgRemovalLocked(order, it) ? null : (
+                            <Chip
+                              label={ACCEPTED_OUT_OF_STOCK_WORDS.removeItem}
+                              onPress={() => askOrRemove(it)}
+                              style={{ height: 32, paddingHorizontal: space.md }}
+                            />
+                          )}
                           <Chip label="Back" selected onPress={() => { setSubFor(null); setAllFor(null); }} style={{ height: 32, paddingHorizontal: space.md }} />
                         </View>
+                        {mmgRemovalLocked(order, it) ? (
+                          <T variant="caption" tone="muted">{ACCEPTED_OUT_OF_STOCK_WORDS.mmgLocked}</T>
+                        ) : null}
                         <T variant="caption" tone="muted" style={{ marginTop: space.xs }}>{ACCEPTED_OUT_OF_STOCK_WORDS.offerTitle}</T>
-                        {substituteCandidates(it, allFor === it.id).length === 0 ? (
+                        {shownCandidates(it).length === 0 ? (
                           <T variant="caption" tone="muted">{ACCEPTED_OUT_OF_STOCK_WORDS.noReplacement}</T>
                         ) : null}
+                        {allFor === it.id && substituteCandidates(it, true).length > SHOW_ALL_LIMIT ? (
+                          <T variant="caption" tone="muted">{ACCEPTED_OUT_OF_STOCK_WORDS.showingSome(SHOW_ALL_LIMIT, substituteCandidates(it, true).length)}</T>
+                        ) : null}
                         <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: space.sm }}>
-                          {substituteCandidates(it, allFor === it.id).map((cand: any) => (
+                          {shownCandidates(it).map((cand: any) => (
                             <Chip
                               key={cand.id}
                               label={`${cand.name} · ${money(cand.basePrice)}`}
@@ -596,13 +622,13 @@ function VendorOrderDetailBody({ navigation, route }: any) {
                     tells the customer). Not on MMG: its total can't change
                     in-app, and the server refuses. [OOS-FLOW] The last item
                     still coming asks once (removing it cancels the order). */}
-                {pickable && pending && order.paymentMethod !== 'MOBILE_MONEY' ? (
+                {pickable && pending && !mmgRemovalLocked(order, it) ? (
                   <View style={{ marginLeft: 64 }}>
                     {lastRemoveFor === it.id ? (
                       <View style={{ marginTop: space.sm, gap: space.xs }}>
-                        <T variant="caption" weight="semibold" tone="error">{ACCEPTED_OUT_OF_STOCK_WORDS.lastRemoveAsk}</T>
+                        <T variant="caption" weight="semibold" tone="error" accessibilityLiveRegion="assertive">{ACCEPTED_OUT_OF_STOCK_WORDS.lastRemoveAsk}</T>
                         <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: space.sm }}>
-                          <PillButton label={ACCEPTED_OUT_OF_STOCK_WORDS.lastRemoveYes} variant="primary" size="sm" disabled={picking.refundLine.isPending || busy} onPress={() => removeLine(it)} />
+                          <PillButton label={ACCEPTED_OUT_OF_STOCK_WORDS.lastRemoveYes} variant="primary" size="sm" disabled={picking.refundLine.isPending || busy} onPress={() => removeLine(it, true)} />
                           <PillButton label={ACCEPTED_OUT_OF_STOCK_WORDS.lastRemoveKeep} variant="soft" size="sm" onPress={() => setLastRemoveFor(null)} />
                         </View>
                       </View>
