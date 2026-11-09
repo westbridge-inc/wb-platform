@@ -434,6 +434,18 @@ describe('PUT /vendor/orders/:id/reject — the customer is told a booking was d
     expect(spies.send).not.toHaveBeenCalled();
   });
 
+  it('[#2412 security review] a decline whose reason looks like a system or Swift support code is refused before anything changes', async () => {
+    // The apps read such codes out as the system's or Swift support's words: a store must not be able to pose as Swift.
+    const h = await providerHost([foodDelivery('food-1')]);
+    const spies = rejectSpies(h.store);
+    for (const reason of ['SUPPORT_SAFETY', 'support_store_closed', 'NO_DRIVERS_AVAILABLE', 'OUT_OF_STOCK']) {
+      await expect(h.call('put /orders/:id/reject', asProvider({ params: { id: 'food-1' }, body: { reason } }))).rejects.toThrow(/in words/);
+    }
+    expect(spies.transition).not.toHaveBeenCalled();
+    expect(spies.send).not.toHaveBeenCalled();
+    expect(h.store.rows[0]!['status']).toBe('PENDING');
+  });
+
   it('control — a cash food order declined with a reason carries it and no MMG sentence', async () => {
     const h = await providerHost([foodDelivery('food-1')]);
     const spies = rejectSpies(h.store);

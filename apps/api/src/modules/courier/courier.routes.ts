@@ -35,6 +35,8 @@ import { POSTAL_REFUSAL, postalItem } from './postal-items';
 import { withCounterpartPhones } from '../calls/counterpart-phone';
 import { courierRiderAnswer } from './courier-rider-answer';
 import { assertParcelHasRiders } from '../dispatch/delivery-capacity';
+import { orderPeople, senderCancellationView } from '../order/customer-cancellation';
+import { personTypedReason } from '../order/typed-reason';
 import { DISPATCH_LOCATION_FRESH_SECONDS, DISPATCH_WIDEST_RADIUS_KM } from '../dispatch/dispatch.service';
 import { readOrderPlacementBudget, refundOrderPlacement, reserveOrderPlacement, type OrderPlacementReservation } from '../integrity/velocity';
 
@@ -413,7 +415,9 @@ export default async function courierRoutes(app: FastifyInstance) {
       orderBy: { placedAt: 'desc' },
       take: 50,
     });
-    return { success: true, data: orders.map((order) => ({ ...order, courierTrackingToken: null })) };
+    // [owner 8 Nov 2026] Who closed a cancelled parcel, in the sender's terms; never who (a user id) nor Swift support's note.
+    const people = await orderPeople(app.prisma, orders);
+    return { success: true, data: orders.map((order) => ({ ...senderCancellationView(order, people), courierTrackingToken: null })) };
   });
 
   /** GET /order/:id — sender's courier job detail. */
@@ -432,7 +436,9 @@ export default async function courierRoutes(app: FastifyInstance) {
     // [S1 response-shaping] the sender's past parcel is not a licence to keep
     // the courier's coordinates — nor their personal phone.
     // [O-1] And a bridge-aware client is sent the courier's number not even while live.
-    return { success: true, data: { ...withCounterpartPhones(request, redactCounterpartyPhone(redactLiveLocation(order))), courierTrackingToken: null } };
+    // [owner 8 Nov 2026] As the history: who closed it in the sender's terms, never who nor Swift support's note.
+    const shown = senderCancellationView(order, await orderPeople(app.prisma, [order]));
+    return { success: true, data: { ...withCounterpartPhones(request, redactCounterpartyPhone(redactLiveLocation(shown))), courierTrackingToken: null } };
   });
 
   /** Sender controls rotate/revoke without recovering bearer secrets. */
@@ -498,7 +504,8 @@ export default async function courierRoutes(app: FastifyInstance) {
     if ((COURIER_CUSTODY_STATUSES as readonly OrderStatus[]).includes(order.status)) {
       throw courierNotCancellable(order.status);
     }
-    const reason = body.reason ?? 'Cancelled by sender';
+    // [#2412 security review] Never a code-shaped reason (typed-reason.ts): the sender's own words or the default.
+    const reason = personTypedReason(body.reason) ?? 'Cancelled by sender';
     // Status/cancellation evidence + search/booking closure + float/mover
     // release + immutable log are one commit. Proof races on the same row lock.
     const { order: updated } = await orderService.transitionOrderAtomically({

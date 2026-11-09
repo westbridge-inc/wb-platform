@@ -15,3 +15,6 @@ export * from './mmg-checkout-support';
 export * from './service-job';
 export * from './category-icon';
 export * from './order-words';
+// Types only: the words are imported by PATH ('@swift/types/src/customer-cancellation-words'), never through
+// this index, so the store console's pages (which load this index) do not download customer-only words.
+export type { CustomerCancellation, CustomerCancelledBy, CustomerCancellationFacts, CustomerCancellationWords } from './customer-cancellation-words';

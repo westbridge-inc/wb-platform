@@ -100,6 +100,8 @@ export function wireVendorOrderDetail(over: Record<string, unknown> = {}) {
     customer: { id: 'customer-1', firstName: 'Test', lastName: 'Customer', phone: '+5920000000' },
     vendor: { vendorType: 'RESTAURANT', selfDeliveryEnabled: false },
     statusHistory: [{ status: 'PENDING', createdAt: new Date().toISOString(), note: null }],
+    // [OOS-FLOW · REVIEW-2 F2] The detail route says it ends an order whose last item comes off.
+    outOfStockEndsOrder: true,
     ...over,
   };
 }

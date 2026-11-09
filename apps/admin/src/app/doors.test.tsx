@@ -272,12 +272,14 @@ describe('[G08] a paid MMG order that cannot be fulfilled', () => {
     await user.click(await screen.findByRole('button', { name: 'Close: store refunds' }));
     const dialog = screen.getByRole('dialog', { name: 'Close SW-2002 as refund handled by the store?' });
     expect(dialog.textContent).toContain('Swift records that and moves no money');
-    await user.type(within(dialog).getByRole('textbox', { name: 'Reason' }), REASON);
+    // [COORD 8 Nov 2026] What the customer sees (a fixed reason) and Swift's internal note, kept apart.
+    await user.click(within(within(dialog).getByRole('group', { name: 'What the customer sees' })).getByRole('radio', { name: 'A problem with the payment' }));
+    await user.type(within(dialog).getByRole('textbox', { name: 'Internal note (Swift only)' }), REASON);
     await user.click(within(dialog).getByRole('button', { name: 'Close it' }));
     await waitFor(() => expect(requestsByMethod(fetchMock, 'POST')).toHaveLength(1));
     const [url, init] = requestsByMethod(fetchMock, 'POST')[0]!;
     expect(String(url)).toMatch(/\/api\/v1\/admin\/orders\/ord-d-1\/close-store-refund$/);
-    expect(JSON.parse(String(init?.body))).toEqual({ expectedClaimRevision: 4 });
+    expect(JSON.parse(String(init?.body))).toEqual({ expectedClaimRevision: 4, customerReason: 'SUPPORT_PAYMENT_PROBLEM' });
     expect(new Headers(init?.headers).get('x-swift-reason')).toBe(REASON);
   });
 

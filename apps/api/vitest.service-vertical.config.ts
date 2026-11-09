@@ -24,6 +24,8 @@ export default defineConfig({
       'src/__tests__/service-vertical-contract.test.ts',
       'src/__tests__/service-vertical-r2.unit.test.ts',
       'src/__tests__/service-slot-wire-composition.unit.test.ts',
+      // [owner 8 Nov 2026] The customer reads say who closed a cancelled order (the same route doubles).
+      'src/__tests__/customer-cancellation.unit.test.ts',
     ],
     testTimeout: 10_000,
     fileParallelism: false,

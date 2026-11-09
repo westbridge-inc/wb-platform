@@ -1,4 +1,4 @@
-import { GUYANA_TZ } from '@swift/types';
+import { GUYANA_TZ } from '@swift/types/src/market-time';
 
 /** Appointment wire values are true instants; browser zone never changes labels. */
 export function formatAppointmentClock(value: string | Date): string {

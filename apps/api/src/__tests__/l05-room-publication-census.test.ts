@@ -80,6 +80,8 @@ describe('sensitive room publication census', () => {
     // + [BUG-HUNT-2 G03] The passenger who never came: the ride closed by its driver (through the gate).
     // + [BUG-HUNT-2 G05] Support gives a ride a new code (through the gate).
     // + [BUG-HUNT-2 G20] "Not collected": a pickup closed by its store (vendor not-collected, through the gate).
-    expect(orderPublishers).toBe(56);
+    // + [OOS-FLOW · owner 8 Nov 2026] an accepted order whose last item is out of stock, closed through the
+    //   canonical seam: its status change and its line's close (picking.service cancelForStockOut, both through the gate).
+    expect(orderPublishers).toBe(58);
   });
 });
