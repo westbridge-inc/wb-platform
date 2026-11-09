@@ -11,6 +11,7 @@ import { promoUsesByPersonWhere } from '../promo/promo-uses';
 import { assertPromoNotSwiftPaid } from '../promo/swift-paid';
 import { admittedCourierPhoto } from '../cash/handover-evidence';
 import { lockIdentityAuthority } from '../integrity/identity-review';
+import { orderLimitCounts } from '../integrity/velocity';
 import { taxiNotificationData } from '../rides/taxi-notification';
 import { Prisma } from '@prisma/client';
 import { assignmentLogWhere } from './store-handover-log';
@@ -1515,7 +1516,11 @@ export class OrderService {
     // commits (notifications are best-effort and never roll an order back).
     const stockEventsByVendor = new Map<string, Array<{ itemId: string; name: string; remaining: number; kind: 'low' | 'out' }>>();
 
-    if (input.reservePlacement) await input.reservePlacement(plans.length);
+    // [OWNER-ASKS · owner 9 Nov 2026] "Pickup orders can be unlimited, only delivery has the cap": the order limit
+    // counts every order this checkout places EXCEPT a pickup (integrity/velocity orderLimitCounts). A pickup-only
+    // checkout reserves nothing and is never refused by the limit; a mixed cart pays for its delivery orders only.
+    const limitedOrders = plans.filter((p) => orderLimitCounts(p.fulfillment)).length;
+    if (input.reservePlacement && limitedOrders > 0) await input.reservePlacement(limitedOrders);
     if (input.beforeTransaction) await input.beforeTransaction();
 
     // [M-11] The two effects every order owes after it commits carry their
