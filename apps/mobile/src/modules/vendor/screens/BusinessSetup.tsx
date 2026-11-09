@@ -1,10 +1,11 @@
 /** @jsxImportSource react */
-import { BUSINESS_NAME_CHOICE, OWN_NAME_CHOICE, OWN_NAME_DECLARATION_V1, OWN_NAME_HINT, OWN_NAME_QUESTION, OWN_NAME_TICK, ownNameApplies, ownNameSigningFor } from '../../../lib/ownNameCopy';
+import { ownNameApplies } from '../../../lib/ownNameCopy';
+import { OwnNameChoiceCard } from '../../../components/onboarding/OwnNameChoiceCard';
 import { useEffect, useState } from 'react';
 import { Pressable, ScrollView, View } from 'react-native';
 import { color, radius, space } from '@swift/ui';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
-import { BrandCheckbox, Card, Chip, LabeledInput, PillButton, T } from '../../../kit';
+import { Card, Chip, LabeledInput, PillButton, T } from '../../../kit';
 import { GUTTER } from '../shared';
 import { API_URL, vendorApi } from '../../../services/api';
 import { openPayLink } from '../../../lib/payLink';
@@ -213,29 +214,17 @@ export function BusinessSetup() {
           ))}
         </View>
 
-        {/* [ROLE-DOCS · owner 21 Oct 2026] The first question for a store asked for a business registration: the
-            law (Business Names (Registration) Act s.3) does not ask one person trading under their own name to
-            register it, so they sign a declaration instead. The server checks the name; a person checks the ID. */}
+        {/* [ROLE-DOCS · owner 21 Oct 2026] The first question for a store asked for a business registration (own name,
+            or a registered name): components/onboarding/OwnNameChoiceCard. [OWNER-ASKS 9 Nov 2026] every box there
+            shows its words. */}
         {ownNameApplies(type) ? (
-          <Card style={{ marginTop: space.xl, gap: space.sm }}>
-            <T variant="heading">{OWN_NAME_QUESTION}</T>
-            {(['OWN_NAME', 'REGISTERED'] as const).map((basis) => (
-              <BrandCheckbox
-                key={basis}
-                checked={nameBasis === basis}
-                onToggle={() => edit({ nameBasis: basis, ownNameTick: false })}
-                label={basis === 'OWN_NAME' ? OWN_NAME_CHOICE : BUSINESS_NAME_CHOICE}
-              />
-            ))}
-            {nameBasis === 'OWN_NAME' ? (
-              <>
-                <T variant="caption" tone="muted">{OWN_NAME_HINT}</T>
-                {ownNameSigningFor(form.name) ? <T variant="caption" weight="bold">{ownNameSigningFor(form.name)}</T> : null}
-                <T variant="caption">{OWN_NAME_DECLARATION_V1}</T>
-                <BrandCheckbox checked={ownNameTick} onToggle={() => edit((draft) => ({ ownNameTick: !draft.ownNameTick }))} label={OWN_NAME_TICK} />
-              </>
-            ) : null}
-          </Card>
+          <OwnNameChoiceCard
+            storeName={form.name}
+            nameBasis={nameBasis}
+            ownNameTick={ownNameTick}
+            onNameBasis={(basis) => edit({ nameBasis: basis, ownNameTick: false })}
+            onToggleTick={() => edit((draft) => ({ ownNameTick: !draft.ownNameTick }))}
+          />
         ) : null}
 
         <Card style={{ marginTop: space.xl, gap: space.md }}>
