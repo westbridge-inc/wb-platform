@@ -65,7 +65,7 @@ import {
 import { DeliveryStatusNote } from '../../../components/DeliveryStatusNote';
 import { cardTapFor } from '../boardTaps';
 import { OUT_OF_STOCK_WORDS, customerDeciding, nothingToAccept } from '../storeOrderRules';
-import { HANDOVER_WORDS, pickupCheckWords, withHandoverSteps } from '../storeHandover';
+import { HANDOVER_WORDS, boardStepLabel, pickupBoardWords, withHandoverSteps } from '../storeHandover';
 import { mmgDisputePaused } from '../order-dispute';
 import { RiderHandoverLine } from '../RiderHandoverLine';
 import { BoardNames } from '../BoardNames';
@@ -219,9 +219,9 @@ const VendorOrderCard = React.memo(function VendorOrderCard({
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: space.sm }}>
           <MaterialCommunityIcons name="form-textbox-password" size={13} color={color.text.muted} />
           <T variant="label" tone="muted">
-            {/* [STORE-DASH · O-2] With the store's pickup code off: check the name and the order number
-                (never a hand-over prompt on a paused order — REVIEW-F S3-1 on #2054). */}
-            {pickupCheckWords(order, mmgDisputePaused(order)) ?? 'Ask the customer for their code at collection'}
+            {/* [STORE-DASH · O-2] With the store's pickup code off: check the name and the order number; on: whom
+                to ask for the code [owner 9 Nov] (never a hand-over prompt on a paused order — REVIEW-F S3-1 on #2054). */}
+            {pickupBoardWords(order, mmgDisputePaused(order))}
           </T>
         </View>
       ) : !isPickup && order.deliveryAddress ? (
@@ -317,7 +317,7 @@ const VendorOrderCard = React.memo(function VendorOrderCard({
           {actions.map((a) => (
             <PillButton
               key={a.action}
-              label={a.label}
+              label={boardStepLabel(a)}
               variant={a.action === 'reject' ? 'outline' : 'primary'}
               size="md"
               style={{ flex: 1 }}
