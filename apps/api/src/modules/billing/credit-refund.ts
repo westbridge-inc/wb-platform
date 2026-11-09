@@ -438,7 +438,9 @@ export async function releaseCreditRefund(prisma: PrismaClient, input: {
     // on its way back to the card. [REVIEW-1 R2-1] One the provider REFUSED moved nothing, and a refused or expired ask
     // can never apply: those alone do not keep the money from going back to the partner's credit.
     const toCard = await tx.privilegedApproval.findFirst({
-      where: { action: CARD_REFUND_ACTION, entityId: input.subscriptionId, status: { in: ['PENDING', 'APPROVED'] }, bodySnapshot: { path: ['body', 'setAsideId'], equals: open.opened.id } },
+      // [REVIEW-1 R3-1] Live = open AND not past its expiry: an expired ask keeps its column but can never apply
+      // (the same filter as the approval gate's standing-ask lookup).
+      where: { action: CARD_REFUND_ACTION, entityId: input.subscriptionId, status: { in: ['PENDING', 'APPROVED'] }, expiresAt: { gt: new Date() }, bodySnapshot: { path: ['body', 'setAsideId'], equals: open.opened.id } },
       select: { id: true },
     }) ?? await tx.cardCreditRefund.findFirst({ where: { setAsideId: open.opened.id, state: { not: 'FAILED' } }, select: { id: true } });
     if (toCard) {

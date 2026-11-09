@@ -1115,6 +1115,10 @@ describe('[CARD-READY] card money set aside at closing goes back to its card thr
     await app.prisma.privilegedApproval.update({ where: { id: asked }, data: { status: 'APPLIED', appliedAt: new Date() } });
     const lapsed = await approval(CARD_REFUND_ACTION, p.subId, 'admin-c', 'admin-b', { setAsideId, cardSessionId: s1, amount: WEEKLY });
     await app.prisma.privilegedApproval.update({ where: { id: lapsed }, data: { status: 'REJECTED' } });
+    // [REVIEW-1 R3-1] An ask past its expiry keeps its PENDING / APPROVED column (EXPIRED is worked out when read), yet
+    // it can never apply: it does not hold the money either.
+    const expired = await approval(CARD_REFUND_ACTION, p.subId, 'admin-c', 'admin-b', { setAsideId, cardSessionId: s1, amount: WEEKLY });
+    await app.prisma.privilegedApproval.update({ where: { id: expired }, data: { status: 'PENDING', expiresAt: new Date(Date.now() - 60_000) } });
     const free = await approval('POST /subscriptions/:id/refund-credit/release', p.subId, 'admin-c', 'admin-b');
     expect(await releaseCreditRefund(app.prisma, { adminId: 'admin-c', approvalId: free, subscriptionId: p.subId, amount: 2 * WEEKLY, setAsideId })).toMatchObject({ amount: 2 * WEEKLY, refundSetAside: 0, balance: 2 * WEEKLY });
   });
