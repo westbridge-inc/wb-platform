@@ -233,6 +233,26 @@ describe('[O-2] takeaway: the pickup code is off by default, for every store', (
     expect((await logs(order.id)).at(-1)).toMatchObject({ status: 'COMPLETED', note: "Handed to the customer without a pickup code (the store's code is off)" });
   });
 
+  // [PICKUP-CODE-BUG · 9 Nov 2026] The store's BOARD (the phone app's orders tab reads GET /vendor/orders) says the
+  // code is off at every step of a takeaway, not only the order screen: accept, a "Start preparing" tap an older
+  // store build still sends (a no-op), ready.
+  it('the store board and order screen say "no code" at every step: accept -> preparing -> ready', async () => {
+    const order = await placeOrder('PICKUP');
+    const boardRow = async () => {
+      const res = await call('GET', '/api/v1/vendor/orders', owner.token, undefined, asStore());
+      expect(res.statusCode, res.body).toBe(200);
+      return (res.json().data as Array<Record<string, unknown>>).find((o) => o['id'] === order.id);
+    };
+    expect(await boardRow()).toMatchObject({ status: 'PENDING', pickupCodeRequired: false });
+    await storeStep(order.id, 'accept', 'PREPARING');
+    expect(await boardRow()).toMatchObject({ status: 'PREPARING', pickupCodeRequired: false });
+    await storeStep(order.id, 'preparing', 'PREPARING');
+    await storeStep(order.id, 'ready', 'READY_FOR_PICKUP');
+    expect(await boardRow()).toMatchObject({ status: 'READY_FOR_PICKUP', pickupCodeRequired: false, orderNumber: expect.any(String), customer: { firstName: 'Asha' } });
+    expect(await storeDetail(order.id)).toMatchObject({ status: 'READY_FOR_PICKUP', pickupCodeRequired: false });
+    expect((await completePickup(order.id)).statusCode).toBe(200);
+  });
+
   it('[COORD ruling, G S4-3] an order locked by wrong-code guesses never completes without a code, even with the code off', async () => {
     const order = await readyTakeaway();
     await sys(() => app.prisma.order.update({ where: { id: order.id }, data: { pickupCodeAttempts: 5 } }));

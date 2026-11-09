@@ -91,7 +91,14 @@ function replaceOutcomeWithStore(params: Record<string, unknown>): boolean {
 }
 
 async function resolveAndGo(dest: LinkDestination, request: number, fromOutcome = false): Promise<void> {
-  const outcome = await resolveDestination(dest);
+  resolving += 1;
+  let outcome: ResolveOutcome;
+  try {
+    outcome = await resolveDestination(dest);
+  } finally {
+    resolving -= 1;
+    lastLinkAt = Date.now();
+  }
   if (request !== latestRequest) return;
   if (outcome.ok) {
     const store = { screen: 'Restaurant', params: { vendorId: outcome.vendorId } };
@@ -105,12 +112,23 @@ async function resolveAndGo(dest: LinkDestination, request: number, fromOutcome 
 let navReady = false;
 let latestRequest = 0;
 
+/** [OTA-CATCH-UP · REVIEW-2 S3-1 on #2431] How long a handled link counts as still landing. */
+export const LINK_SETTLE_MS = 10_000;
+let resolving = 0;
+let lastLinkAt = 0;
+/** A Swift link is still landing: waiting for navigation, being resolved (a table QR's store), or handled in the
+ *  last few seconds. A restart now would lose it (the next JavaScript reads the launch URL, not this one). */
+export function deepLinkBusy(now: number = Date.now()): boolean {
+  return pendingUrl !== null || resolving > 0 || (lastLinkAt > 0 && now - lastLinkAt < LINK_SETTLE_MS);
+}
+
 /** The two fixed fee returns (now beside the link parser, which is pure, so the launch intro can ask too). */
 export { isWeeklyFeeReturn };
 
 function handleUrl(url: string | null): boolean {
   if (!url) return false;
   if (isWeeklyFeeReturn(url)) {
+    lastLinkAt = Date.now();
     // A newer fee return supersedes pending scans and discards all parameters.
     latestRequest += 1;
     pendingUrl = null;
@@ -119,6 +137,7 @@ function handleUrl(url: string | null): boolean {
   }
   const dest = destinationForUrl(url);
   if (!dest) return false; // not ours — the app opens normally
+  lastLinkAt = Date.now();
   const request = ++latestRequest;
   if (!navReady) {
     pendingUrl = url;
@@ -144,9 +163,25 @@ export function flushPendingDeepLink(): void {
   handleUrl(url);
 }
 
+/**
+ * [OTA-CATCH-UP · REVIEW-2 N1 on #2431] Has this process already restarted its JavaScript (an update applied by the
+ * catch-up, expo-updates' restartCount)? The launch URL survives an in-process restart on iOS (launchOptions) and
+ * Android (the launch intent): replaying it would reopen the link the app was launched with (a table QR, the MMG fee
+ * return) over wherever the person was. Unknown (no updates module) = not restarted.
+ */
+// eslint-disable-next-line @typescript-eslint/no-require-imports -- read when the handler installs, never at import
+export function restartedInProcess(load: () => unknown = () => require('expo-updates')): boolean {
+  try {
+    const count = (load() as { latestContext?: { restartCount?: unknown } } | null)?.latestContext?.restartCount;
+    return typeof count === 'number' && count > 0;
+  } catch {
+    return false;
+  }
+}
+
 /** Install once at app start: warm URLs via the listener, cold start via the
  *  initial URL. Failures are silent — the app opening at all is the meal. */
-export function installDeepLinkHandler(): () => void {
+export function installDeepLinkHandler(restarted: () => boolean = restartedInProcess): () => void {
   if (installed) return () => undefined;
   installed = true;
   let active = true;
@@ -161,13 +196,16 @@ export function installDeepLinkHandler(): () => void {
   const sub = Linking.addEventListener('url', ({ url }) => {
     try { receivedWarmLink = handleUrl(url) || receivedWarmLink; } catch { /* never crash on a link */ }
   });
-  Linking.getInitialURL()
-    .then((url) => {
-      // Initial URL and onReady can finish in either order. A new tap wins
-      // over a late initial URL; a stopped listener never navigates later.
-      if (active && !receivedWarmLink) handleUrl(url);
-    })
-    .catch(() => undefined);
+  // [REVIEW-2 N1 on #2431] After an in-process restart the launch URL was handled by the JavaScript before it.
+  if (!restarted()) {
+    Linking.getInitialURL()
+      .then((url) => {
+        // Initial URL and onReady can finish in either order. A new tap wins
+        // over a late initial URL; a stopped listener never navigates later.
+        if (active && !receivedWarmLink) handleUrl(url);
+      })
+      .catch(() => undefined);
+  }
   return () => {
     active = false;
     latestRequest += 1;
@@ -182,6 +220,8 @@ export function installDeepLinkHandler(): () => void {
 /** Test seam. */
 export function resetDeepLinksForTests(): void {
   pendingUrl = null;
+  resolving = 0;
+  lastLinkAt = 0;
   navReady = false;
   installed = false;
   latestRequest = 0;
