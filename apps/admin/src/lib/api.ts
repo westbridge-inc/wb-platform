@@ -602,6 +602,15 @@ export const resetRideCode = (id: string, reason: string) =>
 /** [M2] A new delivery PIN for an order locked at the door. The customer reads it on their order screen; nobody here sees it. */
 export const resetDeliveryPin = (id: string, reason: string) =>
   apiFetch(`/api/v1/admin/orders/${id}/handover-secret/reset-delivery-pin`, { method: 'POST', body: JSON.stringify({ reason }), reason });
+/** [CARD-READY] Weekly-fee card payments (Pay now), newest first. HELD: the provider may have taken the money and Swift
+ *  could not book it; a person decides each one. Views carry no card data and nothing that could move money. */
+export type CardPaymentsFilter = 'HELD' | 'SUCCEEDED' | 'ALL';
+export const fetchCardPayments = (filter: CardPaymentsFilter) =>
+  apiFetch(`/api/v1/admin/billing/card-sessions?purpose=PAY_NOW&limit=50${filter === 'ALL' ? '' : `&status=${filter}`}`);
+/** Finance's decision on a HELD card payment after checking the provider's portal. Two people (C4). */
+export type CardDecision = 'BOOK' | 'REFUND' | 'REFUNDED_IN_PORTAL' | 'NOTHING_TAKEN';
+export const resolveCardPayment = (id: string, action: CardDecision, providerReference: string, amount: number, reason: string) =>
+  apiFetch(`/api/v1/admin/billing/card-sessions/${encodeURIComponent(id)}/resolve`, { method: 'POST', body: JSON.stringify({ action, providerReference, amount }), reason });
 /** [BUG-HUNT-2 G08] What stores owe customers back by MMG. Swift holds none of it: these are records. */
 export const fetchMmgRefunds = (filter: 'open' | 'overdue' | 'disputed') =>
   apiFetch(`/api/v1/admin/mmg-refunds?limit=50&filter=${filter}`);
