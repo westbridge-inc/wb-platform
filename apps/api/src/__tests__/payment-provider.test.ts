@@ -103,11 +103,26 @@ describe('explicitly disabled card provider', () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
-  it.each([undefined, '', '0', 'true'])('factory refuses disabled cards without the kill switch (%s)', (kill) => {
+  it.each([undefined, '', '0', 'true'])('factory refuses disabled cards without the kill switch in production: the launch lock (%s)', (kill) => {
     vi.stubEnv('NODE_ENV', 'production');
     vi.stubEnv('PAYMENT_PROVIDER', 'disabled');
     vi.stubEnv('CARD_RAIL_KILL', kill);
-    expect(() => getPaymentProvider()).toThrow(/CARD_RAIL_KILL/);
+    expect(() => getPaymentProvider()).toThrow(/^FATAL: CARD_RAIL_KILL must be exactly 1 in production/);
+  });
+
+  // [CARD-DECOUPLE] Off production, disabled is the legacy seam's own OFF and
+  // no longer requires the card kill switch: card rail v2 (killed only by
+  // CARD_RAIL_KILL=1) may run on a test server beside it. The disabled
+  // provider still refuses every instruction without contacting anyone.
+  it.each(['development', 'test', 'loadtest'])('off production (%s) the factory gives the disabled provider with the kill switch off', async (mode) => {
+    vi.stubEnv('NODE_ENV', mode);
+    vi.stubEnv('PAYMENT_PROVIDER', 'disabled');
+    vi.stubEnv('CARD_RAIL_KILL', '0');
+    const fetch = vi.fn(() => { throw new Error('Unexpected provider contact'); });
+    vi.stubGlobal('fetch', fetch);
+    const provider = getPaymentProvider();
+    await expect(provider.chargeToken(CHARGE)).resolves.toMatchObject({ status: 'failed', providerRef: '', code: 'CARD_RAIL_DISABLED' });
+    expect(fetch).not.toHaveBeenCalled();
   });
 });
 

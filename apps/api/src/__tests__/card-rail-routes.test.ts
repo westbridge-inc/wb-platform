@@ -691,6 +691,27 @@ describe('the switches: the flag, the kill switch, the platform, the subscriptio
     expect((await money(p.subId)).successes).toBe(1);
   });
 
+  it('[CARD-DECOUPLE] PAYMENT_PROVIDER=disabled turns off only the legacy card seam: on the provider sandbox a listed test subscription sees CARD live, labelled a test (no CARD_RAIL_SIMULATOR_LIVE), and opens Pay now; only CARD_RAIL_KILL=1 stops it', async () => {
+    const legacy = process.env['PAYMENT_PROVIDER'];
+    process.env['PAYMENT_PROVIDER'] = 'disabled';
+    process.env['CARD_RAIL_KILL'] = '0';
+    railOverride = { ...realProvider({ savesCards: false }), binding: { provider: 'powertranz', environment: 'sandbox', account: ACCOUNT } };
+    try {
+      const p = await makeStore();
+      expect(process.env['CARD_RAIL_SIMULATOR_LIVE']).toBeUndefined();
+      expect(await cardActionOf(p)).toMatchObject({ id: 'CARD', state: 'live', testMode: true, testModeLabel: CARD_SANDBOX_TEST_LABEL });
+      const opened = await startSession(p, 'PAY_NOW');
+      expect(opened.statusCode, opened.body).toBe(201);
+      process.env['CARD_RAIL_KILL'] = '1';
+      expect(await cardActionOf(await makeStore())).toEqual({ id: 'CARD', state: 'off' });
+      const refused = await startSession(await makeStore(), 'PAY_NOW');
+      expect(refused.statusCode).toBe(503);
+      expect(refused.json().error.code).toBe('CARD_RAIL_DISABLED');
+    } finally {
+      if (legacy === undefined) delete process.env['PAYMENT_PROVIDER']; else process.env['PAYMENT_PROVIDER'] = legacy;
+    }
+  });
+
   it('the platform switch: iOS is off unless switched on; Android and web are on unless switched off', async () => {
     const p = await makeRider();
     const ios = await startSession(p, 'ENROLL', { headers: { 'x-client-platform': 'ios' } });

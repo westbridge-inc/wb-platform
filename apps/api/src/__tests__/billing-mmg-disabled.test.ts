@@ -640,7 +640,10 @@ describe('[PROD-PATH] the pause is decided by server facts only: nothing a partn
       expect(await noLivePayPath(app.prisma, CARD_LIVE)).toBe(false);
       expect(await noLivePayPath(app.prisma, { ...CARD_LIVE, CARD_RAIL_KILL: '1' })).toBe(true);
       expect(await noLivePayPath(app.prisma, { ...CARD_LIVE, CARD_RAIL_V2: '0' })).toBe(true);
-      expect(await noLivePayPath(app.prisma, { ...CARD_LIVE, PAYMENT_PROVIDER: 'disabled' })).toBe(true);
+      // [CARD-DECOUPLE · 9 Nov] PAYMENT_PROVIDER names the LEGACY card seam only: with it disabled,
+      // card rail v2 on and not killed is still a live way to pay (was: true — v2 read as killed).
+      expect(await noLivePayPath(app.prisma, { ...CARD_LIVE, PAYMENT_PROVIDER: 'disabled' })).toBe(false);
+      expect(await noLivePayPath(app.prisma, { ...CARD_LIVE, PAYMENT_PROVIDER: 'disabled', CARD_RAIL_KILL: '1' })).toBe(true);
     });
     // The card simulator (test pages for listed test subscriptions, no money) or no provider at all is no way to pay.
     expect(await noLivePayPath(app.prisma, { ...CARD_LIVE, CARD_RAIL_PROVIDER: 'simulator' })).toBe(true);

@@ -2,7 +2,7 @@ import { assertPlacesConfig } from '../providers/places/places-config';
 import { runtimeMode } from './runtime-mode';
 import { malformedAllowlistPositions } from '../providers/notifications/sms-recipient-allowlist';
 import { firstInvalidTwilioConfig } from './twilio-identity';
-import { PUBLIC_API_HOSTS, assertDisabledCardRailConfig } from './card-rail';
+import { PUBLIC_API_HOSTS, assertProductionCardKillSwitch } from './card-rail';
 import { powerTranzConfigFromEnv } from '../providers/card/powertranz-provider';
 import { testControlEnabled } from '../modules/ops/test-control';
 import { assertMmgCheckoutConfig } from '../providers/mmg/mmg-checkout';
@@ -99,11 +99,12 @@ export function assertNoLiveCardsOffProduction(env: Record<string, string | unde
  * setting someone can flip: turning either on in production is a reviewed
  * change to this function (and to pilot-up.sh's matching refusal), never a
  * deploy/.env edit.
- *   Cards: no card instruction (PAYMENT_PROVIDER exactly disabled; the
- *   card-rail contract, checked earlier, then also requires CARD_RAIL_KILL=1),
- *   and none of card rail v2's switches (CARD_RAIL_V2, its drain, saving
- *   cards) set to anything but 0. With v2 off the weekly fee never offers a
- *   CARD pay action.
+ *   Cards: no card instruction — the legacy card seam off (PAYMENT_PROVIDER
+ *   exactly disabled), the card kill switch on (CARD_RAIL_KILL exactly 1;
+ *   [CARD-DECOUPLE] card rail v2 reads only this switch, never
+ *   PAYMENT_PROVIDER, so production holds it here, explicitly), and none of
+ *   card rail v2's switches (CARD_RAIL_V2, its drain, saving cards) set to
+ *   anything but 0. With v2 off the weekly fee never offers a CARD pay action.
  *   Ads: ADS_ENABLED unset or 0 (only exactly 1 opens the ads routes).
  * Called only in production. Each refusal names its setting, never a value.
  */
@@ -111,6 +112,7 @@ function assertProductionLaunchLocks(env: Record<string, string | undefined>): v
   if (env['PAYMENT_PROVIDER'] !== 'disabled') {
     throw new Error('FATAL: PAYMENT_PROVIDER must be exactly disabled in production — no card payment until an attorney signs off (owner ruling, 13 Oct); turning cards on is a reviewed code change, not a setting. Refusing to start.');
   }
+  assertProductionCardKillSwitch(env);
   for (const name of ['CARD_RAIL_V2', 'CARD_RAIL_V2_DRAIN', 'CARD_RAIL_ENROLL', 'ADS_ENABLED'] as const) {
     const value = env[name];
     if (value !== undefined && value !== '' && value !== '0') {
@@ -309,7 +311,8 @@ export function assertSafeBootConfig(env: Record<string, string | undefined> = p
   if (paymentProvider !== 'stripe' && paymentProvider !== 'powertranz' && paymentProvider !== 'disabled') {
     throw new Error('FATAL: PAYMENT_PROVIDER must be stripe, powertranz or disabled in production; sandbox/unset can record fake captured revenue. Refusing to start.');
   }
-  assertDisabledCardRailConfig(env);
+  // [CARD-DECOUPLE] The card kill switch is held at 1 by the launch lock
+  // (assertProductionLaunchLocks, below), no longer through PAYMENT_PROVIDER.
   // [PT-1 · C10] Card rail v2. The card simulator is a test page with no real
   // money: production refuses to start while it is even named — whatever the
   // flag says. The flag is 1 or 0 (or unset = 0), never a guess.
