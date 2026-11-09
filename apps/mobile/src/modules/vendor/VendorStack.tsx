@@ -29,6 +29,7 @@ import { storeHoldOf } from '../../lib/vendorProfile';
 import { BusinessSetup, VendorOnboarding } from './screens/BusinessSetup';
 import { WeeklyFeeRouteScreen } from '../billing/screens/WeeklyFeeRouteScreen';
 import { VendorOps } from './screens/VendorOps';
+import { useOtaRestartHold } from '../../hooks/useOtaRestartHold';
 import { VendorBillingSuspended } from './screens/VendorBillingSuspended';
 import { VendorStoreBlocked } from './screens/VendorStoreBlocked';
 import { VendorMenuScreen } from './screens/VendorMenuScreen';
@@ -41,6 +42,8 @@ const Stack = createNativeStackNavigator();
 
 function VendorLiveOrderLayer({ vendorId, ownsStore }: { vendorId: string; ownsStore: boolean }) {
   const { takeover, dismissTakeover } = useVendorOrdersLive(vendorId, ownsStore);
+  // [OTA-CATCH-UP · REVIEW-1 S3-1 on #2431] Never restart into an update while the new-order alert is up.
+  useOtaRestartHold(takeover.length > 0);
   return takeover.length > 0 ? <NewOrderTakeover queue={takeover} onDismiss={dismissTakeover} /> : null;
 }
 

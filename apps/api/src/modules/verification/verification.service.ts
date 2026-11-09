@@ -3394,11 +3394,11 @@ export class VerificationService {
    * days after the notice), never while anything of theirs waits on Swift, never for a role they were ever
    * verified for. Daily, before the reaper. One person failing never stops the others.
    */
-  async sweepAbandonedApplications(now = new Date(), page = 500): Promise<{ noticed: number; purged: number; failed: number }> {
+  async sweepAbandonedApplications(now = new Date(), page = 500): Promise<{ noticed: number; purged: number; failed: number; kept: number }> {
     // The cheap exclusions are in the query (synthetic, erased, anything waiting on Swift, nothing old enough), and every
     // run walks ALL candidates a page at a time (keyset on userId), so people the per-person checks exclude (a verified
     // role, an AML record) can never fill every page and starve the people behind them (COORD security review).
-    const total = { noticed: 0, purged: 0, failed: 0 };
+    const total = { noticed: 0, purged: 0, failed: 0, kept: 0 };
     for (let after: string | undefined; ;) {
       const people = await this.prisma.verificationDocument.findMany({
         where: {
@@ -3416,7 +3416,7 @@ export class VerificationService {
         // never stops the people behind them. Their documents stay: a failure only ever keeps.
         try {
           const r = await this.abandonedApplicationStep(userId, now);
-          total.noticed += r.noticed; total.purged += r.purged;
+          total.noticed += r.noticed; total.purged += r.purged; total.kept += r.kept;
         } catch (err) {
           total.failed += 1;
           log().error({ errName: err instanceof Error ? err.name : typeof err, userId }, 'abandoned-application step failed; left for the next run');
@@ -3455,8 +3455,8 @@ export class VerificationService {
     }
   }
 
-  private async abandonedApplicationStep(userId: string, now: Date): Promise<{ noticed: number; purged: number }> {
-    const none = { noticed: 0, purged: 0 };
+  private async abandonedApplicationStep(userId: string, now: Date): Promise<{ noticed: number; purged: number; kept: number }> {
+    const none = { noticed: 0, purged: 0, kept: 0 };
     const user = await this.prisma.user.findUnique({ where: { id: userId }, select: { phone: true, isSynthetic: true, countryCode: true, tenantId: true } });
     if (!user || user.isSynthetic || user.phone === `deleted:${userId}`) return none;
     // Anything waiting on Swift: never abandoned.
@@ -3471,9 +3471,6 @@ export class VerificationService {
     for (const d of docs) last = Math.max(last, d.createdAt.getTime(), d.reviewedAt?.getTime() ?? 0);
     const lastActivityAt = new Date(last);
     if (now.getTime() - last < ABANDON_NOTICE_DAYS * DAY_MS) return none;
-    // [REVIEW-M S4-3 · COORD] An open fraud, safety, compliance or dispute case keeps the documents, like a hold:
-    // no notice (it would not be true), nothing deleted, until it closes.
-    if (await openCaseKeeps(this.prisma, userId)) return none;
     // The application's documents: partner documents of a role never verified, not held, not an AML record.
     const verified = await everVerifiedRoles(this.prisma, userId, (roleKey) => this.everCompletedChecklist(userId, roleKey));
     const config = await this.countryConfig.getByCode(user.countryCode);
@@ -3489,6 +3486,16 @@ export class VerificationService {
       candidates.push({ ...d, user: { tenantId: user.tenantId } });
     }
     if (!candidates.length) return none;
+    // [REVIEW-M S4-3 · COORD] An open fraud, safety, compliance or dispute case keeps the documents, like a hold:
+    // no notice (it would not be true), nothing deleted, until it closes.
+    // [#2427 REVIEW-1 L3] Every document kept that way is counted and logged (ids only), so a case that never closes
+    // shows in operations instead of reading as nothing to do.
+    let purged = 0;
+    const keptByCase = (kept: ReadonlyArray<{ id: string }>) => {
+      log().info({ userId, documentIds: kept.map((d) => d.id) }, 'abandoned-application: documents kept, an open case names the person');
+      return { noticed: 0, purged, kept: kept.length };
+    };
+    if (await openCaseKeeps(this.prisma, userId)) return keptByCase(candidates);
     // The notice about THIS inactivity (one written after the last activity); activity since voids an older one.
     const notice = await this.prisma.auditLog.findFirst({
       where: { userId, action: ABANDON_NOTICE_ACTION, createdAt: { gt: lastActivityAt } },
@@ -3513,17 +3520,23 @@ export class VerificationService {
         userId, action: ABANDON_NOTICE_ACTION, entity: 'user', entityId: userId, createdAt: now,
         changes: { lastActivityAt: lastActivityAt.toISOString(), purgeDueAt: abandonPurgeDueAt(lastActivityAt, now).toISOString(), documents: candidates.length, notificationId: reach.id, pushed: reach.pushed },
       } });
-      return { noticed: 1, purged: 0 };
+      return { noticed: 1, purged: 0, kept: 0 };
     }
     if (now.getTime() < abandonPurgeDueAt(lastActivityAt, notice.createdAt).getTime()) return none;
     // [COORD 18:5xZ] Checked AGAIN immediately before the purge: a case opened after the notice still keeps everything.
-    if (await openCaseKeeps(this.prisma, userId)) return none;
-    let purged = 0;
-    for (const doc of candidates) {
-      const outcome = await this.purgeDocumentNow(doc, ABANDON_PURGE_ACTOR, { requireRetentionElapsed: false, shredFields: true, now, still: stillAbandoned(lastActivityAt) });
+    if (await openCaseKeeps(this.prisma, userId)) return keptByCase(candidates);
+    // [#2118 · REVIEW-M #2011 S4-1] ...and once more for EACH document, inside each transaction that destroys a key of it,
+    // under the person's lock: a case opened after the check above (before the first key is destroyed, or while an
+    // earlier document's bytes are being deleted, storage calls with no lock held) keeps everything not yet destroyed.
+    let caseOpen = false;
+    const keeps = async (tx: Prisma.TransactionClient) => (caseOpen = await openCaseKeeps(tx, userId));
+    for (const [i, doc] of candidates.entries()) {
+      const outcome = await this.purgeDocumentNow(doc, ABANDON_PURGE_ACTOR, { requireRetentionElapsed: false, shredFields: true, now, still: stillAbandoned(lastActivityAt), keeps });
       if (outcome === 'PURGED') purged += 1;
+      // [#2427 REVIEW-2 S4-3] A case names the person now: the rest are kept too, without a census each under the lock.
+      if (caseOpen) return keptByCase(candidates.slice(i));
     }
-    return { noticed: 0, purged };
+    return { noticed: 0, purged, kept: 0 };
   }
 
   /**
@@ -3538,7 +3551,7 @@ export class VerificationService {
   async purgeDocumentNow(
     doc: { id: string; userId: string; fileUrl: string; docType: string; user: { tenantId: string } },
     deletedBy: string,
-    opts: { requireRetentionElapsed: boolean; shredFields: boolean; now?: Date; still?: Prisma.VerificationDocumentWhereInput },
+    opts: { requireRetentionElapsed: boolean; shredFields: boolean; now?: Date; still?: Prisma.VerificationDocumentWhereInput; keeps?: (tx: Prisma.TransactionClient) => Promise<boolean> },
   ): Promise<'PURGED' | 'PROBE_FAILED' | 'NOT_PURGED'> {
     const now = opts.now ?? new Date();
     const storage = getStorageProvider();
@@ -3548,7 +3561,7 @@ export class VerificationService {
     // [Row 243] The bytes are destroyed only under the person's lock and only while still unheld.
     const evidence = doc.fileUrl
       ? await shredUnlessHeld(this.prisma, storage, { fileKey: doc.fileUrl, userId: doc.userId, documentId: doc.id },
-        { purgedAt: null, ...(opts.requireRetentionElapsed ? { retentionExpiresAt: { lt: now } } : {}), ...still })
+        { purgedAt: null, ...(opts.requireRetentionElapsed ? { retentionExpiresAt: { lt: now } } : {}), ...still }, opts.keeps)
       : NOTHING_STORED;
     if (!evidence) return 'NOT_PURGED';
     const receipt = { submissionId: doc.id, subjectId: doc.userId, tenantId: doc.user.tenantId, docTypeCode: doc.docType, deletedBy, evidence };
@@ -3565,6 +3578,11 @@ export class VerificationService {
       if (!users[0]) return false;
       // [SEC-PII · COORD] The same backstop for the record (and for a document with no bytes): an open identity review.
       if (await identityReviewOpenFor(tx, doc.userId)) return false;
+      // [#2118 · #2427 REVIEW-1 S2] The caller's check runs here too, under the same lock, for EVERY document: this
+      // transaction destroys the extracted values' keys (and is the whole destruction of a document with no file). A case
+      // opened after the file's key was destroyed keeps the record and the extracted values; the keyless document is
+      // finished (re-probed, receipted) by a later run once the case closes (shredUnlessHeld's "prior" path).
+      if (opts.keeps && (await opts.keeps(tx))) return false;
       const won = await tx.verificationDocument.updateMany({
         where: { id: doc.id, userId: doc.userId, purgedAt: null, legalHoldId: null, ...(opts.requireRetentionElapsed ? { retentionExpiresAt: { lt: now } } : {}), ...still },
         data: { purgedAt: new Date(), fileUrl: '' },

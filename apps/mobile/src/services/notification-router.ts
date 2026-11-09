@@ -606,6 +606,7 @@ async function go(tap: Tap) {
 const openApp: OpenApp = () => useAuthStore.getState().intent;
 
 function routeTap(data: Record<string, unknown>) {
+  lastTapAt = Date.now();
   const dest = destinationFor(data, openApp);
   const attempt = ++routing;
   pending = null;
@@ -681,9 +682,18 @@ export function installNotificationTapRouter(): () => void {
 
   return () => {
     installed = false;
-    routing++; pending = null; heldForSignIn = null;
+    routing++; pending = null; heldForSignIn = null; lastTapAt = 0;
     sub.remove();
   };
+}
+
+/** [OTA-CATCH-UP · REVIEW-2 S3-1 on #2431] How long a tap counts as still landing (its screen may need a read). */
+export const TAP_SETTLE_MS = 10_000;
+let lastTapAt = 0;
+/** A notification tap is still landing: one in the last few seconds, one queued for navigation, or one held for the
+ *  sign-in it opened. A restart now would lose it (a tap is never handed to the next JavaScript). */
+export function tapRoutingBusy(now: number = Date.now()): boolean {
+  return pending != null || heldForSignIn != null || (lastTapAt > 0 && now - lastTapAt < TAP_SETTLE_MS);
 }
 
 /** Test seam: is anything queued? */

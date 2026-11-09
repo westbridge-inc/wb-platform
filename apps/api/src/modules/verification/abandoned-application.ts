@@ -2,6 +2,7 @@ import type { DocState, Prisma, PrismaClient, UserRole } from '@prisma/client';
 import type { ChecklistRole } from './verification.service';
 import { runAsSystem } from '../../plugins/tenant-context';
 import { DAY_MS } from './retention-rules';
+import { MMG_REFUND_OPEN_STATUSES } from '../order/mmg-refund-law';
 
 /**
  * [Row 249 · COORD 17:09Z ruling option A (18 Oct, delegated privacy)] An ABANDONED application.
@@ -70,6 +71,9 @@ type Db = Pick<PrismaClient, 'rider' | 'driver' | 'vendorOwner' | 'serviceProvid
  * report about something of theirs (their rating, message, store or item). Checked before the notice and again right
  * before the purge; any lookup error reads as an open case (fail toward keeping).
  *
+ * [#2427 REVIEW-1 L4] Money owed back or disputed is a case too: a store's MMG refund owed to the person (still owed, sent
+ * or disputed), a weekly-fee refund case still open on their subscription, a subscription refund still pending.
+ *
  * Not in the census, with the reason: Strike (a record, not a case: nothing to close), LegalHold (it hangs off an
  * IncidentCase, covered there), SosRetrigger / SosEscalation (they hang off an SosAlert, covered there), AttributionClaim
  * (names no person).
@@ -78,11 +82,12 @@ export const OPEN_CASE_CENSUS = [
   'fraud_case', 'identity_review_case', 'enforcement_appeal', 'incident_case', 'sos_alert', 'safety_deletion_hold',
   'evidence_legal_hold', 'doc_legal_hold', 'compliance_review_case', 'compliance_violation', 'review_case', 'rectification_request',
   'custody_recovery_case', 'content_report', 'rating_report', 'reimbursement_claim', 'support_ticket', 'payment_confirmation_hold',
+  'mmg_refund_obligation', 'fee_refund_case', 'subscription_refund',
 ] as const;
 export type OpenCaseKind = (typeof OPEN_CASE_CENSUS)[number];
 
 /** Every open case naming this person, by census name. Throws on any lookup error (the caller keeps). */
-export async function openCasesOf(db: PrismaClient, userId: string): Promise<OpenCaseKind[]> {
+export async function openCasesOf(db: PrismaClient | Prisma.TransactionClient, userId: string): Promise<OpenCaseKind[]> {
   const [docs, rider, driver, owner, member] = await Promise.all([
     db.verificationDocument.findMany({ where: { userId }, select: { id: true } }),
     db.rider.findUnique({ where: { userId }, select: { id: true } }),
@@ -145,14 +150,23 @@ export async function openCasesOf(db: PrismaClient, userId: string): Promise<Ope
     support_ticket: () => db.supportTicket.count({ where: { userId, status: { in: ['OPEN', 'IN_PROGRESS'] } } }),
     payment_confirmation_hold: async () => subscriptionIds.length
       ? db.paymentConfirmationHold.count({ where: { subscriptionId: { in: subscriptionIds }, resolvedAt: null } }) : 0,
+    // Somebody still has to act on it (order/mmg-refund-law.ts: OWED, SENT, DISPUTED): owed to them, or by their store.
+    mmg_refund_obligation: () => db.mmgRefundObligation.count({ where: {
+      OR: [{ customerId: userId }, { vendorId: { in: vendorIds } }], status: { in: [...MMG_REFUND_OPEN_STATUSES] },
+    } }),
+    fee_refund_case: async () => subscriptionIds.length
+      ? db.feeRefundCase.count({ where: { subscriptionId: { in: subscriptionIds }, state: 'OPEN' } }) : 0,
+    subscription_refund: async () => subscriptionIds.length
+      ? db.subscriptionRefund.count({ where: { subscriptionId: { in: subscriptionIds }, status: 'PENDING' } }) : 0,
   };
   const open: OpenCaseKind[] = [];
   for (const kind of OPEN_CASE_CENSUS) if (await checks[kind]() > 0) open.push(kind);
   return open;
 }
 
-/** True while any open case names the person; any error reads as an open case (fail toward keeping). */
-export async function openCaseKeeps(db: PrismaClient, userId: string): Promise<boolean> {
+/** True while any open case names the person; any error reads as an open case (fail toward keeping). `db` may be the
+ *  purge's own transaction (verification.service purgeDocumentNow `keeps`: the re-check under the person's lock). */
+export async function openCaseKeeps(db: PrismaClient | Prisma.TransactionClient, userId: string): Promise<boolean> {
   try {
     return (await runAsSystem('verification:abandoned-case-census', () => openCasesOf(db, userId))).length > 0;
   } catch {

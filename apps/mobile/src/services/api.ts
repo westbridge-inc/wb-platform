@@ -286,6 +286,20 @@ export async function inAppUnregisterToken(accessToken: string, platform: 'ios' 
   return res.data.data.token;
 }
 
+/**
+ * [CALLS-ERASE · legal review F1] The same removal token, asked through the app's own client while the session is
+ * still live (before an account is deleted or closed). Unlike the sign-out fetch above, an access token that ran
+ * out meanwhile is refreshed the normal way first, because the session has not been torn down yet.
+ */
+export async function inAppUnregisterTokenForLiveSession(session: AuthSessionSnapshot, platform: 'ios' | 'android'): Promise<string> {
+  const res = await api.post<{ success: boolean; data: { token: string } }>(
+    '/calls/app/token',
+    { platform, purpose: 'unregister' },
+    capturedAuthConfig(session),
+  );
+  return res.data.data.token;
+}
+
 export const UPLOAD_TIMEOUT_MS = 90_000;
 
 /** Retry only standalone file uploads, never custody/identity decisions.

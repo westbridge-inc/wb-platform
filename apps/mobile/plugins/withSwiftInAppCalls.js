@@ -55,6 +55,15 @@ const VOICE_ANDROID_VERSION = '6.10.3';
 const TWILIO_FCM_SERVICE = 'com.twiliovoicereactnative.VoiceFirebaseMessagingService';
 const EXPO_FCM_SERVICE = 'expo.modules.notifications.service.ExpoFirebaseMessagingService';
 const ROUTER_SERVICE = `${PACKAGE}.SwiftMessagingService`;
+/** Declared not required (wireManifest): a phone without a microphone still installs Swift. */
+const MIC_FEATURE = 'android.hardware.microphone';
+/**
+ * Hardware Play would otherwise imply as REQUIRED (RECORD_AUDIO implies the microphone; CAMERA implies the camera
+ * and its autofocus), each declared not required so a phone without it still installs Swift. A missing camera
+ * fails softly: expo-camera reports a mount error instead of binding, expo-image-picker rejects the camera intent,
+ * and the photo library stays offered where a photo can come from it.
+ */
+const OPTIONAL_FEATURES = [MIC_FEATURE, 'android.hardware.camera', 'android.hardware.camera.autofocus'];
 
 /** The SDK's own activity intent actions (com.twiliovoicereactnative.Constants) that Swift forwards to its
  *  VoiceService, minus ACTION_PUSH_APP_TO_FOREGROUND (it only opens the app). */
@@ -326,10 +335,23 @@ function wireAppGradle(src) {
     compileOnly("com.twilio:voice-android:${VOICE_ANDROID_VERSION}")${src.slice(open + 1)}`;
 }
 
-/** AndroidManifest (parsed xml2js object): exactly one Firebase receiver, the router. Idempotent. */
+/**
+ * AndroidManifest (parsed xml2js object): exactly one Firebase receiver, the router; and neither the microphone nor
+ * the camera is a device requirement. [BUILD-14] Play implies them REQUIRED from RECORD_AUDIO / CAMERA unless the
+ * manifest says otherwise, so vc11 dropped every phone without a microphone from the catalogue. Calls, QR scans and
+ * photos are features, not the app: such a phone installs Swift and simply cannot use that one feature. Idempotent.
+ */
 function wireManifest(manifest) {
   manifest.manifest.$ = manifest.manifest.$ || {};
   manifest.manifest.$['xmlns:tools'] = manifest.manifest.$['xmlns:tools'] || 'http://schemas.android.com/tools';
+  const features = (manifest.manifest['uses-feature'] || []).filter((f) => !(f.$ && OPTIONAL_FEATURES.includes(f.$['android:name'])));
+  for (const name of OPTIONAL_FEATURES) features.push({ $: { 'android:name': name, 'android:required': 'false' } });
+  manifest.manifest['uses-feature'] = features;
+  // <application> must stay the LAST element of <manifest> (Android's manifest ordering rule): xml2js writes
+  // keys in insertion order, so a newly added 'uses-feature' key is moved ahead of it.
+  const { application } = manifest.manifest;
+  delete manifest.manifest.application;
+  manifest.manifest.application = application;
   const app = manifest.manifest.application[0];
   const services = (app.service || []).filter((s) => ![TWILIO_FCM_SERVICE, EXPO_FCM_SERVICE, ROUTER_SERVICE].includes(s.$['android:name']));
   services.push(
@@ -382,5 +404,5 @@ module.exports = createRunOncePlugin(withSwiftInAppCalls, TAG, '1');
 module.exports.internals = {
   wireMainApplication, wireMainActivity, wireAppGradle, wireManifest,
   ROUTER_KT, INTENTS_KT, GATE_KT, CALL_ACTIONS, OVER_LOCK_ACTIONS, CALL_UUID_EXTRA,
-  FIREBASE_MESSAGING_VERSION, VOICE_ANDROID_VERSION, TWILIO_FCM_SERVICE, EXPO_FCM_SERVICE, ROUTER_SERVICE,
+  FIREBASE_MESSAGING_VERSION, VOICE_ANDROID_VERSION, TWILIO_FCM_SERVICE, EXPO_FCM_SERVICE, ROUTER_SERVICE, MIC_FEATURE, OPTIONAL_FEATURES,
 };

@@ -128,12 +128,12 @@ export const PROCESSOR_REGISTER: readonly ProcessorEntry[] = [
     note: 'Founder decision 2026-09-07: self-hosted (swift-infra/docker-compose.glitchtip.yml); SENTRY_DSN points at it. A sentry.io DSN would make this a third-party processor — not permitted by decision; events are scrubbed by the observability plugin either way. [Owner 21 Oct 2026] The phone app\'s crash reports (EXPO_PUBLIC_SENTRY_DSN, apps/mobile crashReporting.ts) go to the same self-hosted GlitchTip: phone model and OS, app version, the error, language and time zone, and a random per-install id; no user, messages, location or screenshots. Crash and error reports are kept 90 days (Privacy Policy sections 5 and 6).',
   },
   {
-    ref: 'TWILIO', party: 'Twilio Inc.', service: 'SMS one-time codes and notices; Swift-bridged voice calls between the people on an order (CALL_RELAY)',
+    ref: 'TWILIO', party: 'Twilio Inc.', service: 'SMS one-time codes and notices; Swift-bridged voice calls between the people on an order (CALL_RELAY); in-app calls over the internet (INAPP_CALLS)',
     modelBacked: false,
     providerDirs: ['notifications', 'voice'], hosts: ['api.twilio.com', 'twilio.com'],
-    payload: ['CONTACT'], lawfulBasis: 'CONTRACT',
+    payload: ['CONTACT', 'DEVICE_TOKEN', 'DIAGNOSTIC'], lawfulBasis: 'CONTRACT',
     country: 'US', leavesCountry: true, transferBasis: 'CONTRACT_CLAUSES', contractEnv: null,
-    note: 'Phone number + message body. OTP values are never logged (pino redaction). [O-1] With CALL_RELAY on, a bridged call sends Twilio both people\'s numbers and Swift\'s caller ID; Twilio keeps its own call records (numbers, times, duration). Calls are never recorded (record=do-not-record); Swift stores no number for a call.',
+    note: 'Phone number + message body. OTP values are never logged (pino redaction). [O-1] With CALL_RELAY on, a bridged call sends Twilio both people\'s numbers and Swift\'s caller ID; Twilio keeps its own call records (numbers, times, duration). Calls are never recorded (record=do-not-record); Swift stores no number for a call. [INAPP-CALLS · Privacy 2026-11-09] With INAPP_CALLS on, the phone app\'s Twilio Voice SDK gives Twilio the phone\'s push token for calls (PushKit VoIP / FCM; registered only on a live order, unregistered at sign-out), an opaque per-session identity (HMAC, never a number or account id), the call-screen line (role words) and Swift\'s call id as <Parameter>s, the live call audio (relayed, never recorded: record=do-not-record on every <Dial>), the call times, and the SDK\'s own connection/quality reports (network address, OS, SDK version, call quality). Not answered in the app (and not declined): the bridge\'s phone leg, as above.',
   },
   {
     ref: 'EXPO_PUSH', party: 'Expo (650 Industries)', service: 'Push notification relay',

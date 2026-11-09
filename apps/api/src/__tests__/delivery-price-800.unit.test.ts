@@ -67,12 +67,13 @@ describe('the website’s Delivery policy states the schedule from the one const
 
 describe('LEGAL_VERSION 2026-11-08 for the delivery-price wording: material, so everyone ticks again', () => {
   it('is served, and classed material exactly once, for everyone', () => {
-    expect(LEGAL_VERSION).toBe('2026-11-08');
+    // [LEGAL-CALLS · owner 9 Nov 2026] served now under 2026-11-09 (in-app calls: material); 2026-11-08 stays material
+    expect(LEGAL_VERSION).toBe('2026-11-09');
     const entry = MATERIAL_CHANGES.filter((c) => c.version === '2026-11-08');
     expect(entry).toHaveLength(1);
     expect(entry[0]!.audience).toBeUndefined();
     expect(NON_MATERIAL_CHANGES.map((c) => c.version)).not.toContain('2026-11-08');
-    expect(materialVersion(LEGAL_VERSION)).toBe('2026-11-08');
+    expect(materialVersion('2026-11-08')).toBe('2026-11-08');
   });
 
   it('the summary names the new and the old price, and that express is unchanged', () => {
@@ -89,7 +90,8 @@ describe('LEGAL_VERSION 2026-11-08 for the delivery-price wording: material, so 
     ['a customer', ['CUSTOMER']], ['a rider', ['MOVER', 'CUSTOMER']], ['a store owner', ['VENDOR_OWNER', 'CUSTOMER']],
   ] as const)('%s at 2026-11-06 is asked once, with the delivery summary alone; at 2026-11-08, not', (_who, roles) => {
     const summary = MATERIAL_CHANGES.find((c) => c.version === '2026-11-08')!.summary;
-    expect(acceptanceStatus({ tosVersion: '2026-11-06', roles: [...roles] as UserRole[] })).toMatchObject({ needsAcceptance: true, summary });
-    expect(acceptanceStatus({ tosVersion: '2026-11-08', roles: [...roles] as UserRole[] })).toMatchObject({ needsAcceptance: false, summary: [] });
+    // [LEGAL-CALLS] Read as served at 2026-11-08 (2026-11-09, in-app calls, is served on top: legal-calls-2026-11-09.unit.test.ts).
+    expect(acceptanceStatus({ tosVersion: '2026-11-06', roles: [...roles] as UserRole[] }, '2026-11-08')).toMatchObject({ needsAcceptance: true, summary });
+    expect(acceptanceStatus({ tosVersion: '2026-11-08', roles: [...roles] as UserRole[] }, '2026-11-08')).toMatchObject({ needsAcceptance: false, summary: [] });
   });
 });

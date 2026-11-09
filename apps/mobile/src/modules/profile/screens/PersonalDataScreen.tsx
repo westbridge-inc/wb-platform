@@ -6,6 +6,7 @@ import { Feather } from '@expo/vector-icons';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { color, space } from '@swift/ui';
 import { customerApi } from '../../../services/api';
+import { unregisterCallsBeforeAccountEnds } from '../../../services/callsErase';
 import { useProfile } from '../../../hooks/customer';
 import { useStepUp } from '../../../hooks/useStepUp';
 import { isStepUpDismissed } from '../../../lib/stepUp';
@@ -111,9 +112,17 @@ export function PersonalDataScreen({ route, navigation }: any = {}) {
     mutationFn: async () => {
       const owner = requireAuthSessionSnapshot();
       setConfirmDelete(false);
-      const res = await stepUp.withStepUp(() => closureRequest
-        ? customerApi.requestAccountClosure(owner)
-        : customerApi.deleteAccount(owner))();
+      const res = await stepUp.withStepUp(async () => {
+        // [CALLS-ERASE · legal review F1] Out of in-app calls FIRST, with the session still live (its current,
+        // refreshed tokens): once the server has revoked every session, the sign-out teardown can no longer fetch
+        // the removal token and Twilio would keep this phone's push token. Every attempt does it again (the code
+        // sheet may stay open while the app registers anew). Bounded; never stops the request below.
+        await unregisterCallsBeforeAccountEnds(requireAuthSessionForPrincipal(owner));
+        requireAuthSessionForPrincipal(owner);
+        return closureRequest
+          ? customerApi.requestAccountClosure(owner)
+          : customerApi.deleteAccount(owner);
+      })();
       const current = requireAuthSessionForPrincipal(owner);
       setConfirmDelete(false);
       const deletion = res.data?.data;

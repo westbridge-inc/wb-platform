@@ -22,6 +22,7 @@ import { AdvertiserStack } from '../modules/advertiser/AdvertiserStack';
 import { navigationRef, safeNavigate } from './navigationRef';
 import { installNotificationTapRouter, flushPendingNavigation, settleTapAfterSignIn } from '../services/notification-router';
 import { installAppSignals } from '../services/appSignals';
+import { installOtaCatchUp, otaSignedIn } from '../services/otaCatchUp';
 import { installDeepLinkHandler, flushPendingDeepLink } from '../services/deep-links';
 import { ensureFirstLaunchClaim, flushAttributedDestination } from '../services/attribution';
 import { previewBypassForIntent, rootEntryGate, rootNavigatorBoundaryKey } from './rootEntryGate';
@@ -80,6 +81,15 @@ export function RootNavigator() {
   // while it is open: the socket, the store's new-order screen and a mover's
   // offer card act on both (lib/appSignals).
   React.useEffect(() => installAppSignals(), []);
+
+  // [OTA-CATCH-UP] A downloaded update applies at the first moment that cuts nothing — a fresh
+  // install never keeps running the JS it was built with (services/otaCatchUp).
+  React.useEffect(() => installOtaCatchUp(), []);
+  const wasAuthenticated = React.useRef(isAuthenticated);
+  React.useEffect(() => {
+    if (isAuthenticated && !wasAuthenticated.current) otaSignedIn(intent);
+    wasAuthenticated.current = isAuthenticated;
+  }, [isAuthenticated, intent]);
 
   // QR deep links (/store/{slug}, /s/{code}) + the one-time install claim
   // [qr spec Part 6]: same queue-and-flush contract as the tap-router.
