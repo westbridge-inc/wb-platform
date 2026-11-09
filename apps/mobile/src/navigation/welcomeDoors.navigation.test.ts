@@ -163,6 +163,7 @@ vi.mock('../services/api', () => ({
 }));
 vi.mock('../services/push', () => ({ registerIfGranted: async () => undefined, installPushForegroundRetry: () => () => undefined }));
 vi.mock('../services/attribution', () => ({ ensureFirstLaunchClaim: () => undefined, flushAttributedDestination: () => undefined }));
+vi.mock('../services/appSignals', () => ({ installAppSignals: () => () => undefined }));
 vi.mock('../services/notification-router', () => ({
   installNotificationTapRouter: () => () => undefined, flushPendingNavigation: () => undefined, settleTapAfterSignIn: () => undefined,
 }));
