@@ -77,7 +77,12 @@ import {
 //   - a card's last 4 digits or expiry in any response (sec. 6);
 //   - whether the transaction lookup (5.) carries the 3-D Secure proof
 //     (RiskManagement.ThreeDSecure), or covers refunds: until PowerTranz says,
-//     the lookup alone never books, and refund answers are not looked up.
+//     the lookup alone never books, and refund answers are not looked up;
+//   - the lookup's other fields: its top-level TransactionIdentifier,
+//     OrderIdentifier, TransactionType, Approved, IsoResponseCode and
+//     CurrencyCode, the unit of the OrderSummary amounts, and what VoidDateTime
+//     holds on a transaction that was not voided. Swift ASSUMES the sec. 6
+//     names and major units, and reads anything else as unknown (asked).
 // Any answer the guide does not document is `unknown`, never success.
 //
 // Secrets (sec. 4 headers) come from the secrets store through the process
@@ -105,6 +110,15 @@ const PATH = {
  *  (1, 2, 4 ... minutes), never more than 30 minutes. Per transaction, shared by every server (Redis). */
 export const LOOKUP_BACKOFF_FIRST_MS = 60_000;
 export const LOOKUP_BACKOFF_MAX_MS = 30 * 60_000;
+/** [REVIEW-2460-B B8] A transaction's backoff record outlives its longest window by far: one day. */
+const LOOKUP_GATE_TTL_MS = 24 * 60 * 60_000;
+/** [REVIEW-2460-B B7] The lookup runs inside a partner's request (after a completion that may have taken 30 s):
+ *  shorter than the other calls, so the page answers well inside any proxy's patience. */
+export const LOOKUP_TIMEOUT_MS = 10_000;
+/** [REVIEW-2460-A S2-1 · B B2] A VoidDateTime counts only when it is a real date on or after the session began, less
+ *  this margin: the answer names no time zone, and a day covers every zone. Earlier dates ("0001-01-01", a default)
+ *  are not a reversal. */
+export const VOID_DATE_SKEW_MS = 24 * 60 * 60_000;
 
 const REQUEST_TIMEOUT_MS = 15_000;
 /** The completion goes on to the issuing bank (sec. 2.2 1.7): give it longer. */
@@ -478,12 +492,16 @@ export function readCompletion(json: unknown, held: HeldCompletion): CompletionR
 }
 
 /**
- * [CARD-LOOKUP] PowerTranz's record of ONE transaction (GET <root>/api/Transactions/{id}), read strictly. Its
- * fields, in PowerTranz's own names: the sec. 6 response fields (TransactionIdentifier, OrderIdentifier,
- * TransactionType, Approved, IsoResponseCode, CurrencyCode) and, per PowerTranz's written answer to Swift (4 Nov
- * 2026), VoidDateTime ("present = reversed") and OrderSummary { SettledAmount, TotalCaptureAmount,
- * TotalCreditAmount }. Every one of them must be present and of its type (SettledAmount may be absent); a missing,
- * mistyped or finer-than-the-currency field makes the whole answer unreadable — null, never a guess.
+ * [CARD-LOOKUP] PowerTranz's record of ONE transaction (GET <root>/api/Transactions/{id}), read strictly.
+ * DOCUMENTED for this call (PowerTranz's written answer to Swift, 4 Nov 2026): VoidDateTime ("present = reversed")
+ * and OrderSummary { SettledAmount, TotalCaptureAmount, TotalCreditAmount }.
+ * ASSUMED until PowerTranz confirms (asked; CARD-CHECKOUT-API.md section 11) [REVIEW-2460-B B6]: that the record
+ * also carries the sec. 6 response fields TransactionIdentifier, OrderIdentifier, TransactionType, Approved,
+ * IsoResponseCode and CurrencyCode at its top level, and that the OrderSummary amounts are major units like
+ * TotalAmount. If they are not, every answer reads as unreadable and Swift takes the path it took before the lookup.
+ * Every field must be present and of its type (SettledAmount may be absent); a missing, mistyped or
+ * finer-than-the-currency field makes the whole answer unreadable — null, never a guess. A VoidDateTime is a
+ * reversal only when it is a real date on or after `voidNotBeforeMs` (voidDateOf); any other value is unreadable.
  */
 export interface PowerTranzTransactionRecord {
   transactionIdentifier: string;
@@ -497,7 +515,19 @@ export interface PowerTranzTransactionRecord {
   totalCreditMinor: number;
 }
 
-export function readTransactionRecord(json: unknown): PowerTranzTransactionRecord | null {
+/** A VoidDateTime as an instant: ISO date and time (a space allowed for the T), optional fraction and zone; no zone
+ *  is read as UTC. Null for anything else — a placeholder, a default date, an impossible date. */
+export function voidDateOf(text: string): number | null {
+  const m = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2})(?:\.\d{1,7})?)?(Z|[+-]\d{2}:?\d{2})?$/.exec(text.trim());
+  if (!m) return null;
+  const [year, month, day, hour, minute, second] = [m[1], m[2], m[3], m[4], m[5], m[6] ?? '0'].map(Number) as [number, number, number, number, number, number];
+  if (year < 2000 || month < 1 || month > 12 || day < 1 || day > 31 || hour > 23 || minute > 59 || second > 59) return null;
+  if (new Date(Date.UTC(year, month - 1, day)).getUTCDate() !== day) return null; // 30 February and the like
+  const ms = Date.parse(m[7] ? text.trim().replace(' ', 'T') : `${text.trim().replace(' ', 'T')}Z`);
+  return Number.isFinite(ms) ? ms : null;
+}
+
+export function readTransactionRecord(json: unknown, voidNotBeforeMs = Date.UTC(2000, 0, 1)): PowerTranzTransactionRecord | null {
   if (!isObject(json)) return null;
   const transactionIdentifier = str(json['TransactionIdentifier'])?.trim();
   const orderIdentifier = str(json['OrderIdentifier'])?.trim();
@@ -511,23 +541,29 @@ export function readTransactionRecord(json: unknown): PowerTranzTransactionRecor
   if (!transactionIdentifier || !orderIdentifier || !transactionType || !/^\d{1,2}$/.test(transactionType) || typeof approved !== 'boolean'
     || isoResponseCode === undefined || !currencyCode || !isObject(summary)) return null;
   // Absent or null: no reversal. A non-empty text: reversed. Anything else cannot be read.
-  if (voidAt !== undefined && voidAt !== null && !(typeof voidAt === 'string' && voidAt.trim() !== '')) return null;
+  // Absent or null: no reversal. A real date on or after the session began: reversed. Anything else cannot be read.
+  if (voidAt !== undefined && voidAt !== null) {
+    const at = typeof voidAt === 'string' ? voidDateOf(voidAt) : null;
+    if (at === null || at < voidNotBeforeMs) return null;
+  }
   const totalCaptureMinor = minorOfTotalAmount(summary['TotalCaptureAmount'], currencyCode);
   const totalCreditMinor = minorOfTotalAmount(summary['TotalCreditAmount'], currencyCode);
   if (totalCaptureMinor === null || totalCreditMinor === null) return null;
   if (summary['SettledAmount'] !== undefined && summary['SettledAmount'] !== null && minorOfTotalAmount(summary['SettledAmount'], currencyCode) === null) return null;
   return {
     transactionIdentifier, orderIdentifier, transactionType, approved, isoResponseCode, currencyCode,
-    voided: typeof voidAt === 'string', totalCaptureMinor, totalCreditMinor,
+    voided: voidAt !== undefined && voidAt !== null, totalCaptureMinor, totalCreditMinor,
   };
 }
 
-type LookupVerdict = { status: 'confirmed' } | { status: 'reversed' | 'not_bookable' | 'unknown'; reason: string };
+type LookupVerdict = { status: 'confirmed' } | { status: 'reversed' | 'part_credited' | 'not_bookable' | 'unknown'; reason: string };
 
 /**
  * [CARD-LOOKUP] The record, judged against what Swift asked for:
  *   - another transaction or order: the answer is not about this payment — unknown;
- *   - VoidDateTime present, or any TotalCreditAmount: reversed or refunded — never booked;
+ *   - VoidDateTime present (a real date), or a credit of the WHOLE capture: reversed — never booked;
+ *   - a credit smaller than the capture: part refunded, the rest still taken — never booked, never "nothing taken";
+ *     a credit above the capture, or with nothing captured, contradicts itself — unknown;
  *   - not Approved with "00", not a Sale (TransactionType 2, sec. 6), another currency, or a TotalCaptureAmount
  *     that is not Swift's price to the minor unit: not a confirmed sale at Swift's price — never booked;
  *   - otherwise confirmed. Even then this is NOT booking authority on its own: the service books only when the
@@ -537,7 +573,11 @@ export function judgeTransactionRecord(record: PowerTranzTransactionRecord, held
   if (record.transactionIdentifier.toLowerCase() !== held.txnId.toLowerCase()) return { status: 'unknown', reason: 'LOOKUP_OTHER_TRANSACTION' };
   if (record.orderIdentifier !== held.orderId) return { status: 'unknown', reason: 'LOOKUP_OTHER_ORDER' };
   if (record.voided) return { status: 'reversed', reason: 'LOOKUP_VOIDED' };
-  if (record.totalCreditMinor !== 0) return { status: 'reversed', reason: 'LOOKUP_CREDITED' };
+  if (record.totalCreditMinor !== 0) {
+    if (record.totalCaptureMinor <= 0 || record.totalCreditMinor > record.totalCaptureMinor) return { status: 'unknown', reason: 'LOOKUP_CREDIT_UNREADABLE' };
+    if (record.totalCreditMinor === record.totalCaptureMinor) return { status: 'reversed', reason: 'LOOKUP_CREDITED' };
+    return { status: 'part_credited', reason: 'LOOKUP_PARTIAL_CREDIT' };
+  }
   if (!record.approved || record.isoResponseCode !== '00') return { status: 'not_bookable', reason: `LOOKUP_NOT_APPROVED_${record.isoResponseCode.replace(/[^A-Za-z0-9]/g, '').slice(0, 4) || 'NO_CODE'}` };
   if (record.transactionType !== '2') return { status: 'not_bookable', reason: 'LOOKUP_NOT_A_SALE' };
   if (record.currencyCode !== held.currencyCode) return { status: 'not_bookable', reason: 'LOOKUP_CURRENCY_MISMATCH' };
@@ -1019,19 +1059,23 @@ export class PowerTranzCardRailProvider implements CardRailProvider {
    * (LOOKUP_BACKOFF_*), shared by every server; inside the window the answer is `unknown` with `backoff`, and no
    * call is made. Any answer that is not a readable record of THIS transaction and order is `unknown`.
    */
-  async lookupTransaction(input: { binding: CardRailBinding; providerRef: string; orderRef: string; amountMinor: number; currencyCode: string }): Promise<CardLookupOutcome> {
+  async lookupTransaction(input: { binding: CardRailBinding; providerRef: string; orderRef: string; amountMinor: number; currencyCode: string; notBefore?: Date }): Promise<CardLookupOutcome> {
     assertBinding(this.binding, input.binding);
     const digest = (extra: Record<string, unknown>) => rawDigest({ lookup: input.providerRef, ...extra });
     if (!GUID.test(input.providerRef) || !CURRENCY_NUMERIC[input.currencyCode] || !Number.isSafeInteger(input.amountMinor) || input.amountMinor <= 0) {
       return { status: 'unknown', reason: 'LOOKUP_REQUEST_INVALID', rawSha256: digest({ refused: true }) };
     }
+    // [REVIEW-2460-A S4-2] Timed by Redis's own clock (inside the script), one clock for every server.
     const waitMs = Number(await this.redis.eval(LOOKUP_GATE, 1, this.key.lookup(input.providerRef),
-      String(this.now().getTime()), String(LOOKUP_BACKOFF_FIRST_MS), String(LOOKUP_BACKOFF_MAX_MS), String(RECORD_RETAIN_MS)));
+      String(LOOKUP_BACKOFF_FIRST_MS), String(LOOKUP_BACKOFF_MAX_MS), String(LOOKUP_GATE_TTL_MS)));
     if (!(waitMs > 0)) return { status: 'unknown', reason: 'LOOKUP_BACKOFF', backoff: true, rawSha256: digest({ backoff: true }) };
-    const answer = await this.call(`${PATH.transactions}${encodeURIComponent(input.providerRef)}`, { method: 'GET', headers: this.headers(true) });
+    // [REVIEW-2460-B B8] A GET with no body: the credentials and `accept`, no content-type.
+    const headers = this.headers(true);
+    delete headers['content-type'];
+    const answer = await this.call(`${PATH.transactions}${encodeURIComponent(input.providerRef)}`, { method: 'GET', headers, timeoutMs: LOOKUP_TIMEOUT_MS });
     if (answer.shape === 'transport') return { status: 'unknown', reason: `LOOKUP_NO_ANSWER_${answer.reason.toUpperCase()}`, rawSha256: digest({ transport: answer.reason }) };
     if (answer.status < 200 || answer.status >= 300) return { status: 'unknown', reason: `LOOKUP_HTTP_${answer.status}`, rawSha256: digest({ http: answer.status }) };
-    const record = answer.shape === 'json' ? readTransactionRecord(answer.json) : null;
+    const record = answer.shape === 'json' ? readTransactionRecord(answer.json, input.notBefore?.getTime()) : null;
     const rawSha256 = answer.shape === 'json' ? blindedDigest(answer.json) : digest({ unreadable: true });
     if (!record) return { status: 'unknown', reason: 'LOOKUP_UNREADABLE', rawSha256 };
     const verdict = judgeTransactionRecord(record, { txnId: input.providerRef, orderId: input.orderRef, amountMinor: input.amountMinor, currencyCode: input.currencyCode });
@@ -1097,17 +1141,19 @@ redis.call('HSET', KEYS[1], 'completion', 'sending', 'completionClaimedAtMs', AR
 return 1
 `;
 
-/** [CARD-LOOKUP] One read per transaction per window: refuses (0) inside the window; otherwise counts the read and
- *  opens the next window, twice the last (first ARGV[2] ms, at most ARGV[3] ms), and returns it. */
+/** [CARD-LOOKUP] One read per transaction per window, on Redis's clock (TIME): refuses (0) inside the window;
+ *  otherwise counts the read and opens the next window, twice the last (first ARGV[1] ms, at most ARGV[2] ms), and
+ *  returns it. The record expires ARGV[3] ms after the last read. */
 const LOOKUP_GATE = `
-local now = tonumber(ARGV[1])
+local t = redis.call('TIME')
+local now = tonumber(t[1]) * 1000 + math.floor(tonumber(t[2]) / 1000)
 local nextAt = tonumber(redis.call('HGET', KEYS[1], 'nextAtMs') or '0')
 if now < nextAt then return 0 end
 local n = redis.call('HINCRBY', KEYS[1], 'reads', 1)
-local wait = tonumber(ARGV[2]) * (2 ^ (n - 1))
-if wait > tonumber(ARGV[3]) then wait = tonumber(ARGV[3]) end
+local wait = tonumber(ARGV[1]) * (2 ^ (n - 1))
+if wait > tonumber(ARGV[2]) then wait = tonumber(ARGV[2]) end
 redis.call('HSET', KEYS[1], 'nextAtMs', string.format('%.0f', now + wait))
-redis.call('PEXPIRE', KEYS[1], tonumber(ARGV[4]))
+redis.call('PEXPIRE', KEYS[1], tonumber(ARGV[3]))
 return wait`;
 
 const NOTE_ONCE = `

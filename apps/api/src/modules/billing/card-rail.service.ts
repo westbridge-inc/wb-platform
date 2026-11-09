@@ -19,7 +19,7 @@ import {
   type CardLookupOutcome, type CardRailProvider, type CardRailSource, type CardRefundOutcome, type CardReturnObservation, type CardSessionOutcome, type CardSessionPurpose,
   type CompletionClaim, type CreateCardSessionOutcome,
 } from '../../providers/card/card-provider';
-import { POWERTRANZ_PROVIDER, readCompletion } from '../../providers/card/powertranz-provider';
+import { POWERTRANZ_PROVIDER, VOID_DATE_SKEW_MS, readCompletion } from '../../providers/card/powertranz-provider';
 import { SIMULATOR_PAGE, SIMULATOR_PROVIDER } from '../../providers/card/simulator-provider';
 import { PAYER_INCLUDE, payerAudienceOf, payerUserIdOf } from '../subscription/subscription-owner';
 
@@ -611,7 +611,9 @@ export class CardRailService {
    *     provider's approved completion with its own 3-D Secure proof (readCompletion — the existing proof rule;
    *     the record is not documented to carry that proof). Then settlePayNow books it once, with every check it
    *     always makes (price, test system, a void already sent).
-   *   - Voided or refunded on the record: HELD for a person (LOOKUP_SHOWS_REVERSED); no void is sent.
+   *   - Voided (a real VoidDateTime on or after the session began) or refunded IN FULL on the record: HELD for a
+   *     person (LOOKUP_SHOWS_REVERSED); no void is sent; finance may only record "nothing taken".
+   *   - Refunded IN PART: HELD (LOOKUP_PARTIAL_CREDIT), no void, no decision here: escalated to the owner.
    *   - Anything else — a confirmed sale without the stored proof, another amount or currency, a decline, an
    *     unreadable or missing answer — goes on to the path it always took (one void, then HELD when the void is
    *     not confirmed). The completion is never sent again.
@@ -632,7 +634,11 @@ export class CardRailService {
     const provider = this.rail();
     if (!ref || !session.currencyCode || !provider.lookupTransaction || !sameBinding(bindingOf(session), provider.binding)) return keep;
     const held = { txnId: ref, orderId: `SWIFT-${session.id}`, amountMinor: toProviderMinor(Number(session.amount), session.currencyCode, 'card.v2.lookup'), currencyCode: session.currencyCode };
-    const looked = await provider.lookupTransaction({ binding: provider.binding, providerRef: ref, orderRef: held.orderId, amountMinor: held.amountMinor, currencyCode: held.currencyCode })
+    const looked = await provider.lookupTransaction({
+      binding: provider.binding, providerRef: ref, orderRef: held.orderId, amountMinor: held.amountMinor, currencyCode: held.currencyCode,
+      // [REVIEW-2460 S2-1 · B2] A void dated before this payment existed is no void of it (a default date): unreadable.
+      notBefore: new Date(session.createdAt.getTime() - VOID_DATE_SKEW_MS),
+    })
       .catch((): CardLookupOutcome => ({ status: 'unknown', reason: 'LOOKUP_CALL_FAILED', rawSha256: rawDigest({ lookup: 'threw', ref }) }));
     if (looked.status === 'unknown' && looked.backoff) return { result: await this.resultOf(session) };
     log().warn({ sessionId: session.id, completion: outcome.reason, lookup: looked.status, why: 'reason' in looked ? looked.reason : undefined }, '[CARD-LOOKUP] card completion outcome unknown — provider transaction record read');
@@ -649,8 +655,13 @@ export class CardRailService {
         return { outcome: { status: 'unknown', reason: `${outcome.reason}+LOOKUP_CONFIRMED_WITHOUT_3DS_PROOF`, voidable, rawSha256: looked.rawSha256 } };
       }
       case 'reversed':
+        // [REVIEW-2460 S3-1 · B1] Never booked or refunded by finance afterwards (resolveHeld refuses both).
         return { result: await this.hold(session, { status: 'unknown', reason: looked.reason, rawSha256: looked.rawSha256 }, 'LOOKUP_SHOWS_REVERSED', now,
-          `PowerTranz's transaction record shows this payment ${looked.reason === 'LOOKUP_VOIDED' ? 'voided' : 'refunded'} (${outcome.reason}). Nothing was booked and no void was sent. Provider transaction ${ref}. Check it in the provider's portal, then record that nothing was taken (two people).`, ref) };
+          `Swift could not tell what happened to this payment (${outcome.reason}), and PowerTranz's transaction record shows it ${looked.reason === 'LOOKUP_VOIDED' ? 'voided' : 'refunded in full'}. Nothing was booked and no void was sent. Provider transaction ${ref}. Check it in the provider's portal, then record that nothing was taken (two people).`, ref) };
+      case 'part_credited':
+        // [REVIEW-2460 S3-1 · B3] Part refunded, the rest still taken: no decision here (resolveHeld refuses all three).
+        return { result: await this.hold(session, { status: 'unknown', reason: looked.reason, rawSha256: looked.rawSha256 }, 'LOOKUP_PARTIAL_CREDIT', now,
+          `Swift could not tell what happened to this payment (${outcome.reason}), and PowerTranz's transaction record shows part of it refunded: the rest is still taken. Nothing was booked and no void was sent. Provider transaction ${ref}. Check it in PowerTranz's portal and escalate it to the owner.`, ref) };
       case 'not_bookable':
       case 'unknown':
         return { outcome: { status: 'unknown', reason: `${outcome.reason}+${looked.reason}`, voidable, rawSha256: looked.rawSha256 } };
@@ -1222,6 +1233,15 @@ export class CardRailService {
       }
       if (fresh.failureCode === 'AMOUNT_MISMATCH' && input.action === 'NOTHING_TAKEN') {
         throw new AppError(409, 'PROVIDER_SAYS_TAKEN', 'The card provider\'s own answer says money was taken for this payment (another amount or currency than Swift\'s price): it is never closed as "nothing taken". It stays here: escalate to the owner.');
+      }
+      // [REVIEW-2460 S3-1 · B1] The provider's own record shows this payment voided or refunded in full: it is never
+      // booked (no money to book) and never refunded again (a second refund). Only "nothing taken" may close it.
+      if (fresh.failureCode === 'LOOKUP_SHOWS_REVERSED' && input.action !== 'NOTHING_TAKEN') {
+        throw new AppError(409, 'PROVIDER_SAYS_REVERSED', 'The card provider\'s own record shows this payment voided or refunded in full: it is never booked or refunded again. Check the portal, then record that nothing was taken.');
+      }
+      // [REVIEW-2460 S3-1 · B3] Part refunded, the rest still taken: not bookable, not refundable whole, not "nothing taken".
+      if (fresh.failureCode === 'LOOKUP_PARTIAL_CREDIT') {
+        throw new AppError(409, 'PROVIDER_SAYS_PART_REFUNDED', 'The card provider\'s own record shows part of this payment refunded and the rest still taken. Nothing was sent or recorded: it stays here for the owner.');
       }
       if (fresh.providerTransactionRef && fresh.providerTransactionRef.toLowerCase() !== ref.toLowerCase()) {
         throw new AppError(409, 'PROVIDER_REFERENCE_MISMATCH', 'That is not the transaction recorded for this card payment.');

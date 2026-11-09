@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import Redis from 'ioredis';
 import { nanoid } from 'nanoid';
 import {
+  LOOKUP_TIMEOUT_MS,
   POWERTRANZ_SANDBOX_ROOT,
   PowerTranzCardRailProvider,
   PowerTranzConfigError,
@@ -740,12 +741,18 @@ describe('[CARD-LOOKUP] the transaction lookup: read strictly, judged against wh
     expect(gw.calls[0]).toMatchObject({ url: `${POWERTRANZ_SANDBOX_ROOT}/api/Transactions/${txn}`, method: 'GET', body: undefined });
     expect(gw.calls[0]!.headers['powertranz-powertranzid']).toBe('TESTID01');
     expect(gw.calls[0]!.headers['powertranz-powertranzpassword']).toBe('test-password-not-real');
+    // [REVIEW-2460-B B7 · B8] A GET with no body carries no content-type; the read waits at most 10 s.
+    expect(gw.calls[0]!.headers).not.toHaveProperty('content-type');
+    expect(LOOKUP_TIMEOUT_MS).toBeLessThanOrEqual(10_000);
   });
 
-  it('VoidDateTime present = reversed; any credit = reversed: never confirmed', async () => {
+  it('VoidDateTime present (a real date) = reversed; a credit of the whole capture = reversed; a smaller credit = part refunded: never confirmed', async () => {
     expect(await ask(fresh(at({ status: 200, body: record({ VoidDateTime: '2026-11-09T12:00:00' }) })))).toMatchObject({ status: 'reversed', reason: 'LOOKUP_VOIDED' });
+    expect(await ask(fresh(at({ status: 200, body: record({ VoidDateTime: '2026-11-09 12:00:00.123' }) })))).toMatchObject({ status: 'reversed', reason: 'LOOKUP_VOIDED' });
     expect(await ask(fresh(at({ status: 200, body: record({}, { TotalCreditAmount: 2100 }) })))).toMatchObject({ status: 'reversed', reason: 'LOOKUP_CREDITED' });
-    expect(await ask(fresh(at({ status: 200, body: record({}, { TotalCreditAmount: 1 }) })))).toMatchObject({ status: 'reversed', reason: 'LOOKUP_CREDITED' });
+    // [REVIEW-2460-A S3-1] Part of it refunded: the rest WAS taken. Never "reversed", never confirmed.
+    expect(await ask(fresh(at({ status: 200, body: record({}, { TotalCreditAmount: 1 }) })))).toMatchObject({ status: 'part_credited', reason: 'LOOKUP_PARTIAL_CREDIT' });
+    expect(await ask(fresh(at({ status: 200, body: record({}, { TotalCreditAmount: 2099.99 }) })))).toMatchObject({ status: 'part_credited', reason: 'LOOKUP_PARTIAL_CREDIT' });
     // An absent or null VoidDateTime is no reversal.
     expect(await ask(fresh(at({ status: 200, body: record({ VoidDateTime: null }) })))).toMatchObject({ status: 'confirmed' });
   });
@@ -777,6 +784,14 @@ describe('[CARD-LOOKUP] the transaction lookup: read strictly, judged against wh
       [{ status: 200, body: record({ CurrencyCode: '999' }) }, 'LOOKUP_UNREADABLE'],
       [{ status: 200, body: record({ VoidDateTime: '' }) }, 'LOOKUP_UNREADABLE'],
       [{ status: 200, body: record({ VoidDateTime: 17 }) }, 'LOOKUP_UNREADABLE'],
+      // [REVIEW-2460-A S2-1] A VoidDateTime that is not a real date (a "no date" sentinel, a placeholder) is never
+      // read as a reversal: unreadable, so today's void is still sent.
+      [{ status: 200, body: record({ VoidDateTime: '0001-01-01T00:00:00' }) }, 'LOOKUP_UNREADABLE'],
+      [{ status: 200, body: record({ VoidDateTime: '1900-01-01T00:00:00' }) }, 'LOOKUP_UNREADABLE'],
+      [{ status: 200, body: record({ VoidDateTime: 'N/A' }) }, 'LOOKUP_UNREADABLE'],
+      [{ status: 200, body: record({ VoidDateTime: 'garbage' }) }, 'LOOKUP_UNREADABLE'],
+      [{ status: 200, body: record({ VoidDateTime: '1' }) }, 'LOOKUP_UNREADABLE'],
+      [{ status: 200, body: record({ VoidDateTime: '2026-13-45T99:99:99' }) }, 'LOOKUP_UNREADABLE'],
       [{ status: 200, body: [record()] }, 'LOOKUP_UNREADABLE'],
       [{ status: 200, body: 'not json at all' }, 'LOOKUP_UNREADABLE'],
       [{ status: 404, body: 'not found' }, 'LOOKUP_HTTP_404'],
@@ -800,27 +815,31 @@ describe('[CARD-LOOKUP] the transaction lookup: read strictly, judged against wh
     expect(gw.calls).toHaveLength(0);
   });
 
-  it('at most one read per transaction per backoff window, and the window doubles (1, 2, 4 ... minutes, at most 30)', async () => {
-    let clock = Date.now();
+  it('at most one read per transaction per backoff window, timed by Redis\'s own clock (one clock for every server); the window doubles (1, 2, 4 ... minutes, at most 30)', async () => {
+    // [REVIEW-2460-A S4-2] The server's own clock is not the gate's clock: even a server whose clock runs an hour
+    // ahead is held inside the window.
     const gw = at('timeout');
-    const p = fresh(gw, () => new Date(clock));
+    const p = fresh(gw, () => new Date(Date.now() + 60 * 60_000));
     const reads = () => gw.calls.length;
+    const gate = `${PREFIX}l:${p.binding.account}:${txn}`;
+    const windowMs = async () => {
+      const [sec, micro] = await redis.time();
+      return Number(await redis.hget(gate, 'nextAtMs')) - (Number(sec) * 1000 + Math.floor(Number(micro) / 1000));
+    };
     expect(await ask(p)).toMatchObject({ status: 'unknown', reason: 'LOOKUP_NO_ANSWER_TIMEOUT' });
     expect(reads()).toBe(1);
     expect(await ask(p)).toMatchObject({ status: 'unknown', reason: 'LOOKUP_BACKOFF', backoff: true });
-    clock += 59_999;
-    expect(await ask(p)).toMatchObject({ status: 'unknown', backoff: true });
     expect(reads()).toBe(1);
-    clock += 1;
-    await ask(p);
-    expect(reads()).toBe(2);
-    clock += 60_000; // the second window is two minutes
-    expect(await ask(p)).toMatchObject({ backoff: true });
-    clock += 60_000;
-    await ask(p);
-    expect(reads()).toBe(3);
-    for (let i = 0; i < 8; i += 1) { clock += 30 * 60_000; await ask(p); }
-    expect(reads()).toBe(11); // capped at 30 minutes: one read per half hour, never fewer
+    const windows: number[] = [await windowMs()];
+    for (let i = 0; i < 7; i += 1) {
+      await redis.hset(gate, 'nextAtMs', '0'); // the window has passed
+      await ask(p);
+      windows.push(await windowMs());
+      expect(await ask(p)).toMatchObject({ backoff: true });
+    }
+    expect(reads()).toBe(8);
+    const minutes = windows.map((w) => Math.round(w / 60_000));
+    expect(minutes).toEqual([1, 2, 4, 8, 16, 30, 30, 30]);
   });
 
   it('never the normal flow: a page made, completed, declined, refunded or voided reads no transaction record', async () => {

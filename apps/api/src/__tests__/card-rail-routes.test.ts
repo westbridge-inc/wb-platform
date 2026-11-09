@@ -2124,8 +2124,10 @@ describe('[PT-4] real cards through HTTP: Swift\'s hosted page, the bank\'s chec
       expect((await money(refused.subId)).successes).toBe(0);
     });
 
-    it('the lookup shows the payment reversed (VoidDateTime) or refunded (a credit): nothing booked, no void sent, HELD for a person', async () => {
-      for (const [fields, summary] of [[{ VoidDateTime: '2026-11-09T12:00:00' }, {}], [{}, { TotalCreditAmount: 2100 }]] as const) {
+    it('the lookup shows the payment reversed (a real VoidDateTime) or refunded in full: nothing booked, no void sent, HELD; finance can never BOOK or REFUND it, only record nothing taken', async () => {
+      const finance = await makeFinance();
+      const voidedAt = new Date().toISOString().slice(0, 19); // PowerTranz's answer names no zone
+      for (const [fields, summary] of [[{ VoidDateTime: voidedAt }, {}], [{}, { TotalCreditAmount: 2100 }]] as const) {
         const p = await makeStore();
         const { row, txnId, orderId, lost } = await lostCompletion(p, { proof: true });
         lookupAnswer = recordOf(txnId, orderId, fields, summary);
@@ -2133,6 +2135,52 @@ describe('[PT-4] real cards through HTTP: Swift\'s hosted page, the bank\'s chec
         expect(lookups(txnId)).toBe(1);
         expect(voidsOf(txnId)).toBe(0);
         expect(await rowOf(row.id)).toMatchObject({ status: 'HELD', failureCode: 'LOOKUP_SHOWS_REVERSED', providerTransactionRef: txnId, paymentId: null, providerVoidState: null });
+        // [REVIEW-2460 S3-1 · B1] The stored proof would pass BOOK's own check: the reversal refuses it, under the lock.
+        const book = await resolve(finance, row.id, { action: 'BOOK', providerReference: txnId, amount: 2100 });
+        expect(book.statusCode, book.body).toBe(409);
+        expect(book.json().error?.code).toBe('PROVIDER_SAYS_REVERSED');
+        const refund = await resolve(finance, row.id, { action: 'REFUND', providerReference: txnId, amount: 2100 });
+        expect(refund.json().error?.code, refund.body).toBe('PROVIDER_SAYS_REVERSED');
+        expect(sent('/api/refund').filter((b) => b['TransactionIdentifier'] === txnId)).toHaveLength(0);
+        expect(await rowOf(row.id)).toMatchObject({ status: 'HELD', paymentId: null, bookClaimedAt: null, providerRefundState: null });
+        expect((await money(p.subId)).successes).toBe(0);
+        const none = await resolve(finance, row.id, { action: 'NOTHING_TAKEN', providerReference: txnId });
+        expect(none.statusCode, none.body).toBe(200);
+        expect(await rowOf(row.id)).toMatchObject({ status: 'FAILED', resolution: 'NOTHING_TAKEN' });
+      }
+    });
+
+    it('[REVIEW-2460 S3-1 · B3] the lookup shows PART of the payment refunded: the rest is still taken — HELD for the owner, no void, and no decision (BOOK, REFUND, NOTHING_TAKEN all refused)', async () => {
+      const finance = await makeFinance();
+      const p = await makeStore();
+      const { row, txnId, orderId, lost } = await lostCompletion(p, { proof: true });
+      lookupAnswer = recordOf(txnId, orderId, {}, { TotalCreditAmount: 1000 });
+      expect((await serviceOf().confirm(row.id, { now: lost })).status).toBe('HELD');
+      expect(voidsOf(txnId)).toBe(0);
+      expect(await rowOf(row.id)).toMatchObject({ status: 'HELD', failureCode: 'LOOKUP_PARTIAL_CREDIT', paymentId: null, providerVoidState: null });
+      for (const payload of [
+        { action: 'BOOK', providerReference: txnId, amount: 2100 },
+        { action: 'REFUND', providerReference: txnId, amount: 2100 },
+        { action: 'NOTHING_TAKEN', providerReference: txnId },
+      ]) {
+        const answer = await resolve(finance, row.id, payload);
+        expect(answer.statusCode, answer.body).toBe(409);
+        expect(answer.json().error?.code).toBe('PROVIDER_SAYS_PART_REFUNDED');
+      }
+      expect(sent('/api/refund').filter((b) => b['TransactionIdentifier'] === txnId)).toHaveLength(0);
+      expect(await rowOf(row.id)).toMatchObject({ status: 'HELD', resolution: null, paymentId: null });
+      expect((await money(p.subId)).successes).toBe(0);
+    });
+
+    it('[REVIEW-2460 S2-1 · B2] a VoidDateTime that is not a real date of this payment (a default "0001-01-01", one before the payment existed, a placeholder) is no reversal: unreadable, so today\'s void is still sent', async () => {
+      for (const VoidDateTime of ['0001-01-01T00:00:00', '2020-01-01T00:00:00', 'N/A']) {
+        const p = await makeStore();
+        const { row, txnId, orderId, lost } = await lostCompletion(p, { proof: true });
+        lookupAnswer = recordOf(txnId, orderId, { VoidDateTime });
+        expect((await serviceOf().confirm(row.id, { now: lost })).status, VoidDateTime).toBe('FAILED');
+        expect(lookups(txnId)).toBe(1);
+        expect(voidsOf(txnId)).toBe(1);
+        expect(await rowOf(row.id)).toMatchObject({ status: 'FAILED', failureCode: 'VOIDED_UNPROVEN', providerVoidState: 'VOIDED', paymentId: null });
         expect((await money(p.subId)).successes).toBe(0);
       }
     });

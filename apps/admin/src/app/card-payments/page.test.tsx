@@ -138,6 +138,22 @@ describe('[CARD-READY] card payments', () => {
     for (const name of ['Nothing was taken', 'Refund it', 'Book the week']) expect(screen.queryByRole('button', { name })).toBeNull();
   });
 
+  it('[REVIEW-2460 S3-1 · B1] PowerTranz\'s record shows the payment voided or refunded in full: only "Nothing was taken" is offered', async () => {
+    server([{ ...held, failureCode: 'LOOKUP_SHOWS_REVERSED' }]);
+    renderWithQuery(<CardPaymentsPage />);
+    expect(await screen.findByText(/Swift could not tell what happened to this payment, and PowerTranz's record shows it voided or refunded in full/)).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Nothing was taken' })).toBeTruthy();
+    for (const name of ['Refund it', 'Book the week']) expect(screen.queryByRole('button', { name })).toBeNull();
+  });
+
+  it('[REVIEW-2460 S3-1 · B3] part refunded on PowerTranz\'s record: no decision, never "nothing was taken"; escalated to the owner', async () => {
+    server([{ ...held, failureCode: 'LOOKUP_PARTIAL_CREDIT' }]);
+    renderWithQuery(<CardPaymentsPage />);
+    expect(await screen.findByText(/Part of this payment was refunded and the rest is still taken\. Check it in PowerTranz's portal\. It stays here until the owner settles it/)).toBeTruthy();
+    expect(screen.getByText(/shows part of it refunded: the rest is still taken/)).toBeTruthy();
+    for (const name of ['Nothing was taken', 'Refund it', 'Book the week']) expect(screen.queryByRole('button', { name })).toBeNull();
+  });
+
   it('[REVIEW-1 R2-3] once a refund was sent for a held payment, no decision is offered: it stays for the owner', async () => {
     server([{ ...held, providerRefundState: 'UNKNOWN' }]);
     renderWithQuery(<CardPaymentsPage />);
