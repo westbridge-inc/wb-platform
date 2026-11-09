@@ -380,7 +380,12 @@ const PENDING_ELSEWHERE: Record<string, string> = {
 };
 
 /** Reviewed: this state has no Back on purpose. Every entry must still match a real hit. */
-const KNOWN: Record<string, string> = {};
+const KNOWN: Record<string, string> = {
+  // [OWNER-ASKS · owner ruling 9 Nov 2026] Pushed on the business stack (HomeVisitPhotoCard), the screen is always
+  // `stacked` there, so its corner is "Not now" (navigation.goBack()); the "Sign out" branch is the root-gate instance a
+  // mover meets as the door, which is not a pushed screen.
+  'screens/auth/SelfieCaptureScreen.tsx | final return': 'OWNER-ASKS 9 Nov: stacked ⇒ "Not now" goes back',
+};
 
 const RESULT = census(sources(SRC), SRC);
 

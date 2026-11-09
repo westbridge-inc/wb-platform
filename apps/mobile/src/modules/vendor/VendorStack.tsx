@@ -13,6 +13,7 @@ import { VendorTierScreen } from './screens/VendorTierScreen';
 import { VendorBranchesScreen } from './screens/VendorBranchesScreen';
 import { VendorAddBranchScreen } from './screens/VendorAddBranchScreen';
 import { PersonalDataScreen } from '../profile/screens/PersonalDataScreen';
+import { SelfieCaptureScreen } from '../../screens/auth/SelfieCaptureScreen';
 import { GetHelpScreen } from '../profile/screens/GetHelpScreen';
 import { RoleSwitcherSheet } from '../../components/RoleSwitcherSheet';
 import { useWentLive, WentLivePopup } from '../../components/onboarding/WentLive';
@@ -294,6 +295,10 @@ export function VendorStack() {
           the Account tab. Registered on THIS stack: a screen inside the Menu
           tab's nested stack is not reachable from a sibling tab. */}
       <Stack.Screen name="PersonalData" component={PersonalDataScreen} />
+      {/* [OWNER-ASKS · owner ruling 9 Nov 2026] A business that goes to the customer takes its profile photo from inside
+          the app (HomeVisitPhotoCard: the Menu tab's editor and the Account tab), never at the door. Pushed, so "Not now"
+          goes back and a saved photo returns where it was asked. */}
+      <Stack.Screen name="Selfie" component={SelfieCaptureScreen} />
     </Stack.Navigator>
   );
 }

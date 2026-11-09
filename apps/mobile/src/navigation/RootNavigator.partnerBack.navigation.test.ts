@@ -682,14 +682,15 @@ describe('a partner role picked by mistake: back to ordering and on to another o
 });
 
 describe('the profile photo a partner sign-up asks for first is not a one-way door either', () => {
-  /** A signed-in customer with no profile photo opens "Swift Business" from Profile: the photo comes first. */
+  /** A signed-in customer with no profile photo opens "Swift Driver" from Profile: the photo comes first.
+   *  [OWNER-ASKS · owner ruling 9 Nov 2026] Riders and drivers take it; a business does not (below). */
   async function customerAtThePhotoStep() {
     server.vendorProfile = { status: 403, data: null };
     signIn({ id: 'customer-new', roles: ['CUSTOMER'], activeRole: 'CUSTOMER', selfie: false }, 'customer');
     await launch();
     expect(text()).toContain('Swift home');
     await press('Earn with Swift');
-    await pickApp('Swift Business');
+    await pickApp('Swift Driver');
     expect(rootRoute()).toBe('Selfie');
     expect(text()).toContain('Add your photo');
     expect(control('Sign out'), 'signing out is still offered').toBeDefined();
@@ -723,6 +724,20 @@ describe('the profile photo a partner sign-up asks for first is not a one-way do
     expect(await swipe({ fromX: 6, dx: 140 })).toBe(1);
 
     expectOnSwift();
+  });
+});
+
+// [OWNER-ASKS · owner ruling 9 Nov 2026] A store owner, store staff and an in-shop business take no selfie: "Swift
+// Business" opens without the camera. (A business that goes to the customer is asked inside the app: homeVisitPhoto.)
+describe('[owner 9 Nov] Swift Business asks for no photo', () => {
+  it('a signed-in customer with no photo opens Swift Business: no camera, the business app opens', async () => {
+    server.vendorProfile = { status: 403, data: null };
+    signIn({ id: 'customer-shop', roles: ['CUSTOMER'], activeRole: 'CUSTOMER', selfie: false }, 'customer');
+    await launch();
+    await press('Earn with Swift');
+    await pickApp('Swift Business');
+    expect(rootRoute()).not.toBe('Selfie');
+    expect(text()).not.toContain('Add your photo');
   });
 });
 

@@ -121,6 +121,8 @@ vi.mock('../../../stores/authStore', () => ({
   AuthSessionBoundaryError: class extends Error {},
   requireAuthSessionSnapshot: () => ({ userId: 'owner', generation: 1 }),
   requireAuthSessionForPrincipal: (session: unknown) => session,
+  // [OWNER-ASKS 9 Nov] the editor reads whether the owner has a profile photo (home visits): one on file, as before
+  useAuthStore: (select: (state: unknown) => unknown) => select({ user: { selfieCapturedAt: '2026-11-01T00:00:00.000Z' } }),
 }));
 vi.mock('../../../stores/storeSwitcher', () => ({ useStoreSwitcher: { getState: () => ({ selectedStoreId: 'store-A' }) } }));
 vi.mock('../../../stores/vendorPreview', () => ({ useVendorPreview: (select: (s: unknown) => unknown) => select({ previewType: fx.previewType }) }));
