@@ -458,10 +458,22 @@ describe('[SUBSTITUTION] the store asks the customer about a swap', () => {
     expect(screen.getByText(/Please answer by .+\. If you don't, it comes off your order and your total goes down\./)).toBeTruthy();
     const loadsBefore = get.mock.calls.length;
     await userEvent.click(screen.getByRole('button', { name: 'Approve swap' }));
-    expect(decide).toHaveBeenCalledWith('order-1', 'line-1', true);
+    // [TRANSFORMED 8 Nov (OOS-FLOW · REVIEW-1 S3-1): each answer says whether it ends the order (endsOrder).]
+    expect(decide).toHaveBeenCalledWith('order-1', 'line-1', true, false);
     await waitFor(() => expect(get.mock.calls.length).toBeGreaterThan(loadsBefore));
     await userEvent.click(screen.getByRole('button', { name: 'Decline' }));
-    expect(decide).toHaveBeenLastCalledWith('order-1', 'line-1', false);
+    expect(decide).toHaveBeenLastCalledWith('order-1', 'line-1', false, false);
+  });
+
+  it('[OOS-FLOW · REVIEW-2 F5] the only item left: the decline says it cancels the order, and says so to the server', async () => {
+    vi.spyOn(orders, 'getOrder').mockResolvedValue(swapOrder({ ...CASH_VIEW, lastItem: true, ifNoAnswer: 'CANCEL',
+      settlementGuidance: 'This is the only item left on your order: if you say no thanks or don’t answer in time, the order is cancelled. Nothing has been charged.' }) as never);
+    const decide = vi.spyOn(orders, 'decideSubstitution').mockResolvedValue({} as never);
+    render(<OrderDetailPage />);
+    await screen.findByRole('heading', { name: 'Swap Fried Rice for Chilly Fish?' });
+    expect(screen.queryByText(/Declining removes the item/)).toBeNull();
+    await userEvent.click(screen.getByRole('button', { name: 'No thanks, cancel order' }));
+    expect(decide).toHaveBeenLastCalledWith('order-1', 'line-1', false, true);
   });
 
   it('offers only the answers the server accepts, and says why', async () => {
@@ -488,7 +500,8 @@ describe('[SUBSTITUTION] the store asks the customer about a swap', () => {
     expect(screen.getByText('Continuing without it lowers your total by $1,500. You pay only the new total.')).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Decline' })).toBeNull();
     await userEvent.click(screen.getByRole('button', { name: 'Continue without it' }));
-    expect(decide).toHaveBeenCalledWith('order-1', 'line-1', true);
+    // [TRANSFORMED 8 Nov (OOS-FLOW): the answer says it does not end the order.]
+    expect(decide).toHaveBeenCalledWith('order-1', 'line-1', true, false);
     expect((screen.getByRole('button', { name: 'Cancel order' }) as HTMLButtonElement).disabled).toBe(false);
   });
 
@@ -528,9 +541,13 @@ it('[SUBSTITUTION] the web opts in to the server swap view and posts the answer 
   // [O-4] v2: this page renders the pre-accept removal question too (a v1 client is served a legacy line).
   // [PICKUP · owner 30 Oct 2026] pickupHandover=v1: this page tells the customer the name + order number when the
   // store's code is off, so the server sends it no code then.
-  expect(fetchSpy).toHaveBeenCalledWith('/api/v1/customer/orders/order-9?swapDecisions=v2&pickupHandover=v1');
+  // [TRANSFORMED 8 Nov (OOS-FLOW · REVIEW-1 S3-1): lastItemDecline=1 (beside v2): this page labels the only item's
+  // decline "No thanks, cancel order" and sends endsOrder with it.]
+  expect(fetchSpy).toHaveBeenCalledWith('/api/v1/customer/orders/order-9?swapDecisions=v2&lastItemDecline=1&pickupHandover=v1');
   await orders.decideSubstitution('order-9', 'line-3', false);
   expect(fetchSpy).toHaveBeenLastCalledWith('/api/v1/customer/orders/order-9/items/line-3/substitution', { method: 'POST', body: JSON.stringify({ approve: false }) });
+  await orders.decideSubstitution('order-9', 'line-3', false, true);
+  expect(fetchSpy).toHaveBeenLastCalledWith('/api/v1/customer/orders/order-9/items/line-3/substitution', { method: 'POST', body: JSON.stringify({ approve: false, endsOrder: true }) });
 });
 
 // [WEB-TAXI · TAXI waiting charge · research E4] The live waiting count and the

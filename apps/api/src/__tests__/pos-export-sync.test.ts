@@ -1059,7 +1059,8 @@ describe('units given back at the store are not held (refund movements carry the
     await openOrderHolding(store, item.id, 3, 'PREPARING'); // tracked: 10 -> 7, these 3 are held
     expect((await itemOf(item.id)).stockQuantity).toBe(7);
     const line = await app.prisma.orderItem.findFirstOrThrow({ where: { orderId: oldOrder.id } });
-    const refund = await asStore(store, `/orders/${oldOrder.id}/items/${line.id}/refund-line`);
+    // [TRANSFORMED 8 Nov (OOS-FLOW · REVIEW-1 S3-2): the only line ends the order, so the store confirms it (endsOrder).]
+    const refund = await asStore(store, `/orders/${oldOrder.id}/items/${line.id}/refund-line`, { endsOrder: true });
     expect(refund.statusCode, refund.body).toBe(200);
     // Nothing is given back in the old order's name: it took nothing.
     expect(await app.prisma.stockMovement.count({ where: { orderId: oldOrder.id, reason: 'PICK_REFUND' } })).toBe(0);
@@ -1102,7 +1103,8 @@ describe('units given back at the store are not held (refund movements carry the
     const item = await makeItem(store, 'HELD-R', 10, 100);
     const order = await openOrderHolding(store, item.id, 3, 'PREPARING'); // 10 -> 7
     const line = await app.prisma.orderItem.findFirstOrThrow({ where: { orderId: order.id } });
-    const refund = await asStore(store, `/orders/${order.id}/items/${line.id}/refund-line`);
+    // [TRANSFORMED 8 Nov (OOS-FLOW · REVIEW-1 S3-2): the only line ends the order, so the store confirms it (endsOrder).]
+    const refund = await asStore(store, `/orders/${order.id}/items/${line.id}/refund-line`, { endsOrder: true });
     expect(refund.statusCode, refund.body).toBe(200);
     expect((await itemOf(item.id)).stockQuantity).toBe(10);
     // The till counts the 10 on the shelf less 5 sold over the counter: 5, and Swift holds none of them.

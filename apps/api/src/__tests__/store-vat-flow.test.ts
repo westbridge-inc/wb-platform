@@ -479,13 +479,14 @@ describe('6. the goods change, the VAT follows (one recompute)', () => {
   it('a non-VAT order is never given VAT by a recompute', async () => {
     process.env['STORE_VAT'] = '';
     try {
-      await fillCart([{ itemId: soapId, quantity: 2 }]);
+      // [OOS-FLOW] Two lines: after acceptance the last item is never removed (the order ends instead).
+      await fillCart([{ itemId: soapId, quantity: 2 }, { itemId: riceId, quantity: 1 }]);
       const order = await checkout();
       expect(order.vatRateBps).toBeNull();
       expect(order.vatAmount).toBeNull();
       expect(order.items.every((i) => i.vatClass === null)).toBe(true);
       await walkOrderStatus(app.prisma as never, order.id, 'PREPARING', { holdExpiresAt: null });
-      await new PickingService(app.prisma, app.io).refundLine(order.id, order.items[0]!.id, ownerUserId);
+      await new PickingService(app.prisma, app.io).refundLine(order.id, order.items.find((i) => i.itemId === soapId)!.id, ownerUserId);
       expect((await app.prisma.order.findUniqueOrThrow({ where: { id: order.id } })).vatAmount).toBeNull();
     } finally {
       process.env['STORE_VAT'] = '1';

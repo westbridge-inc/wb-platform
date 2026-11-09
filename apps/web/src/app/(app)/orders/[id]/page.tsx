@@ -390,11 +390,11 @@ export default function OrderDetailPage() {
 
   // [SUBSTITUTION · owner 17 Oct 2026] The customer answers the store's swap
   // question here too; the page then reloads the server's truth either way.
-  const decideSwap = useCallback(async (lineId: string, approve: boolean) => {
+  const decideSwap = useCallback(async (lineId: string, approve: boolean, endsOrder = false) => {
     setSwapBusy(lineId);
     setSwapError(null);
     try {
-      await decideSubstitution(id, lineId, approve);
+      await decideSubstitution(id, lineId, approve, endsOrder);
     } catch (decideError) {
       setSwapError(decideError instanceof Error ? decideError.message : 'That did not go through. Try again.');
     } finally {
@@ -766,7 +766,7 @@ export default function OrderDetailPage() {
               <p className={styles.eyebrow}>The store asks</p>
               <h2 id={`swap-title-${lineId}`} className={styles.cardTitle}>Swap {item.name} for {item.substituteName ?? 'another item'}?</h2>
               <p className={styles.mutedCopy}>
-                {item.name} is out of stock. {vendorName} suggests {item.substituteName ?? 'another item'} ({money(Number(item.substitutePrice ?? 0))}{item.quantity > 1 ? ` × ${item.quantity}` : ''}) instead.{allowed.reject ? ' Declining removes the item and lowers your total.' : ''}
+                {item.name} is out of stock. {vendorName} suggests {item.substituteName ?? 'another item'} ({money(Number(item.substitutePrice ?? 0))}{item.quantity > 1 ? ` × ${item.quantity}` : ''}) instead.{allowed.reject && !view?.lastItem ? ' Declining removes the item and lowers your total.' : ''}
               </p>
               {change ? <p className={styles.mutedCopy}><strong>{change}</strong></p> : null}
               {view?.settlementGuidance ? <p className={styles.mutedCopy}>{view.settlementGuidance}</p> : null}
@@ -776,8 +776,9 @@ export default function OrderDetailPage() {
                 <button type="button" className={styles.primaryButton} disabled={swapBusy !== null || !allowed.approve} onClick={() => void decideSwap(lineId, true)}>
                   Approve swap
                 </button>
-                <button type="button" className={styles.secondaryButton} disabled={swapBusy !== null || !allowed.reject} onClick={() => void decideSwap(lineId, false)}>
-                  Decline
+                {/* [OOS-FLOW · REVIEW-2 F5] On the only item left a "no" cancels the order: the button says so. */}
+                <button type="button" className={styles.secondaryButton} disabled={swapBusy !== null || !allowed.reject} onClick={() => void decideSwap(lineId, false, view?.lastItem === true)}>
+                  {view?.lastItem ? 'No thanks, cancel order' : 'Decline'}
                 </button>
               </div>
             </div>

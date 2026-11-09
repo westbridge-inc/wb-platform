@@ -138,6 +138,11 @@ class FakeOrderDb {
           return { count: 1 };
         },
         findUnique: async ({ where }: { where: Row }) => clone(db.lines.get(where['id']) ?? null),
+        // [OOS-FLOW] The other lines still coming (PICK_ALIVE_WHERE): the proposal's push words ask it after the commit.
+        count: async ({ where }: { where: Row }) => [...db.lines.values()].filter((l) => l['orderId'] === where['orderId']
+          && l['id'] !== (where['id'] as { not?: unknown } | undefined)?.not
+          && !['REFUNDED', 'REJECTED'].includes(l['subStatus'] as string)
+          && !(l['subStatus'] === 'PENDING' && l['substituteItemId'] == null && l['substituteName'] == null)).length,
       },
       item: { findUnique: async ({ where }: { where: Row }) => clone(db.items.get(where['id']) ?? null) },
       orderStatusLog: { create: async ({ data }: { data: Row }) => { db.seq += 1; db.statusLogs.push(data); return data; } },

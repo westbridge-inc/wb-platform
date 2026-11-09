@@ -21,7 +21,7 @@ import { assertNameNotReserved } from '../../lib/fixture-filter';
 import { assertPromoTerms, recordPromoTermsVersion, updatePromoTerms } from '../promo/promo-terms';
 import { Prisma, OrderStatus, OrderType, SettlementStatus } from '@prisma/client';
 import type { FulfillmentMode, PrismaClient } from '@prisma/client';
-import { OrderService, assertMmgFulfilmentAllowed, vendorVisibleFilter, cancelledWhileHeld, holdWindowMs, isTerminalOrderStatus, preparationMayStart, releaseLapsedHoldInTransaction } from '../order/order.service';
+import { OrderService, assertMmgFulfilmentAllowed, vendorVisibleFilter, cancelledWhileHeld, holdWindowMs, isTerminalOrderStatus, preparationMayStart, releaseLapsedHoldInTransaction, MMG_MONEY_MOVED } from '../order/order.service';
 import { STORE_ACCEPT_PATH, STORE_REJECTABLE_STATUSES } from '../order/order-status';
 import { vendorResponseSlaMinutes, vendorRespondBy } from '../order/response-sla';
 import { VendorAnalyticsService } from './vendor-analytics.service';
@@ -1045,7 +1045,8 @@ export async function vendorRoutes(app: FastifyInstance) {
   const notifications = new NotificationService(app.prisma, app.io);
   const custodyDeps = { prisma: app.prisma, io: app.io, notifications };
   const settlementLedger = new DeliveryCashSettlementService(app.prisma, notifications);
-  const picking = new PickingService(app.prisma, app.io);
+  // [OOS-FLOW] With the canonical seam: the last item out of stock ends the order (never an empty one).
+  const picking = new PickingService(app.prisma, app.io, orderService);
   const verification = new VerificationService(
     app.prisma,
     new NotificationService(app.prisma, app.io),
@@ -2586,7 +2587,10 @@ export async function vendorRoutes(app: FastifyInstance) {
     const mmgRefund = storeRefundView(refundRows, new Date(), canConfirmPayment(role));
     // [BUG-HUNT-2 G20] A ready pickup says whether "Not collected" may be recorded now, and whether it goes to support.
     const notCollected = order.fulfillment === 'PICKUP' && order.status === 'READY_FOR_PICKUP' ? { notCollected: notCollectedView(order, new Date()) } : {};
-    return { success: true, data: { ...redactCustomerContact({ ...order, ...handover, items: order.items.map(vendorOrderLine), respondBy, ...storeMmgPayBy(order), canConfirmPayment: canConfirmPayment(role), ...noShow, ...notCollected, mmgRefund }), custodyRecovery } };
+    // [OOS-FLOW · REVIEW-2 F2] outOfStockEndsOrder: this server ends an accepted order whose last item comes off
+    // (with the store's confirmation). An app asks once, and words the wait for a swap, only when it reads this:
+    // an app update that reaches phones before this server never promises a cancellation that will not happen.
+    return { success: true, data: { ...redactCustomerContact({ ...order, ...handover, items: order.items.map(vendorOrderLine), respondBy, ...storeMmgPayBy(order), canConfirmPayment: canConfirmPayment(role), ...noShow, ...notCollected, mmgRefund }), custodyRecovery, outOfStockEndsOrder: true } };
   });
 
   /** [AF-MOB-006] POST /orders/:id/recovery/return-received — the store
@@ -2838,7 +2842,8 @@ export async function vendorRoutes(app: FastifyInstance) {
     // Grocery/goods picking gate (§5.3): the bag never closes with an open
     // question in it — every line picked, or its substitution resolved.
     // Restaurants don't shelf-pick, so only quantity-tracked store types gate.
-    if (order.vendorId) {
+    // [OOS-FLOW] A closed order is refused as closed (below), never as an empty bag.
+    if (order.vendorId && !isTerminalOrderStatus(order.status)) {
       const v = await app.prisma.vendor.findUnique({ where: { id: order.vendorId }, select: { vendorType: true } });
       if (v && ['SUPERMARKET', 'STORE'].includes(v.vendorType)) {
         const state = await picking.readiness(order.id);
@@ -2852,12 +2857,22 @@ export async function vendorRoutes(app: FastifyInstance) {
         // a delivery fee for it. An empty order is cancelled, not delivered.
         if (state.fulfilled === 0) {
           pickingReadinessCounter.labels('refused_empty').inc();
+          // [OOS-FLOW · owner 8 Nov 2026] Say what to do instead, in words true on every rail: an order
+          // emptied before this fix is rejected "Out of stock" (the customer is told at once); a stage
+          // the store can no longer reject from goes to Swift support. Never "refunded": on cash
+          // nothing was ever charged.
+          // [REVIEW-2 F7] A paid MMG order cannot be rejected in the app (support closes it): never send the store
+          // to a Reject that refuses.
+          const paidMmg = order.paymentMethod === 'MOBILE_MONEY' && MMG_MONEY_MOVED.has(order.paymentStatus);
+          const rejectable = (STORE_REJECTABLE_STATUSES as readonly string[]).includes(order.status) && !paidMmg;
           throw new AppError(
             409,
             'NOTHING_TO_HAND_OVER',
             state.total === 0
-              ? 'This order has no lines to hand over.'
-              : `All ${state.total} line${state.total === 1 ? '' : 's'} were removed — there is nothing to hand over. Cancel the order instead so the customer is refunded.`,
+              ? 'This order has no items to hand over.'
+              : rejectable
+                ? `Every item on this order was removed as out of stock, so there is nothing to hand over. Reject the order with the reason "Out of stock": the customer is told right away.`
+                : 'Every item on this order was removed as out of stock, so there is nothing to hand over. Contact Swift support to close it.',
           );
         }
         pickingReadinessCounter.labels(state.removed > 0 ? 'ready_partial' : 'ready_complete').inc();
@@ -2990,7 +3005,9 @@ export async function vendorRoutes(app: FastifyInstance) {
     const order = await resolveOwnedOrder(app, request.user.userId, id, request);
     // [O-4] On a waiting order this ASKS the customer (continue without it, or cancel); after the
     // accept it removes the line at once, as before.
-    const line = await picking.refundLine(id, lineId, request.user.userId);
+    // [OOS-FLOW · REVIEW-1 S3-2] endsOrder: the store confirmed that removing the last item cancels the order.
+    const { endsOrder } = z.object({ endsOrder: z.boolean().optional() }).parse(request.body ?? {});
+    const line = await picking.refundLine(id, lineId, request.user.userId, { endsOrder });
     await ackPreAcceptQuestion(order, request.user.userId);
     return { success: true, data: line };
   });
