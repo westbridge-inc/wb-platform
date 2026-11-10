@@ -63,6 +63,9 @@ const approved = (userId: string, docType: string) => system(() => app.prisma.ve
   userId, role: 'VENDOR_OWNER', docType, fileUrl: `/uploads/verification/${RUN}/${docType}-${nanoid(4)}.enc`, status: 'APPROVED', reviewedBy: 'seller-block-test', reviewedAt: new Date(), expiresAt: new Date(Date.now() + 200 * DAY),
 } }));
 const setStore = (id: string, data: Record<string, unknown>) => system(() => app.prisma.vendor.update({ where: { id }, data }));
+/** [security review 10 Nov 2026] A person at Swift confirms the store's exact name as the seller's (the console's approve
+ *  button or its seller-name check): only then does the seller block name the store by it. */
+const personConfirmsName = (id: string, name: string) => setStore(id, { sellerNameCheckedName: name, sellerNameCheckedAt: new Date(), sellerNameCheckedById: 'seller-block-test' });
 const appView = async (vendorId: string) => {
   const res = await app.inject({ method: 'GET', url: `/api/v1/customer/vendors/${vendorId}` });
   expect(res.statusCode).toBe(200);
@@ -121,9 +124,10 @@ describe('[R3] every store page carries the seller block', () => {
   it('legal name, address, phone, payment, the refund rule and the statutory sentence — the same block in the app and on the website', async () => {
     const { userId, vendorId, slug } = await store(1);
     await approved(userId, 'owner_national_id');
+    await personConfirmsName(vendorId, `Asha's Bakery ${RUN}1`);
     await setStore(vendorId, { refundRule: 'Bring it back within 3 days with your receipt for a refund.' });
     const expected = {
-      // [owner ruling 10 Nov 2026] the store's own name: never its owner's personal name, never "trading as"
+      // [owner ruling 10 Nov 2026] the store's own name, as a person confirmed it: never its owner's personal name
       legalName: `Asha's Bakery ${RUN}1`,
       address: '1 Robb Street, Lacytown',
       phone: '+5926001300',
@@ -282,6 +286,7 @@ describe('[row 248] the order receipt says who sold', () => {
   it('names the seller’s legal name, address and published phone, as on the store page', async () => {
     const { userId, vendorId } = await store(9);
     await approved(userId, 'owner_national_id');
+    await personConfirmsName(vendorId, `Asha's Bakery ${RUN}9`);
     const html = await deliveredOrderFrom(vendorId, 9);
     expect(html).toContain(`Sold by Asha's Bakery ${RUN}9 — 9 Robb Street, Lacytown · +5926001300`);
     expect(html).not.toContain('Ramdin9');
@@ -302,6 +307,13 @@ describe('[row 248] the order receipt says who sold', () => {
     await setStore(company.vendorId, { name: `Sample Holdings Inc. ${RUN}5001` });
     await approved(company.userId, 'owner_national_id');
     await approved(company.userId, 'business_registration');
+    // [security review 10 Nov 2026] live, but no person has confirmed its name yet: the block names nobody ("Ask the
+    // store"), never the owner; the receipt names the store by its own name as a store, as with nothing on file
+    for (const page of [(await appView(company.vendorId)).seller, (await webView(company.slug)).seller]) {
+      expect(page.legalName).toBeNull();
+      expect(JSON.stringify(page)).not.toContain('Ramdin5001');
+    }
+    await personConfirmsName(company.vendorId, `Sample Holdings Inc. ${RUN}5001`);
     const app1 = await appView(company.vendorId);
     const web1 = await webView(company.slug);
     expect(app1.seller.legalName).toBe(`Sample Holdings Inc. ${RUN}5001`);

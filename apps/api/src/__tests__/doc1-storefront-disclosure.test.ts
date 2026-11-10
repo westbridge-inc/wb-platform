@@ -101,21 +101,28 @@ afterAll(async () => {
 });
 
 describe('[DOC-1 P19] the disclosure is compiled, never written', () => {
-  it('names what is missing; the store’s own name, checked with its owner’s ID, fills the legal name; the address is labelled self-declared; the contact is the verified account; licences appear while VALID and leave when they expire', async () => {
+  it('names what is missing; with the owner’s ID on file the store’s name waits for a person, who confirms it; the address is labelled self-declared; the contact is the verified account; licences appear while VALID and leave when they expire', async () => {
     const { userId, vendorId } = await store(1);
     const bare = await system(() => compileActivationDisclosure(app.prisma, vendorId, { accountId: userId, tenantId: 'swift-default' }));
     expect(bare.complete).toBe(false);
     expect(bare.missing).toEqual(['legalName']);
+    expect(bare.pendingPersonCheck).toEqual([]);
     expect(bare.address).toMatchObject({ source: 'SELF_DECLARED', value: '1 Sheriff Street, Georgetown' });
     expect(bare.contact).toMatchObject({ source: 'ACCOUNT' });
     // [R3] The operator is the ONE OPERATOR constant, not the configuration this suite sets.
     expect(bare.operator).toEqual({ legalName: OPERATOR_FACTS.name, registeredAddress: OPERATOR_ADDRESS, supportEmail: OPERATOR_FACTS.supportEmail });
 
     await approved(userId, 'owner_national_id');
+    // [security review 10 Nov 2026] complete (the ID alone sufficed before, so no store is made incomplete), but the
+    // store's self-typed name is never presented as a checked name: it names nobody until a person confirms it
+    const pending = await system(() => compileActivationDisclosure(app.prisma, vendorId, { accountId: userId, tenantId: 'swift-default' }));
+    expect(pending).toMatchObject({ complete: true, missing: [], pendingPersonCheck: ['legalName'], legalName: null });
+    await system(() => app.prisma.vendor.update({ where: { id: vendorId }, data: { sellerNameCheckedName: `Priya's Snackette ${RUN}1`, sellerNameCheckedAt: new Date(), sellerNameCheckedById: 'disclosure-test' } }));
     const named = await system(() => compileActivationDisclosure(app.prisma, vendorId, { accountId: userId, tenantId: 'swift-default' }));
     expect(named.complete).toBe(true);
-    expect(named.legalName).toMatchObject({ source: 'STORE_NAME', docType: 'owner_national_id' });
-    expect(named.legalName!.value).toBe(`Priya's Snackette ${RUN}1`);
+    expect(named.pendingPersonCheck).toEqual([]);
+    // no record lends the store's name provenance: no document type, no record id
+    expect(named.legalName).toEqual({ value: `Priya's Snackette ${RUN}1`, source: 'STORE_NAME' });
 
     const licence = await approved(userId, 'food_handler_cert');
     expect((await system(() => compileActivationDisclosure(app.prisma, vendorId, { accountId: userId, tenantId: 'swift-default' }))).licences).toEqual([{ value: 'on file', source: 'RECORD', docType: 'food_handler_cert', recordId: expect.any(String) }]);
@@ -202,53 +209,91 @@ describe('[DOC-1 P19] the disclosure is compiled, never written', () => {
   });
 });
 
-// [R3 · CAA s.70(1) · owner ruling 10 Nov 2026] The seller's name is the BUSINESS's name. An owner's personal name is never
-// shown for a registered business or company, and never as "<person> trading as <store>"; only a person who trades
-// under their OWN name (own-name declaration, no business registration) is named by their full name, because that name
-// is their trading name.
+// [R3 · CAA s.70(1) · owner ruling 10 Nov 2026 · security review] The seller's name is the BUSINESS's name. An owner's
+// personal name is never shown for a registered business or company, and never as "<person> trading as <store>"; only a
+// person who trades under their OWN name (own-name declaration, no business registration) is named by their full name,
+// because that name is their trading name. A store's self-typed name names the seller only once a PERSON at Swift
+// confirmed that exact name; until then the block names nobody, and no record lends the name provenance.
 describe('[R3 · owner ruling 10 Nov 2026] who sells: the business’s own name; a person’s full name only when they trade under it', () => {
   const blockOf = (userId: string, vendorId: string) => system(() => compileActivationDisclosure(app.prisma, vendorId, { accountId: userId, tenantId: 'swift-default' }));
   const setStore = (vendorId: string, data: Record<string, unknown>) => system(() => app.prisma.vendor.update({ where: { id: vendorId }, data }));
+  /** A person at Swift confirms the store's exact name as the seller's (the console's approve or seller-name check). */
+  const personConfirms = (vendorId: string, name: string) => setStore(vendorId, { sellerNameCheckedName: name, sellerNameCheckedAt: new Date(), sellerNameCheckedById: 'disclosure-test' });
   const PERSONAL = /Priya|Persaud\d|trading as/;
 
-  it('a registered company: its company name only — never its owner’s name, never "trading as"', async () => {
+  it('a registered company: names nobody until a person confirms its name, then its company name only — never its owner’s name', async () => {
     const { userId, vendorId } = await store(5);
     await setStore(vendorId, { name: `Sample Holdings Inc. ${RUN}5` });
     await approved(userId, 'business_registration');
-    // the registration alone names it (a company's papers may come before any one person's ID)
+    // the registration alone makes the block complete (a company's papers may come before any one person's ID), but the
+    // self-typed name is not a checked name: nobody is named yet
     const registered = await blockOf(userId, vendorId);
-    expect(registered.legalName).toEqual({ value: `Sample Holdings Inc. ${RUN}5`, source: 'STORE_NAME', docType: 'business_registration', recordId: expect.any(String) });
+    expect(registered).toMatchObject({ complete: true, missing: [], pendingPersonCheck: ['legalName'], legalName: null });
     await approved(userId, 'owner_national_id');
-    const both = await blockOf(userId, vendorId);
-    expect(both.complete).toBe(true);
-    expect(both.legalName).toEqual({ value: `Sample Holdings Inc. ${RUN}5`, source: 'STORE_NAME', docType: 'business_registration', recordId: expect.any(String) });
-    expect(JSON.stringify(both.legalName)).not.toMatch(PERSONAL);
+    const unconfirmed = await blockOf(userId, vendorId);
+    expect(unconfirmed).toMatchObject({ pendingPersonCheck: ['legalName'], legalName: null });
+    expect(JSON.stringify(unconfirmed)).not.toMatch(PERSONAL);
+    await personConfirms(vendorId, `Sample Holdings Inc. ${RUN}5`);
+    const confirmed = await blockOf(userId, vendorId);
+    expect(confirmed).toMatchObject({ complete: true, pendingPersonCheck: [] });
+    expect(confirmed.legalName).toEqual({ value: `Sample Holdings Inc. ${RUN}5`, source: 'STORE_NAME' });
+    expect(JSON.stringify(confirmed.legalName)).not.toMatch(PERSONAL);
   });
 
-  it('a registered business name: that name only — even when it carries the owner’s surname, and even for a store that once declared its own name', async () => {
+  it('a confirmation is of an EXACT name: a renamed store names nobody again until a person confirms the new name', async () => {
+    const { userId, vendorId } = await store(8);
+    await setStore(vendorId, { name: `Sample Traders ${RUN}8` });
+    await approved(userId, 'owner_national_id');
+    await approved(userId, 'business_registration');
+    await personConfirms(vendorId, `Sample Traders ${RUN}8`);
+    expect((await blockOf(userId, vendorId)).legalName).toEqual({ value: `Sample Traders ${RUN}8`, source: 'STORE_NAME' });
+    await setStore(vendorId, { name: `Sample Traders Two ${RUN}8` });
+    expect(await blockOf(userId, vendorId)).toMatchObject({ complete: true, pendingPersonCheck: ['legalName'], legalName: null });
+  });
+
+  it('a registered business name: that name only once confirmed — even when it carries the owner’s surname, and even for a store that once declared its own name', async () => {
     const { userId, vendorId } = await store(6);
     await setStore(vendorId, { name: `Persaud's Hardware ${RUN}6`, tradesUnderOwnName: true });
     await approved(userId, 'owner_national_id');
     await approved(userId, 'own_name_declaration');
     await approved(userId, 'business_registration');
+    // a registration on file: not an own-name trader, so never the owner's full name
+    expect(await blockOf(userId, vendorId)).toMatchObject({ pendingPersonCheck: ['legalName'], legalName: null });
+    await personConfirms(vendorId, `Persaud's Hardware ${RUN}6`);
     const b = await blockOf(userId, vendorId);
-    expect(b.legalName).toEqual({ value: `Persaud's Hardware ${RUN}6`, source: 'STORE_NAME', docType: 'business_registration', recordId: expect.any(String) });
+    expect(b.legalName).toEqual({ value: `Persaud's Hardware ${RUN}6`, source: 'STORE_NAME' });
     expect(b.legalName!.value).not.toContain('Priya');
+  });
+
+  it('a person approving the store confirms exactly the name they saw: another name is refused and confirms nothing; the shown name goes live named', async () => {
+    const { userId, vendorId } = await store(9);
+    await setStore(vendorId, { name: `Sample Foods Ltd ${RUN}9` });
+    await system(() => giveFoodHandlersTick(app.prisma, userId, vendorId));
+    for (const t of await checklistFor(userId)) await approved(userId, t);
+    const refused = await system(() => service.activateStore(userId, vendorId, undefined, { by: 'approver-test', name: `Sample Foods ${RUN}9` })).catch((e: unknown) => e);
+    expect(refused).toMatchObject({ code: 'SELLER_NAME_CHANGED' });
+    expect(await system(() => app.prisma.vendor.findUniqueOrThrow({ where: { id: vendorId }, select: { status: true, sellerNameCheckedName: true } })))
+      .toEqual({ status: 'PENDING_APPROVAL', sellerNameCheckedName: null });
+    await system(() => service.activateStore(userId, vendorId, undefined, { by: 'approver-test', name: `Sample Foods Ltd ${RUN}9` }));
+    expect(await system(() => app.prisma.vendor.findUniqueOrThrow({ where: { id: vendorId }, select: { status: true, sellerNameCheckedName: true, sellerNameCheckedById: true } })))
+      .toEqual({ status: 'ACTIVE', sellerNameCheckedName: `Sample Foods Ltd ${RUN}9`, sellerNameCheckedById: 'approver-test' });
+    expect((await blockOf(userId, vendorId)).legalName).toEqual({ value: `Sample Foods Ltd ${RUN}9`, source: 'STORE_NAME' });
   });
 
   it('a trader under their OWN name: their full name, once a person checked the declaration — and only while the store trades under it', async () => {
     const { userId, vendorId } = await store(7);
     await setStore(vendorId, { name: 'P. Persaud7', tradesUnderOwnName: true });
     await approved(userId, 'owner_national_id');
-    // declared, not yet checked by a person: the store's own name, never the account's
-    expect((await blockOf(userId, vendorId)).legalName).toMatchObject({ value: 'P. Persaud7', source: 'STORE_NAME' });
+    // declared, not yet checked by a person: nobody is named, never the account's name
+    expect(await blockOf(userId, vendorId)).toMatchObject({ pendingPersonCheck: ['legalName'], legalName: null });
     await approved(userId, 'own_name_declaration');
     const own = await blockOf(userId, vendorId);
-    expect(own.complete).toBe(true);
+    expect(own).toMatchObject({ complete: true, pendingPersonCheck: [] });
+    // the declaration was signed for THIS store's name, so it is the provenance
     expect(own.legalName).toEqual({ value: 'Priya Persaud7', source: 'PROPRIETOR', docType: 'own_name_declaration', recordId: expect.any(String) });
     expect(own.legalName!.value).not.toContain('trading as');
-    // the choice is per store: switched to a business name, the store is named by its own name again
+    // the choice is per store: switched to a business name, nobody is named until a person confirms the store's name
     await setStore(vendorId, { tradesUnderOwnName: false });
-    expect((await blockOf(userId, vendorId)).legalName).toMatchObject({ value: 'P. Persaud7', source: 'STORE_NAME' });
+    expect(await blockOf(userId, vendorId)).toMatchObject({ pendingPersonCheck: ['legalName'], legalName: null });
   });
 });

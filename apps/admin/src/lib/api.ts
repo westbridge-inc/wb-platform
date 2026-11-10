@@ -927,7 +927,16 @@ export const decideSafetyCase = (id: string, decisionCode: DecisionCode, notes?:
 
 export const fetchAuditLogs = (params?: string) => apiFetch(`/api/v1/admin/audit-logs?${params || 'limit=50'}`);
 
-export const approveVendor = (id: string, reason: string) => apiFetch(`/api/v1/admin/vendors/${id}/approve`, { method: 'PUT', reason });
+/** [R3 · security review 10 Nov 2026] `sellerName`: the store name this console showed. Sent when activating, it is the
+ *  name the person confirms as the seller's business or company name; a name changed since is refused. Reinstating
+ *  and lifting a suspension send none (they confirm nothing). */
+export const approveVendor = (id: string, reason: string, sellerName?: string) => apiFetch(`/api/v1/admin/vendors/${id}/approve`, {
+  method: 'PUT', reason, ...(sellerName !== undefined ? { body: JSON.stringify({ sellerName }) } : {}),
+});
+/** [R3 · security review 10 Nov 2026] A person confirms the store's name, exactly as shown, as the seller's business or
+ *  company name: until then the storefront names nobody as the seller. */
+export const confirmSellerName = (id: string, name: string, reason: string) =>
+  apiFetch(`/api/v1/admin/vendors/${id}/seller-name`, { method: 'PUT', body: JSON.stringify({ name }), reason });
 export const verifyRiderDocuments = (id: string, reason: string) => apiFetch(`/api/v1/admin/riders/${id}/verify-documents`, { method: 'PUT', reason });
 export const verifyDriverDocuments = (id: string, reason: string) => apiFetch(`/api/v1/admin/drivers/${id}/verify-documents`, { method: 'PUT', reason });
 export const setDriverRideClass = (id: string, rideClass: string, reason: string) =>

@@ -38,6 +38,8 @@ async function fixture(status = 'ACTIVE') {
     name: 'Fixture Shop', slug: 'fixture-shop', addressLine1: 'Fixture business address', addressLine2: null,
     // [owner ruling 10 Nov 2026] not a trader under their own name: the seller is named by the store's own name
     tradesUnderOwnName: false,
+    // [security review 10 Nov 2026] no person has confirmed the store's name as the seller's yet
+    sellerNameCheckedName: null,
     // [CHAINS PR3] The owner is a brand Swift named, so every read below also runs the storefront's branch switcher.
     ownerId: 'owner-fixture', owner: { brandName: 'Fixture Brand', userId: 'account-fixture', user: {
       id: 'account-fixture', tenantId: 'tenant-public', status: 'ACTIVE', countryCode: 'GY',
@@ -176,9 +178,15 @@ describe('R3 public storefront disclosure privacy — actual caller', () => {
     expect(JSON.stringify(block)).not.toContain('TEST_ACCOUNT_CONTACT');
     expect(JSON.stringify(block)).not.toContain('recordId');
     expect(JSON.stringify(block)).not.toContain('private-identity-record');
-    // [owner ruling 10 Nov 2026] the seller is the store, named by its own name: never its account holder's name
-    expect((block as { legalName: unknown }).legalName).toEqual({ value: 'Fixture Shop', source: 'STORE_NAME', docType: 'owner_national_id' });
+    // [owner ruling 10 Nov 2026 · security review] the seller is the store: never its account holder's name, and its
+    // self-typed name only once a person confirmed it — until then nobody is named
+    expect(block).toMatchObject({ legalName: null, pendingPersonCheck: ['legalName'] });
     expect(JSON.stringify(block)).not.toContain('Proprietor');
+    h.vendor['sellerNameCheckedName'] = 'Fixture Shop';
+    const confirmed = (await h.read()).data.disclosure as { legalName: unknown; pendingPersonCheck: unknown };
+    expect(confirmed.legalName).toEqual({ value: 'Fixture Shop', source: 'STORE_NAME' });
+    expect(confirmed.pendingPersonCheck).toEqual([]);
+    expect(JSON.stringify(confirmed)).not.toContain('Proprietor');
   });
 
   it('[row 107] the public block shows only the contact the store published', async () => {

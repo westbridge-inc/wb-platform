@@ -7,12 +7,15 @@ import { validExpiryOr } from './document-validity';
  * prose: every legally required element is sourced from a VALID document record (its
  * submission's extracted fields), or from a fallback the spec names and LABELS
  * (PROPRIETOR = the full name of a trader under their OWN name, which is their trading name;
- * STORE_NAME = the store's own name, as a person checked it with its documents, for every
- * other store — a business or company is never named by its owner's personal name
- * [owner ruling 10 Nov 2026]; SELF_DECLARED = the address the vendor typed; ACCOUNT = the verified account
+ * STORE_NAME = the store's own name, only while it is exactly the name a PERSON at Swift
+ * confirmed as the seller's business or company name — a business or company is never named by
+ * its owner's personal name [owner ruling 10 Nov 2026]; SELF_DECLARED = the address the vendor typed; ACCOUNT = the verified account
  * contact; PLATFORM = the operator block from the ONE OPERATOR constant). A required element with no
  * source leaves the block INCOMPLETE — it never falls back to self-reported text for a
- * legal fact. Nothing is stored: the block is derived on every read, so a lapsed licence
+ * legal fact. A store name no person has confirmed yet is PENDING a person's check: the block
+ * names nobody (never a self-typed name as a checked one), and no store is held or taken down
+ * for it (the go-live rules are unchanged; a person confirms the name in the console).
+ * Nothing is stored: the block is derived on every read, so a lapsed licence
  * disappears from the storefront the moment its record leaves VALID.
  *
  * The go-live gate (a vendor cannot activate with an incomplete block) engages by the
@@ -38,6 +41,10 @@ export interface DisclosureBlock {
   complete: boolean;
   /** The required elements with no lawful source — named, so the vendor and the reviewer know what to fix. */
   missing: string[];
+  /** [R3 · security review 10 Nov 2026] Elements Swift can source but a PERSON has yet to confirm (today: the store's
+   *  name as the seller's business or company name). Shown as nothing until then; never counted as missing, so no
+   *  store that was complete becomes incomplete (a live store is never taken down for one). */
+  pendingPersonCheck: string[];
   legalName: DisclosureElement | null;
   address: DisclosureElement | null;
   contact: DisclosureElement | null;
@@ -55,6 +62,32 @@ const ADDRESS_FIELDS = ['principal_place', 'premises_address', 'registered_addre
  *  never configuration — a missing or stale environment variable can neither blank it nor name someone else. */
 export function platformOperator(): DisclosureBlock['operator'] {
   return { legalName: OPERATOR.name, registeredAddress: OPERATOR_ADDRESS, supportEmail: OPERATOR.supportEmail };
+}
+
+/**
+ * [R3 · CAA s.70(1) · owner ruling 10 Nov 2026 · security review] How the seller is named when no record names the
+ * business. The seller is the BUSINESS: an owner's personal name is never shown for a registered business or company,
+ * and never as "<person> trading as <store>".
+ *  - OWN_NAME: a trader under their OWN name — this store's flag, its own-name declaration VALID (a person compared the
+ *    store's name with the owner's ID), the owner's ID on file and no business registration: named by their full name,
+ *    because that name IS their trading name;
+ *  - PERSON_CHECKED: a person at Swift confirmed this store's EXACT current name as the seller's business or company
+ *    name (sellerNameCheckedName): named by it. A rename (only ever by a person) needs a new confirmation;
+ *  - AWAITING_PERSON: the store's documents are on file but no person has confirmed its name: it names nobody yet;
+ *  - NONE: nothing on file to name it by.
+ * The store's self-typed name is never presented as a checked legal name, and no account-level record lends it
+ * provenance. A person confirms it in the console: approving the store, or its seller-name check (admin routes).
+ */
+export type SellerNameBasis = 'OWN_NAME' | 'PERSON_CHECKED' | 'AWAITING_PERSON' | 'NONE';
+export function sellerNameBasis(
+  store: { name: string; tradesUnderOwnName: boolean; sellerNameCheckedName: string | null },
+  onFile: { identity: boolean; registration: boolean; ownNameDeclaration: boolean },
+  ownerFullName: string,
+): SellerNameBasis {
+  if (store.tradesUnderOwnName && onFile.ownNameDeclaration && onFile.identity && !onFile.registration && ownerFullName.trim()) return 'OWN_NAME';
+  const name = store.name.trim();
+  if (name && store.sellerNameCheckedName != null && store.sellerNameCheckedName === name) return 'PERSON_CHECKED';
+  return onFile.identity || onFile.registration ? 'AWAITING_PERSON' : 'NONE';
 }
 
 type DisclosurePurpose = 'PUBLIC_STOREFRONT' | 'VENDOR_ACTIVATION';
@@ -103,7 +136,7 @@ export async function disclosureGateEngaged(db: Db, countryCode: string): Promis
 }
 
 const DISCLOSURE_VENDOR_SELECT = {
-  id: true, tenantId: true, name: true, addressLine1: true, addressLine2: true, publicPhone: true, tradesUnderOwnName: true,
+  id: true, tenantId: true, name: true, addressLine1: true, addressLine2: true, publicPhone: true, tradesUnderOwnName: true, sellerNameCheckedName: true,
   owner: { select: { userId: true, user: { select: {
     tenantId: true, countryCode: true, firstName: true, lastName: true, phone: true, isPhoneVerified: true,
   } } } },
@@ -136,7 +169,7 @@ export async function compileActivationDisclosure(
         owner: { userId: authority.accountId, user: { tenantId: authority.tenantId } } },
       select: DISCLOSURE_VENDOR_SELECT,
     }) : null;
-  if (!vendor) return { complete: false, missing: ['vendor'], legalName: null, address: null, contact: null, licences: [], operator: platformOperator(), compiledAt: now.toISOString() };
+  if (!vendor) return { complete: false, missing: ['vendor'], pendingPersonCheck: [], legalName: null, address: null, contact: null, licences: [], operator: platformOperator(), compiledAt: now.toISOString() };
   return compileDisclosure(db, vendor, 'VENDOR_ACTIVATION', now);
 }
 
@@ -181,34 +214,28 @@ async function compileDisclosure(db: Db, vendor: DisclosureVendor, purpose: Disc
   const provenance = (r: RecordSource) => ({ docType: r.docType, ...(purpose === 'VENDOR_ACTIVATION' ? { recordId: r.id } : {}) });
   const identity = records.find((r) => IDENTITY_DOC_TYPES.includes(r.docType));
 
-  // Legal / registered name [R3 · CAA s.70(1) · owner ruling 10 Nov 2026]: a business or company is named by ITS
-  // name, never by its owner's personal name, and never as "<person> trading as <store>".
-  //  1. a VALID business record's read name;
-  //  2. a store trading under its owner's OWN name (this store's flag, its own-name declaration VALID — a person checked
-  //     the name against the owner's ID — and no business registration on file): the owner's full name, because that
-  //     name IS the trading name;
-  //  3. every other store — a registered business name, a company, a service business: the store's own name, as a
-  //     person checked it with the store's registration (or its owner's ID).
-  // A legal name is found whenever a record names the business, or the owner's ID or the store's registration is on
-  // file: never in fewer cases than before this rule (the ID alone sufficed), so no store that was complete becomes
-  // incomplete (the activation projection reads the same block).
+  // Legal / registered name [R3 · CAA s.70(1) · owner ruling 10 Nov 2026 · security review]: a VALID business record's
+  // read name; else sellerNameBasis — the own-name trader's full name (provenance: the declaration signed for THIS
+  // store's name), or the store's name only while a person's confirmation is exactly it (no record lends it provenance).
+  // Otherwise it names nobody: PENDING a person's check while the owner's ID or the store's registration is on file
+  // (the ID alone sufficed before this rule, so a store that was complete is never made incomplete), else missing.
   let legalName: DisclosureElement | null = null;
   for (const r of business) {
     const f = await fieldsFor(r, NAME_FIELDS);
     const v = NAME_FIELDS.map((c) => f.get(c)).find((x) => x && x.trim());
     if (v) { legalName = { value: v.trim(), source: 'RECORD', ...provenance(r) }; break; }
   }
-  const registration = records.find((r) => REGISTRATION_DOC_TYPES.includes(r.docType));
-  const ownNameDeclaration = records.find((r) => r.docType === OWN_NAME_DOC_TYPE);
-  if (!legalName && vendor.tradesUnderOwnName && ownNameDeclaration && identity && !registration) {
-    const proprietor = `${vendor.owner.user.firstName} ${vendor.owner.user.lastName}`.trim();
-    if (proprietor) legalName = { value: proprietor, source: 'PROPRIETOR', ...provenance(ownNameDeclaration) };
+  const pendingPersonCheck: string[] = [];
+  if (!legalName) {
+    const registration = records.find((r) => REGISTRATION_DOC_TYPES.includes(r.docType));
+    const ownNameDeclaration = records.find((r) => r.docType === OWN_NAME_DOC_TYPE);
+    const proprietor = `${vendor.owner.user.firstName ?? ''} ${vendor.owner.user.lastName ?? ''}`.trim();
+    const basis = sellerNameBasis(vendor, { identity: !!identity, registration: !!registration, ownNameDeclaration: !!ownNameDeclaration }, proprietor);
+    if (basis === 'OWN_NAME' && ownNameDeclaration) legalName = { value: proprietor, source: 'PROPRIETOR', ...provenance(ownNameDeclaration) };
+    else if (basis === 'PERSON_CHECKED') legalName = { value: vendor.name.trim(), source: 'STORE_NAME' };
+    else if (basis === 'AWAITING_PERSON') pendingPersonCheck.push('legalName');
   }
-  const checkedBy = registration ?? identity;
-  if (!legalName && checkedBy && vendor.name.trim()) {
-    legalName = { value: vendor.name.trim(), source: 'STORE_NAME', ...provenance(checkedBy) };
-  }
-  if (!legalName) missing.push('legalName');
+  if (!legalName && !pendingPersonCheck.includes('legalName')) missing.push('legalName');
 
   // Principal geographic address: a business record's read address; else the self-declared address, labelled.
   let address: DisclosureElement | null = null;
@@ -251,7 +278,7 @@ async function compileDisclosure(db: Db, vendor: DisclosureVendor, purpose: Disc
 
   const operator = platformOperator();
 
-  const block: DisclosureBlock = { complete: missing.length === 0, missing, legalName, address, contact, licences, operator, compiledAt: now.toISOString() };
+  const block: DisclosureBlock = { complete: missing.length === 0, missing, pendingPersonCheck, legalName, address, contact, licences, operator, compiledAt: now.toISOString() };
   if (cacheKey) {
     publicDisclosureCache.set(vendor.id, { at: now.getTime(), key: cacheKey, block: structuredClone(block) });
     if (publicDisclosureCache.size > 5000) publicDisclosureCache.delete(publicDisclosureCache.keys().next().value!);
