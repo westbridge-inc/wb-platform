@@ -2626,7 +2626,10 @@ export class VerificationService {
    * the named store is projected: the button names one store, so the owner's
    * other stores are left to the document path and the daily belt.
    */
-  async activateStore(userId: string, vendorId: string, onActivated?: (tx: Prisma.TransactionClient) => Promise<void>): Promise<void> {
+  async activateStore(
+    userId: string, vendorId: string, onActivated?: (tx: Prisma.TransactionClient) => Promise<void>,
+    sellerName?: { by: string; name: string },
+  ): Promise<void> {
     await this.projectionTransaction(async (tx) => {
       await tx.$queryRaw`SELECT "id" FROM "users" WHERE "id" = ${userId} FOR NO KEY UPDATE`;
       await tx.$queryRaw`SELECT "id" FROM "vendors" WHERE "id" = ${vendorId} FOR UPDATE`;
@@ -2635,6 +2638,16 @@ export class VerificationService {
       const before = await tx.vendor.findUniqueOrThrow({ where: { id: vendorId }, select: { status: true, owner: { select: { user: { select: { status: true } } } } } });
       if (before.status !== 'PENDING_APPROVAL' || before.owner.user.status !== 'ACTIVE') {
         throw new AppError(409, 'ACTIVATION_HELD', 'The store or owner changed while approving. Refresh its checklist.');
+      }
+      // [R3 · security review 10 Nov 2026] The person approving confirms the store's name as the seller's business or
+      // company name — exactly the name they saw: a never-live store's owner may rename it freely, so a name changed
+      // since is refused, never confirmed unseen. Written in the activation's own transaction: a refused activation
+      // confirms nothing. (No name given: an internal caller; the store's name stays unconfirmed.)
+      if (sellerName) {
+        if (held.name.trim() !== sellerName.name.trim()) {
+          throw new AppError(409, 'SELLER_NAME_CHANGED', `The store's name is now “${held.name.trim()}”. Check that name, then approve again.`);
+        }
+        await tx.vendor.update({ where: { id: vendorId }, data: { sellerNameCheckedName: held.name.trim(), sellerNameCheckedAt: new Date(), sellerNameCheckedById: sellerName.by } });
       }
       // A person is approving this store now (the admin button): a branch waiting for a person goes through.
       await this.projectVendorActivation(tx, userId, { vendorId, personApproved: true });
