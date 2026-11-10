@@ -745,6 +745,12 @@ model VerificationDocument {
   record               DocumentRecord?
   /// [DOC-1 §9.3 P4-7] the renewal schedule the database keeps for an approved document with an expiry
   renewalSchedule      RenewalSchedule?
+  /// [COMPANY-DOCS Part 3 · owner rulings 10 Nov 2026 (c), (d)] A paper filed FOR a pending account change (a new business
+  /// type's papers, or a new account holder's): it counts for nothing until a person approves that change, and then it
+  /// counts with the switch, in the same transaction (vendor/account-change.ts). Set when the paper is filed, never
+  /// changed (database trigger). Null for every other paper.
+  accountChangeId      String?
+  accountChange        AccountChangeRequest?      @relation(fields: [accountChangeId], references: [id], onDelete: NoAction)
 
   @@index([status])
   @@index([userId])
@@ -753,6 +759,7 @@ model VerificationDocument {
   @@index([legalHoldId])
   @@index([state])
   @@index([subjectId])
+  @@index([accountChangeId])
   @@map("verification_documents")
 }
 
@@ -1522,6 +1529,8 @@ model VendorOwner {
   /// manages its Swift account) or MANAGER (the manager of a registered business, not its owner). One choice for the
   /// account: every branch rides it and uploads nothing. Every existing account is OWNER (unchanged).
   accountBasis     VendorAccountBasis @default(OWNER)
+  /// [COMPANY-DOCS Part 3] The account's changes of business type and of account holder (one PENDING at a time).
+  accountChanges   AccountChangeRequest[]
 
   @@map("vendor_owners")
 }
@@ -1531,6 +1540,69 @@ enum VendorAccountBasis {
   OWNER
   COMPANY
   MANAGER
+}
+
+/// [COMPANY-DOCS Part 3 · owner rulings 10 Nov 2026 ~07:3xZ (c) + (d)] A change to who a store account is, waiting for a
+/// person at Swift:
+///  - BUSINESS_TYPE, "Change business type": the account's choice (a registered company, a registered business, its
+///    manager, or a trader under their own name) with the new choice's papers;
+///  - HOLDER_HANDOVER: a company's (or a manager's) account passes to a new account holder, named by a new letter of
+///    authority, who files their own papers from their own Swift account.
+/// The stores keep selling on the papers they have while it waits. The papers filed for it
+/// (VerificationDocument.accountChangeId) count for nothing until a person approves it; then the choice, the papers and
+/// the seller name (or the holder) switch in ONE transaction. Refused or withdrawn: nothing changes. One PENDING change
+/// per account and one per person named (partial unique indexes); a decided row is final (database trigger).
+model AccountChangeRequest {
+  id                  String              @id @default(cuid())
+  tenantId            String
+  vendorOwnerId       String
+  vendorOwner         VendorOwner         @relation(fields: [vendorOwnerId], references: [id], onDelete: Cascade)
+  kind                AccountChangeKind
+  status              AccountChangeStatus @default(PENDING)
+  /// Who asked: the account holder, signed in on their own account.
+  requestedById       String
+  /// BUSINESS_TYPE: the account's choice when it asked, and the choice it asks for.
+  fromOption          BusinessTypeOption?
+  toOption            BusinessTypeOption?
+  /// HOLDER_HANDOVER: the account holder when it was asked, and the person the new letter names (their own account).
+  holderId            String?
+  newHolderId         String?
+  /// HOLDER_HANDOVER: the person named said yes in their own app. Nobody is made an account holder unasked.
+  newHolderAcceptedAt DateTime?
+  decidedById         String?
+  decidedAt           DateTime?
+  /// The deciding person's reason (a refusal's is shown to the store, and to the person named).
+  decisionReason      String?
+  createdAt           DateTime            @default(now())
+  updatedAt           DateTime            @updatedAt
+  /// The papers filed for this change.
+  documents           VerificationDocument[]
+
+  @@index([tenantId])
+  @@index([vendorOwnerId, status])
+  @@index([status, createdAt])
+  @@index([newHolderId])
+  @@map("account_change_requests")
+}
+
+enum AccountChangeKind {
+  BUSINESS_TYPE
+  HOLDER_HANDOVER
+}
+
+enum AccountChangeStatus {
+  PENDING
+  APPROVED
+  REFUSED
+  WITHDRAWN
+}
+
+/// The four answers to "What kind of business are you?" (sign-up, and Change business type).
+enum BusinessTypeOption {
+  COMPANY
+  REGISTERED
+  MANAGER
+  OWN_NAME
 }
 
 /// Staff & roles (master plan §4.1): extra logins on a store. The OWNER

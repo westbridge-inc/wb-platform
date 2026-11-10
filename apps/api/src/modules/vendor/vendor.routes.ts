@@ -55,11 +55,11 @@ import { guyanaDayKey, isDateOnly, startOfGuyanaDay } from '../../utils/guyana-d
 import { VerificationService } from '../verification/verification.service';
 import { getKycProvider } from '../../providers/kyc/kyc-provider';
 import { getStorageProvider } from '../../providers/storage/storage-provider';
-import { encryptBuffer, generateDek, getKeyProvider } from '../../providers/storage/envelope';
-import { createHash } from 'node:crypto';
 import { publishLegalDocumentOnce, recordConsent, type ConsentSurface } from '../legal/consent.service';
 import { LEGAL_VERSION } from '../legal/legal.routes';
-import { OWN_NAME_CONSENT_TYPE, OWN_NAME_DECLARATION_V1, OWN_NAME_DECLARATION_VERSION, OWN_NAME_VENDOR_TYPES, renderOwnNamePdf, storeNameIsOwnName } from './own-name';
+import { OWN_NAME_DECLARATION_VERSION, OWN_NAME_VENDOR_TYPES, storeNameIsOwnName } from './own-name';
+import { fileOwnNameDeclaration } from './own-name-filing';
+import { registerAccountChangeVendorRoutes } from './account-change.routes';
 import { FOOD_HANDLERS_CONSENT_TYPE, FOOD_HANDLERS_TICK_V1, FOOD_HANDLERS_VERSION, foodHandlerTickApplies, storeAttested } from './food-handlers';
 import { OWN_NAME_DOC_TYPE } from '../verification/doc-registry';
 import { UNREGISTERED_TIER_REMOVED_WORDS, validRegistrationRecord } from './registration-record';
@@ -1053,6 +1053,8 @@ export async function vendorRoutes(app: FastifyInstance) {
     getKycProvider(),
   );
   const storage = getStorageProvider();
+  // [COMPANY-DOCS Part 3] Change business type and hand over the account (account-change.routes.ts).
+  registerAccountChangeVendorRoutes(app, { verification, notifications });
   /** [IMAGES-E2E PR4] After a store photo's pointer change commits: delete each photo now. A
    *  delete that fails stays owed and the standing retry (retryStorageOrphans) finishes it. */
   const deleteQueuedPhotos = async (orphanIds: string[]) => {
@@ -1827,40 +1829,14 @@ export async function vendorRoutes(app: FastifyInstance) {
     if (!storeNameIsOwnName(vendor.name, user.firstName, user.lastName)) {
       throw new AppError(400, 'OWN_NAME_MISMATCH', `“${vendor.name}” is not just your surname with your first names or initials, so the law asks you to register it as a business name. Upload your business registration instead.`);
     }
-    // Acquire and wrap the key BEFORE publishing words, changing the store, or recording consent (as the declaration).
-    const dek = generateDek();
-    let wrappedDek: Buffer;
-    try {
-      const keys = getKeyProvider();
-      if (!keys) throw new Error('Envelope encryption unavailable');
-      wrappedDek = await keys.wrapDek(dek);
-    } catch {
-      throw new AppError(503, 'VERIFICATION_UPLOAD_UNAVAILABLE', 'Verification uploads are temporarily unavailable. Try again later.');
-    }
-    await publishLegalDocumentOnce(app.prisma, { documentType: OWN_NAME_CONSENT_TYPE, version: OWN_NAME_DECLARATION_VERSION, renderedText: OWN_NAME_DECLARATION_V1 });
-    const signedAt = new Date();
     const platform = String(request.headers['x-client-platform'] ?? '').toLowerCase();
     const surface: ConsentSurface = platform === 'ios' || platform === 'android' ? platform : 'vendor_web';
-    const legalName = `${user.firstName} ${user.lastName}`.trim();
-    await app.prisma.$transaction(async (tx) => {
-      // This store only: its name is the one checked, and the one the PDF and this consent row name.
-      await tx.vendor.update({ where: { id: vendor.id }, data: { tradesUnderOwnName: true } });
-      await recordConsent(tx, {
-        subjectType: 'vendor_user', subjectId: userId, documentType: OWN_NAME_CONSENT_TYPE, version: OWN_NAME_DECLARATION_VERSION,
-        action: 'granted', surface, ip: request.ip,
-        evidence: { vendorId, storeName: vendor.name, signedAt: signedAt.toISOString() },
-      });
+    // [COMPANY-DOCS Part 3] The one signing-and-filing path (own-name-filing.ts), shared with a change of business type.
+    const doc = await fileOwnNameDeclaration(app.prisma, verification, {
+      userId, vendor, legalName: `${user.firstName} ${user.lastName}`.trim(), privacyNoticeVersion: body.privacyNoticeVersion,
+      surface, ip: request.ip, markStore: true,
     });
-    const pdf = await renderOwnNamePdf({ storeName: vendor.name, legalName, signedAt });
-    const storage = getStorageProvider();
-    const { ciphertext, iv, authTag } = encryptBuffer(pdf, dek);
-    const { url: fileUrl } = await storage.upload({ buffer: ciphertext, filename: `own-name-${OWN_NAME_DECLARATION_VERSION}.pdf.enc`, mimeType: 'application/octet-stream', folder: `verification/${userId}` });
-    await app.prisma.encryptedObject.create({ data: {
-      fileKey: fileUrl, iv: new Uint8Array(iv), authTag: new Uint8Array(authTag), wrappedDek: new Uint8Array(wrappedDek),
-      mimeType: 'application/pdf', sizeBytes: pdf.length, sha256: createHash('sha256').update(pdf).digest('hex'), createdBy: userId,
-    } });
     const role = vendor.vendorType as 'RESTAURANT' | 'SUPERMARKET' | 'STORE';
-    const doc = await verification.submitDocument(userId, role, OWN_NAME_DOC_TYPE, fileUrl, body.privacyNoticeVersion, undefined, { ownNameSigned: true });
     reply.code(201);
     return { success: true, data: { nameBasis: 'OWN_NAME', declaration: { id: doc.id, status: doc.status, docType: doc.docType }, status: await verification.getStatus(userId, role) } };
   });

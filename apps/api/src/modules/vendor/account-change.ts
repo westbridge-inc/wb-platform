@@ -1,0 +1,666 @@
+/**
+ * [COMPANY-DOCS Part 3 · owner rulings 10 Nov 2026 ~07:3xZ (c) + (d)] Changing who a store account is, with a person at
+ * Swift deciding.
+ *
+ * (c) "Change business type" (Account, phone + web). A store that chose wrongly at sign-up (e.g. a registered company
+ *     marked as trading under its owner's own name) picks the right answer — a registered company, a registered business,
+ *     its manager, or a trader under their own name — and uploads that answer's papers (Part 1's checklist for it). A
+ *     person at Swift checks each paper and then the change. The store KEEPS SELLING on its old checked papers meanwhile.
+ *     Approved: the account's choice, the papers that count, and the seller name customers see switch in ONE
+ *     transaction. Refused: nothing changes, and the store sees why.
+ * (d) Account-holder handover (a company's account, or a manager's). The holder names the new person (their own Swift
+ *     account); the new person says yes in their own app and files their own papers (their ID, the new letter of
+ *     authority naming them, and the account's other papers: Swift keeps papers per person). A person at Swift checks
+ *     them and the handover; on approval the account moves to the new person for ALL branches and the old person loses
+ *     access (every session ends, their store role goes). Refused or withdrawn: nothing changes. Neither person can take
+ *     or keep the account without a person's approval.
+ *
+ * How "keeps selling" and "switches atomically" hold (one rule each, nothing scattered):
+ *  - A paper filed for a pending change carries `accountChangeId` (VerificationDocument; set when filed, never moved).
+ *    It counts for NOTHING (evidence.ts liveSubmissionWhere: the go-live gate, the expiry bound, the storefront's
+ *    supplier block) until its change is APPROVED. So the gates read the old papers until the decision, and the new ones
+ *    from the decision, with no window in between. Only papers the account does not already use are filed this way
+ *    (`changePaperStaging`); a paper both answers use stays an ordinary paper.
+ *  - The decision (`approveAccountChange`) runs in the verification service's projection transaction: the change row,
+ *    the account's choice or holder, the seller names, and the activation projection commit together, or none of it.
+ *    Every store that passed its papers before must pass them after, or the approval is refused and nothing moves.
+ *  - A refusal or withdrawal (`endAccountChange`) closes the papers filed for it (waiting ones leave review; approved
+ *    ones are withdrawn), so nothing of a refused change can ever count.
+ *  - One PENDING change per account, and one per person named (partial unique indexes); a decided row is final (trigger).
+ * Open orders are never touched: nothing here writes an order, and a handover moves the account, not the stores.
+ */
+import type { AccountChangeRequest, BusinessTypeOption, Prisma, PrismaClient, VendorAccountBasis } from '@prisma/client';
+import { AppError, NotFoundError } from '../../utils/errors';
+import { insertNoticeFor } from '../../lib/owner-wall-notices';
+import { bindTenantTransaction } from '../../plugins/prisma';
+import { lockIdentityAuthority } from '../integrity/identity-review';
+import { VENDOR_MMG_DESTINATION_CLEARED } from '../../utils/store-mmg';
+import { closeOpenMmgStagesFor } from '../integrity/money-surface';
+import { CountryConfigService } from '../country/country-config.service';
+import { recordEvidenceFor } from '../verification/evidence';
+import { hopDocState } from '../verification/doc-state';
+import { OWN_NAME_TIER } from '../verification/doc-registry';
+import { revokeAllSessionsInTransaction } from '../auth/session-revocation';
+import type { MoverSessionRevocationCleanup } from '../mover-authority';
+import { accountBasisApplies, accountTierOf, type AccountBasis } from './account-basis';
+import { OWN_NAME_VENDOR_TYPES, storeNameIsOwnName } from './own-name';
+import { validRegistrationRecord } from './registration-record';
+
+type Db = Prisma.TransactionClient | PrismaClient;
+
+export const BUSINESS_TYPE_OPTIONS = ['COMPANY', 'REGISTERED', 'MANAGER', 'OWN_NAME'] as const satisfies readonly BusinessTypeOption[];
+
+/** The store kinds a person signs up as a store account (a service PROVIDER is not one). */
+export const STORE_ACCOUNT_ROLES: ReadonlySet<string> = new Set(['RESTAURANT', 'SUPERMARKET', 'STORE', 'SERVICE']);
+
+/** How long a holder waits between handover requests they start (a cap on naming numbers, one at a time anyway). */
+const HANDOVER_STARTS_PER_DAY = 3;
+
+/** What an answer makes the account: its basis, and whether its stores trade under the owner's own name. */
+export interface AccountShape { basis: AccountBasis; ownName: boolean }
+
+export function shapeOf(option: BusinessTypeOption): AccountShape {
+  switch (option) {
+    case 'COMPANY': return { basis: 'COMPANY', ownName: false };
+    case 'MANAGER': return { basis: 'MANAGER', ownName: false };
+    case 'OWN_NAME': return { basis: 'OWNER', ownName: true };
+    case 'REGISTERED': return { basis: 'OWNER', ownName: false };
+  }
+}
+
+const ownNameKind = (vendorType: string): boolean => (OWN_NAME_VENDOR_TYPES as readonly string[]).includes(vendorType);
+
+interface StoreRow { id: string; name: string; vendorType: string; tradesUnderOwnName: boolean }
+
+/** The account's answer today. A business owner's account is OWN_NAME only while every store that could trade under
+ *  the owner's own name does; otherwise REGISTERED. */
+export function currentOptionOf(owner: { accountBasis: VendorAccountBasis; vendors: readonly Pick<StoreRow, 'vendorType' | 'tradesUnderOwnName'>[] }): BusinessTypeOption {
+  if (owner.accountBasis === 'COMPANY') return 'COMPANY';
+  if (owner.accountBasis === 'MANAGER') return 'MANAGER';
+  const ownNameStores = owner.vendors.filter((v) => ownNameKind(v.vendorType));
+  return ownNameStores.length > 0 && ownNameStores.every((v) => v.tradesUnderOwnName) ? 'OWN_NAME' : 'REGISTERED';
+}
+
+/** The checklist tier ONE store reads under a shape: the account's company or manager list, the own-name list for a
+ *  store that trades under the owner's own name, else the standard list (verification.service vendorTierOf). */
+export function tierUnder(shape: AccountShape, store: Pick<StoreRow, 'vendorType'>, ownName: boolean): string | undefined {
+  return accountTierOf(shape.basis, store.vendorType) ?? (ownName && ownNameKind(store.vendorType) ? OWN_NAME_TIER : undefined);
+}
+
+/** Each store's list today (its own flag) and under a target shape (the target's flag for every store). */
+async function storeLists(
+  db: Db, countryCode: string, basis: AccountBasis, stores: readonly StoreRow[], target?: AccountShape,
+): Promise<Map<string, string[]>> {
+  const config = new CountryConfigService(db as PrismaClient);
+  const out = new Map<string, string[]>();
+  for (const store of stores) {
+    const tier = target ? tierUnder(target, store, target.ownName) : tierUnder({ basis, ownName: false }, store, store.tradesUnderOwnName);
+    out.set(store.id, await config.getDocumentChecklist(countryCode, store.vendorType, tier, db));
+  }
+  return out;
+}
+
+const unionOf = (lists: Iterable<string[]>): string[] => [...new Set([...lists].flat())];
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Which papers a pending change takes (submitDocument's hook)
+// ---------------------------------------------------------------------------------------------------------------------
+
+export interface ChangeStaging {
+  changeId: string;
+  /** Types this person may file for the store role because of the change. */
+  submittable: string[];
+  /** Is a paper of this type filed FOR the change (counts only once it is approved)? */
+  stages(docType: string): boolean;
+}
+
+/**
+ * [Part 2 seam] The ONE hook the document path calls (VerificationService.submitDocument): whatever files a paper — the
+ * upload screens, or Part 2's in-app signed letter — files it through submitDocument, so a letter for a pending change
+ * is held for that change with no extra wiring.
+ *  - A pending business-type change of the account this person holds: the new answer's papers that the account does
+ *    not already use are filed for the change.
+ *  - A pending handover naming this person, which they accepted: every paper the account's stores use is theirs to file,
+ *    for the handover.
+ * Null: no change is waiting for this person's papers.
+ */
+export async function changePaperStaging(db: Db, userId: string, roleKey: string, countryCode: string): Promise<ChangeStaging | null> {
+  if (!STORE_ACCOUNT_ROLES.has(roleKey)) return null;
+  const owner = await db.vendorOwner.findUnique({
+    where: { userId },
+    select: { id: true, accountBasis: true, vendors: { select: { id: true, name: true, vendorType: true, tradesUnderOwnName: true } } },
+  });
+  if (owner) {
+    const change = await db.accountChangeRequest.findFirst({ where: { vendorOwnerId: owner.id, status: 'PENDING', kind: 'BUSINESS_TYPE' }, select: { id: true, toOption: true } });
+    if (!change?.toOption) return null;
+    const ofRole = owner.vendors.filter((v) => v.vendorType === roleKey);
+    if (ofRole.length === 0) return null;
+    const target = unionOf((await storeLists(db, countryCode, owner.accountBasis, ofRole, shapeOf(change.toOption))).values());
+    const current = new Set(unionOf((await storeLists(db, countryCode, owner.accountBasis, owner.vendors)).values()));
+    return { changeId: change.id, submittable: target, stages: (docType) => target.includes(docType) && !current.has(docType) };
+  }
+  const handover = await db.accountChangeRequest.findFirst({
+    where: { newHolderId: userId, status: 'PENDING', kind: 'HOLDER_HANDOVER', newHolderAcceptedAt: { not: null } },
+    select: { id: true, vendorOwner: { select: { accountBasis: true, vendors: { select: { id: true, name: true, vendorType: true, tradesUnderOwnName: true } } } } },
+  });
+  if (!handover) return null;
+  const ofRole = handover.vendorOwner.vendors.filter((v) => v.vendorType === roleKey);
+  if (ofRole.length === 0) return null;
+  const list = unionOf((await storeLists(db, countryCode, handover.vendorOwner.accountBasis, ofRole)).values());
+  return { changeId: handover.id, submittable: list, stages: (docType) => list.includes(docType) };
+}
+
+/** Under the person's lock, in the filing transaction: a paper is filed for a change only while it still waits. */
+export async function assertChangeTakesPapers(tx: Prisma.TransactionClient, changeId: string): Promise<void> {
+  const rows = await tx.$queryRaw<Array<{ status: string }>>`
+    SELECT "status"::text AS status FROM "account_change_requests" WHERE "id" = ${changeId} FOR SHARE /* account-change-paper */`;
+  if (rows[0]?.status !== 'PENDING') {
+    throw new AppError(409, 'ACCOUNT_CHANGE_DECIDED', 'That change has already been decided. Open Account to see where it stands.');
+  }
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Reading a change: its papers, item by item
+// ---------------------------------------------------------------------------------------------------------------------
+
+export type ChangePaperState = 'APPROVED' | 'PENDING' | 'REJECTED' | 'MISSING';
+export interface ChangePaper {
+  docType: string;
+  state: ChangePaperState;
+  /** The reviewer's words on a refused paper (the store's own copy only). */
+  note: string | null;
+  /** Filed for this change (counts only when it is approved), or a paper the account already uses. */
+  forChange: boolean;
+  /** The latest paper of the type (its review in the console's Documents queue). */
+  documentId: string | null;
+  /** The store kind to file it under (POST /verification/documents `role`): a store of the account whose list asks for it. */
+  role: string;
+}
+export interface ChangeView {
+  id: string;
+  kind: AccountChangeRequest['kind'];
+  status: AccountChangeRequest['status'];
+  fromOption: BusinessTypeOption | null;
+  toOption: BusinessTypeOption | null;
+  createdAt: string;
+  decidedAt: string | null;
+  /** Shown to the store (and the person named) on a refusal only. */
+  refusalReason: string | null;
+  /** HOLDER_HANDOVER: has the person named said yes? */
+  accepted: boolean | null;
+  /** Whose papers the list reads: the account holder's (c), or the person named (d). */
+  papers: ChangePaper[];
+  /** Every paper is approved: the change only waits for a person's decision. */
+  papersComplete: boolean;
+}
+
+const CHANGE_SELECT = {
+  id: true, tenantId: true, kind: true, status: true, fromOption: true, toOption: true, holderId: true, newHolderId: true,
+  newHolderAcceptedAt: true, requestedById: true, decidedAt: true, decidedById: true, decisionReason: true, createdAt: true,
+  vendorOwner: { select: { id: true, userId: true, accountBasis: true, vendors: { select: { id: true, name: true, vendorType: true, tradesUnderOwnName: true }, orderBy: { createdAt: 'asc' } } } },
+} satisfies Prisma.AccountChangeRequestSelect;
+type ChangeRow = Prisma.AccountChangeRequestGetPayload<{ select: typeof CHANGE_SELECT }>;
+
+/** The person whose papers a change reads, and the list they must hold. */
+async function changeRequirement(db: Db, change: ChangeRow): Promise<{ paperHolderId: string; list: string[]; perStore: Map<string, string[]> }> {
+  const paperHolderId = change.kind === 'HOLDER_HANDOVER' ? change.newHolderId! : change.vendorOwner.userId;
+  const holder = await db.user.findUniqueOrThrow({ where: { id: change.vendorOwner.userId }, select: { countryCode: true } });
+  const perStore = await storeLists(db, holder.countryCode, change.vendorOwner.accountBasis, change.vendorOwner.vendors,
+    change.kind === 'BUSINESS_TYPE' && change.toOption ? shapeOf(change.toOption) : undefined);
+  return { paperHolderId, list: unionOf(perStore.values()), perStore };
+}
+
+async function readChangePapers(db: Db, change: ChangeRow, now = new Date()): Promise<{ papers: ChangePaper[]; complete: boolean; perStore: Map<string, string[]>; paperHolderId: string }> {
+  const { paperHolderId, list, perStore } = await changeRequirement(db, change);
+  const counting = change.status === 'PENDING' ? { withChange: change.id } : {};
+  const approved = new Set((await recordEvidenceFor(db, paperHolderId, list, now, counting)).map((r) => r.docType));
+  const filed = await db.verificationDocument.findMany({
+    where: { userId: paperHolderId, docType: { in: list }, OR: [{ accountChangeId: null }, { accountChangeId: change.id }] },
+    orderBy: { createdAt: 'desc' },
+    select: { id: true, docType: true, status: true, state: true, reviewNote: true, accountChangeId: true },
+  });
+  const papers = list.map((docType): ChangePaper => {
+    const latest = filed.find((d) => d.docType === docType && d.state !== 'SUPERSEDED') ?? null;
+    const state: ChangePaperState = approved.has(docType) ? 'APPROVED'
+      : latest?.status === 'PENDING' ? 'PENDING'
+        : latest?.status === 'REJECTED' ? 'REJECTED' : 'MISSING';
+    const askedBy = change.vendorOwner.vendors.find((v) => perStore.get(v.id)?.includes(docType));
+    return {
+      docType, state, note: state === 'REJECTED' ? latest?.reviewNote ?? null : null,
+      forChange: latest?.accountChangeId === change.id || change.kind === 'HOLDER_HANDOVER', documentId: latest?.id ?? null,
+      role: String(askedBy?.vendorType ?? change.vendorOwner.vendors[0]?.vendorType ?? 'STORE'),
+    };
+  });
+  return { papers, complete: papers.every((p) => p.state === 'APPROVED'), perStore, paperHolderId };
+}
+
+export async function viewOfChange(db: Db, change: ChangeRow): Promise<ChangeView> {
+  const { papers, complete } = change.status === 'PENDING' || change.status === 'APPROVED'
+    ? await readChangePapers(db, change) : { papers: [], complete: false };
+  return {
+    id: change.id, kind: change.kind, status: change.status, fromOption: change.fromOption, toOption: change.toOption,
+    createdAt: change.createdAt.toISOString(), decidedAt: change.decidedAt?.toISOString() ?? null,
+    refusalReason: change.status === 'REFUSED' ? change.decisionReason : null,
+    accepted: change.kind === 'HOLDER_HANDOVER' ? change.newHolderAcceptedAt !== null : null,
+    papers, papersComplete: complete,
+  };
+}
+
+export async function loadChange(db: Db, changeId: string): Promise<ChangeRow> {
+  const change = await db.accountChangeRequest.findUnique({ where: { id: changeId }, select: CHANGE_SELECT });
+  if (!change) throw new NotFoundError('AccountChange', changeId);
+  return change;
+}
+
+/** The account holder's view: the change waiting (or the last one decided), and what they may ask for. */
+export async function holderAccountChange(db: Db, userId: string): Promise<{
+  current: BusinessTypeOption; options: BusinessTypeOption[]; handoverOpen: boolean; change: ChangeView | null;
+}> {
+  const owner = await db.vendorOwner.findUnique({
+    where: { userId }, select: { id: true, accountBasis: true, vendors: { select: { id: true, name: true, vendorType: true, tradesUnderOwnName: true } } },
+  });
+  if (!owner || owner.vendors.length === 0) throw new AppError(403, 'STAFF_FORBIDDEN', 'Only the account holder can change the business type');
+  const current = currentOptionOf(owner);
+  const options = BUSINESS_TYPE_OPTIONS.filter((option) => option !== current
+    && owner.vendors.every((v) => accountBasisApplies(shapeOf(option).basis, v.vendorType))
+    && (option !== 'OWN_NAME' || owner.vendors.some((v) => ownNameKind(v.vendorType))));
+  const latest = await db.accountChangeRequest.findFirst({ where: { vendorOwnerId: owner.id, requestedById: userId }, orderBy: { createdAt: 'desc' }, select: { id: true, status: true, decidedAt: true } });
+  // A decided change stays on screen for a week (the store sees the answer and, on a refusal, why).
+  const shown = latest && (latest.status === 'PENDING' || (latest.decidedAt && Date.now() - latest.decidedAt.getTime() < 7 * 86_400_000)) ? latest : null;
+  return {
+    current, options, handoverOpen: owner.accountBasis === 'COMPANY' || owner.accountBasis === 'MANAGER',
+    change: shown ? await viewOfChange(db, await loadChange(db, shown.id)) : null,
+  };
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Asking
+// ---------------------------------------------------------------------------------------------------------------------
+
+function onePending(error: unknown): never {
+  if (typeof error === 'object' && error !== null && (error as { code?: unknown }).code === 'P2002') {
+    throw new AppError(409, 'ACCOUNT_CHANGE_PENDING', 'A change to this account is already waiting for Swift. Withdraw it first, or wait for the answer.');
+  }
+  throw error;
+}
+
+/**
+ * (c) The account holder asks to change the business type. Refused with the reason in words when the answer is the
+ * one the account already has, when a store's kind cannot take it, or (own name) when a store's name is not the owner's
+ * own name or a registration is on file — the same rules sign-up and the own-name route apply.
+ */
+export async function startBusinessTypeChange(prisma: PrismaClient, userId: string, toOption: BusinessTypeOption): Promise<ChangeView> {
+  const owner = await prisma.vendorOwner.findUnique({
+    where: { userId },
+    select: { id: true, accountBasis: true, user: { select: { tenantId: true, firstName: true, lastName: true, status: true } }, vendors: { select: { id: true, name: true, vendorType: true, tradesUnderOwnName: true } } },
+  });
+  if (!owner || owner.vendors.length === 0) throw new AppError(403, 'STAFF_FORBIDDEN', 'Only the account holder can change the business type');
+  if (owner.user.status !== 'ACTIVE') throw new AppError(409, 'ACCOUNT_INACTIVE', 'This account is not active.');
+  const fromOption = currentOptionOf(owner);
+  const target = shapeOf(toOption);
+  const unchanged = target.basis === owner.accountBasis
+    && owner.vendors.filter((v) => ownNameKind(v.vendorType)).every((v) => v.tradesUnderOwnName === target.ownName);
+  if (unchanged) throw new AppError(409, 'NOTHING_TO_CHANGE', 'Your account already has that business type.');
+  for (const store of owner.vendors) {
+    if (!accountBasisApplies(target.basis, store.vendorType)) {
+      throw new AppError(400, 'ACCOUNT_BASIS_NOT_APPLICABLE', target.basis === 'MANAGER'
+        ? 'A manager can hold a registered restaurant, supermarket or store. A service business stays on its owner’s own account.'
+        : 'One of your stores is a kind of business that can’t be held that way.');
+    }
+  }
+  if (toOption === 'OWN_NAME') {
+    const ownNameStores = owner.vendors.filter((v) => ownNameKind(v.vendorType));
+    if (ownNameStores.length === 0) throw new AppError(400, 'OWN_NAME_NOT_APPLICABLE', 'A service business is not asked for a business registration, so it trades as it is.');
+    const misfit = ownNameStores.find((v) => !storeNameIsOwnName(v.name, owner.user.firstName, owner.user.lastName));
+    if (misfit) {
+      throw new AppError(400, 'OWN_NAME_MISMATCH', `“${misfit.name}” is not just your surname with your first names or initials, so the law asks you to register it as a business name. Choose “registered business” instead.`);
+    }
+    if (await validRegistrationRecord(prisma, userId)) {
+      throw new AppError(409, 'ALREADY_REGISTERED', 'A business or company registration is on file for this account, so it can’t trade under a person’s own name. Contact Swift support if that registration has ended.');
+    }
+  }
+  // The ask and its audit row commit together.
+  const created = await prisma.$transaction(async (tx) => {
+    await bindTenantTransaction(tx);
+    const row = await tx.accountChangeRequest.create({
+      data: { tenantId: owner.user.tenantId, vendorOwnerId: owner.id, kind: 'BUSINESS_TYPE', requestedById: userId, fromOption, toOption },
+      select: { id: true },
+    }).catch(onePending);
+    await tx.auditLog.create({ data: { userId, action: 'ASK_BUSINESS_TYPE_CHANGE', entity: 'AccountChangeRequest', entityId: row.id, changes: { fromOption, toOption } } });
+    return row;
+  });
+  return viewOfChange(prisma, await loadChange(prisma, created.id));
+}
+
+/**
+ * (d) The account holder names the new account holder: a company's (or a manager's) account only. The person named
+ * must already have their own Swift account (they sign in on their own phone and file their own papers), hold no store
+ * account of their own, and be on the same operator. One answer for every number that cannot be named, so this never
+ * says which numbers are Swift accounts or why.
+ */
+export async function startHandover(prisma: PrismaClient, userId: string, phone: string): Promise<{ change: ChangeView; noticeId: string }> {
+  const owner = await prisma.vendorOwner.findUnique({
+    where: { userId },
+    select: { id: true, accountBasis: true, user: { select: { tenantId: true, status: true } }, vendors: { select: { id: true, name: true }, orderBy: { createdAt: 'asc' } } },
+  });
+  if (!owner || owner.vendors.length === 0) throw new AppError(403, 'STAFF_FORBIDDEN', 'Only the account holder can hand over the account');
+  if (owner.accountBasis !== 'COMPANY' && owner.accountBasis !== 'MANAGER') {
+    throw new AppError(409, 'HANDOVER_NOT_APPLICABLE', 'A business owner’s account isn’t handed over. If the business has a new owner, they sign up with their own papers.');
+  }
+  if (owner.user.status !== 'ACTIVE') throw new AppError(409, 'ACCOUNT_INACTIVE', 'This account is not active.');
+  const since = new Date(Date.now() - 86_400_000);
+  if (await prisma.accountChangeRequest.count({ where: { vendorOwnerId: owner.id, kind: 'HOLDER_HANDOVER', createdAt: { gt: since } } }) >= HANDOVER_STARTS_PER_DAY) {
+    throw new AppError(429, 'HANDOVER_DAILY_LIMIT', 'You can name a new account holder up to 3 times a day. Try again tomorrow.');
+  }
+  const target = await prisma.user.findUnique({ where: { phone }, select: { id: true, status: true, tenantId: true, vendorOwner: { select: { id: true } } } });
+  if (!target || target.id === userId || target.status !== 'ACTIVE' || target.tenantId !== owner.user.tenantId || target.vendorOwner) {
+    throw new AppError(409, 'HANDOVER_PERSON_UNAVAILABLE', 'That number can’t be named. Ask the person to sign in to Swift on their own phone first. Someone who already holds a store account can’t be named.');
+  }
+  const { refuseReviewAccountRoleGrant } = await import('../review/demo-policy');
+  await refuseReviewAccountRoleGrant(prisma, userId, target.id);
+  const { change, noticeId } = await prisma.$transaction(async (tx) => {
+    await bindTenantTransaction(tx);
+    const row = await tx.accountChangeRequest.create({
+      data: { tenantId: owner.user.tenantId, vendorOwnerId: owner.id, kind: 'HOLDER_HANDOVER', requestedById: userId, holderId: userId, newHolderId: target.id },
+      select: { id: true },
+    }).catch(onePending);
+    await tx.auditLog.create({ data: { userId, action: 'ASK_ACCOUNT_HANDOVER', entity: 'AccountChangeRequest', entityId: row.id, changes: { stores: owner.vendors.length } } });
+    const stores = storeNames(owner.vendors);
+    const notice = await insertNoticeFor(tx, {
+      userId: target.id, type: 'SYSTEM_ANNOUNCEMENT', title: 'You were named as an account holder',
+      body: `${stores} on Swift named you as the new account holder. Open Swift to say yes or no. Nothing changes until a person at Swift checks your papers.`,
+      data: { kind: 'account_handover_named', changeId: row.id },
+    });
+    return { change: row, noticeId: notice.id };
+  });
+  return { change: await viewOfChange(prisma, await loadChange(prisma, change.id)), noticeId };
+}
+
+function storeNames(vendors: readonly { name: string }[]): string {
+  const first = vendors[0]?.name.trim() || 'A store';
+  return vendors.length > 1 ? `${first} (and ${vendors.length - 1} more branch${vendors.length === 2 ? '' : 'es'})` : first;
+}
+
+/** (d) The person named sees the handover waiting for them (never another person's papers). */
+export async function handoversNaming(db: Db, userId: string): Promise<Array<ChangeView & { storeNames: string[]; basis: VendorAccountBasis }>> {
+  const rows = await db.accountChangeRequest.findMany({ where: { newHolderId: userId, kind: 'HOLDER_HANDOVER', status: 'PENDING' }, select: CHANGE_SELECT, orderBy: { createdAt: 'desc' } });
+  const out: Array<ChangeView & { storeNames: string[]; basis: VendorAccountBasis }> = [];
+  for (const row of rows) out.push({ ...(await viewOfChange(db, row)), storeNames: row.vendorOwner.vendors.map((v) => v.name), basis: row.vendorOwner.accountBasis });
+  return out;
+}
+
+/** (d) The person named says yes (they then file their own papers) — once. */
+export async function acceptHandover(prisma: PrismaClient, userId: string, changeId: string): Promise<ChangeView> {
+  // The yes and its audit row commit together; a second yes changes nothing.
+  const won = await prisma.$transaction(async (tx) => {
+    await bindTenantTransaction(tx);
+    const row = await tx.accountChangeRequest.updateMany({
+      where: { id: changeId, newHolderId: userId, kind: 'HOLDER_HANDOVER', status: 'PENDING', newHolderAcceptedAt: null },
+      data: { newHolderAcceptedAt: new Date() },
+    });
+    if (row.count === 1) await tx.auditLog.create({ data: { userId, action: 'ACCEPT_ACCOUNT_HANDOVER', entity: 'AccountChangeRequest', entityId: changeId } });
+    return row.count === 1;
+  });
+  const change = await prisma.accountChangeRequest.findFirst({ where: { id: changeId, newHolderId: userId }, select: CHANGE_SELECT });
+  if (!change) throw new NotFoundError('AccountChange', changeId);
+  if (!won && change.status !== 'PENDING') throw new AppError(409, 'ACCOUNT_CHANGE_DECIDED', 'This handover has already been decided.');
+  return viewOfChange(prisma, change);
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Ending without a switch: a refusal, a withdrawal, a "no"
+// ---------------------------------------------------------------------------------------------------------------------
+
+/** The papers filed for a change that will never be approved leave review (waiting) or are withdrawn (approved), in the
+ *  same transaction, so nothing of it can count later and the next change may file the same types again. */
+async function closeChangePapers(tx: Prisma.TransactionClient, changeId: string, note: string, by: string): Promise<void> {
+  const papers = await tx.verificationDocument.findMany({ where: { accountChangeId: changeId }, select: { id: true, userId: true, state: true } });
+  const now = new Date();
+  for (const paper of papers) {
+    if (paper.state === 'COMMITTED') {
+      await hopDocState(tx, { id: paper.id, userId: paper.userId }, 'COMMITTED', 'REVOKED', { status: 'REJECTED', reviewedBy: by, reviewedAt: now, reviewNote: `REVOKED: ${note}` });
+    } else if (paper.state === 'REVIEW_QUEUED' || paper.state === 'IN_REVIEW' || paper.state === 'INFO_REQUESTED') {
+      await hopDocState(tx, { id: paper.id, userId: paper.userId }, paper.state, 'EXPIRED', { reviewNote: note });
+      await tx.reviewCase.updateMany({ where: { submissionId: paper.id, closedAt: null }, data: { closedAt: now } });
+    }
+  }
+}
+
+/**
+ * Ends a PENDING change with nothing switched: a person's refusal (REFUSED, with the reason the store sees), the
+ * holder withdrawing it, or the person named saying no (WITHDRAWN). Returns the notices to publish after commit.
+ */
+export async function endAccountChange(
+  tx: Prisma.TransactionClient,
+  input: { changeId: string; by: string; outcome: 'REFUSED' | 'WITHDRAWN'; reason?: string; audit: (tx: Prisma.TransactionClient, change: ChangeRow) => Promise<void> },
+): Promise<string[]> {
+  // Under the identity lock every document decision takes: no paper of this change is decided while it ends.
+  await lockIdentityAuthority(tx);
+  await tx.$queryRaw`SELECT "id" FROM "account_change_requests" WHERE "id" = ${input.changeId} FOR UPDATE /* account-change-decision */`;
+  const change = await loadChange(tx, input.changeId);
+  if (change.status !== 'PENDING') throw new AppError(409, 'ACCOUNT_CHANGE_DECIDED', 'This change has already been decided.');
+  const now = new Date();
+  await tx.accountChangeRequest.update({
+    where: { id: change.id },
+    data: { status: input.outcome, decidedAt: now, decidedById: input.by, decisionReason: input.reason ?? null },
+  });
+  const note = input.outcome === 'REFUSED' ? `the change was refused: ${input.reason}` : 'the change was withdrawn';
+  await closeChangePapers(tx, change.id, note, input.by);
+  await input.audit(tx, change);
+  const notices: string[] = [];
+  const holder = change.vendorOwner.userId;
+  const tell = async (userId: string, title: string, body: string, data: { kind: string; changeId: string }) => {
+    if (userId === input.by) return; // the person who ended it knows
+    notices.push((await insertNoticeFor(tx, { userId, type: 'SYSTEM_ANNOUNCEMENT', title, body, data })).id);
+  };
+  // (The kinds are written out, so the phone's notification census sees each one.)
+  if (change.kind === 'BUSINESS_TYPE') {
+    await tell(holder, 'Business type not changed', `Swift did not change your business type: ${input.reason ?? 'the request was withdrawn'}. Your store keeps selling as before.`,
+      { kind: 'account_change_refused', changeId: change.id });
+  } else {
+    const why = input.outcome === 'REFUSED' ? `Swift did not approve the handover: ${input.reason}.` : 'The handover was withdrawn.';
+    await tell(holder, 'Account not handed over', `${why} Nothing changed on your account.`, { kind: 'account_change_refused', changeId: change.id });
+    if (change.newHolderId) {
+      await tell(change.newHolderId, 'Account not handed over', `${why} You were not made the account holder.`, { kind: 'account_handover_ended', changeId: change.id });
+    }
+  }
+  return notices;
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// The switch: one transaction (VerificationService.decideAccountChange runs it, then the activation projection)
+// ---------------------------------------------------------------------------------------------------------------------
+
+export interface ApprovalInput {
+  changeId: string;
+  adminId: string;
+  reason: string;
+  /** (c) to a company, a registered business or a manager: each store's name exactly as the person saw it, which they
+   *  confirm as the seller's business or company name (#2473: the storefront names the seller by it). */
+  sellerNames?: Record<string, string>;
+  audit: (tx: Prisma.TransactionClient, change: ChangeRow, facts: Record<string, unknown>) => Promise<void>;
+  /** Is this store's checklist complete for this person (verification.service isRoleVerified, inside the transaction)? */
+  storeComplete: (tx: Prisma.TransactionClient, holderUserId: string, store: StoreRow) => Promise<boolean>;
+}
+
+export interface ApprovalOutcome {
+  /** Whose stores the activation projection reads after the switch. */
+  holderUserId: string;
+  notices: string[];
+  /** (d) the old holder's sessions ended: the post-commit tail (sockets, mover outbox). */
+  revoked?: { userId: string; cleanup: MoverSessionRevocationCleanup };
+}
+
+const paperWords = (missing: readonly string[]) => missing.map((t) => t.replace(/_/g, ' ')).join(', ');
+
+export async function approveAccountChange(tx: Prisma.TransactionClient, input: ApprovalInput): Promise<ApprovalOutcome> {
+  const first = await loadChange(tx, input.changeId);
+  // The people first (the order every document decision locks in), then the change, the account and its stores.
+  const people = [...new Set([first.vendorOwner.userId, ...(first.newHolderId ? [first.newHolderId] : [])])].sort();
+  for (const id of people) await tx.$queryRaw`SELECT "id" FROM "users" WHERE "id" = ${id} FOR UPDATE /* account-change-decision */`;
+  await tx.$queryRaw`SELECT "id" FROM "account_change_requests" WHERE "id" = ${input.changeId} FOR UPDATE /* account-change-decision */`;
+  const change = await loadChange(tx, input.changeId);
+  if (change.status !== 'PENDING') throw new AppError(409, 'ACCOUNT_CHANGE_DECIDED', 'This change has already been decided.');
+  if (change.vendorOwner.userId !== first.vendorOwner.userId) throw new AppError(409, 'ACCOUNT_CHANGE_MOVED', 'The account changed while you were deciding. Open it again.');
+  await tx.$queryRaw`SELECT "id" FROM "vendor_owners" WHERE "id" = ${change.vendorOwner.id} FOR UPDATE /* account-change-decision */`;
+  const stores = change.vendorOwner.vendors;
+  for (const store of stores) await tx.$queryRaw`SELECT "id" FROM "vendors" WHERE "id" = ${store.id} FOR UPDATE /* account-change-decision */`;
+  const live = await tx.vendor.findMany({ where: { id: { in: stores.map((s) => s.id) } }, select: { id: true, name: true, suspensionSource: true, publicPhone: true, phone: true } });
+  if (live.some((s) => s.suspensionSource === 'WIND_DOWN')) {
+    throw new AppError(409, 'ACCOUNT_CLOSED', 'This account was closed. A closed account’s stores never reopen, so this change can’t be approved.');
+  }
+
+  // Every paper the change needs is approved (the change's own included), before anything moves.
+  const { papers, perStore } = await readChangePapers(tx, change);
+  const missing = papers.filter((p) => p.state !== 'APPROVED').map((p) => p.docType);
+  if (missing.length > 0) {
+    throw new AppError(409, 'CHANGE_PAPERS_INCOMPLETE', `Approve each paper first. Still waiting: ${paperWords(missing)}.`, { missing });
+  }
+  // Which stores pass their papers today: each must still pass them after the switch (no store goes dark by it).
+  const holderBefore = change.vendorOwner.userId;
+  const passedBefore = new Set<string>();
+  for (const store of stores) if (await input.storeComplete(tx, holderBefore, store)) passedBefore.add(store.id);
+
+  const now = new Date();
+  await tx.accountChangeRequest.update({
+    where: { id: change.id },
+    data: { status: 'APPROVED', decidedAt: now, decidedById: input.adminId, decisionReason: input.reason },
+  });
+  const notices: string[] = [];
+  let outcome: ApprovalOutcome;
+
+  if (change.kind === 'BUSINESS_TYPE') {
+    const target = shapeOf(change.toOption!);
+    for (const store of stores) {
+      if (!accountBasisApplies(target.basis, store.vendorType)) throw new AppError(409, 'ACCOUNT_BASIS_NOT_APPLICABLE', `${store.name} can’t be held that way.`);
+    }
+    // The seller name customers see [#2473]: a person confirms each store's exact name as the business's (a trader under
+    // their own name is named by their own name instead, from the own-name declaration now counting).
+    const confirmed: string[] = [];
+    if (!target.ownName) {
+      for (const store of live) {
+        const shown = input.sellerNames?.[store.id];
+        if (shown === undefined) throw new AppError(400, 'SELLER_NAME_REQUIRED', `Confirm the name customers will see for ${store.name.trim()}.`);
+        if (shown.trim() !== store.name.trim()) {
+          throw new AppError(409, 'SELLER_NAME_CHANGED', `The store's name is now “${store.name.trim()}”. Check that name, then approve again.`);
+        }
+        confirmed.push(store.id);
+      }
+      for (const store of live) {
+        await tx.vendor.update({ where: { id: store.id }, data: { sellerNameCheckedName: store.name.trim(), sellerNameCheckedAt: now, sellerNameCheckedById: input.adminId } });
+      }
+    }
+    await tx.vendorOwner.update({ where: { id: change.vendorOwner.id }, data: { accountBasis: target.basis } });
+    for (const store of stores) {
+      const ownName = target.ownName && ownNameKind(store.vendorType);
+      if (store.tradesUnderOwnName !== ownName) await tx.vendor.update({ where: { id: store.id }, data: { tradesUnderOwnName: ownName } });
+    }
+    await input.audit(tx, change, { fromOption: change.fromOption, toOption: change.toOption, stores: stores.length, sellerNamesConfirmed: confirmed });
+    notices.push((await insertNoticeFor(tx, {
+      userId: holderBefore, type: 'SYSTEM_ANNOUNCEMENT', title: 'Business type changed',
+      body: 'Swift checked your new papers and changed your business type. Your store kept selling the whole time; nothing else changes.',
+      data: { kind: 'account_change_approved', changeId: change.id },
+    })).id);
+    outcome = { holderUserId: holderBefore, notices };
+  } else {
+    const newHolder = change.newHolderId!;
+    if (!change.newHolderAcceptedAt) throw new AppError(409, 'HANDOVER_NOT_ACCEPTED', 'The person named has not said yes yet.');
+    const person = await tx.user.findUniqueOrThrow({ where: { id: newHolder }, select: { status: true, tenantId: true, phone: true, roles: true, vendorOwner: { select: { id: true } } } });
+    if (person.status !== 'ACTIVE' || person.phone === `deleted:${newHolder}`) throw new AppError(409, 'HANDOVER_PERSON_UNAVAILABLE', 'The person named no longer has an active Swift account.');
+    if (person.vendorOwner) throw new AppError(409, 'HANDOVER_PERSON_HOLDS_ACCOUNT', 'The person named now holds a store account of their own, so this account can’t move to them.');
+    const old = await tx.user.findUniqueOrThrow({ where: { id: holderBefore }, select: { phone: true, roles: true, activeRole: true } });
+    // The account moves: every branch, in this one row.
+    await tx.vendorOwner.update({ where: { id: change.vendorOwner.id }, data: { userId: newHolder } });
+    const storeIds = stores.map((s) => s.id);
+    // The new holder is the owner now: a staff or manager place they held at these stores ends.
+    const staffEnded = await tx.vendorStaff.deleteMany({ where: { vendorId: { in: storeIds }, userId: { in: [newHolder, holderBefore] } } });
+    // Their store role: the new holder gains it; the old holder keeps it only while a team place elsewhere needs it.
+    await tx.user.update({ where: { id: newHolder }, data: { roles: { set: [...new Set([...person.roles, 'VENDOR_OWNER' as const])] } } });
+    const teamElsewhere = await tx.vendorStaff.count({ where: { userId: holderBefore } });
+    if (!teamElsewhere) {
+      const roles = old.roles.filter((r) => r !== 'VENDOR_OWNER');
+      await tx.user.update({
+        where: { id: holderBefore },
+        data: { roles: { set: roles.length ? roles : ['CUSTOMER'] }, ...(old.activeRole === 'VENDOR_OWNER' ? { activeRole: 'CUSTOMER' } : {}) },
+      });
+    }
+    // Money never follows the old holder: every MMG destination they set (and any change of it still waiting) is
+    // cleared; the new holder sets the company's own, through its usual hold. Customers can pay cash meanwhile. An open
+    // order keeps the number it was placed with (Order.mmgNumberSnapshot).
+    await tx.vendor.updateMany({ where: { id: { in: storeIds } }, data: { ...VENDOR_MMG_DESTINATION_CLEARED } });
+    await closeOpenMmgStagesFor(tx, storeIds);
+    // A store phone that is the old holder's own number stops being the store's: the published one is withdrawn, Swift's
+    // private contact line becomes the new holder's number.
+    for (const store of live) {
+      if (store.publicPhone && store.publicPhone === old.phone) await tx.vendor.update({ where: { id: store.id }, data: { publicPhone: null } });
+      if (store.phone === old.phone) await tx.vendor.update({ where: { id: store.id }, data: { phone: person.phone } });
+    }
+    // The old holder loses access now: every session and device, in this transaction.
+    const cleanup = await revokeAllSessionsInTransaction(tx, holderBefore, `account-handover:${change.id}`);
+    await input.audit(tx, change, { stores: stores.length, staffPlacesEnded: staffEnded.count, mmgCleared: storeIds.length, oldHolderSessionsEnded: true });
+    const names = storeNames(stores);
+    notices.push((await insertNoticeFor(tx, {
+      userId: newHolder, type: 'SYSTEM_ANNOUNCEMENT', title: 'You now hold the account',
+      body: `Swift checked your papers. You now hold the Swift account for ${names}. Add the business’s MMG number in Account so customers can pay by MMG again.`,
+      data: { kind: 'account_handover_completed', changeId: change.id },
+    })).id);
+    notices.push((await insertNoticeFor(tx, {
+      userId: holderBefore, type: 'SYSTEM_ANNOUNCEMENT', title: 'Account handed over',
+      body: `The Swift account for ${names} now belongs to the new account holder the business named. You no longer have access to it.`,
+      data: { kind: 'account_handover_ended', changeId: change.id },
+    })).id);
+    outcome = { holderUserId: newHolder, notices, revoked: { userId: holderBefore, cleanup } };
+  }
+
+  // No store goes dark by the switch: a store that passed its papers before passes them after, or nothing moves.
+  for (const store of stores) {
+    if (!passedBefore.has(store.id)) continue;
+    const reloaded = (await tx.vendor.findUniqueOrThrow({ where: { id: store.id }, select: { tradesUnderOwnName: true } }));
+    if (!(await input.storeComplete(tx, outcome.holderUserId, { ...store, tradesUnderOwnName: reloaded.tradesUnderOwnName }))) {
+      const list = perStore.get(store.id) ?? [];
+      throw new AppError(409, 'CHANGE_PAPERS_INCOMPLETE', `${store.name} would lose its papers with this change (${paperWords(list)}). Nothing was changed.`);
+    }
+  }
+  return outcome;
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// The console's view (a person at Swift decides)
+// ---------------------------------------------------------------------------------------------------------------------
+
+export interface AdminChangeView extends ChangeView {
+  vendorOwnerId: string;
+  accountBasis: VendorAccountBasis;
+  /** Every store of the account: the name a person confirms as the seller's (#2473), as it is now. */
+  stores: Array<{ id: string; name: string; vendorType: string; status: string; sellerNameCheckedName: string | null }>;
+  /** Names only (never a phone or a document): the reviewer matches them against the papers. */
+  holder: { id: string; name: string };
+  newHolder: { id: string; name: string } | null;
+  decisionReason: string | null;
+}
+
+const personName = (u: { firstName: string | null; lastName: string | null } | null): string =>
+  [u?.firstName, u?.lastName].filter((x) => x && x.trim()).join(' ') || 'Unnamed';
+
+export async function adminChangeView(db: Db, change: ChangeRow): Promise<AdminChangeView> {
+  const view = await viewOfChange(db, change);
+  const [stores, holder, newHolder] = await Promise.all([
+    db.vendor.findMany({ where: { ownerId: change.vendorOwner.id }, orderBy: { createdAt: 'asc' }, select: { id: true, name: true, vendorType: true, status: true, sellerNameCheckedName: true } }),
+    db.user.findUnique({ where: { id: change.holderId ?? change.requestedById }, select: { id: true, firstName: true, lastName: true } }),
+    change.newHolderId ? db.user.findUnique({ where: { id: change.newHolderId }, select: { id: true, firstName: true, lastName: true } }) : null,
+  ]);
+  return {
+    ...view, vendorOwnerId: change.vendorOwner.id, accountBasis: change.vendorOwner.accountBasis,
+    stores: stores.map((s) => ({ ...s, vendorType: String(s.vendorType), status: String(s.status) })),
+    holder: { id: holder?.id ?? change.requestedById, name: personName(holder) },
+    newHolder: newHolder ? { id: newHolder.id, name: personName(newHolder) } : null,
+    decisionReason: change.decisionReason,
+  };
+}
+
+export async function adminChangeQueue(db: Db, status: AccountChangeRequest['status']): Promise<AdminChangeView[]> {
+  const rows = await db.accountChangeRequest.findMany({ where: { status }, select: CHANGE_SELECT, orderBy: { createdAt: status === 'PENDING' ? 'asc' : 'desc' }, take: 100 });
+  const out: AdminChangeView[] = [];
+  for (const row of rows) out.push(await adminChangeView(db, row));
+  return out;
+}

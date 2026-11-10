@@ -11,6 +11,7 @@ import { approveRegistrantLink, linkedAccountIds, normalizeRegistrationMark, pla
 import { POLICE_CLEARANCE_WITHDRAWN_NOTE } from './police-clearance-consent';
 import { ACCOUNT_HOLDER_ID_DOC_TYPE, AUTO_APPROVE_EXPIRY_DAYS, BUCKET_OF, CERTIFICATE_YEAR_DOC_TYPES, FOOD_HANDLER_ATTESTATION_TYPE, isNeverAcceptedDocType, OWN_NAME_DOC_TYPE, OWN_NAME_TIER, PERSON_ONLY_DOC_TYPES, POLICE_CLEARANCE_DOC_TYPE, REGISTRATION_DOC_TYPES, registryCode, type RegistrationKind } from './doc-registry';
 import { accountTierOf } from '../vendor/account-basis';
+import { assertChangeTakesPapers, changePaperStaging } from '../vendor/account-change';
 import { guyanaWallClockParts, startOfGuyanaDay } from '../../utils/guyana-day';
 import type { ValidatorContext } from './validators';
 import { plausibleExpiryCeiling, startOfToday } from './validators';
@@ -654,6 +655,8 @@ export class VerificationService {
         throw new AppError(409, 'ACCOUNT_INACTIVE', 'This account is not active — documents cannot be submitted.');
       }
       if (review.authority) await revalidateSubmissionAuthority(tx, data.userId, review.authority);
+      // [COMPANY-DOCS Part 3] A paper for an account change is filed only while that change still waits for a person.
+      if (data.accountChangeId) await assertChangeTakesPapers(tx, data.accountChangeId);
       if (data.status === 'APPROVED') {
         try { await requireIdentityAuthority(tx, data.userId); }
         catch (err) {
@@ -872,6 +875,13 @@ export class VerificationService {
         : await this.checklistFor(userId, user.countryCode, roleKey);
       checklist = [...required, ...await this.optionalFor(userId, user.countryCode, roleKey, required)];
     }
+    // [COMPANY-DOCS Part 3 · owner rulings 10 Nov 2026 (c), (d)] A pending account change takes its own papers (a new
+    // business type's, or a named new holder's: vendor/account-change.ts). One it holds counts for nothing until a person
+    // approves the change, and always waits for a person. Whatever files the paper (an upload, Part 2's signed letter)
+    // comes through here, so it is held the same way.
+    const staging = vatCertificate ? null : await changePaperStaging(this.prisma, userId, roleKey, user.countryCode);
+    if (staging) checklist = [...new Set([...checklist, ...staging.submittable])];
+    const accountChangeId = staging?.stages(docType) ? staging.changeId : null;
     if (!vatCertificate && !checklist.includes(docType)) {
       // [DOC-1 §18.3] A document type a category gate names in this country is
       // submittable by a vendor even when no checklist lists it — a shop that wants
@@ -981,7 +991,7 @@ export class VerificationService {
     // [ROLE-DOCS · security review] Fail closed: no engine, auto-approval or auto-rejection decides an own-name
     // declaration. A person compares the name with the owner's ID (approveDocument requires ownNameConfirmed).
     // [COMPANY-DOCS · owner 10 Nov 2026] Nor a company's or a manager's papers: "all checked by a person at Swift".
-    if (PERSON_ONLY_DOC_TYPES.has(docType) && result.status !== 'pending_manual') result = { ...result, status: 'pending_manual' as const };
+    if ((PERSON_ONLY_DOC_TYPES.has(docType) || accountChangeId) && result.status !== 'pending_manual') result = { ...result, status: 'pending_manual' as const };
 
     const autoExpiryDays = AUTO_APPROVE_EXPIRY_DAYS[docType];
     const doc = await this.createDocumentLively({
@@ -992,6 +1002,7 @@ export class VerificationService {
         kycRef: result.referenceToken,
         consentAt: new Date(),
         privacyNoticeVersion,
+        ...(accountChangeId ? { accountChangeId } : {}),
         status:
           result.status === 'approved' ? 'APPROVED'
           : result.status === 'rejected' ? 'REJECTED'
@@ -2636,6 +2647,21 @@ export class VerificationService {
       }));
     }
     return out;
+  }
+
+  /**
+   * [COMPANY-DOCS Part 3] An account change's decision (vendor/account-change.ts): the caller's writes, then the activation
+   * projection for whoever holds the account AFTER the change, in ONE projection transaction — under the identity lock
+   * every document decision takes, so no paper is decided half-way through it. A throw anywhere rolls all of it back; the
+   * notices it wrote are published after the commit.
+   */
+  async decideAccountChange<T>(work: (tx: Prisma.TransactionClient) => Promise<{ result: T; holderUserId: string; notices: string[] }>): Promise<T> {
+    return this.projectionTransaction(async (tx) => {
+      const { result, holderUserId, notices } = await work(tx);
+      this.projectionNotices.get(tx)?.push(...notices);
+      await this.projectVendorActivation(tx, holderUserId);
+      return result;
+    });
   }
 
   /**

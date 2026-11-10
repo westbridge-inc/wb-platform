@@ -66,10 +66,10 @@ async function fixture(status = 'ACTIVE') {
   const records: Row[] = [
     { id: 'private-identity-record', tenantId: 'tenant-public', accountId: 'account-fixture', subjectId: 'subject-fixture',
       docType: 'owner_national_id', submissionId: 'identity-submission', status: 'VALID', expiresOn: null, updatedAt: new Date('2026-10-01T00:00:00Z'),
-      submission: { purgedAt: null, userId: 'account-fixture', docType: 'owner_national_id', subjectId: 'subject-fixture' } },
+      submission: { purgedAt: null, accountChangeId: null, accountChange: null, userId: 'account-fixture', docType: 'owner_national_id', subjectId: 'subject-fixture' } },
     { id: 'private-personal-record', tenantId: 'tenant-public', accountId: 'account-fixture', subjectId: 'subject-fixture',
       docType: 'food_handler_cert', submissionId: 'personal-submission', status: 'VALID', expiresOn: null, updatedAt: new Date('2026-10-01T00:00:00Z'),
-      submission: { purgedAt: null, userId: 'account-fixture', docType: 'food_handler_cert', subjectId: 'subject-fixture' } },
+      submission: { purgedAt: null, accountChangeId: null, accountChange: null, userId: 'account-fixture', docType: 'food_handler_cert', subjectId: 'subject-fixture' } },
   ];
   const audit = vi.fn(async () => ({ id: 'audit-fixture' }));
   const extracted = vi.fn(async () => [{ id: 'run-fixture', wrappedDek: Buffer.from('fixture-wrapped'), fields: [
@@ -203,7 +203,7 @@ describe('R3 public storefront disclosure privacy — actual caller', () => {
     const h = await fixture();
     h.records.push({ id: 'business-licence-record', tenantId: 'tenant-public', accountId: 'account-fixture', subjectId: 'subject-business',
       docType: 'trade_licence', submissionId: 'licence-submission', status: 'VALID', expiresOn: null, updatedAt: new Date('2026-10-01T00:00:00Z'),
-      submission: { purgedAt: null, userId: 'account-fixture', docType: 'trade_licence', subjectId: 'subject-business' } });
+      submission: { purgedAt: null, accountChangeId: null, accountChange: null, userId: 'account-fixture', docType: 'trade_licence', subjectId: 'subject-business' } });
     (h.prisma as unknown as { docType: { findMany: unknown } }).docType.findMany = async () => [{ legacyCode: 'trade_licence', fields: [{ fieldCode: 'business_name' }] }];
     crypto.decrypt.mockReturnValue(Buffer.from('Fixture Trading Ltd'));
     h.extracted.mockResolvedValue([{ id: 'run-fixture', wrappedDek: Buffer.from('fixture-wrapped'), fields: [
@@ -221,7 +221,7 @@ describe('R3 public storefront disclosure privacy — actual caller', () => {
     const h = await fixture();
     h.records.push({ id: 'business-licence-record', tenantId: 'tenant-public', accountId: 'account-fixture', subjectId: 'subject-business',
       docType: 'trade_licence', submissionId: 'licence-submission', status: 'VALID', expiresOn: null, updatedAt: new Date('2026-10-01T00:00:00Z'),
-      submission: { purgedAt: null, userId: 'account-fixture', docType: 'trade_licence', subjectId: 'subject-business' } });
+      submission: { purgedAt: null, accountChangeId: null, accountChange: null, userId: 'account-fixture', docType: 'trade_licence', subjectId: 'subject-business' } });
     (h.prisma as unknown as { docType: { findMany: unknown } }).docType.findMany = async () => [{ legacyCode: 'trade_licence', fields: [{ fieldCode: 'permit_number' }] }];
     crypto.decrypt.mockReturnValue(Buffer.from('TL-0042'));
     h.extracted.mockResolvedValue([{ id: 'run-fixture', wrappedDek: Buffer.from('fixture-wrapped'), fields: [
@@ -240,7 +240,7 @@ describe('R3 public storefront disclosure privacy — actual caller', () => {
       const h = await fixture();
       h.records.push({ id: 'business-licence-record', tenantId: 'tenant-public', accountId: 'account-fixture', subjectId: 'subject-business',
         docType: 'trade_licence', submissionId: 'licence-submission', status: 'VALID', expiresOn: null, updatedAt: new Date('2026-10-01T00:00:00Z'),
-        submission: { purgedAt: null, userId: 'account-fixture', docType: 'trade_licence', subjectId: 'subject-business' } });
+        submission: { purgedAt: null, accountChangeId: null, accountChange: null, userId: 'account-fixture', docType: 'trade_licence', subjectId: 'subject-business' } });
       (h.prisma as unknown as { docType: { findMany: unknown } }).docType.findMany = async () => [{ legacyCode: 'trade_licence', fields: [{ fieldCode: 'business_name' }] }];
       crypto.decrypt.mockReturnValue(Buffer.from('Fixture Trading Ltd'));
       h.extracted.mockResolvedValue([{ id: 'run-fixture', wrappedDek: Buffer.from('fixture-wrapped'), fields: [
@@ -352,7 +352,7 @@ describe('R3 public storefront disclosure privacy — actual caller', () => {
       (h.vendor['owner'] as Row)['brandName'] = brandName;
       h.records.push({ id: 'business-licence-record', tenantId: 'tenant-public', accountId: 'account-fixture', subjectId: 'subject-business',
         docType: 'trade_licence', submissionId: 'licence-submission', status: 'VALID', expiresOn: null, updatedAt: new Date('2026-10-01T00:00:00Z'),
-        submission: { purgedAt: null, userId: 'account-fixture', docType: 'trade_licence', subjectId: 'subject-business' } });
+        submission: { purgedAt: null, accountChangeId: null, accountChange: null, userId: 'account-fixture', docType: 'trade_licence', subjectId: 'subject-business' } });
       (h.prisma as unknown as { docType: { findMany: unknown } }).docType.findMany = async () => [{ legacyCode: 'trade_licence', fields: [{ fieldCode: 'business_name' }] }];
       crypto.decrypt.mockReturnValue(Buffer.from('Fixture Trading Ltd'));
       h.extracted.mockResolvedValue([{ id: 'run-fixture', wrappedDek: Buffer.from('fixture-wrapped'), fields: [
