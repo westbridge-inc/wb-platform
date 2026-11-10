@@ -179,6 +179,8 @@ describe('[R16] business registration kind', () => {
     await user.selectOptions(screen.getByLabelText('What this certificate is'), 'BUSINESS_NAME');
     const year = new Date().getFullYear();
     fireEvent.change(screen.getByLabelText('Year printed on the certificate'), { target: { value: String(year) } });
+    // [R3 · review F1] the registered name printed on it is typed too: the tick is then the last thing approval waits for
+    fireEvent.change(screen.getByLabelText('Registered name, exactly as printed'), { target: { value: 'Sample Holdings Limited' } });
     expect(approve().disabled).toBe(true);
     await user.click(screen.getByLabelText('The proprietor named on it is a company'));
     expect(approve().disabled).toBe(false);
@@ -186,7 +188,7 @@ describe('[R16] business registration kind', () => {
     await user.type(screen.getByLabelText('Decision note'), 'Synthetic evidence checked');
     await user.click(screen.getByRole('button', { name: 'Confirm approval' }));
     await waitFor(() => expect(requestsByMethod(fetch, 'PUT')).toHaveLength(1));
-    expect(JSON.parse(String(requestsByMethod(fetch, 'PUT')[0]![1]?.body))).toEqual({ registrationKind: 'BUSINESS_NAME', certificateYear: year, proprietorIsCompany: true });
+    expect(JSON.parse(String(requestsByMethod(fetch, 'PUT')[0]![1]?.body))).toEqual({ registrationKind: 'BUSINESS_NAME', certificateYear: year, legalName: 'Sample Holdings Limited', proprietorIsCompany: true });
   });
 
   it('a company certificate, or an owner’s business registration, is never asked about its proprietor', async () => {
