@@ -4,7 +4,7 @@ import { use, useState } from 'react';
 import Link from 'next/link';
 import { ArrowLeft } from 'lucide-react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { fetchVendorDetail, fetchVendorActivationChecklist, approveVendor, activateVendor, confirmSellerName, changeStoreName, changeStoreNameConfirmingSeller, changeStoreType, suspendVendor, featureVendor, revokeStoreVat, revealVendorPartyPhone, setChainDeal, setChainBrand, setBranchListedAlone, changeChainDeal, withdrawChainDealChange, fetchVendorChain, type ChainDealOutcome, type DealChangeOutcome, type VendorActivationChecklist, type SellerNameView } from '@/lib/api';
+import { fetchVendorDetail, fetchVendorActivationChecklist, approveVendor, activateVendor, confirmSellerName, changeStoreName, changeStoreType, suspendVendor, featureVendor, revokeStoreVat, revealVendorPartyPhone, setChainDeal, setChainBrand, setBranchListedAlone, changeChainDeal, withdrawChainDealChange, fetchVendorChain, type ChainDealOutcome, type DealChangeOutcome, type VendorActivationChecklist, type SellerNameView } from '@/lib/api';
 import { label, ratingText, type Tone } from '@/lib/labels';
 import { JUDGED_FIELD_WORDS, PROHIBITED_CLASS_LABELS } from '@/lib/prohibited-items';
 import type { ProhibitedClass } from '@/lib/api';
@@ -348,10 +348,17 @@ export default function VendorDetailPage({ params }: { params: Promise<{ id: str
     ],
     reason: { hint: 'How the new name was checked. Kept on the permanent record; not sent to the owner.' },
     context,
-    submit: ({ reason, values }) => (values['certificate'] === MATCHES_CERTIFICATE
-      ? changeStoreNameConfirmingSeller(id, String(values['name']).trim(), reason)
-      : changeStoreName(id, String(values['name']).trim(), reason)),
-    success: () => `The store's name is changed and the owner is told.`,
+    // [R3 · review F7 · security review] Renaming never confirms a seller name. "Yes" asks, as a SECOND step, the
+    // seller-name door (its own authority: approving stores); a refusal there leaves the rename done and says so.
+    submit: async ({ reason, values }) => {
+      const name = String(values['name']).trim();
+      await changeStoreName(id, name, reason);
+      if (values['certificate'] !== MATCHES_CERTIFICATE) return 'renamed' as const;
+      try { await confirmSellerName(id, name, reason); return 'confirmed' as const; } catch { return 'not-confirmed' as const; }
+    },
+    success: (step) => step === 'confirmed' ? `The store's name is changed and confirmed as the seller’s name. The owner is told.`
+      : step === 'not-confirmed' ? `The store's name is changed and the owner is told. Confirming it as the seller’s name was refused: a person who approves stores confirms it on this page.`
+      : `The store's name is changed and the owner is told.`,
   }));
 
   // [STORE-VAT · owner O-5] Withdraw a store's approved VAT (e.g. the GRA cancelled its registration). New orders stop

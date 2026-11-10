@@ -433,10 +433,6 @@ export const changeStoreType = (id: string, vendorType: string, reason: string) 
   apiFetch(`/api/v1/admin/vendors/${id}/type`, { method: 'PUT', body: JSON.stringify({ vendorType }), reason });
 export const changeStoreName = (id: string, name: string, reason: string) =>
   apiFetch(`/api/v1/admin/vendors/${id}/name`, { method: 'PUT', body: JSON.stringify({ name }), reason });
-/** [R3 · review F7] The same rename, and the person says the new name is exactly the registered name on the
- *  certificate: it is confirmed as the seller's name in the same write. */
-export const changeStoreNameConfirmingSeller = (id: string, name: string, reason: string) =>
-  apiFetch(`/api/v1/admin/vendors/${id}/name`, { method: 'PUT', body: JSON.stringify({ name, confirmSellerName: true }), reason });
 /** [R3 · review F5] Who the storefront names as the seller, as the SERVER decides it (GET /admin/vendors/:id
  *  `sellerName`). The console renders it; it never re-derives it. */
 export type SellerNameBasis = 'OWN_NAME' | 'LEGAL_NAME' | 'PERSON_CHECKED' | 'AWAITING_PERSON' | 'NONE';

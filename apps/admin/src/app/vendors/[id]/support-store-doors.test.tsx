@@ -66,18 +66,40 @@ describe('[BUG-HUNT F22] the store page', () => {
     expect(JSON.parse(String(init?.body))).toEqual({ name: 'Corner Kitchen' });
   });
 
-  // [R3 · review F7] A rename takes the store off its confirmed seller name; the person renaming can confirm the new one.
-  it('a rename the person says matches the certificate confirms it as the seller’s name, in the same call', async () => {
-    const fetchMock = serve(store({ firstLiveAt: '2026-10-01T00:00:00.000Z', status: 'ACTIVE' }));
+  // [R3 · review F7 · security review] A rename takes the store off its confirmed seller name. The rename itself never
+  // confirms one: "Yes" asks the seller-name door as a second step (its own authority), and a refusal there is said.
+  async function renameSaying(answer: RegExp, onSellerName: () => { status?: number; body: unknown }) {
+    const fetchMock = mockApi((request) => {
+      if (request.method === 'GET' && request.url.pathname === '/api/v1/admin/vendors/vendor-target') return { body: { success: true, data: store({ firstLiveAt: '2026-10-01T00:00:00.000Z', status: 'ACTIVE' }) } };
+      if (request.method === 'GET' && request.url.pathname.endsWith('/activation-checklist')) return { body: { success: true, data: checklist } };
+      if (request.method === 'PUT' && request.url.pathname.endsWith('/seller-name')) return onSellerName();
+      if (request.method === 'PUT') return { body: { success: true, data: {} } };
+      return { body: { success: true, data: [] } };
+    });
     const { user } = renderWithQuery(<VendorDetailPage params={fulfilledParams({ id: 'vendor-target' })} />);
     await user.click(await screen.findByRole('button', { name: 'Change name…' }));
     const dialog = screen.getByRole('dialog', { name: 'Change the name of Target Store?' });
     expect(within(dialog).getByRole('group', { name: /exactly the registered name on the store’s certificate/ })).toBeTruthy();
     await user.type(within(dialog).getByRole('textbox', { name: 'New store name' }), 'Corner Kitchen Ltd');
-    await user.click(within(dialog).getByRole('radio', { name: /^Yes: it matches the certificate/ }));
+    await user.click(within(dialog).getByRole('radio', { name: answer }));
     await user.type(within(dialog).getByRole('textbox', { name: 'Reason' }), 'Checked the new registration certificate');
     await user.click(within(dialog).getByRole('button', { name: 'Change name' }));
-    await waitFor(() => expect(requestsByMethod(fetchMock, 'PUT')).toHaveLength(1));
-    expect(JSON.parse(String(requestsByMethod(fetchMock, 'PUT')[0]![1]?.body))).toEqual({ name: 'Corner Kitchen Ltd', confirmSellerName: true });
+    return fetchMock;
+  }
+
+  it('"Yes": renames, then confirms the new name through the seller-name door — two calls, the rename never carrying it', async () => {
+    const fetchMock = await renameSaying(/^Yes: it matches the certificate/, () => ({ body: { success: true, data: {} } }));
+    expect((await screen.findByRole('status')).textContent).toContain('confirmed as the seller');
+    const puts = requestsByMethod(fetchMock, 'PUT');
+    expect(puts.map(([url]) => new URL(String(url)).pathname)).toEqual(['/api/v1/admin/vendors/vendor-target/name', '/api/v1/admin/vendors/vendor-target/seller-name']);
+    expect(JSON.parse(String(puts[0]![1]?.body))).toEqual({ name: 'Corner Kitchen Ltd' });
+    expect(JSON.parse(String(puts[1]![1]?.body))).toEqual({ name: 'Corner Kitchen Ltd' });
+  });
+
+  it('"Yes" by someone who may not approve stores: the rename stands, and the page says the confirmation was refused', async () => {
+    await renameSaying(/^Yes: it matches the certificate/, () => ({ status: 403, body: { success: false, error: { code: 'FORBIDDEN', message: 'Not allowed' } } }));
+    const said = (await screen.findByRole('status')).textContent ?? '';
+    expect(said).toContain("The store's name is changed");
+    expect(said).toContain('Confirming it as the seller’s name was refused');
   });
 });

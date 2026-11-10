@@ -209,11 +209,7 @@ const vendorsQuerySchema = z.object({
 // Riders/drivers list filters use UI keywords, not DB enums
 const legalNameChangeSchema = z.object({ firstName: z.string().trim().min(1).max(80), lastName: z.string().trim().min(1).max(80) });
 const storeTypeChangeSchema = z.object({ vendorType: z.nativeEnum(VendorType) });
-const storeNameChangeSchema = z.object({
-  name: z.string().trim().min(2).max(100),
-  // [R3 · review F7] the person renaming also confirms the new name as the seller's (it matches the certificate)
-  confirmSellerName: z.boolean().optional(),
-});
+const storeNameChangeSchema = z.object({ name: z.string().trim().min(2).max(100) });
 /** [R3 · security review 10 Nov 2026] The store name a person confirms as the seller's business or company name: the
  *  exact name the console showed them (approve, or the seller-name check of a store already live). */
 const sellerNameField = z.string().trim().min(1).max(100);
@@ -2254,7 +2250,7 @@ export async function adminRoutes(app: FastifyInstance) {
   /** [BUG-HUNT F22] "To use a new name, contact Swift support: we check the new name first" (CHECKED_NAME_RENAME). This is that door. */
   app.put('/vendors/:id/name', { preHandler: [adminGuard] }, async (request) => {
     const { id } = request.params as { id: string };
-    const { name, confirmSellerName } = storeNameChangeSchema.parse(request.body ?? {});
+    const { name } = storeNameChangeSchema.parse(request.body ?? {});
     const vendor = await app.prisma.vendor.findUnique({
       where: { id }, select: { ...STORE_WORDS_SELECT, tradesUnderOwnName: true, owner: { select: { userId: true, user: { select: { phone: true, roles: true, activeRole: true } } } } },
     });
@@ -2268,12 +2264,11 @@ export async function adminRoutes(app: FastifyInstance) {
     if (vendor.tradesUnderOwnName) {
       throw new AppError(409, 'OWN_NAME_RENAME', 'This store trades under its owner’s own name, which a person checked. A different name has to be registered as a business name first.');
     }
-    // [R3 · review F7] A new name is not a confirmed seller name: the storefront names nobody for it until a person
-    // confirms it — here, when the person renaming says it matches the certificate, in the same write.
-    const updated = await app.prisma.vendor.update({ where: { id }, data: {
-      name, ...(confirmSellerName === true ? { sellerNameCheckedName: name, sellerNameCheckedAt: new Date(), sellerNameCheckedById: request.user.userId } : {}),
-    } });
-    await audit(request.user.userId, 'CHANGE_VENDOR_NAME', 'Vendor', id, { from: vendor.name, to: name, sellerNameConfirmed: confirmSellerName === true }, request);
+    // [R3 · review F7 · security review] A new name is not a confirmed seller name: the storefront names nobody for it
+    // until a person confirms it through PUT /vendors/:id/seller-name, which needs vendor.approve. This door (vendor.edit)
+    // never confirms one, whatever it is sent: the console offers that second, separately authorised step.
+    const updated = await app.prisma.vendor.update({ where: { id }, data: { name } });
+    await audit(request.user.userId, 'CHANGE_VENDOR_NAME', 'Vendor', id, { from: vendor.name, to: name }, request);
     scheduleVendorSearchSync(app, id);
     await notifications.send({
       userId: vendor.owner.userId, type: 'SYSTEM_ANNOUNCEMENT', title: 'Your store name was changed',

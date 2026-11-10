@@ -55,8 +55,6 @@ export const REASONED_CALLERS: readonly ReasonCaller[] = [
   { route: 'PUT /vendors/:id/suspend', helper: 'suspendVendor', args: ['vnd_1'] },
   { route: 'PUT /vendors/:id/type', helper: 'changeStoreType', args: ['vnd_1', 'STORE'], requiredBodyKeys: ['vendorType'] },
   { route: 'PUT /vendors/:id/name', helper: 'changeStoreName', args: ['vnd_1', 'New Name'], requiredBodyKeys: ['name'] },
-  // [R3 · review F7] the rename that also confirms the new name as the seller's
-  { route: 'PUT /vendors/:id/name', helper: 'changeStoreNameConfirmingSeller', args: ['vnd_1', 'New Name'], requiredBodyKeys: ['name', 'confirmSellerName'] },
   { route: 'PUT /riders/:id/verify-documents', helper: 'verifyRiderDocuments', args: ['rdr_1'] },
   { route: 'PUT /drivers/:id/verify-documents', helper: 'verifyDriverDocuments', args: ['drv_1'] },
   { route: 'PUT /drivers/:id/ride-class', helper: 'setDriverRideClass', args: ['drv_1', 'COMFORT'], requiredBodyKeys: ['rideClass'] },

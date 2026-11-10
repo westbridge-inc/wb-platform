@@ -670,7 +670,7 @@ describe('[R3] the seller name in the console', () => {
     expect(await unnamedCount()).toBe(before);
   });
 
-  it('[review F7] a rename confirms the new name as the seller\'s only when the person says so, in the same write', async () => {
+  it('[review F7] a rename never confirms a seller name: the new name names nobody until the seller-name door confirms it', async () => {
     const owner = await makeUser('Rename');
     const store = await makeStore(owner.id, { status: 'ACTIVE', isVerified: true });
     expect((await call('PUT', `/api/v1/admin/vendors/${store.id}/seller-name`, { name: store.name })).statusCode).toBe(200);
@@ -678,9 +678,33 @@ describe('[R3] the seller name in the console', () => {
     expect(plain.statusCode, plain.body).toBe(200);
     // the old confirmation was of the old name: nobody is named now
     expect((await detail(store.id)).sellerName).toEqual({ basis: 'NONE', value: null });
-    const confirming = await call('PUT', `/api/v1/admin/vendors/${store.id}/name`, { name: `${store.name} Three`, confirmSellerName: true });
-    expect(confirming.statusCode, confirming.body).toBe(200);
+    // the rename door takes no confirmation, whatever it is sent: confirming is the seller-name door's alone
+    const flagged = await call('PUT', `/api/v1/admin/vendors/${store.id}/name`, { name: `${store.name} Three`, confirmSellerName: true });
+    expect(flagged.statusCode, flagged.body).toBe(200);
+    expect((await detail(store.id)).sellerName).toEqual({ basis: 'NONE', value: null });
+    expect((await call('PUT', `/api/v1/admin/vendors/${store.id}/seller-name`, { name: `${store.name} Three` })).statusCode).toBe(200);
     expect((await detail(store.id)).sellerName).toEqual({ basis: 'PERSON_CHECKED', value: `${store.name} Three` });
-    expect(await app.prisma.vendor.findUniqueOrThrow({ where: { id: store.id }, select: { sellerNameCheckedById: true } })).toEqual({ sellerNameCheckedById: expect.any(String) });
+  });
+
+  // [security review · gate parity] Renaming is vendor.edit; confirming a seller name is vendor.approve. A staffer who may
+  // only rename can never mark a name as confirmed, by either door.
+  it('a staffer who may rename but not approve stores cannot confirm a seller name', async () => {
+    const owner = await makeUser('RenameOnly');
+    const store = await makeStore(owner.id, { status: 'ACTIVE', isVerified: true });
+    const staff = await app.prisma.user.create({ data: {
+      phone: testPhone(), firstName: 'Rename', lastName: `Only${seq}`, roles: ['ADMIN', 'CUSTOMER'], activeRole: 'ADMIN', isPhoneVerified: true,
+      admin: { create: { permissions: ['vendor.read', 'vendor.edit'] } },
+    } });
+    userIds.push(staff.id);
+    const token = app.jwt.sign({ userId: staff.id, role: 'ADMIN', jti: nanoid(8) });
+    await app.prisma.session.create({ data: { userId: staff.id, token, refreshToken: nanoid(48), authMethod: 'OTP', deviceId: 'rename-only', deviceType: 'test', expiresAt: new Date(Date.now() + DAY) } });
+    const as = (url: string, payload: Record<string, unknown>) => app.inject({
+      method: 'PUT', url, payload, headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json', 'x-swift-reason': TEST_ADMIN_REASON },
+    });
+    const renamed = await as(`/api/v1/admin/vendors/${store.id}/name`, { name: `${store.name} Ltd`, confirmSellerName: true });
+    expect(renamed.statusCode, renamed.body).toBe(200);
+    expect((await as(`/api/v1/admin/vendors/${store.id}/seller-name`, { name: `${store.name} Ltd` })).statusCode).toBe(403);
+    expect(await app.prisma.vendor.findUniqueOrThrow({ where: { id: store.id }, select: { name: true, sellerNameCheckedName: true, sellerNameCheckedById: true } }))
+      .toEqual({ name: `${store.name} Ltd`, sellerNameCheckedName: null, sellerNameCheckedById: null });
   });
 });
