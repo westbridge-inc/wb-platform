@@ -47,6 +47,14 @@ describe('reviewer fields required by the approval route', () => {
     expect(screen.getAllByText('Account holder’s ID (company or manager)').length).toBeGreaterThan(0);
   });
 
+  it('a manager’s owner letter names the manager path and the owner check', async () => {
+    fixture('owner_authority_letter', [], { role: 'VENDOR_OWNER', accountBasis: 'MANAGER' });
+    const { user } = renderWithQuery(<VerificationPage />);
+    await user.click(await screen.findByRole('button', { name: 'Review' }));
+    expect(await screen.findByText(/Signed up by the manager of a registered business \(not the owner\)/)).toBeTruthy();
+    expect(screen.getByText(/owner named on the Business Registration/)).toBeTruthy();
+  });
+
   it('an owner’s account shows no path line', async () => {
     fixture('owner_national_id', ['documentNumber'], { role: 'VENDOR_OWNER', accountBasis: 'OWNER' });
     const { user } = renderWithQuery(<VerificationPage />);
@@ -157,6 +165,34 @@ describe('[R16] business registration kind', () => {
     await user.click(screen.getByRole('button', { name: 'Confirm approval' }));
     await waitFor(() => expect(requestsByMethod(fetch, 'PUT')).toHaveLength(1));
     expect(JSON.parse(String(requestsByMethod(fetch, 'PUT')[0]![1]?.body))).toEqual({ registrationKind: 'BUSINESS_NAME', certificateYear: year });
+  });
+
+  // [COMPANY-DOCS · review F3] a company's paper that is a business-name registration: the proprietor must be a company
+  it('a company’s business-name registration waits for the “proprietor is a company” tick, and sends it', async () => {
+    const { fetch, user } = await open('certificate_of_incorporation');
+    await user.selectOptions(screen.getByLabelText('What this certificate is'), 'BUSINESS_NAME');
+    const year = new Date().getFullYear();
+    fireEvent.change(screen.getByLabelText('Year printed on the certificate'), { target: { value: String(year) } });
+    expect(approve().disabled).toBe(true);
+    await user.click(screen.getByLabelText('The proprietor named on it is a company'));
+    expect(approve().disabled).toBe(false);
+    await user.click(approve());
+    await user.type(screen.getByLabelText('Decision note'), 'Synthetic evidence checked');
+    await user.click(screen.getByRole('button', { name: 'Confirm approval' }));
+    await waitFor(() => expect(requestsByMethod(fetch, 'PUT')).toHaveLength(1));
+    expect(JSON.parse(String(requestsByMethod(fetch, 'PUT')[0]![1]?.body))).toEqual({ registrationKind: 'BUSINESS_NAME', certificateYear: year, proprietorIsCompany: true });
+  });
+
+  it('a company certificate, or an owner’s business registration, is never asked about its proprietor', async () => {
+    const company = await open('certificate_of_incorporation');
+    await company.user.selectOptions(screen.getByLabelText('What this certificate is'), 'COMPANY');
+    expect(screen.queryByLabelText('The proprietor named on it is a company')).toBeNull();
+  });
+
+  it('an owner’s business registration as a business name: no proprietor tick', async () => {
+    const owner = await open('business_registration');
+    await owner.user.selectOptions(screen.getByLabelText('What this certificate is'), 'BUSINESS_NAME');
+    expect(screen.queryByLabelText('The proprietor named on it is a company')).toBeNull();
   });
 });
 

@@ -48,7 +48,8 @@ describe('[FOOD-PERMIT] the restaurant lists', () => {
     // [DEPT-PRICE] 2026-10-29.1 carries these lists on, with the department-store fee at 45,000 (dept-price.unit.test.ts);
     // [CHECKLIST-LEGAL] 2026-11-01.1 without the self-declared tier's lists (unregistered-tier-removed.test.ts)
     // [O1] 2026-11-07.1 carries the lists on unchanged (rider-cash-no-limit.test.ts)
-    expect(PLATFORM_CONFIG_VERSION).toBe('2026-11-07.1');
+    // [COMPANY-DOCS] 2026-11-10.1 carries them on, adding only the company and manager lists (company-signup-documents.test.ts)
+    expect(PLATFORM_CONFIG_VERSION).toBe('2026-11-10.1');
   });
 });
 

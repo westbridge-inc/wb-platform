@@ -68,6 +68,8 @@ export default function VerificationPage() {
   const [certificateYear, setCertificateYear] = useState('');
   const [registrationKind, setRegistrationKind] = useState<'' | 'BUSINESS_NAME' | 'COMPANY'>('');
   const [ownNameConfirmed, setOwnNameConfirmed] = useState(false);
+  // [COMPANY-DOCS · review F3] a company's paper that is a business-NAME registration: its proprietor is a company
+  const [proprietorIsCompany, setProprietorIsCompany] = useState(false);
   const [insurance, setInsurance] = useState<InsuranceCheck>(EMPTY_INSURANCE);
   const [decision, setDecision] = useState<'approve' | 'reject' | null>(null);
   const [reason, setReason] = useState('');
@@ -143,7 +145,7 @@ export default function VerificationPage() {
     documentList.current?.querySelector<HTMLButtonElement>('[aria-pressed="true"]')?.focus({ preventScroll: true });
   };
   const selectDocument = (doc: ReviewDocument) => {
-    setSelected(doc); setViewed(false); setExpiresAt(''); setDocumentNumber(''); setIssuedOn(''); setCertificateYear(''); setRegistrationKind(''); setOwnNameConfirmed(false); setInsurance(EMPTY_INSURANCE);
+    setSelected(doc); setViewed(false); setExpiresAt(''); setDocumentNumber(''); setIssuedOn(''); setCertificateYear(''); setRegistrationKind(''); setOwnNameConfirmed(false); setProprietorIsCompany(false); setInsurance(EMPTY_INSURANCE);
     setMutationError(null); setDecision(null); setReason(''); setReasonCode('');
   };
   const openApplicant = (next: Applicant | null) => {
@@ -191,6 +193,8 @@ export default function VerificationPage() {
   const needsRegistrationKind = selected?.reviewerTypes?.includes('registrationKind') ?? false;
   // [ROLE-DOCS · owner 21 Oct 2026] an own-name declaration: the reviewer's own check of the name against the owner's ID
   const needsOwnName = selected?.reviewerTypes?.includes('ownNameConfirmed') ?? false;
+  // [COMPANY-DOCS · review F3] the server refuses a company's business-name registration unless its proprietor is a company
+  const needsCompanyProprietor = selected?.docType === 'certificate_of_incorporation' && registrationKind === 'BUSINESS_NAME';
   // [R15] A licence or food certificate checked every January: the year printed on it, never a date.
   const needsCertificateYear = (selected?.reviewerTypes?.includes('certificateYear') ?? false)
     && (!needsRegistrationKind || registrationKind === 'BUSINESS_NAME');
@@ -200,7 +204,8 @@ export default function VerificationPage() {
     && (!needsIssuedOn || (!!issuedOn && Number.isFinite(Date.parse(issuedOn)) && Date.parse(issuedOn) <= now))
     && (!needsCertificateYear || certificateYearOk)
     && (!needsRegistrationKind || registrationKind !== '')
-    && (!needsOwnName || ownNameConfirmed);
+    && (!needsOwnName || ownNameConfirmed)
+    && (!needsCompanyProprietor || proprietorIsCompany);
   const approveBlocked = !viewed || !expiryOk || !typedReady || (isInsurance && !insuranceReady);
   const currentIndex = filtered.findIndex((a) => a.id === applicant?.id);
   const move = (offset: number) => {
@@ -218,6 +223,7 @@ export default function VerificationPage() {
         ...(needsRegistrationKind && registrationKind ? { registrationKind } : {}),
         ...(needsCertificateYear ? { certificateYear: Number(certificateYear) } : {}),
         ...(needsOwnName ? { ownNameConfirmed } : {}),
+        ...(needsCompanyProprietor ? { proprietorIsCompany } : {}),
       }, note) : rejectDoc(doc.id, note, code as RejectionReasonCode);
     },
     onError: (error) => {
@@ -358,6 +364,7 @@ export default function VerificationPage() {
             <CustomerIdRetired key={`cid-${selected.id}`} doc={selected} />
             {selected.status === 'PENDING' && (needsExpiry || isInsurance || needsNumber || needsIssuedOn || needsCertificateYear || needsRegistrationKind || needsOwnName) && <div className="rc-fields">
               {needsRegistrationKind && <label>What this certificate is<select aria-label="What this certificate is" value={registrationKind} onChange={(e) => setRegistrationKind(e.target.value as '' | 'BUSINESS_NAME' | 'COMPANY')} disabled={busy}><option value="">Choose…</option><option value="BUSINESS_NAME">Business name (sole trader or partnership): renewed every year</option><option value="COMPANY">Company: certificate of incorporation, never expires</option></select><small>{registrationKind === 'BUSINESS_NAME' ? 'Type the year it is registered for. The store goes offline on 16 January if it is not renewed.' : 'A company’s incorporation certificate never expires.'}</small></label>}
+              {needsCompanyProprietor && <label className="rc-check"><input type="checkbox" aria-label="The proprietor named on it is a company" checked={proprietorIsCompany} onChange={(e) => setProprietorIsCompany(e.target.checked)} disabled={busy} />The proprietor named on this business name registration is a company (Ltd. or Inc.). If it names a person, reject it: that business signs up as a registered business, or through its manager.</label>}
               {needsOwnName && <label className="rc-check"><input type="checkbox" aria-label="Own name checked against the ID" checked={ownNameConfirmed} onChange={(e) => setOwnNameConfirmed(e.target.checked)} disabled={busy} />The store name in the declaration is the owner’s true surname, with nothing added except their first names or initials, as printed on their ID. If not, reject it: the store must register its business name.</label>}
               {needsCertificateYear && <label>Year printed on the certificate<input inputMode="numeric" aria-label="Year printed on the certificate" autoComplete="off" maxLength={4} placeholder={String(yearNow)} value={certificateYear} onChange={(e) => setCertificateYear(e.target.value)} disabled={busy} /><small>{certificateYear && !certificateYearOk ? `Only this year’s certificate (or, until 16 January, last year’s) can be approved.` : 'It is checked again every January. The server sets the date.'}</small></label>}
               {needsNumber && <label>Document number<input aria-label="Document number" autoComplete="off" maxLength={40} value={documentNumber} onChange={(e) => setDocumentNumber(e.target.value)} disabled={busy} /><small>Read the number from this document.</small></label>}
