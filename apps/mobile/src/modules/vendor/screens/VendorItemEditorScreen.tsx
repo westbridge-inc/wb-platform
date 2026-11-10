@@ -66,6 +66,7 @@ import {
   BUFFER_CHOICES, NOTICE_CHOICES, choicesWith, instantBookingAvailable, minutesLabel, nextWindow, openingBookingSettings,
   slotsFromWeekHours, weekHoursFromSlots, weekHoursProblem, type WeekHours,
 } from '../../../lib/bookingHours';
+import { KeyboardAvoider } from '../../../kit/keyboard-avoider';
 
 /** [TAP-AUDIT] An option group (with its choices) written on a NEW item, before its first save: kept on the phone and
  *  sent with the item in the one create request (POST /vendor/items takes `optionGroups`), so a store adds an item
@@ -619,307 +620,310 @@ export function VendorItemEditorScreen({ navigation, route }: any) {
   return (
     <Screen>
       <SubHeader title={existing ? 'Edit Item' : 'New Item'} navigation={navigation} />
-      <ScrollView contentContainerStyle={{ paddingHorizontal: GUTTER, paddingBottom: space['3xl'] }} showsVerticalScrollIndicator={false}>
-        {/* Photo — the kit's PhotoDrop when the slot is empty (WS-2: a dashed
-            CONTROL inviting the one person who can fix it, never a grey state);
-            the pressable preview once a photograph exists. First adoption of
-            the primitive — the hand-rolled twin retires. */}
-        {previewUri ? (
-          <Pressable disabled={readOnly} onPress={() => setPhotoMenu(true)}>
-            {({ pressed }) => (
-              <View
-                style={{
-                  height: 160,
-                  borderRadius: radius.lg,
-                  overflow: 'hidden',
-                  marginBottom: space.sm,
-                  opacity: pressed ? 0.85 : 1,
-                }}
-              >
-                <Image source={{ uri: previewUri }} style={{ width: '100%', height: 160 }} contentFit="cover" />
-              </View>
-            )}
-          </Pressable>
-        ) : (
-          <PhotoDrop
-            onPress={() => setPhotoMenu(true)}
-            disabled={readOnly}
-            uploading={uploadImage.isPending}
-            hint="Bright and straight-on — customers choose with their eyes"
-            style={{ marginBottom: space.sm }}
-          />
-        )}
-        {previewUri ? (
-          <View style={{ alignItems: 'center', marginBottom: space.lg }}>
-            {readOnly ? (
-              <T variant="caption" tone="muted">Read-only sample photo</T>
-            ) : (
-              <LinkText label={uploadImage.isPending ? 'Uploading…' : 'Change photo'} onPress={() => setPhotoMenu(true)} />
-            )}
-          </View>
-        ) : null}
-        {photoErr ? (
-          <T variant="caption" tone="error" center style={{ marginBottom: space.md }}>
-            {photoErr}
-          </T>
-        ) : null}
-
-        <View style={{ gap: space.md }}>
-          <LabeledInput value={name} onChangeText={setName} placeholder="Item name" />
-          <LabeledInput value={price} onChangeText={setPrice} placeholder={beforeVatNote(existing) || (!existing && vatAdded) ? 'Price before VAT (GYD)' : 'Price (GYD)'} keyboardType="decimal-pad" />
-          {/* [VAT-DOCS] What customers pay for an item Swift adds VAT to (the saved price, from the server). */}
-          {beforeVatNote(existing) ? <T variant="caption" tone="muted" testID="item-before-vat-note">{beforeVatNote(existing)}</T> : null}
-          {!existing && vatPricing?.adds ? (
-            <T variant="caption" tone="muted" testID="item-new-before-vat-hint">{newItemBeforeVatHint(vatPricing.ratePercent)}</T>
-          ) : null}
-          <InlineInput value={description} onChangeText={setDescription} placeholder="Description (optional)" multiline />
-        </View>
-
-        {isService ? (
-          <Card style={{ marginTop: space.lg }}>
-            <T variant="heading" style={{ marginBottom: space.md }}>
-              Appointment booking
-            </T>
-
-            <T variant="caption" weight="semibold" tone="muted" style={{ marginBottom: space.sm }}>
-              Appointment length
-            </T>
-            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: space.sm, marginBottom: space.lg }}>
-              {[15, 30, 45, 60, 90, 120].map((m) => (
-                <Chip key={m} label={`${m} min`} selected={duration === m} onPress={() => setDuration(m)} style={{ height: 36, paddingHorizontal: space.md }} />
-              ))}
-            </View>
-
-            {/* [BOOK-S5a] Hours per day. A day with no hours is closed; a break is the gap between two windows. */}
-            <T variant="caption" weight="semibold" tone="muted" style={{ marginBottom: space.sm }}>
-              Hours each day
-            </T>
-            <View style={{ gap: space.sm, marginBottom: space.lg }}>
-              {DAY_LABELS.map((label, d) => {
-                const windows = week[d] ?? [];
-                const open = windows.length > 0;
-                return (
-                  <View key={label} style={{ gap: space.xs }}>
-                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.sm }}>
-                      <Chip
-                        label={open ? label : `${label} · closed`}
-                        selected={open}
-                        onPress={() => setDayWindows(d, (w) => (w.length > 0 ? [] : [nextWindow([])]))}
-                        style={{ height: 36, paddingHorizontal: space.md, minWidth: 64 }}
-                      />
-                      {open ? (
-                        <LinkText label="Add hours" onPress={() => setDayWindows(d, (w) => [...w, nextWindow(w)])} />
-                      ) : null}
-                    </View>
-                    {windows.map((w, i) => (
-                      <View key={i} style={{ flexDirection: 'row', alignItems: 'center', gap: space.sm }}>
-                        <InlineInput
-                          style={{ flex: 1 }}
-                          value={w.start}
-                          onChangeText={(t) => setDayWindows(d, (ws) => ws.map((x, j) => (j === i ? { ...x, start: t } : x)))}
-                          placeholder="09:00"
-                          center
-                        />
-                        <T variant="label" tone="muted">to</T>
-                        <InlineInput
-                          style={{ flex: 1 }}
-                          value={w.end}
-                          onChangeText={(t) => setDayWindows(d, (ws) => ws.map((x, j) => (j === i ? { ...x, end: t } : x)))}
-                          placeholder="17:00"
-                          center
-                        />
-                        <Pressable
-                          onPress={() => setDayWindows(d, (ws) => ws.filter((_, j) => j !== i))}
-                          hitSlop={8}
-                          accessibilityRole="button"
-                          accessibilityLabel={`Remove ${label} ${w.start}–${w.end}`}
-                        >
-                          <Feather name="x" size={18} color={color.text.muted} />
-                        </Pressable>
-                      </View>
-                    ))}
-                  </View>
-                );
-              })}
-              {hoursProblem ? (
-                <T variant="caption" tone="error">{hoursProblem}</T>
-              ) : null}
-            </View>
-
-            <T variant="caption" weight="semibold" tone="muted" style={{ marginBottom: space.sm }}>
-              Gap after each booking
-            </T>
-            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: space.sm, marginBottom: space.lg }}>
-              {choicesWith(BUFFER_CHOICES, buffer).map((m) => (
-                <Chip key={m} label={minutesLabel(m)} selected={buffer === m} onPress={() => setBuffer(m)} style={{ height: 36, paddingHorizontal: space.md }} />
-              ))}
-            </View>
-
-            <T variant="caption" weight="semibold" tone="muted" style={{ marginBottom: space.xs }}>
-              Minimum notice
-            </T>
-            <T variant="caption" tone="muted" style={{ marginBottom: space.sm }}>
-              How close to its start a customer can still book a time.
-            </T>
-            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: space.sm, marginBottom: space.lg }}>
-              {choicesWith(NOTICE_CHOICES, notice).map((m) => (
-                <Chip key={m} label={minutesLabel(m)} selected={notice === m} onPress={() => setNotice(m)} style={{ height: 36, paddingHorizontal: space.md }} />
-              ))}
-            </View>
-
-            {/* [BOOK-S5a · owner A3/A4] Shown only while the server says it can be chosen. */}
-            {instantAvailable ? (
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.md, marginBottom: space.lg }}>
-                <View style={{ flex: 1 }}>
-                  <T variant="label" weight="semibold">Confirm bookings automatically</T>
-                  <T variant="caption" tone="muted" style={{ marginTop: 2 }}>
-                    {instant
-                      ? 'Bookings paid in cash at the appointment are confirmed as soon as the customer books. MMG bookings still wait for you to accept.'
-                      : 'Every booking waits for you to accept it.'}
-                  </T>
+      {/* [KEYBOARD 10 Nov] Lifted above the keyboard (kit/keyboard-avoider), so the last fields can scroll into view. */}
+      <KeyboardAvoider style={{ flex: 1 }}>
+        <ScrollView contentContainerStyle={{ paddingHorizontal: GUTTER, paddingBottom: space['3xl'] }} showsVerticalScrollIndicator={false}>
+          {/* Photo — the kit's PhotoDrop when the slot is empty (WS-2: a dashed
+              CONTROL inviting the one person who can fix it, never a grey state);
+              the pressable preview once a photograph exists. First adoption of
+              the primitive — the hand-rolled twin retires. */}
+          {previewUri ? (
+            <Pressable disabled={readOnly} onPress={() => setPhotoMenu(true)}>
+              {({ pressed }) => (
+                <View
+                  style={{
+                    height: 160,
+                    borderRadius: radius.lg,
+                    overflow: 'hidden',
+                    marginBottom: space.sm,
+                    opacity: pressed ? 0.85 : 1,
+                  }}
+                >
+                  <Image source={{ uri: previewUri }} style={{ width: '100%', height: 160 }} contentFit="cover" />
                 </View>
-                <BrandSwitch value={instant} onChange={setInstant} label="Confirm bookings automatically" />
-              </View>
-            ) : null}
-
-            <T variant="caption" weight="semibold" tone="muted" style={{ marginBottom: space.sm }}>
-              Where does it happen?
-            </T>
-            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: space.sm, marginBottom: space.md }}>
-              <Chip label="At my place" selected={mode === 'AT_BUSINESS'} onPress={() => setMode('AT_BUSINESS')} style={{ height: 38, paddingHorizontal: space.md }} />
-              <Chip label="I travel to them" selected={mode === 'MOBILE'} onPress={() => setMode('MOBILE')} style={{ height: 38, paddingHorizontal: space.md }} />
-              <Chip label="Both" selected={mode === 'BOTH'} onPress={() => setMode('BOTH')} style={{ height: 38, paddingHorizontal: space.md }} />
+              )}
+            </Pressable>
+          ) : (
+            <PhotoDrop
+              onPress={() => setPhotoMenu(true)}
+              disabled={readOnly}
+              uploading={uploadImage.isPending}
+              hint="Bright and straight-on — customers choose with their eyes"
+              style={{ marginBottom: space.sm }}
+            />
+          )}
+          {previewUri ? (
+            <View style={{ alignItems: 'center', marginBottom: space.lg }}>
+              {readOnly ? (
+                <T variant="caption" tone="muted">Read-only sample photo</T>
+              ) : (
+                <LinkText label={uploadImage.isPending ? 'Uploading…' : 'Change photo'} onPress={() => setPhotoMenu(true)} />
+              )}
             </View>
-
-            {askHomeVisitPhoto ? <HomeVisitPhotoCard /> : null}
-
-            {mode !== 'AT_BUSINESS' ? (
-              <View>
-                <T variant="caption" weight="semibold" tone="muted" style={{ marginBottom: space.sm }}>
-                  How far will you travel from your store? (km)
-                </T>
-                <InlineInput value={radiusKm} onChangeText={setRadiusKm} placeholder="5" keyboardType="number-pad" />
-              </View>
-            ) : null}
-          </Card>
-        ) : (
-          <>
-            {/* Inventory — used by groceries/shops; optional for restaurants */}
-            <T variant="label" weight="semibold" tone="muted" style={{ marginTop: space.lg, marginBottom: space.sm }}>
-              Inventory (optional)
+          ) : null}
+          {photoErr ? (
+            <T variant="caption" tone="error" center style={{ marginBottom: space.md }}>
+              {photoErr}
             </T>
-            <View style={{ gap: space.md }}>
-              <View style={{ flexDirection: 'row', gap: space.md }}>
-                <InlineInput style={{ flex: 1 }} value={stock} onChangeText={setStock} placeholder="Stock qty" keyboardType="number-pad" />
-                <InlineInput style={{ flex: 1 }} value={unit} onChangeText={setUnit} placeholder="Unit (kg, ea)" />
+          ) : null}
+
+          <View style={{ gap: space.md }}>
+            <LabeledInput value={name} onChangeText={setName} placeholder="Item name" />
+            <LabeledInput value={price} onChangeText={setPrice} placeholder={beforeVatNote(existing) || (!existing && vatAdded) ? 'Price before VAT (GYD)' : 'Price (GYD)'} keyboardType="decimal-pad" />
+            {/* [VAT-DOCS] What customers pay for an item Swift adds VAT to (the saved price, from the server). */}
+            {beforeVatNote(existing) ? <T variant="caption" tone="muted" testID="item-before-vat-note">{beforeVatNote(existing)}</T> : null}
+            {!existing && vatPricing?.adds ? (
+              <T variant="caption" tone="muted" testID="item-new-before-vat-hint">{newItemBeforeVatHint(vatPricing.ratePercent)}</T>
+            ) : null}
+            <InlineInput value={description} onChangeText={setDescription} placeholder="Description (optional)" multiline />
+          </View>
+
+          {isService ? (
+            <Card style={{ marginTop: space.lg }}>
+              <T variant="heading" style={{ marginBottom: space.md }}>
+                Appointment booking
+              </T>
+
+              <T variant="caption" weight="semibold" tone="muted" style={{ marginBottom: space.sm }}>
+                Appointment length
+              </T>
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: space.sm, marginBottom: space.lg }}>
+                {[15, 30, 45, 60, 90, 120].map((m) => (
+                  <Chip key={m} label={`${m} min`} selected={duration === m} onPress={() => setDuration(m)} style={{ height: 36, paddingHorizontal: space.md }} />
+                ))}
               </View>
-              {/* How big is one of these to carry? An order holding a bulky or very bulky
-                  item is never offered to a bicycle (lib/bulkWords; the server's utils/load).
-                  A choice, not a number — nobody should be asked to think in units. */}
-              <View>
-                <T variant="caption" weight="semibold" tone="muted" style={{ marginBottom: space.sm }}>
-                  How bulky is one of these to carry?
-                </T>
-                <Segmented
-                  options={[
-                    { key: 'normal', label: 'Normal' },
-                    { key: 'bulky', label: 'Bulky' },
-                    { key: 'very_bulky', label: 'Very bulky' },
-                  ] as const}
-                  value={bulk}
-                  onChange={setBulk}
-                />
-                <T variant="caption" tone="muted" style={{ marginTop: space.xs }}>
-                  {BULK_WORDS[bulk]}
-                </T>
+
+              {/* [BOOK-S5a] Hours per day. A day with no hours is closed; a break is the gap between two windows. */}
+              <T variant="caption" weight="semibold" tone="muted" style={{ marginBottom: space.sm }}>
+                Hours each day
+              </T>
+              <View style={{ gap: space.sm, marginBottom: space.lg }}>
+                {DAY_LABELS.map((label, d) => {
+                  const windows = week[d] ?? [];
+                  const open = windows.length > 0;
+                  return (
+                    <View key={label} style={{ gap: space.xs }}>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.sm }}>
+                        <Chip
+                          label={open ? label : `${label} · closed`}
+                          selected={open}
+                          onPress={() => setDayWindows(d, (w) => (w.length > 0 ? [] : [nextWindow([])]))}
+                          style={{ height: 36, paddingHorizontal: space.md, minWidth: 64 }}
+                        />
+                        {open ? (
+                          <LinkText label="Add hours" onPress={() => setDayWindows(d, (w) => [...w, nextWindow(w)])} />
+                        ) : null}
+                      </View>
+                      {windows.map((w, i) => (
+                        <View key={i} style={{ flexDirection: 'row', alignItems: 'center', gap: space.sm }}>
+                          <InlineInput
+                            style={{ flex: 1 }}
+                            value={w.start}
+                            onChangeText={(t) => setDayWindows(d, (ws) => ws.map((x, j) => (j === i ? { ...x, start: t } : x)))}
+                            placeholder="09:00"
+                            center
+                          />
+                          <T variant="label" tone="muted">to</T>
+                          <InlineInput
+                            style={{ flex: 1 }}
+                            value={w.end}
+                            onChangeText={(t) => setDayWindows(d, (ws) => ws.map((x, j) => (j === i ? { ...x, end: t } : x)))}
+                            placeholder="17:00"
+                            center
+                          />
+                          <Pressable
+                            onPress={() => setDayWindows(d, (ws) => ws.filter((_, j) => j !== i))}
+                            hitSlop={8}
+                            accessibilityRole="button"
+                            accessibilityLabel={`Remove ${label} ${w.start}–${w.end}`}
+                          >
+                            <Feather name="x" size={18} color={color.text.muted} />
+                          </Pressable>
+                        </View>
+                      ))}
+                    </View>
+                  );
+                })}
+                {hoursProblem ? (
+                  <T variant="caption" tone="error">{hoursProblem}</T>
+                ) : null}
               </View>
-              {vatRate != null ? (
+
+              <T variant="caption" weight="semibold" tone="muted" style={{ marginBottom: space.sm }}>
+                Gap after each booking
+              </T>
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: space.sm, marginBottom: space.lg }}>
+                {choicesWith(BUFFER_CHOICES, buffer).map((m) => (
+                  <Chip key={m} label={minutesLabel(m)} selected={buffer === m} onPress={() => setBuffer(m)} style={{ height: 36, paddingHorizontal: space.md }} />
+                ))}
+              </View>
+
+              <T variant="caption" weight="semibold" tone="muted" style={{ marginBottom: space.xs }}>
+                Minimum notice
+              </T>
+              <T variant="caption" tone="muted" style={{ marginBottom: space.sm }}>
+                How close to its start a customer can still book a time.
+              </T>
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: space.sm, marginBottom: space.lg }}>
+                {choicesWith(NOTICE_CHOICES, notice).map((m) => (
+                  <Chip key={m} label={minutesLabel(m)} selected={notice === m} onPress={() => setNotice(m)} style={{ height: 36, paddingHorizontal: space.md }} />
+                ))}
+              </View>
+
+              {/* [BOOK-S5a · owner A3/A4] Shown only while the server says it can be chosen. */}
+              {instantAvailable ? (
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.md, marginBottom: space.lg }}>
+                  <View style={{ flex: 1 }}>
+                    <T variant="label" weight="semibold">Confirm bookings automatically</T>
+                    <T variant="caption" tone="muted" style={{ marginTop: 2 }}>
+                      {instant
+                        ? 'Bookings paid in cash at the appointment are confirmed as soon as the customer books. MMG bookings still wait for you to accept.'
+                        : 'Every booking waits for you to accept it.'}
+                    </T>
+                  </View>
+                  <BrandSwitch value={instant} onChange={setInstant} label="Confirm bookings automatically" />
+                </View>
+              ) : null}
+
+              <T variant="caption" weight="semibold" tone="muted" style={{ marginBottom: space.sm }}>
+                Where does it happen?
+              </T>
+              <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: space.sm, marginBottom: space.md }}>
+                <Chip label="At my place" selected={mode === 'AT_BUSINESS'} onPress={() => setMode('AT_BUSINESS')} style={{ height: 38, paddingHorizontal: space.md }} />
+                <Chip label="I travel to them" selected={mode === 'MOBILE'} onPress={() => setMode('MOBILE')} style={{ height: 38, paddingHorizontal: space.md }} />
+                <Chip label="Both" selected={mode === 'BOTH'} onPress={() => setMode('BOTH')} style={{ height: 38, paddingHorizontal: space.md }} />
+              </View>
+
+              {askHomeVisitPhoto ? <HomeVisitPhotoCard /> : null}
+
+              {mode !== 'AT_BUSINESS' ? (
                 <View>
                   <T variant="caption" weight="semibold" tone="muted" style={{ marginBottom: space.sm }}>
-                    VAT on this item
+                    How far will you travel from your store? (km)
                   </T>
-                  <Segmented
-                    options={vatClassChoices(vatRate, vatEffective).map((c) => ({ key: c.value, label: c.value === 'STANDARD' ? 'Standard' : c.value === 'ZERO_RATED' ? 'Zero-rated' : 'Exempt' }))}
-                    value={vatClass}
-                    onChange={(k) => setVatClass(k as VatClass)}
-                  />
-                  <T variant="caption" tone="muted" style={{ marginTop: space.xs }}>
-                    {vatClassChoices(vatRate, vatEffective).find((c) => c.value === vatClass)?.label}. You choose each item’s VAT class and
-                    are responsible for it; check with the GRA.
-                  </T>
+                  <InlineInput value={radiusKm} onChangeText={setRadiusKm} placeholder="5" keyboardType="number-pad" />
                 </View>
               ) : null}
-              <InlineInput value={sku} onChangeText={setSku} placeholder="SKU / barcode (optional)" />
-              <InlineInput value={lowStock} onChangeText={setLowStock} placeholder="Low-stock alert at (e.g. 5)" keyboardType="number-pad" />
-              {stock.trim() !== '' ? (
-                <T variant="caption" tone="muted">
-                  Tracked items sell down automatically and hide at 0. You’ll get an alert at your low-stock level.
-                </T>
-              ) : (
-                // [IN-STORE-SALE] Why the menu list shows no "Sold in store −1" for this item.
-                <T variant="caption" tone="muted">
-                  {SOLD_IN_STORE.untracked}
-                </T>
-              )}
-              {/* Reasoned movements (received/damaged/…) keep an audit trail —
-                  different from overwriting the number above. */}
-              {existing && existing.stockQuantity != null ? (
-                <StockAdjustRow item={existing} />
-              ) : null}
-            </View>
-          </>
-        )}
+            </Card>
+          ) : (
+            <>
+              {/* Inventory — used by groceries/shops; optional for restaurants */}
+              <T variant="label" weight="semibold" tone="muted" style={{ marginTop: space.lg, marginBottom: space.sm }}>
+                Inventory (optional)
+              </T>
+              <View style={{ gap: space.md }}>
+                <View style={{ flexDirection: 'row', gap: space.md }}>
+                  <InlineInput style={{ flex: 1 }} value={stock} onChangeText={setStock} placeholder="Stock qty" keyboardType="number-pad" />
+                  <InlineInput style={{ flex: 1 }} value={unit} onChangeText={setUnit} placeholder="Unit (kg, ea)" />
+                </View>
+                {/* How big is one of these to carry? An order holding a bulky or very bulky
+                    item is never offered to a bicycle (lib/bulkWords; the server's utils/load).
+                    A choice, not a number — nobody should be asked to think in units. */}
+                <View>
+                  <T variant="caption" weight="semibold" tone="muted" style={{ marginBottom: space.sm }}>
+                    How bulky is one of these to carry?
+                  </T>
+                  <Segmented
+                    options={[
+                      { key: 'normal', label: 'Normal' },
+                      { key: 'bulky', label: 'Bulky' },
+                      { key: 'very_bulky', label: 'Very bulky' },
+                    ] as const}
+                    value={bulk}
+                    onChange={setBulk}
+                  />
+                  <T variant="caption" tone="muted" style={{ marginTop: space.xs }}>
+                    {BULK_WORDS[bulk]}
+                  </T>
+                </View>
+                {vatRate != null ? (
+                  <View>
+                    <T variant="caption" weight="semibold" tone="muted" style={{ marginBottom: space.sm }}>
+                      VAT on this item
+                    </T>
+                    <Segmented
+                      options={vatClassChoices(vatRate, vatEffective).map((c) => ({ key: c.value, label: c.value === 'STANDARD' ? 'Standard' : c.value === 'ZERO_RATED' ? 'Zero-rated' : 'Exempt' }))}
+                      value={vatClass}
+                      onChange={(k) => setVatClass(k as VatClass)}
+                    />
+                    <T variant="caption" tone="muted" style={{ marginTop: space.xs }}>
+                      {vatClassChoices(vatRate, vatEffective).find((c) => c.value === vatClass)?.label}. You choose each item’s VAT class and
+                      are responsible for it; check with the GRA.
+                    </T>
+                  </View>
+                ) : null}
+                <InlineInput value={sku} onChangeText={setSku} placeholder="SKU / barcode (optional)" />
+                <InlineInput value={lowStock} onChangeText={setLowStock} placeholder="Low-stock alert at (e.g. 5)" keyboardType="number-pad" />
+                {stock.trim() !== '' ? (
+                  <T variant="caption" tone="muted">
+                    Tracked items sell down automatically and hide at 0. You’ll get an alert at your low-stock level.
+                  </T>
+                ) : (
+                  // [IN-STORE-SALE] Why the menu list shows no "Sold in store −1" for this item.
+                  <T variant="caption" tone="muted">
+                    {SOLD_IN_STORE.untracked}
+                  </T>
+                )}
+                {/* Reasoned movements (received/damaged/…) keep an audit trail —
+                    different from overwriting the number above. */}
+                {existing && existing.stockQuantity != null ? (
+                  <StockAdjustRow item={existing} />
+                ) : null}
+              </View>
+            </>
+          )}
 
-        {existing && !isService ? (
-          <ModifiersSection item={existing} vatPricing={vatPricing} />
-        ) : !isService ? (
-          <ModifiersSection item={null} staged={{ groups: draftGroups, set: setDraftGroups }} vatPricing={vatPricing} />
-        ) : null}
+          {existing && !isService ? (
+            <ModifiersSection item={existing} vatPricing={vatPricing} />
+          ) : !isService ? (
+            <ModifiersSection item={null} staged={{ groups: draftGroups, set: setDraftGroups }} vatPricing={vatPricing} />
+          ) : null}
 
-        <T variant="label" weight="semibold" tone="muted" style={{ marginTop: space.lg, marginBottom: space.sm }}>
-          Category
-        </T>
-        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: space.sm, marginBottom: space.lg }}>
-          {categories.map((c) => (
-            <Chip key={c.id} label={c.name} selected={c.id === categoryId} onPress={() => setCategoryId(c.id)} style={{ height: 38, paddingHorizontal: space.md }} />
-          ))}
-        </View>
-
-        <View style={{ flexDirection: 'row', gap: space.md, marginBottom: space.lg }}>
-          <Chip label={available ? 'Available' : 'Sold out'} selected={available} onPress={() => setAvailable((v) => !v)} style={{ height: 38, paddingHorizontal: space.md }} />
-          <Chip label={`★ ${STORE_PICK}`} selected={popular} onPress={() => setPopular((v) => !v)} style={{ height: 38, paddingHorizontal: space.md }} />
-        </View>
-
-        {save.isError ? (
-          <T variant="label" tone="error" style={{ marginBottom: space.md }}>
-            {saveRefusal(save.error, store?.vendorType) ?? "Couldn't save. Check the details and try again."}
+          <T variant="label" weight="semibold" tone="muted" style={{ marginTop: space.lg, marginBottom: space.sm }}>
+            Category
           </T>
-        ) : null}
-        {/* [#947's grammar] A disabled button says WHY — the first unmet
-            requirement, in the vendor's own order of work. */}
-        <PillButton
-          label={
-            readOnly
-              ? 'Read-only preview'
-              : !existing && vatPricing == null
-                ? 'Loading the store’s prices…'
-              : !name.trim()
-                ? 'Name the item first'
-                : !(Number.isFinite(priceNum) && priceNum >= 0)
-                  ? 'Set a price'
-                  : !categoryId
-                    ? 'Pick a category'
-                    : isService && hoursProblem
-                      ? 'Fix the hours'
-                      : existing
-                        ? 'Save changes'
-                        : 'Add item'
-          }
-          loading={busy}
-          disabled={readOnly || !valid}
-          onPress={submit}
-        />
-      </ScrollView>
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: space.sm, marginBottom: space.lg }}>
+            {categories.map((c) => (
+              <Chip key={c.id} label={c.name} selected={c.id === categoryId} onPress={() => setCategoryId(c.id)} style={{ height: 38, paddingHorizontal: space.md }} />
+            ))}
+          </View>
+
+          <View style={{ flexDirection: 'row', gap: space.md, marginBottom: space.lg }}>
+            <Chip label={available ? 'Available' : 'Sold out'} selected={available} onPress={() => setAvailable((v) => !v)} style={{ height: 38, paddingHorizontal: space.md }} />
+            <Chip label={`★ ${STORE_PICK}`} selected={popular} onPress={() => setPopular((v) => !v)} style={{ height: 38, paddingHorizontal: space.md }} />
+          </View>
+
+          {save.isError ? (
+            <T variant="label" tone="error" style={{ marginBottom: space.md }}>
+              {saveRefusal(save.error, store?.vendorType) ?? "Couldn't save. Check the details and try again."}
+            </T>
+          ) : null}
+          {/* [#947's grammar] A disabled button says WHY — the first unmet
+              requirement, in the vendor's own order of work. */}
+          <PillButton
+            label={
+              readOnly
+                ? 'Read-only preview'
+                : !existing && vatPricing == null
+                  ? 'Loading the store’s prices…'
+                : !name.trim()
+                  ? 'Name the item first'
+                  : !(Number.isFinite(priceNum) && priceNum >= 0)
+                    ? 'Set a price'
+                    : !categoryId
+                      ? 'Pick a category'
+                      : isService && hoursProblem
+                        ? 'Fix the hours'
+                        : existing
+                          ? 'Save changes'
+                          : 'Add item'
+            }
+            loading={busy}
+            disabled={readOnly || !valid}
+            onPress={submit}
+          />
+        </ScrollView>
+      </KeyboardAvoider>
 
       {/* Photo source picker — kit popup */}
       <PopupCard visible={photoMenu} onClose={() => setPhotoMenu(false)}>

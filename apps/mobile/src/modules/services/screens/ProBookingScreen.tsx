@@ -26,6 +26,7 @@ import { appointmentDayKey, formatAppointmentClock, formatAppointmentSlot } from
 import { moneyExact } from '../../../lib/money';
 import { serviceJobErrorMessage } from '../../../lib/serviceJobPresentation';
 import { APPOINTMENT_FREE_CANCEL_HOURS, bookingDays, bookingRefusalRefresh, durationLabel, type ProOfferingsAnswer } from '../../../lib/proBooking';
+import { KeyboardAvoider } from '../../../kit/keyboard-avoider';
 
 /** How many days the strip shows (the server's horizon may cut it shorter). */
 const DAYS_SHOWN = 30;
@@ -99,103 +100,105 @@ export function ProBookingScreen({ navigation, route }: any) {
           <EmptyState icon="calendar" title="Nothing to book yet" body="This provider has no services to book right now. You can still ask them for a quote from Services." />
         </View>
       ) : (
-        <ScrollView contentContainerStyle={{ paddingHorizontal: space['2xl'], paddingBottom: space['3xl'] }} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
-          <SectionHeader title="Choose a service" style={{ marginTop: space.sm }} />
-          <View style={{ gap: space.md, marginTop: space.md }}>
-            {offerings.map((o) => {
-              const selected = o.id === offeringId;
-              return (
-                <Pressable
-                  key={o.id}
-                  onPress={() => { setOfferingId(o.id); setSlot(null); setRefusal(null); }}
-                  accessibilityRole="radio"
-                  accessibilityState={{ selected }}
-                  accessibilityLabel={`${o.name}, ${durationLabel(o.durationMinutes)}, ${moneyExact(o.price)}`}
-                >
-                  <Card style={selected ? { borderWidth: space.xs / 2, borderColor: color.brand[500] } : undefined}>
-                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.md }}>
-                      <View style={{ flex: 1 }}>
-                        <T variant="body" weight="semibold">{o.name}</T>
-                        <T variant="caption" tone="muted" style={{ marginTop: 2 }}>{durationLabel(o.durationMinutes)}</T>
+        <KeyboardAvoider style={{ flex: 1 }}>
+          <ScrollView contentContainerStyle={{ paddingHorizontal: space['2xl'], paddingBottom: space['3xl'] }} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+            <SectionHeader title="Choose a service" style={{ marginTop: space.sm }} />
+            <View style={{ gap: space.md, marginTop: space.md }}>
+              {offerings.map((o) => {
+                const selected = o.id === offeringId;
+                return (
+                  <Pressable
+                    key={o.id}
+                    onPress={() => { setOfferingId(o.id); setSlot(null); setRefusal(null); }}
+                    accessibilityRole="radio"
+                    accessibilityState={{ selected }}
+                    accessibilityLabel={`${o.name}, ${durationLabel(o.durationMinutes)}, ${moneyExact(o.price)}`}
+                  >
+                    <Card style={selected ? { borderWidth: space.xs / 2, borderColor: color.brand[500] } : undefined}>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.md }}>
+                        <View style={{ flex: 1 }}>
+                          <T variant="body" weight="semibold">{o.name}</T>
+                          <T variant="caption" tone="muted" style={{ marginTop: 2 }}>{durationLabel(o.durationMinutes)}</T>
+                        </View>
+                        <T variant="body" weight="bold">{moneyExact(o.price)}</T>
                       </View>
-                      <T variant="body" weight="bold">{moneyExact(o.price)}</T>
-                    </View>
-                  </Card>
-                </Pressable>
-              );
-            })}
-          </View>
+                    </Card>
+                  </Pressable>
+                );
+              })}
+            </View>
 
-          {offering ? (
-            <>
-              <SectionHeader title="Pick a time" style={{ marginTop: space['2xl'] }} />
-              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginTop: space.md, flexGrow: 0 }} contentContainerStyle={{ gap: space.md }}>
-                {days.map((d) => (
-                  <Chip
-                    key={d.key}
-                    label={d.closed ? `${d.label} · closed` : d.label}
-                    selected={day === d.key}
-                    onPress={() => {
-                      if (d.closed) return;
-                      setDay(d.key);
-                      setSlot(null);
-                    }}
-                    style={{ height: 40, paddingHorizontal: space.lg, opacity: d.closed ? 0.45 : 1 }}
-                  />
-                ))}
-              </ScrollView>
-              {slotsQ.isPending ? (
-                <T variant="label" tone="muted" style={{ marginTop: space.md }}>Checking times…</T>
-              ) : slotsQ.isError && !slotsQ.data ? (
-                <View style={{ marginTop: space.md, alignItems: 'flex-start', gap: space.sm }}>
-                  <T variant="label" tone="error">{serviceJobErrorMessage(slotsQ.error, 'Couldn’t load available times. Check your connection and try again.')}</T>
-                  <Chip label="Try again" selected={false} onPress={() => void slotsQ.refetch()} style={{ height: 40, paddingHorizontal: space.lg }} />
-                </View>
-              ) : times.length === 0 ? (
-                <T variant="label" tone="muted" style={{ marginTop: space.md }}>No times left this day — try another.</T>
-              ) : (
-                <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: space.md, marginTop: space.md }}>
-                  {times.map((iso) => (
-                    <Chip key={iso} label={formatAppointmentClock(iso)} selected={slot === iso} onPress={() => { setSlot(iso); setRefusal(null); }} style={{ height: 42, paddingHorizontal: space.lg }} />
+            {offering ? (
+              <>
+                <SectionHeader title="Pick a time" style={{ marginTop: space['2xl'] }} />
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginTop: space.md, flexGrow: 0 }} contentContainerStyle={{ gap: space.md }}>
+                  {days.map((d) => (
+                    <Chip
+                      key={d.key}
+                      label={d.closed ? `${d.label} · closed` : d.label}
+                      selected={day === d.key}
+                      onPress={() => {
+                        if (d.closed) return;
+                        setDay(d.key);
+                        setSlot(null);
+                      }}
+                      style={{ height: 40, paddingHorizontal: space.lg, opacity: d.closed ? 0.45 : 1 }}
+                    />
                   ))}
-                </View>
-              )}
-              <T variant="caption" tone="faint" style={{ marginTop: space.sm }}>
-                {`Book at least ${Math.round((answer?.minNoticeMinutes ?? 120) / 60)} hours ahead. This appointment runs about ${durationLabel(offering.durationMinutes)}.`}
-              </T>
-
-              <LabeledInput
-                label="Note for the provider (optional)"
-                value={note}
-                onChangeText={setNote}
-                placeholder="Anything they should know"
-                maxLength={500}
-                multiline
-                containerStyle={{ marginTop: space['2xl'] }}
-                style={{ minHeight: 64, textAlignVertical: 'top' }}
-              />
-
-              <View style={{ marginTop: space.xl, padding: space.lg, borderRadius: radius.lg, backgroundColor: color.surface.sunken, gap: space.xs }}>
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.sm }}>
-                  <TonePill label="Confirmed when you book" tone="success" />
-                  <TonePill label="Cash at the appointment" tone="neutral" />
-                </View>
-                <T variant="caption" tone="muted" style={{ marginTop: space.xs }}>
-                  {`You can cancel or move it free in the app until ${APPOINTMENT_FREE_CANCEL_HOURS} hours before it starts.`}
+                </ScrollView>
+                {slotsQ.isPending ? (
+                  <T variant="label" tone="muted" style={{ marginTop: space.md }}>Checking times…</T>
+                ) : slotsQ.isError && !slotsQ.data ? (
+                  <View style={{ marginTop: space.md, alignItems: 'flex-start', gap: space.sm }}>
+                    <T variant="label" tone="error">{serviceJobErrorMessage(slotsQ.error, 'Couldn’t load available times. Check your connection and try again.')}</T>
+                    <Chip label="Try again" selected={false} onPress={() => void slotsQ.refetch()} style={{ height: 40, paddingHorizontal: space.lg }} />
+                  </View>
+                ) : times.length === 0 ? (
+                  <T variant="label" tone="muted" style={{ marginTop: space.md }}>No times left this day — try another.</T>
+                ) : (
+                  <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: space.md, marginTop: space.md }}>
+                    {times.map((iso) => (
+                      <Chip key={iso} label={formatAppointmentClock(iso)} selected={slot === iso} onPress={() => { setSlot(iso); setRefusal(null); }} style={{ height: 42, paddingHorizontal: space.lg }} />
+                    ))}
+                  </View>
+                )}
+                <T variant="caption" tone="faint" style={{ marginTop: space.sm }}>
+                  {`Book at least ${Math.round((answer?.minNoticeMinutes ?? 120) / 60)} hours ahead. This appointment runs about ${durationLabel(offering.durationMinutes)}.`}
                 </T>
-              </View>
 
-              {refusal ? <T variant="label" tone="error" style={{ marginTop: space.md }}>{refusal}</T> : null}
-              <PillButton
-                label={slot ? `Book ${formatAppointmentSlot(slot)} · ${moneyExact(offering.price)}` : 'Pick a time'}
-                style={{ marginTop: space.lg }}
-                loading={book.isPending}
-                disabled={!slot || book.isPending}
-                onPress={confirm}
-              />
-            </>
-          ) : null}
-        </ScrollView>
+                <LabeledInput
+                  label="Note for the provider (optional)"
+                  value={note}
+                  onChangeText={setNote}
+                  placeholder="Anything they should know"
+                  maxLength={500}
+                  multiline
+                  containerStyle={{ marginTop: space['2xl'] }}
+                  style={{ minHeight: 64, textAlignVertical: 'top' }}
+                />
+
+                <View style={{ marginTop: space.xl, padding: space.lg, borderRadius: radius.lg, backgroundColor: color.surface.sunken, gap: space.xs }}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.sm }}>
+                    <TonePill label="Confirmed when you book" tone="success" />
+                    <TonePill label="Cash at the appointment" tone="neutral" />
+                  </View>
+                  <T variant="caption" tone="muted" style={{ marginTop: space.xs }}>
+                    {`You can cancel or move it free in the app until ${APPOINTMENT_FREE_CANCEL_HOURS} hours before it starts.`}
+                  </T>
+                </View>
+
+                {refusal ? <T variant="label" tone="error" style={{ marginTop: space.md }}>{refusal}</T> : null}
+                <PillButton
+                  label={slot ? `Book ${formatAppointmentSlot(slot)} · ${moneyExact(offering.price)}` : 'Pick a time'}
+                  style={{ marginTop: space.lg }}
+                  loading={book.isPending}
+                  disabled={!slot || book.isPending}
+                  onPress={confirm}
+                />
+              </>
+            ) : null}
+          </ScrollView>
+        </KeyboardAvoider>
       )}
 
       <PopupCard visible={booked != null} onClose={() => setBooked(null)}>

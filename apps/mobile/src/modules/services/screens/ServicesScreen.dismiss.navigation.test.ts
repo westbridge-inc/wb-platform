@@ -29,6 +29,8 @@ vi.mock('react-native', async () => {
     TextInput: (p: any) => { fx.typeDescription = p.onChangeText; return h('div', { 'data-testid': 'description' }, p.value); },
     StyleSheet: { create: (s: unknown) => s, flatten: (s: unknown) => s, hairlineWidth: 1, absoluteFill: {} },
     Platform: { OS: 'android' },
+    // Services' composer is lifted by the kit KeyboardAvoider, which listens to the keyboard.
+    Keyboard: { addListener: () => ({ remove() {} }), isVisible: () => false, metrics: () => undefined },
   };
 });
 vi.mock('@expo/vector-icons', () => ({ Feather: () => null, MaterialCommunityIcons: () => null }));

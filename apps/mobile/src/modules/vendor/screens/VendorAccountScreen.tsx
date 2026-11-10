@@ -74,6 +74,7 @@ import { HomeVisitPhotoCard } from '../HomeVisitPhotoCard';
 import { useVendorPreview } from '../../../stores/vendorPreview';
 import { BillingStopControl } from '../../../components/billing/BillingSurfaces';
 import { resumeBillingMethod } from '../../../lib/billing';
+import { KeyboardAvoider } from '../../../kit/keyboard-avoider';
 
 export function VendorAccountScreen() {
   const navigation = useNavigation<any>();
@@ -227,213 +228,216 @@ export function VendorAccountScreen() {
   return (
     <Screen>
       <TabHeader title="Account" />
-      <ScrollView contentContainerStyle={{ paddingHorizontal: GUTTER, paddingBottom: space['3xl'] }} showsVerticalScrollIndicator={false}>
-        {/* Store identity */}
-        <Card style={{ flexDirection: 'row', alignItems: 'center', gap: space.md, marginBottom: space.lg }}>
-          <View style={{ width: 56, height: 56, borderRadius: 28, overflow: 'hidden', alignItems: 'center', justifyContent: 'center', backgroundColor: color.brand[50] }}>
-            {storePhotoUrl(store?.logoUrl, 160) ? (
-              <Image source={{ uri: storePhotoUrl(store?.logoUrl, 160)! }} style={{ width: 56, height: 56 }} contentFit="cover" accessibilityLabel="Store logo" />
-            ) : (
-              <MaterialCommunityIcons name="storefront" size={26} color={color.brand[600]} />
-            )}
-          </View>
-          <View style={{ flex: 1 }}>
-            <T variant="heading" numberOfLines={1}>
-              {store?.name ?? 'Your store'}
-            </T>
-            <T variant="label" tone="muted" numberOfLines={1} style={{ marginTop: 2 }}>
-              {prettyVendorType(store?.vendorType)}
-              {store?.city ? ` · ${store.city}` : ''}
-            </T>
-          </View>
-        </Card>
-
-        {/* [IMAGES-E2E] The store's own logo and cover (managers): uploaded, redrawn without camera data. */}
-        {isManager && store && !samplePreview ? <StorePhotosCard store={store} /> : null}
-
-        <Card style={{ marginBottom: space.lg, paddingVertical: space.sm }}>
-          {/* [CHECKLIST-LEGAL · owner ruling 1 Nov 2026 (a)] No "Seller status" row: the self-declared tier and its limits
-              are removed, so there is no tier to show (the screen stays only for notices sent before). */}
-          {/* [CHAINS PR2] Every branch at a glance, several at once, and (owner) adding one. */}
-          {isManager ? (
-            <SettingsRow icon="git-branch" label="Branches" sub={isOwner ? 'All your branches, and add a branch' : 'Your branches at a glance'} onPress={() => navigation.navigate('VendorBranches')} />
-          ) : null}
-          <SettingsRow icon="user" label="Personal data & account closure" onPress={() => navigation.navigate('PersonalData' , { closureRequest: true })} />
-          <JobAlertSettingsRow />
-          <SettingsRow icon="life-buoy" label="Get help" sub="A human answers — orders, billing, account" onPress={() => navigation.navigate('GetHelp')} />
-          {guestSample ? (
-            <SettingsRow
-              icon="arrow-left"
-              label="Exit preview"
-              sub="Back to the welcome screen"
-              onPress={() => {
-                exitPreview();
-                setIntent(null);
-              }}
-            />
-          ) : (
-            <SettingsRow icon="refresh-cw" label="Switch app" sub="Swift · Swift Driver" onPress={() => setSwitcherOpen(true)} />
-          )}
-        </Card>
-
-        {isOwner ? <SubscriptionCard sub={sub.data} phone={store?.phone} setBilling={setBilling} /> : null}
-
-        {isManager ? (
-          <MmgNumberCard
-            value={store?.mmgNumber}
-            pending={store?.mmgNumberPending ? { number: store.mmgNumberPending, applyAt: store.mmgNumberApplyAt ?? null } : null}
-            holdHours={store?.mmgNumberHoldHours ?? null}
-            saving={saveMmgNumber.isPending}
-            cancelling={cancelPendingMmgNumber.isPending}
-            error={mmgNumberError}
-            readOnly={!isOwner}
-            onSave={(n) => saveMmgNumber.mutate(n)}
-            onCancelPending={isOwner ? () => cancelPendingMmgNumber.mutate() : undefined}
-          />
-        ) : null}
-
-        {/* [PAYMENT-SIMPLIFY] The old pay link only while the server's STORE_MMG_PAY_LINK switch is on. */}
-        {isManager && store?.mmgPayLinkEnabled === true ? (
-          <MmgPayLinkCard
-            who="store"
-            value={store?.mmgPayUrl}
-            pending={store?.mmgPayUrlPending ? { url: store.mmgPayUrlPending, applyAt: store.mmgPayUrlApplyAt ?? null } : null}
-            holdHours={store?.mmgPayUrlHoldHours ?? null}
-            saving={saveMmgLink.isPending}
-            cancelling={cancelPendingMmgLink.isPending}
-            error={mmgError}
-            readOnly={!isOwner}
-            onSave={(u) => saveMmgLink.mutate(u)}
-            onCancelPending={isOwner ? () => cancelPendingMmgLink.mutate() : undefined}
-          />
-        ) : null}
-
-        {isManager ? (
-          <PublicCallNumberCard
-            value={store?.publicPhone}
-            saving={saveCallNumber.isPending}
-            error={callNumberError}
-            onSave={(p) => saveCallNumber.mutate(p)}
-          />
-        ) : null}
-
-        {isOwner ? (
-          <RefundRuleCard
-            value={store?.refundRule}
-            saving={saveRefundRule.isPending}
-            error={refundRuleError}
-            onSave={(rule) => saveRefundRule.mutate(rule)}
-          />
-        ) : null}
-
-        {/* [BOOK-S5a] Services only, and only when the server sends the setting (an older server does not). */}
-        {isManager && bookingCapacity != null ? (
-          <BookingCapacityCard
-            value={bookingCapacity}
-            saving={saveCapacity.isPending}
-            error={capacityError}
-            onSave={(n) => saveCapacity.mutate(n)}
-          />
-        ) : null}
-
-        {isManager && store && !samplePreview && store.vendorType !== 'SERVICE' ? (
-          <KitchenCapacityCard
-            value={storedKitchenCapacity(store)}
-            vendorType={store.vendorType}
-            saving={saveKitchen.isPending}
-            error={kitchenError}
-            onSave={(n) => saveKitchen.mutate(n)}
-          />
-        ) : null}
-
-        {/* A guest's sample store has no pin to move: the save needs a real account. */}
-        {isOwner && !guestSample && store ? <StoreLocationCard store={store} /> : null}
-
-        {isOwner && store?.vendorType ? <VendorDocumentsSection vendorType={store.vendorType} storeName={store?.name} storeId={store?.id} storeFee={store?.id ? { vendorId: store.id, isOwner } : null} /> : null}
-
-        {/* [STORE-VAT · owner O-5] The business's VAT registration is the owner's to give; a sample store has none. */}
-        {isOwner && !samplePreview && store ? <StoreVatSection style={{ marginBottom: space.lg }} /> : null}
-
-        {isManager ? <StoreQrCard /> : null}
-
-        {isManager ? <PromosSection /> : null}
-
-        {isOwner ? <StaffSection /> : null}
-
-        {!isManager ? (
-          <Card style={{ marginBottom: space.lg }}>
-            <T variant="label" weight="semibold">
-              Staff account
-            </T>
-            <T variant="caption" tone="muted" style={{ marginTop: 4 }}>
-              You work the order queue and can mark items sold out. Menus, hours and billing stay with the manager and owner.
-            </T>
+      {/* [KEYBOARD 10 Nov] Lifted above the keyboard (kit/keyboard-avoider), so the last fields can scroll into view. */}
+      <KeyboardAvoider style={{ flex: 1 }}>
+        <ScrollView contentContainerStyle={{ paddingHorizontal: GUTTER, paddingBottom: space['3xl'] }} showsVerticalScrollIndicator={false}>
+          {/* Store identity */}
+          <Card style={{ flexDirection: 'row', alignItems: 'center', gap: space.md, marginBottom: space.lg }}>
+            <View style={{ width: 56, height: 56, borderRadius: 28, overflow: 'hidden', alignItems: 'center', justifyContent: 'center', backgroundColor: color.brand[50] }}>
+              {storePhotoUrl(store?.logoUrl, 160) ? (
+                <Image source={{ uri: storePhotoUrl(store?.logoUrl, 160)! }} style={{ width: 56, height: 56 }} contentFit="cover" accessibilityLabel="Store logo" />
+              ) : (
+                <MaterialCommunityIcons name="storefront" size={26} color={color.brand[600]} />
+              )}
+            </View>
+            <View style={{ flex: 1 }}>
+              <T variant="heading" numberOfLines={1}>
+                {store?.name ?? 'Your store'}
+              </T>
+              <T variant="label" tone="muted" numberOfLines={1} style={{ marginTop: 2 }}>
+                {prettyVendorType(store?.vendorType)}
+                {store?.city ? ` · ${store.city}` : ''}
+              </T>
+            </View>
           </Card>
-        ) : null}
 
-        {isManager ? (
-          <>
-            <T variant="heading" style={{ marginBottom: space.md }}>
-              Business hours
-            </T>
-            {hoursQ.isLoading ? (
-              <LoadingBlock />
-            ) : hoursQ.isError ? (
-              <Card style={{ marginBottom: space.lg }}>
-                <T variant="label" tone="muted">
-                  Couldn&apos;t load your hours. Editing stays off so a guess never overwrites your real schedule.
-                </T>
-                <PillButton label="Retry" size="md" variant="soft" style={{ marginTop: space.sm }} onPress={() => hoursQ.refetch()} />
-              </Card>
+          {/* [IMAGES-E2E] The store's own logo and cover (managers): uploaded, redrawn without camera data. */}
+          {isManager && store && !samplePreview ? <StorePhotosCard store={store} /> : null}
+
+          <Card style={{ marginBottom: space.lg, paddingVertical: space.sm }}>
+            {/* [CHECKLIST-LEGAL · owner ruling 1 Nov 2026 (a)] No "Seller status" row: the self-declared tier and its limits
+                are removed, so there is no tier to show (the screen stays only for notices sent before). */}
+            {/* [CHAINS PR2] Every branch at a glance, several at once, and (owner) adding one. */}
+            {isManager ? (
+              <SettingsRow icon="git-branch" label="Branches" sub={isOwner ? 'All your branches, and add a branch' : 'Your branches at a glance'} onPress={() => navigation.navigate('VendorBranches')} />
+            ) : null}
+            <SettingsRow icon="user" label="Personal data & account closure" onPress={() => navigation.navigate('PersonalData' , { closureRequest: true })} />
+            <JobAlertSettingsRow />
+            <SettingsRow icon="life-buoy" label="Get help" sub="A human answers — orders, billing, account" onPress={() => navigation.navigate('GetHelp')} />
+            {guestSample ? (
+              <SettingsRow
+                icon="arrow-left"
+                label="Exit preview"
+                sub="Back to the welcome screen"
+                onPress={() => {
+                  exitPreview();
+                  setIntent(null);
+                }}
+              />
             ) : (
-              <Card style={{ marginBottom: space.lg }}>
-                {days.map((d) => (
-                  <View key={d.dayOfWeek} style={{ flexDirection: 'row', alignItems: 'center', marginBottom: space.sm }}>
-                    <T variant="label" weight="semibold" style={{ width: 40 }}>
-                      {DAY_LABELS[d.dayOfWeek]}
-                    </T>
-                    {d.isClosed ? (
-                      <T variant="label" tone="muted" style={{ flex: 1, paddingHorizontal: space.sm }}>
-                        Closed
-                      </T>
-                    ) : (
-                      <View style={{ flex: 1, flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: space.sm }}>
-                        {/* [Wave 3] Kit inputs, not hand-rolled TextInputs with
-                            raw font values — the same InlineInput the item
-                            editor's hours already use. */}
-                        <InlineInput
-                          style={{ flex: 1 }}
-                          center
-                          value={d.openTime}
-                          onChangeText={(t: string) => setDay(d.dayOfWeek, { openTime: t })}
-                          placeholder="08:00"
-                        />
-                        <T variant="label" tone="muted">
-                          –
-                        </T>
-                        <InlineInput
-                          style={{ flex: 1 }}
-                          center
-                          value={d.closeTime}
-                          onChangeText={(t: string) => setDay(d.dayOfWeek, { closeTime: t })}
-                          placeholder="22:00"
-                        />
-                      </View>
-                    )}
-                    <BrandSwitch value={!d.isClosed} onChange={(val) => setDay(d.dayOfWeek, { isClosed: !val })} />
-                  </View>
-                ))}
-                <PillButton label="Save hours" size="md" loading={setHours.isPending} style={{ marginTop: space.sm }} disabled={days.length === 0} onPress={() => setHours.mutate(days)} />
-                {setHours.isSuccess ? (
-                  <T variant="caption" tone="success" center style={{ marginTop: space.sm }}>
-                    Hours updated
-                  </T>
-                ) : null}
-              </Card>
+              <SettingsRow icon="refresh-cw" label="Switch app" sub="Swift · Swift Driver" onPress={() => setSwitcherOpen(true)} />
             )}
-          </>
-        ) : null}
-      </ScrollView>
+          </Card>
+
+          {isOwner ? <SubscriptionCard sub={sub.data} phone={store?.phone} setBilling={setBilling} /> : null}
+
+          {isManager ? (
+            <MmgNumberCard
+              value={store?.mmgNumber}
+              pending={store?.mmgNumberPending ? { number: store.mmgNumberPending, applyAt: store.mmgNumberApplyAt ?? null } : null}
+              holdHours={store?.mmgNumberHoldHours ?? null}
+              saving={saveMmgNumber.isPending}
+              cancelling={cancelPendingMmgNumber.isPending}
+              error={mmgNumberError}
+              readOnly={!isOwner}
+              onSave={(n) => saveMmgNumber.mutate(n)}
+              onCancelPending={isOwner ? () => cancelPendingMmgNumber.mutate() : undefined}
+            />
+          ) : null}
+
+          {/* [PAYMENT-SIMPLIFY] The old pay link only while the server's STORE_MMG_PAY_LINK switch is on. */}
+          {isManager && store?.mmgPayLinkEnabled === true ? (
+            <MmgPayLinkCard
+              who="store"
+              value={store?.mmgPayUrl}
+              pending={store?.mmgPayUrlPending ? { url: store.mmgPayUrlPending, applyAt: store.mmgPayUrlApplyAt ?? null } : null}
+              holdHours={store?.mmgPayUrlHoldHours ?? null}
+              saving={saveMmgLink.isPending}
+              cancelling={cancelPendingMmgLink.isPending}
+              error={mmgError}
+              readOnly={!isOwner}
+              onSave={(u) => saveMmgLink.mutate(u)}
+              onCancelPending={isOwner ? () => cancelPendingMmgLink.mutate() : undefined}
+            />
+          ) : null}
+
+          {isManager ? (
+            <PublicCallNumberCard
+              value={store?.publicPhone}
+              saving={saveCallNumber.isPending}
+              error={callNumberError}
+              onSave={(p) => saveCallNumber.mutate(p)}
+            />
+          ) : null}
+
+          {isOwner ? (
+            <RefundRuleCard
+              value={store?.refundRule}
+              saving={saveRefundRule.isPending}
+              error={refundRuleError}
+              onSave={(rule) => saveRefundRule.mutate(rule)}
+            />
+          ) : null}
+
+          {/* [BOOK-S5a] Services only, and only when the server sends the setting (an older server does not). */}
+          {isManager && bookingCapacity != null ? (
+            <BookingCapacityCard
+              value={bookingCapacity}
+              saving={saveCapacity.isPending}
+              error={capacityError}
+              onSave={(n) => saveCapacity.mutate(n)}
+            />
+          ) : null}
+
+          {isManager && store && !samplePreview && store.vendorType !== 'SERVICE' ? (
+            <KitchenCapacityCard
+              value={storedKitchenCapacity(store)}
+              vendorType={store.vendorType}
+              saving={saveKitchen.isPending}
+              error={kitchenError}
+              onSave={(n) => saveKitchen.mutate(n)}
+            />
+          ) : null}
+
+          {/* A guest's sample store has no pin to move: the save needs a real account. */}
+          {isOwner && !guestSample && store ? <StoreLocationCard store={store} /> : null}
+
+          {isOwner && store?.vendorType ? <VendorDocumentsSection vendorType={store.vendorType} storeName={store?.name} storeId={store?.id} storeFee={store?.id ? { vendorId: store.id, isOwner } : null} /> : null}
+
+          {/* [STORE-VAT · owner O-5] The business's VAT registration is the owner's to give; a sample store has none. */}
+          {isOwner && !samplePreview && store ? <StoreVatSection style={{ marginBottom: space.lg }} /> : null}
+
+          {isManager ? <StoreQrCard /> : null}
+
+          {isManager ? <PromosSection /> : null}
+
+          {isOwner ? <StaffSection /> : null}
+
+          {!isManager ? (
+            <Card style={{ marginBottom: space.lg }}>
+              <T variant="label" weight="semibold">
+                Staff account
+              </T>
+              <T variant="caption" tone="muted" style={{ marginTop: 4 }}>
+                You work the order queue and can mark items sold out. Menus, hours and billing stay with the manager and owner.
+              </T>
+            </Card>
+          ) : null}
+
+          {isManager ? (
+            <>
+              <T variant="heading" style={{ marginBottom: space.md }}>
+                Business hours
+              </T>
+              {hoursQ.isLoading ? (
+                <LoadingBlock />
+              ) : hoursQ.isError ? (
+                <Card style={{ marginBottom: space.lg }}>
+                  <T variant="label" tone="muted">
+                    Couldn&apos;t load your hours. Editing stays off so a guess never overwrites your real schedule.
+                  </T>
+                  <PillButton label="Retry" size="md" variant="soft" style={{ marginTop: space.sm }} onPress={() => hoursQ.refetch()} />
+                </Card>
+              ) : (
+                <Card style={{ marginBottom: space.lg }}>
+                  {days.map((d) => (
+                    <View key={d.dayOfWeek} style={{ flexDirection: 'row', alignItems: 'center', marginBottom: space.sm }}>
+                      <T variant="label" weight="semibold" style={{ width: 40 }}>
+                        {DAY_LABELS[d.dayOfWeek]}
+                      </T>
+                      {d.isClosed ? (
+                        <T variant="label" tone="muted" style={{ flex: 1, paddingHorizontal: space.sm }}>
+                          Closed
+                        </T>
+                      ) : (
+                        <View style={{ flex: 1, flexDirection: 'row', alignItems: 'center', gap: 6, paddingHorizontal: space.sm }}>
+                          {/* [Wave 3] Kit inputs, not hand-rolled TextInputs with
+                              raw font values — the same InlineInput the item
+                              editor's hours already use. */}
+                          <InlineInput
+                            style={{ flex: 1 }}
+                            center
+                            value={d.openTime}
+                            onChangeText={(t: string) => setDay(d.dayOfWeek, { openTime: t })}
+                            placeholder="08:00"
+                          />
+                          <T variant="label" tone="muted">
+                            –
+                          </T>
+                          <InlineInput
+                            style={{ flex: 1 }}
+                            center
+                            value={d.closeTime}
+                            onChangeText={(t: string) => setDay(d.dayOfWeek, { closeTime: t })}
+                            placeholder="22:00"
+                          />
+                        </View>
+                      )}
+                      <BrandSwitch value={!d.isClosed} onChange={(val) => setDay(d.dayOfWeek, { isClosed: !val })} />
+                    </View>
+                  ))}
+                  <PillButton label="Save hours" size="md" loading={setHours.isPending} style={{ marginTop: space.sm }} disabled={days.length === 0} onPress={() => setHours.mutate(days)} />
+                  {setHours.isSuccess ? (
+                    <T variant="caption" tone="success" center style={{ marginTop: space.sm }}>
+                      Hours updated
+                    </T>
+                  ) : null}
+                </Card>
+              )}
+            </>
+          ) : null}
+        </ScrollView>
+      </KeyboardAvoider>
 
       <RoleSwitcherSheet visible={switcherOpen} current="vendor" onClose={() => setSwitcherOpen(false)} />
       {stepUp.sheet}

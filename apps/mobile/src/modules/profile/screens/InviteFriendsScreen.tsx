@@ -1,11 +1,12 @@
 /** @jsxImportSource react */
 import React, { useState } from 'react';
-import { Share, View } from 'react-native';
+import { ScrollView, Share, View } from 'react-native';
 import { useMutation } from '@tanstack/react-query';
 import { space } from '@swift/ui';
 import { useProfile } from '../../../hooks/customer';
 import { Card, ErrorState, Header, IconChip, LabeledInput, LoadingBlock, PillButton, Screen, T } from '../../../kit';
 import { toast } from '../../../kit/toast';
+import { KeyboardAvoider } from '../../../kit/keyboard-avoider';
 import { serverMessage } from '../../../lib/stepUp';
 import { customerApi } from '../../../services/api';
 
@@ -53,39 +54,47 @@ export function InviteFriendsScreen() {
   return (
     <Screen>
       <Header title="Invite Friends" />
-      <View style={{ flex: 1, paddingHorizontal: GUTTER, paddingTop: space.xl }}>
-        <View style={{ alignItems: 'center' }}>
-          <IconChip icon="gift" size={88} />
-          <T variant="title" center style={{ marginTop: space.xl }}>
-            Bring your people
-          </T>
-          <T variant="body" tone="muted" center style={{ marginTop: space.sm, maxWidth: 300 }}>
-            Share your code. A friend enters it here after they join, and you can see how many joined.
-          </T>
-        </View>
+      {/* [KEYBOARD 10 Nov] Lifted above the keyboard (kit/keyboard-avoider) and scrollable, so the
+          friend’s-code field can come into view; the spacer still pins Share to the bottom. */}
+      <KeyboardAvoider style={{ flex: 1 }}>
+        <ScrollView
+          contentContainerStyle={{ flexGrow: 1, paddingHorizontal: GUTTER, paddingTop: space.xl }}
+          keyboardShouldPersistTaps="handled"
+          showsVerticalScrollIndicator={false}
+        >
+          <View style={{ alignItems: 'center' }}>
+            <IconChip icon="gift" size={88} />
+            <T variant="title" center style={{ marginTop: space.xl }}>
+              Bring your people
+            </T>
+            <T variant="body" tone="muted" center style={{ marginTop: space.sm, maxWidth: 300 }}>
+              Share your code. A friend enters it here after they join, and you can see how many joined.
+            </T>
+          </View>
 
-        <Card style={{ alignItems: 'center', marginTop: space['2xl'] }}>
-          <T variant="label" tone="muted">
-            Your code
-          </T>
-          <T variant="display" tone="brand" style={{ marginTop: space.sm, letterSpacing: 2 }}>
-            {code ?? '—'}
-          </T>
-          <T variant="caption" tone="muted" style={{ marginTop: space.sm }}>
-            {referred} friend{referred === 1 ? '' : 's'} joined with your code
-          </T>
-        </Card>
-
-        {alreadyUsed ? null : (
-          <Card style={{ marginTop: space.lg, gap: space.sm }}>
-            <LabeledInput label="Have a friend’s code?" value={friendCode} onChangeText={setFriendCode} autoCapitalize="characters" autoCorrect={false} />
-            <PillButton label="Enter code" onPress={() => redeem.mutate()} disabled={!friendCode.trim() || redeem.isPending} size="md" />
+          <Card style={{ alignItems: 'center', marginTop: space['2xl'] }}>
+            <T variant="label" tone="muted">
+              Your code
+            </T>
+            <T variant="display" tone="brand" style={{ marginTop: space.sm, letterSpacing: 2 }}>
+              {code ?? '—'}
+            </T>
+            <T variant="caption" tone="muted" style={{ marginTop: space.sm }}>
+              {referred} friend{referred === 1 ? '' : 's'} joined with your code
+            </T>
           </Card>
-        )}
 
-        <View style={{ flex: 1 }} />
-        <PillButton label="Share My Code" icon="share-2" onPress={share} disabled={!code} style={{ marginBottom: space['2xl'] }} />
-      </View>
+          {alreadyUsed ? null : (
+            <Card style={{ marginTop: space.lg, gap: space.sm }}>
+              <LabeledInput label="Have a friend’s code?" value={friendCode} onChangeText={setFriendCode} autoCapitalize="characters" autoCorrect={false} />
+              <PillButton label="Enter code" onPress={() => redeem.mutate()} disabled={!friendCode.trim() || redeem.isPending} size="md" />
+            </Card>
+          )}
+
+          <View style={{ flex: 1 }} />
+          <PillButton label="Share My Code" icon="share-2" onPress={share} disabled={!code} style={{ marginBottom: space['2xl'] }} />
+        </ScrollView>
+      </KeyboardAvoider>
     </Screen>
   );
 }

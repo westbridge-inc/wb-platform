@@ -36,6 +36,7 @@ import {
   enterServiceProvider,
   serviceProviderScreenMode,
 } from '../serviceProviderEntry';
+import { KeyboardAvoider } from '../../../kit/keyboard-avoider';
 
 interface ProviderProfile {
   id: string;
@@ -307,19 +308,21 @@ function AuthenticatedServiceProviderScreen({ navigation }: any) {
           refetchProfile={profile.refetch}
         />
       ) : (
-        <ScrollView
-          contentContainerStyle={{ paddingHorizontal: space['2xl'], paddingBottom: space['3xl'], gap: space.xl }}
-          showsVerticalScrollIndicator={false}
-          keyboardShouldPersistTaps="handled"
-        >
-          <View>
-            <T variant="title">Earn with your skills</T>
-            <T variant="body" tone="muted" style={{ marginTop: space.sm }}>
-              Choose your service, create your profile, and complete the required checks before receiving customer requests.
-            </T>
-          </View>
-          <ProviderProfileForm onSaved={() => void profile.refetch()} />
-        </ScrollView>
+        <KeyboardAvoider style={{ flex: 1 }}>
+          <ScrollView
+            contentContainerStyle={{ paddingHorizontal: space['2xl'], paddingBottom: space['3xl'], gap: space.xl }}
+            showsVerticalScrollIndicator={false}
+            keyboardShouldPersistTaps="handled"
+          >
+            <View>
+              <T variant="title">Earn with your skills</T>
+              <T variant="body" tone="muted" style={{ marginTop: space.sm }}>
+                Choose your service, create your profile, and complete the required checks before receiving customer requests.
+              </T>
+            </View>
+            <ProviderProfileForm onSaved={() => void profile.refetch()} />
+          </ScrollView>
+        </KeyboardAvoider>
       )}
     </Screen>
   );

@@ -18,7 +18,8 @@ vi.mock('react-native', async () => {
   const { createElement: h } = await import('react');
   const Box = (p: any) => h('div', null, p.children);
   const Press = (p: any) => h('div', { role: 'radio', 'aria-label': p.accessibilityLabel, onClick: p.onPress }, p.children);
-  return { View: Box, ScrollView: Box, Pressable: Press };
+  // The booking form sits in the kit KeyboardAvoider (Android path: a View that listens to the keyboard).
+  return { View: Box, ScrollView: Box, Pressable: Press, Platform: { OS: 'android' }, Keyboard: { addListener: () => ({ remove() {} }), isVisible: () => false, metrics: () => undefined } };
 });
 vi.mock('@expo/vector-icons', () => ({ Feather: () => null }));
 vi.mock('../../../kit', async () => {

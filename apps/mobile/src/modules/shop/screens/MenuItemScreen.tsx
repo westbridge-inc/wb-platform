@@ -38,6 +38,7 @@ import { STORE_PICK } from '../../../lib/storePick';
 import { ItemDescription } from '../components/ItemDescription';
 import { readItemPreview, type ItemPreview } from '../../../lib/doorPreview';
 import { readyTimeLabel, storeKindWords } from '../../../lib/storeKindWords';
+import { KeyboardAvoider } from '../../../kit/keyboard-avoider';
 
 /** [P35 · board 4b] "Craft & Kind · Georgetown": the store's name, and its city when it has one. */
 export function storeLine(store: { name?: string | null; city?: string | null }): string {
@@ -288,327 +289,330 @@ export function MenuItemScreen() {
 
   return (
     <View style={{ flex: 1, backgroundColor: color.surface.subtle }}>
-      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 140 }}>
-        {/* Hero + floating header */}
-        <View>
-          <Photo
-            uri={itemPhoto(item, HERO_PHOTO_WIDTH)}
-            label={item.name}
-            transition={200}
-            style={{ width: SCREEN_W, height: 340 }}
-            contentFit="cover"
-          />
+      {/* [KEYBOARD 10 Nov] Lifted above the keyboard (kit/keyboard-avoider), so the last fields can scroll into view. */}
+      <KeyboardAvoider style={{ flex: 1 }}>
+        <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 140 }}>
+          {/* Hero + floating header */}
+          <View>
+            <Photo
+              uri={itemPhoto(item, HERO_PHOTO_WIDTH)}
+              label={item.name}
+              transition={200}
+              style={{ width: SCREEN_W, height: 340 }}
+              contentFit="cover"
+            />
+            <View
+              style={{
+                position: 'absolute',
+                top: insets.top + space.sm,
+                left: GUTTER,
+                right: GUTTER,
+                flexDirection: 'row',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+              }}
+            >
+              <CircleChip icon="chevron-left" label="Back" onPress={() => navigation.goBack()} />
+            </View>
+          </View>
+
+          {/* Sheet */}
           <View
             style={{
-              position: 'absolute',
-              top: insets.top + space.sm,
-              left: GUTTER,
-              right: GUTTER,
-              flexDirection: 'row',
-              alignItems: 'center',
-              justifyContent: 'space-between',
+              marginTop: -radius.xl,
+              borderTopLeftRadius: radius.xl,
+              borderTopRightRadius: radius.xl,
+              backgroundColor: color.surface.subtle,
+              paddingTop: space['2xl'],
+              paddingHorizontal: GUTTER,
             }}
           >
-            <CircleChip icon="chevron-left" label="Back" onPress={() => navigation.goBack()} />
-          </View>
-        </View>
-
-        {/* Sheet */}
-        <View
-          style={{
-            marginTop: -radius.xl,
-            borderTopLeftRadius: radius.xl,
-            borderTopRightRadius: radius.xl,
-            backgroundColor: color.surface.subtle,
-            paddingTop: space['2xl'],
-            paddingHorizontal: GUTTER,
-          }}
-        >
-          <T variant="title">{item.name}</T>
-          {/* [P35 · board 4b] The store this item is sold by, where it is, and whether a person approved its papers
-              (the store row's isVerified; an older server sends nothing and the pill stays away). */}
-          {vendor.data?.name ? (
-            <View style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: space.sm, marginTop: space.xs }}>
-              <T variant="caption" tone="muted" numberOfLines={1}>
-                {storeLine(vendor.data)}
-              </T>
-              {vendor.data?.isVerified === true ? <TonePill label="Verified seller" tone="success" /> : null}
-            </View>
-          ) : null}
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.md, marginTop: space.sm }}>
-            {/* [Wave 3 audit · law 3] Money is INK, never brand — maroon is
-                reserved for the acts (the CTA below), not the numbers. */}
-            <Money amount={basePrice} size="l" />
-            {/* [STORE-VAT · VAT Act s.90(2)] A person-approved VAT store's standard-rated price includes VAT and says so. */}
-            {itemVatNote(storefrontVat(vendor.data?.vat), item) ? <T variant="caption" tone="muted">{itemVatNote(storefrontVat(vendor.data?.vat), item)}</T> : null}
-            {outOfStock ? (
-              <View
-                style={{
-                  paddingHorizontal: space.md,
-                  paddingVertical: 4,
-                  borderRadius: 9999,
-                  backgroundColor: color.soft.warning,
-                  flexDirection: 'row',
-                  alignItems: 'center',
-                  gap: 5,
-                }}
-              >
-                <Feather name="slash" size={12} color={color.warning} />
-                <T variant="caption" weight="semibold" tone="warning">
-                  Out of stock
+            <T variant="title">{item.name}</T>
+            {/* [P35 · board 4b] The store this item is sold by, where it is, and whether a person approved its papers
+                (the store row's isVerified; an older server sends nothing and the pill stays away). */}
+            {vendor.data?.name ? (
+              <View style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: space.sm, marginTop: space.xs }}>
+                <T variant="caption" tone="muted" numberOfLines={1}>
+                  {storeLine(vendor.data)}
                 </T>
+                {vendor.data?.isVerified === true ? <TonePill label="Verified seller" tone="success" /> : null}
               </View>
             ) : null}
-          </View>
-
-          {/* Tinted info bar — real vendor facts */}
-          <View
-            style={{
-              flexDirection: 'row',
-              alignItems: 'center',
-              justifyContent: 'space-between',
-              // [STORE-WORDS] "Ready in about 30 min" is longer than "30 min prep": a gap keeps it off its neighbours.
-              gap: space.md,
-              backgroundColor: color.brand[50],
-              borderRadius: radius.md,
-              paddingHorizontal: space.lg,
-              paddingVertical: space.md,
-              marginTop: space.lg,
-            }}
-          >
-            {/* [STORE-WORDS] "20 min prep" is a kitchen's word: any other store reads "Ready in about 20 min",
-                and a store that sent no time shows no chip rather than an invented one. */}
-            {readyLine ? (
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flexShrink: 1 }}>
-                <Feather name="clock" size={14} color={color.brand[600]} />
-                <T variant="label" tone="deep" style={{ flexShrink: 1 }}>
-                  {readyLine}
-                </T>
-              </View>
-            ) : null}
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-              <Feather name="star" size={14} color={color.star} />
-              <T variant="label" tone="deep">
-                {vendor.data?.displayRating != null ? Number(vendor.data.displayRating).toFixed(1) : 'New'}
-              </T>
-            </View>
-            {item.isPopular ? (
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                <Feather name="thumbs-up" size={14} color={color.brand[600]} />
-                <T variant="label" tone="deep">
-                  {STORE_PICK}
-                </T>
-              </View>
-            ) : null}
-          </View>
-
-          {item.description ? (
-            <>
-              <SectionHeader title="Description" style={{ marginTop: space['2xl'] }} />
-              <View style={{ marginTop: space.md }}>
-                <ItemDescription text={item.description} />
-              </View>
-            </>
-          ) : null}
-
-          {/* Modifiers — Swift option groups in kit chip language */}
-          {groups.map((g) => {
-            const sel = selected[g.id];
-            const selIds = Array.isArray(sel) ? sel : sel ? [sel] : [];
-            return (
-              <View key={g.id}>
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.md, marginTop: space['2xl'] }}>
-                  <T variant="heading" style={{ flex: 1 }}>
-                    {g.name}
-                  </T>
-                  <T variant="caption" tone={g.isRequired ? 'warning' : 'faint'}>
-                    {g.isRequired ? 'Required' : 'Optional'}
-                    {g.maxSelect > 1 ? ` · up to ${g.maxSelect}` : ''}
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.md, marginTop: space.sm }}>
+              {/* [Wave 3 audit · law 3] Money is INK, never brand — maroon is
+                  reserved for the acts (the CTA below), not the numbers. */}
+              <Money amount={basePrice} size="l" />
+              {/* [STORE-VAT · VAT Act s.90(2)] A person-approved VAT store's standard-rated price includes VAT and says so. */}
+              {itemVatNote(storefrontVat(vendor.data?.vat), item) ? <T variant="caption" tone="muted">{itemVatNote(storefrontVat(vendor.data?.vat), item)}</T> : null}
+              {outOfStock ? (
+                <View
+                  style={{
+                    paddingHorizontal: space.md,
+                    paddingVertical: 4,
+                    borderRadius: 9999,
+                    backgroundColor: color.soft.warning,
+                    flexDirection: 'row',
+                    alignItems: 'center',
+                    gap: 5,
+                  }}
+                >
+                  <Feather name="slash" size={12} color={color.warning} />
+                  <T variant="caption" weight="semibold" tone="warning">
+                    Out of stock
                   </T>
                 </View>
-                <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: space.md, marginTop: space.md }}>
-                  {(g.options ?? []).map((o: any) => {
-                    const on = selIds.includes(o.id);
-                    const price = Number(o.additionalPrice) || 0;
-                    // [F4] Sold out: shown so the menu stays honest, but it
-                    // cannot be chosen (and the server refuses it anyway).
-                    if (!onSale(o)) {
+              ) : null}
+            </View>
+
+            {/* Tinted info bar — real vendor facts */}
+            <View
+              style={{
+                flexDirection: 'row',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                // [STORE-WORDS] "Ready in about 30 min" is longer than "30 min prep": a gap keeps it off its neighbours.
+                gap: space.md,
+                backgroundColor: color.brand[50],
+                borderRadius: radius.md,
+                paddingHorizontal: space.lg,
+                paddingVertical: space.md,
+                marginTop: space.lg,
+              }}
+            >
+              {/* [STORE-WORDS] "20 min prep" is a kitchen's word: any other store reads "Ready in about 20 min",
+                  and a store that sent no time shows no chip rather than an invented one. */}
+              {readyLine ? (
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, flexShrink: 1 }}>
+                  <Feather name="clock" size={14} color={color.brand[600]} />
+                  <T variant="label" tone="deep" style={{ flexShrink: 1 }}>
+                    {readyLine}
+                  </T>
+                </View>
+              ) : null}
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                <Feather name="star" size={14} color={color.star} />
+                <T variant="label" tone="deep">
+                  {vendor.data?.displayRating != null ? Number(vendor.data.displayRating).toFixed(1) : 'New'}
+                </T>
+              </View>
+              {item.isPopular ? (
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                  <Feather name="thumbs-up" size={14} color={color.brand[600]} />
+                  <T variant="label" tone="deep">
+                    {STORE_PICK}
+                  </T>
+                </View>
+              ) : null}
+            </View>
+
+            {item.description ? (
+              <>
+                <SectionHeader title="Description" style={{ marginTop: space['2xl'] }} />
+                <View style={{ marginTop: space.md }}>
+                  <ItemDescription text={item.description} />
+                </View>
+              </>
+            ) : null}
+
+            {/* Modifiers — Swift option groups in kit chip language */}
+            {groups.map((g) => {
+              const sel = selected[g.id];
+              const selIds = Array.isArray(sel) ? sel : sel ? [sel] : [];
+              return (
+                <View key={g.id}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.md, marginTop: space['2xl'] }}>
+                    <T variant="heading" style={{ flex: 1 }}>
+                      {g.name}
+                    </T>
+                    <T variant="caption" tone={g.isRequired ? 'warning' : 'faint'}>
+                      {g.isRequired ? 'Required' : 'Optional'}
+                      {g.maxSelect > 1 ? ` · up to ${g.maxSelect}` : ''}
+                    </T>
+                  </View>
+                  <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: space.md, marginTop: space.md }}>
+                    {(g.options ?? []).map((o: any) => {
+                      const on = selIds.includes(o.id);
+                      const price = Number(o.additionalPrice) || 0;
+                      // [F4] Sold out: shown so the menu stays honest, but it
+                      // cannot be chosen (and the server refuses it anyway).
+                      if (!onSale(o)) {
+                        return (
+                          <Chip
+                            key={o.id}
+                            label={`${o.name} · sold out`}
+                            style={{ height: 42, paddingHorizontal: space.lg, opacity: 0.45 }}
+                          />
+                        );
+                      }
                       return (
                         <Chip
                           key={o.id}
-                          label={`${o.name} · sold out`}
-                          style={{ height: 42, paddingHorizontal: space.lg, opacity: 0.45 }}
+                          label={`${o.name}${price ? ` +${money(price)}` : ''}`}
+                          selected={on}
+                          onPress={() => toggleOption(g, o.id)}
+                          style={{ height: 42, paddingHorizontal: space.lg }}
                         />
                       );
-                    }
+                    })}
+                  </View>
+                </View>
+              );
+            })}
+
+            {isBooking ? (
+              <>
+                {/* [BOOK-S6a · owner A3/A4] The server says this listing confirms a cash booking at once.
+                    No badge (and no "instant" word) when it does not say so: switch off, an older server,
+                    or a business that confirms each booking itself. */}
+                {instantConfirmation ? (
+                  <View style={{ marginTop: space['2xl'], gap: space.xs }}>
+                    <View style={{ flexDirection: 'row' }}>
+                      <TonePill label="Instant confirmation" tone="success" />
+                    </View>
+                    <T variant="caption" tone="muted">
+                      Pay at your appointment and your time is confirmed as soon as you book.
+                    </T>
+                  </View>
+                ) : null}
+                {/* Where it happens — the business's setting; BOTH lets you pick */}
+                <SectionHeader title="Where" style={{ marginTop: space['2xl'] }} />
+                {serviceMode === 'BOTH' ? (
+                  <View style={{ flexDirection: 'row', gap: space.md, marginTop: space.md }}>
+                    <Chip
+                      label="You go to them"
+                      selected={visitMode === 'AT_BUSINESS'}
+                      onPress={() => setVisitMode('AT_BUSINESS')}
+                      style={{ height: 42, paddingHorizontal: space.lg }}
+                    />
+                    <Chip
+                      label="They come to you"
+                      selected={visitMode === 'MOBILE'}
+                      onPress={() => setVisitMode('MOBILE')}
+                      style={{ height: 42, paddingHorizontal: space.lg }}
+                    />
+                  </View>
+                ) : (
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: space.md }}>
+                    <Feather name={serviceMode === 'MOBILE' ? 'navigation' : 'map-pin'} size={14} color={color.brand[600]} />
+                    <T variant="label" tone="muted" style={{ flex: 1 }}>
+                      {serviceMode === 'MOBILE'
+                        ? `They come to your address${slotsQ.data?.serviceRadiusKm ? ` (within ${slotsQ.data.serviceRadiusKm} km)` : ''}`
+                        : `At ${vendor.data?.name ?? 'their place'}${vendor.data?.addressLine1 ? ` — ${vendor.data.addressLine1}` : ''}`}
+                    </T>
+                  </View>
+                )}
+                {serviceMode === 'BOTH' && visitMode === 'MOBILE' ? (
+                  <T variant="caption" tone="faint" style={{ marginTop: 6 }}>
+                    They travel to your saved address{slotsQ.data?.serviceRadiusKm ? ` (within ${slotsQ.data.serviceRadiusKm} km)` : ''}.
+                  </T>
+                ) : null}
+
+                {/* When — day chips + real availability from the booking engine */}
+                <SectionHeader title="Pick a time" style={{ marginTop: space['2xl']}} />
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginTop: space.md, flexGrow: 0 }} contentContainerStyle={{ gap: space.md }}>
+                  {Array.from({ length: 7 }, (_, i) => {
+                    const key = addAppointmentDays(appointmentDayKey(new Date()), i);
+                    const wd = appointmentWeekday(key);
+                    const closed = bookableWeekdays ? !bookableWeekdays.includes(wd) : false;
+                    const label =
+                      i === 0
+                        ? 'Today'
+                        : i === 1
+                          ? 'Tomorrow'
+                          : `${['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][wd]} ${Number(key.slice(-2))}`;
                     return (
                       <Chip
-                        key={o.id}
-                        label={`${o.name}${price ? ` +${money(price)}` : ''}`}
-                        selected={on}
-                        onPress={() => toggleOption(g, o.id)}
-                        style={{ height: 42, paddingHorizontal: space.lg }}
+                        key={i}
+                        label={closed ? `${label} · closed` : label}
+                        selected={dayOffset === i}
+                        onPress={() => {
+                          if (closed) return;
+                          setDayOffset(i);
+                          setSlot(null);
+                        }}
+                        style={{ height: 40, paddingHorizontal: space.lg, opacity: closed ? 0.45 : 1 }}
                       />
                     );
                   })}
-                </View>
-              </View>
-            );
-          })}
-
-          {isBooking ? (
-            <>
-              {/* [BOOK-S6a · owner A3/A4] The server says this listing confirms a cash booking at once.
-                  No badge (and no "instant" word) when it does not say so: switch off, an older server,
-                  or a business that confirms each booking itself. */}
-              {instantConfirmation ? (
-                <View style={{ marginTop: space['2xl'], gap: space.xs }}>
-                  <View style={{ flexDirection: 'row' }}>
-                    <TonePill label="Instant confirmation" tone="success" />
+                </ScrollView>
+                {slotsQ.isPending ? (
+                  <T variant="label" tone="muted" style={{ marginTop: space.md }}>
+                    Checking times…
+                  </T>
+                ) : slotsQ.isError && !slotsQ.data ? (
+                  <View style={{ marginTop: space.md, alignItems: 'flex-start', gap: space.sm }}>
+                    <T variant="label" tone="error">
+                      Couldn’t load available times. Check your connection and try again.
+                    </T>
+                    <Chip
+                      label="Try again"
+                      selected={false}
+                      onPress={() => void slotsQ.refetch()}
+                      style={{ height: 40, paddingHorizontal: space.lg }}
+                    />
                   </View>
-                  <T variant="caption" tone="muted">
-                    Pay at your appointment and your time is confirmed as soon as you book.
+                ) : daySlots.length === 0 ? (
+                  <T variant="label" tone="muted" style={{ marginTop: space.md }}>
+                    No times left this day — try another.
                   </T>
-                </View>
-              ) : null}
-              {/* Where it happens — the business's setting; BOTH lets you pick */}
-              <SectionHeader title="Where" style={{ marginTop: space['2xl'] }} />
-              {serviceMode === 'BOTH' ? (
-                <View style={{ flexDirection: 'row', gap: space.md, marginTop: space.md }}>
-                  <Chip
-                    label="You go to them"
-                    selected={visitMode === 'AT_BUSINESS'}
-                    onPress={() => setVisitMode('AT_BUSINESS')}
-                    style={{ height: 42, paddingHorizontal: space.lg }}
-                  />
-                  <Chip
-                    label="They come to you"
-                    selected={visitMode === 'MOBILE'}
-                    onPress={() => setVisitMode('MOBILE')}
-                    style={{ height: 42, paddingHorizontal: space.lg }}
-                  />
-                </View>
-              ) : (
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: space.md }}>
-                  <Feather name={serviceMode === 'MOBILE' ? 'navigation' : 'map-pin'} size={14} color={color.brand[600]} />
-                  <T variant="label" tone="muted" style={{ flex: 1 }}>
-                    {serviceMode === 'MOBILE'
-                      ? `They come to your address${slotsQ.data?.serviceRadiusKm ? ` (within ${slotsQ.data.serviceRadiusKm} km)` : ''}`
-                      : `At ${vendor.data?.name ?? 'their place'}${vendor.data?.addressLine1 ? ` — ${vendor.data.addressLine1}` : ''}`}
-                  </T>
-                </View>
-              )}
-              {serviceMode === 'BOTH' && visitMode === 'MOBILE' ? (
-                <T variant="caption" tone="faint" style={{ marginTop: 6 }}>
-                  They travel to your saved address{slotsQ.data?.serviceRadiusKm ? ` (within ${slotsQ.data.serviceRadiusKm} km)` : ''}.
-                </T>
-              ) : null}
-
-              {/* When — day chips + real availability from the booking engine */}
-              <SectionHeader title="Pick a time" style={{ marginTop: space['2xl']}} />
-              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginTop: space.md, flexGrow: 0 }} contentContainerStyle={{ gap: space.md }}>
-                {Array.from({ length: 7 }, (_, i) => {
-                  const key = addAppointmentDays(appointmentDayKey(new Date()), i);
-                  const wd = appointmentWeekday(key);
-                  const closed = bookableWeekdays ? !bookableWeekdays.includes(wd) : false;
-                  const label =
-                    i === 0
-                      ? 'Today'
-                      : i === 1
-                        ? 'Tomorrow'
-                        : `${['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][wd]} ${Number(key.slice(-2))}`;
-                  return (
+                ) : (
+                  <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: space.md, marginTop: space.md }}>
+                    {daySlots.map((iso) => (
+                      <Chip
+                        key={iso}
+                        label={formatAppointmentClock(iso)}
+                        selected={slot === iso}
+                        onPress={() => setSlot(iso)}
+                        style={{ height: 42, paddingHorizontal: space.lg }}
+                      />
+                    ))}
+                  </View>
+                )}
+                {slotsQ.isError && slotsQ.data ? (
+                  <View style={{ marginTop: space.sm, flexDirection: 'row', alignItems: 'center', gap: space.sm }}>
+                    <T variant="caption" tone="warning" style={{ flex: 1 }}>
+                      These are the last known times. Refresh before choosing if your connection is back.
+                    </T>
                     <Chip
-                      key={i}
-                      label={closed ? `${label} · closed` : label}
-                      selected={dayOffset === i}
-                      onPress={() => {
-                        if (closed) return;
-                        setDayOffset(i);
-                        setSlot(null);
-                      }}
-                      style={{ height: 40, paddingHorizontal: space.lg, opacity: closed ? 0.45 : 1 }}
+                      label="Refresh"
+                      selected={false}
+                      onPress={() => void slotsQ.refetch()}
+                      style={{ height: 36, paddingHorizontal: space.md }}
                     />
-                  );
-                })}
-              </ScrollView>
-              {slotsQ.isPending ? (
-                <T variant="label" tone="muted" style={{ marginTop: space.md }}>
-                  Checking times…
-                </T>
-              ) : slotsQ.isError && !slotsQ.data ? (
-                <View style={{ marginTop: space.md, alignItems: 'flex-start', gap: space.sm }}>
-                  <T variant="label" tone="error">
-                    Couldn’t load available times. Check your connection and try again.
+                  </View>
+                ) : null}
+                {slotsQ.data?.durationMinutes ? (
+                  <T variant="caption" tone="faint" style={{ marginTop: space.sm }}>
+                    Each appointment runs about {slotsQ.data.durationMinutes} minutes.
                   </T>
-                  <Chip
-                    label="Try again"
-                    selected={false}
-                    onPress={() => void slotsQ.refetch()}
-                    style={{ height: 40, paddingHorizontal: space.lg }}
-                  />
-                </View>
-              ) : daySlots.length === 0 ? (
-                <T variant="label" tone="muted" style={{ marginTop: space.md }}>
-                  No times left this day — try another.
-                </T>
-              ) : (
-                <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: space.md, marginTop: space.md }}>
-                  {daySlots.map((iso) => (
-                    <Chip
-                      key={iso}
-                      label={formatAppointmentClock(iso)}
-                      selected={slot === iso}
-                      onPress={() => setSlot(iso)}
-                      style={{ height: 42, paddingHorizontal: space.lg }}
-                    />
-                  ))}
-                </View>
-              )}
-              {slotsQ.isError && slotsQ.data ? (
-                <View style={{ marginTop: space.sm, flexDirection: 'row', alignItems: 'center', gap: space.sm }}>
-                  <T variant="caption" tone="warning" style={{ flex: 1 }}>
-                    These are the last known times. Refresh before choosing if your connection is back.
-                  </T>
-                  <Chip
-                    label="Refresh"
-                    selected={false}
-                    onPress={() => void slotsQ.refetch()}
-                    style={{ height: 36, paddingHorizontal: space.md }}
-                  />
-                </View>
-              ) : null}
-              {slotsQ.data?.durationMinutes ? (
-                <T variant="caption" tone="faint" style={{ marginTop: space.sm }}>
-                  Each appointment runs about {slotsQ.data.durationMinutes} minutes.
-                </T>
-              ) : null}
-            </>
-          ) : null}
+                ) : null}
+              </>
+            ) : null}
 
-          {!isBooking ? (
-            <LabeledInput
-              label="Note for the store"
-              placeholder={storeKindWords(vendor.data?.vendorType).itemNotePlaceholder}
-              value={note}
-              onChangeText={setNote}
-              maxLength={500}
-              accessibilityLabel="Note for the store"
-              testID="menu-item-note"
-              containerStyle={{ marginTop: space.xl }}
-            />
-          ) : null}
+            {!isBooking ? (
+              <LabeledInput
+                label="Note for the store"
+                placeholder={storeKindWords(vendor.data?.vendorType).itemNotePlaceholder}
+                value={note}
+                onChangeText={setNote}
+                maxLength={500}
+                accessibilityLabel="Note for the store"
+                testID="menu-item-note"
+                containerStyle={{ marginTop: space.xl }}
+              />
+            ) : null}
 
-          {addErr ? (
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: space.lg }}>
-              <Feather name="alert-circle" size={14} color={color.error} />
-              <T variant="label" tone="error">
-                {addErr}
-              </T>
-            </View>
-          ) : null}
-        </View>
-      </ScrollView>
+            {addErr ? (
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: space.lg }}>
+                <Feather name="alert-circle" size={14} color={color.error} />
+                <T variant="label" tone="error">
+                  {addErr}
+                </T>
+              </View>
+            ) : null}
+          </View>
+        </ScrollView>
+      </KeyboardAvoider>
 
       {/* Sticky action bar — stepper + Add to cart (kit 21) */}
       <View

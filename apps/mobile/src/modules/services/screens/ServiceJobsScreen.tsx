@@ -25,6 +25,7 @@ import { Card, Chip, EmptyState, ErrorState, Header, IconChip, LoadingBlock, Pil
 import { errorMessage } from '../../../lib/apiError';
 import { isListBookedJob, serviceJobControls } from '../../../lib/proBooking';
 import { ProJobMoveCard } from '../ProJobMoveCard';
+import { KeyboardAvoider } from '../../../kit/keyboard-avoider';
 
 const STATUS_LABEL: Record<string, { label: string; tone: 'brand' | 'success' | 'neutral' }> = {
   REQUESTED: { label: 'Waiting for quote', tone: 'neutral' },
@@ -464,22 +465,26 @@ export function ServiceJobsScreen({ navigation }: any) {
   return (
     <Screen>
       <Header title="My Jobs" />
-      <ScrollView
-        contentContainerStyle={{ paddingHorizontal: space['2xl'], paddingTop: space.sm, paddingBottom: space['3xl'] }}
-        showsVerticalScrollIndicator={false}
-        refreshControl={<RefreshControl refreshing={pull.refreshing} onRefresh={() => { void pull.onRefresh(); }} tintColor={color.brand[500]} />}
-      >
-        {q.isLoading ? (
-          <LoadingBlock />
-        ) : q.isError && !q.data ? (
-          // [WR-029] An outage is not "No jobs yet" — active work may exist.
-          <ErrorState onRetry={() => q.refetch()} />
-        ) : jobs.length === 0 ? (
-          <EmptyState icon="tool" title="No jobs yet" body="Request a pro from Services and quotes land here." />
-        ) : (
-          jobs.map((j) => <JobCard key={j.id} job={j} navigation={navigation} />)
-        )}
-      </ScrollView>
+      {/* [KEYBOARD 10 Nov] Lifted above the keyboard (kit/keyboard-avoider), so the last fields can scroll into view. */}
+      <KeyboardAvoider style={{ flex: 1 }}>
+        <ScrollView
+          contentContainerStyle={{ paddingHorizontal: space['2xl'], paddingTop: space.sm, paddingBottom: space['3xl'] }}
+          showsVerticalScrollIndicator={false}
+          refreshControl={<RefreshControl refreshing={pull.refreshing} onRefresh={() => { void pull.onRefresh(); }} tintColor={color.brand[500]} />}
+          keyboardShouldPersistTaps="handled"
+        >
+          {q.isLoading ? (
+            <LoadingBlock />
+          ) : q.isError && !q.data ? (
+            // [WR-029] An outage is not "No jobs yet" — active work may exist.
+            <ErrorState onRetry={() => q.refetch()} />
+          ) : jobs.length === 0 ? (
+            <EmptyState icon="tool" title="No jobs yet" body="Request a pro from Services and quotes land here." />
+          ) : (
+            jobs.map((j) => <JobCard key={j.id} job={j} navigation={navigation} />)
+          )}
+        </ScrollView>
+      </KeyboardAvoider>
     </Screen>
   );
 }
