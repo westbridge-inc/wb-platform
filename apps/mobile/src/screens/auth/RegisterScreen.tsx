@@ -1,6 +1,6 @@
 /** @jsxImportSource react */
 import React, { useState } from 'react';
-import { KeyboardAvoidingView, Platform, Pressable, ScrollView, View } from 'react-native';
+import { Pressable, ScrollView, View } from 'react-native';
 import { useMutation } from '@tanstack/react-query';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { color, space } from '@swift/ui';
@@ -10,6 +10,7 @@ import { useAuthStore } from '../../stores/authStore';
 import { SwiftMark } from '../../components/SwiftLogo';
 import { BrandCheckbox, Header, LabeledInput, PillButton, Screen, T } from '../../kit';
 import { AGE_TICK_LABEL } from '../../lib/ageTickCopy';
+import { KeyboardAvoider } from '../../kit/keyboard-avoider';
 
 // Kit "Register" (frame 7) on the real signup contract: the phone arrived
 // verified from the OTP step; name (+ optional email) completes the account.
@@ -66,7 +67,9 @@ export function RegisterScreen() {
       {/* [BUG-GUARDS C4] A way out of sign-up (a wrong number, a change of mind). The phone proof is
           one-use, so Back starts a fresh sign-in, the same door as "Verify phone again". */}
       <Header onBack={() => navigation.reset({ index: 0, routes: [{ name: 'PhoneEntry' }] })} />
-      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1 }}>
+      {/* [ANDROID 9 Nov] Moves on Android too (kit/keyboard-avoider): the edge-to-edge window is never resized
+          for the keyboard, and the old `undefined` behavior there never moved, so the keyboard hid the bottom of the screen. */}
+      <KeyboardAvoider style={{ flex: 1 }}>
         <ScrollView
           contentContainerStyle={{ flexGrow: 1, paddingHorizontal: space['2xl'], paddingTop: space['2xl'] }}
           keyboardShouldPersistTaps="handled"
@@ -164,7 +167,7 @@ export function RegisterScreen() {
             />
           )}
         </ScrollView>
-      </KeyboardAvoidingView>
+      </KeyboardAvoider>
     </Screen>
   );
 }

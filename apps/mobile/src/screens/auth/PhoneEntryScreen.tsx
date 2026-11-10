@@ -1,6 +1,6 @@
 /** @jsxImportSource react */
 import React, { useEffect, useState } from 'react';
-import { KeyboardAvoidingView, Platform, ScrollView, View } from 'react-native';
+import { ScrollView, View } from 'react-native';
 import { useMutation } from '@tanstack/react-query';
 import { useNavigation } from '@react-navigation/native';
 import { color, radius, space } from '@swift/ui';
@@ -13,6 +13,7 @@ import { useCountdown } from '../../hooks/useCountdown';
 import { SwiftMark } from '../../components/SwiftLogo';
 import { LabeledInput, PillButton, Screen, T } from '../../kit';
 import { DEFAULT_COUNTRY } from '../../lib/markets';
+import { KeyboardAvoider } from '../../kit/keyboard-avoider';
 
 // Kit "Login" (frame 5) reshaped for Swift's real auth: phone → OTP. No
 // passwords, no social sign-in — the backend has neither.
@@ -74,7 +75,9 @@ export function PhoneEntryScreen() {
 
   return (
     <Screen style={{ backgroundColor: color.surface.base }}>
-      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1 }}>
+      {/* [ANDROID 9 Nov] Moves on Android too (kit/keyboard-avoider): the edge-to-edge window is never resized
+          for the keyboard, and the old `undefined` behavior there never moved, so the keyboard hid the bottom of the screen. */}
+      <KeyboardAvoider style={{ flex: 1 }}>
         <ScrollView
           contentContainerStyle={{ flexGrow: 1, paddingHorizontal: space['2xl'], paddingTop: space['2xl'] }}
           keyboardShouldPersistTaps="handled"
@@ -196,7 +199,7 @@ export function PhoneEntryScreen() {
             )}
           </View>
         </ScrollView>
-      </KeyboardAvoidingView>
+      </KeyboardAvoider>
     </Screen>
   );
 }

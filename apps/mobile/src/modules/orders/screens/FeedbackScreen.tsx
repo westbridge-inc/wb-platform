@@ -1,6 +1,6 @@
 /** @jsxImportSource react */
 import React, { useState } from 'react';
-import { KeyboardAvoidingView, Platform, Pressable, ScrollView, TextInput, View } from 'react-native';
+import { Pressable, ScrollView, TextInput, View } from 'react-native';
 import { Image } from 'expo-image';
 import { Feather } from '@expo/vector-icons';
 import { useNavigation, useRoute } from '@react-navigation/native';
@@ -11,6 +11,7 @@ import { Chip, ErrorState, Header, IconChip, LoadingBlock, PillButton, PopupCard
 import { afterDismiss } from '../../../kit/after-dismiss';
 import { useRowHold } from '../../../lib/useRowHold';
 import { ratingTagFitsStore } from '../../../lib/storeKindWords';
+import { KeyboardAvoider } from '../../../kit/keyboard-avoider';
 
 const GUTTER = space['2xl'];
 
@@ -219,7 +220,9 @@ export function FeedbackScreen() {
   return (
     <Screen>
       <Header title="Feedback" />
-      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1 }}>
+      {/* [ANDROID 9 Nov] Moves on Android too (kit/keyboard-avoider): the edge-to-edge window is never resized
+          for the keyboard, and the old `undefined` behavior there never moved, so the keyboard hid the bottom of the screen. */}
+      <KeyboardAvoider style={{ flex: 1 }}>
         <ScrollView
           contentContainerStyle={{ flexGrow: 1, paddingHorizontal: GUTTER, paddingTop: space.xl, paddingBottom: space['2xl'] }}
           keyboardShouldPersistTaps="handled"
@@ -362,7 +365,7 @@ export function FeedbackScreen() {
             />
           </View>
         </ScrollView>
-      </KeyboardAvoidingView>
+      </KeyboardAvoider>
 
       {/* Thanks popup (kit 46/48) */}
       <PopupCard

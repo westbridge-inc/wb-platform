@@ -75,3 +75,4 @@ export * from './after-dismiss';
 export * from './cart-bar';
 // The one "Log out of Swift?" ask. Every log-out control goes through it.
 export * from './logout-confirm';
+export * from './keyboard-avoider';
