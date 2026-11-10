@@ -41,6 +41,7 @@ vi.mock('./OwnNameCard', async () => {
 });
 vi.mock('./FoodHandlersCard', () => ({ FoodHandlersCard: () => null }));
 vi.mock('./StoreWeeklyFeeCard', () => ({ StoreWeeklyFeeCard: () => null }));
+vi.mock('./AuthorityLetterEsignCard', () => ({ AuthorityLetterEsignCard: () => null }));
 vi.mock('./DocumentUploadCard', async () => {
   const R = await import('react');
   return { DocumentUploadCard: ({ docType }: { docType: string }) => R.createElement('div', { 'data-doc': docType }) };

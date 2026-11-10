@@ -233,6 +233,18 @@ export const DARK_FEATURES: DarkFeature[] = [
       "Booking an appointment is a request, as before: the customer's time is taken only when the business accepts, so two customers can wait on the same free time and the business's accept decides (the other is told the time was taken). No listing can be set to confirm bookings automatically, and a booking keeps the one-minute free-cancel window. On: the time is taken when the customer books; a cash booking of a listing set to confirm automatically is confirmed in the same moment (MMG bookings still wait for the business); a confirmed booking cancels free until two hours before it starts. Already landed: the Terms and refunds wording for instant confirmation and the two-hour cancel window (LEGAL_VERSION 2026-10-28), and the phone app's success popup that follows the server's order status. That popup reaches phones in an over-the-air update after Apple approves build 12; until then build 12 shows 'Booking requested' for a few seconds after an instant booking (the owner accepted this). No shop certificate is needed: Guyana has no hair or beauty shop certificate, so hair and beauty listings book like any other service (owner, 28 Oct 2026, replacing A2). The real-Postgres race tests (several checkouts for one time) run in CI. Kept OFF until a staging run (staging stays frozen while Apple reviews build 12), then the owner's go; the owner has ruled it turns ON in production with the launch deploy (28 Oct 2026, B4, A3, A4, B1, C2).",
     impact: 'product',
   },
+  {
+    // [COMPANY-DOCS PART 2 · owner 10 Nov 2026 ~07:5xZ] Kept OFF until the owner approves the Privacy Policy bullet for
+    // a letter signer's name and number (owner/LEGAL-20261110-COMPANY-DOCS-WORDING.md) and its LEGAL_VERSION ships.
+    key: 'authority_letter_esign',
+    setting: 'AUTHORITY_LETTER_ESIGN',
+    source: 'env',
+    enabledWhen: '1',
+    title: 'Letter of authority signed in Swift (by the director or owner, on their own phone)',
+    whileOff:
+      "A company's (or a manager's) account holder sees no form to ask the director (or the owner) to sign in Swift: they upload a signed paper letter, as before, and a person at Swift checks it. Nobody is texted a signing link, and a link sent while it was on stops working: it can no longer be opened, texted a code or signed, so nothing more about a signer is collected.",
+    impact: 'product',
+  },
   // ── [row 331 · CONFIG-GUARDS] the kill switches. Each is unset (or 0) in
   // normal running; set to 1 it switches its capability off. The census in
   // dark-features.test.ts fails on any *_KILL the API reads that is not here.

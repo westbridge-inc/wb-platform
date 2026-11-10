@@ -158,6 +158,8 @@ describe('[dark features] the registry matches the code that reads the switch', 
       read('apps/api/src/modules/calls/inapp-calls-switch.ts'),
       // [BUG-HUNT F23] the brake on approving partners
       read('apps/api/src/modules/verification/approval-brake.ts'),
+      // [COMPANY-DOCS PART 2] the letter of authority signed in Swift
+      read('apps/api/src/modules/vendor/authority-letter/esign-switch.ts'),
     ].join('\n');
     expect(sources.length, 'could not read the sources — the check cannot run').toBeGreaterThan(500);
     for (const f of DARK_FEATURES) {

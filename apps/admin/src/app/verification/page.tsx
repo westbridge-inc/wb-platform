@@ -13,6 +13,7 @@ import { CustomerIdRetired } from '@/components/verification/CustomerIdRetired';
 import { approveDoc, rejectDoc, errorCode, fetchUserDetail, fetchVerificationCounts, fetchDocumentCustody, type InsuranceCheck } from '@/lib/api';
 import { reasonTooShort } from '@/lib/ask-reason';
 import { REJECTION_REASONS, SECOND_REVIEW_CODES, isRejectionReasonCode, type RejectionReasonCode } from '@/lib/rejection-reasons';
+import { AuthorityConfirmationFields, EMPTY_AUTHORITY, authorityConfirmationReady, type AuthorityConfirmationValue } from './authority-confirmation-fields';
 import { HELD_FOR_ORDERING_DAY, heldForOrderingDayLine, REVIEW_COUNTS_POLL_MS, REVIEW_STATUSES, accountPathLine, applicantId, isSystemActor, newSinceLoaded, docLabel, reviewerHint, reviewNote, roleLabel, vehicleLabel, reviewTimeline, groupApplicants, loadReviewQueue, maskedPhone, waitingSince, resubmissionLabel, previousDecisionLine, type Applicant, type ReviewDocument, type ReviewLane, type ReviewStatus } from '@/lib/review-center';
 import { label } from '@/lib/labels';
 import { gyDate, gyDateTime, gyTodayYmd } from '@/lib/dates';
@@ -71,6 +72,9 @@ export default function VerificationPage() {
   // [COMPANY-DOCS · review F3] a company's paper that is a business-NAME registration: its proprietor is a company
   const [proprietorIsCompany, setProprietorIsCompany] = useState(false);
   const [insurance, setInsurance] = useState<InsuranceCheck>(EMPTY_INSURANCE);
+  // [COMPANY-DOCS PART 2 · review F2] a letter of authority: how the reviewer confirmed its signer (reset per document)
+  const [authority, setAuthority] = useState<AuthorityConfirmationValue>(EMPTY_AUTHORITY);
+  useEffect(() => { setAuthority(EMPTY_AUTHORITY); }, [selected?.id]);
   const [decision, setDecision] = useState<'approve' | 'reject' | null>(null);
   const [reason, setReason] = useState('');
   const [reasonCode, setReasonCode] = useState<RejectionReasonCode | ''>('');
@@ -187,6 +191,8 @@ export default function VerificationPage() {
     // [R13 · research D6] Every motor vehicle's policy must permit use for hire or reward (taxi: passengers
     // for hire; delivery: commercial use), read and confirmed by the reviewer; a private-use policy is rejected.
     insurance.coverageClass === 'HIRE' && insurance.hireClassConfirmed && insurance.plateCrossChecked;
+  // [COMPANY-DOCS PART 2 · review F2] a letter of authority (paper or signed in Swift): never approved without it
+  const needsAuthority = selected?.reviewerTypes?.includes('authorityConfirmed') ?? false;
   const needsNumber = selected?.reviewerTypes?.includes('documentNumber') ?? false;
   const needsIssuedOn = selected?.reviewerTypes?.includes('issuedOn') ?? false;
   // [R16] A business registration: the reviewer says what it is; only a yearly business NAME needs its year.
@@ -207,6 +213,8 @@ export default function VerificationPage() {
     && (!needsOwnName || ownNameConfirmed)
     && (!needsCompanyProprietor || proprietorIsCompany);
   const approveBlocked = !viewed || !expiryOk || !typedReady || (isInsurance && !insuranceReady);
+  // [review F2] ...and a letter of authority only once its signer is confirmed (how, and what was checked).
+  const approveLocked = approveBlocked || (needsAuthority && !authorityConfirmationReady(authority));
   const currentIndex = filtered.findIndex((a) => a.id === applicant?.id);
   const move = (offset: number) => {
     const next = filtered[currentIndex + offset];
@@ -220,6 +228,7 @@ export default function VerificationPage() {
         ...(isInsurance ? { insurance } : {}),
         ...(needsNumber ? { documentNumber: documentNumber.trim() } : {}),
         ...(needsIssuedOn ? { issuedOn: new Date(issuedOn).toISOString() } : {}),
+        ...(needsAuthority && authority.method ? { authorityConfirmed: { method: authority.method, reason: authority.reason.trim() } } : {}),
         ...(needsRegistrationKind && registrationKind ? { registrationKind } : {}),
         ...(needsCertificateYear ? { certificateYear: Number(certificateYear) } : {}),
         ...(needsOwnName ? { ownNameConfirmed } : {}),
@@ -267,7 +276,7 @@ export default function VerificationPage() {
   // the registered name and the date it shows; the server refuses it at this door (DECIDE_IN_STORE_VAT).
   const vatCertificate = selected?.docType === VAT_CERTIFICATE_DOC_TYPE;
   const openDecision = (action: 'approve' | 'reject') => {
-    if (!selected || selected.status !== 'PENDING' || busy || vatCertificate || (action === 'approve' && approveBlocked)) return;
+    if (!selected || selected.status !== 'PENDING' || busy || vatCertificate || (action === 'approve' && approveLocked)) return;
     setReason(''); setReasonCode(''); setMutationError(null); setDecision(action);
   };
   useEffect(() => {
@@ -379,6 +388,7 @@ export default function VerificationPage() {
                 <label className="rc-check"><input type="checkbox" checked={insurance.plateCrossChecked} onChange={(e) => setInsurance({ ...insurance, plateCrossChecked: e.target.checked })} />Cross-checked against the vehicle’s plate (an H-plate for a taxi)</label>
               </fieldset>}
             </div>}
+            {selected.status === 'PENDING' && needsAuthority && <AuthorityConfirmationFields docType={selected.docType} value={authority} onChange={setAuthority} disabled={busy} />}
             <section className="rc-history"><h3>History and audit timeline</h3>
               {custody.isLoading ? <p>Loading history…</p> : custody.isError ? <p className="rc-error">History unavailable. <button onClick={() => void custody.refetch()}>Retry history</button></p> : timeline.length ?
                 <ol>{timeline.map((event, i) => <li key={`${event.at}-${i}`}><time dateTime={event.at}>{gyDateTime(event.at)}</time><span>{event.label}</span><TimelineActor actor={event.actor} applicant={applicant} /></li>)}</ol> : <p className="rc-muted">No history returned for this document.</p>}
@@ -386,14 +396,14 @@ export default function VerificationPage() {
           </div>
         </div>
         {selected.status === 'PENDING' && vatCertificate && <footer className="rc-actions"><p>A VAT certificate is decided in Store VAT, where you type the VAT number, the registered name and the date it shows.</p><Link href="/store-vat" className="rc-primary">Open Store VAT</Link></footer>}
-        {selected.status === 'PENDING' && !vatCertificate && <footer ref={actions} className="rc-actions"><p>{viewed ? 'Evidence opened. Record your decision.' : 'Open the evidence to unlock approval.'}<small>Desktop: A approve · R reject · J/K navigate</small></p><button disabled={busy} onClick={() => openDecision('reject')}>Reject</button><button className="rc-primary" disabled={busy || !!approveBlocked} onClick={() => openDecision('approve')}>Approve</button></footer>}
+        {selected.status === 'PENDING' && !vatCertificate && <footer ref={actions} className="rc-actions"><p>{viewed ? 'Evidence opened. Record your decision.' : 'Open the evidence to unlock approval.'}<small>Desktop: A approve · R reject · J/K navigate</small></p><button disabled={busy} onClick={() => openDecision('reject')}>Reject</button><button className="rc-primary" disabled={busy || !!approveLocked} onClick={() => openDecision('approve')}>Approve</button></footer>}
       </section>}
     </div>
     {decision && selected && applicant && <Modal title={decision === 'approve' ? 'Approve document' : 'Reject document'} busy={busy} onClose={() => setDecision(null)}>
       <h2>{decision === 'approve' ? 'Approve' : 'Reject'} {docLabel(selected.docType)}</h2><p>For {applicant.name}. This changes their operating eligibility.</p>
       <form onSubmit={(event) => {
         event.preventDefault();
-        if (inFlight.current || busy || reasonTooShort(reason) || reason.trim().length > 500 || (decision === 'reject' && !reasonCode) || (decision === 'approve' && approveBlocked)) return;
+        if (inFlight.current || busy || reasonTooShort(reason) || reason.trim().length > 500 || (decision === 'reject' && !reasonCode) || (decision === 'approve' && approveLocked)) return;
         inFlight.current = true; setMutationError(null);
         mutation.mutate({ action: decision, doc: selected, note: reason.trim(), code: reasonCode });
       }}>
@@ -402,7 +412,7 @@ export default function VerificationPage() {
         <label>Decision note<textarea aria-label="Decision note" placeholder={decision === 'reject' ? 'Rejection reason' : 'Why this document is valid'} rows={4} maxLength={500} value={reason} disabled={busy} onChange={(e) => setReason(e.target.value)} /></label>
         <p className="rc-muted">At least 12 characters. Your note is kept in the review record.</p>
         <MutationError error={mutationError} label="Verification action failed" />
-        <div className="rc-dialog-actions"><button type="button" disabled={busy} onClick={() => setDecision(null)}>Cancel</button><button className="rc-primary" type="submit" disabled={busy || reasonTooShort(reason) || (decision === 'reject' && !reasonCode) || (decision === 'approve' && !!approveBlocked)}>{busy ? 'Saving decision…' : decision === 'approve' ? 'Confirm approval' : 'Confirm rejection'}</button></div>
+        <div className="rc-dialog-actions"><button type="button" disabled={busy} onClick={() => setDecision(null)}>Cancel</button><button className="rc-primary" type="submit" disabled={busy || reasonTooShort(reason) || (decision === 'reject' && !reasonCode) || (decision === 'approve' && !!approveLocked)}>{busy ? 'Saving decision…' : decision === 'approve' ? 'Confirm approval' : 'Confirm rejection'}</button></div>
       </form>
     </Modal>}
   </div></div>;

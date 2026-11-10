@@ -47,6 +47,22 @@ describe('[COMPANY-DOCS · review F2, F3, F4, F8] what the reviewer is told to c
     expect(hint).toContain('the company’s name or a business name the company has registered');
   });
 
+  it('[Part 2 review F12] a letter signed in Swift has no letterhead: the hint says so, so a strict reviewer does not reject it for that', () => {
+    expect(reviewerHint('company_authority_letter')).toContain('or signed in Swift (no letterhead)');
+    expect(reviewerHint('owner_authority_letter')).toContain('or signed in Swift');
+  });
+
+  it('[Part 2 review F1] a listing proves a name, not who signed: the hint asks for the call on a number Swift finds itself', () => {
+    const company = reviewerHint('company_authority_letter')!;
+    expect(company).toContain('a director listing proves a name, not who signed');
+    expect(company).toContain('unless this paper IS the director listing naming the account holder');
+    expect(company).toContain('whether it authorised this account holder');
+    const owner = reviewerHint('owner_authority_letter')!;
+    expect(owner).toContain('A registration proves a name, not who signed');
+    expect(owner).toContain('always call the business on a number Swift finds itself');
+    expect(owner).not.toContain('If in doubt');
+  });
+
   it('an expired ID or passport is refused', () => {
     expect(reviewerHint('account_holder_id')).toContain('Refuse an expired ID or passport.');
   });
