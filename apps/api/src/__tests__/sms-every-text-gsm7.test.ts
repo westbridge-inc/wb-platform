@@ -136,6 +136,7 @@ const SMS_TEXT_FILES: Record<string, { min: number; why: string }> = {
   'modules/billing/billing.service.ts': { min: 5, why: 'weekly-fee texts (feeSms / sms)' },
   'modules/billing/billing-notice-delivery.ts': { min: 1, why: 'billing history text' },
   'modules/safety/guardian-delivery.ts': { min: 0, why: 'passenger check-in text (passengerCheckinSms)' },
+  'modules/vendor/authority-letter/authority-letter.service.ts': { min: 0, why: 'letter of authority link and code (letterLinkSms, letterCodeSms; rendered in its own suite)' },
 };
 
 describe('[SMS-COST 1] every word written into an SMS is GSM-7', () => {

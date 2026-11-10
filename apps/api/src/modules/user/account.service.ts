@@ -690,6 +690,9 @@ export class AccountService {
     await prisma.cartMergeReceipt.deleteMany({ where: { userId } });
     // [O-1] The Swift-bridged calls the person asked for (roles and times; never a number).
     await prisma.callSession.deleteMany({ where: { callerUserId: userId } });
+    // [COMPANY-DOCS PART 2] The letters of authority the person asked someone to sign: the signer's name and number go
+    // with the account (a signed letter is a verification document, purged with the others).
+    await prisma.authorityLetterRequest.deleteMany({ where: { userId } });
 
     // 3c. [COORD 18 Oct 23:28Z · owner 19 Oct A/A/A] Rows that stay lose what identifies the person: profiles
     //     (vehicle, plate, location, pay link, bio), the checkout replay copy, fraud marks (phone, address key,

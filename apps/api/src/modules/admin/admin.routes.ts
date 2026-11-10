@@ -135,6 +135,7 @@ import { MMG_SUPPORT_PAGE_DEFAULT, MMG_SUPPORT_PAGE_MAX, MMG_SUPPORT_STATUSES, d
 import { assertNotBannedGoods, catalogueChecksFor, flaggedItemsInTenant, prohibitedStoreCategory, storeCheckOf, storesHeldInTenant, STORE_WORDS_SELECT, wordsFor } from '../compliance/prohibited-gate';
 import { judgedWordsHash, notAllowedMessage, PROHIBITED_CLASSES, PROHIBITED_CLASS_LABELS, storeWordsHash, type CatalogueCheck } from '../compliance/prohibited-items';
 import { REGISTRATION_KINDS, SELFIE_COMPARE_DOC_TYPES } from '../verification/doc-registry';
+import { AUTHORITY_CONFIRMATION_METHODS, AUTHORITY_REASON_MAX, AUTHORITY_REASON_MIN } from '../verification/authority-confirmation';
 import { maskOrderPartyPhones, maskRowUserPhones, ORDER_CONTACT_PARTIES, revealOrderPartyPhone } from './order-contact';
 import { PROOF_PHOTO_NAMES, openProofPhoto } from './order-proof-photo';
 import { moverUserOf, PAYER_INCLUDE, subscriptionTenantWhere } from '../subscription/subscription-owner';
@@ -434,6 +435,10 @@ const approveDocSchema = z.object({
   certificateYear: z.coerce.number().int().min(1900).max(9999).optional(),
   // [R16] a business registration: a yearly business NAME (sole trader, partnership) or a COMPANY's incorporation
   registrationKind: z.enum(REGISTRATION_KINDS).optional(),
+  // [COMPANY-DOCS PART 2 · review F2] a letter of authority: how the reviewer confirmed its signer, and what they checked
+  authorityConfirmed: z.object({
+    method: z.enum(AUTHORITY_CONFIRMATION_METHODS), reason: z.string().trim().min(AUTHORITY_REASON_MIN).max(AUTHORITY_REASON_MAX),
+  }).strict().optional(),
   // [ROLE-DOCS · owner 21 Oct 2026] an own-name declaration: the reviewer confirms the store name against the owner's ID
   ownNameConfirmed: z.boolean().optional(),
   // [COMPANY-DOCS · review F3] a company's business-name registration: the proprietor named on it is a company
@@ -7164,6 +7169,7 @@ export async function adminRoutes(app: FastifyInstance) {
       ...(body.issuedOn !== undefined ? { issuedOn: body.issuedOn } : {}),
       ...(body.certificateYear !== undefined ? { certificateYear: body.certificateYear } : {}),
       ...(body.registrationKind !== undefined ? { registrationKind: body.registrationKind } : {}),
+      ...(body.authorityConfirmed !== undefined ? { authorityConfirmed: body.authorityConfirmed } : {}),
       ...(body.ownNameConfirmed !== undefined ? { ownNameConfirmed: body.ownNameConfirmed } : {}),
       ...(body.proprietorIsCompany !== undefined ? { proprietorIsCompany: body.proprietorIsCompany } : {}),
     }, {
@@ -7171,7 +7177,7 @@ export async function adminRoutes(app: FastifyInstance) {
       // action row and the canonical admin row. A decision cannot commit without them.
       within: async (tx, decided) => {
         await auditIn(tx, request.user.userId, 'APPROVE_VERIFICATION_DOC', 'VerificationDocument', id,
-          { docType: decided.docType, ...(body.insurance ? { insurance: body.insurance } : {}) }, request);
+          { docType: decided.docType, ...(body.insurance ? { insurance: body.insurance } : {}), ...(body.authorityConfirmed ? { signerConfirmedBy: body.authorityConfirmed.method } : {}) }, request);
         await auditWithin(tx, request as unknown as AuditRequestLike, app.prefix);
       },
     });
