@@ -87,6 +87,8 @@ const Home = () => h('p', null, 'home');
 const Cart = () => h('p', null, 'cart');
 const StoreCartBar = CartBar as (props: { vendorId?: string }) => React.ReactElement;
 const Restaurant = () => h('section', null, h('p', null, 'store'), h(StoreCartBar, { vendorId: 'store-1' }));
+// [ANDROID 9 Nov] Search with no matches: the empty state, then the bar (no vendorId).
+const Search = () => h('section', null, h('p', null, 'No matches'), h(StoreCartBar, {}));
 const Tabs = () => h(Tab.Navigator, {
   screenOptions: { headerShown: false },
   children: [h(Tab.Screen, { key: 'Home', name: 'Home', component: Home }), h(Tab.Screen, { key: 'Cart', name: 'Cart', component: Cart })],
@@ -101,7 +103,11 @@ async function mount() {
   await act(async () => root.render(h(NavigationContainer as any, { ref: nav, linking: { enabled: false, prefixes: [] } },
     h(Stack.Navigator, {
       screenOptions: { headerShown: false },
-      children: [h(Stack.Screen, { key: 'Tabs', name: 'Tabs', component: Tabs }), h(Stack.Screen, { key: 'Restaurant', name: 'Restaurant', component: Restaurant })],
+      children: [
+        h(Stack.Screen, { key: 'Tabs', name: 'Tabs', component: Tabs }),
+        h(Stack.Screen, { key: 'Restaurant', name: 'Restaurant', component: Restaurant }),
+        h(Stack.Screen, { key: 'Search', name: 'Search', component: Search }),
+      ],
     }))));
   expect(nav.isReady()).toBe(true);
 }
@@ -120,6 +126,16 @@ describe('[UI-SWEEP U09] View cart goes back to the one tab bar', () => {
     expect(stackNames()).toEqual(['Tabs', 'Restaurant']);
     await act(async () => viewCart().click());
     expect(stackNames(), 'no second copy of the tab bar').toEqual(['Tabs']);
+    expect(nav.getCurrentRoute()?.name).toBe('Cart');
+  });
+
+  it('[ANDROID 9 Nov] Search (no matches) -> View cart opens the Cart tab', async () => {
+    await mount();
+    await act(async () => nav.navigate('Search'));
+    expect(stackNames()).toEqual(['Tabs', 'Search']);
+    expect(host.textContent).toContain('No matches');
+    await act(async () => viewCart().click());
+    expect(stackNames(), 'Search is popped, no second tab bar').toEqual(['Tabs']);
     expect(nav.getCurrentRoute()?.name).toBe('Cart');
   });
 
