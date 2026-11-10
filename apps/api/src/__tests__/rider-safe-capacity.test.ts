@@ -571,6 +571,22 @@ describe('[RIDE-03 follow-up] a store that delivers itself, and the banner readi
     expect(offered(big)).toBe(0);
   });
 
+  it('A-1: only "riders near, none may carry this cash" refuses the store: with no Swift rider online at all, the accept goes ahead', async () => {
+    const at = cell(22);
+    const store = await makeStore(at, 'Own Drivers Quiet', { selfDelivery: true, bigPrice: LIMIT + 1_000 });
+    process.env['DISPATCH_AVAILABILITY'] = '1';
+    const c = await customerAt(at);
+    await addToCart(c, store.vendorId, store.bigItemId);
+    const placed = await call('POST', '/api/v1/customer/checkout', c.token, { paymentMethod: 'CASH' });
+    expect(placed.statusCode, placed.body).toBe(200);
+    const orderId = placed.json().data.order.id as string;
+    // Nobody online near the store yet: a rider who can carry it may still come online, so the store is not stopped.
+    await sys(() => app.prisma.vendor.update({ where: { id: store.vendorId }, data: { selfDeliveryEnabled: false } }));
+    const accepted = await call('PUT', `/api/v1/vendor/orders/${orderId}/accept`, store.owner.token, {}, { 'x-vendor-id': store.vendorId });
+    expect(accepted.statusCode, accepted.body).toBe(200);
+    expect((await sys(() => app.prisma.order.findUniqueOrThrow({ where: { id: orderId }, select: { fulfillmentMode: true } }))).fulfillmentMode).toBe('PLATFORM_RIDER');
+  });
+
   it('S3-2: the cart banner counts paid options in the cash, exactly as checkout does', async () => {
     const at = cell(19);
     // 7,500 + a 1,000 option = 8,500 store cash: over L = 8,000 only with the option counted.
