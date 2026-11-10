@@ -2,8 +2,9 @@
  * [DOC-1 Part XIX · DOC-INV-27 · P19] test_no_storefront_without_disclosure
  *
  * The supplier-information block is compiled from VALID document records and labelled
- * fallbacks, never hand-written: an unregistered proprietor's name "trading as" the store
- * (from the verified identity record), the self-declared address labelled as such, the
+ * fallbacks, never hand-written: the store's own checked name (a business or company is never
+ * named by its owner's personal name; only a trader under their OWN name shows their full name,
+ * owner ruling 10 Nov 2026), the self-declared address labelled as such, the
  * verified account contact, every VALID licence record, and the platform operator block
  * from the ONE OPERATOR constant [R3]. It is derived on every read: an expired licence leaves the block in
  * the same sweep. Once the country's business document types are ACTIVE, a store with an
@@ -100,7 +101,7 @@ afterAll(async () => {
 });
 
 describe('[DOC-1 P19] the disclosure is compiled, never written', () => {
-  it('names what is missing; the verified proprietor "trading as" the store fills the legal name; the address is labelled self-declared; the contact is the verified account; licences appear while VALID and leave when they expire', async () => {
+  it('names what is missing; the store’s own name, checked with its owner’s ID, fills the legal name; the address is labelled self-declared; the contact is the verified account; licences appear while VALID and leave when they expire', async () => {
     const { userId, vendorId } = await store(1);
     const bare = await system(() => compileActivationDisclosure(app.prisma, vendorId, { accountId: userId, tenantId: 'swift-default' }));
     expect(bare.complete).toBe(false);
@@ -113,8 +114,8 @@ describe('[DOC-1 P19] the disclosure is compiled, never written', () => {
     await approved(userId, 'owner_national_id');
     const named = await system(() => compileActivationDisclosure(app.prisma, vendorId, { accountId: userId, tenantId: 'swift-default' }));
     expect(named.complete).toBe(true);
-    expect(named.legalName).toMatchObject({ source: 'PROPRIETOR', docType: 'owner_national_id' });
-    expect(named.legalName!.value).toBe(`Priya Persaud1 trading as Priya's Snackette ${RUN}1`);
+    expect(named.legalName).toMatchObject({ source: 'STORE_NAME', docType: 'owner_national_id' });
+    expect(named.legalName!.value).toBe(`Priya's Snackette ${RUN}1`);
 
     const licence = await approved(userId, 'food_handler_cert');
     expect((await system(() => compileActivationDisclosure(app.prisma, vendorId, { accountId: userId, tenantId: 'swift-default' }))).licences).toEqual([{ value: 'on file', source: 'RECORD', docType: 'food_handler_cert', recordId: expect.any(String) }]);
@@ -198,5 +199,56 @@ describe('[DOC-1 P19] the disclosure is compiled, never written', () => {
       if (prevKek === undefined) delete process.env['MASTER_KEK']; else process.env['MASTER_KEK'] = prevKek;
       resetKeyProviderForTests();
     }
+  });
+});
+
+// [R3 · CAA s.70(1) · owner ruling 10 Nov 2026] The seller's name is the BUSINESS's name. An owner's personal name is never
+// shown for a registered business or company, and never as "<person> trading as <store>"; only a person who trades
+// under their OWN name (own-name declaration, no business registration) is named by their full name, because that name
+// is their trading name.
+describe('[R3 · owner ruling 10 Nov 2026] who sells: the business’s own name; a person’s full name only when they trade under it', () => {
+  const blockOf = (userId: string, vendorId: string) => system(() => compileActivationDisclosure(app.prisma, vendorId, { accountId: userId, tenantId: 'swift-default' }));
+  const setStore = (vendorId: string, data: Record<string, unknown>) => system(() => app.prisma.vendor.update({ where: { id: vendorId }, data }));
+  const PERSONAL = /Priya|Persaud\d|trading as/;
+
+  it('a registered company: its company name only — never its owner’s name, never "trading as"', async () => {
+    const { userId, vendorId } = await store(5);
+    await setStore(vendorId, { name: `Sample Holdings Inc. ${RUN}5` });
+    await approved(userId, 'business_registration');
+    // the registration alone names it (a company's papers may come before any one person's ID)
+    const registered = await blockOf(userId, vendorId);
+    expect(registered.legalName).toEqual({ value: `Sample Holdings Inc. ${RUN}5`, source: 'STORE_NAME', docType: 'business_registration', recordId: expect.any(String) });
+    await approved(userId, 'owner_national_id');
+    const both = await blockOf(userId, vendorId);
+    expect(both.complete).toBe(true);
+    expect(both.legalName).toEqual({ value: `Sample Holdings Inc. ${RUN}5`, source: 'STORE_NAME', docType: 'business_registration', recordId: expect.any(String) });
+    expect(JSON.stringify(both.legalName)).not.toMatch(PERSONAL);
+  });
+
+  it('a registered business name: that name only — even when it carries the owner’s surname, and even for a store that once declared its own name', async () => {
+    const { userId, vendorId } = await store(6);
+    await setStore(vendorId, { name: `Persaud's Hardware ${RUN}6`, tradesUnderOwnName: true });
+    await approved(userId, 'owner_national_id');
+    await approved(userId, 'own_name_declaration');
+    await approved(userId, 'business_registration');
+    const b = await blockOf(userId, vendorId);
+    expect(b.legalName).toEqual({ value: `Persaud's Hardware ${RUN}6`, source: 'STORE_NAME', docType: 'business_registration', recordId: expect.any(String) });
+    expect(b.legalName!.value).not.toContain('Priya');
+  });
+
+  it('a trader under their OWN name: their full name, once a person checked the declaration — and only while the store trades under it', async () => {
+    const { userId, vendorId } = await store(7);
+    await setStore(vendorId, { name: 'P. Persaud7', tradesUnderOwnName: true });
+    await approved(userId, 'owner_national_id');
+    // declared, not yet checked by a person: the store's own name, never the account's
+    expect((await blockOf(userId, vendorId)).legalName).toMatchObject({ value: 'P. Persaud7', source: 'STORE_NAME' });
+    await approved(userId, 'own_name_declaration');
+    const own = await blockOf(userId, vendorId);
+    expect(own.complete).toBe(true);
+    expect(own.legalName).toEqual({ value: 'Priya Persaud7', source: 'PROPRIETOR', docType: 'own_name_declaration', recordId: expect.any(String) });
+    expect(own.legalName!.value).not.toContain('trading as');
+    // the choice is per store: switched to a business name, the store is named by its own name again
+    await setStore(vendorId, { tradesUnderOwnName: false });
+    expect((await blockOf(userId, vendorId)).legalName).toMatchObject({ value: 'P. Persaud7', source: 'STORE_NAME' });
   });
 });

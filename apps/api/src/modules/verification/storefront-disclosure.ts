@@ -6,8 +6,10 @@ import { validExpiryOr } from './document-validity';
  * The ECT Act supplier-information block is a COMPILED artifact, never hand-written
  * prose: every legally required element is sourced from a VALID document record (its
  * submission's extracted fields), or from a fallback the spec names and LABELS
- * (PROPRIETOR = the verified proprietor's name "trading as …" for a business with no
- * registered business name, such as a trader under their own name; SELF_DECLARED = the address the vendor typed; ACCOUNT = the verified account
+ * (PROPRIETOR = the full name of a trader under their OWN name, which is their trading name;
+ * STORE_NAME = the store's own name, as a person checked it with its documents, for every
+ * other store — a business or company is never named by its owner's personal name
+ * [owner ruling 10 Nov 2026]; SELF_DECLARED = the address the vendor typed; ACCOUNT = the verified account
  * contact; PLATFORM = the operator block from the ONE OPERATOR constant). A required element with no
  * source leaves the block INCOMPLETE — it never falls back to self-reported text for a
  * legal fact. Nothing is stored: the block is derived on every read, so a lapsed licence
@@ -21,7 +23,7 @@ import type { Prisma, PrismaClient } from '@prisma/client';
 import { createHash } from 'node:crypto';
 import { getKeyProvider } from '../../providers/storage/envelope';
 import { unpackAndDecrypt } from './extraction-ledger';
-import { BUCKET_OF, IDENTITY_DOC_TYPES, LICENCE_DISCLOSURE_TYPES } from './doc-registry';
+import { BUCKET_OF, IDENTITY_DOC_TYPES, LICENCE_DISCLOSURE_TYPES, OWN_NAME_DOC_TYPE, REGISTRATION_DOC_TYPES } from './doc-registry';
 import { vendorTenantForCaller } from '../vendor/vendor-visibility';
 import { inoperableSubscriptionWhere } from '../subscription/operate-gate';
 import { getTenantId } from '../../plugins/tenant-context';
@@ -30,7 +32,7 @@ import { OPERATOR, OPERATOR_ADDRESS } from '../legal/operator';
 
 type Db = Prisma.TransactionClient | PrismaClient;
 
-export type DisclosureSource = 'RECORD' | 'PROPRIETOR' | 'SELF_DECLARED' | 'ACCOUNT' | 'PUBLISHED' | 'PLATFORM';
+export type DisclosureSource = 'RECORD' | 'PROPRIETOR' | 'STORE_NAME' | 'SELF_DECLARED' | 'ACCOUNT' | 'PUBLISHED' | 'PLATFORM';
 export interface DisclosureElement { value: string; source: DisclosureSource; docType?: string; recordId?: string }
 export interface DisclosureBlock {
   complete: boolean;
@@ -101,7 +103,7 @@ export async function disclosureGateEngaged(db: Db, countryCode: string): Promis
 }
 
 const DISCLOSURE_VENDOR_SELECT = {
-  id: true, tenantId: true, name: true, addressLine1: true, addressLine2: true, publicPhone: true,
+  id: true, tenantId: true, name: true, addressLine1: true, addressLine2: true, publicPhone: true, tradesUnderOwnName: true,
   owner: { select: { userId: true, user: { select: {
     tenantId: true, countryCode: true, firstName: true, lastName: true, phone: true, isPhoneVerified: true,
   } } } },
@@ -179,16 +181,32 @@ async function compileDisclosure(db: Db, vendor: DisclosureVendor, purpose: Disc
   const provenance = (r: RecordSource) => ({ docType: r.docType, ...(purpose === 'VENDOR_ACTIVATION' ? { recordId: r.id } : {}) });
   const identity = records.find((r) => IDENTITY_DOC_TYPES.includes(r.docType));
 
-  // Legal / registered name: a VALID business record's read name; else the verified proprietor "trading as".
+  // Legal / registered name [R3 · CAA s.70(1) · owner ruling 10 Nov 2026]: a business or company is named by ITS
+  // name, never by its owner's personal name, and never as "<person> trading as <store>".
+  //  1. a VALID business record's read name;
+  //  2. a store trading under its owner's OWN name (this store's flag, its own-name declaration VALID — a person checked
+  //     the name against the owner's ID — and no business registration on file): the owner's full name, because that
+  //     name IS the trading name;
+  //  3. every other store — a registered business name, a company, a service business: the store's own name, as a
+  //     person checked it with the store's registration (or its owner's ID).
+  // A legal name is found whenever a record names the business, or the owner's ID or the store's registration is on
+  // file: never in fewer cases than before this rule (the ID alone sufficed), so no store that was complete becomes
+  // incomplete (the activation projection reads the same block).
   let legalName: DisclosureElement | null = null;
   for (const r of business) {
     const f = await fieldsFor(r, NAME_FIELDS);
     const v = NAME_FIELDS.map((c) => f.get(c)).find((x) => x && x.trim());
     if (v) { legalName = { value: v.trim(), source: 'RECORD', ...provenance(r) }; break; }
   }
-  if (!legalName && identity) {
+  const registration = records.find((r) => REGISTRATION_DOC_TYPES.includes(r.docType));
+  const ownNameDeclaration = records.find((r) => r.docType === OWN_NAME_DOC_TYPE);
+  if (!legalName && vendor.tradesUnderOwnName && ownNameDeclaration && identity && !registration) {
     const proprietor = `${vendor.owner.user.firstName} ${vendor.owner.user.lastName}`.trim();
-    if (proprietor) legalName = { value: `${proprietor} trading as ${vendor.name}`, source: 'PROPRIETOR', ...provenance(identity) };
+    if (proprietor) legalName = { value: proprietor, source: 'PROPRIETOR', ...provenance(ownNameDeclaration) };
+  }
+  const checkedBy = registration ?? identity;
+  if (!legalName && checkedBy && vendor.name.trim()) {
+    legalName = { value: vendor.name.trim(), source: 'STORE_NAME', ...provenance(checkedBy) };
   }
   if (!legalName) missing.push('legalName');
 
