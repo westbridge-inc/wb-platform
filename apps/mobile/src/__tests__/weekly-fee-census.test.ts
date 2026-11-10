@@ -10,10 +10,27 @@ export function retiredPaymentCopy(text: string) {
   const code = text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
   return /\b(?:sanFormatted|payCashSteps|activationCopy)\b|(?:\?\.|\.)san\b|\[\s*[\x27\x22]san[\x27\x22]\s*\]|MMG[\s-]+agent|Swift[\s-]+Number|pay[^\n]{0,80}account[\s-]+number|(?:weekly fee|subscription)[^\n]{0,80}(?:paid by card|pay by card|pay in cash)|coming soon/i.test(code);
 }
+// [LEGAL-CARDS · owner's card wording, 10 Nov 2026 · DRAFT until the owner approves the words] The Privacy Policy's
+// "Partner records" bullet says what Swift keeps "if you pay by card" (a statement of what is recorded, not an offer).
+// That one bullet of the legal snapshot is the only text exempted: the rest of the snapshot, and every other file, is
+// checked exactly as before.
+const LEGAL_SNAPSHOT = join(process.cwd(), '../web/src/legal/generated.ts');
+const PARTNER_RECORDS = /<li><b>Partner records \(partners only\):<\/b>[\s\S]*?<\/li>/g;
+const checked = (f: string) => {
+  const text = readFileSync(f, 'utf8');
+  return f === LEGAL_SNAPSHOT ? text.replace(PARTNER_RECORDS, '') : text;
+};
 describe('partner checkout surface census', () => {
   it('no deprecated payload, agent instruction or teased method can be rendered', () => {
-    const bad = roots.flatMap((r) => files(join(process.cwd(), r))).filter((f) => retiredPaymentCopy(readFileSync(f, 'utf8')));
+    const all = roots.flatMap((r) => files(join(process.cwd(), r)));
+    expect(all).toContain(LEGAL_SNAPSHOT);
+    const bad = all.filter((f) => retiredPaymentCopy(checked(f)));
     expect(bad).toEqual([]);
+  });
+  it('the legal snapshot exempts exactly one bullet, the Privacy Policy’s partner records', () => {
+    const bullets = readFileSync(LEGAL_SNAPSHOT, 'utf8').match(PARTNER_RECORDS) ?? [];
+    expect(bullets).toHaveLength(1);
+    expect(bullets[0]).toContain("if you pay by card, our card processor's reference for the payment");
   });
   it('the detector rejects a reintroduced agent row and all deprecated payload fields', () => {
     expect(retiredPaymentCopy(source('src/modules/vendor/screens/VendorAccountScreen.tsx'))).toBe(false);
