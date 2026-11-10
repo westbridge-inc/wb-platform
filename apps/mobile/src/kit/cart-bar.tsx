@@ -69,6 +69,13 @@ export function useCartBarClearance({ vendorId }: { vendorId?: string } = {}): n
  * safe-area bottom inset (`insets.bottom + space.lg`), spanning the paper
  * gutter, so it never sits on the home indicator or the screen's own bottom
  * chrome. The 52pt height and pill radius are the storefront's geometry.
+ *
+ * [ANDROID 9 Nov] The PRESSABLE carries that placement and the pill only fills
+ * it. Pressability measures the Pressable's own box when a touch starts and
+ * drops the press on any move outside it (+20/30pt); Android reports a move
+ * during almost every real tap. When only the pill was absolute, the Pressable
+ * was a 0pt strip at the screen's bottom edge, (inset + 68)pt below the pill,
+ * so on Android "View cart" did nothing. Touch box = visible pill, always.
  */
 export function CartBar({ vendorId }: { vendorId?: string } = {}) {
   const navigation = useNavigation<any>();
@@ -85,15 +92,18 @@ export function CartBar({ vendorId }: { vendorId?: string } = {}) {
       accessibilityRole="button"
       accessibilityLabel={`View cart, ${count} item${count === 1 ? '' : 's'}`}
       onPress={() => navigation.navigate('Tabs', { screen: 'Cart' }, { pop: true })}
+      style={{
+        position: 'absolute',
+        left: GUTTER,
+        right: GUTTER,
+        bottom: insets.bottom + space.lg,
+        height: CART_BAR_HEIGHT,
+      }}
     >
       {({ pressed }) => (
         <View
           style={{
-            position: 'absolute',
-            left: GUTTER,
-            right: GUTTER,
-            bottom: insets.bottom + space.lg,
-            height: CART_BAR_HEIGHT,
+            flex: 1,
             borderRadius: 9999,
             flexDirection: 'row',
             alignItems: 'center',
