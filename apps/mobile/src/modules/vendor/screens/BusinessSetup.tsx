@@ -1,5 +1,4 @@
 /** @jsxImportSource react */
-import { ownNameApplies } from '../../../lib/ownNameCopy';
 import { OwnNameChoiceCard } from '../../../components/onboarding/OwnNameChoiceCard';
 import { useEffect, useState } from 'react';
 import { Pressable, ScrollView, View } from 'react-native';
@@ -112,7 +111,7 @@ export function BusinessSetup() {
   const owner = userId ? { userId, generation } : null;
   // [DCR-1] `agree` is the Business Agreement consent — recorded in the ledger
   // with the exact version at store creation, the same way signup records the Terms.
-  const { name, type, phone, addr, city, agree, pin, nameBasis, ownNameTick } = useBusinessSetupDraft((s) => businessSetupDraftFor(s, owner));
+  const { name, type, phone, addr, city, agree, pin, nameBasis, ownNameTick, managerNotOwner } = useBusinessSetupDraft((s) => businessSetupDraftFor(s, owner));
   const edit = (patch: Partial<BusinessSetupDraft> | ((draft: BusinessSetupDraft) => Partial<BusinessSetupDraft>)) => {
     editBusinessSetupDraft(getAuthSessionSnapshot(), owner, patch);
   };
@@ -126,7 +125,7 @@ export function BusinessSetup() {
   // position goes to that map as a place to START, and is never submitted.
   const deviceSuggestion = grantedLocationFix(latitude, longitude, locationStatus);
   const hasPin = pin !== null;
-  const form = { name, type, phone, addr, city, agree, pin, nameBasis, ownNameTick };
+  const form = { name, type, phone, addr, city, agree, pin, nameBasis, ownNameTick, managerNotOwner };
   const blocker = businessSetupBlocker(form);
   // [PR1270-S2-04] The price on the door is a condition of the door: the store
   // is created only against a weekly fee that was fetched successfully, is the
@@ -210,22 +209,30 @@ export function BusinessSetup() {
         </T>
         <View style={{ flexDirection: 'row', gap: space.md }}>
           {TYPES.map((t) => (
-            <BizTypeTile key={t.key} t={t} active={t.key === type} onPress={() => edit({ type: t.key })} />
+            <BizTypeTile
+              key={t.key}
+              t={t}
+              active={t.key === type}
+              // [COMPANY-DOCS] a service business has no own-name path: a choice it is not offered goes back to the owner's
+              onPress={() => edit((draft) => ({ type: t.key, ...(t.key === 'SERVICE' && draft.nameBasis === 'OWN_NAME' ? { nameBasis: 'REGISTERED' as const, ownNameTick: false } : {}) }))}
+            />
           ))}
         </View>
 
         {/* [ROLE-DOCS · owner 21 Oct 2026] The first question for a store asked for a business registration (own name,
             or a registered name): components/onboarding/OwnNameChoiceCard. [OWNER-ASKS 9 Nov 2026] every box there
-            shows its words. */}
-        {ownNameApplies(type) ? (
-          <OwnNameChoiceCard
-            storeName={form.name}
-            nameBasis={nameBasis}
-            ownNameTick={ownNameTick}
-            onNameBasis={(basis) => edit({ nameBasis: basis, ownNameTick: false })}
-            onToggleTick={() => edit((draft) => ({ ownNameTick: !draft.ownNameTick }))}
-          />
-        ) : null}
+            shows its words. [COMPANY-DOCS · owner 10 Nov 2026] ONE choice for every business type: a registered company,
+            a registered business (or its manager), or my own name; a service business sees the company and its owner. */}
+        <OwnNameChoiceCard
+          storeName={form.name}
+          vendorType={type}
+          nameBasis={nameBasis}
+          ownNameTick={ownNameTick}
+          managerNotOwner={managerNotOwner}
+          onNameBasis={(basis) => edit({ nameBasis: basis, ownNameTick: false, managerNotOwner: false })}
+          onToggleTick={() => edit((draft) => ({ ownNameTick: !draft.ownNameTick }))}
+          onToggleManager={() => edit((draft) => ({ managerNotOwner: !draft.managerNotOwner }))}
+        />
 
         <Card style={{ marginTop: space.xl, gap: space.md }}>
           <LabeledInput value={name} onChangeText={(value) => edit({ name: value })} placeholder="Business name" />

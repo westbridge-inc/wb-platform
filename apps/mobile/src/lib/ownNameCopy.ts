@@ -16,11 +16,13 @@ I declare that:
 4. Under the Business Names (Registration) Act, Cap. 90:05, section 3, I therefore do not need to register a business name.
 5. If I trade under any other name, I will register it with the Deeds and Commercial Registries Authority (DCRA) and upload the certificate to Swift before I use it.`;
 
-/** The sign-up's question, in the owner's words. */
-export const OWN_NAME_QUESTION = 'What name does your store use?';
+/** The sign-up's question, in the owner's words. [COMPANY-DOCS · owner 10 Nov 2026] ONE choice with three options
+ *  (lib/businessBasisCopy): a registered company, a registered business, or my own name. */
+export { BASIS_QUESTION as OWN_NAME_QUESTION } from './businessBasisCopy';
 // [OWNER-ASKS 9 Nov 2026] Each choice says what it is; the declaration's tick says what ticking it means.
-export const OWN_NAME_CHOICE = 'My own name — I’m one person trading under just my surname, with or without my first names or initials (for example “Persaud” or “R. Persaud”)';
-export const BUSINESS_NAME_CHOICE = 'A registered business name or a company (I have the DCRA certificate)';
+export const OWN_NAME_CHOICE = 'I trade under my own name — I’m one person trading under just my surname, with or without my first names or initials (for example “Persaud” or “R. Persaud”)';
+/** [COMPANY-DOCS] A company is its own choice now (businessBasisCopy COMPANY_CHOICE): this is the registered business name. */
+export { REGISTERED_CHOICE as BUSINESS_NAME_CHOICE } from './businessBasisCopy';
 export const OWN_NAME_HINT = 'The law does not ask you to register your own name as a business name, so you sign a short declaration instead of uploading a business registration. A person on our team checks it against your ID.';
 export const OWN_NAME_TICK = 'I have read and agree to this declaration.';
 

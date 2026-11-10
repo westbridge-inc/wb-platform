@@ -170,6 +170,21 @@ describe('Create store waits for a confirmed pin', () => {
     expect(vendorBusinessPayload({ ...complete, type: 'SERVICE', nameBasis: 'OWN_NAME' })).not.toHaveProperty('nameBasis');
   });
 
+  // [COMPANY-DOCS · owner 10 Nov 2026] who signs up travels as `accountBasis`: a company, or a registered store's manager
+  it('a company sends accountBasis COMPANY; a registered store’s manager MANAGER; the owner and own name send none', () => {
+    expect(vendorBusinessPayload({ ...complete, nameBasis: 'COMPANY' })).toMatchObject({ accountBasis: 'COMPANY' });
+    expect(vendorBusinessPayload({ ...complete, nameBasis: 'COMPANY' })).not.toHaveProperty('nameBasis');
+    expect(vendorBusinessPayload({ ...complete, type: 'SERVICE', nameBasis: 'COMPANY' })).toMatchObject({ accountBasis: 'COMPANY' });
+    expect(vendorBusinessPayload({ ...complete, nameBasis: 'REGISTERED', managerNotOwner: true })).toMatchObject({ accountBasis: 'MANAGER' });
+    // no manager path for a service business; a stale manager tick under another choice sends nothing
+    expect(vendorBusinessPayload({ ...complete, type: 'SERVICE', nameBasis: 'REGISTERED', managerNotOwner: true })).not.toHaveProperty('accountBasis');
+    expect(vendorBusinessPayload({ ...complete, nameBasis: 'OWN_NAME', ownNameTick: true, managerNotOwner: true })).not.toHaveProperty('accountBasis');
+    expect(vendorBusinessPayload({ ...complete, nameBasis: 'REGISTERED' })).not.toHaveProperty('accountBasis');
+    expect(vendorBusinessPayload(complete)).not.toHaveProperty('accountBasis');
+    // a company has no tick to give
+    expect(businessSetupBlocker({ ...complete, nameBasis: 'COMPANY' })).toBeNull();
+  });
+
   it('with everything else filled in and agreed, no pin keeps Create off and says so', () => {
     expect(businessSetupBlocker({ ...complete, pin: null })).toBe('Place your store on the map');
     expect(vendorBusinessPayload({ ...complete, pin: null })).toBeNull();

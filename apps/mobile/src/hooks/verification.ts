@@ -65,6 +65,8 @@ export function useBecomePartner() {
         region?: string;
         /** [ROLE-DOCS · owner 21 Oct 2026] the store trades under its owner's own name (checked by the server) */
         nameBasis?: 'OWN_NAME' | 'REGISTERED';
+        /** [COMPANY-DOCS · owner 10 Nov 2026] who signs the account up (absent = the owner): its papers follow it */
+        accountBasis?: 'COMPANY' | 'MANAGER';
         latitude: number;
         longitude: number;
       };

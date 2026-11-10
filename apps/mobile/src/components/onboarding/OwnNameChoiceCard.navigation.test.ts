@@ -44,6 +44,7 @@ vi.mock('../../kit', async () => {
 
 import { OwnNameChoiceCard } from './OwnNameChoiceCard';
 import { BUSINESS_NAME_CHOICE, OWN_NAME_CHOICE, OWN_NAME_DECLARATION_V1, OWN_NAME_TICK } from '../../lib/ownNameCopy';
+import { COMPANY_CHOICE, COMPANY_HINT, MANAGER_HINT, MANAGER_TICK, REGISTERED_HINT, SERVICE_OWNER_CHOICE } from '../../lib/businessBasisCopy';
 
 let host: HTMLDivElement | undefined;
 let root: ReturnType<typeof createRoot> | undefined;
@@ -53,31 +54,35 @@ afterEach(async () => {
 });
 
 /** Every choice the card reports, in order. */
-const chosen: Array<'OWN_NAME' | 'REGISTERED'> = [];
+const chosen: Array<'OWN_NAME' | 'REGISTERED' | 'COMPANY'> = [];
 afterEach(() => { chosen.length = 0; });
 
-/** The store sign-up's own wiring (BusinessSetup.tsx): a choice reported to it sets the basis and clears the tick. */
-function Harness({ storeName }: { storeName: string }) {
-  const [nameBasis, setNameBasis] = React.useState<'OWN_NAME' | 'REGISTERED'>('REGISTERED');
+/** The store sign-up's own wiring (BusinessSetup.tsx): a choice reported to it sets the basis and clears the ticks. */
+function Harness({ storeName, vendorType }: { storeName: string; vendorType?: string }) {
+  const [nameBasis, setNameBasis] = React.useState<'OWN_NAME' | 'REGISTERED' | 'COMPANY'>('REGISTERED');
   const [tick, setTick] = React.useState(false);
+  const [manager, setManager] = React.useState(false);
   return React.createElement(OwnNameChoiceCard, {
-    storeName, nameBasis, ownNameTick: tick,
-    onNameBasis: (basis: 'OWN_NAME' | 'REGISTERED') => { chosen.push(basis); setNameBasis(basis); setTick(false); },
+    storeName, nameBasis, ownNameTick: tick, vendorType, managerNotOwner: manager,
+    onNameBasis: (basis: 'OWN_NAME' | 'REGISTERED' | 'COMPANY') => { chosen.push(basis); setNameBasis(basis); setTick(false); setManager(false); },
     onToggleTick: () => setTick((t) => !t),
+    onToggleManager: () => setManager((m) => !m),
   });
 }
-const mount = async () => {
+const mount = async (vendorType?: string) => {
   host = document.createElement('div'); document.body.append(host); root = createRoot(host);
-  await act(async () => root!.render(React.createElement(Harness, { storeName: 'R. Persaud' })));
+  await act(async () => root!.render(React.createElement(Harness, { storeName: 'R. Persaud', vendorType })));
 };
 const control = (role: string, name: string) =>
   [...host!.querySelectorAll(`button[data-role="${role}"]`)].find((b) => b.getAttribute('aria-label') === name) as HTMLButtonElement | undefined;
 
-describe('[OWNER-ASKS 9 Nov] "What name does your store use?" explains every box', () => {
-  it('the two choices are radio buttons whose words are on screen', async () => {
+describe('[OWNER-ASKS 9 Nov · COMPANY-DOCS 10 Nov] "How is your business set up?" explains every box', () => {
+  it('the three choices are radio buttons whose words are on screen, in the owner’s order', async () => {
     await mount();
-    expect(host!.textContent).toContain('What name does your store use?');
-    for (const words of [OWN_NAME_CHOICE, BUSINESS_NAME_CHOICE]) {
+    expect(host!.textContent).toContain('How is your business set up?');
+    const radios = [...host!.querySelectorAll('button[data-role="radio"]')].map((b) => b.getAttribute('aria-label'));
+    expect(radios).toEqual([COMPANY_CHOICE, BUSINESS_NAME_CHOICE, OWN_NAME_CHOICE]);
+    for (const words of [OWN_NAME_CHOICE, BUSINESS_NAME_CHOICE, COMPANY_CHOICE]) {
       const choice = control('radio', words);
       expect(choice, words).toBeTruthy();
       expect(choice!.textContent).toContain(words);
@@ -121,8 +126,47 @@ describe('[OWNER-ASKS 9 Nov] "What name does your store use?" explains every box
   });
 
   it('the copy is the owner’s', () => {
-    expect(OWN_NAME_CHOICE).toBe('My own name — I’m one person trading under just my surname, with or without my first names or initials (for example “Persaud” or “R. Persaud”)');
-    expect(BUSINESS_NAME_CHOICE).toBe('A registered business name or a company (I have the DCRA certificate)');
+    expect(OWN_NAME_CHOICE).toBe('I trade under my own name — I’m one person trading under just my surname, with or without my first names or initials (for example “Persaud” or “R. Persaud”)');
+    expect(BUSINESS_NAME_CHOICE).toBe('We’re a registered business (a business name registered with the DCRA)');
+    expect(COMPANY_CHOICE).toBe('We’re a registered company (incorporated, for example a “Ltd.” or “Inc.”)');
     expect(OWN_NAME_TICK).toBe('I have read and agree to this declaration.');
+  });
+});
+
+describe('[COMPANY-DOCS · owner 10 Nov 2026] a company, a registered business or its manager: each says what it uploads', () => {
+  it('a company is told its three papers, that one person manages the account, and that branches and staff upload nothing', async () => {
+    await mount();
+    await act(async () => control('radio', COMPANY_CHOICE)!.click());
+    expect(chosen).toEqual(['COMPANY']);
+    const text = host!.textContent!;
+    expect(text).toContain(COMPANY_HINT);
+    expect(COMPANY_HINT).toContain('Certificate of Incorporation');
+    expect(COMPANY_HINT).toContain('One person manages your Swift account');
+    expect(COMPANY_HINT).toContain('your branches and your staff don’t upload anything');
+    expect(COMPANY_HINT).toContain('passport');
+    expect(text).not.toContain('Declaration: I trade under my own name');
+    expect(control('checkbox', MANAGER_TICK)).toBeUndefined();
+  });
+
+  it('a registered business offers “I’m the manager, not the owner”, which changes what it says to upload', async () => {
+    await mount();
+    expect(host!.textContent).toContain(REGISTERED_HINT);
+    const manager = control('checkbox', MANAGER_TICK);
+    expect(manager).toBeTruthy();
+    await act(async () => manager!.click());
+    expect(control('checkbox', MANAGER_TICK)!.getAttribute('data-checked')).toBe('true');
+    expect(host!.textContent).toContain(MANAGER_HINT);
+    expect(MANAGER_HINT).toContain('letter of authority signed by the owner');
+    // another choice drops the manager tick
+    await act(async () => control('radio', COMPANY_CHOICE)!.click());
+    await act(async () => control('radio', BUSINESS_NAME_CHOICE)!.click());
+    expect(control('checkbox', MANAGER_TICK)!.getAttribute('data-checked')).toBe('false');
+  });
+
+  it('a service business is asked only: a registered company, or its owner (no manager, no own name)', async () => {
+    await mount('SERVICE');
+    const radios = [...host!.querySelectorAll('button[data-role="radio"]')].map((b) => b.getAttribute('aria-label'));
+    expect(radios).toEqual([COMPANY_CHOICE, SERVICE_OWNER_CHOICE]);
+    expect(control('checkbox', MANAGER_TICK)).toBeUndefined();
   });
 });
