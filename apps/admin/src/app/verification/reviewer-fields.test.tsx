@@ -146,6 +146,10 @@ describe('[R16] business registration kind', () => {
     expect(screen.queryByLabelText('Year printed on the certificate')).toBeNull();
     // [R3 · review F1] not without the legal name printed on it: customers see it as the seller
     expect(approve().disabled).toBe(true);
+    // [review-2476 F2] the words never read as allowing a person's name for the seller
+    const hint = screen.getByLabelText('Registered name, exactly as printed').closest('label')!.textContent ?? '';
+    expect(hint).toContain('Never the proprietor’s, a director’s or the account holder’s personal name.');
+    expect(hint).not.toMatch(/unless/i);
     await user.type(screen.getByLabelText('Registered name, exactly as printed'), '  Sample Holdings Limited ');
     expect(approve().disabled).toBe(false);
     await user.click(approve());

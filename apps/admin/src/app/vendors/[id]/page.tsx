@@ -159,10 +159,11 @@ function sellerNameLine(s: SellerNameView | null): string {
 /** [R3 · review F4/F7] The explicit answer a person gives before a store name is confirmed as the seller's. Nothing is
  *  pre-chosen. */
 const MATCHES_CERTIFICATE = 'matches';
-function certificateQuestion(name: string) {
+function certificateQuestion(name: string | null) {
   return {
     kind: 'choice' as const, name: 'certificate',
-    label: `Is “${name.trim()}” exactly the registered name on the store’s certificate?`,
+    // [review-2476 F7] a name not typed yet is described, never quoted as if it were the name
+    label: name === null ? 'Is the new name exactly the registered name on the store’s certificate?' : `Is “${name.trim()}” exactly the registered name on the store’s certificate?`,
     options: [
       { value: MATCHES_CERTIFICATE, label: 'Yes: it matches the certificate. Confirm it as the seller’s name.' },
       { value: 'differs', label: 'No, or not checked: do not confirm it. Customers see “Ask the store” until the legal name is typed.' },
@@ -344,7 +345,7 @@ export default function VendorDetailPage({ params }: { params: Promise<{ id: str
     fields: [
       { kind: 'text', name: 'name', label: 'New store name', required: true, minLength: 2, maxLength: 100 },
       // [R3 · review F7] a new name is not a confirmed seller name: the person says whether it matches the certificate
-      certificateQuestion('the new name'),
+      certificateQuestion(null),
     ],
     reason: { hint: 'How the new name was checked. Kept on the permanent record; not sent to the owner.' },
     context,

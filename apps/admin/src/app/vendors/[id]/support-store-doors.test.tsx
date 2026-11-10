@@ -56,6 +56,9 @@ describe('[BUG-HUNT F22] the store page', () => {
     await user.click(await screen.findByRole('button', { name: 'Change name…' }));
     const dialog = screen.getByRole('dialog', { name: 'Change the name of Target Store?' });
     await user.type(within(dialog).getByRole('textbox', { name: 'New store name' }), 'Corner Kitchen');
+    // [review-2476 F7] the question describes the name still to be typed: it never quotes a placeholder as the name
+    expect(within(dialog).getByRole('group', { name: 'Is the new name exactly the registered name on the store’s certificate?' })).toBeTruthy();
+    expect(within(dialog).queryByText(/“the new name”/)).toBeNull();
     // [R3 · review F7] the person says whether the new name matches the certificate: here it is not confirmed
     await user.click(within(dialog).getByRole('radio', { name: /^No, or not checked/ }));
     await user.type(within(dialog).getByRole('textbox', { name: 'Reason' }), 'Checked the new registration certificate');

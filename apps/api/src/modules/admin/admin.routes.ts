@@ -13,7 +13,7 @@ import { withPreviousDecisions } from '../verification/previous-decision';
 import { REVIEW_QUEUE_SELECT, reviewQueueRow } from './review-queue-row';
 import type { FastifyInstance } from 'fastify';
 import { resolveVerificationObject } from '../verification/object-authority';
-import { SELLER_UNNAMED_BASES, sellerNameViews, unnamedLiveStoreIds } from '../verification/storefront-disclosure';
+import { SELLER_NAME_UNCONFIRMED, SELLER_UNNAMED_BASES, sellerNameViews, unnamedLiveStoreIds } from '../verification/storefront-disclosure';
 import { staffInviteAcceptEnabled } from '../vendor/staff-invites';
 import { bindTenantTransaction, runWithoutTenant } from '../../plugins/prisma';
 import { countWaiting, type WaitingKey } from './dashboard-waiting';
@@ -2269,7 +2269,9 @@ export async function adminRoutes(app: FastifyInstance) {
     // [R3 · review F7 · security review] A new name is not a confirmed seller name: the storefront names nobody for it
     // until a person confirms it through PUT /vendors/:id/seller-name, which needs vendor.approve. This door (vendor.edit)
     // never confirms one, whatever it is sent: the console offers that second, separately authorised step.
-    const updated = await app.prisma.vendor.update({ where: { id }, data: { name } });
+    // [review-2476 F3] A rename also ends the old confirmation, so renaming back to a name confirmed earlier confirms
+    // nothing: a confirmation belongs to the moment a person gave it, not to the string.
+    const updated = await app.prisma.vendor.update({ where: { id }, data: { name, ...SELLER_NAME_UNCONFIRMED } });
     await audit(request.user.userId, 'CHANGE_VENDOR_NAME', 'Vendor', id, { from: vendor.name, to: name }, request);
     scheduleVendorSearchSync(app, id);
     await notifications.send({
@@ -7190,9 +7192,16 @@ export async function adminRoutes(app: FastifyInstance) {
     }, {
       // [S2-29 · KYC-DECISION-ATOMIC] The trail commits with the decision, in its transaction: the
       // action row and the canonical admin row. A decision cannot commit without them.
-      within: async (tx, decided) => {
+      within: async (tx, decided, facts) => {
         await auditIn(tx, request.user.userId, 'APPROVE_VERIFICATION_DOC', 'VerificationDocument', id,
           { docType: decided.docType, ...(body.insurance ? { insurance: body.insurance } : {}) }, request);
+        // [R3 · review-2476 F1] The seller's legal name typed from this paper names the seller of every branch of the
+        // account: who set it, when, for which account and paper, and what it replaced (a business name, not a person's).
+        if (facts?.legalName) {
+          const n = facts.legalName;
+          await auditIn(tx, request.user.userId, 'SET_SELLER_LEGAL_NAME', 'VendorOwner', n.vendorOwnerId,
+            { accountId: n.accountId, documentId: decided.id, docType: decided.docType, from: n.from, fromDocumentId: n.fromDocumentId, to: n.to }, request);
+        }
         await auditWithin(tx, request as unknown as AuditRequestLike, app.prefix);
       },
     });

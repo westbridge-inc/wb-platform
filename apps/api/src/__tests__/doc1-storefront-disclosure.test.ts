@@ -24,7 +24,7 @@ import { VerificationService } from '../modules/verification/verification.servic
 import { NotificationService } from '../modules/notification/notification.service';
 import { SandboxKycProvider } from '../providers/kyc/kyc-provider';
 import { seedDocRegistry, registryCode } from '../modules/verification/doc-registry';
-import { compileActivationDisclosure, disclosureGateEngaged, platformOperator } from '../modules/verification/storefront-disclosure';
+import { compileActivationDisclosure, disclosureGateEngaged, platformOperator, sellerNameViews } from '../modules/verification/storefront-disclosure';
 import { documentRecordDdl } from '../modules/verification/document-record';
 import { docStateMachineDdl } from '../modules/verification/doc-state';
 import { installDdl } from './helpers/install-ddl';
@@ -350,6 +350,20 @@ describe('[R3 · review F1] the legal name typed from the registration paper', (
     await approved(userId, 'business_registration');
     await system(() => app.prisma.vendorOwner.update({ where: { userId }, data: { sellerLegalName: 'Not From This Paper Ltd', sellerLegalNameDocId: 'some-other-paper' } }));
     expect(await blockOf(userId, vendorId)).toMatchObject({ legalName: null, pendingPersonCheck: ['legalName'] });
+  });
+
+  // [review-2476 F9] The order of the rule: a chain store whose own (trading) name a person confirmed is still sold by the
+  // company once its legal name is typed from the registration paper.
+  it('[review-2476 F9] a typed legal name names the seller even where the store\'s own name was confirmed: the company, never its trading name', async () => {
+    const { userId, vendorId } = await store(14);
+    const trading = `Sample Chicken Camp Street ${RUN}14`;
+    await setStore(vendorId, { name: trading, sellerNameCheckedName: trading });
+    await approved(userId, 'owner_national_id');
+    expect((await blockOf(userId, vendorId)).legalName).toEqual({ value: trading, source: 'STORE_NAME' });
+    const paper = await submitPaper(userId);
+    await approveTyped(paper.id, { legalName: 'Sample Holdings Limited' });
+    expect((await blockOf(userId, vendorId)).legalName).toEqual({ value: 'Sample Holdings Limited', source: 'REGISTRATION', docType: 'business_registration', recordId: expect.any(String) });
+    expect((await system(() => sellerNameViews(app.prisma, [vendorId]))).get(vendorId)).toEqual({ basis: 'LEGAL_NAME', value: 'Sample Holdings Limited' });
   });
 
   it('[review F6] a person approving an own-name trader\'s store stamps no store-name confirmation, whatever name is sent', async () => {

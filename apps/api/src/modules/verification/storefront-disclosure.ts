@@ -135,6 +135,9 @@ export async function sellerNameViews(db: Db, vendorIds: readonly string[], now 
 /** A live store whose storefront names no seller (not an own-name trader, no legal name typed from its paper, no
  *  confirmed store name): "Ask the store" until a person names it. */
 export const SELLER_UNNAMED_BASES: readonly SellerNameBasis[] = ['AWAITING_PERSON', 'NONE'];
+/** [review-2476 F3] Written with every change of a store's name: a person's confirmation was of the name they saw then,
+ *  so a new name, or a return to a name confirmed earlier, names nobody until a person confirms it again. */
+export const SELLER_NAME_UNCONFIRMED = { sellerNameCheckedName: null, sellerNameCheckedAt: null, sellerNameCheckedById: null } as const;
 /** [review F2] The LIVE stores whose seller is not named yet, for the console badge, its list filter and Today's count
  *  — the same rule the storefront applies. Bounded (a store list, not a scan): at most `cap` live stores are read. */
 export async function unnamedLiveStoreIds(db: Db, cap = 5000): Promise<string[]> {

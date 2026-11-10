@@ -530,7 +530,23 @@ function hireLicenceUploadWords(missing: readonly string[]): string {
  * admin route's audit rows. Called inside the decision transaction, after the decision and its
  * projections, with the decided document; a throw rolls the whole decision back.
  */
-export type DecisionWithin = (tx: Prisma.TransactionClient, decided: VerificationDocument) => Promise<void>;
+export type DecisionWithin = (tx: Prisma.TransactionClient, decided: VerificationDocument, facts?: DecisionFacts) => Promise<void>;
+/** [R3 · review-2476 F1] What a decision changed beyond the paper, for the caller's audit row: the account's seller legal
+ *  name typed from this registration paper (who customers see as the seller of every branch), old and new. */
+export interface DecisionFacts {
+  legalName?: { vendorOwnerId: string; accountId: string; from: string | null; fromDocumentId: string | null; to: string };
+}
+
+/** [R3 · review-2476 F2] A person's full name, compared ignoring case and spaces, first+last and last+first: a seller's
+ *  legal name that is one of these is the account holder's personal name, never a company's or a business's. */
+const nameKey = (s: string) => s.normalize('NFKC').toLowerCase().replace(/\s+/g, '');
+export function isPersonsFullName(typed: string, person: { firstName: string | null; lastName: string | null }): boolean {
+  const first = nameKey(person.firstName ?? '');
+  const last = nameKey(person.lastName ?? '');
+  if (!first && !last) return false;
+  const key = nameKey(typed);
+  return key === `${first}${last}` || key === `${last}${first}`;
+}
 
 /** [S2-29] The one command an approval's outbox row carries: the work that must follow the
  *  reviewer-typed identity capture (which runs on the system login, in its own transaction). */
@@ -1195,6 +1211,22 @@ export class VerificationService {
         throw new AppError(400, 'LEGAL_NAME_REQUIRED',
           'Type the business’s or company’s registered name exactly as it is printed on this paper. Customers see it as the seller.');
       }
+      // [R3 · owner ruling 10 Nov 2026 · review-2476 F2] The seller is the business: a legal name that is the account
+      // holder's own full name is refused for a company's or a manager's account (their seller is never a person), and
+      // for any account on a company's certificate of incorporation (a company's name is never a person's bare name).
+      // An OWNER's business-name registration may register the business under the owner's own name: the server cannot
+      // tell that from a mistyped proprietor's name, so the reviewer's check stands for it.
+      const typedName = typed.legalName?.trim();
+      if (REGISTRATION_DOC_TYPES.includes(candidate.docType) && typedName) {
+        const holder = await this.prisma.user.findUnique({
+          where: { id: candidate.userId }, select: { firstName: true, lastName: true, vendorOwner: { select: { accountBasis: true } } },
+        });
+        const basis = holder?.vendorOwner?.accountBasis ?? 'OWNER';
+        if (holder && isPersonsFullName(typedName, holder) && (basis !== 'OWNER' || typed.registrationKind === 'COMPANY')) {
+          throw new AppError(400, 'LEGAL_NAME_IS_A_PERSON',
+            'That is the account holder’s own name. Type the registered business or company name printed on this paper: never the proprietor’s, a director’s or the account holder’s personal name.');
+        }
+      }
     }
     // Never on any later write: the typed number leaves this method only as the blind index.
     delete typed.documentNumber;
@@ -1227,11 +1259,19 @@ export class VerificationService {
       await this.holdTheLastPaper(tx, unfinished);
       // [R3 · review F1] The legal name typed from THIS registration paper becomes the account's seller name (one per
       // account: every store and branch). Tied to this paper: the storefront shows it only while the paper is VALID.
+      // [review-2476 F1] The name it replaces is read under the row's lock, so the caller's audit row says exactly what
+      // customers saw before (old -> new) and the decision's trail names who set it, for which account and paper.
       const typedLegalName = typed.legalName?.trim();
+      const facts: DecisionFacts = {};
       if (typedLegalName && REGISTRATION_DOC_TYPES.includes(decided.docType)) {
-        await tx.vendorOwner.updateMany({ where: { userId: decided.userId }, data: {
-          sellerLegalName: typedLegalName, sellerLegalNameAt: new Date(), sellerLegalNameById: adminId, sellerLegalNameDocId: decided.id,
-        } });
+        const [held] = await tx.$queryRaw<Array<{ id: string; sellerLegalName: string | null; sellerLegalNameDocId: string | null }>>`
+          SELECT "id", "sellerLegalName", "sellerLegalNameDocId" FROM "vendor_owners" WHERE "userId" = ${decided.userId} FOR UPDATE /* seller-legal-name */`;
+        if (held) {
+          await tx.vendorOwner.update({ where: { id: held.id }, data: {
+            sellerLegalName: typedLegalName, sellerLegalNameAt: new Date(), sellerLegalNameById: adminId, sellerLegalNameDocId: decided.id,
+          } });
+          facts.legalName = { vendorOwnerId: held.id, accountId: decided.userId, from: held.sellerLegalName, fromDocumentId: held.sellerLegalNameDocId, to: typedLegalName };
+        }
       }
       // [S2-29 · KYC-DECISION-ATOMIC] Everything the approval owes commits with it, or none of it does:
       // the approval notice (published after commit), the caller's audit rows, and the outbox row that owes the
@@ -1249,7 +1289,7 @@ export class VerificationService {
         });
         this.projectionNotices.get(tx)?.push(notice.id);
       }
-      if (decision.within) await decision.within(tx, decided);
+      if (decision.within) await decision.within(tx, decided, facts);
     }, async (tx, userId) => { unfinished = await this.unfinishedPartners(tx, userId); }).catch(async (error: unknown) => {
       if (error instanceof AppError && error.code === PARTNER_APPROVAL_HELD) await this.markPaperHeld(docId, adminId);
       throw error;

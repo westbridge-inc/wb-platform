@@ -636,8 +636,8 @@ describe('[F22] the store doors', () => {
 });
 
 // [R3 · review F2/F5/F7] The console reads the server's answer for who the storefront names (F5); a live store that
-// names nobody is flagged, listed by its own filter and counted on Today (F2); a support rename can confirm the new
-// name in the same write (F7).
+// names nobody is flagged, listed by its own filter and counted on Today (F2); a support rename never confirms a seller
+// name: the new name is confirmed only through the seller-name door, a separate step needing vendor.approve (F7).
 describe('[R3] the seller name in the console', () => {
   const detail = async (id: string) => (await app.inject({ method: 'GET', url: `/api/v1/admin/vendors/${id}`, headers: { authorization: `Bearer ${adminToken}` } })).json().data;
   const unnamedList = async (search: string) => (await app.inject({
@@ -684,6 +684,26 @@ describe('[R3] the seller name in the console', () => {
     expect((await detail(store.id)).sellerName).toEqual({ basis: 'NONE', value: null });
     expect((await call('PUT', `/api/v1/admin/vendors/${store.id}/seller-name`, { name: `${store.name} Three` })).statusCode).toBe(200);
     expect((await detail(store.id)).sellerName).toEqual({ basis: 'PERSON_CHECKED', value: `${store.name} Three` });
+  });
+
+  // [review-2476 F3] A confirmation belongs to the moment a person gave it, not to the string: renaming a store away from
+  // its confirmed name and back again leaves it unconfirmed, until a person confirms it again.
+  it('[review-2476 F3] renaming back to a name confirmed earlier does not restore the confirmation', async () => {
+    const owner = await makeUser('RenameBack');
+    const store = await makeStore(owner.id, { status: 'ACTIVE', isVerified: true });
+    const confirmedName = `${store.name} Ltd`;
+    expect((await call('PUT', `/api/v1/admin/vendors/${store.id}/name`, { name: confirmedName })).statusCode).toBe(200);
+    expect((await call('PUT', `/api/v1/admin/vendors/${store.id}/seller-name`, { name: confirmedName })).statusCode).toBe(200);
+    expect((await detail(store.id)).sellerName).toEqual({ basis: 'PERSON_CHECKED', value: confirmedName });
+    expect((await call('PUT', `/api/v1/admin/vendors/${store.id}/name`, { name: `${store.name} Other` })).statusCode).toBe(200);
+    const back = await call('PUT', `/api/v1/admin/vendors/${store.id}/name`, { name: confirmedName });
+    expect(back.statusCode, back.body).toBe(200);
+    expect((await detail(store.id)).sellerName).toEqual({ basis: 'NONE', value: null });
+    expect(await app.prisma.vendor.findUniqueOrThrow({ where: { id: store.id }, select: { name: true, sellerNameCheckedName: true, sellerNameCheckedAt: true, sellerNameCheckedById: true } }))
+      .toEqual({ name: confirmedName, sellerNameCheckedName: null, sellerNameCheckedAt: null, sellerNameCheckedById: null });
+    // a person confirms it again, as a new confirmation
+    expect((await call('PUT', `/api/v1/admin/vendors/${store.id}/seller-name`, { name: confirmedName })).statusCode).toBe(200);
+    expect((await detail(store.id)).sellerName).toEqual({ basis: 'PERSON_CHECKED', value: confirmedName });
   });
 
   // [security review · gate parity] Renaming is vendor.edit; confirming a seller name is vendor.approve. A staffer who may

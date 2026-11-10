@@ -62,6 +62,7 @@ import { LEGAL_VERSION } from '../legal/legal.routes';
 import { OWN_NAME_CONSENT_TYPE, OWN_NAME_DECLARATION_V1, OWN_NAME_DECLARATION_VERSION, OWN_NAME_VENDOR_TYPES, renderOwnNamePdf, storeNameIsOwnName } from './own-name';
 import { FOOD_HANDLERS_CONSENT_TYPE, FOOD_HANDLERS_TICK_V1, FOOD_HANDLERS_VERSION, foodHandlerTickApplies, storeAttested } from './food-handlers';
 import { OWN_NAME_DOC_TYPE } from '../verification/doc-registry';
+import { SELLER_NAME_UNCONFIRMED } from '../verification/storefront-disclosure';
 import { UNREGISTERED_TIER_REMOVED_WORDS, validRegistrationRecord } from './registration-record';
 import { parseCsvWithHeader } from '../../utils/csv';
 import {
@@ -2024,6 +2025,8 @@ export async function vendorRoutes(app: FastifyInstance) {
     // read or write, as the pin is. No shipped app sends them (builds 9-12 send money, number, rule and capacity settings).
     if (supplied && STORE_DETAIL_FIELDS.some((field) => supplied[field] !== undefined)) requireRole(access, 'OWNER');
     const body = updateVendorProfileSchema.parse(request.body);
+    // [review-2476 F3] A new name ends any seller-name confirmation of the old one (renaming back confirms nothing).
+    let renamed = false;
     if (body.name !== undefined) {
       // [MC-PR3] "TEST-" store names belong to test accounts (+5920…) only; an unchanged name is never re-judged.
       const current = await app.prisma.vendor.findUnique({ where: { id: vendorId }, select: { name: true, tradesUnderOwnName: true, isVerified: true, firstLiveAt: true, owner: { select: { user: { select: { phone: true } } } } } });
@@ -2041,6 +2044,7 @@ export async function vendorRoutes(app: FastifyInstance) {
       if (current && (current.firstLiveAt !== null || current.isVerified) && body.name.trim() !== current.name.trim()) {
         throw new AppError(409, 'CHECKED_NAME_RENAME', 'A person at Swift checked your store under this name, so it can’t be changed here. To use a new name, contact Swift support: we check the new name first.');
       }
+      renamed = !!current && body.name.trim() !== current.name.trim();
     }
     // [REVIEW-PARTNER · DL-5] The store-review fiction moves no money: an MMG pay link is
     // refused before it is even read, and before any step-up, write or owner notice.
@@ -2125,6 +2129,7 @@ export async function vendorRoutes(app: FastifyInstance) {
         where: { id: vendorId },
         data: {
           ...(body.name !== undefined && { name: body.name }),
+          ...(renamed && SELLER_NAME_UNCONFIRMED),
           ...(body.description !== undefined && { description: body.description }),
           ...(body.phone !== undefined && { phone: body.phone }),
           ...(body.email !== undefined && { email: body.email }),
