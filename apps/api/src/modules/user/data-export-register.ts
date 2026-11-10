@@ -294,7 +294,7 @@ export const EXPORT_REGISTER: readonly ExportEntry[] = [
   },
   {
     category: 'cardPayments', model: 'CardSession', by: ['userId'], key: 'id',
-    fields: ['id', 'subscriptionId', 'userId', 'purpose', 'status', 'provider', 'environment', 'providerAccount', 'amount', 'currencyCode', 'periodStart', 'expiresAt', 'returnedAt', 'confirmedAt', 'lastCheckedAt', 'consentVersion', 'consentAt', 'failureCode', 'instrumentId', 'paymentId', 'providerTransactionRef', 'completionClaimedAt', 'providerVoidState', 'providerVoidAt', 'providerRefundState', 'providerRefundAt', 'bookClaimedAt', 'resolution', 'resolvedAt', 'createdAt', 'updatedAt'],
+    fields: ['id', 'subscriptionId', 'userId', 'purpose', 'status', 'provider', 'environment', 'providerAccount', 'amount', 'currencyCode', 'periodStart', 'expiresAt', 'returnedAt', 'confirmedAt', 'lastCheckedAt', 'consentVersion', 'consentAt', 'failureCode', 'instrumentId', 'paymentId', 'providerTransactionRef', 'completionClaimedAt', 'providerVoidState', 'providerVoidAt', 'providerVoidRef', 'providerRefundState', 'providerRefundAt', 'bookClaimedAt', 'resolution', 'resolvedAt', 'createdAt', 'updatedAt'],
   },
   {
     category: 'mmgCheckouts', model: 'MmgCheckoutIntent', by: ['createdByUserId'], key: 'id', omit: { candidates: 'SYSTEM' },
@@ -397,6 +397,9 @@ export const EXPORT_REGISTER: readonly ExportEntry[] = [
       'isVerified', 'activationValidUntil', 'tier', 'tierChangedAt', 'status', 'totalOrders', 'nameReviewApprovedAt', 'createdAt', 'updatedAt',
       // [RETIER PR-A] when the store first went live (it decides whether a new fee is priced on its catalogue)
       'firstLiveAt',
+      // [R3 · security review 10 Nov 2026] the store name a person at Swift confirmed as the seller's, and when (the
+      // person who confirmed it is another person: left out by the register's rule for `…ById`)
+      'sellerNameCheckedName', 'sellerNameCheckedAt',
     ],
   },
   {

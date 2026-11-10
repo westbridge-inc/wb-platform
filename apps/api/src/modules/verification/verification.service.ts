@@ -9,7 +9,7 @@ import { EXPIRABLE_DOC_STATES, ExpirySweepReport } from './expiry-sweep-report';
 import { DOCUMENT_REPLACED, isReplacedNote, replacedNoteFor, supersedeAwaitingCopies } from './replace-pending';
 import { approveRegistrantLink, linkedAccountIds, normalizeRegistrationMark, plateClassOf, resolveSubject, rootSubjectId } from './subjects';
 import { POLICE_CLEARANCE_WITHDRAWN_NOTE } from './police-clearance-consent';
-import { ACCOUNT_HOLDER_ID_DOC_TYPE, AUTO_APPROVE_EXPIRY_DAYS, BUCKET_OF, CERTIFICATE_YEAR_DOC_TYPES, FOOD_HANDLER_ATTESTATION_TYPE, isNeverAcceptedDocType, OWN_NAME_DOC_TYPE, OWN_NAME_TIER, PERSON_ONLY_DOC_TYPES, POLICE_CLEARANCE_DOC_TYPE, REGISTRATION_DOC_TYPES, registryCode, type RegistrationKind } from './doc-registry';
+import { ACCOUNT_HOLDER_ID_DOC_TYPE, AUTO_APPROVE_EXPIRY_DAYS, CERTIFICATE_OF_INCORPORATION_DOC_TYPE, BUCKET_OF, CERTIFICATE_YEAR_DOC_TYPES, FOOD_HANDLER_ATTESTATION_TYPE, isNeverAcceptedDocType, OWN_NAME_DOC_TYPE, OWN_NAME_TIER, PERSON_ONLY_DOC_TYPES, POLICE_CLEARANCE_DOC_TYPE, REGISTRATION_DOC_TYPES, registryCode, type RegistrationKind } from './doc-registry';
 import { accountTierOf } from '../vendor/account-basis';
 import { AUTHORITY_LETTER_DOC_TYPES, authorityConfirmationNote, type AuthorityConfirmation } from './authority-confirmation';
 import { guyanaWallClockParts, startOfGuyanaDay } from '../../utils/guyana-day';
@@ -273,6 +273,9 @@ export interface ReviewerTypedInput {
   /** [ROLE-DOCS · owner 21 Oct 2026] An own-name declaration: the reviewer confirms, from the owner's ID, that the store's
    *  name is the owner's true surname with only first names or initials (Business Names (Registration) Act s.3). */
   ownNameConfirmed?: boolean;
+  /** [COMPANY-DOCS · review F3] A company's paper that is a business-NAME registration: the reviewer confirms the proprietor
+   *  named on it is a company (Ltd. or Inc.), never a person (a person's registration is the owner or manager path). */
+  proprietorIsCompany?: boolean;
   /** The reviewer console's contract: the fields this type needs must be typed. */
   required?: boolean;
 }
@@ -1181,6 +1184,12 @@ export class VerificationService {
           'Confirm, from the owner\u2019s ID, that the store\u2019s name is their true surname with nothing added except their first names or initials. If it is not, reject the declaration: the store must register its business name.');
       }
       if (REGISTRATION_DOC_TYPES.includes(candidate.docType) && (typed.required || typed.registrationKind !== undefined)) {
+        // [COMPANY-DOCS · review F3] A company's paper may be a business-name registration only when the proprietor it
+        // names is a company: one that names a person belongs to the owner's (or the manager's) path, never a company's.
+        if (typed.registrationKind === 'BUSINESS_NAME' && candidate.docType === CERTIFICATE_OF_INCORPORATION_DOC_TYPE && typed.proprietorIsCompany !== true) {
+          throw new AppError(400, 'PROPRIETOR_NOT_A_COMPANY',
+            'A business name registration counts for a company only when the proprietor named on it is a company (Ltd. or Inc.). If it names a person, reject it: that business signs up as a registered business, or through its manager.');
+        }
         if (typed.registrationKind === 'BUSINESS_NAME') expiresAt = certificateYearRecheck(typed.certificateYear);
         else if (typed.registrationKind !== 'COMPANY') {
           throw new AppError(400, 'REGISTRATION_KIND_REQUIRED',
@@ -2658,7 +2667,10 @@ export class VerificationService {
    * the named store is projected: the button names one store, so the owner's
    * other stores are left to the document path and the daily belt.
    */
-  async activateStore(userId: string, vendorId: string, onActivated?: (tx: Prisma.TransactionClient) => Promise<void>): Promise<void> {
+  async activateStore(
+    userId: string, vendorId: string, onActivated?: (tx: Prisma.TransactionClient) => Promise<void>,
+    sellerName?: { by: string; name: string },
+  ): Promise<void> {
     await this.projectionTransaction(async (tx) => {
       await tx.$queryRaw`SELECT "id" FROM "users" WHERE "id" = ${userId} FOR NO KEY UPDATE`;
       await tx.$queryRaw`SELECT "id" FROM "vendors" WHERE "id" = ${vendorId} FOR UPDATE`;
@@ -2667,6 +2679,16 @@ export class VerificationService {
       const before = await tx.vendor.findUniqueOrThrow({ where: { id: vendorId }, select: { status: true, owner: { select: { user: { select: { status: true } } } } } });
       if (before.status !== 'PENDING_APPROVAL' || before.owner.user.status !== 'ACTIVE') {
         throw new AppError(409, 'ACTIVATION_HELD', 'The store or owner changed while approving. Refresh its checklist.');
+      }
+      // [R3 · security review 10 Nov 2026] The person approving confirms the store's name as the seller's business or
+      // company name — exactly the name they saw: a never-live store's owner may rename it freely, so a name changed
+      // since is refused, never confirmed unseen. Written in the activation's own transaction: a refused activation
+      // confirms nothing. (No name given: an internal caller; the store's name stays unconfirmed.)
+      if (sellerName) {
+        if (held.name.trim() !== sellerName.name.trim()) {
+          throw new AppError(409, 'SELLER_NAME_CHANGED', `The store's name is now “${held.name.trim()}”. Check that name, then approve again.`);
+        }
+        await tx.vendor.update({ where: { id: vendorId }, data: { sellerNameCheckedName: held.name.trim(), sellerNameCheckedAt: new Date(), sellerNameCheckedById: sellerName.by } });
       }
       // A person is approving this store now (the admin button): a branch waiting for a person goes through.
       await this.projectVendorActivation(tx, userId, { vendorId, personApproved: true });

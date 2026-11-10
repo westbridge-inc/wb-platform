@@ -306,6 +306,28 @@ describe('[MC-PR2] the approve route is a request to the one activation authorit
     expect(live.activationValidUntil?.toISOString()).toBe(bound!.toISOString());
   });
 
+  // [R3 · security review 10 Nov 2026] Approving confirms the store's name as the seller's only when the console sent the
+  // name it showed: no name sent → the store goes live, but nothing is confirmed (its storefront names nobody yet).
+  it('approving without the shown name confirms no seller name; with it, exactly that name, by that person', async () => {
+    const owner = await makeUser('SellerUnseen');
+    const unseen = await makeStore(owner.id);
+    for (const t of SUPERMARKET_DOCS) await doc(owner.id, t, 'APPROVED');
+    expect((await approve(unseen.id)).statusCode).toBe(200);
+    expect(await app.prisma.vendor.findUniqueOrThrow({ where: { id: unseen.id }, select: { status: true, sellerNameCheckedName: true, sellerNameCheckedById: true } }))
+      .toEqual({ status: 'ACTIVE', sellerNameCheckedName: null, sellerNameCheckedById: null });
+
+    const seenOwner = await makeUser('SellerSeen');
+    const seen = await makeStore(seenOwner.id);
+    for (const t of SUPERMARKET_DOCS) await doc(seenOwner.id, t, 'APPROVED');
+    const res = await app.inject({
+      method: 'PUT', url: `/api/v1/admin/vendors/${seen.id}/approve`,
+      headers: { 'x-swift-reason': TEST_ADMIN_REASON, authorization: `Bearer ${adminToken}` }, payload: { sellerName: seen.name },
+    });
+    expect(res.statusCode, res.body).toBe(200);
+    expect(await app.prisma.vendor.findUniqueOrThrow({ where: { id: seen.id }, select: { status: true, sellerNameCheckedName: true, sellerNameCheckedById: true } }))
+      .toEqual({ status: 'ACTIVE', sellerNameCheckedName: seen.name, sellerNameCheckedById: expect.any(String) });
+  });
+
   // [DS816 S3] "Activate now" names one store. The projection it runs used to sweep every store the owner holds, so a
   // second store of the same owner, never shown on the page, went live and started its trial too.
   it('"Activate now" activates the named store only — another store of the same owner is left as it was', async () => {

@@ -29,7 +29,7 @@ import { VerificationService, IDENTITY_FACE_MATCH_DOCS, identityFaceMatchApplies
 import { NotificationService } from '../modules/notification/notification.service';
 import { ManualReviewKycProvider, SandboxKycProvider } from '../providers/kyc/kyc-provider';
 import { approvedIdentityDocumentNumber, reviewerTypedFields } from '../modules/verification/identity-signal-policy';
-import { DEFAULT_DOCUMENT_CHECKLISTS } from '../modules/ops/platform-config';
+import { DEFAULT_DOCUMENT_CHECKLISTS, PLATFORM_CONFIG_VERSION, desiredPlatformConfig } from '../modules/ops/platform-config';
 import {
   ACCOUNT_HOLDER_ID_DOC_TYPE, BUCKET_OF, COMPANY_TIER, FIELD_CATALOGUE, IDENTITY_DOC_TYPES, IMAGE_POLICY_OF_BUCKET, MANAGER_TIER,
   NAME_CHECKED_DOC_TYPES, PERSON_ONLY_DOC_TYPES, REGISTRATION_DOC_TYPES, RETIRED_FIELDS, SELFIE_COMPARE_DOC_TYPES, seedDocRegistry, splitChecklistKey,
@@ -69,6 +69,18 @@ describe('[COMPANY-DOCS] the checklists per kind of sign-up', () => {
     }
     // no manager path for a service business: no registration names its owner
     expect(DEFAULT_DOCUMENT_CHECKLISTS['SERVICE_MANAGER']).toBeUndefined();
+  });
+
+  it('[review F1] a checklist change is a config change: 2026-11-10.1 carries the new lists into the next owner-signed seed', () => {
+    expect(PLATFORM_CONFIG_VERSION).toBe('2026-11-10.1');
+    const desired = desiredPlatformConfig();
+    expect(desired.version).toBe('2026-11-10.1');
+    for (const c of desired.countries) {
+      const lists = c.policy['documentChecklists'] as Record<string, string[]>;
+      for (const key of ['RESTAURANT_COMPANY', 'SUPERMARKET_COMPANY', 'STORE_COMPANY', 'SERVICE_COMPANY', 'RESTAURANT_MANAGER', 'SUPERMARKET_MANAGER', 'STORE_MANAGER']) {
+        expect(lists[key], `${c.code} ${key}`).toEqual(DEFAULT_DOCUMENT_CHECKLISTS[key]);
+      }
+    }
   });
 
   it('the registry reads the new lists as tiers of the same role', () => {
@@ -122,7 +134,7 @@ describe('[COMPANY-DOCS] the account holder’s ID is protected exactly like an 
   });
 
   it('[REVIEW-M #2046 S4 pattern] the vendor_owners column is added under a 10 s lock timeout, existing accounts OWNER', () => {
-    const sql = readFileSync(join(__dirname, '../../prisma/migrations/20261110120000_vendor_account_basis/migration.sql'), 'utf8');
+    const sql = readFileSync(join(__dirname, '../../prisma/migrations/20261110150000_vendor_account_basis/migration.sql'), 'utf8');
     const lock = sql.indexOf("SET lock_timeout = '10s';");
     expect(lock).toBeGreaterThan(-1);
     expect(lock).toBeLessThan(sql.indexOf('ALTER TABLE "vendor_owners"'));
@@ -141,6 +153,10 @@ describe('[COMPANY-DOCS] the review queue says which path a store account signed
     expect(row.user).not.toHaveProperty('vendorOwner');
     expect(row.user?.phone).not.toBe('+5926001234');
     expect(row.reviewerTypes).toEqual(['documentNumber']);
+    // [review] a manager's account says so too
+    const manager = reviewQueueRow({ ...base, docType: 'owner_authority_letter', user: { id: 'u3', firstName: 'E', lastName: 'F', phone: '+5926001236', countryCode: 'GY', driver: null, vendorOwner: { accountBasis: 'MANAGER' } } } as never);
+    expect(manager.accountBasis).toBe('MANAGER');
+    expect(manager.reviewerTypes).toEqual([]);
     const rider = reviewQueueRow({ ...base, user: { id: 'u2', firstName: 'C', lastName: 'D', phone: '+5926001235', countryCode: 'GY', driver: null, vendorOwner: null } } as never);
     expect(rider.accountBasis).toBeNull();
   });
@@ -269,7 +285,8 @@ describe('[COMPANY-DOCS] sign-up: the choice drives the server checklist', () =>
     // a company is never offered the own-name route, and the route refuses it
     expect(Object.values(status.ownNameFits ?? {})).not.toContain(true);
     const own = await call('POST', '/api/v1/vendor/onboarding/own-name', o, { accept: true, attestationVersion: 'v1' });
-    expect(own.statusCode).toBeGreaterThanOrEqual(400);
+    expect(own.statusCode).toBe(409);
+    expect(own.json().error.code).toBe('ACCOUNT_BASIS_OWN_NAME');
   });
 
   it('“I’m the manager, not the owner”: the manager’s ID and the owner’s letter, with the business registration', async () => {
@@ -277,6 +294,11 @@ describe('[COMPANY-DOCS] sign-up: the choice drives the server checklist', () =>
     expect((await become(o, { vendorType: 'STORE', accountBasis: 'MANAGER' })).statusCode).toBeLessThan(300);
     expect(await basisOf(o.userId)).toBe('MANAGER');
     expect((await statusOf(o, 'STORE')).checklist).toEqual(['account_holder_id', 'owner_authority_letter', 'business_registration', 'storefront_photo']);
+    // [review] only the owner trades under their own name: the route refuses a manager's account too
+    const own = await call('POST', '/api/v1/vendor/onboarding/own-name', o, { accept: true, attestationVersion: 'v1' });
+    expect(own.statusCode).toBe(409);
+    expect(own.json().error.code).toBe('ACCOUNT_BASIS_OWN_NAME');
+    expect(Object.values((await statusOf(o, 'STORE')).ownNameFits ?? {})).not.toContain(true);
   });
 
   it('an older app that sends no choice signs up the owner, exactly as before (existing stores unchanged)', async () => {
@@ -332,6 +354,27 @@ describe('[COMPANY-DOCS] storage and the person-checks-it rule', () => {
     const o = await person();
     expect((await become(o, { accountBasis: 'COMPANY' })).statusCode).toBeLessThan(300);
     expect(await identityFaceMatchApplies(app.prisma, ACCOUNT_HOLDER_ID_DOC_TYPE, 'RESTAURANT', o.userId, { FEATURE_BIOMETRIC_FACE_MATCH: '1' })).toBe(false);
+  });
+});
+
+describe('[COMPANY-DOCS · review F3] a company’s business-name registration counts only when its proprietor is a company', () => {
+  it('approving it as a business name needs the reviewer’s word that the proprietor is a company; a company certificate never does', async () => {
+    const o = await person();
+    expect((await become(o, { accountBasis: 'COMPANY' })).statusCode).toBeLessThan(300);
+    const file = async (tag: string) => service.submitDocument(o.userId, 'RESTAURANT', 'certificate_of_incorporation', await ownedVerificationFixture(app.prisma, o.userId, `co-cert-${tag}`), 'v1');
+    const year = new Date().getUTCFullYear();
+    const named = await file('bn');
+    await expect(service.approveDocument(named.id, adminId, undefined, undefined, { registrationKind: 'BUSINESS_NAME', certificateYear: year }))
+      .rejects.toMatchObject({ code: 'PROPRIETOR_NOT_A_COMPANY' });
+    await expect(service.approveDocument(named.id, adminId, undefined, undefined, { registrationKind: 'BUSINESS_NAME', certificateYear: year, proprietorIsCompany: false }))
+      .rejects.toMatchObject({ code: 'PROPRIETOR_NOT_A_COMPANY' });
+    const approved = await service.approveDocument(named.id, adminId, undefined, undefined, { registrationKind: 'BUSINESS_NAME', certificateYear: year, proprietorIsCompany: true });
+    expect(approved.status).toBe('APPROVED');
+    // an owner's own business registration is unchanged: no such word is asked of it
+    const owner = await person();
+    expect((await become(owner, { vendorType: 'STORE' })).statusCode).toBeLessThan(300);
+    const reg = await service.submitDocument(owner.userId, 'STORE', 'business_registration', await ownedVerificationFixture(app.prisma, owner.userId, 'own-bn'), 'v1');
+    expect((await service.approveDocument(reg.id, adminId, undefined, undefined, { registrationKind: 'BUSINESS_NAME', certificateYear: year })).status).toBe('APPROVED');
   });
 });
 

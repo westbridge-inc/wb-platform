@@ -48,7 +48,8 @@ describe('[FOOD-PERMIT] the restaurant lists', () => {
     // [DEPT-PRICE] 2026-10-29.1 carries these lists on, with the department-store fee at 45,000 (dept-price.unit.test.ts);
     // [CHECKLIST-LEGAL] 2026-11-01.1 without the self-declared tier's lists (unregistered-tier-removed.test.ts)
     // [O1] 2026-11-07.1 carries the lists on unchanged (rider-cash-no-limit.test.ts)
-    expect(PLATFORM_CONFIG_VERSION).toBe('2026-11-07.1');
+    // [COMPANY-DOCS] 2026-11-10.1 carries them on, adding only the company and manager lists (company-signup-documents.test.ts)
+    expect(PLATFORM_CONFIG_VERSION).toBe('2026-11-10.1');
   });
 });
 
@@ -107,7 +108,7 @@ describe('[FOOD-PERMIT] the console never makes an unticked restaurant live', ()
 
 describe('[FOOD-PERMIT] the trust badge: a food handler’s certificate on file is said on the store page', () => {
   const block = (docTypes: string[]) => ({
-    complete: true, missing: [], legalName: null, address: null, contact: null,
+    complete: true, missing: [], pendingPersonCheck: [], legalName: null, address: null, contact: null,
     licences: docTypes.map((docType) => ({ value: 'on file', source: 'RECORD', docType })),
     operator: { legalName: 'x', registeredAddress: 'x', supportEmail: 'x' }, compiledAt: new Date(0).toISOString(),
   }) as DisclosureBlock;

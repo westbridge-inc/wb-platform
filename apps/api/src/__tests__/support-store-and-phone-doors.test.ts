@@ -236,6 +236,51 @@ describe('[F22] a checked store name', () => {
   });
 });
 
+// [R3 · owner ruling 10 Nov 2026 · security review] The storefront names the seller by the store's name only once a
+// PERSON at Swift confirmed that exact name as its business or company name. This is the door for a store approved
+// before the check existed (or renamed since); approving a store confirms it too, and only the name the console showed.
+describe('[R3] a person confirms the seller name', () => {
+  const checked = (id: string) => app.prisma.vendor.findUniqueOrThrow({ where: { id }, select: { sellerNameCheckedName: true, sellerNameCheckedAt: true, sellerNameCheckedById: true } });
+
+  it('confirms exactly the name the console showed, with a trail', async () => {
+    const owner = await makeUser('Seller');
+    const store = await makeStore(owner.id, { status: 'ACTIVE', isVerified: true });
+    const res = await call('PUT', `/api/v1/admin/vendors/${store.id}/seller-name`, { name: store.name });
+    expect(res.statusCode, res.body).toBe(200);
+    expect(await checked(store.id)).toMatchObject({ sellerNameCheckedName: store.name, sellerNameCheckedAt: expect.any(Date), sellerNameCheckedById: expect.any(String) });
+    expect(await app.prisma.auditLog.count({ where: { entityId: store.id, action: 'CONFIRM_SELLER_NAME' } })).toBe(1);
+    const again = await call('PUT', `/api/v1/admin/vendors/${store.id}/seller-name`, { name: store.name });
+    expect(again.statusCode).toBe(409);
+    expect(again.json().error.code).toBe('NOTHING_TO_CHANGE');
+  });
+
+  it('a name that is not the store’s name now is refused, and nothing is confirmed', async () => {
+    const owner = await makeUser('Renamed');
+    const store = await makeStore(owner.id, { status: 'ACTIVE', isVerified: true });
+    const res = await call('PUT', `/api/v1/admin/vendors/${store.id}/seller-name`, { name: `${store.name} Ltd` });
+    expect(res.statusCode).toBe(409);
+    expect(res.json().error.code).toBe('SELLER_NAME_CHANGED');
+    expect(await checked(store.id)).toMatchObject({ sellerNameCheckedName: null, sellerNameCheckedAt: null, sellerNameCheckedById: null });
+  });
+
+  it('takes a reason', async () => {
+    const owner = await makeUser('Reasonless');
+    const store = await makeStore(owner.id, { status: 'ACTIVE', isVerified: true });
+    const res = await call('PUT', `/api/v1/admin/vendors/${store.id}/seller-name`, { name: store.name }, null);
+    expect(res.statusCode).toBeGreaterThanOrEqual(400);
+    expect((await checked(store.id)).sellerNameCheckedName).toBeNull();
+  });
+
+  it('approving a store whose name changed since the console showed it is refused before anything happens', async () => {
+    const owner = await makeUser('Approve');
+    const store = await makeStore(owner.id);
+    const res = await call('PUT', `/api/v1/admin/vendors/${store.id}/approve`, { sellerName: `${store.name} Two` });
+    expect(res.statusCode).toBe(409);
+    expect(res.json().error.code).toBe('SELLER_NAME_CHANGED');
+    expect(await app.prisma.vendor.findUniqueOrThrow({ where: { id: store.id }, select: { status: true, sellerNameCheckedName: true } })).toEqual({ status: 'PENDING_APPROVAL', sellerNameCheckedName: null });
+  });
+});
+
 describe('[F22] a person\'s number', () => {
   it('moves only after the code sent to the new number is read back, and every session ends', async () => {
     const person = await makeUser('Phone');

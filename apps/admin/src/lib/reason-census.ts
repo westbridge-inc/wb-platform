@@ -49,6 +49,9 @@ export const REASONED_CALLERS: readonly ReasonCaller[] = [
 
   // ── Vendors and movers ─────────────────────────────────────────────────
   { route: 'PUT /vendors/:id/approve', helper: 'approveVendor', args: ['vnd_1'] },
+  // [R3 · security review 10 Nov 2026] "Activate now" sends the store name it showed; a person confirms the seller name
+  { route: 'PUT /vendors/:id/approve', helper: 'activateVendor', args: ['vnd_1', 'Shown Store Name'], requiredBodyKeys: ['sellerName'] },
+  { route: 'PUT /vendors/:id/seller-name', helper: 'confirmSellerName', args: ['vnd_1', 'Shown Store Name'], requiredBodyKeys: ['name'] },
   { route: 'PUT /vendors/:id/suspend', helper: 'suspendVendor', args: ['vnd_1'] },
   { route: 'PUT /vendors/:id/type', helper: 'changeStoreType', args: ['vnd_1', 'STORE'], requiredBodyKeys: ['vendorType'] },
   { route: 'PUT /vendors/:id/name', helper: 'changeStoreName', args: ['vnd_1', 'New Name'], requiredBodyKeys: ['name'] },

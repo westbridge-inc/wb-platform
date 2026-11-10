@@ -12,10 +12,25 @@ import {
   minorOfTotalAmount,
   powerTranzConfigFromEnv,
   readCompletion,
+  readAuthenticationReturn,
+  readTransactionRecord,
+  returnEvidence,
   totalAmountOf,
+  voidDateOf,
+  RECORD_ZONE,
+  SELF_CHECK_PAGE_LINE,
+  SELF_CHECK_PAGE_OPENS,
+  VOID_DATE_SKEW_MS,
+  hostedPageAnswer,
+  redirectForm,
   type PowerTranzConfig,
 } from '../providers/card/powertranz-provider';
-import { CardBindingMismatchError } from '../providers/card/card-provider';
+import {
+  STAGING_AMOUNT_MINOR, STAGING_CARD_SUFFIX, STAGING_ORDER, STAGING_READ_AT_MS, STAGING_RETURN_SECRETS, leaksCardSuffix, STAGING_SESSION_AT_MS, STAGING_TXN, STAGING_VOID_AT_MS,
+  STAGING_VOID_DATE_TIME, STAGING_HPP_HTML, STAGING_VOID_TXN, stagingAuthenticatedRecord, stagingConductorNotFoundHtml, stagingPageNotFoundPost,
+  stagingPreprocessedRecord, stagingReturnPost, stagingSaleRecord, stagingVoidRecord,
+} from './fixtures/powertranz-staging-shapes';
+import { CardBindingMismatchError, rawDigest } from '../providers/card/card-provider';
 import { createHash, randomUUID } from 'node:crypto';
 import { CARD_ON_FILE_CONSENT_SHA256, CARD_ON_FILE_CONSENT_TEXT, CARD_ON_FILE_CONSENT_VERSION, failureCodeOf } from '../modules/billing/card-rail.service';
 
@@ -68,6 +83,8 @@ function gateway(routes: Record<string, Responder>) {
     const answer = responder(call);
     if (answer === 'network') throw new TypeError('fetch failed');
     if (answer === 'timeout') { const e = new Error('aborted'); e.name = 'AbortError'; throw e; }
+    // A 204 has no body at all (the real lookup of an unknown transaction).
+    if (answer.status === 204) return new Response(null, { status: 204 });
     return new Response(typeof answer.body === 'string' ? answer.body : JSON.stringify(answer.body), { status: answer.status });
   }) as unknown as typeof globalThis.fetch;
   return { fetch: fakeFetch, calls, paths: () => calls.map((c) => new URL(c.url).pathname) };
@@ -87,12 +104,14 @@ const preprocessed = (call: Call) => {
   };
 };
 
-/** sec. 7.3: the completion answer for the held page (its transaction and order). */
+/** sec. 7.3: the completion answer for the held page (its transaction and order), in the shape of PowerTranz's own
+ *  "/Payment Response" sample (the HPP guides): NO RiskManagement — the real sandbox's approval had none either
+ *  [CARD-STAGING-TEST B2]. It carries a PanToken, which Swift never keeps. */
 const completion = (fields: Record<string, unknown>) => (page: { txnId: string; orderId: string }) => ({
   status: 200,
   body: {
     TransactionType: 2, Approved: true, AuthorizationCode: '123456', TransactionIdentifier: page.txnId, OrderIdentifier: page.orderId, TotalAmount: 2100, CurrencyCode: '328', RRN: '000000000001', CardBrand: 'Visa', IsoResponseCode: '00', ResponseMessage: 'Transaction is approved.',
-    RiskManagement: { ThreeDSecure: { Eci: '05', AuthenticationStatus: 'Y', ResponseCode: '3D0' } }, // sec. 6: present in every response
+    PanToken: 'synthetic-pan-token-never-kept',
     ...fields,
   },
 });
@@ -262,6 +281,14 @@ describe('configuration (secrets named, never echoed)', () => {
       [{ ...base, POWERTRANZ_PASSWORD: '' }, /POWERTRANZ_PASSWORD/],
       [{ ...base, POWERTRANZ_GATEWAY_KEY: 'not-a-guid' }, /POWERTRANZ_GATEWAY_KEY/],
       [{ ...base, POWERTRANZ_PAGE_SET: '' }, /POWERTRANZ_PAGE_SET/],
+      // [CARD-STAGING-TEST 10 Nov 2026] PowerTranz's hosted page guide: a portal page set MUST be sent with "PTZ/"
+      // (without it: 757 "Hosted page not found"). Never added for the owner: refused, naming the setting.
+      [{ ...base, POWERTRANZ_PAGE_SET: 'SWIFT' }, /POWERTRANZ_PAGE_SET must start with PTZ\//],
+      [{ ...base, POWERTRANZ_PAGE_SET: 'ptz/SWIFT' }, /POWERTRANZ_PAGE_SET must start with PTZ\//],
+      [{ ...base, POWERTRANZ_PAGE_SET: 'PTZ/' }, /POWERTRANZ_PAGE_SET must start with PTZ\//],
+      [{ ...base, POWERTRANZ_PAGE_SET: 'PTZ/ ' }, /POWERTRANZ_PAGE_SET must start with PTZ\//],
+      [{ ...base, POWERTRANZ_PAGE_SET: ' PTZ/SWIFT' }, /POWERTRANZ_PAGE_SET must start with PTZ\//],
+      [{ ...base, POWERTRANZ_PAGE_SET: 'SWIFT/PTZ/' }, /POWERTRANZ_PAGE_SET must start with PTZ\//],
       [{ ...base, API_PUBLIC_URL: 'http://api.example.test' }, /API_PUBLIC_URL/],
       [{ ...base, CARD_RAIL_ACCOUNT: 'has spaces' }, /CARD_RAIL_ACCOUNT/],
       [{ ...base, CARD_RAIL_ENVIRONMENT: undefined }, /CARD_RAIL_ENVIRONMENT/],
@@ -276,6 +303,8 @@ describe('configuration (secrets named, never echoed)', () => {
     expect(powerTranzConfigFromEnv({ ...base, NODE_ENV: 'production', CARD_RAIL_ENVIRONMENT: 'live', POWERTRANZ_API_URL: 'https://gateway.ptranz.com' }))
       .toMatchObject({ environment: 'live', apiRoot: 'https://gateway.ptranz.com' });
     expect(() => powerTranzConfigFromEnv({ ...base, NODE_ENV: 'production', CARD_RAIL_ENVIRONMENT: 'live', POWERTRANZ_API_URL: 'https://gateway.example.com' })).toThrow(/ptranz\.com/);
+    // The set is sent exactly as written: PTZ/SWIFT stays PTZ/SWIFT.
+    expect(powerTranzConfigFromEnv({ ...base, POWERTRANZ_PAGE_SET: 'PTZ/SWIFT' })).toMatchObject({ pageSet: 'PTZ/SWIFT' });
   });
 });
 
@@ -489,14 +518,45 @@ describe('confirm: the completion is the money truth, sent at most once (sec. 2.
     }
   });
 
-  it('[review S2-2] an approval Swift cannot book (no 3-D Secure proof of its own, as the guide\'s own sample shows it) is voidable, never succeeded', async () => {
+  it('[CARD-STAGING-TEST B2 · OWNER RULING 10 Nov 2026] PowerTranz\'s own approval of the completion, with NO 3-D Secure block (as its sample and the real sandbox answer it), is booked — it was voided before', async () => {
     let page!: Awaited<ReturnType<typeof openPage>>;
     const gw = gateway({ '/api/spi/sale': preprocessed, '/api/spi/payment': () => completion({ RiskManagement: undefined })(page) });
     const p = provider(gw);
     page = await openPage(p);
     await p.noteReturn({ binding: p.binding, providerSessionRef: page.ref, params: authResult(page, { AuthenticationStatus: 'Y' }) });
+    const outcome = await p.confirm({ binding: p.binding, providerSessionRef: page.ref, purpose: 'PAY_NOW' });
+    expect(outcome).toMatchObject({ status: 'succeeded', providerRef: page.txnId, amountMinor: 210_000, currencyCode: 'GYD' });
+    expect(outcome).not.toHaveProperty('voidable');
+  });
+
+  it('[review S2-2] an approval whose OWN 3-D Secure block says the cardholder was not authenticated contradicts itself: voidable, never succeeded', async () => {
+    let page!: Awaited<ReturnType<typeof openPage>>;
+    const gw = gateway({ '/api/spi/sale': preprocessed, '/api/spi/payment': () => completion({ RiskManagement: { ThreeDSecure: { Eci: '07', AuthenticationStatus: 'N' } } })(page) });
+    const p = provider(gw);
+    page = await openPage(p);
+    await p.noteReturn({ binding: p.binding, providerSessionRef: page.ref, params: authResult(page, { AuthenticationStatus: 'Y' }) });
     expect(await p.confirm({ binding: p.binding, providerSessionRef: page.ref, purpose: 'PAY_NOW' }))
-      .toMatchObject({ status: 'unknown', reason: expect.stringMatching(/^APPROVED_UNAUTHENTICATED_/), voidable: { providerRef: page.txnId } });
+      .toMatchObject({ status: 'unknown', reason: 'APPROVED_UNAUTHENTICATED_SERVER_3DS_N', voidable: { providerRef: page.txnId } });
+  });
+
+  it('[OWNER RULING 10 Nov 2026] the Sale is always sent with ThreeDSecure true, and a page whose record does not say so is never completed: failed, nothing sent', async () => {
+    let page!: Awaited<ReturnType<typeof openPage>>;
+    const gw = gateway({ '/api/spi/sale': preprocessed, '/api/spi/payment': () => completion({})(page) });
+    const p = provider(gw);
+    page = await openPage(p);
+    expect(JSON.parse(gw.calls[0]!.body ?? '{}')).toMatchObject({ ThreeDSecure: true });
+    const k = `${PREFIX}s:${page.ref}`;
+    expect(await redis.hget(k, 'threeDSecure')).toBe('true');
+    for (const marker of [null, 'false']) {
+      const other = await openPage(p);
+      const key = `${PREFIX}s:${other.ref}`;
+      if (marker === null) await redis.hdel(key, 'threeDSecure'); else await redis.hset(key, 'threeDSecure', marker);
+      await p.noteReturn({ binding: p.binding, providerSessionRef: other.ref, params: authResult(other, { AuthenticationStatus: 'Y' }) });
+      expect(await p.confirm({ binding: p.binding, providerSessionRef: other.ref, purpose: 'PAY_NOW' }), String(marker))
+        .toMatchObject({ status: 'failed', reason: 'NOT_AUTHENTICATED:SALE_NOT_3DS' });
+    }
+    expect(gw.paths()).not.toContain('/api/spi/payment');
+    expect(failureCodeOf('NOT_AUTHENTICATED:SALE_NOT_3DS')).toBe('NOT_AUTHENTICATED');
   });
 
   it('[review S4] the completion is never sent after the SpiToken\'s five minutes (sec. 2.2 1.7): failed, nothing sent', async () => {
@@ -534,32 +594,63 @@ describe('confirm: the completion is the money truth, sent at most once (sec. 2.
   });
 });
 
-describe('reading the completion (sec. 6, Appendix 1): booked only on full proof; money that may have moved is voided, never booked', () => {
+describe('reading the completion (sec. 6, Appendix 1): booked only on PowerTranz\'s own approval; money that may have moved is voided, never booked', () => {
   const held = { txnId: 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa', orderId: 'SWIFT-cs_1', amountMinor: 210_000, currencyCode: 'GYD' };
+  /** PowerTranz's own "/Payment Response" sample (the HPP guides), for this page: no RiskManagement. */
   const approved = {
-    TransactionType: 2, Approved: true, IsoResponseCode: '00', TransactionIdentifier: held.txnId, OrderIdentifier: held.orderId,
-    TotalAmount: 2100, CurrencyCode: '328', RiskManagement: { ThreeDSecure: { AuthenticationStatus: 'Y', Eci: '05' } },
+    TransactionType: 2, Approved: true, AuthorizationCode: '123456', TransactionIdentifier: held.txnId, TotalAmount: 2100, CurrencyCode: '328',
+    RRN: '307522590956', CardBrand: 'Visa', IsoResponseCode: '00', ResponseMessage: 'Transaction is approved', PanToken: 'synthetic-pan-token-never-kept',
+    OrderIdentifier: held.orderId,
   };
   const unbookable = (json: unknown) => readCompletion(json, held).status;
-  it('approved 00, this Sale, this order, this amount, with its own 3-D Secure proof: succeeded', () => {
-    expect(readCompletion(approved, held)).toEqual({ status: 'succeeded', amountMinor: 210_000, currencyCode: 'GYD', completionEvidence: expect.objectContaining({ Approved: true, RiskManagement: { ThreeDSecure: { AuthenticationStatus: 'Y', Eci: '05' } } }) });
+  it('[OWNER RULING 10 Nov 2026] approved 00, this Sale, this order, this amount: succeeded — the stored proof is the approval itself (no token, nothing personal, no 3-D Secure field required)', () => {
+    const reading = readCompletion(approved, held);
+    expect(reading).toEqual({ status: 'succeeded', amountMinor: 210_000, currencyCode: 'GYD', completionEvidence: {
+      Approved: true, IsoResponseCode: '00', TransactionType: 2, TransactionIdentifier: held.txnId, OrderIdentifier: held.orderId, TotalAmount: 2100, CurrencyCode: '328', CardBrand: 'Visa',
+    } });
+    expect(JSON.stringify(reading)).not.toMatch(/synthetic-pan-token|307522590956|123456/);
     expect(readCompletion({ ...approved, TransactionIdentifier: undefined, OriginalTrxnIdentifier: held.txnId }, held).status).toBe('succeeded');
     expect(readCompletion({ ...approved, TransactionType: '2' }, held).status).toBe('succeeded');
+    // The stored approval re-reads as the same approval (outcomeOf, the lookup and finance's BOOK re-check it).
+    if (reading.status !== 'succeeded') throw new Error('unreachable');
+    expect(readCompletion(reading.completionEvidence, held)).toEqual(reading);
+    // Evidence stored before the ruling (with the 3-D Secure fields then required) still reads as an approval.
+    expect(readCompletion({ ...reading.completionEvidence, RiskManagement: { ThreeDSecure: { AuthenticationStatus: 'Y', Eci: '05' } } }, held).status).toBe('succeeded');
   });
-  it('[3DS] approved 00 is booked only on PowerTranz\'s OWN 3-D Secure proof (sec. 6, 8.3, 8.4): Y or A, never N / U / R / absent / a failed ECI — those are voided', () => {
+  it('[3DS] a 3-D Secure block on PowerTranz\'s OWN answer is not required — but one that says the cardholder was NOT authenticated (N / U / R, a failed ECI, an unreadable block) contradicts the approval: voided', () => {
     expect(readCompletion({ ...approved, RiskManagement: { ThreeDSecure: { AuthenticationStatus: 'A', Eci: '06' } } }, held).status).toBe('succeeded');
-    for (const tds of [{ AuthenticationStatus: 'N' }, { AuthenticationStatus: 'U' }, { AuthenticationStatus: 'R' }, {}, { AuthenticationStatus: 'Y', Eci: '07' }, { AuthenticationStatus: 'Y', Eci: '00' }]) {
+    expect(readCompletion({ ...approved, RiskManagement: { ThreeDSecure: { AuthenticationStatus: 'Y', Eci: '05' } } }, held).status).toBe('succeeded');
+    for (const absent of [undefined, null, {}, { ThreeDSecure: null }, { ThreeDSecure: {} }]) {
+      expect(readCompletion({ ...approved, RiskManagement: absent }, held).status, JSON.stringify(absent)).toBe('succeeded');
+    }
+    for (const tds of [{ AuthenticationStatus: 'N' }, { AuthenticationStatus: 'U' }, { AuthenticationStatus: 'R' }, { AuthenticationStatus: '' }, { AuthenticationStatus: 'Y', Eci: '07' }, { AuthenticationStatus: 'Y', Eci: '00' }]) {
       expect(readCompletion({ ...approved, RiskManagement: { ThreeDSecure: tds } }, held), JSON.stringify(tds)).toMatchObject({ status: 'unbookable', reason: expect.stringMatching(/^APPROVED_UNAUTHENTICATED_/) });
     }
-    expect(unbookable({ ...approved, RiskManagement: undefined })).toBe('unbookable');
+    // [REVIEW-2466-A F1] Its own ResponseCode counts too: 3D1 (not available), 3D3 (an error) or any code but 3D0, even
+    // with no status or ECI beside it, says no authentication took place.
+    for (const [tds, reason] of [
+      [{ ResponseCode: '3D1' }, 'APPROVED_UNAUTHENTICATED_SERVER_3DS_3D1'],
+      [{ ResponseCode: '3D3' }, 'APPROVED_UNAUTHENTICATED_SERVER_3DS_3D3'],
+      [{ ResponseCode: '3D6', AuthenticationStatus: 'Y', Eci: '05' }, 'APPROVED_UNAUTHENTICATED_SERVER_3DS_3D6'],
+      [{ ResponseCode: '' }, 'APPROVED_UNAUTHENTICATED_SERVER_3DS_UNREADABLE'],
+    ] as const) {
+      expect(readCompletion({ ...approved, RiskManagement: { ThreeDSecure: tds } }, held), JSON.stringify(tds)).toMatchObject({ status: 'unbookable', reason });
+    }
+    expect(readCompletion({ ...approved, RiskManagement: { ThreeDSecure: { ResponseCode: '3D0', AuthenticationStatus: 'Y', Eci: '05' } } }, held).status).toBe('succeeded');
+    expect(readCompletion({ ...approved, RiskManagement: { ThreeDSecure: { ResponseCode: '3D0' } } }, held).status).toBe('succeeded');
+    for (const rm of ['Y', 7, { ThreeDSecure: 'Y' }]) {
+      expect(readCompletion({ ...approved, RiskManagement: rm }, held), JSON.stringify(rm)).toMatchObject({ status: 'unbookable', reason: 'APPROVED_UNAUTHENTICATED_SERVER_3DS_UNREADABLE' });
+    }
   });
-  it('[Opus S4-c · sec. 8.4, 5] the ECI is an ALLOW-list: only a success or attempt value (Visa/Amex 05, 06; Mastercard 02, 01) proves 3-D Secure; a Y or A without an ECI is held, never booked', () => {
-    const tds = (fields: Record<string, unknown>, brand?: string) => ({ ...approved, ...(brand === undefined ? {} : { CardBrand: brand }), RiskManagement: { ThreeDSecure: { AuthenticationStatus: 'Y', ...fields } } });
+  it('[Opus S4-c · sec. 8.4, 5] an ECI the answer DOES carry is an ALLOW-list: only a success or attempt value (Visa/Amex 05, 06; Mastercard 02, 01) agrees with the approval; a Y or A without an ECI contradicts nothing', () => {
+    const tds = (fields: Record<string, unknown>, brand?: string) => ({ ...approved, CardBrand: brand, RiskManagement: { ThreeDSecure: { AuthenticationStatus: 'Y', ...fields } } });
     // No brand in the answer: the documented success and attempt values of every brand (they do not collide).
     for (const eci of ['05', '06', '02', '01']) expect(readCompletion(tds({ Eci: eci }), held).status, eci).toBe('succeeded');
     expect(readCompletion({ ...tds({ Eci: '01' }), RiskManagement: { ThreeDSecure: { AuthenticationStatus: 'A', Eci: '01' } } }, held).status).toBe('succeeded');
-    // Failed or not 3-D Secure (07, 00), a non-payment authentication (N2, N0), anything undocumented, or no ECI at all: voided or held.
-    for (const fields of [{}, { Eci: '' }, { Eci: '07' }, { Eci: '00' }, { Eci: 'N2' }, { Eci: 'N0' }, { Eci: '03' }, { Eci: '99' }, { Eci: 'Y' }, { Eci: null }, { Eci: 2.5 }]) {
+    // No ECI at all contradicts nothing (OWNER RULING 10 Nov 2026: the approval is the proof).
+    for (const fields of [{}, { Eci: null }]) expect(readCompletion(tds(fields), held).status, JSON.stringify(fields)).toBe('succeeded');
+    // Failed or not 3-D Secure (07, 00), a non-payment authentication (N2, N0), anything undocumented or unreadable: voided or held.
+    for (const fields of [{ Eci: '' }, { Eci: '07' }, { Eci: '00' }, { Eci: 'N2' }, { Eci: 'N0' }, { Eci: '03' }, { Eci: '99' }, { Eci: 'Y' }, { Eci: 2.5 }]) {
       expect(readCompletion(tds(fields), held), JSON.stringify(fields)).toMatchObject({ status: 'unbookable', reason: expect.stringMatching(/^APPROVED_UNAUTHENTICATED_SERVER_ECI_/) });
     }
     // The answer names the brand: only that brand's own values count.
@@ -573,9 +664,10 @@ describe('reading the completion (sec. 6, Appendix 1): booked only on full proof
     // An unrecognised brand name falls back to the every-brand values, never to "anything".
     expect(readCompletion(tds({ Eci: '05' }, 'Discover'), held).status).toBe('succeeded');
     expect(readCompletion(tds({ Eci: '07' }, 'Discover'), held).status).toBe('unbookable');
-    // The stored proof always carries its ECI.
+    // The stored proof is the approval: it never carries the 3-D Secure block, only the brand that judged it.
     const ok = readCompletion(tds({ Eci: 2 }, 'Mastercard'), held);
-    expect(ok).toMatchObject({ status: 'succeeded', completionEvidence: { RiskManagement: { ThreeDSecure: { AuthenticationStatus: 'Y', Eci: '02' } } } });
+    expect(ok).toMatchObject({ status: 'succeeded', completionEvidence: { CardBrand: 'Mastercard' } });
+    expect(ok.status === 'succeeded' && ok.completionEvidence).not.toHaveProperty('RiskManagement');
   });
   it('[review S4] a numeric ECI is read like its text: 5 is authenticated, 7 is not', () => {
     expect(readCompletion({ ...approved, RiskManagement: { ThreeDSecure: { AuthenticationStatus: 'Y', Eci: 5 } } }, held).status).toBe('succeeded');
@@ -684,9 +776,20 @@ describe('the owner\'s self-check: OK / FAIL lines only', () => {
       '/api/alive': () => ({ status: 200, body: { ok: true } }),
       '/api/spi/riskmgmt': () => ({ status: 200, body: { Approved: false, IsoResponseCode: '97', Errors: [{ Code: '37', Message: 'Missing field(s)' }] } }),
       '/api/spi/sale': preprocessed,
+      '/hpp': () => ({ status: 200, body: STAGING_HPP_HTML }),
     });
     const lines = await provider(gw).selfCheck({ preprocess: true, returnUrl: RETURN_URL });
-    expect(lines).toEqual([{ check: 'gateway reachable', ok: true }, { check: 'credentials accepted', ok: true }, { check: 'hosted payment page set up', ok: true }]);
+    expect(lines).toEqual([
+      { check: 'gateway reachable', ok: true }, { check: 'credentials accepted', ok: true }, { check: SELF_CHECK_PAGE_LINE, ok: true },
+      { check: SELF_CHECK_PAGE_OPENS.shown, ok: true },
+    ]);
+    // The page is opened as the browser opens it: RedirectData's form, posted once to the API root's own origin.
+    const opened = gw.calls.find((c) => c.url.endsWith('/hpp'))!;
+    expect(opened).toMatchObject({ url: 'https://staging.ptranz.com/hpp', method: 'POST', body: 't=synthetic' });
+    expect(opened.headers['content-type']).toBe('application/x-www-form-urlencoded');
+    // [CARD-STAGING-TEST 10 Nov 2026] SP4 is no proof the page exists (the sandbox preprocessed a set without PTZ/
+    // and refused the page only in the browser): that line claims SP4 only, and the page has its own line.
+    expect(SELF_CHECK_PAGE_LINE).toBe('a sale with this hosted page is preprocessed (SP4)');
     expect(gw.paths()).not.toContain('/api/spi/payment'); // a self-check never completes anything
   });
   it('invalid credentials (Appendix 1: 89 / 312) or an unreachable gateway: FAIL', async () => {
@@ -698,6 +801,57 @@ describe('the owner\'s self-check: OK / FAIL lines only', () => {
     const lines = await provider(gw).selfCheck({ preprocess: true, returnUrl: RETURN_URL });
     expect(lines.map((l) => l.ok)).toEqual([false, false, false]);
     expect(JSON.stringify(lines)).not.toContain('test-password-not-real');
+  });
+
+  it('[CARD-STAGING-TEST 10 Nov 2026] SP4 is no proof the page exists: a page PowerTranz cannot find (757, posted straight back) FAILs, naming the settings to check; an unreadable or foreign answer is "could not tell", never OK', async () => {
+    const run = async (hpp: (call: Call) => ReturnType<Responder>, redirect?: string) => {
+      const gw = gateway({
+        '/api/alive': () => ({ status: 200, body: {} }),
+        '/api/spi/riskmgmt': () => ({ status: 200, body: { Approved: false, IsoResponseCode: '97' } }),
+        '/api/spi/sale': (call) => {
+          const answer = preprocessed(call);
+          return redirect === undefined ? answer : { ...answer, body: { ...answer.body, RedirectData: redirect } };
+        },
+        '/hpp': hpp,
+      });
+      const lines = await provider(gw).selfCheck({ preprocess: true, returnUrl: RETURN_URL });
+      return { lines, gw };
+    };
+    const notFound = await run(() => ({ status: 200, body: stagingConductorNotFoundHtml(RETURN_URL, { txn: STAGING_TXN, order: STAGING_ORDER, spiToken: 'spi-x' }) }));
+    expect(notFound.lines.slice(2)).toEqual([{ check: SELF_CHECK_PAGE_LINE, ok: true }, { check: SELF_CHECK_PAGE_OPENS.not_found, ok: false }]);
+    expect(SELF_CHECK_PAGE_OPENS.not_found).toMatch(/POWERTRANZ_PAGE_SET, with PTZ\/, and POWERTRANZ_PAGE_NAME/);
+    expect(JSON.stringify(notFound.lines)).not.toMatch(/757|Hosted page not found/); // the provider's own words are never printed
+    for (const [hpp, redirect, expected] of [
+      [() => ({ status: 200, body: '<html><body>Under maintenance</body></html>' }), undefined, 'could_not_tell'],
+      [() => ({ status: 500, body: STAGING_HPP_HTML }), undefined, 'could_not_tell'],
+      [() => 'timeout', undefined, 'could_not_tell'],
+      // A post-back with another error than 757: refused.
+      [() => ({ status: 200, body: stagingConductorNotFoundHtml(RETURN_URL, { txn: STAGING_TXN, order: STAGING_ORDER, spiToken: 'x' }).replace('757', '758') }), undefined, 'refused'],
+      // RedirectData that is not one POST form, or posts anywhere but PowerTranz's own API origin: never opened.
+      [() => ({ status: 200, body: STAGING_HPP_HTML }), '<html><body>no form</body></html>', 'could_not_tell'],
+      [() => ({ status: 200, body: STAGING_HPP_HTML }), '<form method="post" action="https://evil.example.test/hpp"><input name="t" value="x"></form>', 'could_not_tell'],
+      [() => ({ status: 200, body: STAGING_HPP_HTML }), '<form method="get" action="https://staging.ptranz.com/hpp"></form>', 'could_not_tell'],
+    ] as const) {
+      const { lines, gw } = await run(hpp as never, redirect);
+      expect(lines.at(-1), String(expected)).toEqual({ check: SELF_CHECK_PAGE_OPENS[expected], ok: false });
+      expect(gw.calls.some((c) => c.url.startsWith('https://evil.example.test')), String(expected)).toBe(false);
+    }
+  });
+
+  it('[CARD-STAGING-TEST] reading RedirectData and the opened page (pure)', () => {
+    expect(redirectForm('<form id="f" method="post" action="https://staging.ptranz.com/api/spi/Conductor"><input type="hidden" name="SpiToken" value="a&amp;b"><input name="x"></form><script>f.submit()</script>'))
+      .toEqual({ action: 'https://staging.ptranz.com/api/spi/Conductor', fields: [['SpiToken', 'a&b'], ['x', '']] });
+    expect(redirectForm('<form method="POST" action="/a"></form><form method="POST" action="/b"></form>')).toBeNull();
+    const base = 'https://staging.ptranz.com/api/spi/Conductor';
+    expect(hostedPageAnswer(STAGING_HPP_HTML, RETURN_URL, base)).toBe('shown');
+    expect(hostedPageAnswer(stagingConductorNotFoundHtml(RETURN_URL, { txn: 't', order: 'o', spiToken: 's' }), RETURN_URL, base)).toBe('not_found');
+    // A form posting back to the return address is no card form, whatever it carries.
+    expect(hostedPageAnswer(`<form method="POST" action="${RETURN_URL.replace(/&/g, '&amp;')}"><input type="hidden" name="X" value="1"></form>`, RETURN_URL, base)).toBe('refused');
+    expect(hostedPageAnswer('<p>nothing to type into</p>', RETURN_URL, base)).toBe('could_not_tell');
+    // [REVIEW-2466-B F5] Inputs alone are not PowerTranz's card form: its card-number and security-code fields must be there.
+    expect(hostedPageAnswer('<form method="POST" action="/login"><input name="user"><input type="password" name="pw"></form>', RETURN_URL, base)).toBe('could_not_tell');
+    expect(hostedPageAnswer('<input name="CardNo">', RETURN_URL, base)).toBe('could_not_tell');
+    expect(hostedPageAnswer('<div><input type="tel" name=\'CardNo\'><input type=tel name=CardCVV2></div>', RETURN_URL, base)).toBe('shown');
   });
 });
 
@@ -722,13 +876,11 @@ describe('[CARD-LOOKUP] the transaction lookup: read strictly, judged against wh
   const order = 'SWIFT-cs_lookup_synthetic';
   const ask = (p: PowerTranzCardRailProvider, providerRef = txn) =>
     p.lookupTransaction({ binding: p.binding, providerRef, orderRef: order, amountMinor: 210_000, currencyCode: 'GYD' });
-  /** A transaction record in PowerTranz's own field names (sec. 6 fields; OrderSummary and VoidDateTime per the written answer). */
-  const record = (fields: Record<string, unknown> = {}, summary: Record<string, unknown> = {}) => ({
-    TransactionType: 2, Approved: true, IsoResponseCode: '00', ResponseMessage: 'Transaction is approved.', TransactionIdentifier: txn,
-    OrderIdentifier: order, TotalAmount: 2100, CurrencyCode: '328', AuthorizationCode: '123456', RRN: '000000000001',
-    OrderSummary: { SettledAmount: 0, TotalCaptureAmount: 2100, TotalCreditAmount: 0, ...summary },
-    ...fields,
-  });
+  /** [CARD-STAGING-TEST 10 Nov 2026] A transaction record in the REAL shape PowerTranz's staging sandbox answered
+   *  (fixtures/powertranz-staging-shapes.ts): no Approved and no top-level order; the order, the counts and the void
+   *  in OrderSummary. `fields` patch the top level, `summary` OrderSummary (undefined drops a field). */
+  const record = (fields: Record<string, unknown> = {}, summary: Record<string, unknown> = {}) =>
+    stagingSaleRecord({ txn, order, summary: { TotalCaptureAmount: 2100, ...summary }, top: { TotalAmount: 2100, ...fields } });
   const at = (answer: ReturnType<Responder>) => gateway({ [`/api/Transactions/${txn}`]: () => answer });
   /** Each case its own merchant label, so one case's backoff never gates another. */
   const fresh = (gw: ReturnType<typeof gateway>, now?: () => Date) => provider(gw, { config: { account: `lk-${nanoid(6).replace(/[^A-Za-z0-9]/g, '0')}` }, ...(now ? { now } : {}) });
@@ -767,25 +919,31 @@ describe('[CARD-LOOKUP] the transaction lookup: read strictly, judged against wh
     expect(delays).not.toContain(15_000);
   });
 
-  it('VoidDateTime present (a real date) = reversed; a credit of the whole capture = reversed; a smaller credit = part refunded: never confirmed', async () => {
+  it('VoidDateTime present (a real date; in OrderSummary, as the real record, or at the top level) = reversed; a credit of the whole capture = reversed; a smaller credit = part refunded: never confirmed', async () => {
+    expect(await ask(fresh(at({ status: 200, body: record({}, { VoidDateTime: '2026-11-09T12:00:00' }) })))).toMatchObject({ status: 'reversed', reason: 'LOOKUP_VOIDED' });
+    expect(await ask(fresh(at({ status: 200, body: record({}, { VoidDateTime: '2026-11-09 12:00:00.123' }) })))).toMatchObject({ status: 'reversed', reason: 'LOOKUP_VOIDED' });
     expect(await ask(fresh(at({ status: 200, body: record({ VoidDateTime: '2026-11-09T12:00:00' }) })))).toMatchObject({ status: 'reversed', reason: 'LOOKUP_VOIDED' });
-    expect(await ask(fresh(at({ status: 200, body: record({ VoidDateTime: '2026-11-09 12:00:00.123' }) })))).toMatchObject({ status: 'reversed', reason: 'LOOKUP_VOIDED' });
-    expect(await ask(fresh(at({ status: 200, body: record({}, { TotalCreditAmount: 2100 }) })))).toMatchObject({ status: 'reversed', reason: 'LOOKUP_CREDITED' });
+    expect(await ask(fresh(at({ status: 200, body: record({}, { TotalCreditAmount: 2100, CreditCount: 1 }) })))).toMatchObject({ status: 'reversed', reason: 'LOOKUP_CREDITED' });
     // [REVIEW-2460-A S3-1] Part of it refunded: the rest WAS taken. Never "reversed", never confirmed.
-    expect(await ask(fresh(at({ status: 200, body: record({}, { TotalCreditAmount: 1 }) })))).toMatchObject({ status: 'part_credited', reason: 'LOOKUP_PARTIAL_CREDIT' });
-    expect(await ask(fresh(at({ status: 200, body: record({}, { TotalCreditAmount: 2099.99 }) })))).toMatchObject({ status: 'part_credited', reason: 'LOOKUP_PARTIAL_CREDIT' });
+    expect(await ask(fresh(at({ status: 200, body: record({}, { TotalCreditAmount: 1, CreditCount: 1 }) })))).toMatchObject({ status: 'part_credited', reason: 'LOOKUP_PARTIAL_CREDIT' });
+    expect(await ask(fresh(at({ status: 200, body: record({}, { TotalCreditAmount: 2099.99, CreditCount: 2 }) })))).toMatchObject({ status: 'part_credited', reason: 'LOOKUP_PARTIAL_CREDIT' });
     // An absent or null VoidDateTime is no reversal.
-    expect(await ask(fresh(at({ status: 200, body: record({ VoidDateTime: null }) })))).toMatchObject({ status: 'confirmed' });
+    expect(await ask(fresh(at({ status: 200, body: record({ VoidDateTime: null }, { VoidDateTime: null }) })))).toMatchObject({ status: 'confirmed' });
   });
 
   it('readable but not a confirmed sale at Swift\'s price -> not_bookable (another capture amount, another currency, declined, not a sale)', async () => {
     const cases: Array<[Record<string, unknown>, Record<string, unknown>, string]> = [
       [{}, { TotalCaptureAmount: 2000 }, 'LOOKUP_AMOUNT_MISMATCH'],
       [{}, { TotalCaptureAmount: 0 }, 'LOOKUP_AMOUNT_MISMATCH'],
-      [{ CurrencyCode: '840' }, {}, 'LOOKUP_CURRENCY_MISMATCH'],
-      [{ Approved: false, IsoResponseCode: '05' }, { TotalCaptureAmount: 0 }, 'LOOKUP_NOT_APPROVED_05'],
+      [{ TotalAmount: 2000 }, {}, 'LOOKUP_AMOUNT_MISMATCH'],
+      [{ CurrencyCode: '840' }, { CurrencyCode: '840' }, 'LOOKUP_CURRENCY_MISMATCH'],
+      [{ CurrencyCode: '840' }, { CurrencyCode: undefined }, 'LOOKUP_CURRENCY_MISMATCH'],
+      [{ IsoResponseCode: '05' }, { TotalCaptureAmount: 0, CaptureCount: 0 }, 'LOOKUP_NOT_APPROVED_05'],
+      [{ Approved: false }, {}, 'LOOKUP_NOT_APPROVED_00'],
       [{ Approved: true, IsoResponseCode: '96' }, {}, 'LOOKUP_NOT_APPROVED_96'],
-      [{ TransactionType: 1 }, {}, 'LOOKUP_NOT_A_SALE'],
+      [{}, { CaptureCount: 0 }, 'LOOKUP_NOT_CAPTURED'],
+      // [CARD-STAGING-TEST] PowerTranz's portal lists every hosted page as a "Sale" row: one with nothing taken is never confirmed.
+      [{}, { CaptureCount: 0, TotalCaptureAmount: 0 }, 'LOOKUP_NOT_CAPTURED'],
     ];
     for (const [fields, summary, reason] of cases) {
       expect(await ask(fresh(at({ status: 200, body: record(fields, summary) }))), JSON.stringify({ fields, summary })).toMatchObject({ status: 'not_bookable', reason });
@@ -796,33 +954,56 @@ describe('[CARD-LOOKUP] the transaction lookup: read strictly, judged against wh
     const noSummary: Record<string, unknown> = record();
     delete noSummary['OrderSummary'];
     const cases: Array<[ReturnType<Responder>, string]> = [
-      [{ status: 200, body: record({ TransactionIdentifier: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb' }) }, 'LOOKUP_OTHER_TRANSACTION'],
-      [{ status: 200, body: record({ OrderIdentifier: 'SWIFT-someone-else' }) }, 'LOOKUP_OTHER_ORDER'],
+      [{ status: 200, body: record({ TransactionIdentifier: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb' }, { OriginalTrxnIdentifier: undefined }) }, 'LOOKUP_OTHER_TRANSACTION'],
+      [{ status: 200, body: record({}, { OrderIdentifier: 'SWIFT-someone-else' }) }, 'LOOKUP_OTHER_ORDER'],
+      [{ status: 200, body: record({ OrderIdentifier: 'SWIFT-someone-else' }, { OrderIdentifier: undefined }) }, 'LOOKUP_OTHER_ORDER'],
+      // [CARD-STAGING-TEST] An approved sale whose record names no order cannot be attributed: unknown.
+      [{ status: 200, body: record({}, { OrderIdentifier: undefined }) }, 'LOOKUP_NO_ORDER'],
+      // [CARD-STAGING-TEST] Not a Sale (a void is its own type-4 transaction): never read as the payment, before anything else.
+      [{ status: 200, body: record({ TransactionType: 1 }) }, 'LOOKUP_NOT_A_SALE'],
+      [{ status: 200, body: record({ TransactionType: 4 }, { VoidDateTime: '2026-11-09T12:00:00' }) }, 'LOOKUP_NOT_A_SALE'],
       [{ status: 200, body: noSummary }, 'LOOKUP_UNREADABLE'],
       [{ status: 200, body: record({}, { TotalCreditAmount: undefined }) }, 'LOOKUP_UNREADABLE'],
       [{ status: 200, body: record({}, { TotalCaptureAmount: '21.005' }) }, 'LOOKUP_UNREADABLE'],
       [{ status: 200, body: record({ Approved: 'true' }) }, 'LOOKUP_UNREADABLE'],
       [{ status: 200, body: record({ CurrencyCode: '999' }) }, 'LOOKUP_UNREADABLE'],
+      [{ status: 200, body: record({ TotalAmount: undefined }) }, 'LOOKUP_UNREADABLE'],
+      [{ status: 200, body: record({ TotalAmount: 2100.005 }) }, 'LOOKUP_UNREADABLE'],
+      // [CARD-STAGING-TEST] Two copies that disagree, or a count that is no count: unreadable, never a guess.
+      [{ status: 200, body: record({}, { CurrencyCode: '840' }) }, 'LOOKUP_UNREADABLE'],
+      [{ status: 200, body: record({ OrderIdentifier: 'SWIFT-someone-else' }) }, 'LOOKUP_UNREADABLE'],
+      [{ status: 200, body: record({}, { OrderIdentifier: 17 }) }, 'LOOKUP_UNREADABLE'],
+      [{ status: 200, body: record({}, { OriginalTrxnIdentifier: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb' }) }, 'LOOKUP_UNREADABLE'],
+      [{ status: 200, body: record({}, { CaptureCount: undefined }) }, 'LOOKUP_UNREADABLE'],
+      [{ status: 200, body: record({}, { CreditCount: -1 }) }, 'LOOKUP_UNREADABLE'],
+      [{ status: 200, body: record({}, { CaptureCount: '1' }) }, 'LOOKUP_UNREADABLE'],
+      [{ status: 200, body: record({}, { VoidDateTime: '' }) }, 'LOOKUP_UNREADABLE'],
+      [{ status: 200, body: record({}, { VoidDateTime: 17 }) }, 'LOOKUP_UNREADABLE'],
       [{ status: 200, body: record({ VoidDateTime: '' }) }, 'LOOKUP_UNREADABLE'],
-      [{ status: 200, body: record({ VoidDateTime: 17 }) }, 'LOOKUP_UNREADABLE'],
       // [REVIEW-2460-A S2-1] A VoidDateTime that is not a real date (a "no date" sentinel, a placeholder) is never
       // read as a reversal: unreadable, so today's void is still sent.
+      [{ status: 200, body: record({}, { VoidDateTime: '0001-01-01T00:00:00' }) }, 'LOOKUP_UNREADABLE'],
+      [{ status: 200, body: record({}, { VoidDateTime: '1900-01-01T00:00:00' }) }, 'LOOKUP_UNREADABLE'],
+      [{ status: 200, body: record({}, { VoidDateTime: 'N/A' }) }, 'LOOKUP_UNREADABLE'],
+      [{ status: 200, body: record({}, { VoidDateTime: 'garbage' }) }, 'LOOKUP_UNREADABLE'],
+      [{ status: 200, body: record({}, { VoidDateTime: '1' }) }, 'LOOKUP_UNREADABLE'],
+      [{ status: 200, body: record({}, { VoidDateTime: '2026-13-45T99:99:99' }) }, 'LOOKUP_UNREADABLE'],
       [{ status: 200, body: record({ VoidDateTime: '0001-01-01T00:00:00' }) }, 'LOOKUP_UNREADABLE'],
-      [{ status: 200, body: record({ VoidDateTime: '1900-01-01T00:00:00' }) }, 'LOOKUP_UNREADABLE'],
-      [{ status: 200, body: record({ VoidDateTime: 'N/A' }) }, 'LOOKUP_UNREADABLE'],
-      [{ status: 200, body: record({ VoidDateTime: 'garbage' }) }, 'LOOKUP_UNREADABLE'],
-      [{ status: 200, body: record({ VoidDateTime: '1' }) }, 'LOOKUP_UNREADABLE'],
-      [{ status: 200, body: record({ VoidDateTime: '2026-13-45T99:99:99' }) }, 'LOOKUP_UNREADABLE'],
       // [REVIEW-2460-DELTA D1] ... nor a date later than a day after the read (.NET's "no date" maximum, SQL's
       // smalldatetime maximum, any future date).
-      [{ status: 200, body: record({ VoidDateTime: '9999-12-31T23:59:59.9999999' }) }, 'LOOKUP_UNREADABLE'],
-      [{ status: 200, body: record({ VoidDateTime: '2079-06-06T23:59:00' }) }, 'LOOKUP_UNREADABLE'],
-      [{ status: 200, body: record({ VoidDateTime: new Date(Date.now() + 2 * 86_400_000).toISOString() }) }, 'LOOKUP_UNREADABLE'],
+      [{ status: 200, body: record({}, { VoidDateTime: '9999-12-31T23:59:59.9999999' }) }, 'LOOKUP_UNREADABLE'],
+      [{ status: 200, body: record({}, { VoidDateTime: '2079-06-06T23:59:00' }) }, 'LOOKUP_UNREADABLE'],
+      [{ status: 200, body: record({}, { VoidDateTime: new Date(Date.now() + 2 * 86_400_000).toISOString() }) }, 'LOOKUP_UNREADABLE'],
       // [REVIEW-2460-DELTA D2] A credit that contradicts the capture (more than captured; nothing captured) is unknown.
-      [{ status: 200, body: record({}, { TotalCreditAmount: 2200 }) }, 'LOOKUP_CREDIT_UNREADABLE'],
-      [{ status: 200, body: record({}, { TotalCaptureAmount: 0, TotalCreditAmount: 100 }) }, 'LOOKUP_CREDIT_UNREADABLE'],
+      [{ status: 200, body: record({}, { TotalCreditAmount: 2200, CreditCount: 1 }) }, 'LOOKUP_CREDIT_UNREADABLE'],
+      [{ status: 200, body: record({}, { TotalCaptureAmount: 0, TotalCreditAmount: 100, CreditCount: 1 }) }, 'LOOKUP_CREDIT_UNREADABLE'],
+      // A credit amount with no credit counted, or a credit counted with no amount: contradictory.
+      [{ status: 200, body: record({}, { TotalCreditAmount: 2100 }) }, 'LOOKUP_CREDIT_UNREADABLE'],
+      [{ status: 200, body: record({}, { CreditCount: 1 }) }, 'LOOKUP_CREDIT_UNREADABLE'],
       [{ status: 200, body: [record()] }, 'LOOKUP_UNREADABLE'],
       [{ status: 200, body: 'not json at all' }, 'LOOKUP_UNREADABLE'],
+      // [CARD-STAGING-TEST] A transaction PowerTranz does not know: HTTP 204, no body.
+      [{ status: 204, body: '' }, 'LOOKUP_NOT_FOUND'],
       [{ status: 404, body: 'not found' }, 'LOOKUP_HTTP_404'],
       [{ status: 500, body: record() }, 'LOOKUP_HTTP_500'],
       ['network', 'LOOKUP_NO_ANSWER_NETWORK'],
@@ -899,56 +1080,60 @@ describe('[CARD-REFUND-LOOKUP] a refund whose answer is not known: the original 
   const order = 'SWIFT-cs_refund_lookup_synthetic';
   const ask = (p: PowerTranzCardRailProvider, amountMinor = 210_000) =>
     p.lookupRefund({ binding: p.binding, providerRef: txn, orderRef: order, amountMinor, currencyCode: 'GYD' });
-  /** The original Sale's record in PowerTranz's own field names (sec. 6; OrderSummary and VoidDateTime per its answers). */
-  const record = (fields: Record<string, unknown> = {}, summary: Record<string, unknown> = {}) => ({
-    TransactionType: 2, Approved: true, IsoResponseCode: '00', ResponseMessage: 'Transaction is approved.', TransactionIdentifier: txn,
-    OrderIdentifier: order, TotalAmount: 2100, CurrencyCode: '328', AuthorizationCode: '123456', RRN: '000000000001',
-    OrderSummary: { SettledAmount: 2100, TotalCaptureAmount: 2100, TotalCreditAmount: 0, ...summary },
-    ...fields,
-  });
+  /** [CARD-STAGING-TEST 10 Nov 2026] The original Sale's record in the REAL shape (fixtures/powertranz-staging-shapes.ts),
+   *  settled. A refund's own record shape is not captured yet: `credited` adds the documented OrderSummary credit
+   *  fields as ASSUMED (TotalCreditAmount with its CreditCount). */
+  const record = (fields: Record<string, unknown> = {}, summary: Record<string, unknown> = {}) =>
+    stagingSaleRecord({ txn, order, summary: { SettledAmount: 2100, TotalCaptureAmount: 2100, ...summary }, top: { TotalAmount: 2100, ...fields } });
+  const credited = (amount: number | string, more: Record<string, unknown> = {}) => ({ TotalCreditAmount: amount, CreditCount: 1, ...more });
   const at = (answer: ReturnType<Responder>) => gateway({ [`/api/Transactions/${txn}`]: () => answer });
   const fresh = (gw: ReturnType<typeof gateway>) => provider(gw, { config: { account: `rl-${nanoid(6).replace(/[^A-Za-z0-9]/g, '0')}` } });
 
   it('the whole payment credited back (TotalCreditAmount = TotalCaptureAmount = Swift\'s price) -> refunded; a real VoidDateTime -> refunded (void). One GET, nothing sent', async () => {
-    const gw = at({ status: 200, body: record({}, { TotalCreditAmount: 2100 }) });
+    const gw = at({ status: 200, body: record({}, credited(2100)) });
     expect(await ask(fresh(gw))).toMatchObject({ status: 'refunded', how: 'credit', reason: 'LOOKUP_CREDITED' });
     expect(gw.calls.map((c) => `${c.method} ${new URL(c.url).pathname}`)).toEqual([`GET /api/Transactions/${txn}`]);
-    expect(await ask(fresh(at({ status: 200, body: record({ VoidDateTime: '2026-11-09T12:00:00' }) })))).toMatchObject({ status: 'refunded', how: 'void', reason: 'LOOKUP_VOIDED' });
-    expect(await ask(fresh(at({ status: 200, body: record({ VoidDateTime: '2026-11-09 12:00:00.1234567' }) })))).toMatchObject({ status: 'refunded', how: 'void' });
+    expect(await ask(fresh(at({ status: 200, body: record({}, { VoidDateTime: '2026-11-09T12:00:00' }) })))).toMatchObject({ status: 'refunded', how: 'void', reason: 'LOOKUP_VOIDED' });
+    expect(await ask(fresh(at({ status: 200, body: record({}, { VoidDateTime: '2026-11-09 12:00:00.1234567' }) })))).toMatchObject({ status: 'refunded', how: 'void' });
   });
 
   it('a credit that is not the whole payment is never "refunded": part of it, or the whole of a capture that is not Swift\'s price -> part_credited (the owner)', async () => {
-    expect(await ask(fresh(at({ status: 200, body: record({}, { TotalCreditAmount: 1 }) })))).toMatchObject({ status: 'part_credited', reason: 'LOOKUP_PARTIAL_CREDIT' });
-    expect(await ask(fresh(at({ status: 200, body: record({}, { TotalCreditAmount: 2099.99 }) })))).toMatchObject({ status: 'part_credited', reason: 'LOOKUP_PARTIAL_CREDIT' });
-    expect(await ask(fresh(at({ status: 200, body: record({}, { TotalCaptureAmount: 2000, TotalCreditAmount: 2000 }) })))).toMatchObject({ status: 'part_credited', reason: 'LOOKUP_CREDIT_NOT_THE_PAYMENT' });
-    expect(await ask(fresh(at({ status: 200, body: record({}, { TotalCaptureAmount: 2200, TotalCreditAmount: 2100 }) })))).toMatchObject({ status: 'part_credited', reason: 'LOOKUP_PARTIAL_CREDIT' });
+    expect(await ask(fresh(at({ status: 200, body: record({}, credited(1)) })))).toMatchObject({ status: 'part_credited', reason: 'LOOKUP_PARTIAL_CREDIT' });
+    expect(await ask(fresh(at({ status: 200, body: record({}, credited(2099.99)) })))).toMatchObject({ status: 'part_credited', reason: 'LOOKUP_PARTIAL_CREDIT' });
+    expect(await ask(fresh(at({ status: 200, body: record({}, credited(2000, { TotalCaptureAmount: 2000 })) })))).toMatchObject({ status: 'part_credited', reason: 'LOOKUP_CREDIT_NOT_THE_PAYMENT' });
+    expect(await ask(fresh(at({ status: 200, body: record({}, credited(2100, { TotalCaptureAmount: 2200 })) })))).toMatchObject({ status: 'part_credited', reason: 'LOOKUP_PARTIAL_CREDIT' });
     // Swift's price differs from the record's whole credit: never refunded.
-    expect(await ask(fresh(at({ status: 200, body: record({}, { TotalCreditAmount: 2100 }) })), 200_000)).toMatchObject({ status: 'part_credited', reason: 'LOOKUP_CREDIT_NOT_THE_PAYMENT' });
+    expect(await ask(fresh(at({ status: 200, body: record({}, credited(2100)) })), 200_000)).toMatchObject({ status: 'part_credited', reason: 'LOOKUP_CREDIT_NOT_THE_PAYMENT' });
   });
 
   it('no credit and no void on the record -> not_refunded (nothing to record yet)', async () => {
     expect(await ask(fresh(at({ status: 200, body: record() })))).toMatchObject({ status: 'not_refunded', reason: 'LOOKUP_NO_CREDIT' });
-    expect(await ask(fresh(at({ status: 200, body: record({ VoidDateTime: null }) })))).toMatchObject({ status: 'not_refunded' });
+    expect(await ask(fresh(at({ status: 200, body: record({ VoidDateTime: null }, { VoidDateTime: null }) })))).toMatchObject({ status: 'not_refunded' });
   });
 
   it('an unreadable or contradictory answer is unknown, never refunded: another transaction, order or currency; a credit above the capture; a credit on a sale that was not approved; a VoidDateTime that is no real date; HTTP errors; no answer', async () => {
     const cases: Array<[ReturnType<Responder>, string]> = [
-      [{ status: 200, body: record({ TransactionIdentifier: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb' }, { TotalCreditAmount: 2100 }) }, 'LOOKUP_OTHER_TRANSACTION'],
-      [{ status: 200, body: record({ OrderIdentifier: 'SWIFT-someone-else' }, { TotalCreditAmount: 2100 }) }, 'LOOKUP_OTHER_ORDER'],
-      [{ status: 200, body: record({ CurrencyCode: '840' }, { TotalCreditAmount: 2100 }) }, 'LOOKUP_CURRENCY_MISMATCH'],
-      [{ status: 200, body: record({}, { TotalCreditAmount: 2200 }) }, 'LOOKUP_CREDIT_UNREADABLE'],
-      [{ status: 200, body: record({}, { TotalCaptureAmount: 0, TotalCreditAmount: 2100 }) }, 'LOOKUP_CREDIT_UNREADABLE'],
-      [{ status: 200, body: record({ Approved: false, IsoResponseCode: '05' }, { TotalCreditAmount: 2100 }) }, 'LOOKUP_NOT_AN_APPROVED_SALE'],
-      [{ status: 200, body: record({ TransactionType: 5 }, { TotalCreditAmount: 2100 }) }, 'LOOKUP_NOT_AN_APPROVED_SALE'],
-      [{ status: 200, body: record({}, { TotalCreditAmount: '2100.005' }) }, 'LOOKUP_UNREADABLE'],
-      [{ status: 200, body: record({}, { TotalCreditAmount: -2100 }) }, 'LOOKUP_UNREADABLE'],
+      [{ status: 200, body: record({ TransactionIdentifier: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb' }, credited(2100, { OriginalTrxnIdentifier: undefined })) }, 'LOOKUP_OTHER_TRANSACTION'],
+      [{ status: 200, body: record({}, credited(2100, { OrderIdentifier: 'SWIFT-someone-else' })) }, 'LOOKUP_OTHER_ORDER'],
+      [{ status: 200, body: record({}, credited(2100, { OrderIdentifier: undefined })) }, 'LOOKUP_NO_ORDER'],
+      [{ status: 200, body: record({ CurrencyCode: '840' }, credited(2100, { CurrencyCode: '840' })) }, 'LOOKUP_CURRENCY_MISMATCH'],
+      [{ status: 200, body: record({}, credited(2200)) }, 'LOOKUP_CREDIT_UNREADABLE'],
+      [{ status: 200, body: record({}, credited(2100, { TotalCaptureAmount: 0 })) }, 'LOOKUP_CREDIT_UNREADABLE'],
+      [{ status: 200, body: record({}, credited(2100, { CreditCount: 0 })) }, 'LOOKUP_CREDIT_UNREADABLE'],
+      [{ status: 200, body: record({}, credited(2100, { CaptureCount: 0 })) }, 'LOOKUP_CREDIT_UNREADABLE'],
+      [{ status: 200, body: record({ Approved: false, IsoResponseCode: '05' }, credited(2100)) }, 'LOOKUP_NOT_AN_APPROVED_SALE'],
+      [{ status: 200, body: record({ TransactionType: 5 }, credited(2100)) }, 'LOOKUP_NOT_A_SALE'],
+      [{ status: 200, body: record({ TransactionType: 4 }, { VoidDateTime: '2026-11-09T12:00:00' }) }, 'LOOKUP_NOT_A_SALE'],
+      [{ status: 200, body: record({}, credited('2100.005')) }, 'LOOKUP_UNREADABLE'],
+      [{ status: 200, body: record({}, credited(-2100)) }, 'LOOKUP_UNREADABLE'],
       [{ status: 200, body: record({}, { TotalCreditAmount: undefined }) }, 'LOOKUP_UNREADABLE'],
-      [{ status: 200, body: record({ VoidDateTime: '0001-01-01T00:00:00' }) }, 'LOOKUP_UNREADABLE'],
-      [{ status: 200, body: record({ VoidDateTime: '9999-12-31T23:59:59.9999999' }) }, 'LOOKUP_UNREADABLE'],
-      [{ status: 200, body: record({ VoidDateTime: 'N/A' }) }, 'LOOKUP_UNREADABLE'],
+      [{ status: 200, body: record({}, { VoidDateTime: '0001-01-01T00:00:00' }) }, 'LOOKUP_UNREADABLE'],
+      [{ status: 200, body: record({}, { VoidDateTime: '9999-12-31T23:59:59.9999999' }) }, 'LOOKUP_UNREADABLE'],
+      [{ status: 200, body: record({}, { VoidDateTime: 'N/A' }) }, 'LOOKUP_UNREADABLE'],
       [{ status: 200, body: 'not json at all' }, 'LOOKUP_UNREADABLE'],
+      [{ status: 204, body: '' }, 'LOOKUP_NOT_FOUND'],
       [{ status: 404, body: 'not found' }, 'LOOKUP_HTTP_404'],
-      [{ status: 500, body: record({}, { TotalCreditAmount: 2100 }) }, 'LOOKUP_HTTP_500'],
+      [{ status: 500, body: record({}, credited(2100)) }, 'LOOKUP_HTTP_500'],
       ['network', 'LOOKUP_NO_ANSWER_NETWORK'],
       ['timeout', 'LOOKUP_NO_ANSWER_TIMEOUT'],
     ];
@@ -959,7 +1144,7 @@ describe('[CARD-REFUND-LOOKUP] a refund whose answer is not known: the original 
   });
 
   it('the same backoff as the completion lookup, per transaction: a refund check right after any read of that transaction reads nothing; another binding is refused before any call', async () => {
-    const gw = at({ status: 200, body: record({}, { TotalCreditAmount: 2100 }) });
+    const gw = at({ status: 200, body: record({}, credited(2100)) });
     const p = fresh(gw);
     await p.lookupTransaction({ binding: p.binding, providerRef: txn, orderRef: order, amountMinor: 210_000, currencyCode: 'GYD' });
     expect(await ask(p)).toMatchObject({ status: 'unknown', reason: 'LOOKUP_BACKOFF', backoff: true });
@@ -972,5 +1157,224 @@ describe('[CARD-REFUND-LOOKUP] a refund whose answer is not known: the original 
       .rejects.toBeInstanceOf(CardBindingMismatchError);
     expect(gw.calls).toHaveLength(2);
     expect(gw.calls.every((c) => c.method === 'GET')).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// [CARD-STAGING-TEST 10 Nov 2026] PowerTranz's REAL staging sandbox, redacted
+// (fixtures/powertranz-staging-shapes.ts): the return post Swift could not
+// read (every payment failed NOT_AUTHENTICATED), and the lookup records it
+// read as unreadable.
+// ---------------------------------------------------------------------------
+
+describe('[CARD-STAGING-TEST] the real return post: Response (the result as JSON text), TransactionIdentifier, SpiToken', () => {
+  const okPayment = (page: () => { txnId: string; orderId: string }) => () => completion({})(page());
+
+  it('a passed 3-D Secure check (3D0, Y, ECI 05) proceeds: Swift completes once, and PowerTranz\'s approval books', async () => {
+    let page!: Awaited<ReturnType<typeof openPage>>;
+    const gw = gateway({ '/api/spi/sale': preprocessed, '/api/spi/payment': okPayment(() => page) });
+    const p = provider(gw);
+    page = await openPage(p);
+    const post = stagingReturnPost({ txn: page.txnId, order: page.orderId, spiToken: page.spiToken });
+    expect(Object.keys(post)).toEqual(['Response', 'TransactionIdentifier', 'SpiToken']);
+    expect(p.parseReturn(post).claimedStatus).toBe('pending');
+    await p.noteReturn({ binding: p.binding, providerSessionRef: page.ref, params: post });
+    expect(await redis.hmget(`${PREFIX}s:${page.ref}`, 'authDecision', 'authNote')).toEqual(['proceed', '3D0_Y']);
+    expect(await p.confirm({ binding: p.binding, providerSessionRef: page.ref, purpose: 'PAY_NOW' })).toMatchObject({ status: 'succeeded', providerRef: page.txnId, amountMinor: 210_000 });
+    expect(gw.calls.filter((c) => c.url.endsWith('/api/spi/payment'))).toHaveLength(1);
+    expect(JSON.parse(gw.calls.find((c) => c.url.endsWith('/api/spi/payment'))!.body ?? 'null')).toBe(page.spiToken);
+    const reading = readAuthenticationReturn(post);
+    expect(reading.result).toMatchObject({ IsoResponseCode: '3D0', TransactionIdentifier: page.txnId, OrderIdentifier: page.orderId, SpiToken: page.spiToken });
+    expect(authenticationDecision(reading.result, page)).toEqual({ proceed: true, note: '3D0_Y' });
+  });
+
+  it('a failed 3-D Secure check (N, ECI 07; or U, R, 3D1) is refused: failed NOT_AUTHENTICATED, nothing sent', async () => {
+    for (const [status, eci, code] of [['N', '07', '3D0'], ['U', '07', '3D0'], ['R', '07', '3D0'], ['Y', '05', '3D1']] as const) {
+      const gw = gateway({ '/api/spi/sale': preprocessed });
+      const p = provider(gw);
+      const page = await openPage(p);
+      const post = stagingReturnPost({ txn: page.txnId, order: page.orderId, spiToken: page.spiToken, status, eci, responseCode: code });
+      expect(p.parseReturn(post).claimedStatus, status).toBe('failed');
+      await p.noteReturn({ binding: p.binding, providerSessionRef: page.ref, params: post });
+      expect(await p.confirm({ binding: p.binding, providerSessionRef: page.ref, purpose: 'PAY_NOW' }), status)
+        .toMatchObject({ status: 'failed', reason: `NOT_AUTHENTICATED:NOT_AUTHENTICATED_${code}_${status}` });
+      expect(gw.paths(), status).toEqual(['/api/spi/sale']);
+    }
+  });
+
+  it('a Response that is not a JSON result, or a post with a result both inside and beside it, is unreadable — never a result, nothing sent', async () => {
+    const cases: Array<[(page: Awaited<ReturnType<typeof openPage>>) => Record<string, string>, string]> = [
+      [(page) => ({ ...stagingReturnPost({ spiToken: page.spiToken, txn: page.txnId, order: page.orderId }), Response: '{"IsoResponseCode":"3D0",' }), 'RETURN_RESPONSE_UNREADABLE'],
+      [(page) => ({ ...stagingReturnPost({ spiToken: page.spiToken, txn: page.txnId, order: page.orderId }), Response: 'Approved' }), 'RETURN_RESPONSE_UNREADABLE'],
+      [(page) => ({ ...stagingReturnPost({ spiToken: page.spiToken, txn: page.txnId, order: page.orderId }), Response: '"3D0"' }), 'RETURN_RESPONSE_UNREADABLE'],
+      [(page) => ({ ...stagingReturnPost({ spiToken: page.spiToken, txn: page.txnId, order: page.orderId }), Response: '[]' }), 'RETURN_RESPONSE_UNREADABLE'],
+      [(page) => ({ ...stagingReturnPost({ spiToken: page.spiToken, txn: page.txnId, order: page.orderId }), Response: '{"hello":"world"}' }), 'RETURN_RESPONSE_UNREADABLE'],
+      [(page) => ({ ...stagingReturnPost({ spiToken: page.spiToken, txn: page.txnId, order: page.orderId }), IsoResponseCode: '3D0' }), 'RETURN_RESPONSE_AMBIGUOUS'],
+      [(page) => ({ ...stagingReturnPost({ spiToken: page.spiToken, txn: page.txnId, order: page.orderId }), RiskManagement: JSON.stringify({ ThreeDSecure: { ResponseCode: '3D0', AuthenticationStatus: 'Y' } }) }), 'RETURN_RESPONSE_AMBIGUOUS'],
+    ];
+    for (const [make, note] of cases) {
+      const gw = gateway({ '/api/spi/sale': preprocessed });
+      const p = provider(gw);
+      const page = await openPage(p);
+      const post = make(page);
+      expect(readAuthenticationReturn(post), note).toEqual({ result: null, note });
+      expect(p.parseReturn(post).claimedStatus, note).toBe('invalid');
+      await p.noteReturn({ binding: p.binding, providerSessionRef: page.ref, params: post });
+      expect(await p.confirm({ binding: p.binding, providerSessionRef: page.ref, purpose: 'PAY_NOW' }), note).toMatchObject({ status: 'failed', reason: `NOT_AUTHENTICATED:${note}` });
+      expect(gw.paths(), note).toEqual(['/api/spi/sale']);
+    }
+  });
+
+  it('identifiers that disagree — beside Response vs inside it, or both naming another page — are refused: nothing sent', async () => {
+    const other = '99999999-9999-4999-8999-999999999999';
+    const cases: Array<[(page: Awaited<ReturnType<typeof openPage>>) => Record<string, string>, string]> = [
+      // The copy beside Response names another transaction or token than the one inside it.
+      [(page) => stagingReturnPost({ txn: page.txnId, order: page.orderId, spiToken: page.spiToken, outerTxn: other }), 'RETURN_TRANSACTIONIDENTIFIER_DISAGREES'],
+      [(page) => stagingReturnPost({ txn: page.txnId, order: page.orderId, spiToken: page.spiToken, outerSpiToken: 'spi-someone-else' }), 'RETURN_SPITOKEN_DISAGREES'],
+      [(page) => ({ ...stagingReturnPost({ txn: page.txnId, order: page.orderId, spiToken: page.spiToken }), OrderIdentifier: 'SWIFT-someone-else' }), 'RETURN_ORDERIDENTIFIER_DISAGREES'],
+      // Both copies agree, and name another page than the one Swift holds.
+      [(page) => stagingReturnPost({ txn: other, order: page.orderId, spiToken: page.spiToken }), 'OTHER_TRANSACTION'],
+      [(page) => stagingReturnPost({ txn: page.txnId, order: page.orderId, spiToken: 'spi-someone-else' }), 'OTHER_PAGE_TOKEN'],
+      [(page) => stagingReturnPost({ txn: page.txnId, order: 'SWIFT-someone-else', spiToken: page.spiToken }), 'OTHER_ORDER'],
+      // An identifier only beside Response is still checked against the page Swift holds.
+      [(page) => {
+        const post = stagingReturnPost({ txn: page.txnId, order: page.orderId, spiToken: page.spiToken });
+        const inner = JSON.parse(post.Response) as Record<string, unknown>;
+        delete inner['SpiToken'];
+        return { ...post, Response: JSON.stringify(inner), SpiToken: 'spi-someone-else' };
+      }, 'OTHER_PAGE_TOKEN'],
+      // An identifier inside Response that is not text is unreadable.
+      [(page) => {
+        const post = stagingReturnPost({ txn: page.txnId, order: page.orderId, spiToken: page.spiToken });
+        return { ...post, Response: JSON.stringify({ ...(JSON.parse(post.Response) as object), TransactionIdentifier: 7 }) };
+      }, 'RETURN_TRANSACTIONIDENTIFIER_UNREADABLE'],
+    ];
+    for (const [make, note] of cases) {
+      const gw = gateway({ '/api/spi/sale': preprocessed });
+      const p = provider(gw);
+      const page = await openPage(p);
+      await p.noteReturn({ binding: p.binding, providerSessionRef: page.ref, params: make(page) });
+      expect(await redis.hmget(`${PREFIX}s:${page.ref}`, 'authDecision', 'authNote'), note).toEqual(['refused', note]);
+      expect(await p.confirm({ binding: p.binding, providerSessionRef: page.ref, purpose: 'PAY_NOW' }), note).toMatchObject({ status: 'failed', reason: `NOT_AUTHENTICATED:${note}` });
+      expect(gw.paths(), note).toEqual(['/api/spi/sale']);
+    }
+    // The same identifier in another case (a GUID) is the same identifier.
+    const p = provider(gateway({ '/api/spi/sale': preprocessed }));
+    const page = await openPage(p);
+    const upper = stagingReturnPost({ txn: page.txnId, order: page.orderId, spiToken: page.spiToken, outerTxn: page.txnId.toUpperCase() });
+    expect(authenticationDecision(readAuthenticationReturn(upper).result, page).proceed).toBe(true);
+  });
+
+  it('a page PowerTranz refused itself (Response: IsoResponseCode 12, Errors 757 "Hosted page not found") is no bank check: PAGE_REFUSED, never NOT_AUTHENTICATED; nothing sent', async () => {
+    const gw = gateway({ '/api/spi/sale': preprocessed });
+    const p = provider(gw);
+    const page = await openPage(p);
+    const post = stagingPageNotFoundPost({ txn: page.txnId, order: page.orderId, spiToken: page.spiToken });
+    expect(authenticationDecision(readAuthenticationReturn(post).result, page)).toEqual({ proceed: false, note: 'PAGE_REFUSED_12_757' });
+    expect(p.parseReturn(post).claimedStatus).toBe('failed');
+    await p.noteReturn({ binding: p.binding, providerSessionRef: page.ref, params: post });
+    const outcome = await p.confirm({ binding: p.binding, providerSessionRef: page.ref, purpose: 'PAY_NOW' });
+    expect(outcome).toMatchObject({ status: 'failed', reason: 'PAGE_REFUSED:PAGE_REFUSED_12_757' });
+    expect(failureCodeOf('PAGE_REFUSED:PAGE_REFUSED_12_757')).toBe('PROVIDER_PAGE_UNAVAILABLE');
+    expect(gw.paths()).toEqual(['/api/spi/sale']);
+    // A 3-D Secure result stays a bank check, whatever else it carries: 3D1 (not available), N.
+    expect(authenticationDecision({ IsoResponseCode: '3D1' }, page).note).toBe('NOT_AUTHENTICATED_3D1_NONE');
+    expect(authenticationDecision({ IsoResponseCode: '3D0', RiskManagement: { ThreeDSecure: { ResponseCode: '3D0', AuthenticationStatus: 'N' } }, Errors: [{ Code: '1' }] }, page).note).toBe('NOT_AUTHENTICATED_3D0_N');
+    // Untrusted words never reach the note in full.
+    expect(authenticationDecision({ IsoResponseCode: '12<script>', Errors: [{ Code: '757; DROP' }, { Code: 'x' }, { Code: 'y' }, { Code: 'z' }] }, page).note).toBe('PAGE_REFUSED_12sc_757D_x_y');
+  });
+
+  it('the PanToken, the cardholder\'s details and the card digits in the post are never stored, logged or echoed: the digest\'s preimage blinds them, and the page record holds only the decision', async () => {
+    const gw = gateway({ '/api/spi/sale': preprocessed });
+    const p = provider(gw);
+    const page = await openPage(p);
+    const post = stagingReturnPost({ txn: page.txnId, order: page.orderId, spiToken: page.spiToken });
+    for (const secret of STAGING_RETURN_SECRETS) expect(JSON.stringify(post), secret).toContain(secret); // the fixture carries them
+    expect(leaksCardSuffix(JSON.stringify(post))).toBe(true); // ... and the card's last digits
+    const evidence = JSON.stringify(returnEvidence(post));
+    for (const secret of [...STAGING_RETURN_SECRETS, page.spiToken]) expect(evidence, secret).not.toContain(secret);
+    expect(leaksCardSuffix(evidence), STAGING_CARD_SUFFIX).toBe(false);
+    expect(evidence).toContain(page.txnId); // what is not secret stays readable in the preimage
+    const observed = p.parseReturn(post);
+    expect(observed.rawSha256).toBe(rawDigest(returnEvidence(post)));
+    expect(JSON.stringify(observed)).not.toMatch(/SYNTHETIC|cardholder@/);
+    await p.noteReturn({ binding: p.binding, providerSessionRef: page.ref, params: post });
+    const kept = JSON.stringify(await redis.hgetall(`${PREFIX}s:${page.ref}`));
+    for (const secret of STAGING_RETURN_SECRETS) expect(kept, secret).not.toContain(secret);
+    expect(leaksCardSuffix(kept), STAGING_CARD_SUFFIX).toBe(false);
+    // An unreadable Response is digested as its own digest, never in the clear.
+    const broken = { ...post, Response: `${post.Response.slice(0, -1)}` };
+    expect(JSON.stringify(returnEvidence(broken))).not.toContain('SYNTHETIC-PAN-TOKEN');
+  });
+});
+
+describe('[CARD-STAGING-TEST] the real lookup records: read strictly, a void read from OrderSummary', () => {
+  const ask = (p: PowerTranzCardRailProvider, opts: { txn?: string; notBefore?: Date } = {}) =>
+    p.lookupTransaction({ binding: p.binding, providerRef: opts.txn ?? STAGING_TXN, orderRef: STAGING_ORDER, amountMinor: STAGING_AMOUNT_MINOR, currencyCode: 'GYD', ...(opts.notBefore ? { notBefore: opts.notBefore } : {}) });
+  const askRefund = (p: PowerTranzCardRailProvider) =>
+    p.lookupRefund({ binding: p.binding, providerRef: STAGING_TXN, orderRef: STAGING_ORDER, amountMinor: STAGING_AMOUNT_MINOR, currencyCode: 'GYD', notBefore: new Date(STAGING_SESSION_AT_MS - VOID_DATE_SKEW_MS) });
+  const at = (body: unknown, status = 200) => gateway({ [`/api/Transactions/${STAGING_TXN}`]: () => ({ status, body }) });
+  /** Read as the staging lane read them: at 05:04:40Z, for a session that began at 05:02:46Z. */
+  const fresh = (gw: ReturnType<typeof gateway>) => provider(gw, { now: () => new Date(STAGING_READ_AT_MS), config: { account: `st-${nanoid(6).replace(/[^A-Za-z0-9]/g, '0')}` } });
+  const notBefore = new Date(STAGING_SESSION_AT_MS - VOID_DATE_SKEW_MS);
+
+  it('dates name no zone: read as UTC-4 (the void Swift sent at 05:03:11Z is dated 01:03:11)', () => {
+    expect(RECORD_ZONE).toBe('-04:00');
+    expect(voidDateOf(STAGING_VOID_DATE_TIME)).toBe(STAGING_VOID_AT_MS);
+    expect(voidDateOf('2026-11-10T01:03:11.773Z')).toBe(STAGING_VOID_AT_MS - 4 * 60 * 60_000); // a named zone is its own
+    expect(voidDateOf('0001-01-01T00:00:00')).toBeNull();
+  });
+
+  it('the approved, captured sale (no Approved, no top-level order) at Swift\'s price -> confirmed', async () => {
+    expect(readTransactionRecord(stagingSaleRecord())).toEqual({
+      transactionIdentifier: STAGING_TXN, orderIdentifier: STAGING_ORDER, transactionType: '2', approved: null, isoResponseCode: '00', currencyCode: 'GYD',
+      totalAmountMinor: STAGING_AMOUNT_MINOR, captureCount: 1, creditCount: 0, voided: false, totalCaptureMinor: STAGING_AMOUNT_MINOR, totalCreditMinor: 0,
+    });
+    expect(await ask(fresh(at(stagingSaleRecord())), { notBefore })).toMatchObject({ status: 'confirmed', providerRef: STAGING_TXN, amountMinor: STAGING_AMOUNT_MINOR, currencyCode: 'GYD' });
+  });
+
+  it('DANGER: the same sale voided the same day (IsoResponseCode still 00, the capture kept, no credit; VoidDateTime ONLY in OrderSummary) is reversed — never confirmed', async () => {
+    const voided = stagingSaleRecord({ voidDateTime: STAGING_VOID_DATE_TIME });
+    expect(voided).not.toHaveProperty('VoidDateTime');
+    expect(voided.IsoResponseCode).toBe('00');
+    expect(readTransactionRecord(voided, notBefore.getTime(), STAGING_READ_AT_MS + VOID_DATE_SKEW_MS)).toMatchObject({ voided: true, totalCaptureMinor: STAGING_AMOUNT_MINOR, totalCreditMinor: 0 });
+    const outcome = await ask(fresh(at(voided)), { notBefore });
+    expect(outcome).toMatchObject({ status: 'reversed', reason: 'LOOKUP_VOIDED' });
+    expect(outcome.status).not.toBe('confirmed');
+    // ... and, for a refund Swift sent whose answer is not known, it reads as the whole payment back (a void).
+    expect(await askRefund(fresh(at(voided)))).toMatchObject({ status: 'refunded', how: 'void', reason: 'LOOKUP_VOIDED' });
+    expect(await askRefund(fresh(at(stagingSaleRecord())))).toMatchObject({ status: 'not_refunded', reason: 'LOOKUP_NO_CREDIT' });
+  });
+
+  it('a page only preprocessed (SP4) or only authenticated (3D0) is no approved sale: not_bookable, never confirmed', async () => {
+    expect(readTransactionRecord(stagingPreprocessedRecord())).toMatchObject({ orderIdentifier: null, approved: null, captureCount: 0, voided: false });
+    expect(await ask(fresh(at(stagingPreprocessedRecord())))).toMatchObject({ status: 'not_bookable', reason: 'LOOKUP_NOT_APPROVED_SP4' });
+    expect(await ask(fresh(at(stagingAuthenticatedRecord())))).toMatchObject({ status: 'not_bookable', reason: 'LOOKUP_NOT_APPROVED_3D0' });
+    // For a refund check, a record that names no order is not about this payment.
+    expect(await askRefund(fresh(at(stagingAuthenticatedRecord())))).toMatchObject({ status: 'unknown', reason: 'LOOKUP_NO_ORDER' });
+  });
+
+  it('a VOID is its own transaction (TransactionType 4, its own id; its record also reads "00", a capture of 15000 and the order): looked up by either id, it is never read as the sale — never confirmed, never "refunded"', async () => {
+    const voidRecord = stagingVoidRecord();
+    expect(voidRecord).toMatchObject({ IsoResponseCode: '00', TransactionType: 4, TotalAmount: 15000, OrderSummary: { CaptureCount: 1, TotalCaptureAmount: 15000, OrderIdentifier: STAGING_ORDER } });
+    // Asked about the sale, answered with the void's record: another transaction.
+    const asSale = gateway({ [`/api/Transactions/${STAGING_TXN}`]: () => ({ status: 200, body: voidRecord }) });
+    expect(await ask(fresh(asSale), { notBefore })).toMatchObject({ status: 'unknown' });
+    // Looked up by the void's own id (its OriginalTrxnIdentifier names the sale): unreadable, never a sale of its own.
+    expect(readTransactionRecord(voidRecord, notBefore.getTime(), STAGING_READ_AT_MS + VOID_DATE_SKEW_MS)).toBeNull();
+    const asVoid = gateway({ [`/api/Transactions/${STAGING_VOID_TXN}`]: () => ({ status: 200, body: voidRecord }) });
+    const outcome = await ask(fresh(asVoid), { txn: STAGING_VOID_TXN, notBefore });
+    expect(outcome).toMatchObject({ status: 'unknown', reason: 'LOOKUP_UNREADABLE' });
+    // Even a void record that named itself as its original is no sale: Sale first, before any void or capture is read.
+    const selfNamed = stagingVoidRecord({ sale: STAGING_VOID_TXN });
+    const named = gateway({ [`/api/Transactions/${STAGING_VOID_TXN}`]: () => ({ status: 200, body: selfNamed }) });
+    expect(await ask(fresh(named), { txn: STAGING_VOID_TXN, notBefore })).toMatchObject({ status: 'unknown', reason: 'LOOKUP_NOT_A_SALE' });
+    const refundAsk = (p: PowerTranzCardRailProvider) => p.lookupRefund({ binding: p.binding, providerRef: STAGING_VOID_TXN, orderRef: STAGING_ORDER, amountMinor: STAGING_AMOUNT_MINOR, currencyCode: 'GYD', notBefore });
+    expect(await refundAsk(fresh(gateway({ [`/api/Transactions/${STAGING_VOID_TXN}`]: () => ({ status: 200, body: selfNamed }) })))).toMatchObject({ status: 'unknown', reason: 'LOOKUP_NOT_A_SALE' });
+  });
+
+  it('a transaction PowerTranz does not know answers 204 with no body: unknown, never "nothing taken"', async () => {
+    expect(await ask(fresh(at(null, 204)))).toMatchObject({ status: 'unknown', reason: 'LOOKUP_NOT_FOUND' });
+    expect(await askRefund(fresh(at(null, 204)))).toMatchObject({ status: 'unknown', reason: 'LOOKUP_NOT_FOUND' });
   });
 });

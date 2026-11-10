@@ -300,6 +300,8 @@ const KNOWN: Record<string, string> = {
   // only with `sub` from a read that succeeded (loading and error return before it), so these say "none", never "failed".
   'components/weekly-fee-history.tsx | No recent checkouts.': 'Drawn only from a weekly-fee read that succeeded (weekly-fee.tsx returns its own error before mounting this part).',
   'components/weekly-fee-history.tsx | No receipts yet.': 'Drawn only from a weekly-fee read that succeeded (weekly-fee.tsx returns its own error before mounting this part).',
+  // [RATINGS · owner report 10 Nov 2026]
+  'components/storefront/storefront-experience.tsx | No ratings yet': 'The store\'s own rating count, from the storefront read that drew this page: storefront-page.tsx calls notFound() when that read fails, so the store line is never drawn from a failed read.',
 };
 
 const ALL = sources(SRC).flatMap((p) => scan(relative(SRC, p), readFileSync(p, 'utf8')));

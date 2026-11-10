@@ -191,6 +191,67 @@ describe('RAT-B — every matrix direction files once', () => {
   });
 });
 
+// [RATINGS-OWN-STORE · owner report 10 Nov 2026] The law above says "a vendor owner can never
+// CUSTOMER_TO_VENDOR their own store" — but the matrix only names the ORDER's customer, so a
+// store's owner (or a member of its team) who orders from the store as a customer passed every
+// check and filed a review of their own store: a self-review, counted in the store's stars and
+// shown on its page once released. Refused now, by name; a real customer is unaffected.
+describe("RAT-A — a store's own people never review it", () => {
+  it("refuses the store's owner and team as customers of their own store, and a person rating themselves", async () => {
+    const c = await makeCast();
+
+    // The owner places a pickup order at their own store as a customer, and rates it.
+    const ownOrder = await makeOrder({ customerId: c.ownerU.id, vendorId: c.vendor.id, status: 'COMPLETED' });
+    await expect(
+      ratings.rate({ orderId: ownOrder.id, raterId: c.ownerU.id, vendorId: c.vendor.id, type: 'CUSTOMER_TO_VENDOR', score: 5 }),
+    ).rejects.toMatchObject({ code: 'OWN_STORE', statusCode: 403 });
+
+    // A member of the store's team does the same.
+    const staffU = await makeUser(['CUSTOMER'], 'CUSTOMER');
+    await app.prisma.vendorStaff.create({ data: { vendorId: c.vendor.id, userId: staffU.id, invitedBy: c.ownerU.id } });
+    const staffOrder = await makeOrder({ customerId: staffU.id, vendorId: c.vendor.id, status: 'COMPLETED' });
+    await expect(
+      ratings.rate({ orderId: staffOrder.id, raterId: staffU.id, vendorId: c.vendor.id, type: 'CUSTOMER_TO_VENDOR', score: 5 }),
+    ).rejects.toMatchObject({ code: 'OWN_STORE', statusCode: 403 });
+
+    // ...or works at another branch of the same owner.
+    const sibling = await app.prisma.vendor.create({
+      data: {
+        ownerId: c.vendor.ownerId, name: `Struct Sibling ${seq}`, slug: `struct-sib-${nanoid(8).toLowerCase()}`,
+        vendorType: 'STORE', phone: `+${phoneBase + 700_000 + seq}`,
+        addressLine1: '2 Matrix Way', city: 'Georgetown', region: 'Demerara-Mahaica',
+        latitude: 6.8, longitude: -58.15, status: 'ACTIVE', isVerified: true,
+      },
+    });
+    createdVendorIds.push(sibling.id);
+    const siblingStaffU = await makeUser(['CUSTOMER'], 'CUSTOMER');
+    await app.prisma.vendorStaff.create({ data: { vendorId: sibling.id, userId: siblingStaffU.id, invitedBy: c.ownerU.id } });
+    const siblingOrder = await makeOrder({ customerId: siblingStaffU.id, vendorId: c.vendor.id, status: 'COMPLETED' });
+    await expect(
+      ratings.rate({ orderId: siblingOrder.id, raterId: siblingStaffU.id, vendorId: c.vendor.id, type: 'CUSTOMER_TO_VENDOR', score: 5 }),
+    ).rejects.toMatchObject({ code: 'OWN_STORE', statusCode: 403 });
+
+    // Nothing was written for any of them — the store's stars did not move.
+    expect(await app.prisma.rating.count({ where: { orderId: { in: [ownOrder.id, staffOrder.id, siblingOrder.id] } } })).toBe(0);
+
+    // A person never rates themselves either: the customer of this order is also its rider.
+    const selfRide = await makeOrder({ customerId: c.riderU.id, vendorId: c.vendor.id, riderId: c.rider.id });
+    await expect(
+      ratings.rate({ orderId: selfRide.id, raterId: c.riderU.id, rateeId: c.riderU.id, type: 'CUSTOMER_TO_RIDER', score: 5 }),
+    ).rejects.toMatchObject({ code: 'SELF_RATING', statusCode: 403 });
+
+    // A real customer of the same store still rates it (a COMPLETED pickup order, a STORE-kind shop's
+    // case too: neither the fulfilment nor the store's kind is a reason to refuse).
+    const realOrder = await makeOrder({ customerId: c.customerU.id, vendorId: c.vendor.id, status: 'COMPLETED' });
+    const ok = await ratings.rate({ orderId: realOrder.id, raterId: c.customerU.id, vendorId: c.vendor.id, type: 'CUSTOMER_TO_VENDOR', score: 4 });
+    expect(ok).toMatchObject({ vendorId: c.vendor.id, score: 4, state: 'ACTIVE', isPublic: true });
+    const shop = await makeOrder({ customerId: c.customerU.id, vendorId: sibling.id, status: 'COMPLETED' });
+    await expect(
+      ratings.rate({ orderId: shop.id, raterId: c.customerU.id, vendorId: sibling.id, type: 'CUSTOMER_TO_VENDOR', score: 5 }),
+    ).resolves.toMatchObject({ vendorId: sibling.id });
+  });
+});
+
 describe('RAT-D — R-Law 4 pinned: ratings never touch dispatch', () => {
   it('the constant is false and dispatch sources reference nothing from the new rating system', () => {
     expect(RATING_AFFECTS_DISPATCH).toBe(false);

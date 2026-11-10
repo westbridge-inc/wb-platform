@@ -104,8 +104,13 @@ import { GUYANA_RIDER_CASH_LIMIT } from '../dispatch/cash-limit';
  *  dispatch/cash-limit; riders see each job's cash and choose); the inactive pegged markets keep their own figures;
  *  and (2) a store gets 10 minutes to accept a new order before it cancels by itself (order_auto_reject_minutes 10,
  *  was 5). One owner-signed seed applies both. Until it does, production keeps GY$8,000 / 20,000 / 40,000 and 5
- *  minutes; a rider already on an old figure moves to the new one at their next go-online (recomputeForUser). */
-export const PLATFORM_CONFIG_VERSION = '2026-11-07.1';
+ *  minutes; a rider already on an old figure moves to the new one at their next go-online (recomputeForUser).
+ *  2026-11-10.1 [COMPANY-DOCS · owner rulings 10 Nov 2026 ~07:0xZ, ~07:2xZ]: 2026-11-07.1 with the registered-company
+ *  and manager lists (RESTAURANT/SUPERMARKET/STORE_COMPANY, SERVICE_COMPANY, RESTAURANT/SUPERMARKET/STORE_MANAGER: the
+ *  certificate of incorporation, the account holder's ID and a letter of authority in place of the owner's ID). Nothing
+ *  else moves, and no existing list changes. Every reader merges the code's lists under the stored copy, so the new
+ *  lists are read before any seed; the next owner-signed seed writes them into the stored copy. */
+export const PLATFORM_CONFIG_VERSION = '2026-11-10.1';
 
 /**
  * The declaration a tier map carries to say it is the COMPLETE partner card:

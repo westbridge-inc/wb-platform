@@ -928,6 +928,15 @@ export const decideSafetyCase = (id: string, decisionCode: DecisionCode, notes?:
 export const fetchAuditLogs = (params?: string) => apiFetch(`/api/v1/admin/audit-logs?${params || 'limit=50'}`);
 
 export const approveVendor = (id: string, reason: string) => apiFetch(`/api/v1/admin/vendors/${id}/approve`, { method: 'PUT', reason });
+/** [R3 · security review 10 Nov 2026] "Activate now": the same approve route, with the store name this console showed
+ *  (`sellerName`) — the name the person confirms as the seller's business or company name; a name changed since is
+ *  refused. Reinstating and lifting a suspension use approveVendor and confirm nothing. */
+export const activateVendor = (id: string, sellerName: string, reason: string) =>
+  apiFetch(`/api/v1/admin/vendors/${id}/approve`, { method: 'PUT', body: JSON.stringify({ sellerName }), reason });
+/** [R3 · security review 10 Nov 2026] A person confirms the store's name, exactly as shown, as the seller's business or
+ *  company name: until then the storefront names nobody as the seller. */
+export const confirmSellerName = (id: string, name: string, reason: string) =>
+  apiFetch(`/api/v1/admin/vendors/${id}/seller-name`, { method: 'PUT', body: JSON.stringify({ name }), reason });
 export const verifyRiderDocuments = (id: string, reason: string) => apiFetch(`/api/v1/admin/riders/${id}/verify-documents`, { method: 'PUT', reason });
 export const verifyDriverDocuments = (id: string, reason: string) => apiFetch(`/api/v1/admin/drivers/${id}/verify-documents`, { method: 'PUT', reason });
 export const setDriverRideClass = (id: string, rideClass: string, reason: string) =>
@@ -1075,7 +1084,7 @@ export const fetchSelfieChecks = () =>
   apiFetch('/api/v1/admin/verification/selfie-checks').then((r) => ((r as { data?: { pending?: SelfieCheck[] } }).data?.pending ?? []));
 export const decideSelfieCheck = (documentId: string, match: boolean, selfieCapturedAt: string, reason: string) =>
   apiFetch(`/api/v1/admin/verification/${documentId}/selfie-check`, { method: 'POST', body: JSON.stringify({ match, selfieCapturedAt }), reason });
-export const approveDoc = (id: string, body: { expiresAt?: string; insurance?: InsuranceCheck; documentNumber?: string; issuedOn?: string; certificateYear?: number; registrationKind?: 'BUSINESS_NAME' | 'COMPANY'; ownNameConfirmed?: boolean } | undefined, reason: string) =>
+export const approveDoc = (id: string, body: { expiresAt?: string; insurance?: InsuranceCheck; documentNumber?: string; issuedOn?: string; certificateYear?: number; registrationKind?: 'BUSINESS_NAME' | 'COMPANY'; ownNameConfirmed?: boolean; proprietorIsCompany?: boolean } | undefined, reason: string) =>
   apiFetch(`/api/v1/admin/verification/${id}/approve`, { method: 'PUT', body: JSON.stringify(body ?? {}), reason });
 // [ADMIN-CONSOLE] The route's whole body (admin.routes.ts rejectDocSchema): the
 // reviewer's words and the server's reason code. The words also ride the
