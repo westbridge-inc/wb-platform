@@ -73,7 +73,7 @@ import { OrderService, TERMINAL_ORDER_STATUSES, MMG_MONEY_MOVED, type CheckoutCo
 import { PickingService } from '../order/picking.service';
 import { isRemovalQuestion, legacySwapItemFields, lineOptionsAsMade, onlyItemLeft, substitutionView } from '../order/substitution-view';
 import { dispatchSearchesCounter } from '../../plugins/observability';
-import { groupLinesByVendor, planFulfillment, planVendorGroup, priceBasket, priceCartLine, resolveTip, type VendorPlan } from '../order/cart-plans';
+import { groupLinesByVendor, planFulfillment, planVendorGroup, priceBasket, priceCartLine, resolveTip, riderCashForLines, type VendorPlan } from '../order/cart-plans';
 import { lineOptionsIssue, normalizeItemNote, OptionSelectionError, selectionKey, validateSelectedOptions, type OptionSelection } from '../order/options';
 import { RatingService } from '../rating/rating.service';
 import { scheduleVendorSearchSync } from '../search/search-sync';
@@ -3252,7 +3252,7 @@ export async function customerRoutes(app: FastifyInstance) {
     const user = await app.prisma.user.findUniqueOrThrow({ where: { id: userId }, select: { tenantId: true } });
     const vendor = await app.prisma.vendor.findFirst({
       where: { id: q.vendorId, tenantId: user.tenantId },
-      select: { id: true, name: true, latitude: true, longitude: true, vendorType: true, mmgNumber: true },
+      select: { id: true, name: true, latitude: true, longitude: true, vendorType: true, mmgNumber: true, selfDeliveryEnabled: true },
     });
     if (!vendor) throw new NotFoundError('Vendor', q.vendorId);
     const gate = process.env['DISPATCH_AVAILABILITY'] === '1' && process.env['DELIVERY_BLOCK_ON_NONE'] !== '0';
@@ -3269,12 +3269,25 @@ export async function customerRoutes(app: FastifyInstance) {
         message: `${vendor.name} has orders waiting for riders, so delivery from this store is paused for a few minutes — you can order for Pickup instead.` } };
     }
 
+    // [REVIEW-2469 S3-1] A store that delivers itself needs no Swift rider: nothing to say (checkout skips the rider
+    // reads for it too). The two switches above still apply.
+    if (vendor.selfDeliveryEnabled) {
+      return { success: true, data: { level: 'GOOD' as const, reason: null, extraMinutes: null, message: null, gate } };
+    }
+
     // The basket from this store: its vehicle size and the cash a rider fronts.
     const cart = await app.prisma.cart.findUnique({
       where: { customerId: userId },
       select: {
         deliveryAddressId: true,
-        items: { where: { item: { vendorId: vendor.id } }, select: { quantity: true, item: { select: { basePrice: true, bulkUnits: true } } } },
+        // [REVIEW-2469 S3-2] The selected options and their prices too: the cash is checkout's own (riderCashForLines).
+        items: {
+          where: { item: { vendorId: vendor.id } },
+          select: {
+            quantity: true, selectedOptions: true,
+            item: { select: { basePrice: true, bulkUnits: true, optionGroups: { select: { name: true, options: { select: { id: true, name: true, additionalPrice: true } } } } } },
+          },
+        },
       },
     });
     const lines = cart?.items ?? [];
@@ -3283,7 +3296,7 @@ export async function customerRoutes(app: FastifyInstance) {
     const { required: packageSize, trueBand: loadBand } = lines.length > 0
       ? readOrderSize({ orderType, courierPackageSize: null, items: lines.map((l) => ({ quantity: l.quantity, bulkUnits: l.item.bulkUnits ?? null })) }, DEFAULT_LOAD_BANDS)
       : { required: null, trueBand: null };
-    const cash = q.paymentMethod === 'MOBILE_MONEY' ? 0 : lines.reduce((sum, l) => sum + Number(l.item.basePrice) * l.quantity, 0);
+    const cash = q.paymentMethod === 'MOBILE_MONEY' ? 0 : riderCashForLines(lines);
     let dropoff: { lat: number; lng: number } | null = q.lat != null && q.lng != null ? { lat: q.lat, lng: q.lng } : null;
     if (!dropoff) {
       const addr = cart?.deliveryAddressId

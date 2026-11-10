@@ -102,6 +102,15 @@ export function planFulfillment(
   return requested ?? 'DELIVERY';
 }
 
+/** [RIDE-03 · REVIEW-2469 S3-2] The store cash a rider fronts for one store's CASH basket: every line at the
+ *  store's price, paid options included (base + options) × quantity — the order's subtotalBase, which dispatch's
+ *  float gate reads. Checkout's rider probe and the cart banner both read it from here, so they never disagree. */
+export function riderCashForLines(
+  lines: ReadonlyArray<{ quantity: number; selectedOptions: unknown; item: { basePrice: unknown; optionGroups?: PricedCartLineInput['item']['optionGroups'] } }>,
+): number {
+  return lines.reduce((sum, l) => sum + lineTotal(Number(l.item.basePrice) + optionsUnitPrice(resolveSelectedOptions(l.item, l.selectedOptions)), l.quantity), 0);
+}
+
 /** One line's price: unit = base + selected options (only options that belong
  *  to the item), line = unit × quantity. The quote's line rows, the plan
  *  subtotal and the order's line snapshot all come from here. */

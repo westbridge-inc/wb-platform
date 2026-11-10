@@ -194,8 +194,19 @@ async function ride03(rec: Recorder, ctx: Ctx, feast: WorldItem): Promise<void> 
   // checkout refusal is measured against the riders' LIVE limit, so it runs on any target; the steps after it need
   // the owner's limit (a near-limit order above the GY$8,000 shown-amount rule).
   const OWNER_LIMIT = 100_000;
-  const p0 = (await GET('/rider/profile', mover(ctx, pool[0]!).session.token)).json?.data;
-  const LIMIT = Number(p0?.float?.limit ?? p0?.floatLimit) || OWNER_LIMIT;
+  // [REVIEW-2469 S3-3] Every goods mover in play, not just the first: on a target with mixed trust levels (staging:
+  // 8,000 / 20,000 / 40,000) the refusal holds only above the LARGEST limit among them (the riders, and a taxi
+  // car's delivery profile when /rider/profile answers for its driver), and the near-limit steps need the SMALLEST to be the owner's.
+  const inPlay = [...pool, ...onlineOf(ctx, 'driver')];
+  const limits: number[] = [];
+  for (const id of inPlay) {
+    const p = (await GET('/rider/profile', mover(ctx, id).session.token)).json?.data;
+    const lim = Number(p?.float?.limit ?? p?.floatLimit);
+    if (Number.isFinite(lim) && lim > 0) limits.push(lim);
+  }
+  rec.require('the cash limits of the riders in play are readable', limits.length >= 1, `read ${limits.length} of ${inPlay.length}`);
+  const LIMIT = Math.max(...limits);
+  const MIN_LIMIT = Math.min(...limits);
   const bigQty = Math.floor(LIMIT / feast.price) + 1; // 23 × 4500 = 103,500 at 100,000
   // [RIDE-03 fix] cap at checkout: a cash basket more than any rider near may carry is refused BEFORE it is placed,
   // with the alternatives that work (the store's MMG when it takes MMG; pickup) — never an order no rider can take.
@@ -207,7 +218,8 @@ async function ride03(rec: Recorder, ctx: Ctx, feast: WorldItem): Promise<void> 
   for (const id of orderIdsOf(big.res)) await POST(`/customer/orders/${id}/cancel`, { reason: 'journey cleanup' }, ctx.roster.customers.C4!.session.token);
   // The same basket paid to the store by MMG is placed (no cash to carry): proven in CI (rider-safe-capacity.test
   // RIDE-03). Not here: an MMG order needs a store with a live MMG number, which needs the owner's SMS step-up.
-  rec.require('the riders carry the owner’s GY$100,000 cash limit (seed 2026-11-07.1) for the near-limit steps', LIMIT === OWNER_LIMIT, `rider cash limit on this target = ${LIMIT}`);
+  rec.require('every rider in play carries the owner’s GY$100,000 cash limit (seed 2026-11-07.1) for the near-limit steps',
+    MIN_LIMIT === OWNER_LIMIT && LIMIT === OWNER_LIMIT, `rider cash limits on this target: ${[...new Set(limits)].sort((x, y) => x - y).join(', ')}`);
   const nearQty = Math.floor(LIMIT / feast.price); // 22 × 4500 = 99,000: fits alone, not beside a first order
 
   const first = await assignedExpress(rec, ctx, 'C4', 'ride03-f1', 'R1-feast', 1, pool);
