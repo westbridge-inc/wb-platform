@@ -550,8 +550,8 @@ export class CardRailService {
         // [CARD-STAGING-TEST 10 Nov 2026] The provider refused its own page: CANCELLED ("the provider could not open the
         // page", section 6 — the partner reads "couldn't open", never a bank failure), and the operators are paged.
         if (outcome.reason.startsWith('PAGE_REFUSED')) return this.pageRefused(session, outcome, now);
-        // A page never finished ran out of time with nothing done: EXPIRED, as section 6 says (failure NOT_FINISHED).
-        if (outcome.reason === 'PAGE_NOT_FINISHED') return this.close(session, 'EXPIRED', failureCodeOf(outcome.reason), outcome, now);
+        // [REVIEW-2466-B F1] A page never finished (PAGE_NOT_FINISHED) stays FAILED with failure NOT_FINISHED: nothing can
+        // be taken, and shipped apps read a Pay now's EXPIRED as "maybe paid" (contract section 6 says FAILED too).
         return this.close(session, 'FAILED', failureCodeOf(outcome.reason), outcome, now);
       case 'requires_action':
       case 'pending':
@@ -918,14 +918,17 @@ export class CardRailService {
 
   /** [CARD-STAGING-TEST 10 Nov 2026] The provider refused to open its own card page (a merchant set-up error, e.g.
    *  757 "Hosted page not found": a page set without PTZ/). Nothing was taken (no completion is ever sent for it). The
-   *  session closes CANCELLED with PROVIDER_PAGE_UNAVAILABLE, and the platform operators are paged — at most once an
-   *  hour per merchant account: every partner meets the same error until the set-up is fixed (or CARD_RAIL_KILL=1). */
+   *  session closes CANCELLED with PROVIDER_PAGE_UNAVAILABLE, and the operators are paged — at most once an hour per
+   *  merchant account (every partner meets the same error until the set-up is fixed, or CARD_RAIL_KILL=1). Paged for
+   *  the session's own tenant, so the store-review fiction never pages real operators. The refusal comes from the
+   *  browser's post, so a partner could forge it on their own session: it closes only that session, and pages at
+   *  most once an hour. */
   private async pageRefused(session: CardSession, outcome: Extract<CardSessionOutcome, { status: 'failed' }>, now: Date): Promise<CardConfirmResult> {
     const result = await this.close(session, 'CANCELLED', failureCodeOf(outcome.reason), outcome, now);
     const why = outcome.reason.replace(/^PAGE_REFUSED:/, '').replace(/[^A-Za-z0-9_]/g, '').slice(0, 48);
     await notifyAdmins(this.prisma, this.notifications, {
-      tenantId: null, title: 'Card payments: the card provider refused its card page',
-      body: `PowerTranz refused to open its hosted card page (${why}) — a set-up error, not the partner's bank (757 is "Hosted page not found": POWERTRANZ_PAGE_SET must start with PTZ/, and POWERTRANZ_PAGE_NAME must be the portal's page). Nothing was charged; partners see "The card page couldn't open". Run the payments self-check (swift-payments-setup.command <host> <key> check), fix the settings, or set CARD_RAIL_KILL=1 to pause card payments. Card session ${session.id}.`,
+      tenantId: session.tenantId, title: 'Card payments: the card provider refused its card page',
+      body: `PowerTranz refused to open its hosted card page (${why}) — a set-up error, not the partner's bank (757 is "Hosted page not found": POWERTRANZ_PAGE_SET must start with PTZ/, and POWERTRANZ_PAGE_NAME must be the portal's page). Nothing was charged. The partner's card page says "Card payments aren't available right now. Nothing was charged. Please use another way to pay in the Swift app." Run the payments self-check (swift-payments-setup.command <host> <key> check), fix the settings, or set CARD_RAIL_KILL=1 to pause card payments. Card session ${session.id}.`,
       data: { kind: 'billing_invariants', alert: 'card-page-refused', sessionId: session.id, reason: why },
       dedupeKey: `card-page-refused:${session.providerAccount}:${now.toISOString().slice(0, 13)}`,
     }).catch((err: unknown) => log().error({ err, sessionId: session.id }, '[CARD-STAGING-TEST] could not page the operators about a refused card page'));

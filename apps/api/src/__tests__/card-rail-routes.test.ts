@@ -1696,10 +1696,12 @@ describe('[PT-4] real cards through HTTP: Swift\'s hosted page, the bank\'s chec
     const paged = await app.prisma.notification.findMany({ where: { userId: finance.userId, dedupeKey: { startsWith: `card-page-refused:${real.binding.account}:` } } });
     expect(paged).toHaveLength(1);
     expect(paged[0]!.body).toMatch(/PTZ\//);
+    // [REVIEW-2466-B F4] The operators read the partner's own words.
+    expect(paged[0]!.body).toContain('Card payments aren\'t available right now. Nothing was charged. Please use another way to pay in the Swift app.');
     expect(paged[0]!.body).toContain('PAGE_REFUSED_12_757');
   });
 
-  it('[CARD-STAGING-TEST 10 Nov 2026 · contract section 6] a card page never finished ran out of time with nothing done: EXPIRED (failure NOT_FINISHED), as the contract says — not FAILED', async () => {
+  it('[REVIEW-2466-B F1 · contract section 6] a card page never finished: FAILED (failure NOT_FINISHED), proven unpaid — never EXPIRED, which shipped apps read as "maybe paid"', async () => {
     const p = await makeStore();
     const session = (await open(p)).json().data;
     const row = await rowOf(session.sessionId);
@@ -1707,8 +1709,10 @@ describe('[PT-4] real cards through HTTP: Swift\'s hosted page, the bank\'s chec
     // The page's window has passed for the provider too (its own clock reads the page record).
     await redis.hset(`${PTZ_PREFIX}s:${row.providerSessionRef}`, 'expiresAtMs', String(Date.now() - 1_000));
     await serviceOf().confirm(session.sessionId, { now: new Date(row.expiresAt.getTime() + 60_000) });
-    expect(await rowOf(session.sessionId)).toMatchObject({ status: 'EXPIRED', failureCode: 'EXPIRED_UNUSED', paymentId: null });
-    expect((await call(p, 'GET', `${SESSIONS}/${session.sessionId}`)).json().data).toMatchObject({ status: 'EXPIRED', failure: 'NOT_FINISHED' });
+    expect(await rowOf(session.sessionId)).toMatchObject({ status: 'FAILED', failureCode: 'EXPIRED_UNUSED', paymentId: null });
+    expect((await call(p, 'GET', `${SESSIONS}/${session.sessionId}`)).json().data).toMatchObject({ status: 'FAILED', failure: 'NOT_FINISHED' });
+    // Its payment confirmation is resolved (proven unpaid): nothing stays waiting on an abandoned page.
+    expect(ACTIVE_CONFIRMATION_STATES).not.toContain((await confirmationOf(session.sessionId))?.status);
     expect(completions()).toBe(before);
     expect((await money(p.subId)).successes).toBe(0);
   });
@@ -1737,6 +1741,10 @@ describe('[PT-4] real cards through HTTP: Swift\'s hosted page, the bank\'s chec
     await expect(app.prisma.cardSession.update({ where: { id: (await rowOf(other.sessionId)).id }, data: { providerVoidRef: 'x'.repeat(65) } })).rejects.toThrow();
     const open2 = (await open(await makeStore())).json().data;
     await expect(app.prisma.cardSession.update({ where: { id: open2.sessionId }, data: { providerVoidRef: voidId } })).rejects.toThrow();
+    // [REVIEW-2466-B F6] ... and written once, like every other provider reference on the row.
+    await expect(app.prisma.cardSession.update({ where: { id: session.sessionId }, data: { providerVoidRef: 'b0b0b0b0-0000-4000-8000-00000000beef' } })).rejects.toThrow(/written once/);
+    await expect(app.prisma.cardSession.update({ where: { id: session.sessionId }, data: { providerVoidRef: null } })).rejects.toThrow(/written once/);
+    expect((await rowOf(session.sessionId)).providerVoidRef).toBe(voidId);
   });
 
   it('[3DS] an approval whose OWN 3-D Secure block says the cardholder was not authenticated: never booked — voided at once', async () => {

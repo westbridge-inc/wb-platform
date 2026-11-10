@@ -848,6 +848,10 @@ describe('the owner\'s self-check: OK / FAIL lines only', () => {
     // A form posting back to the return address is no card form, whatever it carries.
     expect(hostedPageAnswer(`<form method="POST" action="${RETURN_URL.replace(/&/g, '&amp;')}"><input type="hidden" name="X" value="1"></form>`, RETURN_URL, base)).toBe('refused');
     expect(hostedPageAnswer('<p>nothing to type into</p>', RETURN_URL, base)).toBe('could_not_tell');
+    // [REVIEW-2466-B F5] Inputs alone are not PowerTranz's card form: its card-number and security-code fields must be there.
+    expect(hostedPageAnswer('<form method="POST" action="/login"><input name="user"><input type="password" name="pw"></form>', RETURN_URL, base)).toBe('could_not_tell');
+    expect(hostedPageAnswer('<input name="CardNo">', RETURN_URL, base)).toBe('could_not_tell');
+    expect(hostedPageAnswer('<div><input type="tel" name=\'CardNo\'><input type=tel name=CardCVV2></div>', RETURN_URL, base)).toBe('shown');
   });
 });
 

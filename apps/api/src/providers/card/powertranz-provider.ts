@@ -469,8 +469,8 @@ export function redirectForm(html: string): { action: string; fields: Array<[str
   return { action: forms[0]!.action, fields: forms[0]!.inputs };
 }
 
-/** What PowerTranz answered the opened page with: its card form (`shown`), or a post straight back to the return
- *  address (`not_found` for error 757, `refused` otherwise); anything else `could_not_tell`. */
+/** What PowerTranz answered the opened page with: its card form (`shown`: the CardNo and CardCVV2 fields), or a post
+ *  straight back to the return address (`not_found` for error 757, `refused` otherwise); anything else `could_not_tell`. */
 export function hostedPageAnswer(html: string, returnUrl: string, base: string): HostedPageCheck {
   let back: URL;
   try { back = new URL(returnUrl); } catch { return 'could_not_tell'; }
@@ -487,7 +487,10 @@ export function hostedPageAnswer(html: string, returnUrl: string, base: string):
     const codes = result && Array.isArray(result['Errors']) ? result['Errors'].filter(isObject).map((e) => String(e['Code'] ?? '')) : [];
     return codes.includes('757') ? 'not_found' : 'refused';
   }
-  return /<input\b/i.test(html) ? 'shown' : 'could_not_tell';
+  // [REVIEW-2466-B F5] Shown only when PowerTranz's own card form is there: its card-number and security-code fields
+  // (CardNo, CardCVV2: the hosted page's field names on staging). Any other page, inputs or not, is "could not tell".
+  const fields = new Set([...html.matchAll(/<input\b([^>]*)>/gi)].map((m) => htmlAttr(m[1] ?? '', 'name') ?? ''));
+  return fields.has('CardNo') && fields.has('CardCVV2') ? 'shown' : 'could_not_tell';
 }
 
 /** The result alone (null when there is none): readAuthenticationReturn. */
