@@ -102,10 +102,22 @@ export function planFulfillment(
   return requested ?? 'DELIVERY';
 }
 
+/** What pricing one line reads: its quantity, its selection, and its item's base price and option prices. */
+type PriceableCartLine = Pick<PricedCartLineInput, 'quantity' | 'selectedOptions'> & {
+  item: Pick<PricedCartLineInput['item'], 'basePrice' | 'optionGroups'>;
+};
+
+/** [RIDE-03 · REVIEW-2469 S3-2 · REVIEW-2472 A-4] The store cash a rider fronts for one store's CASH basket: the
+ *  sum of priceCartLine's line totals (base + options) × quantity — the plan subtotal, the order's subtotalBase,
+ *  which dispatch's float gate reads. Checkout's rider probe and the cart banner both read it from here. */
+export function riderCashForLines(lines: ReadonlyArray<PriceableCartLine>): number {
+  return lines.reduce((sum, l) => sum + priceCartLine(l).lineTotal, 0);
+}
+
 /** One line's price: unit = base + selected options (only options that belong
  *  to the item), line = unit × quantity. The quote's line rows, the plan
  *  subtotal and the order's line snapshot all come from here. */
-export function priceCartLine(line: Pick<PricedCartLineInput, 'quantity' | 'selectedOptions' | 'item'>): {
+export function priceCartLine(line: PriceableCartLine): {
   basePrice: number;
   unitPrice: number;
   options: ResolvedOption[];

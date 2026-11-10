@@ -128,7 +128,7 @@ import { HANDED_TO_RIDER_NOTE, NO_CODE_HANDOVER_NOTE, handedToRiderSinceAssignme
 import { assertStorePinInMarket } from './store-pin';
 import { lockStorePin, recordStorePinMove } from './store-pin-move';
 import { registerPartnerCardRoutes, withCardPayAction } from '../billing/card-rail.routes';
-import { storeBacklogSentence, storeRiderBacklog } from '../dispatch/delivery-capacity';
+import { storeBacklogSentence, storeRiderBacklog, swiftRiderCashRefusal } from '../dispatch/delivery-capacity';
 import { deliveryPausedAt } from '../dispatch/delivery-pause';
 import { CLOSURE_PAUSE_REFUSAL, CLOSURE_PAUSE_REFUSAL_TEAM } from '../user/closure-pause';
 import { orderStageRefusal } from '../order/order-status-words';
@@ -1147,8 +1147,8 @@ export async function vendorRoutes(app: FastifyInstance) {
       fulfillment: string;
       fulfillmentMode: FulfillmentMode | null;
     },
-  ): Promise<void> {
-    if (source.fulfillment !== 'DELIVERY' || source.riderId || source.fulfillmentMode != null) return;
+  ): Promise<'PLATFORM_RIDER' | 'VENDOR_DELIVERY' | null> {
+    if (source.fulfillment !== 'DELIVERY' || source.riderId || source.fulfillmentMode != null) return null;
     const vendor = source.vendorId
       ? await tx.vendor.findUnique({ where: { id: source.vendorId }, select: { selfDeliveryEnabled: true } })
       : null;
@@ -1157,6 +1157,7 @@ export async function vendorRoutes(app: FastifyInstance) {
       where: { id: source.id },
       data: { fulfillmentMode: mode, fulfillmentModeVersion: { increment: 1 } },
     });
+    return mode;
   }
 
   // =========================================================================
@@ -2664,6 +2665,13 @@ export async function vendorRoutes(app: FastifyInstance) {
     // PENDING -> ACCEPTED -> PREPARING in this one commit, one push to the customer. A booking or an
     // MMG order still waiting for "Paid by MMG" stops at ACCEPTED (preparationMayStart).
     const [acceptedStatus, preparingStatus] = STORE_ACCEPT_PATH;
+    // [REVIEW-2472 A-1] An unresolved DELIVERY order the accept may bind to Swift riders (the store's self-delivery
+    // off now, though it may have been on at checkout, which then asked no rider question): checkout's rider-cash
+    // question again. Asked here, outside the lock; applied under it, only when the bind (the store's setting read
+    // on the locked row) hands the order to Swift riders, so a setting flipped meanwhile cannot slip past it.
+    const cashRefusal = order.fulfillment === 'DELIVERY' && !order.riderId && order.fulfillmentMode == null
+      ? await swiftRiderCashRefusal(app.prisma, (probe) => dispatch.getDeliveryCapacity(probe), order.id, 'accept')
+      : null;
     const updated = await orderService.updateStatus(order.id, acceptedStatus, request.user.userId, 'Accepted by vendor', {
       continueTo: { target: preparingStatus, note: 'Preparing: the store accepted the order', when: preparationMayStart },
       withinTransaction: async (tx, lockedOrder) => {
@@ -2692,7 +2700,8 @@ export async function vendorRoutes(app: FastifyInstance) {
             data: { estimatedPrepTime: body.estimatedPrepTime },
           });
         }
-        await bindUnresolvedDeliveryMode(tx, lockedOrder);
+        // [REVIEW-2472 A-1] Refused before the accept commits: the order stays PENDING, nothing is sought.
+        if (await bindUnresolvedDeliveryMode(tx, lockedOrder) === 'PLATFORM_RIDER' && cashRefusal) throw cashRefusal;
       },
     });
     if (appointmentItemId) await bookingService.nudgeForItem(appointmentItemId).catch(() => {});
@@ -2894,7 +2903,7 @@ export async function vendorRoutes(app: FastifyInstance) {
     }
     if (order.status === 'PREPARING') {
       const updated = await orderService.updateStatus(order.id, 'READY_FOR_PICKUP', request.user.userId, 'Order ready for pickup', {
-        withinTransaction: bindUnresolvedDeliveryMode,
+        withinTransaction: async (tx, lockedOrder) => { await bindUnresolvedDeliveryMode(tx, lockedOrder); },
       });
       // FUL-005: ON_READY — dispatch NOW, when the food is ready, not at accept.
       // No-op under the ON_ACCEPT default (the rider was already dispatched); and
@@ -2929,6 +2938,12 @@ export async function vendorRoutes(app: FastifyInstance) {
     if (isTerminalOrderStatus(order.status)) {
       throw new AppError(409, 'ORDER_CLOSED', 'This order is already closed');
     }
+    // [REVIEW-2472 A-1] "Get a Swift rider" on a CASH order no Swift rider near may carry: refused in the store's
+    // words, before the switch is written — the order stays with the store's own delivery. Asked here, applied on
+    // the locked row below (only a switch that would hand it to Swift riders now).
+    const cashRefusal = mode === 'PLATFORM_RIDER' && !order.riderId
+      ? await swiftRiderCashRefusal(app.prisma, (probe) => dispatch.getDeliveryCapacity(probe), order.id, 'switch')
+      : null;
     // The rider claim path locks this same row. Whichever decision wins the
     // lock wins custody; the loser receives a conflict rather than producing
     // both a vendor courier and a Swift rider for one order.
@@ -2972,6 +2987,7 @@ export async function vendorRoutes(app: FastifyInstance) {
         throw new AppError(409, 'CUSTODY_CONFLICT', 'This order has conflicting delivery custody and needs operator review');
       }
       if (live.fulfillmentMode === mode) return live;
+      if (mode === 'PLATFORM_RIDER' && !live.riderId && cashRefusal) throw cashRefusal;
       return tx.order.update({
         where: { id: order.id },
         data: { fulfillmentMode: mode, fulfillmentModeVersion: { increment: 1 } },

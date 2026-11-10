@@ -45,6 +45,7 @@ const riderIds: string[] = [];
 const vendorIds: string[] = [];
 const zoneIds: string[] = [];
 let backlogCustomer = '';
+let dispatchJobs: ReturnType<typeof recordDispatchQueue> = [];
 
 type Actor = { userId: string; token: string; sessionId: string };
 
@@ -87,7 +88,7 @@ async function makeRider(
   return { ...u, riderId: rider.id };
 }
 
-async function makeStore(at: { lat: number; lng: number }, name: string, opts: { mmgNumber?: string; bigPrice?: number } = {}) {
+async function makeStore(at: { lat: number; lng: number }, name: string, opts: { mmgNumber?: string; bigPrice?: number; selfDelivery?: boolean; optionPrice?: number } = {}) {
   const owner = await makeUser(['VENDOR_OWNER'], 'VENDOR_OWNER');
   const ids = await sys(async () => {
     const vo = await app.prisma.vendorOwner.create({ data: { userId: owner.userId } });
@@ -97,12 +98,16 @@ async function makeStore(at: { lat: number; lng: number }, name: string, opts: {
         addressLine1: '1 Savannah Road', city: 'Aishalton', region: 'Upper Takutu', latitude: at.lat, longitude: at.lng,
         status: 'ACTIVE', acceptingOrders: true, isCurrentlyOpen: true, isVerified: true, minOrderAmount: 0,
         ...(opts.mmgNumber ? { mmgNumber: opts.mmgNumber } : {}),
+        ...(opts.selfDelivery ? { selfDeliveryEnabled: true } : {}),
       },
     });
     const cat = await app.prisma.category.create({ data: { vendorId: vendor.id, name: 'Menu', sortOrder: 0 } });
     const item = await app.prisma.item.create({ data: { vendorId: vendor.id, categoryId: cat.id, name: 'Rice plate', basePrice: 2000, isAvailable: true } });
     const big = await app.prisma.item.create({ data: { vendorId: vendor.id, categoryId: cat.id, name: 'Party tray', basePrice: opts.bigPrice ?? 9000, isAvailable: true } });
-    return { vendorId: vendor.id, itemId: item.id, bigItemId: big.id };
+    // [S3-2] An item whose paid option is part of the store cash a rider fronts.
+    const group = await app.prisma.optionGroup.create({ data: { itemId: big.id, name: 'Extras', minSelect: 0, maxSelect: 1 } });
+    const extra = await app.prisma.option.create({ data: { optionGroupId: group.id, name: 'Extra platter', additionalPrice: opts.optionPrice ?? 0 } });
+    return { vendorId: vendor.id, itemId: item.id, bigItemId: big.id, extraGroupId: group.id, extraOptionId: extra.id };
   });
   vendorIds.push(ids.vendorId);
   return { ...ids, owner };
@@ -161,7 +166,7 @@ beforeAll(async () => {
   await app.register(redisPlugin);
   await app.register(authPlugin);
   await app.register(socketPlugin);
-  recordDispatchQueue(app);
+  dispatchJobs = recordDispatchQueue(app);
   await app.register(customerRoutes, { prefix: '/api/v1/customer' });
   await app.register(vendorRoutes, { prefix: '/api/v1/vendor' });
   await app.register(adminRoutes, { prefix: '/api/v1/admin' });
@@ -348,7 +353,7 @@ describe('[RIDER-SAFE 1/2] checkout: BUSY is taken with the wait in the promise;
 // no rider could ever take. The limit here is L = 8,000 (staging's level-1).
 // ---------------------------------------------------------------------------
 const LIMIT = 8_000;
-const STORE_MMG = '+5926001234';
+const STORE_MMG = '+5926990001';
 
 describe('[RIDE-03] the decision: riders near who can never carry the cash are not supply', () => {
   const base = { legMinutes: 25, maxWaitMinutes: 30 };
@@ -454,6 +459,158 @@ describe('[RIDE-03] checkout: a cash delivery no rider near can carry is refused
     const cash = await call('POST', '/api/v1/customer/checkout', c.token, { paymentMethod: 'CASH' });
     expect(cash.statusCode, cash.body).toBe(409);
     expect(cash.json().error).toMatchObject({ details: { reason: 'CASH_OVER_RIDER_LIMIT' } });
+  });
+});
+
+describe('[RIDE-03 follow-up] a store that delivers itself, and the banner reading the same cash as checkout', () => {
+  it('S3-1: a self-delivering store is never refused for Swift riders: not for cash over every rider limit, not for no riders at all', async () => {
+    const at = cell(18);
+    const store = await makeStore(at, 'Own Drivers Kitchen', { selfDelivery: true, bigPrice: LIMIT + 1_000 });
+    process.env['DISPATCH_AVAILABILITY'] = '1';
+
+    // No Swift rider near at all: the store's own drivers deliver, so the order is placed and the cart says nothing.
+    const none = await customerAt(at);
+    await addToCart(none, store.vendorId, store.itemId);
+    await clearAvailabilityCache(store.vendorId);
+    expect((await call('GET', `/api/v1/customer/delivery-availability?vendorId=${store.vendorId}&paymentMethod=CASH`, none.token)).json().data)
+      .toMatchObject({ level: 'GOOD', reason: null, message: null });
+    const placedNone = await call('POST', '/api/v1/customer/checkout', none.token, { paymentMethod: 'CASH' });
+    expect(placedNone.statusCode, placedNone.body).toBe(200);
+
+    // Swift riders near, none able to carry this cash: still the store's own delivery, placed.
+    for (const m of [100, 200]) await makeRider(at, m, { floatLimit: LIMIT });
+    const big = await customerAt(at);
+    await addToCart(big, store.vendorId, store.bigItemId);
+    await clearAvailabilityCache(store.vendorId);
+    expect((await call('GET', `/api/v1/customer/delivery-availability?vendorId=${store.vendorId}&paymentMethod=CASH`, big.token)).json().data)
+      .toMatchObject({ level: 'GOOD', reason: null, message: null });
+    const placedBig = await call('POST', '/api/v1/customer/checkout', big.token, { paymentMethod: 'CASH' });
+    expect(placedBig.statusCode, placedBig.body).toBe(200);
+
+    // [REVIEW-2472 A-3] Accepted: the store's own delivery, and no Swift rider is ever sought for it.
+    const orderId = placedBig.json().data.order.id as string;
+    const accepted = await call('PUT', `/api/v1/vendor/orders/${orderId}/accept`, store.owner.token, {}, { 'x-vendor-id': store.vendorId });
+    expect(accepted.statusCode, accepted.body).toBe(200);
+    expect((await sys(() => app.prisma.order.findUniqueOrThrow({ where: { id: orderId }, select: { fulfillmentMode: true } }))).fulfillmentMode).toBe('VENDOR_DELIVERY');
+    expect(dispatchJobs.filter((j) => j.name === 'dispatch-order' && j.data.orderId === orderId)).toEqual([]);
+  });
+
+  it("A-3: Swift's pause and the store's own rider backlog still refuse a self-delivering store", async () => {
+    const at = cell(20);
+    const store = await makeStore(at, 'Own Drivers Paused', { selfDelivery: true });
+    process.env['DISPATCH_AVAILABILITY'] = '1';
+    const d = 0.02;
+    const zone = await sys(() => app.prisma.zone.create({
+      data: { name: `Self Delivery Zone ${RUN}`, tenantId: 'swift-default', countryCode: 'GY', priority: -50,
+        boundary: { type: 'Polygon', coordinates: [[[at.lng - d, at.lat - d], [at.lng + d, at.lat - d], [at.lng + d, at.lat + d], [at.lng - d, at.lat + d], [at.lng - d, at.lat - d]]] } },
+    }));
+    zoneIds.push(zone.id);
+    const actor = (await makeUser(['CUSTOMER'], 'CUSTOMER')).userId;
+    const before = await sys(() => readDeliveryPause(app.prisma, 'swift-default'));
+    await sys(() => setDeliveryPause(app.prisma, { tenantId: 'swift-default', platform: before.platform, zoneIds: [...before.zoneIds, zone.id], actorUserId: actor, reason: 'Self-delivery pause check', expectedVersion: before.version }));
+    try {
+      const c = await customerAt(at);
+      await addToCart(c, store.vendorId, store.itemId);
+      const paused = await call('POST', '/api/v1/customer/checkout', c.token, { paymentMethod: 'CASH' });
+      expect(paused.statusCode, paused.body).toBe(409);
+      expect(paused.json().error).toMatchObject({ code: 'DELIVERY_NO_RIDERS', details: { reason: 'SWIFT_PAUSED' } });
+    } finally {
+      const now = await sys(() => readDeliveryPause(app.prisma, 'swift-default'));
+      await sys(() => setDeliveryPause(app.prisma, { tenantId: 'swift-default', platform: before.platform, zoneIds: before.zoneIds, actorUserId: actor, reason: 'Self-delivery pause check over', expectedVersion: now.version }));
+    }
+    // Three of its orders waiting for a Swift rider past the grace (switched to "Get a Swift rider"): STORE_BUSY.
+    for (let i = 0; i < 3; i += 1) {
+      const w = await makeOrder(store.vendorId, at, { acceptedMinAgo: 6 });
+      await sys(() => app.prisma.order.update({ where: { id: w.id }, data: { fulfillmentMode: 'PLATFORM_RIDER' } }));
+    }
+    const c2 = await customerAt(at);
+    await addToCart(c2, store.vendorId, store.itemId);
+    const busy = await call('POST', '/api/v1/customer/checkout', c2.token, { paymentMethod: 'CASH' });
+    expect(busy.statusCode, busy.body).toBe(409);
+    expect(busy.json().error).toMatchObject({ code: 'DELIVERY_NO_RIDERS', details: { reason: 'STORE_BUSY' } });
+  });
+
+  it('A-1: a self-delivery CASH order no Swift rider can carry is never handed to Swift dispatch (setting off before accept, or "Get a Swift rider")', async () => {
+    const at = cell(21);
+    const store = await makeStore(at, 'Own Drivers Switch', { selfDelivery: true, bigPrice: LIMIT + 1_000 });
+    for (const m of [100, 200, 300, 400]) await makeRider(at, m, { floatLimit: LIMIT });
+    process.env['DISPATCH_AVAILABILITY'] = '1';
+    const asStore = { 'x-vendor-id': store.vendorId };
+    const place = async (itemId: string) => {
+      const c = await customerAt(at);
+      await addToCart(c, store.vendorId, itemId);
+      const res = await call('POST', '/api/v1/customer/checkout', c.token, { paymentMethod: 'CASH' });
+      expect(res.statusCode, res.body).toBe(200);
+      return res.json().data.order.id as string;
+    };
+    const big = await place(store.bigItemId);
+    const small = await place(store.itemId);
+    const offered = (id: string) => dispatchJobs.filter((j) => j.name === 'dispatch-order' && j.data.orderId === id).length;
+
+    // (1) The store turns self-delivery OFF before accepting: the accept would hand it to Swift riders, none of whom
+    // can carry its cash. Refused in the store's words, the order is untouched (still PENDING) and nothing is sought.
+    await sys(() => app.prisma.vendor.update({ where: { id: store.vendorId }, data: { selfDeliveryEnabled: false } }));
+    const refusedAccept = await call('PUT', `/api/v1/vendor/orders/${big}/accept`, store.owner.token, {}, asStore);
+    expect(refusedAccept.statusCode, refusedAccept.body).toBe(409);
+    expect(refusedAccept.json().error.code).toBe('NO_RIDER_FOR_CASH');
+    expect(refusedAccept.json().error.message).toMatch(/deliver it yourself/i);
+    expect(refusedAccept.json().error.message).not.toContain('MMG'); // this store takes no MMG: never offered
+    expect((await sys(() => app.prisma.order.findUniqueOrThrow({ where: { id: big }, select: { status: true, fulfillmentMode: true } })))).toEqual({ status: 'PENDING', fulfillmentMode: null });
+    expect(offered(big)).toBe(0);
+    // A basket riders CAN carry is accepted for a Swift rider exactly as before.
+    expect((await call('PUT', `/api/v1/vendor/orders/${small}/accept`, store.owner.token, {}, asStore)).statusCode).toBe(200);
+
+    // (2) Self-delivery back ON: the big order is accepted for the store's own driver. "Get a Swift rider" is refused.
+    await sys(() => app.prisma.vendor.update({ where: { id: store.vendorId }, data: { selfDeliveryEnabled: true } }));
+    expect((await call('PUT', `/api/v1/vendor/orders/${big}/accept`, store.owner.token, {}, asStore)).statusCode).toBe(200);
+    const toRider = await call('PUT', `/api/v1/vendor/orders/${big}/fulfillment-mode`, store.owner.token, { mode: 'PLATFORM_RIDER' }, asStore);
+    expect(toRider.statusCode, toRider.body).toBe(409);
+    expect(toRider.json().error.code).toBe('NO_RIDER_FOR_CASH');
+    expect(toRider.json().error.message).toMatch(/keep delivering it yourself/i);
+    expect((await sys(() => app.prisma.order.findUniqueOrThrow({ where: { id: big }, select: { fulfillmentMode: true } }))).fulfillmentMode).toBe('VENDOR_DELIVERY');
+    expect(offered(big)).toBe(0);
+  });
+
+  it('A-1: only "riders near, none may carry this cash" refuses the store: with no Swift rider online at all, the accept goes ahead', async () => {
+    const at = cell(22);
+    const store = await makeStore(at, 'Own Drivers Quiet', { selfDelivery: true, bigPrice: LIMIT + 1_000 });
+    process.env['DISPATCH_AVAILABILITY'] = '1';
+    const c = await customerAt(at);
+    await addToCart(c, store.vendorId, store.bigItemId);
+    const placed = await call('POST', '/api/v1/customer/checkout', c.token, { paymentMethod: 'CASH' });
+    expect(placed.statusCode, placed.body).toBe(200);
+    const orderId = placed.json().data.order.id as string;
+    // Nobody online near the store yet: a rider who can carry it may still come online, so the store is not stopped.
+    await sys(() => app.prisma.vendor.update({ where: { id: store.vendorId }, data: { selfDeliveryEnabled: false } }));
+    const accepted = await call('PUT', `/api/v1/vendor/orders/${orderId}/accept`, store.owner.token, {}, { 'x-vendor-id': store.vendorId });
+    expect(accepted.statusCode, accepted.body).toBe(200);
+    expect((await sys(() => app.prisma.order.findUniqueOrThrow({ where: { id: orderId }, select: { fulfillmentMode: true } }))).fulfillmentMode).toBe('PLATFORM_RIDER');
+  });
+
+  it('S3-2: the cart banner counts paid options in the cash, exactly as checkout does', async () => {
+    const at = cell(19);
+    // 7,500 + a 1,000 option = 8,500 store cash: over L = 8,000 only with the option counted.
+    const store = await makeStore(at, 'Options Kitchen', { bigPrice: LIMIT - 500, optionPrice: 1_000 });
+    for (const m of [100, 200, 300, 400]) await makeRider(at, m, { floatLimit: LIMIT });
+    process.env['DISPATCH_AVAILABILITY'] = '1';
+
+    const c = await customerAt(at);
+    const add = await call('POST', '/api/v1/customer/cart/items', c.token, { vendorId: store.vendorId, itemId: store.bigItemId, quantity: 1, selectedOptions: { [store.extraGroupId]: store.extraOptionId } });
+    expect([200, 201], add.body).toContain(add.statusCode);
+    await clearAvailabilityCache(store.vendorId);
+    const shown = await call('GET', `/api/v1/customer/delivery-availability?vendorId=${store.vendorId}&paymentMethod=CASH`, c.token);
+    expect(shown.json().data, shown.body).toMatchObject({ level: 'NONE', reason: 'CASH_OVER_RIDER_LIMIT' });
+    const refused = await call('POST', '/api/v1/customer/checkout', c.token, { paymentMethod: 'CASH' });
+    expect(refused.statusCode, refused.body).toBe(409);
+    expect(refused.json().error).toMatchObject({ code: 'DELIVERY_NO_RIDERS', details: { reason: 'CASH_OVER_RIDER_LIMIT' } });
+
+    // The same item without the option (7,500 <= L): banner and checkout both say yes.
+    const plain = await customerAt(at);
+    await addToCart(plain, store.vendorId, store.bigItemId);
+    await clearAvailabilityCache(store.vendorId);
+    expect((await call('GET', `/api/v1/customer/delivery-availability?vendorId=${store.vendorId}&paymentMethod=CASH`, plain.token)).json().data)
+      .toMatchObject({ level: 'GOOD' });
+    expect((await call('POST', '/api/v1/customer/checkout', plain.token, { paymentMethod: 'CASH' })).statusCode).toBe(200);
   });
 });
 
