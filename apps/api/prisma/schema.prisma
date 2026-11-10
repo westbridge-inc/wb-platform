@@ -147,6 +147,8 @@ model User {
 
   // [SAFE-B] Advisory MMG payer evidence recorded for this account.
   mmgPayerEvidence MmgPayerEvidence[]
+  // [COMPANY-DOCS PART 2] Letters of authority this account holder asked a director (or the owner) to sign in Swift.
+  authorityLetterRequests AuthorityLetterRequest[]
   @@index([tenantId])
   @@index([isSynthetic])
   @@map("users")
@@ -1540,6 +1542,76 @@ enum VendorAccountBasis {
   OWNER
   COMPANY
   MANAGER
+}
+
+/// [COMPANY-DOCS PART 2 · owner 10 Nov 2026 ~07:5xZ] A one-page letter of authority Swift writes for a company's account
+/// (or a registered business's manager's) and texts to the director (or the owner) to sign on THEIR OWN phone: a
+/// single-use link (only its SHA-256 is kept; 72 hours), a code texted to that phone (kept as an HMAC; 10 minutes,
+/// 5 tries), then a finger signature and an "I authorise" tick. The signed PDF is filed as the account holder's letter of
+/// authority document (encrypted and served exactly like an ID) and a person at Swift still checks it. The signer's name
+/// and number are a THIRD person's details: never in a log or an audit row, deleted with the account, and a request that
+/// ended unsigned is deleted 30 days after it ended (vendor/authority-letter).
+model AuthorityLetterRequest {
+  id                  String                @id @default(cuid())
+  /// The account holder who asked: the letter is filed as their document.
+  userId              String
+  user                User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  /// The store it was asked from: its type is the checklist role the letter is filed under.
+  vendorId            String
+  /// company_authority_letter (a director signs) or owner_authority_letter (the business's owner signs).
+  docType             String
+  accountBasis        VendorAccountBasis
+  businessName        String
+  registrationNumber  String
+  requesterName       String
+  requesterRole       String
+  signerName          String
+  /// E.164. Never the account holder's own number, nor one already on the store's team.
+  signerPhone         String
+  /// The exact words shown and signed, and their SHA-256 (hex).
+  letterText          String
+  letterSha256        String
+  status              AuthorityLetterStatus @default(SENT)
+  /// SHA-256 (hex) of the link's secret. The secret itself is only ever in the text message.
+  tokenHash           String                @unique
+  /// When the link stops working (72 hours after it was texted). Not a document expiry.
+  linkExpiresAt       DateTime
+  sendCount           Int                   @default(1)
+  lastSentAt          DateTime
+  openedAt            DateTime?
+  codeHash            String?
+  codeExpiresAt       DateTime?
+  codeAttempts        Int                   @default(0)
+  codeSends           Int                   @default(0)
+  codeVerifiedAt      DateTime?
+  signingKeyHash      String?
+  signingKeyExpiresAt DateTime?
+  /// A signature being filed right now (and when it was signed): a cancel, resend or expiry waits for it (5 minutes at most).
+  signingClaimedAt    DateTime?
+  signedAt            DateTime?
+  /// HMAC-SHA256(ip, CONSENT_IP_PEPPER), as the consent ledger keeps it: never the address itself.
+  signerIpHmac        String?
+  signerUserAgent     String?
+  signatureSha256     String?
+  /// The filed document (verification_documents.id) and its stored, encrypted PDF.
+  documentId          String?
+  pdfFileKey          String?
+  endedAt             DateTime?
+  createdAt           DateTime              @default(now())
+  updatedAt           DateTime              @updatedAt
+
+  @@index([userId, createdAt])
+  @@index([status, linkExpiresAt])
+  @@map("authority_letter_requests")
+}
+
+/// [COMPANY-DOCS PART 2] SENT (waiting for the signer) -> SIGNED, EXPIRED (72 hours passed; a resend opens it again) or
+/// CANCELLED (the account holder replaced or withdrew it).
+enum AuthorityLetterStatus {
+  SENT
+  SIGNED
+  EXPIRED
+  CANCELLED
 }
 
 /// Staff & roles (master plan §4.1): extra logins on a store. The OWNER

@@ -21,6 +21,8 @@ import { StoreFeeCard } from '../settings/store-fee-card';
 import { DocumentCard } from './document-card';
 import { OwnNameCard } from './own-name-card';
 import { AUTHORITY_LETTER_LINK, AUTHORITY_LETTER_PATHS, accountBasisNote, accountPaperHint } from '@/lib/business-basis';
+import { esignSignerFor } from '@/lib/authority-letter';
+import { AuthorityLetterEsign } from './authority-letter-esign';
 
 /** The consent words as the person reads them, with "privacy notice" opening the notice (as the rider page). */
 const [CONSENT_BEFORE, CONSENT_AFTER] = DOCUMENT_CONSENT_TEXT.split('privacy notice') as [string, string];
@@ -90,7 +92,7 @@ export function StoreDocumentChecklist({ storeId, vendorType, storeName }: { sto
         </div>
       );
     }
-    return (
+    const documentCard = (
       <DocumentCard
         key={docType}
         role={vendorType}
@@ -107,6 +109,16 @@ export function StoreDocumentChecklist({ storeId, vendorType, storeName }: { sto
         policeConsent={docType === POLICE_CLEARANCE_DOC ? policeWords : null}
         onSent={refresh}
       />
+    );
+    // [COMPANY-DOCS PART 2 · owner 10 Nov 2026 ~07:5xZ] A letter of authority still to give: the main path is to ask the
+    // director (or the owner) to sign in Swift; the paper upload above stays the fallback.
+    const signer = esignSignerFor(docType);
+    if (!signer || isOptional || (doc && doc.status !== 'REJECTED')) return documentCard;
+    return (
+      <div key={docType} className="space-y-2">
+        {documentCard}
+        <AuthorityLetterEsign storeId={storeId} docType={docType} kind={signer} docRejected={doc?.status === 'REJECTED'} onSigned={refresh} />
+      </div>
     );
   };
 

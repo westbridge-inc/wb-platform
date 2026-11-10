@@ -27,6 +27,7 @@ import { servicesRoutes } from '../modules/services/services.routes';
 import { serviceCatalogRoutes } from '../modules/services/service-catalog.routes';
 import { moderationRoutes } from '../modules/moderation/moderation.routes';
 import { partnerRoutes } from '../modules/partner/partner.routes';
+import { authorityLetterVendorRoutes } from '../modules/vendor/authority-letter/authority-letter.routes';
 import { statementRoutes } from '../modules/order/statement.routes';
 import { callsRoutes } from '../modules/calls/calls.routes';
 import { inAppCallsRoutes } from '../modules/calls/inapp-calls.routes';
@@ -88,6 +89,9 @@ async function buildTestApp() {
   await server.register(servicesRoutes, { prefix: '/api/v1/services' });
   await server.register(serviceCatalogRoutes, { prefix: '/api/v1/services' });
   await server.register(partnerRoutes, { prefix: '/api/v1/partner' });
+  // [COMPANY-DOCS PART 2] The account holder's letter-of-authority requests: swept with the vendor prefix (a customer
+  // or a mover is refused before any lookup).
+  await server.register(authorityLetterVendorRoutes, { prefix: '/api/v1/vendor/authority-letters' });
   await server.register(statementRoutes, { prefix: '/api/v1/statements' });
   await server.register(callsRoutes, { prefix: '/api/v1/calls' });
   // [INAPP-CALLS] In-app calling's signed-in door: the same parties as the bridge (swept under /api/v1/calls/).
@@ -444,11 +448,15 @@ describe('composition root ↔ matrix drift guard, by plugin [SWIFT-092 · T1]',
   // inAppVoiceRoutes (/api/v1/calls/voice, app*) is the same provider calling back during an in-app call
   // [INAPP-CALLS]: signed over the exact URL and refused (403) unsigned, 503 until configured; a connect is
   // accepted only from the call's own caller identity, once — proven in inapp-calls.test.ts.
+  // authorityLetterPublicRoutes (/api/v1/public/authority-letter) is the signing page a director (or an owner) opens
+  // from Swift's text [COMPANY-DOCS PART 2]: they have no account; the link's single-use secret (a POST body, never a
+  // URL) IS the credential for that one letter, kept only as its SHA-256, 72 hours; signing also needs a code texted to
+  // the signer's number. Rate-limited by address and the SMS by number — proven in company-authority-letter-esign.test.ts.
   // testControlRoutes exists only in isolated load builds; production never registers it.
   const EXEMPT_PLUGINS = new Set([
     'agentCashRoutes', 'attributionRoutes', 'discoveryRoutes', 'marketRoutes', 'mmgCheckoutPublicRoutes',
     'cardRailPublicRoutes', 'publicRoutes', 'qrPublicRoutes', 'qrResolverRoutes', 'legalRoutes', 'testControlRoutes',
-    'smsInboundRoutes', 'callVoiceRoutes', 'inAppVoiceRoutes',
+    'smsInboundRoutes', 'callVoiceRoutes', 'inAppVoiceRoutes', 'authorityLetterPublicRoutes',
   ]);
 
   it('flags a route plugin the matrix never mounts, even under a prefix it already sweeps (red-first)', () => {

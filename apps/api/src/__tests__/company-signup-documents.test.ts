@@ -158,7 +158,8 @@ describe('[COMPANY-DOCS] the review queue says which path a store account signed
     // [review] a manager's account says so too
     const manager = reviewQueueRow({ ...base, docType: 'owner_authority_letter', user: { id: 'u3', firstName: 'E', lastName: 'F', phone: '+5926001236', countryCode: 'GY', driver: null, vendorOwner: { accountBasis: 'MANAGER' } } } as never);
     expect(manager.accountBasis).toBe('MANAGER');
-    expect(manager.reviewerTypes).toEqual([]);
+    // [COMPANY-DOCS PART 2 · review F2/F1] a letter of authority asks the reviewer how they confirmed the authority
+    expect(manager.reviewerTypes).toEqual(['authorityConfirmed']);
     const rider = reviewQueueRow({ ...base, user: { id: 'u2', firstName: 'C', lastName: 'D', phone: '+5926001235', countryCode: 'GY', driver: null, vendorOwner: null } } as never);
     expect(rider.accountBasis).toBeNull();
   });
@@ -267,7 +268,9 @@ async function approveAll(o: { userId: string }, role: 'RESTAURANT' | 'STORE', d
     const typed = docType === 'account_holder_id' || docType === 'owner_national_id' ? { documentNumber: `ID${NUM}${seq}` }
       : docType === 'certificate_of_incorporation' ? { registrationKind: 'COMPANY' as const }
       : docType === 'business_registration' ? { registrationKind: 'BUSINESS_NAME' as const, certificateYear: new Date().getUTCFullYear() }
-      : docType === 'gra_restaurant_licence' ? { certificateYear: new Date().getUTCFullYear() } : {};
+      : docType === 'gra_restaurant_licence' ? { certificateYear: new Date().getUTCFullYear() }
+      // [COMPANY-DOCS PART 2 · review F2] a letter of authority: how the reviewer confirmed its signer
+      : docType.endsWith('_authority_letter') ? { authorityConfirmed: { method: 'CALLED_ON_FOUND_NUMBER' as const, reason: 'called the company on the number on its website; it confirmed' } } : {};
     await service.approveDocument(doc.id, adminId, undefined, undefined, typed);
   }
 }

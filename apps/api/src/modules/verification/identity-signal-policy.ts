@@ -1,4 +1,5 @@
 import { normalizeDocNumber } from '../integrity/normalize';
+import { AUTHORITY_LETTER_DOC_TYPES } from './authority-confirmation';
 import { CERTIFICATE_YEAR_DOC_TYPES, ISSUE_DATE_DOC_TYPES, LICENCE_NUMBER_DOC_TYPES, OWN_NAME_DOC_TYPE, PERSON_ID_DOC_TYPES, REGISTRATION_DOC_TYPES } from './doc-registry';
 
 // The two type lists live in the registry's own text (DOC-INV-2); re-exported for this module's callers.
@@ -71,7 +72,7 @@ export function reviewerTypedDocumentSignal(docType: string, raw: unknown): stri
   return LICENCE_NUMBER_DOC_TYPES.has(docType) ? `DL:${normalized}` : normalized;
 }
 
-export type ReviewerTypedField = 'documentNumber' | 'issuedOn' | 'certificateYear' | 'registrationKind' | 'ownNameConfirmed' | 'legalName';
+export type ReviewerTypedField = 'documentNumber' | 'issuedOn' | 'certificateYear' | 'registrationKind' | 'ownNameConfirmed' | 'legalName' | 'authorityConfirmed';
 
 /** What the console must ask the reviewer for, for this document type. */
 export function reviewerTypedFields(docType: string): ReviewerTypedField[] {
@@ -84,5 +85,7 @@ export function reviewerTypedFields(docType: string): ReviewerTypedField[] {
   if (REGISTRATION_DOC_TYPES.includes(docType)) return ['registrationKind', 'certificateYear', 'legalName'];
   // [ROLE-DOCS · owner 21 Oct 2026] an own-name declaration: the reviewer's check of the name against the owner's ID
   if (docType === OWN_NAME_DOC_TYPE) return ['ownNameConfirmed'];
+  // [COMPANY-DOCS PART 2 · review F2] a letter of authority: how the reviewer confirmed the signer is a director (or the owner)
+  if (AUTHORITY_LETTER_DOC_TYPES.has(docType)) return ['authorityConfirmed'];
   return [];
 }
