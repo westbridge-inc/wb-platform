@@ -26,6 +26,9 @@ const STAGING_V2 = {
   CARD_RAIL_PROVIDER: 'powertranz',
   CARD_RAIL_ENVIRONMENT: 'sandbox',
   API_PUBLIC_URL: 'https://api-staging.example.test',
+  // [CARD-STAGING-TEST 10 Nov 2026] The provider's settings, readable (a v2 server without them refuses to start).
+  CARD_RAIL_ACCOUNT: 'swift-staging-sandbox', POWERTRANZ_ID: 'TESTID01', POWERTRANZ_PASSWORD: 'not-a-real-password',
+  POWERTRANZ_PAGE_SET: 'PTZ/SWIFT', POWERTRANZ_PAGE_NAME: 'WeeklyFee',
 };
 
 describe('[CARD-DECOUPLE] the legacy PAYMENT_PROVIDER has no say over card rail v2', () => {
@@ -70,6 +73,10 @@ describe('[CARD-DECOUPLE] the legacy PAYMENT_PROVIDER has no say over card rail 
     const provider = getPaymentProvider();
     await expect(provider.chargeToken({ token: 'synthetic', amount: 1, currencyCode: 'GYD', idempotencyKey: 'decouple-1' }))
       .resolves.toMatchObject({ status: 'failed', providerRef: '', code: 'CARD_RAIL_DISABLED' });
+  });
+
+  it('[CARD-STAGING-TEST] ... but not when this process cannot read the credentials (no POWERTRANZ_*_FILE lines): it refuses to start', () => {
+    expect(() => assertSafeBootConfig({ ...STAGING_V2, POWERTRANZ_ID: '', POWERTRANZ_PASSWORD: '' })).toThrow(/^FATAL: CARD_RAIL_V2=1 with CARD_RAIL_PROVIDER=powertranz, but this server cannot read the card provider's settings: POWERTRANZ_ID/);
   });
 
   it('the sandbox is still never on the public API host (unchanged)', () => {

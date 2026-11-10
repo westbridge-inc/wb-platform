@@ -19,11 +19,20 @@ import { POWERTRANZ_ENV, PowerTranzCardRailProvider, PowerTranzConfigError, powe
 // number or an answer from a provider. A FAIL line may name a SETTING (never
 // its value) so the owner knows what to fix.
 //
-//   card  the provider's settings are complete; its gateway answers (guide
-//         v2.7 sec. 3 "Alive"); the credentials are not refused (Appendix 1,
-//         89 / 312); in the sandbox, the hosted payment page preprocesses
-//         (SP4) — preprocessing is no authorization (sec. 7.3) and the
-//         self-check never completes anything: no money moves.
+//   card  the provider's settings are complete (the page set with its PTZ/
+//         prefix); its gateway answers (guide v2.7 sec. 3 "Alive"); the
+//         credentials are not refused (Appendix 1, 89 / 312); in the sandbox,
+//         a sale with the hosted payment page preprocesses (SP4) and the page
+//         itself OPENS (PowerTranz shows its card form, not "page not found")
+//         — preprocessing is no authorization (sec. 7.3) and the self-check
+//         never completes anything: no money moves.
+//
+// [CARD-STAGING-TEST 10 Nov 2026] The owner tool runs this twice: on the values
+// typed in that run (a one-off container), and INSIDE the running API
+// container (`docker compose exec -T api`), where it reads exactly the app's
+// own settings through the same secret-file loader the server boots with
+// (boot/secret-files.ts). Staging's typed values printed OK while the running
+// app could not read its credentials; the second run says so.
 //   mmg   the checkout settings and both keys load; both keys are 4096-bit;
 //         a test request encrypts within what the key carries (RSA-OAEP
 //         SHA-256: 446 bytes for 4096 bits); the merchant login answers.

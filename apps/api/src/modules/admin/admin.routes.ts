@@ -207,6 +207,11 @@ const vendorsQuerySchema = z.object({
 const legalNameChangeSchema = z.object({ firstName: z.string().trim().min(1).max(80), lastName: z.string().trim().min(1).max(80) });
 const storeTypeChangeSchema = z.object({ vendorType: z.nativeEnum(VendorType) });
 const storeNameChangeSchema = z.object({ name: z.string().trim().min(2).max(100) });
+/** [R3 · security review 10 Nov 2026] The store name a person confirms as the seller's business or company name: the
+ *  exact name the console showed them (approve, or the seller-name check of a store already live). */
+const sellerNameField = z.string().trim().min(1).max(100);
+const sellerNameConfirmSchema = z.object({ name: sellerNameField });
+const vendorApproveSchema = z.object({ sellerName: sellerNameField.optional() });
 const phoneChangeSchema = z.object({ phone: z.string().trim().min(7).max(20) });
 const phoneChangeCodeSchema = z.object({ code: z.string().trim().regex(/^\d{6}$/) });
 /** [BUG-HUNT F05] How long a person has to make the one move support allowed. */
@@ -431,6 +436,8 @@ const approveDocSchema = z.object({
   registrationKind: z.enum(REGISTRATION_KINDS).optional(),
   // [ROLE-DOCS · owner 21 Oct 2026] an own-name declaration: the reviewer confirms the store name against the owner's ID
   ownNameConfirmed: z.boolean().optional(),
+  // [COMPANY-DOCS · review F3] a company's business-name registration: the proprietor named on it is a company
+  proprietorIsCompany: z.boolean().optional(),
   // Insurance 5-point manual check (spec §3.4) — supplied for hire-insurance docs
   insurance: z.object({
     insurerName: z.string().min(1).max(120),
@@ -2028,6 +2035,11 @@ export async function adminRoutes(app: FastifyInstance) {
     if (vendor.status === 'ACTIVE') throw new AppError(400, 'ALREADY_ACTIVE', 'Vendor is already approved');
     // [DELETION-INTEGRITY] A store wound down with its owner's closed account never reopens.
     if (vendor.suspensionSource === 'WIND_DOWN') throw new AppError(409, 'ACCOUNT_CLOSED', 'This store belongs to a closed account and cannot be reopened.');
+    // [R3 · security review 10 Nov 2026] Approving confirms the store's name as the seller's: the name the console showed.
+    const shownName = vendorApproveSchema.parse(request.body ?? {}).sellerName;
+    if (shownName !== undefined && shownName !== vendor.name.trim()) {
+      throw new AppError(409, 'SELLER_NAME_CHANGED', `The store's name is now “${vendor.name.trim()}”. Check that name, then approve again.`);
+    }
 
     const goLive = await verification.vendorGoLive(id);
     if (!goLive) throw new NotFoundError('Vendor', id);
@@ -2043,9 +2055,13 @@ export async function adminRoutes(app: FastifyInstance) {
       // auto-approval, the reconcile belt — and now this button), run for this
       // store only [DS816 S3]. It prices the store and starts its trial in the
       // same transaction, or refuses with the config error and leaves it pending.
+      // [R3 · security review 10 Nov 2026] Approving confirms the store's name as the seller's business or company name
+      // ONLY when the console sent the name it showed (`sellerName`); a different name under the lock is refused. With
+      // no name sent (an older console, a script) the store goes live as before but nothing is confirmed: its storefront
+      // names nobody until a person confirms the name (PUT /vendors/:id/seller-name). Never a name nobody was shown.
       await verification.activateStore(goLive.ownerUserId, id, (tx) => auditWithin(tx, request as unknown as AuditRequestLike, app.prefix, {
-        extra: { previousStatus: vendor.status, previousSuspensionSource: vendor.suspensionSource, verdict: next },
-      }));
+        extra: { previousStatus: vendor.status, previousSuspensionSource: vendor.suspensionSource, verdict: next, sellerNameConfirmed: shownName ?? null },
+      }), shownName !== undefined ? { by: request.user.userId, name: shownName } : undefined);
       updated = await app.prisma.vendor.findUniqueOrThrow({ where: { id } });
       feeHeld = updated.status === 'SUSPENDED' && updated.suspensionSource === 'BILLING';
       if (updated.status !== 'ACTIVE' && !feeHeld) {
@@ -2241,6 +2257,34 @@ export async function adminRoutes(app: FastifyInstance) {
       body: `Swift changed your store’s name to ${name}.`, data: { vendorId: id },
     });
     return { success: true, data: updated };
+  });
+
+  /**
+   * [R3 · CAA s.70(1) · owner ruling 10 Nov 2026 · security review] A person confirms the store's name as the seller's
+   * business or company name — for a store approved before this check existed, or renamed since (a new name needs a new
+   * confirmation). The body is the exact name the console showed; a name changed since is refused, never confirmed
+   * unseen. Until a person confirms, the storefront's seller block names nobody ("Ask the store"), never the owner.
+   */
+  app.put('/vendors/:id/seller-name', { preHandler: [adminGuard] }, async (request) => {
+    const { id } = request.params as { id: string };
+    const { name } = sellerNameConfirmSchema.parse(request.body ?? {});
+    const confirmed = await app.prisma.$transaction(async (tx) => {
+      await bindTenantTransaction(tx);
+      await tx.$queryRaw`SELECT "id" FROM "vendors" WHERE "id" = ${id} FOR UPDATE /* admin-seller-name-check */`;
+      const vendor = await tx.vendor.findUnique({ where: { id }, select: { name: true, sellerNameCheckedName: true } });
+      if (!vendor) throw new NotFoundError('Vendor', id);
+      if (vendor.name.trim() !== name) {
+        throw new AppError(409, 'SELLER_NAME_CHANGED', `The store's name is now “${vendor.name.trim()}”. Check that name, then confirm again.`);
+      }
+      if (vendor.sellerNameCheckedName === name) throw new AppError(409, 'NOTHING_TO_CHANGE', 'That name is already confirmed as the seller’s name.');
+      const row = await tx.vendor.update({
+        where: { id }, data: { sellerNameCheckedName: name, sellerNameCheckedAt: new Date(), sellerNameCheckedById: request.user.userId },
+        select: { id: true, name: true, sellerNameCheckedName: true, sellerNameCheckedAt: true },
+      });
+      await auditIn(tx, request.user.userId, 'CONFIRM_SELLER_NAME', 'Vendor', id, { from: vendor.sellerNameCheckedName, to: name }, request);
+      return row;
+    });
+    return { success: true, data: confirmed };
   });
 
   app.put('/vendors/:id/feature', { preHandler: [adminGuard] }, async (request) => {
@@ -7121,6 +7165,7 @@ export async function adminRoutes(app: FastifyInstance) {
       ...(body.certificateYear !== undefined ? { certificateYear: body.certificateYear } : {}),
       ...(body.registrationKind !== undefined ? { registrationKind: body.registrationKind } : {}),
       ...(body.ownNameConfirmed !== undefined ? { ownNameConfirmed: body.ownNameConfirmed } : {}),
+      ...(body.proprietorIsCompany !== undefined ? { proprietorIsCompany: body.proprietorIsCompany } : {}),
     }, {
       // [S2-29 · KYC-DECISION-ATOMIC] The trail commits with the decision, in its transaction: the
       // action row and the canonical admin row. A decision cannot commit without them.

@@ -47,6 +47,7 @@ export function DocumentUploadCard({
   replaced = false,
   optionalHint,
   hint,
+  paperHelp,
   consented = false,
   askConsentFirst = false,
   consentVia = 'checkbox',
@@ -66,6 +67,8 @@ export function DocumentUploadCard({
   optionalHint?: string;
   /** [Owner ruling 11 Oct 2026] What this document is, in plain words (taxi checklist). */
   hint?: string;
+  /** [COMPANY-DOCS · owner 10 Nov 2026] What a company's or a manager's paper is, and the website's one-page letter to sign. */
+  paperHelp?: { text: string; link?: { label: string; url: string } };
   /** [R17] The checklist's consent tick is given: only then can a document be uploaded. */
   consented?: boolean;
   /** [DOC-CONSENT · DPA s.9(1)(a), research D1] The tick on screen stands only on the person's record and this
@@ -285,6 +288,16 @@ function explainPermissionDenied(
             <T variant="micro" tone="muted" style={{ marginTop: 2 }}>
               {hint}
             </T>
+          ) : null}
+          {paperHelp ? (
+            <T variant="micro" tone="muted" style={{ marginTop: 2 }}>
+              {paperHelp.text}
+            </T>
+          ) : null}
+          {paperHelp?.link ? (
+            <View style={{ marginTop: 2, alignSelf: 'flex-start' }}>
+              <LinkText label={paperHelp.link.label} onPress={() => { void Linking.openURL(paperHelp.link!.url).catch(() => undefined); }} />
+            </View>
           ) : null}
           {optionalHint ? (
             <T variant="micro" tone="muted" style={{ marginTop: 2 }}>

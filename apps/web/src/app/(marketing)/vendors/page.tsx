@@ -119,7 +119,8 @@ export default function VendorsPage() {
                 n: '2',
                 t: 'Send your documents',
                 // [FLOW-QA2 NEW-5] What the store checklists ask (platform-config): never a TIN (dropped 6 Oct 2026).
-                b: 'Owner ID, business registration (or a signed declaration if you trade under your own surname) and a photo of your storefront; a restaurant adds its GRA licence, and a service business sends only the owner’s ID. Photograph them with your phone — the camera guides the frame.',
+                // [COMPANY-DOCS · owner 10 Nov 2026] a registered company and a manager give their own papers
+                b: 'Owner ID, business registration (or a signed declaration if you trade under your own surname) and a photo of your storefront; a restaurant adds its GRA licence, and a service business sends only the owner’s ID. A registered company sends its Certificate of Incorporation, a director’s letter and the ID of the one person who manages its account instead of an owner’s ID; a manager signing up for the owner sends their own ID and the owner’s letter. Branches and staff send nothing. Photograph them with your phone — the camera guides the frame.',
               },
               {
                 n: '3',

@@ -20,6 +20,7 @@ import { FoodHandlersCard } from '../settings/food-handlers-card';
 import { StoreFeeCard } from '../settings/store-fee-card';
 import { DocumentCard } from './document-card';
 import { OwnNameCard } from './own-name-card';
+import { AUTHORITY_LETTER_LINK, AUTHORITY_LETTER_PATHS, accountBasisNote, accountPaperHint } from '@/lib/business-basis';
 
 /** The consent words as the person reads them, with "privacy notice" opening the notice (as the rider page). */
 const [CONSENT_BEFORE, CONSENT_AFTER] = DOCUMENT_CONSENT_TEXT.split('privacy notice') as [string, string];
@@ -98,7 +99,9 @@ export function StoreDocumentChecklist({ storeId, vendorType, storeName }: { sto
         isNext={!isOptional && docType === nextDoc}
         optionalHint={isOptional ? optionalDocHint(docType) : undefined}
         // [VERIFY-DOCS] On the list (a business that offers home visits), it still never gates the store.
-        hint={!isOptional && docType === POLICE_CLEARANCE_DOC ? POLICE_CLEARANCE_HOME_VISITS : undefined}
+        hint={!isOptional && docType === POLICE_CLEARANCE_DOC ? POLICE_CLEARANCE_HOME_VISITS : accountPaperHint(docType)}
+        // [COMPANY-DOCS · owner 10 Nov 2026] the one-page letter to fill in, sign and upload (a person still checks it)
+        hintLink={AUTHORITY_LETTER_PATHS[docType] ? { label: AUTHORITY_LETTER_LINK, href: AUTHORITY_LETTER_PATHS[docType]! } : undefined}
         consented={consented}
         consentVia={consentVia}
         policeConsent={docType === POLICE_CLEARANCE_DOC ? policeWords : null}
@@ -120,6 +123,8 @@ export function StoreDocumentChecklist({ storeId, vendorType, storeName }: { sto
         <div>
           <h2 id="documents-required" className="text-lg font-bold">{REQUIRED_HEADING}</h2>
           <p className="mt-1 text-sm text-[var(--swift-muted)]">{REQUIRED_INTRO}</p>
+          {/* [COMPANY-DOCS · owner 10 Nov 2026] a company's or a manager's account: one set of papers, nothing from branches or staff */}
+          {accountBasisNote(d) ? <p className="mt-1 text-sm text-[var(--swift-muted)]" data-account-basis-note>{accountBasisNote(d)}</p> : null}
         </div>
         {/* [R17 · legal research D2/B1] a tick before any upload; the API records it in the consent ledger. */}
         <label className="flex items-start gap-3 rounded-2xl border border-[var(--swift-border)] p-4 text-sm">

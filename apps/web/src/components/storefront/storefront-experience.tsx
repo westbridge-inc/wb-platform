@@ -865,7 +865,12 @@ export function StorefrontExperience({ store, returnPath, fromQr = false, initia
   // [STORE-WORDS · owner 9 Nov 2026] "20 min prep" is a kitchen's word: any other store reads "Ready in about
   // 20 min", and a store with no time shows no line rather than "null min prep".
   const minutes = catalog.etaMin ? `About ${catalog.etaMin} min` : readyTimeLabel(catalog.vendorType, catalog.estimatedPrepTime);
-  const rating = catalog.displayRating !== null ? `${catalog.displayRating.toFixed(1)} ${catalog.ratingBucket}`.trim() : 'No ratings yet';
+  // [RATINGS · owner report 10 Nov 2026] The star figure shows from a store's 5th rating
+  // (RATING_MIN_DISPLAY). Before that a rated store is "New (2)", as on the store list and the
+  // phone; "No ratings yet" only when it is true.
+  const rating = catalog.displayRating !== null
+    ? `${catalog.displayRating.toFixed(1)} ${catalog.ratingBucket}`.trim()
+    : catalog.ratingCount > 0 ? `New ${catalog.ratingBucket}`.trim() : 'No ratings yet';
   const storeMeta = [catalog.cuisineTypes?.[0], storeLabel, rating].filter(Boolean).join(' · ');
   const modalUnitPrice = modalItem ? optionPrice(modalItem, selectedOptions) : null;
 

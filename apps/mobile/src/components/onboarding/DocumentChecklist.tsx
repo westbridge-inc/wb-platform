@@ -14,6 +14,8 @@ import { isTaxiChecklist, taxiDocumentHint, TAXI_TWO_LICENCES } from './taxiDocu
 import { DOCUMENT_REVIEW_PROMISE, emptyChecklistCopy, optionalDocHint, optionalDocTypes } from './documentChecklistPresentation';
 import { SENSITIVE_DOC_TYPES, documentConsentGivenLine, documentConsentOnRecord, policeClearanceWordsFrom } from './documentConsentRecord';
 import type { UploadConsentVia } from '../../services/api';
+import { accountBasisNote, accountPaperHelp } from '../../lib/businessBasisCopy';
+import { WEBSITE_URL } from '../../lib/websiteUrl';
 
 /** The progress track. `h-1.5` was 6px via Tailwind's default scale — the
  *  theme maps no numeric spacing, so it was never a token. Named here so the
@@ -200,6 +202,8 @@ export function DocumentChecklist({
           />
         </View>
       </View>
+      {/* [COMPANY-DOCS · owner 10 Nov 2026] a company's or a manager's account: one set of papers, nothing from branches or staff */}
+      {accountBasisNote(status) ? <T variant="caption" tone="muted">{accountBasisNote(status)}</T> : null}
       {checklist.map((docType) => {
         // [FOOD-PERMIT · owner 24 Oct 2026] the food handlers step is a tick (the server's words), never an upload
         if (docType === FOOD_HANDLERS_DOC) return <FoodHandlersCard key={docType} role={role} status={status} />;
@@ -234,6 +238,7 @@ export function DocumentChecklist({
             replaced={doc?.replaced === true}
             isNext={docType === nextDoc}
             hint={taxiDocumentHint(docType, checklist)}
+            paperHelp={accountPaperHelp(docType, WEBSITE_URL)}
           />
         );
       })}

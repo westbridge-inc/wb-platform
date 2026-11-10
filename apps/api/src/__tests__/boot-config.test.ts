@@ -126,6 +126,13 @@ function runPreflight(candidate: Record<string, string | undefined>) {
   }
 }
 
+/** [CARD-STAGING-TEST 10 Nov 2026] The provider's settings a server running card rail v2 on its sandbox must be able to
+ *  read (synthetic values; the credentials arrive as files on a real server). */
+const SANDBOX_READY = {
+  CARD_RAIL_ACCOUNT: 'swift-staging-sandbox', POWERTRANZ_ID: 'TESTID01', POWERTRANZ_PASSWORD: 'not-a-real-password-7Q',
+  POWERTRANZ_PAGE_SET: 'PTZ/SWIFT', POWERTRANZ_PAGE_NAME: 'WeeklyFee',
+};
+
 describe('assertSafeBootConfig — fail-closed production secrets', () => {
   it.each([
     ['CONSENT_REQUIRED', '0'],
@@ -1064,7 +1071,7 @@ describe('[PT-1 · PT-4] card rail v2 in production: only the real provider set 
   });
 
   it('[review S2-1] in EVERY mode, the provider\'s TEST system (its sandbox) refuses to start on the public API host — a trailing dot is the same host', () => {
-    const sandbox = { CARD_RAIL_V2: '1', CARD_RAIL_PROVIDER: 'powertranz', CARD_RAIL_ENVIRONMENT: 'sandbox' };
+    const sandbox = { CARD_RAIL_V2: '1', CARD_RAIL_PROVIDER: 'powertranz', CARD_RAIL_ENVIRONMENT: 'sandbox', ...SANDBOX_READY };
     for (const env of [
       { NODE_ENV: 'development', ...sandbox, API_PUBLIC_URL: 'https://api.swiftgy.com' },
       { NODE_ENV: 'development', ...sandbox, CARD_RAIL_V2: '0', API_PUBLIC_URL: 'https://API.swiftgy.com/' },
@@ -1080,7 +1087,7 @@ describe('[PT-1 · PT-4] card rail v2 in production: only the real provider set 
   // [GUARD-FIX] Production serves the API as api-live.swiftgy.com (and keeps that name after launch,
   // adding api.swiftgy.com beside it). A guard keyed on one public name alone never fired there.
   it('[GUARD-FIX] in EVERY mode, a TEST card system refuses to start on EITHER production public name, api.swiftgy.com or api-live.swiftgy.com', () => {
-    const sandbox = { CARD_RAIL_V2: '1', CARD_RAIL_PROVIDER: 'powertranz', CARD_RAIL_ENVIRONMENT: 'sandbox' };
+    const sandbox = { CARD_RAIL_V2: '1', CARD_RAIL_PROVIDER: 'powertranz', CARD_RAIL_ENVIRONMENT: 'sandbox', ...SANDBOX_READY };
     for (const env of [
       { NODE_ENV: 'development', CARD_RAIL_V2: '1', CARD_RAIL_PROVIDER: 'simulator', API_PUBLIC_URL: 'https://api-live.swiftgy.com' },
       { NODE_ENV: 'development', CARD_RAIL_V2: '0', CARD_RAIL_PROVIDER: 'simulator', API_PUBLIC_URL: 'https://API-LIVE.swiftgy.com/' },
@@ -1120,6 +1127,43 @@ describe('[PT-1 · PT-4] card rail v2 in production: only the real provider set 
     expect(() => assertSafeBootConfig({ NODE_ENV: 'development', CARD_RAIL_PROVIDER: 'powertranz', CARD_RAIL_ENVIRONMENT: 'sandbox', API_PUBLIC_URL: 'https://api-test.example.test' })).not.toThrow();
     // Production is the only mode whose card checks accept live cards; the launch lock then refuses them.
     expect(() => assertSafeBootConfig({ ...good, ...liveCards })).toThrow(/^FATAL: CARD_RAIL_V2 must be unset or 0 in production/);
+  });
+
+  // [CARD-STAGING-TEST 10 Nov 2026] Staging ran card rail v2 on the provider's sandbox with the credentials missing from
+  // deploy/.env (no POWERTRANZ_*_FILE lines) and a page set without PTZ/: it booted, offered card payment, and every
+  // payment failed. Outside production (production has its own, live-card refusal) such a server now refuses to start.
+  it('[CARD-STAGING-TEST] in EVERY mode but production, card rail v2 (or its drain) on the real provider refuses to start unless this process can read the provider\'s settings — named, never a value', () => {
+    const on = { NODE_ENV: 'development', CARD_RAIL_PROVIDER: 'powertranz', CARD_RAIL_ENVIRONMENT: 'sandbox', API_PUBLIC_URL: 'https://api-staging.swiftgy.com', ...SANDBOX_READY };
+    for (const mode of ['development', 'test', 'loadtest']) {
+      for (const which of [{ CARD_RAIL_V2: '1' }, { CARD_RAIL_V2: '0', CARD_RAIL_V2_DRAIN: '1' }]) {
+        expect(() => assertSafeBootConfig({ ...on, ...which, NODE_ENV: mode }), `${mode} ${JSON.stringify(which)}`).not.toThrow();
+        const cases: Array<[Record<string, string | undefined>, RegExp]> = [
+          [{ POWERTRANZ_ID: undefined }, /POWERTRANZ_ID/],
+          [{ POWERTRANZ_PASSWORD: undefined }, /POWERTRANZ_PASSWORD/],
+          [{ POWERTRANZ_PAGE_SET: 'SWIFT' }, /POWERTRANZ_PAGE_SET must start with PTZ\//],
+          [{ POWERTRANZ_PAGE_NAME: undefined }, /POWERTRANZ_PAGE_NAME/],
+          [{ CARD_RAIL_ACCOUNT: undefined }, /CARD_RAIL_ACCOUNT/],
+          [{ API_PUBLIC_URL: 'http://api-staging.swiftgy.com' }, /API_PUBLIC_URL/],
+        ];
+        for (const [patch, named] of cases) {
+          let thrown: Error | undefined;
+          try { assertSafeBootConfig({ ...on, ...which, NODE_ENV: mode, ...patch }); } catch (err) { thrown = err as Error; }
+          expect(thrown?.message, `${mode} ${JSON.stringify(which)} ${JSON.stringify(patch)}`).toMatch(/^FATAL: CARD_RAIL_V2(_DRAIN)?=1 with CARD_RAIL_PROVIDER=powertranz, but this server cannot read the card provider's settings: /);
+          expect(thrown?.message).toMatch(named);
+          expect(thrown?.message).not.toContain(SANDBOX_READY.POWERTRANZ_PASSWORD);
+        }
+      }
+    }
+    // A missing credential names the store wiring to add; the kill switch does not excuse it (a killed rail still
+    // confirms, sweeps, looks up and refunds what is in flight, all through the provider).
+    for (const kill of ['0', '1']) {
+      let thrown: Error | undefined;
+      try { assertSafeBootConfig({ ...on, CARD_RAIL_V2: '1', CARD_RAIL_KILL: kill, POWERTRANZ_ID: undefined }); } catch (err) { thrown = err as Error; }
+      expect(thrown?.message, kill).toContain('deploy/.env needs POWERTRANZ_ID_FILE=/run/secrets/POWERTRANZ_ID and POWERTRANZ_PASSWORD_FILE=/run/secrets/POWERTRANZ_PASSWORD');
+    }
+    // Off (neither switch), or another provider: nothing about the real provider is asked, as before.
+    expect(() => assertSafeBootConfig({ ...on, POWERTRANZ_ID: undefined, CARD_RAIL_V2: '0' })).not.toThrow();
+    expect(() => assertSafeBootConfig({ NODE_ENV: 'development', CARD_RAIL_V2: '1', CARD_RAIL_PROVIDER: 'simulator' })).not.toThrow();
   });
 
   it('outside production the simulator boots (staging runs NODE_ENV=development)', () => {

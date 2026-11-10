@@ -9,7 +9,8 @@ import { EXPIRABLE_DOC_STATES, ExpirySweepReport } from './expiry-sweep-report';
 import { DOCUMENT_REPLACED, isReplacedNote, replacedNoteFor, supersedeAwaitingCopies } from './replace-pending';
 import { approveRegistrantLink, linkedAccountIds, normalizeRegistrationMark, plateClassOf, resolveSubject, rootSubjectId } from './subjects';
 import { POLICE_CLEARANCE_WITHDRAWN_NOTE } from './police-clearance-consent';
-import { AUTO_APPROVE_EXPIRY_DAYS, BUCKET_OF, CERTIFICATE_YEAR_DOC_TYPES, FOOD_HANDLER_ATTESTATION_TYPE, isNeverAcceptedDocType, OWN_NAME_DOC_TYPE, OWN_NAME_TIER, POLICE_CLEARANCE_DOC_TYPE, REGISTRATION_DOC_TYPES, registryCode, type RegistrationKind } from './doc-registry';
+import { ACCOUNT_HOLDER_ID_DOC_TYPE, AUTO_APPROVE_EXPIRY_DAYS, CERTIFICATE_OF_INCORPORATION_DOC_TYPE, BUCKET_OF, CERTIFICATE_YEAR_DOC_TYPES, FOOD_HANDLER_ATTESTATION_TYPE, isNeverAcceptedDocType, OWN_NAME_DOC_TYPE, OWN_NAME_TIER, PERSON_ONLY_DOC_TYPES, POLICE_CLEARANCE_DOC_TYPE, REGISTRATION_DOC_TYPES, registryCode, type RegistrationKind } from './doc-registry';
+import { accountTierOf } from '../vendor/account-basis';
 import { guyanaWallClockParts, startOfGuyanaDay } from '../../utils/guyana-day';
 import type { ValidatorContext } from './validators';
 import { plausibleExpiryCeiling, startOfToday } from './validators';
@@ -137,7 +138,9 @@ const CUSTOMER_ID_SCOPE = { docType: IDENTITY_DOC_TYPE, role: 'CUSTOMER' } as co
  *  merely OCR-checked: the portrait is face-matched against the operator's
  *  camera-captured signup selfie (master plan §3 — "face-matched to profile
  *  photo"), through the same KycProvider.verifyIdentity seam the L2 flow uses. */
-export const IDENTITY_FACE_MATCH_DOCS: ReadonlySet<string> = new Set(['national_id', 'owner_national_id']);
+// [COMPANY-DOCS · owner 10 Nov 2026] A company's or a manager's account holder's ID is treated exactly as an owner's: the same
+// face rule (#2454: only a person who takes the sign-up selfie is ever face-matched, and a store's account holder never does).
+export const IDENTITY_FACE_MATCH_DOCS: ReadonlySet<string> = new Set(['national_id', 'owner_national_id', ACCOUNT_HOLDER_ID_DOC_TYPE]);
 
 /**
  * [DOC-1 §0.5 · FD-D5] The face-match leg of a document submission: an
@@ -266,6 +269,9 @@ export interface ReviewerTypedInput {
   /** [ROLE-DOCS · owner 21 Oct 2026] An own-name declaration: the reviewer confirms, from the owner's ID, that the store's
    *  name is the owner's true surname with only first names or initials (Business Names (Registration) Act s.3). */
   ownNameConfirmed?: boolean;
+  /** [COMPANY-DOCS · review F3] A company's paper that is a business-NAME registration: the reviewer confirms the proprietor
+   *  named on it is a company (Ltd. or Inc.), never a person (a person's registration is the owner or manager path). */
+  proprietorIsCompany?: boolean;
   /** The reviewer console's contract: the fields this type needs must be typed. */
   required?: boolean;
 }
@@ -977,7 +983,8 @@ export class VerificationService {
     result = gateAutoApproval(result, extraction, registryType);
     // [ROLE-DOCS · security review] Fail closed: no engine, auto-approval or auto-rejection decides an own-name
     // declaration. A person compares the name with the owner's ID (approveDocument requires ownNameConfirmed).
-    if (docType === OWN_NAME_DOC_TYPE && result.status !== 'pending_manual') result = { ...result, status: 'pending_manual' as const };
+    // [COMPANY-DOCS · owner 10 Nov 2026] Nor a company's or a manager's papers: "all checked by a person at Swift".
+    if (PERSON_ONLY_DOC_TYPES.has(docType) && result.status !== 'pending_manual') result = { ...result, status: 'pending_manual' as const };
 
     const autoExpiryDays = AUTO_APPROVE_EXPIRY_DAYS[docType];
     const doc = await this.createDocumentLively({
@@ -1166,6 +1173,12 @@ export class VerificationService {
           'Confirm, from the owner\u2019s ID, that the store\u2019s name is their true surname with nothing added except their first names or initials. If it is not, reject the declaration: the store must register its business name.');
       }
       if (REGISTRATION_DOC_TYPES.includes(candidate.docType) && (typed.required || typed.registrationKind !== undefined)) {
+        // [COMPANY-DOCS · review F3] A company's paper may be a business-name registration only when the proprietor it
+        // names is a company: one that names a person belongs to the owner's (or the manager's) path, never a company's.
+        if (typed.registrationKind === 'BUSINESS_NAME' && candidate.docType === CERTIFICATE_OF_INCORPORATION_DOC_TYPE && typed.proprietorIsCompany !== true) {
+          throw new AppError(400, 'PROPRIETOR_NOT_A_COMPANY',
+            'A business name registration counts for a company only when the proprietor named on it is a company (Ltd. or Inc.). If it names a person, reject it: that business signs up as a registered business, or through its manager.');
+        }
         if (typed.registrationKind === 'BUSINESS_NAME') expiresAt = certificateYearRecheck(typed.certificateYear);
         else if (typed.registrationKind !== 'COMPANY') {
           throw new AppError(400, 'REGISTRATION_KIND_REQUIRED',
@@ -2041,8 +2054,16 @@ export class VerificationService {
    *  store (the owner's Documents view) it is OWN_NAME only when every store of the type trades under the owner's own
    *  name — while any one does not, the registration is asked for. Otherwise undefined (standard). */
   private async vendorTierOf(userId: string, roleKey: ChecklistRole, db: Prisma.TransactionClient | PrismaClient, vendorId?: string): Promise<string | undefined> {
-    const owner = await db.vendorOwner.findUnique({ where: { userId }, select: { vendors: { select: { id: true, vendorType: true, tradesUnderOwnName: true } } } });
+    const owner = await db.vendorOwner.findUnique({ where: { userId }, select: { accountBasis: true, vendors: { select: { id: true, vendorType: true, tradesUnderOwnName: true } } } });
     if (!owner) return undefined;
+    // [COMPANY-DOCS · owner rulings 10 Nov 2026] A company's or a manager's account gives ONE set of papers for the whole
+    // account: every store of the type reads the account's tier (a branch included), never an owner's ID. Own name is
+    // an owner's alone (the own-name route refuses such an account).
+    const accountTier = accountTierOf(owner.accountBasis, roleKey);
+    if (accountTier) {
+      if (vendorId !== undefined) return owner.vendors.some((v) => v.id === vendorId && v.vendorType === roleKey) ? accountTier : undefined;
+      return accountTier;
+    }
     if (vendorId !== undefined) {
       const store = owner.vendors.find((v) => v.id === vendorId);
       return store && store.vendorType === roleKey && store.tradesUnderOwnName ? OWN_NAME_TIER : undefined;
@@ -2285,13 +2306,21 @@ export class VerificationService {
     // Additive (an older app ignores it; a newer app reading an older server finds none and offers nothing). Read
     // beside the name basis.
     const storeRole = roleKey === 'RESTAURANT' || roleKey === 'SUPERMARKET' || roleKey === 'STORE';
+    // [COMPANY-DOCS · owner 10 Nov 2026] `nameBasis` keeps its two words (a company's or a manager's store uses a registered
+    // name); `accountBasis` (additive) says who holds the account: OWNER, COMPANY or MANAGER. A company or manager account
+    // is never offered the own-name route (ownNameFits false for each store: the route refuses it).
+    const storeOwner = roleKey === 'RESTAURANT' || roleKey === 'SUPERMARKET' || roleKey === 'STORE' || roleKey === 'SERVICE'
+      ? await this.prisma.vendorOwner.findUnique({ where: { userId }, select: { accountBasis: true, vendors: { where: { vendorType: roleKey }, select: { id: true, name: true } } } })
+      : null;
+    const accountBasis = storeOwner?.accountBasis;
     const [nameBasis, ownNameFits] = storeRole
       ? await Promise.all([
-        this.vendorTierOf(userId, roleKey, this.prisma).then((tier) => tier ?? 'REGISTERED'),
-        Promise.all([
-          import('../vendor/own-name'),
-          this.prisma.vendorOwner.findUnique({ where: { userId }, select: { vendors: { where: { vendorType: roleKey }, select: { id: true, name: true } } } }),
-        ]).then(([{ ownNameFitsByStore }, owner]) => ownNameFitsByStore(owner?.vendors ?? [], user.firstName, user.lastName)),
+        this.vendorTierOf(userId, roleKey, this.prisma).then((tier) => (tier === OWN_NAME_TIER ? 'OWN_NAME' : 'REGISTERED')),
+        import('../vendor/own-name').then(({ ownNameFitsByStore }) => {
+          const fits = ownNameFitsByStore(storeOwner?.vendors ?? [], user.firstName, user.lastName);
+          if (accountBasis && accountBasis !== 'OWNER') for (const id of Object.keys(fits)) fits[id] = false;
+          return fits;
+        }),
       ])
       : [undefined, undefined];
     if (roleKey === 'SERVICE') {
@@ -2373,6 +2402,7 @@ export class VerificationService {
       ...(homeVisits ? { homeVisits } : {}),
       ...(nameBasis ? { nameBasis } : {}),
       ...(ownNameFits ? { ownNameFits } : {}),
+      ...(accountBasis ? { accountBasis } : {}),
       ...(foodHandlerAttestation ? { foodHandlerAttestation } : {}),
     };
   }
@@ -2626,7 +2656,10 @@ export class VerificationService {
    * the named store is projected: the button names one store, so the owner's
    * other stores are left to the document path and the daily belt.
    */
-  async activateStore(userId: string, vendorId: string, onActivated?: (tx: Prisma.TransactionClient) => Promise<void>): Promise<void> {
+  async activateStore(
+    userId: string, vendorId: string, onActivated?: (tx: Prisma.TransactionClient) => Promise<void>,
+    sellerName?: { by: string; name: string },
+  ): Promise<void> {
     await this.projectionTransaction(async (tx) => {
       await tx.$queryRaw`SELECT "id" FROM "users" WHERE "id" = ${userId} FOR NO KEY UPDATE`;
       await tx.$queryRaw`SELECT "id" FROM "vendors" WHERE "id" = ${vendorId} FOR UPDATE`;
@@ -2635,6 +2668,16 @@ export class VerificationService {
       const before = await tx.vendor.findUniqueOrThrow({ where: { id: vendorId }, select: { status: true, owner: { select: { user: { select: { status: true } } } } } });
       if (before.status !== 'PENDING_APPROVAL' || before.owner.user.status !== 'ACTIVE') {
         throw new AppError(409, 'ACTIVATION_HELD', 'The store or owner changed while approving. Refresh its checklist.');
+      }
+      // [R3 · security review 10 Nov 2026] The person approving confirms the store's name as the seller's business or
+      // company name — exactly the name they saw: a never-live store's owner may rename it freely, so a name changed
+      // since is refused, never confirmed unseen. Written in the activation's own transaction: a refused activation
+      // confirms nothing. (No name given: an internal caller; the store's name stays unconfirmed.)
+      if (sellerName) {
+        if (held.name.trim() !== sellerName.name.trim()) {
+          throw new AppError(409, 'SELLER_NAME_CHANGED', `The store's name is now “${held.name.trim()}”. Check that name, then approve again.`);
+        }
+        await tx.vendor.update({ where: { id: vendorId }, data: { sellerNameCheckedName: held.name.trim(), sellerNameCheckedAt: new Date(), sellerNameCheckedById: sellerName.by } });
       }
       // A person is approving this store now (the admin button): a branch waiting for a person goes through.
       await this.projectVendorActivation(tx, userId, { vendorId, personApproved: true });

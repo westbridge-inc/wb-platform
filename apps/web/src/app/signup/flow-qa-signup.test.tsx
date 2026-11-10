@@ -65,7 +65,7 @@ describe('[F19] the own-name declaration is part of what is missing', () => {
   it('own name chosen, not signed: the button waits and says so; signed: it goes', async () => {
     const user = await businessStep('Persaud');
     await placePin(user, /Place your store on the map/);
-    await user.click(await screen.findByRole('radio', { name: /My own name — I’m one person trading under just my surname/ }));
+    await user.click(await screen.findByRole('radio', { name: /I trade under my own name — I’m one person trading under just my surname/ }));
     await user.click(screen.getByRole('checkbox', { name: /I agree to the Business Agreement/ }));
     const create = screen.getByRole('button', { name: 'Create business' }) as HTMLButtonElement;
     expect(create.disabled).toBe(true);
@@ -79,13 +79,13 @@ describe('[F19] the own-name declaration is part of what is missing', () => {
     fx.become.mockRejectedValue(Object.assign(new Error('“Sample Shop” is not just your surname with your first names or initials, so the law asks you to register it as a business name.'), { code: 'OWN_NAME_MISMATCH' }));
     const user = await businessStep('Sample Shop');
     await placePin(user, /Place your store on the map/);
-    await user.click(await screen.findByRole('radio', { name: /My own name — I’m one person trading under just my surname/ }));
+    await user.click(await screen.findByRole('radio', { name: /I trade under my own name — I’m one person trading under just my surname/ }));
     await user.click(screen.getByRole('checkbox', { name: 'I have read and agree to this declaration.' }));
     await user.click(screen.getByRole('checkbox', { name: /I agree to the Business Agreement/ }));
     await user.click(screen.getByRole('button', { name: 'Create business' }));
     const alert = (await screen.findByRole('alert')).textContent!;
     expect(alert).toContain('is not just your surname');
-    expect(alert).toContain('Choose “A registered business name or a company (I have the DCRA certificate)” and add your business registration under Documents, or use just your surname as the store name.');
+    expect(alert).toContain('Choose “We’re a registered business” and add your business registration under Documents, or use just your surname as the store name.');
   });
 });
 
@@ -120,7 +120,7 @@ describe('[F26] a Services business is asked where it is based', () => {
 describe('[FLOW-QA2 F24] the own-name tick is the same size as the other ticks', () => {
   it('a 20 px box in a 44 px row: the same tick row as the Business Agreement', async () => {
     const user = await businessStep('Persaud');
-    await user.click(await screen.findByRole('radio', { name: /My own name — I’m one person trading under just my surname/ }));
+    await user.click(await screen.findByRole('radio', { name: /I trade under my own name — I’m one person trading under just my surname/ }));
     const own = screen.getByRole('checkbox', { name: 'I have read and agree to this declaration.' }).closest('label')!;
     const agreement = screen.getByRole('checkbox', { name: /I agree to the Business Agreement/ }).closest('label')!;
     expect(own.className).toBeTruthy();
@@ -146,7 +146,7 @@ describe('[FLOW-QA2 NEW-6] a refresh on the business step keeps what was typed',
   it('the name, type and address come back after a refresh; the ticks do not', async () => {
     const user = await businessStep('Refresh Kitchen', 'SUPERMARKET');
     fireEvent.change(screen.getByLabelText('Region (optional)'), { target: { value: 'Demerara-Mahaica' } });
-    await user.click(await screen.findByRole('radio', { name: /My own name — I’m one person trading under just my surname/ }));
+    await user.click(await screen.findByRole('radio', { name: /I trade under my own name — I’m one person trading under just my surname/ }));
     await user.click(screen.getByRole('checkbox', { name: 'I have read and agree to this declaration.' }));
     await waitFor(() => expect(window.location.search).toContain('step=business'));
     cleanup();
@@ -158,7 +158,7 @@ describe('[FLOW-QA2 NEW-6] a refresh on the business step keeps what was typed',
     expect((screen.getByLabelText('Street address') as HTMLInputElement).value).toBe('12 Regent Street');
     expect((screen.getByLabelText('City or town') as HTMLInputElement).value).toBe('Georgetown');
     expect((screen.getByLabelText('Region (optional)') as HTMLInputElement).value).toBe('Demerara-Mahaica');
-    expect(((await screen.findByRole('radio', { name: /My own name — I’m one person trading under just my surname/ })) as HTMLInputElement).checked).toBe(true);
+    expect(((await screen.findByRole('radio', { name: /I trade under my own name — I’m one person trading under just my surname/ })) as HTMLInputElement).checked).toBe(true);
     expect((screen.getByRole('checkbox', { name: 'I have read and agree to this declaration.' }) as HTMLInputElement).checked).toBe(false);
     expect((screen.getByRole('checkbox', { name: /I agree to the Business Agreement/ }) as HTMLInputElement).checked).toBe(false);
     sessionStorage.clear();

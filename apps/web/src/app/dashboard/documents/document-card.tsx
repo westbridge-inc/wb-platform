@@ -36,7 +36,7 @@ const codeOf = (error: unknown) => (error && typeof error === 'object' ? (error 
  * upload and when the words change; the filing sends the clearance's tick and the words' version; and a clearance on
  * file can be withdrawn at any time, asked first in the API's words, then told what happened in the phone's.
  */
-export function DocumentCard({ role, docType, doc, isNext, optionalHint, hint, consented, consentVia, policeConsent = null, onSent }: {
+export function DocumentCard({ role, docType, doc, isNext, optionalHint, hint, hintLink, consented, consentVia, policeConsent = null, onSent }: {
   role: string;
   docType: string;
   doc: StoreDocumentRow | undefined;
@@ -44,6 +44,8 @@ export function DocumentCard({ role, docType, doc, isNext, optionalHint, hint, c
   optionalHint?: string;
   /** What this document is, or what waits for it, in plain words (never a gate). */
   hint?: string;
+  /** [COMPANY-DOCS · owner 10 Nov 2026] A page that helps with this paper (the one-page authority letter to fill in and sign). */
+  hintLink?: { label: string; href: string };
   consented: boolean;
   consentVia: StoreUploadConsentVia;
   policeConsent?: PoliceClearanceWords | null;
@@ -136,6 +138,7 @@ export function DocumentCard({ role, docType, doc, isNext, optionalHint, hint, c
           <span id={captionId} className={`block text-xs ${CAPTION_TONE[view.captionTone]}`}>{send.isPending ? STILL_UPLOADING : view.caption}</span>
           <span className="block font-semibold">{docLabel(docType)}</span>
           {hint && <span className="mt-0.5 block text-xs text-[var(--swift-muted)]">{hint}</span>}
+          {hintLink && <a href={hintLink.href} target="_blank" rel="noopener" className="mt-0.5 block text-xs font-semibold text-[var(--swift-red)] underline" data-letter-link>{hintLink.label}</a>}
           {optionalHint && <span className="mt-0.5 block text-xs text-[var(--swift-muted)]">{optionalHint}</span>}
         </span>
         {send.isPending ? (
