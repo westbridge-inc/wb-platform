@@ -157,7 +157,8 @@ export function reviewerTypedBody(docType: string, docId: string): Record<string
   if (YEAR_TYPED.has(docType)) return { certificateYear: guyanaYear() };
   // [R16] A business registration says what it is: the synthetic stores are companies (a certificate of
   // incorporation never expires, so no January re-check falls inside a journey). The year is typed too.
-  if (docType === 'business_registration') return { registrationKind: 'COMPANY', certificateYear: guyanaYear() };
+  // [R3 · review F1] and the legal name printed on it: the storefront names the seller by it (a synthetic company's).
+  if (docType === 'business_registration') return { registrationKind: 'COMPANY', certificateYear: guyanaYear(), legalName: 'TEST Synthetic Company Ltd' };
   // [ROLE-DOCS] An own-name declaration is approved only on the reviewer's check of the name against the ID.
   if (docType === 'own_name_declaration') return { ownNameConfirmed: true };
   return {};

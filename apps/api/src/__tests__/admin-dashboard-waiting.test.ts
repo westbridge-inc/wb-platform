@@ -319,7 +319,8 @@ describe('[ADMIN-AUDIT S2-1] Today counts every queue that waits for a person', 
     const op = await makeUser('ADMIN', [...SUPPORT_OPERATOR_CAPABILITIES]);
     const w = await waiting(op.token);
     expect(w.queues.map((q) => q.key)).toEqual(['opsAlerts', 'supportSafety', 'supportSafetyInProgress', 'documents', 'support', 'supportInProgress', 'catalogue', 'moderation']);
-    expect(w.notCounted).toEqual(['approvals', 'paymentConfirmations', 'storeVat', 'custody', 'claimsToDecide', 'claimsToPay', 'claimsAutoToPay', 'returnsToDecide', 'refundsOwed']);
+    // [R3 · review F2] the store list is not this operator's: live stores with no seller named are not counted for them
+    expect(w.notCounted).toEqual(['approvals', 'paymentConfirmations', 'storeVat', 'custody', 'claimsToDecide', 'claimsToPay', 'claimsAutoToPay', 'returnsToDecide', 'refundsOwed', 'sellersUnnamed']);
     // It may count documents (DOC-1 §8.4) but not open the Review Center's queue: that row is not a door.
     expect(w.door('documents')).toBe(false);
     expect((await call(op.token, '/api/v1/admin/verification/queue')).statusCode).toBe(403);

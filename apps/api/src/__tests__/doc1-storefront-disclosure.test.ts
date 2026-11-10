@@ -36,6 +36,7 @@ import { packCiphertext } from '../modules/verification/extraction-ledger';
 import { OPERATOR as OPERATOR_FACTS, OPERATOR_ADDRESS } from '../modules/legal/operator';
 import { wordFreeTag } from './helpers/fixture-ids';
 import { giveFoodHandlersTick } from './helpers/food-handlers-tick';
+import { ownedVerificationFixture } from './helpers/verification-object';
 
 grantSuiteCapability('ddl');
 
@@ -295,5 +296,72 @@ describe('[R3 · owner ruling 10 Nov 2026] who sells: the business’s own name;
     // the choice is per store: switched to a business name, nobody is named until a person confirms the store's name
     await setStore(vendorId, { tradesUnderOwnName: false });
     expect(await blockOf(userId, vendorId)).toMatchObject({ pendingPersonCheck: ['legalName'], legalName: null });
+  });
+});
+
+// [R3 · CAA s.70(1) · review F1/F6] The legal name is typed by the PERSON who approves the registration paper, from that
+// paper, once per account: every branch is sold by the company (the store name stays the trading name), and only while
+// that paper stays VALID.
+describe('[R3 · review F1] the legal name typed from the registration paper', () => {
+  const blockOf = (userId: string, vendorId: string) => system(() => compileActivationDisclosure(app.prisma, vendorId, { accountId: userId, tenantId: 'swift-default' }));
+  const setStore = (vendorId: string, data: Record<string, unknown>) => system(() => app.prisma.vendor.update({ where: { id: vendorId }, data }));
+  const submitPaper = (userId: string) => runWithTenant('swift-default', async () => service.submitDocument(userId, 'RESTAURANT', 'business_registration', await ownedVerificationFixture(app.prisma, userId), 'v1'));
+  const approveTyped = (docId: string, typed: Record<string, unknown>) => system(() => service.approveDocument(docId, 'legal-name-reviewer', undefined, undefined, { required: true, registrationKind: 'COMPANY', ...typed }));
+
+  it('the person approving the paper must type the legal name; it then names every branch of the account, never the owner, never the trading name', async () => {
+    const { userId, vendorId } = await store(10);
+    await setStore(vendorId, { name: `Sample Chicken Sheriff Street ${RUN}10` });
+    const owner = await system(() => app.prisma.vendorOwner.findUniqueOrThrow({ where: { userId }, select: { id: true } }));
+    const branch = await system(() => app.prisma.vendor.create({ data: {
+      ownerId: owner.id, name: `Sample Chicken Regent Street ${RUN}10`, slug: `sample-chicken-regent-${RUN.toLowerCase()}-10`, vendorType: 'RESTAURANT', phone: `+59266${NUM}10`,
+      addressLine1: '10 Regent Street', city: 'Georgetown', region: 'Demerara-Mahaica', latitude: 6.8, longitude: -58.16, status: 'PENDING_APPROVAL', publicPhone: '+5926001200',
+    } }));
+    await approved(userId, 'owner_national_id');
+    const paper = await submitPaper(userId);
+    const untyped = await approveTyped(paper.id, {}).catch((e: unknown) => e);
+    expect(untyped).toMatchObject({ code: 'LEGAL_NAME_REQUIRED' });
+    expect(await system(() => app.prisma.vendorOwner.findUniqueOrThrow({ where: { userId }, select: { sellerLegalName: true } }))).toEqual({ sellerLegalName: null });
+    await approveTyped(paper.id, { legalName: '  Sample Holdings Limited  ' });
+    expect(await system(() => app.prisma.vendorOwner.findUniqueOrThrow({ where: { userId }, select: { sellerLegalName: true, sellerLegalNameById: true, sellerLegalNameDocId: true } })))
+      .toEqual({ sellerLegalName: 'Sample Holdings Limited', sellerLegalNameById: 'legal-name-reviewer', sellerLegalNameDocId: paper.id });
+    for (const id of [vendorId, branch.id]) {
+      const b = await blockOf(userId, id);
+      expect(b).toMatchObject({ complete: true, pendingPersonCheck: [] });
+      // the paper it was typed from IS the provenance: it named the seller
+      expect(b.legalName).toEqual({ value: 'Sample Holdings Limited', source: 'REGISTRATION', docType: 'business_registration', recordId: expect.any(String) });
+      expect(JSON.stringify(b.legalName)).not.toMatch(/Priya|Persaud|Sheriff|Regent/);
+    }
+  });
+
+  it('a legal name is shown only while the paper it was typed from is VALID: a lapsed paper names nobody', async () => {
+    const { userId, vendorId } = await store(11);
+    await approved(userId, 'owner_national_id');
+    const paper = await submitPaper(userId);
+    await approveTyped(paper.id, { legalName: 'Sample Traders Limited', expiresAt: undefined });
+    expect((await blockOf(userId, vendorId)).legalName).toMatchObject({ value: 'Sample Traders Limited', source: 'REGISTRATION' });
+    await system(() => app.prisma.verificationDocument.update({ where: { id: paper.id }, data: { expiresAt: new Date(Date.now() - DAY) } }));
+    await system(() => service.expireLapsedDocuments());
+    expect(await blockOf(userId, vendorId)).toMatchObject({ legalName: null, pendingPersonCheck: ['legalName'] });
+  });
+
+  it('a legal name typed for another paper (not this account\'s VALID one) is not shown', async () => {
+    const { userId, vendorId } = await store(12);
+    await approved(userId, 'owner_national_id');
+    await approved(userId, 'business_registration');
+    await system(() => app.prisma.vendorOwner.update({ where: { userId }, data: { sellerLegalName: 'Not From This Paper Ltd', sellerLegalNameDocId: 'some-other-paper' } }));
+    expect(await blockOf(userId, vendorId)).toMatchObject({ legalName: null, pendingPersonCheck: ['legalName'] });
+  });
+
+  it('[review F6] a person approving an own-name trader\'s store stamps no store-name confirmation, whatever name is sent', async () => {
+    const { userId, vendorId } = await store(13);
+    await setStore(vendorId, { name: 'P. Persaud13', tradesUnderOwnName: true });
+    await system(() => giveFoodHandlersTick(app.prisma, userId, vendorId));
+    // every paper this own-name store's own checklist asks for
+    const checklist = await system(() => service.activationChecklist(userId, 'RESTAURANT', { vendorId }));
+    for (const item of checklist.items) await approved(userId, item.docType);
+    await system(() => service.activateStore(userId, vendorId, undefined, { by: 'approver-test', name: 'P. Persaud13' }));
+    expect(await system(() => app.prisma.vendor.findUniqueOrThrow({ where: { id: vendorId }, select: { status: true, sellerNameCheckedName: true } })))
+      .toEqual({ status: 'ACTIVE', sellerNameCheckedName: null });
+    expect((await blockOf(userId, vendorId)).legalName).toMatchObject({ value: 'Priya Persaud13', source: 'PROPRIETOR' });
   });
 });

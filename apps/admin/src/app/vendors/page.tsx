@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import { fetchVendors } from '@/lib/api';
@@ -32,10 +32,22 @@ interface VendorRow {
   totalRatings?: number | null;
   totalOrders?: number | null;
   owner?: { user?: { id?: string } | null } | null;
+  /** [R3 · review F2] live, and its storefront names no seller yet ("Ask the store") */
+  sellerNameUnnamed?: boolean;
 }
+
+/** [R3 · review F2] The seller-name filter: live stores whose storefront names no seller yet. */
+const SELLER_NAME_FILTER: [string, string][] = [['', 'Any seller name'], ['unnamed', 'Live, seller not named yet']];
 
 export default function VendorsPage() {
   const [state, setState] = useState<ListState>(EMPTY_LIST_STATE);
+  // [R3 · review F2] Today's "live stores whose seller is not named yet" opens this list filtered (?sellerName=unnamed).
+  // Read once, after mount (the page is pre-rendered without it); any other value is ignored.
+  useEffect(() => {
+    if (new URLSearchParams(window.location.search).get('sellerName') === 'unnamed') {
+      setState((s) => ({ ...s, filters: { ...s.filters, sellerName: 'unnamed' } }));
+    }
+  }, []);
   const list = useQuery({ queryKey: ['vendors', state], queryFn: () => fetchVendors(listQueryString(state)), placeholderData: keepPreviousData });
   const rows: VendorRow[] = list.data?.data ?? [];
 
@@ -48,6 +60,7 @@ export default function VendorsPage() {
         filters={[
           { key: 'status', label: 'Status', options: [['', 'Any status'], ...Object.entries(ENUM_LABELS.VendorStatus)] },
           { key: 'type', label: 'Type', options: [['', 'All types'], ...Object.entries(ENUM_LABELS.VendorType)] },
+          { key: 'sellerName', label: 'Seller name', options: SELLER_NAME_FILTER },
         ]}
       />
       {list.isLoading ? (
@@ -72,7 +85,12 @@ export default function VendorsPage() {
               ),
             },
             { key: 'type', header: 'Type', width: '16%', cell: (v) => label('VendorType', v.vendorType) },
-            { key: 'status', header: 'Status', width: '20%', cell: (v) => <StatusBadge group="VendorStatus" value={v.status} /> },
+            { key: 'status', header: 'Status', width: '20%', cell: (v) => (
+              <>
+                <StatusBadge group="VendorStatus" value={v.status} />
+                {v.sellerNameUnnamed ? <span className="mc-cell-sub">Seller not named</span> : null}
+              </>
+            ) },
             { key: 'rating', header: 'Rating', width: '12%', cell: (v) => <span className="mc-numbers">{ratingText(v.averageRating, v.totalRatings)}</span> },
             { key: 'orders', header: 'Orders', width: '10%', align: 'right', cell: (v) => <span className="mc-numbers">{v.totalOrders ?? 0}</span> },
           ]}

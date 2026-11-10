@@ -13,6 +13,7 @@ import { withPreviousDecisions } from '../verification/previous-decision';
 import { REVIEW_QUEUE_SELECT, reviewQueueRow } from './review-queue-row';
 import type { FastifyInstance } from 'fastify';
 import { resolveVerificationObject } from '../verification/object-authority';
+import { SELLER_UNNAMED_BASES, sellerNameViews, unnamedLiveStoreIds } from '../verification/storefront-disclosure';
 import { staffInviteAcceptEnabled } from '../vendor/staff-invites';
 import { bindTenantTransaction, runWithoutTenant } from '../../plugins/prisma';
 import { countWaiting, type WaitingKey } from './dashboard-waiting';
@@ -201,12 +202,18 @@ const vendorsQuerySchema = z.object({
   status: z.nativeEnum(VendorStatus).optional(),
   type: z.nativeEnum(VendorType).optional(),
   search: z.string().max(100).optional(),
+  // [R3 · review F2] only LIVE stores whose storefront names no seller yet ("Ask the store")
+  sellerName: z.enum(['unnamed']).optional(),
 });
 
 // Riders/drivers list filters use UI keywords, not DB enums
 const legalNameChangeSchema = z.object({ firstName: z.string().trim().min(1).max(80), lastName: z.string().trim().min(1).max(80) });
 const storeTypeChangeSchema = z.object({ vendorType: z.nativeEnum(VendorType) });
-const storeNameChangeSchema = z.object({ name: z.string().trim().min(2).max(100) });
+const storeNameChangeSchema = z.object({
+  name: z.string().trim().min(2).max(100),
+  // [R3 · review F7] the person renaming also confirms the new name as the seller's (it matches the certificate)
+  confirmSellerName: z.boolean().optional(),
+});
 /** [R3 · security review 10 Nov 2026] The store name a person confirms as the seller's business or company name: the
  *  exact name the console showed them (approve, or the seller-name check of a store already live). */
 const sellerNameField = z.string().trim().min(1).max(100);
@@ -436,6 +443,8 @@ const approveDocSchema = z.object({
   registrationKind: z.enum(REGISTRATION_KINDS).optional(),
   // [ROLE-DOCS · owner 21 Oct 2026] an own-name declaration: the reviewer confirms the store name against the owner's ID
   ownNameConfirmed: z.boolean().optional(),
+  // [R3 · review F1] a registration paper: the legal name printed on it, which the storefront names the seller by
+  legalName: z.string().trim().min(2).max(160).optional(),
   // Insurance 5-point manual check (spec §3.4) — supplied for hire-insurance docs
   insurance: z.object({
     insurerName: z.string().min(1).max(120),
@@ -1279,6 +1288,8 @@ export async function adminRoutes(app: FastifyInstance) {
       claimsAutoToPay: () => tenantPrisma.reimbursementClaim.count({ where: { status: 'AUTO_APPROVED' } }),
       returnsToDecide: () => tenantPrisma.returnRequest.count({ where: { status: 'REQUESTED' } }),
       refundsOwed: () => tenantPrisma.returnRequest.count({ where: { status: 'REFUND_DUE' } }),
+      // [R3 · review F2] live stores whose storefront names no seller yet: the vendors list's own filter
+      sellersUnnamed: async () => (await unnamedLiveStoreIds(app.prisma)).length,
       moderation: async () => {
         const [reports, ratings] = await Promise.all([
           tenantPrisma.contentReport.count({ where: { status: 'PENDING' } }),
@@ -1697,10 +1708,13 @@ export async function adminRoutes(app: FastifyInstance) {
 
   app.get('/vendors', { preHandler: [adminGuard] }, async (request) => {
     const { page, limit, skip } = parsePagination(request.query as Record<string, string>);
-    const { status, type, search } = vendorsQuerySchema.parse(request.query);
+    const { status, type, search, sellerName } = vendorsQuerySchema.parse(request.query);
     const { excludeFixtures } = excludeFixturesQuerySchema.parse(request.query);
+    // [R3 · review F2] the same rule the storefront applies (sellerNameOf), over the live stores
+    const unnamedIds = sellerName === 'unnamed' ? await unnamedLiveStoreIds(app.prisma) : null;
 
     const base: any = {
+      ...(unnamedIds && { id: { in: unnamedIds }, status: 'ACTIVE' }),
       ...(status && { status }),
       ...(type && { vendorType: type }),
       ...(search && {
@@ -1730,7 +1744,12 @@ export async function adminRoutes(app: FastifyInstance) {
 
     // [SEC-PII] The store's and its owner's numbers and emails masked unless the live grant holds vendor.contact.read.
     const contact = holdsPersonContact(request, 'vendor');
-    const rows = vendors.map((v) => ({ ...(contact ? v : maskVendorListRow(v)), vatRegistrationNumber: undefined }));
+    // [R3 · review F2] the badge: a LIVE store whose storefront names no seller yet
+    const views = await sellerNameViews(app.prisma, vendors.filter((v) => v.status === 'ACTIVE').map((v) => v.id));
+    const rows = vendors.map((v) => ({
+      ...(contact ? v : maskVendorListRow(v)), vatRegistrationNumber: undefined,
+      sellerNameUnnamed: v.status === 'ACTIVE' && SELLER_UNNAMED_BASES.includes(views.get(v.id)?.basis ?? 'NONE'),
+    }));
     const result = paginatedResponse(rows, total, { page, limit, skip });
     return { success: true, data: result.data, meta: { ...result.meta, hiddenTestRecords } };
   });
@@ -1795,6 +1814,8 @@ export async function adminRoutes(app: FastifyInstance) {
         prohibitedItems,
         // [owner 14 Oct, store names] Whether the store's own words are held for a person (or were approved).
         storeCheck: storeCheckOf(vendor),
+        // [R3 · review F5] who the storefront names as the seller, by the server's own rule (never re-derived by the console)
+        sellerName: (await sellerNameViews(app.prisma, [vendor.id])).get(vendor.id) ?? { basis: 'NONE', value: null },
       },
     };
   });
@@ -2233,7 +2254,7 @@ export async function adminRoutes(app: FastifyInstance) {
   /** [BUG-HUNT F22] "To use a new name, contact Swift support: we check the new name first" (CHECKED_NAME_RENAME). This is that door. */
   app.put('/vendors/:id/name', { preHandler: [adminGuard] }, async (request) => {
     const { id } = request.params as { id: string };
-    const { name } = storeNameChangeSchema.parse(request.body ?? {});
+    const { name, confirmSellerName } = storeNameChangeSchema.parse(request.body ?? {});
     const vendor = await app.prisma.vendor.findUnique({
       where: { id }, select: { ...STORE_WORDS_SELECT, tradesUnderOwnName: true, owner: { select: { userId: true, user: { select: { phone: true, roles: true, activeRole: true } } } } },
     });
@@ -2247,8 +2268,12 @@ export async function adminRoutes(app: FastifyInstance) {
     if (vendor.tradesUnderOwnName) {
       throw new AppError(409, 'OWN_NAME_RENAME', 'This store trades under its owner’s own name, which a person checked. A different name has to be registered as a business name first.');
     }
-    const updated = await app.prisma.vendor.update({ where: { id }, data: { name } });
-    await audit(request.user.userId, 'CHANGE_VENDOR_NAME', 'Vendor', id, { from: vendor.name, to: name }, request);
+    // [R3 · review F7] A new name is not a confirmed seller name: the storefront names nobody for it until a person
+    // confirms it — here, when the person renaming says it matches the certificate, in the same write.
+    const updated = await app.prisma.vendor.update({ where: { id }, data: {
+      name, ...(confirmSellerName === true ? { sellerNameCheckedName: name, sellerNameCheckedAt: new Date(), sellerNameCheckedById: request.user.userId } : {}),
+    } });
+    await audit(request.user.userId, 'CHANGE_VENDOR_NAME', 'Vendor', id, { from: vendor.name, to: name, sellerNameConfirmed: confirmSellerName === true }, request);
     scheduleVendorSearchSync(app, id);
     await notifications.send({
       userId: vendor.owner.userId, type: 'SYSTEM_ANNOUNCEMENT', title: 'Your store name was changed',
@@ -7163,6 +7188,7 @@ export async function adminRoutes(app: FastifyInstance) {
       ...(body.certificateYear !== undefined ? { certificateYear: body.certificateYear } : {}),
       ...(body.registrationKind !== undefined ? { registrationKind: body.registrationKind } : {}),
       ...(body.ownNameConfirmed !== undefined ? { ownNameConfirmed: body.ownNameConfirmed } : {}),
+      ...(body.legalName !== undefined ? { legalName: body.legalName } : {}),
     }, {
       // [S2-29 · KYC-DECISION-ATOMIC] The trail commits with the decision, in its transaction: the
       // action row and the canonical admin row. A decision cannot commit without them.

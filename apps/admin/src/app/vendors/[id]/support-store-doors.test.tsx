@@ -56,11 +56,28 @@ describe('[BUG-HUNT F22] the store page', () => {
     await user.click(await screen.findByRole('button', { name: 'Change name…' }));
     const dialog = screen.getByRole('dialog', { name: 'Change the name of Target Store?' });
     await user.type(within(dialog).getByRole('textbox', { name: 'New store name' }), 'Corner Kitchen');
+    // [R3 · review F7] the person says whether the new name matches the certificate: here it is not confirmed
+    await user.click(within(dialog).getByRole('radio', { name: /^No, or not checked/ }));
     await user.type(within(dialog).getByRole('textbox', { name: 'Reason' }), 'Checked the new registration certificate');
     await user.click(within(dialog).getByRole('button', { name: 'Change name' }));
     await waitFor(() => expect(requestsByMethod(fetchMock, 'PUT')).toHaveLength(1));
     const [url, init] = requestsByMethod(fetchMock, 'PUT')[0]!;
     expect(String(url)).toMatch(/\/vendors\/vendor-target\/name$/);
     expect(JSON.parse(String(init?.body))).toEqual({ name: 'Corner Kitchen' });
+  });
+
+  // [R3 · review F7] A rename takes the store off its confirmed seller name; the person renaming can confirm the new one.
+  it('a rename the person says matches the certificate confirms it as the seller’s name, in the same call', async () => {
+    const fetchMock = serve(store({ firstLiveAt: '2026-10-01T00:00:00.000Z', status: 'ACTIVE' }));
+    const { user } = renderWithQuery(<VendorDetailPage params={fulfilledParams({ id: 'vendor-target' })} />);
+    await user.click(await screen.findByRole('button', { name: 'Change name…' }));
+    const dialog = screen.getByRole('dialog', { name: 'Change the name of Target Store?' });
+    expect(within(dialog).getByRole('group', { name: /exactly the registered name on the store’s certificate/ })).toBeTruthy();
+    await user.type(within(dialog).getByRole('textbox', { name: 'New store name' }), 'Corner Kitchen Ltd');
+    await user.click(within(dialog).getByRole('radio', { name: /^Yes: it matches the certificate/ }));
+    await user.type(within(dialog).getByRole('textbox', { name: 'Reason' }), 'Checked the new registration certificate');
+    await user.click(within(dialog).getByRole('button', { name: 'Change name' }));
+    await waitFor(() => expect(requestsByMethod(fetchMock, 'PUT')).toHaveLength(1));
+    expect(JSON.parse(String(requestsByMethod(fetchMock, 'PUT')[0]![1]?.body))).toEqual({ name: 'Corner Kitchen Ltd', confirmSellerName: true });
   });
 });

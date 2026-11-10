@@ -266,6 +266,10 @@ export interface ReviewerTypedInput {
   /** [ROLE-DOCS · owner 21 Oct 2026] An own-name declaration: the reviewer confirms, from the owner's ID, that the store's
    *  name is the owner's true surname with only first names or initials (Business Names (Registration) Act s.3). */
   ownNameConfirmed?: boolean;
+  /** [R3 · review F1] A registration paper: the business's or company's legal name, typed from the paper exactly as
+   *  printed. Stored once for the account (every branch is sold by it) and shown as the seller's legal name while
+   *  this paper stays VALID. */
+  legalName?: string;
   /** The reviewer console's contract: the fields this type needs must be typed. */
   required?: boolean;
 }
@@ -1172,6 +1176,12 @@ export class VerificationService {
             'Say what this certificate is: a business name registration (a sole trader or partnership, renewed every year) or a company’s certificate of incorporation.');
         }
       }
+      // [R3 · CAA s.70(1) · review F1] The person approving a registration paper types the legal name printed on it: the
+      // storefront names the seller by it (never the owner's personal name, never the store's own trading name unchecked).
+      if (REGISTRATION_DOC_TYPES.includes(candidate.docType) && typed.required && !(typed.legalName?.trim())) {
+        throw new AppError(400, 'LEGAL_NAME_REQUIRED',
+          'Type the business’s or company’s registered name exactly as it is printed on this paper. Customers see it as the seller.');
+      }
     }
     // Never on any later write: the typed number leaves this method only as the blind index.
     delete typed.documentNumber;
@@ -1202,6 +1212,14 @@ export class VerificationService {
     }, { reviewerId: adminId, approval: { expiresAt, insurance, ...(issuedOn ? { issuedOn } : {}) } }, async (tx, decided) => {
       // [BUG-HUNT F23] First, on the row just written: the whole decision rolls back and the paper stays waiting.
       await this.holdTheLastPaper(tx, unfinished);
+      // [R3 · review F1] The legal name typed from THIS registration paper becomes the account's seller name (one per
+      // account: every store and branch). Tied to this paper: the storefront shows it only while the paper is VALID.
+      const typedLegalName = typed.legalName?.trim();
+      if (typedLegalName && REGISTRATION_DOC_TYPES.includes(decided.docType)) {
+        await tx.vendorOwner.updateMany({ where: { userId: decided.userId }, data: {
+          sellerLegalName: typedLegalName, sellerLegalNameAt: new Date(), sellerLegalNameById: adminId, sellerLegalNameDocId: decided.id,
+        } });
+      }
       // [S2-29 · KYC-DECISION-ATOMIC] Everything the approval owes commits with it, or none of it does:
       // the approval notice (published after commit), the caller's audit rows, and the outbox row that owes the
       // trial decision. A throw anywhere here leaves the document PENDING, so the reviewer's retry decides it, once.
@@ -2633,7 +2651,7 @@ export class VerificationService {
     await this.projectionTransaction(async (tx) => {
       await tx.$queryRaw`SELECT "id" FROM "users" WHERE "id" = ${userId} FOR NO KEY UPDATE`;
       await tx.$queryRaw`SELECT "id" FROM "vendors" WHERE "id" = ${vendorId} FOR UPDATE`;
-      const held = await tx.vendor.findUniqueOrThrow({ where: { id: vendorId }, select: { name: true, subscription: { select: { id: true } } } });
+      const held = await tx.vendor.findUniqueOrThrow({ where: { id: vendorId }, select: { name: true, tradesUnderOwnName: true, subscription: { select: { id: true } } } });
       if (!held.subscription && !partnerApprovalsOpen()) throw lastPaperHeld({ name: held.name, trial: true });
       const before = await tx.vendor.findUniqueOrThrow({ where: { id: vendorId }, select: { status: true, owner: { select: { user: { select: { status: true } } } } } });
       if (before.status !== 'PENDING_APPROVAL' || before.owner.user.status !== 'ACTIVE') {
@@ -2642,8 +2660,9 @@ export class VerificationService {
       // [R3 · security review 10 Nov 2026] The person approving confirms the store's name as the seller's business or
       // company name — exactly the name they saw: a never-live store's owner may rename it freely, so a name changed
       // since is refused, never confirmed unseen. Written in the activation's own transaction: a refused activation
-      // confirms nothing. (No name given: an internal caller; the store's name stays unconfirmed.)
-      if (sellerName) {
+      // confirms nothing. (No name given: an internal caller; the store's name stays unconfirmed.) [review F6] A store
+      // trading under its owner's own name is named by the owner's checked declaration, never by a store-name stamp.
+      if (sellerName && !held.tradesUnderOwnName) {
         if (held.name.trim() !== sellerName.name.trim()) {
           throw new AppError(409, 'SELLER_NAME_CHANGED', `The store's name is now “${held.name.trim()}”. Check that name, then approve again.`);
         }

@@ -212,13 +212,18 @@ describe('[typed fields] the police clearance issue date', () => {
 });
 
 describe('[typed fields] a business registration says what it is (R16)', () => {
-  it('an empty body is refused with REGISTRATION_KIND_REQUIRED; a company approves with its kind alone', async () => {
+  it('an empty body is refused with REGISTRATION_KIND_REQUIRED; a company also needs the legal name printed on it [R3 · review F1]', async () => {
     const doc = await pending(await subject('VENDOR_OWNER'), 'business_registration', 'VENDOR_OWNER');
     const empty = await approve(doc.id, {});
     expect(empty.statusCode).toBe(400);
     expect(empty.json().error.code).toBe('REGISTRATION_KIND_REQUIRED');
     expect(await statusOf(doc.id)).toBe('PENDING');
-    expect((await approve(doc.id, { registrationKind: 'COMPANY' })).statusCode).toBe(200);
+    // the storefront names the seller by the legal name typed from this paper: it must be typed
+    const unnamed = await approve(doc.id, { registrationKind: 'COMPANY' });
+    expect(unnamed.statusCode).toBe(400);
+    expect(unnamed.json().error.code).toBe('LEGAL_NAME_REQUIRED');
+    expect(await statusOf(doc.id)).toBe('PENDING');
+    expect((await approve(doc.id, { registrationKind: 'COMPANY', legalName: 'Fixture Registered Name Ltd' })).statusCode).toBe(200);
     expect(await statusOf(doc.id)).toBe('APPROVED');
   });
 

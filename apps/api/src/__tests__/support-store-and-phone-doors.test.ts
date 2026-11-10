@@ -267,7 +267,10 @@ describe('[R3] a person confirms the seller name', () => {
     const owner = await makeUser('Reasonless');
     const store = await makeStore(owner.id, { status: 'ACTIVE', isVerified: true });
     const res = await call('PUT', `/api/v1/admin/vendors/${store.id}/seller-name`, { name: store.name }, null);
-    expect(res.statusCode).toBeGreaterThanOrEqual(400);
+    // [review F8] the reason gate's own refusal, exactly — not any 4xx (a 404 would have passed)
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error.code).toBe('VALIDATION_ERROR');
+    expect(res.json().error.message).toMatch(/Say why, in a sentence/);
     expect((await checked(store.id)).sellerNameCheckedName).toBeNull();
   });
 
@@ -629,5 +632,55 @@ describe('[F22] the store doors', () => {
     expect(res.statusCode, res.body).toBe(409);
     expect(res.json().error.code).toBe('STORE_NAME_HELD');
     expect((await app.prisma.vendor.findUniqueOrThrow({ where: { id: store.id } })).name).toBe(store.name);
+  });
+});
+
+// [R3 · review F2/F5/F7] The console reads the server's answer for who the storefront names (F5); a live store that
+// names nobody is flagged, listed by its own filter and counted on Today (F2); a support rename can confirm the new
+// name in the same write (F7).
+describe('[R3] the seller name in the console', () => {
+  const detail = async (id: string) => (await app.inject({ method: 'GET', url: `/api/v1/admin/vendors/${id}`, headers: { authorization: `Bearer ${adminToken}` } })).json().data;
+  const unnamedList = async (search: string) => (await app.inject({
+    method: 'GET', url: `/api/v1/admin/vendors?sellerName=unnamed&search=${encodeURIComponent(search)}&limit=50`, headers: { authorization: `Bearer ${adminToken}` },
+  })).json().data as Array<{ id: string; sellerNameUnnamed: boolean }>;
+  const unnamedCount = async () => {
+    const res = await app.inject({ method: 'GET', url: '/api/v1/admin/dashboard/waiting', headers: { authorization: `Bearer ${adminToken}` } });
+    return (res.json().data.queues as Array<{ key: string; count: number | null }>).find((q) => q.key === 'sellersUnnamed')?.count;
+  };
+
+  it('the detail carries the server\'s answer; a live store naming nobody is listed, flagged and counted until a person confirms its name', async () => {
+    const owner = await makeUser('Unnamed');
+    const store = await makeStore(owner.id, { status: 'ACTIVE', isVerified: true });
+    expect((await detail(store.id)).sellerName).toEqual({ basis: 'NONE', value: null });
+    const listed = await unnamedList(store.name);
+    expect(listed.map((r) => [r.id, r.sellerNameUnnamed])).toEqual([[store.id, true]]);
+    const before = await unnamedCount();
+    expect(before).toBeGreaterThanOrEqual(1);
+    expect((await call('PUT', `/api/v1/admin/vendors/${store.id}/seller-name`, { name: store.name })).statusCode).toBe(200);
+    expect((await detail(store.id)).sellerName).toEqual({ basis: 'PERSON_CHECKED', value: store.name });
+    expect(await unnamedList(store.name)).toEqual([]);
+    expect(await unnamedCount()).toBe(before! - 1);
+  });
+
+  it('a store not live is never listed, nor counted on Today, as an unnamed LIVE store', async () => {
+    const before = await unnamedCount();
+    const owner = await makeUser('Waiting');
+    const store = await makeStore(owner.id);
+    expect(await unnamedList(store.name)).toEqual([]);
+    expect(await unnamedCount()).toBe(before);
+  });
+
+  it('[review F7] a rename confirms the new name as the seller\'s only when the person says so, in the same write', async () => {
+    const owner = await makeUser('Rename');
+    const store = await makeStore(owner.id, { status: 'ACTIVE', isVerified: true });
+    expect((await call('PUT', `/api/v1/admin/vendors/${store.id}/seller-name`, { name: store.name })).statusCode).toBe(200);
+    const plain = await call('PUT', `/api/v1/admin/vendors/${store.id}/name`, { name: `${store.name} Two` });
+    expect(plain.statusCode, plain.body).toBe(200);
+    // the old confirmation was of the old name: nobody is named now
+    expect((await detail(store.id)).sellerName).toEqual({ basis: 'NONE', value: null });
+    const confirming = await call('PUT', `/api/v1/admin/vendors/${store.id}/name`, { name: `${store.name} Three`, confirmSellerName: true });
+    expect(confirming.statusCode, confirming.body).toBe(200);
+    expect((await detail(store.id)).sellerName).toEqual({ basis: 'PERSON_CHECKED', value: `${store.name} Three` });
+    expect(await app.prisma.vendor.findUniqueOrThrow({ where: { id: store.id }, select: { sellerNameCheckedById: true } })).toEqual({ sellerNameCheckedById: expect.any(String) });
   });
 });
