@@ -1,11 +1,12 @@
 /** @jsxImportSource react */
 import React, { useEffect, useState } from 'react';
-import { KeyboardAvoidingView, Platform, Pressable, ScrollView, View } from 'react-native';
+import { Pressable, ScrollView, View } from 'react-native';
 import { Feather } from '@expo/vector-icons';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { color, radius, space } from '@swift/ui';
 import { useAddAddress, useUpdateAddress } from '../../../hooks/customer';
 import { BrandSwitch, Header, LabeledInput, PillButton, Screen, T } from '../../../kit';
+import { KeyboardAvoider } from '../../../kit/keyboard-avoider';
 
 const GUTTER = space['2xl'];
 
@@ -80,7 +81,9 @@ export function AddAddressScreen() {
   return (
     <Screen>
       <Header title={editing ? 'Edit Address' : 'Add Address'} />
-      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1 }}>
+      {/* [ANDROID 9 Nov] Moves on Android too (kit/keyboard-avoider): the edge-to-edge window is never resized
+          for the keyboard, and the old `undefined` behavior there never moved, so the keyboard hid the bottom of the screen. */}
+      <KeyboardAvoider style={{ flex: 1 }}>
         <ScrollView
           contentContainerStyle={{ paddingHorizontal: GUTTER, paddingTop: space.md, paddingBottom: space['2xl'], gap: space.xl }}
           keyboardShouldPersistTaps="handled"
@@ -162,7 +165,7 @@ export function AddAddressScreen() {
             onPress={save}
           />
         </ScrollView>
-      </KeyboardAvoidingView>
+      </KeyboardAvoider>
     </Screen>
   );
 }

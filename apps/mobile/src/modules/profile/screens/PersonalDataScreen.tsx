@@ -1,6 +1,6 @@
 /** @jsxImportSource react */
 import React, { useEffect, useState } from 'react';
-import { KeyboardAvoidingView, Platform, ScrollView, Share, View } from 'react-native';
+import { ScrollView, Share, View } from 'react-native';
 import { Image } from 'expo-image';
 import { Feather } from '@expo/vector-icons';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
@@ -17,6 +17,7 @@ import {
 } from '../../../stores/authStore';
 import { ErrorState, Header, IconChip, LabeledInput, LoadingBlock, PillButton, PopupCard, PopupTitle, Screen, SettingsRow, T } from '../../../kit';
 import { toast } from '../../../kit/toast';
+import { KeyboardAvoider } from '../../../kit/keyboard-avoider';
 
 const GUTTER = space['2xl'];
 
@@ -161,7 +162,9 @@ export function PersonalDataScreen({ route, navigation }: any = {}) {
   return (
     <Screen>
       <Header title="Personal Data" />
-      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1 }}>
+      {/* [ANDROID 9 Nov] Moves on Android too (kit/keyboard-avoider): the edge-to-edge window is never resized
+          for the keyboard, and the old `undefined` behavior there never moved, so the keyboard hid the bottom of the screen. */}
+      <KeyboardAvoider style={{ flex: 1 }}>
         <ScrollView
           contentContainerStyle={{ flexGrow: 1, paddingHorizontal: GUTTER, paddingTop: space.lg, paddingBottom: space['2xl'] }}
           keyboardShouldPersistTaps="handled"
@@ -244,7 +247,7 @@ export function PersonalDataScreen({ route, navigation }: any = {}) {
             <SettingsRow icon="trash-2" label={closureRequest ? "Request account closure" : "Delete my account"} tone="error" onPress={() => setConfirmDelete(true)} />
           </View>
         </ScrollView>
-      </KeyboardAvoidingView>
+      </KeyboardAvoider>
 
       <PopupCard visible={confirmDelete} onClose={() => setConfirmDelete(false)}>
         <IconChip icon="alert-triangle" size={56} tone="error" />
