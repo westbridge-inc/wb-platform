@@ -235,7 +235,12 @@ export const CUST_03: Journey<Ctx> = {
     rec.expect('cancel inside the hold', c, 200);
     const after = await customerOrder(C6, id!);
     rec.check('the order reads CANCELLED with no fee', after?.status === 'CANCELLED' && Number(after?.cancellationFee ?? 0) === 0, `status=${after?.status} fee=${after?.cancellationFee}`);
-    rec.deny('a second cancel', await POST(`/customer/orders/${id}/cancel`, {}, C6.token), [400, 409], ['INVALID_STATUS', 'ALREADY_CANCELLED', 'ORDER_CLOSED']);
+    // [BUG-HUNT F12 · #2334, 4 Nov 2026] A second tap after a lost reply gets the first tap's answer again: 200,
+    // still CANCELLED, still no fee — never an error that makes the customer think the cancel failed.
+    const again = await POST(`/customer/orders/${id}/cancel`, {}, C6.token);
+    rec.expect('a second cancel answers the first one again (idempotent)', again, 200);
+    const twice = await customerOrder(C6, id!);
+    rec.check('after the second cancel: still CANCELLED, still no fee', twice?.status === 'CANCELLED' && Number(twice?.cancellationFee ?? 0) === 0, `status=${twice?.status} fee=${twice?.cancellationFee}`);
 
     // reorder, then the stale-cart retry
     const re = await POST(`/customer/orders/${id}/reorder`, {}, C6.token);
@@ -302,6 +307,15 @@ export const CUST_04: Journey<Ctx> = {
     rec.check('the order reads COMPLETED', (await customerOrder(C1, id!))?.status === 'COMPLETED', '');
 
     rec.deny('another customer cannot rate it', await POST(`/customer/orders/${id}/rate`, { vendorScore: 1 }, C2.token), [404], ['NOT_FOUND']);
+    // The store's and the public review lists BEFORE this rating, to prove the new review is held back from both.
+    const reviewIds = async (path: string, token: string): Promise<string[] | null> => {
+      const r = await GET(path, token);
+      const data = r.json?.data;
+      const list: any[] | null = Array.isArray(data) ? data : Array.isArray(data?.reviews) ? data.reviews : null;
+      return r.ok && list ? list.map((x) => String(x.id)) : null;
+    };
+    const storeBefore = await reviewIds('/vendor/reviews?limit=50', R2.session.token);
+    const publicBefore = await reviewIds(`/customer/vendors/${R2.vendorId}/reviews`, C2.token);
     const rate = await POST(`/customer/orders/${id}/rate`, { vendorScore: 5, vendorComment: `journey ${ctx.runId}` }, C1.token);
     rec.expect('rate the completed order', rate, [200, 201]);
     const again = await POST(`/customer/orders/${id}/rate`, { vendorScore: 4 }, C1.token);
@@ -309,22 +323,29 @@ export const CUST_04: Journey<Ctx> = {
     const o = await customerOrder(C1, id!);
     rec.check('the order reads as rated', o?.hasBeenRated === true, `hasBeenRated=${o?.hasBeenRated}`);
 
-    // report: reviews are double-blind (public only once both sides rate, or after 72 h), but the
-    // store sees them at once and a report is filed against the review's id.
-    const storeView = await GET('/vendor/reviews?limit=20', R2.session.token);
+    // [#1482 · 14 Oct 2026] Reviews are double-blind: a review is RELEASED once both sides rate, or after 72 h. The
+    // store's list holds released reviews only and carries no order id or rater (row 52: the store sees what was
+    // said, never who said it). A takeaway has no counterpart rating, so this new review stays held back from the
+    // store AND the public listing for this run; the report path runs on a review that is already released.
+    const storeView = await GET('/vendor/reviews?limit=50', R2.session.token);
     const rows: any[] = Array.isArray(storeView.json?.data) ? storeView.json.data : [];
-    // Match the review by its ORDER, which is unique to this run. The comment cannot carry
-    // the run id: the review scrub masks any 7+ digit run as a possible phone number
-    // (rating/review-scrub.ts), so "journey staging-2026…" is stored as
-    // "journey staging-[number removed]…" — the product protecting PII, not a lost review.
-    const review = rows.find((r) => r.orderId === id);
-    rec.check('the store sees the new review', !!review, `→ ${brief(storeView)} ${rows.length} review(s)`);
-    const publicView = await GET(`/customer/vendors/${R2.vendorId}/reviews`, C2.token);
-    rec.check('the public listing holds it back (double-blind until both sides rate or 72 h)', !JSON.stringify(publicView.json?.data?.reviews ?? []).includes(review?.id ?? '§'), '');
-    if (review) {
+    rec.expect('the store review list answers', storeView, 200, undefined, `${rows.length} released review(s)`);
+    rec.check('the store list names no order and no rater (row 52)', rows.every((r) => !('orderId' in r) && !('raterId' in r) && !('rater' in r)),
+      `keys=${[...new Set(rows.flatMap((r) => Object.keys(r)))].join(',')}`);
+    const storeAfter = rows.map((r) => String(r.id));
+    rec.check('the store does not see the new review before it is released', storeBefore !== null && storeAfter.every((rid) => storeBefore.includes(rid)),
+      `new ids on the store list: ${storeBefore === null ? 'list unreadable before rating' : storeAfter.filter((rid) => !storeBefore.includes(rid)).length}`);
+    const publicAfter = await reviewIds(`/customer/vendors/${R2.vendorId}/reviews`, C2.token);
+    rec.check('the public listing holds it back too (double-blind until both sides rate or 72 h)',
+      publicBefore !== null && publicAfter !== null && publicAfter.every((rid) => publicBefore.includes(rid)),
+      `new ids on the public list: ${publicBefore === null || publicAfter === null ? 'list unreadable' : publicAfter.filter((rid) => !publicBefore.includes(rid)).length}`);
+    const review = rows[0];
+    if (!review) {
+      rec.skipCase('review report', `the store has no released review yet (a review is released when both sides rate, or after 72 h; this run's is held back), so there is no review id to report on this target`);
+    } else {
       rec.deny('a review report with an unknown reason', await POST(`/customer/ratings/${review.id}/report`, { reason: 'NOT_A_REASON' }, C2.token), [400], ['VALIDATION_ERROR']);
       const rep = await POST(`/customer/ratings/${review.id}/report`, { reason: 'SPAM', note: 'journey check' }, C2.token);
-      rec.expect('another customer reports the review', rep, [200, 201]);
+      rec.expect('another customer reports a released review', rep, [200, 201]);
       const rep2 = await POST(`/customer/ratings/${review.id}/report`, { reason: 'SPAM' }, C2.token);
       rec.check('a repeated review report is the same report', rep2.ok && rep2.json?.data?.id === rep.json?.data?.id, `→ ${brief(rep2)}`);
       const ugc = await POST('/reports', { targetType: 'RATING', targetId: review.id, reason: 'OTHER', detail: `journey ${ctx.runId}` }, C1.token);
@@ -346,46 +367,76 @@ export const CUST_04: Journey<Ctx> = {
 
 export const CUST_05: Journey<Ctx> = {
   id: 'CUST-05',
-  title: 'Pickup code at counter (H-3 pickup variant)',
-  cases: 'pickup creation; wrong-code denial/lockout; counter completion',
+  title: 'Pickup handover at the counter, code off (default) and on (H-3 pickup variant)',
+  cases: 'pickup creation; code-off handover by name + order number; code-on missing/wrong-code denial/lockout; counter completion',
   async prepare(rec, ctx) {
     const C3 = ctx.roster.customers.C3!.session;
     ctx.stash['CUST-05'] = {
       good: await pickupAtR2(rec, ctx, C3, 'cust05-good'),
+      on: await pickupAtR2(rec, ctx, C3, 'cust05-on'),
       lock: await pickupAtR2(rec, ctx, C3, 'cust05-lock'),
     };
   },
   async release(rec, ctx) {
     const C3 = ctx.roster.customers.C3!.session;
-    await acceptOnRelease(rec, ctx, C3, ctx.stash['CUST-05']?.good ?? null, 'counter order');
+    await acceptOnRelease(rec, ctx, C3, ctx.stash['CUST-05']?.good ?? null, 'code-off order');
+    await acceptOnRelease(rec, ctx, C3, ctx.stash['CUST-05']?.on ?? null, 'code-on order');
     await acceptOnRelease(rec, ctx, C3, ctx.stash['CUST-05']?.lock ?? null, 'lockout order');
   },
   async run(rec, ctx) {
     const C3 = ctx.roster.customers.C3!.session, R2 = ctx.roster.vendors.R2!;
-    const { good, lock } = ctx.stash['CUST-05'] ?? {};
-    rec.require('two pickup orders were created', !!good && !!lock, '');
-    const g = await customerOrder(C3, good);
-    rec.check('the customer holds a 6-digit pickup code', /^\d{6}$/.test(String(g?.pickupCode ?? '')), `pickupCode ${g?.pickupCode ? 'present' : 'missing'}`);
-    rec.expect('the store readies the first order', await vendorAdvance(R2.session, good, 'READY_FOR_PICKUP'), 200);
+    const { good, on, lock } = ctx.stash['CUST-05'] ?? {};
+    rec.require('three pickup orders were created', !!good && !!on && !!lock, '');
+    const codeSetting = async (): Promise<boolean | null> => {
+      const p = (await GET('/vendor/profile', R2.session.token)).json?.data;
+      const v = (p?.vendors ?? []).find((x: any) => x.id === R2.vendorId);
+      return typeof v?.requirePickupCode === 'boolean' ? v.requirePickupCode : null;
+    };
+    const before = await codeSetting();
+
+    // [O-2 · owner 22 Oct 2026] The takeaway code is OFF by default: the counter checks the customer's first name
+    // and order number, and the store hands the order over without a code (vendor.routes complete-pickup).
+    rec.check('the store’s takeaway code is off by default', before === false, `requirePickupCode=${before}`);
+    if (before !== false) await PUT('/vendor/profile', { requirePickupCode: false }, R2.session.token);
+    rec.expect('the store readies the code-off order', await vendorAdvance(R2.session, good, 'READY_FOR_PICKUP'), 200);
     const vendorView = await GET(`/vendor/orders/${good}`, R2.session.token);
     rec.check('the store never reads the pickup code', vendorView.ok && vendorView.json?.data?.pickupCode === undefined, `vendor view pickupCode=${vendorView.json?.data?.pickupCode}`);
-    rec.deny('handover without a code', await PUT(`/vendor/orders/${good}/complete-pickup`, {}, R2.session.token), [400], ['MISSING_PICKUP_CODE']);
-    const wrongCode = String((Number(g.pickupCode) + 1) % 1_000_000).padStart(6, '0');
-    rec.deny('a wrong code', await PUT(`/vendor/orders/${good}/complete-pickup`, { code: wrongCode }, R2.session.token), [400], ['WRONG_PICKUP_CODE']);
-    rec.expect('the right code completes the handover', await PUT(`/vendor/orders/${good}/complete-pickup`, { code: g.pickupCode }, R2.session.token), 200);
+    const shown = (await GET(`/customer/orders/${good}?pickupHandover=v1`, C3.token)).json?.data;
+    rec.check('code off: a current app gives the customer no code (name + order number instead)', !!shown && !shown.pickupCode && shown.pickupCodeRequired !== true,
+      `pickupCode ${shown?.pickupCode ? 'present' : 'absent'} pickupCodeRequired=${shown?.pickupCodeRequired}`);
+    rec.expect('code off: the store hands it over without a code', await PUT(`/vendor/orders/${good}/complete-pickup`, {}, R2.session.token), 200);
     rec.check('the customer sees COMPLETED', (await customerOrder(C3, good))?.status === 'COMPLETED', '');
 
-    // lockout: five wrong codes, then even the right one is refused
-    rec.expect('the store readies the second order', await vendorAdvance(R2.session, lock, 'READY_FOR_PICKUP'), 200);
-    const l = await customerOrder(C3, lock);
-    const bad = String((Number(l.pickupCode) + 7) % 1_000_000).padStart(6, '0');
-    const tries: string[] = [];
-    for (let i = 0; i < 5; i += 1) tries.push(brief(await PUT(`/vendor/orders/${lock}/complete-pickup`, { code: bad }, R2.session.token)));
-    rec.check('five wrong codes are each refused', tries.every((t) => t.startsWith('400')), tries.join(', '));
-    rec.deny('after the lockout the right code is refused too', await PUT(`/vendor/orders/${lock}/complete-pickup`, { code: l.pickupCode }, R2.session.token), [400], ['MAX_ATTEMPTS']);
-    rec.check('the locked order is not completed', (await customerOrder(C3, lock))?.status === 'READY_FOR_PICKUP', '');
-    // cleanup: an operator closes the locked order
-    await PUT(`/admin/orders/${lock}/cancel`, { reason: 'journey cleanup: pickup code locked' }, ctx.admin.token);
+    // With the store's code ON (its own setting): today's flow — no code and a wrong code are refused, the right
+    // code completes, and five wrong codes lock the order. The setting goes back as it was, whatever happens.
+    const set = await PUT('/vendor/profile', { requirePickupCode: true }, R2.session.token);
+    try {
+      rec.expect('the store turns its takeaway code on', set, 200);
+      rec.check('the setting reads on', (await codeSetting()) === true, '');
+      rec.expect('the store readies the code-on order', await vendorAdvance(R2.session, on, 'READY_FOR_PICKUP'), 200);
+      const o = (await GET(`/customer/orders/${on}?pickupHandover=v1`, C3.token)).json?.data;
+      rec.check('code on: the customer holds a 6-digit pickup code', /^\d{6}$/.test(String(o?.pickupCode ?? '')), `pickupCode ${o?.pickupCode ? 'present' : 'missing'}`);
+      rec.deny('code on: a handover without a code', await PUT(`/vendor/orders/${on}/complete-pickup`, {}, R2.session.token), [400], ['MISSING_PICKUP_CODE']);
+      const wrongCode = String((Number(o?.pickupCode) + 1) % 1_000_000).padStart(6, '0');
+      rec.deny('code on: a wrong code', await PUT(`/vendor/orders/${on}/complete-pickup`, { code: wrongCode }, R2.session.token), [400], ['WRONG_PICKUP_CODE']);
+      rec.expect('code on: the right code completes the handover', await PUT(`/vendor/orders/${on}/complete-pickup`, { code: o?.pickupCode }, R2.session.token), 200);
+      rec.check('the customer sees COMPLETED', (await customerOrder(C3, on))?.status === 'COMPLETED', '');
+
+      // lockout: five wrong codes, then even the right one is refused
+      rec.expect('the store readies the lockout order', await vendorAdvance(R2.session, lock, 'READY_FOR_PICKUP'), 200);
+      const l = (await GET(`/customer/orders/${lock}?pickupHandover=v1`, C3.token)).json?.data;
+      const bad = String((Number(l?.pickupCode) + 7) % 1_000_000).padStart(6, '0');
+      const tries: string[] = [];
+      for (let i = 0; i < 5; i += 1) tries.push(brief(await PUT(`/vendor/orders/${lock}/complete-pickup`, { code: bad }, R2.session.token)));
+      rec.check('five wrong codes are each refused', tries.every((t) => t.startsWith('400')), tries.join(', '));
+      rec.deny('after the lockout the right code is refused too', await PUT(`/vendor/orders/${lock}/complete-pickup`, { code: l?.pickupCode }, R2.session.token), [400], ['MAX_ATTEMPTS']);
+      rec.check('the locked order is not completed', (await customerOrder(C3, lock))?.status === 'READY_FOR_PICKUP', '');
+    } finally {
+      const back = await PUT('/vendor/profile', { requirePickupCode: false }, R2.session.token);
+      rec.cleanup('the store’s takeaway code is back off (the default)', back.ok, brief(back));
+      // an operator closes the locked order (a no-op if it never got there)
+      await PUT(`/admin/orders/${lock}/cancel`, { reason: 'journey cleanup: pickup code locked' }, ctx.admin.token);
+    }
   },
 };
 

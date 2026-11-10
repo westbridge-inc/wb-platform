@@ -32,7 +32,10 @@ import type { DispatchCandidate } from './scoring';
 //         taken, and the customer is told BEFORE ordering how much longer it
 //         will be (the rider wait), and the promise includes it.
 //   NONE  no rider near at all, or the wait would pass `maxRiderWaitMinutes`:
-//         the existing refusal, "order for pickup instead".
+//         the existing refusal, "order for pickup instead". [RIDE-03] Also a
+//         CASH order whose store cash is more than ANY rider near may carry
+//         (their cash LIMIT, not what they have out now): such riders never
+//         free up for it, so they are not supply (CASH_OVER_RIDER_LIMIT).
 //
 // The rider wait when BUSY: this order is (backlog - free - stackable + 1)th
 // in line, and the riders near (busy ones included) free up across one leg,
@@ -43,7 +46,7 @@ import type { DispatchCandidate } from './scoring';
 // ---------------------------------------------------------------------------
 
 export type DeliveryLevel = 'GOOD' | 'BUSY' | 'NONE';
-export type DeliveryNoneReason = 'NO_RIDERS' | 'RIDERS_BUSY';
+export type DeliveryNoneReason = 'NO_RIDERS' | 'RIDERS_BUSY' | 'CASH_OVER_RIDER_LIMIT';
 
 /** The candidate search radius dispatch starts with (dispatch.service BASE_RADIUS_KM). */
 export const CAPACITY_RADIUS_KM = 5;
@@ -167,6 +170,11 @@ export async function backlogNear(
  * hands will free up. The candidate query's own filters (fresh location,
  * active account, rider role, this tenant, a vehicle that carries this size,
  * a delivery rider type) without the room or float gates.
+ *
+ * [RIDE-03] `cashLimitAtLeast` > 0 keeps only riders whose cash LIMIT
+ * (floatLimit) covers that much store cash. What a rider has out now
+ * (committedFloat) is deliberately not read: it comes back when they finish,
+ * so such a rider is busy, not unable. 0 (the default) = every rider.
  */
 export async function ridersOnlineNear(
   prisma: PrismaClient,
@@ -177,6 +185,7 @@ export async function ridersOnlineNear(
   km = CAPACITY_RADIUS_KM,
   /** Who serves this work: dispatch's own split (a parcel goes to COURIER or BOTH riders). */
   riderTypes: readonly string[] = ['DELIVERY', 'BOTH'],
+  cashLimitAtLeast = 0,
 ): Promise<number> {
   const freshSince = new Date(Date.now() - freshSeconds * 1000);
   const tenantFilter = tenantId ? Prisma.sql`AND u."tenantId" = ${tenantId}` : Prisma.empty;
@@ -192,6 +201,7 @@ export async function ridersOnlineNear(
       ${tenantFilter}
       AND r."vehicleType"::text = ANY(${goodsVehicleTypesForPackageSize(packageSize)})
       AND r."riderType"::text = ANY(${[...riderTypes]})
+      ${cashLimitAtLeast > 0 ? Prisma.sql`AND r."floatLimit" >= ${cashLimitAtLeast}` : Prisma.empty}
       AND r."currentLat" IS NOT NULL
       AND r."currentLng" IS NOT NULL
       AND ST_DWithin(
@@ -227,10 +237,18 @@ export async function assertParcelHasRiders(
 export function decideCapacity(input: {
   free: number; stackable: number; ridersNear: number; backlog: number;
   legMinutes: number; maxWaitMinutes: number;
+  /** [RIDE-03] A CASH order: the riders near (busy included) whose cash limit covers its store cash.
+   *  Omitted = no cash to carry. Free and stackable riders already passed dispatch's float gate. */
+  cashCapable?: number;
 }): { level: DeliveryLevel; reason: DeliveryNoneReason | null; riderWaitMinutes: number } {
   const { free, stackable, backlog, legMinutes, maxWaitMinutes } = input;
   const ridersNear = Math.max(input.ridersNear, free + stackable);
   if (ridersNear <= 0) return { level: 'NONE', reason: 'NO_RIDERS', riderWaitMinutes: 0 };
+  // [RIDE-03] Riders are near, but not one of them may ever carry this much store cash: no rider will take it,
+  // however long it waits. Said now, before it is placed. Any rider who can carry it leaves the rest unchanged.
+  if (input.cashCapable !== undefined && Math.max(input.cashCapable, free + stackable) <= 0) {
+    return { level: 'NONE', reason: 'CASH_OVER_RIDER_LIMIT', riderWaitMinutes: 0 };
+  }
   const slots = free + stackable - backlog;
   if (slots >= 1) return { level: 'GOOD', reason: null, riderWaitMinutes: 0 };
   const position = backlog - (free + stackable) + 1;
@@ -243,10 +261,15 @@ export function decideCapacity(input: {
 export async function measureDeliveryCapacity(deps: CapacityDeps, probe: CapacityProbe, freshSeconds: number): Promise<DeliveryCapacity> {
   const tenant = probe.tenantId ?? 'swift-default';
   const point = { lat: probe.store.lat, lng: probe.store.lng };
-  const [candidates, backlog, ridersNear, legMinutes, maxWait, capacity] = await Promise.all([
+  const cash = probe.floatRequired > 0 ? probe.floatRequired : 0;
+  const [candidates, backlog, ridersNear, cashCapable, legMinutes, maxWait, capacity] = await Promise.all([
     deps.candidates(point, probe.floatRequired, probe.tenantId, probe.packageSize),
     backlogNear(deps.prisma, point, probe.tenantId),
     ridersOnlineNear(deps.prisma, point, probe.tenantId, probe.packageSize, freshSeconds),
+    // [RIDE-03] The same riders (same filters), counting only those whose cash limit covers this order's store cash.
+    cash > 0
+      ? ridersOnlineNear(deps.prisma, point, probe.tenantId, probe.packageSize, freshSeconds, CAPACITY_RADIUS_KM, undefined, cash)
+      : Promise.resolve(undefined),
     avgRiderLegMinutes(deps.prisma, tenant),
     maxRiderWaitMinutes(deps.prisma, tenant),
     riderStackingCapacity(deps.prisma),
@@ -263,7 +286,7 @@ export async function measureDeliveryCapacity(deps: CapacityDeps, probe: Capacit
         dropoff: probe.dropoff,
       }, capacity)).size
     : 0;
-  const decision = decideCapacity({ free, stackable, ridersNear, backlog: backlog.length, legMinutes, maxWaitMinutes: maxWait });
+  const decision = decideCapacity({ free, stackable, ridersNear, backlog: backlog.length, legMinutes, maxWaitMinutes: maxWait, cashCapable });
   return {
     ...decision,
     nearestEtaMinutes: candidates[0] ? Math.max(1, Math.round(candidates[0].etaMinutes)) : null,
@@ -297,9 +320,26 @@ export function storeBacklogSentence(waiting: number): string {
   return `${waiting} of your orders ${waiting === 1 ? 'is' : 'are'} waiting for a rider, so new delivery orders are paused. They restart by themselves when a rider takes one. Customers can still order for pickup.`;
 }
 
+/**
+ * [RIDE-03] The alternatives that work when no rider near can carry this much store cash: paying the store by MMG
+ * (no cash to carry) when the store takes MMG and this checkout can pay it that way, and pickup. Never the limit
+ * itself or any rider's number.
+ */
+export function cashOverLimitSentence(alternatives: { storeName: string; mmg: boolean }): string {
+  const lead = 'No rider near the store can carry this much cash right now, so this order cannot be delivered for cash.';
+  return alternatives.mmg
+    ? `${lead} Pay ${alternatives.storeName} by MMG to have it delivered, or order for Pickup instead.`
+    : `${lead} You can order for Pickup instead.`;
+}
+
 /** The honest words, once, for every surface (checkout refusal, cart banner). */
-export function capacitySentence(c: { level: DeliveryLevel; reason: DeliveryNoneReason | null; riderWaitMinutes: number }): string | null {
+export function capacitySentence(
+  c: { level: DeliveryLevel; reason: DeliveryNoneReason | null; riderWaitMinutes: number },
+  /** [RIDE-03] For CASH_OVER_RIDER_LIMIT: the store and whether paying it by MMG is open to this customer. */
+  alternatives: { storeName: string; mmg: boolean } = { storeName: 'the store', mmg: false },
+): string | null {
   if (c.level === 'BUSY') return `Riders are busy — about ${c.riderWaitMinutes} min extra for delivery.`;
+  if (c.level === 'NONE' && c.reason === 'CASH_OVER_RIDER_LIMIT') return cashOverLimitSentence(alternatives);
   if (c.level === 'NONE' && c.reason === 'RIDERS_BUSY') return 'Riders are very busy right now — you can order for Pickup instead, or try delivery again later.';
   if (c.level === 'NONE') return 'No delivery riders are online right now — you can order for Pickup instead, or try delivery again later.';
   return null;

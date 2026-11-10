@@ -4895,12 +4895,17 @@ model CardSession {
   providerTransactionRef String?
   /// Claimed under the billing/session locks before the provider completion is sent.
   completionClaimedAt DateTime?
-  /// Whitelisted approved provider completion, including its own 3DS proof. Never browser evidence.
+  /// Whitelisted fields of the provider's own approval of the completion (the booking proof, owner ruling 10 Nov 2026; rows
+  /// stored before it also hold the 3DS fields then required). Never browser evidence, never a token.
   completionEvidence Json?
   /// [PT-4] The one void Swift sends for a payment it cannot book:
   /// SENDING -> VOIDED | FAILED | UNKNOWN (forward only, trigger-guarded).
   providerVoidState  String?
   providerVoidAt     DateTime?
+  /// [CARD-STAGING-TEST 10 Nov 2026] The void's OWN provider transaction (PowerTranz: a void is its own TransactionType 4
+  /// transaction; the sale's record does not name it), from PowerTranz's approved answer to the void, for finance matching.
+  /// Only beside providerVoidState VOIDED (CHECK card_sessions_void_ref_check).
+  providerVoidRef    String?
   /// [PT-4] A refund a second person approved: SENDING -> PENDING -> REFUNDED | FAILED | UNKNOWN; UNKNOWN -> REFUNDED
   /// only when the provider's own record shows the whole payment back (CARD-REFUND-LOOKUP).
   providerRefundState String?

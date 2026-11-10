@@ -5,20 +5,23 @@
 import { FIXTURE_PNG, upload, type Session } from '../client.js';
 import type { Journey, Recorder } from '../journey.js';
 import { GET, POST, PUT, req, sleep, codeOf, brief, pick, waitFor, customerOrder, placeOrder, orderIdsOf, ensureAddress, idemKey } from './common.js';
-import type { Ctx } from './context.js';
-import { mover, onlineOf, setOnline, pollOffer, placeExpress, riderToDoor, handoverPaid, doorPin, storeAccepts, storeReadies, freeRider } from './dispatch.js';
+import type { Ctx, WorldItem } from './context.js';
+import { mover, onlineOf, setOnline, pollOffer, placeExpress, riderToDoor, handoverPaid, doorPin, storeAccepts, storeReadies, freeRider, type MoverId } from './dispatch.js';
 import { registerFresh } from './auth.js';
 import { uniquePng } from '../roster.js';
 
 const riders = (ctx: Ctx) => onlineOf(ctx, 'rider');
+/** [RIDE-03 · journeys 10 Nov 2026] Riders on a motorbike or a car: a bicycle (DR4, added for COUR-02) cannot carry
+ *  a big basket, so its refusals answer VEHICLE_TOO_SMALL before any cash rule is reached. */
+const cashRiders = (ctx: Ctx) => riders(ctx).filter((id) => mover(ctx, id).vehicleType !== 'BICYCLE');
 
 /** Express order at R1, accepted by the store, offered to a rider who takes it. */
-async function assignedExpress(rec: Recorder, ctx: Ctx, customerId: string, label: string, itemKey = 'R1', qty = 1): Promise<{ orderId: string; riderId: string } | null> {
+async function assignedExpress(rec: Recorder, ctx: Ctx, customerId: string, label: string, itemKey = 'R1', qty = 1, pool: MoverId[] = riders(ctx)): Promise<{ orderId: string; riderId: string } | null> {
   const placed = await placeExpress(ctx, customerId, 'R1', itemKey, label, qty);
   if (!rec.expect(`${label}: express cash delivery checkout`, placed.res, [200, 201])) return null;
   const orderId = placed.id!;
   if (!rec.expect(`${label}: the store accepts`, await storeAccepts(ctx, 'R1', orderId), 200)) return null;
-  const got = await pollOffer(ctx, orderId, riders(ctx));
+  const got = await pollOffer(ctx, orderId, pool);
   if (!rec.check(`${label}: an online rider is offered the job`, !!got, got ? `${got.moverId} holds attempt ${got.offer.offerAttemptId}` : 'no offer within 45 s')) return null;
   const m = mover(ctx, got!.moverId);
   const acc = await POST('/rider/offers/accept', { orderId, offerAttemptId: got!.offer.offerAttemptId }, m.session.token);
@@ -168,66 +171,93 @@ export const RIDE_03: Journey<Ctx> = {
   id: 'RIDE-03',
   estimateSeconds: 150,
   title: 'Cash float at pickup',
-  cases: 'float commit; cap denial; cash not shown; assignment rollback/retry',
+  cases: 'cash over every rider limit refused at checkout; float commit; cap denial; cash not shown; assignment rollback/retry',
   async run(rec, ctx) {
-    rec.require('the 4500 feast item and two riders', !!ctx.world.items['R1-feast'] && riders(ctx).length >= 2, '');
+    rec.require('the 4500 feast item and two motorbike/car riders', !!ctx.world.items['R1-feast'] && cashRiders(ctx).length >= 2,
+      `cash riders=${cashRiders(ctx).join(',') || 'none'}`);
     const feast = ctx.world.items['R1-feast']!;
-    // [O1 · owner 7 Nov 2026] Guyana's rider cash limit is GY$100,000 at every level (seed 2026-11-07.1).
-    const LIMIT = 100_000;
-    const bigQty = Math.floor(LIMIT / feast.price) + 1; // 23 × 4500 = 103,500
-    const nearQty = Math.floor(LIMIT / feast.price); // 22 × 4500 = 99,000: fits alone, not beside a first order
-    // cap at checkout: no rider can front more than the limit
-    const big = await placeExpress(ctx, 'C4', 'R1', 'R1-feast', 'ride03-big', bigQty);
-    rec.deny('a cash basket above every rider’s cash limit is refused at checkout', big.res, [409], ['DELIVERY_NO_RIDERS'], `store price ${bigQty * feast.price} > limit ${LIMIT}`);
-
-    const first = await assignedExpress(rec, ctx, 'C4', 'ride03-f1', 'R1-feast');
-    rec.require('a rider holds the first feast order', !!first, '');
-    const a = mover(ctx, first!.riderId);
-    const pa = (await GET('/rider/profile', a.session.token)).json?.data;
-    rec.check('the float is committed at claim', Number(pa?.float?.committed ?? pa?.committedFloat) === feast.price,
-      `float=${JSON.stringify(pa?.float ?? { committed: pa?.committedFloat, limit: pa?.floatLimit })}`);
-
-    const second = await placeExpress(ctx, 'C6', 'R1', 'R1-feast', 'ride03-f2', nearQty);
-    const secondCash = nearQty * feast.price;
-    rec.expect('a second, near-limit feast order', second.res, [200, 201]);
-    rec.expect('the store accepts it', await storeAccepts(ctx, 'R1', second.id!), 200);
-    // an app that shows no amount cannot take a cash job above GY$8,000 from the board
-    const blind = await POST(`/rider/orders/${second.id}/accept`, {}, a.session.token);
-    rec.deny('a board grab that showed no amount is refused above GY$8,000', blind, [409], ['CASH_AMOUNT_NOT_SHOWN']);
-    const denied = await POST(`/rider/orders/${second.id}/accept`, { payToVendor: secondCash }, a.session.token);
-    rec.deny(`${first!.riderId} cannot take ${secondCash} more cash beside ${feast.price} on a ${LIMIT} limit`, denied, [409], ['FLOAT_EXCEEDED']);
-    const pa2 = (await GET('/rider/profile', a.session.token)).json?.data;
-    rec.check('the refused claim committed nothing (rollback)', Number(pa2?.float?.committed ?? pa2?.committedFloat) === feast.price, `committed=${pa2?.float?.committed ?? pa2?.committedFloat}`);
-
-    // retry: another rider with headroom takes it (offer or board), sending back the cash it was shown
-    const offer = await pollOffer(ctx, second.id!, riders(ctx).filter((id) => id !== first!.riderId), 30_000);
-    let bId: string | null = null;
-    if (offer) {
-      const shown = Number((offer.offer as { cashMath?: { payToVendor?: number } }).cashMath?.payToVendor ?? secondCash);
-      const r = await POST('/rider/offers/accept', { orderId: second.id, offerAttemptId: offer.offer.offerAttemptId, payToVendor: shown }, mover(ctx, offer.moverId).session.token);
-      if (r.ok) bId = offer.moverId;
+    // A bicycle is offline for this journey (back online in `finally`), so every offer and board grab below is a
+    // motorbike/car rider's and reaches the cash rules (F3 of the 10 Nov run).
+    const bikes = riders(ctx).filter((id) => mover(ctx, id).vehicleType === 'BICYCLE');
+    for (const id of bikes) await setOnline(ctx, id, false);
+    try {
+      await ride03(rec, ctx, feast);
+    } finally {
+      for (const id of bikes) await setOnline(ctx, id, true);
     }
-    if (!bId) {
-      for (const id of riders(ctx).filter((x) => x !== first!.riderId)) {
-        const r = await POST(`/rider/orders/${second.id}/accept`, { payToVendor: secondCash }, mover(ctx, id).session.token);
-        if (r.ok) { bId = id; break; }
-      }
-    }
-    rec.check('the retry by a rider with headroom succeeds', !!bId, `taken by ${bId ?? 'nobody'}`);
-
-    // release: delivering frees the float
-    for (const [oid, rid, cust] of [[first!.orderId, first!.riderId, 'C4'], [second.id!, bId, 'C6']] as const) {
-      if (!rid) continue;
-      await storeReadies(ctx, 'R1', oid);
-      const w = mover(ctx, rid);
-      await riderToDoor(w.session, oid);
-      const c = ctx.roster.customers[cust]!;
-      rec.expect(`${rid} delivers ${oid === first!.orderId ? 'the first' : 'the second'} feast order`, await handoverPaid(w.session, oid, { lat: c.lat, lng: c.lng }, await doorPin(c.session, oid)), 200);
-    }
-    const pa3 = (await GET('/rider/profile', a.session.token)).json?.data;
-    rec.check('delivery releases the float', Number(pa3?.float?.committed ?? pa3?.committedFloat ?? 0) === 0, `committed=${pa3?.float?.committed ?? pa3?.committedFloat}`);
   },
 };
+
+async function ride03(rec: Recorder, ctx: Ctx, feast: WorldItem): Promise<void> {
+  const pool = cashRiders(ctx);
+  // [O1 · owner 7 Nov 2026] Guyana's rider cash limit is GY$100,000 at every level (seed 2026-11-07.1). The
+  // checkout refusal is measured against the riders' LIVE limit, so it runs on any target; the steps after it need
+  // the owner's limit (a near-limit order above the GY$8,000 shown-amount rule).
+  const OWNER_LIMIT = 100_000;
+  const p0 = (await GET('/rider/profile', mover(ctx, pool[0]!).session.token)).json?.data;
+  const LIMIT = Number(p0?.float?.limit ?? p0?.floatLimit) || OWNER_LIMIT;
+  const bigQty = Math.floor(LIMIT / feast.price) + 1; // 23 × 4500 = 103,500 at 100,000
+  // [RIDE-03 fix] cap at checkout: a cash basket more than any rider near may carry is refused BEFORE it is placed,
+  // with the alternatives that work (the store's MMG when it takes MMG; pickup) — never an order no rider can take.
+  const big = await placeExpress(ctx, 'C4', 'R1', 'R1-feast', 'ride03-big', bigQty);
+  rec.deny('a cash basket above every rider’s cash limit is refused at checkout', big.res, [409], ['DELIVERY_NO_RIDERS'], `store price ${bigQty * feast.price} > limit ${LIMIT}`);
+  const why = big.res.json?.error;
+  rec.check('the refusal says why (too much cash for any rider near) and offers pickup', why?.details?.reason === 'CASH_OVER_RIDER_LIMIT' && /Pickup/.test(String(why?.message ?? '')),
+    `reason=${why?.details?.reason} message=${why?.message}`);
+  for (const id of orderIdsOf(big.res)) await POST(`/customer/orders/${id}/cancel`, { reason: 'journey cleanup' }, ctx.roster.customers.C4!.session.token);
+  // The same basket paid to the store by MMG is placed (no cash to carry): proven in CI (rider-safe-capacity.test
+  // RIDE-03). Not here: an MMG order needs a store with a live MMG number, which needs the owner's SMS step-up.
+  rec.require('the riders carry the owner’s GY$100,000 cash limit (seed 2026-11-07.1) for the near-limit steps', LIMIT === OWNER_LIMIT, `rider cash limit on this target = ${LIMIT}`);
+  const nearQty = Math.floor(LIMIT / feast.price); // 22 × 4500 = 99,000: fits alone, not beside a first order
+
+  const first = await assignedExpress(rec, ctx, 'C4', 'ride03-f1', 'R1-feast', 1, pool);
+  rec.require('a rider holds the first feast order', !!first, '');
+  const a = mover(ctx, first!.riderId);
+  const pa = (await GET('/rider/profile', a.session.token)).json?.data;
+  rec.check('the float is committed at claim', Number(pa?.float?.committed ?? pa?.committedFloat) === feast.price,
+    `float=${JSON.stringify(pa?.float ?? { committed: pa?.committedFloat, limit: pa?.floatLimit })}`);
+
+  const second = await placeExpress(ctx, 'C6', 'R1', 'R1-feast', 'ride03-f2', nearQty);
+  const secondCash = nearQty * feast.price;
+  rec.expect('a second, near-limit feast order', second.res, [200, 201]);
+  rec.expect('the store accepts it', await storeAccepts(ctx, 'R1', second.id!), 200);
+  // an app that shows no amount cannot take a cash job above GY$8,000 from the board
+  const blind = await POST(`/rider/orders/${second.id}/accept`, {}, a.session.token);
+  rec.deny('a board grab that showed no amount is refused above GY$8,000', blind, [409], ['CASH_AMOUNT_NOT_SHOWN']);
+  const denied = await POST(`/rider/orders/${second.id}/accept`, { payToVendor: secondCash }, a.session.token);
+  rec.deny(`${first!.riderId} cannot take ${secondCash} more cash beside ${feast.price} on a ${LIMIT} limit`, denied, [409], ['FLOAT_EXCEEDED']);
+  const pa2 = (await GET('/rider/profile', a.session.token)).json?.data;
+  rec.check('the refused claim committed nothing (rollback)', Number(pa2?.float?.committed ?? pa2?.committedFloat) === feast.price, `committed=${pa2?.float?.committed ?? pa2?.committedFloat}`);
+
+  // retry: another rider with headroom takes it (offer or board), sending back the cash it was shown
+  const others = pool.filter((id) => id !== first!.riderId);
+  const offer = await pollOffer(ctx, second.id!, others, 30_000);
+  let bId: string | null = null;
+  if (offer) {
+    const shown = Number((offer.offer as { cashMath?: { payToVendor?: number } }).cashMath?.payToVendor ?? secondCash);
+    const r = await POST('/rider/offers/accept', { orderId: second.id, offerAttemptId: offer.offer.offerAttemptId, payToVendor: shown }, mover(ctx, offer.moverId).session.token);
+    if (r.ok) bId = offer.moverId;
+  }
+  if (!bId) {
+    for (const id of others) {
+      const r = await POST(`/rider/orders/${second.id}/accept`, { payToVendor: secondCash }, mover(ctx, id).session.token);
+      if (r.ok) { bId = id; break; }
+    }
+  }
+  rec.check('the retry by a rider with headroom succeeds', !!bId, `taken by ${bId ?? 'nobody'}`);
+
+  // release: delivering frees the float
+  for (const [oid, rid, cust] of [[first!.orderId, first!.riderId, 'C4'], [second.id!, bId, 'C6']] as const) {
+    if (!rid) continue;
+    await storeReadies(ctx, 'R1', oid);
+    const w = mover(ctx, rid);
+    await riderToDoor(w.session, oid);
+    const c = ctx.roster.customers[cust]!;
+    rec.expect(`${rid} delivers ${oid === first!.orderId ? 'the first' : 'the second'} feast order`, await handoverPaid(w.session, oid, { lat: c.lat, lng: c.lng }, await doorPin(c.session, oid)), 200);
+  }
+  const pa3 = (await GET('/rider/profile', a.session.token)).json?.data;
+  rec.check('delivery releases the float', Number(pa3?.float?.committed ?? pa3?.committedFloat ?? 0) === 0, `committed=${pa3?.float?.committed ?? pa3?.committedFloat}`);
+}
 
 export const RIDE_04: Journey<Ctx> = {
   id: 'RIDE-04',
