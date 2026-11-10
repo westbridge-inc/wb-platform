@@ -42,6 +42,8 @@ const LEDGER: Record<string, { count: number; why: string }> = {
   'modules/rider/rider.routes.ts': { count: 3, why: `2 ${OWN}; 1 ${GATED} (the store's account line is no longer selected)` },
   'modules/user/customer.routes.ts': { count: 4, why: `2 ${OWN}; 1 receipt input (the receipt prints only the seller's PUBLISHED phone); 1 ${GATED}` },
   'modules/vendor/vendor.routes.ts': { count: 5, why: `3 ${GATED}; 1 ${OWN} (store team; GET+PUT /staff share staffMemberUserSelect); 1 ${INTERNAL} (reserved-name check)` },
+  // [COMPANY-DOCS Part 3] the handover approval: the old holder's number is compared with each store's phones (a store phone that is theirs stops being the store's) and the new holder's becomes the private contact line. Never in a response or a notice.
+  'modules/vendor/account-change.ts': { count: 3, why: INTERNAL },
   'utils/counterparty.ts': { count: 1, why: 'the opt-in itself (riderCounterpartySelect withPhone)' },
   'modules/calls/call-bridge.ts': { count: 5, why: `${INTERNAL} (the Swift call bridge: each party's number, and the caller's own, read at the moment a leg is dialled and handed only to the voice provider; never in a response, a push or a call_sessions row)` },
   // [BOOK-FU2 · owner B3] +1: the missed-appointment review's customer row (masked unless user.contact.read, like the people list).

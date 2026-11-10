@@ -1368,6 +1368,7 @@ describe('generated declaration envelope contract (own-name declaration)', () =>
     h.db.countryConfig = { findUnique: vi.fn(async () => ({ documentChecklists: {} })) };
     h.db.docType.findMany = vi.fn(async () => []);
     h.db.categoryDocumentGate = { findMany: vi.fn(async () => []) };
+    h.db.accountChangeRequest = { findFirst: vi.fn(async () => null) }; // [COMPANY-DOCS Part 3] no account change waiting: the declaration is the store's own
     const published = vi.spyOn(consent, 'publishLegalDocumentOnce').mockResolvedValue(undefined as never);
     const signed = vi.spyOn(consent, 'recordConsent').mockResolvedValue(undefined as never);
     const plaintext = Buffer.from('synthetic signed PDF');

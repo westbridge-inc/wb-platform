@@ -145,6 +145,10 @@ export const ALERT_CLASS_KINDS: Readonly<Record<AlertClass, readonly string[]>> 
     'email_changed', 'password_changed', 'password_sign_in_paused',
     // Store and advertiser business surfaces (an ad that needs action stays loud)
     'low_stock', 'staff_added', 'staff_invite', 'staff_joined', 'ad_team_invite', 'review_response', 'rating_removed', 'category_request_resolved',
+    // [COMPANY-DOCS Part 3] an account change: decided (business type changed / refused), a handover named, completed or
+    // ended; ops: a change waiting for a document reviewer (like verification_pending). Informational, never loud.
+    'account_change_approved', 'account_change_refused', 'account_handover_named', 'account_handover_completed', 'account_handover_ended',
+    'account_change_pending',
     'category_backfill_review', 'vendor_needs_public_phone', 'vendor_needs_food_handler_tick', 'vendor_needs_weekly_fee_tick', 'support_update', 'store_pin_moved',
     'ad_campaign_paused', 'ad_campaign_cancelled', 'ad_campaign_killed', 'ad_campaign_auto_cancelled',
     'ad_creative_rejected', 'ad_reservation_expiring', 'ad_late_capture', 'ad_mmg_checkout',

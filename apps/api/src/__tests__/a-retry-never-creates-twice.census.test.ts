@@ -275,6 +275,9 @@ const OUT: Record<string, string> = {
   // [#1995 ads security] Accepting one's own advertiser team invitation creates nothing: one compare-and-set
   // (updateMany where acceptedAt is null, the invitee's own row, unexpired) sets acceptedAt; a retry finds no
   // open invitation and answers 404. No order, no money row, no new row.
+  // [COMPANY-DOCS Part 3] an account handover moves no money and creates none of the eight.
+  'modules/vendor/account-change.routes.ts|POST|/account-change/handover': 'The account holder names a new holder: one AccountChangeRequest row, at most one PENDING per account (a partial unique index; a retry is refused ACCOUNT_CHANGE_PENDING), and a notice. No order, payment or fee; nothing moves until a person approves.',
+  'modules/vendor/account-change.routes.ts|POST|/account-handovers/:id/accept': 'The person named says yes: one compare-and-set on the request (newHolderAcceptedAt null -> now); a retry changes nothing. Creates no row of the eight and moves no money.',
   'modules/ads/ads.routes.ts|POST|/advertiser/:id/members/accept': 'The invited person accepts their own open invitation: one compare-and-set on their row (acceptedAt null -> now); a retry finds nothing open (404). Creates no row and moves no money.',
   'modules/rider/rider.routes.ts|POST|/offers/accept': 'A rider takes an offered order (the offer is claimed once); assignment only, no money row.',
   'modules/driver/driver.routes.ts|POST|/rides/:id/accept': 'A driver takes an existing ride request (assignment); the fare is earned at complete, not here.',

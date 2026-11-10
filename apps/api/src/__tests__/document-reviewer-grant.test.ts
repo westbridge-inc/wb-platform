@@ -184,6 +184,9 @@ describe('[V3] the grant is explicit-only: `*`, a wildcard or a role default nev
       // [OWNER-ASKS · security review 9 Nov 2026] The home-visit selfie compared with the approved ID: its queue and its
       // decision show and judge a person's ID beside their face, so the same reviewers.
       'GET /verification/selfie-checks', 'POST /verification/:id/selfie-check',
+      // [COMPANY-DOCS Part 3 · owner rulings 10 Nov 2026 (c), (d)] An account change (a new business type, a new account
+      // holder) is decided against the papers filed for it: its queue, its page and its decisions are the same reviewers'.
+      'GET /account-changes', 'GET /account-changes/:id', 'PUT /account-changes/:id/approve', 'PUT /account-changes/:id/refuse',
     ];
     for (const door of doors) expect((authority.ADMIN_ROUTE_AUTHORITY[door] as { requires?: string } | undefined)?.requires, door).toBe(GRANT);
     const others = Object.entries(authority.ADMIN_ROUTE_AUTHORITY).filter(([k, a]) => !doors.includes(k) && (a as { requires?: string }).requires);
