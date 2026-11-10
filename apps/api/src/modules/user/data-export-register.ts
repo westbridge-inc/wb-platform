@@ -309,6 +309,20 @@ export const EXPORT_REGISTER: readonly ExportEntry[] = [
     fields: ['id', 'userId', 'name', 'phoneE164', 'relationship', 'priority', 'verifiedAt', 'createdAt', 'updatedAt'],
   },
   {
+    // [COMPANY-DOCS PART 2] The letters of authority the person asked a director (or the business's owner) to sign in
+    // Swift: what they typed (as an emergency contact: the business, their own name and role, the signer's name and
+    // number) and how far it got. The signer's own evidence (their network address digest, browser and signature
+    // fingerprint) is the signer's, not the account holder's; the link and code are secrets; the PDF is a stored file.
+    category: 'authorityLetters', model: 'AuthorityLetterRequest', by: ['userId'], key: 'id',
+    omit: {
+      tokenHash: 'SECRET', codeHash: 'SECRET', signingKeyHash: 'SECRET', letterSha256: 'SECRET', pdfFileKey: 'STORED_FILE',
+      signerIpHmac: 'OTHER_PERSON', signerUserAgent: 'OTHER_PERSON', signatureSha256: 'OTHER_PERSON',
+      codeExpiresAt: 'SYSTEM', codeAttempts: 'SYSTEM', codeSends: 'SYSTEM', signingKeyExpiresAt: 'SYSTEM', accountBasis: 'SYSTEM',
+    },
+    fields: ['id', 'userId', 'docType', 'businessName', 'registrationNumber', 'requesterName', 'requesterRole', 'signerName', 'signerPhone',
+      'letterText', 'status', 'expiresAt', 'sendCount', 'lastSentAt', 'openedAt', 'codeVerifiedAt', 'signedAt', 'documentId', 'endedAt', 'createdAt', 'updatedAt'],
+  },
+  {
     // [O-1] The Swift-bridged calls the person asked for on their orders: which party (a role, never a
     // person), when, and how far it got. Swift stores no phone number for a call; the provider's own id is bookkeeping.
     category: 'swiftCalls', model: 'CallSession', by: ['callerUserId'], key: 'id', omit: { provider: 'SYSTEM', providerCallId: 'SYSTEM' },

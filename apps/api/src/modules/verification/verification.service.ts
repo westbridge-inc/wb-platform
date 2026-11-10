@@ -11,6 +11,7 @@ import { approveRegistrantLink, linkedAccountIds, normalizeRegistrationMark, pla
 import { POLICE_CLEARANCE_WITHDRAWN_NOTE } from './police-clearance-consent';
 import { ACCOUNT_HOLDER_ID_DOC_TYPE, AUTO_APPROVE_EXPIRY_DAYS, BUCKET_OF, CERTIFICATE_YEAR_DOC_TYPES, FOOD_HANDLER_ATTESTATION_TYPE, isNeverAcceptedDocType, OWN_NAME_DOC_TYPE, OWN_NAME_TIER, PERSON_ONLY_DOC_TYPES, POLICE_CLEARANCE_DOC_TYPE, REGISTRATION_DOC_TYPES, registryCode, type RegistrationKind } from './doc-registry';
 import { accountTierOf } from '../vendor/account-basis';
+import { authorityConfirmationNote, type AuthorityConfirmation } from './authority-confirmation';
 import { guyanaWallClockParts, startOfGuyanaDay } from '../../utils/guyana-day';
 import type { ValidatorContext } from './validators';
 import { plausibleExpiryCeiling, startOfToday } from './validators';
@@ -266,6 +267,9 @@ export interface ReviewerTypedInput {
   certificateYear?: number;
   /** [R16] A business registration: a yearly business NAME (sole trader, partnership) or a COMPANY's incorporation. */
   registrationKind?: RegistrationKind;
+  /** [COMPANY-DOCS PART 2 · review F2] A letter of authority: how a person confirmed its signer is a director (or the owner),
+   *  and what they checked (authority-confirmation.ts). Required to approve one; never by default. */
+  authorityConfirmed?: AuthorityConfirmation;
   /** [ROLE-DOCS · owner 21 Oct 2026] An own-name declaration: the reviewer confirms, from the owner's ID, that the store's
    *  name is the owner's true surname with only first names or initials (Business Names (Registration) Act s.3). */
   ownNameConfirmed?: boolean;
@@ -1136,6 +1140,7 @@ export class VerificationService {
     // whatever IS typed is checked and used the same way.
     let identitySignal: string | null = null;
     let issuedOn: Date | null = null;
+    let authorityNote: string | null = null;
     if (candidate.status === 'PENDING') {
       if (REVIEWER_TYPED_NUMBER_DOC_TYPES.has(candidate.docType)) {
         const supplied = typeof typed.documentNumber === 'string' && typed.documentNumber.trim().length > 0;
@@ -1163,6 +1168,9 @@ export class VerificationService {
       // that year and checked again every January (the store goes offline on 16 January if it is not
       // renewed). A company's certificate of incorporation never expires: nothing is set for it (the console
       // keys no date for a business registration).
+      // [COMPANY-DOCS PART 2 · review F2] A letter of authority (paper or signed in Swift) is approved only once a person
+      // confirmed its signer IS a director (or the owner) on their own, and said how. Never by default.
+      authorityNote = authorityConfirmationNote(candidate.docType, typed.authorityConfirmed);
       // [ROLE-DOCS · owner 21 Oct 2026] An own-name declaration is approved only on the reviewer's own check of the name
       // against the owner's ID. Never by default: an internal caller that does not say so cannot approve one either.
       if (candidate.docType === OWN_NAME_DOC_TYPE && typed.ownNameConfirmed !== true) {
@@ -1203,7 +1211,7 @@ export class VerificationService {
           hireClassConfirmed: insurance.hireClassConfirmed,
           plateCrossChecked: insurance.plateCrossChecked,
         }),
-    }, { reviewerId: adminId, approval: { expiresAt, insurance, ...(issuedOn ? { issuedOn } : {}) } }, async (tx, decided) => {
+    }, { reviewerId: adminId, ...(authorityNote ? { note: authorityNote } : {}), approval: { expiresAt, insurance, ...(issuedOn ? { issuedOn } : {}) } }, async (tx, decided) => {
       // [BUG-HUNT F23] First, on the row just written: the whole decision rolls back and the paper stays waiting.
       await this.holdTheLastPaper(tx, unfinished);
       // [S2-29 · KYC-DECISION-ATOMIC] Everything the approval owes commits with it, or none of it does:
