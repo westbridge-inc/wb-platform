@@ -33,7 +33,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { nanoid } from 'nanoid';
-import { createHmac } from 'node:crypto';
+import { createHmac, randomBytes } from 'node:crypto';
 import { prismaPlugin, runWithoutTenant } from '../plugins/prisma';
 import { redisPlugin } from '../plugins/redis';
 import { authPlugin } from '../plugins/auth';
@@ -42,6 +42,7 @@ import { registerErrorHandler } from '../middleware/error-handler';
 import { registerEmptyJsonBodyParser } from '../plugins/empty-json';
 import { adminRoutes } from '../modules/admin/admin.routes';
 import { clusterMemberIds } from '../modules/integrity/identity.service';
+import { isPersonsFullName } from '../modules/verification/verification.service';
 
 const RUN = nanoid(8).replace(/[^a-zA-Z0-9]/g, '0');
 const NUM = String(Date.now()).slice(-5);
@@ -309,16 +310,76 @@ describe('[R3 · review-2476] the seller legal name typed at approval', () => {
     expect(await sellerOf(who)).toMatchObject({ sellerLegalName: 'Sample Holdings Limited', sellerLegalNameDocId: doc.id });
   });
 
-  it('[F2] an OWNER account: a company\'s certificate never carries the owner\'s own name; a business name registered under it is the reviewer\'s check', async () => {
+  // [COORD ruling under the owner's 10 Nov rule · review-2476 delta A] The store card names the business. A trader under
+  // their own name goes through the own-name declaration, never a registration paper: so an OWNER account is refused too,
+  // whatever kind of registration the paper is.
+  it('[F2 · delta A] an OWNER account: the owner\'s own name is refused on a business name registration and on a company\'s certificate', async () => {
     const who = await account('OWNER', 'Synthetic', `Trader${RUN}`);
     const doc = await pending(who, 'business_registration', 'VENDOR_OWNER');
     const asCompany = await approve(doc.id, { registrationKind: 'COMPANY', legalName: `trader${RUN} synthetic` });
     expect(asCompany.statusCode).toBe(400);
     expect(asCompany.json().error.code).toBe('LEGAL_NAME_IS_A_PERSON');
+    const asBusinessName = await approve(doc.id, { registrationKind: 'BUSINESS_NAME', certificateYear: thisYear, legalName: `Synthetic Trader${RUN}` });
+    expect(asBusinessName.statusCode).toBe(400);
+    expect(asBusinessName.json().error.code).toBe('LEGAL_NAME_IS_A_PERSON');
     expect(await statusOf(doc.id)).toBe('PENDING');
-    // [deliberate limit] the server cannot tell an owner's business name registered in their own name from a mistyped
-    // proprietor's name: the console's words and the reviewer's check stand for it (the PR names this).
-    expect((await approve(doc.id, { registrationKind: 'BUSINESS_NAME', certificateYear: thisYear, legalName: `Synthetic Trader${RUN}` })).statusCode).toBe(200);
+    expect(await sellerOf(who)).toMatchObject({ sellerLegalName: null, sellerLegalNameDocId: null });
+    // the business's registered name is accepted
+    expect((await approve(doc.id, { registrationKind: 'BUSINESS_NAME', certificateYear: thisYear, legalName: `Trader${RUN} Hardware` })).statusCode).toBe(200);
+    expect(await sellerOf(who)).toMatchObject({ sellerLegalName: `Trader${RUN} Hardware`, sellerLegalNameDocId: doc.id });
+  });
+
+  // [review-2476 delta B] Honest copying errors from a proprietor line still name the person: the name's words are compared
+  // (accents folded, apostrophes and hyphens ignored, commas and full stops as word breaks), in any order, with the
+  // middle names on record and initials allowed, as long as the first name (or its initial) and the last name are there.
+  it('[F2 · delta B] the holder\'s name is refused word by word: accents, order, commas, initials, middle names, apostrophes and hyphens', async () => {
+    const who = await account('COMPANY', 'José Antonio', `O’Brien-Holder${RUN}`);
+    const doc = await pending(who, 'certificate_of_incorporation', 'VENDOR_OWNER');
+    for (const typed of [
+      `Jose O'Brien-Holder${RUN}`,
+      `O’Brien-Holder${RUN}, José`,
+      `J. A. OBrien Holder${RUN}`,
+      `José Antonio O'Brien-Holder${RUN}`,
+      `ANTONIO O’BRIEN-HOLDER${RUN}`,
+    ]) {
+      const res = await approve(doc.id, { registrationKind: 'COMPANY', legalName: typed });
+      expect(res.statusCode, typed).toBe(400);
+      expect(res.json().error.code, typed).toBe('LEGAL_NAME_IS_A_PERSON');
+    }
+    expect(await statusOf(doc.id)).toBe('PENDING');
+    expect((await approve(doc.id, { registrationKind: 'COMPANY', legalName: `O'Brien-Holder${RUN} Trading Limited` })).statusCode).toBe(200);
+  });
+
+  it('[delta B] the word rule, case by case: a person\'s name with or without middle names and initials; never a business name', () => {
+    const person = { firstName: 'Mary Ann', lastName: 'Persaud-Singh' };
+    for (const typed of ['Mary Ann Persaud-Singh', 'persaud singh, mary', 'M. A. Persaud Singh', 'Ann PersaudSingh', 'Máry Persaud–Singh', 'MaryAnnPersaud-Singh', 'Persaud-Singh Mary Ann'])
+      expect(isPersonsFullName(typed, person), typed).toBe(true);
+    for (const typed of ['Persaud-Singh', 'Persaud-Singh Holdings Limited', 'Mary Ann’s Bakery', 'Persaud-Singh & Sons', 'Mary Ann', 'Sample Holdings Limited'])
+      expect(isPersonsFullName(typed, person), typed).toBe(false);
+    expect(isPersonsFullName('Anyone', { firstName: null, lastName: null })).toBe(false);
+  });
+
+  // [review-2476 delta B] A company's director (or a business's owner) who signed its letter of authority in Swift is a
+  // person the server knows by name: the legal name may not be theirs either.
+  it('[F2 · delta B] the name of the person who signed the account\'s letter of authority is refused too', async () => {
+    const who = await account('COMPANY', 'Synthetic', `Holder${RUN}`);
+    const now = new Date();
+    const hex = () => randomBytes(32).toString('hex');
+    await system(() => app.prisma.authorityLetterRequest.create({ data: {
+      userId: who, vendorId: `fixture-vendor-${RUN}`, docType: 'company_authority_letter', accountBasis: 'COMPANY',
+      businessName: 'Sample Holdings Limited', registrationNumber: `C-${RUN}`, requesterName: `Synthetic Holder${RUN}`, requesterRole: 'Manager',
+      signerName: `Dana Director${RUN}`, signerPhone: `+59278${NUM}88`, letterText: 'Synthetic letter text', letterSha256: hex(), tokenHash: hex(),
+      status: 'SIGNED', linkExpiresAt: new Date(now.getTime() + 3 * DAY), lastSentAt: now, codeVerifiedAt: now, signedAt: now,
+      signatureSha256: hex(), documentId: `fixture-letter-${RUN}`, pdfFileKey: `fixture/${RUN}.pdf`,
+    } }));
+    const doc = await pending(who, 'certificate_of_incorporation', 'VENDOR_OWNER');
+    for (const typed of [`Dana Director${RUN}`, `director${RUN}, DANA`, `D. Director${RUN}`]) {
+      const res = await approve(doc.id, { registrationKind: 'COMPANY', legalName: typed });
+      expect(res.statusCode, typed).toBe(400);
+      expect(res.json().error.code, typed).toBe('LEGAL_NAME_IS_A_PERSON');
+    }
+    expect(await statusOf(doc.id)).toBe('PENDING');
+    expect((await approve(doc.id, { registrationKind: 'COMPANY', legalName: 'Sample Holdings Limited' })).statusCode).toBe(200);
   });
 });
 

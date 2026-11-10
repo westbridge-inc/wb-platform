@@ -541,15 +541,43 @@ export interface DecisionFacts {
   legalName?: { vendorOwnerId: string; accountId: string; from: string | null; fromDocumentId: string | null; to: string };
 }
 
-/** [R3 · review-2476 F2] A person's full name, compared ignoring case and spaces, first+last and last+first: a seller's
- *  legal name that is one of these is the account holder's personal name, never a company's or a business's. */
-const nameKey = (s: string) => s.normalize('NFKC').toLowerCase().replace(/\s+/g, '');
+/** [R3 · review-2476 F2 · delta B] Is a typed seller legal name this PERSON's name? Compared by the name's WORDS, so honest
+ *  copying errors from a proprietor line still count: accents and compatibility forms folded (NFKD, marks removed), case
+ *  ignored, apostrophes and hyphens ignored (O'Brien = OBrien = O Brien), every other mark a word break ("Last, First").
+ *  It is the person's name when every typed word is one of their name's words (or joined parts of one, or a single-letter
+ *  initial), in any order, and it names both their first name (a first or middle name on record, or its initial) and their
+ *  whole last name; or when it is their first and last names run together. A business word ("Holdings", "Trading",
+ *  "Bakery") or an unknown name makes it not theirs. Lookalike letters from other scripts are not folded (an insider's
+ *  trick, and every typed name is on the audit trail). */
+const NAME_JOINERS = /['\u2018\u2019\u02BC`\u00B4\u2010-\u2015-]/gu;
+const foldName = (s: string) => s.normalize('NFKD').replace(/\p{M}+/gu, '').toLowerCase();
+/** The words of a typed name: joiners removed inside a word, any other mark a break. */
+const typedNameWords = (s: string) => foldName(s).replace(NAME_JOINERS, '').split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+/** A name on record: its parts (joiners and marks both break), every run of neighbouring parts joined, and the whole. */
+function recordedName(s: string | null): { parts: string[]; known: Set<string>; whole: string } {
+  const parts = foldName(s ?? '').split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+  const known = new Set<string>();
+  for (let i = 0; i < parts.length; i += 1) for (let j = i + 1; j <= parts.length; j += 1) known.add(parts.slice(i, j).join(''));
+  return { parts, known, whole: parts.join('') };
+}
 export function isPersonsFullName(typed: string, person: { firstName: string | null; lastName: string | null }): boolean {
-  const first = nameKey(person.firstName ?? '');
-  const last = nameKey(person.lastName ?? '');
-  if (!first && !last) return false;
-  const key = nameKey(typed);
-  return key === `${first}${last}` || key === `${last}${first}`;
+  const first = recordedName(person.firstName);
+  const last = recordedName(person.lastName);
+  if (!first.whole && !last.whole) return false;
+  const words = typedNameWords(typed);
+  if (words.length === 0) return false;
+  const together = words.join('');
+  if (together === first.whole + last.whole || together === last.whole + first.whole) return true;
+  const initials = new Set([...first.parts, ...last.parts].map((p) => p[0]!));
+  if (!words.every((w) => first.known.has(w) || last.known.has(w) || (w.length === 1 && initials.has(w)))) return false;
+  const namesFirst = !first.whole || words.some((w) => first.known.has(w) || (w.length === 1 && first.parts.some((p) => p[0] === w)));
+  const namesLast = !last.whole || together.includes(last.whole);
+  return namesFirst && namesLast;
+}
+/** A full name kept as one string (a letter's signer): its last word is taken as the last name. */
+export function splitFullName(full: string): { firstName: string; lastName: string } {
+  const words = full.trim().split(/\s+/).filter(Boolean);
+  return { firstName: words.slice(0, -1).join(' '), lastName: words[words.length - 1] ?? '' };
 }
 
 /** [S2-29] The one command an approval's outbox row carries: the work that must follow the
@@ -1222,20 +1250,20 @@ export class VerificationService {
         throw new AppError(400, 'LEGAL_NAME_REQUIRED',
           'Type the business’s or company’s registered name exactly as it is printed on this paper. Customers see it as the seller.');
       }
-      // [R3 · owner ruling 10 Nov 2026 · review-2476 F2] The seller is the business: a legal name that is the account
-      // holder's own full name is refused for a company's or a manager's account (their seller is never a person), and
-      // for any account on a company's certificate of incorporation (a company's name is never a person's bare name).
-      // An OWNER's business-name registration may register the business under the owner's own name: the server cannot
-      // tell that from a mistyped proprietor's name, so the reviewer's check stands for it.
+      // [R3 · owner ruling 10 Nov 2026 · review-2476 F2 · COORD ruling (delta A)] The seller is the business: a legal name
+      // that is a person's own name is refused for EVERY account. A trader under their own name is named through the
+      // own-name declaration, never a registration paper. The people the server knows by name: the account holder, and
+      // [delta B] whoever the account named in a letter of authority (a company's director, a business's owner).
       const typedName = typed.legalName?.trim();
       if (REGISTRATION_DOC_TYPES.includes(candidate.docType) && typedName) {
-        const holder = await this.prisma.user.findUnique({
-          where: { id: candidate.userId }, select: { firstName: true, lastName: true, vendorOwner: { select: { accountBasis: true } } },
-        });
-        const basis = holder?.vendorOwner?.accountBasis ?? 'OWNER';
-        if (holder && isPersonsFullName(typedName, holder) && (basis !== 'OWNER' || typed.registrationKind === 'COMPANY')) {
+        const [holder, letters] = await Promise.all([
+          this.prisma.user.findUnique({ where: { id: candidate.userId }, select: { firstName: true, lastName: true } }),
+          this.prisma.authorityLetterRequest.findMany({ where: { userId: candidate.userId }, select: { signerName: true } }),
+        ]);
+        const people = [...(holder ? [holder] : []), ...letters.map((l) => splitFullName(l.signerName))];
+        if (people.some((person) => isPersonsFullName(typedName, person))) {
           throw new AppError(400, 'LEGAL_NAME_IS_A_PERSON',
-            'That is the account holder’s own name. Type the registered business or company name printed on this paper: never the proprietor’s, a director’s or the account holder’s personal name.');
+            'That is a person’s name (the account holder’s, or the person who signed its letter of authority). Type the registered business or company name printed on this paper: never the proprietor’s, a director’s or the account holder’s personal name.');
         }
       }
     }
