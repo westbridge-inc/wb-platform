@@ -4,7 +4,7 @@ import { use, useState } from 'react';
 import Link from 'next/link';
 import { ArrowLeft } from 'lucide-react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { fetchVendorDetail, fetchVendorActivationChecklist, approveVendor, confirmSellerName, changeStoreName, changeStoreType, suspendVendor, featureVendor, revokeStoreVat, revealVendorPartyPhone, setChainDeal, setChainBrand, setBranchListedAlone, changeChainDeal, withdrawChainDealChange, fetchVendorChain, type ChainDealOutcome, type DealChangeOutcome, type VendorActivationChecklist } from '@/lib/api';
+import { fetchVendorDetail, fetchVendorActivationChecklist, approveVendor, activateVendor, confirmSellerName, changeStoreName, changeStoreType, suspendVendor, featureVendor, revokeStoreVat, revealVendorPartyPhone, setChainDeal, setChainBrand, setBranchListedAlone, changeChainDeal, withdrawChainDealChange, fetchVendorChain, type ChainDealOutcome, type DealChangeOutcome, type VendorActivationChecklist } from '@/lib/api';
 import { label, ratingText, type Tone } from '@/lib/labels';
 import { JUDGED_FIELD_WORDS, PROHIBITED_CLASS_LABELS } from '@/lib/prohibited-items';
 import type { ProhibitedClass } from '@/lib/api';
@@ -225,7 +225,7 @@ export default function VendorDetailPage({ params }: { params: Promise<{ id: str
     confirmLabel: 'Activate store',
     reason: { hint: 'Kept on the permanent record; not sent to the owner.' },
     context,
-    submit: ({ reason }) => approveVendor(id, reason, v.name.trim()),
+    submit: ({ reason }) => activateVendor(id, v.name.trim(), reason),
     success: () => `${v.name} is live and can take orders.`,
   }));
 
