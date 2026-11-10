@@ -66,12 +66,16 @@ async function makeUser(roles: UserRole[], activeRole: UserRole, extra: Record<s
 }
 
 /** An online delivery rider `meters` north of a point. busy = no room (a live leg, not available). */
-async function makeRider(at: { lat: number; lng: number }, meters: number, opts: { busy?: boolean; vendorId?: string } = {}) {
+async function makeRider(
+  at: { lat: number; lng: number }, meters: number,
+  opts: { busy?: boolean; vendorId?: string; floatLimit?: number; committedFloat?: number; offline?: boolean } = {},
+) {
   const u = await makeUser(['RIDER', 'CUSTOMER'], 'RIDER');
   const rider = await sys(() => app.prisma.rider.create({
     data: {
       userId: u.userId, riderType: 'DELIVERY', vehicleType: 'MOTORCYCLE', documentsVerified: true,
-      floatLimit: 1_000_000, isOnline: true, isAvailable: !opts.busy, locationSessionId: u.sessionId,
+      floatLimit: opts.floatLimit ?? 1_000_000, committedFloat: opts.committedFloat ?? 0,
+      isOnline: !opts.offline, isAvailable: !opts.busy, locationSessionId: u.sessionId,
       currentLat: at.lat + meters / 111_000, currentLng: at.lng, lastLocationUpdate: new Date(), acceptanceRate: 50,
     },
   }));
@@ -83,7 +87,7 @@ async function makeRider(at: { lat: number; lng: number }, meters: number, opts:
   return { ...u, riderId: rider.id };
 }
 
-async function makeStore(at: { lat: number; lng: number }, name: string) {
+async function makeStore(at: { lat: number; lng: number }, name: string, opts: { mmgNumber?: string; bigPrice?: number } = {}) {
   const owner = await makeUser(['VENDOR_OWNER'], 'VENDOR_OWNER');
   const ids = await sys(async () => {
     const vo = await app.prisma.vendorOwner.create({ data: { userId: owner.userId } });
@@ -92,11 +96,13 @@ async function makeStore(at: { lat: number; lng: number }, name: string) {
         ownerId: vo.id, name, slug: `rs-${nanoid(8).toLowerCase()}`, vendorType: 'RESTAURANT', phone: '+5926990000',
         addressLine1: '1 Savannah Road', city: 'Aishalton', region: 'Upper Takutu', latitude: at.lat, longitude: at.lng,
         status: 'ACTIVE', acceptingOrders: true, isCurrentlyOpen: true, isVerified: true, minOrderAmount: 0,
+        ...(opts.mmgNumber ? { mmgNumber: opts.mmgNumber } : {}),
       },
     });
     const cat = await app.prisma.category.create({ data: { vendorId: vendor.id, name: 'Menu', sortOrder: 0 } });
     const item = await app.prisma.item.create({ data: { vendorId: vendor.id, categoryId: cat.id, name: 'Rice plate', basePrice: 2000, isAvailable: true } });
-    return { vendorId: vendor.id, itemId: item.id };
+    const big = await app.prisma.item.create({ data: { vendorId: vendor.id, categoryId: cat.id, name: 'Party tray', basePrice: opts.bigPrice ?? 9000, isAvailable: true } });
+    return { vendorId: vendor.id, itemId: item.id, bigItemId: big.id };
   });
   vendorIds.push(ids.vendorId);
   return { ...ids, owner };
@@ -330,6 +336,124 @@ describe('[RIDER-SAFE 1/2] checkout: BUSY is taken with the wait in the promise;
       .toMatchObject({ level: 'NONE', reason: 'NO_RIDERS', gate: false });
     const placed = await call('POST', '/api/v1/customer/checkout', c.token, { paymentMethod: 'CASH' });
     expect(placed.statusCode, placed.body).toBe(200);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// [RIDE-03 · staging journeys 10 Nov 2026] A CASH delivery whose store cash is
+// more than ANY rider near can carry (owner 7 Nov: GY$100,000 at every level)
+// is refused at checkout BEFORE it is placed, with the alternatives that work
+// (MMG to the store when it takes MMG; pickup). Before this, riders who could
+// never carry it counted as "busy", so checkout said BUSY and placed an order
+// no rider could ever take. The limit here is L = 8,000 (staging's level-1).
+// ---------------------------------------------------------------------------
+const LIMIT = 8_000;
+const STORE_MMG = '+5926001234';
+
+describe('[RIDE-03] the decision: riders near who can never carry the cash are not supply', () => {
+  const base = { legMinutes: 25, maxWaitMinutes: 30 };
+  it('riders near but none whose cash limit covers it is NONE (CASH_OVER_RIDER_LIMIT), not BUSY', () => {
+    expect(decideCapacity({ ...base, free: 0, stackable: 0, ridersNear: 4, backlog: 0, cashCapable: 0 }))
+      .toEqual({ level: 'NONE', reason: 'CASH_OVER_RIDER_LIMIT', riderWaitMinutes: 0 });
+  });
+  it('unchanged when a rider can carry it, or when there is no cash to carry', () => {
+    expect(decideCapacity({ ...base, free: 0, stackable: 0, ridersNear: 4, backlog: 0, cashCapable: 1 }))
+      .toEqual({ level: 'BUSY', reason: null, riderWaitMinutes: 5 });
+    expect(decideCapacity({ ...base, free: 0, stackable: 0, ridersNear: 4, backlog: 0 }))
+      .toEqual({ level: 'BUSY', reason: null, riderWaitMinutes: 5 });
+    expect(decideCapacity({ ...base, free: 1, stackable: 0, ridersNear: 4, backlog: 0, cashCapable: 0 }))
+      .toEqual({ level: 'GOOD', reason: null, riderWaitMinutes: 0 });
+    expect(decideCapacity({ ...base, free: 0, stackable: 0, ridersNear: 0, backlog: 0, cashCapable: 0 }))
+      .toEqual({ level: 'NONE', reason: 'NO_RIDERS', riderWaitMinutes: 0 });
+  });
+});
+
+describe('[RIDE-03] checkout: a cash delivery no rider near can carry is refused before it is placed', () => {
+  it('4 idle riders at limit L: cash > L refused (MMG + pickup offered); cash <= L, MMG > L and pickup > L are placed', async () => {
+    const at = cell(15);
+    const store = await makeStore(at, 'Big Tray Kitchen', { mmgNumber: STORE_MMG, bigPrice: LIMIT + 1_000 });
+    for (const m of [100, 200, 300, 400]) await makeRider(at, m, { floatLimit: LIMIT });
+    process.env['DISPATCH_AVAILABILITY'] = '1';
+
+    const probe = { tenantId: 'swift-default', store: { id: store.vendorId, ...at }, orderType: 'FOOD_DELIVERY', dropoff: { lat: at.lat + 0.004, lng: at.lng }, packageSize: 'SMALL', loadBand: 'SMALL' };
+    expect(await sys(() => dispatch.getDeliveryCapacity({ ...probe, floatRequired: LIMIT + 1_000, cashToCollect: LIMIT + 1_000 })))
+      .toMatchObject({ level: 'NONE', reason: 'CASH_OVER_RIDER_LIMIT' });
+    expect(await sys(() => dispatch.getDeliveryCapacity({ ...probe, floatRequired: LIMIT, cashToCollect: LIMIT })))
+      .toMatchObject({ level: 'GOOD' });
+
+    // Cash over every rider's limit: the cart says so first, then checkout refuses and nothing is placed.
+    const over = await customerAt(at);
+    await addToCart(over, store.vendorId, store.bigItemId);
+    await clearAvailabilityCache(store.vendorId);
+    const shown = await call('GET', `/api/v1/customer/delivery-availability?vendorId=${store.vendorId}&paymentMethod=CASH`, over.token);
+    expect(shown.statusCode, shown.body).toBe(200);
+    expect(shown.json().data).toMatchObject({ level: 'NONE', reason: 'CASH_OVER_RIDER_LIMIT', extraMinutes: null, gate: true });
+    expect(shown.json().data.message).toMatch(/MMG/);
+    expect(shown.json().data.message).toMatch(/Pickup/);
+    expect(shown.body).not.toMatch(/8,000|8000|ridersNear|floatLimit/);
+
+    const refused = await call('POST', '/api/v1/customer/checkout', over.token, { paymentMethod: 'CASH' });
+    expect(refused.statusCode, refused.body).toBe(409);
+    expect(refused.json().error).toMatchObject({ code: 'DELIVERY_NO_RIDERS', details: { reason: 'CASH_OVER_RIDER_LIMIT' } });
+    expect(refused.json().error.message).toContain('Big Tray Kitchen by MMG');
+    expect(refused.json().error.message).toContain('Pickup');
+    expect(refused.json().error.message).not.toMatch(/8,000|8000/);
+    expect(await sys(() => app.prisma.order.count({ where: { customerId: over.userId } }))).toBe(0);
+
+    // The same basket paid to the store by MMG: no cash to carry, placed.
+    const mmg = await call('POST', '/api/v1/customer/checkout', over.token, { paymentMethod: 'MOBILE_MONEY', mmgPayTo: 'STORE_NUMBER' }, { 'idempotency-key': `rs-${nanoid(10)}` });
+    expect(mmg.statusCode, mmg.body).toBe(200);
+
+    // The same cash basket for pickup: placed.
+    const pick = await customerAt(at);
+    await addToCart(pick, store.vendorId, store.bigItemId);
+    const pickup = await call('POST', '/api/v1/customer/checkout', pick.token, { paymentMethod: 'CASH', fulfillmentSelections: { [store.vendorId]: 'PICKUP' } });
+    expect(pickup.statusCode, pickup.body).toBe(200);
+
+    // A cash basket the riders CAN carry (<= L): placed, exactly as before.
+    const small = await customerAt(at);
+    await addToCart(small, store.vendorId, store.itemId);
+    const placed = await call('POST', '/api/v1/customer/checkout', small.token, { paymentMethod: 'CASH' });
+    expect(placed.statusCode, placed.body).toBe(200);
+  });
+
+  it('a store without MMG offers pickup only; a rider whose limit covers it but whose cash is out now is BUSY, not refused', async () => {
+    const at = cell(16);
+    const store = await makeStore(at, 'No MMG Kitchen', { bigPrice: LIMIT + 1_000 });
+    for (const m of [100, 200, 300, 400]) await makeRider(at, m, { floatLimit: LIMIT });
+    process.env['DISPATCH_AVAILABILITY'] = '1';
+
+    const c = await customerAt(at);
+    await addToCart(c, store.vendorId, store.bigItemId);
+    const refused = await call('POST', '/api/v1/customer/checkout', c.token, { paymentMethod: 'CASH' });
+    expect(refused.statusCode, refused.body).toBe(409);
+    expect(refused.json().error).toMatchObject({ code: 'DELIVERY_NO_RIDERS', details: { reason: 'CASH_OVER_RIDER_LIMIT' } });
+    expect(refused.json().error.message).toContain('Pickup');
+    expect(refused.json().error.message).not.toContain('MMG');
+
+    // One rider whose limit (100,000) covers it, but who has 95,000 out right now: their cash comes back when they
+    // finish, so they are busy supply (the BUSY wait), never a refusal.
+    await makeRider(at, 500, { floatLimit: 100_000, committedFloat: 95_000 });
+    const busy = await call('POST', '/api/v1/customer/checkout', c.token, { paymentMethod: 'CASH' });
+    expect(busy.statusCode, busy.body).toBe(200);
+  });
+
+  it('a rider who could carry it but is offline is not supply: the existing "no riders" words when none at all are online', async () => {
+    const at = cell(17);
+    const store = await makeStore(at, 'Offline Kitchen', { mmgNumber: STORE_MMG, bigPrice: LIMIT + 1_000 });
+    await makeRider(at, 100, { floatLimit: 100_000, offline: true });
+    process.env['DISPATCH_AVAILABILITY'] = '1';
+    const c = await customerAt(at);
+    await addToCart(c, store.vendorId, store.bigItemId);
+    const none = await call('POST', '/api/v1/customer/checkout', c.token, { paymentMethod: 'CASH' });
+    expect(none.statusCode, none.body).toBe(409);
+    expect(none.json().error).toMatchObject({ code: 'DELIVERY_NO_RIDERS', details: { reason: 'NO_RIDERS' } });
+
+    // Riders online at the lower limit: now the reason is the cash, not "no riders".
+    await makeRider(at, 200, { floatLimit: LIMIT });
+    const cash = await call('POST', '/api/v1/customer/checkout', c.token, { paymentMethod: 'CASH' });
+    expect(cash.statusCode, cash.body).toBe(409);
+    expect(cash.json().error).toMatchObject({ details: { reason: 'CASH_OVER_RIDER_LIMIT' } });
   });
 });
 

@@ -1301,7 +1301,13 @@ export class OrderService {
                 const anyone = await this.riderAvailability(storePoint, cashFloat).catch(() => null);
                 if (anyone && anyone.level !== 'NONE') throw tooBig();
               }
-              throw new AppError(409, 'DELIVERY_NO_RIDERS', capacitySentence(capacity)!, { reason: capacity.reason ?? 'NO_RIDERS' });
+              // [RIDE-03] No rider near may carry this much store cash: refused before anything is placed, with what
+              // works instead — the store's MMG (one store per MMG checkout; no cash to carry), or pickup.
+              const mmg = groups.length === 1 && safeMmgNumber(vendor.mmgNumber) !== null;
+              throw new AppError(409, 'DELIVERY_NO_RIDERS', capacitySentence(capacity, { storeName: vendor.name, mmg })!, {
+                reason: capacity.reason ?? 'NO_RIDERS',
+                ...(capacity.reason === 'CASH_OVER_RIDER_LIMIT' ? { alternatives: mmg ? ['MOBILE_MONEY', 'PICKUP'] : ['PICKUP'] } : {}),
+              });
             }
             if (capacity.level === 'BUSY') riderWaitByVendor.set(vendor.id, capacity.riderWaitMinutes * 60);
           } else {
