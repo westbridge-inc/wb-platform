@@ -82,7 +82,7 @@ export class RatingService {
         estimatedPrepTime: true,
         rider: { select: { userId: true } },
         driver: { select: { userId: true } },
-        vendor: { select: { owner: { select: { userId: true } } } },
+        vendor: { select: { ownerId: true, owner: { select: { userId: true } } } },
       },
     });
 
@@ -141,6 +141,24 @@ export class RatingService {
     }
     if (subject.rateeId !== undefined && (subject.rateeId == null || input.rateeId !== subject.rateeId)) {
       throw new AppError(400, 'WRONG_SUBJECT', 'The rating names a party that was not on this order');
+    }
+
+    // [RATINGS-OWN-STORE] The matrix names the ORDER's customer, so a person who is on both ends
+    // of one order passed it: the store's owner (or a member of its team, at this branch or
+    // another of the same owner) ordering from it as a customer filed a review of their own
+    // store, and a customer who was also the mover rated themselves. Both are self-ratings —
+    // refused by name, before anything is written.
+    if (input.rateeId != null && input.rateeId === input.raterId) {
+      throw new AppError(403, 'SELF_RATING', 'You can’t rate yourself');
+    }
+    if (input.type === 'CUSTOMER_TO_VENDOR' && order.vendor) {
+      const ownTeam = providerUserId === input.raterId || (await this.prisma.vendorStaff.findFirst({
+        where: { userId: input.raterId, vendor: { ownerId: order.vendor.ownerId } },
+        select: { id: true },
+      })) != null;
+      if (ownTeam) {
+        throw new AppError(403, 'OWN_STORE', 'You can’t review a store you own or work at');
+      }
     }
 
     // Prevent duplicate ratings
