@@ -2,7 +2,7 @@ import { assertPlacesConfig } from '../providers/places/places-config';
 import { runtimeMode } from './runtime-mode';
 import { malformedAllowlistPositions } from '../providers/notifications/sms-recipient-allowlist';
 import { firstInvalidTwilioConfig } from './twilio-identity';
-import { PUBLIC_API_HOSTS, assertProductionCardSwitches, cardRailKilled, cardRailV2Enabled } from './card-rail';
+import { PUBLIC_API_HOSTS, assertProductionCardSwitches } from './card-rail';
 import { powerTranzConfigFromEnv } from '../providers/card/powertranz-provider';
 import { testControlEnabled } from '../modules/ops/test-control';
 import { assertMmgCheckoutConfig } from '../providers/mmg/mmg-checkout';
@@ -133,20 +133,24 @@ function powerTranzSetupRefusal(err: unknown): string {
 }
 
 /**
- * [CARDS-SWITCH-ON · staging card test, 10 Nov 2026] Every mode but
- * production (production holds the stricter PT-4 check, for any kill switch):
- * card rail v2 on PowerTranz with the kill switch OFF means card payments are
- * meant to work here, so the provider's whole setup must read now — the
- * credentials from the store included — or the server refuses to start,
- * rather than run with a card button that can only fail. Killed (no new card
- * payment can start) or v2 off, nothing is asked.
+ * [CARD-STAGING-TEST · CARDS-SWITCH-ON, 10 Nov 2026] Called for every mode but production (production refuses the same,
+ * worded for live cards, in assertSafeBootConfig's PT-4 check, for any kill switch): card rail v2 on (or draining) with
+ * the real provider needs the provider's settings READABLE by this process — its credentials from the store
+ * (POWERTRANZ_ID_FILE / POWERTRANZ_PASSWORD_FILE lines in deploy/.env), the hosted page set with its PTZ/ prefix and
+ * name, the account label and public address. Staging ran with the credentials missing from deploy/.env: the app
+ * started, offered card payment, and every page failed. Read by the very function the card provider is built with
+ * (powerTranzConfigFromEnv), after the secret files were loaded, so what boots is what pays. Asked even with the kill
+ * switch on: a killed rail still confirms, sweeps, looks up, voids and refunds what is in flight, and all of that needs
+ * the provider. The message names settings, never a value; a credential refusal names the store wiring
+ * (powerTranzSetupRefusal, shared with production's).
  */
 export function assertCardRailProviderReadable(env: Record<string, string | undefined>): void {
-  if (!cardRailV2Enabled(env) || env['CARD_RAIL_PROVIDER'] !== 'powertranz' || cardRailKilled(env)) return;
+  const which = env['CARD_RAIL_V2'] === '1' ? 'CARD_RAIL_V2=1' : env['CARD_RAIL_V2_DRAIN'] === '1' ? 'CARD_RAIL_V2_DRAIN=1' : null;
+  if (!which || env['CARD_RAIL_PROVIDER'] !== 'powertranz') return;
   try {
     powerTranzConfigFromEnv(env);
   } catch (err) {
-    throw new Error(`FATAL: CARD_RAIL_V2=1 with CARD_RAIL_PROVIDER=powertranz and the kill switch off, but the card provider cannot be set up: ${powerTranzSetupRefusal(err)}. Refusing to start.`);
+    throw new Error(`FATAL: ${which} with CARD_RAIL_PROVIDER=powertranz, but this server cannot read the card provider's settings: ${powerTranzSetupRefusal(err)}. Refusing to start.`);
   }
 }
 

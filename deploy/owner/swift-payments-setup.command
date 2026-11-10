@@ -3,7 +3,10 @@
 # Swift — set up the payment providers on a staging or production server, then
 # check them. For the owner. Double-click it (it opens in Terminal), or run:
 #
-#   swift-payments-setup.command [swift-deploy@host] [path/to/ssh-key] [card|mmg|both]
+#   swift-payments-setup.command [swift-deploy@host] [path/to/ssh-key] [card|mmg|both|check]
+#
+# (`check` asks for nothing: it only checks the RUNNING app, e.g. after the
+# coordinator added the settings lines to deploy/.env and recreated the app.)
 #
 # It asks for exactly these, by provider, and nothing else:
 #   card  (the card provider, PowerTranz)
@@ -25,6 +28,15 @@
 # Then the server checks what was entered and prints only OK / FAIL lines
 # (dist/boot/payments-self-check.js in a one-off API container): never a value
 # and never a provider's answer. The check moves no money.
+#
+# [CARD-STAGING-TEST 10 Nov 2026] It then runs the SAME self-check INSIDE the
+# RUNNING API container, with exactly the app's own settings and secret files
+# (the app reads only deploy/.env, never this run's answers). Staging once
+# printed OK for the entered values while the running app could not read the
+# credentials (its deploy/.env lacked the POWERTRANZ_*_FILE lines) and its page
+# set lacked PowerTranz's PTZ/ prefix: both now print FAIL. Until the settings
+# lines below are in the server's deploy/.env and the app is recreated, the
+# running check FAILS — that is expected, and says what is still to do.
 #
 # Card payments stay OFF: this tool never switches anything on and never
 # restarts the running app. Switching cards on is the owner's "go", done with
@@ -48,8 +60,8 @@ if [ -z "$target" ]; then IFS= read -r -p "Deploy target (swift-deploy@host): " 
 if [ -z "$key" ]; then IFS= read -r -p "SSH private key path: " key; fi
 key="${key/#\~/$HOME}"
 [ -r "$key" ] || die "cannot read the SSH key at $key"
-if [ -z "$which" ]; then IFS= read -r -p "Set up which payments? card, mmg or both: " which; fi
-case "$which" in card|mmg|both) ;; *) die "answer card, mmg or both" ;; esac
+if [ -z "$which" ]; then IFS= read -r -p "Set up which payments? card, mmg or both (or check: only check the running app): " which; fi
+case "$which" in card|mmg|both|check) ;; *) die "answer card, mmg, both or check" ;; esac
 
 SSH=(ssh -i "$key" -o IdentitiesOnly=yes -o PasswordAuthentication=no -o KbdInteractiveAuthentication=no -o ConnectTimeout=20 "$target")
 
@@ -125,7 +137,9 @@ if [ "$which" = card ] || [ "$which" = both ]; then
   if [ "$env_choice" = live ]; then say "Live cards are accepted only by the PRODUCTION server: any other server answers FAIL and refuses to start with them."; fi
   account="$(ask_setting "A short label for this merchant account (letters, digits . _ -), e.g. swift-gy" '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$')"
   public_url="$(ask_setting "This server's own public API address (https://... with no path)" '^https://[A-Za-z0-9.-]+$')"
-  page_set="$(ask_setting "Hosted payment page SET (pages made in the merchant portal start with PTZ/)" '^[A-Za-z0-9 _./-]{1,50}$')"
+  # PowerTranz's hosted page guide: a portal page set MUST be sent with the PTZ/ prefix (without it: error 757,
+  # "Hosted page not found"). The portal's set SWIFT is typed PTZ/SWIFT. The server refuses a set without it.
+  page_set="$(ask_setting "Hosted payment page SET, with PowerTranz's PTZ/ prefix (the portal's set SWIFT is PTZ/SWIFT)" '^PTZ/[A-Za-z0-9_.-][A-Za-z0-9 _./-]{0,45}$')"
   page_name="$(ask_setting "Hosted payment page NAME" '^[A-Za-z0-9 _./-]{1,50}$')"
   api_url=""
   if [ "$env_choice" = live ]; then
@@ -169,27 +183,62 @@ if [ "$which" = mmg ] || [ "$which" = both ]; then
   PARTS+=(mmg)
 fi
 
-# The check, on the server: the store is decrypted onto tmpfs, then a ONE-OFF
-# API container (never the running app) reads it and prints OK / FAIL lines.
-remote="cd $(printf '%q' "$SWIFT_DIR") && sudo -n systemctl restart swift-secrets.service && docker compose --project-directory deploy -f deploy/docker-compose.yml run --rm --no-deps"
-for arg in "${CHECK_ENV[@]}"; do remote+=" $(printf '%q' "$arg")"; done
-remote+=" api node dist/boot/payments-self-check.js ${PARTS[*]}"
+if [ "$which" = check ]; then
+  IFS= read -r -p "Check which payments in the running app? card, mmg or both: " which_check || die "no input"
+  case "$which_check" in card) PARTS=(card) ;; mmg) PARTS=(mmg) ;; both) PARTS=(card mmg) ;; *) die "answer card, mmg or both" ;; esac
+fi
 
-say ""
-say "Checking on the server (OK / FAIL only; nothing is charged)..."
-set +e
-answer="$("${SSH[@]}" -n "$remote" </dev/null 2>/dev/null)"
-status=$?
-set -e
-lines="$(printf '%s\n' "$answer" | grep -E '^(OK  |FAIL) ' || true)"
-unset answer
-if [ -n "$lines" ]; then printf '%s\n' "$lines"; fi
+# run_check REMOTE — runs a self-check on the server; prints its OK / FAIL lines only; CHECK_STATUS / CHECK_LINES say how it went.
+run_check() {
+  local answer
+  set +e
+  answer="$("${SSH[@]}" -n "$1" </dev/null 2>/dev/null)"
+  CHECK_STATUS=$?
+  set -e
+  CHECK_LINES="$(printf '%s\n' "$answer" | grep -E '^(OK  |FAIL) ' || true)"
+  unset answer
+  if [ -n "$CHECK_LINES" ]; then printf '%s\n' "$CHECK_LINES"; fi
+  return 0
+}
 
+status=0
+lines=""
+if [ "$which" != check ]; then
+  # The check, on the server: the store is decrypted onto tmpfs, then a ONE-OFF
+  # API container (never the running app) reads it and prints OK / FAIL lines.
+  remote="cd $(printf '%q' "$SWIFT_DIR") && sudo -n systemctl restart swift-secrets.service && docker compose --project-directory deploy -f deploy/docker-compose.yml run --rm --no-deps"
+  for arg in "${CHECK_ENV[@]}"; do remote+=" $(printf '%q' "$arg")"; done
+  remote+=" api node dist/boot/payments-self-check.js ${PARTS[*]}"
+
+  say ""
+  say "Checking the values you entered, on the server (OK / FAIL only; nothing is charged)..."
+  run_check "$remote"
+  status=$CHECK_STATUS
+  lines=$CHECK_LINES
+fi
+
+# The same self-check INSIDE the running API container: the app's own settings and secret files, exactly as it
+# reads them (never this run's answers). Read-only for the app: it is not restarted and nothing is switched on.
+running="cd $(printf '%q' "$SWIFT_DIR") && docker compose --project-directory deploy -f deploy/docker-compose.yml exec -T api node dist/boot/payments-self-check.js ${PARTS[*]}"
 say ""
-say "Send these settings lines to the coordinator for the server's deploy/.env (no secrets in them):"
-for line in "${ENV_LINES[@]}"; do say "  $line"; done
+say "Checking what the RUNNING app uses (its deploy/.env and secret files; OK / FAIL only; nothing is charged)..."
+run_check "$running"
+running_status=$CHECK_STATUS
+running_lines=$CHECK_LINES
+
+if [ "$which" != check ]; then
+  say ""
+  say "Send these settings lines to the coordinator for the server's deploy/.env (no secrets in them):"
+  for line in "${ENV_LINES[@]}"; do say "  $line"; done
+fi
 say "Card payments stay OFF until your go: the coordinator switches them on with you."
-if [ "$status" -eq 0 ]; then say "All checks passed."
-elif [ -z "$lines" ]; then say "The check could not run on the server (no OK / FAIL lines came back). Nothing was shown; tell the coordinator."
-else say "Some checks did not pass: see the FAIL lines above."; fi
-exit "$status"
+if [ "$which" != check ]; then
+  if [ "$status" -eq 0 ]; then say "The values you entered: all checks passed."
+  elif [ -z "$lines" ]; then say "The values you entered: the check could not run on the server (no OK / FAIL lines came back). Nothing was shown; tell the coordinator."
+  else say "The values you entered: some checks did not pass, see the FAIL lines above."; fi
+fi
+if [ "$running_status" -eq 0 ]; then say "The running app: all checks passed."
+elif [ -z "$running_lines" ]; then say "The running app: the check could not run (is the API running? no OK / FAIL lines came back). Nothing was shown; tell the coordinator."
+else say "The running app: NOT ready, see its FAIL lines above. It does not use these settings yet: the coordinator adds the lines to deploy/.env and recreates the app, then run this tool with: check"; fi
+if [ "$status" -ne 0 ]; then exit "$status"; fi
+exit "$running_status"

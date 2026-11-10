@@ -393,7 +393,7 @@ describe('[PROD-PATH] pilot-up.sh: a real production target', () => {
   const CARDS_ON = {
     CARD_RAIL_KILL: '0', CARD_RAIL_V2: '1', CARD_RAIL_V2_DRAIN: '0', CARD_RAIL_ENROLL: '0',
     CARD_RAIL_PROVIDER: 'powertranz', CARD_RAIL_ENVIRONMENT: 'live', CARD_RAIL_ACCOUNT: 'swift-gy-live',
-    POWERTRANZ_API_URL: 'https://gateway.ptranz.com', POWERTRANZ_PAGE_SET: 'SWIFT', POWERTRANZ_PAGE_NAME: 'WeeklyFee',
+    POWERTRANZ_API_URL: 'https://gateway.ptranz.com', POWERTRANZ_PAGE_SET: 'PTZ/SWIFT', POWERTRANZ_PAGE_NAME: 'WeeklyFee',
     POWERTRANZ_ID_FILE: '/run/secrets/POWERTRANZ_ID', POWERTRANZ_PASSWORD_FILE: '/run/secrets/POWERTRANZ_PASSWORD',
   };
   const CARD_STORE = [...STORE, 'POWERTRANZ_ID', 'POWERTRANZ_PASSWORD'].join(' ');
@@ -458,6 +458,11 @@ describe('[PROD-PATH] pilot-up.sh: a real production target', () => {
       [{ ...CARDS_ON, POWERTRANZ_ID_FILE: '/tmp/POWERTRANZ_ID' }, 'with CARD_RAIL_V2=1 needs POWERTRANZ_ID_FILE=/run/secrets/POWERTRANZ_ID and POWERTRANZ_PASSWORD_FILE=/run/secrets/POWERTRANZ_PASSWORD'],
       [{ ...CARDS_ON, CARD_RAIL_KILL: '1', POWERTRANZ_PASSWORD_FILE: undefined }, 'with CARD_RAIL_V2=1 needs POWERTRANZ_ID_FILE=/run/secrets/POWERTRANZ_ID and POWERTRANZ_PASSWORD_FILE=/run/secrets/POWERTRANZ_PASSWORD'],
       [{ ...CARDS_ON, POWERTRANZ_API_URL: undefined }, 'with CARD_RAIL_V2=1 needs POWERTRANZ_API_URL'],
+      // [Review #2466-B F2] The page set carries PowerTranz's PTZ/ prefix, or the new boot refuses it after the swap.
+      [{ ...CARDS_ON, POWERTRANZ_PAGE_SET: 'SWIFT' }, 'with CARD_RAIL_V2=1 needs POWERTRANZ_PAGE_SET=PTZ/<set>'],
+      [{ ...CARDS_ON, POWERTRANZ_PAGE_SET: 'PTZ/' }, 'with CARD_RAIL_V2=1 needs POWERTRANZ_PAGE_SET=PTZ/<set>'],
+      [{ ...CARDS_ON, POWERTRANZ_PAGE_SET: undefined }, 'with CARD_RAIL_V2=1 needs POWERTRANZ_PAGE_SET=PTZ/<set>'],
+      [{ ...CARDS_ON, CARD_RAIL_KILL: '1', POWERTRANZ_PAGE_SET: 'ptz/SWIFT' }, 'with CARD_RAIL_V2=1 needs POWERTRANZ_PAGE_SET=PTZ/<set>'],
     ];
     for (const args of everyMode) {
       for (const [over, refusal] of cases) {
@@ -525,33 +530,47 @@ describe('[PROD-PATH] pilot-up.sh: a real production target', () => {
     expect(r.stdout).toContain(`STAGING READY at exact SHA ${SHA}`);
   });
 
-  // [CARDS-SWITCH-ON · staging card test, 10 Nov 2026] Staging ran v2 on PowerTranz with the kill switch off
-  // and NO POWERTRANZ_ID_FILE / POWERTRANZ_PASSWORD_FILE lines in deploy/.env: the API and the worker could not
-  // read the credentials, so cards could not work, and nothing said so. Any server now refuses that deploy
-  // before anything changes (the API refuses to boot the same way: boot-config.test.ts).
-  it('[CARDS-SWITCH-ON] any server with v2 on PowerTranz and the kill switch off refuses to deploy without the credentials wired from the store, before anything changes', () => {
-    const sandboxOn = { PAYMENT_PROVIDER: 'disabled', CARD_RAIL_KILL: '0', CARD_RAIL_V2: '1', CARD_RAIL_PROVIDER: 'powertranz', CARD_RAIL_ENVIRONMENT: 'sandbox' };
+  // [CARDS-SWITCH-ON · staging card test, 10 Nov 2026] Staging ran v2 on PowerTranz with NO POWERTRANZ_ID_FILE /
+  // POWERTRANZ_PASSWORD_FILE lines in deploy/.env: the API and the worker could not read the credentials, so cards
+  // could not work, and nothing said so. [Review #2466-B F2] Any server with v2 or its drain on PowerTranz — WHATEVER
+  // THE KILL SWITCH (a killed rail still confirms, looks up, voids and refunds through the provider) — now refuses
+  // that deploy, and a page set without PowerTranz's PTZ/ prefix, before anything changes: the API refuses to boot
+  // the same way (boot-config.test.ts), and api and worker would otherwise crash-loop after the swap.
+  it('[CARDS-SWITCH-ON] any server with v2 or its drain on PowerTranz, whatever the kill switch, refuses to deploy without the credentials wired from the store or the PTZ/ page set, before anything changes', () => {
+    const sandboxOn = { PAYMENT_PROVIDER: 'disabled', CARD_RAIL_KILL: '0', CARD_RAIL_V2: '1', CARD_RAIL_PROVIDER: 'powertranz', CARD_RAIL_ENVIRONMENT: 'sandbox', POWERTRANZ_PAGE_SET: 'PTZ/SWIFT' };
     const wired = { POWERTRANZ_ID_FILE: '/run/secrets/POWERTRANZ_ID', POWERTRANZ_PASSWORD_FILE: '/run/secrets/POWERTRANZ_PASSWORD' };
     const store = [...STORE, 'POWERTRANZ_ID', 'POWERTRANZ_PASSWORD'].join(' ');
-    const refusal = 'CARD_RAIL_V2=1 with CARD_RAIL_PROVIDER=powertranz and the kill switch off needs POWERTRANZ_ID_FILE=/run/secrets/POWERTRANZ_ID and POWERTRANZ_PASSWORD_FILE=/run/secrets/POWERTRANZ_PASSWORD in deploy/.env';
-    for (const over of [
-      {}, { POWERTRANZ_ID_FILE: wired.POWERTRANZ_ID_FILE }, { POWERTRANZ_PASSWORD_FILE: wired.POWERTRANZ_PASSWORD_FILE },
-      { CARD_RAIL_KILL: undefined }, { CARD_RAIL_KILL: '' }, { ...wired, POWERTRANZ_ID_FILE: '/run/secrets/PAYMENT_GATEWAY_KEY' },
-    ]) {
+    const wiringRefusal = 'card rail v2 (CARD_RAIL_V2=1 or CARD_RAIL_V2_DRAIN=1) on CARD_RAIL_PROVIDER=powertranz needs POWERTRANZ_ID_FILE=/run/secrets/POWERTRANZ_ID and POWERTRANZ_PASSWORD_FILE=/run/secrets/POWERTRANZ_PASSWORD in deploy/.env';
+    const setRefusal = 'card rail v2 (CARD_RAIL_V2=1 or CARD_RAIL_V2_DRAIN=1) on CARD_RAIL_PROVIDER=powertranz needs POWERTRANZ_PAGE_SET=PTZ/<set>';
+    // Every switch state that still reaches the provider.
+    const reaching = [
+      {}, { CARD_RAIL_KILL: '1' }, { CARD_RAIL_KILL: undefined }, { CARD_RAIL_KILL: '' },
+      { CARD_RAIL_V2: '0', CARD_RAIL_V2_DRAIN: '1' }, { CARD_RAIL_V2: '0', CARD_RAIL_V2_DRAIN: '1', CARD_RAIL_KILL: '1' },
+    ];
+    for (const state of reaching) {
+      for (const [over, refusal] of [
+        [{}, wiringRefusal], [{ POWERTRANZ_ID_FILE: wired.POWERTRANZ_ID_FILE }, wiringRefusal],
+        [{ POWERTRANZ_PASSWORD_FILE: wired.POWERTRANZ_PASSWORD_FILE }, wiringRefusal],
+        [{ ...wired, POWERTRANZ_ID_FILE: '/run/secrets/PAYMENT_GATEWAY_KEY' }, wiringRefusal],
+        [{ ...wired, POWERTRANZ_PAGE_SET: 'SWIFT' }, setRefusal], [{ ...wired, POWERTRANZ_PAGE_SET: 'PTZ/' }, setRefusal],
+        [{ ...wired, POWERTRANZ_PAGE_SET: undefined }, setRefusal],
+      ] as const) {
+        writeFileSync(log, '');
+        const r = runPilot({ ...STAGING, ...sandboxOn, ...state, ...over }, { env: { STORE_NAMES: store } });
+        const label = `${JSON.stringify(state)} ${JSON.stringify(over)}`;
+        expect(r.status, label).not.toBe(0);
+        expect(r.stderr, label).toContain(refusal);
+        expect(changedNothing(r.calls)).toEqual([]);
+      }
       writeFileSync(log, '');
-      const r = runPilot({ ...STAGING, ...sandboxOn, ...over }, { env: { STORE_NAMES: store } });
-      expect(r.status, JSON.stringify(over)).not.toBe(0);
-      expect(r.stderr, JSON.stringify(over)).toContain(refusal);
-      expect(changedNothing(r.calls)).toEqual([]);
+      const ok = runPilot({ ...STAGING, ...sandboxOn, ...state, ...wired }, { env: { STORE_NAMES: store } });
+      expect(ok.status, `${JSON.stringify(state)}: ${ok.stderr}`).toBe(0);
+      expect(ok.stdout).toContain(`STAGING READY at exact SHA ${SHA}`);
     }
-    writeFileSync(log, '');
-    const ok = runPilot({ ...STAGING, ...sandboxOn, ...wired }, { env: { STORE_NAMES: store } });
-    expect(ok.status, ok.stderr).toBe(0);
-    expect(ok.stdout).toContain(`STAGING READY at exact SHA ${SHA}`);
-    // Killed (no new card payment can start), v2 off, or another provider: not asked.
-    for (const over of [{ CARD_RAIL_KILL: '1' }, { CARD_RAIL_V2: '0' }, { CARD_RAIL_PROVIDER: 'simulator' }]) {
+    // v2 and its drain both off, or another provider: not asked.
+    for (const over of [{ CARD_RAIL_V2: '0' }, { CARD_RAIL_V2: '0', CARD_RAIL_V2_DRAIN: '0', CARD_RAIL_KILL: '1' }, { CARD_RAIL_PROVIDER: 'simulator' }]) {
       writeFileSync(log, '');
-      const r = runPilot({ ...STAGING, ...sandboxOn, ...over });
+      const r = runPilot({ ...STAGING, ...sandboxOn, ...over, POWERTRANZ_PAGE_SET: undefined });
       expect(r.status, `${JSON.stringify(over)}: ${r.stderr}`).toBe(0);
     }
   });

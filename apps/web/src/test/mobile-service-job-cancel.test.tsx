@@ -22,6 +22,9 @@ vi.mock('../../../mobile/node_modules/react-native', () => {
     TextInput: ({ value, onChangeText }: any) => <input value={value} onChange={(e) => onChangeText?.(e.target.value)} />,
     AppState: { addEventListener: () => ({ remove: () => {} }) },
     Platform: { OS: 'ios' },
+    // My Jobs sits in the kit KeyboardAvoider: on iOS that is RN's KeyboardAvoidingView.
+    KeyboardAvoidingView: View,
+    Keyboard: { addListener: () => ({ remove() {} }), isVisible: () => false, metrics: () => undefined },
   };
 });
 vi.mock('../../../mobile/src/hooks', () => ({

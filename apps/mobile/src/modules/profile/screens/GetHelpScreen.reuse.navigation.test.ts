@@ -23,7 +23,8 @@ const fx = vi.hoisted(() => ({
 vi.mock('react-native', async () => {
   const R = await import('react');
   const View = (p: any) => R.createElement('div', null, p.children);
-  return { View, ScrollView: View };
+  // The form sits in the kit KeyboardAvoider (Android path: a View that listens to the keyboard).
+  return { View, ScrollView: View, Platform: { OS: 'android' }, Keyboard: { addListener: () => ({ remove() {} }), isVisible: () => false, metrics: () => undefined } };
 });
 vi.mock('@react-navigation/native', () => ({ useRoute: () => fx.route }));
 vi.mock('@swift/ui', () => ({ color: fx.token, radius: fx.token, space: fx.token }));

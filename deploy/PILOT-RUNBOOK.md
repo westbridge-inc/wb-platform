@@ -1248,16 +1248,19 @@ checkout moves to the requested SHA; everything else before that):
   only on PowerTranz live with POWERTRANZ_API_URL set and
   `POWERTRANZ_ID_FILE=/run/secrets/POWERTRANZ_ID` and
   `POWERTRANZ_PASSWORD_FILE=/run/secrets/POWERTRANZ_PASSWORD` (the owner's
-  live credentials in the store); CARD_RAIL_ENROLL (saved cards and automatic
+  live credentials in the store) and `POWERTRANZ_PAGE_SET=PTZ/<set>`;
+  CARD_RAIL_ENROLL (saved cards and automatic
   weekly card charges), CARD_RAIL_V2_DRAIN and ADS_ENABLED each unset or `0`.
   The rollback is CARD_RAIL_KILL=`1` with CARD_RAIL_V2=`1` left on (open card
   payments are still confirmed). Changing this is a reviewed code change here
   and in the API's boot guard, never a deploy/.env edit;
-- on ANY host (staging included): CARD_RAIL_V2=`1` with
-  CARD_RAIL_PROVIDER=`powertranz` and the kill switch off needs the two
-  POWERTRANZ_*_FILE lines above, or the deploy is refused before anything
-  changes (the API refuses to boot the same way): without them nothing can
-  read the credentials and cards cannot work;
+- on ANY host (staging included): CARD_RAIL_V2=`1` or CARD_RAIL_V2_DRAIN=`1`
+  with CARD_RAIL_PROVIDER=`powertranz`, whatever the kill switch (a killed
+  rail still confirms, looks up, voids and refunds through the provider),
+  needs the two POWERTRANZ_*_FILE lines above and a page set with
+  PowerTranz's prefix (`POWERTRANZ_PAGE_SET=PTZ/<set>`), or the deploy is
+  refused before anything changes (the API refuses to boot the same way):
+  without them nothing can read the credentials or open a card page;
 - for the whole stack and `--no-public` (not `--data-only`), no address-search
   provider: `PLACES_PROVIDER=osm` with `PHOTON_URL=http://photon:2322` (the
   script then also starts the private Photon service from the routing file's

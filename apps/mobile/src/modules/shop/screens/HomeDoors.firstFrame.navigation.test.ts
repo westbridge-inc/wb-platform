@@ -40,6 +40,8 @@ vi.mock('react-native', async () => {
     StyleSheet: { create: (s: unknown) => s, flatten: (s: unknown) => s, hairlineWidth: 1, absoluteFill: {} },
     Dimensions: { get: () => ({ width: 390, height: 844 }) },
     Platform: { OS: 'android' },
+    // Services' composer is lifted by the kit KeyboardAvoider, which listens to the keyboard.
+    Keyboard: { addListener: () => ({ remove() {} }), isVisible: () => false, metrics: () => undefined },
   };
 });
 vi.mock('@react-navigation/native', () => ({

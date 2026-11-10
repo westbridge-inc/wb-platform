@@ -127,6 +127,13 @@ function runPreflight(candidate: Record<string, string | undefined>) {
   }
 }
 
+/** [CARD-STAGING-TEST 10 Nov 2026] The provider's settings a server running card rail v2 on its sandbox must be able to
+ *  read (synthetic values; the credentials arrive as files on a real server). */
+const SANDBOX_READY = {
+  CARD_RAIL_ACCOUNT: 'swift-staging-sandbox', POWERTRANZ_ID: 'TESTID01', POWERTRANZ_PASSWORD: 'not-a-real-password-7Q',
+  POWERTRANZ_PAGE_SET: 'PTZ/SWIFT', POWERTRANZ_PAGE_NAME: 'WeeklyFee',
+};
+
 describe('assertSafeBootConfig — fail-closed production secrets', () => {
   it.each([
     ['CONSENT_REQUIRED', '0'],
@@ -978,12 +985,6 @@ describe('[22 Oct] production refuses live MMG without the MMG checkout', () => 
   });
 });
 
-/** [CARDS-SWITCH-ON] The rest of a sandbox setup (synthetic): v2 on PowerTranz, not killed, boots only with all of it. */
-const SANDBOX_SET_UP = {
-  CARD_RAIL_ACCOUNT: 'swift-gy-test', POWERTRANZ_ID: 'TESTID01', POWERTRANZ_PASSWORD: 'not-a-real-password',
-  POWERTRANZ_PAGE_SET: 'SWIFT', POWERTRANZ_PAGE_NAME: 'WeeklyFee',
-};
-
 // [PT-1 · C10] Card rail v2 in production. The card simulator is a test page
 // with no real money, and this build has no production-capable v2 provider:
 // production refuses both, loudly, at boot — never at a partner's first tap.
@@ -1071,7 +1072,7 @@ describe('[PT-1 · PT-4] card rail v2 in production: only the real provider set 
   });
 
   it('[review S2-1] in EVERY mode, the provider\'s TEST system (its sandbox) refuses to start on the public API host — a trailing dot is the same host', () => {
-    const sandbox = { CARD_RAIL_V2: '1', CARD_RAIL_PROVIDER: 'powertranz', CARD_RAIL_ENVIRONMENT: 'sandbox' };
+    const sandbox = { CARD_RAIL_V2: '1', CARD_RAIL_PROVIDER: 'powertranz', CARD_RAIL_ENVIRONMENT: 'sandbox', ...SANDBOX_READY };
     for (const env of [
       { NODE_ENV: 'development', ...sandbox, API_PUBLIC_URL: 'https://api.swiftgy.com' },
       { NODE_ENV: 'development', ...sandbox, CARD_RAIL_V2: '0', API_PUBLIC_URL: 'https://API.swiftgy.com/' },
@@ -1081,14 +1082,13 @@ describe('[PT-1 · PT-4] card rail v2 in production: only the real provider set 
     ]) {
       expect(() => assertSafeBootConfig(env), JSON.stringify(env)).toThrow(/public API host/);
     }
-    // [CARDS-SWITCH-ON] Not killed, v2 on PowerTranz boots only with its whole setup (the credentials included).
-    expect(() => assertSafeBootConfig({ NODE_ENV: 'development', ...sandbox, ...SANDBOX_SET_UP, API_PUBLIC_URL: 'https://api-test.example.test' })).not.toThrow();
+    expect(() => assertSafeBootConfig({ NODE_ENV: 'development', ...sandbox, API_PUBLIC_URL: 'https://api-test.example.test' })).not.toThrow();
   });
 
   // [GUARD-FIX] Production serves the API as api-live.swiftgy.com (and keeps that name after launch,
   // adding api.swiftgy.com beside it). A guard keyed on one public name alone never fired there.
   it('[GUARD-FIX] in EVERY mode, a TEST card system refuses to start on EITHER production public name, api.swiftgy.com or api-live.swiftgy.com', () => {
-    const sandbox = { CARD_RAIL_V2: '1', CARD_RAIL_PROVIDER: 'powertranz', CARD_RAIL_ENVIRONMENT: 'sandbox' };
+    const sandbox = { CARD_RAIL_V2: '1', CARD_RAIL_PROVIDER: 'powertranz', CARD_RAIL_ENVIRONMENT: 'sandbox', ...SANDBOX_READY };
     for (const env of [
       { NODE_ENV: 'development', CARD_RAIL_V2: '1', CARD_RAIL_PROVIDER: 'simulator', API_PUBLIC_URL: 'https://api-live.swiftgy.com' },
       { NODE_ENV: 'development', CARD_RAIL_V2: '0', CARD_RAIL_PROVIDER: 'simulator', API_PUBLIC_URL: 'https://API-LIVE.swiftgy.com/' },
@@ -1104,7 +1104,7 @@ describe('[PT-1 · PT-4] card rail v2 in production: only the real provider set 
     expect(() => assertSafeBootConfig({ NODE_ENV: 'development', ...sandbox, API_PUBLIC_URL: 'https://api.swiftgy.com' })).toThrow(/public API host api\.swiftgy\.com /);
     // Staging and test servers keep their own names and boot exactly as before.
     for (const url of ['https://api-staging.swiftgy.com', 'https://api-test.example.test']) {
-      expect(() => assertSafeBootConfig({ NODE_ENV: 'development', ...sandbox, ...SANDBOX_SET_UP, API_PUBLIC_URL: url }), url).not.toThrow();
+      expect(() => assertSafeBootConfig({ NODE_ENV: 'development', ...sandbox, API_PUBLIC_URL: url }), url).not.toThrow();
       expect(() => assertSafeBootConfig({ NODE_ENV: 'development', CARD_RAIL_V2: '1', CARD_RAIL_PROVIDER: 'simulator', CARD_RAIL_SIMULATOR_LIVE: '1', API_PUBLIC_URL: url }), url).not.toThrow();
     }
   });
@@ -1128,6 +1128,43 @@ describe('[PT-1 · PT-4] card rail v2 in production: only the real provider set 
     expect(() => assertSafeBootConfig({ NODE_ENV: 'development', CARD_RAIL_PROVIDER: 'powertranz', CARD_RAIL_ENVIRONMENT: 'sandbox', API_PUBLIC_URL: 'https://api-test.example.test' })).not.toThrow();
     // Production is the only mode whose card checks accept live cards (boot-config's card switches then decide).
     expect(() => assertSafeBootConfig({ ...good, ...liveCards })).not.toThrow();
+  });
+
+  // [CARD-STAGING-TEST 10 Nov 2026] Staging ran card rail v2 on the provider's sandbox with the credentials missing from
+  // deploy/.env (no POWERTRANZ_*_FILE lines) and a page set without PTZ/: it booted, offered card payment, and every
+  // payment failed. Outside production (production has its own, live-card refusal) such a server now refuses to start.
+  it('[CARD-STAGING-TEST] in EVERY mode but production, card rail v2 (or its drain) on the real provider refuses to start unless this process can read the provider\'s settings — named, never a value', () => {
+    const on = { NODE_ENV: 'development', CARD_RAIL_PROVIDER: 'powertranz', CARD_RAIL_ENVIRONMENT: 'sandbox', API_PUBLIC_URL: 'https://api-staging.swiftgy.com', ...SANDBOX_READY };
+    for (const mode of ['development', 'test', 'loadtest']) {
+      for (const which of [{ CARD_RAIL_V2: '1' }, { CARD_RAIL_V2: '0', CARD_RAIL_V2_DRAIN: '1' }]) {
+        expect(() => assertSafeBootConfig({ ...on, ...which, NODE_ENV: mode }), `${mode} ${JSON.stringify(which)}`).not.toThrow();
+        const cases: Array<[Record<string, string | undefined>, RegExp]> = [
+          [{ POWERTRANZ_ID: undefined }, /POWERTRANZ_ID/],
+          [{ POWERTRANZ_PASSWORD: undefined }, /POWERTRANZ_PASSWORD/],
+          [{ POWERTRANZ_PAGE_SET: 'SWIFT' }, /POWERTRANZ_PAGE_SET must start with PTZ\//],
+          [{ POWERTRANZ_PAGE_NAME: undefined }, /POWERTRANZ_PAGE_NAME/],
+          [{ CARD_RAIL_ACCOUNT: undefined }, /CARD_RAIL_ACCOUNT/],
+          [{ API_PUBLIC_URL: 'http://api-staging.swiftgy.com' }, /API_PUBLIC_URL/],
+        ];
+        for (const [patch, named] of cases) {
+          let thrown: Error | undefined;
+          try { assertSafeBootConfig({ ...on, ...which, NODE_ENV: mode, ...patch }); } catch (err) { thrown = err as Error; }
+          expect(thrown?.message, `${mode} ${JSON.stringify(which)} ${JSON.stringify(patch)}`).toMatch(/^FATAL: CARD_RAIL_V2(_DRAIN)?=1 with CARD_RAIL_PROVIDER=powertranz, but this server cannot read the card provider's settings: /);
+          expect(thrown?.message).toMatch(named);
+          expect(thrown?.message).not.toContain(SANDBOX_READY.POWERTRANZ_PASSWORD);
+        }
+      }
+    }
+    // A missing credential names the store wiring to add; the kill switch does not excuse it (a killed rail still
+    // confirms, sweeps, looks up and refunds what is in flight, all through the provider).
+    for (const kill of ['0', '1']) {
+      let thrown: Error | undefined;
+      try { assertSafeBootConfig({ ...on, CARD_RAIL_V2: '1', CARD_RAIL_KILL: kill, POWERTRANZ_ID: undefined }); } catch (err) { thrown = err as Error; }
+      expect(thrown?.message, kill).toContain('deploy/.env needs POWERTRANZ_ID_FILE=/run/secrets/POWERTRANZ_ID and POWERTRANZ_PASSWORD_FILE=/run/secrets/POWERTRANZ_PASSWORD');
+    }
+    // Off (neither switch), or another provider: nothing about the real provider is asked, as before.
+    expect(() => assertSafeBootConfig({ ...on, POWERTRANZ_ID: undefined, CARD_RAIL_V2: '0' })).not.toThrow();
+    expect(() => assertSafeBootConfig({ NODE_ENV: 'development', CARD_RAIL_V2: '1', CARD_RAIL_PROVIDER: 'simulator' })).not.toThrow();
   });
 
   it('outside production the simulator boots (staging runs NODE_ENV=development)', () => {
@@ -1537,79 +1574,93 @@ describe('[CARDS-SWITCH-ON] production card and ad switches: cards off by defaul
 });
 
 // ---------------------------------------------------------------------------
-// [CARDS-SWITCH-ON · staging card test, 10 Nov 2026] Staging ran card rail v2
-// on PowerTranz with the kill switch off, but deploy/.env had no
-// POWERTRANZ_ID_FILE / POWERTRANZ_PASSWORD_FILE lines: the API and the worker
-// could not read the credentials, and cards could not work, while every
-// health check read green. Card rail v2 on PowerTranz and NOT killed now
-// refuses to start, in every mode, unless the provider's whole setup reads —
-// the credentials included — naming the store wiring to add, never a value.
-// Killed, or v2 off, nothing is asked (no new card payment can start).
-// Production already refused v2 without the complete live setup (PT-4, any
-// kill switch); its refusal now names the same wiring.
+// [CARDS-SWITCH-ON · CARD-STAGING-TEST, 10 Nov 2026] Staging ran card rail v2
+// on PowerTranz, but deploy/.env had no POWERTRANZ_ID_FILE /
+// POWERTRANZ_PASSWORD_FILE lines: the API and the worker could not read the
+// credentials, and cards could not work, while every health check read green.
+// Card rail v2 (or its drain) on PowerTranz now refuses to start, in every mode
+// and WHATEVER THE KILL SWITCH (a killed rail still confirms, sweeps, looks up,
+// voids and refunds through the provider: review #2466-B F2), unless the
+// provider's whole setup reads — the credentials and the PTZ/ page set
+// included — naming the store wiring to add, never a value. Production
+// already refused v2 without the complete live setup (PT-4, any kill switch);
+// its refusal names the same wiring (one helper).
 // ---------------------------------------------------------------------------
-describe('[CARDS-SWITCH-ON] card rail v2 on PowerTranz and not killed refuses to start without its credentials, in every mode', () => {
+describe('[CARDS-SWITCH-ON] card rail v2 (or its drain) on PowerTranz refuses to start without its credentials, whatever the kill switch, in every mode', () => {
   const sandboxOn = {
     PAYMENT_PROVIDER: 'disabled', CARD_RAIL_KILL: '0', CARD_RAIL_V2: '1', CARD_RAIL_PROVIDER: 'powertranz', CARD_RAIL_ENVIRONMENT: 'sandbox',
-    CARD_RAIL_ACCOUNT: 'swift-gy-test', POWERTRANZ_PAGE_SET: 'SWIFT', POWERTRANZ_PAGE_NAME: 'WeeklyFee', API_PUBLIC_URL: 'https://api-staging.example.test',
+    CARD_RAIL_ACCOUNT: 'swift-gy-test', POWERTRANZ_PAGE_SET: 'PTZ/SWIFT', POWERTRANZ_PAGE_NAME: 'WeeklyFee', API_PUBLIC_URL: 'https://api-staging.example.test',
   };
   const creds = { POWERTRANZ_ID: 'TESTID01', POWERTRANZ_PASSWORD: 'not-a-real-password' };
   const refusal = (env: Record<string, string | undefined>): string => {
     try { assertSafeBootConfig(env); } catch (error) { return (error as Error).message; }
     return '';
   };
-  const NOT_SET_UP = /^FATAL: CARD_RAIL_V2=1 with CARD_RAIL_PROVIDER=powertranz and the kill switch off, but the card provider cannot be set up: /;
+  const NOT_READ = /^FATAL: CARD_RAIL_V2(_DRAIN)?=1 with CARD_RAIL_PROVIDER=powertranz, but this server cannot read the card provider's settings: /;
+  const WIRING = 'POWERTRANZ_ID_FILE=/run/secrets/POWERTRANZ_ID and POWERTRANZ_PASSWORD_FILE=/run/secrets/POWERTRANZ_PASSWORD';
+  /** Every switch state that still reaches the provider: v2 on (killed or not, any kill value), or draining. */
+  const reaching = [
+    { CARD_RAIL_KILL: '0' }, { CARD_RAIL_KILL: '1' }, { CARD_RAIL_KILL: undefined }, { CARD_RAIL_KILL: 'true' },
+    { CARD_RAIL_V2: '0', CARD_RAIL_V2_DRAIN: '1' }, { CARD_RAIL_V2: '0', CARD_RAIL_V2_DRAIN: '1', CARD_RAIL_KILL: '1' },
+  ];
 
-  it.each(['development', 'loadtest', 'test'])('%s: no credentials (no *_FILE lines) refuses, naming the store wiring', (mode) => {
-    const thrown = refusal({ NODE_ENV: mode, ...sandboxOn });
-    expect(thrown).toMatch(NOT_SET_UP);
-    expect(thrown).toMatch(/POWERTRANZ_ID/);
-    expect(thrown).toContain('POWERTRANZ_ID_FILE=/run/secrets/POWERTRANZ_ID');
-    expect(thrown).toContain('POWERTRANZ_PASSWORD_FILE=/run/secrets/POWERTRANZ_PASSWORD');
-    const noPassword = refusal({ NODE_ENV: mode, ...sandboxOn, POWERTRANZ_ID: 'TESTID01' });
-    expect(noPassword).toMatch(NOT_SET_UP);
-    expect(noPassword).toMatch(/POWERTRANZ_PASSWORD/);
-    expect(noPassword).toContain('POWERTRANZ_PASSWORD_FILE=/run/secrets/POWERTRANZ_PASSWORD');
-  });
-
-  it('any other missing piece of the setup refuses too (cards could not work either way), never echoing a value', () => {
-    for (const [patch, message] of [
-      [{ POWERTRANZ_PAGE_NAME: undefined }, /POWERTRANZ_PAGE_SET and POWERTRANZ_PAGE_NAME/],
-      [{ CARD_RAIL_ACCOUNT: undefined }, /CARD_RAIL_ACCOUNT/],
-      [{ API_PUBLIC_URL: undefined }, /API_PUBLIC_URL/],
-      [{ CARD_RAIL_ENVIRONMENT: undefined }, /CARD_RAIL_ENVIRONMENT/],
-      [{ POWERTRANZ_API_URL: 'https://gateway.ptranz.com' }, /not a test system/],
-    ] as const) {
-      const thrown = refusal({ NODE_ENV: 'loadtest', ...sandboxOn, ...creds, ...patch });
-      expect(thrown, JSON.stringify(patch)).toMatch(NOT_SET_UP);
-      expect(thrown).toMatch(message);
-      expect(thrown).not.toContain('not-a-real-password');
+  it.each(['development', 'loadtest', 'test'])('%s: no credentials (no *_FILE lines) refuses, naming the store wiring — killed or not, v2 or drain', (mode) => {
+    for (const over of reaching) {
+      const thrown = refusal({ NODE_ENV: mode, ...sandboxOn, ...over });
+      expect(thrown, JSON.stringify(over)).toMatch(NOT_READ);
+      expect(thrown).toMatch(/POWERTRANZ_ID/);
+      expect(thrown).toContain(WIRING);
+      const noPassword = refusal({ NODE_ENV: mode, ...sandboxOn, ...over, POWERTRANZ_ID: 'TESTID01' });
+      expect(noPassword, JSON.stringify(over)).toMatch(NOT_READ);
+      expect(noPassword).toMatch(/POWERTRANZ_PASSWORD/);
+      expect(noPassword).toContain(WIRING);
     }
   });
 
-  it('the credentials read from the store through the real *_FILE loader: boots', () => {
+  it('any other missing piece of the setup refuses too, the PTZ/ page set included — killed or not — never echoing a value', () => {
+    for (const over of reaching) {
+      for (const [patch, message] of [
+        [{ POWERTRANZ_PAGE_SET: 'SWIFT' }, /POWERTRANZ_PAGE_SET must start with PTZ\//],
+        [{ POWERTRANZ_PAGE_NAME: undefined }, /POWERTRANZ_PAGE_SET and POWERTRANZ_PAGE_NAME|POWERTRANZ_PAGE_NAME/],
+        [{ CARD_RAIL_ACCOUNT: undefined }, /CARD_RAIL_ACCOUNT/],
+        [{ API_PUBLIC_URL: undefined }, /API_PUBLIC_URL/],
+        [{ CARD_RAIL_ENVIRONMENT: undefined }, /CARD_RAIL_ENVIRONMENT/],
+        [{ POWERTRANZ_API_URL: 'https://gateway.ptranz.com' }, /not a test system/],
+      ] as const) {
+        const thrown = refusal({ NODE_ENV: 'loadtest', ...sandboxOn, ...creds, ...over, ...patch });
+        expect(thrown, `${JSON.stringify(over)} ${JSON.stringify(patch)}`).toMatch(NOT_READ);
+        expect(thrown).toMatch(message);
+        expect(thrown).not.toContain('not-a-real-password');
+        expect(thrown).not.toContain(WIRING); // only a credential refusal names the store wiring
+      }
+    }
+  });
+
+  it('the credentials read from the store through the real *_FILE loader: boots (killed too)', () => {
     const dir = mkdtempSync(join(tmpdir(), 'swift-ptz-secrets-'));
     try {
       writeFileSync(join(dir, 'POWERTRANZ_ID'), 'TESTID01\n');
       writeFileSync(join(dir, 'POWERTRANZ_PASSWORD'), 'not-a-real-password\n');
-      const env: Record<string, string | undefined> = {
-        NODE_ENV: 'loadtest', ...sandboxOn,
-        POWERTRANZ_ID_FILE: join(dir, 'POWERTRANZ_ID'), POWERTRANZ_PASSWORD_FILE: join(dir, 'POWERTRANZ_PASSWORD'),
-      };
-      expect(refusal(env)).toMatch(NOT_SET_UP); // the guard reads only what the loader put in the environment
-      applySecretFiles(env);
-      expect(refusal(env)).toBe('');
+      for (const kill of ['0', '1']) {
+        const env: Record<string, string | undefined> = {
+          NODE_ENV: 'loadtest', ...sandboxOn, CARD_RAIL_KILL: kill,
+          POWERTRANZ_ID_FILE: join(dir, 'POWERTRANZ_ID'), POWERTRANZ_PASSWORD_FILE: join(dir, 'POWERTRANZ_PASSWORD'),
+        };
+        expect(refusal(env), kill).toMatch(NOT_READ); // the guard reads only what the loader put in the environment
+        applySecretFiles(env);
+        expect(refusal(env), kill).toBe('');
+      }
     } finally {
       rmSync(dir, { recursive: true });
     }
   });
 
-  it('killed or v2 off: nothing is asked (no new card payment can start); the simulator is not PowerTranz', () => {
-    expect(refusal({ NODE_ENV: 'loadtest', ...sandboxOn, CARD_RAIL_KILL: '1' })).toBe('');
+  it('v2 and its drain both off, or another provider: nothing about PowerTranz is asked', () => {
     expect(refusal({ NODE_ENV: 'loadtest', ...sandboxOn, CARD_RAIL_V2: '0' })).toBe('');
-    expect(refusal({ NODE_ENV: 'loadtest', ...sandboxOn, CARD_RAIL_V2: undefined })).toBe('');
+    expect(refusal({ NODE_ENV: 'loadtest', ...sandboxOn, CARD_RAIL_V2: undefined, CARD_RAIL_KILL: '1' })).toBe('');
+    expect(refusal({ NODE_ENV: 'loadtest', ...sandboxOn, CARD_RAIL_V2: '0', CARD_RAIL_V2_DRAIN: '0' })).toBe('');
     expect(refusal({ NODE_ENV: 'development', CARD_RAIL_V2: '1', CARD_RAIL_PROVIDER: 'simulator' })).toBe('');
-    expect(refusal({ NODE_ENV: 'loadtest', ...sandboxOn, ...creds })).toBe('');
+    for (const over of reaching) expect(refusal({ NODE_ENV: 'loadtest', ...sandboxOn, ...creds, ...over }), JSON.stringify(over)).toBe('');
   });
 
   it('production: v2 without the credentials refuses (any kill switch), naming the same store wiring', () => {
@@ -1621,9 +1672,11 @@ describe('[CARDS-SWITCH-ON] card rail v2 on PowerTranz and not killed refuses to
       for (const missing of ['POWERTRANZ_ID', 'POWERTRANZ_PASSWORD']) {
         const thrown = refusal({ ...good, ...liveOn, ...creds, CARD_RAIL_KILL: kill, [missing]: undefined });
         expect(thrown, `${kill} ${missing}`).toMatch(/^FATAL: CARD_RAIL_V2=1 in production, but the card provider is not fully set up for live cards: /);
-        expect(thrown).toContain(`${missing}_FILE=/run/secrets/${missing}`);
+        expect(thrown).toContain(WIRING);
         expect(thrown).not.toContain('not-a-real-password');
       }
+      // The PTZ/ prefix too (powerTranzConfigFromEnv, for production as for staging).
+      expect(refusal({ ...good, ...liveOn, ...creds, CARD_RAIL_KILL: kill, POWERTRANZ_PAGE_SET: 'SWIFT' }), kill).toMatch(/^FATAL: CARD_RAIL_V2=1 in production, but the card provider is not fully set up for live cards: .*PTZ\//);
     }
     expect(refusal({ ...good, ...liveOn, ...creds })).toBe('');
   });

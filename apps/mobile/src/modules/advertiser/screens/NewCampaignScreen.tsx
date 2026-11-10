@@ -18,6 +18,7 @@ import {
   requireAuthSessionSnapshot,
 } from '../../../stores/authStore';
 import { quotedTotal, selectionIsContiguous, submittedRange, toggleWeek, type AvailableWeek } from '../../../lib/adWeeks';
+import { KeyboardAvoider } from '../../../kit/keyboard-avoider';
 
 // §14.3 — the 5-step New Campaign wizard: ① placement tier cards with live
 // prices → ② weeks from the availability API (sold-out greyed) → ③ cities
@@ -209,197 +210,200 @@ export function NewCampaignScreen() {
         }
       />
 
-      <ScrollView contentContainerStyle={{ padding: space['2xl'], paddingBottom: space['3xl'] }} keyboardShouldPersistTaps="handled">
-        {step === 1 ? (
-          <>
-            <T variant="body" tone="muted">
-              Where should your ad appear? Flat weekly price — no auctions.
-            </T>
-            {placements.isLoading ? (
-              <LoadingBlock style={{ paddingTop: 64 }} />
-            ) : (
-              <View style={{ marginTop: space.xl, gap: space.lg }}>
-                {(placements.data ?? []).map((p: any) => {
-                  const selected = placement?.id === p.id;
-                  return (
-                    <Pressable key={p.id} onPress={() => setPlacement(p)}>
-                      <Card style={{ padding: space.xl, borderWidth: 2, borderColor: selected ? color.brand[500] : 'transparent' }}>
-                        <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
-                          <T variant="body" weight="semibold">
-                            {p.name}
-                          </T>
-                          {/* [law 3] Money is ink, never brand — maroon marks
-                              the selected card's border, not the price. */}
-                          <T variant="label" weight="semibold">
-                            {money(p.weeklyPrice, p.currency)}/wk
-                          </T>
-                        </View>
-                        <T variant="caption" tone="muted" style={{ marginTop: 4 }}>
-                          {p.mediaKind === 'VIDEO' ? 'Autoplay video at the top of home' : p.tier === 2 ? 'Large card in the home feed' : `Rotating bar — ${p.slotsPerWeek} slots, one is yours`}
-                        </T>
-                      </Card>
-                    </Pressable>
-                  );
-                })}
-              </View>
-            )}
-            {/* [#947's grammar] Step 2's button already names its ask —
-                step 1's now does the same. */}
-            <PillButton label={placement ? 'Choose weeks' : 'Pick a placement first'} disabled={!placement} style={{ marginTop: space['2xl'] }} onPress={() => setStep(2)} />
-          </>
-        ) : null}
-
-        {step === 2 ? (
-          <>
-            <T variant="body" tone="muted">
-              Pick the Mondays you want. Sold-out weeks are greyed.
-            </T>
-            {availability.isLoading ? (
-              <LoadingBlock style={{ paddingTop: 64 }} />
-            ) : (
-              <View style={{ marginTop: space.xl, gap: space.md }}>
-                {((availability.data ?? []) as any[]).map((w) => {
-                  const iso = String(w.weekStart).slice(0, 10);
-                  const soldOut = (w.available ?? 0) <= 0;
-                  const selected = weeks.includes(iso);
-                  return (
-                    <Pressable key={iso} onPress={() => onToggleWeek(iso)} disabled={soldOut}>
-                      <Card
-                        style={{
-                          padding: space.lg,
-                          opacity: soldOut ? 0.45 : 1,
-                          borderWidth: 2,
-                          borderColor: selected ? color.brand[500] : 'transparent',
-                          flexDirection: 'row',
-                          justifyContent: 'space-between',
-                          alignItems: 'center',
-                        }}
-                      >
-                        <T variant="body">Week of {iso}</T>
-                        <T variant="caption" tone="muted">
-                          {soldOut ? 'Sold out' : `${w.available} of ${w.capacity} open`}
-                        </T>
-                      </Card>
-                    </Pressable>
-                  );
-                })}
-              </View>
-            )}
-            {weekNotice ? (
-              <T variant="caption" tone="muted" style={{ marginTop: space.lg }}>{weekNotice}</T>
-            ) : null}
-            <PillButton label={weeks.length ? `Continue — ${weeks.length} week${weeks.length > 1 ? 's' : ''}` : 'Pick at least one week'} disabled={weeks.length === 0} style={{ marginTop: space['2xl'] }} onPress={() => setStep(4)} />
-          </>
-        ) : null}
-
-        {step === 4 ? (
-          <>
-            {/* §9.1 spec card BEFORE the picker opens. */}
-            <Card style={{ padding: space.xl, backgroundColor: color.brand[50] }}>
-              <T variant="label" weight="semibold">
-                Creative specs — {placement?.mediaKind === 'VIDEO' ? 'MP4 video' : 'image'}
+      {/* [KEYBOARD 10 Nov] Lifted above the keyboard (kit/keyboard-avoider), so the last fields can scroll into view. */}
+      <KeyboardAvoider style={{ flex: 1 }}>
+        <ScrollView contentContainerStyle={{ padding: space['2xl'], paddingBottom: space['3xl'] }} keyboardShouldPersistTaps="handled">
+          {step === 1 ? (
+            <>
+              <T variant="body" tone="muted">
+                Where should your ad appear? Flat weekly price — no auctions.
               </T>
-              <T variant="caption" tone="muted" style={{ marginTop: 4 }}>
-                {placement?.mediaKind === 'VIDEO'
-                  ? 'MP4 (H.264 + AAC), up to 25 MB. Reviewed before going live.'
-                  : 'JPEG, PNG or WebP up to 500 KB. Reviewed before going live.'}
-                {'\n'}Headline ≤{placement?.tier === 1 ? 60 : 40} chars · CTA ≤15 chars. The "Ad · {advertiser?.companyName ?? 'you'}" label is added by Swift.
-              </T>
-            </Card>
+              {placements.isLoading ? (
+                <LoadingBlock style={{ paddingTop: 64 }} />
+              ) : (
+                <View style={{ marginTop: space.xl, gap: space.lg }}>
+                  {(placements.data ?? []).map((p: any) => {
+                    const selected = placement?.id === p.id;
+                    return (
+                      <Pressable key={p.id} onPress={() => setPlacement(p)}>
+                        <Card style={{ padding: space.xl, borderWidth: 2, borderColor: selected ? color.brand[500] : 'transparent' }}>
+                          <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <T variant="body" weight="semibold">
+                              {p.name}
+                            </T>
+                            {/* [law 3] Money is ink, never brand — maroon marks
+                                the selected card's border, not the price. */}
+                            <T variant="label" weight="semibold">
+                              {money(p.weeklyPrice, p.currency)}/wk
+                            </T>
+                          </View>
+                          <T variant="caption" tone="muted" style={{ marginTop: 4 }}>
+                            {p.mediaKind === 'VIDEO' ? 'Autoplay video at the top of home' : p.tier === 2 ? 'Large card in the home feed' : `Rotating bar — ${p.slotsPerWeek} slots, one is yours`}
+                          </T>
+                        </Card>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+              )}
+              {/* [#947's grammar] Step 2's button already names its ask —
+                  step 1's now does the same. */}
+              <PillButton label={placement ? 'Choose weeks' : 'Pick a placement first'} disabled={!placement} style={{ marginTop: space['2xl'] }} onPress={() => setStep(2)} />
+            </>
+          ) : null}
 
-            {placement?.mediaKind === 'VIDEO' ? (
+          {step === 2 ? (
+            <>
+              <T variant="body" tone="muted">
+                Pick the Mondays you want. Sold-out weeks are greyed.
+              </T>
+              {availability.isLoading ? (
+                <LoadingBlock style={{ paddingTop: 64 }} />
+              ) : (
+                <View style={{ marginTop: space.xl, gap: space.md }}>
+                  {((availability.data ?? []) as any[]).map((w) => {
+                    const iso = String(w.weekStart).slice(0, 10);
+                    const soldOut = (w.available ?? 0) <= 0;
+                    const selected = weeks.includes(iso);
+                    return (
+                      <Pressable key={iso} onPress={() => onToggleWeek(iso)} disabled={soldOut}>
+                        <Card
+                          style={{
+                            padding: space.lg,
+                            opacity: soldOut ? 0.45 : 1,
+                            borderWidth: 2,
+                            borderColor: selected ? color.brand[500] : 'transparent',
+                            flexDirection: 'row',
+                            justifyContent: 'space-between',
+                            alignItems: 'center',
+                          }}
+                        >
+                          <T variant="body">Week of {iso}</T>
+                          <T variant="caption" tone="muted">
+                            {soldOut ? 'Sold out' : `${w.available} of ${w.capacity} open`}
+                          </T>
+                        </Card>
+                      </Pressable>
+                    );
+                  })}
+                </View>
+              )}
+              {weekNotice ? (
+                <T variant="caption" tone="muted" style={{ marginTop: space.lg }}>{weekNotice}</T>
+              ) : null}
+              <PillButton label={weeks.length ? `Continue — ${weeks.length} week${weeks.length > 1 ? 's' : ''}` : 'Pick at least one week'} disabled={weeks.length === 0} style={{ marginTop: space['2xl'] }} onPress={() => setStep(4)} />
+            </>
+          ) : null}
+
+          {step === 4 ? (
+            <>
+              {/* §9.1 spec card BEFORE the picker opens. */}
+              <Card style={{ padding: space.xl, backgroundColor: color.brand[50] }}>
+                <T variant="label" weight="semibold">
+                  Creative specs — {placement?.mediaKind === 'VIDEO' ? 'MP4 video' : 'image'}
+                </T>
+                <T variant="caption" tone="muted" style={{ marginTop: 4 }}>
+                  {placement?.mediaKind === 'VIDEO'
+                    ? 'MP4 (H.264 + AAC), up to 25 MB. Reviewed before going live.'
+                    : 'JPEG, PNG or WebP up to 500 KB. Reviewed before going live.'}
+                  {'\n'}Headline ≤{placement?.tier === 1 ? 60 : 40} chars · CTA ≤15 chars. The "Ad · {advertiser?.companyName ?? 'you'}" label is added by Swift.
+                </T>
+              </Card>
+
+              {placement?.mediaKind === 'VIDEO' ? (
+                <Card style={{ padding: space.xl, marginTop: space.lg }}>
+                  <T variant="caption" tone="muted">
+                    Video upload from a phone gallery lands in the transcode queue. You can also add the video later
+                    from the campaign screen — your booking is not affected.
+                  </T>
+                </Card>
+              ) : (
+                <Pressable onPress={pickImage} style={{ marginTop: space.lg }}>
+                  <Card style={{ padding: space.xl, alignItems: 'center', justifyContent: 'center', minHeight: 140 }}>
+                    {asset ? (
+                      <Image source={{ uri: asset.uri }} style={{ width: '100%', height: 120, borderRadius: radius.md }} resizeMode="cover" />
+                    ) : (
+                      <>
+                        <Feather name="image" size={28} color={color.text.muted} />
+                        <T variant="label" tone="muted" style={{ marginTop: space.sm }}>
+                          Tap to choose your image
+                        </T>
+                      </>
+                    )}
+                  </Card>
+                </Pressable>
+              )}
+
+              <View style={{ marginTop: space.lg, gap: space.lg }}>
+                <LabeledInput label="Campaign name" value={name} onChangeText={setName} placeholder={`${advertiser?.companyName ?? 'My'} — ${placement?.name ?? 'campaign'}`} />
+                <LabeledInput label="Headline" value={headline} onChangeText={setHeadline} maxLength={placement?.tier === 1 ? 60 : 40} placeholder="Fresh roti, hot daily" />
+                <LabeledInput label="Button label (optional)" value={ctaLabel} onChangeText={setCtaLabel} maxLength={15} placeholder="Order now" />
+                <LabeledInput label="Link (optional)" value={destinationValue} onChangeText={setDestinationValue} autoCapitalize="none" placeholder="https://your-site.gy" />
+              </View>
+              <PillButton label="Review order" style={{ marginTop: space['2xl'] }} onPress={() => setStep(5)} />
+            </>
+          ) : null}
+
+          {step === 5 ? (
+            <>
+              <Card style={{ padding: space.xl, gap: space.sm }}>
+                <T variant="heading">{name.trim() || `${advertiser?.companyName ?? ''} — ${placement?.name ?? ''}`}</T>
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
+                  <T variant="body" tone="muted">
+                    {placement?.name}
+                  </T>
+                  <T variant="body">{money(placement?.weeklyPrice)}/wk</T>
+                </View>
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
+                  <T variant="body" tone="muted">
+                    {weeks.length} week{weeks.length > 1 ? 's' : ''} ({weeks[0]} → {weeks[weeks.length - 1]})
+                  </T>
+                  <T variant="body">× {weeks.length}</T>
+                </View>
+                <View style={{ height: 1, backgroundColor: color.border.subtle, marginVertical: space.sm }} />
+                <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
+                  <T variant="body" weight="semibold">
+                    Total
+                  </T>
+                  <T variant="body" weight="semibold">
+                    {money(total)}
+                  </T>
+                </View>
+              </Card>
+
               <Card style={{ padding: space.xl, marginTop: space.lg }}>
                 <T variant="caption" tone="muted">
-                  Video upload from a phone gallery lands in the transcode queue. You can also add the video later
-                  from the campaign screen — your booking is not affected.
+                  Refunds: full refund if your creatives are never approved; cancel ≥7 days before a week starts for
+                  100%, later for 50%; started weeks are not refunded. Cancelling always shows the exact amount first.
                 </T>
               </Card>
-            ) : (
-              <Pressable onPress={pickImage} style={{ marginTop: space.lg }}>
-                <Card style={{ padding: space.xl, alignItems: 'center', justifyContent: 'center', minHeight: 140 }}>
-                  {asset ? (
-                    <Image source={{ uri: asset.uri }} style={{ width: '100%', height: 120, borderRadius: radius.md }} resizeMode="cover" />
-                  ) : (
-                    <>
-                      <Feather name="image" size={28} color={color.text.muted} />
-                      <T variant="label" tone="muted" style={{ marginTop: space.sm }}>
-                        Tap to choose your image
-                      </T>
-                    </>
-                  )}
+
+              {!approved ? (
+                <Card style={{ padding: space.xl, marginTop: space.lg, borderLeftWidth: 3, borderLeftColor: color.warning }}>
+                  <T variant="caption">
+                    Your advertiser account is still in review — payment unlocks the moment you're approved. Your draft
+                    is saved.
+                  </T>
                 </Card>
-              </Pressable>
-            )}
+              ) : null}
 
-            <View style={{ marginTop: space.lg, gap: space.lg }}>
-              <LabeledInput label="Campaign name" value={name} onChangeText={setName} placeholder={`${advertiser?.companyName ?? 'My'} — ${placement?.name ?? 'campaign'}`} />
-              <LabeledInput label="Headline" value={headline} onChangeText={setHeadline} maxLength={placement?.tier === 1 ? 60 : 40} placeholder="Fresh roti, hot daily" />
-              <LabeledInput label="Button label (optional)" value={ctaLabel} onChangeText={setCtaLabel} maxLength={15} placeholder="Order now" />
-              <LabeledInput label="Link (optional)" value={destinationValue} onChangeText={setDestinationValue} autoCapitalize="none" placeholder="https://your-site.gy" />
-            </View>
-            <PillButton label="Review order" style={{ marginTop: space['2xl'] }} onPress={() => setStep(5)} />
-          </>
-        ) : null}
-
-        {step === 5 ? (
-          <>
-            <Card style={{ padding: space.xl, gap: space.sm }}>
-              <T variant="heading">{name.trim() || `${advertiser?.companyName ?? ''} — ${placement?.name ?? ''}`}</T>
-              <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
-                <T variant="body" tone="muted">
-                  {placement?.name}
+              {error ? (
+                <T variant="label" style={{ color: color.error, marginTop: space.lg }}>
+                  {error}
                 </T>
-                <T variant="body">{money(placement?.weeklyPrice)}/wk</T>
-              </View>
-              <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
-                <T variant="body" tone="muted">
-                  {weeks.length} week{weeks.length > 1 ? 's' : ''} ({weeks[0]} → {weeks[weeks.length - 1]})
-                </T>
-                <T variant="body">× {weeks.length}</T>
-              </View>
-              <View style={{ height: 1, backgroundColor: color.border.subtle, marginVertical: space.sm }} />
-              <View style={{ flexDirection: 'row', justifyContent: 'space-between' }}>
-                <T variant="body" weight="semibold">
-                  Total
-                </T>
-                <T variant="body" weight="semibold">
-                  {money(total)}
-                </T>
-              </View>
-            </Card>
+              ) : null}
 
-            <Card style={{ padding: space.xl, marginTop: space.lg }}>
-              <T variant="caption" tone="muted">
-                Refunds: full refund if your creatives are never approved; cancel ≥7 days before a week starts for
-                100%, later for 50%; started weeks are not refunded. Cancelling always shows the exact amount first.
-              </T>
-            </Card>
-
-            {!approved ? (
-              <Card style={{ padding: space.xl, marginTop: space.lg, borderLeftWidth: 3, borderLeftColor: color.warning }}>
-                <T variant="caption">
-                  Your advertiser account is still in review — payment unlocks the moment you're approved. Your draft
-                  is saved.
-                </T>
-              </Card>
-            ) : null}
-
-            {error ? (
-              <T variant="label" style={{ color: color.error, marginTop: space.lg }}>
-                {error}
-              </T>
-            ) : null}
-
-            <PillButton
-              label={busy ?? (approved ? `Reserve & get invoice — ${money(total)}` : 'Save draft')}
-              loading={!!busy}
-              disabled={weeks.length === 0}
-              style={{ marginTop: space['2xl'] }}
-              onPress={reserveAndPay}
-            />
-          </>
-        ) : null}
-      </ScrollView>
+              <PillButton
+                label={busy ?? (approved ? `Reserve & get invoice — ${money(total)}` : 'Save draft')}
+                loading={!!busy}
+                disabled={weeks.length === 0}
+                style={{ marginTop: space['2xl'] }}
+                onPress={reserveAndPay}
+              />
+            </>
+          ) : null}
+        </ScrollView>
+      </KeyboardAvoider>
     </View>
   );
 }

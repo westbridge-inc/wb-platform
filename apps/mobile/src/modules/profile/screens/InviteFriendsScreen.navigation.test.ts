@@ -17,7 +17,9 @@ const fx = vi.hoisted(() => ({
 }));
 vi.mock('react-native', async () => {
   const R = await import('react');
-  return { View: ({ children }: any) => R.createElement('div', null, children), Share: { share: fx.share } };
+  const View = ({ children }: any) => R.createElement('div', null, children);
+  // The page now scrolls inside the kit KeyboardAvoider (Android path: a View that listens to the keyboard).
+  return { View, ScrollView: View, Share: { share: fx.share }, Platform: { OS: 'android' }, Keyboard: { addListener: () => ({ remove() {} }), isVisible: () => false, metrics: () => undefined } };
 });
 vi.mock('@swift/ui', () => ({ space: new Proxy({}, { get: () => 8 }) }));
 vi.mock('../../../kit', async () => {

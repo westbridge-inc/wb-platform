@@ -25,7 +25,8 @@ const fx = vi.hoisted(() => ({
 vi.mock('react-native', async () => {
   const R = await import('react');
   const View = (p: any) => R.createElement('div', null, p.children);
-  return { View, ScrollView: View, Dimensions: { get: () => ({ width: 390, height: 844 }) } };
+  // The item page sits in the kit KeyboardAvoider (Android path: a View that listens to the keyboard).
+  return { View, ScrollView: View, Dimensions: { get: () => ({ width: 390, height: 844 }) }, Platform: { OS: 'android' }, Keyboard: { addListener: () => ({ remove() {} }), isVisible: () => false, metrics: () => undefined } };
 });
 vi.mock('@expo/vector-icons', () => ({ Feather: () => null }));
 vi.mock('@react-navigation/native', () => ({

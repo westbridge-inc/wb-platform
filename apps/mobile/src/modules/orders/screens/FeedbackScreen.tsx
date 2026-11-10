@@ -1,6 +1,6 @@
 /** @jsxImportSource react */
 import React, { useState } from 'react';
-import { KeyboardAvoidingView, Platform, Pressable, ScrollView, TextInput, View } from 'react-native';
+import { Pressable, ScrollView, TextInput, View } from 'react-native';
 import { Image } from 'expo-image';
 import { Feather } from '@expo/vector-icons';
 import { useNavigation, useRoute } from '@react-navigation/native';
@@ -11,6 +11,8 @@ import { Chip, ErrorState, Header, IconChip, LoadingBlock, PillButton, PopupCard
 import { afterDismiss } from '../../../kit/after-dismiss';
 import { useRowHold } from '../../../lib/useRowHold';
 import { ratingTagFitsStore } from '../../../lib/storeKindWords';
+import { ratingBand, tagsOnScreen } from '../../../lib/ratingTagBand';
+import { KeyboardAvoider } from '../../../kit/keyboard-avoider';
 
 const GUTTER = space['2xl'];
 
@@ -174,6 +176,14 @@ export function FeedbackScreen() {
   const holdRow = useRowHold();
   const toggle = (setter: React.Dispatch<React.SetStateAction<string[]>>) => (slug: string) =>
     setter((cur) => (cur.includes(slug) ? cur.filter((t) => t !== slug) : cur.length < RATING_MAX_TAGS ? [...cur, slug] : cur));
+  // [RATINGS · owner report 10 Nov] Stars that cross into the other chip band ("What went wrong?" ↔
+  // "What was great?") drop the chips picked under the old band: they are off the screen, so they
+  // must neither count toward the cap nor be sent (the server refuses an off-band tag, and with it
+  // the whole rating).
+  const restar = (current: number, setScore: (n: number) => void, setTags: (t: string[]) => void) => (n: number) => {
+    if (ratingBand(n) !== ratingBand(current)) setTags([]);
+    setScore(n);
+  };
 
   const o = order.data;
   if (order.isLoading) {
@@ -199,13 +209,16 @@ export function FeedbackScreen() {
   const lastStep = !hasRider || step === 1;
 
   const submit = () => {
+    // Exactly the chips on screen — never one picked under the other star band.
+    const sentVendorTags = tagsOnScreen(vendorTags, vendorScore, tags.data?.['VENDOR'], (slug) => ratingTagFitsStore(slug, o?.vendor?.vendorType));
+    const sentRiderTags = tagsOnScreen(riderTags, riderScore, tags.data?.['RIDER']);
     rate.mutate(
       {
         ...(vendorScore
-          ? { vendorScore, ...(vendorComment.trim() ? { vendorComment: vendorComment.trim() } : {}), ...(vendorTags.length ? { vendorTags } : {}) }
+          ? { vendorScore, ...(vendorComment.trim() ? { vendorComment: vendorComment.trim() } : {}), ...(sentVendorTags.length ? { vendorTags: sentVendorTags } : {}) }
           : {}),
         ...(hasRider && riderScore
-          ? { riderScore, ...(riderComment.trim() ? { riderComment: riderComment.trim() } : {}), ...(riderTags.length ? { riderTags } : {}) }
+          ? { riderScore, ...(riderComment.trim() ? { riderComment: riderComment.trim() } : {}), ...(sentRiderTags.length ? { riderTags: sentRiderTags } : {}) }
           : {}),
       },
       { onSuccess: () => setDone(true) },
@@ -219,7 +232,9 @@ export function FeedbackScreen() {
   return (
     <Screen>
       <Header title="Feedback" />
-      <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1 }}>
+      {/* [ANDROID 9 Nov] Moves on Android too (kit/keyboard-avoider): the edge-to-edge window is never resized
+          for the keyboard, and the old `undefined` behavior there never moved, so the keyboard hid the bottom of the screen. */}
+      <KeyboardAvoider style={{ flex: 1 }}>
         <ScrollView
           contentContainerStyle={{ flexGrow: 1, paddingHorizontal: GUTTER, paddingTop: space.xl, paddingBottom: space['2xl'] }}
           keyboardShouldPersistTaps="handled"
@@ -232,7 +247,7 @@ export function FeedbackScreen() {
               role="Your order"
               question="How was your order?"
               score={vendorScore}
-              onScore={setVendorScore}
+              onScore={restar(vendorScore, setVendorScore, setVendorTags)}
               comment={vendorComment}
               onComment={setVendorComment}
             />
@@ -317,7 +332,7 @@ export function FeedbackScreen() {
               role="Rider"
               question="How was the delivery of your order?"
               score={riderScore}
-              onScore={setRiderScore}
+              onScore={restar(riderScore, setRiderScore, setRiderTags)}
               comment={riderComment}
               onComment={setRiderComment}
             />
@@ -362,7 +377,7 @@ export function FeedbackScreen() {
             />
           </View>
         </ScrollView>
-      </KeyboardAvoidingView>
+      </KeyboardAvoider>
 
       {/* Thanks popup (kit 46/48) */}
       <PopupCard

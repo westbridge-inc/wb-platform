@@ -9,6 +9,7 @@ import { useStepUp } from '../../../hooks/useStepUp';
 import type { VehicleKind } from '../../../services/api';
 import { VehicleSetup } from './MoverOnboardingScreen';
 import { GUTTER } from '../shared';
+import { KeyboardAvoider } from '../../../kit/keyboard-avoider';
 
 /**
  * [VEHICLES] A working mover changes vehicle. The same picker as onboarding, in
@@ -25,28 +26,31 @@ export function MoverVehicleScreen({ navigation }: any) {
   return (
     <Screen>
       <Header title="Your vehicle" />
-      <ScrollView
-        contentContainerStyle={{ paddingHorizontal: GUTTER, paddingBottom: space['3xl'] }}
-        showsVerticalScrollIndicator={false}
-      >
-        <VehicleSetup
-          mode="change"
-          current={current}
-          vt={vt}
-          setVt={setVt}
-          guard={stepUp.withStepUp}
-          onDone={(changed) => {
-            if (!changed) {
-              toast.show('No change', 'That is already your vehicle.');
-              return;
-            }
-            toast.success('Vehicle changed', 'Add its documents — you can go online once they’re approved.');
-            // [UI-SWEEP U35] Documents REPLACE the finished vehicle form: Back
-            // goes to Account, never to a form whose change is already made.
-            navigation?.replace?.('MoverDocuments');
-          }}
-        />
-      </ScrollView>
+      {/* [KEYBOARD 10 Nov] Lifted above the keyboard (kit/keyboard-avoider), so the last fields can scroll into view. */}
+      <KeyboardAvoider style={{ flex: 1 }}>
+        <ScrollView
+          contentContainerStyle={{ paddingHorizontal: GUTTER, paddingBottom: space['3xl'] }}
+          showsVerticalScrollIndicator={false}
+        >
+          <VehicleSetup
+            mode="change"
+            current={current}
+            vt={vt}
+            setVt={setVt}
+            guard={stepUp.withStepUp}
+            onDone={(changed) => {
+              if (!changed) {
+                toast.show('No change', 'That is already your vehicle.');
+                return;
+              }
+              toast.success('Vehicle changed', 'Add its documents — you can go online once they’re approved.');
+              // [UI-SWEEP U35] Documents REPLACE the finished vehicle form: Back
+              // goes to Account, never to a form whose change is already made.
+              navigation?.replace?.('MoverDocuments');
+            }}
+          />
+        </ScrollView>
+      </KeyboardAvoider>
       {stepUp.sheet}
     </Screen>
   );

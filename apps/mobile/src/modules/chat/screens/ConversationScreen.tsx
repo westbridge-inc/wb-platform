@@ -1,6 +1,6 @@
 /** @jsxImportSource react */
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { FlatList, KeyboardAvoidingView, Platform, Pressable, TextInput, View } from 'react-native';
+import { FlatList, Pressable, TextInput, View } from 'react-native';
 import { Feather } from '@expo/vector-icons';
 import { useRoute } from '@react-navigation/native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -13,6 +13,7 @@ import { ActionSheet, CircleChip, ConfirmDialog, ErrorState, Header, LoadingBloc
 import { errorMessage } from '../../../lib/apiError';
 import { CHAT_REPORT_REASONS } from '../../../lib/reportReasons';
 import { confirmedOutbox, dropOutbox, markOutbox, outboxBaseline, outboxItem, settleConfirmedFailed, settleOutbox, threadWithOutbox, type OutboxItem } from '../../../lib/chatOutbox';
+import { KeyboardAvoider } from '../../../kit/keyboard-avoider';
 
 const GUTTER = space['2xl'];
 
@@ -152,7 +153,9 @@ export function ConversationScreen() {
           }
         />
       ) : (
-        <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1 }}>
+        /* [ANDROID 9 Nov] Moves on Android too (kit/keyboard-avoider): the edge-to-edge window is never resized
+           for the keyboard, and the old `undefined` behavior there never moved, so the keyboard hid the composer. */
+        <KeyboardAvoider style={{ flex: 1 }}>
           <FlatList
             ref={listRef}
             data={thread}
@@ -265,7 +268,7 @@ export function ConversationScreen() {
               )}
             </Pressable>
           </View>
-        </KeyboardAvoidingView>
+        </KeyboardAvoider>
       )}
 
       <ActionSheet

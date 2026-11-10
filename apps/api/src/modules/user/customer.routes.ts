@@ -3252,7 +3252,7 @@ export async function customerRoutes(app: FastifyInstance) {
     const user = await app.prisma.user.findUniqueOrThrow({ where: { id: userId }, select: { tenantId: true } });
     const vendor = await app.prisma.vendor.findFirst({
       where: { id: q.vendorId, tenantId: user.tenantId },
-      select: { id: true, name: true, latitude: true, longitude: true, vendorType: true },
+      select: { id: true, name: true, latitude: true, longitude: true, vendorType: true, mmgNumber: true },
     });
     if (!vendor) throw new NotFoundError('Vendor', q.vendorId);
     const gate = process.env['DISPATCH_AVAILABILITY'] === '1' && process.env['DELIVERY_BLOCK_ON_NONE'] !== '0';
@@ -3293,7 +3293,7 @@ export async function customerRoutes(app: FastifyInstance) {
     }
 
     const cacheKey = tenantCacheKey(`avail:DELIVERY:${vendor.id}:${packageSize ?? '-'}/${loadBand ?? '-'}:${Math.ceil(cash / 1000)}:${dropoff ? `${dropoff.lat.toFixed(2)}:${dropoff.lng.toFixed(2)}` : '-'}`);
-    type Reading = { level: 'GOOD' | 'BUSY' | 'NONE'; reason: 'NO_RIDERS' | 'RIDERS_BUSY' | null; riderWaitMinutes: number };
+    type Reading = { level: 'GOOD' | 'BUSY' | 'NONE'; reason: 'NO_RIDERS' | 'RIDERS_BUSY' | 'CASH_OVER_RIDER_LIMIT' | null; riderWaitMinutes: number };
     let reading: Reading | null = null;
     const cached = await app.redis.get(cacheKey).catch(() => null);
     if (cached) {
@@ -3319,7 +3319,8 @@ export async function customerRoutes(app: FastifyInstance) {
         level: reading.level,
         reason: reading.reason,
         extraMinutes: reading.level === 'BUSY' ? reading.riderWaitMinutes : null,
-        message: capacitySentence(reading),
+        // [RIDE-03] Too much cash for any rider near: the store's MMG (when it takes MMG) or pickup.
+        message: capacitySentence(reading, { storeName: vendor.name, mmg: safeMmgNumber(vendor.mmgNumber) !== null }),
         gate,
       },
     };

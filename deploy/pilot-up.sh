@@ -411,6 +411,8 @@ if [ "$PILOT_ENV" = production ]; then
       die "PILOT_ENV=production with CARD_RAIL_V2=1 needs POWERTRANZ_API_URL: PowerTranz's production address, https://gateway.ptranz.com"
     [ "$(env_setting POWERTRANZ_ID_FILE)" = /run/secrets/POWERTRANZ_ID ] && [ "$(env_setting POWERTRANZ_PASSWORD_FILE)" = /run/secrets/POWERTRANZ_PASSWORD ] ||
       die "PILOT_ENV=production with CARD_RAIL_V2=1 needs POWERTRANZ_ID_FILE=/run/secrets/POWERTRANZ_ID and POWERTRANZ_PASSWORD_FILE=/run/secrets/POWERTRANZ_PASSWORD in deploy/.env: the live PowerTranz credentials, entered by the owner at hidden prompts into the encrypted store"
+    [[ "$(env_setting POWERTRANZ_PAGE_SET)" == PTZ/?* ]] ||
+      die "PILOT_ENV=production with CARD_RAIL_V2=1 needs POWERTRANZ_PAGE_SET=PTZ/<set>: the live page set PowerTranz gives, with its PTZ/ prefix (without it no card page opens)"
   fi
   for locked_name in CARD_RAIL_V2_DRAIN CARD_RAIL_ENROLL ADS_ENABLED; do
     case "$locked_name" in
@@ -456,18 +458,23 @@ if [ "$PILOT_ENV" = production ]; then
     esac
   fi
 fi
-# [CARDS-SWITCH-ON · staging card test, 10 Nov 2026] Any server: card rail v2
-# on PowerTranz with the kill switch off means card payments are meant to work,
-# and the API and the worker read the PowerTranz credentials only from the
-# encrypted store, through these two deploy/.env lines (the MMG secrets are
-# wired the same way). Staging once ran without them: nothing could read the
-# credentials and cards could not work, while every check read green. Refused
-# here, before anything changes; the API refuses to boot the same way
-# (boot-config.ts assertCardRailProviderReadable), and the store check below
-# proves both names are stored.
-if [ "$(env_setting CARD_RAIL_V2)" = 1 ] && [ "$(env_setting CARD_RAIL_PROVIDER)" = powertranz ] && [ "$(env_setting CARD_RAIL_KILL)" != 1 ]; then
+# [CARDS-SWITCH-ON · staging card test, 10 Nov 2026 · review #2466-B F2] Any
+# server: card rail v2 (or its drain) on PowerTranz reaches the provider WHATEVER
+# THE KILL SWITCH (a killed rail still confirms, looks up, voids and refunds what
+# is in flight), and the API and the worker read the PowerTranz credentials only
+# from the encrypted store, through these two deploy/.env lines (the MMG secrets
+# are wired the same way). Staging once ran without them: nothing could read the
+# credentials and cards could not work, while every check read green. The page
+# set carries PowerTranz's PTZ/ prefix (without it no card page opens, 757). The
+# API refuses to boot without either (boot-config.ts
+# assertCardRailProviderReadable), so this refuses the deploy here, before
+# anything changes, instead of letting api and worker crash-loop after the swap;
+# the store check below proves both names are stored.
+if { [ "$(env_setting CARD_RAIL_V2)" = 1 ] || [ "$(env_setting CARD_RAIL_V2_DRAIN)" = 1 ]; } && [ "$(env_setting CARD_RAIL_PROVIDER)" = powertranz ]; then
   [ "$(env_setting POWERTRANZ_ID_FILE)" = /run/secrets/POWERTRANZ_ID ] && [ "$(env_setting POWERTRANZ_PASSWORD_FILE)" = /run/secrets/POWERTRANZ_PASSWORD ] ||
-    die "CARD_RAIL_V2=1 with CARD_RAIL_PROVIDER=powertranz and the kill switch off needs POWERTRANZ_ID_FILE=/run/secrets/POWERTRANZ_ID and POWERTRANZ_PASSWORD_FILE=/run/secrets/POWERTRANZ_PASSWORD in deploy/.env: the API reads the PowerTranz credentials only from the encrypted store, and without these lines cards cannot work"
+    die "card rail v2 (CARD_RAIL_V2=1 or CARD_RAIL_V2_DRAIN=1) on CARD_RAIL_PROVIDER=powertranz needs POWERTRANZ_ID_FILE=/run/secrets/POWERTRANZ_ID and POWERTRANZ_PASSWORD_FILE=/run/secrets/POWERTRANZ_PASSWORD in deploy/.env, whatever the kill switch: the API reads the PowerTranz credentials only from the encrypted store, and without these lines it refuses to start"
+  [[ "$(env_setting POWERTRANZ_PAGE_SET)" == PTZ/?* ]] ||
+    die "card rail v2 (CARD_RAIL_V2=1 or CARD_RAIL_V2_DRAIN=1) on CARD_RAIL_PROVIDER=powertranz needs POWERTRANZ_PAGE_SET=PTZ/<set>: PowerTranz's page set is sent with its PTZ/ prefix (the portal's set SWIFT is PTZ/SWIFT; without it no card page opens), and the API refuses to start without it"
 fi
 for tool in git docker curl python3; do command -v "$tool" >/dev/null 2>&1 || die "$tool is required"; done
 # [COORD 21 Oct] MALWARE_SCAN_BYPASS_SHOUT: the emergency bypass is loud on every deploy.
