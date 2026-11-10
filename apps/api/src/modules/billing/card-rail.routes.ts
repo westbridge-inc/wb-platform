@@ -872,6 +872,9 @@ export async function adminResolveCardSession(app: FastifyInstance, id: string, 
   );
 }
 
+/** The approval action (method and admin route template) of "Check with the card provider". */
+export const CARD_PROVIDER_CHECK_ACTION = 'POST /billing/card-sessions/:id/check-provider';
+
 const checkBody = z.object({
   /** The stated reason may come in the body as well as the header (ADM-006). */
   reason: z.string().trim().max(2000).optional(),

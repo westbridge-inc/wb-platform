@@ -1,8 +1,8 @@
 -- [CARD-REFUND-LOOKUP] A refund to a card whose answer was lost (UNKNOWN), or is still pending, is settled by the card
 -- provider's own record of the ORIGINAL transaction (GET /api/Transactions/{id}: TotalCreditAmount, VoidDateTime),
 -- read only when a person asks and a second admin approves. When the record shows the WHOLE payment back, the claim
--- moves on to REFUNDED, once. Nothing else changes: every other transition stays refused, an answered refund is
--- otherwise final, and nothing here sends anything.
+-- moves on to REFUNDED, once, keeping the refund's own answer (its time and hash) as it was. Nothing else changes:
+-- every other transition stays refused, an answered refund is otherwise final, and nothing here sends anything.
 -- Additive in effect: two guard functions gain one allowed transition each; no table, column or row changes.
 --
 -- ROLLBACK: rollback.sql beside this file (puts back the previous guards; rows already moved stay as they are).
@@ -94,7 +94,10 @@ BEGIN
     RAISE EXCEPTION 'card_credit_refunds row %: a refund claim only moves forward, once (% -> %) [CARD-READY]', OLD.id, OLD."state", NEW."state" USING ERRCODE = 'check_violation';
   END IF;
   IF OLD."state" <> 'SENDING'
-     AND NOT (OLD."state" IN ('UNKNOWN', 'PENDING') AND NEW."state" = 'REFUNDED' AND OLD."providerRefundRef" IS NULL AND OLD."billingEventId" IS NULL)
+     -- [REVIEW-2461-B S3-1] Moving on to REFUNDED sets the reference and the refund record once; the refund's own
+     -- answer (answeredAt, answerSha256) stays exactly as it was.
+     AND NOT (OLD."state" IN ('UNKNOWN', 'PENDING') AND NEW."state" = 'REFUNDED' AND OLD."providerRefundRef" IS NULL AND OLD."billingEventId" IS NULL
+              AND NEW."answeredAt" IS NOT DISTINCT FROM OLD."answeredAt" AND NEW."answerSha256" IS NOT DISTINCT FROM OLD."answerSha256")
      AND (NEW."providerRefundRef" IS DISTINCT FROM OLD."providerRefundRef"
        OR NEW."billingEventId" IS DISTINCT FROM OLD."billingEventId" OR NEW."answeredAt" IS DISTINCT FROM OLD."answeredAt"
        OR NEW."outcomeReason" IS DISTINCT FROM OLD."outcomeReason" OR NEW."answerSha256" IS DISTINCT FROM OLD."answerSha256") THEN

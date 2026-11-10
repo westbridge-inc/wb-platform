@@ -87,6 +87,9 @@ import {
 //   - whether the transaction lookup (5.) carries the 3-D Secure proof
 //     (RiskManagement.ThreeDSecure): until PowerTranz says, the lookup alone
 //     never books;
+//   - whether OrderSummary.TotalCreditAmount counts only APPROVED refunds (never
+//     a pending, declined or reversed attempt): Swift ASSUMES it does (6.), and
+//     real staging records pin it before cards go live;
 //   - whether the original transaction's record lists the refunds made on it,
 //     each with its own TransactionIdentifier (asked): Swift reads no refund
 //     id from it. A refund confirmed by the lookup (6.) is recorded under a
@@ -614,6 +617,8 @@ type RefundVerdict = { status: 'refunded'; how: 'credit' | 'void'; reason: strin
  *   - a credit above the capture, or with nothing captured: contradicts itself — unknown;
  *   - not an approved Sale ("00", TransactionType 2): a credit on it cannot be read as this payment's — unknown;
  *   - TotalCreditAmount = TotalCaptureAmount = Swift's price, to the minor unit: the WHOLE payment went back — refunded;
+ *     ASSUMED until PowerTranz confirms [REVIEW-2461-A S3-1]: TotalCreditAmount counts only refunds PowerTranz
+ *     APPROVED (never a pending, declined or reversed attempt). Real staging records pin this before cards go live;
  *   - any other credit (part of it, or a capture that is not Swift's price): never "refunded" — held for the owner.
  */
 export function judgeRefundRecord(record: PowerTranzTransactionRecord, held: HeldCompletion): RefundVerdict {

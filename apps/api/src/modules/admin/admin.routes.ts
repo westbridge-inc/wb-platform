@@ -2,7 +2,7 @@ import { emitToOrderRoom, emitToStoreRoom } from '../order/order-room-emission.s
 import { scanUpload } from '../../lib/malware-scan';
 import { documentScanState, uploadScanRefusal, retryHeldEvidenceScan } from '../../lib/upload-scan-debt';
 import { vatTracker } from '../billing/vat-tracker';
-import { adminCardSession, adminCardSessions, adminCheckCardProvider, adminResolveCardSession, adminSubscriptionCards, cardRailRuntimeOf } from '../billing/card-rail.routes';
+import { CARD_PROVIDER_CHECK_ACTION, adminCardSession, adminCardSessions, adminCheckCardProvider, adminResolveCardSession, adminSubscriptionCards, cardRailRuntimeOf } from '../billing/card-rail.routes';
 import { cardRailV2DrainEnabled, cardRailV2Enabled } from '../../utils/card-rail';
 import { listCases, caseDetail, claimCase, directCase, assignRelay, confirmReturn } from '../custody/custody-recovery';
 import { CUSTODY_CASE_DIRECTABLE, CUSTODY_CASE_OPEN_STATES } from '../order/order-status';
@@ -7963,7 +7963,9 @@ export async function adminRoutes(app: FastifyInstance) {
       });
       // [OWNER 5 Nov 2026] The receipt exists only now: the person executing is told its number.
       const receiptNumber = approval.action === IN_PERSON_ACTION ? (replay.json() as { data?: { receiptNumber?: string } }).data?.receiptNumber : undefined;
-      return { success: true, data: { id: approval.id, status: applied?.status ?? 'APPLIED', appliedAt: applied?.appliedAt ?? null, ...(receiptNumber ? { receiptNumber } : {}) } };
+      // [CARD-REFUND-LOOKUP · REVIEW-2461-B S3-2] What "Check with the card provider" found is told to the person executing it.
+      const providerCheck = approval.action === CARD_PROVIDER_CHECK_ACTION ? (replay.json() as { data?: { check?: string } }).data?.check : undefined;
+      return { success: true, data: { id: approval.id, status: applied?.status ?? 'APPLIED', appliedAt: applied?.appliedAt ?? null, ...(receiptNumber ? { receiptNumber } : {}), ...(providerCheck ? { providerCheck } : {}) } };
     }
 
     let error: { code?: string; message?: string } | undefined;

@@ -24,7 +24,7 @@ import { runWithTenant, runWithoutTenant } from '../plugins/tenant-context';
 import { deleteRunKeys, runKeyPrefix } from './helpers/card-sim-keys';
 import { testPhone } from './helpers/fixture-ids';
 import { partnerObligations, verdictFor } from '../modules/user/partner-wind-down';
-import { recordCreditRefundPaid, releaseCreditRefund, setAsideCreditRefund } from '../modules/billing/credit-refund';
+import { recordCreditRefundPaid, refundReferenceOf, releaseCreditRefund, setAsideCreditRefund } from '../modules/billing/credit-refund';
 import { CARD_REFUND_ACTION, checkCardCreditRefund, creditRefundSources, lookupCreditReference, refundCardCreditToCard, validateCardRefundAsk } from '../modules/billing/card-credit-refund';
 
 // ---------------------------------------------------------------------------
@@ -1152,6 +1152,8 @@ describe('[CARD-READY] card money set aside at closing goes back to its card thr
     it('the whole payment credited back on the provider\'s record: REFUNDED ONCE, its CARD payout part out of card clearing, under Swift\'s reference; never resent; checked again: nothing to check', async () => {
       const { p, s1, setAsideId, tenantId, sent } = await lostRefund();
       const original = await originalOf(s1);
+      const before = await app.prisma.cardCreditRefund.findUniqueOrThrow({ where: { cardSessionId: s1 } });
+      expect(before.answeredAt).not.toBeNull();
       const look = looking(whole);
       const done = await checkIt(tenantId, s1, look.provider);
       const reference = lookupCreditReference(original);
@@ -1163,6 +1165,11 @@ describe('[CARD-READY] card money set aside at closing goes back to its card thr
       const row = await app.prisma.cardCreditRefund.findUniqueOrThrow({ where: { cardSessionId: s1 } });
       expect(row).toMatchObject({ state: 'REFUNDED', providerRefundRef: reference, setAsideId });
       expect(row.billingEventId).toBeTruthy();
+      // [REVIEW-2461-B S3-1] The refund's own (lost) answer stays on the row as it was; the record's hash is in the trail.
+      expect(row.answeredAt?.getTime()).toBe(before.answeredAt?.getTime());
+      expect(row.answerSha256).toBe(before.answerSha256);
+      const trail = await app.prisma.auditLog.findFirst({ where: { entityId: p.subId, action: 'PREPAID_REFUND_CARD_REFUND_CHECK_REFUNDED' } });
+      expect(trail?.changes).toMatchObject({ lookupSha256: 'f'.repeat(64), how: 'credit', wasAnswerSha256: before.answerSha256, reference });
       expect(await app.prisma.billingEvent.count({ where: { subscriptionId: p.subId, type: 'PREPAID_REFUND', paymentRef: reference } })).toBe(1);
       const out = await app.prisma.ledgerEntry.findMany({ where: { transaction: { idempotencyKey: `ledger:credit-refund-paid:${reference}` } }, select: { accountCode: true, debit: true, credit: true } });
       expect(out.map((e) => [e.accountCode, Number(e.debit), Number(e.credit)]).sort()).toEqual([['CLEARING_CARD', 0, WEEKLY], ['REFUND_PAYABLE', WEEKLY, 0]]);
@@ -1234,6 +1241,43 @@ describe('[CARD-READY] card money set aside at closing goes back to its card thr
       const look = looking(whole);
       await expect(checkIt(sessionRow.tenantId, q.s2, look.provider)).rejects.toMatchObject({ code: 'NOTHING_TO_CHECK' });
       expect(look.reads).toHaveLength(0);
+    });
+
+    it('[REVIEW-2461 A S4-1] the record shows the money back but Swift cannot record it: the verdict is kept in the trail and the owner is told; nothing recorded', async () => {
+      const { p, s1, tenantId } = await lostRefund();
+      const reference = lookupCreditReference(await originalOf(s1));
+      // The reference is already on record (fixture): Swift refuses to record the payout under it.
+      await app.prisma.billingEvent.create({ data: { subscriptionId: p.subId, type: 'TIER_CHANGE', currencyCode: 'GYD', idempotencyKey: `fixture-ref-${RUN}-${nanoid(6)}`, paymentRef: reference, note: 'fixture: the reference is taken' } });
+      const told: string[] = [];
+      await expect(checkIt(tenantId, s1, looking(whole).provider, async (m) => { told.push(m); })).rejects.toMatchObject({ code: 'REFUND_REFERENCE_IS_A_PAYMENT' });
+      expect(told).toHaveLength(1);
+      expect(told[0]).toContain('shows the whole');
+      const trail = await app.prisma.auditLog.findFirst({ where: { entityId: p.subId, action: 'PREPAID_REFUND_CARD_REFUND_CHECK_REFUNDED_NOT_RECORDED' } });
+      expect(trail?.changes).toMatchObject({ refusal: 'REFUND_REFERENCE_IS_A_PAYMENT', lookupSha256: 'f'.repeat(64), lookup: 'refunded' });
+      expect((await app.prisma.cardCreditRefund.findUniqueOrThrow({ where: { cardSessionId: s1 } })).state).toBe('UNKNOWN');
+      expect(await app.prisma.billingEvent.count({ where: { subscriptionId: p.subId, type: 'PREPAID_REFUND' } })).toBe(0);
+    });
+
+    it('[REVIEW-2461-A S4-3] a payout typed by a person can never use Swift\'s LOOKUP-CREDIT- reference', () => {
+      expect(() => refundReferenceOf('lookup-credit-0446a902-311d-4868-8247-e9dfbd8ea0a6')).toThrow(expect.objectContaining({ code: 'REFUND_REFERENCE_RESERVED' }));
+      expect(refundReferenceOf('TRF-12345')).toBe('TRF-12345');
+    });
+
+    it('[REVIEW-2461-B S3-1 · S4-2] the database: moving on to REFUNDED keeps the refund\'s own answer; a refused (FAILED) refund never becomes REFUNDED; a REFUNDED one is never rewritten', async () => {
+      const { p, s1, s2, setAsideId, tenantId } = await lostRefund();
+      // Changing the refund's own answer on the way to REFUNDED is refused.
+      const event = await app.prisma.billingEvent.create({ data: { subscriptionId: p.subId, type: 'TIER_CHANGE', currencyCode: 'GYD', idempotencyKey: `fixture-evt-${RUN}-${nanoid(6)}`, note: 'fixture' } });
+      await expect(app.prisma.cardCreditRefund.update({ where: { cardSessionId: s1 }, data: { state: 'REFUNDED', providerRefundRef: `FIXTURE-${RUN}`, billingEventId: event.id, answeredAt: new Date() } })).rejects.toThrow(/an answered refund is final/);
+      await expect(app.prisma.cardCreditRefund.update({ where: { cardSessionId: s1 }, data: { state: 'REFUNDED', providerRefundRef: `FIXTURE-${RUN}`, billingEventId: event.id, answerSha256: '9'.repeat(64) } })).rejects.toThrow(/an answered refund is final/);
+      // A refused refund moved nothing and stays refused.
+      const refused = refunding(async () => ({ status: 'failed', reason: 'REFUND_REFUSED_12_384', rawSha256: '7'.repeat(64) }));
+      expect(await toCard(p, setAsideId, s2, refused.provider, await approval(CARD_REFUND_ACTION, p.subId, 'admin-c', 'admin-b'))).toMatchObject({ state: 'FAILED' });
+      await expect(app.prisma.cardCreditRefund.update({ where: { cardSessionId: s2 }, data: { state: 'REFUNDED', providerRefundRef: `FIXTURE2-${RUN}`, billingEventId: event.id } })).rejects.toThrow(/only moves forward/);
+      // REFUNDED by the lookup: final.
+      expect(await checkIt(tenantId, s1, looking(whole).provider)).toMatchObject({ check: 'REFUNDED' });
+      for (const data of [{ providerRefundRef: `OTHER-${RUN}` }, { billingEventId: event.id }, { answeredAt: new Date() }, { answerSha256: '8'.repeat(64) }, { outcomeReason: 'rewritten' }, { state: 'UNKNOWN' }]) {
+        await expect(app.prisma.cardCreditRefund.update({ where: { cardSessionId: s1 }, data }), JSON.stringify(data)).rejects.toThrow(/final|only moves forward/);
+      }
     });
 
     it('the database: an unanswered refund moves only to REFUNDED, with its reference and record; an answered one never moves again', async () => {

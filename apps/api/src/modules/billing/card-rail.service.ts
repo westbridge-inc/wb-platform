@@ -1374,7 +1374,8 @@ export class CardRailService {
     const session = await this.prisma.cardSession.findUnique({ where: { id: input.sessionId } });
     if (!session || session.tenantId !== input.tenantId || session.purpose !== 'PAY_NOW') throw new NotFoundError('Card session', input.sessionId);
     if (session.status !== 'HELD') {
-      const answer = await checkCardCreditRefund(this.prisma, this.rail, {
+      // [REVIEW-2461-B S4-3] `rail` reads this service's provider: passed bound (an unbound method lost `this`).
+      const answer = await checkCardCreditRefund(this.prisma, () => this.rail(), {
         adminId: input.adminUserId, tenantId: input.tenantId, cardSessionId: session.id, now, ...(input.onAudit ? { onAudit: input.onAudit } : {}),
         alertOwner: (body) => notifyAdmins(this.prisma, this.notifications, {
           tenantId: session.tenantId, title: 'Card refund needs the owner', body,
@@ -1403,8 +1404,28 @@ export class CardRailService {
     }).catch((): CardRefundLookupOutcome => ({ status: 'unknown', reason: 'LOOKUP_CALL_FAILED', rawSha256: rawDigest({ lookup: 'threw', ref }) }));
     const check = providerCheckOf(looked);
     log().warn({ sessionId: session.id, refund: session.providerRefundState, lookup: looked.status, why: looked.reason }, '[CARD-REFUND-LOOKUP] a held card payment\'s refund was checked with the provider');
-    const audited = (tx: Prisma.TransactionClient) => input.onAudit?.(tx, { check, lookup: looked.status, lookupReason: looked.reason, providerTransactionRef: ref, refundWas: session.providerRefundState });
-    const changed = () => new AppError(409, 'NOTHING_TO_CHECK', 'This payment changed while it was being checked. Nothing was recorded: look at it again.');
+    // [REVIEW-2461-A S4-2] The hash of the record the decision rests on, and how it showed the money back.
+    const audited = (tx: Prisma.TransactionClient, extra: Record<string, unknown> = {}) => input.onAudit?.(tx, {
+      check, lookup: looked.status, lookupReason: looked.reason, lookupSha256: looked.rawSha256, ...(looked.status === 'refunded' ? { how: looked.how } : {}),
+      providerTransactionRef: ref, refundWas: session.providerRefundState, ...extra,
+    });
+    const page = (body: string) => notifyAdmins(this.prisma, this.notifications, {
+      tenantId: session.tenantId,
+      title: 'Card refund needs the owner',
+      body,
+      data: { kind: 'billing_invariants', alert: 'card-refund-not-whole', subscriptionId: session.subscriptionId, sessionId: session.id },
+      dedupeKey: `card-refund-not-whole:${session.id}`,
+    }).catch(() => {});
+    /** [REVIEW-2461 A S4-1] The payment changed under the check: nothing is recorded, but the provider's verdict is kept
+     *  (its own audit row) and, when it said money is back, the owner is told. */
+    const changed = async () => {
+      log().error({ sessionId: session.id, lookup: looked.status }, '[CARD-REFUND-LOOKUP] the held card payment changed while its refund was checked — nothing recorded');
+      await this.prisma.$transaction(async (tx) => { await audited(tx, { notRecorded: 'SESSION_CHANGED' }); });
+      if (looked.status !== 'not_refunded' && looked.status !== 'unknown') {
+        await page(`Card payment ${session.id} (order ${orderRef}, transaction ${ref}): PowerTranz's record shows ${looked.status === 'refunded' ? 'the whole payment back' : 'a refund that is not the whole payment'} (${looked.reason}), but the payment changed while it was checked. Nothing was recorded or sent. Look at it again.`);
+      }
+      return new AppError(409, 'NOTHING_TO_CHECK', 'This payment changed while it was being checked. Nothing was recorded: look at it again.');
+    };
 
     if (looked.status === 'refunded') {
       // The provider's own record shows the whole payment back: the refund Swift sent took effect. Closed as REFUNDED,
@@ -1417,24 +1438,21 @@ export class CardRailService {
         await audited(tx);
         return true;
       });
-      if (!closed) throw changed();
+      if (!closed) throw await changed();
     } else if (looked.status === 'part_credited') {
       // A credit that is not the whole payment: never "refunded". Held for the owner (finance has no decision on it).
+      // [REVIEW-2461-B S2-1] A late provider approval keeps its code: it alone blocks every new fee instruction beside
+      // this payment (lateCardApprovalHeldInTx, unresolvedConfirmationSources), exactly as hold() keeps it. The part
+      // credit is then in the audit row and the page; resolveHeld already refuses every decision once a refund was sent.
       const held = await this.prisma.$transaction(async (tx) => {
         const fresh = await this.lockSession(tx, session.id);
         if (!fresh || !heldRefundCheckable(fresh, now)) return false;
-        await tx.cardSession.update({ where: { id: fresh.id }, data: { failureCode: 'LOOKUP_REFUND_NOT_WHOLE' } });
+        if (fresh.failureCode !== 'LATE_PROVIDER_APPROVAL') await tx.cardSession.update({ where: { id: fresh.id }, data: { failureCode: 'LOOKUP_REFUND_NOT_WHOLE' } });
         await audited(tx);
         return true;
       });
-      if (!held) throw changed();
-      await notifyAdmins(this.prisma, this.notifications, {
-        tenantId: session.tenantId,
-        title: 'Card refund needs the owner',
-        body: `Card payment ${session.id} (order ${orderRef}, transaction ${ref}): PowerTranz's record shows a refund that is not the whole ${Number(session.amount)} ${session.currencyCode} payment (${looked.reason}). Nothing was recorded or sent. The owner settles it with PowerTranz.`,
-        data: { kind: 'billing_invariants', alert: 'card-refund-not-whole', subscriptionId: session.subscriptionId, sessionId: session.id },
-        dedupeKey: `card-refund-not-whole:${session.id}`,
-      }).catch(() => {});
+      if (!held) throw await changed();
+      await page(`Card payment ${session.id} (order ${orderRef}, transaction ${ref}): PowerTranz's record shows a refund that is not the whole ${Number(session.amount)} ${session.currencyCode} payment (${looked.reason}). Nothing was recorded or sent. The owner settles it with PowerTranz.`);
     } else {
       // No credit yet, unreadable, or asked moments ago: nothing is recorded, nothing is sent again.
       await this.prisma.$transaction(async (tx) => { await audited(tx); });

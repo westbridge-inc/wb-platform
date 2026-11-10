@@ -51,7 +51,9 @@ import type { CardSessionOutcome, CompletionClaim } from '../providers/card/card
 import { resetKeyProviderForTests } from '../providers/storage/envelope';
 import { cleanupBillingClocks } from './helpers/billing-clock-cleanup';
 import { deleteRunKeys, runKeyPrefix } from './helpers/card-sim-keys';
-import { injectWithApproval } from './helpers/admin-approval';
+import { askAndApprove, injectWithApproval } from './helpers/admin-approval';
+import { setAsideCreditRefund } from '../modules/billing/credit-refund';
+import { CARD_REFUND_ACTION, refundCardCreditToCard } from '../modules/billing/card-credit-refund';
 import { TEST_ADMIN_REASON } from './helpers/admin-reason';
 
 // ---------------------------------------------------------------------------
@@ -339,6 +341,8 @@ afterAll(async () => {
     await cleanupBillingClocks(app.prisma, subIds);
     // Deleting the subscriptions cascades their cards, sessions and payments;
     // observations are append-only evidence and stay, keyed to this run's ids.
+    await app.prisma.cardCreditRefund.deleteMany({ where: { subscriptionId: { in: subIds } } });
+    await app.prisma.privilegedApproval.deleteMany({ where: { fingerprint: { startsWith: `card-refund-lookup-${RUN}-` } } });
     await app.prisma.billingEvent.deleteMany({ where: { subscriptionId: { in: subIds } } });
     await app.prisma.subscriptionPayment.deleteMany({ where: { subscriptionId: { in: subIds } } });
     await app.prisma.prepaidBalance.deleteMany({ where: { subscriptionId: { in: subIds } } });
@@ -2629,6 +2633,73 @@ describe('[PT-4] real cards through HTTP: Swift\'s hosted page, the bank\'s chec
       expect((await check(finance, sessionId)).json().data).toMatchObject({ check: 'REFUNDED', resolution: 'REFUNDED' });
       expect(await rowOf(sessionId)).toMatchObject({ providerRefundState: 'REFUNDED', status: 'FAILED' });
       expect(refundsOf(txnId)).toBe(0);
+    });
+
+    it('[REVIEW-2461-B S2-1] a part credit on a LATE provider approval hold keeps LATE_PROVIDER_APPROVAL: no new fee collection starts beside it', async () => {
+      const finance = await makeFinance();
+      const p = await makeStore();
+      const { sessionId, txnId } = await heldPayment(p, from());
+      // The approval arrived after the page closed and its void was refused (fixture: the code the late path writes).
+      await app.prisma.cardSession.update({ where: { id: sessionId }, data: { failureCode: 'LATE_PROVIDER_APPROVAL' } });
+      refundAnswer = () => 'network';
+      const lost = await resolve(finance, sessionId, { action: 'REFUND', providerReference: txnId, amount: 2100 });
+      expect(lost.json().data, lost.body).toMatchObject({ status: 'HELD', refund: 'unknown' });
+      refundAnswer = adjusted;
+      lookupAnswer = recordOf(txnId, sessionId, {}, { TotalCreditAmount: 700 });
+      expect((await check(finance, sessionId)).json().data).toMatchObject({ check: 'OWNER_HOLD', status: 'HELD', failureCode: 'LATE_PROVIDER_APPROVAL' });
+      expect(await rowOf(sessionId)).toMatchObject({ status: 'HELD', failureCode: 'LATE_PROVIDER_APPROVAL', providerRefundState: 'UNKNOWN' });
+      expect(await app.prisma.notification.count({ where: { userId: finance.userId, dedupeKey: `card-refund-not-whole:${sessionId}` } })).toBe(1);
+      // Even with its confirmation resolved (as when a newer obligation stood), the late approval alone blocks collection.
+      await app.prisma.$transaction((tx) => resolveConfirmationInTx(tx, p.subId, { cardSessionId: sessionId }, 'PROVEN_UNPAID', { actor: finance.userId, reference: 'newer-obligation-fixture' }));
+      const blocked = await open(p);
+      expect(blocked.statusCode, blocked.body).toBe(409);
+      expect(blocked.json().error?.code).toBe('PAYMENT_CONFIRMING');
+      expect(await readFeePaymentDecision(app.prisma, p.subId)).toMatchObject({ allowed: false, reason: 'PAYMENT_CONFIRMING' });
+      expect(await app.prisma.$transaction((tx) => hasConfirmationInTx(tx, p.subId, new Date()))).toBe(true);
+      expect(refundsOf(txnId)).toBe(1);
+    });
+
+    it('[REVIEW-2461 B S4-3 · B S3-2] over HTTP, a refund of set-aside credit to the card whose answer was lost: executed from Approvals, it says what was found and records REFUNDED once', async () => {
+      const finance = await makeFinance();
+      const p = await makeStore({ due: new Date(Date.now() + 3 * DAY) });
+      const session = (await open(p)).json().data;
+      expect(pageState((await bankFramePosts(session.sessionId, 'Y', {}, from())).body)).toBe('SUCCEEDED');
+      const row = await rowOf(session.sessionId);
+      expect(row.status).toBe('SUCCEEDED');
+      const txnId = row.providerTransactionRef!;
+      let n = 0;
+      const approval = async (action: string, requestedBy: string, approvedBy: string) => (await app.prisma.privilegedApproval.create({ data: {
+        action, cls: 'C4', capability: 'subscription.refund', entityId: p.subId, fingerprint: `card-refund-lookup-${RUN}-${(n += 1)}-${nanoid(6)}`,
+        bodySnapshot: { params: {}, body: {}, query: {} }, status: 'APPROVED', requestedBy, reason: 'test: card refund at closing',
+        approvedBy, decidedAt: new Date(), expiresAt: new Date(Date.now() + DAY),
+      } })).id;
+      const aside = await setAsideCreditRefund(app.prisma, { adminId: 'admin-a', approvalId: await approval('POST /subscriptions/:id/refund-credit/set-aside', 'admin-a', 'admin-b'), subscriptionId: p.subId, amount: 2100 });
+      refundAnswer = () => 'network';
+      const lost = await refundCardCreditToCard(app.prisma, () => real, {
+        adminId: 'admin-c', approvalId: await approval(CARD_REFUND_ACTION, 'admin-c', 'admin-b'), subscriptionId: p.subId, setAsideId: aside.billingEventId, cardSessionId: row.id, amount: 2100,
+      });
+      expect(lost.state).toBe('UNKNOWN');
+      refundAnswer = adjusted;
+      expect(refundsOf(txnId)).toBe(1);
+      const listed = await ptz.inject({ method: 'GET', url: '/api/v1/admin/billing/card-sessions?refund=UNCONFIRMED&limit=200', headers: { authorization: `Bearer ${finance.token}` } });
+      expect(listed.json().data.sessions.find((x: { id: string }) => x.id === row.id), listed.body).toMatchObject({ status: 'SUCCEEDED', cardRefund: { state: 'UNKNOWN', providerRefundRef: null }, providerCheck: true });
+      lookupAnswer = recordOf(txnId, row.id, {}, { TotalCreditAmount: 2100 });
+      const approvalId = await askAndApprove(ptz, {
+        method: 'POST', url: `/api/v1/admin/billing/card-sessions/${row.id}/check-provider`,
+        headers: { authorization: `Bearer ${finance.token}`, 'content-type': 'application/json', 'x-swift-reason': TEST_ADMIN_REASON }, payload: {},
+      });
+      expect(lookups(txnId)).toBe(0);
+      const applied = await ptz.inject({
+        method: 'POST', url: `/api/v1/admin/approvals/${approvalId}/apply`,
+        headers: { authorization: `Bearer ${finance.token}`, 'content-type': 'application/json', 'x-swift-reason': TEST_ADMIN_REASON }, payload: {},
+      });
+      expect(applied.statusCode, applied.body).toBe(200);
+      expect(applied.json().data).toMatchObject({ status: 'APPLIED', providerCheck: 'REFUNDED' });
+      const refund = await app.prisma.cardCreditRefund.findUniqueOrThrow({ where: { cardSessionId: row.id } });
+      expect(refund).toMatchObject({ state: 'REFUNDED', providerRefundRef: `LOOKUP-CREDIT-${txnId.toUpperCase()}`, answeredAt: lost.state === 'UNKNOWN' ? expect.any(Date) : null });
+      expect(await app.prisma.billingEvent.count({ where: { subscriptionId: p.subId, type: 'PREPAID_REFUND' } })).toBe(1);
+      expect(lookups(txnId)).toBe(1);
+      expect(refundsOf(txnId)).toBe(1);
     });
 
     it('the database lets a lost refund answer move only to REFUNDED, and a REFUNDED refund nowhere', async () => {

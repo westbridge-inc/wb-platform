@@ -2,7 +2,8 @@
 
 import { useState, type FormEvent } from 'react';
 import { useInfiniteQuery, useQueryClient } from '@tanstack/react-query';
-import { checkCardProvider, fetchCardPayments, resolveCardPayment, type CardDecision, type CardPaymentsFilter, type ProviderCheck } from '@/lib/api';
+import { checkCardProvider, fetchCardPayments, resolveCardPayment, type CardDecision, type CardPaymentsFilter } from '@/lib/api';
+import { checkWords } from '@/lib/card-check-words';
 import type { ReasonField } from '@/components/mc/ReasonDialog';
 import { StatusPill } from '@/components/detail';
 import { QueryFailed } from '@/components/mc/QueryFailed';
@@ -49,14 +50,6 @@ const HELD_WHY: Record<string, string> = {
 const asCode = (code: string) => `code ${code}`;
 const STATE_WORDS: Record<string, string> = { SENDING: 'being sent', SENT: 'sent', VOIDED: 'done', REFUNDED: 'done', PENDING: 'pending', FAILED: 'refused', UNKNOWN: 'not confirmed' };
 const RESOLUTION_WORDS: Record<string, string> = { BOOKED: 'week booked', REFUNDED: 'refunded', NOTHING_TAKEN: 'nothing taken' };
-/** What "Check with the card provider" found, in words. */
-const CHECK_WORDS: Record<ProviderCheck, string> = {
-  REFUNDED: "PowerTranz's record shows the whole payment back. Recorded as refunded.",
-  OWNER_HOLD: "PowerTranz's record shows a refund that is not the whole payment. Nothing was recorded: it is held for the owner, who has been told.",
-  NO_REFUND_ON_RECORD: "PowerTranz's record shows no refund on this payment yet. Nothing was recorded, and nothing was sent again.",
-  NOT_KNOWN: 'PowerTranz gave no answer Swift could read. Nothing was recorded, and nothing was sent again. Check its portal, or try again later.',
-  ASKED_RECENTLY: 'This payment was looked up moments ago. Nothing was recorded. Try again in a few minutes.',
-};
 
 /** What the person states from the portal: the amount seen taken (book, refund), or the order reference searched (nothing taken). */
 type Asks = 'amount' | 'order';
@@ -183,8 +176,7 @@ export default function CardPaymentsPage() {
     confirmLabel: 'Check with the card provider',
     submit: ({ reason }) => checkCardProvider(r.id, reason),
     success: (answer) => {
-      const found = (answer as { data?: { check?: ProviderCheck } } | null)?.data?.check;
-      return found && CHECK_WORDS[found] ? CHECK_WORDS[found] : 'Checked. Nothing was recorded.';
+      return checkWords((answer as { data?: { check?: unknown } } | null)?.data?.check) ?? 'Checked. Nothing was recorded.';
     },
   }).then((outcome) => {
     if (outcome?.tone === 'queued') setQueued((all) => ({ ...all, [r.id]: true }));
