@@ -34,6 +34,8 @@ const QUEUES: Record<WaitingKey, { one: string; many: string; href: string; leve
   returnsToDecide: { one: 'return to decide', many: 'returns to decide', href: '/returns', level: 'warning' },
   refundsOwed: { one: 'refund owed', many: 'refunds owed', href: '/returns?status=REFUND_DUE', level: 'warning' },
   moderation: { one: 'report or held review to moderate', many: 'reports or held reviews to moderate', href: '/moderation', level: 'warning' },
+  // [R3 · review F2] a live store whose storefront names no seller: customers see "Ask the store" until a person names it
+  sellersUnnamed: { one: 'live store whose seller is not named yet', many: 'live stores whose seller is not named yet', href: '/vendors?sellerName=unnamed', level: 'warning', detail: 'customers see “Ask the store”' },
 };
 
 /** The server's answer, only when it has the shape this page reads: anything else is not a count. */

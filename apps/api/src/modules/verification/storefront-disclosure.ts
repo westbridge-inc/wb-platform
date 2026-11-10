@@ -35,7 +35,7 @@ import { OPERATOR, OPERATOR_ADDRESS } from '../legal/operator';
 
 type Db = Prisma.TransactionClient | PrismaClient;
 
-export type DisclosureSource = 'RECORD' | 'PROPRIETOR' | 'STORE_NAME' | 'SELF_DECLARED' | 'ACCOUNT' | 'PUBLISHED' | 'PLATFORM';
+export type DisclosureSource = 'RECORD' | 'PROPRIETOR' | 'REGISTRATION' | 'STORE_NAME' | 'SELF_DECLARED' | 'ACCOUNT' | 'PUBLISHED' | 'PLATFORM';
 export interface DisclosureElement { value: string; source: DisclosureSource; docType?: string; recordId?: string }
 export interface DisclosureBlock {
   complete: boolean;
@@ -65,29 +65,85 @@ export function platformOperator(): DisclosureBlock['operator'] {
 }
 
 /**
- * [R3 · CAA s.70(1) · owner ruling 10 Nov 2026 · security review] How the seller is named when no record names the
- * business. The seller is the BUSINESS: an owner's personal name is never shown for a registered business or company,
- * and never as "<person> trading as <store>".
+ * [R3 · CAA s.70(1) · owner ruling 10 Nov 2026 · security review · review F1] How the seller is named when no record
+ * names the business. The seller is the BUSINESS: an owner's personal name is never shown for a registered business or
+ * company, and never as "<person> trading as <store>".
  *  - OWN_NAME: a trader under their OWN name — this store's flag, its own-name declaration VALID (a person compared the
  *    store's name with the owner's ID), the owner's ID on file and no business registration: named by their full name,
- *    because that name IS their trading name;
+ *    because that name IS their trading name (paper: the declaration, signed for this store's name);
+ *  - LEGAL_NAME: the account's legal name, typed by the PERSON who approved its registration paper, from that paper
+ *    (VendorOwner.sellerLegalName), while that very paper is a VALID record (paper: it). One per account, so every
+ *    branch is sold by the company; the store name stays the trading name;
  *  - PERSON_CHECKED: a person at Swift confirmed this store's EXACT current name as the seller's business or company
- *    name (sellerNameCheckedName): named by it. A rename (only ever by a person) needs a new confirmation;
- *  - AWAITING_PERSON: the store's documents are on file but no person has confirmed its name: it names nobody yet;
+ *    name (sellerNameCheckedName): named by it. A rename needs a new confirmation;
+ *  - AWAITING_PERSON: the store's documents are on file but no person has named it yet: it names nobody;
  *  - NONE: nothing on file to name it by.
- * The store's self-typed name is never presented as a checked legal name, and no account-level record lends it
- * provenance. A person confirms it in the console: approving the store, or its seller-name check (admin routes).
+ * The store's self-typed name is never presented as a checked legal name, and a record lends provenance only when it
+ * named the seller. One rule for the storefront, the console (sellerNameViews) and the ops count.
  */
-export type SellerNameBasis = 'OWN_NAME' | 'PERSON_CHECKED' | 'AWAITING_PERSON' | 'NONE';
-export function sellerNameBasis(
-  store: { name: string; tradesUnderOwnName: boolean; sellerNameCheckedName: string | null },
-  onFile: { identity: boolean; registration: boolean; ownNameDeclaration: boolean },
-  ownerFullName: string,
-): SellerNameBasis {
-  if (store.tradesUnderOwnName && onFile.ownNameDeclaration && onFile.identity && !onFile.registration && ownerFullName.trim()) return 'OWN_NAME';
-  const name = store.name.trim();
-  if (name && store.sellerNameCheckedName != null && store.sellerNameCheckedName === name) return 'PERSON_CHECKED';
-  return onFile.identity || onFile.registration ? 'AWAITING_PERSON' : 'NONE';
+export type SellerNameBasis = 'OWN_NAME' | 'LEGAL_NAME' | 'PERSON_CHECKED' | 'AWAITING_PERSON' | 'NONE';
+type SellerPaper = { docType: string; submissionId: string };
+export interface SellerNameInputs<R extends SellerPaper> {
+  store: { name: string; tradesUnderOwnName: boolean; sellerNameCheckedName: string | null };
+  owner: { firstName: string | null; lastName: string | null; sellerLegalName: string | null; sellerLegalNameDocId: string | null };
+  /** The account's VALID, current records. */
+  records: readonly R[];
+}
+export function sellerNameOf<R extends SellerPaper>(i: SellerNameInputs<R>): { basis: SellerNameBasis; value: string | null; paper?: R } {
+  const identity = i.records.some((r) => IDENTITY_DOC_TYPES.includes(r.docType));
+  const registration = i.records.some((r) => REGISTRATION_DOC_TYPES.includes(r.docType));
+  const declaration = i.records.find((r) => r.docType === OWN_NAME_DOC_TYPE);
+  const fullName = `${i.owner.firstName ?? ''} ${i.owner.lastName ?? ''}`.trim();
+  if (i.store.tradesUnderOwnName && declaration && identity && !registration && fullName) return { basis: 'OWN_NAME', value: fullName, paper: declaration };
+  const legalName = i.owner.sellerLegalName?.trim();
+  const legalPaper = legalName && i.owner.sellerLegalNameDocId
+    ? i.records.find((r) => REGISTRATION_DOC_TYPES.includes(r.docType) && r.submissionId === i.owner.sellerLegalNameDocId)
+    : undefined;
+  if (legalName && legalPaper) return { basis: 'LEGAL_NAME', value: legalName, paper: legalPaper };
+  const name = i.store.name.trim();
+  if (name && i.store.sellerNameCheckedName != null && i.store.sellerNameCheckedName === name) return { basis: 'PERSON_CHECKED', value: name };
+  return { basis: identity || registration ? 'AWAITING_PERSON' : 'NONE', value: null };
+}
+
+/** What the console shows of a store's seller name: the same rule as the storefront, read without opening any document
+ *  field (no decrypt, no audit row). A machine-read business name (RECORD) is not consulted: the processor never
+ *  returns one today, and the storefront would only ever add it. */
+export interface SellerNameView { basis: SellerNameBasis; value: string | null }
+export async function sellerNameViews(db: Db, vendorIds: readonly string[], now = new Date()): Promise<Map<string, SellerNameView>> {
+  const out = new Map<string, SellerNameView>();
+  if (vendorIds.length === 0) return out;
+  const stores = await db.vendor.findMany({
+    where: { id: { in: [...vendorIds] } },
+    select: { id: true, tenantId: true, name: true, tradesUnderOwnName: true, sellerNameCheckedName: true,
+      owner: { select: { userId: true, sellerLegalName: true, sellerLegalNameDocId: true, user: { select: { firstName: true, lastName: true } } } } },
+  });
+  const accounts = [...new Set(stores.map((s) => s.owner.userId))];
+  const rows = accounts.length ? (await db.documentRecord.findMany({
+    where: { accountId: { in: accounts }, status: 'VALID', OR: validExpiryOr('expiresOn', now),
+      docType: { in: [...IDENTITY_DOC_TYPES, ...REGISTRATION_DOC_TYPES, OWN_NAME_DOC_TYPE] }, submission: { purgedAt: null } },
+    select: { tenantId: true, accountId: true, docType: true, subjectId: true, submissionId: true,
+      submission: { select: { userId: true, docType: true, subjectId: true } } },
+  })).filter((r) => r.docType === r.submission.docType && r.subjectId === r.submission.subjectId && r.submission.userId === r.accountId) : [];
+  for (const s of stores) {
+    const records = rows.filter((r) => r.accountId === s.owner.userId && r.tenantId === s.tenantId);
+    const named = sellerNameOf({ store: s, owner: { ...s.owner.user, sellerLegalName: s.owner.sellerLegalName, sellerLegalNameDocId: s.owner.sellerLegalNameDocId }, records });
+    out.set(s.id, { basis: named.basis, value: named.value });
+  }
+  return out;
+}
+
+/** A live store whose storefront names no seller (not an own-name trader, no legal name typed from its paper, no
+ *  confirmed store name): "Ask the store" until a person names it. */
+export const SELLER_UNNAMED_BASES: readonly SellerNameBasis[] = ['AWAITING_PERSON', 'NONE'];
+/** [review-2476 F3] Written with every change of a store's name: a person's confirmation was of the name they saw then,
+ *  so a new name, or a return to a name confirmed earlier, names nobody until a person confirms it again. */
+export const SELLER_NAME_UNCONFIRMED = { sellerNameCheckedName: null, sellerNameCheckedAt: null, sellerNameCheckedById: null } as const;
+/** [review F2] The LIVE stores whose seller is not named yet, for the console badge, its list filter and Today's count
+ *  — the same rule the storefront applies. Bounded (a store list, not a scan): at most `cap` live stores are read. */
+export async function unnamedLiveStoreIds(db: Db, cap = 5000): Promise<string[]> {
+  const live = await db.vendor.findMany({ where: { status: 'ACTIVE' }, select: { id: true }, orderBy: { id: 'asc' }, take: cap });
+  const views = await sellerNameViews(db, live.map((v) => v.id));
+  return live.map((v) => v.id).filter((id) => SELLER_UNNAMED_BASES.includes(views.get(id)?.basis ?? 'NONE'));
 }
 
 type DisclosurePurpose = 'PUBLIC_STOREFRONT' | 'VENDOR_ACTIVATION';
@@ -137,7 +193,7 @@ export async function disclosureGateEngaged(db: Db, countryCode: string): Promis
 
 const DISCLOSURE_VENDOR_SELECT = {
   id: true, tenantId: true, name: true, addressLine1: true, addressLine2: true, publicPhone: true, tradesUnderOwnName: true, sellerNameCheckedName: true,
-  owner: { select: { userId: true, user: { select: {
+  owner: { select: { userId: true, sellerLegalName: true, sellerLegalNameDocId: true, user: { select: {
     tenantId: true, countryCode: true, firstName: true, lastName: true, phone: true, isPhoneVerified: true,
   } } } },
 } satisfies Prisma.VendorSelect;
@@ -212,13 +268,13 @@ async function compileDisclosure(db: Db, vendor: DisclosureVendor, purpose: Disc
   const business = candidates.filter(r => publicFields.has(r.docType));
   const fieldsFor = (r: RecordSource, codes: readonly string[]) => readFields(db, r, codes.filter(c => publicFields.get(r.docType)?.has(c)), purpose);
   const provenance = (r: RecordSource) => ({ docType: r.docType, ...(purpose === 'VENDOR_ACTIVATION' ? { recordId: r.id } : {}) });
-  const identity = records.find((r) => IDENTITY_DOC_TYPES.includes(r.docType));
 
-  // Legal / registered name [R3 · CAA s.70(1) · owner ruling 10 Nov 2026 · security review]: a VALID business record's
-  // read name; else sellerNameBasis — the own-name trader's full name (provenance: the declaration signed for THIS
-  // store's name), or the store's name only while a person's confirmation is exactly it (no record lends it provenance).
-  // Otherwise it names nobody: PENDING a person's check while the owner's ID or the store's registration is on file
-  // (the ID alone sufficed before this rule, so a store that was complete is never made incomplete), else missing.
+  // Legal / registered name [R3 · CAA s.70(1) · owner ruling 10 Nov 2026 · security review · review F1]: a VALID
+  // business record's read name; else sellerNameOf — the own-name trader's full name, the account's legal name typed
+  // from its VALID registration paper (that paper is the provenance), or the store's name only while a person's
+  // confirmation is exactly it (no record lends it provenance). Otherwise it names nobody: PENDING a person while the
+  // owner's ID or a registration is on file (the ID alone sufficed before, so a complete store never becomes
+  // incomplete), else missing.
   let legalName: DisclosureElement | null = null;
   for (const r of business) {
     const f = await fieldsFor(r, NAME_FIELDS);
@@ -227,13 +283,11 @@ async function compileDisclosure(db: Db, vendor: DisclosureVendor, purpose: Disc
   }
   const pendingPersonCheck: string[] = [];
   if (!legalName) {
-    const registration = records.find((r) => REGISTRATION_DOC_TYPES.includes(r.docType));
-    const ownNameDeclaration = records.find((r) => r.docType === OWN_NAME_DOC_TYPE);
-    const proprietor = `${vendor.owner.user.firstName ?? ''} ${vendor.owner.user.lastName ?? ''}`.trim();
-    const basis = sellerNameBasis(vendor, { identity: !!identity, registration: !!registration, ownNameDeclaration: !!ownNameDeclaration }, proprietor);
-    if (basis === 'OWN_NAME' && ownNameDeclaration) legalName = { value: proprietor, source: 'PROPRIETOR', ...provenance(ownNameDeclaration) };
-    else if (basis === 'PERSON_CHECKED') legalName = { value: vendor.name.trim(), source: 'STORE_NAME' };
-    else if (basis === 'AWAITING_PERSON') pendingPersonCheck.push('legalName');
+    const named = sellerNameOf({ store: vendor, owner: { ...vendor.owner.user, sellerLegalName: vendor.owner.sellerLegalName, sellerLegalNameDocId: vendor.owner.sellerLegalNameDocId }, records });
+    if (named.basis === 'OWN_NAME' && named.paper && named.value) legalName = { value: named.value, source: 'PROPRIETOR', ...provenance(named.paper) };
+    else if (named.basis === 'LEGAL_NAME' && named.paper && named.value) legalName = { value: named.value, source: 'REGISTRATION', ...provenance(named.paper) };
+    else if (named.basis === 'PERSON_CHECKED' && named.value) legalName = { value: named.value, source: 'STORE_NAME' };
+    else if (named.basis === 'AWAITING_PERSON') pendingPersonCheck.push('legalName');
   }
   if (!legalName && !pendingPersonCheck.includes('legalName')) missing.push('legalName');
 

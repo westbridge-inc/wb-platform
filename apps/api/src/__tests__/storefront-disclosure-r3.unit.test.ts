@@ -41,7 +41,8 @@ async function fixture(status = 'ACTIVE') {
     // [security review 10 Nov 2026] no person has confirmed the store's name as the seller's yet
     sellerNameCheckedName: null,
     // [CHAINS PR3] The owner is a brand Swift named, so every read below also runs the storefront's branch switcher.
-    ownerId: 'owner-fixture', owner: { brandName: 'Fixture Brand', userId: 'account-fixture', user: {
+    // [review F1] no legal name typed from a registration paper for this account
+    ownerId: 'owner-fixture', owner: { brandName: 'Fixture Brand', userId: 'account-fixture', sellerLegalName: null, sellerLegalNameDocId: null, user: {
       id: 'account-fixture', tenantId: 'tenant-public', status: 'ACTIVE', countryCode: 'GY',
       firstName: 'Fixture', lastName: 'Proprietor', phone: 'TEST_ACCOUNT_CONTACT', isPhoneVerified: true,
     } },

@@ -23,7 +23,7 @@ export interface ReviewDocument {
   createdAt?: string; consentAt?: string | null; privacyNoticeVersion?: string | null;
   expiresAt?: string | null;
   previousDecision?: PreviousDecision | null;
-  reviewerTypes?: Array<'documentNumber' | 'issuedOn' | 'certificateYear' | 'registrationKind' | 'ownNameConfirmed' | 'authorityConfirmed'>;
+  reviewerTypes?: Array<'documentNumber' | 'issuedOn' | 'certificateYear' | 'registrationKind' | 'ownNameConfirmed' | 'legalName' | 'authorityConfirmed'>;
   /** [COMPANY-DOCS · owner 10 Nov 2026] Who holds a store account (the path its papers follow); null for anyone else. */
   accountBasis?: 'OWNER' | 'COMPANY' | 'MANAGER' | null;
   /** A reviewer's id, or the server's automatic marker ('auto:id-on-file', 'kyc:auto') — never shown raw. */

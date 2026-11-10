@@ -1518,6 +1518,15 @@ model VendorOwner {
   dealChangeSwitchedAt  DateTime?
   /// [ENTERPRISE · E1] The owner's "pay all my branches" MMG checkouts (one MMG page for several branch fees).
   chainCheckouts   MmgCheckoutIntent[]
+  /// [R3 · CAA s.70(1) · owner ruling 10 Nov 2026 · review F1] The business's or company's LEGAL name, typed by the
+  /// PERSON at Swift who approved its registration paper (business registration / certificate of incorporation), from
+  /// that paper. One per account: every store and branch of the account is sold by it (the store name stays the trading
+  /// name). Shown as the seller's legal name only while that very paper (sellerLegalNameDocId) is a VALID record; a new
+  /// paper is typed again when a person approves it. Never written by the owner.
+  sellerLegalName      String?
+  sellerLegalNameAt    DateTime?
+  sellerLegalNameById  String?
+  sellerLegalNameDocId String?
   /// [COMPANY-DOCS · owner rulings 10 Nov 2026] Who holds this account, chosen at sign-up, and so which papers the whole
   /// account gives (verification/doc-registry COMPANY_TIER, MANAGER_TIER): OWNER (the default: the owner of a registered
   /// business, or a person trading under their own name), COMPANY (a registered company; the holder is the ONE person who

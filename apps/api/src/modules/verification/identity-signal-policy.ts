@@ -72,7 +72,7 @@ export function reviewerTypedDocumentSignal(docType: string, raw: unknown): stri
   return LICENCE_NUMBER_DOC_TYPES.has(docType) ? `DL:${normalized}` : normalized;
 }
 
-export type ReviewerTypedField = 'documentNumber' | 'issuedOn' | 'certificateYear' | 'registrationKind' | 'ownNameConfirmed' | 'authorityConfirmed';
+export type ReviewerTypedField = 'documentNumber' | 'issuedOn' | 'certificateYear' | 'registrationKind' | 'ownNameConfirmed' | 'legalName' | 'authorityConfirmed';
 
 /** What the console must ask the reviewer for, for this document type. */
 export function reviewerTypedFields(docType: string): ReviewerTypedField[] {
@@ -80,8 +80,9 @@ export function reviewerTypedFields(docType: string): ReviewerTypedField[] {
   if (ISSUE_DATE_DOC_TYPES.has(docType)) return ['issuedOn'];
   // [R15] a licence or food certificate checked again every January: the year printed on it
   if (CERTIFICATE_YEAR_DOC_TYPES.has(docType)) return ['certificateYear'];
-  // [R16] a business registration: which kind it is, and for a business name the year it is registered for
-  if (REGISTRATION_DOC_TYPES.includes(docType)) return ['registrationKind', 'certificateYear'];
+  // [R16] a business registration: which kind it is, and for a business name the year it is registered for;
+  // [R3 · review F1] and the legal name printed on it, which the storefront names the seller by
+  if (REGISTRATION_DOC_TYPES.includes(docType)) return ['registrationKind', 'certificateYear', 'legalName'];
   // [ROLE-DOCS · owner 21 Oct 2026] an own-name declaration: the reviewer's check of the name against the owner's ID
   if (docType === OWN_NAME_DOC_TYPE) return ['ownNameConfirmed'];
   // [COMPANY-DOCS PART 2 · review F2] a letter of authority: how the reviewer confirmed the signer is a director (or the owner)

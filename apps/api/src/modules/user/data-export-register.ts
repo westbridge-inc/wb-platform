@@ -361,8 +361,10 @@ export const EXPORT_REGISTER: readonly ExportEntry[] = [
     // [CHAINS] The chain deal is the owner's own commercial term: its weekly fee, currency and when it was set. Who at
     // Swift set it and the staff's reason are Swift's internal record.
     // [CHAINS PR3] The brand name customers see for all the owner's branches is the owner's own business name.
+    // [R3 · review F1] the business's legal name a person at Swift typed from its registration paper, when, and which of
+    // the person's own papers it was typed from (who typed it is another person: left out by the `…ById` rule)
     // [COMPANY-DOCS] Who holds the account (owner, a company's account holder, a business's manager): the person's own choice.
-    fields: ['id', 'userId', 'createdAt', 'dealWeeklyRate', 'dealCurrencyCode', 'dealSetAt', 'brandName', 'dealChangeKind', 'dealChangeFrom', 'dealChangeTo', 'dealChangeNotBefore', 'dealChangeSetAt', 'dealChangeSwitchedAt', 'accountBasis'],
+    fields: ['id', 'userId', 'createdAt', 'dealWeeklyRate', 'dealCurrencyCode', 'dealSetAt', 'brandName', 'dealChangeKind', 'dealChangeFrom', 'dealChangeTo', 'dealChangeNotBefore', 'dealChangeSetAt', 'dealChangeSwitchedAt', 'accountBasis', 'sellerLegalName', 'sellerLegalNameAt', 'sellerLegalNameDocId'],
     omit: { dealReason: 'INTERNAL_NOTE', dealSetBy: 'OTHER_PERSON', dealChangeReason: 'INTERNAL_NOTE', dealChangeSetBy: 'OTHER_PERSON' },
   },
   {

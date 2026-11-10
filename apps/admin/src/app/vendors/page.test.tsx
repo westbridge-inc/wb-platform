@@ -70,3 +70,35 @@ describe('[MC-PR1] vendors list', () => {
     await waitFor(() => expect(requestsByMethod(fetchMock, 'PUT')).toHaveLength(0));
   });
 });
+
+// [R3 · review F2] A live store whose storefront names no seller is flagged on the list, and Today's count opens the list
+// filtered to exactly those stores (?sellerName=unnamed), read by the server's own rule.
+describe('[R3] live stores whose seller is not named', () => {
+  it('flags such a row, and only such a row', async () => {
+    mockApi((request) => {
+      if (request.method === 'GET' && request.url.pathname === listPath) {
+        return { body: { success: true, data: [{ ...rows[0], sellerNameUnnamed: false }, { ...rows[1], sellerNameUnnamed: true }] } };
+      }
+      throw new Error(`Unexpected request: ${request.method} ${request.url}`);
+    });
+    renderWithQuery(<VendorsPage />);
+    const flags = await screen.findAllByText('Seller not named');
+    expect(flags).toHaveLength(1);
+    expect(flags[0]!.closest('tr')?.textContent).toContain('Live Store');
+  });
+
+  it('arriving from Today with ?sellerName=unnamed asks the server for exactly those stores; the filter says so', async () => {
+    window.history.replaceState({}, '', '/vendors?sellerName=unnamed');
+    try {
+      const fetchMock = mockApi((request) => {
+        if (request.method === 'GET' && request.url.pathname === listPath) return { body: { success: true, data: [{ ...rows[1], sellerNameUnnamed: true }] } };
+        throw new Error(`Unexpected request: ${request.method} ${request.url}`);
+      });
+      renderWithQuery(<VendorsPage />);
+      await waitFor(() => expect(requestsByMethod(fetchMock, 'GET').some(([url]) => new URL(String(url)).searchParams.get('sellerName') === 'unnamed')).toBe(true));
+      expect((await screen.findByRole('combobox', { name: 'Seller name' }) as HTMLSelectElement).value).toBe('unnamed');
+    } finally {
+      window.history.replaceState({}, '', '/');
+    }
+  });
+});

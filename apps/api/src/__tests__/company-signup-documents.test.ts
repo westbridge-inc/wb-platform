@@ -37,6 +37,7 @@ import {
 import { docTypeName } from '../modules/verification/doc-names';
 import { isPersonalDocType } from '../modules/verification/retention-rules';
 import { reviewQueueRow } from '../modules/admin/review-queue-row';
+import { compileActivationDisclosure } from '../modules/verification/storefront-disclosure';
 import { signupQuote, WEEKLY_FEE_ACK_VERSION } from '../modules/partner/weekly-fee-ack';
 import { ownedVerificationFixture } from './helpers/verification-object';
 import { grantStepUp } from './helpers/step-up';
@@ -129,7 +130,8 @@ describe('[COMPANY-DOCS] the account holder’s ID is protected exactly like an 
     expect(FIELD_CATALOGUE['owner_authority_letter']).toEqual([]);
     // the company's certificate is a registration: the reviewer says if it is a company's (never expires) or a business name
     expect(REGISTRATION_DOC_TYPES).toContain('certificate_of_incorporation');
-    expect(reviewerTypedFields('certificate_of_incorporation')).toEqual(['registrationKind', 'certificateYear']);
+    // [R3 · review F1] and types the legal name printed on it: the storefront names the seller by it
+    expect(reviewerTypedFields('certificate_of_incorporation')).toEqual(['registrationKind', 'certificateYear', 'legalName']);
     expect((FIELD_CATALOGUE['certificate_of_incorporation'] ?? []).some((f) => f.fieldCode === 'proprietor_name')).toBe(false);
   });
 
@@ -259,6 +261,7 @@ async function become(o: { userId: string; token: string; vendorId: string }, ov
 }
 const statusOf = async (o: { token: string; vendorId: string }, role = 'RESTAURANT') => (await call('GET', `/api/v1/verification/status?role=${role}`, o)).json().data;
 const basisOf = async (userId: string) => (await system(() => app.prisma.vendorOwner.findUniqueOrThrow({ where: { userId } }))).accountBasis;
+const statusOfDoc = async (id: string) => (await system(() => app.prisma.verificationDocument.findUniqueOrThrow({ where: { id }, select: { status: true } }))).status;
 async function approveAll(o: { userId: string }, role: 'RESTAURANT' | 'STORE', docTypes: string[]) {
   for (const docType of docTypes) {
     const doc = await service.submitDocument(o.userId, role, docType, await ownedVerificationFixture(app.prisma, o.userId, `co-${docType}`), 'v1');
@@ -376,6 +379,29 @@ describe('[COMPANY-DOCS · review F3] a company’s business-name registration c
     expect((await become(owner, { vendorType: 'STORE' })).statusCode).toBeLessThan(300);
     const reg = await service.submitDocument(owner.userId, 'STORE', 'business_registration', await ownedVerificationFixture(app.prisma, owner.userId, 'own-bn'), 'v1');
     expect((await service.approveDocument(reg.id, adminId, undefined, undefined, { registrationKind: 'BUSINESS_NAME', certificateYear: year })).status).toBe('APPROVED');
+  });
+});
+
+// [R3 · CAA s.70(1) · owner ruling 10 Nov 2026 · review F1] A company's certificate is a registration paper: the person
+// approving it types the company's legal name printed on it, and the storefront names the seller by that name — never
+// the account holder (a person), never the store's trading name unchecked.
+describe('[R3 · review F1] a company’s certificate names the company as the seller, never its account holder', () => {
+  it('the person approving the certificate must type the legal name; the store is then sold by it', async () => {
+    const o = await person('Synthetic', 'Accountholder');
+    expect((await become(o, { accountBasis: 'COMPANY' })).statusCode).toBeLessThan(300);
+    await approveAll(o, 'RESTAURANT', ['account_holder_id']);
+    const cert = await service.submitDocument(o.userId, 'RESTAURANT', 'certificate_of_incorporation', await ownedVerificationFixture(app.prisma, o.userId, 'co-cert-legal'), 'v1');
+    const blockOf = () => system(() => compileActivationDisclosure(app.prisma, o.vendorId, { accountId: o.userId, tenantId: 'swift-default' }));
+    // the console's contract: not without the name printed on it
+    await expect(system(() => service.approveDocument(cert.id, adminId, undefined, undefined, { required: true, registrationKind: 'COMPANY' })))
+      .rejects.toMatchObject({ code: 'LEGAL_NAME_REQUIRED' });
+    expect(await statusOfDoc(cert.id)).toBe('PENDING');
+    await system(() => service.approveDocument(cert.id, adminId, undefined, undefined, { required: true, registrationKind: 'COMPANY', legalName: 'Sample Holdings Limited' }));
+    const block = await blockOf();
+    expect(block.legalName).toEqual({ value: 'Sample Holdings Limited', source: 'REGISTRATION', docType: 'certificate_of_incorporation', recordId: expect.any(String) });
+    expect(block.pendingPersonCheck).toEqual([]);
+    // the account holder is a person: never named as the seller of a company
+    expect(JSON.stringify(block.legalName)).not.toMatch(/Synthetic|Accountholder/);
   });
 });
 
