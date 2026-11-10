@@ -26,7 +26,7 @@ import {
   type PowerTranzConfig,
 } from '../providers/card/powertranz-provider';
 import {
-  STAGING_AMOUNT_MINOR, STAGING_ORDER, STAGING_READ_AT_MS, STAGING_RETURN_SECRETS, STAGING_SESSION_AT_MS, STAGING_TXN, STAGING_VOID_AT_MS,
+  STAGING_AMOUNT_MINOR, STAGING_CARD_SUFFIX, STAGING_ORDER, STAGING_READ_AT_MS, STAGING_RETURN_SECRETS, leaksCardSuffix, STAGING_SESSION_AT_MS, STAGING_TXN, STAGING_VOID_AT_MS,
   STAGING_VOID_DATE_TIME, STAGING_HPP_HTML, STAGING_VOID_TXN, stagingAuthenticatedRecord, stagingConductorNotFoundHtml, stagingPageNotFoundPost,
   stagingPreprocessedRecord, stagingReturnPost, stagingSaleRecord, stagingVoidRecord,
 } from './fixtures/powertranz-staging-shapes';
@@ -626,6 +626,18 @@ describe('reading the completion (sec. 6, Appendix 1): booked only on PowerTranz
     for (const tds of [{ AuthenticationStatus: 'N' }, { AuthenticationStatus: 'U' }, { AuthenticationStatus: 'R' }, { AuthenticationStatus: '' }, { AuthenticationStatus: 'Y', Eci: '07' }, { AuthenticationStatus: 'Y', Eci: '00' }]) {
       expect(readCompletion({ ...approved, RiskManagement: { ThreeDSecure: tds } }, held), JSON.stringify(tds)).toMatchObject({ status: 'unbookable', reason: expect.stringMatching(/^APPROVED_UNAUTHENTICATED_/) });
     }
+    // [REVIEW-2466-A F1] Its own ResponseCode counts too: 3D1 (not available), 3D3 (an error) or any code but 3D0, even
+    // with no status or ECI beside it, says no authentication took place.
+    for (const [tds, reason] of [
+      [{ ResponseCode: '3D1' }, 'APPROVED_UNAUTHENTICATED_SERVER_3DS_3D1'],
+      [{ ResponseCode: '3D3' }, 'APPROVED_UNAUTHENTICATED_SERVER_3DS_3D3'],
+      [{ ResponseCode: '3D6', AuthenticationStatus: 'Y', Eci: '05' }, 'APPROVED_UNAUTHENTICATED_SERVER_3DS_3D6'],
+      [{ ResponseCode: '' }, 'APPROVED_UNAUTHENTICATED_SERVER_3DS_UNREADABLE'],
+    ] as const) {
+      expect(readCompletion({ ...approved, RiskManagement: { ThreeDSecure: tds } }, held), JSON.stringify(tds)).toMatchObject({ status: 'unbookable', reason });
+    }
+    expect(readCompletion({ ...approved, RiskManagement: { ThreeDSecure: { ResponseCode: '3D0', AuthenticationStatus: 'Y', Eci: '05' } } }, held).status).toBe('succeeded');
+    expect(readCompletion({ ...approved, RiskManagement: { ThreeDSecure: { ResponseCode: '3D0' } } }, held).status).toBe('succeeded');
     for (const rm of ['Y', 7, { ThreeDSecure: 'Y' }]) {
       expect(readCompletion({ ...approved, RiskManagement: rm }, held), JSON.stringify(rm)).toMatchObject({ status: 'unbookable', reason: 'APPROVED_UNAUTHENTICATED_SERVER_3DS_UNREADABLE' });
     }
@@ -1274,8 +1286,10 @@ describe('[CARD-STAGING-TEST] the real return post: Response (the result as JSON
     const page = await openPage(p);
     const post = stagingReturnPost({ txn: page.txnId, order: page.orderId, spiToken: page.spiToken });
     for (const secret of STAGING_RETURN_SECRETS) expect(JSON.stringify(post), secret).toContain(secret); // the fixture carries them
+    expect(leaksCardSuffix(JSON.stringify(post))).toBe(true); // ... and the card's last digits
     const evidence = JSON.stringify(returnEvidence(post));
-    for (const secret of [...STAGING_RETURN_SECRETS, page.spiToken, '"4242"']) expect(evidence, secret).not.toContain(secret);
+    for (const secret of [...STAGING_RETURN_SECRETS, page.spiToken]) expect(evidence, secret).not.toContain(secret);
+    expect(leaksCardSuffix(evidence), STAGING_CARD_SUFFIX).toBe(false);
     expect(evidence).toContain(page.txnId); // what is not secret stays readable in the preimage
     const observed = p.parseReturn(post);
     expect(observed.rawSha256).toBe(rawDigest(returnEvidence(post)));
@@ -1283,6 +1297,7 @@ describe('[CARD-STAGING-TEST] the real return post: Response (the result as JSON
     await p.noteReturn({ binding: p.binding, providerSessionRef: page.ref, params: post });
     const kept = JSON.stringify(await redis.hgetall(`${PREFIX}s:${page.ref}`));
     for (const secret of STAGING_RETURN_SECRETS) expect(kept, secret).not.toContain(secret);
+    expect(leaksCardSuffix(kept), STAGING_CARD_SUFFIX).toBe(false);
     // An unreadable Response is digested as its own digest, never in the clear.
     const broken = { ...post, Response: `${post.Response.slice(0, -1)}` };
     expect(JSON.stringify(returnEvidence(broken))).not.toContain('SYNTHETIC-PAN-TOKEN');

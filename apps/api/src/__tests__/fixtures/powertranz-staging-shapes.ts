@@ -10,6 +10,8 @@
 export const STAGING_TXN = '4f1c2b3a-0d9e-4c8b-a7f6-5e4d3c2b1a09';
 export const STAGING_ORDER = 'SWIFT-cmstagingshape0000000000';
 export const STAGING_AMOUNT_MINOR = 1_500_000; // GY$15,000.00 (GYD has 2 decimals in Swift's minor units)
+/** The card's last digits in the post (synthetic, distinctive). */
+export const STAGING_CARD_SUFFIX = '8317';
 
 /** The browser's return to MerchantResponseUrl: x-www-form-urlencoded, exactly these three fields in this order. */
 export function stagingReturnPost(o: { txn?: string; order?: string; spiToken: string; status?: string; eci?: string; responseCode?: string; outerTxn?: string; outerSpiToken?: string }) {
@@ -21,7 +23,7 @@ export function stagingReturnPost(o: { txn?: string; order?: string; spiToken: s
     TotalAmount: 15000,
     CurrencyCode: '328',
     CardBrand: 'Visa',
-    CardSuffix: '4242',
+    CardSuffix: STAGING_CARD_SUFFIX,
     IsoResponseCode: o.responseCode ?? '3D0',
     ResponseMessage: '3D-Secure complete',
     RiskManagement: {
@@ -40,19 +42,29 @@ export function stagingReturnPost(o: { txn?: string; order?: string; spiToken: s
     PanToken: 'SYNTHETIC-PAN-TOKEN-00000000000000000000000000000000',
     OrderIdentifier: o.order ?? STAGING_ORDER,
     SpiToken: o.spiToken,
-    BillingAddress: { FirstName: 'Testa', LastName: 'Partner', CountryCode: '328', EmailAddress: 'cardholder@example.test' },
+    BillingAddress: { FirstName: 'Testa', LastName: 'Quillfeather', CountryCode: '328', EmailAddress: 'cardholder@example.test' },
   };
   return { Response: JSON.stringify(response), TransactionIdentifier: o.outerTxn ?? txn, SpiToken: o.outerSpiToken ?? o.spiToken };
 }
 
-/** The values in the return post that must never be stored, logged or echoed. */
+/** The values in the return post that must never be stored, logged or echoed (the card's last digits: leaksCardSuffix). */
 export const STAGING_RETURN_SECRETS = [
   'SYNTHETIC-PAN-TOKEN-00000000000000000000000000000000',
   'SYNTHETIC-CARDHOLDER-INFO',
   'cardholder@example.test',
   'Testa',
+  'Quillfeather', // [REVIEW-2466-A F2] the cardholder's last name: distinctive, so it can only come from the post
   'AAAAAAAAAAAAAAAAAAAAAAAAAAA=',
 ] as const;
+
+/**
+ * [REVIEW-2466-A F2] The card's last digits as the post carries them (CardSuffix). Four digits can occur by chance
+ * inside a random digest, id or token, so a leak is the value standing on its own: a token of its own (not inside a
+ * longer run of letters and digits), quoted or not.
+ */
+export function leaksCardSuffix(text: string): boolean {
+  return new RegExp(`(^|[^0-9A-Za-z])${STAGING_CARD_SUFFIX}([^0-9A-Za-z]|$)`).test(text);
+}
 
 const summaryOf = (fields: Record<string, unknown>) => ({
   CaptureCount: 0, CreditCount: 0, OriginalTrxnDateTime: '0001-01-01T00:00:00', SettledAmount: 0, TotalCaptureAmount: 0, TotalCreditAmount: 0, ...fields,

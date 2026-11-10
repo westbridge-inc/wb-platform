@@ -591,8 +591,9 @@ function eciOf(raw: unknown): string | undefined {
  * Secure fields: its documented sample (the HPP guides, "/Payment Response") has no RiskManagement, the real sandbox
  * answer had none, and PowerTranz declines a completion whose authentication failed ("declined by default", sec. 8.3).
  * Requiring them voided a real approval. But when the answer DOES carry RiskManagement.ThreeDSecure, it must not
- * contradict the approval: an AuthenticationStatus other than Y or A (sec. 8.3), or an ECI that is not a success or
- * attempt value for the card's brand (sec. 8.4), or a block that cannot be read. Returns that contradiction's note,
+ * contradict the approval: a ResponseCode other than 3D0 (sec. 8.1), an AuthenticationStatus other than Y or A
+ * (sec. 8.3), or an ECI that is not a success or attempt value for the card's brand (sec. 8.4), or a block that
+ * cannot be read. Returns that contradiction's note,
  * or null. Nothing the browser sent counts here.
  */
 export function serverAuthenticationContradiction(json: Record<string, unknown>): string | null {
@@ -602,6 +603,10 @@ export function serverAuthenticationContradiction(json: Record<string, unknown>)
   if (tds === undefined || tds === null) return null;
   if (!isObject(tds)) return 'SERVER_3DS_UNREADABLE';
   const shown = (v: unknown) => String(v).replace(/[^A-Za-z0-9]/g, '').slice(0, 4) || 'UNREADABLE';
+  // [REVIEW-2466-A F1] Its own ResponseCode, when there, must be the completed check (3D0, sec. 8.1): 3D1 (3-D Secure
+  // not available), 3D3 (an error) or any other code says no authentication took place, whatever else is missing.
+  const code = tds['ResponseCode'];
+  if (code !== undefined && code !== null && code !== '3D0') return `SERVER_3DS_${shown(code)}`;
   const status = tds['AuthenticationStatus'];
   if (status !== undefined && status !== null && status !== 'Y' && status !== 'A') return `SERVER_3DS_${shown(status)}`;
   const raw = tds['Eci'];

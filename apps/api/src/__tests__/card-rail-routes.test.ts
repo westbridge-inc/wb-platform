@@ -56,7 +56,7 @@ import { setAsideCreditRefund } from '../modules/billing/credit-refund';
 import { CARD_REFUND_ACTION, refundCardCreditToCard } from '../modules/billing/card-credit-refund';
 import { TEST_ADMIN_REASON } from './helpers/admin-reason';
 import { setAppLogger } from '../utils/logger';
-import { STAGING_RETURN_SECRETS, stagingPageNotFoundPost, stagingReturnPost, stagingSaleRecord } from './fixtures/powertranz-staging-shapes';
+import { STAGING_CARD_SUFFIX, STAGING_RETURN_SECRETS, leaksCardSuffix, stagingPageNotFoundPost, stagingReturnPost, stagingSaleRecord } from './fixtures/powertranz-staging-shapes';
 
 // ---------------------------------------------------------------------------
 // [PT-2] The card rail v2 ROUTES against the database and the real simulator
@@ -1664,6 +1664,8 @@ describe('[PT-4] real cards through HTTP: Swift\'s hosted page, the bank\'s chec
       for (const k of await redis.keys(`${PTZ_PREFIX}*`)) if ((await redis.type(k)) === 'hash') hashes.push(await redis.hgetall(k));
       const kept = JSON.stringify([row, observations, res.body, res.headers, lines, hashes]);
       for (const secret of STAGING_RETURN_SECRETS) expect(kept, secret).not.toContain(secret);
+      // [REVIEW-2466-A F2] ... nor the card's last digits, as a value of their own anywhere.
+      expect(leaksCardSuffix(kept), STAGING_CARD_SUFFIX).toBe(false);
     } finally {
       setAppLogger(console);
       for (const spy of quiet) spy.mockRestore();
