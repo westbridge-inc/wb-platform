@@ -6,7 +6,8 @@ import { COMPANY_AUTHORITY_LETTER } from '../authority-letter';
 export const metadata: Metadata = {
   title: 'Letter of authority for a company',
   description: 'A one-page letter a company director signs so one person can manage the company’s Swift store account.',
-  robots: { index: false },
+  // a printable form, not a page to find: never indexed (private-routes-noindex.test)
+  robots: { index: false, follow: false },
 };
 
 export default function CompanyAuthorityLetter() {

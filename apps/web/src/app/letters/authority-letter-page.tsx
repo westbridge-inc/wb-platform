@@ -4,7 +4,7 @@ import { PrintButton } from './print-button';
 /** [COMPANY-DOCS · owner 10 Nov 2026 (a)] One letter on one printed page: the steps above it never print. */
 export function AuthorityLetterPage({ letter }: { letter: AuthorityLetter }) {
   return (
-    <main id="main" className="mx-auto max-w-2xl bg-white px-4 py-8 text-[15px] leading-relaxed text-black print:max-w-none print:p-0">
+    <main id="main" tabIndex={-1} className="mx-auto max-w-2xl bg-white px-4 py-8 text-[15px] leading-relaxed text-black print:max-w-none print:p-0">
       <section className="mb-8 rounded-2xl border border-black/10 p-4 print:hidden" aria-labelledby="letter-howto">
         <h1 id="letter-howto" className="text-lg font-bold">{letter.title}</h1>
         <ol className="mt-2 list-decimal space-y-1 pl-5 text-sm">

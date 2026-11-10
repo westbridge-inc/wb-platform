@@ -5,6 +5,11 @@
  * the certificate (a director) or the Business Registration (an owner). The words never mention a price or a payment:
  * the phone links here (G-FEE).
  */
+import { site } from '@/site.config';
+
+/** Who the letter is addressed to: the operator's own facts (site.config, from the legal operator record). */
+const TO_SWIFT = `To: ${site.legalEntityName} (${site.tradeName}), ${site.address}`;
+
 export interface AuthorityLetter {
   kind: 'company' | 'owner';
   title: string;
@@ -28,7 +33,7 @@ export const COMPANY_AUTHORITY_LETTER: AuthorityLetter = {
     'A person at Swift checks it against your Certificate of Incorporation. Your branches and your staff don’t upload anything.',
   ],
   lines: [
-    { text: 'To: Westbridge Inc. (Swift), Georgetown, Guyana' },
+    { text: TO_SWIFT },
     { text: 'Date:', blank: true, gap: true },
     { text: 'Company name (as on the Certificate of Incorporation):', blank: true },
     { text: 'Company registration number:', blank: true, gap: true },
@@ -51,7 +56,7 @@ export const OWNER_AUTHORITY_LETTER: AuthorityLetter = {
     'A person at Swift checks it against the Business Registration. Your branches and your staff don’t upload anything.',
   ],
   lines: [
-    { text: 'To: Westbridge Inc. (Swift), Georgetown, Guyana' },
+    { text: TO_SWIFT },
     { text: 'Date:', blank: true, gap: true },
     { text: 'Business name (as on the Business Registration):', blank: true },
     { text: 'Business registration number:', blank: true, gap: true },

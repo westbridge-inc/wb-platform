@@ -342,7 +342,7 @@ describe('[COMPANY-DOCS] one set of papers for the whole account: branches uploa
     await grantStepUp(app, o.token);
     const quote = await signupQuote(app.prisma, o.userId, { role: 'VENDOR', vendorType: 'RESTAURANT' });
     const ack = { version: WEEKLY_FEE_ACK_VERSION, amount: quote.amount, currencyCode: quote.currencyCode };
-    const add = (over: Record<string, unknown>) => call('POST', '/api/v1/vendor/stores', o, { publicPhone: '+5926007788', business: business({ name: `Chicken Co North ${RUN} ${nanoid(4)}`, ...over }), weeklyFeeAck: ack });
+    const add = (over: Record<string, unknown>) => call('POST', '/api/v1/vendor/stores', o, { publicPhone: '+5926007788', business: business({ name: `Chicken Co North ${RUN} ${wordFreeTag(6)}`, ...over }), weeklyFeeAck: ack });
     // a branch never changes how the account signed up
     const other = await add({ accountBasis: 'OWNER' });
     expect(other.statusCode).toBe(409);

@@ -4,6 +4,7 @@ import CompanyAuthorityLetter from './company-authority/page';
 import OwnerAuthorityLetter from './owner-authority/page';
 import { COMPANY_AUTHORITY_LETTER, OWNER_AUTHORITY_LETTER } from './authority-letter';
 import { AUTHORITY_LETTER_PATHS } from '@/lib/business-basis';
+import { site } from '@/site.config';
 
 // [COMPANY-DOCS · owner decision 10 Nov 2026 (a)] One-page letters of authority to fill in, sign and upload: plain words,
 // blanks, signature, date and stamp lines. The phone links here, so no price or payment word is ever on them (G-FEE).
@@ -16,7 +17,8 @@ describe('[COMPANY-DOCS] the letters of authority', () => {
     const article = screen.getByRole('article', { name: letter.title });
     expect(article.getAttribute('data-letter')).toBe(kind);
     const text = article.textContent!;
-    expect(text).toContain('To: Westbridge Inc. (Swift), Georgetown, Guyana');
+    // the operator's own facts, never typed by hand (company-facts-guard.test)
+    expect(text).toContain(`To: ${site.legalEntityName} (${site.tradeName}), ${site.address}`);
     expect(text).toContain('registration number:');
     expect(text).toContain('manage its Swift store account');
     expect(text).toContain('until');
