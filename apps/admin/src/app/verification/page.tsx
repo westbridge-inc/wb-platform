@@ -13,7 +13,7 @@ import { CustomerIdRetired } from '@/components/verification/CustomerIdRetired';
 import { approveDoc, rejectDoc, errorCode, fetchUserDetail, fetchVerificationCounts, fetchDocumentCustody, type InsuranceCheck } from '@/lib/api';
 import { reasonTooShort } from '@/lib/ask-reason';
 import { REJECTION_REASONS, SECOND_REVIEW_CODES, isRejectionReasonCode, type RejectionReasonCode } from '@/lib/rejection-reasons';
-import { HELD_FOR_ORDERING_DAY, heldForOrderingDayLine, REVIEW_COUNTS_POLL_MS, REVIEW_STATUSES, applicantId, isSystemActor, newSinceLoaded, docLabel, reviewerHint, reviewNote, roleLabel, vehicleLabel, reviewTimeline, groupApplicants, loadReviewQueue, maskedPhone, waitingSince, resubmissionLabel, previousDecisionLine, type Applicant, type ReviewDocument, type ReviewLane, type ReviewStatus } from '@/lib/review-center';
+import { HELD_FOR_ORDERING_DAY, heldForOrderingDayLine, REVIEW_COUNTS_POLL_MS, REVIEW_STATUSES, accountPathLine, applicantId, isSystemActor, newSinceLoaded, docLabel, reviewerHint, reviewNote, roleLabel, vehicleLabel, reviewTimeline, groupApplicants, loadReviewQueue, maskedPhone, waitingSince, resubmissionLabel, previousDecisionLine, type Applicant, type ReviewDocument, type ReviewLane, type ReviewStatus } from '@/lib/review-center';
 import { label } from '@/lib/labels';
 import { gyDate, gyDateTime, gyTodayYmd } from '@/lib/dates';
 
@@ -350,6 +350,7 @@ export default function VerificationPage() {
               <span>{previousDecisionLine(selected.previousDecision)}</span>
               {selected.previousDecision.reviewNote && <span>Last time: {selected.previousDecision.reviewNote}</span>}
             </aside>}
+            {accountPathLine(selected.accountBasis) ? <p className="rc-reviewer-hint" data-account-path>{accountPathLine(selected.accountBasis)}</p> : null}
             {reviewerHint(selected.docType) ? <p className="rc-reviewer-hint">{reviewerHint(selected.docType)}</p> : null}
             {reviewNote(selected.docType, selected.role) && <p className="rc-muted rc-review-note">{reviewNote(selected.docType, selected.role)}</p>}
             <DocumentViewer key={selected.id} id={selected.id} label={docLabel(selected.docType)} onViewed={setViewed} onRejectMissing={selected.status === 'PENDING' && !busy ? () => { openDecision('reject'); setReasonCode('UNREADABLE'); } : undefined} />

@@ -108,5 +108,9 @@ describe('[FLOW-QA2 NEW-5] the vendors page asks a business for what the store c
     // [REVIEW-F3 S3-1] the page covers service businesses too: their checklist is the owner's ID only
     expect(checklist('SERVICE')).toEqual(['owner_national_id']);
     expect(step).toContain('Owner ID, business registration (or a signed declaration if you trade under your own surname) and a photo of your storefront; a restaurant adds its GRA licence, and a service business sends only the owner’s ID.');
+    // [COMPANY-DOCS · owner 10 Nov 2026] a registered company and a manager, as the platform's lists ask (never an owner's ID)
+    expect(checklist('STORE_COMPANY')).toEqual(['certificate_of_incorporation', 'account_holder_id', 'company_authority_letter', 'storefront_photo']);
+    expect(checklist('STORE_MANAGER')).toEqual(['account_holder_id', 'owner_authority_letter', 'business_registration', 'storefront_photo']);
+    expect(step).toContain('A registered company sends its Certificate of Incorporation, a director’s letter and the ID of the one person who manages its account instead of an owner’s ID; a manager signing up for the owner sends their own ID and the owner’s letter. Branches and staff send nothing.');
   });
 });

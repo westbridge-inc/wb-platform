@@ -1810,6 +1810,13 @@ export async function vendorRoutes(app: FastifyInstance) {
     if (!(OWN_NAME_VENDOR_TYPES as readonly string[]).includes(vendor.vendorType)) {
       throw new AppError(400, 'OWN_NAME_NOT_APPLICABLE', 'A service business is not asked for a business registration, so it needs no own-name declaration.');
     }
+    // [COMPANY-DOCS · owner 10 Nov 2026] Own name is an owner's alone: a company's or a manager's account gives its own papers.
+    const holder = await app.prisma.vendorOwner.findUnique({ where: { id: vendor.ownerId }, select: { accountBasis: true } });
+    if (holder?.accountBasis === 'COMPANY' || holder?.accountBasis === 'MANAGER') {
+      throw new AppError(409, 'ACCOUNT_BASIS_OWN_NAME', holder.accountBasis === 'COMPANY'
+        ? 'A registered company trades under its company name, not under a person’s own name.'
+        : 'Only the owner can trade under their own name. As the manager, upload the owner’s business registration.');
+    }
     if (registered) throw new AppError(409, 'ALREADY_REGISTERED', 'A business registration is on file for this store, so it needs no own-name declaration.');
     if (existing?.status === 'PENDING' || (existing && vendor.tradesUnderOwnName)) {
       throw new AppError(409, 'OWN_NAME_DECLARATION_EXISTS', `Your own-name declaration is already ${existing.status === 'APPROVED' ? 'on file' : 'waiting for review'}.`);

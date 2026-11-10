@@ -13,6 +13,7 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { LEGAL_URL } from '@/lib/legal-url';
 import { becomePartner, signOwnName } from '@/lib/customer-account';
 import { ownNameStoreType } from '@/lib/own-name-store-type';
+import { signupAccountBasis } from '@/lib/business-basis';
 import { AGREEMENT, agreementAsk, businessAsk, EXAMPLE, LIMIT, taxiAsk } from '@/lib/signup-fields';
 import { isCarVehicle, isHirePlate, MOVER_VEHICLES, PRIVATE_CAR_H_PLATE, PRIVATE_CAR_NOTE, riderVehicles, TAXI_DOOR_PRIVATE_CAR, TAXI_PLATE_ERROR, TAXI_PLATE_HINT, type MoverRole } from '@/lib/signup-roles';
 import { BIKE_WITH_A_MOTOR } from '@/lib/bike-with-a-motor';
@@ -109,19 +110,21 @@ function usePartnerTerms() {
 /** What a store owner has typed on the business step (kept by the page across Back and forward). */
 export interface BusinessDraft {
   biz: { name: string; vendorType: string; addressLine1: string; city: string; region: string };
-  /** [ROLE-DOCS · owner 21 Oct 2026] own name (no business registration, BNA s.3) or a business name; the declaration tick */
-  nameBasis: 'REGISTERED' | 'OWN_NAME';
+  /** [ROLE-DOCS · owner 21 Oct 2026] own name (no business registration, BNA s.3) or a business name; the declaration tick.
+   *  [COMPANY-DOCS · owner 10 Nov 2026] or a registered company; and "I'm the manager, not the owner" under a registered business. */
+  nameBasis: 'REGISTERED' | 'OWN_NAME' | 'COMPANY';
   ownNameTick: boolean;
+  managerNotOwner?: boolean;
   storePin: StorePin | null;
 }
 /** [FLOW-QA F19] The server refused an own-name store whose name is not just the owner's surname: what to do next. */
-export const OWN_NAME_NEXT = 'Choose “A registered business name or a company (I have the DCRA certificate)” and add your business registration under Documents, or use just your surname as the store name.';
+export const OWN_NAME_NEXT = 'Choose “We’re a registered business” and add your business registration under Documents, or use just your surname as the store name.';
 /** [FLOW-QA F26] A Services business is not a shop: it is asked where it is based. */
 const PIN_WORDS = {
   store: { place: 'Place your store on the map', move: 'Move the store pin', confirmed: 'Store location confirmed' },
   service: { place: 'Show where you’re based on the map', move: 'Move the pin', confirmed: 'Location confirmed' },
 } as const;
-const NEW_BUSINESS: BusinessDraft = { biz: { name: '', vendorType: 'RESTAURANT', addressLine1: '', city: '', region: '' }, nameBasis: 'REGISTERED', ownNameTick: false, storePin: null };
+const NEW_BUSINESS: BusinessDraft = { biz: { name: '', vendorType: 'RESTAURANT', addressLine1: '', city: '', region: '' }, nameBasis: 'REGISTERED', ownNameTick: false, managerNotOwner: false, storePin: null };
 
 /** [FLOW-QA F9] `note`: said under the heading when an existing account adds a business or a vehicle to itself. */
 export function BusinessStep({ shell, draft, onDraft, note = null }: { shell: StepShell; draft: BusinessDraft | null; onDraft: (_draft: BusinessDraft) => void; note?: string | null }) {
@@ -130,8 +133,11 @@ export function BusinessStep({ shell, draft, onDraft, note = null }: { shell: St
   const [d, setD] = useState<BusinessDraft>(() => draft ?? readBusinessDraft() ?? NEW_BUSINESS);
   useEffect(() => { onDraft(d); saveBusinessDraft(d); }, [d, onDraft]);
   const { biz, nameBasis, ownNameTick, storePin } = d;
-  const setBiz = (next: BusinessDraft['biz']) => setD((cur) => ({ ...cur, biz: next }));
-  const setNameBasis = (next: BusinessDraft['nameBasis']) => setD((cur) => ({ ...cur, nameBasis: next }));
+  const managerNotOwner = d.managerNotOwner === true;
+  // [COMPANY-DOCS] a service business has no own-name path: a choice it is not offered goes back to the owner's
+  const setBiz = (next: BusinessDraft['biz']) => setD((cur) => ({ ...cur, biz: next, ...(next.vendorType === 'SERVICE' && cur.nameBasis === 'OWN_NAME' ? { nameBasis: 'REGISTERED' as const, ownNameTick: false } : {}) }));
+  const setNameBasis = (next: BusinessDraft['nameBasis']) => setD((cur) => ({ ...cur, nameBasis: next, managerNotOwner: false }));
+  const setManagerNotOwner = (next: boolean) => setD((cur) => ({ ...cur, managerNotOwner: next }));
   const setOwnNameTick = (next: boolean) => setD((cur) => ({ ...cur, ownNameTick: next }));
   const setStorePin = (next: StorePin | null) => setD((cur) => ({ ...cur, storePin: next }));
   const terms = usePartnerTerms();
@@ -167,12 +173,15 @@ export function BusinessStep({ shell, draft, onDraft, note = null }: { shell: St
   const [OwnNameChoice, setOwnNameChoice] = useState<typeof OwnNameChoiceComponent | null>(null);
   const [ownNameLoadFailed, setOwnNameLoadFailed] = useState(false);
   const ownNameType = ownNameStoreType(biz.vendorType);
+  // [COMPANY-DOCS · owner 10 Nov 2026] The choice is asked of every business type now (a service business: a company or its
+  // owner), so it loads on the business step whatever the type.
   useEffect(() => {
-    if (!ownNameType || OwnNameChoice || ownNameLoadFailed) return;
+    if (OwnNameChoice || ownNameLoadFailed) return;
     loadOwnNameChoice().then((m) => setOwnNameChoice(() => m.OwnNameChoice), () => setOwnNameLoadFailed(true));
-  }, [ownNameType, OwnNameChoice, ownNameLoadFailed]);
+  }, [OwnNameChoice, ownNameLoadFailed]);
   const pinWords = PIN_WORDS[biz.vendorType === 'SERVICE' ? 'service' : 'store'];
   const ownName = nameBasis === 'OWN_NAME' && ownNameType;
+  const accountBasis = signupAccountBasis({ type: biz.vendorType, nameBasis, managerNotOwner });
   // [WEB-ONBOARDING · owner 1 Nov 2026] While the button waits, one line under it names the first thing missing, in the
   // app's words (#947's grammar), held to the server's shortest values: the form, the pin, then [FLOW-QA F19] an
   // own-name store's signed declaration, in the app's order (businessSetupBlocker). The weekly fee block says its own ask.
@@ -184,7 +193,7 @@ export function BusinessStep({ shell, draft, onDraft, note = null }: { shell: St
     if (ownName && !ownNameTick) throw new Error('Sign the own-name declaration to continue');
     if (fee.ask) throw new Error(fee.ask);
     if (!agree) throw new Error(agreementAsk(AGREEMENT.business));
-    await terms.feeChecked(becomePartner({ role: 'VENDOR', acceptAgreement: true, ...(fee.ack && { weeklyFeeAck: fee.ack }), business: { name: biz.name.trim(), vendorType: biz.vendorType, phone: guyanaPhone(phone), addressLine1: biz.addressLine1.trim(), city: biz.city.trim(), region: biz.region.trim(), latitude: storePin.latitude, longitude: storePin.longitude, ...(ownName ? { nameBasis: 'OWN_NAME' } : {}) } })
+    await terms.feeChecked(becomePartner({ role: 'VENDOR', acceptAgreement: true, ...(fee.ack && { weeklyFeeAck: fee.ack }), business: { name: biz.name.trim(), vendorType: biz.vendorType, phone: guyanaPhone(phone), addressLine1: biz.addressLine1.trim(), city: biz.city.trim(), region: biz.region.trim(), latitude: storePin.latitude, longitude: storePin.longitude, ...(ownName ? { nameBasis: 'OWN_NAME' } : {}), ...(accountBasis ? { accountBasis } : {}) } })
       .catch((e: { code?: unknown; message?: string }) => {
         // [FLOW-QA F19] the server's words, then what to do next
         if (e?.code === 'OWN_NAME_MISMATCH') throw Object.assign(new Error(`${e.message ?? ''} ${OWN_NAME_NEXT}`.trim()), { code: e.code });
@@ -208,11 +217,11 @@ export function BusinessStep({ shell, draft, onDraft, note = null }: { shell: St
       <div className={styles.field}><label htmlFor="business-type" className={styles.label}>Business type</label><select id="business-type" value={biz.vendorType} onChange={(e) => setBiz({ ...biz, vendorType: e.target.value })} className={styles.input}>
         <option value="RESTAURANT">Restaurant / food</option><option value="SUPERMARKET">Supermarket / grocery</option><option value="STORE">Shop / goods</option><option value="SERVICE">Services</option>
       </select></div>
-      {ownNameType ? (OwnNameChoice
-        ? <OwnNameChoice storeName={biz.name} nameBasis={nameBasis} onNameBasis={setNameBasis} tick={ownNameTick} onTick={setOwnNameTick} />
+      {OwnNameChoice
+        ? <OwnNameChoice storeName={biz.name} vendorType={biz.vendorType} nameBasis={nameBasis} onNameBasis={setNameBasis} tick={ownNameTick} onTick={setOwnNameTick} managerNotOwner={managerNotOwner} onManagerNotOwner={setManagerNotOwner} />
         : ownNameLoadFailed
-          ? <button type="button" className={styles.roleButton} onClick={() => setOwnNameLoadFailed(false)}>Couldn’t load the store-name choice — try again</button>
-          : null) : null}
+          ? <button type="button" className={styles.roleButton} onClick={() => setOwnNameLoadFailed(false)}>Couldn’t load the business-type choice — try again</button>
+          : null}
       <div className={styles.field}><label htmlFor="business-street" className={styles.label}>Street address</label><input id="business-street" autoComplete="street-address" maxLength={LIMIT.street} placeholder={EXAMPLE.street} disabled={busy || placingStore} value={biz.addressLine1} onChange={(e) => editBusinessAddress({ addressLine1: e.target.value })} className={styles.input} /></div>
       <div className={styles.field}><label htmlFor="business-city" className={styles.label}>City or town</label><input id="business-city" autoComplete="address-level2" maxLength={LIMIT.city} placeholder={EXAMPLE.city} disabled={busy || placingStore} value={biz.city} onChange={(e) => editBusinessAddress({ city: e.target.value })} className={styles.input} /></div>
       <div className={styles.field}><label htmlFor="business-region" className={styles.label}>Region (optional)</label><input id="business-region" autoComplete="address-level1" maxLength={LIMIT.region} placeholder={EXAMPLE.region} disabled={busy || placingStore} value={biz.region} onChange={(e) => editBusinessAddress({ region: e.target.value })} className={styles.input} /></div>

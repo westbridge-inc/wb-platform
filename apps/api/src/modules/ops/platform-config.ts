@@ -229,12 +229,29 @@ export const DEFAULT_DOCUMENT_CHECKLISTS: Record<string, string[]> = {
     RESTAURANT_OWN_NAME: ['owner_national_id', 'own_name_declaration', 'gra_restaurant_licence', 'storefront_photo'],
     SUPERMARKET_OWN_NAME: ['owner_national_id', 'own_name_declaration', 'storefront_photo'],
     STORE_OWN_NAME: ['owner_national_id', 'own_name_declaration', 'storefront_photo'],
+    // [COMPANY-DOCS · owner rulings 10 Nov 2026 ~07:0xZ, ~07:2xZ] A registered COMPANY (incorporated, e.g. KFC) gives no owner's
+    // ID: its certificate of incorporation (or the company's business registration), the ID of the ONE person who manages
+    // the Swift account, and a letter of authority from a director (or the director listing). ONE set for the whole
+    // account: its branches and its staff upload nothing. The type's other papers are unchanged.
+    RESTAURANT_COMPANY: ['certificate_of_incorporation', 'account_holder_id', 'company_authority_letter', 'gra_restaurant_licence', 'storefront_photo'],
+    SUPERMARKET_COMPANY: ['certificate_of_incorporation', 'account_holder_id', 'company_authority_letter', 'storefront_photo'],
+    STORE_COMPANY: ['certificate_of_incorporation', 'account_holder_id', 'company_authority_letter', 'storefront_photo'],
+    // [COMPANY-DOCS] A registered business whose MANAGER signs up (the owner cannot give their ID): the manager's ID and a
+    // letter of authority signed by the owner, with the business registration (which names that owner).
+    RESTAURANT_MANAGER: ['account_holder_id', 'owner_authority_letter', 'business_registration', 'gra_restaurant_licence', 'storefront_photo'],
+    SUPERMARKET_MANAGER: ['account_holder_id', 'owner_authority_letter', 'business_registration', 'storefront_photo'],
+    STORE_MANAGER: ['account_holder_id', 'owner_authority_letter', 'business_registration', 'storefront_photo'],
     // Service businesses (owner ruling, 6 Oct 2026 ~21:25 GYT): the store opens on the owner's ID;
     // a police clearance is OPTIONAL for the store, and a HOME-VISIT booking needs the owner's
     // approved, current one (modules/verification/home-visits) — in-shop bookings never do.
     // Marketplace tradespeople keep it REQUIRED: their jobs are home visits.
     SERVICE: ['owner_national_id'],
     SERVICE_OPTIONAL: ['police_clearance'],
+    // [COMPANY-DOCS · owner 10 Nov 2026] A service business that is a registered company: the company's papers in place of
+    // an owner's ID, as for a store. Home visits keep their own rule (the account holder's police clearance, and the selfie
+    // + ID match when that switch is on: verification/home-visits). No SERVICE_MANAGER: a service business has no
+    // registration that names its owner, so an owner's letter could not be checked against anything (COORD to put to the owner).
+    SERVICE_COMPANY: ['certificate_of_incorporation', 'account_holder_id', 'company_authority_letter'],
     SERVICE_PROVIDER: ['national_id', 'police_clearance'],
     SERVICE_PROVIDER_TRADE_ELECTRICIAN: ['gei_electrical_licence'],
     SERVICE_PROVIDER_TRADE_ELECTRICAL: ['gei_electrical_licence'],

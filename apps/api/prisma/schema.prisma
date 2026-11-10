@@ -1516,8 +1516,21 @@ model VendorOwner {
   dealChangeSwitchedAt  DateTime?
   /// [ENTERPRISE · E1] The owner's "pay all my branches" MMG checkouts (one MMG page for several branch fees).
   chainCheckouts   MmgCheckoutIntent[]
+  /// [COMPANY-DOCS · owner rulings 10 Nov 2026] Who holds this account, chosen at sign-up, and so which papers the whole
+  /// account gives (verification/doc-registry COMPANY_TIER, MANAGER_TIER): OWNER (the default: the owner of a registered
+  /// business, or a person trading under their own name), COMPANY (a registered company; the holder is the ONE person who
+  /// manages its Swift account) or MANAGER (the manager of a registered business, not its owner). One choice for the
+  /// account: every branch rides it and uploads nothing. Every existing account is OWNER (unchanged).
+  accountBasis     VendorAccountBasis @default(OWNER)
 
   @@map("vendor_owners")
+}
+
+/// [COMPANY-DOCS · owner rulings 10 Nov 2026] Who holds a store account (VendorOwner.accountBasis).
+enum VendorAccountBasis {
+  OWNER
+  COMPANY
+  MANAGER
 }
 
 /// Staff & roles (master plan §4.1): extra logins on a store. The OWNER

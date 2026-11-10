@@ -91,6 +91,11 @@ export const BUCKET_OF: Readonly<Record<string, DocBucket>> = {
   self_declaration_unregistered: 'BUSINESS',
   // [ROLE-DOCS · owner 21 Oct 2026] the signed "I trade under my own name" declaration (vendor/own-name.ts)
   own_name_declaration: 'BUSINESS',
+  // [COMPANY-DOCS · owner 10 Nov 2026] a registered company's papers, and a registered business run by its manager:
+  // the company's certificate and the two authority letters are business records; the account holder's ID is a
+  // person's ID, PERSONAL exactly like an owner's (purged after review: IMAGE_POLICY_OF_BUCKET).
+  certificate_of_incorporation: 'BUSINESS', company_authority_letter: 'BUSINESS', owner_authority_letter: 'BUSINESS',
+  account_holder_id: 'PERSONAL',
   // [TRADES · 13 Oct 2026; R15] service-trade documents: a person's licence is PERSONAL; a premises
   // certificate is BUSINESS and always reviewed by a person (ALWAYS_REVIEW_LEGACY_CODES).
   pest_control_operator_licence: 'PERSONAL', pesticide_applicator_certificate: 'PERSONAL',
@@ -171,6 +176,8 @@ export const ALWAYS_REVIEW_LEGACY_CODES: ReadonlySet<string> = new Set([
   // [ROLE-DOCS · owner 21 Oct 2026 · security review] whether a store's name is its owner's true surname (BNA s.3)
   // is read from the owner's ID by a person, never by a machine
   'own_name_declaration',
+  // [COMPANY-DOCS · owner 10 Nov 2026] which company, and who may act for it, is a person's judgement
+  'certificate_of_incorporation', 'company_authority_letter', 'owner_authority_letter',
 ]);
 
 export const registryCode = (countryCode: string, legacyCode: string) => `${countryCode}.${legacyCode}`;
@@ -562,6 +569,20 @@ export const FIELD_CATALOGUE: Readonly<Record<string, readonly FieldRow[]>> = {
   owner_national_id: IDENTITY,
   passport: IDENTITY,
   digital_id: IDENTITY,
+  // [COMPANY-DOCS · owner 10 Nov 2026] the account holder's National ID, Digital ID card or passport: an ID like any other
+  account_holder_id: IDENTITY,
+  // [COMPANY-DOCS] the company's certificate (or its business registration): its number, the company's name and registered
+  // office (public facts of a company) and the date. No proprietor: a company has none.
+  certificate_of_incorporation: [
+    { fieldCode: 'registration_number', dataType: 'text', blind: true, identifier: true },
+    { fieldCode: 'company_name', dataType: 'text' },
+    { fieldCode: 'registered_address', dataType: 'text' },
+    { fieldCode: 'registration_date', dataType: 'date' },
+  ],
+  // [COMPANY-DOCS] the authority letters are read by a person and nothing is extracted from them (like a photo): no name
+  // or signature on them is ever copied into a field, an export of fields, or a storefront.
+  company_authority_letter: [],
+  owner_authority_letter: [],
   // A photo declares no EXTRACTED fields: its capture metadata (captured_at, geo_point, device_attestation —
   // §3.2) is recorded by the capture attestation (P22), not read from the image. Photo types stay field-less.
   storefront_photo: [],
@@ -688,6 +709,7 @@ export const RETIRED_FIELDS: Readonly<Record<string, readonly string[]>> = {
   owner_national_id: ['sex', 'nationality'],
   passport: ['sex', 'nationality'],
   digital_id: ['sex', 'nationality'],
+  account_holder_id: ['sex', 'nationality'],
   vehicle_registration: ['owner_name'],
 };
 /** An empty placeholder for a retired field: nothing to show anyone. */
@@ -749,13 +771,36 @@ export const OWN_NAME_TIER = 'OWN_NAME';
 export const OWN_NAME_LIST_SUFFIX = '_OWN_NAME';
 /** [VERIFY-DOCS] `<KEY>_OPTIONAL` names documents the same role MAY add: never a gate. */
 export const OPTIONAL_LIST_SUFFIX = '_OPTIONAL';
+/**
+ * [COMPANY-DOCS · owner rulings 10 Nov 2026 ~07:0xZ and ~07:2xZ] Who signs up a store decides its papers:
+ *  - a registered COMPANY (incorporated, e.g. KFC): `<ROLE>_COMPANY`: the certificate of incorporation (or the company's
+ *    business registration), the ID of the ONE person who manages the Swift account, and the authority letter from a
+ *    director (or the director listing). Never an owner's ID. Branches and staff upload nothing.
+ *  - a registered business whose MANAGER signs up (the owner cannot give their ID): `<ROLE>_MANAGER`: the manager's ID,
+ *    a letter of authority signed by the owner, and the business registration.
+ * A person at Swift checks every one of them (PERSON_ONLY_DOC_TYPES). The account's choice is VendorOwner.accountBasis.
+ */
+export const COMPANY_TIER = 'COMPANY';
+export const COMPANY_LIST_SUFFIX = '_COMPANY';
+export const MANAGER_TIER = 'MANAGER';
+export const MANAGER_LIST_SUFFIX = '_MANAGER';
 /** RESTAURANT_OWN_NAME → { actorRole: 'RESTAURANT', tier: 'OWN_NAME' }; MOVER_OPTIONAL → { actorRole: 'MOVER', optional };
+ *  STORE_COMPANY → { actorRole: 'STORE', tier: 'COMPANY' }; STORE_MANAGER → { actorRole: 'STORE', tier: 'MANAGER' };
  *  anything else is the STANDARD tier's required list. */
 export function splitChecklistKey(listKey: string): { actorRole: string; tier: string; optional: boolean } {
   const optional = listKey.endsWith(OPTIONAL_LIST_SUFFIX);
   const key = optional ? listKey.slice(0, -OPTIONAL_LIST_SUFFIX.length) : listKey;
-  if (key.endsWith(OWN_NAME_LIST_SUFFIX)) return { actorRole: key.slice(0, -OWN_NAME_LIST_SUFFIX.length), tier: OWN_NAME_TIER, optional };
+  for (const [suffix, tier] of [[OWN_NAME_LIST_SUFFIX, OWN_NAME_TIER], [COMPANY_LIST_SUFFIX, COMPANY_TIER], [MANAGER_LIST_SUFFIX, MANAGER_TIER]] as const) {
+    if (key.endsWith(suffix)) return { actorRole: key.slice(0, -suffix.length), tier, optional };
+  }
   return { actorRole: key, tier: REGISTRY_TIER, optional };
+}
+/** The tier's list key for a role: `STORE` + COMPANY → `STORE_COMPANY`; the standard tier is the role's own key. */
+export function checklistKeyFor(roleKey: string, tier: string | undefined): string {
+  if (tier === OWN_NAME_TIER) return `${roleKey}${OWN_NAME_LIST_SUFFIX}`;
+  if (tier === COMPANY_TIER) return `${roleKey}${COMPANY_LIST_SUFFIX}`;
+  if (tier === MANAGER_TIER) return `${roleKey}${MANAGER_LIST_SUFFIX}`;
+  return roleKey;
 }
 
 export async function registryChecklist(prisma: Pick<PrismaClient, 'requirementSet'>, countryCode: string, actorRole: string, now = new Date(), tier: string = REGISTRY_TIER): Promise<string[] | null> {
@@ -780,7 +825,7 @@ export const IDENTITY_DOC_TYPES: readonly string[] = ['owner_national_id', 'nati
 /** [Item 98 · owner ruling 13 Oct 2026, row 30] The photo IDs a reviewer compares with the applicant's signup selfie, by
  *  eye and never by a machine: whichever was sent, a national ID, an owner's national ID, a passport or a driver's
  *  licence (a motorised mover's licence is their photo ID). Registry text (DOC-INV-2). */
-export const SELFIE_COMPARE_DOC_TYPES: ReadonlySet<string> = new Set([...IDENTITY_DOC_TYPES, 'drivers_licence']);
+export const SELFIE_COMPARE_DOC_TYPES: ReadonlySet<string> = new Set([...IDENTITY_DOC_TYPES, 'drivers_licence', 'account_holder_id']);
 /** [VERIFY-DOCS · owner ruling 6 Oct 2026 ~21:25 GYT] The licence whose NUMBER a reviewer types at approval (kept only as a
  *  blind index, for the duplicate-account check — verification/identity-signal-policy.ts). Registry text (DOC-INV-2). */
 export const LICENCE_NUMBER_DOC_TYPES: ReadonlySet<string> = new Set(['drivers_licence']);
@@ -790,7 +835,9 @@ export const ISSUE_DATE_DOC_TYPES: ReadonlySet<string> = new Set(['police_cleara
 /** [DOC-1 §3.6 · P3-2] The registration records: a VALID one is a store's business registration on file (the own-name
  *  route refuses a store that already holds one). [CHECKLIST-LEGAL · owner 1 Nov 2026 (a)] No tier is promoted by it any
  *  more: the self-declared tier is removed. */
-export const REGISTRATION_DOC_TYPES: readonly string[] = ['business_registration'];
+// [COMPANY-DOCS · owner 10 Nov 2026] A company's certificate of incorporation (or its business registration) is a registration
+// record too: the reviewer says which kind it is (a company's never expires; a business name is checked every January).
+export const REGISTRATION_DOC_TYPES: readonly string[] = ['business_registration', 'certificate_of_incorporation'];
 /**
  * [R16 · owner 15 Oct 2026, research D7] What a business registration certificate is, decided by the
  * reviewer who reads it: a business NAME registered by a sole trader or a partnership (Business Names
@@ -801,6 +848,23 @@ export const REGISTRATION_KINDS = ['BUSINESS_NAME', 'COMPANY'] as const;
 export type RegistrationKind = (typeof REGISTRATION_KINDS)[number];
 /** [ROLE-DOCS · owner 21 Oct 2026] The signed "I trade under my own name" declaration. Registry text (DOC-INV-2). */
 export const OWN_NAME_DOC_TYPE = 'own_name_declaration';
+/** [COMPANY-DOCS · owner 10 Nov 2026] A registered company's certificate of incorporation (or its business registration). */
+export const CERTIFICATE_OF_INCORPORATION_DOC_TYPE = 'certificate_of_incorporation';
+/** [COMPANY-DOCS] The ID (National ID, Digital ID card or passport) of the ONE person who manages the Swift account for a
+ *  company, or for a registered business whose manager signs up. Protected exactly as an owner's ID (PERSONAL, the same
+ *  fields, the reviewer's number check, the same face rules), but it is NOT a proprietor's ID: it is never in
+ *  IDENTITY_DOC_TYPES, so it never makes "<name> trading as <store>" on a storefront (the public name is the company's). */
+export const ACCOUNT_HOLDER_ID_DOC_TYPE = 'account_holder_id';
+/** [COMPANY-DOCS] The letter on company letterhead, signed by a director, naming the account holder (or the director listing). */
+export const COMPANY_AUTHORITY_DOC_TYPE = 'company_authority_letter';
+/** [COMPANY-DOCS] The letter signed by the business owner (named on the business registration) naming the manager. */
+export const OWNER_AUTHORITY_DOC_TYPE = 'owner_authority_letter';
+/** [COMPANY-DOCS] Every ID a person's identity number is read from at review: the proprietor's IDs and the account holder's. */
+export const PERSON_ID_DOC_TYPES: readonly string[] = [...IDENTITY_DOC_TYPES, ACCOUNT_HOLDER_ID_DOC_TYPE];
+/** [ROLE-DOCS · COMPANY-DOCS] Papers only a person at Swift decides: no engine, automatic approval or automatic rejection. */
+export const PERSON_ONLY_DOC_TYPES: ReadonlySet<string> = new Set([
+  OWN_NAME_DOC_TYPE, CERTIFICATE_OF_INCORPORATION_DOC_TYPE, ACCOUNT_HOLDER_ID_DOC_TYPE, COMPANY_AUTHORITY_DOC_TYPE, OWNER_AUTHORITY_DOC_TYPE,
+]);
 /** [FOOD-PERMIT · owner ruling 24 Oct 2026] A food handler's certificate. Required of a chef and a caterer; OPTIONAL for a
  *  restaurant, which ticks the statement below instead. */
 export const FOOD_HANDLER_CERT_DOC_TYPE = 'food_handler_cert';
@@ -842,4 +906,6 @@ export const VEHICLE_REGISTRATION_DOC_TYPE = 'vehicle_registration';
 export const NAME_CHECKED_DOC_TYPES: readonly string[] = [
   'national_id', 'owner_national_id', 'drivers_licence', 'hire_car_driver_licence', 'own_name_declaration', 'police_clearance',
   'food_handler_cert', 'gei_electrical_licence', 'pest_control_operator_licence', 'pesticide_applicator_certificate', 'digital_id',
+  // [COMPANY-DOCS] the account holder's own ID carries the account holder's own name
+  'account_holder_id',
 ];

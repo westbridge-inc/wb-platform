@@ -135,7 +135,10 @@ const FAQ: QA[] = [
         Owner ID, a business registration (or, if your store&apos;s name is your own name, a short signed declaration
         instead), a photo of your storefront, and any licence your kind of business needs (a restaurant adds its GRA
         Food Restaurant Licence and confirms that everyone who handles its food holds a current food handler&apos;s
-        certificate). A person reviews them.{' '}
+        certificate). A registered company sends its Certificate of Incorporation, a letter from a director and the ID of
+        the one person who manages its Swift account instead of an owner ID; a manager signing up for the owner sends
+        their own ID and a letter from the owner. Your branches and staff don&apos;t send anything. A person reviews
+        them.{' '}
         {/* [OPEN-EARLY] The review time is true only once Swift is open; before launch, approval is on launch day. */}
         <ReviewTime live="We review documents Monday to Saturday, 8:00–16:00 Guyana time." /> Your free trial starts the day you are{' '}
         <i>approved</i>, so review time never eats into it. The{' '}

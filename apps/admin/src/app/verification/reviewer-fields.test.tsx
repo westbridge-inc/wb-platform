@@ -4,11 +4,11 @@ import VerificationPage from './page';
 import { DocumentViewer } from '@/components/verification/DocumentViewer';
 import { mockApi, renderWithQuery, requestsByMethod } from '@/test/test-utils';
 
-function fixture(docType: string, reviewerTypes: string[]) {
+function fixture(docType: string, reviewerTypes: string[], extra: Record<string, unknown> = {}) {
   return mockApi((r) => {
     if (r.url.pathname.endsWith('/queue/counts')) return { body: { data: {} } };
     if (r.url.pathname.endsWith('/queue')) return { body: { data: [{ id: 'synthetic-doc', userId: 'synthetic-user', docType, reviewerTypes,
-      role: 'MOVER', status: 'PENDING', user: { id: 'synthetic-user', firstName: 'Synthetic', lastName: 'Applicant' } }], meta: { hasNext: false } } };
+      role: 'MOVER', status: 'PENDING', user: { id: 'synthetic-user', firstName: 'Synthetic', lastName: 'Applicant' }, ...extra }], meta: { hasNext: false } } };
     if (r.url.pathname.includes('/users/')) return { body: { data: {} } };
     if (r.url.pathname.endsWith('/custody')) return { body: { data: { timeline: [] } } };
     if (r.url.pathname.endsWith('/document-url')) return { body: { data: { url: '/api/v1/verification/render/synthetic-doc?sig=fixture&expires=1' } } };
@@ -19,7 +19,8 @@ function fixture(docType: string, reviewerTypes: string[]) {
 }
 
 describe('reviewer fields required by the approval route', () => {
-  it.each(['national_id', 'owner_national_id', 'passport', 'drivers_licence'])('%s sends the number the reviewer read', async (docType) => {
+  // [COMPANY-DOCS · owner 10 Nov 2026] a company's or a manager's account holder's ID is checked exactly as an owner's
+  it.each(['national_id', 'owner_national_id', 'passport', 'drivers_licence', 'account_holder_id'])('%s sends the number the reviewer read', async (docType) => {
     const fetch = fixture(docType, ['documentNumber']);
     const { user } = renderWithQuery(<VerificationPage />);
     await user.click(await screen.findByRole('button', { name: 'Review' }));
@@ -34,6 +35,24 @@ describe('reviewer fields required by the approval route', () => {
     await user.click(within(dialog).getByRole('button', { name: 'Confirm approval' }));
     await waitFor(() => expect(requestsByMethod(fetch, 'PUT')).toHaveLength(1));
     expect(JSON.parse(String(requestsByMethod(fetch, 'PUT')[0]![1]?.body))).toMatchObject({ documentNumber: 'SYNTH-1234' });
+  });
+
+  // [COMPANY-DOCS · owner 10 Nov 2026] The reviewer is told which path a store account signed up on, and what to check.
+  it('a company’s account holder’s ID names the path and the check, and is never called the owner’s ID', async () => {
+    fixture('account_holder_id', ['documentNumber'], { role: 'VENDOR_OWNER', accountBasis: 'COMPANY' });
+    const { user } = renderWithQuery(<VerificationPage />);
+    await user.click(await screen.findByRole('button', { name: 'Review' }));
+    expect(await screen.findByText(/Signed up as a registered company/)).toBeTruthy();
+    expect(screen.getByText(/The ID of the one person who manages this Swift account/)).toBeTruthy();
+    expect(screen.getAllByText('Account holder’s ID (company or manager)').length).toBeGreaterThan(0);
+  });
+
+  it('an owner’s account shows no path line', async () => {
+    fixture('owner_national_id', ['documentNumber'], { role: 'VENDOR_OWNER', accountBasis: 'OWNER' });
+    const { user } = renderWithQuery(<VerificationPage />);
+    await user.click(await screen.findByRole('button', { name: 'Review' }));
+    await screen.findAllByText('National ID');
+    expect(screen.queryByText(/Signed up as a registered company|Signed up by the manager/)).toBeNull();
   });
 
   // [Rule 11 Oct 2026: no ID-number duplicate check at launch] The server asks nothing typed for a customer's ID.
