@@ -45,6 +45,7 @@ const riderIds: string[] = [];
 const vendorIds: string[] = [];
 const zoneIds: string[] = [];
 let backlogCustomer = '';
+let dispatchJobs: ReturnType<typeof recordDispatchQueue> = [];
 
 type Actor = { userId: string; token: string; sessionId: string };
 
@@ -165,7 +166,7 @@ beforeAll(async () => {
   await app.register(redisPlugin);
   await app.register(authPlugin);
   await app.register(socketPlugin);
-  recordDispatchQueue(app);
+  dispatchJobs = recordDispatchQueue(app);
   await app.register(customerRoutes, { prefix: '/api/v1/customer' });
   await app.register(vendorRoutes, { prefix: '/api/v1/vendor' });
   await app.register(adminRoutes, { prefix: '/api/v1/admin' });
@@ -485,6 +486,89 @@ describe('[RIDE-03 follow-up] a store that delivers itself, and the banner readi
       .toMatchObject({ level: 'GOOD', reason: null, message: null });
     const placedBig = await call('POST', '/api/v1/customer/checkout', big.token, { paymentMethod: 'CASH' });
     expect(placedBig.statusCode, placedBig.body).toBe(200);
+
+    // [REVIEW-2472 A-3] Accepted: the store's own delivery, and no Swift rider is ever sought for it.
+    const orderId = placedBig.json().data.order.id as string;
+    const accepted = await call('PUT', `/api/v1/vendor/orders/${orderId}/accept`, store.owner.token, {}, { 'x-vendor-id': store.vendorId });
+    expect(accepted.statusCode, accepted.body).toBe(200);
+    expect((await sys(() => app.prisma.order.findUniqueOrThrow({ where: { id: orderId }, select: { fulfillmentMode: true } }))).fulfillmentMode).toBe('VENDOR_DELIVERY');
+    expect(dispatchJobs.filter((j) => j.name === 'dispatch-order' && j.data.orderId === orderId)).toEqual([]);
+  });
+
+  it("A-3: Swift's pause and the store's own rider backlog still refuse a self-delivering store", async () => {
+    const at = cell(20);
+    const store = await makeStore(at, 'Own Drivers Paused', { selfDelivery: true });
+    process.env['DISPATCH_AVAILABILITY'] = '1';
+    const d = 0.02;
+    const zone = await sys(() => app.prisma.zone.create({
+      data: { name: `Self Delivery Zone ${RUN}`, tenantId: 'swift-default', countryCode: 'GY', priority: -50,
+        boundary: { type: 'Polygon', coordinates: [[[at.lng - d, at.lat - d], [at.lng + d, at.lat - d], [at.lng + d, at.lat + d], [at.lng - d, at.lat + d], [at.lng - d, at.lat - d]]] } },
+    }));
+    zoneIds.push(zone.id);
+    const actor = (await makeUser(['CUSTOMER'], 'CUSTOMER')).userId;
+    const before = await sys(() => readDeliveryPause(app.prisma, 'swift-default'));
+    await sys(() => setDeliveryPause(app.prisma, { tenantId: 'swift-default', platform: before.platform, zoneIds: [...before.zoneIds, zone.id], actorUserId: actor, reason: 'Self-delivery pause check', expectedVersion: before.version }));
+    try {
+      const c = await customerAt(at);
+      await addToCart(c, store.vendorId, store.itemId);
+      const paused = await call('POST', '/api/v1/customer/checkout', c.token, { paymentMethod: 'CASH' });
+      expect(paused.statusCode, paused.body).toBe(409);
+      expect(paused.json().error).toMatchObject({ code: 'DELIVERY_NO_RIDERS', details: { reason: 'SWIFT_PAUSED' } });
+    } finally {
+      const now = await sys(() => readDeliveryPause(app.prisma, 'swift-default'));
+      await sys(() => setDeliveryPause(app.prisma, { tenantId: 'swift-default', platform: before.platform, zoneIds: before.zoneIds, actorUserId: actor, reason: 'Self-delivery pause check over', expectedVersion: now.version }));
+    }
+    // Three of its orders waiting for a Swift rider past the grace (switched to "Get a Swift rider"): STORE_BUSY.
+    for (let i = 0; i < 3; i += 1) {
+      const w = await makeOrder(store.vendorId, at, { acceptedMinAgo: 6 });
+      await sys(() => app.prisma.order.update({ where: { id: w.id }, data: { fulfillmentMode: 'PLATFORM_RIDER' } }));
+    }
+    const c2 = await customerAt(at);
+    await addToCart(c2, store.vendorId, store.itemId);
+    const busy = await call('POST', '/api/v1/customer/checkout', c2.token, { paymentMethod: 'CASH' });
+    expect(busy.statusCode, busy.body).toBe(409);
+    expect(busy.json().error).toMatchObject({ code: 'DELIVERY_NO_RIDERS', details: { reason: 'STORE_BUSY' } });
+  });
+
+  it('A-1: a self-delivery CASH order no Swift rider can carry is never handed to Swift dispatch (setting off before accept, or "Get a Swift rider")', async () => {
+    const at = cell(21);
+    const store = await makeStore(at, 'Own Drivers Switch', { selfDelivery: true, bigPrice: LIMIT + 1_000 });
+    for (const m of [100, 200, 300, 400]) await makeRider(at, m, { floatLimit: LIMIT });
+    process.env['DISPATCH_AVAILABILITY'] = '1';
+    const asStore = { 'x-vendor-id': store.vendorId };
+    const place = async (itemId: string) => {
+      const c = await customerAt(at);
+      await addToCart(c, store.vendorId, itemId);
+      const res = await call('POST', '/api/v1/customer/checkout', c.token, { paymentMethod: 'CASH' });
+      expect(res.statusCode, res.body).toBe(200);
+      return res.json().data.order.id as string;
+    };
+    const big = await place(store.bigItemId);
+    const small = await place(store.itemId);
+    const offered = (id: string) => dispatchJobs.filter((j) => j.name === 'dispatch-order' && j.data.orderId === id).length;
+
+    // (1) The store turns self-delivery OFF before accepting: the accept would hand it to Swift riders, none of whom
+    // can carry its cash. Refused in the store's words, the order is untouched (still PENDING) and nothing is sought.
+    await sys(() => app.prisma.vendor.update({ where: { id: store.vendorId }, data: { selfDeliveryEnabled: false } }));
+    const refusedAccept = await call('PUT', `/api/v1/vendor/orders/${big}/accept`, store.owner.token, {}, asStore);
+    expect(refusedAccept.statusCode, refusedAccept.body).toBe(409);
+    expect(refusedAccept.json().error.code).toBe('NO_RIDER_FOR_CASH');
+    expect(refusedAccept.json().error.message).toMatch(/deliver it yourself/i);
+    expect(refusedAccept.json().error.message).not.toContain('MMG'); // this store takes no MMG: never offered
+    expect((await sys(() => app.prisma.order.findUniqueOrThrow({ where: { id: big }, select: { status: true, fulfillmentMode: true } })))).toEqual({ status: 'PENDING', fulfillmentMode: null });
+    expect(offered(big)).toBe(0);
+    // A basket riders CAN carry is accepted for a Swift rider exactly as before.
+    expect((await call('PUT', `/api/v1/vendor/orders/${small}/accept`, store.owner.token, {}, asStore)).statusCode).toBe(200);
+
+    // (2) Self-delivery back ON: the big order is accepted for the store's own driver. "Get a Swift rider" is refused.
+    await sys(() => app.prisma.vendor.update({ where: { id: store.vendorId }, data: { selfDeliveryEnabled: true } }));
+    expect((await call('PUT', `/api/v1/vendor/orders/${big}/accept`, store.owner.token, {}, asStore)).statusCode).toBe(200);
+    const toRider = await call('PUT', `/api/v1/vendor/orders/${big}/fulfillment-mode`, store.owner.token, { mode: 'PLATFORM_RIDER' }, asStore);
+    expect(toRider.statusCode, toRider.body).toBe(409);
+    expect(toRider.json().error.code).toBe('NO_RIDER_FOR_CASH');
+    expect(toRider.json().error.message).toMatch(/keep delivering it yourself/i);
+    expect((await sys(() => app.prisma.order.findUniqueOrThrow({ where: { id: big }, select: { fulfillmentMode: true } }))).fulfillmentMode).toBe('VENDOR_DELIVERY');
+    expect(offered(big)).toBe(0);
   });
 
   it('S3-2: the cart banner counts paid options in the cash, exactly as checkout does', async () => {

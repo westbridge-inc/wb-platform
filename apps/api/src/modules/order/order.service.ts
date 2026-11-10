@@ -1253,9 +1253,11 @@ export class OrderService {
         // §2 checkout gate (availability spec, flag-gated): zero riders online
         // means an order that would strand food on a counter — honesty beats
         // accepting it. Pickup remains available; appointments never get here.
-        // [REVIEW-2469 S3-1] A store that delivers itself (selfDeliveryEnabled: its orders resolve to
-        // VENDOR_DELIVERY at accept, fulfillment-mode.ts) needs no Swift rider — none to be near, none to front its
-        // cash — so the Swift-rider reads below never refuse it, nor add a Swift rider wait to its promise.
+        // [REVIEW-2469 S3-1] A store that delivers itself (selfDeliveryEnabled) needs no Swift rider — none to be
+        // near, none to front its cash — so the Swift-rider reads below never refuse it, nor add a Swift rider wait to
+        // its promise. Who delivers is decided later: the store's setting AT ACCEPT, and its own "Get a Swift rider"
+        // override (fulfillment-mode.ts). Both re-ask the rider-cash question before a CASH order reaches Swift
+        // riders (vendor.routes accept + fulfillment-mode, swiftRiderCashRefusal) [REVIEW-2472 A-1].
         if (
           process.env['DISPATCH_AVAILABILITY'] === '1'
           && process.env['DELIVERY_BLOCK_ON_NONE'] !== '0'

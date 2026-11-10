@@ -8,6 +8,9 @@ import { riderStackingCapacity } from './concurrency-policy';
 import { sizeClassForProbe, stackableForProbe } from './stack-eligibility';
 import { goodsVehicleTypesForPackageSize } from '../../config/vehicle-classes';
 import { AppError } from '../../utils/errors';
+import { DEFAULT_LOAD_BANDS, readOrderSize } from '../../utils/load';
+import { riderFloatForOrder } from './float.service';
+import { safeMmgNumber } from '../../utils/mmg-number';
 import type { DispatchCandidate } from './scoring';
 
 // ---------------------------------------------------------------------------
@@ -330,6 +333,54 @@ export function cashOverLimitSentence(alternatives: { storeName: string; mmg: bo
   return alternatives.mmg
     ? `${lead} Pay ${alternatives.storeName} by MMG to have it delivered, or order for Pickup instead.`
     : `${lead} You can order for Pickup instead.`;
+}
+
+/**
+ * [REVIEW-2472 A-1] A CASH order about to be handed to Swift riders AFTER checkout — the store accepting it once its
+ * self-delivery setting is off (the accept binds PLATFORM_RIDER), or tapping "Get a Swift rider" — is checked again
+ * with checkout's own rider-cash question: riders near, but not one who may carry this order's store cash. Then no
+ * Swift rider could ever take it, so the store is told now, in its own words, instead of food cooking for an order
+ * that waits for nobody. Only that answer refuses: no rider online at all (a rider may come online), a busy wait or
+ * a failed probe never block the store. Behind checkout's own switches (DISPATCH_AVAILABILITY, DELIVERY_BLOCK_ON_NONE).
+ */
+export async function swiftRiderCashRefusal(
+  prisma: PrismaClient,
+  capacity: (probe: CapacityProbe) => Promise<DeliveryCapacity>,
+  orderId: string,
+  moment: 'accept' | 'switch',
+): Promise<AppError | null> {
+  if (process.env['DISPATCH_AVAILABILITY'] !== '1' || process.env['DELIVERY_BLOCK_ON_NONE'] === '0') return null;
+  const order = await prisma.order.findUnique({
+    where: { id: orderId },
+    select: {
+      tenantId: true, vendorId: true, orderType: true, courierPackageSize: true, fulfillment: true, paymentMethod: true, subtotalBase: true,
+      pickupLat: true, pickupLng: true, deliveryLat: true, deliveryLng: true, items: { select: { quantity: true, bulkUnits: true } },
+      vendor: { select: { mmgNumber: true } },
+    },
+  });
+  if (!order || order.fulfillment !== 'DELIVERY' || !order.vendorId || order.pickupLat == null || order.pickupLng == null) return null;
+  const cash = riderFloatForOrder(order);
+  if (!(cash > 0)) return null;
+  const size = readOrderSize(order, DEFAULT_LOAD_BANDS);
+  const reading = await capacity({
+    tenantId: order.tenantId,
+    store: { id: order.vendorId, lat: order.pickupLat, lng: order.pickupLng },
+    orderType: order.orderType,
+    dropoff: order.deliveryLat != null && order.deliveryLng != null ? { lat: order.deliveryLat, lng: order.deliveryLng } : null,
+    floatRequired: cash,
+    cashToCollect: cash,
+    packageSize: size.required,
+    loadBand: size.trueBand,
+  }).catch(() => null);
+  if (reading?.level !== 'NONE' || reading.reason !== 'CASH_OVER_RIDER_LIMIT') return null;
+  const amount = `GY$${Math.round(cash).toLocaleString('en-US')}`;
+  const lead = `No Swift rider near your store can carry the ${amount} cash this order needs right now, so a Swift rider cannot take it.`;
+  // The customer's other ways, only the ones that work: paying the store by MMG only when it takes MMG.
+  const reorder = safeMmgNumber(order.vendor?.mmgNumber) !== null ? 'for pickup, or pay you by MMG' : 'for pickup';
+  return new AppError(409, 'NO_RIDER_FOR_CASH', moment === 'accept'
+    ? `${lead} To deliver it yourself, turn self-delivery on and accept it again. Or reject it, so the customer can order again ${reorder}.`
+    : `${lead} Keep delivering it yourself, or ask the customer whether they can collect it.`,
+  { payToVendor: cash });
 }
 
 /** The honest words, once, for every surface (checkout refusal, cart banner). */
