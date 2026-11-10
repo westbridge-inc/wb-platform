@@ -82,7 +82,7 @@ export class RatingService {
         estimatedPrepTime: true,
         rider: { select: { userId: true } },
         driver: { select: { userId: true } },
-        vendor: { select: { ownerId: true, owner: { select: { userId: true } } } },
+        vendor: { select: { owner: { select: { userId: true } } } },
       },
     });
 
@@ -151,9 +151,11 @@ export class RatingService {
     if (input.rateeId != null && input.rateeId === input.raterId) {
       throw new AppError(403, 'SELF_RATING', 'You can’t rate yourself');
     }
-    if (input.type === 'CUSTOMER_TO_VENDOR' && order.vendor) {
+    // (The team lookup is by the owner's person — one owner record per person — so a member of any
+    // branch of the same owner is the store's own team too.)
+    if (input.type === 'CUSTOMER_TO_VENDOR' && order.vendorId && providerUserId) {
       const ownTeam = providerUserId === input.raterId || (await this.prisma.vendorStaff.findFirst({
-        where: { userId: input.raterId, vendor: { ownerId: order.vendor.ownerId } },
+        where: { userId: input.raterId, vendor: { owner: { userId: providerUserId } } },
         select: { id: true },
       })) != null;
       if (ownTeam) {
