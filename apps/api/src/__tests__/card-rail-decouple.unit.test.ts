@@ -26,6 +26,12 @@ const STAGING_V2 = {
   CARD_RAIL_PROVIDER: 'powertranz',
   CARD_RAIL_ENVIRONMENT: 'sandbox',
   API_PUBLIC_URL: 'https://api-staging.example.test',
+  // [CARDS-SWITCH-ON] v2 on PowerTranz, not killed, boots only with its whole setup (synthetic values).
+  CARD_RAIL_ACCOUNT: 'swift-gy-test',
+  POWERTRANZ_ID: 'TESTID01',
+  POWERTRANZ_PASSWORD: 'not-a-real-password',
+  POWERTRANZ_PAGE_SET: 'SWIFT',
+  POWERTRANZ_PAGE_NAME: 'WeeklyFee',
 };
 
 describe('[CARD-DECOUPLE] the legacy PAYMENT_PROVIDER has no say over card rail v2', () => {
@@ -87,7 +93,9 @@ describe('[CARD-DECOUPLE] the legacy PAYMENT_PROVIDER has no say over card rail 
 // (card-rail-routes.test.ts [CARD-DECOUPLE]).
 describe('[Review #2453-A F1] the provider sandbox never lifts the fee pause', () => {
   const noMmg = { MMG_DRIVER: 'disabled' };
-  const reader = { platformConfig: { findUnique: async () => null } } as never;
+  // [B-3 · CARDS-SWITCH-ON] Live cards count only with the card on every platform (fee-pause-card-platforms.unit.test.ts):
+  // the card switch row here says so; MMG's row is absent.
+  const reader = { platformConfig: { findUnique: async ({ where }: { where: { key: string } }) => (where.key === 'billing.cardCheckout.platforms' ? { value: { ios: true, android: true, web: true } } : null) } } as never;
 
   it('v2 on the sandbox, not killed, MMG off: no live way to pay, so the fee stays paused', async () => {
     for (const environment of ['sandbox', undefined, '', 'Live', 'LIVE', 'production']) {

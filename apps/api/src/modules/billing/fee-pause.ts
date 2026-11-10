@@ -3,6 +3,7 @@ import { mmgDisabled, mmgPushRailOn } from '../../providers/mmg/mmg-provider';
 import { getMmgCheckoutProvider, mmgCheckoutEnabled } from '../../providers/mmg/mmg-checkout';
 import { weeklyFeeCardLive } from '../../utils/card-rail';
 import { feeCheckoutEveryPlatformOn } from './fee-checkout-switch';
+import { cardCheckoutEveryPlatformOn } from './card-checkout-switch';
 
 // ---------------------------------------------------------------------------
 // [PROD-PATH] THE rule for "the weekly fee is paused" (coordinator ruling of
@@ -36,13 +37,20 @@ import { feeCheckoutEveryPlatformOn } from './fee-checkout-switch';
 // boot MMG_DRIVER=live without MMG_CHECKOUT_ENABLED=1 (utils/boot-config.ts).
 //
 // The card rail counts as a live way to pay only when a partner can open it
-// (weeklyFeeCardLive: v2 on, not killed, a real provider taking real cards;
-// never a test system — the simulator or a provider's sandbox — which serves
-// only listed test subscriptions). With it live, a
-// partner can pay now by card, so nobody is paused, MMG on or off. When the
-// first real provider lands, its per-platform switch (card-pay-action.ts;
-// iOS off unless switched on) decides which apps show the card, so switch
-// the provider on only once every partner can reach a card page.
+// (cardPayPathLive):
+//   - the server switches (weeklyFeeCardLive: v2 on, not killed, a real
+//     provider taking real cards; never a test system — the simulator or a
+//     provider's sandbox — which serves only listed test subscriptions), AND
+//   - [Review #2453-B B-3] the card's own per-platform switch
+//     (billing.cardCheckout.platforms, card-checkout-switch.ts) on for EVERY
+//     platform, exactly as MMG's checkout counts: a partner's app may be any
+//     of them, and iOS is OFF unless the row says "ios": true (Apple 3.1.1).
+//     Before, live cards lifted the pause for everyone while an iOS partner
+//     saw no card button: with MMG off they would have been billed, failed
+//     and dunned with no way to pay.
+// With it live, a partner can pay now by card on whatever app they use, so
+// nobody is paused, MMG on or off. With the card off on any platform the
+// pause is decided by MMG alone (paying by card still works where it is on).
 //
 // This switch rule is one part of the persisted hold predicate in mmg-pause.
 // Billing and both operate gates also wait for clock repair after switches return.
@@ -91,7 +99,14 @@ export async function mmgPayPathLive(db: PayPathReader, env: Record<string, stri
   return feeCheckoutEveryPlatformOn(db);
 }
 
+/** [B-3] Can a partner pay the weekly fee by card on this server right now, on EVERY platform? The server's card
+ *  switches first (env only); the card's per-platform row is read, fresh, only when they say yes. */
+export async function cardPayPathLive(db: PayPathReader, env: Record<string, string | undefined> = process.env): Promise<boolean> {
+  if (!weeklyFeeCardLive(env)) return false;
+  return cardCheckoutEveryPlatformOn(db);
+}
+
 export async function noLivePayPath(db: PayPathReader, env: Record<string, string | undefined> = process.env): Promise<boolean> {
-  if (weeklyFeeCardLive(env)) return false;
+  if (await cardPayPathLive(db, env)) return false;
   return !await mmgPayPathLive(db, env);
 }

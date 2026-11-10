@@ -37,6 +37,7 @@ import { MMG_PUSH_RAIL_ENV, mmgPushFollowUpOn, mmgPushRailOn } from '../provider
 import { retainedCohort, retainedPhonePrefix, retireKeptScaffolding, without } from './helpers/retained-evidence';
 import { cleanupBillingClocks } from './helpers/billing-clock-cleanup';
 import { resetFeeCheckoutSwitchCache } from '../modules/billing/fee-pay-actions';
+import { CARD_CHECKOUT_PLATFORMS_KEY } from '../modules/billing/card-pay-action';
 import { devChannelLog, resetDevChannelLog } from '../providers/notifications/channels';
 
 const HOUR = 60 * 60 * 1000;
@@ -213,8 +214,14 @@ describe('[Option A] the billing run never pushes while the switch is off', () =
     const subId = await makeVendorSub('MOBILE_MONEY');
     // The MMG checkout is off; a live card rail is the way to pay that keeps the fee unpaused.
     stubLive({ MMG_REFERENCE_ROUNDTRIP_VERIFIED: '1', CARD_RAIL_V2: '1', CARD_RAIL_KILL: '0', PAYMENT_PROVIDER: 'sandbox', CARD_RAIL_PROVIDER: 'powertranz', CARD_RAIL_ENVIRONMENT: 'live' });
+    // [B-3 · CARDS-SWITCH-ON] ...on every platform: the card's own switch row says so (iOS is off without it).
+    await app.prisma.platformConfig.upsert({ where: { key: CARD_CHECKOUT_PLATFORMS_KEY }, create: { key: CARD_CHECKOUT_PLATFORMS_KEY, value: { ios: true, android: true, web: true } }, update: { value: { ios: true, android: true, web: true } } });
     vi.spyOn(globalThis, 'fetch').mockRejectedValue(new Error('the push rail is off: MMG must not be contacted'));
-    expect(await billing.billSubscription((await withRelations(subId)) as any)).toBe('failed');
+    try {
+      expect(await billing.billSubscription((await withRelations(subId)) as any)).toBe('failed');
+    } finally {
+      await app.prisma.platformConfig.deleteMany({ where: { key: CARD_CHECKOUT_PLATFORMS_KEY } });
+    }
     const owner = (await withRelations(subId)).vendor!.owner.userId;
     const outbox = await app.prisma.billingFeeNotice.findMany({ where: { subscriptionId: subId }, select: { status: true, stageKey: true } });
     expect(outbox).toEqual([{ status: 'DELIVERED', stageKey: 'failed:a1' }]);

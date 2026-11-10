@@ -183,7 +183,7 @@ const PRODUCTION = {
   API_PUBLIC_URL: `https://${PROD_HOST}`, APP_PUBLIC_URL: 'https://swiftgy.com',
   // Admin top-ups stay on hold in production (owner ruling, 8 Oct).
   BILLING_TOPUP_HOLD: '1',
-  // No card payment in production until an attorney signs off (owner ruling, 13 Oct).
+  // Cards off in production until the owner's go (owner ruling, 7 Oct; CARDS-SWITCH-ON below).
   PAYMENT_PROVIDER: 'disabled', CARD_RAIL_KILL: '1',
   // Address search (the API refuses production without it once #1563 lands;
   // osm or google is the owner's choice).
@@ -379,32 +379,105 @@ describe('[PROD-PATH] pilot-up.sh: a real production target', () => {
     expect(staging.stderr).not.toContain('refuses the agent-cash webhook');
   });
 
-  // [LAUNCH-LOCK] Owner ruling, 13 Oct: until an attorney signs off,
-  // production takes no card payment and runs no ads. The API's boot guard
-  // refuses the same settings (boot-config.test.ts); turning either on is a
-  // reviewed code change in both places, never an .env edit.
+  // [LAUNCH-LOCK → CARDS-SWITCH-ON] Owner rulings: 13 Oct (production refused
+  // cards and ads "until an attorney signs off"), 15 Oct (GUARDRAILS §8: that
+  // gate replaced by the owner's documented answers; what could be criminal —
+  // recurring card charges, ads — stays off until a lawyer confirms) and 7 Oct
+  // option A (production may take cards with the kill switch off ONLY with v2
+  // on the real provider and the complete live setup, on the owner's go).
+  // The API's boot guard holds the same rule (boot-config.test.ts); changing
+  // it is a reviewed code change in both places, never an .env edit.
   const everyMode = [[SHA], ['--data-only', SHA], ['--no-public', SHA]];
   const modeEnv = (args: string[]): Record<string, string> => (args.length > 1 ? { DNS_MAP: '' } : {});
-  it('production refuses any card provider but disabled, and no kill switch, in every mode, before anything changes', () => {
+  /** The switch-on lines COORD sets on the owner's go (synthetic labels; the secrets stay in the store). */
+  const CARDS_ON = {
+    CARD_RAIL_KILL: '0', CARD_RAIL_V2: '1', CARD_RAIL_V2_DRAIN: '0', CARD_RAIL_ENROLL: '0',
+    CARD_RAIL_PROVIDER: 'powertranz', CARD_RAIL_ENVIRONMENT: 'live', CARD_RAIL_ACCOUNT: 'swift-gy-live',
+    POWERTRANZ_API_URL: 'https://gateway.ptranz.com', POWERTRANZ_PAGE_SET: 'SWIFT', POWERTRANZ_PAGE_NAME: 'WeeklyFee',
+    POWERTRANZ_ID_FILE: '/run/secrets/POWERTRANZ_ID', POWERTRANZ_PASSWORD_FILE: '/run/secrets/POWERTRANZ_PASSWORD',
+  };
+  const CARD_STORE = [...STORE, 'POWERTRANZ_ID', 'POWERTRANZ_PASSWORD'].join(' ');
+
+  it('production refuses any card provider but disabled, and a kill switch that is neither 1 nor 0, in every mode, before anything changes', () => {
     const cases: Array<[Record<string, string | undefined>, string]> = [
       [{ PAYMENT_PROVIDER: undefined }, 'needs PAYMENT_PROVIDER=disabled'],
       [{ PAYMENT_PROVIDER: 'stripe' }, 'needs PAYMENT_PROVIDER=disabled'],
       [{ PAYMENT_PROVIDER: 'powertranz' }, 'needs PAYMENT_PROVIDER=disabled'],
       [{ PAYMENT_PROVIDER: 'Disabled' }, 'needs PAYMENT_PROVIDER=disabled'],
-      [{ CARD_RAIL_KILL: undefined }, 'needs CARD_RAIL_KILL=1'],
-      [{ CARD_RAIL_KILL: '0' }, 'needs CARD_RAIL_KILL=1'],
-      [{ CARD_RAIL_KILL: 'yes' }, 'needs CARD_RAIL_KILL=1'],
+      [{ ...CARDS_ON, PAYMENT_PROVIDER: 'powertranz' }, 'needs PAYMENT_PROVIDER=disabled'],
+      [{ CARD_RAIL_KILL: undefined }, 'needs CARD_RAIL_KILL=1 (cards off) or 0 (cards on'],
+      [{ CARD_RAIL_KILL: 'yes' }, 'needs CARD_RAIL_KILL=1 (cards off) or 0 (cards on'],
+      [{ CARD_RAIL_KILL: '00' }, 'needs CARD_RAIL_KILL=1 (cards off) or 0 (cards on'],
+      [{ ...CARDS_ON, CARD_RAIL_KILL: 'off' }, 'needs CARD_RAIL_KILL=1 (cards off) or 0 (cards on'],
     ];
     for (const args of everyMode) {
       for (const [over, refusal] of cases) {
         writeFileSync(log, '');
-        const r = runPilot({ ...PRODUCTION, ...over }, { args, env: modeEnv(args) });
+        const r = runPilot({ ...PRODUCTION, ...over }, { args, env: { ...modeEnv(args), STORE_NAMES: CARD_STORE } });
         expect(r.status, `${args.join(' ')} ${JSON.stringify(over)}`).not.toBe(0);
         expect(r.stderr).toContain(`PILOT_ENV=production ${refusal}`);
-        expect(r.stderr).toContain('until an attorney signs off');
+        expect(r.stderr).toContain('owner ruling, 7 Oct');
+        expect(r.stderr).not.toMatch(/attorney/i);
         expect(changedNothing(r.calls)).toEqual([]);
       }
     }
+  });
+
+  it('LIFTED: production deploys Pay now by card — the kill switch 0 with v2 on PowerTranz, live cards, the credentials wired from the store — in every mode', () => {
+    for (const args of everyMode) {
+      writeFileSync(log, '');
+      const r = runPilot({ ...PRODUCTION, ...CARDS_ON }, { args, env: { ...modeEnv(args), STORE_NAMES: CARD_STORE, ...(args[0] === '--data-only' ? { API_STOPPED: '1' } : {}), ...(args[0] === '--no-public' ? { CADDY_STOPPED: '1' } : {}) } });
+      expect(r.status, `${args.join(' ')}: ${r.stderr}`).toBe(0);
+    }
+    writeFileSync(log, '');
+    const full = runPilot({ ...PRODUCTION, ...CARDS_ON }, { env: { STORE_NAMES: CARD_STORE } });
+    expect(full.stdout).toContain(`PRODUCTION READY at exact SHA ${SHA}`);
+    // The optional gateway key, when PowerTranz issued one, comes from the store too.
+    writeFileSync(log, '');
+    const withKey = runPilot({ ...PRODUCTION, ...CARDS_ON, POWERTRANZ_GATEWAY_KEY_FILE: '/run/secrets/POWERTRANZ_GATEWAY_KEY' }, { env: { STORE_NAMES: `${CARD_STORE} POWERTRANZ_GATEWAY_KEY` } });
+    expect(withKey.status, withKey.stderr).toBe(0);
+  });
+
+  it('LIFTED: the rollback deploys — the kill switch back to 1 with v2 left on (open card payments are still confirmed)', () => {
+    const r = runPilot({ ...PRODUCTION, ...CARDS_ON, CARD_RAIL_KILL: '1' }, { env: { STORE_NAMES: CARD_STORE } });
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.stdout).toContain(`PRODUCTION READY at exact SHA ${SHA}`);
+  });
+
+  it('KEPT: cards on, or v2 on, need the real provider, live cards, its address and the credentials wired from the store — refused before anything changes', () => {
+    const cases: Array<[Record<string, string | undefined>, string, string?]> = [
+      [{ CARD_RAIL_KILL: '0' }, 'with CARD_RAIL_KILL=0 (cards on) needs CARD_RAIL_V2=1, CARD_RAIL_PROVIDER=powertranz and CARD_RAIL_ENVIRONMENT=live'],
+      [{ ...CARDS_ON, CARD_RAIL_V2: '0' }, 'with CARD_RAIL_KILL=0 (cards on) needs CARD_RAIL_V2=1, CARD_RAIL_PROVIDER=powertranz and CARD_RAIL_ENVIRONMENT=live'],
+      [{ ...CARDS_ON, CARD_RAIL_V2: undefined }, 'with CARD_RAIL_KILL=0 (cards on) needs CARD_RAIL_V2=1, CARD_RAIL_PROVIDER=powertranz and CARD_RAIL_ENVIRONMENT=live'],
+      [{ ...CARDS_ON, CARD_RAIL_ENVIRONMENT: 'sandbox' }, 'with CARD_RAIL_KILL=0 (cards on) needs CARD_RAIL_V2=1, CARD_RAIL_PROVIDER=powertranz and CARD_RAIL_ENVIRONMENT=live'],
+      [{ ...CARDS_ON, CARD_RAIL_PROVIDER: 'simulator' }, 'with CARD_RAIL_KILL=0 (cards on) needs CARD_RAIL_V2=1, CARD_RAIL_PROVIDER=powertranz and CARD_RAIL_ENVIRONMENT=live'],
+      [{ ...CARDS_ON, CARD_RAIL_KILL: '1', CARD_RAIL_ENVIRONMENT: 'sandbox' }, 'with CARD_RAIL_V2=1 needs CARD_RAIL_PROVIDER=powertranz and CARD_RAIL_ENVIRONMENT=live'],
+      [{ ...CARDS_ON, CARD_RAIL_V2: 'true' }, 'needs CARD_RAIL_V2 unset, 0 or 1'],
+      [{ ...CARDS_ON, POWERTRANZ_ID_FILE: undefined }, 'with CARD_RAIL_V2=1 needs POWERTRANZ_ID_FILE=/run/secrets/POWERTRANZ_ID and POWERTRANZ_PASSWORD_FILE=/run/secrets/POWERTRANZ_PASSWORD'],
+      [{ ...CARDS_ON, POWERTRANZ_PASSWORD_FILE: undefined }, 'with CARD_RAIL_V2=1 needs POWERTRANZ_ID_FILE=/run/secrets/POWERTRANZ_ID and POWERTRANZ_PASSWORD_FILE=/run/secrets/POWERTRANZ_PASSWORD'],
+      [{ ...CARDS_ON, POWERTRANZ_ID_FILE: '/tmp/POWERTRANZ_ID' }, 'with CARD_RAIL_V2=1 needs POWERTRANZ_ID_FILE=/run/secrets/POWERTRANZ_ID and POWERTRANZ_PASSWORD_FILE=/run/secrets/POWERTRANZ_PASSWORD'],
+      [{ ...CARDS_ON, CARD_RAIL_KILL: '1', POWERTRANZ_PASSWORD_FILE: undefined }, 'with CARD_RAIL_V2=1 needs POWERTRANZ_ID_FILE=/run/secrets/POWERTRANZ_ID and POWERTRANZ_PASSWORD_FILE=/run/secrets/POWERTRANZ_PASSWORD'],
+      [{ ...CARDS_ON, POWERTRANZ_API_URL: undefined }, 'with CARD_RAIL_V2=1 needs POWERTRANZ_API_URL'],
+    ];
+    for (const args of everyMode) {
+      for (const [over, refusal] of cases) {
+        writeFileSync(log, '');
+        const r = runPilot({ ...PRODUCTION, ...over }, { args, env: { ...modeEnv(args), STORE_NAMES: CARD_STORE } });
+        expect(r.status, `${args.join(' ')} ${JSON.stringify(over)}`).not.toBe(0);
+        expect(r.stderr, JSON.stringify(over)).toContain(`PILOT_ENV=production ${refusal}`);
+        expect(changedNothing(r.calls)).toEqual([]);
+      }
+    }
+    // The credentials wired but not in the store: the store check refuses them by name (unchanged rule).
+    writeFileSync(log, '');
+    const notStored = runPilot({ ...PRODUCTION, ...CARDS_ON }, { env: { STORE_NAMES: STORE.join(' ') } });
+    expect(notStored.status).not.toBe(0);
+    expect(notStored.stderr).toContain('POWERTRANZ_ID is wired as POWERTRANZ_ID_FILE but is not in the encrypted store');
+    // A secret typed into deploy/.env is refused, as every secret is.
+    writeFileSync(log, '');
+    const typed = runPilot({ ...PRODUCTION, ...CARDS_ON, POWERTRANZ_ID_FILE: undefined, POWERTRANZ_ID: 'LIVEID01' }, { env: { STORE_NAMES: CARD_STORE } });
+    expect(typed.status).not.toBe(0);
+    expect(typed.stderr + typed.stdout).not.toContain('LIVEID01');
   });
 
   // [BUG-HUNT F23] A near miss reads as closed, which on ordering day would hold every partner with no word to anyone.
@@ -422,14 +495,21 @@ describe('[PROD-PATH] pilot-up.sh: a real production target', () => {
     expect(r.stderr).not.toContain('PARTNER_APPROVALS_OPEN');
   });
 
-  it.each(['CARD_RAIL_V2', 'CARD_RAIL_V2_DRAIN', 'CARD_RAIL_ENROLL', 'ADS_ENABLED'])('production refuses %s unless it is unset or 0, in every mode, before anything changes', (name) => {
+  it.each([
+    ['CARD_RAIL_ENROLL', 'saved cards and automatic weekly card charges stay off until a lawyer confirms them (GUARDRAILS §8; owner rulings, 13 and 15 Oct)'],
+    ['CARD_RAIL_V2_DRAIN', 'to stop card payments set CARD_RAIL_KILL=1 and leave CARD_RAIL_V2=1'],
+    ['ADS_ENABLED', 'ads stay off until a lawyer confirms them (GUARDRAILS §8; owner rulings, 15 Oct and 6 Nov)'],
+  ])('KEPT: production refuses %s unless it is unset or 0 — cards off or on, in every mode, before anything changes', (name, why) => {
     for (const args of everyMode) {
-      for (const value of ['1', 'true', 'on']) {
-        writeFileSync(log, '');
-        const r = runPilot({ ...PRODUCTION, [name]: value }, { args, env: modeEnv(args) });
-        expect(r.status, `${args.join(' ')} ${name}=${value}`).not.toBe(0);
-        expect(r.stderr).toContain(`PILOT_ENV=production refuses ${name} unless it is unset or 0`);
-        expect(changedNothing(r.calls)).toEqual([]);
+      for (const base of [{}, CARDS_ON]) {
+        for (const value of ['1', 'true', 'on']) {
+          writeFileSync(log, '');
+          const r = runPilot({ ...PRODUCTION, ...base, [name]: value }, { args, env: { ...modeEnv(args), STORE_NAMES: CARD_STORE } });
+          expect(r.status, `${args.join(' ')} ${name}=${value}`).not.toBe(0);
+          expect(r.stderr).toContain(`PILOT_ENV=production refuses ${name} unless it is unset or 0: ${why}`);
+          expect(r.stderr).not.toMatch(/attorney/i);
+          expect(changedNothing(r.calls)).toEqual([]);
+        }
       }
     }
     for (const off of ['', '0']) {
@@ -443,6 +523,37 @@ describe('[PROD-PATH] pilot-up.sh: a real production target', () => {
     const r = runPilot({ ...STAGING, PAYMENT_PROVIDER: 'sandbox', CARD_RAIL_KILL: '0', CARD_RAIL_V2: '1', CARD_RAIL_V2_DRAIN: '1', CARD_RAIL_ENROLL: '1', ADS_ENABLED: '1' });
     expect(r.status, r.stderr).toBe(0);
     expect(r.stdout).toContain(`STAGING READY at exact SHA ${SHA}`);
+  });
+
+  // [CARDS-SWITCH-ON · staging card test, 10 Nov 2026] Staging ran v2 on PowerTranz with the kill switch off
+  // and NO POWERTRANZ_ID_FILE / POWERTRANZ_PASSWORD_FILE lines in deploy/.env: the API and the worker could not
+  // read the credentials, so cards could not work, and nothing said so. Any server now refuses that deploy
+  // before anything changes (the API refuses to boot the same way: boot-config.test.ts).
+  it('[CARDS-SWITCH-ON] any server with v2 on PowerTranz and the kill switch off refuses to deploy without the credentials wired from the store, before anything changes', () => {
+    const sandboxOn = { PAYMENT_PROVIDER: 'disabled', CARD_RAIL_KILL: '0', CARD_RAIL_V2: '1', CARD_RAIL_PROVIDER: 'powertranz', CARD_RAIL_ENVIRONMENT: 'sandbox' };
+    const wired = { POWERTRANZ_ID_FILE: '/run/secrets/POWERTRANZ_ID', POWERTRANZ_PASSWORD_FILE: '/run/secrets/POWERTRANZ_PASSWORD' };
+    const store = [...STORE, 'POWERTRANZ_ID', 'POWERTRANZ_PASSWORD'].join(' ');
+    const refusal = 'CARD_RAIL_V2=1 with CARD_RAIL_PROVIDER=powertranz and the kill switch off needs POWERTRANZ_ID_FILE=/run/secrets/POWERTRANZ_ID and POWERTRANZ_PASSWORD_FILE=/run/secrets/POWERTRANZ_PASSWORD in deploy/.env';
+    for (const over of [
+      {}, { POWERTRANZ_ID_FILE: wired.POWERTRANZ_ID_FILE }, { POWERTRANZ_PASSWORD_FILE: wired.POWERTRANZ_PASSWORD_FILE },
+      { CARD_RAIL_KILL: undefined }, { CARD_RAIL_KILL: '' }, { ...wired, POWERTRANZ_ID_FILE: '/run/secrets/PAYMENT_GATEWAY_KEY' },
+    ]) {
+      writeFileSync(log, '');
+      const r = runPilot({ ...STAGING, ...sandboxOn, ...over }, { env: { STORE_NAMES: store } });
+      expect(r.status, JSON.stringify(over)).not.toBe(0);
+      expect(r.stderr, JSON.stringify(over)).toContain(refusal);
+      expect(changedNothing(r.calls)).toEqual([]);
+    }
+    writeFileSync(log, '');
+    const ok = runPilot({ ...STAGING, ...sandboxOn, ...wired }, { env: { STORE_NAMES: store } });
+    expect(ok.status, ok.stderr).toBe(0);
+    expect(ok.stdout).toContain(`STAGING READY at exact SHA ${SHA}`);
+    // Killed (no new card payment can start), v2 off, or another provider: not asked.
+    for (const over of [{ CARD_RAIL_KILL: '1' }, { CARD_RAIL_V2: '0' }, { CARD_RAIL_PROVIDER: 'simulator' }]) {
+      writeFileSync(log, '');
+      const r = runPilot({ ...STAGING, ...sandboxOn, ...over });
+      expect(r.status, `${JSON.stringify(over)}: ${r.stderr}`).toBe(0);
+    }
   });
 });
 

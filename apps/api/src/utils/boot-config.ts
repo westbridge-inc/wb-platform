@@ -2,7 +2,7 @@ import { assertPlacesConfig } from '../providers/places/places-config';
 import { runtimeMode } from './runtime-mode';
 import { malformedAllowlistPositions } from '../providers/notifications/sms-recipient-allowlist';
 import { firstInvalidTwilioConfig } from './twilio-identity';
-import { PUBLIC_API_HOSTS, assertProductionCardKillSwitch } from './card-rail';
+import { PUBLIC_API_HOSTS, assertProductionCardSwitches, cardRailKilled, cardRailV2Enabled } from './card-rail';
 import { powerTranzConfigFromEnv } from '../providers/card/powertranz-provider';
 import { testControlEnabled } from '../modules/ops/test-control';
 import { assertMmgCheckoutConfig } from '../providers/mmg/mmg-checkout';
@@ -93,32 +93,60 @@ export function assertNoLiveCardsOffProduction(env: Record<string, string | unde
 }
 
 /**
- * [LAUNCH-LOCK · owner ruling 13 Oct, #34] Until an attorney signs off,
- * production takes no card payment and runs no ads (GUARDRAILS §8). Both are
- * already off by default; this makes "off" a refusal to boot rather than a
- * setting someone can flip: turning either on in production is a reviewed
- * change to this function (and to pilot-up.sh's matching refusal), never a
- * deploy/.env edit.
- *   Cards: no card instruction — the legacy card seam off (PAYMENT_PROVIDER
- *   exactly disabled), the card kill switch on (CARD_RAIL_KILL exactly 1;
- *   [CARD-DECOUPLE] card rail v2 reads only this switch, never
- *   PAYMENT_PROVIDER, so production holds it here, explicitly), and none of
- *   card rail v2's switches (CARD_RAIL_V2, its drain, saving cards) set to
- *   anything but 0. With v2 off the weekly fee never offers a CARD pay action.
- *   Ads: ADS_ENABLED unset or 0 (only exactly 1 opens the ads routes).
- * Called only in production. Each refusal names its setting, never a value.
+ * [LAUNCH-LOCK → CARDS-SWITCH-ON] Production's card and ad switches. Owner
+ * ruling 13 Oct (#34) refused both "until an attorney signs off"; owner ruling
+ * 15 Oct replaced that gate (GUARDRAILS §8: the owner's documented answers;
+ * what could be criminal stays off until a lawyer confirms it).
+ *   Cards (card-rail.ts assertProductionCardSwitches): off by default
+ *   (CARD_RAIL_KILL=1); on only as Pay now on the provider's hosted page with
+ *   real cards (CARD_RAIL_KILL=0 beside CARD_RAIL_V2=1, PowerTranz, live — the
+ *   owner's go, owner ruling 7 Oct; the complete live setup is PT-4's check,
+ *   above); paused by the kill switch with v2 left on. Saved cards and
+ *   automatic weekly card charges, the drain switch and the legacy card seam
+ *   stay refused.
+ *   Ads: ADS_ENABLED unset or 0 (only exactly 1 opens the ads routes; owner
+ *   rulings 15 Oct and 6 Nov: off at launch).
+ * pilot-up.sh refuses the same settings. Changing either is a reviewed code
+ * change here and there, never a deploy/.env edit. Called only in production.
+ * Each refusal names its setting, never a value.
  */
 function assertProductionLaunchLocks(env: Record<string, string | undefined>): void {
-  if (env['PAYMENT_PROVIDER'] !== 'disabled') {
-    throw new Error('FATAL: PAYMENT_PROVIDER must be exactly disabled in production — no card payment until an attorney signs off (owner ruling, 13 Oct); turning cards on is a reviewed code change, not a setting. Refusing to start.');
+  assertProductionCardSwitches(env);
+  const ads = env['ADS_ENABLED'];
+  if (ads !== undefined && ads !== '' && ads !== '0') {
+    throw new Error('FATAL: ADS_ENABLED must be unset or 0 in production — ads stay off until a lawyer confirms them (GUARDRAILS §8; owner rulings, 15 Oct and 6 Nov); turning it on is a reviewed code change, not a setting. Refusing to start.');
   }
-  assertProductionCardKillSwitch(env);
-  for (const name of ['CARD_RAIL_V2', 'CARD_RAIL_V2_DRAIN', 'CARD_RAIL_ENROLL', 'ADS_ENABLED'] as const) {
-    const value = env[name];
-    if (value !== undefined && value !== '' && value !== '0') {
-      const what = name === 'ADS_ENABLED' ? 'ads stay off' : 'no card payment';
-      throw new Error(`FATAL: ${name} must be unset or 0 in production — ${what} until an attorney signs off (owner ruling, 13 Oct); turning it on is a reviewed code change, not a setting. Refusing to start.`);
-    }
+}
+
+/** [CARDS-SWITCH-ON · staging card test, 10 Nov 2026] The PowerTranz
+ *  credentials reach the API and the worker only from the encrypted store,
+ *  through these two deploy/.env lines (utils/secret-files.ts). Staging once
+ *  ran without them: nothing could read the credentials, and cards could not
+ *  work while every health check read green. A refusal about them names the
+ *  wiring to add. */
+const POWERTRANZ_STORE_WIRING = 'POWERTRANZ_ID_FILE=/run/secrets/POWERTRANZ_ID and POWERTRANZ_PASSWORD_FILE=/run/secrets/POWERTRANZ_PASSWORD';
+function powerTranzSetupRefusal(err: unknown): string {
+  const reason = (err as Error).message;
+  return /POWERTRANZ_ID|POWERTRANZ_PASSWORD/.test(reason)
+    ? `${reason} (the credentials come from the encrypted store: deploy/.env needs ${POWERTRANZ_STORE_WIRING})`
+    : reason;
+}
+
+/**
+ * [CARDS-SWITCH-ON · staging card test, 10 Nov 2026] Every mode but
+ * production (production holds the stricter PT-4 check, for any kill switch):
+ * card rail v2 on PowerTranz with the kill switch OFF means card payments are
+ * meant to work here, so the provider's whole setup must read now — the
+ * credentials from the store included — or the server refuses to start,
+ * rather than run with a card button that can only fail. Killed (no new card
+ * payment can start) or v2 off, nothing is asked.
+ */
+export function assertCardRailProviderReadable(env: Record<string, string | undefined>): void {
+  if (!cardRailV2Enabled(env) || env['CARD_RAIL_PROVIDER'] !== 'powertranz' || cardRailKilled(env)) return;
+  try {
+    powerTranzConfigFromEnv(env);
+  } catch (err) {
+    throw new Error(`FATAL: CARD_RAIL_V2=1 with CARD_RAIL_PROVIDER=powertranz and the kill switch off, but the card provider cannot be set up: ${powerTranzSetupRefusal(err)}. Refusing to start.`);
   }
 }
 
@@ -227,6 +255,7 @@ export function assertSafeBootConfig(env: Record<string, string | undefined> = p
   assertCardSimulatorNotPublic(env);
   if (runtimeMode(env) !== 'production') {
     assertNoLiveCardsOffProduction(env);
+    assertCardRailProviderReadable(env);
     assertDurableStorageConfig(env);
     return;
   }
@@ -311,8 +340,9 @@ export function assertSafeBootConfig(env: Record<string, string | undefined> = p
   if (paymentProvider !== 'stripe' && paymentProvider !== 'powertranz' && paymentProvider !== 'disabled') {
     throw new Error('FATAL: PAYMENT_PROVIDER must be stripe, powertranz or disabled in production; sandbox/unset can record fake captured revenue. Refusing to start.');
   }
-  // [CARD-DECOUPLE] The card kill switch is held at 1 by the launch lock
-  // (assertProductionLaunchLocks, below), no longer through PAYMENT_PROVIDER.
+  // [CARD-DECOUPLE · CARDS-SWITCH-ON] The card kill switch is held by the
+  // card switches (assertProductionLaunchLocks, below), never through
+  // PAYMENT_PROVIDER: 1, or 0 only beside v2 on PowerTranz with live cards.
   // [PT-1 · C10] Card rail v2. The card simulator is a test page with no real
   // money: production refuses to start while it is even named — whatever the
   // flag says. The flag is 1 or 0 (or unset = 0), never a guess.
@@ -347,7 +377,7 @@ export function assertSafeBootConfig(env: Record<string, string | undefined> = p
     try {
       powerTranzConfigFromEnv(env);
     } catch (err) {
-      throw new Error(`FATAL: ${which} in production, but the card provider is not fully set up for live cards: ${(err as Error).message}. Refusing to start.`);
+      throw new Error(`FATAL: ${which} in production, but the card provider is not fully set up for live cards: ${powerTranzSetupRefusal(err)}. Refusing to start.`);
     }
   }
   // [GUARD-FIX] The provider's TEST system (its sandbox) never runs in

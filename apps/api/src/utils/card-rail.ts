@@ -7,8 +7,8 @@ import { cardRailProviderNames } from '../providers/card/card-rail-factory';
  * seam (providers/payment) and has no say over v2, so the PowerTranz
  * credentials are entered once (POWERTRANZ_*) and a test server can run v2
  * against the provider's sandbox while the legacy seam stays disabled.
- * Production keeps CARD_RAIL_KILL=1 by its launch lock
- * (assertProductionCardKillSwitch, below). */
+ * Production holds it at exactly 1 (cards off) or 0 (cards on, only beside
+ * the complete live setup) by assertProductionCardSwitches, below. */
 export function cardRailKilled(env: Record<string, string | undefined> = process.env): boolean {
   return env['CARD_RAIL_KILL'] === '1';
 }
@@ -42,7 +42,10 @@ export function cardRailV2Enabled(env: Record<string, string | undefined> = proc
  * the fee pause for EVERY partner on a test server, who then had no way to
  * pay. Live cards run only on production (boot-config.ts), so off production
  * this is always false. Server switches only: nothing about a partner (their
- * card on file, their billing method, their app) enters it. */
+ * card on file, their billing method, their app) enters it. [Review #2453-B
+ * B-3] It is the env half of the fee pause's card answer: fee-pause.ts
+ * cardPayPathLive also requires the card's per-platform switch
+ * (billing.cardCheckout.platforms) on for EVERY platform. */
 export function weeklyFeeCardLive(env: Record<string, string | undefined> = process.env): boolean {
   const provider = env['CARD_RAIL_PROVIDER'] ?? '';
   return cardRailV2Enabled(env) && !cardRailKilled(env) && provider !== 'simulator' && cardRailProviderNames().includes(provider)
@@ -93,17 +96,53 @@ export function cardTestSubscriptions(env: Record<string, string | undefined> = 
  * name (boot-config.ts). */
 export const PUBLIC_API_HOSTS: readonly string[] = ['api.swiftgy.com', 'api-live.swiftgy.com'];
 
-/** [LAUNCH-LOCK · owner ruling 13 Oct · CARD-DECOUPLE] PRODUCTION ONLY (the
- * callers check the mode): the card kill switch is exactly '1'. Until
- * 9 Nov 2026 this rode on "PAYMENT_PROVIDER=disabled requires
- * CARD_RAIL_KILL=1" in every mode; card rail v2 no longer reads
- * PAYMENT_PROVIDER, so production holds the switch itself, explicitly — the
- * API boot guard (boot-config.ts assertProductionLaunchLocks), the legacy
- * provider factory (getPaymentProvider) and pilot-up.sh. Turning cards on in
- * production is a reviewed change to these, never a deploy/.env edit.
- * Names the setting, never a value. */
-export function assertProductionCardKillSwitch(env: Record<string, string | undefined>): void {
-  if (env['CARD_RAIL_KILL'] !== '1') {
-    throw new Error('FATAL: CARD_RAIL_KILL must be exactly 1 in production — no card payment until an attorney signs off (owner ruling, 13 Oct); turning cards on is a reviewed code change, not a setting. Refusing to start.');
+const switchSet = (value: string | undefined): boolean => value !== undefined && value !== '' && value !== '0';
+
+/** [CARDS-SWITCH-ON] PRODUCTION ONLY (the callers check the mode): the card
+ * switches production may run, held in one place by the API boot guard
+ * (boot-config.ts assertProductionLaunchLocks), the legacy provider factory
+ * (getPaymentProvider, built while routes register) and — in shell —
+ * pilot-up.sh.
+ *   - Owner ruling 13 Oct 2026 (#34): production refused cards "until an
+ *     attorney signs off". Owner ruling 15 Oct 2026 replaced that gate
+ *     (GUARDRAILS §8): Swift runs on the owner's documented answers, and what
+ *     could be criminal stays off until a lawyer confirms it — for cards,
+ *     recurring card charges (saved cards).
+ *   - Owner ruling 7 Oct 2026 (option A): production may run CARD_RAIL_KILL=0
+ *     with PAYMENT_PROVIDER=disabled ONLY when CARD_RAIL_V2=1 and the live card
+ *     setup is complete; turning cards on is the owner's "go".
+ * So production boots in exactly one of three postures:
+ *   cards OFF   CARD_RAIL_KILL=1, CARD_RAIL_V2 unset or 0 (the default);
+ *   cards ON    CARD_RAIL_KILL=0, CARD_RAIL_V2=1, CARD_RAIL_PROVIDER=powertranz,
+ *               CARD_RAIL_ENVIRONMENT=live — Pay now on the provider's hosted
+ *               page, real cards (the complete live setup is PT-4's check in
+ *               boot-config.ts, for any CARD_RAIL_V2=1);
+ *   PAUSED      CARD_RAIL_KILL=1 with CARD_RAIL_V2=1 left on: the rollback. No
+ *               new card payment starts; the ones already open are still
+ *               confirmed, looked up and refunded.
+ * And always refuses: the legacy card seam (PAYMENT_PROVIDER anything but
+ * disabled), saving cards (CARD_RAIL_ENROLL: saved cards and automatic weekly
+ * card charges), and the drain switch (CARD_RAIL_V2_DRAIN: the rollback keeps
+ * v2 on instead). Changing any of this is a reviewed code change, never a
+ * deploy/.env edit. Each refusal names its setting, never a value. */
+export function assertProductionCardSwitches(env: Record<string, string | undefined>): void {
+  if (env['PAYMENT_PROVIDER'] !== 'disabled') {
+    throw new Error('FATAL: PAYMENT_PROVIDER must be exactly disabled in production — the legacy card seam (a stored card token Swift charges itself) stays off; production takes cards only as Pay now on the provider\'s hosted page (card rail v2, owner ruling, 7 Oct). Turning the legacy seam on is a reviewed code change, not a setting. Refusing to start.');
+  }
+  if (switchSet(env['CARD_RAIL_ENROLL'])) {
+    throw new Error('FATAL: CARD_RAIL_ENROLL must be unset or 0 in production — saved cards and automatic weekly card charges stay off until a lawyer confirms them (GUARDRAILS §8; owner rulings, 13 and 15 Oct); turning it on is a reviewed code change, not a setting. Refusing to start.');
+  }
+  if (switchSet(env['CARD_RAIL_V2_DRAIN'])) {
+    throw new Error('FATAL: CARD_RAIL_V2_DRAIN must be unset or 0 in production — to stop card payments set CARD_RAIL_KILL=1 and leave CARD_RAIL_V2=1, which keeps confirming the card payments already open; draining with card rail v2 off is a reviewed code change, not a setting. Refusing to start.');
+  }
+  // The switch is OFF exactly at '1', everywhere (cardRailKilled; the dark-features census). Production also
+  // refuses every near miss of ON: only exactly '0' turns cards on here (the one '0' comparison the census allows).
+  const cardsOff = cardRailKilled(env);
+  const cardsOn = env['CARD_RAIL_KILL'] === '0';
+  if (!cardsOff && !cardsOn) {
+    throw new Error('FATAL: CARD_RAIL_KILL must be exactly 1 (cards off) or exactly 0 (cards on) in production — cards go on only on the owner\'s go, beside the complete live card setup (owner ruling, 7 Oct); anything else is a reviewed code change, not a setting. Refusing to start.');
+  }
+  if (cardsOn && !(env['CARD_RAIL_V2'] === '1' && env['CARD_RAIL_PROVIDER'] === 'powertranz' && env['CARD_RAIL_ENVIRONMENT'] === 'live')) {
+    throw new Error('FATAL: CARD_RAIL_KILL=0 (cards on) in production needs CARD_RAIL_V2=1, CARD_RAIL_PROVIDER=powertranz and CARD_RAIL_ENVIRONMENT=live — production takes cards only as Pay now on the provider\'s hosted page, with real cards and the complete live setup (owner ruling, 7 Oct); anything else is a reviewed code change, not a setting. Refusing to start.');
   }
 }

@@ -303,7 +303,7 @@ export const DARK_FEATURES: DarkFeature[] = [
     offWhen: '1',
     title: 'New card charges',
     whileOff:
-      'No new card charge is made, so a customer cannot pay by card and pays by MMG or cash; charges the processor already made are still reconciled. This is the launch posture production requires (owner ruling, 13 Oct) until an attorney signs off, so in production it is listed on purpose.',
+      'No new card payment starts, so a partner cannot pay the weekly fee by card and pays by MMG or in person; card payments already made are still confirmed and reconciled. Production keeps this switch at 1 until the owner says go (owner ruling, 7 Oct), and setting it back to 1 is the rollback, so in production it is listed on purpose.',
     impact: 'money',
   },
   {
@@ -404,7 +404,7 @@ export const DARK_FEATURES: DarkFeature[] = [
     enabledWhen: '1',
     title: 'Advertising (advertiser accounts, campaigns, sponsored placements)',
     whileOff:
-      'Advertising is closed: no sponsored placement is shown to anyone, and the advertiser routes refuse every request. This is the launch lock (owner ruling, 13 Oct 2026): production refuses to start with it on until an attorney signs off.',
+      'Advertising is closed: no sponsored placement is shown to anyone, and the advertiser routes refuse every request. Production refuses to start with it on: ads stay off until a lawyer confirms them (GUARDRAILS §8; owner rulings, 15 Oct and 6 Nov 2026).',
     impact: 'growth',
   },
   {

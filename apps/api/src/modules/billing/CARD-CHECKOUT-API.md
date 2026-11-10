@@ -331,13 +331,47 @@ Pressing a button sends the browser to the return page, exactly as a real provid
   - `PAYMENT_PROVIDER` is the **legacy** card seam (a bare token charged through `providers/payment`), not card rail v2. `disabled` turns off that seam alone: its provider refuses every instruction and billing defers it. It does not stop v2 (until 9 Nov 2026 it did, and a disabled provider required `CARD_RAIL_KILL=1` everywhere).
   - Credentials: card rail v2 reads only `POWERTRANZ_ID`, `POWERTRANZ_PASSWORD` and the optional `POWERTRANZ_GATEWAY_KEY` (and the non-secret `POWERTRANZ_API_URL`, `POWERTRANZ_PAGE_SET`, `POWERTRANZ_PAGE_NAME`). `PAYMENT_GATEWAY_KEY` / `PAYMENT_GATEWAY_SECRET` belong to the legacy seam and stay unset.
   - A test server runs v2 on the provider's sandbox with `PAYMENT_PROVIDER=disabled`, `CARD_RAIL_KILL=0`, `CARD_RAIL_V2=1`, `CARD_RAIL_PROVIDER=powertranz`, `CARD_RAIL_ENVIRONMENT=sandbox` and `CARD_RAIL_TEST_SUBSCRIPTIONS` (only the listed test subscriptions can open a sandbox page). The sandbox shows the card choice as a test by itself; `CARD_RAIL_SIMULATOR_LIVE` is for the simulator only.
-  - **Production (launch lock):** the API boot guard and `pilot-up.sh` refuse production unless `PAYMENT_PROVIDER=disabled`, `CARD_RAIL_KILL=1`, and `CARD_RAIL_V2`, `CARD_RAIL_V2_DRAIN`, `CARD_RAIL_ENROLL` are unset or 0. The kill-switch lock is explicit (`assertProductionCardKillSwitch`, also held by the legacy provider factory in production). Turning cards on in production is a reviewed code change to these, never a setting.
-- **The per-platform switch** is the card's own platform-config key, `billing.cardCheckout.platforms`: `{ "ios": true, "android": true, "web": true }`. It is separate from MMG's (`billing.feeCheckout.platforms`), so either can be closed alone.
+  - **Production card switches** (owner rulings 7 Oct option A and 15 Oct; GUARDRAILS §8; they replaced the 13 Oct "until an attorney signs off" lock): the API boot guard, the legacy provider factory and `pilot-up.sh` hold one rule (`assertProductionCardSwitches`). Production starts in exactly one of three postures and refuses every other:
+    - **cards off** (default): `CARD_RAIL_KILL=1`, `CARD_RAIL_V2` unset or 0;
+    - **cards on** (only on the owner's go): `CARD_RAIL_KILL=0` beside `CARD_RAIL_V2=1`, `CARD_RAIL_PROVIDER=powertranz`, `CARD_RAIL_ENVIRONMENT=live` and the complete live setup (PT-4) — Pay now on the provider's hosted page, real cards;
+    - **paused** (the rollback): `CARD_RAIL_KILL=1` with `CARD_RAIL_V2=1` left on — no new card payment starts; the ones already open are still confirmed, looked up and refunded.
+    - Always refused: `PAYMENT_PROVIDER` other than `disabled` (the legacy seam), `CARD_RAIL_ENROLL` (saved cards and automatic weekly card charges stay off until a lawyer confirms them), `CARD_RAIL_V2_DRAIN` (the rollback keeps v2 on instead) and `ADS_ENABLED`. Changing the rule is a reviewed code change, never a setting.
+  - **The credentials are read only from the encrypted store**, through `POWERTRANZ_ID_FILE=/run/secrets/POWERTRANZ_ID` and `POWERTRANZ_PASSWORD_FILE=/run/secrets/POWERTRANZ_PASSWORD` in `deploy/.env` (and `POWERTRANZ_GATEWAY_KEY_FILE=/run/secrets/POWERTRANZ_GATEWAY_KEY` only if PowerTranz issued a key), exactly as the MMG secrets are. On **any** server, `CARD_RAIL_V2=1` on `powertranz` with the kill switch off refuses to start (API and worker: `assertCardRailProviderReadable`; `pilot-up.sh`, before anything changes) unless the provider's whole setup reads, the credentials included. Production refuses v2 without them for any kill switch (PT-4). (Staging once ran without these lines: nothing could read the credentials and cards could not work.)
+  - **The provider's address** (`POWERTRANZ_API_URL`): a bare `https://` origin on a `ptranz.com` host, or the SPI address PowerTranz writes (the origin followed by `/api/spi/`), which names the same root; any other path, a query or credentials are refused. Production: `https://gateway.ptranz.com` (PowerTranz's written answer of 4 Nov 2026 gives `https://gateway.ptranz.com/api/spi/`); required for live cards, never a test system; live cards run only in production. Every call is `<root>/api/...` exactly as on staging: `/api/spi/sale`, `/api/spi/payment`, `/api/spi/riskmgmt`, `/api/refund`, `/api/void`, `/api/alive`, and the lookup `/api/Transactions/{id}` (on production ASSUMED by analogy with staging until PowerTranz confirms, section 11).
+- **The per-platform switch** is the card's own platform-config key, `billing.cardCheckout.platforms`: `{ "ios": true, "android": true, "web": true }` (read by `card-checkout-switch.ts`). It is separate from MMG's (`billing.feeCheckout.platforms`), so either can be closed alone.
   - iOS is **off** unless the row says `"ios": true` (owner ruling 6 Oct: Apple 3.1.1, iOS off by default).
   - Android and web are on unless the row says `false`.
   - Only a real `true` / `false` counts: any other value switches that platform off, and a row that is not an object switches every platform off (as MMG's switch).
   - A change shows within a minute, with no deploy.
   - An unknown platform counts as on only if every platform is on.
+  - **The fee pause** (`fee-pause.ts`, "no live way to pay") counts live cards as a way to pay only when this switch is on for **every** platform, as MMG's checkout counts (review #2453-B B-3): a partner's app may be any of them, and iOS is off unless the row says so. With the card off on one platform the pause is decided by MMG alone; paying by card still works wherever it is on. The row is read fresh for the pause (no cache).
+
+### 9.1 Switching cards on in production (and back off)
+
+The switch is an env change, made by the coordinator only after the staging card test passed, PowerTranz gave the live details, the owner stored the live credentials at hidden prompts, and the owner said "go". Nothing in this contract turns it on by itself.
+
+1. **Before:** a read-only count of production subscriptions with `billingMethod='CARD'` must be 0 (with v2 on, a CARD-billed subscription is charged only from a saved card, and with none on file its week fails toward dunning; nothing can save a card, as `CARD_RAIL_ENROLL` stays 0). Run `deploy/preflight.ts --secrets-dir /run/swift-secrets` on the host with the new lines: the verdict must be PASS.
+2. **The lines** in production's `deploy/.env` (values that are not secrets; the three secrets stay in the store):
+   ```
+   PAYMENT_PROVIDER=disabled
+   CARD_RAIL_KILL=0
+   CARD_RAIL_V2=1
+   CARD_RAIL_V2_DRAIN=0
+   CARD_RAIL_ENROLL=0
+   CARD_RAIL_SIMULATOR_LIVE=0
+   CARD_RAIL_TEST_SUBSCRIPTIONS=
+   CARD_RAIL_PROVIDER=powertranz
+   CARD_RAIL_ENVIRONMENT=live
+   CARD_RAIL_ACCOUNT=<a short label for the live merchant account>
+   POWERTRANZ_API_URL=https://gateway.ptranz.com
+   POWERTRANZ_PAGE_SET=<the live page set>
+   POWERTRANZ_PAGE_NAME=<the live page name>
+   POWERTRANZ_ID_FILE=/run/secrets/POWERTRANZ_ID
+   POWERTRANZ_PASSWORD_FILE=/run/secrets/POWERTRANZ_PASSWORD
+   POWERTRANZ_GATEWAY_KEY_FILE=/run/secrets/POWERTRANZ_GATEWAY_KEY   # only if PowerTranz issued a gateway key
+   ```
+   `API_PUBLIC_URL` stays production's own (pilot-up already requires it). The card platform switch (`billing.cardCheckout.platforms`) is a database row, not env: without a row, iOS is off and Android and the website are on.
+3. **Rollback:** set `CARD_RAIL_KILL=1` (leave `CARD_RAIL_V2=1`) and restart the API and the worker. New card payments stop at once (the card button is hidden and opening a page answers `503 CARD_RAIL_DISABLED`); payments already open are still confirmed and looked up, and finance can still refund. Do not set `CARD_RAIL_V2=0` while any card session is open or held: v2 off also closes the admin card pages, and production refuses the drain switch.
 
 ## 10. Notices
 
@@ -361,11 +395,11 @@ Pressing a button sends the browser to the return page, exactly as a real provid
   - our hosted `PageSet` / `PageName`, and styling it as Swift; whether the hosted page collects the cardholder details 3-D Secure 2 needs (guide sec. 9.3) or Swift must send them;
   - whether `MerchantResponseUrl` must be registered, and the exact shape of the frame's post to it;
   - whether the payment completion's answer carries the original `TransactionIdentifier` (how to look up a completion whose answer was lost is answered: the transaction lookup, section 8);
-  - the transaction lookup's exact answer: a sample for an approved 3-D Secure Sale; whether `TransactionIdentifier`, `OrderIdentifier`, `TransactionType`, `Approved`, `IsoResponseCode` and `CurrencyCode` sit at its top level beside `OrderSummary` and `VoidDateTime`; what `VoidDateTime` holds on a transaction that was not voided (absent, null, a default date) and its format when set; whether the `OrderSummary` amounts are major units like `TotalAmount`, and whether `TotalCaptureAmount` is the sale amount before settlement; whether it carries the 3-D Secure proof (`RiskManagement.ThreeDSecure`); what it answers for a transaction it does not know, and how soon after a completion the record is readable and final; its production address (Swift reads `<API root>/api/Transactions/{id}`, the root without `/spi`) and whether it needs the gateway key; any rate limit;
+  - the transaction lookup's exact answer: a sample for an approved 3-D Secure Sale; whether `TransactionIdentifier`, `OrderIdentifier`, `TransactionType`, `Approved`, `IsoResponseCode` and `CurrencyCode` sit at its top level beside `OrderSummary` and `VoidDateTime`; what `VoidDateTime` holds on a transaction that was not voided (absent, null, a default date) and its format when set; whether the `OrderSummary` amounts are major units like `TotalAmount`, and whether `TotalCaptureAmount` is the sale amount before settlement; whether it carries the 3-D Secure proof (`RiskManagement.ThreeDSecure`); what it answers for a transaction it does not know, and how soon after a completion the record is readable and final; its production address (Swift reads `https://gateway.ptranz.com/api/Transactions/{id}`, production's root without `/api/spi/`, as staging's `https://staging.ptranz.com/api/Transactions/{id}`) and whether it needs the gateway key; any rate limit;
   - whether `OrderSummary.TotalCreditAmount` counts only approved refunds (never a pending, declined or reversed attempt);
   - whether the original transaction's record lists the refunds and voids made on it, each with its own `TransactionIdentifier` (a lost refund answer is checked by `TotalCreditAmount` today, section 8, and recorded under Swift's own reference until then);
   - whether the hosted page works inside an iframe in iPhone Safari (third-party cookies) and Android in-app browsers;
-  - the production API root (the guide says it is provided after staging is validated);
+  - ~~the production API root~~ answered by PowerTranz in writing (4 Nov 2026): `https://gateway.ptranz.com/api/spi/`, read by Swift as the root `https://gateway.ptranz.com` (section 9);
   - enabling `PanToken` on a Pay now;
   - can a person refund a payment in the Merchant Portal, and if so which refund reference does the portal show (Swift records refunds only from the API answer until this is answered);
   - can a refund be smaller than the original payment (a partial refund), and with which answer when it cannot (sec. 5.2 documents partial captures only);

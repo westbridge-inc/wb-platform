@@ -10,6 +10,7 @@ import type { ClientPlatform } from './fee-pay-actions';
 import { INSTRUMENT_DTO_SELECT, cardTestLabel, type PaymentInstrumentDto } from './card-rail.service';
 import type { CardRailProvider, CardRailSource } from '../../providers/card/card-provider';
 import { SIMULATOR_PROVIDER } from '../../providers/card/simulator-provider';
+import { CARD_CHECKOUT_PLATFORMS_KEY, cardPlatformSwitches, type CardPlatformSwitches } from './card-checkout-switch';
 
 // ---------------------------------------------------------------------------
 // [PT-2] May this partner pay the weekly fee by card, here, now? Decided in
@@ -52,21 +53,14 @@ export type CardPayAction =
 export const CARD_OFF: CardPayAction = { id: 'CARD', state: 'off' };
 
 /**
- * The per-platform switch for card payment, its own key so the card door can
- * be closed on one platform without touching MMG's: {"ios": bool, "android":
- * bool, "web": bool}. [Owner 6 Oct · Apple 3.1.1] iOS is OFF unless the row
- * says `"ios": true`; Android and web are ON unless the row says `false`.
- * [DS633, as MMG's switch] Only a real boolean counts: any other value for a
- * platform switches that platform OFF, and a row that is not an object
- * switches every platform OFF, each with a warning, so a kill written with
- * the wrong type still kills.
+ * The per-platform switch for card payment (card-checkout-switch.ts, the one
+ * reader of the row: iOS OFF unless the row says `"ios": true`; Android and
+ * web ON unless it says `false`; only real booleans count). Read here through
+ * a one-minute cache.
  */
-export const CARD_CHECKOUT_PLATFORMS_KEY = 'billing.cardCheckout.platforms';
+export { CARD_CHECKOUT_PLATFORMS_KEY };
 const SWITCH_TTL_MS = 60_000;
-const PLATFORMS = ['ios', 'android', 'web'] as const;
-type PlatformSwitches = Record<(typeof PLATFORMS)[number], boolean>;
-/** With no row, or a platform missing from the row. */
-const SWITCH_DEFAULTS: PlatformSwitches = { ios: false, android: true, web: true };
+type PlatformSwitches = CardPlatformSwitches;
 
 /** Paying rejoins a CHURNED account; PAUSED (billing stopped) and CANCELLED do not pay. */
 const PAYABLE: ReadonlySet<SubscriptionStatus> = new Set<SubscriptionStatus>([...OPERABLE_STATUSES, 'SUSPENDED', 'CHURNED']);
@@ -77,32 +71,11 @@ export function resetCardCheckoutSwitchCache(): void {
   switchCache = null;
 }
 
-function platformSwitches(row: { value: unknown } | null): PlatformSwitches {
-  if (!row) return { ...SWITCH_DEFAULTS };
-  const value = row.value;
-  if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    log().warn({ key: CARD_CHECKOUT_PLATFORMS_KEY }, '[PT-2] the card per-platform switch is not an object of true/false values; paying by card is OFF on every platform until it is corrected');
-    return { ios: false, android: false, web: false };
-  }
-  const switches = { ...SWITCH_DEFAULTS };
-  for (const platform of PLATFORMS) {
-    if (!Object.prototype.hasOwnProperty.call(value, platform)) continue;
-    const on = (value as Record<string, unknown>)[platform];
-    if (typeof on === 'boolean') {
-      switches[platform] = on;
-    } else {
-      switches[platform] = false;
-      log().warn({ key: CARD_CHECKOUT_PLATFORMS_KEY, platform }, '[PT-2] a card per-platform switch value is not true or false; paying by card is OFF on that platform until it is corrected');
-    }
-  }
-  return switches;
-}
-
 export async function cardCheckoutPlatforms(prisma: Pick<PrismaClient, 'platformConfig'>): Promise<PlatformSwitches> {
   const now = Date.now();
   if (!switchCache || now - switchCache.at > SWITCH_TTL_MS) {
     const row = await prisma.platformConfig.findUnique({ where: { key: CARD_CHECKOUT_PLATFORMS_KEY } });
-    switchCache = { at: now, switches: platformSwitches(row) };
+    switchCache = { at: now, switches: cardPlatformSwitches(row) };
   }
   return { ...switchCache.switches };
 }

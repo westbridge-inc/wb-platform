@@ -1239,12 +1239,25 @@ checkout moves to the requested SHA; everything else before that):
 - AGENT_CASH_WEBHOOK_SECRET or AGENT_CASH_WEBHOOK_SECRET_FILE set: partners
   pay the weekly fee only on the MMG checkout page, never through an agent or
   a Swift Number (the agent-cash webhook answers 503 without its secret);
-- the launch lock (owner ruling, 13 Oct): until an attorney signs off,
-  production takes no card payment and runs no ads. PAYMENT_PROVIDER must be
-  exactly `disabled` and CARD_RAIL_KILL exactly `1`; CARD_RAIL_V2,
-  CARD_RAIL_V2_DRAIN, CARD_RAIL_ENROLL and ADS_ENABLED must each be unset or
-  `0`. Lifting it is a reviewed code change here and in the API's boot guard,
-  never a deploy/.env edit;
+- the card and ad switches (owner rulings 7 Oct option A and 15 Oct;
+  GUARDRAILS section 8; they replaced the 13 Oct "until an attorney signs off"
+  lock): PAYMENT_PROVIDER exactly `disabled` (the legacy card seam stays off);
+  CARD_RAIL_KILL exactly `1` (cards off) or `0` (cards on, only on the owner's
+  go), and `0` only beside CARD_RAIL_V2=`1`, CARD_RAIL_PROVIDER=`powertranz`
+  and CARD_RAIL_ENVIRONMENT=`live`; CARD_RAIL_V2 unset, `0` or `1`, and `1`
+  only on PowerTranz live with POWERTRANZ_API_URL set and
+  `POWERTRANZ_ID_FILE=/run/secrets/POWERTRANZ_ID` and
+  `POWERTRANZ_PASSWORD_FILE=/run/secrets/POWERTRANZ_PASSWORD` (the owner's
+  live credentials in the store); CARD_RAIL_ENROLL (saved cards and automatic
+  weekly card charges), CARD_RAIL_V2_DRAIN and ADS_ENABLED each unset or `0`.
+  The rollback is CARD_RAIL_KILL=`1` with CARD_RAIL_V2=`1` left on (open card
+  payments are still confirmed). Changing this is a reviewed code change here
+  and in the API's boot guard, never a deploy/.env edit;
+- on ANY host (staging included): CARD_RAIL_V2=`1` with
+  CARD_RAIL_PROVIDER=`powertranz` and the kill switch off needs the two
+  POWERTRANZ_*_FILE lines above, or the deploy is refused before anything
+  changes (the API refuses to boot the same way): without them nothing can
+  read the credentials and cards cannot work;
 - for the whole stack and `--no-public` (not `--data-only`), no address-search
   provider: `PLACES_PROVIDER=osm` with `PHOTON_URL=http://photon:2322` (the
   script then also starts the private Photon service from the routing file's
@@ -1321,8 +1334,9 @@ explicitly off. Beyond the earlier guards:
   (one platform off pauses every fee on the server, cash included);
   turning a real card provider on also ends the pause, so do it only when
   partners can open the card pages (note the per-platform card switch: iOS
-  is off unless switched on). While the launch lock below holds, production
-  refuses a card provider outright.
+  is off unless switched on). Live cards count as a way to pay for the
+  pause only with the card on EVERY platform (`billing.cardCheckout.platforms`;
+  iOS is off unless the row says `"ios": true`), as MMG's checkout does.
 - **OPS_ONCALL_PHONES.** One or more E.164 numbers, comma-separated. An
   unacknowledged SOS escalates to them by SMS.
 - **Email.** `EMAIL_PROVIDER=smtp` with SMTP_HOST, SMTP_PORT, SMTP_USER,
@@ -1335,13 +1349,14 @@ explicitly off. Beyond the earlier guards:
   AGENT_CASH_WEBHOOK_SECRET (nor its `_FILE`): the same two rules pilot-up.sh
   checks, held by the API itself however it is started (a hand-run compose,
   an old script). The refusal names the setting, never a value.
-- **The launch lock.** No card payment and no ads until an attorney signs
-  off (owner ruling, 13 Oct): the same settings pilot-up.sh checks above
-  (PAYMENT_PROVIDER `disabled`, CARD_RAIL_KILL `1`, CARD_RAIL_V2,
-  CARD_RAIL_V2_DRAIN, CARD_RAIL_ENROLL and ADS_ENABLED unset or `0`). The
-  card rail's own production checks still run first, so a refusal names the
-  real problem before the lock. The value-free preflight
-  (`deploy/preflight.ts`) lists every one.
+- **The card and ad switches.** The same rule pilot-up.sh checks above:
+  cards off (CARD_RAIL_KILL `1`), cards on (CARD_RAIL_KILL `0` beside
+  CARD_RAIL_V2 `1` on PowerTranz with live cards and the complete live setup:
+  owner ruling 7 Oct, the owner's go), or paused (CARD_RAIL_KILL `1` with v2
+  left on); PAYMENT_PROVIDER `disabled`; CARD_RAIL_ENROLL, CARD_RAIL_V2_DRAIN
+  and ADS_ENABLED unset or `0`. The card rail's own production checks still
+  run first, so a refusal names the real problem before the switches. The
+  value-free preflight (`deploy/preflight.ts`) lists every one.
 
 ### Database first, before the providers and DNS
 

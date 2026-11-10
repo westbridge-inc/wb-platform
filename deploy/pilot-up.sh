@@ -377,18 +377,50 @@ if [ "$PILOT_ENV" = production ]; then
     [ -z "$(env_setting "$agent_cash_name")" ] ||
       die "PILOT_ENV=production refuses the agent-cash webhook ($agent_cash_name is set): partners pay the weekly fee only on the MMG checkout page"
   done
-  # [LAUNCH-LOCK] Owner ruling, 13 Oct: until an attorney signs off,
-  # production takes no card payment and runs no ads. The API's boot guard
-  # refuses the same settings (boot-config.ts assertProductionLaunchLocks);
-  # turning either on is a reviewed code change in both, never an .env edit.
+  # [LAUNCH-LOCK -> CARDS-SWITCH-ON] Production's card and ad switches, the
+  # same rule as the API's boot guard (boot-config.ts assertProductionLaunchLocks,
+  # card-rail.ts assertProductionCardSwitches). Owner rulings: 13 Oct (cards and
+  # ads refused "until an attorney signs off"), replaced 15 Oct (GUARDRAILS
+  # section 8: what could be criminal - recurring card charges, ads - stays off
+  # until a lawyer confirms), and 7 Oct option A (cards on only with v2 on the
+  # real provider and the complete live setup, on the owner's go). So: cards off
+  # (CARD_RAIL_KILL=1), cards on (CARD_RAIL_KILL=0 beside CARD_RAIL_V2=1,
+  # PowerTranz, live), or paused (the kill switch back to 1 with v2 left on);
+  # the legacy seam, saved cards, the drain switch and ads stay refused.
+  # Changing this is a reviewed code change in both places, never an .env edit.
   [ "$(env_setting PAYMENT_PROVIDER)" = disabled ] ||
-    die "PILOT_ENV=production needs PAYMENT_PROVIDER=disabled: no card payment until an attorney signs off (owner ruling, 13 Oct)"
-  [ "$(env_setting CARD_RAIL_KILL)" = 1 ] ||
-    die "PILOT_ENV=production needs CARD_RAIL_KILL=1: no card payment until an attorney signs off (owner ruling, 13 Oct)"
-  for locked_name in CARD_RAIL_V2 CARD_RAIL_V2_DRAIN CARD_RAIL_ENROLL ADS_ENABLED; do
+    die "PILOT_ENV=production needs PAYMENT_PROVIDER=disabled: the legacy card seam stays off; production takes cards only as Pay now on the provider's hosted page (owner ruling, 7 Oct)"
+  card_kill="$(env_setting CARD_RAIL_KILL)"
+  card_v2="$(env_setting CARD_RAIL_V2)"
+  case "$card_kill" in
+    1 | 0) ;;
+    *) die "PILOT_ENV=production needs CARD_RAIL_KILL=1 (cards off) or 0 (cards on, only on the owner's go beside the complete live card setup: owner ruling, 7 Oct)" ;;
+  esac
+  case "$card_v2" in
+    "" | 0 | 1) ;;
+    *) die "PILOT_ENV=production needs CARD_RAIL_V2 unset, 0 or 1" ;;
+  esac
+  if [ "$card_kill" = 0 ]; then
+    [ "$card_v2" = 1 ] && [ "$(env_setting CARD_RAIL_PROVIDER)" = powertranz ] && [ "$(env_setting CARD_RAIL_ENVIRONMENT)" = live ] ||
+      die "PILOT_ENV=production with CARD_RAIL_KILL=0 (cards on) needs CARD_RAIL_V2=1, CARD_RAIL_PROVIDER=powertranz and CARD_RAIL_ENVIRONMENT=live: production takes cards only as Pay now on the provider's hosted page, with real cards (owner ruling, 7 Oct)"
+  fi
+  if [ "$card_v2" = 1 ]; then
+    [ "$(env_setting CARD_RAIL_PROVIDER)" = powertranz ] && [ "$(env_setting CARD_RAIL_ENVIRONMENT)" = live ] ||
+      die "PILOT_ENV=production with CARD_RAIL_V2=1 needs CARD_RAIL_PROVIDER=powertranz and CARD_RAIL_ENVIRONMENT=live: production takes real cards only (owner ruling, 7 Oct)"
+    [ -n "$(env_setting POWERTRANZ_API_URL)" ] ||
+      die "PILOT_ENV=production with CARD_RAIL_V2=1 needs POWERTRANZ_API_URL: PowerTranz's production address, https://gateway.ptranz.com"
+    [ "$(env_setting POWERTRANZ_ID_FILE)" = /run/secrets/POWERTRANZ_ID ] && [ "$(env_setting POWERTRANZ_PASSWORD_FILE)" = /run/secrets/POWERTRANZ_PASSWORD ] ||
+      die "PILOT_ENV=production with CARD_RAIL_V2=1 needs POWERTRANZ_ID_FILE=/run/secrets/POWERTRANZ_ID and POWERTRANZ_PASSWORD_FILE=/run/secrets/POWERTRANZ_PASSWORD in deploy/.env: the live PowerTranz credentials, entered by the owner at hidden prompts into the encrypted store"
+  fi
+  for locked_name in CARD_RAIL_V2_DRAIN CARD_RAIL_ENROLL ADS_ENABLED; do
+    case "$locked_name" in
+      CARD_RAIL_ENROLL) locked_why="saved cards and automatic weekly card charges stay off until a lawyer confirms them (GUARDRAILS §8; owner rulings, 13 and 15 Oct)" ;;
+      CARD_RAIL_V2_DRAIN) locked_why="to stop card payments set CARD_RAIL_KILL=1 and leave CARD_RAIL_V2=1, which keeps confirming the card payments already open" ;;
+      *) locked_why="ads stay off until a lawyer confirms them (GUARDRAILS §8; owner rulings, 15 Oct and 6 Nov)" ;;
+    esac
     case "$(env_setting "$locked_name")" in
       "" | 0) ;;
-      *) die "PILOT_ENV=production refuses $locked_name unless it is unset or 0: no card payment and no ads until an attorney signs off (owner ruling, 13 Oct)" ;;
+      *) die "PILOT_ENV=production refuses $locked_name unless it is unset or 0: $locked_why" ;;
     esac
   done
   # [Row 312] MALWARE_SCAN: every upload is scanned by the private clamd
@@ -423,6 +455,19 @@ if [ "$PILOT_ENV" = production ]; then
         die "PILOT_ENV=production needs PLACES_PROVIDER=osm or google (the owner's choice): production has no local-only address search" ;;
     esac
   fi
+fi
+# [CARDS-SWITCH-ON · staging card test, 10 Nov 2026] Any server: card rail v2
+# on PowerTranz with the kill switch off means card payments are meant to work,
+# and the API and the worker read the PowerTranz credentials only from the
+# encrypted store, through these two deploy/.env lines (the MMG secrets are
+# wired the same way). Staging once ran without them: nothing could read the
+# credentials and cards could not work, while every check read green. Refused
+# here, before anything changes; the API refuses to boot the same way
+# (boot-config.ts assertCardRailProviderReadable), and the store check below
+# proves both names are stored.
+if [ "$(env_setting CARD_RAIL_V2)" = 1 ] && [ "$(env_setting CARD_RAIL_PROVIDER)" = powertranz ] && [ "$(env_setting CARD_RAIL_KILL)" != 1 ]; then
+  [ "$(env_setting POWERTRANZ_ID_FILE)" = /run/secrets/POWERTRANZ_ID ] && [ "$(env_setting POWERTRANZ_PASSWORD_FILE)" = /run/secrets/POWERTRANZ_PASSWORD ] ||
+    die "CARD_RAIL_V2=1 with CARD_RAIL_PROVIDER=powertranz and the kill switch off needs POWERTRANZ_ID_FILE=/run/secrets/POWERTRANZ_ID and POWERTRANZ_PASSWORD_FILE=/run/secrets/POWERTRANZ_PASSWORD in deploy/.env: the API reads the PowerTranz credentials only from the encrypted store (sudo swift-secrets set POWERTRANZ_ID / POWERTRANZ_PASSWORD), and without these lines cards cannot work"
 fi
 for tool in git docker curl python3; do command -v "$tool" >/dev/null 2>&1 || die "$tool is required"; done
 # [COORD 21 Oct] MALWARE_SCAN_BYPASS_SHOUT: the emergency bypass is loud on every deploy.
