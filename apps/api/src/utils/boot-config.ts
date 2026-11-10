@@ -93,6 +93,31 @@ export function assertNoLiveCardsOffProduction(env: Record<string, string | unde
 }
 
 /**
+ * [CARD-STAGING-TEST 10 Nov 2026] Called for every mode but production (production refuses the same, worded for live
+ * cards, in assertSafeBootConfig): card rail v2 on (or draining) with the real provider needs the provider's settings
+ * READABLE by this process — its credentials from the store (POWERTRANZ_ID_FILE / POWERTRANZ_PASSWORD_FILE lines in
+ * deploy/.env), the hosted page set with its PTZ/ prefix and name, the account label and public address. Staging ran
+ * with the credentials missing from deploy/.env: the app started, offered card payment, and every page failed. Read by
+ * the very function the card provider is built with (powerTranzConfigFromEnv), after the secret files were loaded, so
+ * what boots is what pays. Asked even with the kill switch on: a killed rail still confirms, sweeps, looks up and
+ * refunds what is in flight, and all of that needs the provider. The message names settings, never a value.
+ */
+export function assertCardRailProviderReadable(env: Record<string, string | undefined>): void {
+  const which = env['CARD_RAIL_V2'] === '1' ? 'CARD_RAIL_V2=1' : env['CARD_RAIL_V2_DRAIN'] === '1' ? 'CARD_RAIL_V2_DRAIN=1' : null;
+  if (!which || env['CARD_RAIL_PROVIDER'] !== 'powertranz') return;
+  try {
+    powerTranzConfigFromEnv(env);
+  } catch (err) {
+    const reason = (err as Error).message;
+    // The credentials reach a server only from the encrypted store, through two deploy/.env lines: say so.
+    const wiring = /POWERTRANZ_ID|POWERTRANZ_PASSWORD/.test(reason)
+      ? ' (the credentials come from the encrypted store: deploy/.env needs POWERTRANZ_ID_FILE=/run/secrets/POWERTRANZ_ID and POWERTRANZ_PASSWORD_FILE=/run/secrets/POWERTRANZ_PASSWORD)'
+      : '';
+    throw new Error(`FATAL: ${which} with CARD_RAIL_PROVIDER=powertranz, but this server cannot read the card provider's settings: ${reason}${wiring}. Refusing to start.`);
+  }
+}
+
+/**
  * [LAUNCH-LOCK · owner ruling 13 Oct, #34] Until an attorney signs off,
  * production takes no card payment and runs no ads (GUARDRAILS §8). Both are
  * already off by default; this makes "off" a refusal to boot rather than a
@@ -227,6 +252,7 @@ export function assertSafeBootConfig(env: Record<string, string | undefined> = p
   assertCardSimulatorNotPublic(env);
   if (runtimeMode(env) !== 'production') {
     assertNoLiveCardsOffProduction(env);
+    assertCardRailProviderReadable(env);
     assertDurableStorageConfig(env);
     return;
   }

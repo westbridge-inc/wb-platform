@@ -174,7 +174,7 @@ describe('[CARD-PAGE] Swift\'s card pages look like the Swift app', () => {
   });
 
   it('each return state wears the app\'s tone for it (cardSessionTone): Done success, Checking waiting, didn\'t go through error, otherwise neutral', () => {
-    const tone = { SUCCEEDED: 'success', PENDING: 'waiting', FAILED: 'error', UNKNOWN: 'neutral' } as const;
+    const tone = { SUCCEEDED: 'success', PENDING: 'waiting', FAILED: 'error', UNAVAILABLE: 'error', UNKNOWN: 'neutral' } as const; // UNAVAILABLE is CANCELLED's page: the app's error tone
     for (const state of CARD_RETURN_PAGES) {
       const html = returnPageHtml(state);
       expect(html.match(/class="icon tone-(\w+)"/g), state).toEqual([`class="icon tone-${tone[state]}"`]);
@@ -261,9 +261,11 @@ describe('[CARD-PAGE] what the restyle must never change', () => {
       SUCCEEDED: 'Go back to the Swift app to see it.',
       PENDING: 'We&#39;re checking with the bank. Don&#39;t pay again. You can close this page.',
       FAILED: 'You can try again in the Swift app.',
+      // [CARD-STAGING-TEST 10 Nov 2026] The provider could not open its own page (a set-up error): nobody's bank is blamed.
+      UNAVAILABLE: 'Nothing was charged. Please use another way to pay in the Swift app.',
       UNKNOWN: 'Open the Swift app to see your weekly fee.',
     } as const;
-    const title = { SUCCEEDED: 'Done', PENDING: 'Checking with the bank', FAILED: 'This didn&#39;t go through' } as const;
+    const title = { SUCCEEDED: 'Done', PENDING: 'Checking with the bank', FAILED: 'This didn&#39;t go through', UNAVAILABLE: 'Card payments aren&#39;t available right now' } as const;
     for (const state of CARD_RETURN_PAGES) {
       if (state !== 'UNKNOWN') expect(returnPageHtml(state), state).toContain(`<h1>${title[state]}</h1>`);
       expect(returnPageHtml(state), state).toContain(`<p>${body[state]}</p>`);

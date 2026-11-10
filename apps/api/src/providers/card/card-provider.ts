@@ -77,7 +77,8 @@ export type CompletionClaim = 'send' | 'closed' | 'claimed';
  *  closes its session. */
 export const COMPLETION_CLAIM_WAIT_MS = 35_000;
 
-/** Safe fields from the provider's own approved completion, never a browser return. */
+/** Safe fields from the provider's own approved completion, never a browser return. [OWNER RULING 10 Nov 2026] This
+ *  approval IS the proof a payment is booked on (the Sale having been sent with 3-D Secure): no token, nothing personal. */
 export type CardCompletionEvidence = {
   Approved: true;
   IsoResponseCode: '00';
@@ -86,9 +87,11 @@ export type CardCompletionEvidence = {
   OrderIdentifier: string;
   TotalAmount: number;
   CurrencyCode: string;
-  /** The brand the answer named, if any (the ECI is judged per brand, sec. 8.4). */
+  /** The brand the answer named, if any (an ECI is judged per brand, sec. 8.4). */
   CardBrand?: string;
-  RiskManagement: { ThreeDSecure: { AuthenticationStatus: string; Eci: string } };
+  /** Only on evidence stored before the owner's ruling of 10 Nov 2026 (it was then required); never required now, and
+   *  never written by readCompletion. When present it must not contradict the approval. */
+  RiskManagement?: { ThreeDSecure: { AuthenticationStatus: string; Eci: string } };
 };
 
 /** The five outcomes. A caller switches over all of them; `assertNever` makes
@@ -194,8 +197,8 @@ export type CardRefundOutcome = Evidence & (
 /** [CARD-LOOKUP] What the provider's own record of ONE transaction says, judged against what Swift asked for. Asked
  *  ONLY when a completion's outcome is not known (its answer was lost, timed out or could not be read), never as the
  *  normal flow. `confirmed` is an approved sale of this transaction and order, at Swift's price and currency, not
- *  reversed and not refunded — and it is still not booking authority by itself (the service also needs the stored
- *  completion's own 3-D Secure proof). `reversed`: the record shows it voided or refunded in full. `part_credited`:
+ *  reversed and not refunded — and it is still not booking authority by itself (the service also needs PowerTranz's
+ *  own approval of the completion, stored when it arrived). `reversed`: the record shows it voided or refunded in full. `part_credited`:
  *  part of it refunded, the rest still taken. `not_bookable`: readable,
  *  but not a confirmed sale at Swift's price. `unknown`: no readable answer, or (`backoff`) not asked this time. */
 export type CardLookupOutcome = Evidence & (
