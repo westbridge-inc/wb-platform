@@ -2,12 +2,13 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest
 import Redis from 'ioredis';
 import { generateKeyPairSync, randomUUID } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { nanoid } from 'nanoid';
 import { connectSelfCheckRedis, formatSelfCheck, runPaymentsSelfCheck } from '../modules/billing/payments-self-check';
-import { POWERTRANZ_ENV } from '../providers/card/powertranz-provider';
+import { POWERTRANZ_ENV, SELF_CHECK_PAGE_LINE, SELF_CHECK_PAGE_OPENS } from '../providers/card/powertranz-provider';
+import { STAGING_HPP_HTML, stagingConductorNotFoundHtml } from './fixtures/powertranz-staging-shapes';
 import { applySecretFiles, SECRET_FILE_NAMES } from '../utils/secret-files';
 
 // ---------------------------------------------------------------------------
@@ -18,6 +19,8 @@ import { applySecretFiles, SECRET_FILE_NAMES } from '../utils/secret-files';
 // ---------------------------------------------------------------------------
 
 const PASSWORD = `pw-${nanoid(16)}`;
+const PAGE_LINE = `card: ${SELF_CHECK_PAGE_LINE}`;
+const OPENS_LINE = `card: ${SELF_CHECK_PAGE_OPENS.shown}`;
 const CARD_ENV = {
   NODE_ENV: 'development', CARD_RAIL_PROVIDER: 'powertranz', CARD_RAIL_ENVIRONMENT: 'sandbox', CARD_RAIL_ACCOUNT: 'swift-gy',
   POWERTRANZ_ID: 'TESTID01', POWERTRANZ_PASSWORD: PASSWORD, POWERTRANZ_PAGE_SET: 'PTZ/Swift', POWERTRANZ_PAGE_NAME: 'Weekly',
@@ -29,7 +32,7 @@ let redis: Redis;
  *  models answers that say nothing about them (another status, no JSON, a
  *  system error, no answer at all). */
 type ProbeAnswer = boolean | 'http401' | 'http403' | 'http404' | 'http500' | 'not-json' | 'system-error' | 'no-answer';
-function gateway(opts: { alive?: boolean; credentials?: ProbeAnswer; page?: boolean } = {}) {
+function gateway(opts: { alive?: boolean; credentials?: ProbeAnswer; page?: boolean; opens?: 'shown' | 'not_found' } = {}) {
   const paths: string[] = [];
   const headers: Array<Record<string, string>> = [];
   const fetch = (async (url: string | URL, init?: Parameters<typeof globalThis.fetch>[1]) => {
@@ -56,7 +59,15 @@ function gateway(opts: { alive?: boolean; credentials?: ProbeAnswer; page?: bool
       const req = JSON.parse(String(init?.body)) as Record<string, unknown>;
       return new Response(JSON.stringify(opts.page === false
         ? { Approved: false, IsoResponseCode: '12', Errors: [{ Code: '757', Message: 'Hosted page not found' }] }
-        : { IsoResponseCode: 'SP4', TransactionIdentifier: req['TransactionIdentifier'], RedirectData: '<form></form>', SpiToken: 'spi-synthetic' }), { status: 200 });
+        : { IsoResponseCode: 'SP4', TransactionIdentifier: req['TransactionIdentifier'], SpiToken: 'spi-synthetic',
+          RedirectData: '<html><body><form id="f" method="POST" action="https://staging.ptranz.com/api/spi/Conductor"><input type="hidden" name="SpiToken" value="spi-synthetic"></form><script>f.submit()</script></body></html>' }), { status: 200 });
+    }
+    // [CARD-STAGING-TEST 10 Nov 2026] The page itself, opened as the browser opens it: the card form, or (a page set
+    // PowerTranz cannot find) a page that posts its 757 result straight back to the return address.
+    if (path === '/api/spi/Conductor') {
+      return new Response(opts.opens === 'not_found'
+        ? stagingConductorNotFoundHtml('https://api.example.test/api/v1/billing/card/return?session=selfcheck&state=0', { txn: 't', order: 'o', spiToken: 'spi-synthetic' })
+        : STAGING_HPP_HTML, { status: 200 });
     }
     return new Response('not found', { status: 404 });
   }) as unknown as typeof globalThis.fetch;
@@ -80,7 +91,8 @@ describe('the card self-check', () => {
       'OK   card: settings complete',
       'OK   card: gateway reachable',
       'OK   card: credentials accepted',
-      'OK   card: hosted payment page set up',
+      `OK   ${PAGE_LINE}`,
+      `OK   ${OPENS_LINE}`,
     ].join('\n'));
     expect(gw.paths).not.toContain('/api/spi/payment');
   });
@@ -88,7 +100,7 @@ describe('the card self-check', () => {
   it('[REVIEW-G S4-2 on #1524] the sandbox page record the check leaves in Redis is gone within an hour (a named TTL), not kept for the 30-day card record retention', async () => {
     const before = new Set(await redis.keys('ptz:selfcheck:s:*'));
     const lines = await runPaymentsSelfCheck(['card'], CARD_ENV, { redis, fetch: gateway().fetch });
-    expect(formatSelfCheck(lines)).toContain('OK   card: hosted payment page set up');
+    expect(formatSelfCheck(lines)).toContain(`OK   ${PAGE_LINE}`);
     const made = (await redis.keys('ptz:selfcheck:s:*')).filter((k) => !before.has(k));
     expect(made).toHaveLength(1);
     const ttl = await redis.pttl(made[0]!);
@@ -104,7 +116,7 @@ describe('the card self-check', () => {
       'OK   card: settings complete',
       'FAIL card: gateway reachable',
       'FAIL card: credentials accepted',
-      'FAIL card: hosted payment page set up',
+      `FAIL ${PAGE_LINE}`,
     ].join('\n'));
     expect(printed).not.toContain(PASSWORD);
     expect(printed).not.toContain('TESTID01');
@@ -153,6 +165,36 @@ describe('the card self-check', () => {
     const printed = formatSelfCheck(await runPaymentsSelfCheck(['card'], { ...CARD_ENV, CARD_RAIL_ENVIRONMENT: 'live', POWERTRANZ_API_URL: 'https://gateway.ptranz.com' }, { redis, fetch: gw.fetch }));
     expect(printed).toBe('FAIL card: settings complete (CARD_RAIL_ENVIRONMENT)');
     expect(gw.paths).toEqual([]);
+  });
+
+  it('[CARD-STAGING-TEST 10 Nov 2026] the page itself is opened: a page PowerTranz cannot find (757) FAILs even though the sale was preprocessed (SP4)', async () => {
+    const printed = formatSelfCheck(await runPaymentsSelfCheck(['card'], CARD_ENV, { redis, fetch: gateway({ opens: 'not_found' }).fetch }));
+    expect(printed.split('\n')).toEqual([
+      'OK   card: settings complete', 'OK   card: gateway reachable', 'OK   card: credentials accepted', `OK   ${PAGE_LINE}`,
+      'FAIL card: the hosted payment page opens (PowerTranz cannot find this page: check POWERTRANZ_PAGE_SET, with PTZ/, and POWERTRANZ_PAGE_NAME)',
+    ]);
+  });
+
+  it('[CARD-STAGING-TEST 10 Nov 2026] a page set without PowerTranz\'s PTZ/ prefix: FAIL, naming the setting, and nothing is asked of the gateway', async () => {
+    for (const set of ['SWIFT', 'ptz/SWIFT', 'PTZ/']) {
+      const gw = gateway();
+      const printed = formatSelfCheck(await runPaymentsSelfCheck(['card'], { ...CARD_ENV, POWERTRANZ_PAGE_SET: set }, { redis, fetch: gw.fetch }));
+      expect(printed, set).toBe('FAIL card: settings complete (POWERTRANZ_PAGE_SET)');
+      expect(gw.paths, set).toEqual([]);
+    }
+  });
+
+  it('[CARD-STAGING-TEST 10 Nov 2026] the RUNNING app\'s own settings: credentials it cannot read (no POWERTRANZ_*_FILE lines in its deploy/.env) are a FAIL — read through the same secret-file loader the server boots with', async () => {
+    // What the running container holds: the settings lines, but no POWERTRANZ_ID_FILE / POWERTRANZ_PASSWORD_FILE.
+    const running: Record<string, string | undefined> = { ...CARD_ENV, POWERTRANZ_ID: undefined, POWERTRANZ_PASSWORD: undefined };
+    applySecretFiles(running);
+    const gw = gateway();
+    expect(formatSelfCheck(await runPaymentsSelfCheck(['card'], running, { redis, fetch: gw.fetch }))).toBe('FAIL card: settings complete (POWERTRANZ_ID)');
+    expect(gw.paths).toEqual([]);
+    // With the lines, the same loader reads the files: OK.
+    const withLines: Record<string, string | undefined> = { ...running, POWERTRANZ_ID_FILE: '/run/secrets/POWERTRANZ_ID', POWERTRANZ_PASSWORD_FILE: '/run/secrets/POWERTRANZ_PASSWORD' };
+    applySecretFiles(withLines, { readFileSync: (file: string) => Buffer.from(file.endsWith('POWERTRANZ_ID') ? 'TESTID01\n' : `${PASSWORD}\n`) } as never);
+    expect(formatSelfCheck(await runPaymentsSelfCheck(['card'], withLines, { redis, fetch: gateway().fetch }))).toContain('OK   card: credentials accepted');
   });
 });
 
@@ -301,7 +343,7 @@ describe('the owner tool: deploy/owner/swift-payments-setup.command', () => {
     /** Runs the tool with typed answers; returns the one-off container's EFFECTIVE settings: the
      *  server's deploy/.env (with values an earlier run left: STALE) overridden by the tool's -e flags,
      *  as docker compose merges them, plus what the tool printed and the secrets it sent. */
-    function runTool(answers: string[]) {
+    function runTool(answers: string[], opts: { running?: 'ok' | 'fail' | 'down'; which?: 'card' | 'check' } = {}) {
       const dir = mkdtempSync(join(tmpdir(), 'swift-setup-'));
       try {
         const bin = join(dir, 'bin');
@@ -313,16 +355,26 @@ describe('the owner tool: deploy/owner/swift-payments-setup.command', () => {
         script('ssh', 'exec env PATH="$FAKE_BIN:$PATH" bash -c "${@: -1}"');
         // sudo: the secret store keeps what arrives on stdin; anything else succeeds.
         script('sudo', 'if [ "$2" = swift-secrets ] && [ "$3" = set ]; then cat > "$FAKE_SENT/$4"; fi\nexit 0');
-        // docker: record the one-off container's arguments, answer like the self-check.
-        script('docker', 'printf "%s\\n" "$@" > "$FAKE_SENT/docker-args"\nprintf "OK   card: settings complete\\n"');
+        // docker: record each call's arguments (the one-off container, then the RUNNING app), answer like the self-check.
+        // The running app answers as FAKE_RUNNING says: ok, fail (as staging's did: no POWERTRANZ_*_FILE lines) or down.
+        script('docker', [
+          'n=$(ls "$FAKE_SENT" | grep -c "^docker-call-" || true)',
+          'printf "%s\\n" "$@" > "$FAKE_SENT/docker-call-$((n + 1))"',
+          'case " $* " in',
+          '  *" exec "*) case "$FAKE_RUNNING" in ok) printf "OK   card: settings complete\\n" ;; fail) printf "FAIL card: settings complete (POWERTRANZ_ID)\\n"; exit 1 ;; *) exit 1 ;; esac ;;',
+          '  *) printf "OK   card: settings complete\\n" ;;',
+          'esac',
+        ].join('\n'));
         const key = join(dir, 'id_test');
         writeFileSync(key, 'not a key');
-        const run = spawnSync('bash', [path, 'swift-deploy@host.example.test', key, 'card'], {
+        const run = spawnSync('bash', [path, 'swift-deploy@host.example.test', key, opts.which ?? 'card'], {
           input: `${answers.join('\n')}\n`, encoding: 'utf8', timeout: 30_000,
-          env: { PATH: `${bin}:${process.env['PATH']}`, HOME: dir, FAKE_BIN: bin, FAKE_SENT: sent, SWIFT_DIR: dir },
+          env: { PATH: `${bin}:${process.env['PATH']}`, HOME: dir, FAKE_BIN: bin, FAKE_SENT: sent, SWIFT_DIR: dir, FAKE_RUNNING: opts.running ?? 'ok' },
         });
-        expect(run.status, run.stderr).toBe(0);
-        const args = readFileSync(join(sent, 'docker-args'), 'utf8').split('\n');
+        expect(run.status, run.stderr).toBe((opts.running ?? 'ok') === 'ok' ? 0 : 1);
+        const calls = readdirSync(sent).filter((f) => f.startsWith('docker-call-')).sort().map((f) => readFileSync(join(sent, f), 'utf8').split('\n'));
+        const oneOff = calls.find((c) => c.includes('run'));
+        const args = oneOff ?? [];
         const flags: Record<string, string> = {};
         args.forEach((a, i) => {
           if (args[i - 1] !== '-e') return;
@@ -333,7 +385,7 @@ describe('the owner tool: deploy/owner/swift-payments-setup.command', () => {
         for (const name of ['POWERTRANZ_ID', 'POWERTRANZ_PASSWORD', 'POWERTRANZ_GATEWAY_KEY']) {
           if (existsSync(join(sent, name))) secrets[`/run/secrets/${name}`] = readFileSync(join(sent, name), 'utf8');
         }
-        return { effective: { ...STALE, ...flags } as Record<string, string | undefined>, printed: run.stderr, secrets };
+        return { effective: { ...STALE, ...flags } as Record<string, string | undefined>, printed: run.stderr, stdout: run.stdout, secrets, calls };
       } finally { rmSync(dir, { recursive: true, force: true }); }
     }
     /** The self-check the container would run on those settings (secret files read from what the tool sent). */
@@ -357,7 +409,7 @@ describe('the owner tool: deploy/owner/swift-payments-setup.command', () => {
       expect(run.printed).toMatch(/^ {2}POWERTRANZ_API_URL=$/m);
       const { printed, gw } = await checkOn(run);
       expect(printed).toBe([
-        'OK   card: settings complete', 'OK   card: gateway reachable', 'OK   card: credentials accepted', 'OK   card: hosted payment page set up',
+        'OK   card: settings complete', 'OK   card: gateway reachable', 'OK   card: credentials accepted', `OK   ${PAGE_LINE}`, `OK   ${OPENS_LINE}`,
       ].join('\n'));
       expect(gw.headers.some((h) => 'powertranz-gatewaykey' in h)).toBe(false);
       expect(run.printed).not.toContain(PW);
@@ -379,6 +431,44 @@ describe('the owner tool: deploy/owner/swift-payments-setup.command', () => {
       expect(run.effective['POWERTRANZ_API_URL']).toBe('https://gateway2.ptranz.com');
       expect(run.effective['CARD_RAIL_ENVIRONMENT']).toBe('live');
       expect(run.effective['POWERTRANZ_GATEWAY_KEY_FILE']).toBe('');
+    });
+
+    it('[CARD-STAGING-TEST 10 Nov 2026] then the SAME self-check runs INSIDE the running API container, with no answer of this run: the app\'s own settings', () => {
+      const run = runTool([...sandbox, '']);
+      expect(run.calls).toHaveLength(2);
+      const [oneOff, running] = run.calls as [string[], string[]];
+      expect(oneOff).toContain('run');
+      expect(running.slice(running.indexOf('exec'))).toEqual(['exec', '-T', 'api', 'node', 'dist/boot/payments-self-check.js', 'card', '']);
+      expect(running).not.toContain('-e'); // nothing of this run reaches it: only what the app itself reads
+      expect(run.stdout.split('\n').filter((l) => /^(OK {2}|FAIL) /.test(l))).toHaveLength(2);
+      expect(run.printed).toMatch(/The running app: all checks passed\./);
+    });
+
+    it('[CARD-STAGING-TEST 10 Nov 2026] the entered values pass but the running app cannot read them (no settings lines in its deploy/.env): FAIL, NOT ready, and the tool fails', () => {
+      const run = runTool([...sandbox, ''], { running: 'fail' });
+      expect(run.stdout).toMatch(/^OK {3}card: settings complete$/m);
+      expect(run.stdout).toMatch(/^FAIL card: settings complete \(POWERTRANZ_ID\)$/m);
+      expect(run.printed).toMatch(/The values you entered: all checks passed\./);
+      expect(run.printed).toMatch(/The running app: NOT ready/);
+      expect(run.printed).toMatch(/^ {2}POWERTRANZ_ID_FILE=\/run\/secrets\/POWERTRANZ_ID$/m);
+      const down = runTool([...sandbox, ''], { running: 'down' });
+      expect(down.printed).toMatch(/The running app: the check could not run/);
+    });
+
+    it('`check` asks for nothing secret and only checks the running app', () => {
+      const run = runTool(['card'], { which: 'check' });
+      expect(run.calls).toHaveLength(1);
+      expect(run.calls[0]).toContain('exec');
+      expect(run.calls[0]).not.toContain('run');
+      expect(Object.keys(run.secrets)).toEqual([]);
+      expect(run.printed).not.toMatch(/Value for|settings lines/);
+      expect(runTool(['card'], { which: 'check', running: 'fail' }).printed).toMatch(/The running app: NOT ready/);
+    });
+
+    it('[CARD-STAGING-TEST 10 Nov 2026] a page set typed without PTZ/ is asked again (the portal\'s set SWIFT is PTZ/SWIFT)', () => {
+      const run = runTool(['sandbox', 'swift-gy', 'https://api.example.test', 'SWIFT', 'PTZ/SWIFT', 'Weekly', ID, ID, PW, PW, '']);
+      expect(run.printed).toMatch(/that does not look right, asking again/);
+      expect(run.effective['POWERTRANZ_PAGE_SET']).toBe('PTZ/SWIFT');
     });
   });
 

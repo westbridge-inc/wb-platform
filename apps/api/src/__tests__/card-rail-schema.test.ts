@@ -148,7 +148,10 @@ describe('[PT-1] the three tables are walled like every tenant table', () => {
       'card_sessions_purpose_shape_check',
       'card_sessions_refund_needs_ref_check', 'card_sessions_refund_state_check', 'card_sessions_resolution_check',
       'card_sessions_state_hash_check',
-      'card_sessions_void_needs_ref_check', 'card_sessions_void_state_check',
+      'card_sessions_void_needs_ref_check',
+      // [CARD-STAGING-TEST 10 Nov 2026] the void's own provider transaction, only beside a confirmed void (card_void_ref)
+      'card_sessions_void_ref_check',
+      'card_sessions_void_state_check',
       'payment_instruments_binding_check',
       'payment_instruments_display_check', 'payment_instruments_sealed_check', 'payment_instruments_status_time_check',
     ]);

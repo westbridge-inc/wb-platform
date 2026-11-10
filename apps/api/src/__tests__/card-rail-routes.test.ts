@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import Fastify, { type FastifyInstance } from 'fastify';
 import rateLimit from '@fastify/rate-limit';
 import Redis from 'ioredis';
@@ -55,6 +55,8 @@ import { askAndApprove, injectWithApproval } from './helpers/admin-approval';
 import { setAsideCreditRefund } from '../modules/billing/credit-refund';
 import { CARD_REFUND_ACTION, refundCardCreditToCard } from '../modules/billing/card-credit-refund';
 import { TEST_ADMIN_REASON } from './helpers/admin-reason';
+import { setAppLogger } from '../utils/logger';
+import { STAGING_RETURN_SECRETS, stagingPageNotFoundPost, stagingReturnPost, stagingSaleRecord } from './fixtures/powertranz-staging-shapes';
 
 // ---------------------------------------------------------------------------
 // [PT-2] The card rail v2 ROUTES against the database and the real simulator
@@ -281,6 +283,7 @@ const pageState = (html: string) => {
   if (html.includes('<h1>Done</h1>')) return 'SUCCEEDED';
   if (html.includes('<h1>Checking with the bank</h1>')) return 'PENDING';
   if (html.includes("<h1>This didn&#39;t go through</h1>")) return 'FAILED';
+  if (html.includes('<h1>Card payments aren&#39;t available right now</h1>')) return 'UNAVAILABLE';
   // [CARD-PAGE] The unknown state is headed "Weekly fee", as the MMG return page is (it was a bare "Swift").
   if (html.includes('<h1>Weekly fee</h1>')) return 'UNKNOWN';
   return `UNRECOGNISED: ${html.slice(0, 200)}`;
@@ -1226,10 +1229,14 @@ describe('[PT-4] real cards through HTTP: Swift\'s hosted page, the bank\'s chec
     status: 200,
     body: {
       TransactionType: 2, Approved: true, AuthorizationCode: '123456', TransactionIdentifier: held.txnId, OrderIdentifier: held.orderId, TotalAmount: 2100, CurrencyCode: '328', RRN: '000000000001', IsoResponseCode: '00',
-      RiskManagement: { ThreeDSecure: { Eci: '05', AuthenticationStatus: 'Y', ResponseCode: '3D0' } }, // the completion's OWN 3-D Secure proof (sec. 6)
+      // [CARD-STAGING-TEST B2] As PowerTranz's own "/Payment Response" sample and the real sandbox answer it: no
+      // RiskManagement (OWNER RULING 10 Nov 2026: the approval of a 3-D Secure Sale's completion is the proof), and a PanToken Swift never keeps.
+      CardBrand: 'Visa', ResponseMessage: 'Transaction is approved', PanToken: 'synthetic-pan-token-never-kept',
       ...fields,
     },
   });
+  /** An approval Swift cannot book: PowerTranz's own answer says the cardholder was NOT authenticated (it contradicts itself). */
+  const unprovable = () => approve({ RiskManagement: { ThreeDSecure: { Eci: '07', AuthenticationStatus: 'N', ResponseCode: '3D0' } } });
   /** sec. 7.6 / 7.5: an approved void (type 4) or refund (type 5) of the named transaction, as the guide's samples answer. */
   const adjusted = (b: Record<string, unknown>): Answer => ({
     status: 200,
@@ -1281,7 +1288,7 @@ describe('[PT-4] real cards through HTTP: Swift\'s hosted page, the bank\'s chec
   });
   /** A Pay now whose approval Swift could not book and whose void the gateway refused: HELD for a person. */
   async function heldPayment(p: Partner, from?: string) {
-    payment = approve({ RiskManagement: undefined });
+    payment = unprovable();
     voidAnswer = () => ({ status: 200, body: { Approved: false, IsoResponseCode: '12', ResponseMessage: 'Invalid transaction' } });
     const session = (await open(p)).json().data;
     expect(pageState((await bankFramePosts(session.sessionId, 'Y', {}, from)).body)).toBe('PENDING');
@@ -1302,7 +1309,8 @@ describe('[PT-4] real cards through HTTP: Swift\'s hosted page, the bank\'s chec
       await bankFramePosts(session.sessionId, 'Y');
       const row = await rowOf(session.sessionId);
       expect(row.status).toBe('HELD');
-      expect(row.completionEvidence).toMatchObject({ Approved: true, RiskManagement: { ThreeDSecure: { AuthenticationStatus: 'Y' } } });
+      expect(row.completionEvidence).toMatchObject({ Approved: true, IsoResponseCode: '00', TransactionType: 2 });
+      expect(JSON.stringify(row.completionEvidence)).not.toMatch(/synthetic-pan-token|RiskManagement/);
       expect((await money(p.subId)).successes).toBe(0);
       return { sessionId: session.sessionId as string, txnId: row.providerTransactionRef! };
     } finally { billing.settleHostedCardPayment = settle; }
@@ -1575,7 +1583,7 @@ describe('[PT-4] real cards through HTTP: Swift\'s hosted page, the bank\'s chec
   });
 
   it('[review S2-2] a void claimed by a server that then stopped: never sent again; past the wait it is HELD for a person', async () => {
-    payment = approve({ RiskManagement: undefined });
+    payment = unprovable();
     const p = await makeRider();
     const session = (await open(p)).json().data;
     const claimedAt = new Date();
@@ -1622,9 +1630,116 @@ describe('[PT-4] real cards through HTTP: Swift\'s hosted page, the bank\'s chec
     expect(await rowOf(session.sessionId)).toMatchObject({ status: 'FAILED', failureCode: 'VOIDED_UNPROVEN', providerVoidState: 'VOIDED' });
   });
 
-  it('[3DS · forged return] PowerTranz\'s own answer carries no 3-D Secure proof at all: never booked — the approval is voided at once', async () => {
+  it('[CARD-STAGING-TEST B2 · OWNER RULING 10 Nov 2026] PowerTranz\'s own approval carries no 3-D Secure block (as its sample and the real sandbox answer it): booked ONCE — it was voided before; the browser\'s claim of approval adds nothing', async () => {
     payment = approve({ RiskManagement: undefined });
-    const p = await makeStore(); // the approval's amount is this store's fee: only the missing proof can stop it
+    const p = await makeStore();
+    const session = (await open(p)).json().data;
+    expect(pageState((await bankFramePosts(session.sessionId, 'Y', { Approved: true, IsoResponseCode: '00' })).body)).toBe('SUCCEEDED');
+    expect((await money(p.subId)).successes).toBe(1);
+    const txnId = (await heldOf(session.sessionId))['txnId'];
+    expect(sent('/api/void').filter((b) => b['TransactionIdentifier'] === txnId)).toHaveLength(0);
+    expect(await rowOf(session.sessionId)).toMatchObject({ status: 'SUCCEEDED', providerTransactionRef: txnId, providerVoidState: null });
+  });
+
+  it('[CARD-STAGING-TEST 10 Nov 2026] the REAL return post over HTTP (x-www-form-urlencoded: Response, TransactionIdentifier, SpiToken; 3D0, Y, ECI 05): booked ONCE — and its PanToken, the cardholder\'s details and the card digits are never stored, logged or echoed', async () => {
+    const lines: string[] = [];
+    const keep = (...args: unknown[]) => { lines.push(JSON.stringify(args)); };
+    setAppLogger({ info: keep, warn: keep, error: keep, debug: keep } as never);
+    const quiet = (['log', 'info', 'warn', 'error', 'debug'] as const).map((m) => vi.spyOn(console, m).mockImplementation(keep));
+    try {
+      const p = await makeStore();
+      const session = (await open(p)).json().data;
+      const held = await heldOf(session.sessionId);
+      const post = stagingReturnPost({ txn: held['txnId']!, order: held['orderId']!, spiToken: held['spiToken']! });
+      const before = completions();
+      const res = await ptz.inject({ method: 'POST', url: merchantResponsePath(), headers: { 'content-type': 'application/x-www-form-urlencoded' }, payload: new URLSearchParams(post).toString(), remoteAddress: '203.0.113.30' });
+      expect(pageState(res.body)).toBe('SUCCEEDED');
+      expect(completions() - before).toBe(1);
+      expect((await money(p.subId)).successes).toBe(1);
+      const row = await rowOf(session.sessionId);
+      expect(row).toMatchObject({ status: 'SUCCEEDED', providerVoidState: null });
+      const observations = await app.prisma.cardObservation.findMany({ where: { sessionId: session.sessionId } });
+      expect(observations.find((o) => o.source === 'RETURN')).toMatchObject({ verdict: 'ACCEPTED' });
+      const hashes: unknown[] = [];
+      for (const k of await redis.keys(`${PTZ_PREFIX}*`)) if ((await redis.type(k)) === 'hash') hashes.push(await redis.hgetall(k));
+      const kept = JSON.stringify([row, observations, res.body, res.headers, lines, hashes]);
+      for (const secret of STAGING_RETURN_SECRETS) expect(kept, secret).not.toContain(secret);
+    } finally {
+      setAppLogger(console);
+      for (const spy of quiet) spy.mockRestore();
+    }
+  });
+
+  it('[CARD-STAGING-TEST 10 Nov 2026] PowerTranz refuses its OWN page (757 "Hosted page not found"): never "your bank\'s check" — CANCELLED, PAGE_UNAVAILABLE, a neutral page that sends the partner to another way to pay, and the operators paged (once an hour)', async () => {
+    const finance = await makeFinance();
+    const pages: string[] = [];
+    for (let i = 0; i < 2; i += 1) {
+      const p = await makeStore();
+      const session = (await open(p)).json().data;
+      const held = await heldOf(session.sessionId);
+      const post = stagingPageNotFoundPost({ txn: held['txnId']!, order: held['orderId']!, spiToken: held['spiToken']! });
+      const before = completions();
+      const res = await ptz.inject({ method: 'POST', url: merchantResponsePath(), headers: { 'content-type': 'application/x-www-form-urlencoded' }, payload: new URLSearchParams(post).toString(), remoteAddress: `203.0.113.${40 + i}` });
+      pages.push(pageState(res.body));
+      expect(res.body).toContain('Nothing was charged. Please use another way to pay in the Swift app.');
+      expect(res.body).not.toMatch(/bank|3-D Secure|757/i);
+      expect(completions()).toBe(before);
+      expect(await rowOf(session.sessionId)).toMatchObject({ status: 'CANCELLED', failureCode: 'PROVIDER_PAGE_UNAVAILABLE', paymentId: null, providerVoidState: null });
+      const view = (await call(p, 'GET', `${SESSIONS}/${session.sessionId}`)).json().data;
+      expect(view).toMatchObject({ status: 'CANCELLED', failure: 'PAGE_UNAVAILABLE' });
+      expect((await money(p.subId)).successes).toBe(0);
+    }
+    expect(pages).toEqual(['UNAVAILABLE', 'UNAVAILABLE']);
+    // The operators hear of it — once an hour per merchant account, however many partners meet it.
+    const paged = await app.prisma.notification.findMany({ where: { userId: finance.userId, dedupeKey: { startsWith: `card-page-refused:${real.binding.account}:` } } });
+    expect(paged).toHaveLength(1);
+    expect(paged[0]!.body).toMatch(/PTZ\//);
+    expect(paged[0]!.body).toContain('PAGE_REFUSED_12_757');
+  });
+
+  it('[CARD-STAGING-TEST 10 Nov 2026 · contract section 6] a card page never finished ran out of time with nothing done: EXPIRED (failure NOT_FINISHED), as the contract says — not FAILED', async () => {
+    const p = await makeStore();
+    const session = (await open(p)).json().data;
+    const row = await rowOf(session.sessionId);
+    const before = completions();
+    // The page's window has passed for the provider too (its own clock reads the page record).
+    await redis.hset(`${PTZ_PREFIX}s:${row.providerSessionRef}`, 'expiresAtMs', String(Date.now() - 1_000));
+    await serviceOf().confirm(session.sessionId, { now: new Date(row.expiresAt.getTime() + 60_000) });
+    expect(await rowOf(session.sessionId)).toMatchObject({ status: 'EXPIRED', failureCode: 'EXPIRED_UNUSED', paymentId: null });
+    expect((await call(p, 'GET', `${SESSIONS}/${session.sessionId}`)).json().data).toMatchObject({ status: 'EXPIRED', failure: 'NOT_FINISHED' });
+    expect(completions()).toBe(before);
+    expect((await money(p.subId)).successes).toBe(0);
+  });
+
+  it('[CARD-STAGING-TEST 10 Nov 2026] a void is PowerTranz\'s own transaction: its own id, when the approved answer names it, is kept beside the sale\'s (the portal\'s Void row); an answer that names only the sale keeps none', async () => {
+    const finance = await makeFinance();
+    payment = unprovable();
+    const voidId = 'b0b0b0b0-0000-4000-8000-00000000f00d';
+    voidAnswer = (b) => ({ status: 200, body: { OriginalTrxnIdentifier: b['TransactionIdentifier'], TransactionType: 4, Approved: true, TransactionIdentifier: voidId, TotalAmount: 2100, CurrencyCode: '328', IsoResponseCode: '00', ResponseMessage: 'Transaction is approved' } });
+    const p = await makeStore();
+    const session = (await open(p)).json().data;
+    expect(pageState((await bankFramePosts(session.sessionId, 'Y', {}, '203.0.113.31')).body)).toBe('FAILED');
+    const row = await rowOf(session.sessionId);
+    expect(row).toMatchObject({ status: 'FAILED', failureCode: 'VOIDED_UNPROVEN', providerVoidState: 'VOIDED', providerVoidRef: voidId });
+    expect(row.providerTransactionRef).not.toBe(voidId);
+    const admin = await ptz.inject({ method: 'GET', url: `/api/v1/admin/billing/card-sessions/${session.sessionId}`, headers: { authorization: `Bearer ${finance.token}` } });
+    expect(JSON.stringify(admin.json())).toContain(voidId);
+    // The guide's sample void answer names the sale as itself: nothing more is kept.
+    voidAnswer = adjusted;
+    payment = unprovable();
+    const q = await makeStore();
+    const other = (await open(q)).json().data;
+    await bankFramePosts(other.sessionId, 'Y', {}, '203.0.113.32');
+    expect(await rowOf(other.sessionId)).toMatchObject({ providerVoidState: 'VOIDED', providerVoidRef: null });
+    // The column holds only a confirmed void's id.
+    await expect(app.prisma.cardSession.update({ where: { id: (await rowOf(other.sessionId)).id }, data: { providerVoidRef: 'x'.repeat(65) } })).rejects.toThrow();
+    const open2 = (await open(await makeStore())).json().data;
+    await expect(app.prisma.cardSession.update({ where: { id: open2.sessionId }, data: { providerVoidRef: voidId } })).rejects.toThrow();
+  });
+
+  it('[3DS] an approval whose OWN 3-D Secure block says the cardholder was not authenticated: never booked — voided at once', async () => {
+    payment = unprovable();
+    const p = await makeStore(); // the approval's amount is this store's fee: only its own contradiction can stop it
     const session = (await open(p)).json().data;
     expect(pageState((await bankFramePosts(session.sessionId, 'Y', { Approved: true, IsoResponseCode: '00' })).body)).toBe('FAILED');
     expect((await money(p.subId)).successes).toBe(0);
@@ -1826,7 +1941,7 @@ describe('[PT-4] real cards through HTTP: Swift\'s hosted page, the bank\'s chec
       await bankFramePosts(row.id, 'Y');
       const proven = await rowOf(row.id);
       expect(proven.completionClaimedAt).not.toBeNull();
-      expect(proven.completionEvidence).toMatchObject({ Approved: true, RiskManagement: { ThreeDSecure: { AuthenticationStatus: 'Y' } } });
+      expect(proven.completionEvidence).toMatchObject({ Approved: true, IsoResponseCode: '00', TransactionType: 2 });
       await expect(app.prisma.cardSession.update({ where: { id: row.id }, data: { completionClaimedAt: new Date(Date.now() + 60_000) } })).rejects.toThrow(/claim is written once/);
       await expect(app.prisma.cardSession.update({ where: { id: row.id }, data: { completionEvidence: { forged: true } } })).rejects.toThrow(/evidence is written once/);
       await serviceOf().confirm(row.id);
@@ -1913,7 +2028,7 @@ describe('[PT-4] real cards through HTTP: Swift\'s hosted page, the bank\'s chec
       expect((await money(p.subId)).successes).toBe(0);
     });
 
-    it('BOOK refuses an approval without the provider own 3DS proof even after two-person approval', async () => {
+    it('BOOK refuses an approval Swift could not book (no stored approval of the completion) even after two-person approval', async () => {
       const finance = await makeFinance();
       const p = await makeStore();
       const { sessionId, txnId } = await heldPayment(p);
@@ -2029,8 +2144,8 @@ describe('[PT-4] real cards through HTTP: Swift\'s hosted page, the bank\'s chec
 
   // [CARD-LOOKUP] PowerTranz's transaction lookup (its written answer to Swift, 4 Nov 2026): asked ONLY when a
   // completion's outcome is not known, never as the normal flow. Booked from it only when it confirms an approved sale
-  // of THIS transaction and order at Swift's price and currency, not voided and not refunded, AND the session holds the
-  // provider's own approved completion with its 3-D Secure proof. Anything else: today's void-then-hold path, or HELD.
+  // of THIS transaction and order at Swift's price and currency, not voided and not refunded, AND the session holds
+  // PowerTranz's own approval of the completion (OWNER RULING 10 Nov 2026). Anything else: today's void-then-hold path, or HELD.
   describe('[CARD-LOOKUP] a completion whose outcome is not known is looked up, never booked without proof, never resent', () => {
     const lookups = (txnId: string) => calls.filter((c) => c.path === `/api/Transactions/${txnId}`).length;
     const allLookups = () => calls.filter((c) => c.path.startsWith('/api/Transactions/')).length;
@@ -2039,20 +2154,20 @@ describe('[PT-4] real cards through HTTP: Swift\'s hosted page, the bank\'s chec
     const from = () => `192.0.2.${(addr += 1)}`;
     const voidsOf = (txnId: string) => sent('/api/void').filter((b) => b['TransactionIdentifier'] === txnId).length;
     const refusedVoid = (): Answer => ({ status: 200, body: { Approved: false, IsoResponseCode: '12', ResponseMessage: 'Invalid transaction' } });
-    /** PowerTranz's record of the transaction, in its own field names (sec. 6; OrderSummary and VoidDateTime per its answer). */
+    /** [CARD-STAGING-TEST 10 Nov 2026] PowerTranz's record of the transaction in the REAL shape its staging sandbox answered
+     *  (fixtures/powertranz-staging-shapes.ts): no Approved, no top-level order; the order, the counts and VoidDateTime in
+     *  OrderSummary. A credit counts one refund (CreditCount, ASSUMED until a real refund record is captured). */
     const recordOf = (txnId: string, orderId: string, fields: Record<string, unknown> = {}, summary: Record<string, unknown> = {}) => (id: string): Answer =>
       id.toLowerCase() !== txnId.toLowerCase() ? { status: 404, body: 'not found' } : {
         status: 200,
-        body: {
-          TransactionType: 2, Approved: true, IsoResponseCode: '00', ResponseMessage: 'Transaction is approved.', TransactionIdentifier: txnId, OrderIdentifier: orderId,
-          TotalAmount: 2100, CurrencyCode: '328', AuthorizationCode: '123456', RRN: '000000000001',
-          OrderSummary: { SettledAmount: 0, TotalCaptureAmount: 2100, TotalCreditAmount: 0, ...summary },
-          ...fields,
-        },
+        body: stagingSaleRecord({ txn: txnId, order: orderId, top: { TotalAmount: 2100, ...fields },
+          summary: { TotalCaptureAmount: 2100, CreditCount: Number(summary['TotalCreditAmount'] ?? 0) > 0 ? 1 : 0, ...summary } }),
       };
+    /** A VoidDateTime as PowerTranz writes it: no zone, Guyana time (UTC-4). */
+    const guyanaNow = () => new Date(Date.now() - 4 * 60 * 60_000).toISOString().slice(0, 19);
     /** A Pay now whose completion was durably claimed (so it may have been sent) and whose answer is lost: the provider
-     *  store lost its record of the page. `proof`: the session already holds the provider's approved completion with its
-     *  own 3-D Secure proof (written before a crash, before the week was booked). */
+     *  store lost its record of the page. `proof`: the session already holds PowerTranz's own approval of the completion
+     *  (written before a crash, before the week was booked). */
     async function lostCompletion(p: Partner, opts: { proof: boolean }) {
       const session = (await open(p)).json().data;
       const realConfirm = real.confirm.bind(real);
@@ -2066,7 +2181,7 @@ describe('[PT-4] real cards through HTTP: Swift\'s hosted page, the bank\'s chec
       let completionEvidence: object | undefined;
       if (opts.proof) {
         const reading = readCompletion((approve()({ txnId, orderId }) as { body: unknown }).body, { txnId, orderId, amountMinor: 210_000, currencyCode: 'GYD' });
-        if (reading.status !== 'succeeded') throw new Error('fixture: the approval must carry its own proof');
+        if (reading.status !== 'succeeded') throw new Error('fixture: the approval must be bookable');
         completionEvidence = reading.completionEvidence;
       }
       const claimedAt = new Date();
@@ -2075,7 +2190,7 @@ describe('[PT-4] real cards through HTTP: Swift\'s hosted page, the bank\'s chec
       return { row, txnId, orderId, lost: new Date(claimedAt.getTime() + 36_000) };
     }
 
-    it('the lookup confirms a sale and the session holds the provider\'s own 3-D Secure proof: booked ONCE; asked again, nothing more is read, sent or booked', async () => {
+    it('the lookup confirms a sale and the session holds PowerTranz\'s own approval of the completion: booked ONCE; asked again, nothing more is read, sent or booked', async () => {
       const p = await makeStore();
       const { row, txnId, orderId, lost } = await lostCompletion(p, { proof: true });
       const before = completions();
@@ -2109,7 +2224,7 @@ describe('[PT-4] real cards through HTTP: Swift\'s hosted page, the bank\'s chec
       expect((await open(p)).statusCode).toBe(503);
     });
 
-    it('[COORD ruling] the lookup confirms a sale but the session holds NO 3-D Secure proof: never booked — today\'s void-then-hold path', async () => {
+    it('[COORD ruling · OWNER RULING 10 Nov 2026] the lookup confirms a sale but the session holds NO stored approval of the completion: never booked — today\'s void-then-hold path', async () => {
       const voided = await makeStore();
       const a = await lostCompletion(voided, { proof: false });
       lookupAnswer = recordOf(a.txnId, a.orderId);
@@ -2130,8 +2245,8 @@ describe('[PT-4] real cards through HTTP: Swift\'s hosted page, the bank\'s chec
 
     it('the lookup shows the payment reversed (a real VoidDateTime) or refunded in full: nothing booked, no void sent, HELD; finance can never BOOK or REFUND it, only record nothing taken', async () => {
       const finance = await makeFinance();
-      const voidedAt = new Date().toISOString().slice(0, 19); // PowerTranz's answer names no zone
-      for (const [fields, summary] of [[{ VoidDateTime: voidedAt }, {}], [{}, { TotalCreditAmount: 2100 }]] as const) {
+      const voidedAt = guyanaNow(); // PowerTranz's answer names no zone: UTC-4
+      for (const [fields, summary] of [[{}, { VoidDateTime: voidedAt }], [{}, { TotalCreditAmount: 2100 }]] as const) {
         const p = await makeStore();
         const { row, txnId, orderId, lost } = await lostCompletion(p, { proof: true });
         lookupAnswer = recordOf(txnId, orderId, fields, summary);
@@ -2181,7 +2296,7 @@ describe('[PT-4] real cards through HTTP: Swift\'s hosted page, the bank\'s chec
     });
 
     it('[REVIEW-2460-DELTA D2] a credit that contradicts the capture (more than captured, or nothing captured) is unreadable: never a hold without a void — today\'s void is sent', async () => {
-      for (const summary of [{ TotalCreditAmount: 2200 }, { TotalCaptureAmount: 0, TotalCreditAmount: 100 }]) {
+      for (const summary of [{ TotalCreditAmount: 2200 }, { TotalCaptureAmount: 0, TotalCreditAmount: 100 }, { TotalCreditAmount: 2100, CreditCount: 0 }]) {
         const p = await makeStore();
         const { row, txnId, orderId, lost } = await lostCompletion(p, { proof: true });
         lookupAnswer = recordOf(txnId, orderId, {}, summary);
@@ -2198,7 +2313,7 @@ describe('[PT-4] real cards through HTTP: Swift\'s hosted page, the bank\'s chec
       for (const VoidDateTime of ['0001-01-01T00:00:00', '2020-01-01T00:00:00', 'N/A', '9999-12-31T23:59:59.9999999', new Date(Date.now() + 2 * 86_400_000).toISOString().slice(0, 19)]) {
         const p = await makeStore();
         const { row, txnId, orderId, lost } = await lostCompletion(p, { proof: true });
-        lookupAnswer = recordOf(txnId, orderId, { VoidDateTime });
+        lookupAnswer = recordOf(txnId, orderId, {}, { VoidDateTime });
         expect((await serviceOf().confirm(row.id, { now: lost })).status, VoidDateTime).toBe('FAILED');
         expect(lookups(txnId)).toBe(1);
         expect(voidsOf(txnId)).toBe(1);
@@ -2304,7 +2419,7 @@ describe('[PT-4] real cards through HTTP: Swift\'s hosted page, the bank\'s chec
     });
 
     it('an approval Swift cannot book, returned twice and confirmed three times in parallel: ONE completion, ONE void, nothing booked', async () => {
-      payment = approve({ RiskManagement: undefined });
+      payment = unprovable();
       const p = await makeStore();
       const session = (await open(p)).json().data;
       const txnId = (await heldOf(session.sessionId))['txnId']!;
@@ -2319,7 +2434,7 @@ describe('[PT-4] real cards through HTTP: Swift\'s hosted page, the bank\'s chec
     });
 
     it('a confirmation while another one\'s void is in flight sends no second void: the database claim holds, not only the provider\'s own', async () => {
-      payment = approve({ RiskManagement: undefined });
+      payment = unprovable();
       const p = await makeStore();
       const session = (await open(p)).json().data;
       const txnId = (await heldOf(session.sessionId))['txnId']!;
@@ -2395,7 +2510,7 @@ describe('[PT-4] real cards through HTTP: Swift\'s hosted page, the bank\'s chec
       expect((await rowOf(session.sessionId)).status).toBe('OPEN');
       expect((await money(p.subId)).successes).toBe(1);
       // Even an answer Swift would void, returned and confirmed in parallel: the session is SUCCEEDED, nothing else happens.
-      payment = approve({ RiskManagement: undefined });
+      payment = unprovable();
       const before = completions();
       const pages = await Promise.all([bankFramePosts(session.sessionId, 'Y'), serviceOf().confirm(session.sessionId), serviceOf().confirm(session.sessionId, { now: new Date(row.expiresAt.getTime() + 60_000) })]);
       expect(pageState(pages[0].body)).toBe('SUCCEEDED');
@@ -2479,16 +2594,13 @@ describe('[PT-4] real cards through HTTP: Swift\'s hosted page, the bank\'s chec
      *  address (the benchmarking range, RFC 2544). */
     let addr = 0;
     const from = () => `198.18.0.${(addr += 1)}`;
-    /** The original Sale's record, in PowerTranz's own field names (sec. 6; OrderSummary and VoidDateTime per its answers). */
+    /** [CARD-STAGING-TEST 10 Nov 2026] The original Sale's record in the REAL shape (fixtures/powertranz-staging-shapes.ts),
+     *  settled. A refund's own record is not captured yet: a credit counts one refund (CreditCount, ASSUMED). */
     const recordOf = (txnId: string, sessionId: string, fields: Record<string, unknown> = {}, summary: Record<string, unknown> = {}) => (id: string): Answer =>
       id.toLowerCase() !== txnId.toLowerCase() ? { status: 404, body: 'not found' } : {
         status: 200,
-        body: {
-          TransactionType: 2, Approved: true, IsoResponseCode: '00', ResponseMessage: 'Transaction is approved.', TransactionIdentifier: txnId, OrderIdentifier: `SWIFT-${sessionId}`,
-          TotalAmount: 2100, CurrencyCode: '328', AuthorizationCode: '123456', RRN: '000000000001',
-          OrderSummary: { SettledAmount: 2100, TotalCaptureAmount: 2100, TotalCreditAmount: 0, ...summary },
-          ...fields,
-        },
+        body: stagingSaleRecord({ txn: txnId, order: `SWIFT-${sessionId}`, top: { TotalAmount: 2100, ...fields },
+          summary: { SettledAmount: 2100, TotalCaptureAmount: 2100, CreditCount: Number(summary['TotalCreditAmount'] ?? 0) > 0 ? 1 : 0, ...summary } }),
       };
     const check = (admin: { token: string }, sessionId: string) => injectWithApproval(ptz, {
       method: 'POST', url: `/api/v1/admin/billing/card-sessions/${sessionId}/check-provider`,
@@ -2550,11 +2662,11 @@ describe('[PT-4] real cards through HTTP: Swift\'s hosted page, the bank\'s chec
       const finance = await makeFinance();
       const p = await makeStore();
       const a = await refundLost(finance, p);
-      lookupAnswer = recordOf(a.txnId, a.sessionId, { VoidDateTime: new Date().toISOString().slice(0, 19) });
+      lookupAnswer = recordOf(a.txnId, a.sessionId, {}, { VoidDateTime: new Date(Date.now() - 4 * 60 * 60_000).toISOString().slice(0, 19) });
       expect((await check(finance, a.sessionId)).json().data).toMatchObject({ check: 'REFUNDED', reason: 'LOOKUP_VOIDED', resolution: 'REFUNDED' });
       const q = await makeStore();
       const b = await refundLost(finance, q);
-      lookupAnswer = recordOf(b.txnId, b.sessionId, { VoidDateTime: '0001-01-01T00:00:00' });
+      lookupAnswer = recordOf(b.txnId, b.sessionId, {}, { VoidDateTime: '0001-01-01T00:00:00' });
       expect((await check(finance, b.sessionId)).json().data).toMatchObject({ check: 'NOT_KNOWN', reason: 'LOOKUP_UNREADABLE', status: 'HELD', resolution: null });
       expect(await rowOf(b.sessionId)).toMatchObject({ status: 'HELD', providerRefundState: 'UNKNOWN', failureCode: 'APPROVED_UNPROVEN' });
       expect(refundsOf(b.txnId)).toBe(1);
@@ -2731,7 +2843,7 @@ describe('[PT-4] real cards through HTTP: Swift\'s hosted page, the bank\'s chec
       expect(partner.statusCode).toBe(403);
     });
 
-    it('BOOK: only the recorded transaction, only this week\'s exact price; missing provider 3DS proof still refuses BOOK', async () => {
+    it('BOOK: only the recorded transaction, only this week\'s exact price; no stored approval of the completion still refuses BOOK', async () => {
       const finance = await makeFinance();
       const p = await makeStore();
       const { sessionId, txnId } = await heldPayment(p);
@@ -2748,7 +2860,7 @@ describe('[PT-4] real cards through HTTP: Swift\'s hosted page, the bank\'s chec
       expect(ACTIVE_CONFIRMATION_STATES).toContain((await confirmationOf(sessionId))?.status);
     });
 
-    it('BOOK with the provider\'s own approved completion and its 3-D Secure proof: only the recorded transaction, only this week\'s exact price; then the week is booked ONCE', async () => {
+    it('BOOK with PowerTranz\'s own approval of the completion, stored when it arrived: only the recorded transaction, only this week\'s exact price; then the week is booked ONCE', async () => {
       const finance = await makeFinance();
       const p = await makeStore();
       const { sessionId, txnId } = await verifiedHeldPayment(p);

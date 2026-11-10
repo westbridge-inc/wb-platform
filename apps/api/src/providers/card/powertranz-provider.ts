@@ -45,21 +45,33 @@ import {
 //      may only STOP Swift from completing (a result that is not 3D0 with Y/A,
 //      or that names another page) — it can never start money, mark anything
 //      paid, or change the session [C5].
+//      [CARD-STAGING-TEST 10 Nov 2026] PowerTranz's real sandbox posts it as an
+//      x-www-form-urlencoded form of THREE fields: Response (the whole result,
+//      as JSON text), TransactionIdentifier and SpiToken. The guide's samples
+//      show the result itself (its fields at the top level); both are read
+//      (readAuthenticationReturn), and the two copies of an identifier must agree.
 //   3. confirm: the merchant completes with POST /spi/payment and the SpiToken
 //      (sec. 2.2 1.7, 7.3). Before that call "there has been no financial
 //      authorization and no funds have been held" (sec. 7.3), and PowerTranz
-//      itself refuses a completion whose authentication was N or R (sec. 8.3).
-//      The answer to that server-to-server call is the ONLY money truth, and
-//      Swift books it only when it is Approved with IsoResponseCode "00" for
-//      THIS transaction AND its OWN 3-D Secure fields (RiskManagement.
-//      ThreeDSecure, listed in sec. 6) show the payment
-//      was authenticated (AuthenticationStatus Y or A, sec. 8.3; not a
-//      failed / non-3DS ECI, sec. 8.4). An approval without that proof is
-//      unknown: a person looks, nothing is booked, nothing is dropped. Swift
-//      sends the completion at most ONCE per page (an atomic claim), and never
-//      repeats it (Appendix 1, 787 "Duplicate call received"). When its outcome
-//      is not known (no answer, an unreadable one), Swift reads the
-//      transaction's record instead (5. below), never sends it again.
+//      itself refuses a completion whose authentication was N or R (sec. 8.3;
+//      the HPP guide: "The payment completion request will be declined by
+//      default if the 3DS authentication is unsuccessful"). The Sale is always
+//      sent with ThreeDSecure true, and a page whose record does not say so is
+//      never completed. The answer to that server-to-server call is the ONLY
+//      money truth. [OWNER RULING 10 Nov 2026] Swift books it only on
+//      PowerTranz's own APPROVAL of the completion: Approved with
+//      IsoResponseCode "00" for THIS transaction and order, a Sale, at Swift's
+//      exact amount and currency. PowerTranz's own sample of that answer
+//      carries no RiskManagement, and the real sandbox's carries none either,
+//      so none is required; one that IS present and says the cardholder was
+//      not authenticated contradicts the approval and is never booked. The
+//      browser's 3D0 / Y / ECI is untrusted context only, never enough. An
+//      approval Swift cannot book is voided at once (or held for a person),
+//      never dropped. Swift sends the completion at most ONCE per page (an
+//      atomic claim), and never repeats it (Appendix 1, 787 "Duplicate call
+//      received"). When its outcome is not known (no answer, an unreadable
+//      one), Swift reads the transaction's record instead (5. below), never
+//      sends it again.
 //   4. A Sale settles automatically (sec. 2.2 1.9, 7.4). Refund (sec. 5.2,
 //      7.5) and void (sec. 5.2, 7.6) take the ORIGINAL TransactionIdentifier.
 //   5. [CARD-LOOKUP] The transaction lookup is not in guide v2.7; it comes from
@@ -69,6 +81,14 @@ import {
 //      as the normal flow; VoidDateTime present = reversed; OrderSummary has
 //      SettledAmount, TotalCaptureAmount, TotalCreditAmount. lookupTransaction
 //      reads it strictly; the service decides what it may book.
+//      [CARD-STAGING-TEST 10 Nov 2026] The REAL records (staging sandbox):
+//      no Approved and no top-level OrderIdentifier at all; the order is
+//      OrderSummary.OrderIdentifier, and VoidDateTime sits ONLY in
+//      OrderSummary (IsoResponseCode stays "00" after a void, and
+//      TotalCaptureAmount keeps the sale's amount); TransactionType is a
+//      number; dates carry no zone (UTC-4); a transaction PowerTranz does not
+//      know answers HTTP 204 with no body. readTransactionRecord reads that
+//      shape (see there).
 //   6. [CARD-REFUND-LOOKUP] PowerTranz's written answer to Swift (9 Nov 2026):
 //      the lookup "is supported for all transaction types", and refunds
 //      (partial ones and Merchant Portal ones included) are supported. So a
@@ -84,22 +104,22 @@ import {
 //     false, no ENROLL page is made, and an off-session charge answers
 //     requires_action (no penalty, "Confirm your card") without any call;
 //   - a card's last 4 digits or expiry in any response (sec. 6);
-//   - whether the transaction lookup (5.) carries the 3-D Secure proof
-//     (RiskManagement.ThreeDSecure): until PowerTranz says, the lookup alone
-//     never books;
+//   - the 3-D Secure proof on the transaction lookup (5.): the real records
+//     carry none, so the lookup alone never books — the service also needs the
+//     completion's own approval, stored when it arrived (readCompletion);
 //   - whether OrderSummary.TotalCreditAmount counts only APPROVED refunds (never
 //     a pending, declined or reversed attempt): Swift ASSUMES it does (6.), and
-//     real staging records pin it before cards go live;
+//     real staging records of refunds pin it before cards go live (the records
+//     of 10 Nov 2026 hold a sale and a void, no refund yet);
 //   - whether the original transaction's record lists the refunds made on it,
 //     each with its own TransactionIdentifier (asked): Swift reads no refund
 //     id from it. A refund confirmed by the lookup (6.) is recorded under a
 //     reference Swift makes from the original transaction (ASSUMED enough for
 //     the books until PowerTranz says; the portal shows the refund's own id);
-//   - the lookup's other fields: its top-level TransactionIdentifier,
-//     OrderIdentifier, TransactionType, Approved, IsoResponseCode and
-//     CurrencyCode, the unit of the OrderSummary amounts, and what VoidDateTime
-//     holds on a transaction that was not voided. Swift ASSUMES the sec. 6
-//     names and major units, and reads anything else as unknown (asked).
+//   - the time zone of the record's dates: none is named; the staging records
+//     of 10 Nov 2026 read as UTC-4 (Guyana). Bermuda, PowerTranz's home, is
+//     also UTC-4 in November but UTC-3 in summer, so a summer hour is not
+//     pinned (asked); every date window keeps a day's margin (VOID_DATE_SKEW_MS).
 // Any answer the guide does not document is `unknown`, never success.
 //
 // Secrets (sec. 4 headers) come from the secrets store through the process
@@ -133,9 +153,15 @@ const LOOKUP_GATE_TTL_MS = 24 * 60 * 60_000;
  *  shorter than the other calls, so the page answers well inside any proxy's patience. */
 export const LOOKUP_TIMEOUT_MS = 10_000;
 /** [REVIEW-2460-A S2-1 · B B2 · DELTA D1] A VoidDateTime counts only when it is a real date between the session's start
- *  and the read, each widened by this margin: the answer names no time zone, and a day covers every zone. Earlier
- *  dates ("0001-01-01", a default) and later ones ("9999-12-31", a "no date" maximum) are not a reversal. */
+ *  and the read, each widened by this margin: the answer names no time zone (read as UTC-4, RECORD_ZONE), and a day
+ *  covers any zone error. Earlier dates ("0001-01-01", a default) and later ones ("9999-12-31", a "no date" maximum)
+ *  are not a reversal. */
 export const VOID_DATE_SKEW_MS = 24 * 60 * 60_000;
+/** [CARD-STAGING-TEST 10 Nov 2026] The zone PowerTranz's record dates are written in (they name none): UTC-4. The
+ *  staging records were read at 05:04Z and dated 01:03 (a void Swift sent moments before). Guyana is UTC-4 all year;
+ *  Bermuda (PowerTranz's home) is UTC-4 in winter and UTC-3 in summer, which the evidence cannot tell apart (asked):
+ *  VOID_DATE_SKEW_MS covers that hour. */
+export const RECORD_ZONE = '-04:00';
 
 const REQUEST_TIMEOUT_MS = 15_000;
 /** The completion goes on to the issuing bank (sec. 2.2 1.7): give it longer. */
@@ -151,6 +177,16 @@ const RECORD_RETAIN_MS = 30 * 24 * 60 * 60_000;
  *  that the page set up: it is abandoned at once and kept one hour, never the
  *  30-day card record retention. Nothing reads it afterwards. */
 export const SELF_CHECK_RECORD_TTL_MS = 60 * 60_000;
+/** The sandbox self-check's preprocessing line: what SP4 proves, and no more (selfCheck). */
+export const SELF_CHECK_PAGE_LINE = 'a sale with this hosted page is preprocessed (SP4)';
+/** [CARD-STAGING-TEST 10 Nov 2026] The sandbox self-check's page line: the page itself, opened as the partner's
+ *  browser opens it (openHostedPage). SP4 alone said OK for a page set PowerTranz then refused (757). */
+export const SELF_CHECK_PAGE_OPENS: Readonly<Record<HostedPageCheck, string>> = {
+  shown: 'the hosted payment page opens (PowerTranz shows its card form)',
+  not_found: 'the hosted payment page opens (PowerTranz cannot find this page: check POWERTRANZ_PAGE_SET, with PTZ/, and POWERTRANZ_PAGE_NAME)',
+  refused: 'the hosted payment page opens (PowerTranz refused the page)',
+  could_not_tell: 'the hosted payment page opens (could not tell: no readable page came back)',
+};
 
 /** ISO 4217 numeric codes (sec. 5.1 CurrencyCode "Must use numeric currency code (ISO 4217)"). */
 export const CURRENCY_NUMERIC: Readonly<Record<string, string>> = {
@@ -158,6 +194,9 @@ export const CURRENCY_NUMERIC: Readonly<Record<string, string>> = {
 };
 const CURRENCY_ALPHA: Readonly<Record<string, string>> = Object.fromEntries(Object.entries(CURRENCY_NUMERIC).map(([a, n]) => [n, a]));
 
+/** sec. 5.1 ThreeDSecure: every Sale Swift sends asks for 3-D Secure (OWNER RULING 10 Nov 2026: the completion's
+ *  approval books only because the Sale was a 3-D Secure one; confirm checks the page record says so). */
+const SALE_THREE_D_SECURE = true as const;
 /** sec. 5.1 ExtendedData.ThreeDSecure.ChallengeWindowSize: 5 = 100% (the page fills the phone or the card frame). */
 const CHALLENGE_WINDOW_FULL = 5;
 /** sec. 5.1 ChallengeIndicator 01 = no preference (the issuer decides, sec. 9.3). */
@@ -179,7 +218,7 @@ export interface PowerTranzConfig {
   password: string;
   /** sec. 4 PowerTranz-GatewayKey (C, GUID 36): "Do not send until value is provided by PowerTranz". */
   gatewayKey?: string;
-  /** sec. 5.1 ExtendedData.HostedPage.PageSet / PageName (AN 50 each; portal pages carry the "PTZ/" prefix). */
+  /** sec. 5.1 ExtendedData.HostedPage.PageSet / PageName (AN 50 each). The set always starts with "PTZ/" (PAGE_SET_PREFIX). */
   pageSet: string;
   pageName: string;
   /** Swift's public API origin: its hosted card page and MerchantResponseUrl live there. */
@@ -187,6 +226,16 @@ export interface PowerTranzConfig {
 }
 
 const ACCOUNT_LABEL = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/;
+/**
+ * PowerTranz's hosted page guides (SPI-HPP and SPI-3DS-HPP, "Note !"): "Pages created in Powertranz Merchant Portal
+ * MUST contain the 'PTZ/' prefix in the Page Set request. If this prefix is missing, the transaction will fail, and
+ * the Hosted Payment Page will not be loaded correctly." Every hosted page is made in the portal (the same guides), so
+ * the set is always written with it — e.g. the portal's set SWIFT is written PTZ/SWIFT. [CARD-STAGING-TEST 10 Nov
+ * 2026] Without it the sandbox preprocessed the Sale (SP4) and then answered the page itself with IsoResponseCode 12,
+ * error 757 "Hosted page not found". Swift never adds the prefix for the owner (what is set is what is sent): a set
+ * without it is refused, naming the setting, at the setup tool, the self-check and the boot.
+ */
+export const PAGE_SET_PREFIX = 'PTZ/';
 const GUID = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
 
 /** The environment names this provider reads (the setup tool asks for exactly these). */
@@ -258,6 +307,9 @@ export function powerTranzConfigFromEnv(env: Record<string, string | undefined> 
   if (pageSet.length < 1 || pageSet.length > 50 || pageName.length < 1 || pageName.length > 50) {
     throw new PowerTranzConfigError('POWERTRANZ_PAGE_SET and POWERTRANZ_PAGE_NAME are required (sec. 5.1, at most 50 characters): cards are typed only on the hosted page');
   }
+  if (!pageSet.startsWith(PAGE_SET_PREFIX) || pageSet.trim().length <= PAGE_SET_PREFIX.length || pageSet !== pageSet.trim()) {
+    throw new PowerTranzConfigError('POWERTRANZ_PAGE_SET must start with PTZ/ and then the set\'s name, as the merchant portal\'s pages are sent (PowerTranz\'s hosted page guide; without it the page is not found, error 757): e.g. PTZ/SWIFT for the set SWIFT');
+  }
   const publicBaseUrl = httpsOrigin(env['API_PUBLIC_URL'] ?? '', 'API_PUBLIC_URL (where the bank sends the browser back)');
   return { account, environment, apiRoot, powerTranzId, password, ...(gatewayKey ? { gatewayKey } : {}), pageSet, pageName, publicBaseUrl };
 }
@@ -301,45 +353,156 @@ export function alphaOfCurrency(value: unknown): string | null {
 
 const sha256 = (value: string) => createHash('sha256').update(value).digest('hex');
 
-/** The fields a payload may carry that are tokens or personal data: digested, never kept in a digest's preimage in the clear. */
-const BLINDED = new Set(['SpiToken', 'PanToken', 'RedirectData', 'BillingAddress', 'ShippingAddress', 'CardholderName', 'Cavv', 'Xid', 'FcDetails']);
+/** The fields a payload may carry that are tokens or personal data: digested, never kept in a digest's preimage in the
+ *  clear. [CARD-STAGING-TEST 10 Nov 2026] The real return post also carries CardSuffix (the card's last digits) and
+ *  RiskManagement.ThreeDSecure.CardholderInfo (the issuer's message to the cardholder), beside PanToken and BillingAddress. */
+const BLINDED = new Set(['SpiToken', 'PanToken', 'RedirectData', 'BillingAddress', 'ShippingAddress', 'CardholderName', 'Cavv', 'Xid', 'FcDetails',
+  'CardSuffix', 'CardholderInfo']);
+/** A provider payload with its tokens and personal fields replaced by their own digests: the only form of a payload
+ *  that is ever digested (and nothing of it is ever stored but the digest). */
+export function blinded(payload: unknown): unknown {
+  if (Array.isArray(payload)) return payload.map(blinded);
+  if (isObject(payload)) {
+    return Object.fromEntries(Object.entries(payload).map(([k, v]) => [k, BLINDED.has(k) ? sha256(JSON.stringify(v ?? null)) : blinded(v)]));
+  }
+  return payload;
+}
+
 /** The sha256 of a provider payload with its tokens and personal fields replaced by their own digests. */
 export function blindedDigest(payload: unknown): string {
-  const blind = (value: unknown): unknown => {
-    if (Array.isArray(value)) return value.map(blind);
-    if (isObject(value)) {
-      return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, BLINDED.has(k) ? sha256(JSON.stringify(v ?? null)) : blind(v)]));
+  return rawDigest(blinded(payload));
+}
+
+function jsonObject(text: string): Record<string, unknown> | null {
+  try {
+    const value: unknown = JSON.parse(text);
+    return isObject(value) ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+/** [CARD-STAGING-TEST 10 Nov 2026] The real return post's field that holds the whole result as JSON text. */
+export const RETURN_RESPONSE_FIELD = 'Response';
+/** The identifiers the real post carries both beside "Response" and inside it: the two copies must agree. */
+const RETURN_ECHOES = ['SpiToken', 'TransactionIdentifier', 'OrderIdentifier'] as const;
+/** What says "this is a result" in the guide's own samples (sec. 2.2 1.6; HPP guides). */
+const looksLikeResult = (o: Record<string, unknown>) => 'IsoResponseCode' in o || 'SpiToken' in o || 'RiskManagement' in o;
+
+export type AuthenticationReading = { result: Record<string, unknown>; note?: undefined } | { result: null; note: string };
+
+/**
+ * The 3-D Secure authentication result the browser brought back to MerchantResponseUrl (sec. 2.2 1.6). Two shapes:
+ *   - [CARD-STAGING-TEST 10 Nov 2026] the REAL sandbox post: an x-www-form-urlencoded form of three fields, Response
+ *     (the whole result as JSON text: IsoResponseCode, RiskManagement.ThreeDSecure, the identifiers, PanToken,
+ *     BillingAddress ...), TransactionIdentifier and SpiToken. The result is read from Response. Its SpiToken,
+ *     TransactionIdentifier and OrderIdentifier must equal the copies beside it whenever both are there (an
+ *     identifier only beside it is carried into the result, so it is still checked against the page Swift holds);
+ *     an identifier inside it that is not text is unreadable. A Response that is not a JSON object, or a post that
+ *     ALSO carries a result beside it (IsoResponseCode or RiskManagement), is unreadable — never a result;
+ *   - PowerTranz's documented samples (the HPP guides; sec. 2.2 1.6, Appendix 2: posted "as Json"): the result's
+ *     fields at the top level; nested objects arrive as JSON text (the return route flattens them).
+ * Anything else reads as no result, with a note saying why. A result grants nothing: authenticationDecision.
+ */
+export function readAuthenticationReturn(params: Readonly<Record<string, string>>): AuthenticationReading {
+  const top: Record<string, unknown> = { ...params };
+  const response = params[RETURN_RESPONSE_FIELD];
+  if (response !== undefined) {
+    const inner = jsonObject(response);
+    if (!inner || !looksLikeResult(inner)) return { result: null, note: 'RETURN_RESPONSE_UNREADABLE' };
+    if ('IsoResponseCode' in top || 'RiskManagement' in top) return { result: null, note: 'RETURN_RESPONSE_AMBIGUOUS' };
+    const result: Record<string, unknown> = { ...inner };
+    for (const name of RETURN_ECHOES) {
+      const outer = params[name];
+      const own = inner[name];
+      if (own !== undefined && own !== null && typeof own !== 'string') return { result: null, note: `RETURN_${name.toUpperCase()}_UNREADABLE` };
+      if (outer === undefined) continue;
+      if (typeof own !== 'string') { result[name] = outer; continue; }
+      const same = name === 'TransactionIdentifier' ? own.toLowerCase() === outer.toLowerCase() : name === 'OrderIdentifier' ? own.trim() === outer.trim() : own === outer;
+      if (!same) return { result: null, note: `RETURN_${name.toUpperCase()}_DISAGREES` };
     }
-    return value;
+    return { result };
+  }
+  if (looksLikeResult(top)) {
+    const rm = str(top['RiskManagement']);
+    return { result: { ...top, ...(rm !== undefined ? { RiskManagement: jsonObject(rm) ?? rm } : {}) } };
+  }
+  return { result: null, note: 'NO_AUTHENTICATION_RESULT' };
+}
+
+// ---------------------------------------------------------------------------
+// [CARD-STAGING-TEST 10 Nov 2026] Opening the hosted page, for the owner's sandbox self-check only (never a payment).
+// PowerTranz's guides: RedirectData is "an HTML form accompanied by JavaScript code" that the cardholder's browser
+// posts to PowerTranz, which then shows the hosted page (their samples: one <form action=... method="POST"> of hidden
+// inputs and a script that submits it). The staging test saw exactly that: the form posts to the API root's
+// /api/spi/Conductor, which answers the card form (CardholderName, CardNo, ...) — or, for a page set PowerTranz does
+// not know, a page that posts straight back to MerchantResponseUrl the three-field result of section 7 with
+// Errors 757 "Hosted page not found". Swift does what the browser does, once, and reads which of the two came back.
+// Anything else is "could not tell", a FAIL: never an OK.
+// ---------------------------------------------------------------------------
+
+export type HostedPageCheck = 'shown' | 'not_found' | 'refused' | 'could_not_tell';
+
+const HTML_ENTITIES: Readonly<Record<string, string>> = { amp: '&', quot: '"', apos: "'", lt: '<', gt: '>', '#39': "'", '#34': '"', '#x27': "'", '#x22': '"' };
+function htmlText(text: string): string {
+  return text.replace(/&(amp|quot|apos|lt|gt|#39|#34|#x27|#x22);/gi, (_m, name: string) => HTML_ENTITIES[name.toLowerCase()] ?? _m);
+}
+function htmlAttr(attrs: string, name: string): string | undefined {
+  const m = new RegExp(`(?:^|\\s)${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)'|([^\\s>]+))`, 'i').exec(attrs);
+  return m ? htmlText(m[1] ?? m[2] ?? m[3] ?? '') : undefined;
+}
+type HtmlForm = { action: string | undefined; method: string; inputs: Array<[string, string]> };
+function htmlForms(html: string): HtmlForm[] {
+  return [...html.matchAll(/<form\b([^>]*)>([\s\S]*?)<\/form>/gi)].map((m) => ({
+    action: htmlAttr(m[1] ?? '', 'action'),
+    method: (htmlAttr(m[1] ?? '', 'method') ?? 'GET').toUpperCase(),
+    inputs: [...(m[2] ?? '').matchAll(/<input\b([^>]*)>/gi)]
+      .map((i): [string, string] => [htmlAttr(i[1] ?? '', 'name') ?? '', htmlAttr(i[1] ?? '', 'value') ?? ''])
+      .filter(([name]) => name !== ''),
+  }));
+}
+
+/** The one POST form RedirectData carries (its action and fields), or null when it is not exactly that. */
+export function redirectForm(html: string): { action: string; fields: Array<[string, string]> } | null {
+  const forms = htmlForms(html);
+  if (forms.length !== 1 || !forms[0]!.action || forms[0]!.method !== 'POST') return null;
+  return { action: forms[0]!.action, fields: forms[0]!.inputs };
+}
+
+/** What PowerTranz answered the opened page with: its card form (`shown`), or a post straight back to the return
+ *  address (`not_found` for error 757, `refused` otherwise); anything else `could_not_tell`. */
+export function hostedPageAnswer(html: string, returnUrl: string, base: string): HostedPageCheck {
+  let back: URL;
+  try { back = new URL(returnUrl); } catch { return 'could_not_tell'; }
+  const toReturn = (action: string | undefined) => {
+    try {
+      const at = new URL(action ?? '', base);
+      return at.origin === back.origin && at.pathname === back.pathname;
+    } catch { return false; }
   };
-  return rawDigest(blind(payload));
+  for (const form of htmlForms(html)) {
+    const response = form.inputs.find(([name]) => name === RETURN_RESPONSE_FIELD);
+    const result = response ? jsonObject(response[1]) : null;
+    if (!toReturn(form.action) && !result) continue;
+    const codes = result && Array.isArray(result['Errors']) ? result['Errors'].filter(isObject).map((e) => String(e['Code'] ?? '')) : [];
+    return codes.includes('757') ? 'not_found' : 'refused';
+  }
+  return /<input\b/i.test(html) ? 'shown' : 'could_not_tell';
+}
+
+/** The result alone (null when there is none): readAuthenticationReturn. */
+export function authenticationResultOf(params: Readonly<Record<string, string>>): Record<string, unknown> | null {
+  return readAuthenticationReturn(params).result;
 }
 
 /**
- * The 3-D Secure authentication result the browser brought back (sec. 2.2 1.6,
- * Appendix 2: the iframe posts it "as Json"). It may arrive as top-level
- * fields, or as one field holding the JSON text; nested objects arrive as
- * JSON text (the return route flattens them). Null when nothing in the return
- * reads as an authentication response.
+ * [CARD-STAGING-TEST 10 Nov 2026] What a return's digest is taken of: every field, a field holding JSON read as its
+ * object (so the tokens and personal data INSIDE the real post's Response — PanToken, BillingAddress, CardSuffix,
+ * CardholderInfo, Cavv, Xid, SpiToken — are blinded like any other), and a Response that is not JSON replaced by its own
+ * digest. Only the sha256 of this is ever kept; the post itself is never stored, logged or echoed.
  */
-export function authenticationResultOf(params: Readonly<Record<string, string>>): Record<string, unknown> | null {
-  const parse = (text: string): Record<string, unknown> | null => {
-    try {
-      const value: unknown = JSON.parse(text);
-      return isObject(value) ? value : null;
-    } catch {
-      return null;
-    }
-  };
-  const looksLikeResult = (o: Record<string, unknown>) => 'IsoResponseCode' in o || 'SpiToken' in o || 'RiskManagement' in o;
-  const top: Record<string, unknown> = {};
-  for (const [k, v] of Object.entries(params)) top[k] = v;
-  if (looksLikeResult(top)) {
-    const rm = str(top['RiskManagement']);
-    return { ...top, ...(rm !== undefined ? { RiskManagement: parse(rm) ?? rm } : {}) };
-  }
-  const nested = Object.values(params).map(parse).filter((o): o is Record<string, unknown> => o !== null && looksLikeResult(o));
-  return nested.length === 1 ? nested[0]! : null;
+export function returnEvidence(params: Readonly<Record<string, string>>): unknown {
+  return blinded(Object.fromEntries(Object.entries(params).map(([k, v]) => [k, jsonObject(v) ?? (k === RETURN_RESPONSE_FIELD ? sha256(v) : v)])));
 }
 
 export type AuthenticationDecision =
@@ -378,7 +541,17 @@ export function authenticationDecision(
   const code = str(tds?.['ResponseCode']) ?? str(result['IsoResponseCode']);
   const status = str(tds?.['AuthenticationStatus']);
   if (code === '3D0' && (status === 'Y' || status === 'A')) return { proceed: true, note: `3D0_${status}` };
-  return { proceed: false, note: `NOT_AUTHENTICATED_${code ?? 'NONE'}_${status ?? 'NONE'}` };
+  // The browser's words are untrusted: only a short code of letters and digits reaches the note (and its failure reason).
+  const shown = (v: string | undefined) => (v ?? '').replace(/[^A-Za-z0-9]/g, '').slice(0, 4) || 'NONE';
+  // [CARD-STAGING-TEST 10 Nov 2026] PowerTranz refusing its OWN page is no bank check: a set-up error (the page set
+  // without PTZ/ came back as IsoResponseCode 12 with Errors 757 "Hosted page not found", and no 3-D Secure block).
+  // Never shown to the partner as "your bank's check didn't go through": PAGE_REFUSED (confirm, failureCodeOf).
+  const iso = str(result['IsoResponseCode']);
+  const errors = Array.isArray(result['Errors']) ? result['Errors'].filter(isObject).map((e) => shown(String(e['Code'] ?? ''))).filter((c) => c !== 'NONE') : [];
+  if (!tds && (errors.length > 0 || (iso !== undefined && !/^(?:3D|HP)\d$/.test(iso)))) {
+    return { proceed: false, note: `PAGE_REFUSED_${shown(iso)}${errors.length ? `_${errors.slice(0, 3).join('_')}` : ''}` };
+  }
+  return { proceed: false, note: `NOT_AUTHENTICATED_${shown(code)}_${shown(status)}` };
 }
 
 /**
@@ -414,23 +587,28 @@ function eciOf(raw: unknown): string | undefined {
 }
 
 /**
- * The 3-D Secure proof carried by PowerTranz's OWN server-side answer (sec. 6:
- * RiskManagement.ThreeDSecure; the completion sample omits it): authenticated
- * only when AuthenticationStatus is Y or A (sec. 8.3: N or R is never
- * completed) AND the ECI is a success or attempt value for the card's brand
- * (sec. 8.4). Sec. 5 lists the ECI as "Provided if AuthenticationStatus is Y or
- * A", so a Y or A without one is not proof: held for a person, never booked.
- * Nothing the browser sent counts here.
+ * [OWNER RULING 10 Nov 2026 · CARD-STAGING-TEST B2] PowerTranz's OWN completion answer is NOT required to carry 3-D
+ * Secure fields: its documented sample (the HPP guides, "/Payment Response") has no RiskManagement, the real sandbox
+ * answer had none, and PowerTranz declines a completion whose authentication failed ("declined by default", sec. 8.3).
+ * Requiring them voided a real approval. But when the answer DOES carry RiskManagement.ThreeDSecure, it must not
+ * contradict the approval: an AuthenticationStatus other than Y or A (sec. 8.3), or an ECI that is not a success or
+ * attempt value for the card's brand (sec. 8.4), or a block that cannot be read. Returns that contradiction's note,
+ * or null. Nothing the browser sent counts here.
  */
-export function serverAuthentication(json: Record<string, unknown>): { authenticated: boolean; note: string; eci?: string } {
-  const rm = isObject(json['RiskManagement']) ? json['RiskManagement'] : null;
-  const tds = rm && isObject(rm['ThreeDSecure']) ? rm['ThreeDSecure'] : null;
-  const status = str(tds?.['AuthenticationStatus']);
-  if (status !== 'Y' && status !== 'A') return { authenticated: false, note: `SERVER_3DS_${status ?? 'ABSENT'}` };
-  const eci = eciOf(tds?.['Eci']);
-  if (eci === undefined) return { authenticated: false, note: 'SERVER_ECI_ABSENT' };
-  if (!eciSetFor(json['CardBrand']).has(eci)) return { authenticated: false, note: `SERVER_ECI_${eci.replace(/[^A-Za-z0-9]/g, '').slice(0, 4) || 'UNREADABLE'}` };
-  return { authenticated: true, note: `SERVER_3DS_${status}`, eci };
+export function serverAuthenticationContradiction(json: Record<string, unknown>): string | null {
+  const rm = json['RiskManagement'];
+  if (rm === undefined || rm === null) return null;
+  const tds = isObject(rm) ? rm['ThreeDSecure'] : rm;
+  if (tds === undefined || tds === null) return null;
+  if (!isObject(tds)) return 'SERVER_3DS_UNREADABLE';
+  const shown = (v: unknown) => String(v).replace(/[^A-Za-z0-9]/g, '').slice(0, 4) || 'UNREADABLE';
+  const status = tds['AuthenticationStatus'];
+  if (status !== undefined && status !== null && status !== 'Y' && status !== 'A') return `SERVER_3DS_${shown(status)}`;
+  const raw = tds['Eci'];
+  if (raw === undefined || raw === null) return null;
+  const eci = eciOf(raw);
+  if (eci === undefined || !eciSetFor(json['CardBrand']).has(eci)) return `SERVER_ECI_${shown(raw)}`;
+  return null;
 }
 
 /** Appendix 1 numeric response codes that say an earlier identical call may have been taken. */
@@ -460,8 +638,13 @@ export interface HeldCompletion { txnId: string; orderId: string; amountMinor: n
  *   - succeeded ONLY on Approved true AND IsoResponseCode "00" AND naming THIS
  *     page (its TransactionIdentifier — ours or as the original —, its
  *     OrderIdentifier SWIFT-<session>, and TransactionType 2, a Sale, sec. 6)
- *     AND its own 3-D Secure proof (serverAuthentication) AND exactly the
- *     amount and currency Swift asked for;
+ *     AND exactly the amount and currency Swift asked for, AND no 3-D Secure
+ *     block of its own that contradicts the approval
+ *     (serverAuthenticationContradiction; none is required — OWNER RULING
+ *     10 Nov 2026: PowerTranz's own approval of the completion of a Sale sent
+ *     with ThreeDSecure true is the proof). The answer is only ever read for a
+ *     page whose Sale was sent with ThreeDSecure true (confirm checks the page
+ *     record before the completion is sent);
  *   - any other approval, a contradictory answer (Approved false with "00"),
  *     a possible duplicate (787 / 788 / 387), a code that is not the bank's
  *     answer (timeouts, system errors), or no Approved flag at all: money may
@@ -482,21 +665,21 @@ export function readCompletion(json: unknown, held: HeldCompletion): CompletionR
     if (txn !== mine && original !== mine) return unbookable('APPROVAL_DOES_NOT_NAME_THIS_TRANSACTION');
     if (str(json['OrderIdentifier'])?.trim() !== held.orderId) return unbookable('APPROVAL_DOES_NOT_NAME_THIS_ORDER');
     if (String(json['TransactionType'] ?? '') !== '2') return unbookable('APPROVAL_IS_NOT_A_SALE');
-    const auth = serverAuthentication(json);
-    if (!auth.authenticated) return unbookable(`APPROVED_UNAUTHENTICATED_${auth.note}`);
+    const contradiction = serverAuthenticationContradiction(json);
+    if (contradiction) return unbookable(`APPROVED_UNAUTHENTICATED_${contradiction}`);
     const currencyCode = alphaOfCurrency(json['CurrencyCode']);
     const amountMinor = currencyCode ? minorOfTotalAmount(json['TotalAmount'], currencyCode) : null;
     if (!currencyCode || amountMinor === null) return unbookable('APPROVED_AMOUNT_UNREADABLE');
     if (amountMinor !== held.amountMinor || currencyCode !== held.currencyCode) return unbookable('APPROVED_AMOUNT_MISMATCH');
-    const tds = (json['RiskManagement'] as { ThreeDSecure: Record<string, unknown> }).ThreeDSecure;
     const brand = str(json['CardBrand'])?.trim();
+    // [OWNER RULING 10 Nov 2026] The stored proof IS this approval: its whitelisted fields, nothing the browser sent,
+    // no token and nothing personal (PanToken, RRN, AuthorizationCode stay out).
     return { status: 'succeeded', amountMinor, currencyCode, completionEvidence: {
       Approved: true, IsoResponseCode: '00', TransactionType: 2,
       TransactionIdentifier: held.txnId, OrderIdentifier: held.orderId,
       TotalAmount: totalAmountOf(amountMinor, currencyCode), CurrencyCode: CURRENCY_NUMERIC[currencyCode]!,
-      // The brand is kept when the answer named it, so a later re-check judges the same ECI the same way.
+      // The brand is kept when the answer named it, so a later re-check judges any ECI the same way.
       ...(brand ? { CardBrand: brand.slice(0, 32) } : {}),
-      RiskManagement: { ThreeDSecure: { AuthenticationStatus: String(tds['AuthenticationStatus']), Eci: auth.eci! } },
     } };
   }
   if (approved === false) {
@@ -512,96 +695,150 @@ export function readCompletion(json: unknown, held: HeldCompletion): CompletionR
  * [CARD-LOOKUP] PowerTranz's record of ONE transaction (GET <root>/api/Transactions/{id}), read strictly.
  * DOCUMENTED for this call (PowerTranz's written answer to Swift, 4 Nov 2026): VoidDateTime ("present = reversed")
  * and OrderSummary { SettledAmount, TotalCaptureAmount, TotalCreditAmount }.
- * ASSUMED until PowerTranz confirms (asked; CARD-CHECKOUT-API.md section 11) [REVIEW-2460-B B6]: that the record
- * also carries the sec. 6 response fields TransactionIdentifier, OrderIdentifier, TransactionType, Approved,
- * IsoResponseCode and CurrencyCode at its top level, and that the OrderSummary amounts are major units like
- * TotalAmount. If they are not, every answer reads as unreadable and Swift takes the path it took before the lookup.
- * Every field must be present and of its type (SettledAmount may be absent); a missing, mistyped or
- * finer-than-the-currency field makes the whole answer unreadable — null, never a guess. A VoidDateTime is a
+ * [CARD-STAGING-TEST 10 Nov 2026] The REAL records of PowerTranz's staging sandbox (redacted copies are the test
+ * fixtures) replace the field names Swift had assumed:
+ *   - top level: TransactionIdentifier, TransactionType (a number: 2 = Sale), IsoResponseCode, ResponseMessage,
+ *     CurrencyCode ("328"), TotalAmount (major units), Tax/Tip/OtherAmount, TransactionDateTime, and on a completed
+ *     sale AuthorizationCode and Rrn. NO Approved and NO OrderIdentifier: Approved is read only if it ever appears
+ *     (and must then be true), the order only from OrderSummary (a top-level one, if it ever appears, must agree);
+ *   - OrderSummary: CaptureCount, CreditCount, TotalCaptureAmount, TotalCreditAmount, SettledAmount (major units),
+ *     OriginalTrxnDateTime; on a completed sale also OrderIdentifier ("SWIFT-<session>"), CurrencyCode,
+ *     OriginalTrxnIdentifier and LastCaptureDateTime; and VoidDateTime ONLY once voided — never at the top level.
+ *     IsoResponseCode stays "00" after a void and TotalCaptureAmount keeps the sale's amount, so VoidDateTime is
+ *     the only sign of the void: it is read from OrderSummary (and from the top level too, should it ever appear);
+ *   - a page only preprocessed or authenticated (IsoResponseCode SP4 / 3D0) has no order, currency or void in its
+ *     OrderSummary, and OriginalTrxnDateTime "0001-01-01T00:00:00";
+ *   - dates name no zone: UTC-4 (RECORD_ZONE).
+ * Every field above that every real record carries must be present and of its type (SettledAmount may be absent);
+ * one that only some records carry must, when present, be of its type and agree with the rest (OrderSummary's
+ * CurrencyCode with the top level's, OriginalTrxnIdentifier with TransactionIdentifier). Anything missing, mistyped,
+ * finer than the currency or disagreeing makes the whole answer unreadable — null, never a guess. A VoidDateTime is a
  * reversal only when it is a real date between `voidNotBeforeMs` and `voidNotAfterMs` (voidDateOf); any other value is
  * unreadable.
  */
 export interface PowerTranzTransactionRecord {
   transactionIdentifier: string;
-  orderIdentifier: string;
+  /** OrderSummary.OrderIdentifier; null on a record that names no order (a page never completed: SP4 / 3D0). */
+  orderIdentifier: string | null;
   transactionType: string;
-  approved: boolean;
+  /** The real records carry no Approved: null. When one is present it is read (and must be true to book). */
+  approved: boolean | null;
   isoResponseCode: string;
   currencyCode: string;
+  totalAmountMinor: number;
+  captureCount: number;
+  creditCount: number;
   voided: boolean;
   totalCaptureMinor: number;
   totalCreditMinor: number;
 }
 
-/** A VoidDateTime as an instant: ISO date and time (a space allowed for the T), optional fraction and zone; no zone
- *  is read as UTC. Null for anything else — a placeholder, a default date, an impossible date. */
+/** A record date as an instant: ISO date and time (a space allowed for the T), optional fraction and zone; no zone
+ *  is read as RECORD_ZONE (UTC-4). Null for anything else — a placeholder, a default date, an impossible date. */
 export function voidDateOf(text: string): number | null {
   const m = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2})(?:\.\d{1,7})?)?(Z|[+-]\d{2}:?\d{2})?$/.exec(text.trim());
   if (!m) return null;
   const [year, month, day, hour, minute, second] = [m[1], m[2], m[3], m[4], m[5], m[6] ?? '0'].map(Number) as [number, number, number, number, number, number];
   if (year < 2000 || month < 1 || month > 12 || day < 1 || day > 31 || hour > 23 || minute > 59 || second > 59) return null;
   if (new Date(Date.UTC(year, month - 1, day)).getUTCDate() !== day) return null; // 30 February and the like
-  const ms = Date.parse(m[7] ? text.trim().replace(' ', 'T') : `${text.trim().replace(' ', 'T')}Z`);
+  const ms = Date.parse(m[7] ? text.trim().replace(' ', 'T') : `${text.trim().replace(' ', 'T')}${RECORD_ZONE}`);
   return Number.isFinite(ms) ? ms : null;
+}
+
+/** A count in OrderSummary: a whole number, zero or more. */
+function countOf(value: unknown): number | null {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0 ? value : null;
 }
 
 export function readTransactionRecord(json: unknown, voidNotBeforeMs = Date.UTC(2000, 0, 1), voidNotAfterMs = Date.now() + VOID_DATE_SKEW_MS): PowerTranzTransactionRecord | null {
   if (!isObject(json)) return null;
+  const summary = json['OrderSummary'];
+  if (!isObject(summary)) return null;
   const transactionIdentifier = str(json['TransactionIdentifier'])?.trim();
-  const orderIdentifier = str(json['OrderIdentifier'])?.trim();
   const type = json['TransactionType'];
   const transactionType = typeof type === 'number' && Number.isInteger(type) ? String(type) : str(type)?.trim();
-  const approved = json['Approved'];
   const isoResponseCode = str(json['IsoResponseCode'])?.trim();
   const currencyCode = alphaOfCurrency(json['CurrencyCode']);
-  const voidAt = json['VoidDateTime'];
-  const summary = json['OrderSummary'];
-  if (!transactionIdentifier || !orderIdentifier || !transactionType || !/^\d{1,2}$/.test(transactionType) || typeof approved !== 'boolean'
-    || isoResponseCode === undefined || !currencyCode || !isObject(summary)) return null;
-  // Absent or null: no reversal. A non-empty text: reversed. Anything else cannot be read.
+  if (!transactionIdentifier || !transactionType || !/^\d{1,2}$/.test(transactionType) || isoResponseCode === undefined || !currencyCode) return null;
+  const approvedRaw = json['Approved'];
+  if (approvedRaw !== undefined && approvedRaw !== null && typeof approvedRaw !== 'boolean') return null;
+  const approved = typeof approvedRaw === 'boolean' ? approvedRaw : null;
+  const totalAmountMinor = minorOfTotalAmount(json['TotalAmount'], currencyCode);
+  if (totalAmountMinor === null) return null;
+  // The summary's own currency, when it names one, is the record's.
+  if (summary['CurrencyCode'] !== undefined && summary['CurrencyCode'] !== null && alphaOfCurrency(summary['CurrencyCode']) !== currencyCode) return null;
+  // The order: OrderSummary's (the real records), or a top-level one; both present must agree; present must be text.
+  const orders: string[] = [];
+  for (const raw of [summary['OrderIdentifier'], json['OrderIdentifier']]) {
+    if (raw === undefined || raw === null) continue;
+    const text = str(raw)?.trim();
+    if (!text) return null;
+    orders.push(text);
+  }
+  if (orders.length === 2 && orders[0] !== orders[1]) return null;
+  const original = summary['OriginalTrxnIdentifier'];
+  if (original !== undefined && original !== null && str(original)?.trim().toLowerCase() !== transactionIdentifier.toLowerCase()) return null;
+  const captureCount = countOf(summary['CaptureCount']);
+  const creditCount = countOf(summary['CreditCount']);
+  if (captureCount === null || creditCount === null) return null;
   // Absent or null: no reversal. A real date on or after the session began: reversed. Anything else cannot be read.
-  if (voidAt !== undefined && voidAt !== null) {
+  // [CARD-STAGING-TEST 10 Nov 2026] VoidDateTime sits in OrderSummary; a top-level one is read the same way.
+  let voided = false;
+  for (const voidAt of [summary['VoidDateTime'], json['VoidDateTime']]) {
+    if (voidAt === undefined || voidAt === null) continue;
     const at = typeof voidAt === 'string' ? voidDateOf(voidAt) : null;
     // [REVIEW-2460-DELTA D1] ... and never after the read (plus the zone margin): a "no date" maximum
     // ("9999-12-31T23:59:59.9999999", "2079-06-06") or any future date is no reversal.
     if (at === null || at < voidNotBeforeMs || at > voidNotAfterMs) return null;
+    voided = true;
   }
   const totalCaptureMinor = minorOfTotalAmount(summary['TotalCaptureAmount'], currencyCode);
   const totalCreditMinor = minorOfTotalAmount(summary['TotalCreditAmount'], currencyCode);
   if (totalCaptureMinor === null || totalCreditMinor === null) return null;
   if (summary['SettledAmount'] !== undefined && summary['SettledAmount'] !== null && minorOfTotalAmount(summary['SettledAmount'], currencyCode) === null) return null;
   return {
-    transactionIdentifier, orderIdentifier, transactionType, approved, isoResponseCode, currencyCode,
-    voided: voidAt !== undefined && voidAt !== null, totalCaptureMinor, totalCreditMinor,
+    transactionIdentifier, orderIdentifier: orders[0] ?? null, transactionType, approved, isoResponseCode, currencyCode, totalAmountMinor,
+    captureCount, creditCount, voided, totalCaptureMinor, totalCreditMinor,
   };
 }
 
 type LookupVerdict = { status: 'confirmed' } | { status: 'reversed' | 'part_credited' | 'not_bookable' | 'unknown'; reason: string };
 
+const codeShown = (code: string) => code.replace(/[^A-Za-z0-9]/g, '').slice(0, 4) || 'NO_CODE';
+
 /**
  * [CARD-LOOKUP] The record, judged against what Swift asked for:
- *   - another transaction or order: the answer is not about this payment — unknown;
+ *   - another transaction or order, or not a Sale (TransactionType 2 — a void is its own type-4 transaction, whose
+ *     record also reads "00" with a capture): the answer is not about this payment — unknown;
  *   - VoidDateTime present (a real date), or a credit of the WHOLE capture: reversed — never booked;
  *   - a credit smaller than the capture: part refunded, the rest still taken — never booked, never "nothing taken";
- *     a credit above the capture, or with nothing captured, contradicts itself — unknown;
- *   - not Approved with "00", not a Sale (TransactionType 2, sec. 6), another currency, or a TotalCaptureAmount
+ *     a credit above the capture, with nothing captured, or with no credit counted, contradicts itself — unknown;
+ *   - not "00" (or an Approved that is false): not an approved sale — never booked (a page only preprocessed or
+ *     authenticated reads SP4 / 3D0 / 3D6 here: PowerTranz's portal lists those as "Sale" rows, with nothing taken);
+ *   - a record that names no order: unknown;
+ *   - another currency, nothing captured (CaptureCount 0), a credit counted, or a TotalAmount or TotalCaptureAmount
  *     that is not Swift's price to the minor unit: not a confirmed sale at Swift's price — never booked;
  *   - otherwise confirmed. Even then this is NOT booking authority on its own: the service books only when the
- *     session also holds the provider's approved completion with its own 3-D Secure proof (readCompletion).
+ *     session also holds PowerTranz's own approval of the completion, stored when it arrived (readCompletion).
  */
 export function judgeTransactionRecord(record: PowerTranzTransactionRecord, held: HeldCompletion): LookupVerdict {
   if (record.transactionIdentifier.toLowerCase() !== held.txnId.toLowerCase()) return { status: 'unknown', reason: 'LOOKUP_OTHER_TRANSACTION' };
-  if (record.orderIdentifier !== held.orderId) return { status: 'unknown', reason: 'LOOKUP_OTHER_ORDER' };
+  // [CARD-STAGING-TEST 10 Nov 2026] A Sale (TransactionType 2) before anything else: a void is its OWN transaction
+  // (type 4) whose record also reads "00", a capture and an order — never read as the sale Swift asked about.
+  if (record.transactionType !== '2') return { status: 'unknown', reason: 'LOOKUP_NOT_A_SALE' };
+  if (record.orderIdentifier !== null && record.orderIdentifier !== held.orderId) return { status: 'unknown', reason: 'LOOKUP_OTHER_ORDER' };
   if (record.voided) return { status: 'reversed', reason: 'LOOKUP_VOIDED' };
   if (record.totalCreditMinor !== 0) {
-    if (record.totalCaptureMinor <= 0 || record.totalCreditMinor > record.totalCaptureMinor) return { status: 'unknown', reason: 'LOOKUP_CREDIT_UNREADABLE' };
+    if (record.totalCaptureMinor <= 0 || record.totalCreditMinor > record.totalCaptureMinor || record.creditCount < 1) return { status: 'unknown', reason: 'LOOKUP_CREDIT_UNREADABLE' };
     if (record.totalCreditMinor === record.totalCaptureMinor) return { status: 'reversed', reason: 'LOOKUP_CREDITED' };
     return { status: 'part_credited', reason: 'LOOKUP_PARTIAL_CREDIT' };
   }
-  if (!record.approved || record.isoResponseCode !== '00') return { status: 'not_bookable', reason: `LOOKUP_NOT_APPROVED_${record.isoResponseCode.replace(/[^A-Za-z0-9]/g, '').slice(0, 4) || 'NO_CODE'}` };
-  if (record.transactionType !== '2') return { status: 'not_bookable', reason: 'LOOKUP_NOT_A_SALE' };
+  if (record.approved === false || record.isoResponseCode !== '00') return { status: 'not_bookable', reason: `LOOKUP_NOT_APPROVED_${codeShown(record.isoResponseCode)}` };
+  if (record.orderIdentifier === null) return { status: 'unknown', reason: 'LOOKUP_NO_ORDER' };
   if (record.currencyCode !== held.currencyCode) return { status: 'not_bookable', reason: 'LOOKUP_CURRENCY_MISMATCH' };
-  if (record.totalCaptureMinor !== held.amountMinor) return { status: 'not_bookable', reason: 'LOOKUP_AMOUNT_MISMATCH' };
+  if (record.creditCount !== 0) return { status: 'unknown', reason: 'LOOKUP_CREDIT_UNREADABLE' };
+  if (record.captureCount < 1) return { status: 'not_bookable', reason: 'LOOKUP_NOT_CAPTURED' };
+  if (record.totalCaptureMinor !== held.amountMinor || record.totalAmountMinor !== held.amountMinor) return { status: 'not_bookable', reason: 'LOOKUP_AMOUNT_MISMATCH' };
   return { status: 'confirmed' };
 }
 
@@ -611,24 +848,34 @@ type RefundVerdict = { status: 'refunded'; how: 'credit' | 'void'; reason: strin
  * [CARD-REFUND-LOOKUP] The ORIGINAL transaction's record, judged for a refund Swift sent whose answer is not known
  * (PowerTranz's written answer to Swift, 9 Nov 2026: the lookup covers every transaction type; refunds, partial and
  * portal ones included, are supported):
- *   - another transaction, order or currency: the answer is not about this payment — unknown;
- *   - VoidDateTime a real date (voidDateOf, the same window as the completion lookup): voided — refunded (void);
+ *   - another transaction, order or currency, no order named, or not a Sale (TransactionType 2): the answer is not
+ *     about this payment — unknown;
+ *   - VoidDateTime a real date (voidDateOf, the same window as the completion lookup): voided — refunded (void).
+ *     [CARD-STAGING-TEST 10 Nov 2026] A void reads exactly so on the real record: OrderSummary.VoidDateTime set,
+ *     the capture kept, no credit;
  *   - no credit on it: not refunded (yet);
- *   - a credit above the capture, or with nothing captured: contradicts itself — unknown;
- *   - not an approved Sale ("00", TransactionType 2): a credit on it cannot be read as this payment's — unknown;
+ *   - a credit above the capture, with nothing captured, or with no credit or no capture counted: contradicts
+ *     itself — unknown;
+ *   - not approved ("00", an Approved that is not false): a credit on it cannot be read as this payment's — unknown;
  *   - TotalCreditAmount = TotalCaptureAmount = Swift's price, to the minor unit: the WHOLE payment went back — refunded;
- *     ASSUMED until PowerTranz confirms [REVIEW-2461-A S3-1]: TotalCreditAmount counts only refunds PowerTranz
- *     APPROVED (never a pending, declined or reversed attempt). Real staging records pin this before cards go live;
+ *     ASSUMED until PowerTranz confirms [REVIEW-2461-A S3-1]: TotalCreditAmount (with CreditCount) counts only refunds
+ *     PowerTranz APPROVED (never a pending, declined or reversed attempt). The staging records of 10 Nov 2026 hold no
+ *     refund yet: a real refund's record pins this before cards go live;
  *   - any other credit (part of it, or a capture that is not Swift's price): never "refunded" — held for the owner.
  */
 export function judgeRefundRecord(record: PowerTranzTransactionRecord, held: HeldCompletion): RefundVerdict {
   if (record.transactionIdentifier.toLowerCase() !== held.txnId.toLowerCase()) return { status: 'unknown', reason: 'LOOKUP_OTHER_TRANSACTION' };
+  // A Sale before anything else (a void's or a refund's own record is never the payment's).
+  if (record.transactionType !== '2') return { status: 'unknown', reason: 'LOOKUP_NOT_A_SALE' };
+  if (record.orderIdentifier === null) return { status: 'unknown', reason: 'LOOKUP_NO_ORDER' };
   if (record.orderIdentifier !== held.orderId) return { status: 'unknown', reason: 'LOOKUP_OTHER_ORDER' };
   if (record.currencyCode !== held.currencyCode) return { status: 'unknown', reason: 'LOOKUP_CURRENCY_MISMATCH' };
   if (record.voided) return { status: 'refunded', how: 'void', reason: 'LOOKUP_VOIDED' };
   if (record.totalCreditMinor === 0) return { status: 'not_refunded', reason: 'LOOKUP_NO_CREDIT' };
-  if (record.totalCaptureMinor <= 0 || record.totalCreditMinor > record.totalCaptureMinor) return { status: 'unknown', reason: 'LOOKUP_CREDIT_UNREADABLE' };
-  if (!record.approved || record.isoResponseCode !== '00' || record.transactionType !== '2') return { status: 'unknown', reason: 'LOOKUP_NOT_AN_APPROVED_SALE' };
+  if (record.totalCaptureMinor <= 0 || record.totalCreditMinor > record.totalCaptureMinor || record.creditCount < 1 || record.captureCount < 1) {
+    return { status: 'unknown', reason: 'LOOKUP_CREDIT_UNREADABLE' };
+  }
+  if (record.approved === false || record.isoResponseCode !== '00') return { status: 'unknown', reason: 'LOOKUP_NOT_AN_APPROVED_SALE' };
   if (record.totalCreditMinor === record.totalCaptureMinor && record.totalCaptureMinor === held.amountMinor) return { status: 'refunded', how: 'credit', reason: 'LOOKUP_CREDITED' };
   return { status: 'part_credited', reason: record.totalCreditMinor < record.totalCaptureMinor ? 'LOOKUP_PARTIAL_CREDIT' : 'LOOKUP_CREDIT_NOT_THE_PAYMENT' };
 }
@@ -753,7 +1000,7 @@ export class PowerTranzCardRailProvider implements CardRailProvider {
       TransactionIdentifier: txnId,
       TotalAmount: totalAmountOf(input.amountMinor!, currencyCode), // sec. 5.1 M, DEC 18,3
       CurrencyCode: numeric,                                        // sec. 5.1 M, ISO 4217 numeric
-      ThreeDSecure: true,                                           // sec. 5.1 M; sec. 2: a 3-D Secure request
+      ThreeDSecure: SALE_THREE_D_SECURE,                            // sec. 5.1 M; sec. 2: a 3-D Secure request (always)
       Source: {},                                                   // sec. 7.2: with the hosted page the card is typed there, never here [C1]
       OrderIdentifier: orderId,
       BillingAddress: {},                                           // sec. 5.1 nested object; the hosted page collects the cardholder's details
@@ -781,6 +1028,9 @@ export class PowerTranzCardRailProvider implements CardRailProvider {
     try {
       await this.redis.hset(k, {
         sessionRef: input.sessionRef, purpose: input.purpose, txnId, orderId,
+        // [OWNER RULING 10 Nov 2026] What the Sale was sent with, from the body itself: the completion is sent only
+        // for a page whose Sale asked for 3-D Secure (confirm), so PowerTranz's approval of it is the proof.
+        threeDSecure: String(body.ThreeDSecure),
         amountMinor: String(input.amountMinor), currencyCode,
         expiresAtMs: String(input.expiresAt.getTime()), createdAtMs: String(this.now().getTime()),
         spiToken, redirectData,
@@ -817,8 +1067,10 @@ export class PowerTranzCardRailProvider implements CardRailProvider {
   // -------------------------------------------------------------------------
 
   parseReturn(params: Readonly<Record<string, string>>): CardReturnObservation {
-    const result = authenticationResultOf(params);
-    const rawSha256 = blindedDigest(result ?? params);
+    const { result } = readAuthenticationReturn(params);
+    // [CARD-STAGING-TEST 10 Nov 2026] The digest is of the post with its tokens and personal data blinded, inside the
+    // real post's Response too (returnEvidence): PanToken, BillingAddress, CardSuffix, CardholderInfo never reach it.
+    const rawSha256 = rawDigest(returnEvidence(params));
     if (!result) return { rawSha256, claimedStatus: 'invalid' };
     // Pure: no held facts here, so the echo checks wait for noteReturn.
     const decision = authenticationDecision(result, { txnId: str(result['TransactionIdentifier']) ?? '', orderId: str(result['OrderIdentifier'])?.trim() ?? '' });
@@ -835,9 +1087,10 @@ export class PowerTranzCardRailProvider implements CardRailProvider {
     const k = this.key.session(input.providerSessionRef);
     const rec = await this.redis.hgetall(k);
     if (!rec['sessionRef']) return;
-    const decision = authenticationDecision(authenticationResultOf(input.params), {
-      ...(rec['spiToken'] ? { spiToken: rec['spiToken'] } : {}), txnId: rec['txnId'] ?? '', orderId: rec['orderId'] ?? '',
-    });
+    const reading = readAuthenticationReturn(input.params);
+    const decision: AuthenticationDecision = reading.result
+      ? authenticationDecision(reading.result, { ...(rec['spiToken'] ? { spiToken: rec['spiToken'] } : {}), txnId: rec['txnId'] ?? '', orderId: rec['orderId'] ?? '' })
+      : { proceed: false, note: reading.note };
     await this.redis.eval(NOTE_ONCE, 1, k, String(this.now().getTime()), decision.proceed ? 'proceed' : 'refused', decision.note);
   }
 
@@ -881,8 +1134,13 @@ export class PowerTranzCardRailProvider implements CardRailProvider {
         if (await this.abandon(k, 'SPI_TOKEN_EXPIRED')) return { status: 'failed', reason: 'SPI_TOKEN_EXPIRED', rawSha256: digest({ completion: 'abandoned', why: 'SPI_TOKEN_EXPIRED' }) };
         continue;
       }
-      if (rec['authDecision'] !== 'proceed') {
-        const why = `NOT_AUTHENTICATED:${rec['authNote'] ?? ''}`;
+      // [OWNER RULING 10 Nov 2026] Never completed unless the browser's result passed (it can only stop Swift) AND the
+      // page's Sale was sent with ThreeDSecure true (a record that does not say so — or an older one — is not completed).
+      if (rec['authDecision'] !== 'proceed' || rec['threeDSecure'] !== 'true') {
+        const note = rec['authNote'] ?? '';
+        // [CARD-STAGING-TEST] A page PowerTranz refused (a set-up error) is no failed bank check: PAGE_REFUSED.
+        const why = rec['threeDSecure'] !== 'true' ? 'NOT_AUTHENTICATED:SALE_NOT_3DS'
+          : note.startsWith('PAGE_REFUSED') ? `PAGE_REFUSED:${note}` : `NOT_AUTHENTICATED:${note}`;
         if (await this.abandon(k, why)) return { status: 'failed', reason: why, rawSha256: digest({ completion: 'abandoned', why }) };
         continue;
       }
@@ -1149,6 +1407,8 @@ export class PowerTranzCardRailProvider implements CardRailProvider {
     const answer = await this.call(`${PATH.transactions}${encodeURIComponent(input.providerRef)}`, { method: 'GET', headers, timeoutMs: LOOKUP_TIMEOUT_MS });
     if (answer.shape === 'transport') return { status: 'unknown', reason: `LOOKUP_NO_ANSWER_${answer.reason.toUpperCase()}`, rawSha256: digest({ transport: answer.reason }) };
     if (answer.status < 200 || answer.status >= 300) return { status: 'unknown', reason: `LOOKUP_HTTP_${answer.status}`, rawSha256: digest({ http: answer.status }) };
+    // [CARD-STAGING-TEST 10 Nov 2026] A transaction PowerTranz does not know: HTTP 204 with no body. Unknown, never "nothing taken".
+    if (answer.status === 204) return { status: 'unknown', reason: 'LOOKUP_NOT_FOUND', rawSha256: digest({ http: 204 }) };
     const record = answer.shape === 'json' ? readTransactionRecord(answer.json, input.notBefore?.getTime(), this.now().getTime() + VOID_DATE_SKEW_MS) : null;
     const rawSha256 = answer.shape === 'json' ? blindedDigest(answer.json) : digest({ unreadable: true });
     if (!record) return { status: 'unknown', reason: 'LOOKUP_UNREADABLE', rawSha256 };
@@ -1159,6 +1419,31 @@ export class PowerTranzCardRailProvider implements CardRailProvider {
   // The owner's self-check (PT-5): OK / FAIL only, never a value
   // -------------------------------------------------------------------------
 
+  /** [CARD-STAGING-TEST 10 Nov 2026] Self-check only: post RedirectData's one form, as the partner's browser does,
+   *  to the API root's own origin (never anywhere else), and read what PowerTranz answered (hostedPageAnswer). */
+  private async openHostedPage(redirectData: string, returnUrl: string): Promise<HostedPageCheck> {
+    const form = redirectForm(redirectData);
+    if (!form) return 'could_not_tell';
+    let target: URL;
+    try { target = new URL(form.action, this.config.apiRoot); } catch { return 'could_not_tell'; }
+    if (target.protocol !== 'https:' || target.origin !== this.config.apiRoot) return 'could_not_tell';
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+    try {
+      const res = await this.http(target.href, {
+        method: 'POST', redirect: 'error', signal: controller.signal,
+        headers: { 'content-type': 'application/x-www-form-urlencoded', accept: 'text/html' },
+        body: new URLSearchParams(form.fields).toString(),
+      });
+      const html = await res.text();
+      return res.status >= 200 && res.status < 300 ? hostedPageAnswer(html, returnUrl, target.href) : 'could_not_tell';
+    } catch {
+      return 'could_not_tell';
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   /**
    * - alive: GET /api/alive answers (sec. 3);
    * - credentials: a request the gateway must authenticate (sec. 2.2 1.4) is
@@ -1167,6 +1452,12 @@ export class PowerTranzCardRailProvider implements CardRailProvider {
    * - hostedPage (sandbox only, `preprocess`): a Sale for the smallest amount
    *   is preprocessed (SP4) with this PageSet/PageName. Preprocessing is no
    *   authorization (sec. 7.3) and Swift never completes it: no money moves.
+   *   [CARD-STAGING-TEST 10 Nov 2026] SP4 does NOT prove the page exists: the
+   *   sandbox preprocessed a Sale whose page set lacked "PTZ/" and refused the
+   *   page itself only when the browser opened it (757). So the check then
+   *   opens the page as the browser does (openHostedPage) and FAILs unless
+   *   PowerTranz shows its card form; the prefix is also checked with the
+   *   settings (PAGE_SET_PREFIX). Opening it shows a form: still no money.
    */
   async selfCheck(opts: { preprocess: boolean; returnUrl: string }): Promise<Array<{ check: string; ok: boolean }>> {
     const out: Array<{ check: string; ok: boolean }> = [];
@@ -1190,10 +1481,12 @@ export class PowerTranzCardRailProvider implements CardRailProvider {
         binding: this.binding, sessionRef: `selfcheck-${randomBytes(6).toString('hex')}`, purpose: 'PAY_NOW',
         returnUrl: opts.returnUrl, expiresAt: new Date(this.now().getTime() + 60_000), amountMinor: 100, currencyCode: 'GYD',
       });
-      out.push({ check: 'hosted payment page set up', ok: created.status === 'succeeded' });
+      out.push({ check: SELF_CHECK_PAGE_LINE, ok: created.status === 'succeeded' });
       if (created.status === 'succeeded') {
         const record = this.key.session(created.providerSessionRef);
         try {
+          const opened = await this.openHostedPage(await this.redis.hget(record, 'redirectData') ?? '', opts.returnUrl).catch((): HostedPageCheck => 'could_not_tell');
+          out.push({ check: SELF_CHECK_PAGE_OPENS[opened], ok: opened === 'shown' });
           await this.abandon(record, 'SELF_CHECK');
         } finally {
           await this.redis.pexpire(record, SELF_CHECK_RECORD_TTL_MS).catch(() => 0);

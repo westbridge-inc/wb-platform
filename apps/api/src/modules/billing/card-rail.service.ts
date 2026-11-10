@@ -109,6 +109,8 @@ export interface CardConfirmResult {
   /** [AX318 R1] ENROLL replacing a card: a weekly charge on the replaced card
    *  was already handed to the provider; it finishes and is reconciled. */
   paymentInProgress?: boolean;
+  /** The session's failure code (internal; the return page reads it, partners see only `failure` categories). */
+  failureCode?: string;
 }
 
 const sha256Hex = (value: string) => createHash('sha256').update(value).digest('hex');
@@ -118,6 +120,9 @@ const sha256Hex = (value: string) => createHash('sha256').update(value).digest('
  *  asked of the bank); everything else the provider calls failed is. */
 export function failureCodeOf(reason: string): string {
   if (reason.startsWith('NOT_AUTHENTICATED')) return 'NOT_AUTHENTICATED';
+  // [CARD-STAGING-TEST 10 Nov 2026] The provider refused its own card page (a set-up error such as 757 "Hosted page
+  // not found"): the page could not open — never "your bank's check didn't go through".
+  if (reason.startsWith('PAGE_REFUSED')) return 'PROVIDER_PAGE_UNAVAILABLE';
   if (reason === 'PAGE_NOT_FINISHED') return 'EXPIRED_UNUSED';
   // [Review S4] The completion was never sent (its five minutes had passed): nothing was asked of the bank.
   if (reason === 'SPI_TOKEN_EXPIRED') return 'COMPLETION_EXPIRED';
@@ -542,6 +547,11 @@ export class CardRailService {
         if (outcome.purpose !== session.purpose) return this.hold(session, outcome, 'PURPOSE_MISMATCH', now, undefined, 'providerRef' in outcome ? outcome.providerRef : undefined);
         return outcome.purpose === 'ENROLL' ? this.enrollCard(session, outcome, now) : this.settlePayNow(session, outcome, now);
       case 'failed':
+        // [CARD-STAGING-TEST 10 Nov 2026] The provider refused its own page: CANCELLED ("the provider could not open the
+        // page", section 6 — the partner reads "couldn't open", never a bank failure), and the operators are paged.
+        if (outcome.reason.startsWith('PAGE_REFUSED')) return this.pageRefused(session, outcome, now);
+        // A page never finished ran out of time with nothing done: EXPIRED, as section 6 says (failure NOT_FINISHED).
+        if (outcome.reason === 'PAGE_NOT_FINISHED') return this.close(session, 'EXPIRED', failureCodeOf(outcome.reason), outcome, now);
         return this.close(session, 'FAILED', failureCodeOf(outcome.reason), outcome, now);
       case 'requires_action':
       case 'pending':
@@ -608,14 +618,15 @@ export class CardRailService {
    *
    * What the record decides (COORD ruling, 9 Nov 2026):
    *   - BOOKED only when the record confirms an approved sale of THIS transaction and order (SWIFT-<session>), at
-   *     Swift's exact price and currency, not voided and with no credit, AND the session already holds the
-   *     provider's approved completion with its own 3-D Secure proof (readCompletion — the existing proof rule;
-   *     the record is not documented to carry that proof). Then settlePayNow books it once, with every check it
-   *     always makes (price, test system, a void already sent).
+   *     Swift's exact price and currency, captured, not voided and with no credit, AND the session already holds
+   *     PowerTranz's own approval of the completion, stored when it arrived (readCompletion — the proof rule;
+   *     OWNER RULING 10 Nov 2026: that server-to-server approval of a 3-D Secure Sale is the proof; the real
+   *     record carries no 3-D Secure fields). Then settlePayNow books it once, with every check it always makes
+   *     (price, test system, a void already sent).
    *   - Voided (a real VoidDateTime on or after the session began) or refunded IN FULL on the record: HELD for a
    *     person (LOOKUP_SHOWS_REVERSED); no void is sent; finance may only record "nothing taken".
    *   - Refunded IN PART: HELD (LOOKUP_PARTIAL_CREDIT), no void, no decision here: escalated to the owner.
-   *   - Anything else — a confirmed sale without the stored proof, another amount or currency, a decline, an
+   *   - Anything else — a confirmed sale without the stored approval, another amount or currency, a decline, an
    *     unreadable or missing answer — goes on to the path it always took (one void, then HELD when the void is
    *     not confirmed). The completion is never sent again.
    *   - The read was made moments ago (its backoff window): nothing is done now; the session is asked again later.
@@ -653,7 +664,7 @@ export class CardRailService {
             completionEvidence: proof.completionEvidence, rawSha256: looked.rawSha256,
           }, now) };
         }
-        return { outcome: { status: 'unknown', reason: `${outcome.reason}+LOOKUP_CONFIRMED_WITHOUT_3DS_PROOF`, voidable, rawSha256: looked.rawSha256 } };
+        return { outcome: { status: 'unknown', reason: `${outcome.reason}+LOOKUP_CONFIRMED_WITHOUT_COMPLETION_APPROVAL`, voidable, rawSha256: looked.rawSha256 } };
       }
       case 'reversed':
         // [REVIEW-2460 S3-1 · B1] Never booked or refunded by finance afterwards (resolveHeld refuses both).
@@ -905,6 +916,22 @@ export class CardRailService {
     return this.resultOf(await this.prisma.cardSession.findUniqueOrThrow({ where: { id: session.id } }));
   }
 
+  /** [CARD-STAGING-TEST 10 Nov 2026] The provider refused to open its own card page (a merchant set-up error, e.g.
+   *  757 "Hosted page not found": a page set without PTZ/). Nothing was taken (no completion is ever sent for it). The
+   *  session closes CANCELLED with PROVIDER_PAGE_UNAVAILABLE, and the platform operators are paged — at most once an
+   *  hour per merchant account: every partner meets the same error until the set-up is fixed (or CARD_RAIL_KILL=1). */
+  private async pageRefused(session: CardSession, outcome: Extract<CardSessionOutcome, { status: 'failed' }>, now: Date): Promise<CardConfirmResult> {
+    const result = await this.close(session, 'CANCELLED', failureCodeOf(outcome.reason), outcome, now);
+    const why = outcome.reason.replace(/^PAGE_REFUSED:/, '').replace(/[^A-Za-z0-9_]/g, '').slice(0, 48);
+    await notifyAdmins(this.prisma, this.notifications, {
+      tenantId: null, title: 'Card payments: the card provider refused its card page',
+      body: `PowerTranz refused to open its hosted card page (${why}) — a set-up error, not the partner's bank (757 is "Hosted page not found": POWERTRANZ_PAGE_SET must start with PTZ/, and POWERTRANZ_PAGE_NAME must be the portal's page). Nothing was charged; partners see "The card page couldn't open". Run the payments self-check (swift-payments-setup.command <host> <key> check), fix the settings, or set CARD_RAIL_KILL=1 to pause card payments. Card session ${session.id}.`,
+      data: { kind: 'billing_invariants', alert: 'card-page-refused', sessionId: session.id, reason: why },
+      dedupeKey: `card-page-refused:${session.providerAccount}:${now.toISOString().slice(0, 13)}`,
+    }).catch((err: unknown) => log().error({ err, sessionId: session.id }, '[CARD-STAGING-TEST] could not page the operators about a refused card page'));
+    return result;
+  }
+
   private async close(
     session: CardSession,
     status: 'FAILED' | 'EXPIRED' | 'CANCELLED',
@@ -1017,7 +1044,11 @@ export class CardRailService {
         .catch((): CardRefundOutcome => ({ status: 'unknown', reason: 'VOID_CALL_FAILED', rawSha256: rawDigest({ void: 'threw' }) }));
     }
     const state = voided.status === 'succeeded' ? 'VOIDED' : voided.status === 'failed' ? 'FAILED' : 'UNKNOWN';
-    await this.prisma.cardSession.updateMany({ where: { id: session.id, providerVoidState: 'SENDING' }, data: { providerVoidState: state } });
+    // [CARD-STAGING-TEST 10 Nov 2026] A void is PowerTranz's own transaction (type 4, its own id); the sale's record does
+    // not name it. Kept when the approved answer names it (an id that is not the sale's), for finance's matching.
+    const voidRef = voided.status === 'succeeded' ? voided.providerRef.trim().slice(0, 64) : '';
+    const ownVoidRef = voidRef && voidRef.toLowerCase() !== ref.trim().toLowerCase() ? { providerVoidRef: voidRef } : {};
+    await this.prisma.cardSession.updateMany({ where: { id: session.id, providerVoidState: 'SENDING' }, data: { providerVoidState: state, ...ownVoidRef } });
     const after = await this.prisma.cardSession.findUniqueOrThrow({ where: { id: session.id } });
     if (state === 'VOIDED') return this.closeVoided(after, voided.rawSha256, now);
     await recordCardObservation(this.prisma, this.observation(after, 'CONFIRM', voided.rawSha256, observedStatus(voided.status), 'REJECTED_MISMATCH'));
@@ -1144,6 +1175,7 @@ export class CardRailService {
       sessionId: session.id,
       purpose: session.purpose,
       status: session.status,
+      ...(session.failureCode ? { failureCode: session.failureCode } : {}),
       ...(instrument ? { instrument } : {}),
     };
   }
@@ -1264,7 +1296,7 @@ export class CardRailService {
           ? readCompletion(fresh.completionEvidence, { txnId: fresh.providerTransactionRef, orderId: `SWIFT-${fresh.id}`,
             amountMinor: toProviderMinor(Number(fresh.amount), fresh.currencyCode!, 'card.finance.book'), currencyCode: fresh.currencyCode! }) : null;
         if (fresh.failureCode === 'LATE_PROVIDER_APPROVAL' || proof?.status !== 'succeeded') {
-          throw new AppError(409, 'PROVIDER_COMPLETION_EVIDENCE_REQUIRED', 'Booking needs the provider’s approved completion with its own 3-D Secure proof. Refund or reconcile this payment instead.');
+          throw new AppError(409, 'PROVIDER_COMPLETION_EVIDENCE_REQUIRED', 'Booking needs the provider’s own approval of this payment’s completion, stored when it arrived. Refund or reconcile this payment instead.');
         }
         const paymentId = fresh.paymentId ?? (await tx.subscriptionPayment.create({
           data: {

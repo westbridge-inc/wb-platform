@@ -54,7 +54,7 @@ export const CARD_RETURN_BODY_LIMIT = 16 * 1024;
 /** At most this many named values in one return; more is refused unread. */
 export const CARD_RETURN_MAX_FIELDS = 64;
 /** The words the return page can show — and nothing else (no amount, name, card or id). */
-export const CARD_RETURN_PAGES = ['SUCCEEDED', 'PENDING', 'FAILED', 'UNKNOWN'] as const;
+export const CARD_RETURN_PAGES = ['SUCCEEDED', 'PENDING', 'FAILED', 'UNAVAILABLE', 'UNKNOWN'] as const;
 export type CardReturnPage = (typeof CARD_RETURN_PAGES)[number];
 /** Where the "Back to the Swift app" link goes: no parameters, ever. */
 export const CARD_APP_RETURN_LINK = 'swift://pay/card/return';
@@ -397,7 +397,10 @@ export function returnParams(query: unknown, body: unknown): Record<string, stri
   return out;
 }
 
-function pageForStatus(status: CardSessionStatus): CardReturnPage {
+function pageForStatus(status: CardSessionStatus, failureCode?: string | null): CardReturnPage {
+  // [CARD-STAGING-TEST 10 Nov 2026] The provider could not open its own page (a set-up error such as 757): neutral
+  // words that blame nobody's bank and point to another way to pay.
+  if (status === 'CANCELLED' && failureCode === 'PROVIDER_PAGE_UNAVAILABLE') return 'UNAVAILABLE';
   switch (status) {
     case 'SUCCEEDED': return 'SUCCEEDED';
     case 'FAILED': case 'CANCELLED': case 'EXPIRED': return 'FAILED';
@@ -412,6 +415,7 @@ const RETURN_WORDS: Record<CardReturnPage, { title: string; body: string; tone: 
   SUCCEEDED: { title: 'Done', body: 'Go back to the Swift app to see it.', tone: 'success' },
   PENDING: { title: 'Checking with the bank', body: "We're checking with the bank. Don't pay again. You can close this page.", tone: 'waiting' },
   FAILED: { title: "This didn't go through", body: 'You can try again in the Swift app.', tone: 'error' },
+  UNAVAILABLE: { title: "Card payments aren't available right now", body: 'Nothing was charged. Please use another way to pay in the Swift app.', tone: 'error' },
   UNKNOWN: { title: 'Weekly fee', body: 'Open the Swift app to see your weekly fee.', tone: 'neutral' },
 };
 
@@ -464,7 +468,7 @@ export const CARD_RETURN_CONFIRM_WAIT_MS = 20_000;
 
 async function confirmWithin(runtime: CardRailRuntime, sessionId: string, waitMs: number): Promise<CardReturnPage> {
   let timer: ReturnType<typeof setTimeout> | undefined;
-  const confirmed = runtime.service.confirm(sessionId).then((r) => pageForStatus(r.status));
+  const confirmed = runtime.service.confirm(sessionId).then((r) => pageForStatus(r.status, r.failureCode));
   // A late failure is the sweep's to retry; it must not surface as an unhandled rejection.
   confirmed.catch((err: unknown) => log().error({ err }, '[PT-2] a card confirmation finished with an error after its return was answered'));
   const waited = new Promise<CardReturnPage>((resolve) => { timer = setTimeout(() => resolve('PENDING'), waitMs); });
@@ -494,8 +498,8 @@ async function processReturn(runtime: CardRailRuntime, prisma: PrismaClient, req
     // Past the state check (a reload, a late or repeated return): the
     // session's own status. Anything else learns nothing.
     if (result.verdict === 'REJECTED_REPLAY' || result.verdict === 'REJECTED_CLOSED' || result.verdict === 'REJECTED_EXPIRED') {
-      const now = await prisma.cardSession.findUnique({ where: { id: sessionId }, select: { status: true } });
-      return now ? pageForStatus(now.status) : 'UNKNOWN';
+      const now = await prisma.cardSession.findUnique({ where: { id: sessionId }, select: { status: true, failureCode: true } });
+      return now ? pageForStatus(now.status, now.failureCode) : 'UNKNOWN';
     }
     return 'UNKNOWN';
   });
@@ -750,6 +754,8 @@ const ADMIN_SESSION_SELECT = {
   instrumentId: true, paymentId: true, createdAt: true,
   // [Review S2-2] What finance needs to look a held payment up and resolve it.
   providerTransactionRef: true, providerVoidState: true, providerRefundState: true, bookClaimedAt: true, resolution: true, resolvedBy: true, resolvedAt: true,
+  // [CARD-STAGING-TEST 10 Nov 2026] The void's own provider transaction, when PowerTranz named it (the portal's Void row).
+  providerVoidRef: true,
 } as const;
 
 const ADMIN_CARD_SELECT = {
