@@ -1,5 +1,5 @@
 import type { PrismaClient, CountryConfig, VehicleType, Prisma } from '@prisma/client';
-import { isNeverAcceptedDocType, OPTIONAL_LIST_SUFFIX, registryChecklist, OWN_NAME_LIST_SUFFIX, OWN_NAME_TIER } from '../verification/doc-registry';
+import { checklistKeyFor, COMPANY_TIER, isNeverAcceptedDocType, MANAGER_TIER, OPTIONAL_LIST_SUFFIX, registryChecklist, OWN_NAME_TIER } from '../verification/doc-registry';
 import { COMPLETE_CARD, DEFAULT_DOCUMENT_CHECKLISTS, PRIVATE_CAR_PHOTO_DOC } from '../ops/platform-config';
 import { AppError, NotFoundError } from '../../utils/errors';
 import type { DeliveryRates } from '../../utils/markup';
@@ -318,12 +318,14 @@ export class CountryConfigService {
     // keeps its standard set. [CHECKLIST-LEGAL · owner 1 Nov 2026 (a)] No other tier exists: the self-declared
     // (unregistered) tier is removed, so any other tier a caller names reads the standard set, and a stored copy of
     // the retired lists from an older seed is never read (RETIRED_LIST_KEYS).
-    const ownName = tier === OWN_NAME_TIER;
-    const fromRegistry = await registryChecklist(db, code, roleKey, new Date(), ownName ? OWN_NAME_TIER : undefined);
+    // [COMPANY-DOCS · owner 10 Nov 2026] The COMPANY and MANAGER tiers read <ROLE>_COMPANY / <ROLE>_MANAGER the same way.
+    const known = tier === OWN_NAME_TIER || tier === COMPANY_TIER || tier === MANAGER_TIER ? tier : undefined;
+    const fromRegistry = await registryChecklist(db, code, roleKey, new Date(), known);
     if (fromRegistry) return fromRegistry.filter((docType) => !isNeverAcceptedDocType(docType));
     const config = await this.getByCode(code, db);
     const lists = withoutRetiredLists(config.documentChecklists);
-    if (ownName && lists[`${roleKey}${OWN_NAME_LIST_SUFFIX}`]) return lists[`${roleKey}${OWN_NAME_LIST_SUFFIX}`]!.filter((docType) => !isNeverAcceptedDocType(docType));
+    const tierList = known ? lists[checklistKeyFor(roleKey, known)] : undefined;
+    if (tierList) return tierList.filter((docType) => !isNeverAcceptedDocType(docType));
     return (lists[roleKey] ?? []).filter((docType) => !isNeverAcceptedDocType(docType));
   }
 

@@ -47,6 +47,8 @@ const PUBLIC_PAGES = [
 ];
 
 const PRIVATE_PAGES = [
+  'letters/company-authority/page.tsx', // [COMPANY-DOCS] printable letter of authority: reachable, never indexed
+  'letters/owner-authority/page.tsx',
   'dashboard/notifications/page.tsx',
   'portal/notifications/page.tsx',
   'advertiser/page.tsx',

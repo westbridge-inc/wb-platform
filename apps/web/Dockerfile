@@ -115,6 +115,8 @@ COPY apps/mobile/src/components/onboarding/documentConsentRecord.ts apps/mobile/
 COPY apps/mobile/src/components/onboarding/foodHandlers.ts apps/mobile/src/components/onboarding/foodHandlers.ts
 COPY apps/mobile/src/lib/uploadConsentCopy.ts apps/mobile/src/lib/uploadConsentCopy.ts
 COPY apps/mobile/src/lib/ownNameCopy.ts apps/mobile/src/lib/ownNameCopy.ts
+# [COMPANY-DOCS] the sign-up's three-option choice and the company/manager papers' words (ownNameCopy re-exports from it)
+COPY apps/mobile/src/lib/businessBasisCopy.ts apps/mobile/src/lib/businessBasisCopy.ts
 # [WEB-SETTINGS] The store's MMG number card speaks the phone's hold sentence and its "takes effect" time (each imports nothing).
 COPY apps/mobile/src/lib/mmgHold.ts apps/mobile/src/lib/mmgHold.ts
 COPY apps/mobile/src/lib/stepUp.ts apps/mobile/src/lib/stepUp.ts

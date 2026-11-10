@@ -441,6 +441,8 @@ const approveDocSchema = z.object({
   ownNameConfirmed: z.boolean().optional(),
   // [R3 · review F1] a registration paper: the legal name printed on it, which the storefront names the seller by
   legalName: z.string().trim().min(2).max(160).optional(),
+  // [COMPANY-DOCS · review F3] a company's business-name registration: the proprietor named on it is a company
+  proprietorIsCompany: z.boolean().optional(),
   // Insurance 5-point manual check (spec §3.4) — supplied for hire-insurance docs
   insurance: z.object({
     insurerName: z.string().min(1).max(120),
@@ -7184,6 +7186,7 @@ export async function adminRoutes(app: FastifyInstance) {
       ...(body.registrationKind !== undefined ? { registrationKind: body.registrationKind } : {}),
       ...(body.ownNameConfirmed !== undefined ? { ownNameConfirmed: body.ownNameConfirmed } : {}),
       ...(body.legalName !== undefined ? { legalName: body.legalName } : {}),
+      ...(body.proprietorIsCompany !== undefined ? { proprietorIsCompany: body.proprietorIsCompany } : {}),
     }, {
       // [S2-29 · KYC-DECISION-ATOMIC] The trail commits with the decision, in its transaction: the
       // action row and the canonical admin row. A decision cannot commit without them.

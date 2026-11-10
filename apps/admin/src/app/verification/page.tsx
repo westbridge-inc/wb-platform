@@ -13,7 +13,7 @@ import { CustomerIdRetired } from '@/components/verification/CustomerIdRetired';
 import { approveDoc, rejectDoc, errorCode, fetchUserDetail, fetchVerificationCounts, fetchDocumentCustody, type InsuranceCheck } from '@/lib/api';
 import { reasonTooShort } from '@/lib/ask-reason';
 import { REJECTION_REASONS, SECOND_REVIEW_CODES, isRejectionReasonCode, type RejectionReasonCode } from '@/lib/rejection-reasons';
-import { HELD_FOR_ORDERING_DAY, heldForOrderingDayLine, REVIEW_COUNTS_POLL_MS, REVIEW_STATUSES, applicantId, isSystemActor, newSinceLoaded, docLabel, reviewerHint, reviewNote, roleLabel, vehicleLabel, reviewTimeline, groupApplicants, loadReviewQueue, maskedPhone, waitingSince, resubmissionLabel, previousDecisionLine, type Applicant, type ReviewDocument, type ReviewLane, type ReviewStatus } from '@/lib/review-center';
+import { HELD_FOR_ORDERING_DAY, heldForOrderingDayLine, REVIEW_COUNTS_POLL_MS, REVIEW_STATUSES, accountPathLine, applicantId, isSystemActor, newSinceLoaded, docLabel, reviewerHint, reviewNote, roleLabel, vehicleLabel, reviewTimeline, groupApplicants, loadReviewQueue, maskedPhone, waitingSince, resubmissionLabel, previousDecisionLine, type Applicant, type ReviewDocument, type ReviewLane, type ReviewStatus } from '@/lib/review-center';
 import { label } from '@/lib/labels';
 import { gyDate, gyDateTime, gyTodayYmd } from '@/lib/dates';
 
@@ -70,6 +70,8 @@ export default function VerificationPage() {
   const [ownNameConfirmed, setOwnNameConfirmed] = useState(false);
   // [R3 · review F1] the legal name printed on a registration paper: the storefront names the seller by it
   const [legalName, setLegalName] = useState('');
+  // [COMPANY-DOCS · review F3] a company's paper that is a business-NAME registration: its proprietor is a company
+  const [proprietorIsCompany, setProprietorIsCompany] = useState(false);
   const [insurance, setInsurance] = useState<InsuranceCheck>(EMPTY_INSURANCE);
   const [decision, setDecision] = useState<'approve' | 'reject' | null>(null);
   const [reason, setReason] = useState('');
@@ -145,7 +147,7 @@ export default function VerificationPage() {
     documentList.current?.querySelector<HTMLButtonElement>('[aria-pressed="true"]')?.focus({ preventScroll: true });
   };
   const selectDocument = (doc: ReviewDocument) => {
-    setSelected(doc); setViewed(false); setExpiresAt(''); setDocumentNumber(''); setIssuedOn(''); setCertificateYear(''); setRegistrationKind(''); setOwnNameConfirmed(false); setLegalName(''); setInsurance(EMPTY_INSURANCE);
+    setSelected(doc); setViewed(false); setExpiresAt(''); setDocumentNumber(''); setIssuedOn(''); setCertificateYear(''); setRegistrationKind(''); setOwnNameConfirmed(false); setProprietorIsCompany(false); setLegalName(''); setInsurance(EMPTY_INSURANCE);
     setMutationError(null); setDecision(null); setReason(''); setReasonCode('');
   };
   const openApplicant = (next: Applicant | null) => {
@@ -195,6 +197,8 @@ export default function VerificationPage() {
   const needsOwnName = selected?.reviewerTypes?.includes('ownNameConfirmed') ?? false;
   // [R3 · review F1] a registration paper: the legal name printed on it, typed exactly
   const needsLegalName = selected?.reviewerTypes?.includes('legalName') ?? false;
+  // [COMPANY-DOCS · review F3] the server refuses a company's business-name registration unless its proprietor is a company
+  const needsCompanyProprietor = selected?.docType === 'certificate_of_incorporation' && registrationKind === 'BUSINESS_NAME';
   // [R15] A licence or food certificate checked every January: the year printed on it, never a date.
   const needsCertificateYear = (selected?.reviewerTypes?.includes('certificateYear') ?? false)
     && (!needsRegistrationKind || registrationKind === 'BUSINESS_NAME');
@@ -205,7 +209,8 @@ export default function VerificationPage() {
     && (!needsCertificateYear || certificateYearOk)
     && (!needsRegistrationKind || registrationKind !== '')
     && (!needsOwnName || ownNameConfirmed)
-    && (!needsLegalName || legalName.trim().length >= 2);
+    && (!needsLegalName || legalName.trim().length >= 2)
+    && (!needsCompanyProprietor || proprietorIsCompany);
   const approveBlocked = !viewed || !expiryOk || !typedReady || (isInsurance && !insuranceReady);
   const currentIndex = filtered.findIndex((a) => a.id === applicant?.id);
   const move = (offset: number) => {
@@ -224,6 +229,7 @@ export default function VerificationPage() {
         ...(needsCertificateYear ? { certificateYear: Number(certificateYear) } : {}),
         ...(needsOwnName ? { ownNameConfirmed } : {}),
         ...(needsLegalName ? { legalName: legalName.trim() } : {}),
+        ...(needsCompanyProprietor ? { proprietorIsCompany } : {}),
       }, note) : rejectDoc(doc.id, note, code as RejectionReasonCode);
     },
     onError: (error) => {
@@ -356,6 +362,7 @@ export default function VerificationPage() {
               <span>{previousDecisionLine(selected.previousDecision)}</span>
               {selected.previousDecision.reviewNote && <span>Last time: {selected.previousDecision.reviewNote}</span>}
             </aside>}
+            {accountPathLine(selected.accountBasis) ? <p className="rc-reviewer-hint" data-account-path>{accountPathLine(selected.accountBasis)}</p> : null}
             {reviewerHint(selected.docType) ? <p className="rc-reviewer-hint">{reviewerHint(selected.docType)}</p> : null}
             {reviewNote(selected.docType, selected.role) && <p className="rc-muted rc-review-note">{reviewNote(selected.docType, selected.role)}</p>}
             <DocumentViewer key={selected.id} id={selected.id} label={docLabel(selected.docType)} onViewed={setViewed} onRejectMissing={selected.status === 'PENDING' && !busy ? () => { openDecision('reject'); setReasonCode('UNREADABLE'); } : undefined} />
@@ -364,6 +371,7 @@ export default function VerificationPage() {
             {selected.status === 'PENDING' && (needsExpiry || isInsurance || needsNumber || needsIssuedOn || needsCertificateYear || needsRegistrationKind || needsOwnName || needsLegalName) && <div className="rc-fields">
               {needsRegistrationKind && <label>What this certificate is<select aria-label="What this certificate is" value={registrationKind} onChange={(e) => setRegistrationKind(e.target.value as '' | 'BUSINESS_NAME' | 'COMPANY')} disabled={busy}><option value="">Choose…</option><option value="BUSINESS_NAME">Business name (sole trader or partnership): renewed every year</option><option value="COMPANY">Company: certificate of incorporation, never expires</option></select><small>{registrationKind === 'BUSINESS_NAME' ? 'Type the year it is registered for. The store goes offline on 16 January if it is not renewed.' : 'A company’s incorporation certificate never expires.'}</small></label>}
               {needsLegalName && <label>Registered name, exactly as printed<input aria-label="Registered name, exactly as printed" autoComplete="off" maxLength={160} value={legalName} onChange={(e) => setLegalName(e.target.value)} disabled={busy} /><small>Customers see this as the seller: the business’s or company’s name on this paper, never a person’s name unless the paper registers it.</small></label>}
+              {needsCompanyProprietor && <label className="rc-check"><input type="checkbox" aria-label="The proprietor named on it is a company" checked={proprietorIsCompany} onChange={(e) => setProprietorIsCompany(e.target.checked)} disabled={busy} />The proprietor named on this business name registration is a company (Ltd. or Inc.). If it names a person, reject it: that business signs up as a registered business, or through its manager.</label>}
               {needsOwnName && <label className="rc-check"><input type="checkbox" aria-label="Own name checked against the ID" checked={ownNameConfirmed} onChange={(e) => setOwnNameConfirmed(e.target.checked)} disabled={busy} />The store name in the declaration is the owner’s true surname, with nothing added except their first names or initials, as printed on their ID. If not, reject it: the store must register its business name.</label>}
               {needsCertificateYear && <label>Year printed on the certificate<input inputMode="numeric" aria-label="Year printed on the certificate" autoComplete="off" maxLength={4} placeholder={String(yearNow)} value={certificateYear} onChange={(e) => setCertificateYear(e.target.value)} disabled={busy} /><small>{certificateYear && !certificateYearOk ? `Only this year’s certificate (or, until 16 January, last year’s) can be approved.` : 'It is checked again every January. The server sets the date.'}</small></label>}
               {needsNumber && <label>Document number<input aria-label="Document number" autoComplete="off" maxLength={40} value={documentNumber} onChange={(e) => setDocumentNumber(e.target.value)} disabled={busy} /><small>Read the number from this document.</small></label>}

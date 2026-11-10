@@ -197,6 +197,8 @@ const ROUTE_CLASS: Record<string, 'ordering' | 'open'> = {
   '/vendors': 'open', '/drivers': 'open', '/legal/child-safety': 'open', '/legal/delivery': 'open', '/legal/privacy': 'open',
   '/legal/refunds': 'open', '/legal/terms': 'open', '/account/delete': 'open', '/launching-soon': 'open', '/offline': 'open',
   '/login': 'open', '/signup': 'open',
+  // [COMPANY-DOCS · owner 10 Nov 2026] the printable letters of authority a partner signs (linked from the app and Documents).
+  '/letters/company-authority': 'open', '/letters/owner-authority': 'open',
   // [WEB-DELETE] Where a person lands once their account is deleted (signed out by then; partners delete before launch).
   '/account-deleted': 'open',
   // Partner consoles (stores, riders, drivers, advertisers) work before launch.

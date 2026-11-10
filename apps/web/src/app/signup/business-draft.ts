@@ -7,8 +7,10 @@ import { BUSINESS_KEY } from '@/lib/signup-draft';
  */
 export type BusinessDraftKept = {
   biz: { name: string; vendorType: string; addressLine1: string; city: string; region: string };
-  nameBasis: 'REGISTERED' | 'OWN_NAME';
+  nameBasis: 'REGISTERED' | 'OWN_NAME' | 'COMPANY';
   ownNameTick: boolean;
+  /** [COMPANY-DOCS · owner 10 Nov 2026] "I'm the manager, not the owner" (absent in a draft kept before it existed: false) */
+  managerNotOwner?: boolean;
   storePin: { latitude: number; longitude: number; address: string | null } | null;
 };
 const isText = (v: unknown): v is string => typeof v === 'string';
@@ -22,6 +24,6 @@ export function readBusinessDraft(): BusinessDraftKept | null {
     if (!d || !b || ![b.name, b.vendorType, b.addressLine1, b.city, b.region].every(isText)) return null;
     const p = d.storePin;
     const pin = p && Number.isFinite(p.latitude) && Number.isFinite(p.longitude) ? { latitude: p.latitude, longitude: p.longitude, address: isText(p.address) ? p.address : null } : null;
-    return { biz: { name: b.name, vendorType: b.vendorType, addressLine1: b.addressLine1, city: b.city, region: b.region }, nameBasis: d.nameBasis === 'OWN_NAME' ? 'OWN_NAME' : 'REGISTERED', ownNameTick: false, storePin: pin };
+    return { biz: { name: b.name, vendorType: b.vendorType, addressLine1: b.addressLine1, city: b.city, region: b.region }, nameBasis: d.nameBasis === 'OWN_NAME' || d.nameBasis === 'COMPANY' ? d.nameBasis : 'REGISTERED', ownNameTick: false, managerNotOwner: d.managerNotOwner === true, storePin: pin };
   } catch { return null; }
 }

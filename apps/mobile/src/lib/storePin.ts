@@ -1,5 +1,6 @@
 import { GEORGETOWN } from './deviceLocation';
 import type { BusinessSetupType } from '../stores/businessSetupDraft';
+import { signupAccountBasis } from './businessBasisCopy';
 
 // ---------------------------------------------------------------------------
 // [Q8] The store pin. Owner report: "they can't just use the location they're
@@ -177,9 +178,11 @@ export interface BusinessSetupFields {
   city: string;
   agree: boolean;
   pin: StorePin | null;
-  /** [ROLE-DOCS · owner 21 Oct 2026] absent = a business name, as before */
-  nameBasis?: 'REGISTERED' | 'OWN_NAME';
+  /** [ROLE-DOCS · owner 21 Oct 2026] absent = a business name, as before. [COMPANY-DOCS] or a registered company */
+  nameBasis?: 'REGISTERED' | 'OWN_NAME' | 'COMPANY';
   ownNameTick?: boolean;
+  /** [COMPANY-DOCS · owner 10 Nov 2026] "I'm the manager, not the owner" (a registered store only) */
+  managerNotOwner?: boolean;
 }
 
 /** [ROLE-DOCS] Only the store types asked for a business registration can trade under an own name. */
@@ -210,6 +213,7 @@ export function businessSetupBlocker(form: BusinessSetupFields): string | null {
 export function vendorBusinessPayload(form: BusinessSetupFields) {
   const pin = confirmedStorePin(form.pin);
   if (!pin || businessSetupBlocker(form) !== null) return null;
+  const accountBasis = signupAccountBasis(form);
   return {
     name: form.name.trim(),
     vendorType: form.type,
@@ -219,6 +223,8 @@ export function vendorBusinessPayload(form: BusinessSetupFields) {
     latitude: pin.latitude,
     longitude: pin.longitude,
     ...(ownNameStore(form) ? { nameBasis: 'OWN_NAME' as const } : {}),
+    // [COMPANY-DOCS · owner 10 Nov 2026] who signs up: a registered company, or a registered store's manager (absent = the owner)
+    ...(accountBasis ? { accountBasis } : {}),
   };
 }
 

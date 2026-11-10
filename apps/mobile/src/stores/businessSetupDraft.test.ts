@@ -36,6 +36,8 @@ const typed = {
   // [ROLE-DOCS · owner 21 Oct 2026] the store's name basis and the own-name declaration tick
   nameBasis: 'OWN_NAME' as const,
   ownNameTick: true,
+  // [COMPANY-DOCS · owner 10 Nov 2026] "I'm the manager, not the owner" travels with the rest of the form
+  managerNotOwner: true,
 };
 
 beforeEach(() => {
@@ -54,6 +56,7 @@ describe('the List-your-business draft', () => {
       pin: null,
       nameBasis: 'REGISTERED',
       ownNameTick: false,
+      managerNotOwner: false,
     });
   });
 
@@ -136,12 +139,14 @@ describe('the List-your-business draft', () => {
       pin: null,
       nameBasis: 'REGISTERED',
       ownNameTick: false,
+      managerNotOwner: false,
     });
   });
 
   it('holds the six form fields, the store pin and the own-name choice only, in memory only', () => {
     // [ROLE-DOCS · owner 21 Oct 2026 — a DELIBERATE change] + the name basis and the own-name tick
-    expect(Object.keys(EMPTY_BUSINESS_SETUP_DRAFT).sort()).toEqual(['addr', 'agree', 'city', 'name', 'nameBasis', 'ownNameTick', 'phone', 'pin', 'type']);
+    // [COMPANY-DOCS · owner 10 Nov 2026 — a DELIBERATE change] + "I'm the manager, not the owner" (a choice, never a document)
+    expect(Object.keys(EMPTY_BUSINESS_SETUP_DRAFT).sort()).toEqual(['addr', 'agree', 'city', 'managerNotOwner', 'name', 'nameBasis', 'ownNameTick', 'phone', 'pin', 'type']);
     // A business phone, street address and store pin must not be written to
     // disk, and the agreement tick must never outlive the process that showed the terms.
     const src = readFileSync(new URL('./businessSetupDraft.ts', import.meta.url), 'utf8');
