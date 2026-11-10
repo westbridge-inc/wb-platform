@@ -107,7 +107,7 @@ describe('[FOOD-PERMIT] the console never makes an unticked restaurant live', ()
 
 describe('[FOOD-PERMIT] the trust badge: a food handler’s certificate on file is said on the store page', () => {
   const block = (docTypes: string[]) => ({
-    complete: true, missing: [], legalName: null, address: null, contact: null,
+    complete: true, missing: [], pendingPersonCheck: [], legalName: null, address: null, contact: null,
     licences: docTypes.map((docType) => ({ value: 'on file', source: 'RECORD', docType })),
     operator: { legalName: 'x', registeredAddress: 'x', supportEmail: 'x' }, compiledAt: new Date(0).toISOString(),
   }) as DisclosureBlock;
