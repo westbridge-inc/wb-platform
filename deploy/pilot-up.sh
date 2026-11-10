@@ -467,7 +467,7 @@ fi
 # proves both names are stored.
 if [ "$(env_setting CARD_RAIL_V2)" = 1 ] && [ "$(env_setting CARD_RAIL_PROVIDER)" = powertranz ] && [ "$(env_setting CARD_RAIL_KILL)" != 1 ]; then
   [ "$(env_setting POWERTRANZ_ID_FILE)" = /run/secrets/POWERTRANZ_ID ] && [ "$(env_setting POWERTRANZ_PASSWORD_FILE)" = /run/secrets/POWERTRANZ_PASSWORD ] ||
-    die "CARD_RAIL_V2=1 with CARD_RAIL_PROVIDER=powertranz and the kill switch off needs POWERTRANZ_ID_FILE=/run/secrets/POWERTRANZ_ID and POWERTRANZ_PASSWORD_FILE=/run/secrets/POWERTRANZ_PASSWORD in deploy/.env: the API reads the PowerTranz credentials only from the encrypted store (sudo swift-secrets set POWERTRANZ_ID / POWERTRANZ_PASSWORD), and without these lines cards cannot work"
+    die "CARD_RAIL_V2=1 with CARD_RAIL_PROVIDER=powertranz and the kill switch off needs POWERTRANZ_ID_FILE=/run/secrets/POWERTRANZ_ID and POWERTRANZ_PASSWORD_FILE=/run/secrets/POWERTRANZ_PASSWORD in deploy/.env: the API reads the PowerTranz credentials only from the encrypted store, and without these lines cards cannot work"
 fi
 for tool in git docker curl python3; do command -v "$tool" >/dev/null 2>&1 || die "$tool is required"; done
 # [COORD 21 Oct] MALWARE_SCAN_BYPASS_SHOUT: the emergency bypass is loud on every deploy.
