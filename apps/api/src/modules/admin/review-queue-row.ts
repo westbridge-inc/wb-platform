@@ -31,6 +31,8 @@ export const REVIEW_QUEUE_SELECT = {
       id: true, firstName: true, lastName: true, phone: true, countryCode: true,
       // [A-19] The reviewer ticks "cross-checked against the H-plate": the plate is on the screen.
       driver: { select: { licensePlate: true, vehicleMake: true, vehicleModel: true, vehicleType: true } },
+      // [COMPANY-DOCS · owner 10 Nov 2026] Which path the store account signed up on: the reviewer checks each paper against it.
+      vendorOwner: { select: { accountBasis: true } },
     },
   },
 } satisfies Prisma.VerificationDocumentSelect;
@@ -39,6 +41,7 @@ export type ReviewQueueDocument = Prisma.VerificationDocumentGetPayload<{ select
 
 /** One queue row: the allow-listed fields, the earlier decision, the fields the reviewer types, the number masked. */
 export function reviewQueueRow(doc: ReviewQueueDocument & { previousDecision: PreviousDecision | null }) {
+  const { vendorOwner, ...user } = doc.user ?? { vendorOwner: null };
   return {
     id: doc.id,
     userId: doc.userId,
@@ -55,6 +58,8 @@ export function reviewQueueRow(doc: ReviewQueueDocument & { previousDecision: Pr
     previousDecision: doc.previousDecision,
     // [VERIFY-DOCS] What the reviewer must type to approve it.
     reviewerTypes: reviewerTypedFields(doc.docType),
-    user: doc.user ? maskOwnPhone(doc.user) : null,
+    // [COMPANY-DOCS] OWNER, COMPANY or MANAGER for a store account; null for anyone else.
+    accountBasis: vendorOwner?.accountBasis ?? null,
+    user: doc.user ? maskOwnPhone(user) : null,
   };
 }

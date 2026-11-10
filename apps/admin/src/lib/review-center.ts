@@ -24,6 +24,8 @@ export interface ReviewDocument {
   expiresAt?: string | null;
   previousDecision?: PreviousDecision | null;
   reviewerTypes?: Array<'documentNumber' | 'issuedOn' | 'certificateYear' | 'registrationKind' | 'ownNameConfirmed'>;
+  /** [COMPANY-DOCS · owner 10 Nov 2026] Who holds a store account (the path its papers follow); null for anyone else. */
+  accountBasis?: 'OWNER' | 'COMPANY' | 'MANAGER' | null;
   /** A reviewer's id, or the server's automatic marker ('auto:id-on-file', 'kyc:auto') — never shown raw. */
   reviewedBy?: string | null;
   /** [BUG-HUNT F23] A reviewer checked this paper and it waits for ordering day: nobody needs to check it again. */
@@ -53,6 +55,9 @@ const LABELS: Record<string, string> = {
   self_declaration_unregistered: 'Unregistered business declaration (no longer accepted)',
   // [MC-PR2] checklist photo types the queue and the activation checklist both name
   storefront_photo: 'Storefront photo', own_name_declaration: 'Own-name declaration (no business registration)', vehicle_plate_photo: 'Number-plate photo', vehicle_exterior_photo: 'Vehicle photo',
+  // [COMPANY-DOCS · owner 10 Nov 2026] a registered company's papers, and a registered business run by its manager
+  certificate_of_incorporation: 'Certificate of Incorporation (company)', account_holder_id: 'Account holder’s ID (company or manager)',
+  company_authority_letter: 'Director’s letter of authority (or director listing)', owner_authority_letter: 'Owner’s letter of authority (manager)',
   // [TRADES · 13 Oct 2026; R15] service-trade documents
   pest_control_operator_licence: 'PTCCB pest-control operator licence', pesticide_applicator_certificate: 'PTCCB applicator certificate',
   eating_house_registration: 'Eating-house registration', gei_electrical_licence: 'GEI electrical licence',
@@ -94,7 +99,25 @@ const REVIEWER_HINTS: Record<string, string> = {
   // [R13 · owner 15 Oct 2026, research D6] every motor vehicle, not only a taxi
   vehicle_insurance: "Read 'Limitations as to use': it must permit use for hire or reward (taxi: passengers for hire; delivery: commercial use). A policy for social, domestic and pleasure use only is rejected as 'Insurance does not permit use for hire or reward'.",
 };
-export const reviewerHint = (type: string): string | undefined => REVIEWER_HINTS[type];
+// [COMPANY-DOCS · owner rulings 10 Nov 2026] What a person checks on a company's or a manager's papers. Nothing is approved
+// by a machine: the server queues every one of them for a person.
+const ACCOUNT_PAPER_HINTS: Record<string, string> = {
+  // [review F3, F4] a company's business-name registration only when its proprietor is a company; brands may differ
+  certificate_of_incorporation: 'The company’s Certificate of Incorporation from the DCRA (or the company’s Business Registration). Choose “Company” for a certificate of incorporation. A business name registration counts only when the proprietor named on it is a company (Ltd. or Inc.): if it names a person, reject it, because that business signs up as a registered business or through its manager. The store’s name must be the company’s name or a business name the company has registered (brands and franchises often differ): if they differ, ask for that business name registration.',
+  // [review F8] never an expired ID
+  account_holder_id: 'The ID of the one person who manages this Swift account: a National ID, Digital ID card or passport. Refuse an expired ID or passport. The name must match the account and the person named in the letter of authority. This is not the owner’s ID: never show this person’s name on the store.',
+  // [review F2] a certificate of incorporation names no directors: the signer's directorship is checked on its own
+  company_authority_letter: 'A letter on the company’s letterhead, signed and dated by a director, naming the account holder and allowing them to run the company’s Swift store account; or the company’s list of directors showing the account holder as a director. A certificate of incorporation names no directors: confirm the signer IS a director, from the company’s director listing (DCRA notice of directors or annual return), or by calling the company on a number Swift finds itself, never a number on the letter or the form. If you cannot confirm it, reject the letter.',
+  owner_authority_letter: 'A letter signed and dated by the business owner named on the Business Registration, naming this manager and allowing them to run the business’s Swift store account. The owner’s name must match the registration; the manager’s must match their ID. If in doubt, call the business on a number Swift finds itself, never a number on the letter or the form.',
+};
+export const reviewerHint = (type: string): string | undefined => REVIEWER_HINTS[type] ?? ACCOUNT_PAPER_HINTS[type];
+
+/** [COMPANY-DOCS · owner 10 Nov 2026] The path a store account signed up on, in words, for the reviewer (null: not a store account, or the owner's own path). */
+export function accountPathLine(basis: ReviewDocument['accountBasis']): string | null {
+  if (basis === 'COMPANY') return 'Signed up as a registered company: check the certificate, the director’s letter and the account holder’s ID together. No owner’s ID is asked for.';
+  if (basis === 'MANAGER') return 'Signed up by the manager of a registered business (not the owner): check the business registration, the owner’s letter and the manager’s ID together.';
+  return null;
+}
 
 /**
  * [TRADES · 13 Oct 2026] What the reviewer checks on a service-trade document, in plain words.

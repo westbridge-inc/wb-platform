@@ -32,6 +32,11 @@ const DOC_LABELS: Record<string, string> = {
   storefront_photo: 'Storefront Photo',
   // [ROLE-DOCS · owner 21 Oct 2026] signed in the app in place of a business registration (own name, BNA s.3)
   own_name_declaration: 'Own-name declaration',
+  // [COMPANY-DOCS · owner 10 Nov 2026] a registered company's papers, and a registered business run by its manager
+  certificate_of_incorporation: 'Certificate of Incorporation (or the company’s Business Registration)',
+  account_holder_id: 'Account holder’s ID (National ID, Digital ID card or passport)',
+  company_authority_letter: 'Letter of authority from a director (or the company’s list of directors)',
+  owner_authority_letter: 'Letter of authority signed by the business owner',
   // [FOOD-PERMIT · owner 24 Oct 2026] a registered restaurant's tick for its food handlers (never a file)
   food_handler_attestation: 'Food handlers confirmation',
   selfie: 'Selfie',

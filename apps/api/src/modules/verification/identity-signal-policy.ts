@@ -1,12 +1,13 @@
 import { normalizeDocNumber } from '../integrity/normalize';
-import { CERTIFICATE_YEAR_DOC_TYPES, IDENTITY_DOC_TYPES, ISSUE_DATE_DOC_TYPES, LICENCE_NUMBER_DOC_TYPES, OWN_NAME_DOC_TYPE, REGISTRATION_DOC_TYPES } from './doc-registry';
+import { CERTIFICATE_YEAR_DOC_TYPES, ISSUE_DATE_DOC_TYPES, LICENCE_NUMBER_DOC_TYPES, OWN_NAME_DOC_TYPE, PERSON_ID_DOC_TYPES, REGISTRATION_DOC_TYPES } from './doc-registry';
 
 // The two type lists live in the registry's own text (DOC-INV-2); re-exported for this module's callers.
 export { ISSUE_DATE_DOC_TYPES, LICENCE_NUMBER_DOC_TYPES };
 
 /** [CHECKLIST-LEGAL · owner ruling 1 Nov 2026 (b)] The partner identity documents only: the customer's ID (the synthetic
  *  L2 flow) is gone, so no customer ID number can become an identity key any more. */
-const IDENTITY_NUMBER_DOC_TYPES = new Set<string>([...IDENTITY_DOC_TYPES]);
+// [COMPANY-DOCS · owner 10 Nov 2026] A company's or a manager's account holder's ID joins them: protected exactly as an owner's.
+const IDENTITY_NUMBER_DOC_TYPES = new Set<string>([...PERSON_ID_DOC_TYPES]);
 
 /**
  * Convert only a declared identity-document identifier into a HARD integrity
@@ -56,7 +57,7 @@ export function approvedIdentityDocumentNumber(
  * an identity key and never links two customers.
  */
 export const REVIEWER_TYPED_NUMBER_DOC_TYPES: ReadonlySet<string> = new Set([
-  ...IDENTITY_DOC_TYPES,
+  ...PERSON_ID_DOC_TYPES,
   ...LICENCE_NUMBER_DOC_TYPES,
 ]);
 /** Fewer characters than this identify nobody (and would union strangers). */
