@@ -130,3 +130,63 @@ describe('[ANDROID 9 Nov] every KeyboardAvoidingView avoids the keyboard on Andr
     expect(src).toMatch(/Platform\.OS === 'ios' \? <KeyboardAvoidingView behavior="padding" \{\.\.\.props\} \/> : <AndroidKeyboardAvoider \{\.\.\.props\} \/>/);
   });
 });
+
+// ---------------------------------------------------------------------------
+// [KEYBOARD 10 Nov] Same family, both platforms: forms with NO keyboard-avoiding
+// view whose field sat near the end of a short page (or in a pinned bottom
+// composer) went under the keyboard on iOS too, with nothing below it to scroll
+// it up. Each such field now sits inside the kit KeyboardAvoider. (Fields with a
+// long page below them, the modal cards — kit/card.tsx has its own — and the
+// gorhom sheets are not in this list.)
+// ---------------------------------------------------------------------------
+
+const HIDDEN_FIELDS: Array<{ screen: string; field: string; marker: string }> = [
+  { screen: 'modules/shop/screens/MenuItemScreen.tsx', field: 'Note for the store', marker: 'testID="menu-item-note"' },
+  { screen: 'modules/profile/screens/GetHelpScreen.tsx', field: 'Tell us what happened', marker: 'placeholder="Tell us what happened…"' },
+  { screen: 'modules/profile/screens/InviteFriendsScreen.tsx', field: 'Have a friend’s code?', marker: 'label="Have a friend’s code?"' },
+  { screen: 'modules/services/screens/ServicesScreen.tsx', field: 'Describe the job (pinned composer)', marker: 'placeholder="Describe the job (at least 10 characters)…"' },
+  { screen: 'modules/services/screens/ProBookingScreen.tsx', field: 'Note for the provider', marker: 'label="Note for the provider (optional)"' },
+  { screen: 'modules/services/screens/ServiceProviderScreen.tsx', field: 'About your work (new provider)', marker: '<ProviderProfileForm onSaved=' },
+  { screen: 'modules/services/screens/ServiceJobsScreen.tsx', field: 'Quote (GYD), in every job card', marker: '<JobCard key={j.id}' },
+  { screen: 'modules/services/screens/ProBookableScreen.tsx', field: 'Time off From / To', marker: '<LabeledInput label="To" value={offEnd}' },
+  { screen: 'modules/vendor/screens/VendorAccountScreen.tsx', field: 'Business hours (last rows)', marker: 'label="Save hours"' },
+  { screen: 'modules/vendor/screens/VendorItemEditorScreen.tsx', field: 'Travel radius (km)', marker: '<InlineInput value={radiusKm}' },
+  { screen: 'modules/mover/screens/MoverVehicleScreen.tsx', field: 'Licence plate (change vehicle)', marker: '<VehicleSetup' },
+  { screen: 'modules/advertiser/screens/AdvertiserRegisterScreen.tsx', field: 'Website (optional)', marker: 'label="Website (optional)"' },
+  { screen: 'modules/advertiser/screens/NewCampaignScreen.tsx', field: 'Link (optional)', marker: 'label="Link (optional)"' },
+];
+
+describe('[KEYBOARD 10 Nov] a field near the end of a short form still comes up above the keyboard', () => {
+  for (const { screen, field, marker } of HIDDEN_FIELDS) {
+    it(`${screen}: "${field}" is inside the kit KeyboardAvoider`, () => {
+      const src = readFileSync(join(SRC, screen), 'utf8');
+      expect(src).toMatch(/import \{ KeyboardAvoider \} from '(\.\.\/)+kit\/keyboard-avoider';/);
+      const at = src.indexOf(marker);
+      expect(at, `${screen} still renders "${field}"`).toBeGreaterThan(-1);
+      const open = src.lastIndexOf('<KeyboardAvoider style={{ flex: 1 }}>', at);
+      const close = src.indexOf('</KeyboardAvoider>', at);
+      expect(open, `"${field}" has a KeyboardAvoider above it`).toBeGreaterThan(-1);
+      expect(close, `"${field}" has the KeyboardAvoider's close below it`).toBeGreaterThan(at);
+      expect(src.slice(open, at), `"${field}" is inside that KeyboardAvoider, not after it`).not.toContain('</KeyboardAvoider>');
+    });
+  }
+
+  it('the Services job composer is pinned inside the lifted area, so it rides on the keyboard', () => {
+    const src = readFileSync(join(SRC, 'modules/services/screens/ServicesScreen.tsx'), 'utf8');
+    const avoider = src.indexOf('<KeyboardAvoider style={{ flex: 1 }}>');
+    // The absolute composer is placed against the inner View (which ends at the
+    // keyboard), not against the avoider's own edge (which stays under it).
+    expect(src.slice(avoider, avoider + 120)).toMatch(/<KeyboardAvoider style=\{\{ flex: 1 \}\}>\s*<View style=\{\{ flex: 1 \}\}>/);
+    const composer = src.indexOf('{/* Job composer');
+    expect(composer).toBeGreaterThan(avoider);
+    expect(src.indexOf('</View>\n      </KeyboardAvoider>', composer)).toBeGreaterThan(composer);
+  });
+
+  it('a quote typed in My Jobs can be sent with one tap (taps are kept while the keyboard is up)', () => {
+    const src = readFileSync(join(SRC, 'modules/services/screens/ServiceJobsScreen.tsx'), 'utf8');
+    const scroll = src.indexOf('<ScrollView', src.indexOf('<KeyboardAvoider style={{ flex: 1 }}>'));
+    const openingTag = src.slice(scroll, src.indexOf('\n        >\n', scroll));
+    expect(openingTag).toContain('refreshControl');
+    expect(openingTag).toContain('keyboardShouldPersistTaps="handled"');
+  });
+});

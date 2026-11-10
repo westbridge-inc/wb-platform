@@ -19,7 +19,14 @@ vi.mock('../../../mobile/src/hooks/customer', () => ({
 vi.mock('../../../mobile/src/stores/bookingStore', () => ({ useBookingStore: (select: any) => select({ setAppointment: vi.fn() }) }));
 vi.mock('../../../mobile/src/lib/images', () => ({ itemPhoto: () => null, HERO_PHOTO_WIDTH: 1280 }));
 vi.mock('../../../mobile/src/kit/after-dismiss', () => ({ afterDismiss: (fn: () => void) => fn() }));
-vi.mock('../../../mobile/node_modules/react-native', () => ({ Dimensions: { get: () => ({ width: 390 }) }, ScrollView: ({ children }: any) => <div>{children}</div>, View: ({ children }: any) => <div>{children}</div> }));
+// The item page sits in the kit KeyboardAvoider (Android path: a View that listens to the keyboard).
+vi.mock('../../../mobile/node_modules/react-native', () => ({
+  Dimensions: { get: () => ({ width: 390 }) },
+  ScrollView: ({ children }: any) => <div>{children}</div>,
+  View: ({ children }: any) => <div>{children}</div>,
+  Platform: { OS: 'android' },
+  Keyboard: { addListener: () => ({ remove() {} }), isVisible: () => false, metrics: () => undefined },
+}));
 vi.mock('../../../mobile/node_modules/@expo/vector-icons', () => ({ Feather: () => null }));
 vi.mock('../../../mobile/node_modules/react-native-safe-area-context', () => ({ useSafeAreaInsets: () => ({ top: 0, bottom: 0 }) }));
 vi.mock('../../../mobile/node_modules/@react-navigation/native', () => ({

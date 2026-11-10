@@ -15,6 +15,7 @@ import { appointmentDayKey, formatAppointmentDay } from '../../../lib/appointmen
 import { moneyExact } from '../../../lib/money';
 import { parseServiceQuoteInput, serviceJobErrorMessage } from '../../../lib/serviceJobPresentation';
 import { bookingDays, durationLabel, hoursSummary, normalizeClock, WEEKDAY_NAMES, withDayWindows, type HoursWindow } from '../../../lib/proBooking';
+import { KeyboardAvoider } from '../../../kit/keyboard-avoider';
 
 interface MyOffering { id: string; name: string; durationMinutes: number; price: number; active: boolean }
 interface MyBookable {
@@ -141,126 +142,129 @@ export function ProBookableScreen() {
   return (
     <Screen>
       <Header title="Bookable services" />
-      <ScrollView contentContainerStyle={{ paddingHorizontal: space['2xl'], paddingBottom: space['3xl'], gap: space.lg }} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
-        {!data.bookable ? (
-          <Card style={{ backgroundColor: color.soft.info }}>
-            <T variant="label" tone="info">Your service does not take bookings from a list yet. Customers can still ask you for a quote.</T>
-          </Card>
-        ) : (
-          <Card style={{ gap: space.xs }}>
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.sm, flexWrap: 'wrap' }}>
-              <T variant="heading">Customers book you</T>
-              <TonePill
-                label={data.agreementAccepted && live ? 'Open for bookings' : 'Not open yet'}
-                tone={data.agreementAccepted && live ? 'success' : 'neutral'}
-              />
-            </View>
-            <T variant="caption" tone="muted">
-              {data.agreementAccepted === false
-                ? 'Customers can book you from this list once you have accepted the updated provider agreement. Until then they can still ask you for a quote.'
-                : !live
-                  ? 'Add at least one service and your weekly hours, and customers can book a time from your list.'
-                  : 'Bookings from your list are confirmed at once. Customers pay you cash at the appointment. You can move or cancel a booking from My jobs.'}
-            </T>
-          </Card>
-        )}
-
-        <SectionHeader title="Your services" />
-        {data.offerings.length === 0 ? <T variant="caption" tone="muted">No services yet.</T> : null}
-        {data.offerings.map((o) => (
-          <Card key={o.id}>
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.md }}>
-              <View style={{ flex: 1 }}>
-                <T variant="body" weight="semibold">{o.name}</T>
-                <T variant="caption" tone="muted" style={{ marginTop: 2 }}>{`${durationLabel(o.durationMinutes)} · ${moneyExact(o.price)}`}</T>
-              </View>
-              <Switch
-                value={o.active}
-                accessibilityLabel={`${o.name} ${o.active ? 'on' : 'off'}`}
-                disabled={toggle.isPending || !data.bookable}
-                onValueChange={(active) => toggle.mutate({ id: o.id, active })}
-              />
-            </View>
-            {editing === o.id ? <OfferingForm existing={o} onDone={() => setEditing(null)} /> : (
-              data.bookable ? <PillButton label="Edit" variant="soft" size="sm" style={{ marginTop: space.md, alignSelf: 'flex-start' }} onPress={() => setEditing(o.id)} /> : null
-            )}
-          </Card>
-        ))}
-        {toggle.isError ? <T variant="label" tone="error">{serviceJobErrorMessage(toggle.error, 'Couldn’t change this service. Try again.')}</T> : null}
-        {data.bookable ? (editing === 'new' ? <OfferingForm onDone={() => setEditing(null)} /> : (
-          <PillButton label="Add a service" icon="plus" variant="soft" size="md" onPress={() => setEditing('new')} />
-        )) : null}
-
-        {data.bookable ? (
-          <>
-            <SectionHeader title="Weekly hours" style={{ marginTop: space.lg }} />
-            <T variant="caption" tone="muted">
-              {hoursSummary(data.weeklyHours).length ? hoursSummary(data.weeklyHours).join(' · ') : 'No hours yet: nobody can book you until you add some.'}
-            </T>
-            <Card>
-              {WEEKDAY_NAMES.map((_, d) => (
-                <DayHours key={d} day={d} windows={draft.filter((w) => w.dayOfWeek === d)} onChange={(w) => setHours(withDayWindows(draft, d, w))} />
-              ))}
+      {/* [KEYBOARD 10 Nov] Lifted above the keyboard (kit/keyboard-avoider), so the last fields can scroll into view. */}
+      <KeyboardAvoider style={{ flex: 1 }}>
+        <ScrollView contentContainerStyle={{ paddingHorizontal: space['2xl'], paddingBottom: space['3xl'], gap: space.lg }} keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
+          {!data.bookable ? (
+            <Card style={{ backgroundColor: color.soft.info }}>
+              <T variant="label" tone="info">Your service does not take bookings from a list yet. Customers can still ask you for a quote.</T>
             </Card>
-            {saveHours.isError ? <T variant="label" tone="error">{serviceJobErrorMessage(saveHours.error, 'Couldn’t save your hours. Try again.')}</T> : null}
-            <PillButton
-              label={hoursChanged ? 'Save hours' : 'Hours saved'}
-              size="md"
-              disabled={!hoursChanged}
-              loading={saveHours.isPending}
-              onPress={() => saveHours.mutate(draft, { onSuccess: () => setHours(null) })}
-            />
-
-            <SectionHeader title="Time off" style={{ marginTop: space.lg }} />
-            <T variant="caption" tone="muted">Time off stops new bookings. It never cancels one already booked: move or cancel those from My jobs.</T>
-            {data.timeOff.map((t) => (
-              <Card key={t.id} style={{ flexDirection: 'row', alignItems: 'center', gap: space.md }}>
-                <T variant="body" style={{ flex: 1 }}>{`${formatAppointmentDay(t.date)}${t.start && t.end ? ` · ${t.start}–${t.end}` : ' · all day'}`}</T>
-                <PillButton label="Remove" variant="soft" size="sm" loading={removeOff.isPending} onPress={() => removeOff.mutate(t.id)} />
-              </Card>
-            ))}
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ flexGrow: 0 }} contentContainerStyle={{ gap: space.md }}>
-              {bookingDays(today, 30, undefined).map((d) => (
-                <Chip key={d.key} label={d.label} selected={offDay === d.key} onPress={() => { setOffDay(d.key); setOffNote(null); }} style={{ height: 40, paddingHorizontal: space.lg }} />
-              ))}
-            </ScrollView>
-            {offDay ? (
-              <View style={{ gap: space.sm }}>
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.md }}>
-                  <T variant="label" style={{ flex: 1 }}>All day</T>
-                  <Switch value={offWhole} onValueChange={setOffWhole} accessibilityLabel="Time off all day" />
-                </View>
-                {!offWhole ? (
-                  <View style={{ flexDirection: 'row', gap: space.sm }}>
-                    <LabeledInput label="From" value={offStart} onChangeText={setOffStart} placeholder="09:00" containerStyle={{ flex: 1 }} />
-                    <LabeledInput label="To" value={offEnd} onChangeText={setOffEnd} placeholder="12:00" containerStyle={{ flex: 1 }} />
-                  </View>
-                ) : null}
-                {addOff.isError ? <T variant="label" tone="error">{serviceJobErrorMessage(addOff.error, 'Couldn’t add this time off. Try again.')}</T> : null}
-                <PillButton
-                  label={`Add time off · ${formatAppointmentDay(offDay)}`}
-                  size="md"
-                  disabled={!offStartOk}
-                  loading={addOff.isPending}
-                  onPress={() => addOff.mutate(
-                    offWhole ? { date: offDay } : { date: offDay, start: normalizeClock(offStart)!, end: normalizeClock(offEnd)! },
-                    {
-                      onSuccess: (res: any) => {
-                        const clashing = Number(res?.clashingBookings ?? 0);
-                        setOffNote(clashing > 0
-                          ? `Added. You still have ${clashing} booked ${clashing === 1 ? 'job' : 'jobs'} in this time: move or cancel ${clashing === 1 ? 'it' : 'them'} from My jobs.`
-                          : 'Added.');
-                        setOffDay(null);
-                      },
-                    },
-                  )}
+          ) : (
+            <Card style={{ gap: space.xs }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.sm, flexWrap: 'wrap' }}>
+                <T variant="heading">Customers book you</T>
+                <TonePill
+                  label={data.agreementAccepted && live ? 'Open for bookings' : 'Not open yet'}
+                  tone={data.agreementAccepted && live ? 'success' : 'neutral'}
                 />
               </View>
-            ) : null}
-            {offNote ? <T variant="label" tone={offNote === 'Added.' ? 'success' : 'warning'}>{offNote}</T> : null}
-          </>
-        ) : null}
-      </ScrollView>
+              <T variant="caption" tone="muted">
+                {data.agreementAccepted === false
+                  ? 'Customers can book you from this list once you have accepted the updated provider agreement. Until then they can still ask you for a quote.'
+                  : !live
+                    ? 'Add at least one service and your weekly hours, and customers can book a time from your list.'
+                    : 'Bookings from your list are confirmed at once. Customers pay you cash at the appointment. You can move or cancel a booking from My jobs.'}
+              </T>
+            </Card>
+          )}
+
+          <SectionHeader title="Your services" />
+          {data.offerings.length === 0 ? <T variant="caption" tone="muted">No services yet.</T> : null}
+          {data.offerings.map((o) => (
+            <Card key={o.id}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.md }}>
+                <View style={{ flex: 1 }}>
+                  <T variant="body" weight="semibold">{o.name}</T>
+                  <T variant="caption" tone="muted" style={{ marginTop: 2 }}>{`${durationLabel(o.durationMinutes)} · ${moneyExact(o.price)}`}</T>
+                </View>
+                <Switch
+                  value={o.active}
+                  accessibilityLabel={`${o.name} ${o.active ? 'on' : 'off'}`}
+                  disabled={toggle.isPending || !data.bookable}
+                  onValueChange={(active) => toggle.mutate({ id: o.id, active })}
+                />
+              </View>
+              {editing === o.id ? <OfferingForm existing={o} onDone={() => setEditing(null)} /> : (
+                data.bookable ? <PillButton label="Edit" variant="soft" size="sm" style={{ marginTop: space.md, alignSelf: 'flex-start' }} onPress={() => setEditing(o.id)} /> : null
+              )}
+            </Card>
+          ))}
+          {toggle.isError ? <T variant="label" tone="error">{serviceJobErrorMessage(toggle.error, 'Couldn’t change this service. Try again.')}</T> : null}
+          {data.bookable ? (editing === 'new' ? <OfferingForm onDone={() => setEditing(null)} /> : (
+            <PillButton label="Add a service" icon="plus" variant="soft" size="md" onPress={() => setEditing('new')} />
+          )) : null}
+
+          {data.bookable ? (
+            <>
+              <SectionHeader title="Weekly hours" style={{ marginTop: space.lg }} />
+              <T variant="caption" tone="muted">
+                {hoursSummary(data.weeklyHours).length ? hoursSummary(data.weeklyHours).join(' · ') : 'No hours yet: nobody can book you until you add some.'}
+              </T>
+              <Card>
+                {WEEKDAY_NAMES.map((_, d) => (
+                  <DayHours key={d} day={d} windows={draft.filter((w) => w.dayOfWeek === d)} onChange={(w) => setHours(withDayWindows(draft, d, w))} />
+                ))}
+              </Card>
+              {saveHours.isError ? <T variant="label" tone="error">{serviceJobErrorMessage(saveHours.error, 'Couldn’t save your hours. Try again.')}</T> : null}
+              <PillButton
+                label={hoursChanged ? 'Save hours' : 'Hours saved'}
+                size="md"
+                disabled={!hoursChanged}
+                loading={saveHours.isPending}
+                onPress={() => saveHours.mutate(draft, { onSuccess: () => setHours(null) })}
+              />
+
+              <SectionHeader title="Time off" style={{ marginTop: space.lg }} />
+              <T variant="caption" tone="muted">Time off stops new bookings. It never cancels one already booked: move or cancel those from My jobs.</T>
+              {data.timeOff.map((t) => (
+                <Card key={t.id} style={{ flexDirection: 'row', alignItems: 'center', gap: space.md }}>
+                  <T variant="body" style={{ flex: 1 }}>{`${formatAppointmentDay(t.date)}${t.start && t.end ? ` · ${t.start}–${t.end}` : ' · all day'}`}</T>
+                  <PillButton label="Remove" variant="soft" size="sm" loading={removeOff.isPending} onPress={() => removeOff.mutate(t.id)} />
+                </Card>
+              ))}
+              <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ flexGrow: 0 }} contentContainerStyle={{ gap: space.md }}>
+                {bookingDays(today, 30, undefined).map((d) => (
+                  <Chip key={d.key} label={d.label} selected={offDay === d.key} onPress={() => { setOffDay(d.key); setOffNote(null); }} style={{ height: 40, paddingHorizontal: space.lg }} />
+                ))}
+              </ScrollView>
+              {offDay ? (
+                <View style={{ gap: space.sm }}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.md }}>
+                    <T variant="label" style={{ flex: 1 }}>All day</T>
+                    <Switch value={offWhole} onValueChange={setOffWhole} accessibilityLabel="Time off all day" />
+                  </View>
+                  {!offWhole ? (
+                    <View style={{ flexDirection: 'row', gap: space.sm }}>
+                      <LabeledInput label="From" value={offStart} onChangeText={setOffStart} placeholder="09:00" containerStyle={{ flex: 1 }} />
+                      <LabeledInput label="To" value={offEnd} onChangeText={setOffEnd} placeholder="12:00" containerStyle={{ flex: 1 }} />
+                    </View>
+                  ) : null}
+                  {addOff.isError ? <T variant="label" tone="error">{serviceJobErrorMessage(addOff.error, 'Couldn’t add this time off. Try again.')}</T> : null}
+                  <PillButton
+                    label={`Add time off · ${formatAppointmentDay(offDay)}`}
+                    size="md"
+                    disabled={!offStartOk}
+                    loading={addOff.isPending}
+                    onPress={() => addOff.mutate(
+                      offWhole ? { date: offDay } : { date: offDay, start: normalizeClock(offStart)!, end: normalizeClock(offEnd)! },
+                      {
+                        onSuccess: (res: any) => {
+                          const clashing = Number(res?.clashingBookings ?? 0);
+                          setOffNote(clashing > 0
+                            ? `Added. You still have ${clashing} booked ${clashing === 1 ? 'job' : 'jobs'} in this time: move or cancel ${clashing === 1 ? 'it' : 'them'} from My jobs.`
+                            : 'Added.');
+                          setOffDay(null);
+                        },
+                      },
+                    )}
+                  />
+                </View>
+              ) : null}
+              {offNote ? <T variant="label" tone={offNote === 'Added.' ? 'success' : 'warning'}>{offNote}</T> : null}
+            </>
+          ) : null}
+        </ScrollView>
+      </KeyboardAvoider>
     </Screen>
   );
 }

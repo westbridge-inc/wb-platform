@@ -17,6 +17,7 @@ import { enterServiceProvider } from '../serviceProviderEntry';
 import { licenceLabel } from '../licenceLabel';
 import { useServiceCatalog } from '../useServiceCatalog';
 import { customerServiceCategories, SERVICE_GROUP_LABELS, selectedServiceCategory, serviceRequestTrade } from '../serviceCatalogPresentation';
+import { KeyboardAvoider } from '../../../kit/keyboard-avoider';
 
 const SERVICES_TINT = VERTICAL_TINT.services ?? { bg: color.brand[50], ink: color.brand[600] };
 const SERVICE_PICTOGRAMS: Record<string, PictogramName> = {
@@ -90,276 +91,282 @@ export function ServicesScreen({ navigation }: any) {
   return (
     <Screen>
       <Header title="Services" right={<LinkText label="My jobs" onPress={() => navigation?.navigate?.('ServiceJobs')} />} />
-      <ScrollView
-        contentContainerStyle={{ paddingHorizontal: space['2xl'], paddingTop: space.sm, paddingBottom: selectedProviderId ? space['5xl'] * 5 + space.xl : space['3xl'] }}
-        showsVerticalScrollIndicator={false}
-        keyboardShouldPersistTaps="handled"
-      >
-        <T variant="title">Find the right service</T>
-        <T variant="body" tone="muted" style={{ marginTop: space.sm, marginBottom: space.lg }}>
-          Choose an available service, discuss the quote, and agree a time with your provider.
-        </T>
-
-        <Card style={{ flexDirection: 'row', alignItems: 'center', gap: space.md, marginBottom: space.xl }}>
-          <IconChip icon="briefcase" />
-          <View style={{ flex: 1 }}>
-            <T variant="label" weight="semibold">Offer your own services</T>
-            <T variant="caption" tone="muted" style={{ marginTop: space.xs }}>
-              Set up your profile, verification, and provider jobs.
-            </T>
-          </View>
-          <PillButton
-            label="Open"
-            variant="soft"
-            size="md"
-            onPress={() => enterServiceProvider({
-              isAuthenticated,
-              promptLogin,
-              navigate: (screen) => navigation?.navigate?.(screen),
-            })}
-          />
-        </Card>
-
-        <T variant="heading" style={{ marginBottom: space.sm }}>
-          Choose a service
-        </T>
-        <T variant="caption" tone="muted" style={{ marginBottom: space.md }}>
-          {providers.some((p) => p.bookableFromList === true)
-            ? 'Browse by category. Every provider accepts quote requests; some also take bookings from their list of services — tap Book to pick a time.'
-            : 'Browse by category. Available providers accept quote requests; instant appointment booking is still being prepared.'}
-        </T>
-        {/* [Wave 3 · ref 13] The reference draws trade PILLS — the kit Chip —
-            not pictogram tiles. Tiles were an unrecorded invention; the
-            reference outranks them. */}
-        {/* [APP-SPEED D] The catalogue's pills, as shapes, on the first frame (Home reads it ahead of this door, so
-            usually the real pills are already here). A failed read still says so, with Try again. */}
-        {offlineFirstRead(catalog) ? (
-          // [APP-SPEED D · review S3] A first read waiting for a connection: the offline state, never an endless skeleton.
-          <EmptyState icon="wifi-off" title="You’re offline" body={OFFLINE_FIRST_READ_MESSAGE} actionLabel="Try again" onAction={() => void catalog.refetch()} />
-        ) : catalog.isPending ? <ChipsSkeleton style={{ marginBottom: space.lg }} /> : catalog.isError ? (
-          <EmptyState icon="alert-circle" title="Couldn’t load services" body="Try loading the service catalogue again." actionLabel="Try again" onAction={() => void catalog.refetch()} />
-        ) : Object.entries(SERVICE_GROUP_LABELS).filter(([group]) =>
-          visibleCategories.some((category) => category.group === group)).map(([group, label]) => (
-          <View key={group} style={{ marginBottom: space.lg, gap: space.sm }}>
-            <T variant="label" weight="semibold">{label}</T>
-            <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: space.sm }}>
-              {visibleCategories.filter((category) => category.group === group).map((option) => (
-                <Chip
-                  key={option.id}
-                  label={option.label}
-                  selected={option.id === trade}
-                  onPress={() => {
-                    setTrade(option.id);
-                    setSelectedProviderId(undefined);
-                  }}
-                />
-              ))}
-            </View>
-          </View>
-        ))}
-        {selectedTrade?.availabilityMessage ? (
-          <T variant="caption" tone="muted" style={{ marginVertical: space.md }}>
-            {selectedTrade.availabilityMessage}
-          </T>
-        ) : null}
-
-        {/* Safety guidance from the API (licensed-trade nudges) */}
-        {requestTrade && data?.guidance ? (
-          <View
-            style={{
-              flexDirection: 'row',
-              alignItems: 'flex-start',
-              gap: space.md,
-              marginTop: space.xl,
-              padding: space.lg,
-              borderRadius: radius.lg,
-              backgroundColor: data.riskTier === 'HIGH' ? color.soft.warning : color.soft.info,
-            }}
+      {/* [KEYBOARD 10 Nov] Lifted above the keyboard (kit/keyboard-avoider): the composer is pinned to the
+          bottom of the inner View, so it rides on top of the keyboard instead of under it. */}
+      <KeyboardAvoider style={{ flex: 1 }}>
+        <View style={{ flex: 1 }}>
+          <ScrollView
+            contentContainerStyle={{ paddingHorizontal: space['2xl'], paddingTop: space.sm, paddingBottom: selectedProviderId ? space['5xl'] * 5 + space.xl : space['3xl'] }}
+            showsVerticalScrollIndicator={false}
+            keyboardShouldPersistTaps="handled"
           >
-            <Feather name="shield" size={20} color={data.riskTier === 'HIGH' ? color.warning : color.info} />
-            <T variant="label" tone={data.riskTier === 'HIGH' ? 'warning' : 'info'} style={{ flex: 1 }}>
-              {data.guidance}
+            <T variant="title">Find the right service</T>
+            <T variant="body" tone="muted" style={{ marginTop: space.sm, marginBottom: space.lg }}>
+              Choose an available service, discuss the quote, and agree a time with your provider.
             </T>
-          </View>
-        ) : null}
 
-        {catalog.isPending || catalog.isError ? null : !trade ? (
-          <EmptyState icon="tool" title="What needs doing?" body="Pick a service to see verified pros near you." />
-        ) : !requestTrade ? (
-          <EmptyState icon="clock" title="This service is being prepared" body="You can browse other categories while the required provider checks are completed." />
-        ) : offlineFirstRead({ fetchStatus: providersFetchStatus, data }) ? (
-          <EmptyState icon="wifi-off" title="You’re offline" body={OFFLINE_FIRST_READ_MESSAGE} actionLabel="Try again" onAction={() => { void refetchProviders(); }} />
-        ) : isFetching ? (
-          <ListSkeleton rows={3} style={{ paddingHorizontal: 0 }} />
-        ) : isError ? (
-          // [NO-DEAD-ENDS] A failed list is not "none available": say so, and retry here.
-          <EmptyState
-            icon="alert-circle"
-            title="Couldn’t load providers"
-            body="This is not an empty list. Check your connection and try again."
-            actionLabel="Try again"
-            onAction={() => { void refetchProviders(); }}
-          />
-        ) : providers.length === 0 ? (
-          <EmptyState
-            icon="users"
-            title="None available yet"
-            body={`No ${selectedTrade?.label.toLowerCase() ?? 'service'} providers near you yet — check back soon.`}
-          />
-        ) : (
-          <View style={{ marginTop: space.xl, gap: space.md }}>
-            {providers.map((p) => {
-              const selected = p.id === selectedProviderId;
-              const providerPictogram = SERVICE_PICTOGRAMS[p.trade] ?? 'services';
-              return (
-                <Card
-                  key={p.id}
-                  style={selected ? { borderWidth: space.xs / 2, borderColor: SERVICES_TINT.ink } : undefined}
-                >
-                  <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: space.md }}>
-                    <View
-                      accessible={false}
-                      accessibilityElementsHidden
-                      importantForAccessibility="no-hide-descendants"
-                      style={{
-                        width: space['5xl'],
-                        height: space['5xl'],
-                        borderRadius: radius.md,
-                        backgroundColor: SERVICES_TINT.bg,
-                        alignItems: 'center',
-                        justifyContent: 'center',
+            <Card style={{ flexDirection: 'row', alignItems: 'center', gap: space.md, marginBottom: space.xl }}>
+              <IconChip icon="briefcase" />
+              <View style={{ flex: 1 }}>
+                <T variant="label" weight="semibold">Offer your own services</T>
+                <T variant="caption" tone="muted" style={{ marginTop: space.xs }}>
+                  Set up your profile, verification, and provider jobs.
+                </T>
+              </View>
+              <PillButton
+                label="Open"
+                variant="soft"
+                size="md"
+                onPress={() => enterServiceProvider({
+                  isAuthenticated,
+                  promptLogin,
+                  navigate: (screen) => navigation?.navigate?.(screen),
+                })}
+              />
+            </Card>
+
+            <T variant="heading" style={{ marginBottom: space.sm }}>
+              Choose a service
+            </T>
+            <T variant="caption" tone="muted" style={{ marginBottom: space.md }}>
+              {providers.some((p) => p.bookableFromList === true)
+                ? 'Browse by category. Every provider accepts quote requests; some also take bookings from their list of services — tap Book to pick a time.'
+                : 'Browse by category. Available providers accept quote requests; instant appointment booking is still being prepared.'}
+            </T>
+            {/* [Wave 3 · ref 13] The reference draws trade PILLS — the kit Chip —
+                not pictogram tiles. Tiles were an unrecorded invention; the
+                reference outranks them. */}
+            {/* [APP-SPEED D] The catalogue's pills, as shapes, on the first frame (Home reads it ahead of this door, so
+                usually the real pills are already here). A failed read still says so, with Try again. */}
+            {offlineFirstRead(catalog) ? (
+              // [APP-SPEED D · review S3] A first read waiting for a connection: the offline state, never an endless skeleton.
+              <EmptyState icon="wifi-off" title="You’re offline" body={OFFLINE_FIRST_READ_MESSAGE} actionLabel="Try again" onAction={() => void catalog.refetch()} />
+            ) : catalog.isPending ? <ChipsSkeleton style={{ marginBottom: space.lg }} /> : catalog.isError ? (
+              <EmptyState icon="alert-circle" title="Couldn’t load services" body="Try loading the service catalogue again." actionLabel="Try again" onAction={() => void catalog.refetch()} />
+            ) : Object.entries(SERVICE_GROUP_LABELS).filter(([group]) =>
+              visibleCategories.some((category) => category.group === group)).map(([group, label]) => (
+              <View key={group} style={{ marginBottom: space.lg, gap: space.sm }}>
+                <T variant="label" weight="semibold">{label}</T>
+                <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: space.sm }}>
+                  {visibleCategories.filter((category) => category.group === group).map((option) => (
+                    <Chip
+                      key={option.id}
+                      label={option.label}
+                      selected={option.id === trade}
+                      onPress={() => {
+                        setTrade(option.id);
+                        setSelectedProviderId(undefined);
                       }}
-                    >
-                      <Pictogram name={providerPictogram} size={space['2xl']} color={SERVICES_TINT.ink} />
-                    </View>
-                    <View style={{ flex: 1 }}>
-                      <View style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: space.sm }}>
-                        <T variant="heading" style={{ flexShrink: 1 }}>
-                          {p.tradeLabel}
-                        </T>
-                        <TonePill label="Verified" tone="success" />
-                      </View>
-                      <View style={{ marginTop: space.sm }}>
-                        {/* [ALG-31 / L2] `displayRating` from the one mapper.
-                            This read the raw mean behind a hand-rolled
-                            `totalRatings > 0` threshold — a THIRD definition of
-                            when a rating may be shown, and a far looser one than
-                            RATING_MIN_DISPLAY (5). A tradesperson with a single
-                            1-star rating was branded ★1.0 on the browse page,
-                            which is exactly what the threshold exists to
-                            prevent. The count stays honest and separate. */}
-                        <RatingMeta
-                          rating={p.displayRating ?? null}
-                          extra={p.totalRatings > 0 ? `${p.totalRatings} ratings` : undefined}
-                        />
-                      </View>
-                      <View style={{ marginTop: space.sm }}>
-                        {licenceLabel(p.licenceCheckedOn) ? (
-                          <TonePill label={licenceLabel(p.licenceCheckedOn)!} tone="neutral" />
-                        ) : (
-                          <T variant="caption" tone="muted">
-                            {p.selfSkilled ? 'Self-skilled' : 'No trade credential shown'}
-                          </T>
-                        )}
-                      </View>
-                    </View>
-                    {/* [ref 13] The button sits compact in the card's top
-                        row — "Request", or the filled "Selected" (tap again
-                        to unpick). The per-card "discuss quotes" box is gone:
-                        the page subtitle says it once for everyone. */}
-                    <View style={{ gap: space.sm }}>
-                      {/* [BOOK-P3] Book a time from the pro's list, when the server says they take bookings
-                          (signed in only: a guest is asked to sign in first). */}
-                      {p.bookableFromList === true ? (
-                        <PillButton
-                          label="Book"
-                          size="sm"
-                          icon="calendar"
-                          onPress={() => (isAuthenticated ? navigation?.navigate?.('ProBooking', { providerId: p.id }) : promptLogin())}
-                        />
-                      ) : null}
-                      <PillButton
-                        label={selected ? 'Selected' : 'Request'}
-                        variant={selected ? 'primary' : 'soft'}
-                        size="sm"
-                        onPress={() => setSelectedProviderId(selected ? undefined : p.id)}
-                      />
-                    </View>
-                  </View>
-                  {p.bio ? (
-                    <T variant="label" tone="muted" numberOfLines={2} style={{ marginTop: space.md }}>
-                      {p.bio}
-                    </T>
-                  ) : null}
-                  {/* [IMAGES-E2E] Photos of the provider's own work (uploaded, redrawn without camera data). */}
-                  {p.portfolioPhotos?.length ? (
-                    <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginTop: space.md }} contentContainerStyle={{ gap: space.sm }}>
-                      {p.portfolioPhotos.slice(0, 6).map((photo) => {
-                        const uri = storePhotoUrl(photo, 320);
-                        return uri ? (
-                          <Image
-                            key={photo}
-                            source={{ uri }}
-                            style={{ width: 96, height: 72, borderRadius: radius.md, backgroundColor: color.surface.subtle }}
-                            contentFit="cover"
-                            accessibilityLabel={`Work by ${p.tradeLabel.toLowerCase()}`}
-                          />
-                        ) : null;
-                      })}
-                    </ScrollView>
-                  ) : null}
-                </Card>
-              );
-            })}
-          </View>
-        )}
-      </ScrollView>
+                    />
+                  ))}
+                </View>
+              </View>
+            ))}
+            {selectedTrade?.availabilityMessage ? (
+              <T variant="caption" tone="muted" style={{ marginVertical: space.md }}>
+                {selectedTrade.availabilityMessage}
+              </T>
+            ) : null}
 
-      {/* Job composer — slides in when a provider is chosen */}
-      {requestTrade && selectedProviderId ? (
-        <View
-          style={{
-            position: 'absolute',
-            left: 0,
-            right: 0,
-            bottom: 0,
-            backgroundColor: color.surface.base,
-            borderTopWidth: StyleSheet.hairlineWidth,
-            borderTopColor: color.border.subtle,
-            paddingHorizontal: space['2xl'],
-            paddingTop: space.lg,
-            paddingBottom: space['2xl'],
-            gap: space.md,
-          }}
-        >
-          <View
-            style={{
-              borderRadius: radius.lg,
-              borderWidth: StyleSheet.hairlineWidth,
-              borderColor: color.border.subtle,
-              backgroundColor: color.surface.base,
-              paddingHorizontal: space.lg,
-              paddingVertical: space.md,
-              minHeight: space['5xl'] + space['2xl'],
-            }}
-          >
-            <TextInput
-              value={description}
-              onChangeText={setDescription}
-              placeholder="Describe the job (at least 10 characters)…"
-              placeholderTextColor={color.text.muted}
-              multiline
-              style={{ fontFamily: font.body, fontSize: fontSize.base, color: color.text.primary, minHeight: space['5xl'] }}
-            />
-          </View>
-          {errMsg ? (
-            <T variant="label" tone="error" center>
-              {errMsg}
-            </T>
+            {/* Safety guidance from the API (licensed-trade nudges) */}
+            {requestTrade && data?.guidance ? (
+              <View
+                style={{
+                  flexDirection: 'row',
+                  alignItems: 'flex-start',
+                  gap: space.md,
+                  marginTop: space.xl,
+                  padding: space.lg,
+                  borderRadius: radius.lg,
+                  backgroundColor: data.riskTier === 'HIGH' ? color.soft.warning : color.soft.info,
+                }}
+              >
+                <Feather name="shield" size={20} color={data.riskTier === 'HIGH' ? color.warning : color.info} />
+                <T variant="label" tone={data.riskTier === 'HIGH' ? 'warning' : 'info'} style={{ flex: 1 }}>
+                  {data.guidance}
+                </T>
+              </View>
+            ) : null}
+
+            {catalog.isPending || catalog.isError ? null : !trade ? (
+              <EmptyState icon="tool" title="What needs doing?" body="Pick a service to see verified pros near you." />
+            ) : !requestTrade ? (
+              <EmptyState icon="clock" title="This service is being prepared" body="You can browse other categories while the required provider checks are completed." />
+            ) : offlineFirstRead({ fetchStatus: providersFetchStatus, data }) ? (
+              <EmptyState icon="wifi-off" title="You’re offline" body={OFFLINE_FIRST_READ_MESSAGE} actionLabel="Try again" onAction={() => { void refetchProviders(); }} />
+            ) : isFetching ? (
+              <ListSkeleton rows={3} style={{ paddingHorizontal: 0 }} />
+            ) : isError ? (
+              // [NO-DEAD-ENDS] A failed list is not "none available": say so, and retry here.
+              <EmptyState
+                icon="alert-circle"
+                title="Couldn’t load providers"
+                body="This is not an empty list. Check your connection and try again."
+                actionLabel="Try again"
+                onAction={() => { void refetchProviders(); }}
+              />
+            ) : providers.length === 0 ? (
+              <EmptyState
+                icon="users"
+                title="None available yet"
+                body={`No ${selectedTrade?.label.toLowerCase() ?? 'service'} providers near you yet — check back soon.`}
+              />
+            ) : (
+              <View style={{ marginTop: space.xl, gap: space.md }}>
+                {providers.map((p) => {
+                  const selected = p.id === selectedProviderId;
+                  const providerPictogram = SERVICE_PICTOGRAMS[p.trade] ?? 'services';
+                  return (
+                    <Card
+                      key={p.id}
+                      style={selected ? { borderWidth: space.xs / 2, borderColor: SERVICES_TINT.ink } : undefined}
+                    >
+                      <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: space.md }}>
+                        <View
+                          accessible={false}
+                          accessibilityElementsHidden
+                          importantForAccessibility="no-hide-descendants"
+                          style={{
+                            width: space['5xl'],
+                            height: space['5xl'],
+                            borderRadius: radius.md,
+                            backgroundColor: SERVICES_TINT.bg,
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                          }}
+                        >
+                          <Pictogram name={providerPictogram} size={space['2xl']} color={SERVICES_TINT.ink} />
+                        </View>
+                        <View style={{ flex: 1 }}>
+                          <View style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: space.sm }}>
+                            <T variant="heading" style={{ flexShrink: 1 }}>
+                              {p.tradeLabel}
+                            </T>
+                            <TonePill label="Verified" tone="success" />
+                          </View>
+                          <View style={{ marginTop: space.sm }}>
+                            {/* [ALG-31 / L2] `displayRating` from the one mapper.
+                                This read the raw mean behind a hand-rolled
+                                `totalRatings > 0` threshold — a THIRD definition of
+                                when a rating may be shown, and a far looser one than
+                                RATING_MIN_DISPLAY (5). A tradesperson with a single
+                                1-star rating was branded ★1.0 on the browse page,
+                                which is exactly what the threshold exists to
+                                prevent. The count stays honest and separate. */}
+                            <RatingMeta
+                              rating={p.displayRating ?? null}
+                              extra={p.totalRatings > 0 ? `${p.totalRatings} ratings` : undefined}
+                            />
+                          </View>
+                          <View style={{ marginTop: space.sm }}>
+                            {licenceLabel(p.licenceCheckedOn) ? (
+                              <TonePill label={licenceLabel(p.licenceCheckedOn)!} tone="neutral" />
+                            ) : (
+                              <T variant="caption" tone="muted">
+                                {p.selfSkilled ? 'Self-skilled' : 'No trade credential shown'}
+                              </T>
+                            )}
+                          </View>
+                        </View>
+                        {/* [ref 13] The button sits compact in the card's top
+                            row — "Request", or the filled "Selected" (tap again
+                            to unpick). The per-card "discuss quotes" box is gone:
+                            the page subtitle says it once for everyone. */}
+                        <View style={{ gap: space.sm }}>
+                          {/* [BOOK-P3] Book a time from the pro's list, when the server says they take bookings
+                              (signed in only: a guest is asked to sign in first). */}
+                          {p.bookableFromList === true ? (
+                            <PillButton
+                              label="Book"
+                              size="sm"
+                              icon="calendar"
+                              onPress={() => (isAuthenticated ? navigation?.navigate?.('ProBooking', { providerId: p.id }) : promptLogin())}
+                            />
+                          ) : null}
+                          <PillButton
+                            label={selected ? 'Selected' : 'Request'}
+                            variant={selected ? 'primary' : 'soft'}
+                            size="sm"
+                            onPress={() => setSelectedProviderId(selected ? undefined : p.id)}
+                          />
+                        </View>
+                      </View>
+                      {p.bio ? (
+                        <T variant="label" tone="muted" numberOfLines={2} style={{ marginTop: space.md }}>
+                          {p.bio}
+                        </T>
+                      ) : null}
+                      {/* [IMAGES-E2E] Photos of the provider's own work (uploaded, redrawn without camera data). */}
+                      {p.portfolioPhotos?.length ? (
+                        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginTop: space.md }} contentContainerStyle={{ gap: space.sm }}>
+                          {p.portfolioPhotos.slice(0, 6).map((photo) => {
+                            const uri = storePhotoUrl(photo, 320);
+                            return uri ? (
+                              <Image
+                                key={photo}
+                                source={{ uri }}
+                                style={{ width: 96, height: 72, borderRadius: radius.md, backgroundColor: color.surface.subtle }}
+                                contentFit="cover"
+                                accessibilityLabel={`Work by ${p.tradeLabel.toLowerCase()}`}
+                              />
+                            ) : null;
+                          })}
+                        </ScrollView>
+                      ) : null}
+                    </Card>
+                  );
+                })}
+              </View>
+            )}
+          </ScrollView>
+
+          {/* Job composer — slides in when a provider is chosen */}
+          {requestTrade && selectedProviderId ? (
+            <View
+              style={{
+                position: 'absolute',
+                left: 0,
+                right: 0,
+                bottom: 0,
+                backgroundColor: color.surface.base,
+                borderTopWidth: StyleSheet.hairlineWidth,
+                borderTopColor: color.border.subtle,
+                paddingHorizontal: space['2xl'],
+                paddingTop: space.lg,
+                paddingBottom: space['2xl'],
+                gap: space.md,
+              }}
+            >
+              <View
+                style={{
+                  borderRadius: radius.lg,
+                  borderWidth: StyleSheet.hairlineWidth,
+                  borderColor: color.border.subtle,
+                  backgroundColor: color.surface.base,
+                  paddingHorizontal: space.lg,
+                  paddingVertical: space.md,
+                  minHeight: space['5xl'] + space['2xl'],
+                }}
+              >
+                <TextInput
+                  value={description}
+                  onChangeText={setDescription}
+                  placeholder="Describe the job (at least 10 characters)…"
+                  placeholderTextColor={color.text.muted}
+                  multiline
+                  style={{ fontFamily: font.body, fontSize: fontSize.base, color: color.text.primary, minHeight: space['5xl'] }}
+                />
+              </View>
+              {errMsg ? (
+                <T variant="label" tone="error" center>
+                  {errMsg}
+                </T>
+              ) : null}
+              <PillButton label="Send request" loading={requestJob.isPending} disabled={!canSend} onPress={onSend} />
+            </View>
           ) : null}
-          <PillButton label="Send request" loading={requestJob.isPending} disabled={!canSend} onPress={onSend} />
         </View>
-      ) : null}
+      </KeyboardAvoider>
 
       {/* Kit success popup */}
       <PopupCard visible={sentPopup} onClose={() => setSentPopup(false)}>
