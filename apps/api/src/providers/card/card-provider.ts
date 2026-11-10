@@ -207,6 +207,21 @@ export type CardLookupOutcome = Evidence & (
   | { status: 'unknown'; reason: string; backoff?: true }
 );
 
+/** [CARD-REFUND-LOOKUP] What the provider's own record of the ORIGINAL transaction says about a refund Swift sent and
+ *  whose answer is not known (lost, pending, or a claim stuck past its wait). Asked ONLY when a person presses "Check
+ *  with the card provider" (two people), never as the normal flow, and never instead of an answer. `refunded`: the
+ *  record shows the WHOLE payment credited back (TotalCreditAmount = TotalCaptureAmount = Swift's price) or the sale
+ *  voided (a real VoidDateTime). `part_credited`: a credit that is not exactly the whole payment — held for the owner,
+ *  never "refunded". `not_refunded`: readable, and no credit or void on it yet. `unknown`: no readable answer, or
+ *  (`backoff`) not asked this time. Nothing here carries the refund's own TransactionIdentifier: PowerTranz has not said
+ *  the record lists it (asked), so Swift never reads one from it. */
+export type CardRefundLookupOutcome = Evidence & (
+  | { status: 'refunded'; how: 'credit' | 'void'; reason: string }
+  | { status: 'part_credited'; reason: string }
+  | { status: 'not_refunded'; reason: string }
+  | { status: 'unknown'; reason: string; backoff?: true }
+);
+
 /** What the browser brought back — recorded, never trusted as money [C5]. */
 export interface CardReturnObservation {
   rawSha256: string;
@@ -288,6 +303,11 @@ export interface CardRailProvider {
   /** [CARD-LOOKUP] Optional: read the provider's record of one transaction (no money moves, nothing is sent but the
    *  read). Only for a completion whose outcome is not known; at most one read per transaction per backoff window. */
   lookupTransaction?(input: { binding: CardRailBinding; providerRef: string; orderRef: string; amountMinor: number; currencyCode: string; notBefore?: Date }): Promise<CardLookupOutcome>;
+
+  /** [CARD-REFUND-LOOKUP] Optional: read the provider's record of the ORIGINAL transaction to learn whether a refund
+   *  Swift sent (answer not known) took the whole payment back. A read only: nothing is sent, nothing is resent. Same
+   *  backoff as lookupTransaction (one window per transaction). */
+  lookupRefund?(input: { binding: CardRailBinding; providerRef: string; orderRef: string; amountMinor: number; currencyCode: string; notBefore?: Date }): Promise<CardRefundLookupOutcome>;
 }
 
 /** Where a v2 provider comes from, resolved lazily: only v2 work ever asks. */

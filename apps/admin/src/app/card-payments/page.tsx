@@ -2,7 +2,8 @@
 
 import { useState, type FormEvent } from 'react';
 import { useInfiniteQuery, useQueryClient } from '@tanstack/react-query';
-import { fetchCardPayments, resolveCardPayment, type CardDecision, type CardPaymentsFilter } from '@/lib/api';
+import { checkCardProvider, fetchCardPayments, resolveCardPayment, type CardDecision, type CardPaymentsFilter } from '@/lib/api';
+import { checkWords } from '@/lib/card-check-words';
 import type { ReasonField } from '@/components/mc/ReasonDialog';
 import { StatusPill } from '@/components/detail';
 import { QueryFailed } from '@/components/mc/QueryFailed';
@@ -18,10 +19,14 @@ import { gyDate, gyDateTime } from '@/lib/dates';
 // amount) as the portal shows it, and for "nothing taken" the order reference they searched. Swift's own record is
 // shown read-only beside it. [REVIEW-2 F3] Each payment shows its order reference, SWIFT-<session id>: the
 // OrderIdentifier Swift sends, which the provider's Merchant Portal and reports use (guide 9.2).
+// [CARD-REFUND-LOOKUP] A refund Swift sent whose answer is not known (a held payment's refund, or a refund of
+// set-aside credit to the card) has "Check with the card provider": the server reads PowerTranz's own record of the
+// payment and records it refunded only when the WHOLE payment went back. Two people; it never sends a refund.
 // ---------------------------------------------------------------------------
 
 const FILTERS: { key: CardPaymentsFilter; label: string }[] = [
   { key: 'HELD', label: 'Needs a person' },
+  { key: 'REFUND_CHECK', label: 'Refunds to check' },
   { key: 'SUCCEEDED', label: 'Paid' },
   { key: 'ALL', label: 'All' },
 ];
@@ -34,6 +39,7 @@ const HELD_WHY: Record<string, string> = {
   LATE_PROVIDER_APPROVAL: 'The provider approved it after Swift had closed the payment page.',
   LOOKUP_SHOWS_REVERSED: "Swift could not tell what happened to this payment, and PowerTranz's record shows it voided or refunded in full. Nothing was booked.",
   LOOKUP_PARTIAL_CREDIT: "Swift could not tell what happened to this payment, and PowerTranz's record shows part of it refunded: the rest is still taken. Nothing was booked.",
+  LOOKUP_REFUND_NOT_WHOLE: "A refund was sent, and PowerTranz's record shows a refund that is not this whole payment. Nothing was recorded as refunded.",
   NOT_SETTLED: 'The payment was taken but could not be booked to the week.',
   WALLET_CURRENCY_MISMATCH: 'The fee credit is held in another currency.',
   CURRENCY_UNPINNED: 'The currency it was charged in cannot be confirmed.',
@@ -100,6 +106,9 @@ interface CardPaymentRow {
   createdAt: string; failureCode: string | null; environment: string;
   providerTransactionRef: string | null; providerVoidState: string | null; providerRefundState: string | null;
   resolution: string | null; resolvedAt: string | null;
+  /** [CARD-REFUND-LOOKUP] Its refund of set-aside credit to the card, if any; whether a refund of it can be checked now. */
+  cardRefund?: { state: string; providerRefundRef: string | null } | null;
+  providerCheck?: boolean;
 }
 
 const money = (amount: number | null, currency: string | null) => (amount === null ? '—' : `${currency === 'GYD' || !currency ? 'GY$' : `${currency} `}${amount.toLocaleString()}`);
@@ -150,6 +159,36 @@ export default function CardPaymentsPage() {
     if (outcome?.tone === 'queued') setQueued((all) => ({ ...all, [r.id]: true }));
   });
 
+  const check = (r: CardPaymentRow) => void actions.run({
+    title: `Check the ${money(r.amount, r.currencyCode)} refund with the card provider?`,
+    body: (
+      <>
+        <p>
+          Swift reads PowerTranz&apos;s own record of this payment. Only if it shows the whole payment back is the refund
+          recorded as done. A part refund is held for the owner. Nothing is sent to the card again. A second admin approves it.
+        </p>
+        <p className="text-sm mt-2">
+          Provider transaction <span className="font-mono break-all">{r.providerTransactionRef ?? '—'}</span>
+          {' · '}order <span className="font-mono break-all">{orderRef(r.id)}</span>
+        </p>
+      </>
+    ),
+    confirmLabel: 'Check with the card provider',
+    submit: ({ reason }) => checkCardProvider(r.id, reason),
+    success: (answer) => {
+      return checkWords((answer as { data?: { check?: unknown } } | null)?.data?.check) ?? 'Checked. Nothing was recorded.';
+    },
+  }).then((outcome) => {
+    if (outcome?.tone === 'queued') setQueued((all) => ({ ...all, [r.id]: true }));
+  });
+  const checkButton = (r: CardPaymentRow) => (!r.providerCheck ? null : queued[r.id] ? (
+    <p role="status" className="text-sm mt-3">Waiting for approval: a second admin, on Approvals. Nothing has changed yet.</p>
+  ) : (
+    <div className="flex flex-wrap gap-2 mt-3">
+      <button type="button" className="mc-btn" onClick={() => check(r)}>Check with the card provider</button>
+    </div>
+  ));
+
   return (
     <div className="mc-page">
       <div className="flex gap-1 mb-1" role="group" aria-label="Show card payments">
@@ -198,6 +237,12 @@ export default function CardPaymentsPage() {
                   {' · '}Order <span className="font-mono break-all">{orderRef(r.id)}</span>
                   <span className="mc-muted"> · Subscription <span className="font-mono">{r.subscriptionId}</span></span>
                 </p>
+                {r.cardRefund && (
+                  <p className="text-sm mc-muted mt-1">
+                    Refund to the card (at closing): {STATE_WORDS[r.cardRefund.state] ?? asCode(r.cardRefund.state)}
+                    {r.cardRefund.providerRefundRef && <> · <span className="font-mono break-all">{r.cardRefund.providerRefundRef}</span></>}
+                  </p>
+                )}
                 {r.status === 'HELD' && r.failureCode && <p className="text-sm mc-muted mt-1">{HELD_WHY[r.failureCode] ?? `Held for a reason without words yet (${asCode(r.failureCode)}).`}</p>}
                 {(r.providerVoidState || r.providerRefundState || r.resolution) && (
                   <p className="text-sm mc-muted mt-1">
@@ -206,7 +251,14 @@ export default function CardPaymentsPage() {
                       r.resolution && `Decided: ${RESOLUTION_WORDS[r.resolution] ?? asCode(r.resolution)}${r.resolvedAt ? `, ${gyDateTime(r.resolvedAt)}` : ''}`].filter(Boolean).join(' · ')}
                   </p>
                 )}
-                {open && r.failureCode === 'LOOKUP_PARTIAL_CREDIT' ? (
+                {open && r.failureCode === 'LOOKUP_REFUND_NOT_WHOLE' ? (
+                  // [CARD-REFUND-LOOKUP] A refund that is not the whole payment: held for the owner. It can be checked
+                  // again once the owner has settled it with PowerTranz.
+                  <>
+                    <p className="text-sm mt-3">PowerTranz&apos;s record shows a refund that is not this whole payment. It stays here until the owner settles it with PowerTranz: escalate it to the owner.</p>
+                    {checkButton(r)}
+                  </>
+                ) : open && r.failureCode === 'LOOKUP_PARTIAL_CREDIT' ? (
                   // [REVIEW-2460 S3-1 · B3] Part refunded, the rest still taken: no decision here.
                   <p className="text-sm mt-3">Part of this payment was refunded and the rest is still taken. Check it in PowerTranz&apos;s portal. It stays here until the owner settles it with the card provider: escalate it to the owner.</p>
                 ) : open && r.failureCode === 'AMOUNT_MISMATCH' ? (
@@ -214,7 +266,21 @@ export default function CardPaymentsPage() {
                   <p className="text-sm mt-3">The card provider says money was taken, but its amount or currency differs from Swift&apos;s price. It stays here until the owner settles it with the card provider: escalate it to the owner.</p>
                 ) : open && r.providerRefundState ? (
                   // [REVIEW-1 R2-3] A refund was sent: money was taken. No decision closes it here; the owner settles it.
-                  <p className="text-sm mt-3">A refund was sent for this payment, so money was taken. It stays here until the owner settles it with the card provider: escalate it to the owner.</p>
+                  // [CARD-REFUND-LOOKUP] One whose answer is not known can be checked with the card provider.
+                  <>
+                    <p className="text-sm mt-3">
+                      {r.providerCheck
+                        ? 'A refund was sent for this payment and its answer is not known. Check it with the card provider: Swift records it refunded only if the whole payment went back.'
+                        : 'A refund was sent for this payment, so money was taken. It stays here until the owner settles it with the card provider: escalate it to the owner.'}
+                    </p>
+                    {checkButton(r)}
+                  </>
+                ) : !open && r.providerCheck ? (
+                  // [CARD-REFUND-LOOKUP] A refund of set-aside credit to the card whose answer is not known.
+                  <>
+                    <p className="text-sm mt-3">A refund of this payment to its card was sent and its answer is not known. Check it with the card provider: Swift records it refunded only if the whole payment went back.</p>
+                    {checkButton(r)}
+                  </>
                 ) : open && (r.providerTransactionRef && r.amount !== null ? (
                   queued[r.id] ? <p role="status" className="text-sm mt-3">Waiting for approval: a second admin, on Approvals. Nothing has changed yet.</p> : (
                     <div className="flex flex-wrap gap-2 mt-3">

@@ -18,14 +18,14 @@ import { openVaultToken } from '../modules/billing/card-vault';
 import { NotificationService } from '../modules/notification/notification.service';
 import { SandboxPaymentProvider } from '../providers/payment/payment-provider';
 import { SimulatorCardRailProvider, type SimulatorScenario } from '../providers/card/simulator-provider';
-import type { CardRailProvider } from '../providers/card/card-provider';
+import type { CardRailProvider, CardRefundLookupOutcome } from '../providers/card/card-provider';
 import { resetKeyProviderForTests } from '../providers/storage/envelope';
 import { runWithTenant, runWithoutTenant } from '../plugins/tenant-context';
 import { deleteRunKeys, runKeyPrefix } from './helpers/card-sim-keys';
 import { testPhone } from './helpers/fixture-ids';
 import { partnerObligations, verdictFor } from '../modules/user/partner-wind-down';
-import { recordCreditRefundPaid, releaseCreditRefund, setAsideCreditRefund } from '../modules/billing/credit-refund';
-import { CARD_REFUND_ACTION, creditRefundSources, refundCardCreditToCard, validateCardRefundAsk } from '../modules/billing/card-credit-refund';
+import { recordCreditRefundPaid, refundReferenceOf, releaseCreditRefund, setAsideCreditRefund } from '../modules/billing/credit-refund';
+import { CARD_REFUND_ACTION, checkCardCreditRefund, creditRefundSources, lookupCreditReference, refundCardCreditToCard, validateCardRefundAsk } from '../modules/billing/card-credit-refund';
 
 // ---------------------------------------------------------------------------
 // [PT-1] The hosted card loop, end to end, on the real simulator and the real
@@ -1121,6 +1121,171 @@ describe('[CARD-READY] card money set aside at closing goes back to its card thr
     await app.prisma.privilegedApproval.update({ where: { id: expired }, data: { status: 'PENDING', expiresAt: new Date(Date.now() - 60_000) } });
     const free = await approval('POST /subscriptions/:id/refund-credit/release', p.subId, 'admin-c', 'admin-b');
     expect(await releaseCreditRefund(app.prisma, { adminId: 'admin-c', approvalId: free, subscriptionId: p.subId, amount: 2 * WEEKLY, setAsideId })).toMatchObject({ amount: 2 * WEEKLY, refundSetAside: 0, balance: 2 * WEEKLY });
+  });
+
+  // [CARD-REFUND-LOOKUP] A refund to the card whose answer is not known, checked with the card provider (the route is
+  // C4: two people). Only the WHOLE payment credited back on the provider's own record records it, once; never resent.
+  describe('[CARD-REFUND-LOOKUP] "Check with the card provider" for a refund to the card whose answer is not known', () => {
+    type LookIn = Parameters<NonNullable<CardRailProvider['lookupRefund']>>[0];
+    /** The simulator, refunds counted, with the record the test chooses; every read is kept. */
+    const looking = (answer: (i: LookIn) => CardRefundLookupOutcome) => {
+      const reads: LookIn[] = [];
+      const refunds: unknown[] = [];
+      const { provider } = watched(sim);
+      return {
+        reads, refunds,
+        provider: { ...provider, refund: async (i: Parameters<CardRailProvider['refund']>[0]) => { refunds.push(i); throw new Error('a refund must never be sent by a check'); }, lookupRefund: async (i: LookIn) => { reads.push(i); return answer(i); } } as CardRailProvider,
+      };
+    };
+    const whole = (): CardRefundLookupOutcome => ({ status: 'refunded', how: 'credit', reason: 'LOOKUP_CREDITED', rawSha256: 'f'.repeat(64) });
+    /** Two card weeks set aside; the first one's refund to the card sent and its answer lost (UNKNOWN). */
+    async function lostRefund() {
+      const { p, s1, s2, setAsideId } = await twoCardWeeksSetAside();
+      const lost = refunding(async () => { throw new Error('socket hang up'); });
+      expect(await toCard(p, setAsideId, s1, lost.provider, await approval(CARD_REFUND_ACTION, p.subId, 'admin-c', 'admin-b'))).toMatchObject({ state: 'UNKNOWN' });
+      const tenantId = (await app.prisma.cardCreditRefund.findUniqueOrThrow({ where: { cardSessionId: s1 } })).tenantId;
+      return { p, s1, s2, setAsideId, tenantId, sent: lost.calls };
+    }
+    const checkIt = (tenantId: string, cardSessionId: string, provider: CardRailProvider, alertOwner?: (m: string) => Promise<void>) =>
+      checkCardCreditRefund(app.prisma, () => provider, { adminId: 'admin-d', tenantId, cardSessionId, ...(alertOwner ? { alertOwner } : {}) });
+
+    it('the whole payment credited back on the provider\'s record: REFUNDED ONCE, its CARD payout part out of card clearing, under Swift\'s reference; never resent; checked again: nothing to check', async () => {
+      const { p, s1, setAsideId, tenantId, sent } = await lostRefund();
+      const original = await originalOf(s1);
+      const before = await app.prisma.cardCreditRefund.findUniqueOrThrow({ where: { cardSessionId: s1 } });
+      expect(before.answeredAt).not.toBeNull();
+      const look = looking(whole);
+      const done = await checkIt(tenantId, s1, look.provider);
+      const reference = lookupCreditReference(original);
+      expect(reference).toBe(`LOOKUP-CREDIT-${original.toUpperCase()}`);
+      expect(done).toEqual({ check: 'REFUNDED', reason: 'LOOKUP_CREDITED', refund: { state: 'REFUNDED', providerRefundRef: reference } });
+      expect(look.reads).toEqual([expect.objectContaining({ providerRef: original, orderRef: `SWIFT-${s1}`, amountMinor: WEEKLY * 100, currencyCode: 'GYD' })]);
+      expect(look.refunds).toHaveLength(0);
+      expect(sent).toHaveLength(1);
+      const row = await app.prisma.cardCreditRefund.findUniqueOrThrow({ where: { cardSessionId: s1 } });
+      expect(row).toMatchObject({ state: 'REFUNDED', providerRefundRef: reference, setAsideId });
+      expect(row.billingEventId).toBeTruthy();
+      // [REVIEW-2461-B S3-1] The refund's own (lost) answer stays on the row as it was; the record's hash is in the trail.
+      expect(row.answeredAt?.getTime()).toBe(before.answeredAt?.getTime());
+      expect(row.answerSha256).toBe(before.answerSha256);
+      const trail = await app.prisma.auditLog.findFirst({ where: { entityId: p.subId, action: 'PREPAID_REFUND_CARD_REFUND_CHECK_REFUNDED' } });
+      expect(trail?.changes).toMatchObject({ lookupSha256: 'f'.repeat(64), how: 'credit', wasAnswerSha256: before.answerSha256, reference });
+      expect(await app.prisma.billingEvent.count({ where: { subscriptionId: p.subId, type: 'PREPAID_REFUND', paymentRef: reference } })).toBe(1);
+      const out = await app.prisma.ledgerEntry.findMany({ where: { transaction: { idempotencyKey: `ledger:credit-refund-paid:${reference}` } }, select: { accountCode: true, debit: true, credit: true } });
+      expect(out.map((e) => [e.accountCode, Number(e.debit), Number(e.credit)]).sort()).toEqual([['CLEARING_CARD', 0, WEEKLY], ['REFUND_PAYABLE', WEEKLY, 0]]);
+      // The set-aside now owes only the other card week.
+      expect((await creditRefundSources(app.prisma, p.subId)).setAside).toMatchObject({ amount: WEEKLY, stillToPay: WEEKLY });
+      await expect(checkIt(tenantId, s1, look.provider)).rejects.toMatchObject({ code: 'NOTHING_TO_CHECK' });
+      expect(look.reads).toHaveLength(1);
+      expect(await app.prisma.billingEvent.count({ where: { subscriptionId: p.subId, type: 'PREPAID_REFUND' } })).toBe(1);
+    });
+
+    it('a credit that is not the whole payment: held for the owner (told once), never refunded; nothing recorded', async () => {
+      const { p, s1, tenantId } = await lostRefund();
+      const told: string[] = [];
+      const look = looking(() => ({ status: 'part_credited', reason: 'LOOKUP_PARTIAL_CREDIT', rawSha256: '1'.repeat(64) }));
+      expect(await checkIt(tenantId, s1, look.provider, async (m) => { told.push(m); })).toMatchObject({ check: 'OWNER_HOLD', refund: { state: 'UNKNOWN', providerRefundRef: null } });
+      expect(told).toHaveLength(1);
+      expect(told[0]).toContain(`SWIFT-${s1}`);
+      expect((await app.prisma.cardCreditRefund.findUniqueOrThrow({ where: { cardSessionId: s1 } })).state).toBe('UNKNOWN');
+      expect(await app.prisma.billingEvent.count({ where: { subscriptionId: p.subId, type: 'PREPAID_REFUND' } })).toBe(0);
+      // Still held: its money cannot be paid another way.
+      expect((await creditRefundSources(app.prisma, p.subId)).setAside).toMatchObject({ stillToPay: WEEKLY });
+      expect(look.refunds).toHaveLength(0);
+    });
+
+    it('no credit yet, an unreadable answer, a read too soon, a read that throws: nothing recorded, nothing sent', async () => {
+      const { p, s1, tenantId } = await lostRefund();
+      const answers: Array<[() => CardRefundLookupOutcome, string]> = [
+        [() => ({ status: 'not_refunded', reason: 'LOOKUP_NO_CREDIT', rawSha256: '2'.repeat(64) }), 'NO_REFUND_ON_RECORD'],
+        [() => ({ status: 'unknown', reason: 'LOOKUP_UNREADABLE', rawSha256: '3'.repeat(64) }), 'NOT_KNOWN'],
+        [() => ({ status: 'unknown', reason: 'LOOKUP_BACKOFF', backoff: true, rawSha256: '4'.repeat(64) }), 'ASKED_RECENTLY'],
+        [() => { throw new Error('gateway down'); }, 'NOT_KNOWN'],
+      ];
+      for (const [answer, check] of answers) {
+        const look = looking(answer);
+        expect(await checkIt(tenantId, s1, look.provider), check).toMatchObject({ check, refund: { state: 'UNKNOWN' } });
+        expect(look.refunds).toHaveLength(0);
+      }
+      expect(await app.prisma.billingEvent.count({ where: { subscriptionId: p.subId, type: 'PREPAID_REFUND' } })).toBe(0);
+      expect((await app.prisma.cardCreditRefund.findUniqueOrThrow({ where: { cardSessionId: s1 } })).state).toBe('UNKNOWN');
+    });
+
+    it('a PENDING refund confirmed whole is REFUNDED; a claim stuck SENDING is checked only ten minutes after it was written; a refused one, or another tenant\'s, has nothing to check', async () => {
+      const { p, s1, s2, setAsideId, tenantId } = await lostRefund();
+      // s2: its refund answered PENDING.
+      const pending = refunding(async () => ({ status: 'pending', rawSha256: '5'.repeat(64) }));
+      expect(await toCard(p, setAsideId, s2, pending.provider, await approval(CARD_REFUND_ACTION, p.subId, 'admin-c', 'admin-b'))).toMatchObject({ state: 'PENDING' });
+      expect(await checkIt(tenantId, s2, looking(whole).provider)).toMatchObject({ check: 'REFUNDED', refund: { state: 'REFUNDED' } });
+      // Another tenant never sees s1's.
+      await expect(checkIt(OTHER_TENANT, s1, looking(whole).provider)).rejects.toMatchObject({ code: 'NOTHING_TO_CHECK' });
+      // A claim still SENDING (its process stopped mid-call, before any answer was written).
+      const q = await twoCardWeeksSetAside();
+      const sessionRow = await app.prisma.cardSession.findUniqueOrThrow({ where: { id: q.s1 } });
+      const claim = (createdAt: Date) => app.prisma.cardCreditRefund.create({ data: {
+        tenantId: sessionRow.tenantId, subscriptionId: q.p.subId, cardSessionId: q.s1, setAsideId: q.setAsideId, amount: WEEKLY, currencyCode: 'GYD',
+        requestedByUserId: 'admin-c', approvalId: `stuck-${RUN}-${createdAt.getTime()}`, createdAt,
+      } });
+      const stuck = await claim(new Date(Date.now() - 5 * 60_000));
+      const early = looking(whole);
+      await expect(checkIt(sessionRow.tenantId, q.s1, early.provider)).rejects.toMatchObject({ code: 'NOTHING_TO_CHECK' });
+      expect(early.reads).toHaveLength(0);
+      await app.prisma.cardCreditRefund.delete({ where: { id: stuck.id } });
+      await claim(new Date(Date.now() - 11 * 60_000));
+      const late = looking(whole);
+      expect(await checkIt(sessionRow.tenantId, q.s1, late.provider)).toMatchObject({ check: 'REFUNDED', refund: { state: 'REFUNDED' } });
+      expect(late.refunds).toHaveLength(0);
+      // A refund the provider refused moved nothing: there is nothing to check.
+      const refused = refunding(async () => ({ status: 'failed', reason: 'REFUND_REFUSED_12_384', rawSha256: '6'.repeat(64) }));
+      await toCard(q.p, q.setAsideId, q.s2, refused.provider, await approval(CARD_REFUND_ACTION, q.p.subId, 'admin-c', 'admin-b'));
+      const look = looking(whole);
+      await expect(checkIt(sessionRow.tenantId, q.s2, look.provider)).rejects.toMatchObject({ code: 'NOTHING_TO_CHECK' });
+      expect(look.reads).toHaveLength(0);
+    });
+
+    it('[REVIEW-2461 A S4-1] the record shows the money back but Swift cannot record it: the verdict is kept in the trail and the owner is told; nothing recorded', async () => {
+      const { p, s1, tenantId } = await lostRefund();
+      const reference = lookupCreditReference(await originalOf(s1));
+      // The reference is already on record (fixture): Swift refuses to record the payout under it.
+      await app.prisma.billingEvent.create({ data: { subscriptionId: p.subId, type: 'TIER_CHANGE', currencyCode: 'GYD', idempotencyKey: `fixture-ref-${RUN}-${nanoid(6)}`, paymentRef: reference, note: 'fixture: the reference is taken' } });
+      const told: string[] = [];
+      await expect(checkIt(tenantId, s1, looking(whole).provider, async (m) => { told.push(m); })).rejects.toMatchObject({ code: 'REFUND_REFERENCE_IS_A_PAYMENT' });
+      expect(told).toHaveLength(1);
+      expect(told[0]).toContain('shows the whole');
+      const trail = await app.prisma.auditLog.findFirst({ where: { entityId: p.subId, action: 'PREPAID_REFUND_CARD_REFUND_CHECK_REFUNDED_NOT_RECORDED' } });
+      expect(trail?.changes).toMatchObject({ refusal: 'REFUND_REFERENCE_IS_A_PAYMENT', lookupSha256: 'f'.repeat(64), lookup: 'refunded' });
+      expect((await app.prisma.cardCreditRefund.findUniqueOrThrow({ where: { cardSessionId: s1 } })).state).toBe('UNKNOWN');
+      expect(await app.prisma.billingEvent.count({ where: { subscriptionId: p.subId, type: 'PREPAID_REFUND' } })).toBe(0);
+    });
+
+    it('[REVIEW-2461-A S4-3] a payout typed by a person can never use Swift\'s LOOKUP-CREDIT- reference', () => {
+      expect(() => refundReferenceOf('lookup-credit-0446a902-311d-4868-8247-e9dfbd8ea0a6')).toThrow(expect.objectContaining({ code: 'REFUND_REFERENCE_RESERVED' }));
+      expect(refundReferenceOf('TRF-12345')).toBe('TRF-12345');
+    });
+
+    it('[REVIEW-2461-B S3-1 · S4-2] the database: moving on to REFUNDED keeps the refund\'s own answer; a refused (FAILED) refund never becomes REFUNDED; a REFUNDED one is never rewritten', async () => {
+      const { p, s1, s2, setAsideId, tenantId } = await lostRefund();
+      // Changing the refund's own answer on the way to REFUNDED is refused.
+      const event = await app.prisma.billingEvent.create({ data: { subscriptionId: p.subId, type: 'TIER_CHANGE', currencyCode: 'GYD', idempotencyKey: `fixture-evt-${RUN}-${nanoid(6)}`, note: 'fixture' } });
+      await expect(app.prisma.cardCreditRefund.update({ where: { cardSessionId: s1 }, data: { state: 'REFUNDED', providerRefundRef: `FIXTURE-${RUN}`, billingEventId: event.id, answeredAt: new Date() } })).rejects.toThrow(/an answered refund is final/);
+      await expect(app.prisma.cardCreditRefund.update({ where: { cardSessionId: s1 }, data: { state: 'REFUNDED', providerRefundRef: `FIXTURE-${RUN}`, billingEventId: event.id, answerSha256: '9'.repeat(64) } })).rejects.toThrow(/an answered refund is final/);
+      // A refused refund moved nothing and stays refused.
+      const refused = refunding(async () => ({ status: 'failed', reason: 'REFUND_REFUSED_12_384', rawSha256: '7'.repeat(64) }));
+      expect(await toCard(p, setAsideId, s2, refused.provider, await approval(CARD_REFUND_ACTION, p.subId, 'admin-c', 'admin-b'))).toMatchObject({ state: 'FAILED' });
+      await expect(app.prisma.cardCreditRefund.update({ where: { cardSessionId: s2 }, data: { state: 'REFUNDED', providerRefundRef: `FIXTURE2-${RUN}`, billingEventId: event.id } })).rejects.toThrow(/only moves forward/);
+      // REFUNDED by the lookup: final.
+      expect(await checkIt(tenantId, s1, looking(whole).provider)).toMatchObject({ check: 'REFUNDED' });
+      for (const data of [{ providerRefundRef: `OTHER-${RUN}` }, { billingEventId: event.id }, { answeredAt: new Date() }, { answerSha256: '8'.repeat(64) }, { outcomeReason: 'rewritten' }, { state: 'UNKNOWN' }]) {
+        await expect(app.prisma.cardCreditRefund.update({ where: { cardSessionId: s1 }, data }), JSON.stringify(data)).rejects.toThrow(/final|only moves forward/);
+      }
+    });
+
+    it('the database: an unanswered refund moves only to REFUNDED, with its reference and record; an answered one never moves again', async () => {
+      const { s1 } = await lostRefund();
+      await expect(app.prisma.cardCreditRefund.update({ where: { cardSessionId: s1 }, data: { state: 'FAILED' } })).rejects.toThrow(/only moves forward/);
+      await expect(app.prisma.cardCreditRefund.update({ where: { cardSessionId: s1 }, data: { state: 'REFUNDED' } })).rejects.toThrow(/refunded_check|check constraint/i);
+      await expect(app.prisma.cardCreditRefund.update({ where: { cardSessionId: s1 }, data: { outcomeReason: 'rewritten' } })).rejects.toThrow(/an answered refund is final/);
+    });
   });
 
   it('the person who asked for the set-aside never approves its refund to the card', async () => {

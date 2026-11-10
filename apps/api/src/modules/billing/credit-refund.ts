@@ -292,10 +292,20 @@ export const REFUND_AMOUNT = z.number().positive().max(9_999_999_999.99)
 export const REFUND_SET_ASIDE_ID = z.string().min(1, 'Name the set-aside this step is for.').max(64);
 /** The payout record's body: one schema for the approval gate's ask check and the route. */
 export const PAID_REFUND_BODY = z.object({ amount: REFUND_AMOUNT, method: z.enum(['MMG', 'BANK_TRANSFER', 'CHEQUE', 'CASH']), reference: z.string().max(200), setAsideId: REFUND_SET_ASIDE_ID });
-export const refundReferenceOf = (raw: unknown) => normaliseReference(raw, {
-  required: 'Enter the MMG or bank reference, cheque number or receipt number of the refund you paid. It is the only proof the money went back.',
-  invalid: 'That does not look like a reference. Copy it from the MMG or bank record, the cheque, or the receipt the partner signed.',
-}, 'REFUND_REFERENCE');
+/** [CARD-REFUND-LOOKUP · REVIEW-2461-A S4-3] Swift's own reference for a refund to the card confirmed by the card
+ *  provider's transaction record (card-credit-refund.ts lookupCreditReference). Reserved: a payout typed by a person
+ *  never carries it, so it can never be taken for (or hide behind) that recorded refund. */
+export const LOOKUP_CREDIT_PREFIX = 'LOOKUP-CREDIT-';
+export const refundReferenceOf = (raw: unknown) => {
+  const reference = normaliseReference(raw, {
+    required: 'Enter the MMG or bank reference, cheque number or receipt number of the refund you paid. It is the only proof the money went back.',
+    invalid: 'That does not look like a reference. Copy it from the MMG or bank record, the cheque, or the receipt the partner signed.',
+  }, 'REFUND_REFERENCE');
+  if (reference.startsWith(LOOKUP_CREDIT_PREFIX)) {
+    throw new AppError(400, 'REFUND_REFERENCE_RESERVED', 'References starting LOOKUP-CREDIT- are Swift\'s own, for refunds the card provider confirmed. Enter the reference of the transfer, cheque or receipt you paid.');
+  }
+  return reference;
+};
 
 const REFERENCE_REUSED = 'This transfer reference already recorded a refund. One transfer pays one refund: check the reference.';
 

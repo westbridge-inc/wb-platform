@@ -893,3 +893,84 @@ describe('[CARD-LOOKUP] the transaction lookup: read strictly, judged against wh
     expect(gw.calls.every((c) => c.method === 'POST')).toBe(true);
   });
 });
+
+describe('[CARD-REFUND-LOOKUP] a refund whose answer is not known: the original transaction\'s record, judged for the WHOLE payment back', () => {
+  const txn = 'e8c4d2b3-6f70-4b9c-8d1e-2f3a4b5c6d7e';
+  const order = 'SWIFT-cs_refund_lookup_synthetic';
+  const ask = (p: PowerTranzCardRailProvider, amountMinor = 210_000) =>
+    p.lookupRefund({ binding: p.binding, providerRef: txn, orderRef: order, amountMinor, currencyCode: 'GYD' });
+  /** The original Sale's record in PowerTranz's own field names (sec. 6; OrderSummary and VoidDateTime per its answers). */
+  const record = (fields: Record<string, unknown> = {}, summary: Record<string, unknown> = {}) => ({
+    TransactionType: 2, Approved: true, IsoResponseCode: '00', ResponseMessage: 'Transaction is approved.', TransactionIdentifier: txn,
+    OrderIdentifier: order, TotalAmount: 2100, CurrencyCode: '328', AuthorizationCode: '123456', RRN: '000000000001',
+    OrderSummary: { SettledAmount: 2100, TotalCaptureAmount: 2100, TotalCreditAmount: 0, ...summary },
+    ...fields,
+  });
+  const at = (answer: ReturnType<Responder>) => gateway({ [`/api/Transactions/${txn}`]: () => answer });
+  const fresh = (gw: ReturnType<typeof gateway>) => provider(gw, { config: { account: `rl-${nanoid(6).replace(/[^A-Za-z0-9]/g, '0')}` } });
+
+  it('the whole payment credited back (TotalCreditAmount = TotalCaptureAmount = Swift\'s price) -> refunded; a real VoidDateTime -> refunded (void). One GET, nothing sent', async () => {
+    const gw = at({ status: 200, body: record({}, { TotalCreditAmount: 2100 }) });
+    expect(await ask(fresh(gw))).toMatchObject({ status: 'refunded', how: 'credit', reason: 'LOOKUP_CREDITED' });
+    expect(gw.calls.map((c) => `${c.method} ${new URL(c.url).pathname}`)).toEqual([`GET /api/Transactions/${txn}`]);
+    expect(await ask(fresh(at({ status: 200, body: record({ VoidDateTime: '2026-11-09T12:00:00' }) })))).toMatchObject({ status: 'refunded', how: 'void', reason: 'LOOKUP_VOIDED' });
+    expect(await ask(fresh(at({ status: 200, body: record({ VoidDateTime: '2026-11-09 12:00:00.1234567' }) })))).toMatchObject({ status: 'refunded', how: 'void' });
+  });
+
+  it('a credit that is not the whole payment is never "refunded": part of it, or the whole of a capture that is not Swift\'s price -> part_credited (the owner)', async () => {
+    expect(await ask(fresh(at({ status: 200, body: record({}, { TotalCreditAmount: 1 }) })))).toMatchObject({ status: 'part_credited', reason: 'LOOKUP_PARTIAL_CREDIT' });
+    expect(await ask(fresh(at({ status: 200, body: record({}, { TotalCreditAmount: 2099.99 }) })))).toMatchObject({ status: 'part_credited', reason: 'LOOKUP_PARTIAL_CREDIT' });
+    expect(await ask(fresh(at({ status: 200, body: record({}, { TotalCaptureAmount: 2000, TotalCreditAmount: 2000 }) })))).toMatchObject({ status: 'part_credited', reason: 'LOOKUP_CREDIT_NOT_THE_PAYMENT' });
+    expect(await ask(fresh(at({ status: 200, body: record({}, { TotalCaptureAmount: 2200, TotalCreditAmount: 2100 }) })))).toMatchObject({ status: 'part_credited', reason: 'LOOKUP_PARTIAL_CREDIT' });
+    // Swift's price differs from the record's whole credit: never refunded.
+    expect(await ask(fresh(at({ status: 200, body: record({}, { TotalCreditAmount: 2100 }) })), 200_000)).toMatchObject({ status: 'part_credited', reason: 'LOOKUP_CREDIT_NOT_THE_PAYMENT' });
+  });
+
+  it('no credit and no void on the record -> not_refunded (nothing to record yet)', async () => {
+    expect(await ask(fresh(at({ status: 200, body: record() })))).toMatchObject({ status: 'not_refunded', reason: 'LOOKUP_NO_CREDIT' });
+    expect(await ask(fresh(at({ status: 200, body: record({ VoidDateTime: null }) })))).toMatchObject({ status: 'not_refunded' });
+  });
+
+  it('an unreadable or contradictory answer is unknown, never refunded: another transaction, order or currency; a credit above the capture; a credit on a sale that was not approved; a VoidDateTime that is no real date; HTTP errors; no answer', async () => {
+    const cases: Array<[ReturnType<Responder>, string]> = [
+      [{ status: 200, body: record({ TransactionIdentifier: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb' }, { TotalCreditAmount: 2100 }) }, 'LOOKUP_OTHER_TRANSACTION'],
+      [{ status: 200, body: record({ OrderIdentifier: 'SWIFT-someone-else' }, { TotalCreditAmount: 2100 }) }, 'LOOKUP_OTHER_ORDER'],
+      [{ status: 200, body: record({ CurrencyCode: '840' }, { TotalCreditAmount: 2100 }) }, 'LOOKUP_CURRENCY_MISMATCH'],
+      [{ status: 200, body: record({}, { TotalCreditAmount: 2200 }) }, 'LOOKUP_CREDIT_UNREADABLE'],
+      [{ status: 200, body: record({}, { TotalCaptureAmount: 0, TotalCreditAmount: 2100 }) }, 'LOOKUP_CREDIT_UNREADABLE'],
+      [{ status: 200, body: record({ Approved: false, IsoResponseCode: '05' }, { TotalCreditAmount: 2100 }) }, 'LOOKUP_NOT_AN_APPROVED_SALE'],
+      [{ status: 200, body: record({ TransactionType: 5 }, { TotalCreditAmount: 2100 }) }, 'LOOKUP_NOT_AN_APPROVED_SALE'],
+      [{ status: 200, body: record({}, { TotalCreditAmount: '2100.005' }) }, 'LOOKUP_UNREADABLE'],
+      [{ status: 200, body: record({}, { TotalCreditAmount: -2100 }) }, 'LOOKUP_UNREADABLE'],
+      [{ status: 200, body: record({}, { TotalCreditAmount: undefined }) }, 'LOOKUP_UNREADABLE'],
+      [{ status: 200, body: record({ VoidDateTime: '0001-01-01T00:00:00' }) }, 'LOOKUP_UNREADABLE'],
+      [{ status: 200, body: record({ VoidDateTime: '9999-12-31T23:59:59.9999999' }) }, 'LOOKUP_UNREADABLE'],
+      [{ status: 200, body: record({ VoidDateTime: 'N/A' }) }, 'LOOKUP_UNREADABLE'],
+      [{ status: 200, body: 'not json at all' }, 'LOOKUP_UNREADABLE'],
+      [{ status: 404, body: 'not found' }, 'LOOKUP_HTTP_404'],
+      [{ status: 500, body: record({}, { TotalCreditAmount: 2100 }) }, 'LOOKUP_HTTP_500'],
+      ['network', 'LOOKUP_NO_ANSWER_NETWORK'],
+      ['timeout', 'LOOKUP_NO_ANSWER_TIMEOUT'],
+    ];
+    for (const [answer, reason] of cases) {
+      const outcome = await ask(fresh(at(answer)));
+      expect(outcome, JSON.stringify(answer)).toMatchObject({ status: 'unknown', reason });
+    }
+  });
+
+  it('the same backoff as the completion lookup, per transaction: a refund check right after any read of that transaction reads nothing; another binding is refused before any call', async () => {
+    const gw = at({ status: 200, body: record({}, { TotalCreditAmount: 2100 }) });
+    const p = fresh(gw);
+    await p.lookupTransaction({ binding: p.binding, providerRef: txn, orderRef: order, amountMinor: 210_000, currencyCode: 'GYD' });
+    expect(await ask(p)).toMatchObject({ status: 'unknown', reason: 'LOOKUP_BACKOFF', backoff: true });
+    expect(gw.calls).toHaveLength(1);
+    await redis.hset(`${PREFIX}l:${p.binding.account}:${txn}`, 'nextAtMs', '0'); // the window has passed
+    expect(await ask(p)).toMatchObject({ status: 'refunded' });
+    expect(await ask(p)).toMatchObject({ status: 'unknown', reason: 'LOOKUP_BACKOFF', backoff: true });
+    expect(gw.calls).toHaveLength(2);
+    await expect(p.lookupRefund({ binding: { ...p.binding, account: 'someone-else' }, providerRef: txn, orderRef: order, amountMinor: 210_000, currencyCode: 'GYD' }))
+      .rejects.toBeInstanceOf(CardBindingMismatchError);
+    expect(gw.calls).toHaveLength(2);
+    expect(gw.calls.every((c) => c.method === 'GET')).toBe(true);
+  });
+});

@@ -284,3 +284,31 @@ describe('[U26] a failed read is never an empty queue', () => {
     expect(await screen.findByText(/Nothing is waiting on a second signature|Nothing in this view/)).toBeTruthy();
   });
 });
+
+// [CARD-REFUND-LOOKUP · REVIEW-2461-B S3-2] The approved "Check with the card provider" runs from here: the person
+// executing it is told what PowerTranz's record showed, never just "Executed."
+describe('executing an approved check with the card provider says what was found', () => {
+  const CHECK = {
+    ...APPROVED_WITH_BODY, id: 'ap-check', action: 'POST /billing/card-sessions/:id/check-provider', capability: 'billing.card.resolve',
+    entityId: 'cs_1', bodySnapshot: { params: { id: 'cs_1' }, body: {} },
+  };
+  for (const [providerCheck, words] of [
+    ['NO_REFUND_ON_RECORD', /Executed\. PowerTranz's record shows no refund on this payment yet\. Nothing was recorded/],
+    ['REFUNDED', /Executed\. PowerTranz's record shows the whole payment back\. Recorded as refunded\./],
+  ] as const) {
+    it(providerCheck, async () => {
+      mockApi(approvalsHandler((request) => {
+        if (request.method === 'POST' && request.url.pathname === '/api/v1/admin/approvals/ap-check/apply') {
+          return { body: { success: true, data: { id: 'ap-check', status: 'APPLIED', appliedAt: inHours(0), providerCheck } } };
+        }
+        throw new Error(`Unexpected request: ${request.method} ${request.url}`);
+      }, [CHECK]));
+      const { user } = renderWithQuery(<ApprovalsPage />);
+      await user.click(await screen.findByRole('button', { name: 'Approved' }));
+      await user.click(await screen.findByRole('button', { name: 'Execute the approved action' }));
+      const panel = await screen.findByRole('dialog');
+      await user.click(within(panel).getByRole('button', { name: 'Execute it' }));
+      expect(await screen.findByText(words)).toBeTruthy();
+    });
+  }
+});

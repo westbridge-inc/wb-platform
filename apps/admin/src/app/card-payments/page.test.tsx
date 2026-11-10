@@ -161,6 +161,51 @@ describe('[CARD-READY] card payments', () => {
     for (const name of ['Nothing was taken', 'Refund it', 'Book the week']) expect(screen.queryByRole('button', { name })).toBeNull();
   });
 
+  // [CARD-REFUND-LOOKUP] A refund Swift sent whose answer is not known: "Check with the card provider", two people.
+  it('[CARD-REFUND-LOOKUP] a held payment whose refund answer is not known offers "Check with the card provider" (no decision); it sends no fields, waits for a second admin', async () => {
+    const fetchMock = server([{ ...held, providerRefundState: 'UNKNOWN', providerCheck: true }]);
+    const { user } = renderWithQuery(<CardPaymentsPage />);
+    expect(await screen.findByText(/its answer is not known\. Check it with the card provider/)).toBeTruthy();
+    for (const name of ['Nothing was taken', 'Refund it', 'Book the week']) expect(screen.queryByRole('button', { name })).toBeNull();
+    await user.click(screen.getByRole('button', { name: 'Check with the card provider' }));
+    const panel = await screen.findByRole('dialog');
+    expect(within(panel).getByText(/Only if it shows the whole payment back is the refund\s+recorded as done/)).toBeTruthy();
+    expect(within(panel).getByText(/Nothing is sent to the card again/)).toBeTruthy();
+    await user.type(within(panel).getByRole('textbox', { name: 'Reason' }), REASON);
+    await user.click(within(panel).getByRole('button', { name: 'Check with the card provider' }));
+    await waitFor(() => expect(requestsByMethod(fetchMock, 'POST')).toHaveLength(1));
+    const [url] = requestsByMethod(fetchMock, 'POST')[0]!;
+    expect(new URL(String(url)).pathname).toBe('/api/v1/admin/billing/card-sessions/cs_1/check-provider');
+    expect(bodyOf(fetchMock)).toEqual({});
+    expect(await screen.findByText(/Waiting for approval: a second admin/)).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Check with the card provider' })).toBeNull();
+  });
+
+  it('[CARD-REFUND-LOOKUP] a refund the server says cannot be checked now (sent moments ago) offers no check; one held for the owner can be checked again', async () => {
+    server([{ ...held, providerRefundState: 'SENDING', providerCheck: false }, { ...held, id: 'cs_5', providerRefundState: 'UNKNOWN', failureCode: 'LOOKUP_REFUND_NOT_WHOLE', providerCheck: true }]);
+    renderWithQuery(<CardPaymentsPage />);
+    expect(await screen.findByText(/A refund was sent for this payment, so money was taken\. It stays here until the owner settles it/)).toBeTruthy();
+    expect(screen.getByText(/PowerTranz's record shows a refund that is not this whole payment\. It stays here until the owner settles it/)).toBeTruthy();
+    expect(screen.getAllByRole('button', { name: 'Check with the card provider' })).toHaveLength(1);
+    for (const name of ['Nothing was taken', 'Refund it', 'Book the week']) expect(screen.queryByRole('button', { name })).toBeNull();
+  });
+
+  it('[CARD-REFUND-LOOKUP] "Refunds to check" asks the server for unconfirmed refunds; a refund to the card shows its state and, checked, what PowerTranz\'s record showed', async () => {
+    const credit = { ...paid, cardRefund: { state: 'UNKNOWN', providerRefundRef: null }, providerCheck: true };
+    const fetchMock = server([credit], () => ({ status: 200, body: { success: true, data: { kind: 'CARD_CREDIT_REFUND', check: 'REFUNDED', reason: 'LOOKUP_CREDITED', refund: { state: 'REFUNDED', providerRefundRef: 'LOOKUP-CREDIT-X' } } } }));
+    const { user } = renderWithQuery(<CardPaymentsPage />);
+    await user.click(await screen.findByRole('button', { name: 'Refunds to check' }));
+    expect(await screen.findByText(/Refund to the card \(at closing\): not confirmed/)).toBeTruthy();
+    const url = new URL(String(requestsByMethod(fetchMock, 'GET').at(-1)![0]));
+    expect(url.searchParams.get('refund')).toBe('UNCONFIRMED');
+    expect(url.searchParams.has('status')).toBe(false);
+    await user.click(screen.getByRole('button', { name: 'Check with the card provider' }));
+    const panel = await screen.findByRole('dialog');
+    await user.type(within(panel).getByRole('textbox', { name: 'Reason' }), REASON);
+    await user.click(within(panel).getByRole('button', { name: 'Check with the card provider' }));
+    expect(await screen.findByText(/PowerTranz's record shows the whole payment back\. Recorded as refunded\./)).toBeTruthy();
+  });
+
   it('without a recorded provider transaction nothing can be decided here', async () => {
     server([noRef]);
     renderWithQuery(<CardPaymentsPage />);

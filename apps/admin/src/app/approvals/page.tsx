@@ -15,6 +15,7 @@ import {
   type ApprovalRow, decidedBy, personWords,
 } from '@/lib/approvals';
 import { gyDateTime } from '@/lib/dates';
+import { checkWords } from '@/lib/card-check-words';
 
 const FILTERS = ['PENDING', 'APPROVED', 'REJECTED', 'APPLIED', 'EXPIRED', 'CANCELLED'] as const;
 
@@ -122,7 +123,9 @@ function ApprovalCard({ row, onDecided }: { row: ApprovalRow; onDecided: () => v
     // [OWNER 5 Nov 2026] A fee paid in person gets its receipt only now.
     success: (res) => {
       const receipt = (res as { data?: { receiptNumber?: string } }).data?.receiptNumber;
-      return receipt ? `Executed. Receipt ${receipt}: print it from Finance, or it reaches the partner on their fee page.` : 'Executed.';
+      // [CARD-REFUND-LOOKUP] What the approved "Check with the card provider" found.
+      const found = checkWords((res as { data?: { providerCheck?: unknown } }).data?.providerCheck);
+      return receipt ? `Executed. Receipt ${receipt}: print it from Finance, or it reaches the partner on their fee page.` : found ? `Executed. ${found}` : 'Executed.';
     },
   });
 
