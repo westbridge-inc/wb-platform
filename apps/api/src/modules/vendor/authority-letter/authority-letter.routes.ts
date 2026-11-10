@@ -8,7 +8,8 @@
  *
  * authorityLetterPublicRoutes (/api/v1/public/authority-letter, no account): the signing page. The link's secret is the
  * only credential and is only ever sent in a POST body (the page reads it after the '#'), so it never reaches a server
- * log; each route is rate-limited by address, and the SMS routes by number too.
+ * log; each route is rate-limited by address, and the SMS routes by number too. While the switch is off every one of
+ * them is dark (404), checked before the body is read.
  */
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { z } from '../../../lib/zod';

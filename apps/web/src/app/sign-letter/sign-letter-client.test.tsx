@@ -8,7 +8,8 @@ import robots from '../robots';
 // read the one-page letter, confirm a code texted to their phone, sign with a finger and tick "I authorise". No account.
 // The link's secret is after the '#': it leaves the address bar once read and goes to the API only in request bodies.
 
-const TOKEN = 'AbCdEfGhIjKlMnOpQrStUvWxYz0123456789_-AbCdE';
+// A link secret's shape (43 URL-safe characters), plainly fake: never a real-looking key.
+const TOKEN = 'test-link-token-'.padEnd(43, 'x');
 const PAGE = {
   status: 'SENT', title: 'Letter of authority: Swift store account (company)', signerKind: 'director', signerName: 'Devon Persaud',
   phoneEnding: '123', expiresAt: '2026-11-13T15:00:00.000Z', signedAt: null,
