@@ -103,6 +103,8 @@ export function letterFormState(input: LetterFormInput, kind: 'director' | 'owne
     if (value.length < min) errors[field] = 'Fill this in.';
     else if (value.length > max) errors[field] = `Use at most ${max} characters.`;
     else if (/[<>]/.test(value)) errors[field] = 'Use letters, numbers and ordinary punctuation.';
+    // [review F6] as the server refuses them: invisible formatting (bidi, zero-width), private-use and control characters
+    else if (/[\p{Cc}\p{Cf}\p{Co}\u2028\u2029]/u.test(value)) errors[field] = 'Remove the hidden characters (copied text can carry them): type it again.';
   }
   const local = digitsOf(input.signerDigits).slice(0, SIGNER_DIGITS);
   const signerPhone = `${dialCode}${local}`;

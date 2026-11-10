@@ -34,19 +34,20 @@ const when = (at: Date) => `${formatGuyanaTime(at, { day: 'numeric', month: 'lon
  */
 export function unverifiedNumberLine(f: Pick<SignedLetterFacts, 'signerPhone' | 'requesterName' | 'signerKind'>): string {
   const role = f.signerKind === 'director' ? 'a director of the company' : 'the business’s owner';
-  return `NOT CHECKED BY SWIFT: the number ${f.signerPhone} was typed by ${f.requesterName}, the person who asked for this letter. `
+  const who = f.signerKind === 'director' ? 'the company' : 'the business';
+  return `NOT CHECKED BY SWIFT: the number ${f.signerPhone} and the name were typed by ${f.requesterName}, the person who asked for this letter. `
     + 'Swift checked only that someone holding that number confirmed a code and signed. This signature alone does not prove '
-    + `that the signer is ${role}: a person at Swift confirms that separately, from an official listing or by calling on a number Swift found itself.`;
+    + `who signed, nor that the signer is ${role}: a person at Swift confirms the authority separately, by calling ${who} on a number Swift found itself.`;
 }
 
 /** The record printed under the signature, one fact a line. */
 export function signingRecordLines(f: SignedLetterFacts): string[] {
   return [
-    `Signed electronically on Swift by ${f.signerName} (${f.signerKind}) on ${when(f.signedAt)}.`,
+    `Signed electronically on Swift by whoever held the phone number ${f.signerPhone}, as “${f.signerName}” (the name ${f.requesterName} typed), on ${when(f.signedAt)}.`,
     `A code Swift texted to ${f.signerPhone} was confirmed on ${when(f.codeVerifiedAt)}.`,
     `Network address (keyed digest): ${f.ipDigest ?? 'not recorded'}. Browser: ${(f.userAgent ?? 'not recorded').slice(0, 200)}.`,
     `SHA-256 of the letter's words: ${f.letterSha256}. Swift request: ${f.requestId}.`,
-    'A person at Swift checks this letter against the business’s registration papers before the store can go live.',
+    'A person at Swift confirms the authority separately before the store can go live.',
   ];
 }
 
@@ -62,11 +63,11 @@ export function renderSignedLetterPdf(f: SignedLetterFacts): Promise<Buffer> {
     doc.font('Helvetica').fontSize(10.5);
     for (const line of f.lines) doc.text(line, { lineGap: 2 }).moveDown(0.5);
     doc.moveDown(0.5);
-    doc.font('Helvetica-Bold').fontSize(10).text(`Signature of the ${f.signerKind}:`);
+    doc.font('Helvetica-Bold').fontSize(10).text(`Signature (signed as “${f.signerName}”):`);
     const top = doc.y + 4;
     doc.image(f.signaturePng, doc.page.margins.left, top, { fit: [240, 90] });
     doc.y = top + 96;
-    doc.font('Helvetica').fontSize(10.5).text(`Name: ${f.signerName}`);
+    doc.font('Helvetica').fontSize(10.5).text(`Name as typed by ${f.requesterName}: ${f.signerName}`);
     doc.moveDown(0.6);
     doc.font('Helvetica-Bold').fontSize(9).fillColor('#9a1b1b').text(unverifiedNumberLine(f), { lineGap: 1 });
     doc.fillColor('#000000').moveDown(0.6);

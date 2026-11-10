@@ -250,7 +250,7 @@ async function approveAll(o: { userId: string }, role: 'RESTAURANT' | 'STORE', d
       : docType === 'business_registration' ? { registrationKind: 'BUSINESS_NAME' as const, certificateYear: new Date().getUTCFullYear() }
       : docType === 'gra_restaurant_licence' ? { certificateYear: new Date().getUTCFullYear() }
       // [COMPANY-DOCS PART 2 · review F2] a letter of authority: how the reviewer confirmed its signer
-      : docType.endsWith('_authority_letter') ? { authorityConfirmed: { method: 'REGISTER_LISTING' as const, reason: 'DCRA annual return lists the signer as a director' } } : {};
+      : docType.endsWith('_authority_letter') ? { authorityConfirmed: { method: 'CALLED_ON_FOUND_NUMBER' as const, reason: 'called the company on the number on its website; it confirmed' } } : {};
     await service.approveDocument(doc.id, adminId, undefined, undefined, typed);
   }
 }

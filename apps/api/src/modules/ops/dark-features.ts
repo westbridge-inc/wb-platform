@@ -242,7 +242,7 @@ export const DARK_FEATURES: DarkFeature[] = [
     enabledWhen: '1',
     title: 'Letter of authority signed in Swift (by the director or owner, on their own phone)',
     whileOff:
-      "A company's (or a manager's) account holder sees no form to ask the director (or the owner) to sign in Swift: they upload a signed paper letter, as before, and a person at Swift checks it. Nobody is texted a signing link. A link already sent (only while it was on) can still be opened and signed until it expires.",
+      "A company's (or a manager's) account holder sees no form to ask the director (or the owner) to sign in Swift: they upload a signed paper letter, as before, and a person at Swift checks it. Nobody is texted a signing link, and a link sent while it was on stops working: it can no longer be opened, texted a code or signed, so nothing more about a signer is collected.",
     impact: 'product',
   },
   // ── [row 331 · CONFIG-GUARDS] the kill switches. Each is unset (or 0) in

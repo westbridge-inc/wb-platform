@@ -11,7 +11,7 @@ import { approveRegistrantLink, linkedAccountIds, normalizeRegistrationMark, pla
 import { POLICE_CLEARANCE_WITHDRAWN_NOTE } from './police-clearance-consent';
 import { ACCOUNT_HOLDER_ID_DOC_TYPE, AUTO_APPROVE_EXPIRY_DAYS, BUCKET_OF, CERTIFICATE_YEAR_DOC_TYPES, FOOD_HANDLER_ATTESTATION_TYPE, isNeverAcceptedDocType, OWN_NAME_DOC_TYPE, OWN_NAME_TIER, PERSON_ONLY_DOC_TYPES, POLICE_CLEARANCE_DOC_TYPE, REGISTRATION_DOC_TYPES, registryCode, type RegistrationKind } from './doc-registry';
 import { accountTierOf } from '../vendor/account-basis';
-import { authorityConfirmationNote, type AuthorityConfirmation } from './authority-confirmation';
+import { AUTHORITY_LETTER_DOC_TYPES, authorityConfirmationNote, type AuthorityConfirmation } from './authority-confirmation';
 import { guyanaWallClockParts, startOfGuyanaDay } from '../../utils/guyana-day';
 import type { ValidatorContext } from './validators';
 import { plausibleExpiryCeiling, startOfToday } from './validators';
@@ -1170,7 +1170,10 @@ export class VerificationService {
       // keys no date for a business registration).
       // [COMPANY-DOCS PART 2 · review F2] A letter of authority (paper or signed in Swift) is approved only once a person
       // confirmed its signer IS a director (or the owner) on their own, and said how. Never by default.
-      authorityNote = authorityConfirmationNote(candidate.docType, typed.authorityConfirmed);
+      // [Part 2 review F1] A letter a third person signed in Swift can only be confirmed by a call on a number Swift found.
+      const signedInSwift = AUTHORITY_LETTER_DOC_TYPES.has(candidate.docType)
+        && (await this.prisma.authorityLetterRequest.count({ where: { documentId: docId } })) > 0;
+      authorityNote = authorityConfirmationNote(candidate.docType, typed.authorityConfirmed, { signedInSwift });
       // [ROLE-DOCS · owner 21 Oct 2026] An own-name declaration is approved only on the reviewer's own check of the name
       // against the owner's ID. Never by default: an internal caller that does not say so cannot approve one either.
       if (candidate.docType === OWN_NAME_DOC_TYPE && typed.ownNameConfirmed !== true) {

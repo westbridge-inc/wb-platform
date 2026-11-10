@@ -29,27 +29,36 @@ describe('[review F2] the signer of a letter of authority is confirmed by a pers
     fireEvent.load(await screen.findByRole('img'));
     const approve = () => screen.getByRole('button', { name: 'Approve' }) as HTMLButtonElement;
     expect(approve().disabled).toBe(true);
-    expect(screen.getByText(/the number was typed by the account holder: Swift never checked that it belongs to the director/)).toBeTruthy();
-    await user.click(screen.getByLabelText(/director listing \(DCRA notice of directors or annual return\) names the signer as a director/));
+    expect(screen.getByText(/A letter signed in Swift has no letterhead \(that is expected\)/)).toBeTruthy();
+    expect(screen.getByText(/a listing proves a name, not who signed/)).toBeTruthy();
+    await user.click(screen.getByLabelText(/I called the company on a number Swift found itself \(not one on the letter or the form\), and the company confirmed it authorised this account holder/));
     expect(approve().disabled).toBe(true); // a method alone is not enough
     await user.type(screen.getByLabelText('What you checked to confirm the signer'), 'short');
     expect(approve().disabled).toBe(true);
-    await user.type(screen.getByLabelText('What you checked to confirm the signer'), ': DCRA annual return 2026 lists the signer');
+    await user.type(screen.getByLabelText('What you checked to confirm the signer'), ': called the number on its website; HR confirmed');
     expect(approve().disabled).toBe(false);
     await user.click(approve());
     await user.type(screen.getByLabelText('Decision note'), 'Synthetic evidence checked');
     await user.click(screen.getByRole('button', { name: 'Confirm approval' }));
     await waitFor(() => expect(requestsByMethod(fetch, 'PUT')).toHaveLength(1));
     expect(JSON.parse(String(requestsByMethod(fetch, 'PUT')[0]![1]?.body))).toEqual({
-      authorityConfirmed: { method: 'REGISTER_LISTING', reason: 'short: DCRA annual return 2026 lists the signer' },
+      authorityConfirmed: { method: 'CALLED_ON_FOUND_NUMBER', reason: 'short: called the number on its website; HR confirmed' },
     });
   });
 
-  it('a manager’s letter: the owner, from the Business Registration or a call on a number Swift found itself', async () => {
+  it('a company’s listing counts only when it names the account holder themself, never for a letter signed in Swift', async () => {
+    fixture('company_authority_letter');
+    const { user } = renderWithQuery(<VerificationPage />);
+    await user.click(await screen.findByRole('button', { name: 'Review' }));
+    expect(screen.getByLabelText(/names the account holder themself as a director: no one else signed\. Never for a letter signed in Swift\./)).toBeTruthy();
+  });
+
+  it('a manager’s letter: only a call on a number Swift found itself (a registration cannot prove who signed)', async () => {
     fixture('owner_authority_letter');
     const { user } = renderWithQuery(<VerificationPage />);
     await user.click(await screen.findByRole('button', { name: 'Review' }));
-    expect(screen.getByLabelText('The Business Registration names the signer as the owner')).toBeTruthy();
-    expect(screen.getByLabelText(/I called the business on a number Swift found itself \(not one on the letter or the form\)/)).toBeTruthy();
+    expect(screen.getByLabelText(/I called the business on a number Swift found itself \(not one on the letter or the form\), and its owner confirmed they authorised this manager/)).toBeTruthy();
+    expect(screen.queryByLabelText(/Business Registration/)).toBeNull();
+    expect(screen.getAllByRole('radio')).toHaveLength(1);
   });
 });

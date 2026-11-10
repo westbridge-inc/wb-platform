@@ -27,7 +27,7 @@ CREATE TABLE "authority_letter_requests" (
     "letterSha256" TEXT NOT NULL,
     "status" "AuthorityLetterStatus" NOT NULL DEFAULT 'SENT',
     "tokenHash" TEXT NOT NULL,
-    "expiresAt" TIMESTAMP(3) NOT NULL,
+    "linkExpiresAt" TIMESTAMP(3) NOT NULL,
     "sendCount" INTEGER NOT NULL DEFAULT 1,
     "lastSentAt" TIMESTAMP(3) NOT NULL,
     "openedAt" TIMESTAMP(3),
@@ -38,6 +38,7 @@ CREATE TABLE "authority_letter_requests" (
     "codeVerifiedAt" TIMESTAMP(3),
     "signingKeyHash" TEXT,
     "signingKeyExpiresAt" TIMESTAMP(3),
+    "signingClaimedAt" TIMESTAMP(3),
     "signedAt" TIMESTAMP(3),
     "signerIpHmac" TEXT,
     "signerUserAgent" TEXT,
@@ -55,7 +56,7 @@ CREATE UNIQUE INDEX "authority_letter_requests_tokenHash_key" ON "authority_lett
 
 CREATE INDEX "authority_letter_requests_userId_createdAt_idx" ON "authority_letter_requests"("userId", "createdAt");
 
-CREATE INDEX "authority_letter_requests_status_expiresAt_idx" ON "authority_letter_requests"("status", "expiresAt");
+CREATE INDEX "authority_letter_requests_status_linkExpiresAt_idx" ON "authority_letter_requests"("status", "linkExpiresAt");
 
 ALTER TABLE "authority_letter_requests" ADD CONSTRAINT "authority_letter_requests_userId_fkey" FOREIGN KEY ("userId") REFERENCES "users"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 

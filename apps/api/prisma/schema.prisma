@@ -1565,7 +1565,8 @@ model AuthorityLetterRequest {
   status              AuthorityLetterStatus @default(SENT)
   /// SHA-256 (hex) of the link's secret. The secret itself is only ever in the text message.
   tokenHash           String                @unique
-  expiresAt           DateTime
+  /// When the link stops working (72 hours after it was texted). Not a document expiry.
+  linkExpiresAt       DateTime
   sendCount           Int                   @default(1)
   lastSentAt          DateTime
   openedAt            DateTime?
@@ -1576,6 +1577,8 @@ model AuthorityLetterRequest {
   codeVerifiedAt      DateTime?
   signingKeyHash      String?
   signingKeyExpiresAt DateTime?
+  /// A signature being filed right now (and when it was signed): a cancel, resend or expiry waits for it (5 minutes at most).
+  signingClaimedAt    DateTime?
   signedAt            DateTime?
   /// HMAC-SHA256(ip, CONSENT_IP_PEPPER), as the consent ledger keeps it: never the address itself.
   signerIpHmac        String?
@@ -1589,7 +1592,7 @@ model AuthorityLetterRequest {
   updatedAt           DateTime              @updatedAt
 
   @@index([userId, createdAt])
-  @@index([status, expiresAt])
+  @@index([status, linkExpiresAt])
   @@map("authority_letter_requests")
 }
 

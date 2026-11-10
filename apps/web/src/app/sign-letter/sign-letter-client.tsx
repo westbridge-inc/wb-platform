@@ -5,17 +5,21 @@ import { SwiftLogo } from '@/components/swift-logo';
 import { BROWSER_API_ORIGIN as API_URL } from '@/lib/browser-api-origin';
 import { SignaturePad } from './signature-pad';
 
-/** What the API shows of the letter (POST /api/v1/public/authority-letter/open). */
+/** What the API shows of the letter (POST /api/v1/public/authority-letter/open): the letter while it waits; once signed,
+ *  only that it is signed. */
 export interface LetterPage {
-  status: 'SENT' | 'SIGNED';
+  status: 'SENT';
   title: string;
   lines: string[];
   signerKind: 'director' | 'owner';
   signerName: string;
   phoneEnding: string;
   expiresAt: string;
-  signedAt: string | null;
 }
+type OpenAnswer = LetterPage | { status: 'SIGNED'; signedAt: string | null };
+
+/** Who signs, in plain words (never the server's code). */
+const SIGNER_AS: Readonly<Record<LetterPage['signerKind'], string>> = { director: 'a director of the company', owner: 'the owner of the business' };
 
 /** The link's secret after the '#': 43 URL-safe characters, nothing else. */
 export function parseLetterLink(hash: string): string | null {
@@ -75,7 +79,7 @@ export function SignLetterClient() {
     setToken(t);
     if (window.location.hash) window.history.replaceState(null, '', window.location.pathname + window.location.search);
     if (!t) { setStep({ kind: 'no-link' }); return; }
-    post<LetterPage>('open', { token: t })
+    post<OpenAnswer>('open', { token: t })
       .then((page) => setStep(page.status === 'SIGNED' ? { kind: 'signed' } : { kind: 'read', page }))
       .catch((e: unknown) => setStep({ kind: 'closed', message: errorText(e) }));
   }, []);
@@ -184,7 +188,7 @@ export function SignLetterClient() {
                   <SignaturePad label={`Signature of ${step.page.signerName}`} onChange={setSignature} />
                   <label className="flex items-start gap-3 text-sm">
                     <input type="checkbox" checked={agree} onChange={(e) => setAgree(e.target.checked)} className="mt-0.5 h-4 w-4 accent-[var(--swift-red)]" />
-                    <span>I, {step.page.signerName}, authorise what this letter says, as the {step.page.signerKind}, and sign it.</span>
+                    <span>I, {step.page.signerName}, authorise what this letter says, as {SIGNER_AS[step.page.signerKind] ?? 'the person named in it'}, and sign it.</span>
                   </label>
                   <button type="button" className="sw-btn sw-btn-block" disabled={busy !== null || !signature || !agree} onClick={() => void sign(step.page)}>
                     {busy === 'sign' ? 'Signing…' : 'Sign the letter'}

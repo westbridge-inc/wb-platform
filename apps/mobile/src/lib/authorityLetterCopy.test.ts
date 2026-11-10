@@ -11,7 +11,7 @@ import {
 
 const FILLED = {
   businessName: 'Kariba Fried Chicken Ltd.', registrationNumber: 'C-12345', requesterName: 'Asha Ramdin', requesterRole: 'Operations Manager',
-  signerName: 'Devon Persaud', signerDigits: '060 0123',
+  signerName: 'Devon Persaud', signerDigits: '050 0123',
 };
 const VIEW: LetterRequestView = {
   id: 'r1', docType: 'company_authority_letter', status: 'SENT', signerKind: 'director', signerFirstName: 'Devon', signerPhoneEnding: '123',
@@ -30,19 +30,19 @@ describe('[COMPANY-DOCS PART 2] who signs which letter', () => {
 
 describe('[COMPANY-DOCS PART 2] the form', () => {
   it('a filled form sends the server’s body, the number as +592 and seven digits', () => {
-    const s = letterFormState({ ...FILLED, ownPhone: '+5920699999' }, 'director');
+    const s = letterFormState({ ...FILLED, ownPhone: '+5920599999' }, 'director');
     expect(s.canSubmit).toBe(true);
     expect(s.body).toEqual({
       businessName: 'Kariba Fried Chicken Ltd.', registrationNumber: 'C-12345', requesterName: 'Asha Ramdin', requesterRole: 'Operations Manager',
-      signerName: 'Devon Persaud', signerPhone: '+5920600123',
+      signerName: 'Devon Persaud', signerPhone: '+5920500123',
     });
   });
 
   it('the director’s number is never your own, nor one on your team', () => {
-    const own = letterFormState({ ...FILLED, ownPhone: '+592 060 0123' }, 'director');
+    const own = letterFormState({ ...FILLED, ownPhone: '+592 050 0123' }, 'director');
     expect(own.canSubmit).toBe(false);
     expect(own.errors.signerPhone).toBe('The director signs on their own phone. Enter the director’s number, not yours.');
-    const team = letterFormState({ ...FILLED, teamPhones: ['+5920600123'] }, 'owner');
+    const team = letterFormState({ ...FILLED, teamPhones: ['+5920500123'] }, 'owner');
     expect(team.errors.signerPhone).toBe('That number belongs to someone on your store’s team. Enter the owner’s own number.');
     expect(letterFormState({ ...FILLED, signerDigits: '60001' }, 'director').errors.signerPhone).toBe('Enter the 7-digit mobile number.');
   });
@@ -59,6 +59,15 @@ describe('[COMPANY-DOCS PART 2] the form', () => {
       expect(letterFormState({ ...FILLED, [field]: 'x'.repeat(max + 1) }, 'director').errors[field as keyof typeof ESIGN_LIMITS]).toBe(`Use at most ${max} characters.`);
     }
     expect(letterFormState({ ...FILLED, businessName: ' ' }, 'director').errors.businessName).toBe('Fill this in.');
+  });
+
+  it('[review F6] hidden characters (bidi overrides, zero-width, private-use, control) are refused as the server refuses them', () => {
+    for (const hidden of ['‮', '​', '⁦', '', '\u0007', ' ']) {
+      const s = letterFormState({ ...FILLED, signerName: `Devon${hidden} Persaud` }, 'director');
+      expect(s.canSubmit, JSON.stringify(hidden)).toBe(false);
+      expect(s.errors.signerName).toBe('Remove the hidden characters (copied text can carry them): type it again.');
+    }
+    expect(letterFormState({ ...FILLED, businessName: 'O’Neil & Sons Ltd.' }, 'director').canSubmit).toBe(true); // ordinary punctuation passes
   });
 });
 
@@ -83,7 +92,7 @@ describe('[COMPANY-DOCS PART 2] where it stands', () => {
     expect(letterRequestFor('company_authority_letter', { request: null })).toBeNull();
   });
 
-  it('resend: one a minute, three in all', () => {
+  it('resend: one a minute, and only as many as the server says are left', () => {
     const now = Date.parse('2026-11-10T15:00:30.000Z');
     expect(resendState({ ...VIEW, resendAt: '2026-11-10T15:01:00.000Z' }, now)).toEqual({ allowed: false, label: 'Send again in 30 s' });
     expect(resendState(VIEW, now)).toEqual({ allowed: true, label: 'Send the link again' });

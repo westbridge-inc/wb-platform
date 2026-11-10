@@ -32,8 +32,8 @@ export const CODE_MAX_ATTEMPTS = 5;
 export const CODE_MAX_SENDS = 6;
 /** After the code: how long the signer has to draw and send their signature. */
 export const SIGNING_KEY_TTL_MS = 30 * 60_000;
-/** The first text plus this many resends. */
-export const MAX_RESENDS = 3;
+/** The first text plus this many resends (together, the number's daily letter-text cap: letter-sms-budget.ts). */
+export const MAX_RESENDS = 2;
 export const RESEND_COOLDOWN_MS = 60_000;
 /** Requests one account may start in 24 hours (each one texts a number the account typed). */
 export const MAX_REQUESTS_PER_DAY = 5;
@@ -57,9 +57,21 @@ export interface LetterWords {
   sha256: string;
 }
 
-/** One line of a name or a number, as typed: spaces collapsed, no control characters. */
+/**
+ * [review F6] Characters a typed field must never carry: control characters, line and paragraph separators, invisible
+ * formatting characters (bidi overrides, zero-width joiners: \p{Cf}) and private-use ones (\p{Co}). The browser applies
+ * bidi to the words the signer reads while the PDF does not, so the signed page and the PDF could read differently. The
+ * form REFUSES them (authority-letter.routes.ts); cleanField strips them too, as a second wall.
+ */
+export const HIDDEN_CHARACTERS = /[\p{Cc}\p{Cf}\p{Co}\u2028\u2029]/u;
+export const HIDDEN_CHARACTERS_WORDS = 'Remove the hidden characters (copied text can carry them): type it again.';
+
+/**
+ * One line of a name or a number, as typed: spaces collapsed, and none of the HIDDEN_CHARACTERS (stripped): the page and
+ * the signed PDF say the same thing.
+ */
 export function cleanField(value: string): string {
-  return value.replace(/[\p{Cc}\u2028\u2029]/gu, ' ').replace(/\s+/g, ' ').trim();
+  return value.replace(/[\p{Cf}\p{Co}]/gu, '').replace(/[\p{Cc}\u2028\u2029]/gu, ' ').replace(/\s+/g, ' ').trim();
 }
 
 /** The date the letter is written, in Guyana: "10 November 2026". */
@@ -117,16 +129,14 @@ export function phoneEnding(phone: string): string {
   return phone.replace(/\D/g, '').slice(-3);
 }
 
-/** A text message in plain GSM characters (one cheap part per 160): curly quotes straightened, anything else dropped. */
-export function smsSafe(value: string): string {
-  return value.replace(/[‘’]/g, "'").replace(/[“”]/g, '"').replace(/[–—]/g, '-').replace(/[^\x20-\x7e]/g, '');
-}
-
-/** The text with the link. Names only who asks and for which business; the secret sits after '#' (never in a log). */
-export function letterLinkSms(input: { requesterName: string; businessName: string; basis: LetterBasis; link: string }): string {
-  const who = smsSafe(firstNameOf(input.requesterName)) || 'Someone';
-  const business = smsSafe(cleanField(input.businessName)).slice(0, 60);
-  return `Swift: ${who} asked you to sign a letter of authority for ${business} on Swift. Read and sign it here: ${input.link} Not expecting this? Ignore this text.`;
+/**
+ * [security review · COORD 10 Nov 2026] The text with the link: ONE fixed sentence, with nothing anyone typed in it (no
+ * name of the person who asked, no business name, no role): Swift's trusted sender never carries words, a link, a domain
+ * or a number someone else chose. The names are shown only on Swift's own signing page, after the link opens. The only
+ * link is Swift's, its secret after '#'.
+ */
+export function letterLinkSms(link: string): string {
+  return `Swift: Someone asked you to sign a letter of authority for a business on Swift. Read it and sign it here: ${link} Not expecting this? Ignore this text.`;
 }
 
 /** The code text. */

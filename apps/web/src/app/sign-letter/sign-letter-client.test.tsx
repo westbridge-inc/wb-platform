@@ -66,7 +66,7 @@ describe('the signing page', () => {
     fireEvent.pointerMove(pad, { clientX: 60, clientY: 40, pointerId: 1 });
     fireEvent.pointerUp(pad, { clientX: 60, clientY: 40, pointerId: 1 });
     expect(sign.disabled).toBe(true); // drawn, not ticked
-    await user.click(screen.getByRole('checkbox', { name: /I, Devon Persaud, authorise what this letter says, as the director, and sign it\./ }));
+    await user.click(screen.getByRole('checkbox', { name: /I, Devon Persaud, authorise what this letter says, as a director of the company, and sign it\./ }));
     expect(sign.disabled).toBe(false);
     await user.click(sign);
     expect(await screen.findByText('Signed. Thank you, Devon.')).toBeTruthy();
@@ -106,7 +106,8 @@ describe('the signing page', () => {
 
   it('an already signed letter is not offered again', async () => {
     at(`#${TOKEN}`);
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(ok({ ...PAGE, status: 'SIGNED', signedAt: '2026-11-11T13:00:00.000Z' })));
+    // [review F4] a signed link answers only that it is signed
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValueOnce(ok({ status: 'SIGNED', signedAt: '2026-11-11T13:00:00.000Z' })));
     render(<SignLetterClient />);
     expect(await screen.findByText('This letter is already signed')).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Text me a code' })).toBeNull();

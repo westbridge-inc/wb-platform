@@ -41,13 +41,13 @@ describe('[COMPANY-DOCS PART 2] ask a director to sign in Swift', () => {
     await user.type(screen.getByLabelText('Your full name'), 'Asha Ramdin');
     await user.type(screen.getByLabelText('Your position in the company'), 'Operations Manager');
     await user.type(screen.getByLabelText('The director’s full name'), 'Devon Persaud');
-    await user.type(screen.getByLabelText('The director’s mobile number'), '060-0123');
+    await user.type(screen.getByLabelText('The director’s mobile number'), '050-0123');
     expect(send.disabled).toBe(false);
     await user.click(send);
     await waitFor(() => expect(writes).toHaveLength(1));
     expect(writes[0]).toEqual({ method: 'POST', path: '/vendor/authority-letters', body: {
       businessName: 'Kariba Fried Chicken Ltd.', registrationNumber: 'C-12345', requesterName: 'Asha Ramdin', requesterRole: 'Operations Manager',
-      signerName: 'Devon Persaud', signerPhone: '+5920600123',
+      signerName: 'Devon Persaud', signerPhone: '+5920500123',
     } });
     // the paper letter stays offered
     expect(screen.getByText('Prefer paper? Upload a signed letter instead.')).toBeTruthy();
@@ -69,7 +69,7 @@ describe('[COMPANY-DOCS PART 2] ask a director to sign in Swift', () => {
     api(null, () => ({ status: 400, body: { success: false, error: { code: 'SIGNER_PHONE_ON_TEAM', message: 'That number belongs to someone on your store’s team. The director signs on their own phone: enter the director’s own number.' } } }));
     const user = userEvent.setup();
     renderWithQuery(<AuthorityLetterEsign storeId="shop" docType="company_authority_letter" kind="director" onSigned={() => undefined} />);
-    for (const [label, value] of [['Company name (as on the Certificate of Incorporation)', 'Kariba Ltd.'], ['Company registration number', '1'], ['Your full name', 'Asha Ramdin'], ['Your position in the company', 'Manager'], ['The director’s full name', 'Devon Persaud'], ['The director’s mobile number', '0600123']] as const) {
+    for (const [label, value] of [['Company name (as on the Certificate of Incorporation)', 'Kariba Ltd.'], ['Company registration number', '1'], ['Your full name', 'Asha Ramdin'], ['Your position in the company', 'Manager'], ['The director’s full name', 'Devon Persaud'], ['The director’s mobile number', '0500123']] as const) {
       await user.type(await screen.findByLabelText(label), value);
     }
     await user.click(screen.getByRole('button', { name: 'Send the letter to sign' }));

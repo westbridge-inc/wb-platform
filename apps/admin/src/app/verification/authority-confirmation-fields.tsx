@@ -16,24 +16,27 @@ export function authorityConfirmationReady(v: AuthorityConfirmationValue): boole
   return v.method !== '' && reason.length >= AUTHORITY_REASON_MIN && reason.length <= 500;
 }
 
+/**
+ * [Part 2 review F1] A listing proves a name, never who signed: where anyone other than the account holder signed (every
+ * owner's letter, every letter signed in Swift), only the call on a number Swift found itself counts. The listing counts
+ * only when the paper IS the company's director listing naming the account holder themself (the server enforces both).
+ */
 export function authorityChoices(docType: string): Array<{ method: AuthorityMethod; label: string }> {
   return docType === 'owner_authority_letter'
     ? [
-      { method: 'REGISTER_LISTING', label: 'The Business Registration names the signer as the owner' },
-      { method: 'CALLED_ON_FOUND_NUMBER', label: 'I called the business on a number Swift found itself (not one on the letter or the form) and it confirmed the signer is the owner' },
+      { method: 'CALLED_ON_FOUND_NUMBER', label: 'I called the business on a number Swift found itself (not one on the letter or the form), and its owner confirmed they authorised this manager' },
     ]
     : [
-      { method: 'REGISTER_LISTING', label: 'The company’s director listing (DCRA notice of directors or annual return) names the signer as a director' },
-      { method: 'CALLED_ON_FOUND_NUMBER', label: 'I called the company on a number Swift found itself (not one on the letter or the form) and it confirmed the signer is a director' },
+      { method: 'CALLED_ON_FOUND_NUMBER', label: 'I called the company on a number Swift found itself (not one on the letter or the form), and the company confirmed it authorised this account holder' },
+      { method: 'REGISTER_LISTING', label: 'This paper is the company’s director listing (DCRA notice of directors or annual return) and it names the account holder themself as a director: no one else signed. Never for a letter signed in Swift.' },
     ];
 }
 
-export const AUTHORITY_NOT_PROOF = 'A signature is not proof on its own. If this letter was signed in Swift, its signing record says the number was typed by the account holder: Swift never checked that it belongs to the director, the owner or the company. Confirm the signer yourself. If you cannot, reject the letter.';
+export const AUTHORITY_NOT_PROOF = 'A signature is not proof on its own, and a listing proves a name, not who signed. A letter signed in Swift has no letterhead (that is expected); its signing record says the name and number were typed by the account holder and Swift never checked them. Confirm the authority yourself. If you cannot, reject the letter.';
 
 export function AuthorityConfirmationFields({ docType, value, onChange, disabled }: {
   docType: string; value: AuthorityConfirmationValue; onChange: (_v: AuthorityConfirmationValue) => void; disabled: boolean;
 }) {
-  const who = docType === 'owner_authority_letter' ? 'the owner' : 'a director';
   return (
     <fieldset className="rc-fields" disabled={disabled} data-authority-confirmation>
       <legend>Signer confirmed (required)</legend>
@@ -47,7 +50,7 @@ export function AuthorityConfirmationFields({ docType, value, onChange, disabled
       <label>What you checked
         <textarea
           aria-label="What you checked to confirm the signer" maxLength={500} value={value.reason}
-          placeholder={`For example: the DCRA annual return lists the signer as ${who}`}
+          placeholder={docType === 'owner_authority_letter' ? 'For example: called the number on the business’s Facebook page; the owner confirmed' : 'For example: called the company’s number from its website; the HR manager confirmed'}
           onChange={(e) => onChange({ ...value, reason: e.target.value })}
         />
         <small>{value.reason.trim().length < AUTHORITY_REASON_MIN ? `At least ${AUTHORITY_REASON_MIN} characters. Kept with the decision.` : 'Kept with the decision.'}</small>
