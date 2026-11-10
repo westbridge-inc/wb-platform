@@ -1,5 +1,6 @@
 import type { PrismaClient } from '@prisma/client';
 import { log } from '../../utils/logger';
+import { weeklyFeeCardLive } from '../../utils/card-rail';
 
 // ---------------------------------------------------------------------------
 // The per-platform switch for paying the weekly fee by card, its own key so
@@ -54,4 +55,16 @@ export async function cardCheckoutEveryPlatformOn(db: Pick<PrismaClient, 'platfo
   const row = await db.platformConfig.findUnique({ where: { key: CARD_CHECKOUT_PLATFORMS_KEY }, select: { value: true } });
   const switches = cardPlatformSwitches(row);
   return switches.ios && switches.android && switches.web;
+}
+
+/** [CARDS-SWITCH-ON · review #2465-B F4] Can a partner pay the weekly fee by card on this server right now, on at least
+ *  one platform? The server's own switches first (weeklyFeeCardLive: v2 on, not killed, the real provider, live cards),
+ *  then this row, read fresh and only when they say yes (so while cards are off nothing is read). The public site's
+ *  card claims follow it (GET /public/capabilities → cardPayments), so the website never lists Visa and Mastercard
+ *  before a partner can use them, and stops within its own short cache after the kill switch. */
+export async function cardPaymentsOffered(db: Pick<PrismaClient, 'platformConfig'>, env: Record<string, string | undefined> = process.env): Promise<boolean> {
+  if (!weeklyFeeCardLive(env)) return false;
+  const row = await db.platformConfig.findUnique({ where: { key: CARD_CHECKOUT_PLATFORMS_KEY }, select: { value: true } });
+  const switches = cardPlatformSwitches(row);
+  return switches.ios || switches.android || switches.web;
 }

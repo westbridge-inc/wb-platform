@@ -379,22 +379,23 @@ if [ "$PILOT_ENV" = production ]; then
   done
   # [LAUNCH-LOCK -> CARDS-SWITCH-ON] Production's card and ad switches, the
   # same rule as the API's boot guard (boot-config.ts assertProductionLaunchLocks,
-  # card-rail.ts assertProductionCardSwitches). Owner rulings: 13 Oct (cards and
-  # ads refused "until an attorney signs off"), replaced 15 Oct (GUARDRAILS
-  # section 8: what could be criminal - recurring card charges, ads - stays off
-  # until a lawyer confirms), and 7 Oct option A (cards on only with v2 on the
-  # real provider and the complete live setup, on the owner's go). So: cards off
-  # (CARD_RAIL_KILL=1), cards on (CARD_RAIL_KILL=0 beside CARD_RAIL_V2=1,
-  # PowerTranz, live), or paused (the kill switch back to 1 with v2 left on);
-  # the legacy seam, saved cards, the drain switch and ads stay refused.
-  # Changing this is a reviewed code change in both places, never an .env edit.
+  # card-rail.ts assertProductionCardSwitches); the guard itself also runs in the
+  # new image before the swap (BOOT_GUARD, below). Cards on rests on the owner's
+  # go-cards ruling (OWNER-DECISIONS, dated at the go). History: 13 Oct (cards
+  # and ads refused "until an attorney signs off"), 15 Oct (GUARDRAILS section
+  # 8: what could be criminal - recurring card charges, ads - stays off until a
+  # lawyer confirms). So: cards off (CARD_RAIL_KILL=1), cards on
+  # (CARD_RAIL_KILL=0 beside CARD_RAIL_V2=1, PowerTranz, live), or paused (the
+  # kill switch back to 1 with v2 left on); the legacy seam, saved cards, the
+  # drain switch, a test-subscription list and ads stay refused. Changing this
+  # is a reviewed code change in both places, never an .env edit.
   [ "$(env_setting PAYMENT_PROVIDER)" = disabled ] ||
-    die "PILOT_ENV=production needs PAYMENT_PROVIDER=disabled: the legacy card seam stays off; production takes cards only as Pay now on the provider's hosted page (owner ruling, 7 Oct)"
+    die "PILOT_ENV=production needs PAYMENT_PROVIDER=disabled: the legacy card seam stays off; production takes cards only as Pay now on the provider's hosted page (the owner's go-cards ruling, OWNER-DECISIONS, dated at the go)"
   card_kill="$(env_setting CARD_RAIL_KILL)"
   card_v2="$(env_setting CARD_RAIL_V2)"
   case "$card_kill" in
     1 | 0) ;;
-    *) die "PILOT_ENV=production needs CARD_RAIL_KILL=1 (cards off) or 0 (cards on, only on the owner's go beside the complete live card setup: owner ruling, 7 Oct)" ;;
+    *) die "PILOT_ENV=production needs CARD_RAIL_KILL=1 (cards off) or 0 (cards on, only beside the complete live card setup: the owner's go-cards ruling, OWNER-DECISIONS, dated at the go)" ;;
   esac
   case "$card_v2" in
     "" | 0 | 1) ;;
@@ -402,11 +403,11 @@ if [ "$PILOT_ENV" = production ]; then
   esac
   if [ "$card_kill" = 0 ]; then
     [ "$card_v2" = 1 ] && [ "$(env_setting CARD_RAIL_PROVIDER)" = powertranz ] && [ "$(env_setting CARD_RAIL_ENVIRONMENT)" = live ] ||
-      die "PILOT_ENV=production with CARD_RAIL_KILL=0 (cards on) needs CARD_RAIL_V2=1, CARD_RAIL_PROVIDER=powertranz and CARD_RAIL_ENVIRONMENT=live: production takes cards only as Pay now on the provider's hosted page, with real cards (owner ruling, 7 Oct)"
+      die "PILOT_ENV=production with CARD_RAIL_KILL=0 (cards on) needs CARD_RAIL_V2=1, CARD_RAIL_PROVIDER=powertranz and CARD_RAIL_ENVIRONMENT=live: production takes cards only as Pay now on the provider's hosted page, with real cards (the owner's go-cards ruling, OWNER-DECISIONS, dated at the go)"
   fi
   if [ "$card_v2" = 1 ]; then
     [ "$(env_setting CARD_RAIL_PROVIDER)" = powertranz ] && [ "$(env_setting CARD_RAIL_ENVIRONMENT)" = live ] ||
-      die "PILOT_ENV=production with CARD_RAIL_V2=1 needs CARD_RAIL_PROVIDER=powertranz and CARD_RAIL_ENVIRONMENT=live: production takes real cards only (owner ruling, 7 Oct)"
+      die "PILOT_ENV=production with CARD_RAIL_V2=1 needs CARD_RAIL_PROVIDER=powertranz and CARD_RAIL_ENVIRONMENT=live: production takes real cards only (the owner's go-cards ruling, OWNER-DECISIONS, dated at the go)"
     [ -n "$(env_setting POWERTRANZ_API_URL)" ] ||
       die "PILOT_ENV=production with CARD_RAIL_V2=1 needs POWERTRANZ_API_URL: PowerTranz's production address, https://gateway.ptranz.com"
     [ "$(env_setting POWERTRANZ_ID_FILE)" = /run/secrets/POWERTRANZ_ID ] && [ "$(env_setting POWERTRANZ_PASSWORD_FILE)" = /run/secrets/POWERTRANZ_PASSWORD ] ||
@@ -414,6 +415,9 @@ if [ "$PILOT_ENV" = production ]; then
     [[ "$(env_setting POWERTRANZ_PAGE_SET)" == PTZ/?* ]] ||
       die "PILOT_ENV=production with CARD_RAIL_V2=1 needs POWERTRANZ_PAGE_SET=PTZ/<set>: the live page set PowerTranz gives, with its PTZ/ prefix (without it no card page opens)"
   fi
+  # [Review #2465-A F2] The test-subscription list names what a TEST card system may serve; production runs none.
+  [ -z "$(env_setting CARD_RAIL_TEST_SUBSCRIPTIONS)" ] ||
+    die "PILOT_ENV=production refuses CARD_RAIL_TEST_SUBSCRIPTIONS unless it is empty: it names the only subscriptions a TEST card system may serve, and production runs none"
   for locked_name in CARD_RAIL_V2_DRAIN CARD_RAIL_ENROLL ADS_ENABLED; do
     case "$locked_name" in
       CARD_RAIL_ENROLL) locked_why="saved cards and automatic weekly card charges stay off until a lawyer confirms them (GUARDRAILS §8; owner rulings, 13 and 15 Oct)" ;;
@@ -743,6 +747,24 @@ fi
 # [ADMIN-CONSOLE] The same for the admin console: built before anything stops.
 if [ -n "$ADMIN_HOST" ] && [ "$DATA_ONLY" -eq 0 ] && [ "$NO_PUBLIC" -eq 0 ]; then
   "${COMPOSE[@]}" build admin
+fi
+# [CARDS-SWITCH-ON · reviews #2465-A F1 / B-B4] THE API'S OWN BOOT GUARD, before
+# anything is started, stopped or migrated: the exact image just built runs
+# assertSafeBootConfig (dist/boot/boot-guard.js) once as api and once as worker,
+# each with Compose's own settings for that service (deploy/.env, its *_FILE
+# lines and the store mounted as /run/secrets), exactly as the swapped services
+# will start. The checks above are a quick first pass in shell; this is the
+# rule itself, so a setting the API refuses (a card setting, a provider, any
+# other boot refusal) never reaches the swap and crash-loops a live API. The
+# database-only stage starts no API and is not asked.
+if [ "$DATA_ONLY" -eq 0 ]; then
+  for guard_service in api worker; do
+    if ! guard_out="$("${COMPOSE[@]}" run --rm --no-deps -T "$guard_service" node dist/boot/boot-guard.js 2>&1)"; then
+      guard_reason="$(printf '%s\n' "$guard_out" | grep -m1 '^FATAL' || true)"
+      die "BOOT_GUARD: the new $guard_service image refuses this configuration: ${guard_reason:-its boot guard did not pass}. Nothing was started, stopped or migrated"
+    fi
+  done
+  echo "boot guard: the new api and worker images accept this configuration"
 fi
 "${COMPOSE[@]}" up -d --wait postgres redis meilisearch
 # [S3-L1] The database says which deployment it belongs to (deployment_identity,

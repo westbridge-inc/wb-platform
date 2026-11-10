@@ -99,11 +99,11 @@ export function assertNoLiveCardsOffProduction(env: Record<string, string | unde
  * what could be criminal stays off until a lawyer confirms it).
  *   Cards (card-rail.ts assertProductionCardSwitches): off by default
  *   (CARD_RAIL_KILL=1); on only as Pay now on the provider's hosted page with
- *   real cards (CARD_RAIL_KILL=0 beside CARD_RAIL_V2=1, PowerTranz, live — the
- *   owner's go, owner ruling 7 Oct; the complete live setup is PT-4's check,
- *   above); paused by the kill switch with v2 left on. Saved cards and
- *   automatic weekly card charges, the drain switch and the legacy card seam
- *   stay refused.
+ *   real cards (CARD_RAIL_KILL=0 beside CARD_RAIL_V2=1, PowerTranz, live — on
+ *   the owner's go-cards ruling, OWNER-DECISIONS, dated at the go; the
+ *   complete live setup is PT-4's check, above); paused by the kill switch
+ *   with v2 left on. Saved cards and automatic weekly card charges, the drain
+ *   switch, the legacy card seam and a test-subscription list stay refused.
  *   Ads: ADS_ENABLED unset or 0 (only exactly 1 opens the ads routes; owner
  *   rulings 15 Oct and 6 Nov: off at launch).
  * pilot-up.sh refuses the same settings. Changing either is a reviewed code

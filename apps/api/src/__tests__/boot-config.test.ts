@@ -56,8 +56,8 @@ const good: Record<string, string | undefined> = {
   PUSH_PROVIDER: 'expo',
   JWT_SECRET: 'test-jwt-secret-at-least-32-characters',
   KYC_PROVIDER: 'manual',
-  // [CARDS-SWITCH-ON] Production boots with cards off until the owner's go
-  // (owner ruling, 7 Oct): the valid production base has cards off. The
+  // [CARDS-SWITCH-ON] Production boots with cards off until the owner's
+  // go-cards ruling (OWNER-DECISIONS, dated at the go): the valid production base has cards off. The
   // live Stripe key stays so a case that switches the provider back on still
   // passes the provider's own checks and reaches the lock.
   PAYMENT_PROVIDER: 'disabled',
@@ -1399,9 +1399,10 @@ describe('production address lookup is an explicit deployment choice', () => {
 //     criminal stays off until a lawyer confirms it. For cards that is
 //     recurring card charges (saved cards); for ads, ads (owner 6 Nov: off at
 //     launch).
-//   - Owner ruling 7 Oct 2026 (option A): production may run CARD_RAIL_KILL=0
-//     with PAYMENT_PROVIDER=disabled ONLY when CARD_RAIL_V2=1 and the live card
-//     setup is complete; switching it on is the owner's "go".
+//   - Cards ON rests on the owner's go-cards ruling (OWNER-DECISIONS, dated at
+//     the go); owner ruling 7 Oct 2026 (option A) described this change's shape:
+//     CARD_RAIL_KILL=0 with PAYMENT_PROVIDER=disabled ONLY when CARD_RAIL_V2=1 and
+//     the live card setup is complete.
 // So production boots cards OFF exactly as before, Pay now ON only on the real
 // provider with real cards, and the rollback (the kill switch back to 1 with v2
 // left on) — and still refuses saved cards, the drain switch, the legacy seam,
@@ -1551,9 +1552,65 @@ describe('[CARDS-SWITCH-ON] production card and ad switches: cards off by defaul
       expect(message).not.toMatch(/attorney/i);
       expect(message).not.toContain('not-a-real-password');
     }
-    for (const message of ruled) expect(message).toMatch(/owner rulings?, /);
-    expect(refusal({ ...good, CARD_RAIL_KILL: '0' })).toMatch(/owner ruling, 7 Oct/);
+    // [Review #2465-B B3] Cards ON cites the owner's go-cards ruling; saved cards and ads keep their own rulings.
+    const GO_CARDS = /owner's go-cards ruling.*OWNER-DECISIONS, dated at the go/;
+    for (const message of ruled.slice(0, 3)) expect(message).toMatch(GO_CARDS);
+    for (const message of ruled) expect(message).not.toMatch(/7 Oct/);
     expect(refusal({ ...good, ...cardsOn, CARD_RAIL_ENROLL: '1' })).toMatch(/GUARDRAILS §8; owner rulings, 13 and 15 Oct/);
+    expect(refusal({ ...good, ...cardsOn, ADS_ENABLED: '1' })).toMatch(/GUARDRAILS §8; owner rulings, 15 Oct and 6 Nov/);
+  });
+
+  // [Review #2465-A F2] The test-subscription list only ever names what a TEST card system may serve; production runs
+  // none, so a listed id there could only let a test record be booked or refunded as a test.
+  it('KEPT: production refuses a test-subscription list (CARD_RAIL_TEST_SUBSCRIPTIONS), cards off, on or paused', () => {
+    for (const [label, base] of [['cards off', good], ['cards on', { ...good, ...cardsOn }], ['cards paused', { ...good, ...cardsPaused }]] as const) {
+      for (const value of ['sub_1', 'sub_1,sub_2', ' ', ',']) {
+        expect(refusal({ ...base, CARD_RAIL_TEST_SUBSCRIPTIONS: value }), `${label} ${JSON.stringify(value)}`).toMatch(/^FATAL: CARD_RAIL_TEST_SUBSCRIPTIONS must be empty in production/);
+      }
+      for (const empty of [undefined, '']) expect(refusal({ ...base, CARD_RAIL_TEST_SUBSCRIPTIONS: empty }), `${label} ${String(empty)}`).toBe('');
+    }
+    expect(() => assertSafeBootConfig({ NODE_ENV: 'development', CARD_RAIL_V2: '1', CARD_RAIL_PROVIDER: 'simulator', CARD_RAIL_TEST_SUBSCRIPTIONS: 'sub_1' })).not.toThrow();
+  });
+
+  // [Reviews #2465-A F1 / B-B4] pilot-up.sh runs THIS guard in the new image before the swap
+  // (node dist/boot/boot-guard.js, as api and as worker): the entry prints the server's own refusal and exits 1, or
+  // prints one OK line and exits 0. Run here as pilot-up runs it, as its own process with only the given settings.
+  describe('the boot-guard entry (dist/boot/boot-guard.js) pilot-up runs before the swap', () => {
+    const guard = (env: Record<string, string | undefined>) => spawnSync(join(process.cwd(), 'node_modules/.bin/tsx'), [join(process.cwd(), 'src/boot/boot-guard.ts')], {
+      encoding: 'utf8',
+      env: { PATH: process.env['PATH'] ?? '', ...Object.fromEntries(Object.entries(env).filter((entry): entry is [string, string] => entry[1] !== undefined)) },
+    });
+
+    it('passes production as it runs today, and the switch-on set: exit 0, one OK line', () => {
+      for (const env of [good, { ...good, ...cardsOn }, { ...good, ...cardsPaused }]) {
+        const run = guard(env);
+        expect(run.status, run.stdout + run.stderr).toBe(0);
+        expect(run.stdout.trim()).toBe('OK boot guard: this configuration starts');
+      }
+    });
+
+    it('refuses what the API refuses (the settings pilot-up\'s shell checks never read included): exit 1, the server\'s own message, never a value', () => {
+      const cases: Array<[string, Record<string, string | undefined>, RegExp]> = [
+        ['the card simulator', { ...good, CARD_RAIL_PROVIDER: 'simulator' }, /CARD_RAIL_PROVIDER=simulator/],
+        ['the simulator\'s test switch', { ...good, CARD_RAIL_SIMULATOR_LIVE: '1' }, /CARD_RAIL_SIMULATOR_LIVE/],
+        ['PowerTranz not live, v2 off', { ...good, CARD_RAIL_PROVIDER: 'powertranz', CARD_RAIL_ENVIRONMENT: 'sandbox' }, /a TEST card system/],
+        ['no page name', { ...good, ...cardsOn, POWERTRANZ_PAGE_NAME: undefined }, /POWERTRANZ_PAGE_NAME/],
+        ['no account label', { ...good, ...cardsOn, CARD_RAIL_ACCOUNT: undefined }, /CARD_RAIL_ACCOUNT/],
+        ['a malformed provider address', { ...good, ...cardsOn, POWERTRANZ_API_URL: 'gateway.ptranz.com/api/spi' }, /POWERTRANZ_API_URL/],
+        ['a test-subscription list', { ...good, CARD_RAIL_TEST_SUBSCRIPTIONS: 'sub_1' }, /CARD_RAIL_TEST_SUBSCRIPTIONS/],
+        ['saved cards', { ...good, ...cardsOn, CARD_RAIL_ENROLL: '1' }, /CARD_RAIL_ENROLL/],
+        ['a non-card refusal (no on-call list)', { ...good, OPS_ONCALL_PHONES: undefined }, /OPS_ONCALL_PHONES/],
+        ['a store secret that cannot be read', { ...good, ...cardsOn, POWERTRANZ_ID: undefined, POWERTRANZ_ID_FILE: '/nonexistent/POWERTRANZ_ID' }, /POWERTRANZ_ID_FILE/],
+      ];
+      for (const [label, env, named] of cases) {
+        const run = guard(env);
+        expect(run.status, `${label}: ${run.stdout}${run.stderr}`).toBe(1);
+        expect(run.stderr, label).toMatch(/^FATAL/m);
+        expect(run.stderr, label).toMatch(named);
+        expect(run.stdout + run.stderr, label).not.toContain('not-a-real-password');
+        expect(run.stdout, label).not.toContain('OK boot guard');
+      }
+    });
   });
 
   it('asks nothing outside production: staging and test servers keep their switches', () => {

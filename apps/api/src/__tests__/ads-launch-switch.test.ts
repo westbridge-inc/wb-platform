@@ -63,7 +63,8 @@ describe('launch advertising switch', () => {
       const response = await app.inject('/api/v1/public/capabilities');
       expect(response.statusCode).toBe(200);
       expect(response.headers['cache-control']).toBe('no-store');
-      expect(response.json()).toEqual({ success: true, data: { adsEnabled: enabled } });
+      // [CARDS-SWITCH-ON] cardPayments rides beside it (card-payments-capability.unit.test.ts); cards are off here.
+      expect(response.json()).toEqual({ success: true, data: { adsEnabled: enabled, cardPayments: 'soon' } });
       expect((await app.inject('/api/v1/ads/placements')).statusCode).toBe(enabled ? 200 : 403);
     }
   });

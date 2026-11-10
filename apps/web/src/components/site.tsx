@@ -3,7 +3,8 @@ import { SwiftLogo } from './swift-logo';
 import { BrowserOrderingNote } from './browser-ordering-note';
 import { StoreBadgesWhenLive } from './store-badges';
 import { StoresLive } from './stores-live';
-import { site, launch } from '@/site.config';
+import { CardsLive } from './cards-live';
+import { site } from '@/site.config';
 
 /** Shared marketing chrome: the footer, Swift red on a light canvas. The header is components/site-nav.tsx,
  *  imported on its own: [WEB-APPBAR · perf] re-exported from here, it rode as a client module in every page that
@@ -15,29 +16,29 @@ export const GOOGLE_TRADEMARKS = 'Google Play and the Google Play logo are trade
 /**
  * [Q36] How money moves, in one honest line. Orders are paid to the business —
  * cash, or the store's own MMG — and the API refuses any other order payment.
- * Visa and Mastercard are for Swift's own charges (the weekly partner fee, and
- * advertising a business chooses to buy). They are listed only once
- * launch.cardPayments says the card rail is live: a method that does not work
- * yet is never shown or teased (the partner checkout census enforces it).
+ * Visa and Mastercard are for Swift's own weekly partner fee. [CARDS-SWITCH-ON ·
+ * review #2465-B F3/F4] They are listed only while the server says a partner can
+ * pay by card right now (components/cards-live.tsx), never on a build flag: a
+ * method that does not work is never shown or teased (the partner checkout census
+ * enforces it). Advertising is not named: ads are off, and nothing takes an ad
+ * payment by card.
  */
 export function PaymentMethods() {
-  const cardsLive = launch.cardPayments === 'live';
-  const methods = ['Cash', 'MMG', ...(cardsLive ? ['Visa', 'Mastercard'] : [])];
+  const pill = 'inline-flex items-center rounded-full border border-[var(--swift-border)] bg-[var(--swift-card)] px-3 py-1 text-[13px] font-semibold leading-[18px] text-[var(--swift-ink)]';
   return (
     <section aria-label="Payment methods" className="mx-auto max-w-6xl px-5 py-5 text-xs text-[var(--swift-muted)]">
       <div className="flex flex-col gap-3 md:flex-row md:items-center md:gap-5">
         <h2 className="sw-eyebrow">Payment methods</h2>
         <ul className="flex flex-wrap gap-2">
-          {methods.map((name) => (
-            <li key={name} className="inline-flex items-center rounded-full border border-[var(--swift-border)] bg-[var(--swift-card)] px-3 py-1 text-[13px] font-semibold leading-[18px] text-[var(--swift-ink)]">
-              {name}
-            </li>
-          ))}
+          {['Cash', 'MMG'].map((name) => <li key={name} className={pill}>{name}</li>)}
+          <CardsLive>
+            {['Visa', 'Mastercard'].map((name) => <li key={name} className={pill}>{name}</li>)}
+          </CardsLive>
         </ul>
       </div>
       <p className="mt-3 max-w-3xl leading-relaxed">
         Orders are paid to the business itself, in cash or by MMG.
-        {cardsLive ? " Visa and Mastercard are for Swift's own charges, the weekly partner fee and advertising." : null}
+        <CardsLive>{" Visa and Mastercard are for Swift's own weekly partner fee."}</CardsLive>
       </p>
     </section>
   );

@@ -75,6 +75,16 @@ if argv[:1] == ["compose"] and "config" in argv and "--format" in argv:
     sys.exit(0)
 if argv[:1] == ["run"] and any("photon:2322" in a for a in argv) and os.environ.get("PHOTON_DOWN") == "1":
     sys.exit(1)
+if argv[:1] == ["compose"] and "run" in argv and "dist/boot/boot-guard.js" in argv:
+    # [CARDS-SWITCH-ON] the API's own boot guard in the new image, as api or worker: BOOT_GUARD_REFUSE names the
+    # service whose image refuses ("both" for either), with the server's own message.
+    service = argv[argv.index("node") - 1]
+    refuse = os.environ.get("BOOT_GUARD_REFUSE", "")
+    if refuse in (service, "both"):
+        sys.stderr.write("FATAL: CARD_RAIL_PROVIDER=simulator in production — the card simulator is a test page with no real money. Refusing to start.\n")
+        sys.exit(1)
+    print("OK boot guard: this configuration starts")
+    sys.exit(0)
 if argv[:1] == ["compose"] and "exec" in argv and "postgres" in argv and any("swift_app_login" in a for a in argv):
     # [TA-S0-003 · R3] pilot-up's count of the two runtime logins in the
     # database's cluster: 0 before Phase C (RUNTIME_LOGINS models after).
@@ -183,7 +193,7 @@ const PRODUCTION = {
   API_PUBLIC_URL: `https://${PROD_HOST}`, APP_PUBLIC_URL: 'https://swiftgy.com',
   // Admin top-ups stay on hold in production (owner ruling, 8 Oct).
   BILLING_TOPUP_HOLD: '1',
-  // Cards off in production until the owner's go (owner ruling, 7 Oct; CARDS-SWITCH-ON below).
+  // Cards off in production until the owner's go-cards ruling (CARDS-SWITCH-ON below).
   PAYMENT_PROVIDER: 'disabled', CARD_RAIL_KILL: '1',
   // Address search (the API refuses production without it once #1563 lands;
   // osm or google is the owner's choice).
@@ -379,14 +389,13 @@ describe('[PROD-PATH] pilot-up.sh: a real production target', () => {
     expect(staging.stderr).not.toContain('refuses the agent-cash webhook');
   });
 
-  // [LAUNCH-LOCK → CARDS-SWITCH-ON] Owner rulings: 13 Oct (production refused
-  // cards and ads "until an attorney signs off"), 15 Oct (GUARDRAILS §8: that
-  // gate replaced by the owner's documented answers; what could be criminal —
-  // recurring card charges, ads — stays off until a lawyer confirms) and 7 Oct
-  // option A (production may take cards with the kill switch off ONLY with v2
-  // on the real provider and the complete live setup, on the owner's go).
-  // The API's boot guard holds the same rule (boot-config.test.ts); changing
-  // it is a reviewed code change in both places, never an .env edit.
+  // [LAUNCH-LOCK → CARDS-SWITCH-ON] Cards on rests on the owner's go-cards ruling
+  // (OWNER-DECISIONS, dated at the go). History: 13 Oct (production refused cards
+  // and ads "until an attorney signs off"), 15 Oct (GUARDRAILS §8: what could be
+  // criminal — recurring card charges, ads — stays off until a lawyer confirms),
+  // and 7 Oct option A (this change's shape). The API's boot guard holds the same
+  // rule (boot-config.test.ts) and pilot-up runs it in the new image before the
+  // swap; changing it is a reviewed code change, never an .env edit.
   const everyMode = [[SHA], ['--data-only', SHA], ['--no-public', SHA]];
   const modeEnv = (args: string[]): Record<string, string> => (args.length > 1 ? { DNS_MAP: '' } : {});
   /** The switch-on lines COORD sets on the owner's go (synthetic labels; the secrets stay in the store). */
@@ -416,7 +425,8 @@ describe('[PROD-PATH] pilot-up.sh: a real production target', () => {
         const r = runPilot({ ...PRODUCTION, ...over }, { args, env: { ...modeEnv(args), STORE_NAMES: CARD_STORE } });
         expect(r.status, `${args.join(' ')} ${JSON.stringify(over)}`).not.toBe(0);
         expect(r.stderr).toContain(`PILOT_ENV=production ${refusal}`);
-        expect(r.stderr).toContain('owner ruling, 7 Oct');
+        expect(r.stderr).toContain("the owner's go-cards ruling, OWNER-DECISIONS, dated at the go");
+        expect(r.stderr).not.toContain('7 Oct');
         expect(r.stderr).not.toMatch(/attorney/i);
         expect(changedNothing(r.calls)).toEqual([]);
       }
@@ -483,7 +493,7 @@ describe('[PROD-PATH] pilot-up.sh: a real production target', () => {
     const typed = runPilot({ ...PRODUCTION, ...CARDS_ON, POWERTRANZ_ID_FILE: undefined, POWERTRANZ_ID: 'LIVEID01' }, { env: { STORE_NAMES: CARD_STORE } });
     expect(typed.status).not.toBe(0);
     expect(typed.stderr + typed.stdout).not.toContain('LIVEID01');
-  });
+  }, 240_000); // dozens of pilot-up runs: the default 30 s is too short on a loaded machine
 
   // [BUG-HUNT F23] A near miss reads as closed, which on ordering day would hold every partner with no word to anyone.
   it.each(['true', 'yes', 'on', '2', 'open', '1 '])('PARTNER_APPROVALS_OPEN=%j is refused before anything changes', (value) => {
@@ -530,6 +540,66 @@ describe('[PROD-PATH] pilot-up.sh: a real production target', () => {
     expect(r.stdout).toContain(`STAGING READY at exact SHA ${SHA}`);
   });
 
+  // [Review #2465-A F2] The test-subscription list names what a TEST card system may serve; production runs none.
+  it('production refuses a test-subscription list (CARD_RAIL_TEST_SUBSCRIPTIONS), cards off or on, in every mode, before anything changes', () => {
+    for (const args of everyMode) {
+      for (const base of [{}, CARDS_ON]) {
+        for (const value of ['sub_1', 'sub_1,sub_2']) {
+          writeFileSync(log, '');
+          const r = runPilot({ ...PRODUCTION, ...base, CARD_RAIL_TEST_SUBSCRIPTIONS: value }, { args, env: { ...modeEnv(args), STORE_NAMES: CARD_STORE } });
+          expect(r.status, `${args.join(' ')} ${value}`).not.toBe(0);
+          expect(r.stderr).toContain('PILOT_ENV=production refuses CARD_RAIL_TEST_SUBSCRIPTIONS unless it is empty');
+          expect(changedNothing(r.calls)).toEqual([]);
+        }
+      }
+    }
+    writeFileSync(log, '');
+    expect(runPilot({ ...PRODUCTION, CARD_RAIL_TEST_SUBSCRIPTIONS: '' }).status).toBe(0);
+    writeFileSync(log, '');
+    expect(runPilot({ ...STAGING, CARD_RAIL_TEST_SUBSCRIPTIONS: 'sub_1' }).status).toBe(0);
+  });
+
+  // [Reviews #2465-A F1 / B-B4] pilot-up's shell checks are a first pass; THE rule is the API's own boot guard, run in
+  // the image just built, as api and as worker, with Compose's own settings for each, before anything is started,
+  // stopped or migrated. A refusal ends the deploy there, with the server's own message.
+  const guardRun = (service: string) => `run --rm --no-deps -T ${service} node dist/boot/boot-guard.js`;
+  const firstIndex = (lines: string[], test: (l: string) => boolean) => lines.findIndex(test);
+  it('runs the API\'s own boot guard in the new image, as api and as worker, after the build and before anything starts or stops (production and staging)', () => {
+    for (const [settings, args, env] of [
+      [PRODUCTION, [SHA], {}], [{ ...PRODUCTION, ...CARDS_ON }, [SHA], { STORE_NAMES: CARD_STORE }],
+      [PRODUCTION, ['--no-public', SHA], { DNS_MAP: '', CADDY_STOPPED: '1' }], [STAGING, [SHA], {}],
+    ] as const) {
+      writeFileSync(log, '');
+      const r = runPilot(settings, { args: [...args], env: { ...env } });
+      expect(r.status, `${args.join(' ')}: ${r.stderr}`).toBe(0);
+      const api = indexOf(r.calls, guardRun('api'));
+      const worker = indexOf(r.calls, guardRun('worker'));
+      expect(api, args.join(' ')).toBeGreaterThan(indexOf(r.calls, ' build api'));
+      expect(worker).toBeGreaterThan(api);
+      const firstChange = firstIndex(r.calls, (l) => /^docker compose .* (up|stop)( |$)/.test(l) || (l.startsWith('systemctl ') && !/^systemctl (is-enabled|is-active|restart swift-secrets)/.test(l)));
+      expect(firstChange, args.join(' ')).toBeGreaterThan(worker);
+      expect(r.stdout).toContain('boot guard: the new api and worker images accept this configuration');
+    }
+  });
+
+  it.each(['api', 'worker', 'both'])('a refusal by the new %s image ends the deploy with the server\'s own message: nothing started, stopped or migrated', (refuse) => {
+    for (const [args, env] of [[[SHA], {}], [['--no-public', SHA], { DNS_MAP: '', CADDY_STOPPED: '1' }]] as const) {
+      writeFileSync(log, '');
+      const r = runPilot({ ...PRODUCTION, ...CARDS_ON }, { args: [...args], env: { ...env, STORE_NAMES: CARD_STORE, BOOT_GUARD_REFUSE: refuse } });
+      expect(r.status, args.join(' ')).not.toBe(0);
+      expect(r.stderr).toContain(`BOOT_GUARD: the new ${refuse === 'worker' ? 'worker' : 'api'} image refuses this configuration: FATAL: CARD_RAIL_PROVIDER=simulator in production`);
+      expect(r.stderr).toContain('Nothing was started, stopped or migrated');
+      expect(r.calls.filter((l) => /^docker compose .* (up|stop)( |$)/.test(l))).toEqual([]);
+      expect(r.calls.filter((l) => l.includes('migrate'))).toEqual([]);
+    }
+  });
+
+  it('the database-only stage starts no API, so its image is not asked', () => {
+    const r = runPilot(PRODUCTION, { args: ['--data-only', SHA], env: { DNS_MAP: '', API_STOPPED: '1', BOOT_GUARD_REFUSE: 'both' } });
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.calls.filter((l) => l.includes('boot-guard'))).toEqual([]);
+  });
+
   // [CARDS-SWITCH-ON · staging card test, 10 Nov 2026] Staging ran v2 on PowerTranz with NO POWERTRANZ_ID_FILE /
   // POWERTRANZ_PASSWORD_FILE lines in deploy/.env: the API and the worker could not read the credentials, so cards
   // could not work, and nothing said so. [Review #2466-B F2] Any server with v2 or its drain on PowerTranz — WHATEVER
@@ -573,7 +643,7 @@ describe('[PROD-PATH] pilot-up.sh: a real production target', () => {
       const r = runPilot({ ...STAGING, ...sandboxOn, ...over, POWERTRANZ_PAGE_SET: undefined });
       expect(r.status, `${JSON.stringify(over)}: ${r.stderr}`).toBe(0);
     }
-  });
+  }, 240_000); // dozens of pilot-up runs: the default 30 s is too short on a loaded machine
 });
 
 // [S3-L1] A host deploys only onto a database of its own kind: pilot-up reads

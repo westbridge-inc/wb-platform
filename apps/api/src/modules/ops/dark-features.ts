@@ -303,7 +303,7 @@ export const DARK_FEATURES: DarkFeature[] = [
     offWhen: '1',
     title: 'New card charges',
     whileOff:
-      'No new card payment starts, so a partner cannot pay the weekly fee by card and pays by MMG or in person; card payments already made are still confirmed and reconciled. Production keeps this switch at 1 until the owner says go (owner ruling, 7 Oct), and setting it back to 1 is the rollback, so in production it is listed on purpose.',
+      'No new card payment starts, so a partner cannot pay the weekly fee by card and pays by MMG or in person; card payments already made are still confirmed and reconciled. Production keeps this switch at 1 until the owner\'s go-cards ruling (OWNER-DECISIONS, dated at the go), and setting it back to 1 (then recreating the api and worker containers) is the rollback, so in production it is listed on purpose.',
     impact: 'money',
   },
   {

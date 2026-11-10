@@ -117,6 +117,7 @@ const TOKEN_DISALLOWED_HANDLERS = ['pay/mmg/[...path]/route.ts'];
 // must be reviewed here too; they cannot silently evade the census.
 const PUBLIC_RESOURCES = [
   '(app)/order/vendor/[id]/route.ts', // [W6] the old store address: a 301 to /store/<slug>, or a noindex 404
+  'api/card-payments/route.ts', // [CARDS-SWITCH-ON] whether partners can pay by card now, as the API says (no personal data)
   'api/launch-state/route.ts', // [S1] the public site's switch, as the server holds it (no personal data)
   'manifest.ts',
   'media/[...path]/route.ts', // stores' public photos only; no identity or private upload paths

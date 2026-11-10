@@ -1239,9 +1239,10 @@ checkout moves to the requested SHA; everything else before that):
 - AGENT_CASH_WEBHOOK_SECRET or AGENT_CASH_WEBHOOK_SECRET_FILE set: partners
   pay the weekly fee only on the MMG checkout page, never through an agent or
   a Swift Number (the agent-cash webhook answers 503 without its secret);
-- the card and ad switches (owner rulings 7 Oct option A and 15 Oct;
-  GUARDRAILS section 8; they replaced the 13 Oct "until an attorney signs off"
-  lock): PAYMENT_PROVIDER exactly `disabled` (the legacy card seam stays off);
+- the card and ad switches (cards on rests on the owner's go-cards ruling,
+  OWNER-DECISIONS, dated at the go; saved cards and ads stay refused under
+  GUARDRAILS section 8; the 13 Oct "until an attorney signs off" lock is
+  replaced): PAYMENT_PROVIDER exactly `disabled` (the legacy card seam stays off);
   CARD_RAIL_KILL exactly `1` (cards off) or `0` (cards on, only on the owner's
   go), and `0` only beside CARD_RAIL_V2=`1`, CARD_RAIL_PROVIDER=`powertranz`
   and CARD_RAIL_ENVIRONMENT=`live`; CARD_RAIL_V2 unset, `0` or `1`, and `1`
@@ -1250,10 +1251,22 @@ checkout moves to the requested SHA; everything else before that):
   `POWERTRANZ_PASSWORD_FILE=/run/secrets/POWERTRANZ_PASSWORD` (the owner's
   live credentials in the store) and `POWERTRANZ_PAGE_SET=PTZ/<set>`;
   CARD_RAIL_ENROLL (saved cards and automatic
-  weekly card charges), CARD_RAIL_V2_DRAIN and ADS_ENABLED each unset or `0`.
-  The rollback is CARD_RAIL_KILL=`1` with CARD_RAIL_V2=`1` left on (open card
-  payments are still confirmed). Changing this is a reviewed code change here
-  and in the API's boot guard, never a deploy/.env edit;
+  weekly card charges), CARD_RAIL_V2_DRAIN and ADS_ENABLED each unset or `0`;
+  CARD_RAIL_TEST_SUBSCRIPTIONS empty. The rollback is CARD_RAIL_KILL=`1` with
+  CARD_RAIL_V2=`1` left on (open card payments are still confirmed), applied
+  with `docker compose --project-directory deploy -f deploy/docker-compose.yml
+  up -d --no-deps --force-recreate api worker` (a `restart` does NOT re-read
+  deploy/.env); with one admin it is the only immediate stop (the card
+  platform row needs a second admin's approval, a 12-hour solo wait).
+  Changing this is a reviewed code change here and in the API's boot guard,
+  never a deploy/.env edit;
+- for the whole stack and `--no-public` (not `--data-only`), THE API'S OWN BOOT
+  GUARD: after the API image is built and before anything is started, stopped
+  or migrated, the new image runs `node dist/boot/boot-guard.js` once as api
+  and once as worker, with Compose's own settings for each (deploy/.env, its
+  `_FILE` lines, the store). Any refusal ends the deploy there with the
+  server's own message (`BOOT_GUARD: ...`), so a setting the API refuses never
+  reaches the swap;
 - on ANY host (staging included): CARD_RAIL_V2=`1` or CARD_RAIL_V2_DRAIN=`1`
   with CARD_RAIL_PROVIDER=`powertranz`, whatever the kill switch (a killed
   rail still confirms, looks up, voids and refunds through the provider),
@@ -1355,7 +1368,7 @@ explicitly off. Beyond the earlier guards:
 - **The card and ad switches.** The same rule pilot-up.sh checks above:
   cards off (CARD_RAIL_KILL `1`), cards on (CARD_RAIL_KILL `0` beside
   CARD_RAIL_V2 `1` on PowerTranz with live cards and the complete live setup:
-  owner ruling 7 Oct, the owner's go), or paused (CARD_RAIL_KILL `1` with v2
+  the owner's go-cards ruling, OWNER-DECISIONS, dated at the go), or paused (CARD_RAIL_KILL `1` with v2
   left on); PAYMENT_PROVIDER `disabled`; CARD_RAIL_ENROLL, CARD_RAIL_V2_DRAIN
   and ADS_ENABLED unset or `0`. The card rail's own production checks still
   run first, so a refusal names the real problem before the switches. The

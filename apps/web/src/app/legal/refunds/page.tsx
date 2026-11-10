@@ -1,5 +1,6 @@
 import { PolicyDocument, policyMetadata } from '@/components/policy-document';
-import { site, launch } from '@/site.config';
+import { site } from '@/site.config';
+import { CardsLive } from '@/components/cards-live';
 
 /**
  * [Q36 item 3] Refunds and cancellations, as Swift works today. Each rule is
@@ -48,7 +49,6 @@ export const metadata = policyMetadata(
 );
 
 export default function RefundsPage() {
-  const cardsLive = launch.cardPayments === 'live';
   const email = (
     <a href={`mailto:${site.supportEmail}`}>{site.supportEmail}</a>
   );
@@ -154,7 +154,7 @@ export default function RefundsPage() {
           MMG, or directly to {site.legalEntityName}, in person by cash or cheque, or by bank transfer; a cheque counts once it clears,
           and a payment counts once {site.tradeName} records it.
           You get a receipt for every payment. Never pay the fee through an agent or anyone else.{' '}
-          {cardsLive ? 'It can also be paid by Visa or Mastercard, through our bank’s card payment page.' : null}
+          <CardsLive>It can also be paid by Visa or Mastercard, through our bank’s card payment page.</CardsLive>
         </li>
         <li>
           <b>Charged twice, or by mistake?</b> {site.tradeName} refunds the extra or mistaken charge in full, within 14
