@@ -437,6 +437,20 @@ const PUBLISHED: Record<
     driver_agreement: 'f5ae81359f8d2d0cb0df17b9e18e68ca37cfc12682ed8630d29d81ff932aa7a6',
     vendor_agreement: '340314a81c7db7f8ce31971a314cd563d528e8d7f125bc0001e6536930c25ac7',
   },
+  // [2026-11-10 · LEGAL-CARDS · MATERIAL for partners (a new processor flow: PowerTranz takes a partner's weekly-fee
+  // card payment) · DRAFT until the owner approves the words and a Guyana attorney reads them] Privacy sections 1, 2 and
+  // 5 (what Swift keeps of a card payment; card details are typed on the card processor's page; PowerTranz and ipapi.co)
+  // and the Mover and Business Agreements section 2 (a closing refund to the card; a refused card refund stays as
+  // credit until the partner agrees in writing). Checked mechanically before pinning: putting "9 November 2026" back in
+  // place of "10 November 2026" reproduces the 2026-11-09.2 Terms pin exactly; doing the same and taking out the three
+  // Privacy insertions reproduces its pin exactly; doing the same and undoing the two agreement edits (the card clause
+  // and the refused-refund sentence) reproduces both agreement pins exactly.
+  '2026-11-10': {
+    terms: '5645e1f97222f313179b52ac772bd79fffa2c91c43d933cec5bf99ff51efd8ac',
+    privacy: '526cde7d466be583d8adbef548fd3f7e2b452365dc9be8aa54713dd1b2394fdd',
+    driver_agreement: 'e5db9841fd7d5687324a62b19db6f9a4f18d4284bc36d36eafc6572d69360c0a',
+    vendor_agreement: '77f282463f51f4e0f2648b9caf0cad6bc2c456abbb7c785b33ebe9b546148968',
+  },
 };
 
 describe('legal version binding [F-035-08]', () => {
@@ -458,7 +472,9 @@ describe('legal version binding [F-035-08]', () => {
     expect(feeParagraph).toContain('it is used only for your weekly fees and cannot be withdrawn or sent to anyone.');
     expect(feeParagraph).toContain('you will not pay the new fee. A week you paid for before we told you keeps the old fee, and once we have told you, Swift takes payment only for weeks that start before the change until the new fee applies.');
     expect(feeParagraph).toContain('If it goes down, the lower fee applies from your next weekly fee not yet charged, even one you have already paid for, with a notice in the app; what you paid above the lower fee counts toward your later weekly fees.');
-    expect(feeParagraph).toContain('If you close your account, Swift refunds to you any weekly fee you paid for a week that has not started, within 14 days, to the account you paid from or, if you paid in person, by a way you and Swift agree, records the refund, and then deletes the account; a week that has started is not refunded.');
+    // [LEGAL-CARDS · 2026-11-10] A week paid by card goes back to that card; a refused card refund is never resent.
+    expect(feeParagraph).toContain('If you close your account, Swift refunds to you any weekly fee you paid for a week that has not started, within 14 days, to the account you paid from, to the card you paid with, or, if you paid in person, by a way you and Swift agree, records the refund, and then deletes the account; a week that has started is not refunded.');
+    expect(feeParagraph).toContain('If a refund to your card is refused, Swift does not send it to the card again: Swift tells you, keeps the money as credit for your weekly fees, and returns it another way only once you agree to that way in writing; your account is deleted once it has been returned.');
     expect(feeParagraph, 'one week at a time is gone [owner 6 Nov]').not.toMatch(/one week at a time|the coming week, and no further|paid ahead/i);
   });
 

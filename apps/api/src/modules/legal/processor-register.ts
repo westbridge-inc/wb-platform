@@ -210,12 +210,12 @@ export const PROCESSOR_REGISTER: readonly ProcessorEntry[] = [
     note: 'Merchant agreement. Phone number + amount + reference; no documents.',
   },
   {
-    ref: 'POWERTRANZ', party: 'PowerTranz (First Atlantic Commerce)', service: 'Card payment gateway',
+    ref: 'POWERTRANZ', party: 'PowerTranz (First Atlantic Commerce)', service: 'Card payment gateway: a partner\'s weekly-fee Pay now on its hosted page (card rail v2, providers/card), and the dormant legacy card seam (providers/payment)',
     modelBacked: false,
-    providerDirs: ['payment'], hosts: ['ptranz.com'],
+    providerDirs: ['payment', 'card'], hosts: ['ptranz.com'],
     payload: ['PAYMENT'], lawfulBasis: 'CONTRACT',
     country: 'Barbados (Caribbean)', leavesCountry: true, transferBasis: 'CONTRACT_CLAUSES', contractEnv: null,
-    note: 'Card data is tokenised at the gateway; Swift never stores PANs.',
+    note: 'Card data is typed only on PowerTranz\'s hosted page; Swift never sees or stores a card number. [LEGAL-CARDS · Privacy 2026-11-10] The page (in Swift\'s frame) receives the card details, the cardholder details it asks for and the browser\'s network address and details, for the payment and 3-D Secure; Swift\'s server sends the amount, currency and Swift\'s order reference, and keeps the transaction reference, amount, currency, the 3-D Secure result and the outcome (approved, refused, refunded). As served on staging (10 Nov 2026) the page also calls ipapi.co from the browser (POLICY_NAMED_WITHOUT_EGRESS). Country: to be confirmed with PowerTranz (its go-live calendar is Bermuda\'s); the Privacy Policy says only "outside Guyana".',
   },
   {
     ref: 'STRIPE', party: 'Stripe, Inc.', service: 'Card payment gateway (dormant — V1 is cash-only)',
@@ -230,9 +230,6 @@ export const PROCESSOR_REGISTER: readonly ProcessorEntry[] = [
 /** Provider directories that are not a processor, with the reason the census accepts. */
 export const NON_PROCESSOR_DIRS: Readonly<Record<string, string>> = {
   prescreen: 'in-process heuristics (HeuristicAdPreScreenProvider); no network call',
-  // [PT-1] Card rail v2 holds only the provider-neutral interface and the Swift
-  // simulator. The first real card processor added there registers above, with its hosts.
-  card: 'card rail v2 interface and the Swift simulator only (state in Swift Redis); no third party is called',
 };
 
 /** Outbound host literals in source that are not processors, with the reason. */
@@ -256,6 +253,10 @@ export const NON_PROCESSOR_HOSTS: Readonly<Record<string, string>> = {
 export const POLICY_NAMED_WITHOUT_EGRESS: Readonly<Record<string, string>> = {
   WhatsApp: 'support chats a person starts from the app\'s wa.me link go to Swift\'s public support line (owner ruling 11 Oct: it answers WhatsApp); the code renders the link only',
   'the map built into your phone': 'the phone\'s own map (Google Maps on Android, Apple Maps on iPhone) draws the map on the device; Swift\'s servers call neither',
+  // [LEGAL-CARDS · Privacy 2026-11-10] PowerTranz's hosted card page (its code, in Swift's frame) asks this IP-location
+  // service from the partner's browser, as served on staging 10 Nov 2026 (CARD-CHECKOUT-API section 11 asks PowerTranz
+  // what it receives and whether it can be turned off). Swift's code sends it nothing.
+  'ipapi.co': 'PowerTranz\'s hosted card page calls it from the partner\'s browser for IP location; Swift\'s code sends it nothing',
 };
 
 export function processorByRef(ref: string | undefined | null): ProcessorEntry | null {
