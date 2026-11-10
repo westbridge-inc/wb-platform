@@ -156,7 +156,8 @@ describe('[COMPANY-DOCS] the review queue says which path a store account signed
     // [review] a manager's account says so too
     const manager = reviewQueueRow({ ...base, docType: 'owner_authority_letter', user: { id: 'u3', firstName: 'E', lastName: 'F', phone: '+5926001236', countryCode: 'GY', driver: null, vendorOwner: { accountBasis: 'MANAGER' } } } as never);
     expect(manager.accountBasis).toBe('MANAGER');
-    expect(manager.reviewerTypes).toEqual([]);
+    // [COMPANY-DOCS PART 2 · review F2/F1] a letter of authority asks the reviewer how they confirmed the authority
+    expect(manager.reviewerTypes).toEqual(['authorityConfirmed']);
     const rider = reviewQueueRow({ ...base, user: { id: 'u2', firstName: 'C', lastName: 'D', phone: '+5926001235', countryCode: 'GY', driver: null, vendorOwner: null } } as never);
     expect(rider.accountBasis).toBeNull();
   });

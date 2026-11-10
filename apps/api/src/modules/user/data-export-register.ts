@@ -317,10 +317,10 @@ export const EXPORT_REGISTER: readonly ExportEntry[] = [
     omit: {
       tokenHash: 'SECRET', codeHash: 'SECRET', signingKeyHash: 'SECRET', letterSha256: 'SECRET', pdfFileKey: 'STORED_FILE',
       signerIpHmac: 'OTHER_PERSON', signerUserAgent: 'OTHER_PERSON', signatureSha256: 'OTHER_PERSON',
-      codeExpiresAt: 'SYSTEM', codeAttempts: 'SYSTEM', codeSends: 'SYSTEM', signingKeyExpiresAt: 'SYSTEM', accountBasis: 'SYSTEM',
+      codeExpiresAt: 'SYSTEM', codeAttempts: 'SYSTEM', codeSends: 'SYSTEM', signingKeyExpiresAt: 'SYSTEM', signingClaimedAt: 'SYSTEM', accountBasis: 'SYSTEM',
     },
     fields: ['id', 'userId', 'docType', 'businessName', 'registrationNumber', 'requesterName', 'requesterRole', 'signerName', 'signerPhone',
-      'letterText', 'status', 'expiresAt', 'sendCount', 'lastSentAt', 'openedAt', 'codeVerifiedAt', 'signedAt', 'documentId', 'endedAt', 'createdAt', 'updatedAt'],
+      'letterText', 'status', 'linkExpiresAt', 'sendCount', 'lastSentAt', 'openedAt', 'codeVerifiedAt', 'signedAt', 'documentId', 'endedAt', 'createdAt', 'updatedAt'],
   },
   {
     // [O-1] The Swift-bridged calls the person asked for on their orders: which party (a role, never a
