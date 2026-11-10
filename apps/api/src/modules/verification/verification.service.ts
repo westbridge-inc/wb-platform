@@ -9,7 +9,7 @@ import { EXPIRABLE_DOC_STATES, ExpirySweepReport } from './expiry-sweep-report';
 import { DOCUMENT_REPLACED, isReplacedNote, replacedNoteFor, supersedeAwaitingCopies } from './replace-pending';
 import { approveRegistrantLink, linkedAccountIds, normalizeRegistrationMark, plateClassOf, resolveSubject, rootSubjectId } from './subjects';
 import { POLICE_CLEARANCE_WITHDRAWN_NOTE } from './police-clearance-consent';
-import { ACCOUNT_HOLDER_ID_DOC_TYPE, AUTO_APPROVE_EXPIRY_DAYS, BUCKET_OF, CERTIFICATE_YEAR_DOC_TYPES, FOOD_HANDLER_ATTESTATION_TYPE, isNeverAcceptedDocType, OWN_NAME_DOC_TYPE, OWN_NAME_TIER, PERSON_ONLY_DOC_TYPES, POLICE_CLEARANCE_DOC_TYPE, REGISTRATION_DOC_TYPES, registryCode, type RegistrationKind } from './doc-registry';
+import { ACCOUNT_HOLDER_ID_DOC_TYPE, AUTO_APPROVE_EXPIRY_DAYS, CERTIFICATE_OF_INCORPORATION_DOC_TYPE, BUCKET_OF, CERTIFICATE_YEAR_DOC_TYPES, FOOD_HANDLER_ATTESTATION_TYPE, isNeverAcceptedDocType, OWN_NAME_DOC_TYPE, OWN_NAME_TIER, PERSON_ONLY_DOC_TYPES, POLICE_CLEARANCE_DOC_TYPE, REGISTRATION_DOC_TYPES, registryCode, type RegistrationKind } from './doc-registry';
 import { accountTierOf } from '../vendor/account-basis';
 import { assertChangeTakesPapers, changePaperStaging } from '../vendor/account-change';
 import { guyanaWallClockParts, startOfGuyanaDay } from '../../utils/guyana-day';
@@ -270,6 +270,9 @@ export interface ReviewerTypedInput {
   /** [ROLE-DOCS · owner 21 Oct 2026] An own-name declaration: the reviewer confirms, from the owner's ID, that the store's
    *  name is the owner's true surname with only first names or initials (Business Names (Registration) Act s.3). */
   ownNameConfirmed?: boolean;
+  /** [COMPANY-DOCS · review F3] A company's paper that is a business-NAME registration: the reviewer confirms the proprietor
+   *  named on it is a company (Ltd. or Inc.), never a person (a person's registration is the owner or manager path). */
+  proprietorIsCompany?: boolean;
   /** The reviewer console's contract: the fields this type needs must be typed. */
   required?: boolean;
 }
@@ -1181,6 +1184,12 @@ export class VerificationService {
           'Confirm, from the owner\u2019s ID, that the store\u2019s name is their true surname with nothing added except their first names or initials. If it is not, reject the declaration: the store must register its business name.');
       }
       if (REGISTRATION_DOC_TYPES.includes(candidate.docType) && (typed.required || typed.registrationKind !== undefined)) {
+        // [COMPANY-DOCS · review F3] A company's paper may be a business-name registration only when the proprietor it
+        // names is a company: one that names a person belongs to the owner's (or the manager's) path, never a company's.
+        if (typed.registrationKind === 'BUSINESS_NAME' && candidate.docType === CERTIFICATE_OF_INCORPORATION_DOC_TYPE && typed.proprietorIsCompany !== true) {
+          throw new AppError(400, 'PROPRIETOR_NOT_A_COMPANY',
+            'A business name registration counts for a company only when the proprietor named on it is a company (Ltd. or Inc.). If it names a person, reject it: that business signs up as a registered business, or through its manager.');
+        }
         if (typed.registrationKind === 'BUSINESS_NAME') expiresAt = certificateYearRecheck(typed.certificateYear);
         else if (typed.registrationKind !== 'COMPANY') {
           throw new AppError(400, 'REGISTRATION_KIND_REQUIRED',
