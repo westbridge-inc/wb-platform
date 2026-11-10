@@ -1635,6 +1635,12 @@ model Vendor {
   /// Act s.3: a true surname with only first names or initials needs no registration): its checklist asks for the
   /// signed own-name declaration (vendor/own-name.ts) instead of a business registration. Set only by that signature.
   tradesUnderOwnName      Boolean                  @default(false)
+  /// [R3 · owner ruling 10 Nov 2026] The exact store name a PERSON at Swift confirmed as the seller's business or
+  /// company name (the console's approve button, or its seller-name check): the storefront names the seller by the
+  /// store's name only while `name` still equals it. Null = no person has confirmed one. Never written by the owner.
+  sellerNameCheckedName   String?
+  sellerNameCheckedAt     DateTime?
+  sellerNameCheckedById   String?
   tierNote                String?
   // [REPORT-013 F-013-07] WHO suspended the store: 'BILLING' (non-payment,
   // reversible by payment) or 'ADMIN' (manual/safety — payment must NOT

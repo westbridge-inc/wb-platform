@@ -134,6 +134,9 @@ describe('[MC-PR2] when the server says the rules are met', () => {
     const [url, init] = requestsByMethod(fetchMock, 'PUT')[0]!;
     expect(String(url)).toMatch(/\/api\/v1\/admin\/vendors\/vendor-target\/approve$/);
     expect((init?.headers as Record<string, string>)['x-swift-reason']).toBe(REASON);
+    // [R3 · security review 10 Nov 2026] activating confirms the name the dialog showed as the seller's — and says so
+    expect(dialog.textContent).toContain('Customers will see “Target Store” as the seller on the store page.');
+    expect(JSON.parse(String(init?.body))).toEqual({ sellerName: 'Target Store' });
   });
 
   it('[owner #51 · DS1145 S3] a store suspended before it was ever live, with no phone, is lifted back to waiting — the page says so, never "live"', async () => {
@@ -149,6 +152,17 @@ describe('[MC-PR2] when the server says the rules are met', () => {
     expect(said).toContain('Target Store is waiting for its phone number and goes live once the owner adds it.');
     expect(said).not.toMatch(/is live/);
     expect(String(requestsByMethod(fetchMock, 'PUT')[0]![0])).toMatch(/\/api\/v1\/admin\/vendors\/vendor-target\/approve$/);
+  });
+
+  it('[R3] reinstating confirms no seller name: it sends none', async () => {
+    const fetchMock = serve('SUSPENDED', checklistOf('CAN_REINSTATE', { storeStatus: 'SUSPENDED', suspensionSource: 'ADMIN' }), () => ({ body: { success: true, data: { ...storeOf('ACTIVE') } } }));
+    const { user } = page();
+    await user.click(await screen.findByRole('button', { name: 'Reinstate…' }));
+    const dialog = screen.getByRole('dialog', { name: 'Reinstate Target Store?' });
+    await user.type(within(dialog).getByRole('textbox', { name: 'Reason' }), REASON);
+    await user.click(within(dialog).getByRole('button', { name: 'Reinstate store' }));
+    await screen.findByRole('status');
+    expect(requestsByMethod(fetchMock, 'PUT')[0]![1]?.body).toBeUndefined();
   });
 
   it('an admin-suspended store with current documents can be reinstated', async () => {
@@ -217,4 +231,54 @@ describe('[MC-PR2] when the server says the rules are met', () => {
     expect(await screen.findByText(/The owner closed their Swift account\. The store stays closed/)).toBeTruthy();
     await waitFor(() => expect(screen.queryByRole('button', { name: /^(Approve|Activate|Reinstate)/ })).toBeNull());
   });
+});
+
+// [R3 · owner ruling 10 Nov 2026 · security review] The storefront names the seller by the store's name only once a person
+// confirmed that exact name as the business or company name; the page says who customers see, and confirms only the
+// name it shows.
+describe('[R3] the seller name customers see', () => {
+  function serveLive(extra: Record<string, unknown>, onWrite?: (_r: ApiRequest) => { status?: number; body: unknown }) {
+    return mockApi((request) => {
+      if (request.method === 'GET' && request.url.pathname === '/api/v1/admin/vendors/vendor-target') return { body: { success: true, data: { ...storeOf('ACTIVE'), ...extra } } };
+      if (request.method === 'GET' && request.url.pathname === '/api/v1/admin/vendors/vendor-target/activation-checklist') return { body: { success: true, data: checklistOf('LIVE', { storeStatus: 'ACTIVE' }) } };
+      if (onWrite && request.method !== 'GET') return onWrite(request);
+      throw new Error(`Unexpected request: ${request.method} ${request.url}`);
+    });
+  }
+
+  it('not confirmed: says customers see "Ask the store", and confirms exactly the name shown, with a reason', async () => {
+    const fetchMock = serveLive({ tradesUnderOwnName: false, sellerNameCheckedName: null }, () => ({ body: { success: true, data: { id: 'vendor-target', sellerNameCheckedName: 'Target Store' } } }));
+    const { user } = page();
+    expect(await screen.findByText(/Nobody yet: customers see “Ask the store” until a person confirms the store’s name\./)).toBeTruthy();
+    await user.click(screen.getByRole('button', { name: 'Confirm seller name…' }));
+    const dialog = screen.getByRole('dialog', { name: 'Confirm “Target Store” as the seller’s name?' });
+    expect(dialog.textContent).toContain('Check it is exactly the registered business or company name on the store’s certificate.');
+    await user.type(within(dialog).getByRole('textbox', { name: 'Reason' }), REASON);
+    await user.click(within(dialog).getByRole('button', { name: 'Confirm seller name' }));
+    expect((await screen.findByRole('status')).textContent).toContain('Customers now see Target Store as the seller.');
+    const [url, init] = requestsByMethod(fetchMock, 'PUT')[0]!;
+    expect(String(url)).toMatch(/\/api\/v1\/admin\/vendors\/vendor-target\/seller-name$/);
+    expect(JSON.parse(String(init?.body))).toEqual({ name: 'Target Store' });
+    expect((init?.headers as Record<string, string>)['x-swift-reason']).toBe(REASON);
+  });
+
+  it('confirmed for the name it has now: shows it, offers nothing; confirmed for an older name: not confirmed', async () => {
+    const view = renderWithSeller({ tradesUnderOwnName: false, sellerNameCheckedName: 'Target Store' });
+    expect(await screen.findByText('Target Store (confirmed by a person)')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Confirm seller name…' })).toBeNull();
+    view.unmount();
+    renderWithSeller({ tradesUnderOwnName: false, sellerNameCheckedName: 'Old Store Name' });
+    expect(await screen.findByRole('button', { name: 'Confirm seller name…' })).toBeTruthy();
+  });
+
+  it('a trader under their own name: their full name is shown once their declaration is approved, no store name to confirm', async () => {
+    renderWithSeller({ tradesUnderOwnName: true, sellerNameCheckedName: null });
+    expect(await screen.findByText('The owner’s full name, once their own-name declaration is approved')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Confirm seller name…' })).toBeNull();
+  });
+
+  function renderWithSeller(extra: Record<string, unknown>) {
+    serveLive(extra);
+    return page();
+  }
 });
