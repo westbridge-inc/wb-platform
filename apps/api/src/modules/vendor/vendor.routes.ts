@@ -58,7 +58,7 @@ import { VerificationService } from '../verification/verification.service';
 import { getKycProvider } from '../../providers/kyc/kyc-provider';
 import { getStorageProvider } from '../../providers/storage/storage-provider';
 import { encryptBuffer, generateDek, getKeyProvider } from '../../providers/storage/envelope';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { publishLegalDocumentOnce, recordConsent, type ConsentSurface } from '../legal/consent.service';
 import { LEGAL_VERSION } from '../legal/legal.routes';
 import { OWN_NAME_CONSENT_TYPE, OWN_NAME_DECLARATION_V1, OWN_NAME_DECLARATION_VERSION, OWN_NAME_VENDOR_TYPES, renderOwnNamePdf, storeNameIsOwnName } from './own-name';
@@ -5636,6 +5636,77 @@ export async function vendorRoutes(app: FastifyInstance) {
     }
     reply.type('text/html; charset=utf-8');
     return buildVendorStatement(app.prisma, vendorId, period);
+  });
+
+  /** [ORDER-EXPORT] The stores this caller may export: where they may see sales (an owner every branch, a team
+   *  member only the stores they MANAGE, as GET /stores/summary). Staff-only callers are refused. */
+  const exportStores = async (request: FastifyRequest) => {
+    const access = await resolveVendor(app, request.user.userId, selectedVendorId(request));
+    const salesStores = access.role === 'OWNER' && access.ownerId
+      ? access.vendorIds
+      : (await app.prisma.vendorStaff.findMany({ where: { userId: request.user.userId, role: 'MANAGER', vendorId: { in: access.vendorIds } }, select: { vendorId: true } })).map((m) => m.vendorId);
+    if (salesStores.length === 0) requireRole(access, 'MANAGER');
+    return { access, salesStores };
+  };
+
+  /** [REVIEW-2485-B S4-7] GET /orders/export/branches — the branches the export may cover for this login (the website
+   *  and the phone offer only these), and whether "all" means every branch (owner) or the stores they manage. */
+  app.get('/orders/export/branches', auth, async (request) => {
+    const { access, salesStores } = await exportStores(request);
+    const branches = await app.prisma.vendor.findMany({ where: { id: { in: salesStores } }, orderBy: { createdAt: 'asc' }, select: { id: true, name: true, city: true } });
+    return { success: true, data: { scope: access.role === 'OWNER' && access.ownerId ? 'owner' : 'manager', branches } };
+  });
+
+  /** [ORDER-EXPORT · owner 11 Nov 2026] GET /orders/export?from=YYYY-MM-DD&to=YYYY-MM-DD&branch=<storeId>|all — the
+   *  order history as a CSV file for finance reconciliation (vendor/order-export.ts: finance columns only, no customer
+   *  details, formula-safe). One branch (default: the selected store) or `all`: every store where this caller may see
+   *  sales — an owner every branch, a team member only the stores they MANAGE (as GET /stores/summary). Staff never.
+   *  At most 366 Guyana days; every export leaves an audit row (who, range, branches) before the first byte. */
+  app.get('/orders/export', { ...auth, config: { rateLimit: { max: 30, timeWindow: '1 hour' } } }, async (request, reply) => {
+    const { orderExportPeriod, orderExportLines, orderExportStream, releaseOrderExportLock, ORDER_EXPORT_AUDIT_ACTION, ORDER_EXPORT_LOCK_PREFIX, ORDER_EXPORT_LOCK_TTL_S } = await import('./order-export');
+    const q = z.object({ from: z.string().max(10).optional(), to: z.string().max(10).optional(), branch: z.string().min(1).max(64).optional() })
+      .parse(request.query ?? {});
+    const { access, salesStores } = await exportStores(request);
+    const all = q.branch === 'all';
+    const branch = all ? null : (q.branch ?? access.vendorId);
+    if (branch !== null && !salesStores.includes(branch)) {
+      if (!access.vendorIds.includes(branch)) throw new AppError(403, 'STAFF_FORBIDDEN', 'You are not a member of this store');
+      throw new AppError(403, 'STAFF_FORBIDDEN', 'This needs a manager — ask the store owner to upgrade your role');
+    }
+    const period = orderExportPeriod(q);
+    const vendorIds = all ? salesStores : [branch!];
+    // [REVIEW-2485-A S3-1] One export at a time per person, so a big chain export cannot be run many times over at once.
+    const lockKey = `${ORDER_EXPORT_LOCK_PREFIX}${request.user.userId}`;
+    const lockToken = randomUUID();
+    // [REVIEW-2485-DELTA S4] No lock store, no export (a heavy read is not run unguarded), said plainly.
+    const taken = await app.redis.set(lockKey, lockToken, 'EX', ORDER_EXPORT_LOCK_TTL_S, 'NX').catch((err: unknown) => {
+      request.log.warn({ err }, '[ORDER-EXPORT] lock store unavailable');
+      throw new AppError(503, 'EXPORT_UNAVAILABLE', 'Export is unavailable right now. Try again shortly.');
+    });
+    if (taken !== 'OK') {
+      throw new AppError(429, 'EXPORT_ALREADY_RUNNING', 'An export is already running for you. Try again when it has finished.');
+    }
+    // [REVIEW-2485-DELTA S4-1] Compare-and-delete: only this export's own token.
+    const release = () => { void releaseOrderExportLock(app.redis, lockKey, lockToken).catch(() => undefined); };
+    let stream: ReturnType<typeof orderExportStream>;
+    try {
+      // [REVIEW-2485-A S4-3] An all-branches export is recorded against a store this person may export (their first),
+      // never the selected store, where they may be only staff; the full list is in `vendorIds`.
+      await app.prisma.auditLog.create({ data: {
+        userId: request.user.userId, action: ORDER_EXPORT_AUDIT_ACTION, entity: 'Vendor', entityId: all ? salesStores[0]! : branch!,
+        changes: { from: period.fromDay, to: period.toDay, scope: all ? 'all' : 'branch', vendorIds, role: access.role },
+      } });
+      stream = orderExportStream(orderExportLines(app.prisma, { vendorIds, from: period.from, to: period.to }));
+    } catch (err) {
+      release();
+      throw err;
+    }
+    stream.once('close', release);
+    const name = `swift-orders-${all ? 'all-branches-' : ''}${period.fromDay}-to-${period.toDay}.csv`;
+    reply.type('text/csv; charset=utf-8')
+      .header('content-disposition', `attachment; filename="${name}"`)
+      .header('cache-control', 'no-store');
+    return reply.send(stream);
   });
 
   app.get('/settlements', auth, async (request) => {
