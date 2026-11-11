@@ -30,6 +30,8 @@ import { statusChip, timeAgo } from './order-chip';
 import { OUT_OF_STOCK_WORDS, canMarkOutOfStock, customerDeciding, lastLineStanding, lineStockWords, nothingToAccept } from '../../../../../mobile/src/modules/vendor/storeOrderRules';
 import { ACCEPTED_OUT_OF_STOCK_WORDS, LAST_ITEM_ENDS_ORDER, SHOW_ALL_LIMIT, mmgRemovalLocked, nothingLeftToHandOver, removalEndsOrder, serverErrorCode, storeCanReject } from '../../../../../mobile/src/modules/vendor/acceptedOutOfStock';
 import { HANDOVER_WORDS, canMarkHandedToRider, handoverNeedsNoCode, pickupCheckWords } from '../../../../../mobile/src/modules/vendor/storeHandover';
+// [L09 · M026 · MENU-OPTIONS] What the customer chose, read as the app's kitchen view reads it (a plain file, imported as is).
+import { orderLineOptionsParts } from '../../../../../mobile/src/modules/vendor/orderLineOptions';
 import { handedToRider } from '@/lib/store-handover-api';
 import { RiderHandoverLine } from '@/components/rider-handover-line';
 
@@ -614,7 +616,14 @@ export function OrderDetail({ id, onClose }: { id: string; onClose: () => void }
           return (
             <div key={it.id} className="text-sm">
               <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
-                <span className="min-w-0 break-words"><b>{it.quantity}×</b> {it.name}{it.specialInstructions ? <i className="text-[var(--swift-muted)]"> — {it.specialInstructions}</i> : null}</span>
+                <span className="min-w-0 break-words">
+                  <b>{it.quantity}×</b> {it.name}{it.specialInstructions ? <i className="text-[var(--swift-muted)]"> — {it.specialInstructions}</i> : null}
+                  {/* [L09 · M026 · MENU-OPTIONS] The choices, one group per line ("Large", "Crust: Stuffed crust → Cheese:
+                      Cheddar", "Toppings — Left: Pepperoni / Right: Mushroom"), as the app's order screens show them. */}
+                  {orderLineOptionsParts(it.options).map((part, i) => (
+                    <span key={i} data-testid="order-line-option" className="block text-xs font-semibold text-[var(--swift-ink)]">{part}</span>
+                  ))}
+                </span>
                 {/* [BUG-GUARDS C8] The row wraps at 360px: the item, then its step and price. */}
                 <span className="flex flex-wrap items-center justify-end gap-2">
                   {!paused && lastLineStanding(o, it) && !lastOut && (

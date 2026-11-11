@@ -12,10 +12,17 @@ import { beforeVatNote, editablePrice, itemPricePayload, newItemBeforeVatHint, n
 import { formatMoney } from '@/lib/money';
 import type { CatalogItem, VatClass } from '@/lib/vendor-api';
 import {
-  addOption, addOptionGroup, createItem, createSection, deleteItem, deleteOption, deleteOptionGroup, deleteSection,
-  refusalWords, renameSection, saveItem, sizedPhoto, uploadItemPhoto,
-  type BulkWord, type ItemBody, type MenuItem, type OptionGroupRow, type Section,
+  addOption, addOptionGroup, attachLibraryGroup, createItem, createSection, deleteItem, deleteOption, deleteOptionGroup, deleteSection,
+  readItem, refusalWords, renameSection, saveItem, sizedPhoto, updateOption, updateOptionGroup, uploadItemPhoto,
+  type BulkWord, type GroupBody, type ItemBody, type MenuItem, type OptionGroupRow, type Section,
 } from '@/lib/menu-api';
+// [MENU-OPTIONS · owner 11 Nov 2026] Sizes, halves, follow-up groups and the shared option library: the app's own rules
+// and words (a plain file, imported as is), and the library's window (OptionLibraryPanel).
+import {
+  choicePricePlaceholder, flagsOf, followUpLabel, followUpTargets, fromPriceWords, groupFlagsBody, groupRuleWords, isFollowUpGroup,
+  libraryGroupsToAdd, lowestSizePrice, sharedEditWarning, sharedUse, sizePriceLabel, usedByWords, type GroupFlags,
+} from '../../../../../mobile/src/lib/menuOptionsEditor';
+import { GroupRules, NEW_GROUP_FLAGS, OptionLibraryDialog, OptionLibraryPanel, optionWriteFailure, rereadAfterLibrary, useLibrary } from './option-library';
 import { vatClassWords } from './vat-class-words';
 import { adjustStock } from '@/lib/stock-adjust';
 // The app's own words for the store's pick tick (a plain file, imported as is).
@@ -196,7 +203,7 @@ export function PriceEdit({ item, onSave, onDone }: { item: CatalogItem; onSave:
 
 // ── Item editor ──────────────────────────────────────────────────────────────
 
-type DraftGroup = { key: string; name: string; isRequired: boolean; maxSelect: number; options: Array<{ key: string; name: string; additionalPrice: number; vatListedAdditionalPrice?: number | null }> };
+type DraftGroup = { key: string; name: string; isRequired: boolean; maxSelect: number; setsPrice?: boolean; allowHalves?: boolean; halfPricePercent?: number; options: Array<{ key: string; name: string; additionalPrice: number; vatListedAdditionalPrice?: number | null }> };
 let draftKeys = 0;
 const nextKey = () => `draft-${++draftKeys}`;
 
@@ -271,16 +278,21 @@ export function ItemEditor({
 
   // [UI-SWEEP U67, as the app] A change is a difference from how the editor opened; closing with one asks first.
   const formNow = JSON.stringify([name, price, description, categoryId, available, popular, sku, unit, bulk, stock, lowStock, vatClass,
-    duration, week, instantTouched, bufferTouched, noticeTouched, mode, radiusKm, draftGroups.map((g) => [g.name, g.isRequired, g.maxSelect, g.options])]);
+    duration, week, instantTouched, bufferTouched, noticeTouched, mode, radiusKm, draftGroups.map((g) => [g.name, g.isRequired, g.maxSelect, g.setsPrice, g.allowHalves, g.halfPricePercent, g.options])]);
   const [formAtOpen] = useState(formNow);
   const unsaved = formNow !== formAtOpen || photo !== null;
   const tryClose = () => (unsaved ? setDiscardAsk(true) : onClose());
 
-  const priceNum = Number(price);
-  const valid = name.trim().length >= 1 && price.trim() !== '' && Number.isFinite(priceNum) && priceNum >= 0 && !!categoryId && (!isService || hoursProblem == null) && vatKnown;
+  // [MENU-OPTIONS · owner 11 Nov 2026] SIZE SETS THE PRICE: an item with a group that sets the price costs its chosen
+  // size; its own price is the lowest size, kept so by the server. The field is then read-only ("From $X").
+  const [liveGroups, setLiveGroups] = useState<OptionGroupRow[]>(item?.optionGroups ?? []);
+  const sizedFrom = isService ? null : lowestSizePrice(item ? liveGroups : draftGroups.map((g) => ({ setsPrice: g.setsPrice, options: g.options.map((o) => ({ additionalPrice: o.additionalPrice })) })));
+  const priceNum = sizedFrom ?? Number(price);
+  const priceTyped = sizedFrom != null || price.trim() !== '';
+  const valid = name.trim().length >= 1 && priceTyped && Number.isFinite(priceNum) && priceNum >= 0 && !!categoryId && (!isService || hoursProblem == null) && vatKnown;
   const label = !vatKnown ? 'Loading the store’s prices…'
     : !name.trim() ? 'Name the item first'
-    : !(price.trim() !== '' && Number.isFinite(priceNum) && priceNum >= 0) ? 'Set a price'
+    : !(priceTyped && Number.isFinite(priceNum) && priceNum >= 0) ? 'Set a price'
       : !categoryId ? 'Pick a category'
         : isService && hoursProblem ? 'Fix the hours'
           : item ? 'Save changes' : 'Add item';
@@ -319,13 +331,17 @@ export function ItemEditor({
               // A new item's groups and choices go with it, in the one request (as the app sends them).
               ...(!item && draftGroups.length > 0 ? {
                 optionGroups: draftGroups.map((g) => ({
-                  name: g.name, isRequired: g.isRequired, minSelect: g.isRequired ? 1 : 0, maxSelect: g.maxSelect,
+                  name: g.name,
+                  // [MENU-OPTIONS] A size / half-and-half flag only when it is on: a plain group is sent as it always was.
+                  ...groupFlagsBody({ required: g.isRequired, multi: g.maxSelect > 1, setsPrice: g.setsPrice === true, allowHalves: g.allowHalves === true, halfPercent: g.halfPricePercent ?? 100 }),
                   // [REVIEW-M #2255 S4-2] A new option's price as the store typed it (before VAT where VAT is added).
                   options: g.options.map((o) => ({ name: o.name, ...newOptionPrice(o.additionalPrice, vatAdded) })),
                 })),
               } : {}),
             }),
       };
+      // [MENU-OPTIONS] A sized item's price is its lowest size, kept by the server: an edit never sends one.
+      if (item && sizedFrom != null) { delete body['basePrice']; delete body['vatListedPrice']; }
       const saved = item ? await saveItem(item.id, body) : await createItem(body);
       writeItem(qc, keys, saved);
       if (photo && saved?.id) {
@@ -386,7 +402,15 @@ export function ItemEditor({
 
       <div className="mt-4 space-y-3">
         <input className="sw-input" aria-label="Item name" placeholder="Item name" value={name} onChange={(e) => setName(e.target.value)} data-modal-initial-focus />
-        <input className="sw-input" aria-label={beforeVatField ? 'Price before VAT (GYD)' : 'Price (GYD)'} placeholder={beforeVatField ? 'Price before VAT (GYD)' : 'Price (GYD)'} inputMode="decimal" value={price} onChange={(e) => setPrice(e.target.value)} />
+        {sizedFrom != null ? (
+          // [MENU-OPTIONS] The item's price follows its sizes (read-only).
+          <div data-testid="item-from-price">
+            <p className="text-sm font-semibold">{fromPriceWords(sizedFrom, formatMoney)}</p>
+            <p className="sw-caption">Set by the choices of the group that sets the price.</p>
+          </div>
+        ) : (
+          <input className="sw-input" aria-label={beforeVatField ? 'Price before VAT (GYD)' : 'Price (GYD)'} placeholder={beforeVatField ? 'Price before VAT (GYD)' : 'Price (GYD)'} inputMode="decimal" value={price} onChange={(e) => setPrice(e.target.value)} />
+        )}
         {/* [REVIEW-F #2256 S4-2] A new item in a store whose VAT is added: the same words as the phone. */}
         {!item && vatPricing?.adds && <p className="text-xs text-[var(--swift-muted)]">{newItemBeforeVatHint(vatPricing.ratePercent)}</p>}
         {/* [VAT-DOCS] What customers pay for an item Swift adds VAT to (the saved price, from the server). */}
@@ -505,7 +529,7 @@ export function ItemEditor({
             {stock.trim() !== '' ? <p className="sw-caption">Tracked items sell down automatically and hide at 0. You’ll get an alert at your low-stock level.</p>
               : <p className="sw-caption">{SOLD_IN_STORE.untracked}</p>}
           </div>
-          <OptionsSection storeId={storeId} item={item} drafts={draftGroups} setDrafts={setDraftGroups} vatPricing={vatPricing} vendorType={vendorType} />
+          <OptionsSection storeId={storeId} item={item} drafts={draftGroups} setDrafts={setDraftGroups} vatPricing={vatPricing} vendorType={vendorType} onGroupsChange={setLiveGroups} />
         </>
       )}
 
@@ -553,14 +577,19 @@ function Chip({ label, on, onClick }: { label: string; on: boolean; onClick: () 
 }
 
 /** Options & add-ons (sizes, toppings, extras). A new item keeps them here and sends them with it; an existing item's
- *  changes go one at a time, each shown from the server's answer (as the app's ModifiersSection). */
-function OptionsSection({ storeId, item, drafts, setDrafts, vatPricing = null, vendorType }: {
+ *  changes go one at a time, each shown from the server's answer (as the app's ModifiersSection).
+ *  [MENU-OPTIONS · owner 11 Nov 2026] As the app: a group may set the price (Size) or be half-and-half (with the store's
+ *  half price rule); a choice may open a follow-up group of the item (one level); a group shared from the option
+ *  library says "Used by N items", is edited in the library (every item changes) and Remove takes it off this item. */
+function OptionsSection({ storeId, item, drafts, setDrafts, vatPricing = null, vendorType, onGroupsChange }: {
   storeId: string | null;
   item: MenuItem | null;
   drafts: DraftGroup[];
   setDrafts: (_update: (_groups: DraftGroup[]) => DraftGroup[]) => void;
   vatPricing?: VatPricing;
   vendorType?: string;
+  /** [MENU-OPTIONS] The item's saved groups as they change (its "From" price follows its sizes). */
+  onGroupsChange?: (_groups: OptionGroupRow[]) => void;
 }) {
   // [security review #2256] The same word as the item's price field: the wording and the payload never disagree.
   const vatAdded = vatPricing?.adds === true;
@@ -568,30 +597,48 @@ function OptionsSection({ storeId, item, drafts, setDrafts, vatPricing = null, v
   const keys = keysFor(storeId);
   const [saved, setSaved] = useState<OptionGroupRow[]>(item?.optionGroups ?? []);
   const [groupName, setGroupName] = useState('');
-  const [required, setRequired] = useState(false);
-  const [multi, setMulti] = useState(false);
+  const [flags, setFlags] = useState<GroupFlags>(NEW_GROUP_FLAGS);
   const [choice, setChoice] = useState<Record<string, { name: string; price: string }>>({});
   const [removeGroupId, setRemoveGroupId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const groups = useMemo(() => (item
-    ? saved.map((g) => ({ id: g.id, name: g.name, isRequired: g.isRequired, maxSelect: g.maxSelect, options: g.options.map((o) => ({ id: o.id, name: o.name, additionalPrice: Number(o.additionalPrice) || 0, vatListedAdditionalPrice: o.vatListedAdditionalPrice ?? null })) }))
-    : drafts.map((g) => ({ id: g.key, name: g.name, isRequired: g.isRequired, maxSelect: g.maxSelect, options: g.options.map((o) => ({ id: o.key, name: o.name, additionalPrice: o.additionalPrice })) }))), [item, saved, drafts]);
+  const [libraryFocus, setLibraryFocus] = useState<string | null>(null);
+  const [libraryPick, setLibraryPick] = useState('');
+  const library = useLibrary(storeId, !!item);
+  const groups: OptionGroupRow[] = useMemo(() => (item
+    ? saved.map((g) => ({ ...g, options: g.options.map((o) => ({ ...o, additionalPrice: Number(o.additionalPrice) || 0, vatListedAdditionalPrice: o.vatListedAdditionalPrice ?? null })) }))
+    : drafts.map((g) => ({
+      id: g.key, name: g.name, isRequired: g.isRequired, minSelect: g.isRequired ? 1 : 0, maxSelect: g.maxSelect,
+      setsPrice: g.setsPrice === true, allowHalves: g.allowHalves === true, halfPricePercent: g.halfPricePercent ?? 100,
+      options: g.options.map((o) => ({ id: o.key, name: o.name, additionalPrice: o.additionalPrice })),
+    }))), [item, saved, drafts]);
   const keepGroups = (next: OptionGroupRow[]) => {
     setSaved(next);
+    onGroupsChange?.(next);
     if (item) qc.setQueryData<CatalogItem[]>(keys.itemsAll, (rows) => rows?.map((r) => (r.id === item.id ? { ...r, optionGroups: next } as CatalogItem : r)));
   };
-  const failed = (e: unknown) => setError(refusalWords(e, vendorType) ?? "That didn't save. Check your connection and try again.");
+  const failed = (e: unknown) => setError(optionWriteFailure(e, vendorType));
+  /** [MENU-OPTIONS] The item's groups as the server now holds them (an attach or a shared group's removal brings or
+   *  takes the follow-up groups with it). */
+  const rereadGroups = async () => {
+    if (!item) return;
+    const fresh = await readItem(item.id);
+    if (fresh) keepGroups(fresh.optionGroups ?? []);
+  };
 
   const addGroup = useMutation({
-    mutationFn: (body: { name: string; isRequired: boolean; minSelect: number; maxSelect: number }) => addOptionGroup(item!.id, body),
+    mutationFn: (body: GroupBody & { name: string; isRequired: boolean; minSelect: number; maxSelect: number }) => addOptionGroup(item!.id, body),
     onMutate: () => setError(null),
-    onSuccess: (g) => { keepGroups([...saved, { ...g, options: g.options ?? [] }]); setGroupName(''); setRequired(false); setMulti(false); },
+    onSuccess: (g) => { keepGroups([...saved, { ...g, options: g.options ?? [] }]); setGroupName(''); setFlags(NEW_GROUP_FLAGS); },
     onError: failed,
   });
   const removeGroup = useMutation({
     mutationFn: (id: string) => deleteOptionGroup(id),
     onMutate: () => setError(null),
-    onSuccess: (_answer, id) => keepGroups(saved.filter((g) => g.id !== id)),
+    onSuccess: (_answer, id) => {
+      const wasShared = !!saved.find((g) => g.id === id)?.libraryGroupId;
+      keepGroups(saved.filter((g) => g.id !== id));
+      if (wasShared) { void rereadGroups(); rereadAfterLibrary(qc, storeId); }
+    },
     onError: failed,
   });
   const add = useMutation({
@@ -606,18 +653,57 @@ function OptionsSection({ storeId, item, drafts, setDrafts, vatPricing = null, v
     onSuccess: (_answer, { groupId, id }) => keepGroups(saved.map((g) => (g.id === groupId ? { ...g, options: g.options.filter((o) => o.id !== id) } : g))),
     onError: failed,
   });
-  const busy = addGroup.isPending || removeGroup.isPending || add.isPending || remove.isPending;
+  // [MENU-OPTIONS] A group's rule, a choice's follow-up group, a library group attached.
+  const rules = useMutation({
+    mutationFn: ({ id, body }: { id: string; body: GroupBody }) => updateOptionGroup(id, body),
+    onMutate: () => setError(null),
+    onSuccess: (g) => keepGroups(saved.map((x) => (x.id === g.id ? { ...x, ...g, options: g.options ?? x.options } : x))),
+    onError: failed,
+  });
+  const followUp = useMutation({
+    mutationFn: ({ optionId, followUpGroupId }: { groupId: string; optionId: string; followUpGroupId: string | null }) => updateOption(optionId, { followUpGroupId }),
+    onMutate: () => setError(null),
+    onSuccess: (_o, { groupId, optionId, followUpGroupId }) => keepGroups(saved.map((g) => (g.id === groupId
+      ? { ...g, options: g.options.map((o) => (o.id === optionId ? { ...o, followUpGroupId } : o)) } : g))),
+    onError: failed,
+  });
+  const attach = useMutation({
+    mutationFn: (libraryGroupId: string) => attachLibraryGroup(libraryGroupId, [item!.id]),
+    onMutate: () => setError(null),
+    onSuccess: async () => { setLibraryPick(''); rereadAfterLibrary(qc, storeId); await rereadGroups(); },
+    onError: failed,
+  });
+  const busy = addGroup.isPending || removeGroup.isPending || add.isPending || remove.isPending || rules.isPending || followUp.isPending || attach.isPending;
+  const sizeTaken = groups.some((g) => g.setsPrice);
 
   const submitGroup = () => {
     const name = groupName.trim();
     if (!name || busy) return;
-    const body = { name, isRequired: required, minSelect: required ? 1 : 0, maxSelect: multi ? 10 : 1 };
+    const body = { name, ...groupFlagsBody(flags) };
     if (!item) {
-      setDrafts((gs) => [...gs, { key: nextKey(), name, isRequired: required, maxSelect: body.maxSelect, options: [] }]);
-      setGroupName(''); setRequired(false); setMulti(false);
+      setDrafts((gs) => [...gs, {
+        key: nextKey(), name, isRequired: body.isRequired, maxSelect: body.maxSelect,
+        ...(body.setsPrice ? { setsPrice: true } : {}),
+        ...(body.allowHalves ? { allowHalves: true, halfPricePercent: body.halfPricePercent } : {}),
+        options: [],
+      }]);
+      setGroupName(''); setFlags(NEW_GROUP_FLAGS);
       return;
     }
     addGroup.mutate(body);
+  };
+  const changeRules = (g: OptionGroupRow, next: Partial<GroupFlags>) => {
+    if (busy) return;
+    const f = { ...flagsOf(g), ...next };
+    if (!item) {
+      const body = groupFlagsBody(f);
+      setDrafts((gs) => gs.map((d) => (d.key === g.id ? {
+        ...d, isRequired: body.isRequired, maxSelect: body.maxSelect, setsPrice: body.setsPrice === true,
+        allowHalves: body.allowHalves === true, halfPricePercent: body.halfPricePercent ?? 100,
+      } : d)));
+      return;
+    }
+    rules.mutate({ id: g.id, body: groupFlagsBody(f, { explicit: true }) });
   };
   const submitChoice = (groupId: string) => {
     const typed = choice[groupId] ?? { name: '', price: '' };
@@ -641,6 +727,28 @@ function OptionsSection({ storeId, item, drafts, setDrafts, vatPricing = null, v
     if (!item) { setDrafts((gs) => gs.filter((g) => g.key !== id)); return; }
     setRemoveGroupId(id);
   };
+  const setFollowUp = (groupId: string, optionId: string, followUpGroupId: string | null) => {
+    if (busy) return;
+    followUp.mutate({ groupId, optionId, followUpGroupId });
+  };
+  const attachPicked = () => {
+    if (busy || !libraryPick) return;
+    attach.mutate(libraryPick);
+  };
+
+  // [MENU-OPTIONS] A shared group is edited in the library, right here (every item that uses it changes).
+  if (libraryFocus) {
+    return (
+      <section className="mt-5 rounded-xl border border-[var(--swift-border)] p-4" aria-label="Options & add-ons">
+        <OptionLibraryPanel storeId={storeId} vendorType={vendorType} vatAdded={vatAdded} focusGroupId={libraryFocus}
+          items={(qc.getQueryData<CatalogItem[]>(keys.itemsAll) ?? []).filter((r) => (r as MenuItem).fulfillment !== 'APPOINTMENT').map((r) => ({ id: r.id, name: r.name }))}
+          onDone={() => { setLibraryFocus(null); void rereadGroups(); }} />
+      </section>
+    );
+  }
+
+  const removingShared = removeGroupId ? sharedUse(groups.find((g) => g.id === removeGroupId) ?? {}, library.data) : null;
+  const addable = libraryGroupsToAdd(library.data, groups);
 
   return (
     <section className="mt-5 rounded-xl border border-[var(--swift-border)] p-4" aria-label="Options & add-ons">
@@ -648,50 +756,98 @@ function OptionsSection({ storeId, item, drafts, setDrafts, vatPricing = null, v
       <p className="sw-caption mt-1">Sizes, toppings, extras — customers pick these when ordering.</p>
       {!item && groups.length > 0 ? <p className="sw-caption mt-1">Saved with the item when you tap Add item.</p> : null}
       {error ? <p role="alert" className="mt-2 text-sm font-semibold text-[var(--swift-red)]">{error}</p> : null}
-      {groups.map((g) => (
+      {groups.map((g) => {
+        const shared = item ? sharedUse(g, library.data) : null;
+        const targets = followUpTargets(groups, g.id);
+        return (
         <div key={g.id} className="mt-3 rounded-lg bg-[var(--swift-subtle)] p-3" aria-label={`Group ${g.name}`} role="group">
           <div className="flex items-center gap-2">
             <div className="min-w-0 flex-1">
               <p className="text-sm font-semibold">{g.name}</p>
-              <p className="sw-caption">{g.isRequired ? 'Required' : 'Optional'} · {g.maxSelect > 1 ? `up to ${g.maxSelect}` : 'pick one'}</p>
+              <p className="sw-caption">{groupRuleWords(g)}</p>
+              {shared ? <p className="text-xs font-semibold text-[var(--swift-red)]">Shared · {usedByWords(shared.usedBy)}</p> : null}
+              {isFollowUpGroup(groups, g.id) ? <p className="sw-caption">Follow-up group: shown when its choice is picked.</p> : null}
             </div>
             <button type="button" className="min-h-9 px-2 text-sm font-semibold text-[var(--swift-muted)]" aria-label={`Remove ${g.name}`} disabled={busy} onClick={() => askRemoveGroup(g.id)}>Remove</button>
           </div>
+          {shared ? (
+            <div className="mt-2 flex flex-wrap items-center gap-3">
+              <p className="sw-caption">{sharedEditWarning(shared.usedBy)} when you edit it.</p>
+              <button type="button" className="text-sm font-semibold text-[var(--swift-red)]" onClick={() => setLibraryFocus(shared.libraryGroupId)}>Edit shared group</button>
+            </div>
+          ) : (
+            <GroupRules flags={flagsOf(g)} onChange={(next) => changeRules(g, next)} sizeTaken={sizeTaken && !g.setsPrice} disabled={busy} label={g.name} />
+          )}
           {g.options.map((o) => (
-            <div key={o.id} className="mt-2 flex items-center gap-2 text-sm">
-              <span className="flex-1">{o.name}</span>
-              <span className="text-[var(--swift-muted)]">{optionPriceLabel(o)}</span>
-              <button type="button" className="min-h-9 px-2 text-[var(--swift-muted)]" aria-label={`Remove ${o.name}`} disabled={busy} onClick={() => removeChoice(g.id, o.id)}>✕</button>
+            <div key={o.id} className="mt-2 flex flex-wrap items-center gap-2 text-sm">
+              <span className="flex-1">{o.name}{o.isAvailable === false ? ' · Sold out' : ''}</span>
+              {item && !shared && (o.followUpGroupId || targets.length > 0) ? (
+                <select className="sw-input w-auto" aria-label={`Opens follow-up group: ${o.name}`} value={o.followUpGroupId ?? ''} disabled={busy}
+                  onChange={(e) => setFollowUp(g.id, o.id, e.target.value || null)}>
+                  <option value="">Opens nothing</option>
+                  {targets.map((t) => <option key={t.id} value={t.id}>{followUpLabel(groups, t.id)}</option>)}
+                </select>
+              ) : shared && o.followUpGroupId ? <span className="sw-caption">{followUpLabel(groups, o.followUpGroupId)}</span> : null}
+              <span className="text-[var(--swift-muted)]">{g.setsPrice ? sizePriceLabel(o, formatMoney) : optionPriceLabel(o)}</span>
+              {shared ? null : <button type="button" className="min-h-9 px-2 text-[var(--swift-muted)]" aria-label={`Remove ${o.name}`} disabled={busy} onClick={() => removeChoice(g.id, o.id)}>✕</button>}
             </div>
           ))}
+          {shared ? null : (
           <div className="mt-2 flex items-center gap-2">
             <input className="sw-input" aria-label={`Choice for ${g.name}`} placeholder="Choice (e.g. Large)" value={choice[g.id]?.name ?? ''}
               onChange={(e) => setChoice((c) => ({ ...c, [g.id]: { name: e.target.value, price: c[g.id]?.price ?? '' } }))}
               onKeyDown={(e) => { if (e.key === 'Enter') submitChoice(g.id); }} />
-            <input className="sw-input w-28" aria-label={vatAdded ? `Extra price before VAT for ${g.name}` : `Extra price for ${g.name}`} placeholder={vatAdded ? '+GYD before VAT' : '+GYD'} inputMode="numeric" value={choice[g.id]?.price ?? ''}
-              onChange={(e) => setChoice((c) => ({ ...c, [g.id]: { name: c[g.id]?.name ?? '', price: e.target.value } }))}
-              onKeyDown={(e) => { if (e.key === 'Enter') submitChoice(g.id); }} />
+            {g.setsPrice ? (
+              <input className="sw-input w-28" aria-label={`Price for ${g.name}`} placeholder={choicePricePlaceholder(true, vatAdded)} inputMode="numeric" value={choice[g.id]?.price ?? ''}
+                onChange={(e) => setChoice((c) => ({ ...c, [g.id]: { name: c[g.id]?.name ?? '', price: e.target.value } }))}
+                onKeyDown={(e) => { if (e.key === 'Enter') submitChoice(g.id); }} />
+            ) : (
+              <input className="sw-input w-28" aria-label={vatAdded ? `Extra price before VAT for ${g.name}` : `Extra price for ${g.name}`} placeholder={vatAdded ? '+GYD before VAT' : '+GYD'} inputMode="numeric" value={choice[g.id]?.price ?? ''}
+                onChange={(e) => setChoice((c) => ({ ...c, [g.id]: { name: c[g.id]?.name ?? '', price: e.target.value } }))}
+                onKeyDown={(e) => { if (e.key === 'Enter') submitChoice(g.id); }} />
+            )}
             <button type="button" className="sw-btn sw-btn-sm" aria-label={`Add choice to ${g.name}`} disabled={busy || vatPricing == null || !(choice[g.id]?.name ?? '').trim()} onClick={() => submitChoice(g.id)}>+</button>
           </div>
+          )}
         </div>
-      ))}
+        );
+      })}
       <div className="mt-3">
         <input className="sw-input" aria-label="New group (e.g. Size, Toppings)" placeholder="New group (e.g. Size, Toppings)" value={groupName} onChange={(e) => setGroupName(e.target.value)}
           onKeyDown={(e) => { if (e.key === 'Enter') submitGroup(); }} />
-        <div className="mt-2 flex gap-2">
-          <Chip label="Required" on={required} onClick={() => setRequired((v) => !v)} />
-          <Chip label="Multiple picks" on={multi} onClick={() => setMulti((v) => !v)} />
-        </div>
+        {!flags.setsPrice ? (
+          <div className="mt-2 flex gap-2">
+            <Chip label="Required" on={flags.required} onClick={() => setFlags((f) => ({ ...f, required: !f.required }))} />
+            <Chip label="Multiple picks" on={flags.multi} onClick={() => setFlags((f) => ({ ...f, multi: !f.multi }))} />
+          </div>
+        ) : null}
+        <GroupRules flags={flags} onChange={(next) => setFlags((f) => ({ ...f, ...next }))} sizeTaken={sizeTaken} label="New group" />
         <button type="button" className="sw-btn-outline mt-2 min-h-11 rounded-lg px-4 text-sm font-semibold" disabled={busy || !groupName.trim()} onClick={submitGroup}>
           {addGroup.isPending ? 'Adding…' : 'Add option group'}
         </button>
       </div>
+      {/* [MENU-OPTIONS] A group from the store's option library, built once and shared by many items. */}
+      {item ? (
+        <div className="mt-3 flex flex-wrap items-center gap-2">
+          {library.isError ? <p role="alert" className="text-sm font-semibold text-[var(--swift-red)]">Couldn’t load your option library. Check your connection and try again.</p> : (
+            <>
+              <select className="sw-input w-auto" aria-label="Add from option library" value={libraryPick} disabled={busy || addable.length === 0} onChange={(e) => setLibraryPick(e.target.value)}>
+                <option value="">{addable.length ? 'Add from option library…' : 'No other groups in your option library yet'}</option>
+                {addable.map((l) => <option key={l.id} value={l.id}>{l.name} · {usedByWords(l.usedByItemCount)}</option>)}
+              </select>
+              <button type="button" className="sw-btn-outline min-h-11 rounded-lg px-4 text-sm font-semibold" disabled={busy || !libraryPick} onClick={attachPicked}>
+                {attach.isPending ? 'Adding…' : 'Add'}
+              </button>
+            </>
+          )}
+        </div>
+      ) : null}
       {removeGroupId ? (
-        <div role="dialog" aria-label="Remove group?" className="mt-3 rounded-xl border border-[var(--swift-border)] p-4">
-          <p className="font-bold">Remove group?</p>
-          <p className="sw-caption mt-1">Delete this option group and all its choices.</p>
+        <div role="dialog" aria-label={removingShared ? 'Remove from this item?' : 'Remove group?'} className="mt-3 rounded-xl border border-[var(--swift-border)] p-4">
+          <p className="font-bold">{removingShared ? 'Remove from this item?' : 'Remove group?'}</p>
+          <p className="sw-caption mt-1">{removingShared ? 'The shared group stays in your option library and on the other items that use it.' : 'Delete this option group and all its choices.'}</p>
           <div className="mt-3 flex gap-3">
-            <button type="button" className="sw-btn sw-btn-md" disabled={removeGroup.isPending} onClick={() => { const id = removeGroupId; setRemoveGroupId(null); removeGroup.mutate(id); }}>Delete</button>
+            <button type="button" className="sw-btn sw-btn-md" disabled={removeGroup.isPending} onClick={() => { const id = removeGroupId; setRemoveGroupId(null); removeGroup.mutate(id); }}>{removingShared ? 'Remove' : 'Delete'}</button>
             <button type="button" className="sw-btn-outline min-h-11 rounded-lg px-4 text-sm font-semibold" onClick={() => setRemoveGroupId(null)}>Cancel</button>
           </div>
         </div>
@@ -792,7 +948,9 @@ export function DeleteItemDialog({ storeId, item, vendorType, onClose }: { store
 export type MenuDialogState =
   | { kind: 'item'; item: CatalogItem | null }
   | { kind: 'section'; mode: 'add' | 'rename' | 'delete'; section: { id: string; name: string } | null }
-  | { kind: 'delete'; item: CatalogItem };
+  | { kind: 'delete'; item: CatalogItem }
+  /** [MENU-OPTIONS] The option library (shared option groups). */
+  | { kind: 'library'; items: Array<{ id: string; name: string }> };
 
 export function MenuDialog({ dialog, storeId, sections, counts, vendorType, instantAvailable, vatRate, vatEffective, vatPricing, onClose }: {
   dialog: MenuDialogState;
@@ -808,6 +966,9 @@ export function MenuDialog({ dialog, storeId, sections, counts, vendorType, inst
 }) {
   if (dialog.kind === 'item') {
     return <ItemEditor storeId={storeId} item={dialog.item} sections={sections} vendorType={vendorType} instantAvailable={instantAvailable} vatRate={vatRate} vatEffective={vatEffective} vatPricing={vatPricing} onClose={onClose} />;
+  }
+  if (dialog.kind === 'library') {
+    return <OptionLibraryDialog storeId={storeId} vendorType={vendorType} vatAdded={vatPricing?.adds === true} items={dialog.items} onClose={onClose} />;
   }
   if (dialog.kind === 'section') {
     return <SectionDialog storeId={storeId} vendorType={vendorType} section={dialog.section} mode={dialog.mode}

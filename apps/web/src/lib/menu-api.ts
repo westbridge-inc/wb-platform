@@ -12,8 +12,15 @@ const V = '/api/v1/vendor';
 
 export type BulkWord = 'normal' | 'bulky' | 'very_bulky';
 // [VAT-DOCS] vatListedAdditionalPrice: the extra price the store typed before VAT, while VAT is added to it (else null).
-export type OptionRow = { id: string; name: string; additionalPrice: string | number; vatListedAdditionalPrice?: string | number | null; isAvailable?: boolean };
-export type OptionGroupRow = { id: string; name: string; isRequired: boolean; minSelect: number; maxSelect: number; options: OptionRow[] };
+// [MENU-OPTIONS · owner 11 Nov 2026] followUpGroupId: the group of the same item this choice opens (one level).
+export type OptionRow = { id: string; name: string; additionalPrice: string | number; vatListedAdditionalPrice?: string | number | null; isAvailable?: boolean; followUpGroupId?: string | null };
+// [MENU-OPTIONS] setsPrice (size sets the price), allowHalves + halfPricePercent (half-and-half), libraryGroupId (a
+// copy of a shared library group: edited in the option library only).
+export type OptionGroupRow = {
+  id: string; name: string; isRequired: boolean; minSelect: number; maxSelect: number; options: OptionRow[];
+  setsPrice?: boolean; allowHalves?: boolean; halfPricePercent?: number; libraryGroupId?: string | null;
+};
+export type GroupBody = { name?: string; isRequired?: boolean; minSelect?: number; maxSelect?: number; setsPrice?: boolean; allowHalves?: boolean; halfPricePercent?: number };
 /** An item as the server answers it to the editor (GET /items row, POST/PUT /items answer). */
 export type MenuItem = CatalogItem & {
   categoryId?: string;
@@ -33,6 +40,9 @@ const data = <T>(r: { data?: unknown }) => r.data as T;
 
 export const createItem = (body: ItemBody) => apiFetch(`${V}/items`, { method: 'POST', body: JSON.stringify(body) }).then(data<MenuItem>);
 export const saveItem = (id: string, body: ItemBody) => apiFetch(`${V}/items/${id}`, { method: 'PUT', body: JSON.stringify(body) }).then(data<MenuItem>);
+/** [MENU-OPTIONS] One item as the editor reads it (GET /items holds every item: an attach or a shared group's removal
+ *  changes more than one of the item's groups, so they are read again). */
+export const readItem = (id: string) => apiFetch(`${V}/items`).then((r) => (data<MenuItem[]>(r) ?? []).find((i) => i.id === id) ?? null);
 export const deleteItem = (id: string) => apiFetch(`${V}/items/${id}`, { method: 'DELETE' }).then(data<{ deleted: boolean }>);
 export const uploadItemPhoto = (id: string, file: Blob, name: string) => {
   const form = new FormData();
@@ -44,12 +54,38 @@ export const createSection = (name: string) => apiFetch(`${V}/categories`, { met
 export const renameSection = (id: string, name: string) => apiFetch(`${V}/categories/${id}`, { method: 'PUT', body: JSON.stringify({ name }) }).then(data<Section>);
 export const deleteSection = (id: string) => apiFetch(`${V}/categories/${id}`, { method: 'DELETE' }).then(data<{ deleted: boolean; itemsRemoved: number }>);
 
-export const addOptionGroup = (itemId: string, body: { name: string; isRequired: boolean; minSelect: number; maxSelect: number }) =>
+export const addOptionGroup = (itemId: string, body: GroupBody & { name: string; isRequired: boolean; minSelect: number; maxSelect: number }) =>
   apiFetch(`${V}/items/${itemId}/option-groups`, { method: 'POST', body: JSON.stringify(body) }).then(data<OptionGroupRow>);
+export const updateOptionGroup = (id: string, body: GroupBody) =>
+  apiFetch(`${V}/option-groups/${id}`, { method: 'PUT', body: JSON.stringify(body) }).then(data<OptionGroupRow>);
+export const updateOption = (id: string, body: { followUpGroupId?: string | null; isAvailable?: boolean }) =>
+  apiFetch(`${V}/options/${id}`, { method: 'PUT', body: JSON.stringify(body) }).then(data<OptionRow>);
 export const deleteOptionGroup = (id: string) => apiFetch(`${V}/option-groups/${id}`, { method: 'DELETE' }).then(data<{ deleted: boolean }>);
 export const addOption = (groupId: string, body: { name: string; additionalPrice: number; vatListedAdditionalPrice?: number }) =>
   apiFetch(`${V}/option-groups/${groupId}/options`, { method: 'POST', body: JSON.stringify(body) }).then(data<OptionRow>);
 export const deleteOption = (id: string) => apiFetch(`${V}/options/${id}`, { method: 'DELETE' }).then(data<{ deleted: boolean }>);
+
+// [MENU-OPTIONS · owner 11 Nov 2026] The shared option library (the app's VendorOptionLibraryScreen, same routes and
+// bodies): a group built once and attached to many items; editing it changes every item that uses it. Prices are what
+// the store types (before VAT where VAT is added).
+export type LibraryOption = { id: string; name: string; price: number; isDefault: boolean; isAvailable: boolean; sortOrder: number; followUpGroupId: string | null; externalCode: string | null };
+export type LibraryGroup = {
+  id: string; name: string; isRequired: boolean; minSelect: number; maxSelect: number; sortOrder: number;
+  setsPrice: boolean; allowHalves: boolean; halfPricePercent: number; isFollowUp: boolean;
+  usedByItemCount: number; usedByItems: Array<{ id: string; name: string }>; options: LibraryOption[];
+};
+export type LibraryOptionBody = { name?: string; price?: number; isAvailable?: boolean; followUpGroupId?: string | null; externalCode?: string | null };
+const json = (method: string, body?: unknown) => ({ method, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+export const getLibrary = () => apiFetch(`${V}/modifier-groups`).then(data<LibraryGroup[]>);
+export const createLibraryGroup = (body: GroupBody & { name: string }) => apiFetch(`${V}/modifier-groups`, json('POST', body)).then(data<LibraryGroup>);
+export const updateLibraryGroup = (id: string, body: GroupBody) => apiFetch(`${V}/modifier-groups/${id}`, json('PUT', body)).then(data<LibraryGroup>);
+export const deleteLibraryGroup = (id: string) => apiFetch(`${V}/modifier-groups/${id}`, json('DELETE')).then(data<{ deleted: boolean; removedFromItems: number }>);
+export const orderLibrary = (ids: string[]) => apiFetch(`${V}/modifier-groups/order`, json('PUT', { ids })).then(data<{ ordered: number }>);
+export const addLibraryOption = (groupId: string, body: LibraryOptionBody & { name: string }) => apiFetch(`${V}/modifier-groups/${groupId}/options`, json('POST', body)).then(data<LibraryOption>);
+export const updateLibraryOption = (id: string, body: LibraryOptionBody) => apiFetch(`${V}/modifier-options/${id}`, json('PUT', body)).then(data<LibraryOption>);
+export const deleteLibraryOption = (id: string) => apiFetch(`${V}/modifier-options/${id}`, json('DELETE')).then(data<{ deleted: boolean }>);
+export const attachLibraryGroup = (id: string, itemIds: string[]) => apiFetch(`${V}/modifier-groups/${id}/attach`, json('POST', { itemIds })).then(data<{ attached: string[]; already: string[] }>);
+export const detachLibraryGroup = (id: string, itemIds: string[]) => apiFetch(`${V}/modifier-groups/${id}/detach`, json('POST', { itemIds })).then(data<{ detached: string[] }>);
 
 /** [REVIEW-F #2142 S4-2, as the phone's #2141] The item or its section was deleted on another device: the server's
  *  "Category with id … not found" names an internal id, so the store reads this instead. */
