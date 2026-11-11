@@ -2,7 +2,7 @@
 import { useVendorMutation } from '../../../hooks/useVendorMutation';
 import { useState, useEffect, useRef, type ReactNode } from 'react';
 import { insightsHeldView, type InsightsPair } from '../../../lib/insightsHeldView';
-import { Alert, RefreshControl, ScrollView, View } from 'react-native';
+import { Alert, RefreshControl, ScrollView, Share, View } from 'react-native';
 import { Image } from 'expo-image';
 import { color, radius, space } from '@swift/ui';
 import { Feather, MaterialCommunityIcons } from '@expo/vector-icons';
@@ -13,6 +13,7 @@ import { errorMessage } from '../../../lib/apiError';
 import { StandingCard } from '../../../components/StandingCard';
 import { API_URL, vendorApi } from '../../../services/api';
 import { openPayLink } from '../../../lib/payLink';
+import { ORDER_EXPORT_RANGES, orderExportDays, orderExportRefusal, orderExportTitle, type OrderExportRange } from '../../../lib/orderExport';
 import {
   useMyStoreReviews,
   useRespondReview,
@@ -26,6 +27,7 @@ import {
   usePopularItems,
   useBusyHours,
   useRepeatCustomers,
+  useBranchStores,
 } from '../../../hooks/vendorops';
 import { usePullToRefresh } from '../../../hooks/usePullToRefresh';
 import { getAuthSessionSnapshot, requireAuthSessionForPrincipal, requireAuthSessionSnapshot } from '../../../stores/authStore';
@@ -688,6 +690,68 @@ function RepeatCustomersCard() {
   );
 }
 
+/**
+ * [ORDER-EXPORT · owner 11 Nov 2026] "Export orders": the order history of a range of days as a CSV, for the
+ * store's accounts, handed to the share sheet (email it, save it to Files, send it to the accountant). Owners and
+ * managers (this screen's audience; the server refuses staff). A business with several branches picks this store
+ * or all of them. No customer details are in the file.
+ */
+function OrderExportCard() {
+  const [range, setRange] = useState<OrderExportRange>('last-month');
+  const [allBranches, setAllBranches] = useState(false);
+  const selectedStoreId = useStoreSwitcher((state) => state.selectedStoreId);
+  const stores = useBranchStores();
+  const storeId = selectedStoreId ?? stores.data?.selectedId ?? null;
+  const several = (stores.data?.stores?.length ?? 0) > 1;
+  const exportOrders = useVendorMutation({
+    mutationFn: async () => {
+      if (!storeId) throw new Error('Choose a store first.');
+      const owner = requireAuthSessionSnapshot();
+      const days = orderExportDays(range);
+      const all = several && allBranches;
+      const r = await vendorApi.exportOrders({ ...days, branch: all ? 'all' : storeId }, storeId, owner).catch((err: unknown) => {
+        const refusal = orderExportRefusal(err);
+        throw refusal ? new Error(refusal) : err;
+      });
+      requireAuthSessionForPrincipal(owner);
+      const csv = typeof r.data === 'string' ? r.data.replace(/^\uFEFF/, '') : '';
+      if (!csv) throw new Error('The export came back empty.');
+      await Share.share({ title: orderExportTitle(days, all), message: csv });
+    },
+  });
+  const days = orderExportDays(range);
+  return (
+    <Card style={{ marginTop: space.lg }}>
+      <T variant="body" weight="bold">Export orders</T>
+      <T variant="caption" tone="muted" style={{ marginTop: 4, marginBottom: space.md }}>
+        A spreadsheet (CSV) of every order from {days.from} to {days.to}: times, payment, totals, cancellations and refunds. No customer details.
+      </T>
+      <Segmented options={ORDER_EXPORT_RANGES} value={range} onChange={setRange} />
+      {several ? (
+        <Segmented
+          style={{ marginTop: space.sm }}
+          options={[{ key: 'this', label: 'This store' }, { key: 'all', label: 'All branches' }] as const}
+          value={allBranches ? 'all' : 'this'}
+          onChange={(key) => setAllBranches(key === 'all')}
+        />
+      ) : null}
+      <PillButton
+        label="Export orders (CSV)"
+        variant="outline"
+        size="md"
+        style={{ marginTop: space.md }}
+        loading={exportOrders.isPending}
+        onPress={() => exportOrders.mutate()}
+      />
+      {exportOrders.isError ? (
+        <T variant="caption" tone="error" center style={{ marginTop: space.sm }}>
+          {errorMessage(exportOrders.error, 'Couldn’t export the orders — try again.')}
+        </T>
+      ) : null}
+    </Card>
+  );
+}
+
 export function VendorInsightsScreen() {
   const q = useVendorAnalytics();
   const readOnly = !!useVendorPreview((state) => state.previewType);
@@ -915,6 +979,7 @@ export function VendorInsightsScreen() {
                     Couldn’t open the statement — try again.
                   </T>
                 ) : null}
+                <OrderExportCard />
               </>
             ) : null}
             {/* [ref 21] The reference's own closing line — and this screen's

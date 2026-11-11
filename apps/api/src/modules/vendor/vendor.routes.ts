@@ -5628,6 +5628,39 @@ export async function vendorRoutes(app: FastifyInstance) {
     return buildVendorStatement(app.prisma, vendorId, period);
   });
 
+  /** [ORDER-EXPORT · owner 11 Nov 2026] GET /orders/export?from=YYYY-MM-DD&to=YYYY-MM-DD&branch=<storeId>|all — the
+   *  order history as a CSV file for finance reconciliation (vendor/order-export.ts: finance columns only, no customer
+   *  details, formula-safe). One branch (default: the selected store) or `all`: every store where this caller may see
+   *  sales — an owner every branch, a team member only the stores they MANAGE (as GET /stores/summary). Staff never.
+   *  At most 366 Guyana days; every export leaves an audit row (who, range, branches) before the first byte. */
+  app.get('/orders/export', { ...auth, config: { rateLimit: { max: 30, timeWindow: '1 hour' } } }, async (request, reply) => {
+    const { orderExportPeriod, orderExportLines, orderExportStream, ORDER_EXPORT_AUDIT_ACTION } = await import('./order-export');
+    const q = z.object({ from: z.string().max(10).optional(), to: z.string().max(10).optional(), branch: z.string().min(1).max(64).optional() })
+      .parse(request.query ?? {});
+    const access = await resolveVendor(app, request.user.userId, selectedVendorId(request));
+    const salesStores = access.role === 'OWNER' && access.ownerId
+      ? access.vendorIds
+      : (await app.prisma.vendorStaff.findMany({ where: { userId: request.user.userId, role: 'MANAGER', vendorId: { in: access.vendorIds } }, select: { vendorId: true } })).map((m) => m.vendorId);
+    if (salesStores.length === 0) requireRole(access, 'MANAGER');
+    const all = q.branch === 'all';
+    const branch = all ? null : (q.branch ?? access.vendorId);
+    if (branch !== null && !salesStores.includes(branch)) {
+      if (!access.vendorIds.includes(branch)) throw new AppError(403, 'STAFF_FORBIDDEN', 'You are not a member of this store');
+      throw new AppError(403, 'STAFF_FORBIDDEN', 'This needs a manager — ask the store owner to upgrade your role');
+    }
+    const period = orderExportPeriod(q);
+    const vendorIds = all ? salesStores : [branch!];
+    await app.prisma.auditLog.create({ data: {
+      userId: request.user.userId, action: ORDER_EXPORT_AUDIT_ACTION, entity: 'Vendor', entityId: all ? access.vendorId : branch!,
+      changes: { from: period.fromDay, to: period.toDay, scope: all ? 'all' : 'branch', vendorIds, role: access.role },
+    } });
+    const name = `swift-orders-${all ? 'all-branches-' : ''}${period.fromDay}-to-${period.toDay}.csv`;
+    reply.type('text/csv; charset=utf-8')
+      .header('content-disposition', `attachment; filename="${name}"`)
+      .header('cache-control', 'no-store');
+    return reply.send(orderExportStream(orderExportLines(app.prisma, { vendorIds, from: period.from, to: period.to })));
+  });
+
   app.get('/settlements', auth, async (request) => {
     const { vendorId } = await requireVendor(app, request, 'MANAGER');
     const query = request.query as Record<string, string | undefined>;

@@ -1,11 +1,12 @@
 'use client';
 
 import { useQuery } from '@tanstack/react-query';
-import { getOverview, money } from '@/lib/vendor-api';
+import { getOverview, getStores, money } from '@/lib/vendor-api';
 import { storeKey, useStoreId } from '@/lib/store-scope';
 import { useStoreRole } from '@/lib/store-role';
 import { DataUnavailable } from '@/components/data-unavailable';
 import { CheckingLatest, useCheckingLatest } from '@/components/checking-latest';
+import { OrderExportCard } from './order-export';
 
 function Stat({ label, value, sub }: { label: string; value: string; sub?: string }) {
   return (
@@ -27,6 +28,8 @@ export default function InsightsPage() {
   const storeId = useStoreId();
   const { manager, known } = useStoreRole();
   const overview = useQuery({ queryKey: storeKey(storeId, 'overview'), queryFn: getOverview, enabled: manager, refetchInterval: 30_000 });
+  // [ORDER-EXPORT] The same read as the role (keyed by store): the branches the export card offers.
+  const stores = useQuery({ queryKey: storeKey(storeId, 'my-role'), queryFn: getStores, enabled: manager });
   const d = overview.data;
   const checkingLatest = useCheckingLatest(overview);
   return (
@@ -49,6 +52,7 @@ export default function InsightsPage() {
           <Stat label="Live items" value={String(d.activeMenuItems)} sub={`${d.vendor.totalOrders} lifetime orders`} />
         </div>
       )}
+      {manager && storeId && <OrderExportCard key={storeId} storeId={storeId} stores={stores.data?.stores ?? []} />}
       <p className="text-center text-xs text-[var(--swift-muted)]">Reconciled numbers only — a beautiful wrong number is still a lie.</p>
     </div>
   );
