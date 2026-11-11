@@ -13,6 +13,7 @@ import { RiderHandoverLine } from '../RiderHandoverLine';
 import { orderLineOptionsText } from '../orderLineOptions';
 import { rejectReasonsFor } from '../rejectReasons';
 import { promisedTimeName } from '../../../lib/storeKindWords';
+import { storeKeepsDelivery, ringMoney } from '../ringMoney';
 import { orderPaymentLine } from '../storeWords';
 import { storeTimelineLabel } from '../../../lib/orderStatus';
 import { useOrderAction, useRetryDispatch, useSetOrderFulfillmentMode, useVendorOrder, usePickingActions, usePendingPickLines, useVendorMenu, useReturnReceived } from '../../../hooks/vendorops';
@@ -257,6 +258,9 @@ function VendorOrderDetailBody({ navigation, route }: any) {
   const emptied = nothingLeftToHandOver(order) && !mmgDisputePaused(order);
   const isPickup = order.fulfillment === 'PICKUP';
   const isAppt = order.fulfillment === 'APPOINTMENT';
+  // [STORE-MONEY] The store's own money on this order (the server's storeMoney; ringMoney.ts reads it).
+  const storeMoney = ringMoney(order);
+  const feeYours = storeKeepsDelivery(order);
   const apptMobile = isAppt && !!order.deliveryAddress && order.deliveryAddress !== order.pickupAddress;
   // [STORE-DASH · O-2] The hand-overs ride on top of the shared steps (storeHandover).
   const actions = withHandoverSteps(order, orderActions(order), mmgDisputePaused(order));
@@ -656,10 +660,18 @@ function VendorOrderDetailBody({ navigation, route }: any) {
         {/* Money — recorded amounts only (cash model: payment before handover) */}
         <Card style={{ marginBottom: space.md }}>
           <InfoRow label="Items" value={money(order.subtotalBase)} />
-          {Number(order.deliveryFee) > 0 ? <InfoRow label="Delivery fee (rider's)" value={money(order.deliveryFee)} /> : null}
-          {Number(order.tipAmount) > 0 ? <InfoRow label="Tip" value={money(order.tipAmount)} /> : null}
+          {Number(order.deliveryFee) > 0 ? <InfoRow label={feeYours ? 'Delivery fee (yours)' : "Delivery fee (rider's)"} value={money(order.deliveryFee)} /> : null}
+          {Number(order.tipAmount) > 0 ? <InfoRow label={feeYours ? 'Tip (yours)' : "Tip (rider's)"} value={money(order.tipAmount)} /> : null}
           {Number(order.discount) > 0 ? <InfoRow label="Promo discount" value={`-${money(order.discount)}`} /> : null}
-          <InfoRow label="Customer pays" value={money(order.totalAmount)} strong />
+          <InfoRow label="Customer pays" value={money(order.totalAmount)} />
+          {/* [STORE-MONEY · owner 11 Nov 2026] The card ends on the STORE's money — the food after its own discount —
+              never the customer's total with the rider's fee and tip; the server's lines say whose the rest is. */}
+          <InfoRow label={storeMoney.longLabel} value={money(storeMoney.food)} strong />
+          {storeMoney.notes.map((line) => (
+            <T key={line} variant="caption" tone="muted" style={{ marginTop: 4 }}>
+              {line}
+            </T>
+          ))}
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: space.sm }}>
             <MaterialCommunityIcons name="cash" size={16} color={color.success} />
             <T variant="caption" weight="semibold" tone="muted">
