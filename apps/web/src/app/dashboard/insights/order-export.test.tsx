@@ -8,9 +8,14 @@ import { mockApi, renderWithQuery, type ApiRequest } from '@/test/test-utils';
 const store = (id: string, name: string) => ({ id, name, vendorType: 'RESTAURANT', isCurrentlyOpen: true, acceptingOrders: true, city: 'Georgetown', isVerified: true, status: 'ACTIVE', awaitingApproval: false });
 const overview = { vendor: { totalOrders: 3 }, today: { orders: 1, revenue: 1000 }, week: { orders: 2, revenue: 2000 }, month: { orders: 3, revenue: 3000 }, activeMenuItems: 4 };
 
-function api(opts: { stores: unknown[]; role: string }) {
+const branch = (id: string, name: string) => ({ id, name, city: 'Georgetown' });
+
+function api(opts: { stores: unknown[]; role: string; exportable?: { scope: string; branches: unknown[] } }) {
   return mockApi(({ url }: ApiRequest) => {
     if (url.pathname === '/api/v1/vendor/stores') return { body: { data: { stores: opts.stores, selectedId: 'camp', myRole: opts.role } } };
+    if (url.pathname === '/api/v1/vendor/orders/export/branches') {
+      return opts.exportable ? { body: { data: opts.exportable } } : { status: 403, body: { success: false, error: { code: 'STAFF_FORBIDDEN' } } };
+    }
     if (url.pathname === '/api/v1/vendor/analytics/overview') return { body: { data: overview } };
     return { status: 404, body: { success: false } };
   });
@@ -31,7 +36,7 @@ describe('[ORDER-EXPORT] Insights: Export orders', () => {
   it('a chain owner exports all branches for the chosen days, saved under the server\'s file name', async () => {
     const created = vi.fn((_blob: Blob) => 'blob:orders');
     vi.stubGlobal('URL', Object.assign(URL, { createObjectURL: created, revokeObjectURL: vi.fn() }));
-    const base = api({ stores: [store('camp', 'Royal Camp'), store('north', 'Royal North')], role: 'OWNER' });
+    const base = api({ stores: [store('camp', 'Royal Camp'), store('north', 'Royal North')], role: 'OWNER', exportable: { scope: 'owner', branches: [branch('camp', 'Royal Camp'), branch('north', 'Royal North')] } });
     const { user } = renderWithQuery(<InsightsPage />);
     const button = await screen.findByRole('button', { name: 'Export orders (CSV)' });
     const asked: URL[] = [];
@@ -46,11 +51,12 @@ describe('[ORDER-EXPORT] Insights: Export orders', () => {
       }
       return base(input, init);
     }));
-    await user.clear(screen.getByLabelText('From'));
-    await user.type(screen.getByLabelText('From'), '2026-10-01');
-    await user.clear(screen.getByLabelText('To'));
-    await user.type(screen.getByLabelText('To'), '2026-10-31');
-    await user.selectOptions(screen.getByLabelText('Branch'), 'all');
+    await user.clear(screen.getByLabelText('Placed from'));
+    await user.type(screen.getByLabelText('Placed from'), '2026-10-01');
+    await user.clear(screen.getByLabelText('Placed to'));
+    await user.type(screen.getByLabelText('Placed to'), '2026-10-31');
+    expect(screen.getByRole('option', { name: 'All branches' })).toBeTruthy();
+    await user.selectOptions(await screen.findByLabelText('Branch'), 'all');
     await user.click(button);
     await waitFor(() => expect(created).toHaveBeenCalledTimes(1));
     expect(clicked).toHaveBeenCalledTimes(1);
@@ -63,7 +69,7 @@ describe('[ORDER-EXPORT] Insights: Export orders', () => {
   });
 
   it('one store: no branch choice; the server\'s refusal is shown in its words', async () => {
-    const base = api({ stores: [store('camp', 'Royal Camp')], role: 'MANAGER' });
+    const base = api({ stores: [store('camp', 'Royal Camp')], role: 'MANAGER', exportable: { scope: 'manager', branches: [branch('camp', 'Royal Camp')] } });
     const { user } = renderWithQuery(<InsightsPage />);
     const button = await screen.findByRole('button', { name: 'Export orders (CSV)' });
     expect(screen.queryByLabelText('Branch')).toBeNull();
@@ -76,5 +82,17 @@ describe('[ORDER-EXPORT] Insights: Export orders', () => {
     }));
     await user.click(button);
     expect((await screen.findByRole('alert')).textContent).toBe('One file covers at most 366 days. Choose a shorter range.');
+  });
+
+  it('a manager who is staff at another branch: only the managed stores, and "All branches you manage"', async () => {
+    api({
+      stores: [store('camp', 'Royal Camp'), store('north', 'Royal North'), store('east', 'Royal East')], role: 'MANAGER',
+      exportable: { scope: 'manager', branches: [branch('camp', 'Royal Camp'), branch('north', 'Royal North')] },
+    });
+    renderWithQuery(<InsightsPage />);
+    const picker = await screen.findByLabelText('Branch');
+    const names = [...(picker as HTMLSelectElement).options].map((o) => o.textContent);
+    expect(names).toEqual(['Royal Camp · Georgetown', 'Royal North · Georgetown', 'All branches you manage']);
+    expect(screen.getByText(/orders placed between the days you choose/)).toBeTruthy();
   });
 });
