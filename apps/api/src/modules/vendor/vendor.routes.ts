@@ -5628,6 +5628,25 @@ export async function vendorRoutes(app: FastifyInstance) {
     return buildVendorStatement(app.prisma, vendorId, period);
   });
 
+  /** [ORDER-EXPORT] The stores this caller may export: where they may see sales (an owner every branch, a team
+   *  member only the stores they MANAGE, as GET /stores/summary). Staff-only callers are refused. */
+  const exportStores = async (request: FastifyRequest) => {
+    const access = await resolveVendor(app, request.user.userId, selectedVendorId(request));
+    const salesStores = access.role === 'OWNER' && access.ownerId
+      ? access.vendorIds
+      : (await app.prisma.vendorStaff.findMany({ where: { userId: request.user.userId, role: 'MANAGER', vendorId: { in: access.vendorIds } }, select: { vendorId: true } })).map((m) => m.vendorId);
+    if (salesStores.length === 0) requireRole(access, 'MANAGER');
+    return { access, salesStores };
+  };
+
+  /** [REVIEW-2485-B S4-7] GET /orders/export/branches — the branches the export may cover for this login (the website
+   *  and the phone offer only these), and whether "all" means every branch (owner) or the stores they manage. */
+  app.get('/orders/export/branches', auth, async (request) => {
+    const { access, salesStores } = await exportStores(request);
+    const branches = await app.prisma.vendor.findMany({ where: { id: { in: salesStores } }, orderBy: { createdAt: 'asc' }, select: { id: true, name: true, city: true } });
+    return { success: true, data: { scope: access.role === 'OWNER' && access.ownerId ? 'owner' : 'manager', branches } };
+  });
+
   /** [ORDER-EXPORT · owner 11 Nov 2026] GET /orders/export?from=YYYY-MM-DD&to=YYYY-MM-DD&branch=<storeId>|all — the
    *  order history as a CSV file for finance reconciliation (vendor/order-export.ts: finance columns only, no customer
    *  details, formula-safe). One branch (default: the selected store) or `all`: every store where this caller may see
@@ -5637,11 +5656,7 @@ export async function vendorRoutes(app: FastifyInstance) {
     const { orderExportPeriod, orderExportLines, orderExportStream, ORDER_EXPORT_AUDIT_ACTION } = await import('./order-export');
     const q = z.object({ from: z.string().max(10).optional(), to: z.string().max(10).optional(), branch: z.string().min(1).max(64).optional() })
       .parse(request.query ?? {});
-    const access = await resolveVendor(app, request.user.userId, selectedVendorId(request));
-    const salesStores = access.role === 'OWNER' && access.ownerId
-      ? access.vendorIds
-      : (await app.prisma.vendorStaff.findMany({ where: { userId: request.user.userId, role: 'MANAGER', vendorId: { in: access.vendorIds } }, select: { vendorId: true } })).map((m) => m.vendorId);
-    if (salesStores.length === 0) requireRole(access, 'MANAGER');
+    const { access, salesStores } = await exportStores(request);
     const all = q.branch === 'all';
     const branch = all ? null : (q.branch ?? access.vendorId);
     if (branch !== null && !salesStores.includes(branch)) {

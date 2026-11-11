@@ -11,6 +11,9 @@ import { registerErrorHandler } from '../middleware/error-handler';
 import { registerEmptyJsonBodyParser } from '../plugins/empty-json';
 import { parseCsv } from '../utils/csv';
 import { ORDER_EXPORT_AUDIT_ACTION, ORDER_EXPORT_COLUMNS, guyanaStamp } from '../modules/vendor/order-export';
+import { aggregateSalesComponents } from '../modules/billing/sales-components';
+import { VENDOR_NO_RESPONSE_REASON } from '../modules/order/customer-cancellation';
+import { endOfGuyanaDay, startOfGuyanaDay } from '../utils/guyana-day';
 import { testPhone, wordFreeTag } from './helpers/fixture-ids';
 
 // ---------------------------------------------------------------------------
@@ -100,6 +103,13 @@ let northInjected: { id: string; orderNumber: string };
 let northBefore: { id: string };
 let foreignOrder: { id: string };
 let heldOrder: { id: string };
+// [REVIEW-2485-B] The finance fixtures: a third branch, orders placed 20-26 Oct (outside RANGE).
+let ledger: { id: string; name: string };
+const L: Record<string, { id: string; orderNumber: string }> = {};
+let vendorCode = '';
+let platformCode = '';
+const LEDGER_RANGE = 'from=2026-10-20&to=2026-10-25';
+const LEDGER_AT = new Date('2026-10-21T15:00:00.000Z');
 
 beforeAll(async () => {
   app = Fastify({ logger: false });
@@ -160,6 +170,64 @@ beforeAll(async () => {
   foreignOrder = await order(foreign.id, customer.userId);
   // Still inside the customer's free-cancel hold: the store has never seen it.
   heldOrder = await order(north.id, customer.userId, { status: 'PENDING', holdExpiresAt: new Date(Date.now() + 10 * 60_000) });
+
+  // ---- [REVIEW-2485-B] finance fixtures on the ledger branch ----
+  ledger = await store(vo.id, `Ledger Branch ${wordFreeTag(5)}`);
+  const code = async (funder: 'VENDOR' | 'PLATFORM') => {
+    const p = await app.prisma.promoCode.create({ data: {
+      code: `OEX${funder[0]}${wordFreeTag(6).toUpperCase()}`, description: 'export funder test', vendorId: funder === 'VENDOR' ? ledger.id : null,
+      discountType: 'FIXED_AMOUNT', discountValue: 300, applicableTo: ['FOOD_DELIVERY'], validFrom: new Date(Date.now() - 400 * DAY), validUntil: new Date(Date.now() + DAY), funder,
+    } });
+    promoIds.push(p.id);
+    return p;
+  };
+  const vendorPromo = await code('VENDOR');
+  const platformPromo = await code('PLATFORM');
+  vendorCode = vendorPromo.code;
+  platformCode = platformPromo.code;
+  const redeem = (orderId: string, promoCodeId: string, funder: 'VENDOR' | 'PLATFORM', goodsDiscount: number, deliveryDiscount: number) =>
+    app.prisma.promoRedemption.create({ data: { orderId, promoCodeId, termsVersion: 1, discountType: 'FIXED_AMOUNT', discountValue: goodsDiscount + deliveryDiscount, funder, goodsDiscount, deliveryDiscount } });
+  // L1: Swift rider, cash collected, express, the store's own code, lines removed at substitution.
+  L['vendorPromo'] = await order(ledger.id, customer.userId, {
+    placedAt: LEDGER_AT, deliveredAt: new Date(LEDGER_AT.getTime() + 40 * 60_000), fulfillmentMode: 'PLATFORM_RIDER', isExpress: true,
+    subtotalBase: 3000, subtotalCustomer: 3000, discount: 300, deliveryFee: 1500, tipAmount: 100, totalAmount: 4300,
+    paymentStatus: 'CAPTURED', promoCodeId: vendorPromo.id,
+  });
+  await redeem(L['vendorPromo'].id, vendorPromo.id, 'VENDOR', 300, 0);
+  for (const [qty, subStatus] of [[2, 'NONE'], [1, 'REFUNDED'], [4, 'REJECTED']] as const) {
+    await app.prisma.orderItem.create({ data: {
+      orderId: L['vendorPromo'].id, itemId: `ledger-${subStatus}`, name: `Line ${subStatus}`, quantity: qty, subStatus,
+      basePrice: 100, markedUpPrice: 100, markupAmount: 0, totalBase: 100 * qty, totalMarkup: 0, totalCustomer: 100 * qty,
+    } });
+  }
+  // L2: the store's own delivery, a Swift-funded code carried by the redemption only (multi-store basket), cash never recorded.
+  L['platformPromo'] = await order(ledger.id, customer.userId, {
+    placedAt: LEDGER_AT, deliveredAt: new Date(LEDGER_AT.getTime() + 30 * 60_000), fulfillmentMode: 'VENDOR_DELIVERY',
+    subtotalBase: 2000, subtotalCustomer: 2000, discount: 450, deliveryFee: 500, tipAmount: 0, totalAmount: 2050,
+  });
+  await redeem(L['platformPromo'].id, platformPromo.id, 'PLATFORM', 250, 200);
+  // L3: a pickup completed before discounts had a funding record, with a service fee.
+  L['legacy'] = await order(ledger.id, customer.userId, {
+    placedAt: LEDGER_AT, status: 'COMPLETED', fulfillment: 'PICKUP',
+    subtotalBase: 1000, subtotalCustomer: 1000, discount: 100, deliveryFee: 0, tipAmount: 0, serviceFee: 50, totalAmount: 950,
+  });
+  // L4: MMG confirmed by the provider, with tax.
+  L['mmg'] = await order(ledger.id, customer.userId, {
+    placedAt: LEDGER_AT, status: 'COMPLETED', fulfillment: 'PICKUP', paymentMethod: 'MOBILE_MONEY', paymentStatus: 'CAPTURED',
+    subtotalBase: 1500, subtotalCustomer: 1500, deliveryFee: 0, tipAmount: 0, taxAmount: 15, totalAmount: 1515,
+  });
+  // L5: a system close (too old to deliver), the cash refund already handed back.
+  L['tooOld'] = await order(ledger.id, customer.userId, {
+    placedAt: LEDGER_AT, status: 'CANCELLED', cancelledAt: new Date(LEDGER_AT.getTime() + 90 * 60_000), cancellationReason: 'FOOD_TOO_OLD',
+    refundOwedAmount: 1000, refundOwedAt: LEDGER_AT, refundSettledAt: new Date(LEDGER_AT.getTime() + DAY), refundPaidAmount: 1000, refundRef: `OEXR-${nanoid(8)}`,
+  });
+  // L6: the store never answered.
+  L['noResponse'] = await order(ledger.id, customer.userId, {
+    placedAt: LEDGER_AT, status: 'CANCELLED', cancelledAt: new Date(LEDGER_AT.getTime() + 10 * 60_000), cancellationReason: VENDOR_NO_RESPONSE_REASON,
+  });
+  // L7 / L8: the last instant of 25 Oct in Guyana (in), and the first of 26 Oct (out).
+  L['lastInstant'] = await order(ledger.id, customer.userId, { placedAt: new Date('2026-10-26T03:59:59.999Z'), deliveredAt: new Date('2026-10-26T04:30:00.000Z'), tipAmount: 0, totalAmount: 2500 });
+  L['nextDay'] = await order(ledger.id, customer.userId, { placedAt: new Date('2026-10-26T04:00:00.000Z') });
 });
 
 afterAll(async () => {
@@ -259,6 +327,16 @@ describe('[ORDER-EXPORT] the columns', () => {
     expect(res.statusCode, res.body).toBe(200);
     const [header] = parseCsv(res.body.replace(/^\uFEFF/, ''));
     expect(header).toEqual([...ORDER_EXPORT_COLUMNS]);
+    expect(header).toEqual([
+      'order_number', 'branch', 'branch_city', 'order_status', 'fulfilment', 'express',
+      'placed_at_guyana', 'placed_at_iso', 'accepted_at_guyana', 'accepted_at_iso', 'ready_at_guyana', 'ready_at_iso',
+      'completed_at_guyana', 'completed_at_iso', 'cancelled_at_guyana', 'cancelled_at_iso',
+      'payment_method', 'payment_status', 'payment_note', 'mmg_paid_claim', 'mmg_store_reference', 'item_count', 'currency',
+      'food_subtotal', 'discount', 'discount_store_funded', 'discount_swift_funded_goods', 'discount_swift_funded_delivery', 'discount_estimated', 'promo_code',
+      'delivery_fee', 'service_fee', 'tip', 'tax', 'vat_included', 'total',
+      'store_goods_net', 'store_delivery_fee_and_tip', 'rider_delivery_fee_and_tip',
+      'cancelled_by', 'cancellation_reason', 'refund_owed', 'refund_paid', 'refund_note',
+    ]);
     for (const pii of [CUSTOMER_FIRST, CUSTOMER_LAST, customerPhone, ADDRESS, NOTE, customer.userId, 'CUSTREF', '6.81', '-58.16']) {
       expect(res.body, pii).not.toContain(pii);
     }
@@ -273,9 +351,12 @@ describe('[ORDER-EXPORT] the columns', () => {
       placed_at_guyana: '2026-10-05 11:30:00', placed_at_iso: IN_RANGE.toISOString(),
       accepted_at_guyana: '2026-10-05 11:31:00', ready_at_guyana: '2026-10-05 11:50:00',
       completed_at_guyana: '2026-10-05 12:15:00', completed_at_iso: new Date(IN_RANGE.getTime() + 45 * 60_000).toISOString(),
-      cancelled_at_guyana: '', payment_method: 'cash', mmg_paid_claim: '', mmg_store_reference: '',
-      item_count: '5', currency: 'GYD', food_subtotal: '2000.00', delivery_fee: '500.00', service_fee: '0.00', tip: '100.00',
-      discount: '200.00', vat_included: '245.61', total: '2400.00', cancelled_by: '', refund_amount: '', refund_note: '',
+      cancelled_at_guyana: '', payment_method: 'cash', payment_status: 'cash_to_store_not_recorded_by_swift',
+      payment_note: 'Cash to the store, not recorded by Swift', mmg_paid_claim: '', mmg_store_reference: '', express: 'no',
+      item_count: '5', currency: 'GYD', food_subtotal: '2000.00', delivery_fee: '500.00', service_fee: '0.00', tip: '100.00', tax: '0.00',
+      discount: '200.00', discount_store_funded: '200.00', discount_swift_funded_goods: '0.00', discount_swift_funded_delivery: '0.00',
+      discount_estimated: 'yes', store_goods_net: '1800.00', store_delivery_fee_and_tip: '600.00', rider_delivery_fee_and_tip: '0.00',
+      vat_included: '245.61', total: '2400.00', cancelled_by: '', refund_owed: '', refund_paid: '', refund_note: '',
     });
     expect(row['promo_code']).toMatch(/^OEX/);
   });
@@ -283,7 +364,7 @@ describe('[ORDER-EXPORT] the columns', () => {
   it('MMG: the store\'s claim and its own reference (formula-safe), never the customer\'s reference', async () => {
     const res = await get(owner.token, `/api/v1/vendor/orders/export?${RANGE}`, camp.id);
     const row = rowsOf(res.body)[0]!;
-    expect(row).toMatchObject({ payment_method: 'mmg', payment_status: 'claimed', mmg_paid_claim: 'store_confirmed', fulfilment: 'pickup' });
+    expect(row).toMatchObject({ payment_method: 'mmg', payment_status: 'mmg_reported_by_store', mmg_paid_claim: 'store_confirmed', fulfilment: 'pickup' });
     expect(row['mmg_store_reference']).toMatch(/^'=REF/);
   });
 
@@ -292,7 +373,8 @@ describe('[ORDER-EXPORT] the columns', () => {
     const row = rowsOf(res.body).find((r) => r['order_number'] === northCancelled.orderNumber)!;
     expect(row).toMatchObject({
       order_status: 'cancelled', cancelled_by: 'store', cancellation_reason: "'-1+1 kitchen closed early",
-      cancelled_at_guyana: '2026-10-05 11:35:00', refund_amount: '2600.00', refund_note: 'Refund owed 2600.00: not paid back yet',
+      cancelled_at_guyana: '2026-10-05 11:35:00', refund_owed: '2600.00', refund_paid: '', refund_note: 'Refund owed 2600.00: not paid back yet',
+      store_goods_net: '', store_delivery_fee_and_tip: '', rider_delivery_fee_and_tip: '', payment_status: 'no_payment_recorded',
     });
   });
 
@@ -338,11 +420,117 @@ describe('[ORDER-EXPORT] the audit row', () => {
     const rows = await app.prisma.auditLog.findMany({ where: { userId: owner.userId, action: ORDER_EXPORT_AUDIT_ACTION, createdAt: { gte: since } } });
     expect(rows).toHaveLength(1);
     expect(rows[0]!.changes).toMatchObject({ from: '2026-10-02', to: '2026-10-09', scope: 'all', role: 'OWNER' });
-    expect(new Set((rows[0]!.changes as { vendorIds: string[] }).vendorIds)).toEqual(new Set([north.id, camp.id]));
+    expect(new Set((rows[0]!.changes as { vendorIds: string[] }).vendorIds)).toEqual(new Set([north.id, camp.id, ledger.id]));
 
     const refused = await get(owner.token, '/api/v1/vendor/orders/export?from=2025-01-01&to=2026-10-09', north.id);
     expect(refused.statusCode).toBe(400);
     expect(await app.prisma.auditLog.count({ where: { userId: owner.userId, action: ORDER_EXPORT_AUDIT_ACTION, createdAt: { gte: since } } })).toBe(1);
+  });
+});
+
+describe('[REVIEW-2485-B] the store\'s money, split like the sales statement', () => {
+  const ledgerRows = async () => {
+    const res = await get(owner.token, `/api/v1/vendor/orders/export?${LEDGER_RANGE}&branch=${ledger.id}`, north.id);
+    expect(res.statusCode, res.body).toBe(200);
+    const rows = rowsOf(res.body);
+    return { rows, by: (key: string) => rows.find((r) => r['order_number'] === L[key]!.orderNumber)! };
+  };
+
+  it('the last instant of the end day is in; 00:00 on the next Guyana day is out', async () => {
+    const { rows } = await ledgerRows();
+    const numbers = new Set(rows.map((r) => r['order_number']));
+    expect(numbers).toContain(L['lastInstant']!.orderNumber);
+    expect(numbers).not.toContain(L['nextDay']!.orderNumber);
+    expect(rows).toHaveLength(7);
+  });
+
+  it('sum(store_goods_net) equals the sales statement total for the same days', async () => {
+    const { rows } = await ledgerRows();
+    const cents = rows.reduce((sum, r) => sum + (r['store_goods_net'] ? Math.round(Number(r['store_goods_net']) * 100) : 0), 0);
+    const statement = await aggregateSalesComponents(app.prisma, { vendorId: ledger.id, from: startOfGuyanaDay('2026-10-20'), to: endOfGuyanaDay('2026-10-25') });
+    expect(statement.netSales).toBe(9100);
+    expect(cents / 100).toBe(statement.netSales);
+    const swiftOwes = rows.reduce((sum, r) => sum + Math.round(Number(r['discount_swift_funded_goods'] || 0) * 100), 0) / 100;
+    expect(swiftOwes).toBe(statement.sponsorReceivable);
+  });
+
+  it('a store-funded code: the store\'s discount, Swift-rider fee and tip the rider\'s, express flagged, removed lines not counted', async () => {
+    const { by } = await ledgerRows();
+    expect(by('vendorPromo')).toMatchObject({
+      promo_code: vendorCode, discount: '300.00', discount_store_funded: '300.00', discount_swift_funded_goods: '0.00',
+      discount_swift_funded_delivery: '0.00', discount_estimated: 'no', store_goods_net: '2700.00',
+      rider_delivery_fee_and_tip: '1600.00', store_delivery_fee_and_tip: '0.00', express: 'yes', item_count: '2',
+      payment_status: 'cash_collected', payment_note: 'Paid in cash on delivery', fulfilment: 'delivery',
+    });
+  });
+
+  it('a Swift-funded code: what Swift owes the store, the fee part, and the code from the redemption record', async () => {
+    const { by } = await ledgerRows();
+    expect(by('platformPromo')).toMatchObject({
+      promo_code: platformCode, discount: '450.00', discount_store_funded: '0.00', discount_swift_funded_goods: '250.00',
+      discount_swift_funded_delivery: '200.00', discount_estimated: 'no', store_goods_net: '2000.00',
+      store_delivery_fee_and_tip: '500.00', rider_delivery_fee_and_tip: '0.00', fulfilment: 'own_delivery',
+      payment_status: 'cash_to_store_not_recorded_by_swift',
+    });
+  });
+
+  it('a discount with no funding record is counted as the store\'s and marked estimated', async () => {
+    const { by } = await ledgerRows();
+    expect(by('legacy')).toMatchObject({
+      discount_store_funded: '100.00', discount_estimated: 'yes', store_goods_net: '900.00', service_fee: '50.00',
+      payment_status: 'cash_to_store_not_recorded_by_swift', payment_note: 'Cash to the store, not recorded by Swift',
+    });
+  });
+
+  it('MMG confirmed by the provider; tax is its own column', async () => {
+    const { by } = await ledgerRows();
+    expect(by('mmg')).toMatchObject({ payment_status: 'mmg_confirmed', payment_note: 'Paid by MMG — directly to the store', tax: '15.00', total: '1515.00' });
+  });
+
+  it('refunds: owed and paid back are separate columns', async () => {
+    const { by } = await ledgerRows();
+    expect(by('tooOld')).toMatchObject({ refund_owed: '', refund_paid: '1000.00', store_goods_net: '' });
+    expect(by('tooOld')['refund_note']).toBe('Refund 1000.00: paid back 2026-10-22');
+  });
+
+  it('cancellation reasons are in plain words, never codes', async () => {
+    const { by } = await ledgerRows();
+    expect(by('tooOld')).toMatchObject({ cancelled_by: 'system', cancellation_reason: 'Too old to deliver: the order was ready but no rider could be found in time.' });
+    expect(by('noResponse')).toMatchObject({ cancelled_by: 'no_response', cancellation_reason: 'The store didn’t respond in time.' });
+    const all = await get(owner.token, `/api/v1/vendor/orders/export?from=2026-10-01&to=2026-10-25&branch=all`, north.id);
+    for (const row of rowsOf(all.body)) expect(row['cancellation_reason']).not.toMatch(/^[A-Z0-9_]+$/);
+  });
+
+  it('total adds up on every row, across delivery, own delivery, pickup, express, MMG and cash', async () => {
+    const all = await get(owner.token, `/api/v1/vendor/orders/export?from=2026-10-01&to=2026-10-25&branch=all`, north.id);
+    const rows = rowsOf(all.body);
+    expect(rows.length).toBeGreaterThanOrEqual(11);
+    const c = (r: Record<string, string>, k: string) => Math.round(Number(r[k] || 0) * 100);
+    for (const r of rows) {
+      const sum = c(r, 'food_subtotal') - c(r, 'discount') + c(r, 'delivery_fee') + c(r, 'service_fee') + c(r, 'tax') + c(r, 'tip');
+      expect(Math.max(0, sum), r['order_number']).toBe(c(r, 'total'));
+    }
+  });
+});
+
+describe('[REVIEW-2485-B] GET /orders/export/branches — the branches this login may export', () => {
+  it('an owner: every branch', async () => {
+    const res = await get(owner.token, '/api/v1/vendor/orders/export/branches', north.id);
+    expect(res.statusCode, res.body).toBe(200);
+    expect(res.json().data.scope).toBe('owner');
+    expect(new Set(res.json().data.branches.map((b: { id: string }) => b.id))).toEqual(new Set([north.id, camp.id, ledger.id]));
+  });
+
+  it('a manager: only the stores they manage; staff are refused', async () => {
+    const member = await makeUser(['CUSTOMER'], 'CUSTOMER');
+    await app.prisma.vendorStaff.create({ data: { vendorId: north.id, userId: member.userId, role: 'MANAGER', invitedBy: owner.userId } });
+    await app.prisma.vendorStaff.create({ data: { vendorId: camp.id, userId: member.userId, role: 'STAFF', invitedBy: owner.userId } });
+    const res = await get(member.token, '/api/v1/vendor/orders/export/branches', camp.id);
+    expect(res.statusCode, res.body).toBe(200);
+    expect(res.json().data).toMatchObject({ scope: 'manager', branches: [{ id: north.id, name: north.name, city: 'Georgetown' }] });
+    const staff = await makeUser(['CUSTOMER'], 'CUSTOMER');
+    await app.prisma.vendorStaff.create({ data: { vendorId: north.id, userId: staff.userId, role: 'STAFF', invitedBy: owner.userId } });
+    expect((await get(staff.token, '/api/v1/vendor/orders/export/branches', north.id)).statusCode).toBe(403);
   });
 });
 
