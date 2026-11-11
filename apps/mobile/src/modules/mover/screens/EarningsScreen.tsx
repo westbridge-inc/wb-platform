@@ -297,7 +297,7 @@ function EarningsTools({
   // [FOLLOWUPS 11 Nov · the rider fee check] "Pay weekly fee" opened a screen with nothing to pay while MMG checkout
   // was off. The button is drawn only when that screen can take a payment (the same server answer, payActions); a fee
   // owed with no way to pay here says so; anything else (paused, trial, paid) is said by the fee card above.
-  const door = earningsFeeDoor(source as FeeSubscription | null);
+  const door = earningsFeeDoor(sub);
   return (
     <Card style={{ marginTop: space.md }}>
       {showPaidAhead ? (

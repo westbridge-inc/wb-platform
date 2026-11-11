@@ -16,8 +16,10 @@ export type EarningsFeeDoor = { kind: 'pay' } | { kind: 'cannot-pay-here'; inPer
 /** The fee states in which money is owed now (fee-status.ts). */
 const OWED: ReadonlySet<string> = new Set(['DUE', 'SUSPENDED', 'INACTIVE']);
 
-export function earningsFeeDoor(sub: FeeSubscription | null | undefined): EarningsFeeDoor {
-  if (!sub || typeof sub !== 'object') return { kind: 'none' };
+/** `raw`: the subscription read as the server sent it (any shape: a missing or odd answer offers nothing). */
+export function earningsFeeDoor(raw: unknown): EarningsFeeDoor {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { kind: 'none' };
+  const sub = raw as FeeSubscription;
   if (liveMmg(sub) || liveCard(sub.payActions)) return { kind: 'pay' };
   if (OWED.has(feeStatusOf(sub).state)) return { kind: 'cannot-pay-here', inPerson: sub.inPerson?.open === true };
   return { kind: 'none' };

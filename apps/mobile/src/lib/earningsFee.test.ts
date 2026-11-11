@@ -65,7 +65,7 @@ describe('[FOLLOWUPS] the Earnings screen reads these', () => {
   });
 
   it('the Pay button is drawn only for a way to pay; otherwise the line (and the in-person door when open)', () => {
-    expect(tools).toContain('const door = earningsFeeDoor(source as FeeSubscription | null);');
+    expect(tools).toContain('const door = earningsFeeDoor(sub);');
     expect(tools).toMatch(/\{door\.kind === 'pay' \? \(\s*<PillButton\s+label="Pay weekly fee"/);
     expect(tools).toContain('{FEE_NOT_PAYABLE_IN_APP}');
     expect(tools).toMatch(/door\.kind === 'cannot-pay-here' \? \([\s\S]*\{door\.inPerson \? <LinkText label=\{FEE_PAY_IN_PERSON_LINK\}/);
