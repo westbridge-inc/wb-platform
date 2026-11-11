@@ -419,16 +419,18 @@ export default function SubscriptionsPage() {
                                     title: `Refund a card payment to ${h.name}'s card?`,
                                     body: <><p>{sourcesLine(view)}</p>
                                       <p>Swift asks the card provider once to refund the whole card payment to the card it came from. It counts as paid back only when the card provider approves it. A second admin approves first. Never refund it any other way.</p>
+                                      {ready.some((c) => c.partial) && <p>A card payment that already paid part of a week that started goes back only for its weeks that have not started: a partial refund of that payment, for exactly the amount shown. If the card provider refuses it, nothing moves and it stays here to pay back another way.</p>}
                                       {otherLines.length > 0 && <p>{otherLines.join(' ')}</p>}</>,
                                     confirmLabel: 'Refund to card',
                                     fields: [
-                                      { kind: 'choice', name: 'payment', label: 'Card payment', options: ready.map((c) => ({ value: c.cardSessionId, label: `Order ${c.orderReference} · GY$${c.amount.toLocaleString()}${c.paidAt ? ` · paid ${gyDate(c.paidAt)}` : ''}` })) },
+                                      { kind: 'choice', name: 'payment', label: 'Card payment', options: ready.map((c) => ({ value: c.cardSessionId, label: `Order ${c.orderReference} · ${c.partial ? `GY$${c.refundAmount.toLocaleString()} of GY$${c.amount.toLocaleString()} (its weeks not started)` : `GY$${c.amount.toLocaleString()}`}${c.paidAt ? ` · paid ${gyDate(c.paidAt)}` : ''}` })) },
                                     ],
                                   });
                                   if (!answer) return;
                                   const chosen = ready.find((c) => c.cardSessionId === answer.values['payment']);
                                   if (!chosen) return;
-                                  toCard.mutate({ id: s.id, setAsideId: view.setAside.id, cardSessionId: chosen.cardSessionId, amount: chosen.amount, reason: answer.reason });
+                                  // [OWNER 10 Nov 2026] The server's own figure for what goes back: the whole payment, or its unused part.
+                                  toCard.mutate({ id: s.id, setAsideId: view.setAside.id, cardSessionId: chosen.cardSessionId, amount: chosen.refundAmount, reason: answer.reason });
                                 }}
                                 disabled={refundBusy}
                                 className="mc-btn"

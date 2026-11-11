@@ -23,12 +23,20 @@ import {
 //   voided", TotalAmount "Required for Capture and Refund", Refund "Mandatory for refunds: Set to true"; sec. 7.5 the
 //   request and its answer (TransactionType 5, its own TransactionIdentifier, OriginalTrxnIdentifier).
 //
+// [OWNER 10 Nov 2026 · PARTLY USED CARD PAYMENT] What goes back to the card is exactly that card payment's money in the
+// refund set aside at closing (fee-receipt allocations say which payment's money it is): its weeks that have not
+// started. All of it: the WHOLE payment. Part of it (the rest already paid a week that started): that PART, as a partial
+// refund of the same original transaction — the same documented call with the part as TotalAmount. PowerTranz's docs:
+// "Powertranz supports partial capture and refund ... You cannot void a transaction partially", and "Partial capture,
+// partial refund and void after capture, are features that should be supported by acquiring banks" (Authorization
+// Result, PowerTranz developer docs); its written answer to Swift (9 Nov 2026): partial refunds "are supported through
+// both the Merchant Portal and API calls". The owner asked PowerTranz to confirm partial refunds on Swift's account. A
+// partial refund PowerTranz refuses (or does not offer) moves nothing: FAILED, exactly like any refused refund, and the
+// money stays set aside, owed, for a person to pay back the existing way (a payout record, two people) — never dropped.
+// None of it (all of it paid weeks that started): nothing goes back (CARD_PAYMENT_ALL_USED).
+//
 // What the guide does NOT say, so Swift does not do it:
-//   - that a refund may be smaller than the payment. Sec. 5.2 says "partial voids are not supported. Only partial
-//     captures are supported." So a card payment is refunded WHOLE or not at all: only a card payment whose whole
-//     amount sits unused in the refund set aside at closing (fee-receipt allocations say which payment's money it is)
-//     can go back to its card. Part of one that already paid a week cannot: the owner decides how that part is paid
-//     back (an open question for PowerTranz, CARD-CHECKOUT-API.md section 11);
+//   - a partial VOID (sec. 5.2: "partial voids are not supported"): a part goes back only by refund;
 //   - a refund made by hand in the merchant portal (the guide names the portal only for page names, sec. 5.1, and
 //     order references in reports, sec. 9.2): nothing here records one;
 //   - the refund's own reference in the transaction lookup. PowerTranz's written answers to Swift (4 and 9 Nov 2026)
@@ -40,8 +48,9 @@ import {
 //
 // The law, in order:
 //   1. A person asks, with a reason; a second admin approves (C4); the asker of the set-aside never approves it.
-//   2. Under the payer lock: the set-aside is open, this card payment's whole amount is in it, nothing is refunded for
-//      this payment yet, and it fits what is still to pay back. The claim (SENDING) is written BEFORE the one call.
+//   2. Under the payer lock: the set-aside is open, the amount asked is exactly this card payment's money in it (the
+//      whole payment, or its unused part: cardRefundPart), nothing is refunded for this payment yet, and it fits what is
+//      still to pay back. The claim (SENDING, with that amount) is written BEFORE the one call.
 //   3. ONE refund call, keyed by the claim. Only the provider's approved answer for THIS transaction, type and amount
 //      (the driver checks all three) records the money as paid back: a CARD payout part under the refund's own
 //      reference (into the reference census), REFUND_PAYABLE -> CLEARING_CARD. A refusal moves nothing (FAILED).
@@ -110,20 +119,44 @@ async function cardPaymentInSetAside(tx: Tx, subscriptionId: string, setAsideId:
   return { session: session as CardSession & { paymentId: string; currencyCode: string }, original, inSetAside };
 }
 
-/** Everything that must hold for this card payment to go back to its card now, read under the payer lock. */
+/** [OWNER 10 Nov 2026 · PARTLY USED CARD PAYMENT] What of a card payment goes back to its card at closing, in cents:
+ *  exactly its money in the refund set aside, the weeks it paid for that have not started. All of it: the whole
+ *  payment. Part of it (the rest already paid a week that started): that part, a PARTIAL refund of the same
+ *  transaction. None of it: nothing. Never more than the payment, and only whole units of the currency (weekly fees and
+ *  card payments are whole GYD, MAJOR_WHOLE), so the provider is asked for exactly that part, with no rounding. */
+export type CardRefundPart = { cents: number; partial: boolean } | { refused: 'ALL_USED' | 'ABOVE_PAYMENT' | 'NOT_WHOLE_UNITS' };
+export function cardRefundPart(paymentCents: number, inSetAsideCents: number): CardRefundPart {
+  if (!(inSetAsideCents > 0)) return { refused: 'ALL_USED' };
+  if (inSetAsideCents > paymentCents) return { refused: 'ABOVE_PAYMENT' };
+  if (!Number.isSafeInteger(inSetAsideCents) || inSetAsideCents % 100 !== 0) return { refused: 'NOT_WHOLE_UNITS' };
+  return { cents: inSetAsideCents, partial: inSetAsideCents < paymentCents };
+}
+
+/** Everything that must hold for this card payment (or its unused part) to go back to its card now, read under the payer lock. */
 async function eligibleInTx(tx: Tx, subscriptionId: string, setAsideId: string, cardSessionId: string, amount: number) {
   const open = await namedOpenSetAside(tx, subscriptionId, setAsideId, NOTHING_SET_ASIDE, CYCLE_CHANGED);
   const { session, original, inSetAside } = await cardPaymentInSetAside(tx, subscriptionId, open.opened.id, cardSessionId);
   const whole = cents(session.amount);
-  if (session.currencyCode !== open.currencyCode) refuse('CARD_REFUND_CURRENCY', 'This card payment is in another currency than the refund set aside.');
+  const currency = session.currencyCode;
+  if (currency !== open.currencyCode) refuse('CARD_REFUND_CURRENCY', 'This card payment is in another currency than the refund set aside.');
   const prior = await tx.cardCreditRefund.findUnique({ where: { cardSessionId }, select: { state: true } });
   if (prior) refuse('CARD_REFUND_EXISTS', `A refund of this card payment was already asked (${prior.state === 'REFUNDED' ? 'refunded' : prior.state === 'FAILED' ? 'the card provider refused it' : 'its answer is not confirmed'}). It is never sent twice.`);
-  if (inSetAside !== whole) {
-    refuse('CARD_PAYMENT_PARTLY_USED', `Only ${inSetAside / 100} of this ${whole / 100} ${session.currencyCode} card payment is in the refund set aside: the rest already paid weekly fees. The card provider's guide documents no refund smaller than the payment, so Swift refunds a card payment only whole. Ask the owner how to pay this part back. Nothing was sent.`);
+  const part = cardRefundPart(whole, inSetAside);
+  if ('refused' in part) {
+    if (part.refused === 'ALL_USED') {
+      refuse('CARD_PAYMENT_ALL_USED', `None of this ${whole / 100} ${currency} card payment is in the refund set aside: all of it paid weekly fees that started, and a week that has started is not refunded. Nothing was sent.`);
+    }
+    if (part.refused === 'ABOVE_PAYMENT') {
+      refuse('CARD_REFUND_ABOVE_PAYMENT', `More of this card payment is recorded in the refund set aside (${inSetAside / 100}) than the payment itself (${whole / 100} ${currency}). Nothing was sent: escalate to the owner.`);
+    }
+    refuse('CARD_REFUND_NOT_WHOLE_UNITS', `The unused part of this card payment, ${inSetAside / 100} ${currency}, is not a whole number of ${currency}. Nothing was sent: pay it back another way (Record payout, two people), or escalate to the owner.`);
   }
-  if (cents(amount) !== whole) refuse('CARD_REFUND_WHOLE_PAYMENT', `A card payment is refunded whole: ${whole / 100} ${session.currencyCode}.`);
-  if (whole > await stillToPayCents(tx, open)) refuse('REFUND_AMOUNT_MISMATCH', 'This is more than is still to pay back on this refund. Nothing was sent.');
-  return { open, session, original };
+  if (cents(amount) !== part.cents) {
+    if (!part.partial) refuse('CARD_REFUND_WHOLE_PAYMENT', `A card payment is refunded whole: ${whole / 100} ${currency}.`);
+    refuse('CARD_REFUND_UNUSED_PART', `Part of this ${whole / 100} ${currency} card payment already paid a week that started. Only its weeks that have not started go back to its card: exactly ${part.cents / 100} ${currency}, a partial refund of the same payment. Nothing was sent.`);
+  }
+  if (part.cents > await stillToPayCents(tx, open)) refuse('REFUND_AMOUNT_MISMATCH', 'This is more than is still to pay back on this refund. Nothing was sent.');
+  return { open, session, original, part };
 }
 
 /** [Review S2-1 pattern] Checked when it is ASKED, before the approval gate writes the request, under the refund's
@@ -143,8 +176,9 @@ export interface CardRefundAnswer extends CreditRefundState {
 }
 
 /**
- * The approved ask, applied: ONE refund of the whole card payment through the provider, recorded only on its own
- * approved answer. `approvalId` names the step: applying it again answers what happened, and never sends again.
+ * The approved ask, applied: ONE refund through the provider of the card payment's money in the set-aside (the whole
+ * payment, or its unused part as a partial refund), recorded only on its own approved answer for exactly that amount.
+ * `approvalId` names the step: applying it again answers what happened, and never sends again.
  */
 export async function refundCardCreditToCard(prisma: PrismaClient, rail: CardRailSource, input: {
   adminId: string; approvalId: string; subscriptionId: string; setAsideId: string; cardSessionId: string; amount: number;
@@ -165,21 +199,23 @@ export async function refundCardCreditToCard(prisma: PrismaClient, rail: CardRai
     await lockCreditRefundAsks(tx, input.subscriptionId);
     const again = await tx.cardCreditRefund.findUnique({ where: { approvalId: input.approvalId } });
     if (again) return { replay: again };
-    const { open, session, original } = await eligibleInTx(tx, input.subscriptionId, input.setAsideId, input.cardSessionId, input.amount);
+    const { open, session, original, part } = await eligibleInTx(tx, input.subscriptionId, input.setAsideId, input.cardSessionId, input.amount);
     // Swift refunds only through the provider setup that took the money (guide sec. 4: the merchant's own credentials).
     if (!sameBinding(bindingOf(session), provider.binding)) {
       refuse('CARD_PROVIDER_SETUP_CHANGED', 'This card payment was taken through another card provider setup, and Swift refunds only through the setup that took it. Nothing was sent: escalate to the owner.');
     }
     await assertPayoutPairRule(tx, open.opened, input.approvalId);
+    // The amount refunded is the part asked (whole cents, divisible by 100: an exact decimal), frozen in the claim.
     const row = await tx.cardCreditRefund.create({ data: {
       tenantId: session.tenantId, subscriptionId: input.subscriptionId, cardSessionId: session.id, setAsideId: open.opened.id,
-      amount: session.amount!, currencyCode: session.currencyCode, requestedByUserId: input.adminId, approvalId: input.approvalId,
+      amount: part.cents / 100, currencyCode: session.currencyCode, requestedByUserId: input.adminId, approvalId: input.approvalId,
     } });
-    await audit(tx, input, { step: 'CARD_REFUND_SENDING', amount: Number(row.amount), currencyCode: row.currencyCode, cardSessionId: session.id, orderReference: orderReferenceOf(session.id), providerTransactionRef: original, cardRefundId: row.id });
-    return { row, session, original };
+    await audit(tx, input, { step: 'CARD_REFUND_SENDING', amount: Number(row.amount), paymentAmount: Number(session.amount), partial: part.partial, currencyCode: row.currencyCode, cardSessionId: session.id, orderReference: orderReferenceOf(session.id), providerTransactionRef: original, cardRefundId: row.id });
+    return { row, session, original, partial: part.partial };
   });
   if ('replay' in claimed) return answer(claimed.replay!, true);
-  const { row, session, original } = claimed;
+  const { row, session, original, partial } = claimed;
+  const ofPayment = partial ? ` (part of the ${Number(session.amount)} ${row.currencyCode} payment: its weeks that had not started)` : '';
 
   // 3. ONE call. Its key is the claim: the driver never sends a second refund for it.
   const outcome: CardRefundOutcome = await provider.refund({
@@ -201,17 +237,17 @@ export async function refundCardCreditToCard(prisma: PrismaClient, rail: CardRai
       const event = await recordPayoutPartInTx(tx, {
         subscriptionId: input.subscriptionId, amount: Number(row.amount), currencyCode: row.currencyCode, method: 'CARD', reference: own,
         eventKey: `${PAID_KEY}${own}`,
-        note: `Set-aside fee credit refunded to the card that paid it: the card provider approved refund ${own} of order ${orderReferenceOf(session.id)} (asked by ${input.adminId})`,
+        note: `Set-aside fee credit refunded to the card that paid it${ofPayment}: the card provider approved refund ${own} of order ${orderReferenceOf(session.id)} (asked by ${input.adminId})`,
       });
       const refunded = await tx.cardCreditRefund.update({ where: { id: row.id }, data: { state: 'REFUNDED', providerRefundRef: own, billingEventId: event.id, answeredAt: now, answerSha256: outcome.rawSha256 } });
-      await audit(tx, input, { step: 'CARD_REFUNDED', amount: Number(row.amount), currencyCode: row.currencyCode, cardSessionId: session.id, reference: own, billingEventId: event.id, cardRefundId: row.id });
+      await audit(tx, input, { step: 'CARD_REFUNDED', amount: Number(row.amount), paymentAmount: Number(session.amount), partial, currencyCode: row.currencyCode, cardSessionId: session.id, reference: own, billingEventId: event.id, cardRefundId: row.id });
       return refunded;
     }
     const state: CardRefundState = outcome.status === 'failed' ? 'FAILED' : outcome.status === 'pending' ? 'PENDING' : 'UNKNOWN';
     const reason = outcome.status === 'failed' || outcome.status === 'unknown' ? outcome.reason
       : outcome.status === 'pending' ? 'REFUND_PENDING' : 'REFUND_ANSWER_WITHOUT_ITS_OWN_REFERENCE';
     const closed = await tx.cardCreditRefund.update({ where: { id: row.id }, data: { state, outcomeReason: reason.slice(0, 200), answeredAt: now, answerSha256: outcome.rawSha256 } });
-    await audit(tx, input, { step: `CARD_REFUND_${state}`, amount: Number(row.amount), currencyCode: row.currencyCode, cardSessionId: session.id, outcomeReason: reason, cardRefundId: row.id });
+    await audit(tx, input, { step: `CARD_REFUND_${state}`, amount: Number(row.amount), paymentAmount: Number(session.amount), partial, currencyCode: row.currencyCode, cardSessionId: session.id, outcomeReason: reason, cardRefundId: row.id });
     return closed;
   });
   if (done.state !== 'REFUNDED' && done.state !== 'FAILED') {
@@ -239,6 +275,10 @@ export interface CreditSourceView {
   cardPayments: Array<{
     cardSessionId: string; orderReference: string; providerTransactionRef: string | null; amount: number; currencyCode: string;
     inSetAside: number; paidAt: Date | null;
+    /** [OWNER 10 Nov 2026] What a refund to the card sends: its money in the set-aside (cardRefundPart), 0 when none can go. */
+    refundAmount: number;
+    /** True when that is part of the payment (the rest paid a week that started): a partial refund of the same payment. */
+    partial: boolean;
     refund: { state: CardRefundState; providerRefundRef: string | null } | null;
     refundable: boolean;
   }>;
@@ -291,11 +331,15 @@ export async function creditRefundSources(db: PrismaClient | Tx, subscriptionId:
     cardPayments: sessions.map((s) => {
       const refund = refunds.find((r) => r.cardSessionId === s.id);
       const inSetAside = inSetAsideOf.get(s.paymentId ?? '') ?? 0;
+      // [OWNER 10 Nov 2026] The whole payment, or its unused part (a partial refund): the same rule the refund applies.
+      const part = cardRefundPart(cents(s.amount ?? 0), inSetAside);
+      const goes = 'refused' in part ? null : part;
       return {
         cardSessionId: s.id, orderReference: orderReferenceOf(s.id), providerTransactionRef: originals.get(s.paymentId ?? '') ?? s.providerTransactionRef,
         amount: Number(s.amount ?? 0), currencyCode: s.currencyCode ?? opened.currencyCode, inSetAside: inSetAside / 100, paidAt: s.confirmedAt,
+        refundAmount: goes ? goes.cents / 100 : 0, partial: goes?.partial ?? false,
         refund: refund ? { state: refund.state as CardRefundState, providerRefundRef: refund.providerRefundRef } : null,
-        refundable: !refund && s.status === 'SUCCEEDED' && !!originals.get(s.paymentId ?? '') && inSetAside === cents(s.amount ?? 0) && inSetAside <= cents(stillToPay),
+        refundable: !refund && s.status === 'SUCCEEDED' && !!originals.get(s.paymentId ?? '') && goes !== null && goes.cents <= cents(stillToPay),
       };
     }),
   };
@@ -307,7 +351,9 @@ export async function creditRefundSources(db: PrismaClient | Tx, subscriptionId:
 // PowerTranz's written answers to Swift: the transaction lookup is for unknown outcomes only, never the normal flow
 // (4 Nov 2026), and "is supported for all transaction types"; refunds, partial and Merchant Portal ones included, are
 // supported (9 Nov 2026). Swift reads the ORIGINAL transaction's record (lookupRefund) when a person asks and a second
-// admin approves (C4). What it may record:
+// admin approves (C4). [OWNER 10 Nov 2026] A partial refund (part of the payment: its weeks that had not started) is
+// judged against that PART of Swift's whole capture: REFUNDED only when TotalCreditAmount is exactly the part asked;
+// the whole payment back, a void, or any other credit is held for the owner. What it may record:
 //   - the record shows TotalCreditAmount = TotalCaptureAmount = the whole payment, or a real VoidDateTime: REFUNDED,
 //     once, through the closing paths that already exist (a HELD Pay now: closed REFUNDED; a refund of set-aside
 //     credit: its CARD payout part, REFUND_PAYABLE -> CLEARING_CARD);
@@ -376,7 +422,7 @@ export async function checkCardCreditRefund(prisma: PrismaClient, rail: CardRail
     ? await prisma.subscriptionPayment.findUnique({ where: { id: session.paymentId }, select: { status: true, externalRef: true, paymentMethod: true } })
     : null;
   const original = payment?.status === 'CAPTURED' && payment.paymentMethod === 'CARD' ? payment.externalRef?.trim() ?? '' : '';
-  if (!session || !original || (session.providerTransactionRef && session.providerTransactionRef.trim().toLowerCase() !== original.toLowerCase())) {
+  if (!session || !original || session.amount === null || (session.providerTransactionRef && session.providerTransactionRef.trim().toLowerCase() !== original.toLowerCase())) {
     refuse('CARD_PAYMENT_NOT_REFUNDABLE', 'Swift cannot name this card payment\'s original transaction with certainty. Nothing was read or recorded: escalate to the owner.');
   }
   const provider = rail();
@@ -385,9 +431,17 @@ export async function checkCardCreditRefund(prisma: PrismaClient, rail: CardRail
   }
   if (!provider.lookupRefund) refuse('PROVIDER_CANNOT_LOOK_UP', 'This card provider gives Swift no way to look a payment up. Check its portal and escalate to the owner. Nothing was recorded.');
   const orderRef = orderReferenceOf(session.id);
+  // [OWNER 10 Nov 2026] The record is judged for the amount Swift asked back (the claim's), of Swift's whole capture (the
+  // payment): the same figures for a whole refund; the part and the whole for a partial one.
+  const partial = cents(row.amount) < cents(session.amount);
+  const asked = partial
+    ? `${Number(row.amount)} of the ${Number(session.amount)} ${row.currencyCode} card payment that Swift asked back (its weeks that had not started)`
+    : `whole ${Number(row.amount)} ${row.currencyCode} card payment`;
   const looked: CardRefundLookupOutcome = await provider.lookupRefund({
     binding: provider.binding, providerRef: original, orderRef,
-    amountMinor: toProviderMinor(Number(row.amount), row.currencyCode, 'card.v2.credit-refund-check'), currencyCode: row.currencyCode,
+    amountMinor: toProviderMinor(Number(session.amount), row.currencyCode, 'card.v2.credit-refund-check'),
+    refundMinor: toProviderMinor(Number(row.amount), row.currencyCode, 'card.v2.credit-refund-check'),
+    currencyCode: row.currencyCode,
     notBefore: new Date(session.createdAt.getTime() - VOID_DATE_SKEW_MS),
   }).catch((): CardRefundLookupOutcome => ({ status: 'unknown', reason: 'LOOKUP_CALL_FAILED', rawSha256: rawDigest({ lookup: 'threw', ref: original }) }));
   const check = providerCheckOf(looked);
@@ -395,7 +449,7 @@ export async function checkCardCreditRefund(prisma: PrismaClient, rail: CardRail
   const facts = {
     step: `CARD_REFUND_CHECK_${check}`, cardSessionId: session.id, cardRefundId: row.id, orderReference: orderRef, providerTransactionRef: original,
     lookup: looked.status, lookupReason: looked.reason, lookupSha256: looked.rawSha256, ...(looked.status === 'refunded' ? { how: looked.how } : {}),
-    amount: Number(row.amount), currencyCode: row.currencyCode,
+    amount: Number(row.amount), paymentAmount: Number(session.amount), partial, currencyCode: row.currencyCode,
   };
   const who = { adminId: input.adminId, subscriptionId: row.subscriptionId, ...(input.onAudit ? { onAudit: input.onAudit } : {}) };
   const answer = (state: CardRefundState, providerRefundRef: string | null, c: ProviderCheck = check): CreditRefundCheckAnswer => ({ check: c, reason: looked.reason, refund: { state, providerRefundRef } });
@@ -403,8 +457,8 @@ export async function checkCardCreditRefund(prisma: PrismaClient, rail: CardRail
   if (looked.status !== 'refunded') {
     await prisma.$transaction(async (tx) => { await audit(tx, who, facts); });
     if (looked.status === 'part_credited') {
-      log().error({ cardRefundId: row.id, reason: looked.reason }, '[CARD-REFUND-LOOKUP] the provider record shows a credit that is not the whole card payment — held for the owner');
-      await input.alertOwner?.(`The card provider's record of order ${orderRef} (transaction ${original}) shows a refund that is not the whole ${Number(row.amount)} ${row.currencyCode} card payment (${looked.reason}). Nothing was recorded or sent. The owner settles it with PowerTranz.`).catch(() => {});
+      log().error({ cardRefundId: row.id, reason: looked.reason, partial }, '[CARD-REFUND-LOOKUP] the provider record shows a credit that is not what Swift asked back — held for the owner');
+      await input.alertOwner?.(`The card provider's record of order ${orderRef} (transaction ${original}) shows a refund that is not the ${asked} (${looked.reason}). Nothing was recorded or sent. The owner settles it with PowerTranz.`).catch(() => {});
     }
     return answer(row.state as CardRefundState, row.providerRefundRef);
   }
@@ -431,7 +485,7 @@ export async function checkCardCreditRefund(prisma: PrismaClient, rail: CardRail
     const event = await recordPayoutPartInTx(tx, {
       subscriptionId: row.subscriptionId, amount: Number(fresh.amount), currencyCode: fresh.currencyCode, method: 'CARD', reference,
       eventKey: `${PAID_KEY}${reference}`,
-      note: `Set-aside fee credit refunded to the card that paid it: the card provider's own record of transaction ${original} (order ${orderRef}) shows the whole payment ${looked.how === 'void' ? 'voided' : 'credited back'} (checked by ${input.adminId}; the refund's own answer had been ${fresh.state})`,
+      note: `Set-aside fee credit refunded to the card that paid it: the card provider's own record of transaction ${original} (order ${orderRef}) shows ${partial ? `exactly the ${asked} credited back` : `the whole payment ${looked.how === 'void' ? 'voided' : 'credited back'}`} (checked by ${input.adminId}; the refund's own answer had been ${fresh.state})`,
     });
     // [REVIEW-2461-B S3-1] The refund's own answer (its time and hash) stays on the row as it was; the record that
     // confirmed it is in the audit trail. A claim that never got an answer (stuck SENDING) is answered now.
@@ -448,7 +502,7 @@ export async function checkCardCreditRefund(prisma: PrismaClient, rail: CardRail
     // verdict is kept (its own audit row) and the owner is told, before the refusal.
     log().error({ cardRefundId: row.id, refusal: done.refusal.code }, '[CARD-REFUND-LOOKUP] the provider record shows the card payment back, but Swift could not record it — owner');
     await prisma.$transaction(async (tx) => { await audit(tx, who, { ...facts, step: 'CARD_REFUND_CHECK_REFUNDED_NOT_RECORDED', refusal: done.refusal.code }); });
-    await input.alertOwner?.(`The card provider's record of order ${orderRef} (transaction ${original}) shows the whole ${Number(row.amount)} ${row.currencyCode} card payment back, but Swift could not record it (${done.refusal.code}). Nothing was recorded or sent. The owner settles it.`).catch(() => {});
+    await input.alertOwner?.(`The card provider's record of order ${orderRef} (transaction ${original}) shows the ${asked} back, but Swift could not record it (${done.refusal.code}). Nothing was recorded or sent. The owner settles it.`).catch(() => {});
     refuse(done.refusal.code, done.refusal.message);
   }
   return answer('REFUNDED', done.refunded.providerRefundRef);

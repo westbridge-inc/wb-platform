@@ -145,6 +145,24 @@ const MMG_HISTORY_HOLD = 'MMG_HISTORY_APPROVAL_UNVERIFIED';
 /** [PT-1] A hosted Pay-now payment's clientKey: `cardpay:<card session id>`.
  *  The session sweep owns these rows; the weekly-intent reconciler skips them. */
 export const CARD_PAY_NOW_KEY_PREFIX = 'cardpay:';
+/** [BILLING-REANCHOR] The receipt channel of a card capture that brought a suspended partner back: kept as fee credit
+ *  and spent at once, in the same transaction, on the return week. */
+export const CARD_RETURN_CHANNEL = 'CARD_RETURN';
+
+/**
+ * [N1 · CARD-STAGING-TEST R2 · owner 10 Nov 2026] What a booked card payment did with its money, as the partner is told
+ * (CardSessionView.settlement): `banked` when it was kept as fee credit — a week that has not started (CARD_PAY_AHEAD),
+ * or money kept without moving the account (CARD_LATE_APPROVAL) — and `advanced` when it paid a week. A RETURN is kept
+ * as fee credit too (its bank event), but that credit is spent AT ONCE on the return week in the same transaction
+ * (receipt channel CARD_RETURN): the week is paid, so it is `advanced`, never "kept for your next weekly fee". Read from
+ * what was durably booked, so every repeat (a racing confirmation, the sweep, a finance BOOK) answers the same.
+ */
+export async function cardPayNowSettlement(db: PrismaClient | Prisma.TransactionClient, paymentId: string): Promise<'advanced' | 'banked'> {
+  const kept = await db.billingEvent.findUnique({ where: { idempotencyKey: `bank:${paymentId}` }, select: { id: true } });
+  if (!kept) return 'advanced';
+  const receipt = await db.feeReceipt.findUnique({ where: { billingEventId: kept.id }, select: { channel: true } });
+  return receipt?.channel === CARD_RETURN_CHANNEL ? 'advanced' : 'banked';
+}
 /** [PT-1] Why an instrument charge did not happen — shown to the partner in
  *  the ordinary failure notice ("<reason>. We will retry tomorrow…", then the
  *  real ways to pay from fee-notice-copy.ts). A fact, never a door: the app
@@ -1577,7 +1595,8 @@ export class BillingService {
       this.prisma.subscriptionPayment.findUnique({ where: { id: payment.id } }),
       this.prisma.billingEvent.findUnique({ where: { idempotencyKey: `bank:${payment.id}` }, select: { id: true } }),
     ]);
-    if (banked) return { outcome: 'banked' };
+    // [N1] Kept as fee credit — unless it was a RETURN, whose credit already paid the return week (cardPayNowSettlement).
+    if (banked) return { outcome: await cardPayNowSettlement(this.prisma, payment.id) };
     if (after?.status === 'CAPTURED' && after.externalRef === input.providerRef) return { outcome: 'advanced' };
     if (after?.failureCode === 'WALLET_CURRENCY_MISMATCH' || after?.failureCode === 'CURRENCY_UNPINNED') {
       return { outcome: 'held', failureCode: after.failureCode };
@@ -2272,7 +2291,7 @@ export class BillingService {
         if (bankCapture) {
           await this.creditWalletInTx(tx, {
             subscriptionId: sub.id, amount, currencyCode: sub.currencyCode,
-            eventKey: `bank:${payment.id}`, channel: returning ? 'CARD_RETURN' : bankedAnyway ? 'CARD_LATE_APPROVAL' : 'CARD_PAY_AHEAD', rail: 'CARD',
+            eventKey: `bank:${payment.id}`, channel: returning ? CARD_RETURN_CHANNEL : bankedAnyway ? 'CARD_LATE_APPROVAL' : 'CARD_PAY_AHEAD', rail: 'CARD',
             note: returning
               ? `Card payment received for ${periodKey} from a suspended partner: their return; spent on the return week (the time suspended is not billed) (payment ${payment.id})`
               : bankedAnyway
