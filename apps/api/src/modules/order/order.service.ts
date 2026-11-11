@@ -1,3 +1,4 @@
+import { loadStoreMoney } from '../billing/store-money';
 import { persistHandoverNotice, drainHandoverNotices } from '../handover/handover-notice';
 import { drainDeliveryLifts, liftAfterDelivery, persistDeliveryLift } from '../safety/delivery-lift';
 import { authorizeHandover, preflightHandoverDoor, verifyHandoverDecision, type HandoverDecision, type HandoverFailure } from '../handover/handover-decision';
@@ -2240,7 +2241,8 @@ export class OrderService {
               vendorOwner.userId,
               order.orderNumber,
               order.items.length,
-              Number(order.totalAmount),
+              // [STORE-MONEY] The store's goods money, never the customer's total (rider's fee + tip).
+              (await loadStoreMoney(this.prisma, order.id)) ?? Number(order.subtotalCustomer),
               order.id,
               // [Q10] The same cut-off the auto-cancel row above was armed with.
               vendorRespondBy(order, { slaMinutes: queueTiming.vendorResponseSlaMinutes, holdMs: holdWindowMs() ?? 0 }),
@@ -3434,7 +3436,8 @@ export class OrderService {
               vendorOwner.userId,
               order.orderNumber,
               order.items.length,
-              Number(order.totalAmount),
+              // [STORE-MONEY] The store's goods money, never the customer's total (rider's fee + tip).
+              (await loadStoreMoney(this.prisma, order.id)) ?? Number(order.subtotalCustomer),
               order.id,
               vendorRespondBy(order, { slaMinutes, holdMs: holdWindowMs() ?? 0 }),
             );

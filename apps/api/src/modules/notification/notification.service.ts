@@ -1,3 +1,4 @@
+import type { StoreMoney } from '../billing/store-money';
 import { enqueueFeeDemand, isFeeDemand, persistFeeDemandInbox, handOffFeeDemand, feeDemandOutstanding } from '../billing/fee-demand-delivery';
 import { ownerWallSystem } from '../../lib/owner-rls';
 import { insertNoticeFor } from '../../lib/owner-wall-notices';
@@ -868,7 +869,13 @@ export class NotificationService {
    * it rides in the payload so the push rings until then and never after,
    * and the store copy is tagged audience business, like the re-alert.
    */
-  async newOrderForVendor(vendorOwnerId: string, orderNumber: string, itemCount: number, total: number, orderId: string, respondBy?: Date | null): Promise<string> {
+  async newOrderForVendor(vendorOwnerId: string, orderNumber: string, itemCount: number, money: number | StoreMoney, orderId: string, respondBy?: Date | null): Promise<string> {
+    // [STORE-MONEY · owner 11 Nov 2026] The amount in a store's new-order push is the STORE's money for the goods
+    // (billing/store-money.ts), never the customer's total — that carries the rider's delivery fee and tip. A bare
+    // number is already the store's goods amount.
+    const storeMoneyNow = typeof money === 'number' ? null : money;
+    const food = typeof money === 'number' ? money : money.food;
+    const foodWord = storeMoneyNow ? storeMoneyNow.foodWord : 'Items';
     // [Owner ruling #15 · continues #1367] The alert rings the team of the
     // store (owner, managers, staff), each with the same row, push and event
     // the owner always had (store-team.ts ringRecipients).
@@ -894,7 +901,7 @@ export class NotificationService {
         userId,
         type: 'ORDER_UPDATE',
         title: 'New Order!',
-        body: `Order ${orderNumber}${branch?.named ? ` at ${branch.name}` : ''} — ${itemCount} item(s), $${total.toLocaleString()} GYD`,
+        body: `Order ${orderNumber}${branch?.named ? ` at ${branch.name}` : ''} — ${itemCount} item(s). ${foodWord}: $${food.toLocaleString()} GYD`,
         audience: 'business',
         data: {
           orderId, orderNumber, status: 'PENDING', kind: 'vendor_order_alert',
@@ -908,7 +915,8 @@ export class NotificationService {
         notificationId,
         orderId,
         orderNumber,
-        total,
+        total: food,
+        ...(storeMoneyNow ? { storeMoney: storeMoneyNow } : {}),
         persistent: true,
         ...(branch ? { vendorId: branch.vendorId } : {}),
       });

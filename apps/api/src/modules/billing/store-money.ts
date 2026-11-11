@@ -33,7 +33,9 @@ export type StoreMoneyDelivery = 'SWIFT_RIDER' | 'STORE_RIDER' | 'PICKUP' | 'APP
 export interface StoreMoney {
   /** The store's money for the goods (after its own discount): the number a store screen shows big. */
   food: number;
-  /** What to call it: "Food — you receive" (a restaurant), "Items — you receive", "Service — you receive". */
+  /** What the goods are: "Food" (a restaurant), "Items" (any other store), "Service" (a booking). */
+  foodWord: string;
+  /** The label beside the big number: "Food — you receive". */
   foodLabel: string;
   /** Part of `food` Swift pays (a Swift-funded discount); 0 when none. */
   swiftPaysYou: number;
@@ -146,7 +148,7 @@ export function storeMoney(order: StoreMoneyOrder): StoreMoney | null {
   if (swiftPaysYou > 0) lines.push(`Swift pays you ${amt(swiftPaysYou)} (a Swift discount the customer got)`);
 
   return {
-    food, foodLabel: `${word} — you receive`, swiftPaysYou: round2(swiftPaysYou), delivery, payment,
+    food, foodWord: word, foodLabel: `${word} — you receive`, swiftPaysYou: round2(swiftPaysYou), delivery, payment,
     riderFeeAndTip, yoursFeeAndTip, customerPaysYou, lines,
   };
 }
