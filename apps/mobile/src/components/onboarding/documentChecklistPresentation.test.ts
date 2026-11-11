@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { checklistProgress, emptyChecklistCopy, faceMatchedDocTypes, optionalDocHint, optionalDocTypes } from './documentChecklistPresentation';
 
@@ -106,6 +107,20 @@ describe('checklistProgress', () => {
     for (const status of [null, undefined, {}, { checklist: 'x', documents: 'y' }]) {
       expect(checklistProgress(status as never), JSON.stringify(status)).toEqual({ total: 0, approved: 0, allSubmitted: false, inReview: false });
     }
+  });
+});
+
+// The checklist screen keeps its own copy of the precedence (the website's parity test pins its words), so this rule
+// and that one are pinned to read the same rows the same way.
+describe('checklistProgress reads documents as the checklist screen does', () => {
+  it('the same precedence and the same "All submitted" rule, in the screen\'s own words', () => {
+    const screen = readFileSync(new URL('./DocumentChecklist.tsx', import.meta.url), 'utf8');
+    expect(screen).toContain("docs.find((d) => d.status === 'PENDING')");
+    expect(screen).toContain("?? docs.find((d) => d.status === 'APPROVED' && (!d.expiresAt || new Date(d.expiresAt) > new Date()))");
+    expect(screen).toContain("const allSubmitted = checklist.every((dt) => ['APPROVED', 'PENDING'].includes(latestDoc(dt)?.status));");
+    const helper = readFileSync(new URL('./documentChecklistPresentation.ts', import.meta.url), 'utf8');
+    expect(helper).toContain("docs.find((d) => d.status === 'PENDING')");
+    expect(helper).toContain("?? docs.find((d) => d.status === 'APPROVED' && (!d.expiresAt || new Date(String(d.expiresAt)).getTime() > now))");
   });
 });
 
