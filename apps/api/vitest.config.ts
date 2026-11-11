@@ -75,6 +75,9 @@ export default defineConfig({
       CARD_RAIL_PROVIDER: '',
       // [TAXI multi-stop] Off unless a test switches it on per case.
       TAXI_MAX_STOPS: '',
+      // [KITCHEN-INTEGRATION] Off unless a test switches it on per case; the secret is never inherited.
+      DRAGONTAIL_INTEGRATION: '',
+      DRAGONTAIL_CREDENTIALS: '',
       ADS_ENABLED: '',
       // [PAYMENT-SIMPLIFY] The store's MMG pay link is off unless a test switches it on.
       STORE_MMG_PAY_LINK: '',

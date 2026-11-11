@@ -172,6 +172,7 @@ describe('the allowlist census — no secret the API reads can fall back to the 
     APP_STORE_URL: 'a public store listing',
     PLAY_STORE_URL: 'a public store listing',
     AWS_S3_ENDPOINT: 'object-storage endpoint; the keys travel as AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY',
+    DRAGONTAIL_API_URL: 'kitchen-system API base; the per-store logins travel as DRAGONTAIL_CREDENTIALS, never in the address',
     TWILIO_INBOUND_SMS_URL: 'this deployment\'s own public inbound-SMS webhook address, exactly as set on the Twilio number; Twilio signs over it with TWILIO_WEBHOOK_AUTH_TOKEN, and no credential rides in it',
   };
   const urlLike = [...reads.keys()].filter((n) => URL_LIKE.test(n) && !PUBLIC_PREFIX.test(n)).sort();

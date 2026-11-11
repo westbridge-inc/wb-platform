@@ -81,6 +81,9 @@ export const SECRET_FILE_NAMES = [
   'POWERTRANZ_ID',
   'POWERTRANZ_PASSWORD',
   'POWERTRANZ_GATEWAY_KEY',
+  // [KITCHEN-INTEGRATION] The kitchen-system logins (Dragontail issues one per store) and webhook secrets, as one
+  // JSON map of reference -> entry (modules/kitchen/kitchen-credentials.ts). Entered by the owner at a hidden prompt.
+  'DRAGONTAIL_CREDENTIALS',
   // Object storage (documents, and the backup bucket).
   'AWS_ACCESS_KEY_ID',
   'AWS_SECRET_ACCESS_KEY',

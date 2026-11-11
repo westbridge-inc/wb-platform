@@ -816,6 +816,11 @@ export async function releaseHeldOrdersJob(
     await drainCheckoutOutbox({ prisma: ctx.prisma, queues, log: ctx.log }, { orderIds: released })
       .catch((err: unknown) => ctx.log.error({ err }, '[Q12] release ladder drain failed — the outbox sweep will publish'));
     ctx.log.info({ count: released.length }, 'Held orders released to vendors/dispatch (+escalation ladders armed)');
+    // [KITCHEN-INTEGRATION] Released orders a kitchen system claimed go out now, for latency; the tick sweeps
+    // whatever this misses. Switch off: returns at once.
+    const { drainKitchenSyncs } = await import('../modules/kitchen/kitchen-sync');
+    await drainKitchenSyncs({ prisma: ctx.prisma, io: ctx.io }, { orderIds: released })
+      .catch((err: unknown) => ctx.log.error({ err }, '[KITCHEN] release drain failed — the tick will send'));
   }
   return released;
 }
@@ -2061,6 +2066,14 @@ export async function createWorkers(ctx: JobContext, queues: SwiftQueues) {
       const { getChannels } = await import('../providers/notifications/channels');
 
       const { orderId, level = 0 } = job.data;
+      // [KITCHEN-INTEGRATION] While the store's kitchen system is being given this order, the ladder waits a
+      // rung instead of ringing the tablet; once the send settles (or falls back) it rings as for any store.
+      // Switch off: false, with no read.
+      const { kitchenDefersStoreAlert } = await import('../modules/kitchen/kitchen-claim');
+      if (await kitchenDefersStoreAlert(ctx.prisma, orderId).catch(() => false)) {
+        await queues.notificationQueue.add('vendor-alert-escalate', { orderId, level }, { delay: 30_000, removeOnComplete: 100, removeOnFail: 50 });
+        return;
+      }
       const outcome = await inTenantOf(ctx.prisma, { order: orderId }, () => escalateVendorAlert(ctx.prisma, ctx.io, getChannels(), orderId, level));
 
       if (outcome === 'realerted') {
@@ -2876,6 +2889,14 @@ export async function createWorkers(ctx: JobContext, queues: SwiftQueues) {
         return;
       }
 
+      // [KITCHEN-INTEGRATION] Send claimed orders to the store's kitchen system, tell it of cancellations, poll
+      // it. Registered only while DRAGONTAIL_INTEGRATION is on; a stale registration does nothing while off.
+      if (job.name === 'kitchen-integration-tick') {
+        const { runKitchenTick } = await import('../modules/kitchen/kitchen-sync');
+        await runKitchenTick({ prisma: ctx.prisma, io: ctx.io });
+        return;
+      }
+
       if (job.name === 'mmg-accept-expiry') {
         await expireUnpaidMmgAcceptancesJob(ctx);
         return;
@@ -3545,6 +3566,20 @@ export async function scheduleRecurringJobs(queues: ReturnType<typeof createQueu
     removeOnComplete: 20,
     removeOnFail: 20,
   });
+
+  // [KITCHEN-INTEGRATION · owner 11 Nov 2026] The kitchen-system sender and poller, every 5 s (the poll keeps
+  // its own per-store interval). Registered ONLY while DRAGONTAIL_INTEGRATION is on: with the switch off the
+  // boot registers nothing new.
+  {
+    const { dragontailIntegrationEnabled } = await import('../modules/kitchen/kitchen-switch');
+    if (dragontailIntegrationEnabled()) {
+      await queues.dispatchQueue.add('kitchen-integration-tick', {}, {
+        repeat: { every: 5_000 },
+        removeOnComplete: 20,
+        removeOnFail: 20,
+      });
+    }
+  }
 
   // [owner 18 Oct 2026 · PAYMENT-SIMPLIFY] An accepted MMG order not marked
   // "Paid by MMG" within 30 minutes cancels. Every 10 s, so it cancels within
