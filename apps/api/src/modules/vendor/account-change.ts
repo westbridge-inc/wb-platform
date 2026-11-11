@@ -27,6 +27,9 @@
  *  - A refusal or withdrawal (`endAccountChange`) closes the papers filed for it (waiting ones leave review; approved
  *    ones are withdrawn), so nothing of a refused change can ever count.
  *  - One PENDING change per account, and one per person named (partial unique indexes); a decided row is final (trigger).
+ *  - The seller's legal name (#2476) typed from a paper filed for the change is HELD on the change until the decision
+ *    (`holdChangeLegalName`); approved, it becomes the account's, and with none held the account's old one is cleared
+ *    (`settleSellerLegalName`): a name typed for the old business type or holder never names the new one.
  * Open orders are never touched: nothing here writes an order, and a handover moves the account, not the stores.
  */
 import type { AccountChangeRequest, BusinessTypeOption, Prisma, PrismaClient, VendorAccountBasis } from '@prisma/client';
@@ -468,6 +471,77 @@ export async function endAccountChange(
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
+// The seller's legal name (#2476: VendorOwner.sellerLegalName*, typed by the person who approves a registration paper)
+// ---------------------------------------------------------------------------------------------------------------------
+
+/** [R3 · review-2476 F2] The account a paper filed for a change would belong to: its basis is the one a typed legal name
+ *  is checked against (a company's or a manager's seller is never a person). A business type change: the basis it asks
+ *  for; a handover: the account's own (only a company's or a manager's account is handed over). */
+export async function changeBasisOf(db: Db, changeId: string): Promise<VendorAccountBasis | null> {
+  const change = await db.accountChangeRequest.findUnique({
+    where: { id: changeId }, select: { kind: true, toOption: true, vendorOwner: { select: { accountBasis: true } } },
+  });
+  if (!change) return null;
+  return change.kind === 'BUSINESS_TYPE' && change.toOption ? shapeOf(change.toOption).basis : change.vendorOwner.accountBasis;
+}
+
+export interface TypedLegalName { name: string; at: Date; byId: string; documentId: string }
+export type HeldLegalName = { changeId: string; from: string | null; fromDocumentId: string | null; to: string };
+
+/**
+ * [R3 · review-2476 F1] A legal name typed from a registration paper filed for a change, in that paper's decision
+ * transaction. While the change waits it is HELD on the change (the account's own name, what customers see, does not
+ * move: the store keeps selling on its old papers); `'HELD'` with the old -> new for the decision's trail. An approved
+ * change's paper counts already: `'ACCOUNT'` (the caller names the account as for any paper). A refused or withdrawn
+ * change's paper never names anyone: `'NONE'`.
+ */
+export async function holdChangeLegalName(
+  tx: Prisma.TransactionClient, changeId: string, typed: TypedLegalName,
+): Promise<{ to: 'HELD'; held: HeldLegalName } | { to: 'ACCOUNT' | 'NONE' }> {
+  const [row] = await tx.$queryRaw<Array<{ status: string; sellerLegalName: string | null; sellerLegalNameDocId: string | null }>>`
+    SELECT "status"::text AS status, "sellerLegalName", "sellerLegalNameDocId" FROM "account_change_requests"
+    WHERE "id" = ${changeId} FOR UPDATE /* account-change-legal-name */`;
+  if (row?.status === 'APPROVED') return { to: 'ACCOUNT' };
+  if (row?.status !== 'PENDING') return { to: 'NONE' };
+  await tx.accountChangeRequest.update({ where: { id: changeId }, data: {
+    sellerLegalName: typed.name, sellerLegalNameAt: typed.at, sellerLegalNameById: typed.byId, sellerLegalNameDocId: typed.documentId,
+  } });
+  return { to: 'HELD', held: { changeId, from: row.sellerLegalName, fromDocumentId: row.sellerLegalNameDocId, to: typed.name } };
+}
+
+/** What an approval did to the account's legal name, for the caller's SET_SELLER_LEGAL_NAME row (#2476's trail). */
+export interface SellerLegalNameMove {
+  vendorOwnerId: string; accountId: string; documentId: string | null; docType: string | null;
+  from: string | null; fromDocumentId: string | null; to: string | null;
+}
+
+/**
+ * [R3 · review-2476 · owner ruling 10 Nov 2026] On approval, in the decision's transaction (the account's row is locked):
+ * the legal name a person typed from this change's own registration paper becomes the account's; with none held, the
+ * account's legal name is CLEARED. It was typed for the old business type (or the old holder's papers), so it no longer
+ * names this account's seller: a person's own name (allowed on an owner's business-name registration) never stays the
+ * seller of a company's or a manager's account, a registered business's name never the seller of a company or of a
+ * trader under their own name. The storefront then falls to the store names the approving person confirmed, or "Ask the
+ * store", until a person types a name from a paper again. Nothing changed: null.
+ */
+async function settleSellerLegalName(tx: Prisma.TransactionClient, change: ChangeRow, holderAfter: string): Promise<SellerLegalNameMove | null> {
+  const held = await tx.accountChangeRequest.findUniqueOrThrow({
+    where: { id: change.id }, select: { sellerLegalName: true, sellerLegalNameAt: true, sellerLegalNameById: true, sellerLegalNameDocId: true },
+  });
+  const account = await tx.vendorOwner.findUniqueOrThrow({ where: { id: change.vendorOwner.id }, select: { sellerLegalName: true, sellerLegalNameDocId: true } });
+  const next = held.sellerLegalName && held.sellerLegalNameDocId ? held
+    : { sellerLegalName: null, sellerLegalNameAt: null, sellerLegalNameById: null, sellerLegalNameDocId: null };
+  if (account.sellerLegalName === next.sellerLegalName && account.sellerLegalNameDocId === next.sellerLegalNameDocId) return null;
+  await tx.vendorOwner.update({ where: { id: change.vendorOwner.id }, data: next });
+  const paper = next.sellerLegalNameDocId
+    ? await tx.verificationDocument.findUnique({ where: { id: next.sellerLegalNameDocId }, select: { docType: true } }) : null;
+  return {
+    vendorOwnerId: change.vendorOwner.id, accountId: holderAfter, documentId: next.sellerLegalNameDocId, docType: paper?.docType ?? null,
+    from: account.sellerLegalName, fromDocumentId: account.sellerLegalNameDocId, to: next.sellerLegalName,
+  };
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
 // The switch: one transaction (VerificationService.decideAccountChange runs it, then the activation projection)
 // ---------------------------------------------------------------------------------------------------------------------
 
@@ -489,6 +563,8 @@ export interface ApprovalOutcome {
   notices: string[];
   /** (d) the old holder's sessions ended: the post-commit tail (sockets, mover outbox). */
   revoked?: { userId: string; cleanup: MoverSessionRevocationCleanup };
+  /** The account's seller legal name moved (set from this change's paper, or cleared): the caller's trail row. */
+  sellerLegalName?: SellerLegalNameMove;
 }
 
 const paperWords = (missing: readonly string[]) => missing.map((t) => t.replace(/_/g, ' ')).join(', ');
@@ -611,6 +687,10 @@ export async function approveAccountChange(tx: Prisma.TransactionClient, input: 
     })).id);
     outcome = { holderUserId: newHolder, notices, revoked: { userId: holderBefore, cleanup } };
   }
+
+  // The seller's legal name follows the change, never the old business type or holder (settleSellerLegalName).
+  const legalName = await settleSellerLegalName(tx, change, outcome.holderUserId);
+  if (legalName) outcome.sellerLegalName = legalName;
 
   // No store goes dark by the switch: a store that passed its papers before passes them after, or nothing moves.
   for (const store of stores) {

@@ -37,6 +37,10 @@ CREATE TABLE "account_change_requests" (
     "decidedById" TEXT,
     "decidedAt" TIMESTAMP(3),
     "decisionReason" TEXT,
+    "sellerLegalName" TEXT,
+    "sellerLegalNameAt" TIMESTAMP(3),
+    "sellerLegalNameById" TEXT,
+    "sellerLegalNameDocId" TEXT,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP(3) NOT NULL,
 

@@ -1584,6 +1584,16 @@ model AccountChangeRequest {
   decidedAt           DateTime?
   /// The deciding person's reason (a refusal's is shown to the store, and to the person named).
   decisionReason      String?
+  /// [R3 · review-2476 F1] The seller's legal name a person typed from a registration paper filed for THIS change, held
+  /// here (never on the account) while the change waits: the account's own name (VendorOwner.sellerLegalName) stays
+  /// what customers see. Approved, it becomes the account's legal name in the decision's transaction; with none held,
+  /// the account's legal name is cleared (it was typed for the old business type or holder) until a person types one
+  /// from a paper again. Refused or withdrawn: it never names anyone.
+  sellerLegalName     String?
+  sellerLegalNameAt   DateTime?
+  sellerLegalNameById String?
+  /// The registration paper it was typed from (verification_documents.id, filed for this change).
+  sellerLegalNameDocId String?
   createdAt           DateTime            @default(now())
   updatedAt           DateTime            @updatedAt
   /// The papers filed for this change.

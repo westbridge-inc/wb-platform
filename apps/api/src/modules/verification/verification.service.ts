@@ -11,7 +11,7 @@ import { approveRegistrantLink, linkedAccountIds, normalizeRegistrationMark, pla
 import { POLICE_CLEARANCE_WITHDRAWN_NOTE } from './police-clearance-consent';
 import { ACCOUNT_HOLDER_ID_DOC_TYPE, AUTO_APPROVE_EXPIRY_DAYS, CERTIFICATE_OF_INCORPORATION_DOC_TYPE, BUCKET_OF, CERTIFICATE_YEAR_DOC_TYPES, FOOD_HANDLER_ATTESTATION_TYPE, isNeverAcceptedDocType, OWN_NAME_DOC_TYPE, OWN_NAME_TIER, PERSON_ONLY_DOC_TYPES, POLICE_CLEARANCE_DOC_TYPE, REGISTRATION_DOC_TYPES, registryCode, type RegistrationKind } from './doc-registry';
 import { accountTierOf } from '../vendor/account-basis';
-import { assertChangeTakesPapers, changePaperStaging } from '../vendor/account-change';
+import { assertChangeTakesPapers, changeBasisOf, changePaperStaging, holdChangeLegalName, type HeldLegalName } from '../vendor/account-change';
 import { AUTHORITY_LETTER_DOC_TYPES, authorityConfirmationNote, type AuthorityConfirmation } from './authority-confirmation';
 import { guyanaWallClockParts, startOfGuyanaDay } from '../../utils/guyana-day';
 import type { ValidatorContext } from './validators';
@@ -540,6 +540,8 @@ export type DecisionWithin = (tx: Prisma.TransactionClient, decided: Verificatio
  *  name typed from this registration paper (who customers see as the seller of every branch), old and new. */
 export interface DecisionFacts {
   legalName?: { vendorOwnerId: string; accountId: string; from: string | null; fromDocumentId: string | null; to: string };
+  /** [COMPANY-DOCS Part 3] The name typed from a paper filed for a change still waiting: held on the change, not shown. */
+  legalNameHeld?: HeldLegalName;
 }
 
 /** [R3 · review-2476 F2] A person's full name, compared ignoring case and spaces, first+last and last+first: a seller's
@@ -1154,7 +1156,7 @@ export class VerificationService {
     // boundary — the conditional transition below still is.
     const candidate = await this.prisma.verificationDocument.findUnique({
       where: { id: docId },
-      select: { docType: true, expiresAt: true, status: true, userId: true, role: true },
+      select: { docType: true, expiresAt: true, status: true, userId: true, role: true, accountChangeId: true },
     });
     if (!candidate) throw new NotFoundError('VerificationDocument', docId);
     assertStoreVatDoor(candidate.docType, decision);
@@ -1238,12 +1240,15 @@ export class VerificationService {
       // for any account on a company's certificate of incorporation (a company's name is never a person's bare name).
       // An OWNER's business-name registration may register the business under the owner's own name: the server cannot
       // tell that from a mistyped proprietor's name, so the reviewer's check stands for it.
+      // [COMPANY-DOCS Part 3] A paper filed for an account change is checked against the account it would make: the
+      // business type asked for, or (a handover) the company's or manager's account the person named would hold.
       const typedName = typed.legalName?.trim();
       if (REGISTRATION_DOC_TYPES.includes(candidate.docType) && typedName) {
         const holder = await this.prisma.user.findUnique({
           where: { id: candidate.userId }, select: { firstName: true, lastName: true, vendorOwner: { select: { accountBasis: true } } },
         });
-        const basis = holder?.vendorOwner?.accountBasis ?? 'OWNER';
+        const basis = (candidate.accountChangeId ? await changeBasisOf(this.prisma, candidate.accountChangeId) : null)
+          ?? holder?.vendorOwner?.accountBasis ?? 'OWNER';
         if (holder && isPersonsFullName(typedName, holder) && (basis !== 'OWNER' || typed.registrationKind === 'COMPANY')) {
           throw new AppError(400, 'LEGAL_NAME_IS_A_PERSON',
             'That is the account holder’s own name. Type the registered business or company name printed on this paper: never the proprietor’s, a director’s or the account holder’s personal name.');
@@ -1285,7 +1290,13 @@ export class VerificationService {
       // customers saw before (old -> new) and the decision's trail names who set it, for which account and paper.
       const typedLegalName = typed.legalName?.trim();
       const facts: DecisionFacts = {};
-      if (typedLegalName && REGISTRATION_DOC_TYPES.includes(decided.docType)) {
+      // [COMPANY-DOCS Part 3] A paper filed for a change still waiting names nobody yet: its name is held on the change
+      // (account-change holdChangeLegalName) and becomes the account's only if a person approves the change.
+      const forChange = typedLegalName && REGISTRATION_DOC_TYPES.includes(decided.docType) && decided.accountChangeId
+        ? await holdChangeLegalName(tx, decided.accountChangeId, { name: typedLegalName, at: new Date(), byId: adminId, documentId: decided.id })
+        : null;
+      if (forChange?.to === 'HELD') facts.legalNameHeld = forChange.held;
+      if (typedLegalName && REGISTRATION_DOC_TYPES.includes(decided.docType) && (!forChange || forChange.to === 'ACCOUNT')) {
         const [held] = await tx.$queryRaw<Array<{ id: string; sellerLegalName: string | null; sellerLegalNameDocId: string | null }>>`
           SELECT "id", "sellerLegalName", "sellerLegalNameDocId" FROM "vendor_owners" WHERE "userId" = ${decided.userId} FOR UPDATE /* seller-legal-name */`;
         if (held) {

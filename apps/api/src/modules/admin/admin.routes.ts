@@ -7210,6 +7210,12 @@ export async function adminRoutes(app: FastifyInstance) {
           await auditIn(tx, request.user.userId, 'SET_SELLER_LEGAL_NAME', 'VendorOwner', n.vendorOwnerId,
             { accountId: n.accountId, documentId: decided.id, docType: decided.docType, from: n.from, fromDocumentId: n.fromDocumentId, to: n.to }, request);
         }
+        // [COMPANY-DOCS Part 3] A paper filed for a change still waiting: its name is held on the change, not shown yet.
+        if (facts?.legalNameHeld) {
+          const h = facts.legalNameHeld;
+          await auditIn(tx, request.user.userId, 'HOLD_SELLER_LEGAL_NAME', 'AccountChangeRequest', h.changeId,
+            { accountId: decided.userId, documentId: decided.id, docType: decided.docType, from: h.from, fromDocumentId: h.fromDocumentId, to: h.to }, request);
+        }
         await auditWithin(tx, request as unknown as AuditRequestLike, app.prefix);
       },
     });
@@ -7385,6 +7391,13 @@ export async function adminRoutes(app: FastifyInstance) {
         audit: (t, change, facts) => auditIn(t, request.user.userId, change.kind === 'BUSINESS_TYPE' ? 'APPROVE_BUSINESS_TYPE_CHANGE' : 'APPROVE_ACCOUNT_HANDOVER', 'AccountChangeRequest', change.id, facts, request),
         storeComplete: (t, holderUserId, store) => verification.isRoleVerified(holderUserId, store.vendorType as 'RESTAURANT' | 'SUPERMARKET' | 'STORE' | 'SERVICE', t, store.id),
       });
+      // [R3 · review-2476 F1] The account's seller legal name moved with the change (set from its paper, or cleared):
+      // the same trail as a paper's approval, naming the change.
+      if (outcome.sellerLegalName) {
+        const n = outcome.sellerLegalName;
+        await auditIn(tx, request.user.userId, 'SET_SELLER_LEGAL_NAME', 'VendorOwner', n.vendorOwnerId,
+          { accountId: n.accountId, documentId: n.documentId, docType: n.docType, changeId: id, from: n.from, fromDocumentId: n.fromDocumentId, to: n.to }, request);
+      }
       return { result: outcome.revoked ?? null, holderUserId: outcome.holderUserId, notices: outcome.notices };
     });
     if (revoked) {
