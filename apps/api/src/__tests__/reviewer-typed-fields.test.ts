@@ -42,7 +42,7 @@ import { registerErrorHandler } from '../middleware/error-handler';
 import { registerEmptyJsonBodyParser } from '../plugins/empty-json';
 import { adminRoutes } from '../modules/admin/admin.routes';
 import { clusterMemberIds } from '../modules/integrity/identity.service';
-import { isPersonsFullName } from '../modules/verification/verification.service';
+import { isPersonsFullName, splitFullName } from '../modules/verification/verification.service';
 
 const RUN = nanoid(8).replace(/[^a-zA-Z0-9]/g, '0');
 const NUM = String(Date.now()).slice(-5);
@@ -377,9 +377,60 @@ describe('[R3 · review-2476] the seller legal name typed at approval', () => {
       const res = await approve(doc.id, { registrationKind: 'COMPANY', legalName: typed });
       expect(res.statusCode, typed).toBe(400);
       expect(res.json().error.code, typed).toBe('LEGAL_NAME_IS_A_PERSON');
+      // [review-2479 F1] a letter counts whatever its status, so the words never claim it was signed
+      expect(res.json().error.message, typed).toMatch(/named in its letter of authority/);
     }
     expect(await statusOf(doc.id)).toBe('PENDING');
     expect((await approve(doc.id, { registrationKind: 'COMPANY', legalName: 'Sample Holdings Limited' })).statusCode).toBe(200);
+  });
+
+  // [review-2479 F1] The signer's name is free text the holder types. A company's name typed there by mistake (then
+  // cancelled) is not a person: it must never block that company's own legal name.
+  it('[review-2479 F1] a cancelled letter whose signer field holds the company\'s name never refuses that name', async () => {
+    const who = await account('COMPANY', 'Synthetic', `Mistyped${RUN}`);
+    const now = new Date();
+    const hex = () => randomBytes(32).toString('hex');
+    const companyName = `Sample${RUN} Holdings Limited`;
+    await system(() => app.prisma.authorityLetterRequest.create({ data: {
+      userId: who, vendorId: `fixture-vendor-c-${RUN}`, docType: 'company_authority_letter', accountBasis: 'COMPANY',
+      businessName: companyName, registrationNumber: `C2-${RUN}`, requesterName: `Synthetic Mistyped${RUN}`, requesterRole: 'Manager',
+      signerName: companyName, signerPhone: `+59278${NUM}87`, letterText: 'Synthetic letter text', letterSha256: hex(), tokenHash: hex(),
+      status: 'CANCELLED', linkExpiresAt: new Date(now.getTime() + 3 * DAY), lastSentAt: now, endedAt: now,
+    } }));
+    const doc = await pending(who, 'certificate_of_incorporation', 'VENDOR_OWNER');
+    const res = await approve(doc.id, { registrationKind: 'COMPANY', legalName: companyName });
+    expect(res.statusCode, res.body).toBe(200);
+    expect(await sellerOf(who)).toMatchObject({ sellerLegalName: companyName, sellerLegalNameDocId: doc.id });
+  });
+
+  it('[review-2479 F1] a recorded name with a company word is never a person\'s name', () => {
+    for (const name of ['Sample Holdings Limited', 'Sample Holdings Inc.', 'Persaud Trading Ltd', 'Persaud & Co', 'Persaud Company', 'Persaud Corp', 'Persaud Corporation', 'Persaud LLC', 'Persaud Incorporated'])
+      expect(isPersonsFullName(name, splitFullName(name)), name).toBe(false);
+  });
+
+  it('[review-2479 F2] initials stand for first and middle names only, never a part of the last name', () => {
+    const mary = { firstName: 'Mary', lastName: 'Persaud' };
+    expect(isPersonsFullName('M & P Persaud', mary)).toBe(false);
+    expect(isPersonsFullName('M and P Persaud', mary)).toBe(false);
+    expect(isPersonsFullName('M. Persaud', mary)).toBe(true);
+    expect(isPersonsFullName('M & P Persaud', { firstName: 'Mary Paula', lastName: 'Persaud' })).toBe(true);
+  });
+
+  it('[review-2479 F3] a title before the name is ignored', () => {
+    const ravi = { firstName: 'Ravi', lastName: 'Persaud' };
+    for (const typed of ['Mrs Ravi Persaud', 'Mr. R. Persaud', 'Dr Ravi Persaud', 'Ms. Ravi Persaud', 'Miss Ravi Persaud', 'Prof. Ravi Persaud', 'Rev Ravi Persaud', 'Sir Ravi Persaud', 'Hon. Ravi Persaud', 'Mx Ravi Persaud'])
+      expect(isPersonsFullName(typed, ravi), typed).toBe(true);
+    expect(isPersonsFullName('Ravi Persaud', splitFullName('Dr. Ravi Persaud'))).toBe(true);
+    expect(isPersonsFullName('Mr', ravi)).toBe(false);
+  });
+
+  it('[review-2479 F4] a generational suffix never stands for the last name', () => {
+    expect(splitFullName('John Smith Jr.')).toEqual({ firstName: 'John', lastName: 'Smith' });
+    expect(splitFullName('John Smith III')).toEqual({ firstName: 'John', lastName: 'Smith' });
+    for (const signer of ['John Smith Jr.', 'John Smith Sr', 'John Smith II', 'John Smith III', 'John Smith IV'])
+      expect(isPersonsFullName('John Smith', splitFullName(signer)), signer).toBe(true);
+    expect(isPersonsFullName('John Smith Jr', { firstName: 'John', lastName: 'Smith' })).toBe(true);
+    expect(isPersonsFullName('John Smith', { firstName: 'John', lastName: 'Smith Jr.' })).toBe(true);
   });
 });
 

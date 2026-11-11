@@ -254,6 +254,27 @@ describe('[R3] a person confirms the seller name', () => {
     expect(again.json().error.code).toBe('NOTHING_TO_CHANGE');
   });
 
+  // [review-2479 F6 · COORD under the owner's 10 Nov rule] The seller is the business: a store named by its owner's own
+  // name is never confirmed as a business's name here. Only a store trading under its owner's own name (a person
+  // checked its own-name declaration) may carry it.
+  it('[review-2479 F6] the owner’s own name is refused as a seller name, and nothing is confirmed', async () => {
+    const owner = await makeUser('Personal');
+    const store = await makeStore(owner.id, { status: 'ACTIVE', isVerified: true, name: `${owner.lastName}, Personal` });
+    const res = await call('PUT', `/api/v1/admin/vendors/${store.id}/seller-name`, { name: store.name });
+    expect(res.statusCode, res.body).toBe(400);
+    expect(res.json().error.code).toBe('SELLER_NAME_IS_A_PERSON');
+    expect(await checked(store.id)).toMatchObject({ sellerNameCheckedName: null, sellerNameCheckedAt: null, sellerNameCheckedById: null });
+    expect(await app.prisma.auditLog.count({ where: { entityId: store.id, action: 'CONFIRM_SELLER_NAME' } })).toBe(0);
+  });
+
+  it('[review-2479 F6] a store trading under its owner’s own name may confirm that name', async () => {
+    const owner = await makeUser('Ownname');
+    const store = await makeStore(owner.id, { status: 'ACTIVE', isVerified: true, name: `Ownname ${owner.lastName}`, tradesUnderOwnName: true });
+    const res = await call('PUT', `/api/v1/admin/vendors/${store.id}/seller-name`, { name: store.name });
+    expect(res.statusCode, res.body).toBe(200);
+    expect(await checked(store.id)).toMatchObject({ sellerNameCheckedName: store.name });
+  });
+
   it('a name that is not the store’s name now is refused, and nothing is confirmed', async () => {
     const owner = await makeUser('Renamed');
     const store = await makeStore(owner.id, { status: 'ACTIVE', isVerified: true });

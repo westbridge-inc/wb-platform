@@ -548,14 +548,24 @@ export interface DecisionFacts {
  *  initial), in any order, and it names both their first name (a first or middle name on record, or its initial) and their
  *  whole last name; or when it is their first and last names run together. A business word ("Holdings", "Trading",
  *  "Bakery") or an unknown name makes it not theirs. Lookalike letters from other scripts are not folded (an insider's
- *  trick, and every typed name is on the audit trail). */
+ *  trick, and every typed name is on the audit trail).
+ *  [review-2479] A title ("Mr", "Dr.") and a generational suffix ("Jr.", "III") are ignored on both sides; an initial
+ *  stands only for a first or middle name; and a recorded name with a company word ("Limited", "Inc.", "& Co") is a
+ *  company's, never a person's (a letter's signer field is free text, and a company's name typed there by mistake must
+ *  never block that company's own legal name). */
 const NAME_JOINERS = /['\u2018\u2019\u02BC`\u00B4\u2010-\u2015-]/gu;
 const foldName = (s: string) => s.normalize('NFKD').replace(/\p{M}+/gu, '').toLowerCase();
+/** Words around a name that are not the name: titles and generational suffixes (compared without their full stops). */
+const NAME_TITLES = new Set(['mr', 'mrs', 'ms', 'miss', 'dr', 'prof', 'rev', 'sir', 'hon', 'mx']);
+const NAME_SUFFIXES = new Set(['jr', 'sr', 'ii', 'iii', 'iv']);
+const notTheName = (w: string) => NAME_TITLES.has(w) || NAME_SUFFIXES.has(w);
+/** A word only a company's name carries. */
+const COMPANY_WORDS = new Set(['limited', 'ltd', 'inc', 'incorporated', 'llc', 'llp', 'plc', 'co', 'company', 'corp', 'corporation', 'holdings']);
 /** The words of a typed name: joiners removed inside a word, any other mark a break. */
-const typedNameWords = (s: string) => foldName(s).replace(NAME_JOINERS, '').split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+const typedNameWords = (s: string) => foldName(s).replace(NAME_JOINERS, '').split(/[^\p{L}\p{N}]+/u).filter((w) => w && !notTheName(w));
 /** A name on record: its parts (joiners and marks both break), every run of neighbouring parts joined, and the whole. */
 function recordedName(s: string | null): { parts: string[]; known: Set<string>; whole: string } {
-  const parts = foldName(s ?? '').split(/[^\p{L}\p{N}]+/u).filter(Boolean);
+  const parts = foldName(s ?? '').split(/[^\p{L}\p{N}]+/u).filter((p) => p && !notTheName(p));
   const known = new Set<string>();
   for (let i = 0; i < parts.length; i += 1) for (let j = i + 1; j <= parts.length; j += 1) known.add(parts.slice(i, j).join(''));
   return { parts, known, whole: parts.join('') };
@@ -564,20 +574,38 @@ export function isPersonsFullName(typed: string, person: { firstName: string | n
   const first = recordedName(person.firstName);
   const last = recordedName(person.lastName);
   if (!first.whole && !last.whole) return false;
+  if ([...first.parts, ...last.parts].some((p) => COMPANY_WORDS.has(p))) return false;
   const words = typedNameWords(typed);
   if (words.length === 0) return false;
   const together = words.join('');
   if (together === first.whole + last.whole || together === last.whole + first.whole) return true;
-  const initials = new Set([...first.parts, ...last.parts].map((p) => p[0]!));
+  const initials = new Set(first.parts.map((p) => p[0]!));
   if (!words.every((w) => first.known.has(w) || last.known.has(w) || (w.length === 1 && initials.has(w)))) return false;
   const namesFirst = !first.whole || words.some((w) => first.known.has(w) || (w.length === 1 && first.parts.some((p) => p[0] === w)));
   const namesLast = !last.whole || together.includes(last.whole);
   return namesFirst && namesLast;
 }
-/** A full name kept as one string (a letter's signer): its last word is taken as the last name. */
+/** A full name kept as one string (a letter's signer): its last word is taken as the last name, never a generational
+ *  suffix after it ("John Smith Jr." is Smith). */
 export function splitFullName(full: string): { firstName: string; lastName: string } {
   const words = full.trim().split(/\s+/).filter(Boolean);
+  while (words.length > 1 && NAME_SUFFIXES.has(foldName(words[words.length - 1]!).replace(/[^\p{L}\p{N}]+/gu, ''))) words.pop();
   return { firstName: words.slice(0, -1).join(' '), lastName: words[words.length - 1] ?? '' };
+}
+
+/** [R3 · owner ruling 10 Nov 2026 · review-2479 F6] Is this name a person's the server knows for the account: its holder,
+ *  or anyone the account named in a letter of authority (whatever the letter's status: a company's director, a business's
+ *  owner)? One check for the legal name typed from a registration paper and the store name a person confirms as the
+ *  seller's. */
+export async function isAccountPersonsName(
+  db: Pick<Prisma.TransactionClient, 'user' | 'authorityLetterRequest'>, userId: string, name: string,
+): Promise<boolean> {
+  const [holder, letters] = await Promise.all([
+    db.user.findUnique({ where: { id: userId }, select: { firstName: true, lastName: true } }),
+    db.authorityLetterRequest.findMany({ where: { userId }, select: { signerName: true } }),
+  ]);
+  const people = [...(holder ? [holder] : []), ...letters.map((l) => splitFullName(l.signerName))];
+  return people.some((person) => isPersonsFullName(name, person));
 }
 
 /** [S2-29] The one command an approval's outbox row carries: the work that must follow the
@@ -1255,16 +1283,9 @@ export class VerificationService {
       // own-name declaration, never a registration paper. The people the server knows by name: the account holder, and
       // [delta B] whoever the account named in a letter of authority (a company's director, a business's owner).
       const typedName = typed.legalName?.trim();
-      if (REGISTRATION_DOC_TYPES.includes(candidate.docType) && typedName) {
-        const [holder, letters] = await Promise.all([
-          this.prisma.user.findUnique({ where: { id: candidate.userId }, select: { firstName: true, lastName: true } }),
-          this.prisma.authorityLetterRequest.findMany({ where: { userId: candidate.userId }, select: { signerName: true } }),
-        ]);
-        const people = [...(holder ? [holder] : []), ...letters.map((l) => splitFullName(l.signerName))];
-        if (people.some((person) => isPersonsFullName(typedName, person))) {
-          throw new AppError(400, 'LEGAL_NAME_IS_A_PERSON',
-            'That is a person’s name (the account holder’s, or the person who signed its letter of authority). Type the registered business or company name printed on this paper: never the proprietor’s, a director’s or the account holder’s personal name.');
-        }
+      if (REGISTRATION_DOC_TYPES.includes(candidate.docType) && typedName && await isAccountPersonsName(this.prisma, candidate.userId, typedName)) {
+        throw new AppError(400, 'LEGAL_NAME_IS_A_PERSON',
+          'That is a person’s name (the account holder’s, or the person named in its letter of authority). Type the registered business or company name printed on this paper: never the proprietor’s, a director’s or the account holder’s personal name.');
       }
     }
     // Never on any later write: the typed number leaves this method only as the blind index.

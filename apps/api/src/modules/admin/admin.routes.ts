@@ -24,7 +24,7 @@ import { Prisma, type VehicleType, UserRole, UserStatus, VendorStatus, VendorTyp
 import { idsByLiveDocuments, LIVE_DOCUMENTS_FILTER_CAP, withLiveDocuments } from './live-documents';
 import { NotificationService } from '../notification/notification.service';
 import { SupportService } from '../support/support.service';
-import { VerificationService, REJECTION_REASON_CODES } from '../verification/verification.service';
+import { VerificationService, REJECTION_REASON_CODES, isAccountPersonsName } from '../verification/verification.service';
 import { AdvertiserService } from '../ads/advertiser.service';
 import { CreativeService, CREATIVE_REJECT_REASONS, looksLikeMp4 } from '../ads/creative.service';
 import { AdsLifecycleService } from '../ads/lifecycle.service';
@@ -2298,10 +2298,17 @@ export async function adminRoutes(app: FastifyInstance) {
     const confirmed = await app.prisma.$transaction(async (tx) => {
       await bindTenantTransaction(tx);
       await tx.$queryRaw`SELECT "id" FROM "vendors" WHERE "id" = ${id} FOR UPDATE /* admin-seller-name-check */`;
-      const vendor = await tx.vendor.findUnique({ where: { id }, select: { name: true, sellerNameCheckedName: true } });
+      const vendor = await tx.vendor.findUnique({ where: { id }, select: { name: true, sellerNameCheckedName: true, tradesUnderOwnName: true, owner: { select: { userId: true } } } });
       if (!vendor) throw new NotFoundError('Vendor', id);
       if (vendor.name.trim() !== name) {
         throw new AppError(409, 'SELLER_NAME_CHANGED', `The store's name is now “${vendor.name.trim()}”. Check that name, then confirm again.`);
+      }
+      // [owner ruling 10 Nov 2026 · review-2479 F6] The seller is the business: a person's own name (the account holder's,
+      // or someone named in its letter of authority) is never confirmed as a business's name. Only a store trading under
+      // its owner's own name, which a person checked, may carry it.
+      if (!vendor.tradesUnderOwnName && await isAccountPersonsName(tx, vendor.owner.userId, name)) {
+        throw new AppError(400, 'SELLER_NAME_IS_A_PERSON',
+          'That is a person’s name (the account holder’s, or the person named in its letter of authority), not a business’s. A trader under their own name is named through the own-name declaration; otherwise the store needs its registered business or company name.');
       }
       if (vendor.sellerNameCheckedName === name) throw new AppError(409, 'NOTHING_TO_CHANGE', 'That name is already confirmed as the seller’s name.');
       const row = await tx.vendor.update({
