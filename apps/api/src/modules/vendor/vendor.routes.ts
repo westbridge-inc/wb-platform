@@ -4944,7 +4944,12 @@ export async function vendorRoutes(app: FastifyInstance) {
       // [GUARDRAILS §8] Judged on any "on" in the request, the unchanged one too (stricter than the moved switch).
       if (body.isAvailable === true) await assertNotBanned(tx, updated.id);
       // [VAT-DOCS] A new typed price or a new VAT class: VAT added or taken off in this transaction.
-      if (priceEdit || body.vatClass !== undefined) {
+      // [MENU-OPTIONS] A sized item's price IS its lowest size (an older app's save sends the price it showed): settled
+      // back to it, with the VAT, in this transaction. Checkout never prices a sized item from it.
+      if (priceEdit && await tx.optionGroup.count({ where: { itemId: updated.id, setsPrice: true } }) > 0) {
+        await settleItems(tx, vendorId, [updated.id]);
+        if (!unhide) return tx.item.findUniqueOrThrow({ where: { id: updated.id }, include: itemInclude });
+      } else if (priceEdit || body.vatClass !== undefined) {
         const moved = await reconcileVatPricing(tx, vendorId, { itemIds: [updated.id] });
         if (moved.added + moved.restored > 0 && !unhide) return tx.item.findUniqueOrThrow({ where: { id: updated.id }, include: itemInclude });
       }
