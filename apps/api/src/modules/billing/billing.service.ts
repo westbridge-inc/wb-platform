@@ -1100,8 +1100,10 @@ export class BillingService {
     if (!cardRail) return { ok: false, deferred: true };
     // [review-2475 F2] Only the payer's own card: a card another person enrolled (a store's previous account holder)
     // is never charged for this subscription's fee.
+    // [delta D3] A payer that can't be read now defers the attempt: never a "no card on file" failure and strike.
     const payer = await subscriptionPayer(this.prisma, sub.id).catch(() => null);
-    const instrument = payer ? await this.prisma.paymentInstrument.findFirst({ where: { subscriptionId: sub.id, status: 'ACTIVE', userId: payer.userId } }) : null;
+    if (!payer) return { ok: false, deferred: true };
+    const instrument = await this.prisma.paymentInstrument.findFirst({ where: { subscriptionId: sub.id, status: 'ACTIVE', userId: payer.userId } });
     if (!instrument) return { ok: false, reason: NO_CARD_REASON };
     if (cardExpiredAt(instrument, now)) {
       await this.prisma.paymentInstrument.updateMany({ where: { id: instrument.id, status: 'ACTIVE' }, data: { status: 'EXPIRED', expiredAt: now } });

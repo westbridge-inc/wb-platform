@@ -1,6 +1,6 @@
 import { lockFeePaymentDecision } from './fee-payment-authority';
 import { beginConfirmationInTx, lockBillingAuthority, reopenConfirmationForReviewInTx, resolveConfirmationInTx } from './dunning-clock';
-import { lockFeeCollectionAuthority, lockSubscriptionPayer } from '../subscription/mover-fee-authority';
+import { lockFeeCollectionAuthority, lockSubscriptionPayer, subscriptionPayer } from '../subscription/mover-fee-authority';
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import type { CardObservationSource, CardObservationVerdict, CardObservedStatus, CardSession, CardSessionStatus, Prisma, PrismaClient } from '@prisma/client';
 import { AppError, NotFoundError } from '../../utils/errors';
@@ -709,6 +709,12 @@ export class CardRailService {
       const fresh = await this.lockSession(tx, session.id);
       if (!fresh || !LIVE.includes(fresh.status)) return { lost: fresh };
       if (!authority.allowed) return { lost: await tx.cardSession.update({ where: { id: fresh.id }, data: { status: 'HELD', failureCode: 'MOVER_FEE_REVIEW_REQUIRED' } }) };
+      // [review-2475 delta D2] A card is saved only for the person who pays this fee NOW: an "add a card" started by a
+      // store's previous account holder never replaces the new holder's card, nor puts theirs on the account.
+      if ((await subscriptionPayer(tx, fresh.subscriptionId)).userId !== fresh.userId) {
+        await recordCardObservation(tx, this.observation(fresh, 'CONFIRM', outcome.rawSha256, 'SUCCEEDED', 'ACCEPTED'));
+        return { lost: await tx.cardSession.update({ where: { id: fresh.id }, data: { status: 'CANCELLED', failureCode: 'NOT_THE_PAYER', confirmedAt: now } }) };
+      }
       // [AX297 F1] payer -> subscription -> the card this replaces: a weekly
       // charge being authorized on that card finishes first, or sees it REPLACED.
       await lockCardAuthority(tx, fresh.subscriptionId);
@@ -1582,8 +1588,10 @@ export class CardRailService {
   /** [C9] Brand, last 4 and expiry — the token columns are never even selected. */
   async listInstruments(userId: string, subscriptionId: string): Promise<PaymentInstrumentDto[]> {
     await this.ownedSubscription(userId, subscriptionId);
+    // [review-2475 delta D4] Only the payer's own cards: never one a store's previous account holder enrolled.
+    const payer = await subscriptionPayer(this.prisma, subscriptionId);
     return this.prisma.paymentInstrument.findMany({
-      where: { subscriptionId },
+      where: { subscriptionId, userId: payer.userId },
       orderBy: { createdAt: 'desc' },
       select: INSTRUMENT_DTO_SELECT,
     });

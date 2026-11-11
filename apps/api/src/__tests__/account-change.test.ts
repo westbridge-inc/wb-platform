@@ -844,3 +844,72 @@ describe('[review-2475 F8] asking is limited', () => {
     expect(JSON.stringify(tries)).not.toContain(NUM);
   });
 });
+
+// ---------------------------------------------------------------------------------------------------------------------
+// [review-2475 delta] second fix round
+// ---------------------------------------------------------------------------------------------------------------------
+
+describe('[review-2475 delta D1] papers of an EARLIER business type never follow the old holder', () => {
+  it('[P4] registered -> company -> handed over: the old business registration is withdrawn; a new store does not pass on it', async () => {
+    const o = await person('Ravi', 'Persaud');
+    const regPaper = await namedStore(o, 'OWNER', 'Persaud Trading');
+    const asked = (await call('POST', '/api/v1/vendor/account-change/business-type', o, { toOption: 'COMPANY' })).json().data;
+    await fileChangePapers(o.userId, asked);
+    const name = (await store(o.vendorId)).name;
+    expect((await admin('PUT', `/account-changes/${asked.id}/approve`, { sellerNames: { [o.vendorId]: name } })).statusCode).toBe(200);
+    await handedOver(o);
+    expect(await system(() => app.prisma.verificationDocument.findUniqueOrThrow({ where: { id: regPaper }, select: { state: true } }))).toEqual({ state: 'REVOKED' });
+    o.vendorId = '';
+    await become(o, { name: `Brand New Shop ${RUN} ${seq}` });
+    const evidence = await recordEvidenceFor(app.prisma, o.userId, ['owner_national_id', 'business_registration', 'storefront_photo'], new Date());
+    // the person's own ID is theirs and stays; the handed-over business's registration does not
+    expect(evidence.map((r) => r.docType)).toEqual(['owner_national_id']);
+    await fileAndApprove(o.userId, ['storefront_photo']);
+    expect(await service.isRoleVerified(o.userId, 'STORE', app.prisma, o.vendorId)).toBe(false);
+  });
+
+  it('own name -> company -> handed over: the own-name declaration is withdrawn too', async () => {
+    const o = await ownNameStore();
+    const declaration = await system(() => app.prisma.verificationDocument.findFirstOrThrow({ where: { userId: o.userId, docType: 'own_name_declaration' }, select: { id: true } }));
+    const asked = (await call('POST', '/api/v1/vendor/account-change/business-type', o, { toOption: 'COMPANY' })).json().data;
+    await fileChangePapers(o.userId, asked);
+    const name = (await store(o.vendorId)).name;
+    expect((await admin('PUT', `/account-changes/${asked.id}/approve`, { sellerNames: { [o.vendorId]: name } })).statusCode).toBe(200);
+    await handedOver(o);
+    expect(await system(() => app.prisma.verificationDocument.findUniqueOrThrow({ where: { id: declaration.id }, select: { state: true } }))).toEqual({ state: 'REVOKED' });
+    expect((await recordEvidenceFor(app.prisma, o.userId, ['own_name_declaration', 'owner_national_id'], new Date())).map((r) => r.docType)).toEqual(['owner_national_id']);
+  });
+});
+
+describe('[review-2475 delta D2 · D4] the handover ends the old holder\'s card work, on the record, and tells the new holder', () => {
+  it('their open "add a card" is cancelled (a Pay now is left to settle); the removal is in the fee history; the new holder is told to add their own card', async () => {
+    const x = await companyStore();
+    const sub = await system(async () => (await app.prisma.subscription.findFirst({ where: { vendorId: x.vendorId }, select: { id: true } }))
+      ?? app.prisma.subscription.create({ data: {
+        vendorId: x.vendorId, type: 'RETAIL_STORE', status: 'ACTIVE', weeklyRate: 1000, billingMethod: 'CARD',
+        currentPeriodStart: new Date(Date.now() - 7 * DAY), currentPeriodEnd: new Date(Date.now() + DAY), nextBillingDate: new Date(Date.now() + DAY),
+      }, select: { id: true } }));
+    const card = await system(async () => app.prisma.paymentInstrument.create({ data: {
+      subscriptionId: sub.id, userId: x.userId, provider: 'fakebank', environment: 'sandbox', providerAccount: `r2475d-${RUN}`,
+      ...(await sealVaultToken(`tok_${nanoid(10)}`)), brand: 'VISA', last4: '4321', expMonth: 12, expYear: new Date().getUTCFullYear() + 3,
+      consentVersion: 'card-on-file-v1', consentAt: new Date(),
+    }, select: { id: true } }));
+    const session = (purpose: 'ENROLL' | 'PAY_NOW') => system(() => app.prisma.cardSession.create({ data: {
+      subscriptionId: sub.id, userId: x.userId, purpose, provider: 'fakebank', environment: 'sandbox', providerAccount: `r2475d-${RUN}`,
+      stateHash: 'a'.repeat(64), expiresAt: new Date(Date.now() + 15 * 60_000),
+      ...(purpose === 'ENROLL' ? { consentVersion: 'card-on-file-v1', consentAt: new Date() } : { amount: 1000, currencyCode: 'GYD', periodStart: new Date() }),
+    }, select: { id: true } }));
+    const enroll = await session('ENROLL');
+    const payNow = await session('PAY_NOW');
+    const { next } = await handedOver(x);
+    const statusOf = (id: string) => system(() => app.prisma.cardSession.findUniqueOrThrow({ where: { id }, select: { status: true, failureCode: true } }));
+    expect(await statusOf(enroll.id)).toEqual({ status: 'CANCELLED', failureCode: 'ACCOUNT_HANDED_OVER' });
+    expect((await statusOf(payNow.id)).status).toBe('OPEN');
+    const history = await system(() => app.prisma.billingEvent.findFirstOrThrow({ where: { subscriptionId: sub.id, idempotencyKey: `card:revoked:${card.id}` }, select: { type: true, note: true } }));
+    expect(history.type).toBe('TIER_CHANGE');
+    expect(history.note).toMatch(/ending 4321 removed: the account was handed over/);
+    const notice = await system(() => app.prisma.notification.findFirstOrThrow({ where: { userId: next.userId, data: { path: ['kind'], equals: 'account_handover_completed' } }, select: { body: true } }));
+    expect(notice.body).toContain('add your own card, or pay through the MMG checkout page');
+    await system(() => app.prisma.cardSession.deleteMany({ where: { id: { in: [enroll.id, payNow.id] } } }));
+  });
+});

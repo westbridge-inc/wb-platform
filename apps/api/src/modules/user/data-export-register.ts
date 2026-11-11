@@ -519,6 +519,10 @@ export const WITHHELD: Readonly<Record<string, { readonly reason: WithheldReason
   'CashHandoverEvidence.customerId': { reason: 'OTHER_PEOPLE', note: 'the cash handover record a mover filed for an order of yours' },
   'Admin.userId': { reason: 'STAFF_WORK', note: 'your Swift staff permissions' },
   'AdCreative.reviewedByUserId': { reason: 'STAFF_WORK', note: 'ad reviews done as staff' },
+  // [review-2475 D5] The person at Swift who typed a seller's legal name, or confirmed a store's name, from its papers.
+  'AccountChangeRequest.sellerLegalNameById': { reason: 'STAFF_WORK', note: 'seller names typed from papers as staff' },
+  'VendorOwner.sellerLegalNameById': { reason: 'STAFF_WORK', note: 'seller names typed from papers as staff' },
+  'Vendor.sellerNameCheckedById': { reason: 'STAFF_WORK', note: 'store names confirmed as staff' },
   'AccountChangeRequest.decidedById': { reason: 'STAFF_WORK', note: 'account changes decided as staff (a change the person asked for, or was named in, is in the file with its answer)' },
   'CardCreditRefund.requestedByUserId': { reason: 'STAFF_WORK', note: 'card refunds of weekly-fee money asked by staff' },
   'FeeRefundCase.openedByUserId': { reason: 'STAFF_WORK', note: 'weekly-fee refund cases recorded as staff' },

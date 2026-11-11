@@ -42,7 +42,7 @@ import { closeOpenMmgStagesFor } from '../integrity/money-surface';
 import { CountryConfigService } from '../country/country-config.service';
 import { recordEvidenceFor } from '../verification/evidence';
 import { hopDocState } from '../verification/doc-state';
-import { OWN_NAME_TIER } from '../verification/doc-registry';
+import { ACCOUNT_HOLDER_ID_DOC_TYPE, BUCKET_OF, OWN_NAME_TIER } from '../verification/doc-registry';
 import { revokeAllSessionsInTransaction } from '../auth/session-revocation';
 import type { MoverSessionRevocationCleanup } from '../mover-authority';
 import { accountBasisApplies, accountTierOf, type AccountBasis } from './account-basis';
@@ -475,6 +475,13 @@ async function retirePapers(tx: Prisma.TransactionClient, where: Prisma.Verifica
 async function retireHolderCards(tx: Prisma.TransactionClient, storeIds: readonly string[], holderId: string, by: string, changeId: string): Promise<number> {
   const subs = await tx.subscription.findMany({ where: { vendorId: { in: [...storeIds] } }, select: { id: true } });
   if (subs.length === 0) return 0;
+  // [delta D2] An "add a card" the old holder started and has not finished ends here: it can never save their card on
+  // the account (the card rail also refuses a card whose owner is not the payer). A Pay now session is left to settle:
+  // it may already have moved money, and it pays the store's fee.
+  await tx.cardSession.updateMany({
+    where: { subscriptionId: { in: subs.map((s) => s.id) }, userId: holderId, purpose: 'ENROLL', status: { in: ['OPEN', 'UNKNOWN'] } },
+    data: { status: 'CANCELLED', failureCode: 'ACCOUNT_HANDED_OVER', confirmedAt: new Date() },
+  });
   const cards = await tx.paymentInstrument.findMany({ where: { subscriptionId: { in: subs.map((s) => s.id) }, userId: holderId, status: 'ACTIVE' }, select: { id: true, subscriptionId: true } });
   if (cards.length === 0) return 0;
   const { closeUnsentCardIntents } = await import('../billing/billing.service');
@@ -487,6 +494,12 @@ async function retireHolderCards(tx: Prisma.TransactionClient, storeIds: readonl
     const out = await tx.paymentInstrument.updateMany({ where: { id: card.id, userId: holderId, status: 'ACTIVE' }, data: { status: 'REVOKED', revokedAt: now, revokedBy: by } });
     if (out.count !== 1) continue;
     const unsent = await closeUnsentCardIntents(tx, { instrumentId: card.id }, 'CARD_OUT_OF_SERVICE', now);
+    // [delta D4] The fee's own history, as a removal writes it (card-rail removeInstrument).
+    const facts = await tx.paymentInstrument.findUniqueOrThrow({ where: { id: card.id }, select: { brand: true, last4: true, subscription: { select: { currencyCode: true } } } });
+    await tx.billingEvent.create({ data: {
+      subscriptionId: card.subscriptionId, type: 'TIER_CHANGE', currencyCode: facts.subscription.currencyCode, idempotencyKey: `card:revoked:${card.id}`,
+      note: `Card ${facts.brand} ending ${facts.last4} removed: the account was handed over to a new account holder; no card is charged until the new holder adds one or chooses another way to pay`,
+    } });
     await tx.auditLog.create({ data: {
       userId: by, action: 'CARD_REVOKED_ACCOUNT_HANDOVER', entity: 'PaymentInstrument', entityId: card.id,
       changes: { subscriptionId: card.subscriptionId, changeId, status: 'REVOKED', unsentChargesClosed: unsent },
@@ -634,6 +647,10 @@ export interface ApprovalOutcome {
   sellerLegalName?: SellerLegalNameMove;
 }
 
+/** [delta D1] A store holder's business papers, whatever business type asked for them: every BUSINESS-bucket type, and
+ *  the account holder's ID (asked only of a company's or a manager's holder). Never a personal ID other roles use. */
+const STORE_BUSINESS_PAPERS: string[] = [...Object.entries(BUCKET_OF).filter(([, bucket]) => bucket === 'BUSINESS').map(([docType]) => docType), ACCOUNT_HOLDER_ID_DOC_TYPE];
+
 const paperWords = (missing: readonly string[]) => missing.map((t) => t.replace(/_/g, ' ')).join(', ');
 
 export async function approveAccountChange(tx: Prisma.TransactionClient, input: ApprovalInput): Promise<ApprovalOutcome> {
@@ -747,10 +764,16 @@ export async function approveAccountChange(tx: Prisma.TransactionClient, input: 
     await closeOpenMmgStagesFor(tx, storeIds);
     // [review-2475 F2] Nor does a card: the old holder's saved cards on these stores leave service.
     const cardsRevoked = await retireHolderCards(tx, storeIds, holderBefore, input.adminId, change.id);
-    // [review-2475 F1] The account's papers name this business: they never follow the old holder to another account (a
-    // company that names them next, or a store they open). Every paper of the account's lists they hold leaves service.
+    // [review-2475 F1 · delta D1] The account's papers name this business: they never follow the old holder to another
+    // account (a company that names them next, or a store they open). Every paper of the account's lists they hold leaves
+    // service, AND every business paper they filed as a store's holder under any earlier business type (a registration
+    // from before the account became a company, an own-name declaration, a manager's letter). Their personal IDs
+    // (owner_national_id, national_id) stay: a person's own ID is theirs, and other roles use it.
     const accountPapers = unionOf(perStore.values());
-    const papersRetired = await retirePapers(tx, { userId: holderBefore, docType: { in: accountPapers } },
+    const papersRetired = await retirePapers(tx, { userId: holderBefore, OR: [
+      { docType: { in: accountPapers } },
+      { role: 'VENDOR_OWNER', docType: { in: STORE_BUSINESS_PAPERS } },
+    ] },
       'the account was handed over to its new account holder; these papers belong to that business', input.adminId);
     // A store phone that is the old holder's own number stops being the store's: the published one is withdrawn, Swift's
     // private contact line becomes the new holder's number.
@@ -764,7 +787,7 @@ export async function approveAccountChange(tx: Prisma.TransactionClient, input: 
     const names = storeNames(stores);
     notices.push((await insertNoticeFor(tx, {
       userId: newHolder, type: 'SYSTEM_ANNOUNCEMENT', title: 'You now hold the account',
-      body: `Swift checked your papers. You now hold the Swift account for ${names}. Add the business’s MMG number in Account so customers can pay by MMG again.`,
+      body: `Swift checked your papers. You now hold the Swift account for ${names}. Add the business’s MMG number in Account so customers can pay by MMG again.${cardsRevoked > 0 ? ' The previous account holder’s card no longer pays the weekly fee: add your own card, or pay through the MMG checkout page.' : ''}`,
       data: { kind: 'account_handover_completed', changeId: change.id },
     })).id);
     notices.push((await insertNoticeFor(tx, {

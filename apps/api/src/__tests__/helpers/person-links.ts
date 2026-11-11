@@ -6,7 +6,7 @@
  */
 import { Prisma } from '@prisma/client';
 
-export const PERSON_NAME = /(^|[a-z])([uU]serId|[cC]ustomerId|raterId|rateeId|[cC]reatedBy|reporterId|[sS]enderId|[rR]ecipientId|[aA]ccountId|subjectId|[sS]ubjectUserId|[pP]assengerUserId|[dD]riverUserId|requesterId|actorId|ownerUserId|accessorUserId|counterpartyUserId|setByUserId|[uU]serIds?|[hH]olderId|requestedById|decidedById)$/;
+export const PERSON_NAME = /(^|[a-z])([uU]serId|[cC]ustomerId|raterId|rateeId|[cC]reatedBy|reporterId|[sS]enderId|[rR]ecipientId|[aA]ccountId|subjectId|[sS]ubjectUserId|[pP]assengerUserId|[dD]riverUserId|requesterId|actorId|ownerUserId|accessorUserId|counterpartyUserId|setByUserId|[uU]serIds?|[hH]olderId|requestedById|decidedById|sellerLegalNameById|sellerNameCheckedById)$/;
 export const PROFILES = ['Rider', 'Driver', 'ServiceProvider'];
 
 /** Every `Model.column` that points at a person: a User relation, a person-named column, or a mover/provider profile. */

@@ -87,6 +87,10 @@ export const ERASURE_KEPT: Readonly<Record<string, string>> = {
   'AccountChangeRequest.holderId': 'the business record of who held the store account before a handover (Privacy Policy §6, §7): ids only',
   'AccountChangeRequest.newHolderId': 'the business record of who a store account was offered or handed to (Privacy Policy §6, §7): ids only',
   'AccountChangeRequest.decidedById': 'the administrative trail of who decided an account change (Privacy Policy §7): ids only',
+  // [review-2475 D5] Who at Swift named the seller from the papers: the §7 administrative trail behind what customers see.
+  'AccountChangeRequest.sellerLegalNameById': 'the administrative trail of who typed a seller’s legal name from a paper (Privacy Policy §7): ids only',
+  'VendorOwner.sellerLegalNameById': 'the administrative trail of who typed the seller’s legal name from a paper (Privacy Policy §7): ids only',
+  'Vendor.sellerNameCheckedById': 'the administrative trail of who confirmed the store’s name as the seller’s (Privacy Policy §7): ids only',
   'Order.customerId': 'order history, kept for disputes, payments Swift has decided to make, tax and legal duties (Privacy Policy §6)',
   'Order.riderId': 'order history (Privacy Policy §6)',
   'Order.driverId': 'ride history (Privacy Policy §6)',
