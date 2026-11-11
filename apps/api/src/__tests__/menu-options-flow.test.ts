@@ -180,6 +180,16 @@ describe('[MENU-OPTIONS] the shared option library', () => {
     expect((await ownerCall('POST', `/modifier-groups/${lib.size}/attach`, { itemIds: [pizzaA] })).json().data).toEqual({ attached: [], already: [pizzaA] });
   });
 
+  it('an item save that sends a price (an older store app) never moves a sized item off its lowest size', async () => {
+    const res = await ownerCall('PUT', `/items/${pizzaA}`, { basePrice: 9999 });
+    expect(res.statusCode).toBe(200);
+    expect(Number((await app.prisma.item.findUniqueOrThrow({ where: { id: pizzaA } })).basePrice)).toBe(1200);
+    // A plain item still takes the price it is sent.
+    expect((await ownerCall('PUT', `/items/${plainItem}`, { basePrice: 650 })).statusCode).toBe(200);
+    expect(Number((await app.prisma.item.findUniqueOrThrow({ where: { id: plainItem } })).basePrice)).toBe(650);
+    expect((await ownerCall('PUT', `/items/${plainItem}`, { basePrice: 600 })).statusCode).toBe(200);
+  });
+
   it('editing the library changes every attached item at once, and keeps each copy option id (carts hold them)', async () => {
     const before = (await itemGroups(pizzaA)).find((g) => g.name === 'Size')!.options.find((o) => o.name === 'Large')!;
     const library = (await ownerCall('GET', '/modifier-groups')).json().data as Array<{ id: string; options: Array<{ id: string; name: string }> }>;
