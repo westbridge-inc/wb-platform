@@ -816,11 +816,6 @@ export async function releaseHeldOrdersJob(
     await drainCheckoutOutbox({ prisma: ctx.prisma, queues, log: ctx.log }, { orderIds: released })
       .catch((err: unknown) => ctx.log.error({ err }, '[Q12] release ladder drain failed — the outbox sweep will publish'));
     ctx.log.info({ count: released.length }, 'Held orders released to vendors/dispatch (+escalation ladders armed)');
-    // [KITCHEN-INTEGRATION] Released orders a kitchen system claimed go out now, for latency; the tick sweeps
-    // whatever this misses. Switch off: returns at once.
-    const { drainKitchenSyncs } = await import('../modules/kitchen/kitchen-sync');
-    await drainKitchenSyncs({ prisma: ctx.prisma, io: ctx.io }, { orderIds: released })
-      .catch((err: unknown) => ctx.log.error({ err }, '[KITCHEN] release drain failed — the tick will send'));
   }
   return released;
 }
@@ -1214,6 +1209,15 @@ export async function createWorkers(ctx: JobContext, queues: SwiftQueues) {
         }
         case 'auto-complete': {
           await inTenantOf(ctx.prisma, { order: job.data.orderId }, () => autoCompleteDeliveredOrder(ctx, job.data.orderId));
+          break;
+        }
+        // [KITCHEN-INTEGRATION] Send claimed orders to the store's kitchen system, tell it of cancellations, poll
+        // it. On the order queue, never the dispatch queue: a slow kitchen system (timeouts and the spec's retries)
+        // must not hold the hold release or dispatch sweeps. Registered only while DRAGONTAIL_INTEGRATION is on; a
+        // stale registration does nothing while off.
+        case 'kitchen-integration-tick': {
+          const { runKitchenTick } = await import('../modules/kitchen/kitchen-sync');
+          await runKitchenTick({ prisma: ctx.prisma, io: ctx.io });
           break;
         }
       }
@@ -2889,14 +2893,6 @@ export async function createWorkers(ctx: JobContext, queues: SwiftQueues) {
         return;
       }
 
-      // [KITCHEN-INTEGRATION] Send claimed orders to the store's kitchen system, tell it of cancellations, poll
-      // it. Registered only while DRAGONTAIL_INTEGRATION is on; a stale registration does nothing while off.
-      if (job.name === 'kitchen-integration-tick') {
-        const { runKitchenTick } = await import('../modules/kitchen/kitchen-sync');
-        await runKitchenTick({ prisma: ctx.prisma, io: ctx.io });
-        return;
-      }
-
       if (job.name === 'mmg-accept-expiry') {
         await expireUnpaidMmgAcceptancesJob(ctx);
         return;
@@ -3573,7 +3569,7 @@ export async function scheduleRecurringJobs(queues: ReturnType<typeof createQueu
   {
     const { dragontailIntegrationEnabled } = await import('../modules/kitchen/kitchen-switch');
     if (dragontailIntegrationEnabled()) {
-      await queues.dispatchQueue.add('kitchen-integration-tick', {}, {
+      await queues.orderQueue.add('kitchen-integration-tick', {}, {
         repeat: { every: 5_000 },
         removeOnComplete: 20,
         removeOnFail: 20,
