@@ -103,6 +103,8 @@ export const MONEY_COLUMNS: readonly MoneyColumn[] = [
   { model: 'CardCreditRefund', field: 'amount', unit: 'MAJOR_WHOLE' },
   { model: 'Option', field: 'additionalPrice', unit: 'MAJOR_WHOLE' },
   { model: 'Option', field: 'vatListedAdditionalPrice', unit: 'MAJOR_WHOLE' },
+  // [MENU-OPTIONS] a shared library choice's price as the store typed it (before VAT), copied to Option.additionalPrice.
+  { model: 'ModifierOption', field: 'price', unit: 'MAJOR_WHOLE' },
   { model: 'Order', field: 'deliveryFee', unit: 'MAJOR_WHOLE' },
   { model: 'Order', field: 'discount', unit: 'MAJOR_WHOLE' },
   { model: 'Order', field: 'serviceFee', unit: 'MAJOR_WHOLE' },
@@ -132,6 +134,8 @@ export const MONEY_COLUMNS: readonly MoneyColumn[] = [
   { model: 'OrderItemOption', field: 'basePrice', unit: 'MAJOR_WHOLE' },
   { model: 'OrderItemOption', field: 'markedUpPrice', unit: 'MAJOR_WHOLE' },
   { model: 'OrderItemOption', field: 'markupAmount', unit: 'MAJOR_WHOLE' },
+  // [MENU-OPTIONS] the choice's own menu price (size price / full topping price), snapshotted like basePrice.
+  { model: 'OrderItemOption', field: 'listedPrice', unit: 'MAJOR_WHOLE' },
   { model: 'PayoutRequest', field: 'amount', unit: 'MAJOR_WHOLE' },
   { model: 'PayoutRequest', field: 'fee', unit: 'MAJOR_WHOLE' },
   { model: 'PayoutRequest', field: 'netAmount', unit: 'MAJOR_WHOLE' },
