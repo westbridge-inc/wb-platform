@@ -5,7 +5,8 @@ import Redis from 'ioredis';
 import { Writable } from 'node:stream';
 import { createHash, randomBytes } from 'node:crypto';
 import { nanoid } from 'nanoid';
-import type { CardSession, SubscriptionStatus, UserRole } from '@prisma/client';
+import type { CardSession, Prisma, SubscriptionStatus, UserRole } from '@prisma/client';
+import { referenceOnRecord } from '../modules/billing/mmg-fee-reversal';
 import { prismaPlugin } from '../plugins/prisma';
 import { redisPlugin } from '../plugins/redis';
 import { authPlugin } from '../plugins/auth';
@@ -55,7 +56,7 @@ import { askAndApprove, injectWithApproval } from './helpers/admin-approval';
 import { setAsideCreditRefund } from '../modules/billing/credit-refund';
 import { CARD_REFUND_ACTION, refundCardCreditToCard } from '../modules/billing/card-credit-refund';
 import { TEST_ADMIN_REASON } from './helpers/admin-reason';
-import { setAppLogger } from '../utils/logger';
+import { log, setAppLogger } from '../utils/logger';
 import { STAGING_CARD_SUFFIX, STAGING_RETURN_SECRETS, leaksCardSuffix, stagingPageNotFoundPost, stagingReturnPost, stagingSaleRecord } from './fixtures/powertranz-staging-shapes';
 
 // ---------------------------------------------------------------------------
@@ -516,6 +517,56 @@ describe('Pay now through HTTP: priced by the server, booked once, and only on t
     const later = await money(p.subId);
     expect(later.successes).toBe(1);
     expect(later.sub.currentPeriodEnd.getTime()).toBe(periodEndBefore + 7 * DAY);
+  });
+
+  // [N1 · CARD-STAGING-TEST R2 · owner 10 Nov 2026] A card payment that brings a suspended store back (a RETURN) is kept as
+  // fee credit and spent AT ONCE on its return week. The partner's view says the week is paid (`advanced`, which the shipped
+  // apps and website word "Paid: <amount> received."), never `banked` ("Payment received. It is kept for your next weekly
+  // fee."), and no "kept for your next weekly fee" notice is sent. Server-side only: no app change.
+  it('[N1] a suspended store returns by card: its view says the week is PAID (advanced); no "kept for your next weekly fee" notice', async () => {
+    const due = new Date(Date.now() - 10 * DAY);
+    const p = await makeStore({ due });
+    const billable = async () => (await app.prisma.subscription.findUniqueOrThrow({
+      where: { id: p.subId },
+      include: { rider: { select: { userId: true } }, driver: { select: { userId: true } }, vendor: { select: { id: true, owner: { select: { userId: true } } } } },
+    })) as never;
+    // The billing engine's own suspension: three failed charges over 50 hours from the due date.
+    for (const hours of [0, 25, 50]) await runtime.billing.billSubscription(await billable(), new Date(due.getTime() + hours * 3_600_000));
+    expect((await money(p.subId)).sub.status).toBe('SUSPENDED');
+
+    const opened = await startSession(p, 'PAY_NOW');
+    expect(opened.statusCode, opened.body).toBe(201);
+    const session = opened.json().data;
+    expect(pageState((await follow(await press(session.hostedUrl, 'APPROVE'))).body)).toBe('SUCCEEDED');
+    const row = await app.prisma.cardSession.findUniqueOrThrow({ where: { id: session.sessionId } });
+    // It was a RETURN: the capture was kept as credit (one bank event, receipt channel CARD_RETURN) and the return week paid from it.
+    const kept = await app.prisma.billingEvent.findUniqueOrThrow({ where: { idempotencyKey: `bank:${row.paymentId}` } });
+    expect((await app.prisma.feeReceipt.findUniqueOrThrow({ where: { billingEventId: kept.id } })).channel).toBe('CARD_RETURN');
+    const after = await money(p.subId);
+    expect(after.sub.status).toBe('ACTIVE');
+    expect(after.successes).toBe(1);
+    expect(after.sub.nextBillingDate.getTime()).toBeGreaterThan(Date.now());
+
+    const view = (await partnerCall(p, 'GET', `${SESSIONS}/${session.sessionId}`)).json().data;
+    expect(view).toMatchObject({ status: 'SUCCEEDED', settlement: 'advanced' });
+    const kepts = await app.prisma.notification.count({ where: { userId: p.userId, data: { path: ['kind'], equals: 'billing_banked' } } });
+    expect(kepts, 'a return was told its money is "kept for your next weekly fee"').toBe(0);
+    // Confirmed again (the page's own poll, the sweep): still the week paid, nothing booked twice.
+    expect(await runtime.service.confirm(session.sessionId)).toMatchObject({ status: 'SUCCEEDED' });
+    expect((await partnerCall(p, 'GET', `${SESSIONS}/${session.sessionId}`)).json().data).toMatchObject({ settlement: 'advanced' });
+    expect((await money(p.subId)).successes).toBe(1);
+    expect(await app.prisma.billingEvent.count({ where: { subscriptionId: p.subId, idempotencyKey: { startsWith: 'bank:' } } })).toBe(1);
+  });
+
+  it('[N1] a week paid ahead (not started) is still reported as kept (banked), with its notice', async () => {
+    const p = await makeStore({ due: new Date(Date.now() + 3 * DAY) });
+    const opened = await startSession(p, 'PAY_NOW');
+    expect(opened.statusCode, opened.body).toBe(201);
+    const session = opened.json().data;
+    expect(pageState((await follow(await press(session.hostedUrl, 'APPROVE'))).body)).toBe('SUCCEEDED');
+    expect((await partnerCall(p, 'GET', `${SESSIONS}/${session.sessionId}`)).json().data).toMatchObject({ status: 'SUCCEEDED', settlement: 'banked' });
+    expect((await money(p.subId)).successes).toBe(0);
+    expect(await app.prisma.notification.count({ where: { userId: p.userId, data: { path: ['kind'], equals: 'billing_banked' } } })).toBe(1);
   });
 
   it('a client cannot name the amount, or send anything that is not the contract (a card number least of all): 400, nothing opened', async () => {
@@ -2956,6 +3007,63 @@ describe('[PT-4] real cards through HTTP: Swift\'s hosted page, the bank\'s chec
       expect((await call(p, 'GET', '/subscription')).json().data.payActions[1]).toMatchObject({ state: 'live' });
     });
 
+    // [R1 · CARD-STAGING-TEST R2] A refund is PowerTranz's OWN transaction (TransactionType 5, its own TransactionIdentifier),
+    // and the sale's record does not name it. A HELD payment refunded by finance keeps that id from PowerTranz's approved
+    // answer, as voids (providerVoidRef) and refunds to the card (card_credit_refunds.providerRefundRef) already do, so
+    // finance matches the portal's refund row. Only beside REFUNDED, written once, and a money reference Swift records.
+    it('[R1] REFUND answered: the refund\'s own transaction is kept on the session (shown to admins, a recorded money reference), written once and only beside REFUNDED', async () => {
+      const finance = await makeFinance();
+      const p = await makeStore();
+      const { sessionId, txnId } = await heldPayment(p, '203.0.113.49'); // its own source: the return page is rate-limited per address
+      const refundId = `d4e5f6a7-0000-4000-8000-${randomBytes(6).toString('hex')}`;
+      refundAnswer = (b) => ({ status: 200, body: { OriginalTrxnIdentifier: b['TransactionIdentifier'], TransactionType: 5, Approved: true, TransactionIdentifier: refundId, TotalAmount: b['TotalAmount'], CurrencyCode: b['CurrencyCode'], IsoResponseCode: '00', ResponseMessage: 'Transaction is approved' } });
+      try {
+        const done = await resolve(finance, sessionId, { action: 'REFUND', providerReference: txnId, amount: 2100 });
+        expect(done.statusCode, done.body).toBe(200);
+        expect(done.json().data).toMatchObject({ status: 'FAILED', resolution: 'REFUNDED', refund: 'succeeded' });
+      } finally { refundAnswer = adjusted; }
+      const row = await rowOf(sessionId);
+      expect(row).toMatchObject({ failureCode: 'REFUNDED_BY_FINANCE', providerRefundState: 'REFUNDED', providerRefundRef: refundId });
+      expect(row.providerTransactionRef).toBe(txnId);
+      const admin = await ptz.inject({ method: 'GET', url: `/api/v1/admin/billing/card-sessions/${sessionId}`, headers: { authorization: `Bearer ${finance.token}` } });
+      expect(admin.json().data).toMatchObject({ session: { providerRefundRef: refundId } });
+      // A typed "this is the return's reference" naming it is refused: it is a money reference Swift already holds.
+      expect(await referenceOnRecord(app.prisma as unknown as Prisma.TransactionClient, refundId.toUpperCase())).toBe(true);
+      // Written once.
+      await expect(app.prisma.cardSession.update({ where: { id: sessionId }, data: { providerRefundRef: 'e5f6a7b8-0000-4000-8000-00000000beef' } })).rejects.toThrow(/written once/);
+      await expect(app.prisma.cardSession.update({ where: { id: sessionId }, data: { providerRefundRef: null } })).rejects.toThrow(/written once/);
+      // Only beside a confirmed refund, and never longer than a provider reference.
+      const other = await heldPayment(await makeStore(), '203.0.113.47');
+      await expect(app.prisma.cardSession.update({ where: { id: other.sessionId }, data: { providerRefundRef: refundId } })).rejects.toThrow(/refund_ref_check|check constraint/i);
+      expect((await rowOf(sessionId)).providerRefundRef).toBe(refundId);
+    });
+
+    it('[R1] a refund answer that names only the sale (no id of its own) keeps no refund reference: never the sale\'s id twice', async () => {
+      const finance = await makeFinance();
+      const p = await makeStore();
+      const { sessionId, txnId } = await heldPayment(p, '203.0.113.48');
+      refundAnswer = (b) => ({ status: 200, body: { OriginalTrxnIdentifier: b['TransactionIdentifier'], TransactionType: 5, Approved: true, TransactionIdentifier: b['TransactionIdentifier'], TotalAmount: b['TotalAmount'], CurrencyCode: b['CurrencyCode'], IsoResponseCode: '00' } });
+      try {
+        expect((await resolve(finance, sessionId, { action: 'REFUND', providerReference: txnId, amount: 2100 })).json().data).toMatchObject({ resolution: 'REFUNDED', refund: 'succeeded' });
+      } finally { refundAnswer = adjusted; }
+      expect(await rowOf(sessionId)).toMatchObject({ providerRefundState: 'REFUNDED', providerRefundRef: null });
+    });
+
+    // [REVIEW-2484-B S4-5] A malformed id of the refund's own is not kept, but it is said (a warning, never the value).
+    it('[R1] an approved refund naming a malformed id of its own keeps no refund reference and logs a warning', async () => {
+      const finance = await makeFinance();
+      const p = await makeStore();
+      const { sessionId, txnId } = await heldPayment(p, '203.0.113.51');
+      const warned = vi.spyOn(log(), 'warn');
+      refundAnswer = (b) => ({ status: 200, body: { OriginalTrxnIdentifier: b['TransactionIdentifier'], TransactionType: 5, Approved: true, TransactionIdentifier: 'not a ref; DROP', TotalAmount: b['TotalAmount'], CurrencyCode: b['CurrencyCode'], IsoResponseCode: '00' } });
+      try {
+        expect((await resolve(finance, sessionId, { action: 'REFUND', providerReference: txnId, amount: 2100 })).json().data).toMatchObject({ resolution: 'REFUNDED', refund: 'succeeded' });
+        expect(warned.mock.calls.some(([, msg]) => String(msg).includes('malformed refund reference'))).toBe(true);
+        expect(JSON.stringify(warned.mock.calls)).not.toContain('DROP');
+      } finally { refundAnswer = adjusted; warned.mockRestore(); }
+      expect(await rowOf(sessionId)).toMatchObject({ providerRefundState: 'REFUNDED', providerRefundRef: null });
+    });
+
     it('[Opus S3-3] REFUND never sends more than the card payment took: above the session amount it is refused before any claim or call', async () => {
       const finance = await makeFinance();
       const p = await makeStore();
@@ -3232,7 +3340,7 @@ describe('[PT-4] real cards through HTTP: Swift\'s hosted page, the bank\'s chec
     const held = await heldOf(session.sessionId);
     const forged = { IsoResponseCode: '3D0', SpiToken: 'spi-someone-else', TransactionIdentifier: held['txnId'], RiskManagement: { ThreeDSecure: { ResponseCode: '3D0', AuthenticationStatus: 'Y' } } };
     const before = completions();
-    const res = await ptz.inject({ method: 'POST', url: merchantResponsePath(), headers: { 'content-type': 'application/x-www-form-urlencoded' }, payload: `Response=${encodeURIComponent(JSON.stringify(forged))}` });
+    const res = await ptz.inject({ method: 'POST', url: merchantResponsePath(), headers: { 'content-type': 'application/x-www-form-urlencoded' }, payload: `Response=${encodeURIComponent(JSON.stringify(forged))}`, remoteAddress: '203.0.113.50' });
     expect(pageState(res.body)).toBe('FAILED');
     expect(completions()).toBe(before);
     expect((await money(p.subId)).successes).toBe(0);

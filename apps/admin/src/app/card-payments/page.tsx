@@ -105,6 +105,8 @@ interface CardPaymentRow {
   id: string; subscriptionId: string; status: string; amount: number | null; currencyCode: string | null; periodStart: string | null;
   createdAt: string; failureCode: string | null; environment: string;
   providerTransactionRef: string | null; providerVoidState: string | null; providerRefundState: string | null;
+  /** [R1 · REVIEW-2484-B S4-3] The void's and the refund's OWN provider transactions, when PowerTranz named them. */
+  providerVoidRef?: string | null; providerRefundRef?: string | null;
   resolution: string | null; resolvedAt: string | null;
   /** [CARD-REFUND-LOOKUP] Its refund of set-aside credit to the card, if any; whether a refund of it can be checked now. */
   cardRefund?: { state: string; providerRefundRef: string | null } | null;
@@ -251,6 +253,9 @@ export default function CardPaymentsPage() {
                       r.resolution && `Decided: ${RESOLUTION_WORDS[r.resolution] ?? asCode(r.resolution)}${r.resolvedAt ? `, ${gyDateTime(r.resolvedAt)}` : ''}`].filter(Boolean).join(' · ')}
                   </p>
                 )}
+                {/* [R1 · REVIEW-2484-B S4-3] PowerTranz's own Void and Refund rows, to match in its portal. */}
+                {r.providerVoidRef && <p className="text-sm mc-muted mt-1">Void transaction <span className="font-mono break-all">{r.providerVoidRef}</span></p>}
+                {r.providerRefundRef && <p className="text-sm mc-muted mt-1">Refund transaction <span className="font-mono break-all">{r.providerRefundRef}</span></p>}
                 {open && r.failureCode === 'LOOKUP_REFUND_NOT_WHOLE' ? (
                   // [CARD-REFUND-LOOKUP] A refund that is not the whole payment: held for the owner. It can be checked
                   // again once the owner has settled it with PowerTranz.
