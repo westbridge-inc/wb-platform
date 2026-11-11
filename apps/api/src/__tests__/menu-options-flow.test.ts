@@ -223,6 +223,19 @@ describe('[MENU-OPTIONS] the shared option library', () => {
     expect((await ownerCall('DELETE', `/modifier-groups/${second.json().data.id}`)).statusCode).toBe(200);
   });
 
+  it('the library holds the one-level rule itself, even for groups not on any item yet', async () => {
+    const mk = async (name: string) => (await ownerCall('POST', '/modifier-groups', { name, options: [{ name: `${name} one`, price: 0 }] })).json().data;
+    const x = await mk('Level X');
+    const y = await mk('Level Y');
+    const z = await mk('Level Z');
+    expect((await ownerCall('PUT', `/modifier-options/${x.options[0].id}`, { followUpGroupId: y.id })).statusCode).toBe(200);
+    const deep = await ownerCall('PUT', `/modifier-options/${y.options[0].id}`, { followUpGroupId: z.id });
+    expect(deep.statusCode).toBe(400);
+    expect(deep.json().error.message).toMatch(/one level only/);
+    expect((await app.prisma.modifierOption.findUniqueOrThrow({ where: { id: y.options[0].id } })).followUpGroupId).toBeNull();
+    for (const g of [x, y, z]) expect((await ownerCall('DELETE', `/modifier-groups/${g.id}`)).statusCode).toBe(200);
+  });
+
   it('staff read the library but never edit it; another store cannot see or touch it', async () => {
     expect((await inject('GET', V('/modifier-groups'), staff.token, undefined, shop.vendorId)).statusCode).toBe(200);
     expect((await inject('POST', V('/modifier-groups'), staff.token, { name: 'Sneaky' }, shop.vendorId)).statusCode).toBe(403);
