@@ -1,3 +1,7 @@
+/** [PROD-RIDER-TEST (a)1] Fallbacks for an older server that sends the flag without its words. */
+export const NO_RIDER_PROMPT = 'No rider found. Deliver it yourselves?';
+export const NO_RIDER_DETAIL = 'One tap and your store delivers this order with its own rider; the customer is told. Or search for a Swift rider again.';
+
 const DELIVERY_OWNER_CHOICE_STATES = new Set([
   'ACCEPTED',
   'CONFIRMED',
@@ -21,6 +25,13 @@ export interface DeliveryOwnerInput {
   riderId?: string | null;
   riderPresent?: boolean;
   selfDeliveryEnabled?: boolean;
+  /** [PROD-RIDER-TEST (a)1] The server's word that the rider search for THIS order came back empty while it is still
+   *  the store's to choose (GET /vendor/orders/:id `noRiderFound`). The store may then deliver it itself with one
+   *  tap, without the standing setting. Absent from an older server: false. */
+  noRiderFound?: boolean;
+  /** The server's own prompt and detail for that case (shown verbatim). */
+  noRiderPrompt?: string | null;
+  noRiderDetail?: string | null;
 }
 
 /** The store may close only its own riderless delivery after the kitchen has
@@ -45,12 +56,15 @@ export function deliveryOwnerView(input: DeliveryOwnerInput) {
   const riderAssigned = Boolean(input.riderId || input.riderPresent);
   const selfDelivery = input.fulfillmentMode === 'VENDOR_DELIVERY';
   const mayChange = active && DELIVERY_OWNER_CHOICE_STATES.has(status) && !riderAssigned;
-  const canChooseVendor = mayChange && input.selfDeliveryEnabled === true && !selfDelivery;
+  const noRider = mayChange && !selfDelivery && input.noRiderFound === true;
+  const canChooseVendor = mayChange && (input.selfDeliveryEnabled === true || noRider) && !selfDelivery;
   // A store whose global self-delivery setting was disabled later must still
   // be able to return an already-self-owned order to Swift.
   const canChoosePlatform = mayChange && selfDelivery;
 
-  const title = selfDelivery
+  const title = noRider
+    ? (input.noRiderPrompt || NO_RIDER_PROMPT)
+    : selfDelivery
     ? 'Your store delivers this order'
     : riderAssigned
       ? 'A Swift rider delivers this order'
@@ -58,7 +72,9 @@ export function deliveryOwnerView(input: DeliveryOwnerInput) {
         ? 'Platform rider delivery selected'
         : 'Delivery owner not chosen yet';
 
-  const description = selfDelivery
+  const description = noRider
+    ? (input.noRiderDetail || NO_RIDER_DETAIL)
+    : selfDelivery
     ? 'No Swift rider will be sent for this order.'
     : riderAssigned
       ? 'The assigned rider is responsible for delivery.'
@@ -70,6 +86,9 @@ export function deliveryOwnerView(input: DeliveryOwnerInput) {
     active,
     riderAssigned,
     selfDelivery,
+    noRider,
+    /** The one-tap label: the question asked, answered. */
+    vendorChoiceLabel: noRider ? 'We’ll deliver it' : 'We’ll deliver',
     canChooseVendor,
     canChoosePlatform,
     title,

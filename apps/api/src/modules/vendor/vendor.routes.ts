@@ -43,7 +43,8 @@ import { fmtSlotTime, MAX_BUFFER_MINUTES, MAX_MIN_NOTICE_MINUTES, peakMoment } f
 import { appointmentMovedData, appointmentMovedDedupeKey } from '../booking/appointment-moved';
 import { INSTANT_BOOKING_OFF_MESSAGE, instantBookingSettingsForSave, mergeBookingConfig, overlappingWindows, overlappingWindowsMessage, windowsForSave } from '../booking/booking-config';
 import { instantBookingEnabled, NEW_BOOKABLE_LISTING_DEFAULTS } from '../booking/instant-booking';
-import { movedAppointmentFreeCancelEnd } from '../order/cancel-policy';
+import { movedAppointmentFreeCancelEnd, readNoMoverFound } from '../order/cancel-policy';
+import { NO_RIDER_STORE_DELIVERS_NOTE, noRiderStoreView, storeDeliversCustomerNotice, storeMayDeliverAfterNoRider } from '../order/no-rider-fallback';
 import { NO_SHOW_REASON, noShowCustomerNotice, noShowRefusal, noShowView, recordNoShowInTransaction } from '../booking/appointment-no-show';
 import { assertMmgRefundAmount } from '../order/mmg-refund-law';
 import { recordMmgRefundSent, refundSentCustomerNotice, storeRefundView } from '../order/mmg-refund-rail';
@@ -2568,9 +2569,13 @@ export async function vendorRoutes(app: FastifyInstance) {
     // [S1 response-shaping] a terminal order no longer hands floor staff the
     // customer's phone, the rider's phone, or the delivery address/GPS — the
     // live order keeps all of it, which is the only thing a handover needs.
+    // [PROD-RIDER-TEST (a)1] The board card says "No rider found. Deliver it yourselves?" for an order whose search
+    // came back empty (one journal read per riderless delivery on the page; everything else answers without one).
+    const noRider = new Map(await Promise.all(orders.map(async (o) => [o.id, await noRiderStoreView(app.prisma, o)] as const)));
     const data = orders.map((order) => withCounterpartPhones(request, redactCustomerContact({
       ...coerceMoney(order, ORDER_MONEY_FIELDS),
       ...handover.get(order.id),
+      ...noRider.get(order.id),
       items: order.items.map((item) => vendorOrderLine(coerceMoney(item, ORDER_ITEM_MONEY_FIELDS))),
       respondBy: vendorRespondBy(order, respondOpts),
       ...storeMmgPayBy(order),
@@ -2604,7 +2609,9 @@ export async function vendorRoutes(app: FastifyInstance) {
     // [OOS-FLOW · REVIEW-2 F2] outOfStockEndsOrder: this server ends an accepted order whose last item comes off
     // (with the store's confirmation). An app asks once, and words the wait for a swap, only when it reads this:
     // an app update that reaches phones before this server never promises a cancellation that will not happen.
-    return { success: true, data: { ...redactCustomerContact({ ...order, ...handover, items: order.items.map(vendorOrderLine), respondBy, ...storeMmgPayBy(order), canConfirmPayment: canConfirmPayment(role), ...noShow, ...notCollected, mmgRefund }), custodyRecovery, outOfStockEndsOrder: true } };
+    // [PROD-RIDER-TEST (a)1] "No rider found. Deliver it yourselves?" — the card's prompt, from the dispatch journal.
+    const noRider = await noRiderStoreView(app.prisma, order);
+    return { success: true, data: { ...redactCustomerContact({ ...order, ...handover, items: order.items.map(vendorOrderLine), respondBy, ...storeMmgPayBy(order), canConfirmPayment: canConfirmPayment(role), ...noShow, ...notCollected, mmgRefund, ...noRider }), custodyRecovery, outOfStockEndsOrder: true } };
   });
 
   /** [AF-MOB-006] POST /orders/:id/recovery/return-received — the store
@@ -2969,6 +2976,8 @@ export async function vendorRoutes(app: FastifyInstance) {
           orderType: true,
           paymentStatus: true,
           mmgClaimMismatchAt: true,
+          driverId: true,
+          orderNumber: true,
         },
       });
       if (live.fulfillment !== 'DELIVERY') {
@@ -2977,11 +2986,17 @@ export async function vendorRoutes(app: FastifyInstance) {
       if (isTerminalOrderStatus(live.status)) {
         throw new AppError(409, 'ORDER_CLOSED', 'This order is already closed');
       }
-      if (mode === 'VENDOR_DELIVERY') {
+      // [PROD-RIDER-TEST (a)1] "No rider found. Deliver it yourselves?": once the rider search for THIS order came
+      // back empty (the dispatch journal's fact, read on this locked row — the same one that frees the customer's
+      // cancel), one tap takes this order to the store's own delivery, without turning on the standing setting
+      // (that would send every later order to the store's own rider).
+      let afterNoRider = false;
+      if (mode === 'VENDOR_DELIVERY' && live.fulfillmentMode !== 'VENDOR_DELIVERY') {
         const vendor = live.vendorId
           ? await tx.vendor.findUnique({ where: { id: live.vendorId }, select: { selfDeliveryEnabled: true } })
           : null;
-        if (!vendor?.selfDeliveryEnabled) {
+        afterNoRider = storeMayDeliverAfterNoRider(live, await readNoMoverFound(tx, live));
+        if (!vendor?.selfDeliveryEnabled && !afterNoRider) {
           throw new AppError(400, 'SELF_DELIVERY_DISABLED', 'Turn on self-delivery in settings first');
         }
       }
@@ -2991,17 +3006,39 @@ export async function vendorRoutes(app: FastifyInstance) {
       if (mode === 'PLATFORM_RIDER' && live.fulfillmentMode === 'VENDOR_DELIVERY' && live.riderId) {
         throw new AppError(409, 'CUSTODY_CONFLICT', 'This order has conflicting delivery custody and needs operator review');
       }
-      if (live.fulfillmentMode === mode) return live;
+      if (live.fulfillmentMode === mode) return { ...live, afterNoRider: false };
       if (mode === 'PLATFORM_RIDER' && !live.riderId && cashRefusal) throw cashRefusal;
-      return tx.order.update({
+      const switched = await tx.order.update({
         where: { id: order.id },
         data: { fulfillmentMode: mode, fulfillmentModeVersion: { increment: 1 } },
       });
+      if (afterNoRider) {
+        // Evidence in the same commit: who took the delivery, and why. The status itself does not move.
+        await tx.orderStatusLog.create({
+          data: { orderId: order.id, status: live.status, changedBy: request.user.userId, note: NO_RIDER_STORE_DELIVERS_NOTE },
+        });
+      }
+      return { ...switched, afterNoRider };
     });
     // Fallback: "get a rider instead" dispatches a platform rider now if none is
     // on it yet. VENDOR_DELIVERY needs no rider — the vendor's own courier delivers.
     if (mode === 'VENDOR_DELIVERY') {
       await dispatch.retireForVendorDelivery(order.id, committed.fulfillmentModeVersion);
+      if (committed.afterNoRider) {
+        // [PROD-RIDER-TEST (a)1] The customer was told no rider was found: now they are told who brings it, in the
+        // own-rider notice's words (the order screen shows the same notice from the order's mode).
+        await emitToOrderRoom(app.prisma, app.io, order.id, 'order:status_changed', { orderId: order.id, status: committed.status, fulfillmentMode: 'VENDOR_DELIVERY' });
+        if (order.customerId) {
+          await notifications.send({
+            userId: order.customerId,
+            type: 'ORDER_UPDATE',
+            ...storeDeliversCustomerNotice(committed.orderNumber, (await app.prisma.vendor.findUnique({ where: { id: order.vendorId! }, select: { name: true } }))?.name),
+            audience: 'customer',
+            data: { orderId: order.id, kind: 'store_delivers' },
+            dedupeKey: `store-delivers:${order.id}:${committed.fulfillmentModeVersion}`,
+          }).catch(() => undefined);
+        }
+      }
     } else if (!committed.riderId && !mmgDispatchBlocked(committed)) {
       // [#1848 follow-up · REVIEW-M S4-1] Like acceptance: an MMG order not yet "Paid by MMG" arms no
       // dispatch here — "Paid by MMG" arms it. Decided on the committed row (the locked read, or the row the
