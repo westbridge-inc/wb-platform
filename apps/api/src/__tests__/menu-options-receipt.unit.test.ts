@@ -36,3 +36,14 @@ describe('[MENU-OPTIONS] the receipt shows the choices', () => {
     expect(html).not.toContain('<script>');
   });
 });
+
+describe('[MENU-OPTIONS] the kitchen-system hook reads the snapshot parts', () => {
+  it('halves map to sides; a legacy row reads as a whole-item modifier', async () => {
+    const { kitchenModifiers } = await import('../modules/order/kitchen-modifiers');
+    expect(kitchenModifiers([
+      { optionId: 'o1', optionGroupName: 'Toppings', optionName: 'Pepperoni (left half)', plainGroupName: 'Toppings', plainOptionName: 'Pepperoni', placement: 'LEFT', setsPrice: false },
+      { optionId: 'o2', optionGroupName: 'Toppings', optionName: 'Mushroom (right half)', plainGroupName: 'Toppings', plainOptionName: 'Mushroom', placement: 'RIGHT' },
+      { optionGroupName: 'Size', optionName: 'Large' },
+    ]).map((r) => [r.name, r.side, r.optionId])).toEqual([['Pepperoni', 1, 'o1'], ['Mushroom', 2, 'o2'], ['Large', 0, null]]);
+  });
+});
