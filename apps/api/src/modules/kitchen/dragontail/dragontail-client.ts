@@ -111,9 +111,8 @@ export class DragontailClient {
           json = null;
         }
         return { status: res.status, json };
-      } catch (err) {
+      } catch {
         lastProblem = controller.signal.aborted ? `timed out after ${this.opts.timeoutMs} ms` : 'network error';
-        void err;
       } finally {
         clearTimeout(timer);
       }
