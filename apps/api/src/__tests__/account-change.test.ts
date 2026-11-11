@@ -145,7 +145,9 @@ async function become(o: Who, over: Record<string, unknown> = {}) {
 const typedFor = (docType: string) => docType === 'account_holder_id' || docType === 'owner_national_id' ? { documentNumber: `ID${NUM}${seq}${nanoid(4)}` }
   : docType === 'certificate_of_incorporation' ? { registrationKind: 'COMPANY' as const }
     : docType === 'business_registration' ? { registrationKind: 'BUSINESS_NAME' as const, certificateYear: new Date().getUTCFullYear() }
-      : docType === 'own_name_declaration' ? { ownNameConfirmed: true as const } : {};
+      : docType === 'own_name_declaration' ? { ownNameConfirmed: true as const }
+        // [COMPANY-DOCS Part 2 · review F2] a letter of authority is approved only on a person's own confirmation
+        : docType.endsWith('_authority_letter') ? { authorityConfirmed: { method: 'CALLED_ON_FOUND_NUMBER' as const, reason: 'called the company on the number on its website; it confirmed' } } : {};
 
 async function file(userId: string, docType: string, role: 'STORE' | 'RESTAURANT' = 'STORE') {
   return service.submitDocument(userId, role, docType, await ownedVerificationFixture(app.prisma, userId, `ac-${docType}`), 'v1');
