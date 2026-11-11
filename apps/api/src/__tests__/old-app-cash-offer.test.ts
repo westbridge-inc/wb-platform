@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { nanoid } from 'nanoid';
 import type { UserRole } from '@prisma/client';
@@ -8,7 +8,7 @@ import { authPlugin } from '../plugins/auth';
 import { socketPlugin } from '../plugins/socket';
 import { registerErrorHandler } from '../middleware/error-handler';
 import { riderRoutes } from '../modules/rider/rider.routes';
-import { makeDispatchService, type DispatchService } from '../modules/dispatch/dispatch.service';
+import { makeDispatchService, rememberCashUnshown, type DispatchService } from '../modules/dispatch/dispatch.service';
 import { APP_UPDATE_STEPS, assertCashShown } from '../modules/dispatch/cash-limit';
 import { dispatchCashUnshownKey } from '../modules/dispatch/dispatch-generation-keys';
 import { recordDispatchQueue } from './helpers/dispatch-queue';
@@ -49,6 +49,20 @@ describe('[PROD-RIDER-TEST (b)1] the words of an old app\'s refusal', () => {
     expect(err?.code).toBe('CASH_AMOUNT_NOT_SHOWN');
     expect(err?.message).toContain('GY$10,400');
     expect(err?.message).not.toContain('update');
+  });
+});
+
+describe('[review S4-3] the skip and its expiry are written in one atomic call', () => {
+  it('one EVAL (SADD + EXPIRE together), never a bare SADD whose EXPIRE could fail apart', async () => {
+    const redis = { eval: vi.fn(async () => 1), sadd: vi.fn(async () => 1), expire: vi.fn(async () => 1) };
+    await rememberCashUnshown(redis as never, 'order-1', 2, 'rider-1');
+    expect(redis.eval).toHaveBeenCalledTimes(1);
+    expect(redis.sadd).not.toHaveBeenCalled();
+    expect(redis.expire).not.toHaveBeenCalled();
+    const [script, numKeys, key, member, ttl] = redis.eval.mock.calls[0] as unknown as [string, number, string, string, string];
+    expect(script).toContain("redis.call('SADD', KEYS[1], ARGV[1])");
+    expect(script).toContain("redis.call('EXPIRE', KEYS[1], ARGV[2])");
+    expect([numKeys, key, member, ttl]).toEqual([1, dispatchCashUnshownKey('order-1', 2), 'rider-1', '600']);
   });
 });
 
@@ -234,6 +248,10 @@ describe('[PROD-RIDER-TEST (b)] an older app and a cash job over GY$8,000', () =
     expect(blind.json().error).toMatchObject({ code: 'CASH_AMOUNT_NOT_SHOWN' });
     expect(blind.json().error.message).toContain(APP_UPDATE_STEPS);
     expect(await app.redis.sismember(dispatchCashUnshownKey(job.id, job.fulfillmentModeVersion), old.riderId)).toBe(1);
+    // [review S4-3] The skip always carries its expiry.
+    const ttl = await app.redis.ttl(dispatchCashUnshownKey(job.id, job.fulfillmentModeVersion));
+    expect(ttl).toBeGreaterThan(0);
+    expect(ttl).toBeLessThanOrEqual(600);
     expect((await dispatch.dispatchOrder(job.id)).offered).not.toBe(old.riderId);
   });
 

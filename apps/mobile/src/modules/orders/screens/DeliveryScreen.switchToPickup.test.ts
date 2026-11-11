@@ -13,6 +13,9 @@ describe('[PROD-RIDER-TEST (a)2] the customer\'s "Switch to pickup"', () => {
     expect(screen).toContain('{o.switchToPickup.message}');
     expect(screen).toContain('label="Switch to pickup"');
     expect(screen).toContain('customerApi.switchToPickup(targetOrderId)');
+    // [review S4-4] The first tap only opens the confirmation; the switch is sent from its "Yes" (never the first tap).
+    expect(screen).toContain('onPress={() => setConfirmPickupFor(orderId)}');
+    expect(screen.match(/switchToPickup\.mutate\(/g)).toHaveLength(1);
     expect(api).toMatch(/switchToPickup: \(id: string\) =>\s*\n\s*api\.post\(`\/customer\/orders\/\$\{id\}\/convert-to-pickup`, \{\}\)/);
   });
 
@@ -27,5 +30,22 @@ describe('[PROD-RIDER-TEST (a)2] the customer\'s "Switch to pickup"', () => {
     const block = screen.slice(screen.indexOf('const switchToPickup = useMutation'), screen.indexOf('const decideSub = useDecideSubstitution();'));
     expect(block).toContain("toast.error('Couldn’t switch to pickup', errorMessage(error,");
     expect(block).toContain('void order.refetch();');
+  });
+});
+
+describe('[review S4-4] a confirmation before the switch', () => {
+  const popup = screen.slice(screen.indexOf('Switch to pickup?'), screen.indexOf('{/* Cancel confirm */}'));
+
+  it('repeats the server\'s words (what comes off, what is left to pay) and says it cannot be undone', () => {
+    expect(popup).toContain('{o.switchToPickup.message}');
+    expect(popup).toContain('{PICKUP_SWITCH_FINAL}');
+    expect(screen).toContain("const PICKUP_SWITCH_FINAL = 'You collect it from the store yourself, and this can’t be undone.';");
+  });
+
+  it('"Yes" sends it, for the order the confirmation was opened on; "Keep delivery" closes it', () => {
+    expect(popup).toContain('label="Yes, switch to pickup"');
+    expect(popup).toContain('switchToPickup.mutate({ targetOrderId: orderId }, { onSettled: () => setConfirmPickupFor(null) })');
+    expect(popup).toContain('label="Keep delivery"');
+    expect(screen).toContain('visible={confirmPickupFor === orderId && !!o.switchToPickup}');
   });
 });

@@ -1,6 +1,8 @@
 import { formatMoney } from '../../utils/currency-amount';
 import { OWN_RIDER_NOTICE } from './own-rider-notice';
+import type { PrismaClient } from '@prisma/client';
 import { readNoMoverFound, type DispatchJournalReader, type NoMoverSubject } from './cancel-policy';
+import { ringRecipients, storeTeam } from '../notification/store-team';
 
 // ---------------------------------------------------------------------------
 // [PROD-RIDER-TEST 11 Nov 2026 · COORD ruling (a) under the owner's "just fix these issues"]
@@ -61,6 +63,20 @@ export async function noRiderStoreView(db: DispatchJournalReader, order: NoRider
   }
   if (!(await readNoMoverFound(db, order))) return NO_NO_RIDER;
   return { noRiderFound: true, noRiderPrompt: NO_RIDER_STORE_PROMPT, noRiderDetail: NO_RIDER_STORE_DETAIL };
+}
+
+/**
+ * [PROD-RIDER-TEST review S4-2 · COORD] Who in the store hears "No rider found" and "Customer cancelled the order":
+ * the same people the new-order alert rings (notification/store-team.ts ringRecipients: the whole team while staff
+ * invites need acceptance, the owner alone while they do not), never fewer than before (the owner, when the alert
+ * rule names nobody, e.g. a store not ACTIVE).
+ */
+export async function storeNoticeRecipients(db: Pick<PrismaClient, 'vendor'>, vendorId: string, ownerUserId: string | null | undefined): Promise<string[]> {
+  const team = await storeTeam(db, vendorId);
+  const ring = team ? ringRecipients(team) : [];
+  if (ring.length > 0) return ring;
+  const owner = ownerUserId ?? team?.ownerUserId ?? null;
+  return owner ? [owner] : [];
 }
 
 /** The store's push, at the first empty search (once per order state). */

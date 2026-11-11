@@ -428,6 +428,9 @@ const DeliveryMap = React.memo(function DeliveryMap({
   );
 });
 
+/** [PROD-RIDER-TEST review S4-4] Said before the second tap: the switch is final. */
+const PICKUP_SWITCH_FINAL = 'You collect it from the store yourself, and this can’t be undone.';
+
 export function DeliveryScreen() {
   const navigation = useNavigation<any>();
   const route = useRoute<any>();
@@ -528,6 +531,8 @@ export function DeliveryScreen() {
   });
   // [PROD-RIDER-TEST (a)2] "Switch to pickup" after no rider was found: the server decides (a rider or the store may
   // have taken it meanwhile) and its words are shown either way; the order is read again.
+  // [review S4-4] The confirmation is open for this order (null: closed).
+  const [confirmPickupFor, setConfirmPickupFor] = useState<string | null>(null);
   const switchToPickup = useMutation<unknown, any, { targetOrderId: string }>({
     mutationFn: ({ targetOrderId }) => customerApi.switchToPickup(targetOrderId),
     meta: { silent: true },
@@ -1834,7 +1839,7 @@ export function DeliveryScreen() {
                 size="md"
                 loading={switchToPickup.isPending}
                 disabled={switchToPickup.isPending || cancelOrder.isPending}
-                onPress={() => switchToPickup.mutate({ targetOrderId: orderId })}
+                onPress={() => setConfirmPickupFor(orderId)}
               />
             </View>
           ) : null}
@@ -1850,6 +1855,42 @@ export function DeliveryScreen() {
           ) : null}
         </ScrollView>
       </View>
+
+      {/* [PROD-RIDER-TEST review S4-4] "Switch to pickup" cannot be undone: the server's own words (what comes off,
+          what is left to pay) are repeated, and a second tap confirms. Bound to the order it was opened on. */}
+      <PopupCard
+        visible={confirmPickupFor === orderId && !!o.switchToPickup}
+        onClose={() => { if (!switchToPickup.isPending) setConfirmPickupFor(null); }}
+      >
+        <IconChip icon="shopping-bag" size={56} />
+        <PopupTitle variant="heading" center style={{ marginTop: space.md }}>
+          Switch to pickup?
+        </PopupTitle>
+        {typeof o.switchToPickup?.message === 'string' ? (
+          <T variant="label" tone="muted" center style={{ marginTop: space.sm }}>
+            {o.switchToPickup.message}
+          </T>
+        ) : null}
+        <T variant="label" weight="semibold" center style={{ marginTop: space.md }}>
+          {PICKUP_SWITCH_FINAL}
+        </T>
+        <View style={{ alignSelf: 'stretch', gap: space.md, marginTop: space.xl }}>
+          <PillButton
+            label="Yes, switch to pickup"
+            icon="shopping-bag"
+            size="md"
+            loading={switchToPickup.isPending}
+            onPress={() => switchToPickup.mutate({ targetOrderId: orderId }, { onSettled: () => setConfirmPickupFor(null) })}
+          />
+          <PillButton
+            label="Keep delivery"
+            variant="soft"
+            size="md"
+            disabled={switchToPickup.isPending}
+            onPress={() => setConfirmPickupFor(null)}
+          />
+        </View>
+      </PopupCard>
 
       {/* Cancel confirm */}
       <PopupCard

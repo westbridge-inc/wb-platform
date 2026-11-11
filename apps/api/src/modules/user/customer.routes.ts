@@ -1,6 +1,7 @@
 import { servedPhotoAddress } from '../../utils/photo-address';
 import { emitToOrderRoom, emitToStoreRoom } from '../order/order-room-emission.service';
 import { pickupSwitchOffer } from '../order/no-rider-fallback';
+import { withdrawOfferOfPickupSwitch } from '../dispatch/offer-withdrawal';
 import { customerTimeline } from '../order/customer-timeline';
 import { shownRatingFor, shownSurface } from '../rating/rating-groups';
 import { ownerWallSystem } from '../../lib/owner-rls';
@@ -3486,6 +3487,10 @@ export async function customerRoutes(app: FastifyInstance) {
         if (r.count > 0) dispatchSearchesCounter.inc({ status: 'cancelled' });
       })
       .catch(() => {});
+
+    // [PROD-RIDER-TEST S3-1] A rider card still ringing for this order (a re-sweep or the store's "Find a rider" may
+    // have rung one while the customer chose) goes now, through the one withdrawal point, and its mover is free.
+    await withdrawOfferOfPickupSwitch({ prisma: app.prisma, redis: app.redis, io: app.io }, order.id);
 
     // Both sides hear it now. [PICKUP · owner 30 Oct 2026 · REVIEW-F S3-1 on #2251] The words promise a code
     // only when the store asks for one; off (the default) the counter checks the first name and order number

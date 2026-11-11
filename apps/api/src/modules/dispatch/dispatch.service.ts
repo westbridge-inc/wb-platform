@@ -67,7 +67,7 @@ import {
   WITHDRAWN_CARD_SCREEN_SKEW_MS,
 } from './dispatch-generation-keys';
 import { assertOrderMayProceed } from '../compliance/prohibited-gate';
-import { noRiderStoreNotice } from '../order/no-rider-fallback';
+import { noRiderStoreNotice, storeNoticeRecipients } from '../order/no-rider-fallback';
 import { measureDeliveryCapacity, type CapacityProbe, type DeliveryCapacity } from './delivery-capacity';
 
 declare module 'fastify' {
@@ -313,10 +313,20 @@ export function cashMathForOffer(order: {
 const declinedKey = dispatchDeclinedKey;
 
 /** [PROD-RIDER-TEST (b)2] Remember that this rider's app could not show this job's cash (dispatchCashUnshownKey). */
-export async function rememberCashUnshown(redis: Redis, orderId: string, version: number | null | undefined, riderId: string): Promise<void> {
-  const key = dispatchCashUnshownKey(orderId, version);
-  await redis.sadd(key, riderId).catch(() => {});
-  await redis.expire(key, CASH_UNSHOWN_SKIP_SECONDS).catch(() => {});
+/** [review S4-3] The member and its expiry land in ONE atomic call: the skip can never outlive its TTL. */
+export async function rememberCashUnshown(redis: Pick<Redis, 'eval'>, orderId: string, version: number | null | undefined, riderId: string): Promise<void> {
+  await redis.eval(
+    `
+      -- CASH_UNSHOWN_SKIP: add the rider and (re)arm the skip's expiry together.
+      redis.call('SADD', KEYS[1], ARGV[1])
+      redis.call('EXPIRE', KEYS[1], ARGV[2])
+      return 1
+    `,
+    1,
+    dispatchCashUnshownKey(orderId, version),
+    riderId,
+    String(CASH_UNSHOWN_SKIP_SECONDS),
+  ).catch(() => {});
 }
 /**
  * [REPORT-014 F-014-04] Offer ATTEMPT identity. Both Redis pointers store a
@@ -3439,14 +3449,21 @@ export class DispatchService {
     epoch: string,
   ): Promise<void> {
     if (!order.vendor || order.orderType === 'COURIER' || order.orderType === 'TAXI') return;
-    await this.notifications.send({
-      userId: order.vendor.owner.userId,
-      type: 'SYSTEM_ANNOUNCEMENT',
-      ...noRiderStoreNotice(order.orderNumber),
-      audience: 'business',
-      data: { kind: 'dispatch_exhausted', orderId: order.id },
-      dedupeKey: `dispatch-exhausted:${order.id}:${epoch}`,
-    });
+    // [review S4-2] Every store device the new-order alert rings (storeNoticeRecipients), each once per order state.
+    const row = await this.prisma.order.findUnique({ where: { id: order.id }, select: { vendorId: true } });
+    const recipients = row?.vendorId
+      ? await storeNoticeRecipients(this.prisma, row.vendorId, order.vendor.owner.userId)
+      : [order.vendor.owner.userId];
+    for (const userId of recipients) {
+      await this.notifications.send({
+        userId,
+        type: 'SYSTEM_ANNOUNCEMENT',
+        ...noRiderStoreNotice(order.orderNumber),
+        audience: 'business',
+        data: { kind: 'dispatch_exhausted', orderId: order.id },
+        dedupeKey: `dispatch-exhausted:${order.id}:${epoch}`,
+      });
+    }
   }
 
   /** [E02 · DS272 F1] The slow lane's release matched nothing. Usually a

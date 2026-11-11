@@ -1,5 +1,8 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { nanoid } from 'nanoid';
 import { buildWalkWorld, call, castWalk, drainDue, placeCashOrder, releaseWorld, type Cast, type WalkWorld } from './helpers/order-walk-world';
+import { testPhone } from './helpers/fixture-ids';
+import { dispatchMoverOfferKey, dispatchOfferKey } from '../modules/dispatch/dispatch-generation-keys';
 import { OWN_RIDER_NOTICE } from '../modules/order/own-rider-notice';
 
 // ---------------------------------------------------------------------------
@@ -16,6 +19,21 @@ import { OWN_RIDER_NOTICE } from '../modules/order/own-rider-notice';
 
 let w: WalkWorld;
 const flagBefore = process.env['DISPATCH_EXHAUSTION'];
+const inviteBefore = process.env['STAFF_INVITE_ACCEPT'];
+
+/** [review S4-1/S4-2] A STAFF member of the store, signed in (a store tablet signed in as staff). */
+async function addStaff(cast: Cast): Promise<{ userId: string; token: string }> {
+  const user = await w.app.prisma.user.create({
+    data: { phone: testPhone(), firstName: 'Walk', lastName: 'Staff', roles: ['CUSTOMER'] as never, activeRole: 'CUSTOMER' as never, isPhoneVerified: true, selfieCapturedAt: new Date(), customer: { create: {} } },
+  });
+  w.userIds.add(user.id);
+  const token = w.app.jwt.sign({ userId: user.id, role: 'CUSTOMER', jti: nanoid(8) });
+  await w.app.prisma.session.create({
+    data: { userId: user.id, token, refreshToken: nanoid(48), deviceId: `walk-staff-${nanoid(6)}`, deviceType: 'test', expiresAt: new Date(Date.now() + 86_400_000) },
+  });
+  await w.app.prisma.vendorStaff.create({ data: { vendorId: cast.vendorId, userId: user.id, role: 'STAFF', invitedBy: cast.vendorOwner.userId } });
+  return { userId: user.id, token };
+}
 
 beforeAll(async () => {
   delete process.env['DISPATCH_EXHAUSTION']; // production today: the general conversion switch is off
@@ -27,6 +45,8 @@ afterAll(async () => {
   await w.app.close();
   if (flagBefore === undefined) delete process.env['DISPATCH_EXHAUSTION'];
   else process.env['DISPATCH_EXHAUSTION'] = flagBefore;
+  if (inviteBefore === undefined) delete process.env['STAFF_INVITE_ACCEPT'];
+  else process.env['STAFF_INVITE_ACCEPT'] = inviteBefore;
 });
 
 async function noticesOf(orderId: string, userId: string) {
@@ -157,5 +177,82 @@ describe('[PROD-RIDER-TEST (a)3] the store sees clearly when the customer cancel
     const store = (await noticesOf(id, cast.vendorOwner.userId)).filter((n) => n.title === 'Customer cancelled the order');
     expect(store).toHaveLength(1);
     expect(store[0]!.body).toContain('after no rider was found');
+  }, 120_000);
+});
+
+// [PROD-RIDER-TEST review round · COORD 11 Nov 2026]
+describe('[review S3-1] "Switch to pickup" withdraws a rider card still ringing for the order', () => {
+  it('the live offer pair goes at once and the rider is free for the next offer', async () => {
+    const cast = await castWalk(w, 1);
+    const { orderId } = await placeCashOrder(w, cast);
+    const id = orderId!;
+    expect((await call(w, 'PUT', `/api/v1/vendor/orders/${id}/accept`, cast.vendorOwner.token)).statusCode).toBe(200);
+    await drainDue(w);
+    expect(await w.app.prisma.dispatchSearch.count({ where: { subjectId: id, status: 'EXHAUSTED' } })).toBeGreaterThan(0);
+    // A rider comes online and the store's "Find a rider" rings them: a live card.
+    const r = cast.riders[0]!;
+    expect((await call(w, 'POST', '/api/v1/rider/go-online', r.token, { latitude: r.lat, longitude: r.lng })).statusCode).toBe(200);
+    expect((await call(w, 'POST', `/api/v1/vendor/orders/${id}/retry-dispatch`, cast.vendorOwner.token, {})).statusCode).toBe(200);
+    expect(await w.app.redis.get(dispatchOfferKey(id))).toMatch(new RegExp(`^${r.riderId}`));
+    // The customer, still offered the switch (no rider found stays true through a retry), takes it.
+    const res = await call(w, 'POST', `/api/v1/customer/orders/${id}/convert-to-pickup`, cast.customer.token, {});
+    expect(res.statusCode, res.body).toBe(200);
+    expect(await w.app.redis.get(dispatchOfferKey(id))).toBeNull();
+    expect(await w.app.redis.get(dispatchMoverOfferKey(r.riderId))).toBeNull();
+    await w.app.prisma.rider.update({ where: { id: r.riderId }, data: { isOnline: false, isAvailable: false } });
+  }, 120_000);
+});
+
+describe('[review S4-1 · COORD: any store role may tap] the status log records who took the delivery', () => {
+  it('a STAFF member\'s "We\'ll deliver it" is accepted and logged with that person as the actor', async () => {
+    const { cast, id } = await acceptedWithNoRider();
+    const staff = await addStaff(cast);
+    const tap = await call(w, 'PUT', `/api/v1/vendor/orders/${id}/fulfillment-mode`, staff.token, { mode: 'VENDOR_DELIVERY' });
+    expect(tap.statusCode, tap.body).toBe(200);
+    const row = await w.app.prisma.orderStatusLog.findFirstOrThrow({
+      where: { orderId: id, note: 'No rider found: the store chose to deliver this order itself' },
+    });
+    expect(row.changedBy).toBe(staff.userId);
+  }, 120_000);
+});
+
+describe('[review S4-2 · COORD] the store notices reach the team the new-order alert rings', () => {
+  it('with staff invites on, the owner AND a staff member hear "No rider found" and "Customer cancelled the order"', async () => {
+    process.env['STAFF_INVITE_ACCEPT'] = '1';
+    try {
+      const cast = await castWalk(w, 0);
+      const staff = await addStaff(cast);
+      const { orderId } = await placeCashOrder(w, cast);
+      const id = orderId!;
+      expect((await call(w, 'PUT', `/api/v1/vendor/orders/${id}/accept`, cast.vendorOwner.token)).statusCode).toBe(200);
+      await drainDue(w);
+      for (const userId of [cast.vendorOwner.userId, staff.userId]) {
+        expect((await noticesOf(id, userId)).filter((n) => n.title === 'No rider found'), userId).toHaveLength(1);
+      }
+      expect((await call(w, 'POST', `/api/v1/customer/orders/${id}/cancel`, cast.customer.token, { reason: 'No rider' })).statusCode).toBe(200);
+      for (const userId of [cast.vendorOwner.userId, staff.userId]) {
+        expect((await noticesOf(id, userId)).filter((n) => n.title === 'Customer cancelled the order'), userId).toHaveLength(1);
+      }
+    } finally {
+      if (inviteBefore === undefined) delete process.env['STAFF_INVITE_ACCEPT'];
+      else process.env['STAFF_INVITE_ACCEPT'] = inviteBefore;
+    }
+  }, 120_000);
+
+  it('with staff invites off (the new-order alert rings the owner alone), the owner alone hears them', async () => {
+    delete process.env['STAFF_INVITE_ACCEPT'];
+    try {
+      const cast = await castWalk(w, 0);
+      const staff = await addStaff(cast);
+      const { orderId } = await placeCashOrder(w, cast);
+      const id = orderId!;
+      expect((await call(w, 'PUT', `/api/v1/vendor/orders/${id}/accept`, cast.vendorOwner.token)).statusCode).toBe(200);
+      await drainDue(w);
+      expect((await noticesOf(id, cast.vendorOwner.userId)).filter((n) => n.title === 'No rider found')).toHaveLength(1);
+      expect((await noticesOf(id, staff.userId)).filter((n) => n.title === 'No rider found')).toHaveLength(0);
+    } finally {
+      if (inviteBefore === undefined) delete process.env['STAFF_INVITE_ACCEPT'];
+      else process.env['STAFF_INVITE_ACCEPT'] = inviteBefore;
+    }
   }, 120_000);
 });

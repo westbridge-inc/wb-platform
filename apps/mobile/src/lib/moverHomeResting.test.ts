@@ -5,7 +5,7 @@ import { moverHomeResting } from './moverHomeResting';
 
 // [PROD-RIDER-TEST 11 Nov 2026 · COORD ruling (b)3] The rider's home takes a downloaded update only when nothing on it
 // can be cut: never over a ringing offer card, a live delivery or ride, or before the job read has answered.
-const idle = { kind: 'RIDER', jobKnown: true, activeJob: null, run: null, offer: null, queuedBehind: 0 };
+const idle = { kind: 'RIDER', jobKnown: true, activeJob: null, run: null, offer: null, queuedBehind: 0, recovering: false };
 
 describe('[PROD-RIDER-TEST (b)3] when the rider\'s home is a resting screen', () => {
   it('idle: no job, no run, no offer -> resting', () => {
@@ -21,8 +21,13 @@ describe('[PROD-RIDER-TEST (b)3] when the rider\'s home is a resting screen', ()
     expect(moverHomeResting({ ...idle, kind: null })).toBe(false);
   });
 
+  it('[review S3-2] never while an offer-recovery read is in flight (a return to the screen may be about to draw a card)', () => {
+    expect(moverHomeResting({ ...idle, recovering: true })).toBe(false);
+  });
+
   it('the home screen claims MoverRoot with exactly this rule (no other claim of the route anywhere)', () => {
     const src = readFileSync(join(__dirname, '../modules/mover/screens/MoverHomeScreen.tsx'), 'utf8');
-    expect(src).toContain("useOtaRestingRoute('MoverRoot', moverHomeResting({ kind, jobKnown: active.isSuccess, activeJob: active.data, run, offer, queuedBehind }));");
+    expect(src).toContain("useOtaRestingRoute('MoverRoot', moverHomeResting({ kind, jobKnown: active.isSuccess, activeJob: active.data, run, offer, queuedBehind, recovering }));");
+    expect(src).toContain('const { offer, queuedBehind, dismiss, recovering } = useDispatchOffers(');
   });
 });
