@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 
 vi.mock('react-native', () => ({ View: 'View' }));
-vi.mock('@swift/ui', () => ({ space: { xs: 4, sm: 8, md: 12, xl: 20, '2xl': 24, '3xl': 32 } }));
-vi.mock('../../../kit', () => ({ CheckRow: 'CheckRow', Segmented: 'Segmented', T: 'T', TonePill: 'TonePill' }));
+vi.mock('@swift/ui', () => ({ space: { xs: 4, sm: 8, md: 12, lg: 16, xl: 20, '2xl': 24, '3xl': 32 } }));
+vi.mock('../../../kit', () => ({ CheckRow: 'CheckRow', Chip: 'Chip', Segmented: 'Segmented', T: 'T', TonePill: 'TonePill' }));
 vi.mock('../../../lib/money', () => ({ money: (amount: number) => `$${amount.toLocaleString('en-US')}` }));
 
 import { ItemChoices } from './ItemChoices';
@@ -74,7 +74,9 @@ describe('[MENU-OPTIONS] the phone item sheet', () => {
   it('a sold-out topping is shown and cannot be tapped', () => {
     const s = sheet();
     expect(s.row('mush')).toBeUndefined();
-    expect(texts(s.tree())).toContain('Mushroom · sold out');
+    const soldOut = s.tree().find((n) => n.type === 'Chip' && n.props.label === 'Mushroom · sold out');
+    expect(soldOut, 'shown').toBeTruthy();
+    expect(soldOut.props.onPress, 'never tappable').toBeUndefined();
   });
 
   it('the follow-up group is not there until its opener is chosen, appears right under it, and its choice clears with it', () => {

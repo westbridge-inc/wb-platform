@@ -18,10 +18,21 @@ export function sheetUnitPrice(item: PricedItem, selection: SheetSelection): num
   return Number.isFinite(unit) ? unit : null;
 }
 
+/** A group as the validator reads it, with the rule fields an older or partial answer left out at their safest
+ *  reading (the server's columns default the same way: not required, no minimum, pick one). */
+function asValidatable(group: SheetGroup): ValidatableGroup {
+  return {
+    ...group,
+    isRequired: group.isRequired === true,
+    minSelect: Number.isInteger(group.minSelect) ? group.minSelect : 0,
+    maxSelect: Number.isInteger(group.maxSelect) ? group.maxSelect : 1,
+  } as ValidatableGroup;
+}
+
 /** Why the server would refuse these choices (the group's own words), or null when it would accept them. */
 export function selectionProblem(item: { optionGroups?: SheetGroup[] | null }, selection: SheetSelection): string | null {
   try {
-    validateSelectedOptions({ optionGroups: (item.optionGroups ?? []) as ValidatableGroup[] }, selection);
+    validateSelectedOptions({ optionGroups: (item.optionGroups ?? []).map(asValidatable) }, selection);
     return null;
   } catch (error) {
     if (error instanceof OptionSelectionError) return error.message;

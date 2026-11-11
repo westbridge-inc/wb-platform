@@ -2,7 +2,7 @@
 import React from 'react';
 import { View } from 'react-native';
 import { space } from '@swift/ui';
-import { CheckRow, Segmented, T, TonePill } from '../../../kit';
+import { CheckRow, Chip, Segmented, T, TonePill } from '../../../kit';
 import { money } from '../../../lib/money';
 import { halfPrice } from '../../../lib/menuOptionsEngine';
 import {
@@ -97,8 +97,8 @@ export function ItemChoices({ groups, selection, onChoose, onPlace }: ItemChoice
           if (!onSale(option)) {
             // [F4] Shown so the menu stays honest, never chosen (the server refuses it anyway).
             return (
-              <View key={option.id} style={{ minHeight: 44, justifyContent: 'center', opacity: 0.45 }} accessibilityLabel={`${option.name}, sold out`}>
-                <T tone="muted">{`${option.name} · sold out`}</T>
+              <View key={option.id} style={{ flexDirection: 'row', paddingVertical: space.xs }}>
+                <Chip label={`${option.name} · sold out`} style={{ height: 42, paddingHorizontal: space.lg, opacity: 0.45 }} />
               </View>
             );
           }

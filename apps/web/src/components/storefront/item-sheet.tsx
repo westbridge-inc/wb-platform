@@ -30,8 +30,7 @@ const PLACEMENTS: ReadonlyArray<{ key: Placement; label: string }> = [
 
 /** [MENU-OPTIONS] What a choice's row says about money: a size its PRICE (it is the item's price), any other choice
  *  what it adds; nothing when it is free. Null when the server's figure cannot be read. */
-function choicePrice(group: OptionGroup, additionalPrice: unknown): string | null | '' {
-  const amount = parseAmount(additionalPrice);
+function choicePrice(group: OptionGroup, amount: number | null): string | null | '' {
   if (amount === null) return null;
   if (group.setsPrice === true) return gyMoney(amount);
   return amount > 0 ? `+${gyMoney(amount)}` : '';
@@ -176,10 +175,11 @@ function OptionGroupFields({ group, groups, selectedOptions, onChoose, onPlace, 
         }
         const checked = isChosen(selectedOptions, group.id, option.id);
         const blockedByLimit = multiLimitReached && !checked;
-        const price = choicePrice(group, option.additionalPrice);
+        // [W6] A choice whose price cannot be read is never priced: the row says so.
+        const extra = parseAmount(option.additionalPrice);
+        const price = choicePrice(group, extra);
         const placement = checked && group.allowHalves === true ? placementOf(selectedOptions, group.id, option.id) : null;
         const opens = checked && !nested ? followUpFor(groups, group, option) : null;
-        const amount = parseAmount(option.additionalPrice);
         return (
           <div key={option.id} className={styles.optionRow}>
             <label className={`${styles.optionLabel} ${blockedByLimit ? styles.optionLabelDisabled : ''}`}>
@@ -193,7 +193,7 @@ function OptionGroupFields({ group, groups, selectedOptions, onChoose, onPlace, 
                 />
                 {option.name}
               </span>
-              {price === null ? (
+              {extra === null ? (
                 <span className={styles.optionPrice}>Price unavailable</span>
               ) : price ? (
                 <span className={styles.optionPrice}>{price}</span>
@@ -215,8 +215,8 @@ function OptionGroupFields({ group, groups, selectedOptions, onChoose, onPlace, 
                     </button>
                   ))}
                 </div>
-                {amount !== null && amount > 0 ? (
-                  <p className={styles.optionGuidance}>Whole +{gyMoney(amount)} · half +{gyMoney(halfPrice(amount, group.halfPricePercent ?? 100))}</p>
+                {extra !== null && extra > 0 ? (
+                  <p className={styles.optionGuidance}>Whole +{gyMoney(extra)} · half +{gyMoney(halfPrice(extra, group.halfPricePercent ?? 100))}</p>
                 ) : null}
               </div>
             ) : null}
