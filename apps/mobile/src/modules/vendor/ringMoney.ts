@@ -11,8 +11,22 @@
  * Swift-rider order, the store's own when its own rider delivers (the order's recorded choice, else the store's
  * standing "we deliver" setting — the rule acceptance binds with, fulfillment/fulfillment-mode.ts).
  *
- * Plain file, no React Native: the website's takeover imports it as is, so both ring screens say the same.
+ * [STORE-MONEY] A server that sends `storeMoney` (apps/api billing/store-money.ts — the sales statement's law, with
+ * the MMG, Swift-discount and own-delivery cases) is the answer: its number and its own words are shown verbatim.
+ * The rule above stays only for a server that does not send it yet.
+ *
+ * Plain file, no React Native: the website imports it as is, so the phone and the website say the same.
  */
+
+/** The server's breakdown, as far as a screen needs it. */
+export interface ServerStoreMoney {
+  food?: unknown;
+  foodWord?: unknown;
+  foodLabel?: unknown;
+  lines?: unknown;
+  /** SWIFT_RIDER · STORE_RIDER · PICKUP · APPOINTMENT */
+  delivery?: unknown;
+}
 export interface RingMoneyOrder {
   subtotalCustomer?: unknown;
   discount?: unknown;
@@ -21,6 +35,7 @@ export interface RingMoneyOrder {
   fulfillment?: string | null;
   fulfillmentMode?: string | null;
   vendor?: { vendorType?: string | null; selfDeliveryEnabled?: boolean | null } | null;
+  storeMoney?: ServerStoreMoney | null;
 }
 
 export interface RingMoney {
@@ -28,8 +43,12 @@ export interface RingMoney {
   label: string;
   /** The store's goods money; null when the order carried no readable goods amount (the screen shows no number). */
   food: number | null;
+  /** "Food — you receive": the label beside the number on the order screen. */
+  longLabel: string;
   /** Whose the delivery fee and tip are; null when the order has neither (or no rider: a pickup or a booking). */
   note: string | null;
+  /** Every plain line under the number, in order (the server's lines when it sent them; else `note` alone). */
+  notes: string[];
 }
 
 /** A wire amount (a number, or a Decimal serialised as a string), or null when it is not a finite number. */
@@ -49,7 +68,20 @@ export function ownRiderDelivers(o: RingMoneyOrder): boolean {
   return o.vendor?.selfDeliveryEnabled === true;
 }
 
+/** The server's breakdown, when it is well formed; null otherwise (an older server, or a malformed payload). */
+function serverMoney(o: RingMoneyOrder): RingMoney | null {
+  const m = o.storeMoney;
+  if (!m || typeof m !== 'object') return null;
+  const food = amount(m.food);
+  if (food == null || typeof m.foodWord !== 'string' || !m.foodWord.trim()) return null;
+  const notes = Array.isArray(m.lines) ? m.lines.filter((l): l is string => typeof l === 'string' && l.trim() !== '') : [];
+  const longLabel = typeof m.foodLabel === 'string' && m.foodLabel.trim() ? m.foodLabel : `${m.foodWord} — you receive`;
+  return { label: m.foodWord, longLabel, food, note: notes[0] ?? null, notes };
+}
+
 export function ringMoney(o: RingMoneyOrder, storeKind?: string | null): RingMoney {
+  const fromServer = serverMoney(o);
+  if (fromServer) return fromServer;
   const kind = o.vendor?.vendorType ?? storeKind ?? null;
   const label = o.fulfillment === 'APPOINTMENT' || kind === 'SERVICE' ? 'Service' : kind === 'RESTAURANT' ? 'Food' : 'Items';
   const goods = amount(o.subtotalCustomer);
@@ -66,5 +98,5 @@ export function ringMoney(o: RingMoneyOrder, storeKind?: string | null): RingMon
       ? `${what} ${plural ? 'are' : 'is'} yours — your rider delivers`
       : `${what} ${plural ? 'go' : 'goes'} to the rider`;
   }
-  return { label, food, note };
+  return { label, longLabel: `${label} — you receive`, food, note, notes: note ? [note] : [] };
 }

@@ -257,11 +257,11 @@ export function NewOrderTakeover({
               <T variant="bodyStrong">{ring.label}</T>
               <Money amount={ring.food} size="l" />
             </View>
-            {ring.note ? (
-              <T variant="caption" tone="muted" style={{ marginTop: space.xs }}>
-                {ring.note}
+            {ring.notes.map((line) => (
+              <T key={line} variant="caption" tone="muted" style={{ marginTop: space.xs }}>
+                {line}
               </T>
-            ) : null}
+            ))}
           </View>
         ) : null}
 

@@ -294,7 +294,7 @@ export default function NewOrderTakeover({ orders, onOpenOrder }: { orders: Vend
         <p className="mt-3 text-lg font-bold">
           #{current.orderNumber} · {ring.label} {money(ring.food)}
         </p>
-        {ring.note && <p className="mt-1 text-sm text-[var(--swift-muted)]">{ring.note}</p>}
+        {ring.notes.map((line) => <p key={line} className="mt-1 text-sm text-[var(--swift-muted)]">{line}</p>)}
         <p className="mt-1 text-sm text-[var(--swift-muted)]">
           {customer} · {current.items.length} item{current.items.length === 1 ? '' : 's'} ·{' '}
           {current.fulfillment === 'APPOINTMENT' ? 'appointment' : current.fulfillment === 'PICKUP' ? 'pickup' : 'delivery'}

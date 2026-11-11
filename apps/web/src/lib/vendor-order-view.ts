@@ -8,6 +8,8 @@ import { formatAppointmentSlot } from './appointmentTime';
 import { storeOrderStatusWords } from '@swift/types/src/order-words';
 import type { VendorOrder } from './vendor-api';
 import { promisedTimeName } from './store-kind-words';
+// [STORE-MONEY] The app's own reader of the store's money (plain file, imported as is).
+import { ownRiderDelivers, ringMoney } from '../../../mobile/src/modules/vendor/ringMoney';
 
 /** The phone's pill words, from the one shared map (@swift/types order-words).
  *  A status this build does not know reads "Status unavailable", never the code. */
@@ -15,14 +17,31 @@ export function vendorStatusLabel(status: string | null | undefined): string {
   return storeOrderStatusWords(status);
 }
 
-/** The money card: recorded amounts only. Optional lines show only when the order carries them. */
+/** The money card: recorded amounts only. Optional lines show only when the order carries them.
+ *  [STORE-MONEY · owner 11 Nov 2026] It ends on the STORE's money (the food, after its own discount) — never on the
+ *  customer's total, which carries the rider's delivery fee and tip. The phone's card says the same. */
 export function orderMoneyRows(o: VendorOrder): Array<{ label: string; value: number | null; minus?: boolean; strong?: boolean }> {
+  const sm = ringMoney(o);
+  const yours = storeKeepsDelivery(o);
   const rows: Array<{ label: string; value: number | null; minus?: boolean; strong?: boolean }> = [{ label: 'Items', value: o.subtotalBase ?? null }];
-  if ((o.deliveryFee ?? 0) > 0) rows.push({ label: 'Delivery fee (rider’s)', value: o.deliveryFee ?? null });
-  if ((o.tipAmount ?? 0) > 0) rows.push({ label: 'Tip', value: o.tipAmount ?? null });
+  if ((o.deliveryFee ?? 0) > 0) rows.push({ label: yours ? 'Delivery fee (yours)' : 'Delivery fee (rider’s)', value: o.deliveryFee ?? null });
+  if ((o.tipAmount ?? 0) > 0) rows.push({ label: yours ? 'Tip (yours)' : 'Tip (rider’s)', value: o.tipAmount ?? null });
   if ((o.discount ?? 0) > 0) rows.push({ label: 'Promo discount', value: o.discount ?? null, minus: true });
-  rows.push({ label: 'Customer pays', value: o.totalAmount, strong: true });
+  rows.push({ label: 'Customer pays', value: o.totalAmount });
+  rows.push({ label: sm.longLabel, value: sm.food, strong: true });
   return rows;
+}
+
+/** [STORE-MONEY] The plain lines under the money card: whose the fee and tip are, what Swift pays (server words). */
+export function orderMoneyNotes(o: VendorOrder): string[] {
+  return ringMoney(o).notes;
+}
+
+/** The store keeps the delivery fee and tip only when its own rider delivers (the server's word, else the app's rule). */
+function storeKeepsDelivery(o: VendorOrder): boolean {
+  if (o.fulfillment !== 'DELIVERY') return false;
+  const said = o.storeMoney?.delivery;
+  return typeof said === 'string' ? said === 'STORE_RIDER' : ownRiderDelivers(o);
 }
 
 /** The line under the money card: how this order is paid. A method with no

@@ -2,6 +2,7 @@
 
 // Typed client over the EXISTING vendor endpoints — the web dashboard is
 // another client on the same backend; it never invents its own order logic.
+import type { ServerStoreMoney } from '../../../mobile/src/modules/vendor/ringMoney';
 import type { SubstitutionStatus } from '@swift/types';
 import { apiFetch } from './auth';
 import { formatMoney, parseAmount } from './money';
@@ -121,6 +122,9 @@ export interface VendorOrder {
   deliveryFee?: number | null;
   tipAmount?: number | null;
   discount?: number | null;
+  /** [STORE-MONEY] The server's word on the store's own money: the food (the big number) and whose the delivery fee
+   *  and tip are, in plain lines. Read through ringMoney (the app's rule file); absent on an older server. */
+  storeMoney?: ServerStoreMoney | null;
   /** [U25] Straight off the order record: why and when it was cancelled. */
   cancellationReason?: string | null;
   cancelledAt?: string | null;

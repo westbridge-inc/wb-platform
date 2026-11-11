@@ -15,6 +15,7 @@ import { branchOutcomeWords, forEachBranch } from '@/lib/branch-bulk';
 import { branchLabel, isAwaitingApproval, waitingFor } from '@/lib/branch-label';
 import { ownerSteps } from '@/lib/branch-go-live';
 import { DataUnavailable } from '@/components/data-unavailable';
+import { ringMoney } from '../../../../../mobile/src/modules/vendor/ringMoney';
 
 const LANE_WORDS = new Map(BUCKETS.map((b) => [b.key, b.label]));
 
@@ -190,7 +191,8 @@ export default function BranchesPage() {
                         <span className="font-semibold">#{o.orderNumber}</span>
                         <span className="text-[var(--swift-muted)]">{o.vendor?.name ?? 'A branch'}</span>
                         <span className="sw-chip">{LANE_WORDS.get(bucketFor(o.status)) ?? 'Unrecognised'}</span>
-                        <span>{money(o.totalAmount)}</span>
+                        {/* [STORE-MONEY] The branch's own money (the food), never the customer's total with the rider's tip. */}
+                        <span>{ringMoney(o).label} {money(ringMoney(o).food)}</span>
                         <span className="text-xs text-[var(--swift-muted)]">{timeAgo(o.placedAt)}</span>
                         {o.vendor?.id && (
                           <button type="button" className="ml-auto text-sm font-semibold text-[var(--swift-red)]" onClick={() => void openBranchBoard(o.vendor!.id)}>

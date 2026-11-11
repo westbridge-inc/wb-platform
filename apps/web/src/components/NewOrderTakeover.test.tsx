@@ -43,6 +43,21 @@ describe('new-order takeover', () => {
     expect(screen.getByText('Delivery fee & tip go to the rider')).toBeTruthy();
   });
 
+  it('[STORE-MONEY] the server\'s storeMoney wins: its food and its own words (an MMG order\'s rider share)', async () => {
+    const storeMoney = {
+      food: 4000, foodWord: 'Food', foodLabel: 'Food — you receive', delivery: 'SWIFT_RIDER', payment: 'MMG', swiftPaysYou: 0,
+      riderFeeAndTip: 800, yoursFeeAndTip: 0, customerPaysYou: 4800,
+      lines: ["Customer pays you $4,800 by MMG — $800 of it is the rider's, pay it at pickup"],
+    };
+    const mmg = wireVendorOrder({ paymentMethod: 'MOBILE_MONEY', tipAmount: '300.00', totalAmount: '4800.00', storeMoney });
+    const { rerender } = renderWithQuery(<NewOrderTakeover orders={[]} />);
+    rerender(<NewOrderTakeover orders={[normalizeVendorOrder(mmg)]} />);
+
+    const headline = await screen.findByText(new RegExp(`SW-1001`));
+    expect(headline.textContent).toContain(`Food $${(4000).toLocaleString()}`);
+    expect(screen.getByText("Customer pays you $4,800 by MMG — $800 of it is the rider's, pay it at pickup")).toBeTruthy();
+  });
+
   it('[RING-FOOD] the store\'s own rider delivers: the fee and tip are the store\'s, still not in the food number', async () => {
     const own = wireVendorOrder({ tipAmount: '300.00', totalAmount: '4800.00', fulfillmentMode: 'VENDOR_DELIVERY' });
     const { rerender } = renderWithQuery(<NewOrderTakeover orders={[]} />);

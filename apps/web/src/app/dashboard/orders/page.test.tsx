@@ -103,8 +103,10 @@ describe('vendor order board — money is never invented', () => {
     const row = await rowFor('SW-1001');
     await dismissTakeover(user);
 
-    // The list row: `totalAmount` arrived as the STRING "4500.00".
-    expect(row.textContent).toContain(`$${(4500).toLocaleString()}`);
+    // The list row: the STORE's money — `subtotalCustomer` arrived as the STRING "4000.00" [STORE-MONEY: the row used
+    // to show the customer's total, the rider's delivery fee in it].
+    expect(row.textContent).toContain(`Food $${(4000).toLocaleString()}`);
+    expect(row.textContent).not.toContain(`$${(4500).toLocaleString()}`);
     expect(row.textContent).not.toContain('GY$');
 
     // The detail pane: order total plus each line total (`totalCustomer`).
@@ -118,10 +120,10 @@ describe('vendor order board — money is never invented', () => {
     expect(document.body.textContent ?? '').not.toMatch(/NaN/);
   });
 
-  it('renders an em-dash — never "$0" — when the server sends no total', async () => {
-    // A response that cannot say what is owed: `totalAmount` absent entirely.
+  it('renders an em-dash — never "$0" — when the server sends no amount', async () => {
+    // A response that cannot say what the store gets: the goods amount (and any storeMoney) absent entirely.
     const noTotal = wireVendorOrder() as Record<string, unknown>;
-    delete noTotal['totalAmount'];
+    delete noTotal['subtotalCustomer'];
     mockApi(boardHandler([noTotal], { ...wireVendorOrderDetail(), totalAmount: undefined }));
     const { user } = renderWithQuery(<OrdersPage />);
 
@@ -911,10 +913,34 @@ describe('[U25] the order window carries what the phone shows', () => {
     const text = card.textContent ?? '';
     expect(text).toContain(`Items$${(4000).toLocaleString()}`);
     expect(text).toContain(`Delivery fee (rider’s)$${(500).toLocaleString()}`);
-    expect(text).toContain(`Tip$${(200).toLocaleString()}`);
+    expect(text).toContain(`Tip (rider’s)$${(200).toLocaleString()}`);
     expect(text).toContain(`Promo discount-$${(300).toLocaleString()}`);
     expect(text).toContain(`Customer pays$${(4400).toLocaleString()}`);
+    // [STORE-MONEY] The card ends on the store's own money: the food after the discount, never the tip or the fee.
+    expect(text).toContain(`Food — you receive$${(3700).toLocaleString()}`);
+    expect(text).toContain('Delivery fee & tip go to the rider');
     expect(text).toContain('Cash on handover — you keep 100% of the goods total.');
+  });
+
+  it('[STORE-MONEY] the server\'s storeMoney is shown verbatim: an MMG order says what to pass on to the rider', async () => {
+    const storeMoney = {
+      food: 4000, foodWord: 'Food', foodLabel: 'Food — you receive', delivery: 'SWIFT_RIDER', payment: 'MMG', swiftPaysYou: 0,
+      riderFeeAndTip: 700, yoursFeeAndTip: 0, customerPaysYou: 4700,
+      lines: ["Customer pays you $4,700 by MMG — $700 of it is the rider's, pay it at pickup"],
+    };
+    const { dialog } = await openWindow({ status: 'ACCEPTED', paymentMethod: 'MOBILE_MONEY', tipAmount: '200.00', totalAmount: '4700.00', storeMoney });
+    const text = within(dialog).getByRole('region', { name: 'Payment' }).textContent ?? '';
+    expect(text).toContain(`Food — you receive$${(4000).toLocaleString()}`);
+    expect(text).toContain("Customer pays you $4,700 by MMG — $700 of it is the rider's, pay it at pickup");
+  });
+
+  it('[STORE-MONEY] own delivery: the fee and tip read as the store\'s', async () => {
+    const { dialog } = await openWindow({ status: 'ACCEPTED', tipAmount: '200.00', totalAmount: '4700.00', fulfillmentMode: 'VENDOR_DELIVERY' });
+    const text = within(dialog).getByRole('region', { name: 'Payment' }).textContent ?? '';
+    expect(text).toContain(`Delivery fee (yours)$${(500).toLocaleString()}`);
+    expect(text).toContain(`Tip (yours)$${(200).toLocaleString()}`);
+    expect(text).toContain(`Food — you receive$${(4000).toLocaleString()}`);
+    expect(text).toContain('Delivery fee & tip are yours — your rider delivers');
   });
 
   it('a card order never reads as cash on handover', async () => {
