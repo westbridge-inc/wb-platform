@@ -50,6 +50,7 @@ vi.mock('./OwnNameCard', () => ({ OwnNameCard: () => null }));
 vi.mock('./FoodHandlersCard', () => ({ FoodHandlersCard: () => null }));
 // [RETIER PR-A2] the store weekly-fee card reads the API itself (its own tests: storeWeeklyFee.test.ts)
 vi.mock('./StoreWeeklyFeeCard', () => ({ StoreWeeklyFeeCard: () => null }));
+vi.mock('./AuthorityLetterEsignCard', () => ({ AuthorityLetterEsignCard: () => null }));
 vi.mock('./DocumentUploadCard', async () => {
   const R = await import('react');
   return {

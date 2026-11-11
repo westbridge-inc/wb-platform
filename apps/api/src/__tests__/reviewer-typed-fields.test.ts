@@ -52,6 +52,7 @@ const blind = (normalized: string) => createHmac('sha256', process.env['IDENTITY
 
 let app: FastifyInstance;
 let adminToken = '';
+let adminId = '';
 const users: string[] = [];
 let seq = 0;
 const system = <T>(fn: () => Promise<T>) => runWithoutTenant(fn, 'reviewer-typed-fields-test');
@@ -95,6 +96,7 @@ beforeAll(async () => {
     admin: { create: { permissions: ['*', 'documents.review'] } },
   } }));
   users.push(a.id);
+  adminId = a.id;
   adminToken = app.jwt.sign({ userId: a.id, role: 'SUPER_ADMIN', jti: nanoid(8) });
   await system(() => app.prisma.session.create({ data: {
     userId: a.id, token: adminToken, refreshToken: nanoid(48), authMethod: 'OTP', deviceId: `tf-${RUN}`, deviceType: 'test', expiresAt: new Date(Date.now() + DAY),
@@ -212,13 +214,18 @@ describe('[typed fields] the police clearance issue date', () => {
 });
 
 describe('[typed fields] a business registration says what it is (R16)', () => {
-  it('an empty body is refused with REGISTRATION_KIND_REQUIRED; a company approves with its kind alone', async () => {
+  it('an empty body is refused with REGISTRATION_KIND_REQUIRED; a company also needs the legal name printed on it [R3 · review F1]', async () => {
     const doc = await pending(await subject('VENDOR_OWNER'), 'business_registration', 'VENDOR_OWNER');
     const empty = await approve(doc.id, {});
     expect(empty.statusCode).toBe(400);
     expect(empty.json().error.code).toBe('REGISTRATION_KIND_REQUIRED');
     expect(await statusOf(doc.id)).toBe('PENDING');
-    expect((await approve(doc.id, { registrationKind: 'COMPANY' })).statusCode).toBe(200);
+    // the storefront names the seller by the legal name typed from this paper: it must be typed
+    const unnamed = await approve(doc.id, { registrationKind: 'COMPANY' });
+    expect(unnamed.statusCode).toBe(400);
+    expect(unnamed.json().error.code).toBe('LEGAL_NAME_REQUIRED');
+    expect(await statusOf(doc.id)).toBe('PENDING');
+    expect((await approve(doc.id, { registrationKind: 'COMPANY', legalName: 'Fixture Registered Name Ltd' })).statusCode).toBe(200);
     expect(await statusOf(doc.id)).toBe('APPROVED');
   });
 
@@ -240,6 +247,78 @@ describe('[typed fields] a business registration says what it is (R16)', () => {
     expect(rows.find((r) => r.id === id.id)?.reviewerTypes).toEqual(['documentNumber']);
     expect(rows.find((r) => r.id === pc.id)?.reviewerTypes).toEqual(['issuedOn']);
     expect(rows.find((r) => r.id === lic.id)?.reviewerTypes).toEqual(['documentNumber']);
+  });
+});
+
+// [R3 · owner ruling 10 Nov 2026 · review-2476 F1/F2] The legal name typed from a registration paper names the seller of
+// every branch of the account. It is on the trail (who, when, which account and paper, what it replaced), and it is the
+// business's or company's name: never the account holder's own name for a company's or a manager's account.
+describe('[R3 · review-2476] the seller legal name typed at approval', () => {
+  const thisYear = new Date(Date.now() - 4 * 3_600_000).getUTCFullYear(); // Guyana's year (UTC-4)
+  async function account(basis: 'OWNER' | 'COMPANY' | 'MANAGER', firstName: string, lastName: string) {
+    const id = await subject('VENDOR_OWNER');
+    await system(() => app.prisma.user.update({ where: { id }, data: { firstName, lastName } }));
+    await system(() => app.prisma.vendorOwner.create({ data: { userId: id, accountBasis: basis } }));
+    return id;
+  }
+  const sellerOf = (userId: string) => system(() => app.prisma.vendorOwner.findUniqueOrThrow({ where: { userId }, select: { id: true, sellerLegalName: true, sellerLegalNameDocId: true } }));
+  const trailOf = (vendorOwnerId: string) => system(() => app.prisma.auditLog.findMany({ where: { action: 'SET_SELLER_LEGAL_NAME', entityId: vendorOwnerId }, select: { userId: true, entity: true, changes: true, createdAt: true } }));
+
+  it('[F1] the trail says who set it, when, for which account and paper, and what customers saw before', async () => {
+    const who = await account('COMPANY', 'Synthetic', `Holder${RUN}`);
+    const first = await pending(who, 'certificate_of_incorporation', 'VENDOR_OWNER');
+    const before = Date.now();
+    const res = await approve(first.id, { registrationKind: 'COMPANY', legalName: '  Sample Holdings Limited  ' });
+    expect(res.statusCode, res.body).toBe(200);
+    const owner = await sellerOf(who);
+    expect(owner).toMatchObject({ sellerLegalName: 'Sample Holdings Limited', sellerLegalNameDocId: first.id });
+    const one = await trailOf(owner.id);
+    expect(one.map(({ userId, entity, changes }) => ({ userId, entity, changes }))).toEqual([{ userId: adminId, entity: 'VendorOwner', changes: {
+      accountId: who, documentId: first.id, docType: 'certificate_of_incorporation', from: null, fromDocumentId: null, to: 'Sample Holdings Limited',
+    } }]);
+    expect(one[0]!.createdAt.getTime()).toBeGreaterThanOrEqual(before - 1_000);
+    // a later paper replaces it: the trail keeps what customers saw before, and from which paper
+    const second = await pending(who, 'certificate_of_incorporation', 'VENDOR_OWNER');
+    expect((await approve(second.id, { registrationKind: 'COMPANY', legalName: 'Sample Holdings (Guyana) Limited' })).statusCode).toBe(200);
+    const both = await trailOf(owner.id);
+    expect(both.find((t) => (t.changes as Record<string, unknown>)['documentId'] === second.id)).toMatchObject({ userId: adminId, changes: {
+      accountId: who, documentId: second.id, docType: 'certificate_of_incorporation', from: 'Sample Holdings Limited', fromDocumentId: first.id, to: 'Sample Holdings (Guyana) Limited',
+    } });
+    expect(both).toHaveLength(2);
+    // the decision's own row is unchanged, and nothing personal rides on either
+    expect(await system(() => app.prisma.auditLog.count({ where: { action: 'APPROVE_VERIFICATION_DOC', entityId: { in: [first.id, second.id] } } }))).toBe(2);
+    expect(JSON.stringify(both)).not.toMatch(/Synthetic|Holder/);
+  });
+
+  it.each([
+    ['COMPANY', 'certificate_of_incorporation', { registrationKind: 'COMPANY' }],
+    ['MANAGER', 'business_registration', { registrationKind: 'BUSINESS_NAME', certificateYear: thisYear }],
+  ] as const)('[F2] a %s account: the account holder\'s own name is refused (first+last or last+first, any case or spacing)', async (basis, docType, kind) => {
+    const who = await account(basis, 'Synthetic', `Holder${RUN}`);
+    const doc = await pending(who, docType, 'VENDOR_OWNER');
+    for (const typed of [`Synthetic Holder${RUN}`, `  holder${RUN.toLowerCase()}   SYNTHETIC `, `SyntheticHolder${RUN}`]) {
+      const res = await approve(doc.id, { ...kind, legalName: typed });
+      expect(res.statusCode, typed).toBe(400);
+      expect(res.json().error.code).toBe('LEGAL_NAME_IS_A_PERSON');
+    }
+    expect(await statusOf(doc.id)).toBe('PENDING');
+    expect(await sellerOf(who)).toMatchObject({ sellerLegalName: null, sellerLegalNameDocId: null });
+    expect(await trailOf((await sellerOf(who)).id)).toEqual([]);
+    // the business's own registered name is accepted
+    expect((await approve(doc.id, { ...kind, legalName: 'Sample Holdings Limited' })).statusCode).toBe(200);
+    expect(await sellerOf(who)).toMatchObject({ sellerLegalName: 'Sample Holdings Limited', sellerLegalNameDocId: doc.id });
+  });
+
+  it('[F2] an OWNER account: a company\'s certificate never carries the owner\'s own name; a business name registered under it is the reviewer\'s check', async () => {
+    const who = await account('OWNER', 'Synthetic', `Trader${RUN}`);
+    const doc = await pending(who, 'business_registration', 'VENDOR_OWNER');
+    const asCompany = await approve(doc.id, { registrationKind: 'COMPANY', legalName: `trader${RUN} synthetic` });
+    expect(asCompany.statusCode).toBe(400);
+    expect(asCompany.json().error.code).toBe('LEGAL_NAME_IS_A_PERSON');
+    expect(await statusOf(doc.id)).toBe('PENDING');
+    // [deliberate limit] the server cannot tell an owner's business name registered in their own name from a mistyped
+    // proprietor's name: the console's words and the reviewer's check stand for it (the PR names this).
+    expect((await approve(doc.id, { registrationKind: 'BUSINESS_NAME', certificateYear: thisYear, legalName: `Synthetic Trader${RUN}` })).statusCode).toBe(200);
   });
 });
 

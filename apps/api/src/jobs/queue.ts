@@ -1816,6 +1816,16 @@ export async function createWorkers(ctx: JobContext, queues: SwiftQueues) {
             }),
           );
         }
+        // [COMPANY-DOCS PART 2] Letters of authority waiting to be signed: a link past its 72 hours expires (audited), and
+        // a request that ended unsigned 30 days ago is deleted with the signer's name and number. Contained: it never
+        // stops the document sweep.
+        try {
+          const { sweepAuthorityLetters } = await import('../modules/vendor/authority-letter/authority-letter.service');
+          const letters = await sweepAuthorityLetters(ctx.prisma);
+          if (letters.expired > 0 || letters.deleted > 0) ctx.log.info(letters, 'authority letters swept');
+        } catch (err) {
+          ctx.log.error({ err }, 'authority-letter sweep failed; the document sweep still runs');
+        }
         const expired = await verification.expireLapsedDocuments();
         const reminded = await verification.sendExpiryReminders();
         // [R24] A partner's rejected document gets its clock first (30 days after the rejection

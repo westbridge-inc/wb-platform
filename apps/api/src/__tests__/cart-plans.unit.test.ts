@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  groupLinesByVendor, planFulfillment, planVendorGroup, priceBasket, priceCartLine, resolveTip,
+  groupLinesByVendor, planFulfillment, planVendorGroup, priceBasket, priceCartLine, resolveTip, riderCashForLines,
   QUOTE_FALLBACK_KM, type BasketPlan, type BasketPromo, type PlanFulfillment,
 } from '../modules/order/cart-plans';
 import { allocatePromo, orderTotal, promoCapacity, promoDiscount, type PromoAllocation } from '../utils/order-total';
@@ -269,6 +269,18 @@ describe('the per-vendor planner', () => {
     expect(priceCartLine(line(1200, 3, { selectedOptions: { g: 'large' }, optionGroups: groups }))).toMatchObject({ basePrice: 1200, unitPrice: 1500, lineTotal: 4500 });
     expect(priceCartLine(line(1200, 3, { selectedOptions: { g: ['large', 'not-this-items'] }, optionGroups: groups })).lineTotal).toBe(4500);
     expect(priceCartLine(line(1200, 3, { selectedOptions: null })).lineTotal).toBe(3600);
+  });
+
+  it('[RIDE-03 · REVIEW-2472 A-4] the cash a rider fronts (riderCashForLines) IS the plan subtotal, paid options included', async () => {
+    const groups = [{ name: 'Size', options: [{ id: 'large', name: 'Large', additionalPrice: '300' }, { id: 'tray', name: 'Tray', additionalPrice: 1250.5 }] }];
+    const lines = [
+      line(1200, 3, { selectedOptions: { g: 'large' }, optionGroups: groups }),
+      line(7500, 1, { selectedOptions: { g: ['large', 'tray', 'not-this-items'] }, optionGroups: groups }),
+      line(450, 2, { selectedOptions: null }),
+    ];
+    const plan = await planVendorGroup({ vendor, lines, fulfillment: 'DELIVERY', destination: null, deliveryRates: DEFAULT_DELIVERY_RATES, express: false, routeKm });
+    expect(riderCashForLines(lines)).toBe(plan.subtotal);
+    expect(riderCashForLines(lines)).toBe(4500 + 9050.5 + 900);
   });
 });
 

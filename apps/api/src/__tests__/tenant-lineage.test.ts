@@ -62,6 +62,10 @@ export const WALLED_BY_PARENT: Record<string, readonly string[]> = {
   // [R12 · REVIEW-M #1963 S2-1] One row per (wallet debit, receipt it used): walled by its receipt (tenantId, RLS,
   // scoped), deleted only with it (FK cascade), read only through the scoped receipt include (fee-receipt.ts).
   FeeReceiptAllocation: ['FeeReceipt'],
+  // [COMPANY-DOCS PART 2] A letter of authority an account holder asked a director (or the owner) to sign: walled by
+  // the account holder (User). The signed copy is filed as their verification document (walled the same way); the
+  // public signing page reaches ONE row by its link's secret and binds the holder's tenant before filing.
+  AuthorityLetterRequest: ['User'],
 };
 
 /** These foreign keys preserve global reservations, not tenant ownership.

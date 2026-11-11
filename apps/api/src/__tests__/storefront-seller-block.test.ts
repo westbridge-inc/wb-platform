@@ -326,6 +326,24 @@ describe('[row 248] the order receipt says who sold', () => {
     }
   });
 
+  // [R3 · review F1] A chain store: its seller is the company, by the legal name a person typed from its registration
+  // paper (once for the account); the store's own name stays its trading name.
+  it('a chain store: the company’s legal name on the app, the website and the receipt — not the store name, not the owner', async () => {
+    const chain = await store(5003);
+    await setStore(chain.vendorId, { name: `Sample Chicken Sheriff Street ${RUN}5003` });
+    await approved(chain.userId, 'owner_national_id');
+    const paper = await approved(chain.userId, 'business_registration');
+    // what a person approving that paper writes (verification.service approveDocument, tested in doc1-storefront-disclosure)
+    await system(() => app.prisma.vendorOwner.update({ where: { userId: chain.userId }, data: {
+      sellerLegalName: 'Sample Holdings Limited', sellerLegalNameAt: new Date(), sellerLegalNameById: 'seller-block-test', sellerLegalNameDocId: paper.id,
+    } }));
+    expect((await appView(chain.vendorId)).seller.legalName).toBe('Sample Holdings Limited');
+    expect((await webView(chain.slug)).seller.legalName).toBe('Sample Holdings Limited');
+    const receipt = await deliveredOrderFrom(chain.vendorId, 5003);
+    expect(receipt).toContain('Sold by Sample Holdings Limited — 5003 Robb Street, Lacytown');
+    expect(receipt).not.toContain('Ramdin5003');
+  });
+
   it('a trader under their own name: their full name on the app, the website and the receipt', async () => {
     const trader = await store(5002);
     await setStore(trader.vendorId, { name: 'A. Ramdin5002', tradesUnderOwnName: true });

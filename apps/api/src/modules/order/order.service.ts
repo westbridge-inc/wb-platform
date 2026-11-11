@@ -30,7 +30,7 @@ import { generateOrderNumber, type DeliveryRates } from '../../utils/markup';
 import { getMapsProvider, type MapsProvider, type RouteSource } from '../../providers/maps/maps-provider';
 import { canonicalBillableKm } from '../../utils/billable-distance';
 import { allocateAcrossLines } from '../../utils/order-total';
-import { groupLinesByVendor, planFulfillment, planVendorGroup, priceBasket, priceCartLine, resolveTip } from './cart-plans';
+import { groupLinesByVendor, planFulfillment, planVendorGroup, priceBasket, priceCartLine, resolveTip, riderCashForLines } from './cart-plans';
 import { cancellationVerdict, mmgPaidCancelMessage, readAssignedAt, readNoMoverFound } from './cancel-policy';
 import { readStoreCannotHandOver } from '../vendor/store-hold';
 import { pickupCancelledStoreNotice } from './pickup-not-collected';
@@ -64,7 +64,7 @@ import { canonicalSlotStart } from '../booking/availability';
 import { assertOneAppointment, isAppointmentOnlyGroup, storeFlagsAllowCheckout } from '../booking/appointment-checkout';
 import { storeHoursRefusal } from '../vendor/store-hours';
 import { orderingRestriction, CashRulesService, TAXI_FARE_OUTCOME_ENFORCED_AT, COURIER_CASH_OUTCOME_ENFORCED_AT } from '../cash/cash-rules.service';
-import { resolveSelectedOptions, optionsUnitPrice, OptionSelectionError, normalizeItemNote, rebuildSelectionFromSnapshot, selectionKey, validateSelectedOptions, type OptionSelection, type ResolvedOption } from './options';
+import { OptionSelectionError, normalizeItemNote, rebuildSelectionFromSnapshot, selectionKey, validateSelectedOptions, type OptionSelection, type ResolvedOption } from './options';
 import { isKitchenAtCapacity, KITCHEN_ACTIVE_STATUSES } from '../fulfillment/kitchen-capacity';
 import { log } from '../../utils/logger';
 import { dispatchHoldExpired, dispatchHoldExpiredFilter, riderDispatchableStatusesFor, withheldAwaitingReadiness } from '../dispatch/dispatch-trigger';
@@ -1253,17 +1253,21 @@ export class OrderService {
         // §2 checkout gate (availability spec, flag-gated): zero riders online
         // means an order that would strand food on a counter — honesty beats
         // accepting it. Pickup remains available; appointments never get here.
+        // [REVIEW-2469 S3-1] A store that delivers itself (selfDeliveryEnabled) needs no Swift rider — none to be
+        // near, none to front its cash — so the Swift-rider reads below never refuse it, nor add a Swift rider wait to
+        // its promise. Who delivers is decided later: the store's setting AT ACCEPT, and its own "Get a Swift rider"
+        // override (fulfillment-mode.ts). Both re-ask the rider-cash question before a CASH order reaches Swift
+        // riders (vendor.routes accept + fulfillment-mode, swiftRiderCashRefusal) [REVIEW-2472 A-1].
         if (
           process.env['DISPATCH_AVAILABILITY'] === '1'
           && process.env['DELIVERY_BLOCK_ON_NONE'] !== '0'
           && this.riderAvailability
+          && !vendor.selfDeliveryEnabled
         ) {
           // Mirror dispatch's cash-float gate: a CASH delivery needs a rider who
           // can front this order's vendor-cash. Probing float-blind would count
           // riders dispatch then skips → checkout says "yes", dispatch exhausts.
-          const cashFloat = input.paymentMethod === 'CASH'
-            ? items.reduce((s, ci) => s + (Number(ci.item.basePrice) + optionsUnitPrice(resolveSelectedOptions(ci.item, ci.selectedOptions))) * ci.quantity, 0)
-            : 0;
+          const cashFloat = input.paymentMethod === 'CASH' ? riderCashForLines(items) : 0;
           const storePoint = { lat: vendor.latitude, lng: vendor.longitude };
           const tooBig = () => new AppError(
             409,

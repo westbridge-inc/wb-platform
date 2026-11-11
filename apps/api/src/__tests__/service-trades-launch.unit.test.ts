@@ -243,7 +243,7 @@ describe('[R15] licences and food certificates are checked again every January',
 describe('[R16] a business name is checked every January; a company’s incorporation never expires', () => {
   it('the reviewer says what a business registration is, and types the year of a business name', () => {
     expect(REGISTRATION_KINDS).toEqual(['BUSINESS_NAME', 'COMPANY']);
-    expect(reviewerTypedFields('business_registration')).toEqual(['registrationKind', 'certificateYear']);
+    expect(reviewerTypedFields('business_registration')).toEqual(['registrationKind', 'certificateYear', 'legalName']); // [R3 · review F1] the legal name printed on it
   });
 
   it('a January re-check is reminded from 1 December as well as at T-30/14/7/1', async () => {

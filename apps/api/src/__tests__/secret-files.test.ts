@@ -108,6 +108,7 @@ describe('the allowlist census — no secret the API reads can fall back to the 
   /** Secret-shaped by spelling, settings by nature. Each carries its reason. */
   const NON_SECRET: Record<string, string> = {
     DEV_OTP_BYPASS: 'a development switch (0/1), refused in production by the boot guard',
+    AUTHORITY_LETTER_ESIGN: 'the letter-of-authority signing switch (1 = on; "AUTH" is from authority): a setting, not a secret',
     MALWARE_SCAN_BYPASS: 'the scanner-down emergency switch (1 = on; "PASS" is from bypass): a setting, not a secret; every upload it lets through is recorded as scan debt and rescanned',
     MASTER_KEK_ESCROW_FINGERPRINT: 'the sha256 of the key bytes, recorded beside the key on purpose so a stale escrow is caught',
     NOT_MY_DRIVER_AUTHORITY_KILL: 'a kill switch for a dispatch rule',

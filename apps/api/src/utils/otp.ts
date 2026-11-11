@@ -40,6 +40,15 @@ const hashOtp = (otp: string) => HASH_TAG + crypto
 
 const otpRecord = (otp: string) => `${OTP_RECORD_VERSION}|${hashOtp(otp)}|0`;
 
+/**
+ * [COMPANY-DOCS PART 2] A code kept in the database (the letter-of-authority signing code), keyed with the same server
+ * secret as the sign-in codes and bound to its own scope (one request): a code is never stored in the clear, a sign-in
+ * code can never confirm a signature, and one request's code can never confirm another's. Hex, 64 characters.
+ */
+export function scopedOtpDigest(scope: string, otp: string): string {
+  return crypto.createHmac('sha256', otpHashSecret()).update('swift:scoped-otp:v1\0').update(scope).update('\0').update(otp).digest('hex');
+}
+
 // One Redis key holds both the HMAC and attempt count, so this script remains
 // atomic on standalone Redis and Redis Cluster. Return codes:
 // 0 missing/expired/legacy, 1 consumed, 2 locked, 3 invalid.

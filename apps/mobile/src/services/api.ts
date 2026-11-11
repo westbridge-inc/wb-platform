@@ -1364,6 +1364,15 @@ export const vendorApi = {
   signOwnName: () => api.post('/vendor/onboarding/own-name', { accept: true, attestationVersion: OWN_NAME_DECLARATION_VERSION }),
   /** [ROLE-DOCS] Use a registered business name instead: the store asks for its registration again. */
   dropOwnName: () => api.delete('/vendor/onboarding/own-name'),
+  /** [COMPANY-DOCS PART 2 · owner 10 Nov 2026] The account's newest in-app letter of authority (null when none). */
+  authorityLetter: () => api.get('/vendor/authority-letters'),
+  /** [COMPANY-DOCS PART 2] Swift writes the one-page letter and texts the director (or the owner) a link to sign. */
+  askAuthorityLetter: (body: { businessName: string; registrationNumber: string; requesterName: string; requesterRole: string; signerName: string; signerPhone: string }) =>
+    api.post('/vendor/authority-letters', body),
+  /** [COMPANY-DOCS PART 2] A new link (the old one stops working). */
+  resendAuthorityLetter: (id: string) => api.post(`/vendor/authority-letters/${encodeURIComponent(id)}/resend`, {}),
+  /** [COMPANY-DOCS PART 2] Withdraw it (a wrong number), then fill the form again. */
+  cancelAuthorityLetter: (id: string) => api.post(`/vendor/authority-letters/${encodeURIComponent(id)}/cancel`, {}),
   /** [FOOD-PERMIT · owner 24 Oct 2026] A registered restaurant's owner ticks, for ONE store (named by its id, so the tick
    *  never lands on whichever store happens to be selected): everyone who handles food there holds a current food
    *  handler's certificate. `version` is the server's (GET /verification/status → foodHandlerAttestation). */

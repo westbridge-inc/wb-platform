@@ -62,6 +62,7 @@ import { fileOwnNameDeclaration } from './own-name-filing';
 import { registerAccountChangeVendorRoutes } from './account-change.routes';
 import { FOOD_HANDLERS_CONSENT_TYPE, FOOD_HANDLERS_TICK_V1, FOOD_HANDLERS_VERSION, foodHandlerTickApplies, storeAttested } from './food-handlers';
 import { OWN_NAME_DOC_TYPE } from '../verification/doc-registry';
+import { SELLER_NAME_UNCONFIRMED } from '../verification/storefront-disclosure';
 import { UNREGISTERED_TIER_REMOVED_WORDS, validRegistrationRecord } from './registration-record';
 import { parseCsvWithHeader } from '../../utils/csv';
 import {
@@ -128,7 +129,7 @@ import { HANDED_TO_RIDER_NOTE, NO_CODE_HANDOVER_NOTE, handedToRiderSinceAssignme
 import { assertStorePinInMarket } from './store-pin';
 import { lockStorePin, recordStorePinMove } from './store-pin-move';
 import { registerPartnerCardRoutes, withCardPayAction } from '../billing/card-rail.routes';
-import { storeBacklogSentence, storeRiderBacklog } from '../dispatch/delivery-capacity';
+import { storeBacklogSentence, storeRiderBacklog, swiftRiderCashRefusal } from '../dispatch/delivery-capacity';
 import { deliveryPausedAt } from '../dispatch/delivery-pause';
 import { CLOSURE_PAUSE_REFUSAL, CLOSURE_PAUSE_REFUSAL_TEAM } from '../user/closure-pause';
 import { orderStageRefusal } from '../order/order-status-words';
@@ -1149,8 +1150,8 @@ export async function vendorRoutes(app: FastifyInstance) {
       fulfillment: string;
       fulfillmentMode: FulfillmentMode | null;
     },
-  ): Promise<void> {
-    if (source.fulfillment !== 'DELIVERY' || source.riderId || source.fulfillmentMode != null) return;
+  ): Promise<'PLATFORM_RIDER' | 'VENDOR_DELIVERY' | null> {
+    if (source.fulfillment !== 'DELIVERY' || source.riderId || source.fulfillmentMode != null) return null;
     const vendor = source.vendorId
       ? await tx.vendor.findUnique({ where: { id: source.vendorId }, select: { selfDeliveryEnabled: true } })
       : null;
@@ -1159,6 +1160,7 @@ export async function vendorRoutes(app: FastifyInstance) {
       where: { id: source.id },
       data: { fulfillmentMode: mode, fulfillmentModeVersion: { increment: 1 } },
     });
+    return mode;
   }
 
   // =========================================================================
@@ -2000,6 +2002,8 @@ export async function vendorRoutes(app: FastifyInstance) {
     // read or write, as the pin is. No shipped app sends them (builds 9-12 send money, number, rule and capacity settings).
     if (supplied && STORE_DETAIL_FIELDS.some((field) => supplied[field] !== undefined)) requireRole(access, 'OWNER');
     const body = updateVendorProfileSchema.parse(request.body);
+    // [review-2476 F3] A new name ends any seller-name confirmation of the old one (renaming back confirms nothing).
+    let renamed = false;
     if (body.name !== undefined) {
       // [MC-PR3] "TEST-" store names belong to test accounts (+5920…) only; an unchanged name is never re-judged.
       const current = await app.prisma.vendor.findUnique({ where: { id: vendorId }, select: { name: true, tradesUnderOwnName: true, isVerified: true, firstLiveAt: true, owner: { select: { user: { select: { phone: true } } } } } });
@@ -2017,6 +2021,7 @@ export async function vendorRoutes(app: FastifyInstance) {
       if (current && (current.firstLiveAt !== null || current.isVerified) && body.name.trim() !== current.name.trim()) {
         throw new AppError(409, 'CHECKED_NAME_RENAME', 'A person at Swift checked your store under this name, so it can’t be changed here. To use a new name, contact Swift support: we check the new name first.');
       }
+      renamed = !!current && body.name.trim() !== current.name.trim();
     }
     // [REVIEW-PARTNER · DL-5] The store-review fiction moves no money: an MMG pay link is
     // refused before it is even read, and before any step-up, write or owner notice.
@@ -2101,6 +2106,7 @@ export async function vendorRoutes(app: FastifyInstance) {
         where: { id: vendorId },
         data: {
           ...(body.name !== undefined && { name: body.name }),
+          ...(renamed && SELLER_NAME_UNCONFIRMED),
           ...(body.description !== undefined && { description: body.description }),
           ...(body.phone !== undefined && { phone: body.phone }),
           ...(body.email !== undefined && { email: body.email }),
@@ -2640,6 +2646,13 @@ export async function vendorRoutes(app: FastifyInstance) {
     // PENDING -> ACCEPTED -> PREPARING in this one commit, one push to the customer. A booking or an
     // MMG order still waiting for "Paid by MMG" stops at ACCEPTED (preparationMayStart).
     const [acceptedStatus, preparingStatus] = STORE_ACCEPT_PATH;
+    // [REVIEW-2472 A-1] An unresolved DELIVERY order the accept may bind to Swift riders (the store's self-delivery
+    // off now, though it may have been on at checkout, which then asked no rider question): checkout's rider-cash
+    // question again. Asked here, outside the lock; applied under it, only when the bind (the store's setting read
+    // on the locked row) hands the order to Swift riders, so a setting flipped meanwhile cannot slip past it.
+    const cashRefusal = order.fulfillment === 'DELIVERY' && !order.riderId && order.fulfillmentMode == null
+      ? await swiftRiderCashRefusal(app.prisma, (probe) => dispatch.getDeliveryCapacity(probe), order.id, 'accept')
+      : null;
     const updated = await orderService.updateStatus(order.id, acceptedStatus, request.user.userId, 'Accepted by vendor', {
       continueTo: { target: preparingStatus, note: 'Preparing: the store accepted the order', when: preparationMayStart },
       withinTransaction: async (tx, lockedOrder) => {
@@ -2668,7 +2681,8 @@ export async function vendorRoutes(app: FastifyInstance) {
             data: { estimatedPrepTime: body.estimatedPrepTime },
           });
         }
-        await bindUnresolvedDeliveryMode(tx, lockedOrder);
+        // [REVIEW-2472 A-1] Refused before the accept commits: the order stays PENDING, nothing is sought.
+        if (await bindUnresolvedDeliveryMode(tx, lockedOrder) === 'PLATFORM_RIDER' && cashRefusal) throw cashRefusal;
       },
     });
     if (appointmentItemId) await bookingService.nudgeForItem(appointmentItemId).catch(() => {});
@@ -2870,7 +2884,7 @@ export async function vendorRoutes(app: FastifyInstance) {
     }
     if (order.status === 'PREPARING') {
       const updated = await orderService.updateStatus(order.id, 'READY_FOR_PICKUP', request.user.userId, 'Order ready for pickup', {
-        withinTransaction: bindUnresolvedDeliveryMode,
+        withinTransaction: async (tx, lockedOrder) => { await bindUnresolvedDeliveryMode(tx, lockedOrder); },
       });
       // FUL-005: ON_READY — dispatch NOW, when the food is ready, not at accept.
       // No-op under the ON_ACCEPT default (the rider was already dispatched); and
@@ -2905,6 +2919,12 @@ export async function vendorRoutes(app: FastifyInstance) {
     if (isTerminalOrderStatus(order.status)) {
       throw new AppError(409, 'ORDER_CLOSED', 'This order is already closed');
     }
+    // [REVIEW-2472 A-1] "Get a Swift rider" on a CASH order no Swift rider near may carry: refused in the store's
+    // words, before the switch is written — the order stays with the store's own delivery. Asked here, applied on
+    // the locked row below (only a switch that would hand it to Swift riders now).
+    const cashRefusal = mode === 'PLATFORM_RIDER' && !order.riderId
+      ? await swiftRiderCashRefusal(app.prisma, (probe) => dispatch.getDeliveryCapacity(probe), order.id, 'switch')
+      : null;
     // The rider claim path locks this same row. Whichever decision wins the
     // lock wins custody; the loser receives a conflict rather than producing
     // both a vendor courier and a Swift rider for one order.
@@ -2948,6 +2968,7 @@ export async function vendorRoutes(app: FastifyInstance) {
         throw new AppError(409, 'CUSTODY_CONFLICT', 'This order has conflicting delivery custody and needs operator review');
       }
       if (live.fulfillmentMode === mode) return live;
+      if (mode === 'PLATFORM_RIDER' && !live.riderId && cashRefusal) throw cashRefusal;
       return tx.order.update({
         where: { id: order.id },
         data: { fulfillmentMode: mode, fulfillmentModeVersion: { increment: 1 } },

@@ -258,6 +258,8 @@ const OUT: Record<string, string> = {
   'modules/services/services.routes.ts|POST|/jobs/:id/confirm': 'The provider affirms a scheduled slot: a state transition (from SCHEDULED, bound to expectedUpdatedAt), not a new job.',
   'modules/safety/safety.routes.ts|POST|/sos/:id/confirm': 'Safety: confirms an existing SOS; it creates no order or money.',
   'modules/safety/safety.routes.ts|POST|/sos/:id/resolve': 'Safety: resolves an existing SOS; it creates no order or money.',
+  // [COMPANY-DOCS PART 2] Withdraws a letter-of-authority request: no order or money; a replay finds it CANCELLED and changes nothing.
+  'modules/vendor/authority-letter/authority-letter.routes.ts|POST|/:id/cancel': 'Withdraws a letter-of-authority request (the signing link stops working): no order, parcel, ride or money; a replay finds it already CANCELLED and changes nothing.',
   'modules/vendor/vendor.routes.ts|POST|/items/:id/adjust': 'A stock count adjustment on the store\'s item (inventory), not an order or money.',
   'modules/vendor/vendor.routes.ts|POST|/items/import/sync/confirm': 'Applies a till export to the store\'s own items (stock counts and prices), not an order or money. A replay is still a no-op: the upload id is the pos_imports row id, so a retried confirm returns the stored result, and (store, file hash) is unique.',
   'modules/vendor/vendor.routes.ts|POST|/store-categories/request': 'Asks Swift to add a store category; no order or money.',

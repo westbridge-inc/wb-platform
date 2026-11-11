@@ -74,6 +74,8 @@ const LEDGER: Record<string, { count: number; why: string }> = {
   'modules/review/content-pack.ts': { count: 1, why: INTERNAL },
   'modules/safety/deletion-hold.ts': { count: 2, why: INTERNAL },
   'modules/safety/emergency-contact.service.ts': { count: 2, why: OWN },
+  // [COMPANY-DOCS PART 2] the signer's number checked against the account holder's own and the store team's; never in a response
+  'modules/vendor/authority-letter/authority-letter.service.ts': { count: 2, why: INTERNAL },
   'modules/safety/guardian-delivery.ts': { count: 1, why: `${INTERNAL} (SMS fallback to the passenger's own verified phone)` },
   'modules/safety/sos-escalation.ts': { count: 1, why: INTERNAL },
   'modules/support/support.service.ts': { count: 1, why: OPS },
