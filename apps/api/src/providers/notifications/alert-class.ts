@@ -61,6 +61,8 @@ export const ALERT_CLASS_KINDS: Readonly<Record<AlertClass, readonly string[]>> 
     // Orders, the customer side of a journey
     'substitution_pending', 'line_refunded', 'handover_review', 'delivery_options', 'delivery_cash_settlement',
     'dispatch_retrying', 'dispatch_exhausted', 'converted_to_pickup', 'mover_session_revocation',
+    // [PROD-RIDER-TEST (a)] the store delivers it itself (customer); the customer cancelled after no rider (store).
+    'store_delivers', 'no_rider_cancelled',
     // [OF-01/17] The ONE "no rider yet — you can cancel for free" notice; standard, like its dispatch peers.
     'riderless_cutoff',
     // [OF-33] The customer and the store, once each: the rider did not come, a new rider is being found.

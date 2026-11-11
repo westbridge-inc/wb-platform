@@ -87,6 +87,11 @@ describe('[PROD-RIDER-TEST (a)1] the store is asked at once: "No rider found. De
     expect(screen.canCancel).toBe(false);
     // No cash check for a Swift rider applies: the store's own rider carries it (no rider float was committed).
     expect(row.riderId).toBeNull();
+    // End to end: the store finishes its own delivery (ready, then delivered), still without the standing setting.
+    expect((await call(w, 'PUT', `/api/v1/vendor/orders/${id}/ready`, cast.vendorOwner.token)).statusCode).toBe(200);
+    const done = await call(w, 'PUT', `/api/v1/vendor/orders/${id}/delivered`, cast.vendorOwner.token, {});
+    expect(done.statusCode, done.body).toBe(200);
+    expect((await w.app.prisma.order.findUniqueOrThrow({ where: { id } })).status).toBe('DELIVERED');
   }, 120_000);
 
   it('before any search came back empty, the setting still decides (no one-tap self-delivery)', async () => {
