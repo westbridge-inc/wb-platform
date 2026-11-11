@@ -127,7 +127,7 @@ import { BULK_CHOICES, bulkUnitsForChoice, bulkChoiceForUnits, type BulkChoice }
 import { redactCustomerContact, riderCounterpartySelect } from '../../utils/counterparty';
 import { withCounterpartPhones } from '../calls/counterpart-phone';
 import { resolveAvatarUrls } from '../../utils/avatar-url';
-import { HANDED_TO_RIDER_NOTE, NO_CODE_HANDOVER_NOTE, handedToRiderSinceAssignment, handoverEpisodeRowsWhere } from '../order/store-handover-log';
+import { HANDED_TO_RIDER_NOTE, NO_CODE_HANDOVER_NOTE, STORE_PREPARING_WITH_RIDER_NOTE, STORE_READY_WITH_RIDER_NOTE, handedToRiderSinceAssignment, handoverEpisodeRowsWhere, timelineStepOf } from '../order/store-handover-log';
 import { assertStorePinInMarket } from './store-pin';
 import { lockStorePin, recordStorePinMove } from './store-pin-move';
 import { registerPartnerCardRoutes, withCardPayAction } from '../billing/card-rail.routes';
@@ -2621,7 +2621,10 @@ export async function vendorRoutes(app: FastifyInstance) {
     const noRider = await noRiderStoreView(app.prisma, order);
     // [STORE-MONEY · owner 11 Nov 2026] The store's own money on this order (the board's same answer).
     const money = storeMoney({ ...order, promoRedemption: (await redemptionsFor(app.prisma, [order.id])).get(order.id) ?? null });
-    return { success: true, data: { ...redactCustomerContact({ ...order, ...handover, storeMoney: money, items: order.items.map(vendorOrderLine), respondBy, ...storeMmgPayBy(order), canConfirmPayment: canConfirmPayment(role), ...noShow, ...notCollected, mmgRefund, ...noRider }), custodyRecovery, outOfStockEndsOrder: true } };
+    // [FOLLOWUPS 11 Nov 2026] The store's own kitchen taps made after a rider took the order read as "Preparing" /
+    // "Ready" on its timeline, never as a second rider step (the log row keeps the rider's status: timelineStepOf).
+    const statusHistory = order.statusHistory.map((row) => ({ ...row, status: timelineStepOf(row) }));
+    return { success: true, data: { ...redactCustomerContact({ ...order, statusHistory, ...handover, storeMoney: money, items: order.items.map(vendorOrderLine), respondBy, ...storeMmgPayBy(order), canConfirmPayment: canConfirmPayment(role), ...noShow, ...notCollected, mmgRefund, ...noRider }), custodyRecovery, outOfStockEndsOrder: true } };
   });
 
   /** [AF-MOB-006] POST /orders/:id/recovery/return-received — the store
@@ -2808,7 +2811,7 @@ export async function vendorRoutes(app: FastifyInstance) {
           orderId: order.id,
           status: live.status,
           changedBy: userId,
-          note: phase === 'PREPARING' ? 'Vendor started preparing (rider already assigned)' : 'Order ready for pickup (rider already assigned)',
+          note: phase === 'PREPARING' ? STORE_PREPARING_WITH_RIDER_NOTE : STORE_READY_WITH_RIDER_NOTE,
         },
       });
       return { row: next, alreadyStamped: false as const };

@@ -1,4 +1,4 @@
-import { HANDED_TO_RIDER_NOTE } from './store-handover-log';
+import { HANDED_TO_RIDER_NOTE, timelineStepOf } from './store-handover-log';
 
 /**
  * [O-2 · REVIEW-F S3-2 on #2055] The position evidence the server appends to a mover's step note
@@ -18,6 +18,9 @@ export function withoutPositionEvidence(note: string | null): string | null {
 /** The customer's view of the order's status log:
  *  - the store's "Handed to rider" row is left out: it carries the order's status at the tap, so it
  *    would read as a second "Rider assigned" / "Ready" step;
+ *  - [FOLLOWUPS 11 Nov 2026] the store's kitchen taps made after a rider took the order carry the
+ *    rider's status too: they read as the kitchen step they were ("Preparing" / "Ready",
+ *    timelineStepOf), never as a second "Rider on the way" / "Rider at the store";
  *  - a step's position evidence is cut from its note;
  *  - [owner 8 Nov 2026] `noteOf` decides which notes the customer may read at all
  *    (customer-cancellation.ts customerStepNote: never Swift support's, and the
@@ -28,5 +31,5 @@ export function customerTimeline<Row extends { status: string; note: string | nu
 ): Array<{ status: string; note: string | null; timestamp: Date }> {
   return rows
     .filter((row) => row.note !== HANDED_TO_RIDER_NOTE)
-    .map((row) => ({ status: row.status, note: withoutPositionEvidence(noteOf(row)), timestamp: row.createdAt }));
+    .map((row) => ({ status: timelineStepOf(row), note: withoutPositionEvidence(noteOf(row)), timestamp: row.createdAt }));
 }
