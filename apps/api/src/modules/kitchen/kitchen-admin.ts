@@ -1,6 +1,7 @@
 import type { PrismaClient } from '@prisma/client';
-import { z } from 'zod';
+import { z } from '../../lib/zod';
 import type { Server } from 'socket.io';
+import type Redis from 'ioredis';
 import { AppError } from '../../utils/errors';
 import { kitchenLoginRef, kitchenSecretStatus, kitchenWebhookRef, newKitchenIntegrationId } from './kitchen-credentials';
 import { dragontailApiUrl, dragontailIntegrationEnabled, dragontailSettings } from './kitchen-switch';
@@ -105,11 +106,11 @@ export async function putKitchenIntegration(prisma: PrismaClient, vendorId: stri
   return view(row);
 }
 
-export async function testKitchenConnection(prisma: PrismaClient, io: Server, vendorId: string) {
+export async function testKitchenConnection(prisma: PrismaClient, io: Server, redis: Redis, vendorId: string) {
   await vendorOrThrow(prisma, vendorId);
   const row = await prisma.vendorIntegration.findUnique({ where: { vendorId_provider: { vendorId, provider: 'DRAGONTAIL' } } });
   if (!row) throw new AppError(404, 'KITCHEN_NOT_SET_UP', 'This store has no kitchen-system connection yet.');
-  const provider = kitchenProviderFor({ prisma, io }, row);
+  const provider = kitchenProviderFor({ prisma, io, redis }, row);
   if (!provider) {
     return { ok: false, problem: `No login under ${kitchenLoginRef(row)} in the credentials secret.` };
   }

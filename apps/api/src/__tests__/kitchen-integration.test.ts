@@ -46,7 +46,7 @@ let integrationId = '';
 let itemId = '';
 let unmappedItemId = '';
 
-const deps = (): KitchenDeps => ({ prisma: app.prisma, io: app.io, client: { backoffMs: 1 } });
+const deps = (): KitchenDeps => ({ prisma: app.prisma, io: app.io, redis: app.redis, client: { backoffMs: 1 } });
 
 function setEnv(on: boolean) {
   process.env['DRAGONTAIL_INTEGRATION'] = on ? '1' : '';

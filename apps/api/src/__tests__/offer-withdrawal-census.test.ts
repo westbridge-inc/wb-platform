@@ -56,6 +56,9 @@ const REVIEWED_WRITERS: Record<string, string> = {
     'counts one handover-code comparison (pickupCodeAttempts or ridePinAttempts increment) under the order lock; never the status.',
   'modules/dispatch/delivery-watchdog.ts#reopenPreCustodyLeg':
     'reopens a released leg to its kitchen stage (releaseStageFor: ACCEPTED, PREPARING or READY_FOR_PICKUP); never CANCELLED.',
+  // [KITCHEN-INTEGRATION]
+  'modules/kitchen/kitchen-sync.ts#acceptForKitchen':
+    'inside the ACCEPTED transition (withinTransaction): binds own delivery (fulfillmentMode VENDOR_DELIVERY) and the kitchen prep estimate; never the status, never CANCELLED.',
   // [STORE-VAT · owner O-5]
   'modules/store-vat/order-vat.ts#recomputeOrderVat':
     'writes only the VAT the order froze (orderVatAmountFields: vatAmount, vatBase and the goods by class); never the status.',
@@ -242,6 +245,9 @@ describe('[DISPATCH 1/3 · B4] every cancellation withdraws the live offer card 
       // IS the job's Redis (queue.ts passes ctx.redis) or the dispatch
       // service's app Redis — the one offer store.
       if (line === 'modules/dispatch/rescue.ts: deps.redis') continue;
+      // [KITCHEN-INTEGRATION] KitchenDeps.redis IS the job's Redis (queue.ts passes ctx.redis to the tick) or the
+      // app's (the webhook passes app.redis): the one offer store.
+      if (line === 'modules/kitchen/kitchen-sync.ts: deps.redis') continue;
       expect(line, 'pass the app/job Redis as the fifth argument').toMatch(/: (app|ctx)\.redis$/);
     }
   });

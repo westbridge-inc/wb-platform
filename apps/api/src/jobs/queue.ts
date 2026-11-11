@@ -316,6 +316,22 @@ export function createQueues(
   }
 }
 
+/** [KITCHEN-INTEGRATION] While a store's kitchen system is being given an order, its alert ladder waits a rung
+ *  instead of ringing the tablet (true = re-armed, the caller stops); once the send settles (or falls back) the
+ *  ladder rings as for any store. With DRAGONTAIL_INTEGRATION off this is false without a database read. */
+async function kitchenAlertWaits(
+  prisma: JobContext['prisma'],
+  queues: Pick<SwiftQueues, 'notificationQueue'>,
+  orderId: string,
+  level: number,
+): Promise<boolean> {
+  const { kitchenDefersStoreAlert } = await import('../modules/kitchen/kitchen-claim');
+  if (!(await kitchenDefersStoreAlert(prisma, orderId).catch(() => false))) return false;
+  // The same rung again in 30 s: waiting never skips the re-alert or jumps to the text.
+  await queues.notificationQueue.add('vendor-alert-escalate', { orderId, level }, { delay: 30_000, removeOnComplete: 100, removeOnFail: 50 });
+  return true;
+}
+
 export async function enqueueVendorAlertFollowup(
   queues: Pick<SwiftQueues, 'notificationQueue'>,
   orderId: string,
@@ -1217,7 +1233,7 @@ export async function createWorkers(ctx: JobContext, queues: SwiftQueues) {
         // stale registration does nothing while off.
         case 'kitchen-integration-tick': {
           const { runKitchenTick } = await import('../modules/kitchen/kitchen-sync');
-          await runKitchenTick({ prisma: ctx.prisma, io: ctx.io });
+          await runKitchenTick({ prisma: ctx.prisma, io: ctx.io, redis: ctx.redis });
           break;
         }
       }
@@ -2070,14 +2086,7 @@ export async function createWorkers(ctx: JobContext, queues: SwiftQueues) {
       const { getChannels } = await import('../providers/notifications/channels');
 
       const { orderId, level = 0 } = job.data;
-      // [KITCHEN-INTEGRATION] While the store's kitchen system is being given this order, the ladder waits a
-      // rung instead of ringing the tablet; once the send settles (or falls back) it rings as for any store.
-      // Switch off: false, with no read.
-      const { kitchenDefersStoreAlert } = await import('../modules/kitchen/kitchen-claim');
-      if (await kitchenDefersStoreAlert(ctx.prisma, orderId).catch(() => false)) {
-        await queues.notificationQueue.add('vendor-alert-escalate', { orderId, level }, { delay: 30_000, removeOnComplete: 100, removeOnFail: 50 });
-        return;
-      }
+      if (await kitchenAlertWaits(ctx.prisma, queues, orderId, level)) return; // [KITCHEN] see the helper
       const outcome = await inTenantOf(ctx.prisma, { order: orderId }, () => escalateVendorAlert(ctx.prisma, ctx.io, getChannels(), orderId, level));
 
       if (outcome === 'realerted') {

@@ -1,5 +1,6 @@
 import type { OrderStatus, PrismaClient, VendorIntegration } from '@prisma/client';
 import type { Server } from 'socket.io';
+import type Redis from 'ioredis';
 import { runWithTenant } from '../../plugins/tenant-context';
 import { log } from '../../utils/logger';
 import { isTerminalOrderStatus, ORDER_TRANSITIONS } from '../order/order-status';
@@ -41,6 +42,8 @@ const MAX_CANCEL_ATTEMPTS = 5;
 export interface KitchenDeps {
   prisma: PrismaClient;
   io: Server;
+  /** The app/job Redis: the offer store every OrderService is built with (a cancel withdraws a live card). */
+  redis: Redis;
   env?: Record<string, string | undefined>;
   now?: () => Date;
   /** Tests: the HTTP layer (fetch, sleep, backoff). */
@@ -240,7 +243,7 @@ async function fallBack(deps: KitchenDeps, sync: { id: string; orderId: string; 
 /** Accept the order on the store's behalf: PENDING → ACCEPTED → PREPARING, own delivery bound in the same commit. */
 export async function acceptForKitchen(deps: KitchenDeps, orderId: string, promiseSeconds: number | null): Promise<boolean> {
   const { OrderService, preparationMayStart, releaseLapsedHoldInTransaction } = await import('../order/order.service');
-  const orders = new OrderService(deps.prisma, deps.io);
+  const orders = new OrderService(deps.prisma, deps.io, undefined, undefined, deps.redis);
   try {
     await orders.updateStatus(orderId, 'ACCEPTED', KITCHEN_CHANGED_BY, "Accepted by the store's kitchen system", {
       allowedFrom: ['PENDING'],
@@ -439,7 +442,7 @@ export type KitchenEventOutcome = 'applied' | 'unchanged' | 'unknown-order' | 'i
 async function step(deps: KitchenDeps, orderId: string, target: OrderStatus, note: string, extra?: Parameters<OrderServiceType['updateStatus']>[4]): Promise<boolean> {
   const { OrderService } = await import('../order/order.service');
   try {
-    await new OrderService(deps.prisma, deps.io).updateStatus(orderId, target, KITCHEN_CHANGED_BY, note, extra);
+    await new OrderService(deps.prisma, deps.io, undefined, undefined, deps.redis).updateStatus(orderId, target, KITCHEN_CHANGED_BY, note, extra);
     return true;
   } catch (err) {
     log().info({ orderId, target, err: problemOf(err) }, '[KITCHEN] kitchen step does not fit the order now — unchanged');

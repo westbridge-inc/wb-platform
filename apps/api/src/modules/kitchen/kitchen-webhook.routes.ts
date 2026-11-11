@@ -91,7 +91,7 @@ export async function kitchenWebhookRoutes(app: FastifyInstance): Promise<void> 
     }
     const events = dragontailEvents(body);
     const outcomes = await runWithTenant(integration.tenantId, async () => {
-      const applied = await applyKitchenEvents({ prisma: app.prisma, io: app.io }, integration, events);
+      const applied = await applyKitchenEvents({ prisma: app.prisma, io: app.io, redis: app.redis }, integration, events);
       await app.prisma.vendorIntegration.update({ where: { id }, data: { lastHealthyAt: new Date() } }).catch(() => undefined);
       return applied;
     });

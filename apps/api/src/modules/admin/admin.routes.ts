@@ -2305,7 +2305,7 @@ export async function adminRoutes(app: FastifyInstance) {
   });
   app.post('/vendors/:id/kitchen-integration/test', { preHandler: [adminGuard] }, async (request) => {
     const { testKitchenConnection } = await import('../kitchen/kitchen-admin');
-    return { success: true, data: await testKitchenConnection(app.prisma, app.io, (request.params as { id: string }).id) };
+    return { success: true, data: await testKitchenConnection(app.prisma, app.io, app.redis, (request.params as { id: string }).id) };
   });
   app.get('/vendors/:id/kitchen-integration/syncs', { preHandler: [adminGuard] }, async (request) => {
     const { listKitchenSyncs } = await import('../kitchen/kitchen-admin');
