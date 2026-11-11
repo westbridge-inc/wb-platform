@@ -217,7 +217,7 @@ const E = {
   adRefundIntent: { model: 'adRefundIntent', fields: ['status', 'payoutRail', 'manualPayoutRef', 'providerRefundRef', 'completedAt'] },
   paymentConfirmation: { model: 'paymentConfirmationHold', fields: ['status', 'resolvedAt', 'resolvedBy', 'resolutionEvidence'] },
   // [PT-4] A held card payment's resolution: what finance decided and the provider actions it took.
-  cardSession: { model: 'cardSession', fields: ['status', 'failureCode', 'providerTransactionRef', 'providerVoidState', 'providerVoidRef', 'providerRefundState', 'bookClaimedAt', 'resolution', 'resolvedBy', 'resolvedAt'] },
+  cardSession: { model: 'cardSession', fields: ['status', 'failureCode', 'providerTransactionRef', 'providerVoidState', 'providerVoidRef', 'providerRefundState', 'providerRefundRef', 'bookClaimedAt', 'resolution', 'resolvedBy', 'resolvedAt'] },
   agentPayment: { model: 'mmgAgentPayment', fields: ['status', 'amount', 'subscriptionId'] },
   // [MMG REVERSAL] A return of a weekly-fee payment: where it stands and how a person resolved it.
   feeReversal: { model: 'mmgFeeReversal', fields: ['state', 'heldReason', 'resolution', 'resolvedBy', 'failedAt', 'reversedAt', 'walletDebitedAt'] },

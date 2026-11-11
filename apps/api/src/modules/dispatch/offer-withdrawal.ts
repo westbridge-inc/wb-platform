@@ -56,7 +56,9 @@ export const OFFER_WITHDRAWN_EVENT = 'dispatch:offer_withdrawn';
 export interface OfferWithdrawnPayload {
   orderId: string;
   offerAttemptId: string | null;
-  reason: 'ORDER_CANCELLED' | 'ORDER_CLOSED';
+  /** [PROD-RIDER-TEST S3-1] SWITCHED_TO_PICKUP: the customer collects it, so no rider carries it. Apps read only the
+   *  order and attempt (an older app ignores the reason). */
+  reason: 'ORDER_CANCELLED' | 'ORDER_CLOSED' | 'SWITCHED_TO_PICKUP';
 }
 
 /** The pair's TTL carries a ten-second worker grace tail beyond the card's own
@@ -70,6 +72,43 @@ export async function withdrawOfferOfClosedOrder(deps: OfferWithdrawalDeps, orde
   try {
     const order = await deps.prisma.order.findUnique({ where: { id: orderId }, select: { status: true, orderType: true } });
     if (!order || !TERMINAL_ORDER_STATUSES.includes(order.status)) return false;
+    return await withdrawThePair(deps, orderId, order, order.status === 'CANCELLED' ? 'ORDER_CANCELLED' : 'ORDER_CLOSED');
+  } catch (err) {
+    try {
+      log().warn({ err, orderId }, 'dispatch: offer withdrawal after the order closed failed');
+    } catch {
+      // The order is closed either way; the card expires with its countdown.
+    }
+    return false;
+  }
+}
+
+/**
+ * [PROD-RIDER-TEST S3-1] The same withdrawal when a delivery became a PICKUP (the customer's "Switch to pickup"
+ * after no rider was found): no rider carries it any more, so a card still ringing for it goes now, and its mover is
+ * free for the next offer. PostgreSQL decides, as above: nothing is removed unless the order is a pickup now. Called
+ * after the conversion's commit; never throws.
+ */
+export async function withdrawOfferOfPickupSwitch(deps: OfferWithdrawalDeps, orderId: string): Promise<boolean> {
+  try {
+    const order = await deps.prisma.order.findUnique({ where: { id: orderId }, select: { status: true, orderType: true, fulfillment: true } });
+    if (!order || order.fulfillment !== 'PICKUP') return false;
+    return await withdrawThePair(deps, orderId, order, 'SWITCHED_TO_PICKUP');
+  } catch (err) {
+    try {
+      log().warn({ err, orderId }, 'dispatch: offer withdrawal after a switch to pickup failed');
+    } catch {
+      // The card expires with its countdown; an accept is refused by the claim (it binds fulfillment DELIVERY).
+    }
+    return false;
+  }
+}
+
+/** Compare-and-delete the live pair, mark the withdrawn card for the screen guard, and tell the mover's app. */
+async function withdrawThePair(
+  deps: OfferWithdrawalDeps, orderId: string, order: { orderType: string }, reason: OfferWithdrawnPayload['reason'],
+): Promise<boolean> {
+  {
     const forward = dispatchOfferKey(orderId);
     const live = await deps.redis.get(forward);
     if (!live) return false;
@@ -120,15 +159,8 @@ export async function withdrawOfferOfClosedOrder(deps: OfferWithdrawalDeps, orde
       `${orderId}:${attemptId ?? ''}`,
     );
     if (Number(removed) !== 1) return false;
-    await tellTheMover(deps, order, moverId, { orderId, offerAttemptId: attemptId, reason: order.status === 'CANCELLED' ? 'ORDER_CANCELLED' : 'ORDER_CLOSED' });
+    await tellTheMover(deps, order, moverId, { orderId, offerAttemptId: attemptId, reason });
     return true;
-  } catch (err) {
-    try {
-      log().warn({ err, orderId }, 'dispatch: offer withdrawal after the order closed failed');
-    } catch {
-      // The order is closed either way; the card expires with its countdown.
-    }
-    return false;
   }
 }
 

@@ -5001,6 +5001,10 @@ model CardSession {
   /// only when the provider's own record shows the whole payment back (CARD-REFUND-LOOKUP).
   providerRefundState String?
   providerRefundAt   DateTime?
+  /// [R1 · CARD-STAGING-TEST R2] The refund's OWN provider transaction (PowerTranz: a refund is its own TransactionType 5
+  /// transaction; the sale's record does not name it), from PowerTranz's approved answer to a HELD payment's refund, for
+  /// finance matching. Only beside providerRefundState REFUNDED (CHECK card_sessions_refund_ref_check), written once.
+  providerRefundRef  String?
   /// [PT-4] Finance's decision to BOOK a HELD session, claimed (once) before the week is booked.
   bookClaimedAt      DateTime?
   /// [PT-4] The finance decision on a HELD session (two-person): BOOKED | REFUNDED | NOTHING_TAKEN.

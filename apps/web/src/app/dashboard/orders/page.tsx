@@ -110,6 +110,11 @@ export default function OrdersPage() {
       <div className="flex flex-wrap items-center justify-between gap-2"><p className="sw-label">#{o.orderNumber}</p>{statusChip((o.status || '').toUpperCase(), mmgDisputePaused(o))}</div>
       <p className="sw-caption mt-1">{timeAgo(o.placedAt)}</p>
       <BoardNames order={o} />
+      {/* [PROD-RIDER-TEST (a)1] The search for this order came back empty: the server's words; the order window holds
+          the one-tap "We'll deliver it" and "Find a rider". */}
+      {o.noRiderFound === true && typeof o.noRiderPrompt === 'string' && (
+        <p data-testid="board-no-rider" className="mt-2 text-sm font-semibold text-amber-800">{o.noRiderPrompt} Open the order to choose.</p>
+      )}
       <div className="my-3 space-y-1">{o.items.slice(0, 3).map(item => <p key={item.id} className="sw-label">{item.quantity}× {item.name}</p>)}{o.items.length > 3 && <p className="sw-caption">+{o.items.length - 3} more</p>}</div>
       <div className="flex flex-wrap items-center justify-between gap-2 border-t border-[var(--swift-border)] pt-3"><span className="sw-caption">{o.paymentMethod === 'MOBILE_MONEY' ? 'MMG' : 'Cash'}</span><span className="sw-title text-[17px]">{money(o.totalAmount)}</span></div>
       {o.fulfillment === 'APPOINTMENT' && o.appointmentSlot && <p className="sw-caption mt-2">Appointment: {formatAppointmentSlot(o.appointmentSlot)}</p>}

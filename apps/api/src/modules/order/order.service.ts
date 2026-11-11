@@ -34,6 +34,7 @@ import { groupLinesByVendor, planFulfillment, planVendorGroup, priceBasket, pric
 import { cancellationVerdict, mmgPaidCancelMessage, readAssignedAt, readNoMoverFound } from './cancel-policy';
 import { readStoreCannotHandOver } from '../vendor/store-hold';
 import { pickupCancelledStoreNotice } from './pickup-not-collected';
+import { noRiderCancelledStoreNotice, storeNoticeRecipients } from './no-rider-fallback';
 import { readTooLateToDeliver } from '../dispatch/rescue';
 import { readOrderSize, DEFAULT_LOAD_BANDS } from '../../utils/load';
 import { vehicleTypesForPackageSize } from '../../config/vehicle-classes';
@@ -3153,6 +3154,19 @@ export class OrderService {
           userId: ownerUserId, type: 'ORDER_UPDATE', audience: 'business', ...pickupCancelledStoreNotice(order.orderNumber),
           data: { orderId, status: 'CANCELLED' }, dedupeKey: `pickup-not-collected:cancelled:${orderId}`,
         });
+      }
+    }
+
+    // [PROD-RIDER-TEST (a)3] The store made (or is making) this order and was asked to deliver it: it is told plainly
+    // that the customer cancelled after no rider was found (the board's card turns cancelled by the socket above).
+    if (noMoverFree && order.vendorId && !heldNow && order.orderType !== 'COURIER' && order.orderType !== 'TAXI') {
+      // [review S4-2] Every store device the new-order alert rings (storeNoticeRecipients).
+      const ownerUserId = (await this.prisma.vendor.findUnique({ where: { id: order.vendorId }, select: { owner: { select: { userId: true } } } }))?.owner.userId;
+      for (const userId of await storeNoticeRecipients(this.prisma, order.vendorId, ownerUserId)) {
+        await this.notifications.send({
+          userId, type: 'ORDER_UPDATE', audience: 'business', ...noRiderCancelledStoreNotice(order.orderNumber),
+          data: { orderId, status: 'CANCELLED', kind: 'no_rider_cancelled' }, dedupeKey: `no-rider:cancelled:${orderId}`,
+        }).catch(() => undefined);
       }
     }
 

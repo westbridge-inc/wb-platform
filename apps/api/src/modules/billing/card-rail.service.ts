@@ -62,6 +62,11 @@ export const CARD_ON_FILE_CONSENT_SHA256 = '6384aa5c414e5686dacff1ea8503a304bca5
 export const CARD_SESSION_TTL_MS = 15 * 60 * 1000;
 /** An UNKNOWN session is asked about again at most this often. */
 const UNKNOWN_RECHECK_MS = 10 * 60 * 1000;
+/** [N2 · CARD-STAGING-TEST R2] An OPEN session whose return was accepted this long ago, and that no one has asked about
+ *  for as long, is confirmed by the sweep: its return's own confirmation erred (its completion claim, or the booking
+ *  after the provider approved), so it is not left "Checking with the bank" until its page expires (up to 15 minutes).
+ *  A minute leaves the return's own confirmation (seconds: the bank post, the completion and the booking) to finish. */
+export const RETURNED_SWEEP_AFTER_MS = 60 * 1000;
 /** [Review S2-2] A void claimed but never answered (the claimant stopped): past this it is unconfirmed and held for a person. Well past the provider's 15 s request limit. */
 export const VOID_ANSWER_WAIT_MS = 2 * 60 * 1000;
 /** [Review S2-2] A finance BOOK or REFUND claim blocks the other decisions this
@@ -1384,7 +1389,18 @@ export class CardRailService {
       idempotencyKey: `refund:${session.id}`,
     }).catch((): CardRefundOutcome => ({ status: 'unknown', reason: 'REFUND_CALL_FAILED', rawSha256: rawDigest({ refund: 'threw' }) }));
     const state = refunded.status === 'succeeded' ? 'REFUNDED' : refunded.status === 'pending' ? 'PENDING' : refunded.status === 'failed' ? 'FAILED' : 'UNKNOWN';
-    await this.prisma.cardSession.updateMany({ where: { id: session.id, providerRefundState: 'SENDING' }, data: { providerRefundState: state } });
+    // [R1 · CARD-STAGING-TEST R2] A refund is PowerTranz's OWN transaction (TransactionType 5), and the sale's record does
+    // not name it: when the approved answer names an id of its own (not the sale's), it is kept beside the sale's, with the
+    // state, for finance's portal match (written once, only beside REFUNDED: CHECK and trigger). A malformed one is not kept,
+    // so it can never stop the state from being recorded.
+    const ownRef = refunded.status === 'succeeded' ? refunded.providerRef.trim() : '';
+    const refundRef = state === 'REFUNDED' && /^[A-Za-z0-9_-]{1,64}$/.test(ownRef) && ownRef.toLowerCase() !== ref.toLowerCase() ? { providerRefundRef: ownRef } : {};
+    if (state === 'REFUNDED' && ownRef && ownRef.toLowerCase() !== ref.toLowerCase() && !('providerRefundRef' in refundRef)) {
+      // [REVIEW-2484-B S4-5] PowerTranz named an id of its own that is not a reference's shape: not kept, but said, so
+      // finance can tell "no id named" from "a malformed one" (only its length is logged, never the value).
+      log().warn({ sessionId: session.id, length: ownRef.length }, '[R1] the approved refund named a malformed refund reference: not kept; match it in the portal by the order reference');
+    }
+    await this.prisma.cardSession.updateMany({ where: { id: session.id, providerRefundState: 'SENDING' }, data: { providerRefundState: state, ...refundRef } });
     await recordCardObservation(this.prisma, this.observation(session, 'CONFIRM', refunded.rawSha256, observedStatus(refunded.status), 'ACCEPTED'));
     if (state === 'REFUNDED') {
       await this.prisma.$transaction(async (tx) => {
@@ -1543,9 +1559,11 @@ export class CardRailService {
   /**
    * Run with every billing poll. An OPEN session past its window is closed
    * (an unused enrolment) or asked about (a Pay now, or an enrolment whose
-   * return was accepted in time); an UNKNOWN session is asked again at most
-   * every ten minutes, least recently asked first. One session's failure
-   * never stops the sweep. Not stopped by the kill switch [C7]; the worker
+   * return was accepted in time); [N2] an OPEN session whose return was
+   * accepted over a minute ago, and not asked about for a minute, is asked
+   * about before its window ends (confirm is safe to repeat and to race);
+   * an UNKNOWN session is asked again at most every ten minutes, least
+   * recently asked first. One session's failure never stops the sweep. Not stopped by the kill switch [C7]; the worker
    * runs it only while v2 is on or draining (card-rail-worker.ts) [AX297 F5].
    */
   async sweepSessions(now = new Date()): Promise<{ checked: number; succeeded: number; failed: number; expired: number; unknown: number; held: number; errors: number }> {
@@ -1554,6 +1572,10 @@ export class CardRailService {
       where: {
         OR: [
           { status: 'OPEN', expiresAt: { lte: now } },
+          {
+            status: 'OPEN', returnedAt: { lte: new Date(now.getTime() - RETURNED_SWEEP_AFTER_MS) },
+            OR: [{ lastCheckedAt: null }, { lastCheckedAt: { lte: new Date(now.getTime() - RETURNED_SWEEP_AFTER_MS) } }],
+          },
           { status: 'UNKNOWN', OR: [{ lastCheckedAt: null }, { lastCheckedAt: { lte: new Date(now.getTime() - UNKNOWN_RECHECK_MS) } }] },
         ],
       },

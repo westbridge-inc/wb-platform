@@ -6,6 +6,7 @@ import { encryptBuffer, generateDek, getKeyProvider } from '../../providers/stor
 import { publishLegalDocumentOnce, recordConsent, type ConsentSurface } from '../legal/consent.service';
 import type { VerificationService } from '../verification/verification.service';
 import { OWN_NAME_DOC_TYPE } from '../verification/doc-registry';
+import { SELLER_NAME_UNCONFIRMED } from '../verification/storefront-disclosure';
 import { OWN_NAME_CONSENT_TYPE, OWN_NAME_DECLARATION_V1, OWN_NAME_DECLARATION_VERSION, renderOwnNamePdf } from './own-name';
 
 /**
@@ -21,7 +22,7 @@ export async function fileOwnNameDeclaration(
   verification: VerificationService,
   input: {
     userId: string;
-    vendor: { id: string; name: string; vendorType: string };
+    vendor: { id: string; name: string; vendorType: string; tradesUnderOwnName?: boolean };
     legalName: string;
     privacyNoticeVersion: string;
     surface: ConsentSurface;
@@ -45,7 +46,8 @@ export async function fileOwnNameDeclaration(
   const signedAt = new Date();
   await prisma.$transaction(async (tx) => {
     // This store only: its name is the one checked, and the one the PDF and this consent row name.
-    if (input.markStore) await tx.vendor.update({ where: { id: vendor.id }, data: { tradesUnderOwnName: true } });
+    // [review-2479 F6] Switching to the own name ends a seller-name confirmation: a person confirms again, if at all.
+    if (input.markStore) await tx.vendor.update({ where: { id: vendor.id }, data: { tradesUnderOwnName: true, ...(vendor.tradesUnderOwnName ? {} : SELLER_NAME_UNCONFIRMED) } });
     await recordConsent(tx, {
       subjectType: 'vendor_user', subjectId: userId, documentType: OWN_NAME_CONSENT_TYPE, version: OWN_NAME_DECLARATION_VERSION,
       action: 'granted', surface: input.surface, ip: input.ip,

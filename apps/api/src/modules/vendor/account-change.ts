@@ -48,6 +48,8 @@ import type { MoverSessionRevocationCleanup } from '../mover-authority';
 import { accountBasisApplies, accountTierOf, type AccountBasis } from './account-basis';
 import { OWN_NAME_VENDOR_TYPES, storeNameIsOwnName } from './own-name';
 import { validRegistrationRecord } from './registration-record';
+import { SELLER_NAME_UNCONFIRMED } from '../verification/storefront-disclosure';
+import { isAccountPersonsName, SELLER_NAME_IS_A_PERSON_NOTICE } from '../verification/verification.service';
 
 type Db = Prisma.TransactionClient | PrismaClient;
 
@@ -554,17 +556,6 @@ export async function endAccountChange(
 // The seller's legal name (#2476: VendorOwner.sellerLegalName*, typed by the person who approves a registration paper)
 // ---------------------------------------------------------------------------------------------------------------------
 
-/** [R3 · review-2476 F2] The account a paper filed for a change would belong to: its basis is the one a typed legal name
- *  is checked against (a company's or a manager's seller is never a person). A business type change: the basis it asks
- *  for; a handover: the account's own (only a company's or a manager's account is handed over). */
-export async function changeBasisOf(db: Db, changeId: string): Promise<VendorAccountBasis | null> {
-  const change = await db.accountChangeRequest.findUnique({
-    where: { id: changeId }, select: { kind: true, toOption: true, vendorOwner: { select: { accountBasis: true } } },
-  });
-  if (!change) return null;
-  return change.kind === 'BUSINESS_TYPE' && change.toOption ? shapeOf(change.toOption).basis : change.vendorOwner.accountBasis;
-}
-
 export interface TypedLegalName { name: string; at: Date; byId: string; documentId: string }
 export type HeldLegalName = { changeId: string; from: string | null; fromDocumentId: string | null; to: string };
 
@@ -609,7 +600,10 @@ async function settleSellerLegalName(tx: Prisma.TransactionClient, change: Chang
     where: { id: change.id }, select: { sellerLegalName: true, sellerLegalNameAt: true, sellerLegalNameById: true, sellerLegalNameDocId: true },
   });
   const account = await tx.vendorOwner.findUniqueOrThrow({ where: { id: change.vendorOwner.id }, select: { sellerLegalName: true, sellerLegalNameDocId: true } });
-  const next = held.sellerLegalName && held.sellerLegalNameDocId ? held
+  // [review-2479] A person's own name is never stamped as the seller's: a held name that is one (the account's holder after
+  // the change, or someone named in its letter of authority) is dropped, as if none was typed.
+  const usable = held.sellerLegalName && held.sellerLegalNameDocId && !(await isAccountPersonsName(tx, holderAfter, held.sellerLegalName));
+  const next = usable ? held
     : { sellerLegalName: null, sellerLegalNameAt: null, sellerLegalNameById: null, sellerLegalNameDocId: null };
   if (account.sellerLegalName === next.sellerLegalName && account.sellerLegalNameDocId === next.sellerLegalNameDocId) return null;
   await tx.vendorOwner.update({ where: { id: change.vendorOwner.id }, data: next });
@@ -732,7 +726,6 @@ export async function approveAccountChange(tx: Prisma.TransactionClient, input: 
         throw new AppError(409, 'ALREADY_REGISTERED', 'A business or company registration is on file for this account now, so it can’t trade under a person’s own name. Refuse the change.');
       }
     }
-    const confirmed: string[] = [];
     if (!target.ownName) {
       for (const store of live) {
         const shown = input.sellerNames?.[store.id];
@@ -740,18 +733,32 @@ export async function approveAccountChange(tx: Prisma.TransactionClient, input: 
         if (shown.trim() !== store.name.trim()) {
           throw new AppError(409, 'SELLER_NAME_CHANGED', `The store's name is now “${store.name.trim()}”. Check that name, then approve again.`);
         }
-        confirmed.push(store.id);
-      }
-      for (const store of live) {
-        await tx.vendor.update({ where: { id: store.id }, data: { sellerNameCheckedName: store.name.trim(), sellerNameCheckedAt: now, sellerNameCheckedById: input.adminId } });
       }
     }
     await tx.vendorOwner.update({ where: { id: change.vendorOwner.id }, data: { accountBasis: target.basis } });
+    // [review-2479 F6] Switching to or from the own name ends a seller-name confirmation given before (the person
+    // approving confirms again below, where a store name may be confirmed at all).
     for (const store of stores) {
       const ownName = target.ownName && ownNameKind(store.vendorType);
-      if (store.tradesUnderOwnName !== ownName) await tx.vendor.update({ where: { id: store.id }, data: { tradesUnderOwnName: ownName } });
+      if (store.tradesUnderOwnName !== ownName) await tx.vendor.update({ where: { id: store.id }, data: { tradesUnderOwnName: ownName, ...SELLER_NAME_UNCONFIRMED } });
     }
-    await input.audit(tx, change, { fromOption: change.fromOption, toOption: change.toOption, stores: stores.length, sellerNamesConfirmed: confirmed });
+    // The person approving confirms each store's exact name as the business's [#2473]. [COORD ruling 11 Nov 2026 ·
+    // review-2479] Never a person's own name (the holder's, or someone named in the account's letter of authority): such
+    // a store is not stamped (a name never blocks the approval), and the storefront names nobody until the legal name is
+    // typed from a registration paper. A trader under their own name is named by their declaration, never a stamp.
+    const confirmed: string[] = [];
+    const notConfirmed: string[] = [];
+    if (!target.ownName) {
+      for (const store of live) {
+        if (await isAccountPersonsName(tx, holderBefore, store.name.trim())) { notConfirmed.push(store.id); continue; }
+        await tx.vendor.update({ where: { id: store.id }, data: { sellerNameCheckedName: store.name.trim(), sellerNameCheckedAt: now, sellerNameCheckedById: input.adminId } });
+        confirmed.push(store.id);
+      }
+    }
+    await input.audit(tx, change, {
+      fromOption: change.fromOption, toOption: change.toOption, stores: stores.length, sellerNamesConfirmed: confirmed,
+      ...(notConfirmed.length ? { sellerNamesNotConfirmed: notConfirmed, sellerNameNotConfirmedCode: SELLER_NAME_IS_A_PERSON_NOTICE.code } : {}),
+    });
     notices.push((await insertNoticeFor(tx, {
       userId: holderBefore, type: 'SYSTEM_ANNOUNCEMENT', title: 'Business type changed',
       body: 'Swift checked your new papers and changed your business type. Your store kept selling the whole time; nothing else changes.',

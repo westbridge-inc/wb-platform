@@ -55,6 +55,8 @@ import {
   dispatchMoverOfferKey,
   dispatchOfferKey,
   dispatchExhaustKey,
+  dispatchCashUnshownKey,
+  CASH_UNSHOWN_SKIP_SECONDS,
   dispatchExhaustLockKey,
   dispatchGenerationInitKey,
   dispatchReplayTag,
@@ -65,6 +67,7 @@ import {
   WITHDRAWN_CARD_SCREEN_SKEW_MS,
 } from './dispatch-generation-keys';
 import { assertOrderMayProceed } from '../compliance/prohibited-gate';
+import { noRiderStoreNotice, storeNoticeRecipients } from '../order/no-rider-fallback';
 import { measureDeliveryCapacity, type CapacityProbe, type DeliveryCapacity } from './delivery-capacity';
 
 declare module 'fastify' {
@@ -262,6 +265,12 @@ export type OfferCashMath = {
  * expression `createEarnings` pays the driver (TAXI_FARE + TIP). A ride with no
  * stored fare is refused like any split that does not reconcile.
  */
+/** [PROD-RIDER-TEST (b)1] The order columns `cashMathForOffer` reads, for a locked re-read. */
+export const CASH_MATH_SELECT = {
+  orderType: true, paymentMethod: true, totalAmount: true, subtotalBase: true, deliveryFee: true, taxiFareTotal: true,
+  serviceFee: true, taxAmount: true, tipAmount: true, discount: true,
+} as const;
+
 export function cashMathForOffer(order: {
   orderType?: string;
   paymentMethod: string;
@@ -302,6 +311,23 @@ export function cashMathForOffer(order: {
   return { collectFromCustomer: total, payToVendor: vendorShare, youKeep: keep };
 }
 const declinedKey = dispatchDeclinedKey;
+
+/** [PROD-RIDER-TEST (b)2] Remember that this rider's app could not show this job's cash (dispatchCashUnshownKey). */
+/** [review S4-3] The member and its expiry land in ONE atomic call: the skip can never outlive its TTL. */
+export async function rememberCashUnshown(redis: Pick<Redis, 'eval'>, orderId: string, version: number | null | undefined, riderId: string): Promise<void> {
+  await redis.eval(
+    `
+      -- CASH_UNSHOWN_SKIP: add the rider and (re)arm the skip's expiry together.
+      redis.call('SADD', KEYS[1], ARGV[1])
+      redis.call('EXPIRE', KEYS[1], ARGV[2])
+      return 1
+    `,
+    1,
+    dispatchCashUnshownKey(orderId, version),
+    riderId,
+    String(CASH_UNSHOWN_SKIP_SECONDS),
+  ).catch(() => {});
+}
 /**
  * [REPORT-014 F-014-04] Offer ATTEMPT identity. Both Redis pointers store a
  * composite `<id>:<attemptId>` value (ids are cuids/uuids — no ':' inside), so
@@ -1145,7 +1171,13 @@ export class DispatchService {
     // Stacking: the RIDER pool's live capacity (AlgoConfig, cached ~30s;
     // clamped 1..3; 1 = historical behaviour and the kill switch).
     const riderCap = await riderStackingCapacity(this.prisma);
-    const declined = await this.redis.smembers(declinedKey(orderId, deliveryAuthorityVersion));
+    // [PROD-RIDER-TEST (b)2] A rider whose app just failed this job's shown-cash check is skipped too, past an
+    // exhausted search (dispatchCashUnshownKey): their app cannot take it until it updates.
+    const [declinedNow, cashUnshown] = await Promise.all([
+      this.redis.smembers(declinedKey(orderId, deliveryAuthorityVersion)),
+      this.redis.smembers(dispatchCashUnshownKey(orderId, deliveryAuthorityVersion)),
+    ]);
+    const declined = [...declinedNow, ...cashUnshown];
     const locationFreshSince = new Date(Date.now() - DISPATCH_LOCATION_FRESH_SECONDS * 1000);
 
     // SWIFT-062: a courier parcel only goes to a vehicle that can carry it.
@@ -2433,6 +2465,8 @@ export class DispatchService {
       roundKey(orderId, version),
       exhaustKey(orderId, version),
       incentiveKey(orderId, version),
+      // [PROD-RIDER-TEST (b)2] The store asked for a fresh search: a rider who has since updated is asked again.
+      dispatchCashUnshownKey(orderId, version),
     );
     return this.dispatchOrder(orderId);
   }
@@ -2556,6 +2590,12 @@ export class DispatchService {
       if (claimRefusalMarksTheMover(outcome)) {
         await this.redis.sadd(declinedKey(orderId, offeredVersion), mover.id).catch(() => {});
         await this.redis.expire(declinedKey(orderId, offeredVersion), 3600).catch(() => {});
+      }
+      // [PROD-RIDER-TEST (b)2] An app that could not show this job's cash cannot take it on any re-offer either:
+      // remembered past an exhausted search so the search moves on to riders who can (never an acceptance-rate
+      // mark: a refused claim records no offer outcome).
+      if (error instanceof AppError && error.code === 'CASH_AMOUNT_NOT_SHOWN') {
+        await rememberCashUnshown(this.redis, orderId, offeredVersion, mover.id);
       }
       // A hold means nobody can take it now, so there is no one to cascade to.
       // Otherwise the consumed card leaves the order unoffered: keep it moving.
@@ -2969,8 +3009,9 @@ export class DispatchService {
         // while the offer was out, or a card that showed no cash split (above UNSHOWN_CASH_MAX), is refused here, from
         // the LOCKED amount, before anything is committed.
         if (floatAmt > 0 && options.cashShown) {
-          const store = await tx.order.findUnique({ where: { id: orderId }, select: { vendor: { select: { name: true } } } });
-          assertCashShown(floatAmt, options.cashShown.payToVendor, store?.vendor?.name);
+          const store = await tx.order.findUnique({ where: { id: orderId }, select: { vendor: { select: { name: true } }, ...CASH_MATH_SELECT } });
+          // [PROD-RIDER-TEST (b)1] The card could state this split: an app that sent none back is an older app.
+          assertCashShown(floatAmt, options.cashShown.payToVendor, store?.vendor?.name, store != null && cashMathForOffer(store) != null);
         }
         if (floatAmt > 0 && !(await new FloatService(tx).commit(tx, moverId, floatAmt))) {
           throw new AppError(
@@ -3242,6 +3283,10 @@ export class DispatchService {
           // attempt and cycle of the same state collapses into this row.
           dedupeKey: `dispatch-retrying:${order.id}:${epoch}`,
         });
+        // [PROD-RIDER-TEST (a)1] The store is asked AT ONCE — the first empty search is when the customer's cancel
+        // turns free (readNoMoverFound) — not only after every retry ran out: "No rider found. Deliver it
+        // yourselves?" Same key as the terminal notice below, so the store hears it once per order state.
+        await this.notifyStoreNoRider(order, epoch);
         return true;
       }
     }
@@ -3374,17 +3419,7 @@ export class DispatchService {
     // to a real dead state (search again / cancel) instead of spinning forever.
     // The push above reaches a backgrounded app; this reaches the open screen. [taxi #8]
     await emitToOrderRoom(this.prisma, this.io, order.id, 'dispatch:exhausted', { orderId: order.id, orderNumber: order.orderNumber });
-    if (order.vendor) {
-      await this.notifications.send({
-        userId: order.vendor.owner.userId,
-        type: 'SYSTEM_ANNOUNCEMENT',
-        title: 'No riders available',
-        body: `No rider accepted order ${order.orderNumber}. You can hold it and retry, or cancel it.`,
-        audience: 'business',
-        data: { kind: 'dispatch_exhausted', orderId: order.id },
-        dedupeKey: `dispatch-exhausted:${order.id}:${epoch}`,
-      });
-    }
+    await this.notifyStoreNoRider(order, epoch);
 
     // Ops visibility (SWIFT-AUD-D7-02): a fully-exhausted dispatch = a customer's
     // order stranded with no mover, one of the fatal five. Customer + vendor are
@@ -3405,6 +3440,30 @@ export class DispatchService {
       }),
     ).catch(() => {});
     return true;
+  }
+
+  /** [PROD-RIDER-TEST (a)1] "No rider found. Deliver it yourselves?" — the store's push, once per order state
+   *  (shared with the customer's terminal key: the notice table dedupes per person). A parcel or a ride has no store. */
+  private async notifyStoreNoRider(
+    order: { id: string; orderNumber: string; orderType: string; vendor: { name: string; owner: { userId: string } } | null },
+    epoch: string,
+  ): Promise<void> {
+    if (!order.vendor || order.orderType === 'COURIER' || order.orderType === 'TAXI') return;
+    // [review S4-2] Every store device the new-order alert rings (storeNoticeRecipients), each once per order state.
+    const row = await this.prisma.order.findUnique({ where: { id: order.id }, select: { vendorId: true } });
+    const recipients = row?.vendorId
+      ? await storeNoticeRecipients(this.prisma, row.vendorId, order.vendor.owner.userId)
+      : [order.vendor.owner.userId];
+    for (const userId of recipients) {
+      await this.notifications.send({
+        userId,
+        type: 'SYSTEM_ANNOUNCEMENT',
+        ...noRiderStoreNotice(order.orderNumber),
+        audience: 'business',
+        data: { kind: 'dispatch_exhausted', orderId: order.id },
+        dedupeKey: `dispatch-exhausted:${order.id}:${epoch}`,
+      });
+    }
   }
 
   /** [E02 · DS272 F1] The slow lane's release matched nothing. Usually a

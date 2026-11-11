@@ -56,6 +56,7 @@ import { lockFeeCollectionAuthority, lockMoverFeeAuthority, lockSubscriptionPaye
 import { moverUserIdOf, PAYER_INCLUDE, payerAudienceOf, payerOf, payerUserIdOf } from '../subscription/subscription-owner';
 import { sweepChainDealChanges } from '../vendor/chain-deal';
 import { CLOSURE_FEE_HOLD_REFUSAL, CLOSURE_LAPSE_NOTE, closureHoldsWeek } from './closure-fee-hold';
+import { startedWeekOwed } from './credit-refund';
 
 // ---------------------------------------------------------------------------
 // BillingService — the one place V1 touches money: Swift's own weekly fee.
@@ -145,6 +146,24 @@ const MMG_HISTORY_HOLD = 'MMG_HISTORY_APPROVAL_UNVERIFIED';
 /** [PT-1] A hosted Pay-now payment's clientKey: `cardpay:<card session id>`.
  *  The session sweep owns these rows; the weekly-intent reconciler skips them. */
 export const CARD_PAY_NOW_KEY_PREFIX = 'cardpay:';
+/** [BILLING-REANCHOR] The receipt channel of a card capture that brought a suspended partner back: kept as fee credit
+ *  and spent at once, in the same transaction, on the return week. */
+export const CARD_RETURN_CHANNEL = 'CARD_RETURN';
+
+/**
+ * [N1 · CARD-STAGING-TEST R2 · owner 10 Nov 2026] What a booked card payment did with its money, as the partner is told
+ * (CardSessionView.settlement): `banked` when it was kept as fee credit — a week that has not started (CARD_PAY_AHEAD),
+ * or money kept without moving the account (CARD_LATE_APPROVAL) — and `advanced` when it paid a week. A RETURN is kept
+ * as fee credit too (its bank event), but that credit is spent AT ONCE on the return week in the same transaction
+ * (receipt channel CARD_RETURN): the week is paid, so it is `advanced`, never "kept for your next weekly fee". Read from
+ * what was durably booked, so every repeat (a racing confirmation, the sweep, a finance BOOK) answers the same.
+ */
+export async function cardPayNowSettlement(db: PrismaClient | Prisma.TransactionClient, paymentId: string): Promise<'advanced' | 'banked'> {
+  const kept = await db.billingEvent.findUnique({ where: { idempotencyKey: `bank:${paymentId}` }, select: { id: true } });
+  if (!kept) return 'advanced';
+  const receipt = await db.feeReceipt.findUnique({ where: { billingEventId: kept.id }, select: { channel: true } });
+  return receipt?.channel === CARD_RETURN_CHANNEL ? 'advanced' : 'banked';
+}
 /** [PT-1] Why an instrument charge did not happen — shown to the partner in
  *  the ordinary failure notice ("<reason>. We will retry tomorrow…", then the
  *  real ways to pay from fee-notice-copy.ts). A fact, never a door: the app
@@ -460,6 +479,28 @@ export class BillingService {
     return notified;
   }
 
+  /**
+   * [REVIEW-2484-A S4-6] Closing: a week that has started is never refunded. Before a partner's credit is set aside
+   * for a refund, the week that has started and is owed (credit-refund.ts startedWeekOwed: the rules the billing run
+   * itself applies) is paid from that credit, through the ordinary billing path, so only weeks that have not started
+   * remain. Credit only: no MMG prompt or card charge is ever made here. `paid`: at least one started week was paid;
+   * `none`: nothing was owed; `not_covered`: a started week is owed and the credit does not cover it (set-aside then
+   * refuses, STARTED_WEEK_UNPAID); `pending`: its payment is being confirmed.
+   */
+  async settleStartedWeekFromCredit(subscriptionId: string, now = new Date()): Promise<'paid' | 'none' | 'not_covered' | 'pending'> {
+    let paid = false;
+    // A week at a time, as the billing run would; bounded (a plan is never more than a few weeks behind its run).
+    for (let week = 0; week < 6; week += 1) {
+      const sub = await this.prisma.subscription.findUnique({ where: { id: subscriptionId }, include: PAYER_INCLUDE });
+      if (!sub || !(await startedWeekOwed(this.prisma, sub, now))) return paid ? 'paid' : 'none';
+      const outcome = await this.billSubscription(sub as SubWithRelations, now, undefined, false, { prepaidOnly: true });
+      if (outcome === 'pending') return 'pending';
+      if (outcome !== 'succeeded') return 'not_covered';
+      paid = true;
+    }
+    return 'paid';
+  }
+
   /** Bill everything due. One subscription's failure never kills the batch. */
   async runBillingCycle(at?: Date): Promise<BillingCycleResult> {
     // [REVIEW-M #1832 S3-1] Each subscription is billed at the time it is really billed
@@ -612,6 +653,9 @@ export class BillingService {
      *  a stale one. The attempt event exists; re-inserting it would collide
      *  with the very row that licensed this pass. */
     reclaimedAttempt = false,
+    /** [REVIEW-2484-A S4-6] `prepaidOnly`: pay the week from the partner's credit or not at all — no attempt is
+     *  opened unless the credit covers the price, and no MMG prompt or card charge is ever made (closing). */
+    opts: { prepaidOnly?: boolean } = {},
   ): Promise<'succeeded' | 'failed' | 'suspended' | 'skipped' | 'pending'> {
     // Selection is not collection authority. Old workers carrying a second
     // source ID must not open another fee after the payer has one authority.
@@ -654,6 +698,10 @@ export class BillingService {
     // so that week's price, at its own start, is the one charged.
     const returning = await returnReanchorProof(this.prisma, sub, now);
     let priced = await this.priceEligibleFor(returning ? { ...sub, nextBillingDate: returnWeekStart(sub, now) } : sub, usd);
+    if (opts.prepaidOnly && !sub.feeWaived && Number(priced.amount) > 0) {
+      const credit = await this.prisma.prepaidBalance.findUnique({ where: { subscriptionId: sub.id }, select: { balance: true, currencyCode: true } });
+      if (!credit || credit.currencyCode !== sub.currencyCode || Number(credit.balance) < Number(priced.amount)) return 'skipped';
+    }
 
     if (!reclaimedAttempt) try {
       const reserved = await this.prisma.$transaction(async (tx) => {
@@ -734,7 +782,7 @@ export class BillingService {
         // reserved (both rails write their intent before they call out), and
         // the provider keys are deterministic regardless.
         if (await this.reclaimStaleAttempt(sub, attemptKey, now)) {
-          return this.billSubscription(sub, now, usd, true);
+          return this.billSubscription(sub, now, usd, true, opts);
         }
         return 'skipped'; // someone (or a concurrent run) already attempted this
       }
@@ -783,7 +831,7 @@ export class BillingService {
       return 'succeeded';
     }
 
-    const charged = await this.attemptCharge(sub, amount, now);
+    const charged = await this.attemptCharge(sub, amount, now, opts.prepaidOnly === true);
 
     if (charged.ok) {
       if (charged.rail === 'MOBILE_MONEY') {
@@ -1585,7 +1633,8 @@ export class BillingService {
       this.prisma.subscriptionPayment.findUnique({ where: { id: payment.id } }),
       this.prisma.billingEvent.findUnique({ where: { idempotencyKey: `bank:${payment.id}` }, select: { id: true } }),
     ]);
-    if (banked) return { outcome: 'banked' };
+    // [N1] Kept as fee credit — unless it was a RETURN, whose credit already paid the return week (cardPayNowSettlement).
+    if (banked) return { outcome: await cardPayNowSettlement(this.prisma, payment.id) };
     if (after?.status === 'CAPTURED' && after.externalRef === input.providerRef) return { outcome: 'advanced' };
     if (after?.failureCode === 'WALLET_CURRENCY_MISMATCH' || after?.failureCode === 'CURRENCY_UNPINNED') {
       return { outcome: 'held', failureCode: after.failureCode };
@@ -1886,6 +1935,8 @@ export class BillingService {
     sub: SubWithRelations,
     amount: number,
     now: Date,
+    /** [REVIEW-2484-A S4-6] Credit only: never an external rail (a credit spent meanwhile defers the attempt). */
+    prepaidOnly = false,
   ): Promise<ChargeAttemptResult> {
     if (await this.subscriptionHasConfirmationHold(this.prisma, sub.id, undefined, now)) return { ok: false, deferred: true };
     // [PROD-PATH] No live way to pay: the fee is paused before the prepaid
@@ -1920,6 +1971,7 @@ export class BillingService {
     if (balanceRow && Number(balanceRow.balance) >= amount) {
       return { ok: true, ref: 'prepaid', spendPrepaid: amount };
     }
+    if (prepaidOnly) return { ok: false, deferred: true };
 
     // [PT-1] Card rail v2: the weekly card charge uses the subscription's
     // ACTIVE instrument, through the provider recorded ON it. The legacy
@@ -2280,7 +2332,7 @@ export class BillingService {
         if (bankCapture) {
           await this.creditWalletInTx(tx, {
             subscriptionId: sub.id, amount, currencyCode: sub.currencyCode,
-            eventKey: `bank:${payment.id}`, channel: returning ? 'CARD_RETURN' : bankedAnyway ? 'CARD_LATE_APPROVAL' : 'CARD_PAY_AHEAD', rail: 'CARD',
+            eventKey: `bank:${payment.id}`, channel: returning ? CARD_RETURN_CHANNEL : bankedAnyway ? 'CARD_LATE_APPROVAL' : 'CARD_PAY_AHEAD', rail: 'CARD',
             note: returning
               ? `Card payment received for ${periodKey} from a suspended partner: their return; spent on the return week (the time suspended is not billed) (payment ${payment.id})`
               : bankedAnyway

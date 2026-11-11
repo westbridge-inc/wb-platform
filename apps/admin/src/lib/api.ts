@@ -542,11 +542,14 @@ export interface RefundSources {
   cardPayments: Array<{
     cardSessionId: string; orderReference: string; providerTransactionRef: string | null; amount: number; currencyCode: string;
     inSetAside: number; paidAt: string | null; refund: { state: string; providerRefundRef: string | null } | null; refundable: boolean;
+    /** [OWNER 10 Nov 2026] What Refund to card sends: the whole payment, or (`partial`) its weeks that have not started. */
+    refundAmount: number; partial: boolean;
   }>;
 }
 export const fetchRefundSources = (id: string): Promise<{ data: RefundSources }> => apiFetch(`/api/v1/admin/subscriptions/${id}/refund-credit/sources`);
 /** [CARD-READY] Card money goes back to the same card only through the card provider's refund: Swift asks it once for the
- *  whole card payment, and it counts as paid back only on the provider's approval. Two people (C4). */
+ *  card payment's money in the refund (the whole payment, or [owner 10 Nov 2026] its weeks that have not started as a
+ *  partial refund), and it counts as paid back only on the provider's approval. Two people (C4). */
 export const refundCreditToCard = (id: string, setAsideId: string, cardSessionId: string, amount: number, reason: string) =>
   apiFetch(`/api/v1/admin/subscriptions/${id}/refund-credit/card`, {
     method: 'POST',
