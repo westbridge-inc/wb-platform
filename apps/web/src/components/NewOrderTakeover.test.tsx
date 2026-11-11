@@ -21,13 +21,36 @@ describe('new-order takeover', () => {
     stubAudioContext();
   });
 
-  it('shows the real total from `totalAmount`, never "$NaN"', async () => {
+  it('shows the store\'s food amount, never "$NaN" [RING-FOOD: it used to show the customer\'s whole total]', async () => {
     const { rerender } = renderWithQuery(<NewOrderTakeover orders={[]} />);
     rerender(<NewOrderTakeover orders={[normalizeVendorOrder(wireVendorOrder())]} />);
 
     const headline = await screen.findByText(new RegExp(`SW-1001`));
-    expect(headline.textContent).toContain(`$${(4500).toLocaleString()}`);
+    expect(headline.textContent).toContain(`Food $${(4000).toLocaleString()}`);
+    expect(headline.textContent).not.toContain(`$${(4500).toLocaleString()}`);
+    expect(screen.getByText('Delivery fee goes to the rider')).toBeTruthy();
     expect(document.body.textContent ?? '').not.toMatch(/NaN/);
+  });
+
+  it('[RING-FOOD · owner 11 Nov] a tip to the rider is never in the store\'s number', async () => {
+    const tipped = wireVendorOrder({ tipAmount: '300.00', totalAmount: '4800.00' });
+    const { rerender } = renderWithQuery(<NewOrderTakeover orders={[]} />);
+    rerender(<NewOrderTakeover orders={[normalizeVendorOrder(tipped)]} />);
+
+    const headline = await screen.findByText(new RegExp(`SW-1001`));
+    expect(headline.textContent).toContain(`Food $${(4000).toLocaleString()}`);
+    expect(headline.textContent).not.toContain(`$${(4800).toLocaleString()}`);
+    expect(screen.getByText('Delivery fee & tip go to the rider')).toBeTruthy();
+  });
+
+  it('[RING-FOOD] the store\'s own rider delivers: the fee and tip are the store\'s, still not in the food number', async () => {
+    const own = wireVendorOrder({ tipAmount: '300.00', totalAmount: '4800.00', fulfillmentMode: 'VENDOR_DELIVERY' });
+    const { rerender } = renderWithQuery(<NewOrderTakeover orders={[]} />);
+    rerender(<NewOrderTakeover orders={[normalizeVendorOrder(own)]} />);
+
+    const headline = await screen.findByText(new RegExp(`SW-1001`));
+    expect(headline.textContent).toContain(`Food $${(4000).toLocaleString()}`);
+    expect(screen.getByText('Delivery fee & tip are yours — your rider delivers')).toBeTruthy();
   });
 
   it('[Q12] an order the next poll shows cancelled leaves the takeover — no chime for an order that no longer exists', async () => {
@@ -42,9 +65,9 @@ describe('new-order takeover', () => {
     expect(screen.queryByRole('button', { name: 'Accept' })).toBeNull();
   });
 
-  it('renders an em-dash rather than a made-up $0 when no total arrived', async () => {
+  it('renders an em-dash rather than a made-up $0 when no amount arrived', async () => {
     const raw = wireVendorOrder() as Record<string, unknown>;
-    delete raw['totalAmount'];
+    delete raw['subtotalCustomer'];
     const { rerender } = renderWithQuery(<NewOrderTakeover orders={[]} />);
     rerender(<NewOrderTakeover orders={[normalizeVendorOrder(raw)]} />);
 
