@@ -99,7 +99,9 @@ export async function buildKitchenOrder(
     },
   });
   if (!order) return { ok: false, reason: 'the order is gone' };
-  const lines = order.items.filter((l) => l.subStatus !== 'REMOVED');
+  // An open out-of-stock question waits for the customer on the tablet; a refunded or refused line is not made.
+  if (order.items.some((l) => l.subStatus === 'PENDING')) return { ok: false, reason: 'an out-of-stock question is open' };
+  const lines = order.items.filter((l) => l.subStatus !== 'REFUNDED' && l.subStatus !== 'REJECTED');
   if (lines.length === 0) return { ok: false, reason: 'the order has no lines' };
   const catalogue = await prisma.item.findMany({
     where: { id: { in: lines.map((l) => l.itemId) } },
