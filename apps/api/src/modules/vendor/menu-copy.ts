@@ -61,8 +61,10 @@ const sourceMenuSelect = {
       optionGroups: {
         orderBy: { sortOrder: 'asc' },
         select: {
-          name: true, isRequired: true, minSelect: true, maxSelect: true, sortOrder: true,
-          options: { orderBy: { sortOrder: 'asc' }, select: { name: true, additionalPrice: true, vatListedAdditionalPrice: true, isDefault: true, isAvailable: true, sortOrder: true } },
+          id: true, name: true, isRequired: true, minSelect: true, maxSelect: true, sortOrder: true,
+          // [MENU-OPTIONS] the pizza rules travel with the copy (a shared group arrives as the branch's own group).
+          setsPrice: true, allowHalves: true, halfPricePercent: true,
+          options: { orderBy: { sortOrder: 'asc' }, select: { name: true, additionalPrice: true, vatListedAdditionalPrice: true, isDefault: true, isAvailable: true, sortOrder: true, followUpGroupId: true } },
         },
       },
     },
@@ -150,6 +152,39 @@ export async function judgeSourceItems(db: Db, menu: SourceMenu): Promise<{ bann
   return { banned, waiting };
 }
 
+type SourceGroups = SourceMenu[number]['items'][number]['optionGroups'];
+type CopiedGroups = Array<{ id: string; sortOrder: number; name: string; options: Array<{ id: string; sortOrder: number; name: string }> }>;
+
+/** [MENU-OPTIONS] Re-point each copied choice's follow-up at the copied item's matching group. Groups and choices are
+ *  matched by (sort order, name, n-th of that pair): the copy writes the same names and sort orders. */
+async function copyFollowUps(tx: Prisma.TransactionClient, source: SourceGroups, copied: CopiedGroups): Promise<void> {
+  if (!source.some((g) => g.options.some((o) => o.followUpGroupId))) return;
+  const keyed = <T extends { sortOrder: number; name: string }>(rows: readonly T[]) => {
+    const seen = new Map<string, number>();
+    return rows.map((row) => {
+      const base = `${row.sortOrder}\u0000${row.name}`;
+      const n = seen.get(base) ?? 0;
+      seen.set(base, n + 1);
+      return { key: `${base}\u0000${n}`, row };
+    });
+  };
+  const byId = (a: { id: string }, b: { id: string }) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
+  const copiedByKey = new Map(keyed([...copied].sort(byId)).map(({ key, row }) => [key, row]));
+  const sourceKeyed = keyed(source);
+  const groupCopy = new Map(sourceKeyed.map(({ key, row }) => [row.id, copiedByKey.get(key)]));
+  for (const { row: group } of sourceKeyed) {
+    const target = groupCopy.get(group.id);
+    if (!target) continue;
+    const copiedOptions = new Map(keyed([...target.options].sort(byId)).map(({ key, row }) => [key, row]));
+    for (const { key, row: option } of keyed(group.options)) {
+      const opens = option.followUpGroupId ? groupCopy.get(option.followUpGroupId) : undefined;
+      const copiedOption = copiedOptions.get(key);
+      if (!opens || !copiedOption) continue;
+      await tx.option.update({ where: { id: copiedOption.id }, data: { followUpGroupId: opens.id } });
+    }
+  }
+}
+
 /** Write the source menu into the (empty, locked) target store. Inside the caller's transaction. */
 export async function writeMenuCopy(
   tx: Prisma.TransactionClient,
@@ -174,7 +209,7 @@ export async function writeMenuCopy(
     } });
     categories += 1;
     for (const item of copiedItems) {
-      await tx.item.create({ data: {
+      const created = await tx.item.create({ data: {
         vendorId: input.targetId, categoryId: category.id,
         name: item.name, description: item.description, imageUrl: photo(item.imageUrl),
         // [VAT-DOCS] The price the other branch's store TYPED (before VAT while its VAT is added): this branch's own VAT
@@ -188,12 +223,16 @@ export async function writeMenuCopy(
         optionGroups: item.optionGroups.length ? {
           create: item.optionGroups.map((g) => ({
             name: g.name, isRequired: g.isRequired, minSelect: g.minSelect, maxSelect: g.maxSelect, sortOrder: g.sortOrder,
+            setsPrice: g.setsPrice, allowHalves: g.allowHalves, halfPricePercent: g.halfPricePercent,
             options: { create: g.options.map((o) => ({
               name: o.name, additionalPrice: o.vatListedAdditionalPrice ?? o.additionalPrice, isDefault: o.isDefault, isAvailable: o.isAvailable, sortOrder: o.sortOrder,
             })) },
           })),
         } : undefined,
-      } });
+      }, select: { id: true, optionGroups: { select: { id: true, sortOrder: true, name: true, options: { select: { id: true, sortOrder: true, name: true } } } } } });
+      // [MENU-OPTIONS] Follow-ups point at the copied item's own groups: matched by position (groups and choices are
+      // written in the source's order, so the n-th group / choice here is the n-th there).
+      await copyFollowUps(tx, item.optionGroups, created.optionGroups);
       items += 1;
       options += item.optionGroups.reduce((n, g) => n + g.options.length, 0);
     }
@@ -218,7 +257,8 @@ const EXPORT_HEADER = ['category', 'name', 'description', 'basePrice', 'sku', 'u
 /** "Size: Small (+0.00), Large (+500.00) | Sauce: ..." — one cell; prices as the database's Decimal text.
  *  [VAT-DOCS] The prices the store typed (before VAT while its VAT is added), so the file imports back unchanged. */
 function optionsCell(groups: SourceMenu[number]['items'][number]['optionGroups']): string {
-  return groups.map((g) => `${g.name}: ${g.options.map((o) => `${o.name} (+${(o.vatListedAdditionalPrice ?? o.additionalPrice).toFixed(2)})`).join(', ')}`).join(' | ');
+  // [MENU-OPTIONS] A size that sets the price shows its price ("=1200.00"), an add-on what it adds ("+200.00").
+  return groups.map((g) => `${g.name}: ${g.options.map((o) => `${o.name} (${g.setsPrice ? '=' : '+'}${(o.vatListedAdditionalPrice ?? o.additionalPrice).toFixed(2)})`).join(', ')}`).join(' | ');
 }
 
 /** The store's live menu as CSV (the import template's columns, then the options), formula-safe. */

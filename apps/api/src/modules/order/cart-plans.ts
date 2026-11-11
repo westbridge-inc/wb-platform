@@ -34,7 +34,7 @@
 import { deliveryFeeFromRates, expressDeliveryFee, type DeliveryRates } from '../../utils/markup';
 import type { LatLng, RouteSource } from '../../providers/maps/maps-provider';
 import { canonicalBillableKm } from '../../utils/billable-distance';
-import { resolveSelectedOptions, optionsUnitPrice, type ResolvedOption } from './options';
+import { lineBasePrice, resolveSelectedOptions, optionsUnitPrice, type ResolvedOption } from './options';
 import {
   lineTotal, orderTotal, promoCapacity, promoDiscount, allocatePromo,
   type PromoAllocation, type PromoTerms,
@@ -62,7 +62,13 @@ export interface PricedCartLineInput {
     vendorId: string;
     fulfillment: string;
     basePrice: unknown;
-    optionGroups?: Array<{ name: string; options: Array<{ id: string; name: string; additionalPrice: unknown }> }> | null;
+    /** [MENU-OPTIONS] The pizza rules are REQUIRED here, so every money reader loads them (OPTION_GROUPS_PRICING_SELECT
+     *  or a full include): a reader that forgot them would price a size as an add-on and ignore the half rule. */
+    optionGroups?: Array<{
+      id: string; name: string; sortOrder: number;
+      setsPrice: boolean; allowHalves: boolean; halfPricePercent: number;
+      options: Array<{ id: string; name: string; additionalPrice: unknown; followUpGroupId: string | null; sortOrder: number }>;
+    }> | null;
   };
 }
 
@@ -116,15 +122,17 @@ export function riderCashForLines(lines: ReadonlyArray<PriceableCartLine>): numb
 
 /** One line's price: unit = base + selected options (only options that belong
  *  to the item), line = unit × quantity. The quote's line rows, the plan
- *  subtotal and the order's line snapshot all come from here. */
+ *  subtotal and the order's line snapshot all come from here.
+ *  [MENU-OPTIONS] base = the chosen size's price when a group sets the price (the item's basePrice otherwise); a
+ *  half topping adds the store's half price; a follow-up choice adds its own price (options.ts). */
 export function priceCartLine(line: PriceableCartLine): {
   basePrice: number;
   unitPrice: number;
   options: ResolvedOption[];
   lineTotal: number;
 } {
-  const basePrice = Number(line.item.basePrice);
   const options = resolveSelectedOptions(line.item, line.selectedOptions);
+  const basePrice = lineBasePrice(line.item.basePrice, options);
   const unitPrice = basePrice + optionsUnitPrice(options);
   return { basePrice, unitPrice, options, lineTotal: lineTotal(unitPrice, line.quantity) };
 }

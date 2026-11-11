@@ -92,6 +92,7 @@ import { runAsSystem } from '../../plugins/tenant-context';
 import { queueStorePhotoDeletions } from './store-photos';
 import { MENU_COPY_AUDIT_ACTION, assertCopyable, copyPhotos, judgeSourceItems, menuExportCsv, menuHasAnything, priorCopy, readLiveMenu, writeMenuCopy, type MenuCopyResult } from './menu-copy';
 import { scheduleVendorSearchSync } from '../search/search-sync';
+import { assertLibraryRules, attachLibraryGroup, deleteLibraryGroup, detachCopy, detachLibraryGroup, libraryGroupOf, normalizedGroupFlags, readLibrary, settleItems, sharedGroupEditRefusal, syncLibraryGroup } from './modifier-library';
 import { assertNotBanned, assertNotBannedGoods, assertStoreAllowed, catalogueChecksFor, partnerStoreView, partnerView, storeCheckOf, unhideRestocked } from '../compliance/prohibited-gate';
 import { certainGoods, notAllowedMessage } from '../compliance/prohibited-items';
 import { SearchService } from '../search/search.service';
@@ -270,6 +271,11 @@ const optionGroupInputSchema = z.object({
   minSelect: z.number().int().min(0).max(50).optional(),
   maxSelect: z.number().int().min(1).max(50).optional(),
   sortOrder: z.number().int().min(0).optional(),
+  // [MENU-OPTIONS · owner 11 Nov 2026] Size sets the price (pick exactly one; the choice's price IS the item price),
+  // half-and-half (whole / left / right) and the store's price rule for a half (a percent of the choice's price).
+  setsPrice: z.boolean().optional(),
+  allowHalves: z.boolean().optional(),
+  halfPricePercent: z.number().int().min(1).max(100).optional(),
 });
 
 // SERVICE listings carry a bookingConfig: how long an appointment is, the weekly
@@ -402,7 +408,28 @@ const updateOptionGroupSchema = optionGroupInputSchema.partial();
 
 const addOptionSchema = optionInputSchema.extend({
   isAvailable: z.boolean().optional(),
+  // [MENU-OPTIONS] The follow-up group (of the same item) this choice opens, or null for none (one level deep).
+  followUpGroupId: z.string().min(1).max(64).nullable().optional(),
 });
+
+// [MENU-OPTIONS] The shared option-group library (vendor/modifier-library.ts). Prices are what the store types
+// (before VAT); each attached item's copy is reconciled with that item's VAT.
+const libraryOptionSchema = z.object({
+  name: z.string().trim().min(1).max(100),
+  price: z.number().min(0).max(10_000_000).optional(),
+  isDefault: z.boolean().optional(),
+  isAvailable: z.boolean().optional(),
+  sortOrder: z.number().int().min(0).optional(),
+  followUpGroupId: z.string().min(1).max(64).nullable().optional(),
+  externalCode: z.string().trim().max(64).nullable().optional(),
+});
+const libraryGroupSchema = optionGroupInputSchema.extend({
+  options: z.array(libraryOptionSchema).max(100).optional(),
+});
+const libraryGroupUpdateSchema = optionGroupInputSchema.partial();
+const libraryOptionUpdateSchema = libraryOptionSchema.partial();
+const itemIdsSchema = z.object({ itemIds: z.array(z.string().min(1).max(64)).min(1).max(500) });
+const idOrderSchema = z.object({ ids: z.array(z.string().min(1).max(64)).min(1).max(200) });
 
 const updateOptionSchema = addOptionSchema.partial();
 
@@ -811,6 +838,26 @@ function vatPriceEditOrRefuse<T>(edit: () => T): T {
 
 /** [REVIEW-M #2255 S4-2] An older app's NEW price on a store that adds VAT: refused like an edit (vat-pricing.ts
  *  refuseOlderAppNewPrice), inside the transaction that would create the rows, so nothing is created. */
+/** [MENU-OPTIONS] A follow-up group named for an item's option: one of THAT item's groups (the item's other rules,
+ *  one level and never a size, are judged by settleItems after the write). null clears it. */
+async function followUpOnItem(tx: Prisma.TransactionClient, itemId: string, followUpGroupId: string | null | undefined): Promise<string | null> {
+  if (!followUpGroupId) return null;
+  const target = await tx.optionGroup.findFirst({ where: { id: followUpGroupId, itemId }, select: { id: true } });
+  if (!target) throw new AppError(400, 'MENU_OPTIONS_RULE', 'A choice can open only another group of the same item.');
+  return target.id;
+}
+
+/** [MENU-OPTIONS] A menu-option write the database refused on a rule it also holds (one size group per item, a
+ *  follow-up on another item, a shared group on another store's item) answers like the server's own rule check. */
+function menuOptionsWriteError(err: unknown): never {
+  if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002') {
+    throw new AppError(400, 'MENU_OPTIONS_RULE', 'An item can have only one group that sets the price (like Size).');
+  }
+  const message = err instanceof Error ? err.message : '';
+  if (/\[MENU-OPTIONS\]/.test(message)) throw new AppError(400, 'MENU_OPTIONS_RULE', 'That option setup is not allowed. Check which groups each choice opens.');
+  throw err;
+}
+
 async function refuseOlderAppNewPriceIn(tx: Prisma.TransactionClient, vendorId: string, ambiguous: boolean, vatClass?: string | null): Promise<void> {
   try {
     await refuseOlderAppNewPrice(tx, vendorId, ambiguous, vatClass);
@@ -825,10 +872,14 @@ async function refuseOlderAppNewPriceIn(tx: Prisma.TransactionClient, vendorId: 
  *  and none once an approved substitute replaced the line, because the swap is
  *  charged without them (order/substitution-view.ts). */
 const VENDOR_ORDER_ITEMS = {
-  include: { selectedOptions: { select: { optionGroupName: true, optionName: true, markedUpPrice: true } } },
+  include: { selectedOptions: { select: {
+    optionGroupName: true, optionName: true, markedUpPrice: true,
+    // [MENU-OPTIONS] placement (Left / Right / Whole), the follow-up's opener and the size, for the kitchen view.
+    plainGroupName: true, plainOptionName: true, placement: true, parentOptionName: true, setsPrice: true,
+  } } },
 } as const;
 
-function vendorOrderLine<T extends { subStatus: string; selectedOptions: Array<{ optionGroupName: string; optionName: string; markedUpPrice: unknown }> }>(line: T) {
+function vendorOrderLine<T extends { subStatus: string; selectedOptions: Array<{ optionGroupName: string; optionName: string; markedUpPrice: unknown; plainGroupName: string | null; plainOptionName: string | null; placement: string | null; parentOptionName: string | null; setsPrice: boolean }> }>(line: T) {
   const { selectedOptions, ...rest } = line;
   return { ...rest, options: lineOptionsAsMade({ subStatus: line.subStatus, selectedOptions }) };
 }
@@ -4192,12 +4243,16 @@ export async function vendorRoutes(app: FastifyInstance) {
           ...(body.vatClass !== undefined ? { vatClass: body.vatClass } : {}),
           optionGroups: body.optionGroups?.length
             ? {
-                create: body.optionGroups.map((group, gi) => ({
+                create: body.optionGroups.map((raw) => normalizedGroupFlags(raw)).map((group, gi) => ({
                   name: group.name,
                   isRequired: group.isRequired ?? false,
                   minSelect: group.minSelect ?? 0,
                   maxSelect: group.maxSelect ?? 1,
                   sortOrder: group.sortOrder ?? gi,
+                  // [MENU-OPTIONS] size sets the price / half-and-half and its price rule.
+                  setsPrice: group.setsPrice ?? false,
+                  allowHalves: group.allowHalves ?? false,
+                  halfPricePercent: group.halfPricePercent ?? 100,
                   options: {
                     create: group.options.map((opt, oi) => ({
                       name: opt.name,
@@ -4212,7 +4267,8 @@ export async function vendorRoutes(app: FastifyInstance) {
         },
         select: { id: true },
       });
-      await reconcileVatPricing(tx, vendorId, { itemIds: [created.id] });
+      // [MENU-OPTIONS] The item's option rules, its "from" price (lowest size) and its VAT, in this transaction.
+      await settleItems(tx, vendorId, [created.id]);
       return tx.item.findUniqueOrThrow({ where: { id: created.id }, include: itemInclude });
     });
 
@@ -5028,7 +5084,8 @@ export async function vendorRoutes(app: FastifyInstance) {
     const item = await app.prisma.item.findFirst({ where: { id: request.params.itemId, vendorId, archivedAt: null } });
     if (!item) throw new NotFoundError('Item', request.params.itemId);
 
-    const body = addOptionGroupSchema.parse(request.body);
+    // [MENU-OPTIONS] A group that sets the price is always "pick exactly one".
+    const body = normalizedGroupFlags(addOptionGroupSchema.parse(request.body));
     // [GUARDRAILS §8] Options of an item Swift does not allow are not edited either, and an
     // option that IS banned goods ("Carib Lager") is refused. [#55]
     await assertNotBanned(app.prisma, item.id, { wordBanEditable: true });
@@ -5057,6 +5114,9 @@ export async function vendorRoutes(app: FastifyInstance) {
           minSelect: body.minSelect ?? 0,
           maxSelect: body.maxSelect ?? 1,
           sortOrder,
+          setsPrice: body.setsPrice ?? false,
+          allowHalves: body.allowHalves ?? false,
+          halfPricePercent: body.halfPricePercent ?? 100,
           options: body.options?.length
             ? {
                 create: body.options.map((opt, i) => ({
@@ -5068,13 +5128,12 @@ export async function vendorRoutes(app: FastifyInstance) {
               }
             : undefined,
         },
-        include: { options: { orderBy: { sortOrder: 'asc' } } },
+        select: { id: true },
       });
-      const priced = await reconcileVatPricing(tx, vendorId, { itemIds: [request.params.itemId] });
-      return priced.added > 0
-        ? tx.optionGroup.findUniqueOrThrow({ where: { id: created.id }, include: { options: { orderBy: { sortOrder: 'asc' } } } })
-        : created;
-    });
+      // [MENU-OPTIONS · VAT-DOCS] The item's option rules, its "from" price and VAT added when the store's approval says so.
+      await settleItems(tx, vendorId, [request.params.itemId]);
+      return tx.optionGroup.findUniqueOrThrow({ where: { id: created.id }, include: { options: { orderBy: { sortOrder: 'asc' } } } });
+    }).catch(menuOptionsWriteError);
 
     return { success: true, data: group };
   });
@@ -5089,40 +5148,56 @@ export async function vendorRoutes(app: FastifyInstance) {
     const { vendorId } = await requireVendor(app, request, 'MANAGER');
     const existing = await app.prisma.optionGroup.findFirst({
       where: { id: request.params.id, item: { vendorId, archivedAt: null } },
-      select: { id: true, itemId: true },
+      select: { id: true, itemId: true, libraryGroupId: true, setsPrice: true, allowHalves: true },
     });
     if (!existing) throw new NotFoundError('OptionGroup', request.params.id);
+    // [MENU-OPTIONS] A shared group is edited only in the library (every item that uses it changes together).
+    if (existing.libraryGroupId) throw sharedGroupEditRefusal();
     await assertNotBanned(app.prisma, existing.itemId, { wordBanEditable: true });
 
-    const body = updateOptionGroupSchema.parse(request.body);
+    const parsed = updateOptionGroupSchema.parse(request.body);
+    const body = normalizedGroupFlags({ ...parsed, setsPrice: parsed.setsPrice ?? existing.setsPrice, allowHalves: parsed.allowHalves ?? existing.allowHalves });
     if (body.name !== undefined) assertNotBannedGoods([body.name]);
 
-    const group = await app.prisma.optionGroup.update({
-      where: { id: request.params.id },
-      data: {
-        ...(body.name !== undefined && { name: body.name.trim() }),
-        ...(body.isRequired !== undefined && { isRequired: body.isRequired }),
-        ...(body.minSelect !== undefined && { minSelect: body.minSelect }),
-        ...(body.maxSelect !== undefined && { maxSelect: body.maxSelect }),
-        ...(body.sortOrder !== undefined && { sortOrder: body.sortOrder }),
-      },
-      include: { options: { orderBy: { sortOrder: 'asc' } } },
-    });
+    const group = await app.prisma.$transaction(async (tx) => {
+      await tx.optionGroup.update({
+        where: { id: request.params.id },
+        data: {
+          ...(body.name !== undefined && { name: body.name.trim() }),
+          ...(body.isRequired !== undefined && { isRequired: body.isRequired }),
+          ...(body.minSelect !== undefined && { minSelect: body.minSelect }),
+          ...(body.maxSelect !== undefined && { maxSelect: body.maxSelect }),
+          ...(body.sortOrder !== undefined && { sortOrder: body.sortOrder }),
+          ...(parsed.setsPrice !== undefined && { setsPrice: parsed.setsPrice }),
+          ...(parsed.allowHalves !== undefined && { allowHalves: parsed.allowHalves }),
+          ...(body.halfPricePercent !== undefined && { halfPricePercent: body.halfPricePercent }),
+        },
+      });
+      await settleItems(tx, vendorId, [existing.itemId]);
+      return tx.optionGroup.findUniqueOrThrow({ where: { id: request.params.id }, include: { options: { orderBy: { sortOrder: 'asc' } } } });
+    }).catch(menuOptionsWriteError);
 
     return { success: true, data: group };
   });
 
-  /** DELETE /option-groups/:id — Delete an option group and its options */
+  /** DELETE /option-groups/:id — Delete an option group and its options.
+   *  [MENU-OPTIONS] On an item's copy of a shared group: removes the shared group from THIS item only. */
   app.delete<{ Params: IdParam }>('/option-groups/:id', auth, async (request) => {
     const { vendorId } = await requireVendor(app, request, 'MANAGER');
     const existing = await app.prisma.optionGroup.findFirst({
       where: { id: request.params.id, item: { vendorId, archivedAt: null } },
-      select: { id: true, itemId: true },
+      select: { id: true, itemId: true, libraryGroupId: true },
     });
     if (!existing) throw new NotFoundError('OptionGroup', request.params.id);
 
-    await app.prisma.option.deleteMany({ where: { optionGroupId: request.params.id } });
-    await app.prisma.optionGroup.delete({ where: { id: request.params.id } });
+    await app.prisma.$transaction(async (tx) => {
+      if (existing.libraryGroupId) await detachCopy(tx, existing);
+      else {
+        await tx.option.deleteMany({ where: { optionGroupId: request.params.id } });
+        await tx.optionGroup.delete({ where: { id: request.params.id } });
+      }
+      await settleItems(tx, vendorId, [existing.itemId]);
+    }).catch(menuOptionsWriteError);
 
     return { success: true, data: { deleted: true } };
   });
@@ -5136,9 +5211,10 @@ export async function vendorRoutes(app: FastifyInstance) {
     const { vendorId } = await requireVendor(app, request, 'MANAGER');
     const group = await app.prisma.optionGroup.findFirst({
       where: { id: request.params.groupId, item: { vendorId, archivedAt: null } },
-      select: { id: true, itemId: true, item: { select: { vatClass: true } } },
+      select: { id: true, itemId: true, libraryGroupId: true, item: { select: { vatClass: true } } },
     });
     if (!group) throw new NotFoundError('OptionGroup', request.params.groupId);
+    if (group.libraryGroupId) throw sharedGroupEditRefusal();
     await assertNotBanned(app.prisma, group.itemId, { wordBanEditable: true });
 
     const body = addOptionSchema.parse(request.body);
@@ -5164,12 +5240,14 @@ export async function vendorRoutes(app: FastifyInstance) {
           isDefault: body.isDefault ?? false,
           isAvailable: body.isAvailable ?? true,
           sortOrder,
+          // [MENU-OPTIONS] Judged with the item's other rules by settleItems (same item, one level).
+          followUpGroupId: await followUpOnItem(tx, group.itemId, body.followUpGroupId),
         },
       });
       // [VAT-DOCS] VAT added to its price when the store's approval says so.
-      const priced = await reconcileVatPricing(tx, vendorId, { itemIds: [group.itemId] });
-      return priced.added > 0 ? tx.option.findUniqueOrThrow({ where: { id: created.id } }) : created;
-    });
+      await settleItems(tx, vendorId, [group.itemId]);
+      return tx.option.findUniqueOrThrow({ where: { id: created.id } });
+    }).catch(menuOptionsWriteError);
 
     return { success: true, data: option };
   });
@@ -5179,18 +5257,32 @@ export async function vendorRoutes(app: FastifyInstance) {
     const { vendorId } = await requireVendor(app, request, 'MANAGER');
     const existing = await app.prisma.option.findFirst({
       where: { id: request.params.id, optionGroup: { item: { vendorId, archivedAt: null } } },
-      select: { id: true, additionalPrice: true, vatListedAdditionalPrice: true, optionGroup: { select: { itemId: true } } },
+      select: { id: true, additionalPrice: true, vatListedAdditionalPrice: true, libraryOptionId: true, optionGroup: { select: { itemId: true, libraryGroupId: true } } },
     });
     if (!existing) throw new NotFoundError('Option', request.params.id);
     await assertNotBanned(app.prisma, existing.optionGroup.itemId, { wordBanEditable: true });
 
     const body = updateOptionSchema.parse(request.body);
+    // [MENU-OPTIONS] A choice of a shared group: only "sold out / back on" is taken here, and it is the LIBRARY
+    // choice's (every item that uses it). Anything else is edited in the library.
+    if (existing.optionGroup.libraryGroupId) {
+      const onlyAvailability = Object.keys(body).every((k) => k === 'isAvailable') && body.isAvailable !== undefined;
+      if (!onlyAvailability || !existing.libraryOptionId) throw sharedGroupEditRefusal();
+      const libraryOptionId = existing.libraryOptionId;
+      const libraryGroupId = existing.optionGroup.libraryGroupId;
+      await app.prisma.$transaction(async (tx) => {
+        await tx.modifierOption.update({ where: { id: libraryOptionId }, data: { isAvailable: body.isAvailable } });
+        await syncLibraryGroup(tx, vendorId, libraryGroupId);
+      }).catch(menuOptionsWriteError);
+      scheduleVendorSearchSync(app, vendorId);
+      return { success: true, data: await app.prisma.option.findUniqueOrThrow({ where: { id: existing.id } }) };
+    }
     if (body.name !== undefined) assertNotBannedGoods([body.name]);
     // [VAT-DOCS] The extra price the store typed, or none when an older app sent back the customer's price unchanged.
     const priceEdit = vatPriceEditOrRefuse(() => optionPriceEdit(existing, body));
 
     const option = await app.prisma.$transaction(async (tx) => {
-      const updated = await tx.option.update({
+      await tx.option.update({
         where: { id: request.params.id },
         data: {
           ...(body.name !== undefined && { name: body.name.trim() }),
@@ -5198,12 +5290,12 @@ export async function vendorRoutes(app: FastifyInstance) {
           ...(body.isDefault !== undefined && { isDefault: body.isDefault }),
           ...(body.isAvailable !== undefined && { isAvailable: body.isAvailable }),
           ...(body.sortOrder !== undefined && { sortOrder: body.sortOrder }),
+          ...(body.followUpGroupId !== undefined && { followUpGroupId: await followUpOnItem(tx, existing.optionGroup.itemId, body.followUpGroupId) }),
         },
       });
-      if (!priceEdit) return updated;
-      const priced = await reconcileVatPricing(tx, vendorId, { itemIds: [existing.optionGroup.itemId] });
-      return priced.added > 0 ? tx.option.findUniqueOrThrow({ where: { id: updated.id } }) : updated;
-    });
+      await settleItems(tx, vendorId, [existing.optionGroup.itemId]);
+      return tx.option.findUniqueOrThrow({ where: { id: request.params.id } });
+    }).catch(menuOptionsWriteError);
 
     return { success: true, data: option };
   });
@@ -5213,13 +5305,206 @@ export async function vendorRoutes(app: FastifyInstance) {
     const { vendorId } = await requireVendor(app, request, 'MANAGER');
     const existing = await app.prisma.option.findFirst({
       where: { id: request.params.id, optionGroup: { item: { vendorId, archivedAt: null } } },
-      select: { id: true, optionGroup: { select: { itemId: true } } },
+      select: { id: true, optionGroup: { select: { itemId: true, libraryGroupId: true } } },
     });
     if (!existing) throw new NotFoundError('Option', request.params.id);
+    if (existing.optionGroup.libraryGroupId) throw sharedGroupEditRefusal();
 
-    await app.prisma.option.delete({ where: { id: request.params.id } });
+    await app.prisma.$transaction(async (tx) => {
+      await tx.option.delete({ where: { id: request.params.id } });
+      await settleItems(tx, vendorId, [existing.optionGroup.itemId]);
+    }).catch(menuOptionsWriteError);
 
     return { success: true, data: { deleted: true } };
+  });
+
+  // =========================================================================
+  // 4b. MENU — Option library (shared option groups) [MENU-OPTIONS · owner 11 Nov 2026]
+  // Build a group once, attach it to many items; editing it changes every item that uses it.
+  // Reading: any member of the store. Writing: the owner or a manager (as every menu edit).
+  // =========================================================================
+
+  /** GET /modifier-groups — the store's library, each group with its options and the items that use it. */
+  app.get('/modifier-groups', auth, async (request) => {
+    const { vendorId } = await resolveVendor(app, request.user.userId, selectedVendorId(request));
+    return { success: true, data: await readLibrary(app.prisma as unknown as Prisma.TransactionClient, vendorId) };
+  });
+
+  /** POST /modifier-groups — create a shared group (with its options). */
+  app.post('/modifier-groups', auth, async (request) => {
+    const { vendorId } = await requireVendor(app, request, 'MANAGER');
+    const body = normalizedGroupFlags(libraryGroupSchema.parse(request.body));
+    assertNotBannedGoods([body.name, ...(body.options ?? []).map((o) => o.name)]);
+    if ((body.options ?? []).some((o) => o.followUpGroupId)) {
+      throw new AppError(400, 'MENU_OPTIONS_RULE', 'Create the group first, then choose which group each choice opens.');
+    }
+    const created = await app.prisma.$transaction(async (tx) => {
+      const last = await tx.modifierGroup.findFirst({ where: { vendorId }, orderBy: { sortOrder: 'desc' }, select: { sortOrder: true } });
+      const group = await tx.modifierGroup.create({
+        data: {
+          vendorId, name: body.name.trim(),
+          isRequired: body.isRequired ?? false, minSelect: body.minSelect ?? 0, maxSelect: body.maxSelect ?? 1,
+          sortOrder: body.sortOrder ?? (last?.sortOrder ?? -1) + 1,
+          setsPrice: body.setsPrice ?? false, allowHalves: body.allowHalves ?? false, halfPricePercent: body.halfPricePercent ?? 100,
+          options: body.options?.length ? { create: body.options.map((o, i) => ({
+            name: o.name.trim(), price: o.price ?? 0, isDefault: o.isDefault ?? false, isAvailable: o.isAvailable ?? true,
+            sortOrder: o.sortOrder ?? i, externalCode: o.externalCode ?? null,
+          })) } : undefined,
+        },
+        select: { id: true },
+      });
+      await assertLibraryRules(tx, vendorId);
+      return group;
+    }).catch(menuOptionsWriteError);
+    const library = await readLibrary(app.prisma as unknown as Prisma.TransactionClient, vendorId);
+    return { success: true, data: library.find((g) => g.id === created.id) };
+  });
+
+  /** PUT /modifier-groups/order — the library's order on the store's screens. */
+  app.put('/modifier-groups/order', auth, async (request) => {
+    const { vendorId } = await requireVendor(app, request, 'MANAGER');
+    const { ids } = idOrderSchema.parse(request.body);
+    await app.prisma.$transaction(async (tx) => {
+      const owned = await tx.modifierGroup.count({ where: { id: { in: ids }, vendorId } });
+      if (owned !== new Set(ids).size) throw new NotFoundError('ModifierGroup');
+      for (const [i, id] of ids.entries()) await tx.modifierGroup.update({ where: { id }, data: { sortOrder: i } });
+    });
+    return { success: true, data: { ordered: ids.length } };
+  });
+
+  /** PUT /modifier-groups/:id — edit a shared group; every item that uses it changes in the same step. */
+  app.put<{ Params: IdParam }>('/modifier-groups/:id', auth, async (request) => {
+    const { vendorId } = await requireVendor(app, request, 'MANAGER');
+    const parsed = libraryGroupUpdateSchema.parse(request.body);
+    if (parsed.name !== undefined) assertNotBannedGoods([parsed.name]);
+    await app.prisma.$transaction(async (tx) => {
+      const existing = await libraryGroupOf(tx, vendorId, request.params.id);
+      const body = normalizedGroupFlags({ ...parsed, setsPrice: parsed.setsPrice ?? existing.setsPrice, allowHalves: parsed.allowHalves ?? existing.allowHalves });
+      await tx.modifierGroup.update({
+        where: { id: existing.id },
+        data: {
+          ...(body.name !== undefined && { name: body.name.trim() }),
+          ...(body.isRequired !== undefined && { isRequired: body.isRequired }),
+          ...(body.minSelect !== undefined && { minSelect: body.minSelect }),
+          ...(body.maxSelect !== undefined && { maxSelect: body.maxSelect }),
+          ...(body.sortOrder !== undefined && { sortOrder: body.sortOrder }),
+          ...(parsed.setsPrice !== undefined && { setsPrice: parsed.setsPrice }),
+          ...(parsed.allowHalves !== undefined && { allowHalves: parsed.allowHalves }),
+          ...(body.halfPricePercent !== undefined && { halfPricePercent: body.halfPricePercent }),
+        },
+      });
+      await assertLibraryRules(tx, vendorId);
+      await syncLibraryGroup(tx, vendorId, existing.id);
+    }).catch(menuOptionsWriteError);
+    scheduleVendorSearchSync(app, vendorId);
+    const library = await readLibrary(app.prisma as unknown as Prisma.TransactionClient, vendorId);
+    return { success: true, data: library.find((g) => g.id === request.params.id) };
+  });
+
+  /** DELETE /modifier-groups/:id — delete a shared group: it leaves every item that uses it. */
+  app.delete<{ Params: IdParam }>('/modifier-groups/:id', auth, async (request) => {
+    const { vendorId } = await requireVendor(app, request, 'MANAGER');
+    const result = await app.prisma.$transaction((tx) => deleteLibraryGroup(tx, vendorId, request.params.id)).catch(menuOptionsWriteError);
+    scheduleVendorSearchSync(app, vendorId);
+    return { success: true, data: { deleted: true, removedFromItems: result.items } };
+  });
+
+  /** POST /modifier-groups/:id/options — add a choice to a shared group (every item that uses it gets it). */
+  app.post<{ Params: IdParam }>('/modifier-groups/:id/options', auth, async (request) => {
+    const { vendorId } = await requireVendor(app, request, 'MANAGER');
+    const body = libraryOptionSchema.parse(request.body);
+    assertNotBannedGoods([body.name]);
+    const created = await app.prisma.$transaction(async (tx) => {
+      const group = await libraryGroupOf(tx, vendorId, request.params.id);
+      const last = group.options.at(-1);
+      const option = await tx.modifierOption.create({
+        data: {
+          modifierGroupId: group.id, name: body.name.trim(), price: body.price ?? 0, isDefault: body.isDefault ?? false,
+          isAvailable: body.isAvailable ?? true, sortOrder: body.sortOrder ?? (last ? last.sortOrder + 1 : 0),
+          followUpGroupId: body.followUpGroupId ?? null, externalCode: body.externalCode ?? null,
+        },
+      });
+      await assertLibraryRules(tx, vendorId);
+      await syncLibraryGroup(tx, vendorId, group.id);
+      return option;
+    }).catch(menuOptionsWriteError);
+    scheduleVendorSearchSync(app, vendorId);
+    return { success: true, data: { ...created, price: Number(created.price) } };
+  });
+
+  /** PUT /modifier-groups/:id/options/order — the order of a shared group's choices. */
+  app.put<{ Params: IdParam }>('/modifier-groups/:id/options/order', auth, async (request) => {
+    const { vendorId } = await requireVendor(app, request, 'MANAGER');
+    const { ids } = idOrderSchema.parse(request.body);
+    await app.prisma.$transaction(async (tx) => {
+      const group = await libraryGroupOf(tx, vendorId, request.params.id);
+      const own = new Set(group.options.map((o) => o.id));
+      if (ids.some((id) => !own.has(id))) throw new NotFoundError('ModifierOption');
+      for (const [i, id] of ids.entries()) await tx.modifierOption.update({ where: { id }, data: { sortOrder: i } });
+      await syncLibraryGroup(tx, vendorId, group.id);
+    }).catch(menuOptionsWriteError);
+    return { success: true, data: { ordered: ids.length } };
+  });
+
+  /** PUT /modifier-options/:id — edit a shared choice (name, price, sold out, follow-up group, kitchen code). */
+  app.put<{ Params: IdParam }>('/modifier-options/:id', auth, async (request) => {
+    const { vendorId } = await requireVendor(app, request, 'MANAGER');
+    const body = libraryOptionUpdateSchema.parse(request.body);
+    if (body.name !== undefined) assertNotBannedGoods([body.name]);
+    const updated = await app.prisma.$transaction(async (tx) => {
+      const existing = await tx.modifierOption.findFirst({ where: { id: request.params.id, modifierGroup: { vendorId } }, select: { id: true, modifierGroupId: true } });
+      if (!existing) throw new NotFoundError('ModifierOption', request.params.id);
+      const option = await tx.modifierOption.update({
+        where: { id: existing.id },
+        data: {
+          ...(body.name !== undefined && { name: body.name.trim() }),
+          ...(body.price !== undefined && { price: body.price }),
+          ...(body.isDefault !== undefined && { isDefault: body.isDefault }),
+          ...(body.isAvailable !== undefined && { isAvailable: body.isAvailable }),
+          ...(body.sortOrder !== undefined && { sortOrder: body.sortOrder }),
+          ...(body.followUpGroupId !== undefined && { followUpGroupId: body.followUpGroupId }),
+          ...(body.externalCode !== undefined && { externalCode: body.externalCode }),
+        },
+      });
+      await assertLibraryRules(tx, vendorId);
+      await syncLibraryGroup(tx, vendorId, existing.modifierGroupId);
+      return option;
+    }).catch(menuOptionsWriteError);
+    scheduleVendorSearchSync(app, vendorId);
+    return { success: true, data: { ...updated, price: Number(updated.price) } };
+  });
+
+  /** DELETE /modifier-options/:id — remove a shared choice from every item that uses its group. */
+  app.delete<{ Params: IdParam }>('/modifier-options/:id', auth, async (request) => {
+    const { vendorId } = await requireVendor(app, request, 'MANAGER');
+    await app.prisma.$transaction(async (tx) => {
+      const existing = await tx.modifierOption.findFirst({ where: { id: request.params.id, modifierGroup: { vendorId } }, select: { id: true, modifierGroupId: true } });
+      if (!existing) throw new NotFoundError('ModifierOption', request.params.id);
+      await tx.modifierOption.delete({ where: { id: existing.id } });
+      await syncLibraryGroup(tx, vendorId, existing.modifierGroupId);
+    }).catch(menuOptionsWriteError);
+    scheduleVendorSearchSync(app, vendorId);
+    return { success: true, data: { deleted: true } };
+  });
+
+  /** POST /modifier-groups/:id/attach — attach a shared group to many items at once. */
+  app.post<{ Params: IdParam }>('/modifier-groups/:id/attach', auth, async (request) => {
+    const { vendorId } = await requireVendor(app, request, 'MANAGER');
+    const { itemIds } = itemIdsSchema.parse(request.body);
+    // [GUARDRAILS §8] An item Swift does not allow is not edited, here as on every option route.
+    for (const itemId of new Set(itemIds)) await assertNotBanned(app.prisma, itemId, { wordBanEditable: true });
+    const result = await app.prisma.$transaction((tx) => attachLibraryGroup(tx, vendorId, request.params.id, itemIds)).catch(menuOptionsWriteError);
+    scheduleVendorSearchSync(app, vendorId);
+    return { success: true, data: result };
+  });
+
+  /** POST /modifier-groups/:id/detach — take a shared group off many items at once. */
+  app.post<{ Params: IdParam }>('/modifier-groups/:id/detach', auth, async (request) => {
+    const { vendorId } = await requireVendor(app, request, 'MANAGER');
+    const { itemIds } = itemIdsSchema.parse(request.body);
+    const result = await app.prisma.$transaction((tx) => detachLibraryGroup(tx, vendorId, request.params.id, itemIds)).catch(menuOptionsWriteError);
+    scheduleVendorSearchSync(app, vendorId);
+    return { success: true, data: result };
   });
 
   // =========================================================================

@@ -1977,6 +1977,15 @@ export class OrderService {
                       basePrice: o.additionalPrice,
                       markedUpPrice: o.additionalPrice,
                       markupAmount: 0,
+                      // [MENU-OPTIONS] SNAPSHOT of the parts (placement, opener, size): a later menu edit never
+                      // changes what this order was made with or charged.
+                      plainGroupName: o.plainGroupName,
+                      plainOptionName: o.plainOptionName,
+                      placement: o.placement,
+                      parentOptionName: o.parentOptionName,
+                      setsPrice: o.setsPrice,
+                      listedPrice: o.listedPrice,
+                      optionId: o.optionId,
                     })),
                   },
                 }),
