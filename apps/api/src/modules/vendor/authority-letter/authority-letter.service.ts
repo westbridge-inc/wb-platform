@@ -88,6 +88,29 @@ async function audit(db: Db, action: string, requestId: string, actorUserId: str
   await db.auditLog.create({ data: { action, entity: LETTER_AUDIT_ENTITY, entityId: requestId, userId: actorUserId, changes: changes as Prisma.InputJsonValue } });
 }
 
+/**
+ * [FOLLOWUPS-2475] A business type change ended without switching (refused, or withdrawn): a letter asked for the new
+ * business type (the change's own, a company's director or a registered business's owner) is never needed now, so one
+ * still waiting is cancelled in the change's own transaction (audited, its link dies): no signer is texted or signs for
+ * nothing. A letter being signed right now is left to finish (its filing is refused: not on the account's list).
+ */
+export async function cancelChangeLetters(tx: Prisma.TransactionClient, input: { userId: string; docType: string; by: string; changeId: string; now?: Date }): Promise<number> {
+  const now = input.now ?? new Date();
+  const live = await tx.authorityLetterRequest.findMany({
+    where: { userId: input.userId, docType: input.docType, status: { in: ['SENT', 'EXPIRED'] }, ...notBeingSigned(now) }, select: { id: true, status: true },
+  });
+  let cancelled = 0;
+  for (const r of live) {
+    const moved = await tx.authorityLetterRequest.updateMany({
+      where: { id: r.id, status: r.status, ...notBeingSigned(now) }, data: { status: 'CANCELLED', endedAt: now, signingKeyHash: null, codeHash: null },
+    });
+    if (moved.count !== 1) continue;
+    cancelled += 1;
+    await audit(tx, LETTER_AUDIT.cancelled, r.id, input.by, { reason: 'change-ended', changeId: input.changeId });
+  }
+  return cancelled;
+}
+
 /** What the account holder sees of their request (their Documents page). */
 export interface LetterRequestView {
   id: string;
@@ -159,7 +182,9 @@ export class AuthorityLetterService {
    * Start a request: the account holder of a COMPANY or MANAGER account asks the director (or owner) to sign.
    * Replaces a request still waiting (cancelled, audited). Texts the link.
    */
-  async create(input: { userId: string; vendorId: string; basis: LetterBasis; form: ParsedForm; ip: string; now?: Date }): Promise<LetterRequestView> {
+  async create(input: { userId: string; vendorId: string; basis: LetterBasis; form: ParsedForm; ip: string; now?: Date;
+    /** [FOLLOWUPS-2475] The business type change waiting this letter is for (not the account's own letter). */
+    changeId?: string }): Promise<LetterRequestView> {
     const now = input.now ?? new Date();
     const { userId, basis, form } = input;
     const docType = LETTER_DOC_TYPE[basis];
@@ -192,6 +217,13 @@ export class AuthorityLetterService {
     const token = newSecret();
     const live = await this.prisma.authorityLetterRequest.findMany({ where: { userId, status: { in: ['SENT', 'EXPIRED'] } }, select: { id: true, status: true } });
     const created = await this.prisma.$transaction(async (tx) => {
+      // [FOLLOWUPS-2475] A change's letter: the change is still waiting, held until this commits (the change's end
+      // takes the same row first, then cancels its letters: never a letter left for a change that ended).
+      if (input.changeId) {
+        const [change] = await tx.$queryRaw<Array<{ status: string }>>`
+          SELECT "status"::text AS status FROM "account_change_requests" WHERE "id" = ${input.changeId} FOR UPDATE /* authority-letter-for-change */`;
+        if (change?.status !== 'PENDING') throw new AppError(409, 'ACCOUNT_CHANGE_DECIDED', 'That change has already been decided. Open Account to see where it stands.');
+      }
       for (const old of live) {
         const moved = await tx.authorityLetterRequest.updateMany({ where: { id: old.id, status: old.status, ...notBeingSigned(now) }, data: { status: 'CANCELLED', endedAt: now, signingKeyHash: null, codeHash: null } });
         if (moved.count !== 1) throw beingSigned();

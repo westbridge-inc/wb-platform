@@ -962,6 +962,18 @@ export interface AccountChange {
   holder: { id: string; name: string };
   newHolder: { id: string; name: string } | null;
   decisionReason: string | null;
+  /** A change waiting: what approving it does to the account's seller legal name, computed by the server's own approval
+   *  rule (account-change.ts planSellerLegalName); never re-derived here. Decided: null. */
+  sellerLegalNameOnApproval: SellerLegalNameOnApproval | null;
+}
+export interface SellerLegalNameOnApproval {
+  effect: 'KEPT' | 'SET' | 'CLEARED';
+  /** The account's legal name now (what customers see while the change waits). */
+  from: string | null;
+  /** The account's legal name after approval. */
+  to: string | null;
+  /** SET: the change's own paper the name was typed from. */
+  docType: string | null;
 }
 export const fetchAccountChanges = (status: AccountChange['status'] = 'PENDING') =>
   apiFetch(`/api/v1/admin/account-changes?status=${status}`).then((r) => ((r as { data?: AccountChange[] }).data ?? []));

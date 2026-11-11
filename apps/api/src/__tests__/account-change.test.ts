@@ -529,6 +529,12 @@ async function namedStore(o: Who, basis: 'OWNER' | 'COMPANY', legalName: string)
   expect(await sellerName(o)).toBe(legalName);
   return paper;
 }
+/** The console's read of the change: what approving it would do to the account's legal name (FOLLOWUPS-2475). */
+const previewOf = async (changeId: string) => {
+  const res = await admin('GET', `/account-changes/${changeId}`);
+  expect(res.statusCode, res.body).toBe(200);
+  return res.json().data.sellerLegalNameOnApproval as { effect: string; from: string | null; to: string | null; docType: string | null } | null;
+};
 /** Files (and a person approves) every paper the change still waits for; a registration paper gets `typed`. */
 async function fileChangePapers(paperHolder: string, view: { papers: Array<{ docType: string; state: string }> }, typed: Record<string, unknown> = {}) {
   for (const { docType } of view.papers.filter((p) => p.state !== 'APPROVED')) {
@@ -547,9 +553,15 @@ describe('[R3 · review-2476] the seller legal name follows the change, never th
     await fileChangePapers(o.userId, asked.json().data); // nothing typed (an internal caller)
     expect(await sellerName(o)).toBe('Asha Ramdin'); // still selling on the old papers while it waits
     const name = (await store(o.vendorId)).name;
+    // the reviewer sees, before deciding, that approval clears it (the queue and the change's own read agree)
+    const preview = { effect: 'CLEARED', from: 'Asha Ramdin', to: null, docType: null };
+    expect(await previewOf(changeId)).toEqual(preview);
+    const queue = (await admin('GET', '/account-changes?status=PENDING')).json().data as Array<{ id: string; sellerLegalNameOnApproval: unknown }>;
+    expect(queue.find((c) => c.id === changeId)?.sellerLegalNameOnApproval).toEqual(preview);
 
     const res = await admin('PUT', `/account-changes/${changeId}/approve`, { sellerNames: { [o.vendorId]: name } });
     expect(res.statusCode, res.body).toBe(200);
+    expect(res.json().data.sellerLegalNameOnApproval).toBeNull(); // decided: nothing left to preview
     const account = await accountOf(o.userId);
     expect(account).toEqual({ id: account.id, accountBasis: toOption, sellerLegalName: null, sellerLegalNameAt: null, sellerLegalNameById: null, sellerLegalNameDocId: null });
     // the storefront names the store the approving person confirmed, never the owner's own name
@@ -578,6 +590,8 @@ describe('[R3 · review-2476] the seller legal name follows the change, never th
     expect((await legalNameTrail(first.id, 'HOLD_SELLER_LEGAL_NAME')).map((t) => t.changes)).toEqual([{
       accountId: o.userId, documentId: certificate.id, docType: 'certificate_of_incorporation', from: null, fromDocumentId: null, to: 'Persaud Holdings Limited',
     }]);
+    // the reviewer reads what approval would do: the held name replaces the old one
+    expect(await previewOf(first.id)).toEqual({ effect: 'SET', from: 'Persaud Trading', to: 'Persaud Holdings Limited', docType: 'certificate_of_incorporation' });
 
     // refused: the held name never names anyone; the old one stands
     expect((await admin('PUT', `/account-changes/${first.id}/refuse`, {}, 'The certificate is for a different company.')).statusCode).toBe(200);
@@ -589,6 +603,7 @@ describe('[R3 · review-2476] the seller legal name follows the change, never th
     await fileChangePapers(o.userId, again, { legalName: 'Persaud Holdings Limited' });
     const certificateNow = await system(() => app.prisma.verificationDocument.findFirstOrThrow({ where: { accountChangeId: again.id, docType: 'certificate_of_incorporation' }, select: { id: true } }));
     expect(await sellerName(o)).toBe('Persaud Trading');
+    expect(await previewOf(again.id)).toEqual({ effect: 'SET', from: 'Persaud Trading', to: 'Persaud Holdings Limited', docType: 'certificate_of_incorporation' });
     const name = (await store(o.vendorId)).name;
     expect((await admin('PUT', `/account-changes/${again.id}/approve`, { sellerNames: { [o.vendorId]: name } })).statusCode).toBe(200);
     const account = await accountOf(o.userId);
@@ -626,10 +641,25 @@ describe('[R3 · review-2476] the seller legal name follows the change, never th
     }
     const theirs = await system(() => app.prisma.verificationDocument.findFirstOrThrow({ where: { accountChangeId: changeId, docType: 'certificate_of_incorporation' }, select: { id: true } }));
     expect(await accountOf(o.userId)).toMatchObject({ sellerLegalName: 'Persaud Chicken Limited', sellerLegalNameDocId: oldPaper });
+    // the same words, now from the new holder's own certificate: the account's name is SET from it (not kept)
+    expect(await previewOf(changeId)).toEqual({ effect: 'SET', from: 'Persaud Chicken Limited', to: 'Persaud Chicken Limited', docType: 'certificate_of_incorporation' });
     expect((await admin('PUT', `/account-changes/${changeId}/approve`, {})).statusCode).toBe(200);
     const account = await accountOf(next.userId);
     expect(account).toMatchObject({ sellerLegalName: 'Persaud Chicken Limited', sellerLegalNameDocId: theirs.id, sellerLegalNameById: adminId });
     expect(await sellerName({ ...next, vendorId: o.vendorId })).toBe('Persaud Chicken Limited');
     expect((await legalNameTrail(account.id)).at(-1)?.changes).toMatchObject({ accountId: next.userId, documentId: theirs.id, changeId, fromDocumentId: oldPaper });
+  });
+
+  it('no legal name now and none typed for the change: the console says approval keeps it so (nothing moves, no trail row)', async () => {
+    const o = await ownNameStore(); // trading under her own name: no account legal name
+    expect(await accountOf(o.userId)).toMatchObject({ sellerLegalName: null, sellerLegalNameDocId: null });
+    const asked = (await call('POST', '/api/v1/vendor/account-change/business-type', o, { toOption: 'COMPANY' })).json().data;
+    await fileChangePapers(o.userId, asked); // nothing typed (an internal caller)
+    expect(await previewOf(asked.id)).toEqual({ effect: 'KEPT', from: null, to: null, docType: null });
+    const name = (await store(o.vendorId)).name;
+    expect((await admin('PUT', `/account-changes/${asked.id}/approve`, { sellerNames: { [o.vendorId]: name } })).statusCode).toBe(200);
+    const account = await accountOf(o.userId);
+    expect(account).toMatchObject({ accountBasis: 'COMPANY', sellerLegalName: null, sellerLegalNameDocId: null });
+    expect(await legalNameTrail(account.id)).toEqual([]);
   });
 });

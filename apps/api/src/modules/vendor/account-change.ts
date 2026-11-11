@@ -449,6 +449,12 @@ export async function endAccountChange(
   });
   const note = input.outcome === 'REFUSED' ? `the change was refused: ${input.reason}` : 'the change was withdrawn';
   await closeChangePapers(tx, change.id, note, input.by);
+  // [FOLLOWUPS-2475] A letter of authority asked in Swift for the new business type, still waiting: never needed now.
+  const letterFor = change.kind === 'BUSINESS_TYPE' ? changeLetterBasisOf(change.toOption, change.vendorOwner.accountBasis) : null;
+  if (letterFor) {
+    const [{ cancelChangeLetters }, { LETTER_DOC_TYPE }] = await Promise.all([import('./authority-letter/authority-letter.service'), import('./authority-letter/letter')]);
+    await cancelChangeLetters(tx, { userId: change.vendorOwner.userId, docType: LETTER_DOC_TYPE[letterFor], by: input.by, changeId: change.id });
+  }
   await input.audit(tx, change);
   const notices: string[] = [];
   const holder = change.vendorOwner.userId;
@@ -468,6 +474,27 @@ export async function endAccountChange(
     }
   }
   return notices;
+}
+
+/** The letter of authority a business type change asks for that the account's own basis does not: the new basis's
+ *  (a company's director, or a registered business's owner for its manager), or null. */
+function changeLetterBasisOf(toOption: BusinessTypeOption | null, current: VendorAccountBasis): 'COMPANY' | 'MANAGER' | null {
+  const target = toOption ? shapeOf(toOption).basis : null;
+  return (target === 'COMPANY' || target === 'MANAGER') && target !== current ? target : null;
+}
+
+/**
+ * [FOLLOWUPS-2475 · Part 2 seam] The letter of authority the account holder's business type change still waiting asks
+ * for, when it is not the account's own: the basis the letter is written for (vendor/authority-letter: who signs, which
+ * letter). The signed letter is filed through VerificationService.submitDocument, which holds it for the change.
+ */
+export async function changeLetterBasis(db: Db, userId: string): Promise<{ basis: 'COMPANY' | 'MANAGER'; changeId: string } | null> {
+  const change = await db.accountChangeRequest.findFirst({
+    where: { status: 'PENDING', kind: 'BUSINESS_TYPE', vendorOwner: { userId } },
+    select: { id: true, toOption: true, vendorOwner: { select: { accountBasis: true } } },
+  });
+  const basis = change ? changeLetterBasisOf(change.toOption, change.vendorOwner.accountBasis) : null;
+  return basis && change ? { basis, changeId: change.id } : null;
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -515,30 +542,62 @@ export interface SellerLegalNameMove {
   from: string | null; fromDocumentId: string | null; to: string | null;
 }
 
+/** What approving a change waiting would do to the account's seller legal name, read by the same rule the approval
+ *  applies (`planSellerLegalName`): KEPT (nothing moves), SET to the name a person typed from the change's own
+ *  registration paper (`docType`), or CLEARED. The console shows it before a person decides. */
+export interface SellerLegalNameOnApproval {
+  effect: 'KEPT' | 'SET' | 'CLEARED';
+  /** The account's legal name now (what customers see while the change waits). */
+  from: string | null;
+  /** The account's legal name after approval. */
+  to: string | null;
+  /** SET: the change's paper the name was typed from. */
+  docType: string | null;
+}
+
+const NO_LEGAL_NAME = { sellerLegalName: null, sellerLegalNameAt: null, sellerLegalNameById: null, sellerLegalNameDocId: null };
+
 /**
- * [R3 · review-2476 · owner ruling 10 Nov 2026] On approval, in the decision's transaction (the account's row is locked):
- * the legal name a person typed from this change's own registration paper becomes the account's; with none held, the
- * account's legal name is CLEARED. It was typed for the old business type (or the old holder's papers), so it no longer
- * names this account's seller: a person's own name (allowed on an owner's business-name registration) never stays the
- * seller of a company's or a manager's account, a registered business's name never the seller of a company or of a
- * trader under their own name. The storefront then falls to the store names the approving person confirmed, or "Ask the
- * store", until a person types a name from a paper again. Nothing changed: null.
+ * [R3 · review-2476 · owner ruling 10 Nov 2026] The one rule for the account's legal name on approval, read by the
+ * approval itself (settleSellerLegalName, in its transaction) and by the console's preview (adminChangeView): the legal
+ * name a person typed from this change's own registration paper becomes the account's; with none held, the account's
+ * legal name is CLEARED. It was typed for the old business type (or the old holder's papers), so it no longer names this
+ * account's seller: a person's own name (allowed on an owner's business-name registration) never stays the seller of a
+ * company's or a manager's account, a registered business's name never the seller of a company or of a trader under
+ * their own name. The storefront then falls to the store names a person confirmed, or "Ask the store", until a person
+ * types a name from a paper again.
  */
-async function settleSellerLegalName(tx: Prisma.TransactionClient, change: ChangeRow, holderAfter: string): Promise<SellerLegalNameMove | null> {
-  const held = await tx.accountChangeRequest.findUniqueOrThrow({
-    where: { id: change.id }, select: { sellerLegalName: true, sellerLegalNameAt: true, sellerLegalNameById: true, sellerLegalNameDocId: true },
+async function planSellerLegalName(db: Db, changeId: string, vendorOwnerId: string) {
+  const held = await db.accountChangeRequest.findUniqueOrThrow({
+    where: { id: changeId }, select: { sellerLegalName: true, sellerLegalNameAt: true, sellerLegalNameById: true, sellerLegalNameDocId: true },
   });
-  const account = await tx.vendorOwner.findUniqueOrThrow({ where: { id: change.vendorOwner.id }, select: { sellerLegalName: true, sellerLegalNameDocId: true } });
-  const next = held.sellerLegalName && held.sellerLegalNameDocId ? held
-    : { sellerLegalName: null, sellerLegalNameAt: null, sellerLegalNameById: null, sellerLegalNameDocId: null };
-  if (account.sellerLegalName === next.sellerLegalName && account.sellerLegalNameDocId === next.sellerLegalNameDocId) return null;
-  await tx.vendorOwner.update({ where: { id: change.vendorOwner.id }, data: next });
-  const paper = next.sellerLegalNameDocId
-    ? await tx.verificationDocument.findUnique({ where: { id: next.sellerLegalNameDocId }, select: { docType: true } }) : null;
+  const account = await db.vendorOwner.findUniqueOrThrow({ where: { id: vendorOwnerId }, select: { sellerLegalName: true, sellerLegalNameDocId: true } });
+  const next = held.sellerLegalName && held.sellerLegalNameDocId ? held : NO_LEGAL_NAME;
+  const effect: SellerLegalNameOnApproval['effect'] =
+    account.sellerLegalName === next.sellerLegalName && account.sellerLegalNameDocId === next.sellerLegalNameDocId ? 'KEPT'
+      : next.sellerLegalName ? 'SET' : 'CLEARED';
+  const paper = effect === 'SET' && next.sellerLegalNameDocId
+    ? await db.verificationDocument.findUnique({ where: { id: next.sellerLegalNameDocId }, select: { docType: true } }) : null;
+  return { effect, account, next, docType: paper?.docType ?? null };
+}
+
+/** On approval, in the decision's transaction (the account's row is locked): planSellerLegalName, applied. Nothing
+ *  changed: null. */
+async function settleSellerLegalName(tx: Prisma.TransactionClient, change: ChangeRow, holderAfter: string): Promise<SellerLegalNameMove | null> {
+  const plan = await planSellerLegalName(tx, change.id, change.vendorOwner.id);
+  if (plan.effect === 'KEPT') return null;
+  await tx.vendorOwner.update({ where: { id: change.vendorOwner.id }, data: plan.next });
   return {
-    vendorOwnerId: change.vendorOwner.id, accountId: holderAfter, documentId: next.sellerLegalNameDocId, docType: paper?.docType ?? null,
-    from: account.sellerLegalName, fromDocumentId: account.sellerLegalNameDocId, to: next.sellerLegalName,
+    vendorOwnerId: change.vendorOwner.id, accountId: holderAfter, documentId: plan.next.sellerLegalNameDocId, docType: plan.docType,
+    from: plan.account.sellerLegalName, fromDocumentId: plan.account.sellerLegalNameDocId, to: plan.next.sellerLegalName,
   };
+}
+
+/** The console's preview of settleSellerLegalName for a change still waiting (a decided change: null). Read-only. */
+export async function sellerLegalNameOnApproval(db: Db, change: ChangeRow): Promise<SellerLegalNameOnApproval | null> {
+  if (change.status !== 'PENDING') return null;
+  const plan = await planSellerLegalName(db, change.id, change.vendorOwner.id);
+  return { effect: plan.effect, from: plan.account.sellerLegalName, to: plan.next.sellerLegalName, docType: plan.docType };
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -717,6 +776,8 @@ export interface AdminChangeView extends ChangeView {
   holder: { id: string; name: string };
   newHolder: { id: string; name: string } | null;
   decisionReason: string | null;
+  /** A change waiting: what approving it does to the account's seller legal name (settleSellerLegalName's own rule). */
+  sellerLegalNameOnApproval: SellerLegalNameOnApproval | null;
 }
 
 const personName = (u: { firstName: string | null; lastName: string | null } | null): string =>
@@ -724,10 +785,11 @@ const personName = (u: { firstName: string | null; lastName: string | null } | n
 
 export async function adminChangeView(db: Db, change: ChangeRow): Promise<AdminChangeView> {
   const view = await viewOfChange(db, change);
-  const [stores, holder, newHolder] = await Promise.all([
+  const [stores, holder, newHolder, legalName] = await Promise.all([
     db.vendor.findMany({ where: { ownerId: change.vendorOwner.id }, orderBy: { createdAt: 'asc' }, select: { id: true, name: true, vendorType: true, status: true, sellerNameCheckedName: true } }),
     db.user.findUnique({ where: { id: change.holderId ?? change.requestedById }, select: { id: true, firstName: true, lastName: true } }),
     change.newHolderId ? db.user.findUnique({ where: { id: change.newHolderId }, select: { id: true, firstName: true, lastName: true } }) : null,
+    sellerLegalNameOnApproval(db, change),
   ]);
   return {
     ...view, vendorOwnerId: change.vendorOwner.id, accountBasis: change.vendorOwner.accountBasis,
@@ -735,6 +797,7 @@ export async function adminChangeView(db: Db, change: ChangeRow): Promise<AdminC
     holder: { id: holder?.id ?? change.requestedById, name: personName(holder) },
     newHolder: newHolder ? { id: newHolder.id, name: personName(newHolder) } : null,
     decisionReason: change.decisionReason,
+    sellerLegalNameOnApproval: legalName,
   };
 }
 

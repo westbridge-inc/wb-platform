@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { approveAccountChange, fetchAccountChanges, refuseAccountChange, type AccountChange, type BusinessTypeOption } from '@/lib/api';
+import { approveAccountChange, fetchAccountChanges, refuseAccountChange, type AccountChange, type BusinessTypeOption, type SellerLegalNameOnApproval } from '@/lib/api';
 import { QueryFailed } from '@/components/mc/QueryFailed';
 import { docLabel } from '@/lib/review-center';
 import { gyDate } from '@/lib/dates';
@@ -24,6 +24,26 @@ const OPTION_WORDS: Record<BusinessTypeOption, string> = {
 const PAPER_WORDS: Record<AccountChange['papers'][number]['state'], string> = {
   APPROVED: 'Approved', PENDING: 'Waiting in Documents', REJECTED: 'Rejected', MISSING: 'Not uploaded yet',
 };
+
+/**
+ * [FOLLOWUPS-2475] What approval does to the account's seller legal name (the name customers see as the seller of every
+ * branch), said plainly before a person decides. The effect is the server's own (the approval's rule, read without
+ * writing: sellerLegalNameOnApproval); this only puts it in words.
+ */
+function legalNameOnApprovalWords(preview: SellerLegalNameOnApproval, change: Pick<AccountChange, 'kind'>, confirmsNames: boolean): string {
+  const paper = preview.docType ? docLabel(preview.docType) : 'registration paper';
+  if (preview.effect === 'SET') {
+    if (preview.from === null) return `Approval sets it to “${preview.to}”, as a person typed it from this change’s ${paper}.`;
+    if (preview.from === preview.to) return `Approval sets it to “${preview.to}” from this change’s ${paper} (the same words as now, from the new paper).`;
+    return `Approval replaces “${preview.from}” with “${preview.to}”, as a person typed it from this change’s ${paper}.`;
+  }
+  if (preview.effect === 'KEPT') {
+    return preview.from === null ? 'There is none now, and approval sets none.' : `Approval keeps “${preview.from}”.`;
+  }
+  const typedFor = change.kind === 'BUSINESS_TYPE' ? 'the old business type' : 'the old account holder’s papers';
+  return `Approval clears “${preview.from ?? ''}”: it was typed for ${typedFor}, and nobody typed a name from this change’s registration paper. `
+    + `Customers then see “Ask the store” as the seller until a person confirms a name${confirmsNames ? ' (ticking each store’s name below does that)' : ''}.`;
+}
 
 export default function AccountChangesPage() {
   const changes = useQuery({ queryKey: ['account-changes', 'PENDING'], queryFn: () => fetchAccountChanges('PENDING') });
@@ -91,6 +111,12 @@ function AccountChangeRow({ change }: { change: AccountChange }) {
         ))}
       </ul>
       {!change.papersComplete ? <p className="rc-muted">Approve each paper in Documents before deciding the change.</p> : null}
+      {change.sellerLegalNameOnApproval ? (
+        <div role="note" aria-label="Seller legal name on approval">
+          <p className="font-semibold">Seller legal name</p>
+          <p className="rc-muted">{legalNameOnApprovalWords(change.sellerLegalNameOnApproval, change, namesToConfirm.length > 0)}</p>
+        </div>
+      ) : null}
       {namesToConfirm.length ? (
         <fieldset className="space-y-1">
           <legend className="font-semibold">Seller name customers will see</legend>

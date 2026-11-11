@@ -21,6 +21,7 @@ const change = {
   ],
   stores: [{ id: 'vnd-1', name: 'Sample Shop Inc.', vendorType: 'STORE', status: 'ACTIVE', sellerNameCheckedName: null }],
   holder: { id: 'u1', name: 'Sample Owner' }, newHolder: null,
+  sellerLegalNameOnApproval: { effect: 'SET', from: null, to: 'Sample Shop Inc.', docType: 'certificate_of_incorporation' },
 };
 
 function serve(rows: unknown[], onWrite?: (_r: ApiRequest) => ApiReply) {
@@ -81,5 +82,52 @@ describe('[COMPANY-DOCS Part 3] Account changes queue', () => {
     serve([]);
     renderWithQuery(<AccountChangesPage />);
     expect(await screen.findByText('No account change is waiting.')).toBeTruthy();
+  });
+
+  // [FOLLOWUPS-2475] Before deciding, the reviewer reads what approval does to the seller legal name: the server's own
+  // effect (kept / set from the change's paper / cleared), only put in words here.
+  const legalNameNote = async () => (await screen.findByRole('note', { name: 'Seller legal name on approval' })).textContent;
+
+  it('set: names the change’s own paper and the name a person typed from it; replacing an old name says both', async () => {
+    serve([{ ...change, sellerLegalNameOnApproval: { effect: 'SET', from: 'Sample Trading', to: 'Sample Shop Inc.', docType: 'certificate_of_incorporation' } }]);
+    renderWithQuery(<AccountChangesPage />);
+    expect(await legalNameNote()).toContain('Approval replaces “Sample Trading” with “Sample Shop Inc.”, as a person typed it from this change’s Certificate of Incorporation (company).');
+  });
+
+  it('cleared: says the old name goes and customers see “Ask the store” until a person confirms one (here, by the ticks below)', async () => {
+    serve([{ ...change, sellerLegalNameOnApproval: { effect: 'CLEARED', from: 'Sample Owner', to: null, docType: null } }]);
+    renderWithQuery(<AccountChangesPage />);
+    const note = await legalNameNote();
+    expect(note).toContain('Approval clears “Sample Owner”: it was typed for the old business type');
+    expect(note).toContain('Customers then see “Ask the store” as the seller until a person confirms a name (ticking each store’s name below does that).');
+  });
+
+  it('cleared on a handover: typed for the old holder’s papers; no store-name ticks to point at', async () => {
+    serve([{ ...change, kind: 'HOLDER_HANDOVER', fromOption: null, toOption: null, accepted: true, accountBasis: 'COMPANY', newHolder: { id: 'u2', name: 'Next Holder' },
+      sellerLegalNameOnApproval: { effect: 'CLEARED', from: 'Sample Shop Inc.', to: null, docType: null } }]);
+    renderWithQuery(<AccountChangesPage />);
+    const note = await legalNameNote();
+    expect(note).toContain('it was typed for the old account holder’s papers');
+    expect(note).toContain('until a person confirms a name.');
+    expect(note).not.toContain('ticking');
+  });
+
+  it('kept with no name: says there is none and approval sets none', async () => {
+    serve([{ ...change, sellerLegalNameOnApproval: { effect: 'KEPT', from: null, to: null, docType: null } }]);
+    renderWithQuery(<AccountChangesPage />);
+    expect(await legalNameNote()).toContain('There is none now, and approval sets none.');
+  });
+
+  it('kept with a name: says approval keeps it', async () => {
+    serve([{ ...change, sellerLegalNameOnApproval: { effect: 'KEPT', from: 'Sample Shop Inc.', to: 'Sample Shop Inc.', docType: null } }]);
+    renderWithQuery(<AccountChangesPage />);
+    expect(await legalNameNote()).toContain('Approval keeps “Sample Shop Inc.”.');
+  });
+
+  it('no preview from the server (a decided change): no line, never a guess', async () => {
+    serve([{ ...change, sellerLegalNameOnApproval: null }]);
+    renderWithQuery(<AccountChangesPage />);
+    expect(await screen.findByText(/a registered company$/)).toBeTruthy();
+    expect(screen.queryByRole('note', { name: 'Seller legal name on approval' })).toBeNull();
   });
 });
