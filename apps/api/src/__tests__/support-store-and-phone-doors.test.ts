@@ -273,7 +273,7 @@ describe('[R3] a person confirms the seller name', () => {
   });
 
   // [COORD security finding] The owner sets the flag by signing (the declaration then waits for a person): the flag
-  // alone is never enough. Only a declaration a person approved lets the owner's own name be confirmed.
+  // never lets the owner's own name be confirmed. [COORD Option A] Nor does an approved declaration (below).
   it('[review-2479 F6] a store flagged as trading under its owner’s own name, its declaration not approved, is refused', async () => {
     const owner = await makeUser('Flagonly');
     const store = await makeStore(owner.id, { status: 'ACTIVE', isVerified: true, name: `Flagonly ${owner.lastName}`, tradesUnderOwnName: true });
@@ -295,13 +295,19 @@ describe('[R3] a person confirms the seller name', () => {
     expect(res.json().error.code).toBe('SELLER_NAME_IS_A_PERSON');
   });
 
-  it('[review-2479 F6] a store trading under its owner’s own name, its declaration approved by a person, may confirm that name', async () => {
+  // [COORD ruling 11 Nov 2026 (Option A) · a DELIBERATE rule change, not a weakened guard] Round 2 let an own-name trader
+  // with an approved declaration confirm its name here. That stamp outlived the declaration: once it was revoked or
+  // lapsed, the storefront fell back to the stamp and showed the owner's own name as a checked business name. A person's
+  // own name is now never stamped at this door, for own-name traders too: their name shows only through the live
+  // declaration (the storefront's own-name basis).
+  it('[review-2479 · COORD Option A] an own-name trader, its declaration approved by a person, is refused too: its name shows only through the declaration', async () => {
     const owner = await makeUser('Ownname');
     const store = await makeStore(owner.id, { status: 'ACTIVE', isVerified: true, name: `Ownname ${owner.lastName}`, tradesUnderOwnName: true });
     await declaration(owner.id, 'APPROVED');
     const res = await call('PUT', `/api/v1/admin/vendors/${store.id}/seller-name`, { name: store.name });
-    expect(res.statusCode, res.body).toBe(200);
-    expect(await checked(store.id)).toMatchObject({ sellerNameCheckedName: store.name });
+    expect(res.statusCode, res.body).toBe(400);
+    expect(res.json().error.code).toBe('SELLER_NAME_IS_A_PERSON');
+    expect(await checked(store.id)).toMatchObject({ sellerNameCheckedName: null, sellerNameCheckedAt: null, sellerNameCheckedById: null });
   });
 
   it('a name that is not the store’s name now is refused, and nothing is confirmed', async () => {

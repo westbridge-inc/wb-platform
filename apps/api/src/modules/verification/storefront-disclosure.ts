@@ -132,14 +132,6 @@ export async function sellerNameViews(db: Db, vendorIds: readonly string[], now 
   return out;
 }
 
-/** [review-2479 F6] A person approved this account's own-name declaration and it is a VALID record now: the same record
- *  the storefront's OWN_NAME basis reads. The store's own flag is not enough (the owner sets it by signing). */
-export async function ownNameDeclarationOnFile(db: Db, accountId: string, now = new Date()): Promise<boolean> {
-  return (await db.documentRecord.count({ where: {
-    accountId, status: 'VALID', OR: validExpiryOr('expiresOn', now), docType: OWN_NAME_DOC_TYPE, submission: { purgedAt: null, userId: accountId, docType: OWN_NAME_DOC_TYPE } },
-  })) > 0;
-}
-
 /** A live store whose storefront names no seller (not an own-name trader, no legal name typed from its paper, no
  *  confirmed store name): "Ask the store" until a person names it. */
 export const SELLER_UNNAMED_BASES: readonly SellerNameBasis[] = ['AWAITING_PERSON', 'NONE'];
