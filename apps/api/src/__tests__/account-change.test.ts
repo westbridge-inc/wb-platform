@@ -35,6 +35,7 @@ import { signupQuote, WEEKLY_FEE_ACK_VERSION } from '../modules/partner/weekly-f
 import { ownedVerificationFixture } from './helpers/verification-object';
 import { grantStepUp } from './helpers/step-up';
 import { wordFreeTag } from './helpers/fixture-ids';
+import { cleanupBillingClocks } from './helpers/billing-clock-cleanup';
 import { sealVaultToken } from '../modules/billing/card-vault';
 import { sellerNameViews } from '../modules/verification/storefront-disclosure';
 import { validRegistrationRecord } from '../modules/vendor/registration-record';
@@ -108,6 +109,7 @@ afterAll(async () => {
     await app.prisma.vendorStaff.deleteMany({ where: { vendorId: { in: vendors } } });
     const subs = await app.prisma.subscription.findMany({ where: { vendorId: { in: vendors } }, select: { id: true } });
     await app.prisma.billingEvent.deleteMany({ where: { subscriptionId: { in: subs.map((s) => s.id) } } });
+    await cleanupBillingClocks(app.prisma, subs.map((s) => s.id)); // a resumed MMG plan opened its billing clock
     await app.prisma.subscription.deleteMany({ where: { vendorId: { in: vendors } } });
     await app.prisma.trialGrant.deleteMany({ where: { accountId: { in: users } } });
     const docs = (await app.prisma.verificationDocument.findMany({ where: { userId: { in: users } }, select: { id: true } })).map((d) => d.id);
@@ -911,5 +913,97 @@ describe('[review-2475 delta D2 · D4] the handover ends the old holder\'s card 
     const notice = await system(() => app.prisma.notification.findFirstOrThrow({ where: { userId: next.userId, data: { path: ['kind'], equals: 'account_handover_completed' } }, select: { body: true } }));
     expect(notice.body).toContain('add your own card, or pay through the MMG checkout page');
     await system(() => app.prisma.cardSession.deleteMany({ where: { id: { in: [enroll.id, payNow.id] } } }));
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------------
+// [review-2475 final] last round
+// ---------------------------------------------------------------------------------------------------------------------
+
+async function storeFee(vendorId: string, data: { billingMethod: 'CASH' | 'CARD' | 'MOBILE_MONEY'; mmgPayerMsisdn?: string | null }) {
+  return system(async () => {
+    const found = await app.prisma.subscription.findFirst({ where: { vendorId }, select: { id: true } });
+    const sub = found ?? await app.prisma.subscription.create({ data: {
+      vendorId, type: 'RETAIL_STORE', status: 'ACTIVE', weeklyRate: 1000, billingMethod: 'CASH',
+      currentPeriodStart: new Date(Date.now() - 7 * DAY), currentPeriodEnd: new Date(Date.now() + DAY), nextBillingDate: new Date(Date.now() + DAY),
+    }, select: { id: true } });
+    await app.prisma.subscription.update({ where: { id: sub.id }, data: { billingMethod: data.billingMethod, mmgPayerMsisdn: data.mmgPayerMsisdn ?? null } });
+    return sub;
+  });
+}
+const phoneOf = async (userId: string) => (await system(() => app.prisma.user.findUniqueOrThrow({ where: { id: userId }, select: { phone: true } }))).phone;
+const feeOf = (id: string) => system(() => app.prisma.subscription.findUniqueOrThrow({ where: { id }, select: { billingMethod: true, mmgPayerMsisdn: true } }));
+
+describe('[review-2475 final G1] the old holder\'s MMG number never stays on the store\'s weekly fee', () => {
+  it('[P6] handed over: the fee goes back to a new fee\'s rail (CASH, no number), in its history; the new holder is told; nobody reads the old number', async () => {
+    const x = await companyStore();
+    const oldNumber = await phoneOf(x.userId);
+    const sub = await storeFee(x.vendorId, { billingMethod: 'MOBILE_MONEY', mmgPayerMsisdn: oldNumber });
+    const { next, changeId } = await handedOver(x);
+    expect(await feeOf(sub.id)).toEqual({ billingMethod: 'CASH', mmgPayerMsisdn: null });
+    const history = await system(() => app.prisma.billingEvent.findFirstOrThrow({ where: { subscriptionId: sub.id, idempotencyKey: `rail:handover:${changeId}:${sub.id}` }, select: { type: true, note: true } }));
+    expect(history).toMatchObject({ type: 'TIER_CHANGE', note: expect.stringMatching(/previous holder's MMG number no longer pays the weekly fee; it is paid through the MMG checkout page/) });
+    expect(JSON.stringify(history)).not.toContain(oldNumber);
+    const notice = await system(() => app.prisma.notification.findFirstOrThrow({ where: { userId: next.userId, data: { path: ['kind'], equals: 'account_handover_completed' } }, select: { body: true } }));
+    expect(notice.body).toContain('pay it through the MMG checkout page');
+    const read = await call('GET', '/api/v1/vendor/subscription', { ...next, vendorId: x.vendorId, token: await session(next.userId, 'VENDOR_OWNER') });
+    expect(read.statusCode, read.body).toBe(200);
+    expect(read.json().data).toMatchObject({ billingMethod: 'CASH', mmgPayerMsisdn: null });
+    expect(read.body).not.toContain(oldNumber);
+    expect((await system(() => app.prisma.auditLog.findFirstOrThrow({ where: { entityId: changeId, action: 'APPROVE_ACCOUNT_HANDOVER' } }))).changes).toMatchObject({ feeRailsReset: 1 });
+  });
+
+  it('a card rail left with no card (the old holder\'s revoked) goes back to CASH too; a fee on CASH is left alone', async () => {
+    const x = await companyStore();
+    const sub = await storeFee(x.vendorId, { billingMethod: 'CARD' });
+    await system(async () => app.prisma.paymentInstrument.create({ data: {
+      subscriptionId: sub.id, userId: x.userId, provider: 'fakebank', environment: 'sandbox', providerAccount: `r2475f-${RUN}`,
+      ...(await sealVaultToken(`tok_${nanoid(10)}`)), brand: 'VISA', last4: '9876', expMonth: 12, expYear: new Date().getUTCFullYear() + 3,
+      consentVersion: 'card-on-file-v1', consentAt: new Date(),
+    } }));
+    const { changeId } = await handedOver(x);
+    expect(await feeOf(sub.id)).toEqual({ billingMethod: 'CASH', mmgPayerMsisdn: null });
+    expect((await system(() => app.prisma.billingEvent.findFirstOrThrow({ where: { idempotencyKey: `rail:handover:${changeId}:${sub.id}` } }))).note).toMatch(/previous holder's card/);
+    const y = await companyStore();
+    const cash = await storeFee(y.vendorId, { billingMethod: 'CASH' });
+    const second = await handedOver(y);
+    expect(await system(() => app.prisma.billingEvent.count({ where: { idempotencyKey: `rail:handover:${second.changeId}:${cash.id}` } }))).toBe(0);
+  });
+
+  it('GET /vendor/subscription shows an MMG payer number only to the person whose number it is; a plan on MMG resumes on its stored number', async () => {
+    const o = await companyStore();
+    // A resumed MMG plan records payer evidence, which is immutable: this synthetic account is left in the test database.
+    users.splice(users.indexOf(o.userId), 1);
+    const sub = await storeFee(o.vendorId, { billingMethod: 'MOBILE_MONEY', mmgPayerMsisdn: `+5926${NUM}77` });
+    expect((await call('GET', '/api/v1/vendor/subscription', o)).json().data.mmgPayerMsisdn).toBeNull();
+    const own = await phoneOf(o.userId);
+    await system(() => app.prisma.subscription.update({ where: { id: sub.id }, data: { mmgPayerMsisdn: own } }));
+    expect((await call('GET', '/api/v1/vendor/subscription', o)).json().data.mmgPayerMsisdn).toBe(own);
+    // the app may send no number (it reads none it doesn't own): the plan keeps the number it has
+    await system(() => app.prisma.subscription.update({ where: { id: sub.id }, data: { mmgPayerMsisdn: `+5926${NUM}77` } }));
+    await grantStepUp(app, o.token);
+    const resumed = await call('PUT', '/api/v1/vendor/subscription/billing-method', o, { method: 'MOBILE_MONEY' });
+    expect(resumed.statusCode, resumed.body).toBe(200);
+    expect(await feeOf(sub.id)).toEqual({ billingMethod: 'MOBILE_MONEY', mmgPayerMsisdn: `+5926${NUM}77` });
+  });
+});
+
+describe('[review-2475 final G2] the old holder\'s letters of authority end at the handover', () => {
+  it('a letter still waiting to be signed is cancelled (link dead, keys cleared), audited with the reason', async () => {
+    const x = await companyStore();
+    const owner0 = await owner(x.userId);
+    const letter = await system(() => app.prisma.authorityLetterRequest.create({ data: {
+      userId: x.userId, vendorId: x.vendorId, docType: 'company_authority_letter', accountBasis: owner0.accountBasis,
+      businessName: 'Synthetic Company Limited', registrationNumber: 'C-0000', requesterName: 'Kamla Persaud', requesterRole: 'Manager',
+      signerName: 'Devon Director', signerPhone: `+5926${NUM}66`, letterText: 'Letter\nline', letterSha256: 'b'.repeat(64),
+      tokenHash: Buffer.from(nanoid(32)).toString('hex'), linkExpiresAt: new Date(Date.now() + 72 * 3_600_000), lastSentAt: new Date(), codeHash: 'c'.repeat(64), signingKeyHash: 'd'.repeat(64),
+    }, select: { id: true } }));
+    const { changeId } = await handedOver(x);
+    expect(await system(() => app.prisma.authorityLetterRequest.findUniqueOrThrow({ where: { id: letter.id }, select: { status: true, codeHash: true, signingKeyHash: true, endedAt: true } })))
+      .toEqual({ status: 'CANCELLED', codeHash: null, signingKeyHash: null, endedAt: expect.any(Date) });
+    const trail = await system(() => app.prisma.auditLog.findFirstOrThrow({ where: { entity: 'AuthorityLetterRequest', entityId: letter.id, action: 'AUTHORITY_LETTER_CANCELLED' } }));
+    expect(trail).toMatchObject({ userId: adminId, changes: { reason: 'account_handed_over', changeId } });
+    expect((await system(() => app.prisma.auditLog.findFirstOrThrow({ where: { entityId: changeId, action: 'APPROVE_ACCOUNT_HANDOVER' } }))).changes).toMatchObject({ letterRequestsCancelled: 1 });
+    await system(() => app.prisma.authorityLetterRequest.deleteMany({ where: { id: letter.id } }));
   });
 });

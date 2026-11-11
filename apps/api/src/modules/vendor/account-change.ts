@@ -651,6 +651,29 @@ export interface ApprovalOutcome {
  *  the account holder's ID (asked only of a company's or a manager's holder). Never a personal ID other roles use. */
 const STORE_BUSINESS_PAPERS: string[] = [...Object.entries(BUCKET_OF).filter(([, bucket]) => bucket === 'BUSINESS').map(([docType]) => docType), ACCOUNT_HOLDER_ID_DOC_TYPE];
 
+/**
+ * [review-2475 G1] The weekly fee's rail after a handover: the old holder's MMG payer number (the phone a push would ask)
+ * is never kept, and a card rail left with no card (the old holder's revoked) is not either. Each such fee goes back to
+ * what a new fee is born with (CASH: the fee is paid through the MMG checkout page), in the fee's history.
+ */
+async function resetHolderFeeRails(tx: Prisma.TransactionClient, storeIds: readonly string[], changeId: string): Promise<number> {
+  const subs = await tx.subscription.findMany({ where: { vendorId: { in: [...storeIds] } }, select: { id: true, billingMethod: true, mmgPayerMsisdn: true, currencyCode: true } });
+  let reset = 0;
+  for (const sub of subs) {
+    const cardLeft = sub.billingMethod === 'CARD' ? await tx.paymentInstrument.count({ where: { subscriptionId: sub.id, status: 'ACTIVE' } }) : 0;
+    const was = sub.mmgPayerMsisdn !== null || sub.billingMethod === 'MOBILE_MONEY' ? 'MMG number' : sub.billingMethod === 'CARD' && cardLeft === 0 ? 'card' : null;
+    if (!was) continue;
+    await tx.$queryRaw`SELECT "id" FROM "subscriptions" WHERE "id" = ${sub.id} FOR UPDATE /* account-handover-rail */`;
+    await tx.subscription.update({ where: { id: sub.id }, data: { billingMethod: 'CASH', mmgPayerMsisdn: null } });
+    await tx.billingEvent.create({ data: {
+      subscriptionId: sub.id, type: 'TIER_CHANGE', currencyCode: sub.currencyCode, idempotencyKey: `rail:handover:${changeId}:${sub.id}`,
+      note: `Billing rail set to CASH: the account was handed over to a new account holder, so the previous holder's ${was} no longer pays the weekly fee; it is paid through the MMG checkout page`,
+    } });
+    reset += 1;
+  }
+  return reset;
+}
+
 const paperWords = (missing: readonly string[]) => missing.map((t) => t.replace(/_/g, ' ')).join(', ');
 
 export async function approveAccountChange(tx: Prisma.TransactionClient, input: ApprovalInput): Promise<ApprovalOutcome> {
@@ -757,13 +780,19 @@ export async function approveAccountChange(tx: Prisma.TransactionClient, input: 
         data: { roles: { set: roles.length ? roles : ['CUSTOMER'] }, ...(old.activeRole === 'VENDOR_OWNER' ? { activeRole: 'CUSTOMER' } : {}) },
       });
     }
-    // Money never follows the old holder: every MMG destination they set (and any change of it still waiting) is
-    // cleared; the new holder sets the company's own, through its usual hold. Customers can pay cash meanwhile. An open
-    // order keeps the number it was placed with (Order.mmgNumberSnapshot).
+    // Money never follows the old holder. The stores' MMG numbers customers pay (and any change of one still waiting) are
+    // cleared; the new holder sets the company's own, through its usual hold, and customers can pay cash meanwhile. An
+    // open order keeps the number it was placed with (Order.mmgNumberSnapshot). The weekly fee's own rail is reset
+    // below (resetHolderFeeRails): the old holder's MMG payer number, and a card rail left with no card, are not kept.
     await tx.vendor.updateMany({ where: { id: { in: storeIds } }, data: { ...VENDOR_MMG_DESTINATION_CLEARED } });
     await closeOpenMmgStagesFor(tx, storeIds);
     // [review-2475 F2] Nor does a card: the old holder's saved cards on these stores leave service.
     const cardsRevoked = await retireHolderCards(tx, storeIds, holderBefore, input.adminId, change.id);
+    // [review-2475 G1] Nor the fee's MMG payer number: each fee rail that was the old holder's goes back to a new fee's.
+    const railsReset = await resetHolderFeeRails(tx, storeIds, change.id);
+    // [review-2475 G2] Nor a letter of authority the old holder asked a director to sign: its link ends now.
+    const { cancelLettersForHandover } = await import('./authority-letter/authority-letter.service');
+    const lettersCancelled = await cancelLettersForHandover(tx, { holderId: holderBefore, vendorIds: storeIds, by: input.adminId, changeId: change.id });
     // [review-2475 F1 · delta D1] The account's papers name this business: they never follow the old holder to another
     // account (a company that names them next, or a store they open). Every paper of the account's lists they hold leaves
     // service, AND every business paper they filed as a store's holder under any earlier business type (a registration
@@ -771,7 +800,7 @@ export async function approveAccountChange(tx: Prisma.TransactionClient, input: 
     // (owner_national_id, national_id) stay: a person's own ID is theirs, and other roles use it.
     const accountPapers = unionOf(perStore.values());
     const papersRetired = await retirePapers(tx, { userId: holderBefore, OR: [
-      { docType: { in: accountPapers } },
+      { role: 'VENDOR_OWNER', docType: { in: accountPapers } },
       { role: 'VENDOR_OWNER', docType: { in: STORE_BUSINESS_PAPERS } },
     ] },
       'the account was handed over to its new account holder; these papers belong to that business', input.adminId);
@@ -783,11 +812,11 @@ export async function approveAccountChange(tx: Prisma.TransactionClient, input: 
     }
     // The old holder loses access now: every session and device, in this transaction.
     const cleanup = await revokeAllSessionsInTransaction(tx, holderBefore, `account-handover:${change.id}`);
-    await input.audit(tx, change, { stores: stores.length, staffPlacesEnded: staffEnded.count, mmgCleared: storeIds.length, cardsRevoked, oldHolderPapersRetired: papersRetired, oldHolderSessionsEnded: true });
+    await input.audit(tx, change, { stores: stores.length, staffPlacesEnded: staffEnded.count, mmgCleared: storeIds.length, cardsRevoked, feeRailsReset: railsReset, letterRequestsCancelled: lettersCancelled, oldHolderPapersRetired: papersRetired, oldHolderSessionsEnded: true });
     const names = storeNames(stores);
     notices.push((await insertNoticeFor(tx, {
       userId: newHolder, type: 'SYSTEM_ANNOUNCEMENT', title: 'You now hold the account',
-      body: `Swift checked your papers. You now hold the Swift account for ${names}. Add the business’s MMG number in Account so customers can pay by MMG again.${cardsRevoked > 0 ? ' The previous account holder’s card no longer pays the weekly fee: add your own card, or pay through the MMG checkout page.' : ''}`,
+      body: `Swift checked your papers. You now hold the Swift account for ${names}. Add the business’s MMG number in Account so customers can pay by MMG again.${cardsRevoked > 0 ? ' The previous account holder’s card no longer pays the weekly fee: add your own card, or pay through the MMG checkout page.' : railsReset > 0 ? ' The previous account holder’s MMG number no longer pays the weekly fee: pay it through the MMG checkout page.' : ''}`,
       data: { kind: 'account_handover_completed', changeId: change.id },
     })).id);
     notices.push((await insertNoticeFor(tx, {

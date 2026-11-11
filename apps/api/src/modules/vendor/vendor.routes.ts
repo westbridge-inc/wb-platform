@@ -5647,10 +5647,15 @@ export async function vendorRoutes(app: FastifyInstance) {
     const { feeStatusFor } = await import('../billing/fee-status');
     if (!subscription) return { success: true, data: null };
     const fee = await payInfo(app.prisma, subscription);
+    // [review-2475 G1] An MMG payer number is shown only to the person whose number it is: never one a store's previous
+    // account holder left on the fee (a handover clears it; this never shows another person's number in any case).
+    const caller = await app.prisma.user.findUnique({ where: { id: request.user.userId }, select: { phone: true } });
+    const ownMmgNumber = subscription.mmgPayerMsisdn && caller?.phone === subscription.mmgPayerMsisdn ? subscription.mmgPayerMsisdn : null;
     return {
       success: true,
       data: {
         ...subscription,
+        mmgPayerMsisdn: ownMmgNumber,
         // "My Swift Number" + Pay-screen block [san spec 2.4/6.1].
         ...(await sanDisplay(app.prisma, subscription)),
         ...fee,
@@ -5684,7 +5689,9 @@ export async function vendorRoutes(app: FastifyInstance) {
     const billingSvc = new BillingService(app.prisma, notifications, getPaymentProvider());
     const updated = body.method === 'NONE'
       ? await billingSvc.stopBilling(sub.id, request.user.userId)
-      : await billingSvc.setBillingRail(sub.id, body.method, body.mmgPayerMsisdn);
+      // [review-2475 G1] A plan already on MMG resumes on its stored number when none is typed (the app no longer reads a
+      // number that is not the caller's own login number, so it may send none).
+      : await billingSvc.setBillingRail(sub.id, body.method, body.mmgPayerMsisdn ?? (body.method === 'MOBILE_MONEY' && sub.billingMethod === 'MOBILE_MONEY' ? sub.mmgPayerMsisdn ?? undefined : undefined));
     return { success: true, data: { billingMethod: updated.billingMethod, mmgPayerMsisdn: updated.mmgPayerMsisdn } };
   });
 
