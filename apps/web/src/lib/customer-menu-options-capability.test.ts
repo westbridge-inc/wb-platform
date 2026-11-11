@@ -1,0 +1,35 @@
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+const apiFetch = vi.hoisted(() => vi.fn(async (_path: string, _init?: RequestInit) => ({ data: {} })));
+vi.mock('./auth', () => ({ apiFetch, getSessionPrincipal: vi.fn() }));
+
+import { addToCart, updateCartLine } from './customer';
+
+// ---------------------------------------------------------------------------
+// [MENU-OPTIONS · owner 11 Nov 2026] Every cart write from the website says it shows sizes that set the price,
+// halves and follow-up choices (MENU_OPTIONS_V2). Without it the server refuses such an item with 409
+// APP_UPDATE_REQUIRED, an "update the app" the website can never act on. (The basket upload is pinned in
+// basket-merge.test.ts.) Synthetic ids only.
+// ---------------------------------------------------------------------------
+
+beforeEach(() => apiFetch.mockClear());
+
+describe('[MENU-OPTIONS] the website’s cart writes declare MENU_OPTIONS_V2', () => {
+  it('an add sends the choices as the API reads them, and the capability', async () => {
+    await addToCart({ vendorId: 'store-1', itemId: 'pizza-1', quantity: 1, selectedOptions: { size: 'large', toppings: ['pep:left'] } });
+    const [path, init] = apiFetch.mock.calls[0]!;
+    expect(path).toBe('/api/v1/customer/cart/items');
+    expect(init?.method).toBe('POST');
+    expect(JSON.parse(String(init!.body))).toEqual({
+      vendorId: 'store-1', itemId: 'pizza-1', quantity: 1, selectedOptions: { size: 'large', toppings: ['pep:left'] }, capabilities: ['MENU_OPTIONS_V2'],
+    });
+  });
+
+  it('a quantity change sends it too', async () => {
+    await updateCartLine('line-1', 2);
+    const [path, init] = apiFetch.mock.calls[0]!;
+    expect(path).toBe('/api/v1/customer/cart/items/line-1');
+    expect(init?.method).toBe('PUT');
+    expect(JSON.parse(String(init!.body))).toEqual({ quantity: 2, capabilities: ['MENU_OPTIONS_V2'] });
+  });
+});

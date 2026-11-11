@@ -1,6 +1,7 @@
 import { apiFetch, ApiRequestError } from './auth';
 import { prepareGuestMerge, settleGuestMerge } from './basket';
 import { readCheckoutAttempt, type Cart } from './customer';
+import { cartWriteCapabilities } from '../../../mobile/src/lib/menuSheet';
 export interface GuestMergeResult {
   applied: boolean;
   verdicts: Array<{ clientLineId: string; status: string; unitPrice?: number }>;
@@ -14,7 +15,10 @@ export async function uploadGuestBasket(scope: string): Promise<GuestMergeResult
     const result = (await apiFetch('/api/v1/customer/cart/merge', {
       method: 'POST', headers: { 'Idempotency-Key': pending.key },
       body: JSON.stringify({ lines: pending.lines.map(l => ({ clientLineId: l.clientLineId, vendorId: l.vendorId, itemId: l.itemId,
-        quantity: l.quantity, expectedUnitPrice: l.unitPrice, selectedOptions: l.selectedOptions })) }),
+        quantity: l.quantity, expectedUnitPrice: l.unitPrice, selectedOptions: l.selectedOptions })),
+      // [MENU-OPTIONS] This site shows sizes, halves and follow-up choices: without the word such a line comes back
+      // OPTIONS_CHANGED and the customer has to choose again.
+      capabilities: cartWriteCapabilities() }),
     }, { redirectOnExpired: false })).data as GuestMergeResult;
     if (typeof result?.applied !== 'boolean' || !Array.isArray(result.verdicts)
       || result.verdicts.length !== pending.lines.length

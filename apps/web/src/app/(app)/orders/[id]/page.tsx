@@ -33,6 +33,7 @@ import { lineDisplayAmount } from '@/lib/money';
 import { mmgStorePaymentDeadline, mmgStorePaymentNote, orderPrepFacts, orderStepState, orderTimelineIndex, parseMmgStorePayment } from '@/lib/app-rules';
 import { appointmentBookingView } from '@/lib/booking-rules';
 import styles from './tracking.module.css';
+import { orderLineChoices, type OrderLineChoice } from '@/lib/menu-options';
 import { pickupCodeWords } from './pickup-words';
 import { lazyRetry } from '@/lib/chunk-retry';
 import { orderReadyEstimate } from '@/lib/store-kind-words';
@@ -61,6 +62,8 @@ type OrderLine = {
   substituteName?: string | null;
   substitutePrice?: number | null;
   substitution?: SwapView | null;
+  /** [MENU-OPTIONS] The line's choices as made (size, halves, a follow-up under its opener). */
+  options?: OrderLineChoice[] | null;
 };
 
 type TimelineEvent = {
@@ -916,9 +919,15 @@ export default function OrderDetailPage() {
           <h2 id="summary-title" className={styles.cardTitle}>{isTaxi ? 'Your ride' : 'Your order'}</h2>
           <div className={styles.orderLines}>
             {(order.items ?? []).map((item, index) => (
-              <div key={item.id ?? `${item.name}-${index}`} className={styles.line}>
-                <span>{item.quantity}× {item.name}{lineRemoved(item) ? ' (removed, not charged)' : ''}</span>
-                <strong>{money(lineRemoved(item) ? 0 : lineDisplayAmount(item.lineTotal, item.customerPrice, item.quantity))}</strong>
+              <div key={item.id ?? `${item.name}-${index}`}>
+                <div className={styles.line}>
+                  <span>{item.quantity}× {item.name}{lineRemoved(item) ? ' (removed, not charged)' : ''}</span>
+                  <strong>{money(lineRemoved(item) ? 0 : lineDisplayAmount(item.lineTotal, item.customerPrice, item.quantity))}</strong>
+                </div>
+                {/* [MENU-OPTIONS] "Size: Large", a follow-up under its opener, a half-and-half pizza by half. */}
+                {orderLineChoices(item.options).map((choice, at) => (
+                  <p key={at} className={choice.followUp ? `${styles.lineChoice} ${styles.lineChoiceFollowUp}` : styles.lineChoice}>{choice.text}</p>
+                ))}
               </div>
             ))}
           </div>

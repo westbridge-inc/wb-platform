@@ -79,6 +79,32 @@ describe('receipt amount presentation', () => {
   });
 });
 
+// [MENU-OPTIONS · owner 11 Nov 2026] The receipt shows each line's choices as the store makes them: the size, the
+// follow-up under its opener, a half-and-half pizza by half; an older order's plain "group: name" still reads.
+describe('[MENU-OPTIONS] an order line shows its choices', () => {
+  it('Size, Crust with its follow-up under it, Toppings by half', async () => {
+    vi.spyOn(orders, 'getOrder').mockResolvedValue({
+      ...ORDER, paymentAction: null,
+      items: [{ id: 'line-1', name: 'Garden pizza', quantity: 1, lineTotal: 4250, options: [
+        { group: 'Size', name: 'Large', price: 0, plainGroup: 'Size', plainName: 'Large', placement: null, parentOptionName: null, setsPrice: true },
+        { group: 'Crust', name: 'Stuffed crust', price: 500, plainGroup: 'Crust', plainName: 'Stuffed crust', placement: null, parentOptionName: null, setsPrice: false },
+        { group: 'Cheese (Stuffed crust)', name: 'Cheddar', price: 100, plainGroup: 'Cheese', plainName: 'Cheddar', placement: null, parentOptionName: 'Stuffed crust', setsPrice: false },
+        { group: 'Toppings', name: 'Pepperoni (left half)', price: 150, plainGroup: 'Toppings', plainName: 'Pepperoni', placement: 'LEFT', parentOptionName: null, setsPrice: false },
+        { group: 'Toppings', name: 'Mushroom (right half)', price: 88, plainGroup: 'Toppings', plainName: 'Mushroom', placement: 'RIGHT', parentOptionName: null, setsPrice: false },
+      ] }, { id: 'line-2', name: 'Curry', quantity: 1, lineTotal: 1200, options: [{ group: 'Roti', name: 'Paratha', price: 300 }] }],
+    } as never);
+    render(<OrderDetailPage />);
+    const receipt = (await screen.findByText('Receipt preview')).closest('aside')!;
+    const lines = [...receipt.querySelectorAll('p')].map((p) => p.textContent);
+    expect(lines).toEqual(expect.arrayContaining([
+      'Size: Large', 'Crust: Stuffed crust', 'Cheese: Cheddar', 'Toppings — Left: Pepperoni / Right: Mushroom', 'Roti: Paratha',
+    ]));
+    const cheese = [...receipt.querySelectorAll('p')].find((p) => p.textContent === 'Cheese: Cheddar')!;
+    expect(cheese.className, 'the follow-up sits indented under its opener').toMatch(/lineChoiceFollowUp/);
+    expect(lines.indexOf('Cheese: Cheddar')).toBe(lines.indexOf('Crust: Stuffed crust') + 1);
+  });
+});
+
 describe('[W-32] the payment that opens is the payment that was shown', () => {
   it('shows a service appointment at the market time on the order page', async () => {
     vi.spyOn(orders, 'getOrder').mockResolvedValue({

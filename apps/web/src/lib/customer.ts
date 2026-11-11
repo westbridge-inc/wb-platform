@@ -7,6 +7,7 @@ import { apiFetch, getSessionPrincipal } from './auth';
 import { formatAmount, parseAmount } from './money';
 import type { StorefrontDetail } from './api';
 import { BROWSER_API_ORIGIN as API_URL } from '@/lib/browser-api-origin';
+import { cartWriteCapabilities } from '../../../mobile/src/lib/menuSheet';
 
 
 // ── Auth (customer) ────────────────────────────────────────────────────────
@@ -181,13 +182,21 @@ export async function getCart(options?: { redirectOnExpired?: boolean }): Promis
   const data = (await apiFetch('/api/v1/customer/cart', undefined, options)).data as Cart | null;
   return data ?? { items: [] };
 }
+// [MENU-OPTIONS] Every cart write says this site shows sizes that set the price, halves and follow-up choices
+// (MENU_OPTIONS_V2): the server refuses such an item from a client that does not (409 APP_UPDATE_REQUIRED).
 export async function addToCart(body: { vendorId: string; itemId: string; quantity: number; selectedOptions?: Record<string, string | string[]> }) {
-  return (await apiFetch('/api/v1/customer/cart/items', { method: 'POST', body: JSON.stringify(body) })).data;
+  return (await apiFetch('/api/v1/customer/cart/items', { method: 'POST', body: JSON.stringify({ ...body, capabilities: cartWriteCapabilities() }) })).data;
 }
 
-export interface OptionGroup { id: string; name: string; isRequired: boolean; minSelect: number; maxSelect: number; options: Array<{ id: string; name: string; additionalPrice: string; isDefault: boolean; isAvailable: boolean }>; }
+/** [MENU-OPTIONS] setsPrice: a size, its choice's price IS the item price. allowHalves: whole / left / right, a half at
+ *  halfPricePercent% of the choice. followUpGroupId: the group (of the same item) the choice opens. */
+export interface OptionGroup {
+  id: string; name: string; isRequired: boolean; minSelect: number; maxSelect: number;
+  sortOrder?: number; setsPrice?: boolean; allowHalves?: boolean; halfPricePercent?: number;
+  options: Array<{ id: string; name: string; additionalPrice: string; isDefault: boolean; isAvailable: boolean; sortOrder?: number; followUpGroupId?: string | null }>;
+}
 export async function updateCartLine(lineId: string, quantity: number) {
-  return apiFetch(`/api/v1/customer/cart/items/${lineId}`, { method: 'PUT', body: JSON.stringify({ quantity }) });
+  return apiFetch(`/api/v1/customer/cart/items/${lineId}`, { method: 'PUT', body: JSON.stringify({ quantity, capabilities: cartWriteCapabilities() }) });
 }
 export async function removeCartLine(lineId: string) {
   return apiFetch(`/api/v1/customer/cart/items/${lineId}`, { method: 'DELETE' });

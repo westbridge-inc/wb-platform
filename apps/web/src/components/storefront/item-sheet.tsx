@@ -4,6 +4,10 @@ import { useState } from 'react';
 import { Minus, Plus, X } from 'lucide-react';
 import { formatAmount, parseAmount } from '@/lib/money';
 import type { MenuItem, OptionGroup } from '@/lib/customer';
+import {
+  clearableSingle, followUpFor, groupGuidance, isChosen, maxChoices, onSale as choiceOnSale, placementOf, requiredGroup,
+  singleChoice, sortedOptions, topLevelGroups, halfPrice, type Placement,
+} from '@/lib/menu-options';
 import { Photo } from '@/components/order-ui';
 import { Sheet } from '@/components/sheet';
 import styles from './storefront.module.css';
@@ -18,12 +22,19 @@ import styles from './storefront.module.css';
 
 const gyMoney = (value: unknown) => formatAmount(value, '$');
 
-function optionGuidance(group: OptionGroup): string {
-  const minimum = group.isRequired ? Math.max(1, group.minSelect) : group.minSelect;
-  if (group.maxSelect <= 1) return minimum > 0 ? 'Choose 1' : 'Optional';
-  if (minimum === group.maxSelect) return `Choose ${group.maxSelect}`;
-  if (minimum > 0) return `Choose ${minimum}–${group.maxSelect}`;
-  return `Optional · up to ${group.maxSelect}`;
+const PLACEMENTS: ReadonlyArray<{ key: Placement; label: string }> = [
+  { key: 'WHOLE', label: 'Whole' },
+  { key: 'LEFT', label: 'Left half' },
+  { key: 'RIGHT', label: 'Right half' },
+];
+
+/** [MENU-OPTIONS] What a choice's row says about money: a size its PRICE (it is the item's price), any other choice
+ *  what it adds; nothing when it is free. Null when the server's figure cannot be read. */
+function choicePrice(group: OptionGroup, additionalPrice: unknown): string | null | '' {
+  const amount = parseAmount(additionalPrice);
+  if (amount === null) return null;
+  if (group.setsPrice === true) return gyMoney(amount);
+  return amount > 0 ? `+${gyMoney(amount)}` : '';
 }
 
 /** [P35 · board 4b] About three lines of the sheet's description; past this it is clamped behind "Read more". */
@@ -38,8 +49,11 @@ export interface ItemSheetProps {
   /** Absent: the sheet shows no seller line (tests, older callers). */
   seller?: ItemSheetSeller;
   vendorType: string | null | undefined;
+  /** The choices as the API reads them: `id`, `id:left`, `id:right`. */
   selectedOptions: Record<string, string[]>;
   onChoose: (_group: OptionGroup, _optionId: string) => void;
+  /** [MENU-OPTIONS] A chosen topping of a half-and-half group moves to the whole item, the left or the right half. */
+  onPlace?: (_group: OptionGroup, _optionId: string, _placement: Placement) => void;
   quantity: number;
   onQuantity: (_next: (_count: number) => number) => void;
   error: string | null;
@@ -51,8 +65,9 @@ export interface ItemSheetProps {
 }
 
 export function ItemSheet({
-  item, seller, vendorType, selectedOptions, onChoose, quantity, onQuantity, error, busy, cartLoading, unitPrice, onConfirm, onClose,
+  item, seller, vendorType, selectedOptions, onChoose, onPlace, quantity, onQuantity, error, busy, cartLoading, unitPrice, onConfirm, onClose,
 }: ItemSheetProps) {
+  const groups = item.optionGroups ?? [];
   return (
     <Sheet labelledBy="menu-options-title" onClose={onClose} className={styles.sheet}>
       <div className={styles.sheetHeader}>
@@ -73,51 +88,14 @@ export function ItemSheet({
       </div>
 
       <div className={styles.options}>
-        {(item.optionGroups ?? []).map((group) => {
-          const selectedCount = (selectedOptions[group.id] ?? []).length;
-          const multiLimitReached = group.maxSelect > 1 && selectedCount >= group.maxSelect;
-          const onSale = group.options.filter((option) => option.isAvailable !== false);
-          return (
-            <div key={group.id} className={styles.optionBlock}>
-              <fieldset className={styles.optionGroup} data-option-group={group.id}>
-                <legend className={styles.optionHeading}>
-                  <span className={styles.optionTitle}>{group.name}</span>
-                  <span className={styles.optionMeta}>
-                    {group.isRequired ? <span className={styles.required}>Required</span> : <span className={styles.optionGuidance}>{optionGuidance(group)}</span>}
-                  </span>
-                </legend>
-                {group.isRequired && group.maxSelect > 1 ? <p className={styles.optionGuidance}>{optionGuidance(group)}</p> : null}
-                {onSale.length === 0 ? <p className={styles.optionGuidance}>Every choice here is sold out right now.</p> : null}
-                {onSale.map((option) => {
-                  const checked = (selectedOptions[group.id] ?? []).includes(option.id);
-                  const single = group.maxSelect <= 1;
-                  const clearableSingle = single && !group.isRequired && group.minSelect === 0;
-                  const blockedByLimit = multiLimitReached && !checked;
-                  const extra = parseAmount(option.additionalPrice);
-                  return (
-                    <label key={option.id} className={`${styles.optionLabel} ${blockedByLimit ? styles.optionLabelDisabled : ''}`}>
-                      <span className={styles.optionChoice}>
-                        <input
-                          type={single && !clearableSingle ? 'radio' : 'checkbox'}
-                          name={group.id}
-                          checked={checked}
-                          disabled={blockedByLimit}
-                          onChange={() => onChoose(group, option.id)}
-                        />
-                        {option.name}
-                      </span>
-                      {extra === null ? (
-                        <span className={styles.optionPrice}>Price unavailable</span>
-                      ) : extra > 0 ? (
-                        <span className={styles.optionPrice}>+{gyMoney(extra)}</span>
-                      ) : null}
-                    </label>
-                  );
-                })}
-              </fieldset>
-            </div>
-          );
-        })}
+        {/* [MENU-OPTIONS · owner 11 Nov 2026] Like a pizza shop's sheet: each group says Required and how many to
+            choose; a size shows its price; a chosen half-and-half topping goes on the Whole item, the Left half or
+            the Right half; a follow-up group opens right under the choice that opens it, only while it is chosen. */}
+        {topLevelGroups(groups).map((group) => (
+          <div key={group.id} className={styles.optionBlock}>
+            <OptionGroupFields group={group} groups={groups} selectedOptions={selectedOptions} onChoose={onChoose} onPlace={onPlace} nested={false} />
+          </div>
+        ))}
       </div>
 
       <div className={styles.sheetFooter}>
@@ -156,5 +134,98 @@ function SheetDescription({ text }: { text: string }) {
         </button>
       ) : null}
     </>
+  );
+}
+
+interface OptionGroupFieldsProps {
+  group: OptionGroup;
+  groups: OptionGroup[];
+  selectedOptions: Record<string, string[]>;
+  onChoose: ItemSheetProps['onChoose'];
+  onPlace: ItemSheetProps['onPlace'];
+  nested: boolean;
+}
+
+/** One group of choices (and, under a chosen option that opens one, its follow-up group). */
+function OptionGroupFields({ group, groups, selectedOptions, onChoose, onPlace, nested }: OptionGroupFieldsProps) {
+  const selectedCount = (selectedOptions[group.id] ?? []).length;
+  const single = singleChoice(group);
+  const multiLimitReached = !single && selectedCount >= maxChoices(group);
+  const options = sortedOptions(group);
+  const anyOnSale = options.some(choiceOnSale);
+  const required = requiredGroup(group);
+  return (
+    <fieldset className={nested ? `${styles.optionGroup} ${styles.followUpGroup}` : styles.optionGroup} data-option-group={group.id}>
+      <legend className={styles.optionHeading}>
+        <span className={styles.optionTitle}>{group.name}</span>
+        <span className={styles.optionMeta}>
+          {required ? <span className={styles.required}>Required</span> : <span className={styles.optionGuidance}>Optional</span>}
+        </span>
+      </legend>
+      <p className={styles.optionGuidance}>{groupGuidance(group)}</p>
+      {!anyOnSale ? <p className={styles.optionGuidance}>Every choice here is sold out right now.</p> : null}
+      {options.map((option) => {
+        if (!choiceOnSale(option)) {
+          // [F4] Shown so the menu stays honest, never chosen (the server refuses it anyway).
+          return (
+            <p key={option.id} className={`${styles.optionLabel} ${styles.optionLabelDisabled}`}>
+              <span className={styles.optionChoice}>{option.name}</span>
+              <span className={styles.optionPrice}>Sold out</span>
+            </p>
+          );
+        }
+        const checked = isChosen(selectedOptions, group.id, option.id);
+        const blockedByLimit = multiLimitReached && !checked;
+        const price = choicePrice(group, option.additionalPrice);
+        const placement = checked && group.allowHalves === true ? placementOf(selectedOptions, group.id, option.id) : null;
+        const opens = checked && !nested ? followUpFor(groups, group, option) : null;
+        const amount = parseAmount(option.additionalPrice);
+        return (
+          <div key={option.id} className={styles.optionRow}>
+            <label className={`${styles.optionLabel} ${blockedByLimit ? styles.optionLabelDisabled : ''}`}>
+              <span className={styles.optionChoice}>
+                <input
+                  type={single && !clearableSingle(group) ? 'radio' : 'checkbox'}
+                  name={group.id}
+                  checked={checked}
+                  disabled={blockedByLimit}
+                  onChange={() => onChoose(group, option.id)}
+                />
+                {option.name}
+              </span>
+              {price === null ? (
+                <span className={styles.optionPrice}>Price unavailable</span>
+              ) : price ? (
+                <span className={styles.optionPrice}>{price}</span>
+              ) : null}
+            </label>
+            {placement && onPlace ? (
+              <div className={styles.halfPicker}>
+                <div role="radiogroup" aria-label={`Where ${option.name} goes`} className={styles.halfChoices}>
+                  {PLACEMENTS.map((place) => (
+                    <button
+                      key={place.key}
+                      type="button"
+                      role="radio"
+                      aria-checked={placement === place.key}
+                      className={placement === place.key ? `${styles.halfChoice} ${styles.halfChoiceOn}` : styles.halfChoice}
+                      onClick={() => onPlace(group, option.id, place.key)}
+                    >
+                      {place.label}
+                    </button>
+                  ))}
+                </div>
+                {amount !== null && amount > 0 ? (
+                  <p className={styles.optionGuidance}>Whole +{gyMoney(amount)} · half +{gyMoney(halfPrice(amount, group.halfPricePercent ?? 100))}</p>
+                ) : null}
+              </div>
+            ) : null}
+            {opens ? (
+              <OptionGroupFields group={opens} groups={groups} selectedOptions={selectedOptions} onChoose={onChoose} onPlace={onPlace} nested />
+            ) : null}
+          </div>
+        );
+      })}
+    </fieldset>
   );
 }

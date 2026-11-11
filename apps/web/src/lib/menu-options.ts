@@ -10,15 +10,32 @@
  *
  * The page's figures are a preview. The server re-prices every line when it is
  * added and again at checkout.
+ *
+ * [MENU-OPTIONS · owner 11 Nov 2026] Pizza-grade choices: a size SETS the item
+ * price (lineBasePrice), a half topping costs the store's half price
+ * (halfPrice), a follow-up group opens under the option that opens it. What a
+ * tap does to the selection is the phone's own sheet model
+ * (apps/mobile/src/lib/menuSheet.ts, import-free, imported here by path so the
+ * phone and the site behave the same; apps/web/Dockerfile copies it too).
  */
 import { parseAmount } from './money';
-import { normalizeItemNote, resolveSelectedOptions, validateSelectedOptions } from '../../../api/src/modules/order/options';
+import { halfPrice, lineBasePrice, normalizeItemNote, resolveSelectedOptions, validateSelectedOptions } from '../../../api/src/modules/order/options';
+import { followUpGroupIds, requiredGroup } from '../../../mobile/src/lib/menuSheet';
 
-export { OptionSelectionError, resolveSelectedOptions, validateSelectedOptions } from '../../../api/src/modules/order/options';
+export { halfPrice, OptionSelectionError, resolveSelectedOptions, validateSelectedOptions } from '../../../api/src/modules/order/options';
 export type { OptionSelection, OptionSelectionReason, ValidatableGroup } from '../../../api/src/modules/order/options';
+export {
+  cartWriteCapabilities, chooseOption, choiceId, defaultSelection, followUpFor, groupGuidance, hasSizes, isChosen, onSale,
+  orderLineChoices, placeOption, placementOf, restoreSelection, singleChoice, clearableSingle, maxChoices, requiredGroup,
+  sortedOptions, topLevelGroups, wireSelection,
+} from '../../../mobile/src/lib/menuSheet';
+export type { ChoiceLine, OrderLineChoice, Placement, SheetGroup, SheetSelection } from '../../../mobile/src/lib/menuSheet';
 
-type PricedOption = { id: string; name: string; additionalPrice: unknown; isAvailable?: boolean | null; isDefault?: boolean };
-type PricedGroup = { id: string; name: string; isRequired: boolean; minSelect: number; maxSelect: number; options: PricedOption[] };
+type PricedOption = { id: string; name: string; additionalPrice: unknown; isAvailable?: boolean | null; isDefault?: boolean; sortOrder?: number | null; followUpGroupId?: string | null };
+type PricedGroup = {
+  id: string; name: string; isRequired: boolean; minSelect: number; maxSelect: number; options: PricedOption[];
+  sortOrder?: number | null; setsPrice?: boolean | null; allowHalves?: boolean | null; halfPricePercent?: number | null;
+};
 type PricedItem = { basePrice: unknown; customerPrice?: unknown; optionGroups?: PricedGroup[] | null };
 
 /** The item's own price, or null when the server's figure cannot be read. */
@@ -26,14 +43,22 @@ export function basePrice(item: PricedItem): number | null {
   return parseAmount(item.customerPrice ?? item.basePrice);
 }
 
-/** How many choices a group needs before the item can be added (the validator's rule for an empty group). */
+/** How many choices a group needs before the item can be added (the validator's rule for an empty group; a size is
+ *  always needed). */
 export function requiredCount(group: PricedGroup): number {
-  return group.isRequired ? Math.max(1, group.minSelect) : 0;
+  return requiredGroup(group) ? Math.max(1, group.minSelect) : 0;
 }
 
-/** The item cannot be added without opening its choices. */
+/** The groups needed whatever is chosen: every required group except a follow-up one (needed only once opened). */
+function alwaysRequired(item: PricedItem): PricedGroup[] {
+  const groups = item.optionGroups ?? [];
+  const followUps = followUpGroupIds(groups);
+  return groups.filter((group) => !followUps.has(group.id) && requiredCount(group) > 0);
+}
+
+/** The item cannot be added without opening its choices (a required group, or a size). */
 export function needsChoices(item: PricedItem): boolean {
-  return (item.optionGroups ?? []).some((group) => requiredCount(group) > 0);
+  return alwaysRequired(item).length > 0;
 }
 
 /**
@@ -43,7 +68,8 @@ export function needsChoices(item: PricedItem): boolean {
  */
 export function opensChoices(item: PricedItem): boolean {
   return needsChoices(item)
-    || (item.optionGroups ?? []).some((group) => group.options.some((option) => option.isDefault === true && option.isAvailable !== false));
+    || (item.optionGroups ?? []).some((group) => group.setsPrice === true || group.allowHalves === true
+      || group.options.some((option) => (option.isDefault === true && option.isAvailable !== false) || !!option.followUpGroupId));
 }
 
 /**
@@ -51,7 +77,7 @@ export function opensChoices(item: PricedItem): boolean {
  * cannot be ordered with any selection right now (the sheet says which).
  */
 export function requiredChoiceSoldOut(item: PricedItem): boolean {
-  return (item.optionGroups ?? []).some((group) =>
+  return alwaysRequired(item).some((group) =>
     group.options.filter((option) => option.isAvailable !== false).length < requiredCount(group));
 }
 
@@ -65,18 +91,20 @@ export function fromPrice(item: PricedItem): number | null {
   const base = basePrice(item);
   if (base === null || requiredChoiceSoldOut(item)) return null;
   let total = base;
-  for (const group of item.optionGroups ?? []) {
+  for (const group of alwaysRequired(item)) {
     const needed = requiredCount(group);
-    if (needed === 0) continue;
     const deltas: number[] = [];
     for (const option of group.options) {
       if (option.isAvailable === false) continue;
       const delta = parseAmount(option.additionalPrice);
       if (delta === null) return null;
-      deltas.push(delta);
+      // [MENU-OPTIONS] A topping may go on one half, at the store's half price.
+      deltas.push(group.allowHalves === true ? Math.min(delta, halfPrice(delta, group.halfPricePercent ?? 100)) : delta);
     }
     deltas.sort((a, b) => a - b);
-    for (const delta of deltas.slice(0, needed)) total += delta;
+    // [MENU-OPTIONS] A size IS the price: the cheapest size on sale replaces the item's price, never adds to it.
+    if (group.setsPrice === true) total += deltas[0]! - base;
+    else for (const delta of deltas.slice(0, needed)) total += delta;
   }
   return total;
 }
@@ -95,15 +123,19 @@ export function isPlainLine(line: { selectedOptions?: unknown; selectedOptionNam
 }
 
 /**
- * One unit's price with these choices: the item's price plus each chosen
- * choice's price, resolved against the item's OWN groups by the API's
- * resolver. Null when any figure cannot be read.
+ * One unit's price with these choices, resolved against the item's OWN groups
+ * by the API's resolver: the chosen size's price (or the item's price), plus
+ * each other choice (a half at the store's half price). Null when any figure
+ * cannot be read.
  */
 export function selectionPrice(item: PricedItem, selected: Record<string, string[]>): number | null {
-  const base = basePrice(item);
+  const itemPrice = basePrice(item);
+  if (itemPrice === null) return null;
+  const resolved = resolveSelectedOptions(item, selected);
+  const base = parseAmount(lineBasePrice(itemPrice, resolved));
   if (base === null) return null;
   let total = base;
-  for (const option of resolveSelectedOptions(item, selected)) {
+  for (const option of resolved) {
     const extra = parseAmount(option.additionalPrice);
     if (extra === null) return null;
     total += extra;
@@ -119,4 +151,10 @@ export function selectionComplete(item: { optionGroups?: PricedGroup[] | null },
   } catch {
     return false;
   }
+}
+
+/** The choices' words as the cart shows them ("Large", "Pepperoni (left half)"): the API's own display words, so a
+ *  browser basket line reads exactly like the saved cart line it becomes. */
+export function selectionNames(item: PricedItem, selected: Record<string, string | string[]>): string[] {
+  return resolveSelectedOptions(item, selected).map((option) => option.optionName);
 }

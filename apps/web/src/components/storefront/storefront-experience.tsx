@@ -31,12 +31,19 @@ import { LIVE_MENU_MAX_AGE_MS, type ServerStoreMenu } from '@/lib/browse-keys';
 import {
   OptionSelectionError,
   basePrice,
+  chooseOption as chooseInSheet,
+  defaultSelection,
   fromPrice,
   isPlainLine,
   opensChoices,
+  placeOption,
   requiredChoiceSoldOut,
   requiredCount,
+  restoreSelection,
+  selectionNames,
   selectionPrice,
+  singleChoice,
+  type Placement,
   validateSelectedOptions,
 } from '@/lib/menu-options';
 import { useOptionalCustomerSession } from '@/components/customer-session';
@@ -174,16 +181,10 @@ function liveCatalog(store: StorefrontDetail, vendor: VendorDetail): DisplayVend
 const itemPrice = (item: DisplayItem): number | null => basePrice(item);
 const optionPrice = (item: DisplayItem, selected: Record<string, string[]>): number | null => selectionPrice(item, selected);
 
+/** [MENU-OPTIONS] The sheet as it opens: the store's pre-selected choices on sale (and those of a follow-up group a
+ *  pre-selected choice opens): the phone's own sheet model, lib/menu-options. */
 function selectedDefaults(groups: OptionGroup[]): Record<string, string[]> {
-  return Object.fromEntries(
-    groups.map((group) => [
-      group.id,
-      group.options
-        .filter((option) => option.isAvailable !== false && option.isDefault)
-        .slice(0, group.maxSelect)
-        .map((option) => option.id),
-    ]),
-  );
+  return defaultSelection(groups);
 }
 
 /** What the person is told when the validator refuses their choices. [STORE-WORDS] `catalogue` is the
@@ -665,10 +666,13 @@ export function StorefrontExperience({ store, returnPath, fromQr = false, initia
   const addLocal = async (item: DisplayItem, quantity: number, selectedOptions: Record<string, string | string[]>) => {
     try {
       const { addGuestLine, clearGuestBasket } = await import('@/lib/basket');
+      // [MENU-OPTIONS] The basket keeps the choices as the API reads them (`id`, `id:left`) and the preview price by
+      // the API's own rules (the size IS the price, a half at the store's half price); the upload re-prices it.
       const unitPrice = selectionPrice(item, Object.fromEntries(Object.entries(selectedOptions).map(([k, v]) => [k, typeof v === 'string' ? [v] : v])));
       if (unitPrice === null) throw new Error('Check the live item price before adding it.');
+      const names = selectionNames(item, selectedOptions);
       const result = addGuestLine({ vendorId: catalog.id, storeSlug: store.slug, vendorName: catalog.name, itemId: item.id,
-        name: item.name, quantity, unitPrice, selectedOptions, fulfillment: item.fulfillment, returnPath });
+        name: item.name, quantity, unitPrice, selectedOptions, ...(names.length ? { selectedOptionNames: names } : {}), fulfillment: item.fulfillment, returnPath });
       if (result === 'DIFFERENT_STORE') {
         if (window.confirm('Your basket is from another store. Replace it with this store’s basket?')) {
           clearGuestBasket(); await addLocal(item, quantity, selectedOptions);
@@ -754,10 +758,9 @@ export function StorefrontExperience({ store, returnPath, fromQr = false, initia
     }
     // Reopen even items without options: resuming sign-in never silently
     // changes a cart, and the customer sees the current server price.
-    const choices = Object.fromEntries((item.optionGroups ?? []).map(group => [group.id,
-      (intent.selectedOptions[group.id] ?? []).filter(id => group.options.some(option => option.id === id && option.isAvailable)).slice(0, group.maxSelect),
-    ]));
-    setSelectedOptions(choices);
+    // [MENU-OPTIONS] Kept choices against today's menu: on sale, a half only where halves are allowed, a follow-up
+    // only while its opener is kept (lib/menu-options restoreSelection).
+    setSelectedOptions(restoreSelection(item.optionGroups ?? [], intent.selectedOptions));
     setItemQuantity(intent.quantity ?? 1);
     setModalError(null);
     setModalItem(item);
@@ -802,23 +805,17 @@ export function StorefrontExperience({ store, returnPath, fromQr = false, initia
     tapItem(item, -1);
   };
 
+  // [MENU-OPTIONS] What a tap does is the phone's own sheet model: a size replaces a size; pick-many stops at the
+  // maximum; unchoosing an opener clears its follow-up group's choices.
   const chooseOption = (group: OptionGroup, optionId: string) => {
     setModalError(null);
-    setSelectedOptions((current) => {
-      const selected = current[group.id] ?? [];
-      if (group.maxSelect <= 1) {
-        const canClear = !group.isRequired && group.minSelect === 0;
-        return {
-          ...current,
-          [group.id]: canClear && selected.includes(optionId) ? [] : [optionId],
-        };
-      }
-      if (selected.includes(optionId)) {
-        return { ...current, [group.id]: selected.filter((id) => id !== optionId) };
-      }
-      if (selected.length >= group.maxSelect) return current;
-      return { ...current, [group.id]: [...selected, optionId] };
-    });
+    const groups = modalItem?.optionGroups ?? [];
+    setSelectedOptions((current) => chooseInSheet(groups, current, group.id, optionId));
+  };
+  const placeTopping = (group: OptionGroup, optionId: string, placement: Placement) => {
+    setModalError(null);
+    const groups = modalItem?.optionGroups ?? [];
+    setSelectedOptions((current) => placeOption(groups, current, group.id, optionId, placement));
   };
 
   const confirmOptions = () => {
@@ -836,7 +833,8 @@ export function StorefrontExperience({ store, returnPath, fromQr = false, initia
       const validated = validateSelectedOptions(liveItem, selectedOptions).selection;
       // The shape the apps send: one id for a pick-one group, a list otherwise.
       selected = Object.fromEntries(Object.entries(validated).map(([groupId, ids]) => {
-        const single = (liveItem.optionGroups?.find(group => group.id === groupId)?.maxSelect ?? 1) <= 1;
+        const group = liveItem.optionGroups?.find(candidate => candidate.id === groupId);
+        const single = group ? singleChoice(group) : true;
         return [groupId, single && Array.isArray(ids) ? ids[0]! : ids];
       }));
     } catch (choiceError) {
@@ -1252,6 +1250,7 @@ export function StorefrontExperience({ store, returnPath, fromQr = false, initia
           vendorType={catalog.vendorType}
           selectedOptions={selectedOptions}
           onChoose={chooseOption}
+          onPlace={placeTopping}
           quantity={itemQuantity}
           onQuantity={setItemQuantity}
           error={modalError}

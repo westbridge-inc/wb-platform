@@ -80,4 +80,14 @@ describe('[Q11] the image build context carries what the site imports', () => {
       expect(code, target).not.toMatch(/\bimport\s*\(|\brequire\s*\(/);
     }
   });
+
+  it('[MENU-OPTIONS] the phone’s item-sheet model the site imports by path imports nothing itself (the image copies exactly that file)', () => {
+    const target = 'apps/mobile/src/lib/menuSheet';
+    expect(importsOutsideTheSite()).toContain(target);
+    const code = readFileSync(join(REPO_ROOT, `${target}.ts`), 'utf8')
+      .replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1');
+    expect(code).not.toMatch(/^\s*import[\s{*'"]/m);
+    expect(code).not.toMatch(/^\s*export\s*(type\s*)?(\*|\{[^}]*\})\s*(as\s+\w+\s*)?from\s*['"]/m);
+    expect(code).not.toMatch(/\bimport\s*\(|\brequire\s*\(/);
+  });
 });
