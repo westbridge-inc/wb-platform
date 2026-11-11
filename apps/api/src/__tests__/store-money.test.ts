@@ -82,15 +82,29 @@ describe('[STORE-MONEY] the store sees its own money', () => {
     expect(swift.swiftPaysYou).toBe(c.sponsorReceivable);
   });
 
-  it('MMG with a Swift-funded delivery discount: the store passes the rider the full fee + tip, so Swift pays the gap', () => {
+  it('[REVIEW-2487 F1] MMG with a Swift-funded DELIVERY discount: never "Swift pays you" — labelled as the sales statement does', () => {
+    // Whether Swift reimburses a store for a Swift-funded delivery promotion is an open owner question: the screen
+    // names the money the way the statement does ("funded by Swift (the rider's)") and promises no payment.
     const m = storeMoney(order({
       paymentMethod: 'MOBILE_MONEY', discount: 500, totalAmount: 4300,
       promoRedemption: { goodsDiscount: 0, deliveryDiscount: 500, funder: 'PLATFORM' },
     }))!;
     expect(m.customerPaysYou).toBe(4300);
-    expect(m.riderFeeAndTip).toBe(800);
-    expect(m.swiftPaysYou).toBe(500);
-    expect(m.customerPaysYou! - m.riderFeeAndTip + m.swiftPaysYou).toBe(m.food);
+    expect(m.riderFeeAndTip).toBe(800); // the delivery-cash-settlement amount, unchanged
+    expect(m.swiftPaysYou).toBe(0);
+    expect(m.lines.join('\n')).not.toMatch(/Swift pays you/);
+    expect(m.lines).toContain("Delivery-fee promotion funded by Swift (the rider's): $500");
+    // A Swift-funded GOODS discount on the same kind of order still reads "Swift pays you" (the statement's "owed to you").
+    const goods = storeMoney(order({ paymentMethod: 'MOBILE_MONEY', discount: 400, totalAmount: 4400, promoRedemption: { goodsDiscount: 400, deliveryDiscount: 0, funder: 'PLATFORM' } }))!;
+    expect(goods.swiftPaysYou).toBe(400);
+  });
+
+  it('[REVIEW-2487 F2] a card order (cards are not live) never says the customer pays the store directly', () => {
+    const m = storeMoney(order({ paymentMethod: 'CARD' }))!;
+    expect(m.payment).toBe('OTHER');
+    expect(m.customerPaysYou).toBeNull();
+    expect(m.lines.join('\n')).not.toMatch(/pays you|directly/);
+    expect(m.lines).toEqual(["Customer pays $4,800 — $800 of it is the rider's"]);
   });
 
   it('names only what the order carries, and the goods by the store\'s kind', () => {

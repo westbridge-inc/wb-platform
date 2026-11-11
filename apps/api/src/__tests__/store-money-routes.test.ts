@@ -160,6 +160,8 @@ describe('[STORE-MONEY] the store\'s new-order push never shows the rider\'s tip
     for (const call of calls) {
       expect(call).not.toContain('totalAmount');
       expect(call).toContain('loadStoreMoney(this.prisma, order.id)');
+      // [REVIEW-2487 F4] A failed store-money read never skips the ring push: it falls back to the goods amount.
+      expect(call).toContain('loadStoreMoney(this.prisma, order.id).catch(() => null)) ?? Number(order.subtotalCustomer)');
     }
   });
 });

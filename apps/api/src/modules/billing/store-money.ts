@@ -128,14 +128,23 @@ export function storeMoney(order: StoreMoneyOrder): StoreMoney | null {
     if (payment === 'CASH') {
       if (riderFeeAndTip > 0) lines.push(`Rider's ${feeTipWords(fee, tip)}: ${amt(riderFeeAndTip)} (not yours)`);
     } else {
-      // The customer pays the store the whole total; the store pays the rider's part on. A Swift-funded delivery
-      // discount lowered what the customer paid but not what the rider is owed: Swift pays the store that gap.
-      customerPaysYou = round2(total);
-      swiftPaysYou = round2(swiftPaysYou + c.feeFunding);
-      const how = payment === 'MMG' ? 'by MMG' : 'directly';
-      lines.push(riderFeeAndTip > 0
-        ? `Customer pays you ${amt(customerPaysYou)} ${how} — ${amt(riderFeeAndTip)} of it is the rider's, pay it at pickup`
-        : `Customer pays you ${amt(customerPaysYou)} ${how}`);
+      if (payment === 'MMG') {
+        // The customer pays the store the whole total by MMG; the store pays the rider's part on (the settlement).
+        customerPaysYou = round2(total);
+        lines.push(riderFeeAndTip > 0
+          ? `Customer pays you ${amt(customerPaysYou)} by MMG — ${amt(riderFeeAndTip)} of it is the rider's, pay it at pickup`
+          : `Customer pays you ${amt(customerPaysYou)} by MMG`);
+      } else {
+        // [REVIEW-2487 F2] Any other method (a card: not live) — where its money lands is not settled yet, so the words
+        // say only what the customer pays and whose part of it is the rider's, never "pays you directly".
+        lines.push(riderFeeAndTip > 0
+          ? `Customer pays ${amt(total)} — ${amt(riderFeeAndTip)} of it is the rider's`
+          : `Customer pays ${amt(total)}`);
+      }
+      // [REVIEW-2487 F1] A Swift-funded DELIVERY discount lowered what the customer paid, not what the rider is owed.
+      // The sales statement names it "funded by Swift (the rider's)"; whether Swift reimburses the store for it is an
+      // open owner question — so it is named the same way here and never promised as "Swift pays you".
+      if (c.feeFunding > 0) lines.push(`Delivery-fee promotion funded by Swift (the rider's): ${amt(round2(c.feeFunding))}`);
     }
   } else if (delivery === 'STORE_RIDER' || delivery === 'APPOINTMENT') {
     yoursFeeAndTip = round2(Math.max(0, fee - c.feeFunding) + tip);

@@ -2241,8 +2241,8 @@ export class OrderService {
               vendorOwner.userId,
               order.orderNumber,
               order.items.length,
-              // [STORE-MONEY] The store's goods money, never the customer's total (rider's fee + tip).
-              (await loadStoreMoney(this.prisma, order.id)) ?? Number(order.subtotalCustomer),
+              // [STORE-MONEY] The store's goods money, never the customer's total (rider's fee + tip). A failed read falls back to the goods [REVIEW-2487 F4].
+              (await loadStoreMoney(this.prisma, order.id).catch(() => null)) ?? Number(order.subtotalCustomer),
               order.id,
               // [Q10] The same cut-off the auto-cancel row above was armed with.
               vendorRespondBy(order, { slaMinutes: queueTiming.vendorResponseSlaMinutes, holdMs: holdWindowMs() ?? 0 }),
@@ -3436,8 +3436,8 @@ export class OrderService {
               vendorOwner.userId,
               order.orderNumber,
               order.items.length,
-              // [STORE-MONEY] The store's goods money, never the customer's total (rider's fee + tip).
-              (await loadStoreMoney(this.prisma, order.id)) ?? Number(order.subtotalCustomer),
+              // [STORE-MONEY] The store's goods money, never the customer's total (rider's fee + tip). A failed read falls back to the goods [REVIEW-2487 F4].
+              (await loadStoreMoney(this.prisma, order.id).catch(() => null)) ?? Number(order.subtotalCustomer),
               order.id,
               vendorRespondBy(order, { slaMinutes, holdMs: holdWindowMs() ?? 0 }),
             );
