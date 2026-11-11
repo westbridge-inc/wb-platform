@@ -77,12 +77,13 @@ function canonicalChoice(id: string, placement: Placement | null): string {
 }
 
 /** [MENU-OPTIONS] A choice's price on one half: the store's percent of its price, half-up to the whole dollar.
- *  100% is the price itself, unrounded. Exact integer arithmetic (cents as BigInt). */
+ *  100% is the price itself, unrounded. Exact integer arithmetic on whole cents (the web build targets below ES2020). */
 export function halfPrice(price: number, percent: number): number {
   const pct = Number.isInteger(percent) && percent >= 1 && percent <= 100 ? percent : 100;
   if (pct === 100) return price;
-  const cents = BigInt(Math.round(price * 100));
-  return Number((cents * BigInt(pct) + 5000n) / 10000n);
+  // Whole cents times a whole percent stays far inside the exact integer range (prices are at most 10,000,000).
+  const cents = Math.round(price * 100);
+  return Math.floor((cents * pct + 5000) / 10000);
 }
 
 const byMenuOrder = <T extends { sortOrder?: number | null; id?: string }>(a: T, b: T) =>
