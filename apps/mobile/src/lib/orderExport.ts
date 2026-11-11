@@ -75,3 +75,11 @@ export function orderExportShareable(csv: string): boolean {
 export function orderExportAllLabel(scope: 'owner' | 'manager' | undefined): string {
   return scope === 'manager' ? 'All branches you manage' : 'All branches';
 }
+
+/** [REVIEW-2485-DELTA S4-4] The store "This store" exports: the selected one when this login may export it, else the
+ *  first branch it may (a store where it is only staff would be refused), as the website does. */
+export function orderExportStore(selected: string | null, branches: ReadonlyArray<{ id: string }> | undefined): string | null {
+  if (!branches) return selected;
+  if (selected && branches.some((b) => b.id === selected)) return selected;
+  return branches[0]?.id ?? null;
+}

@@ -13,7 +13,7 @@ import { errorMessage } from '../../../lib/apiError';
 import { StandingCard } from '../../../components/StandingCard';
 import { API_URL, vendorApi } from '../../../services/api';
 import { openPayLink } from '../../../lib/payLink';
-import { ORDER_EXPORT_RANGES, ORDER_EXPORT_TOO_LARGE, orderExportAllLabel, orderExportDays, orderExportRefusal, orderExportShareable, orderExportTitle, type OrderExportRange } from '../../../lib/orderExport';
+import { ORDER_EXPORT_RANGES, ORDER_EXPORT_TOO_LARGE, orderExportAllLabel, orderExportDays, orderExportRefusal, orderExportShareable, orderExportStore, orderExportTitle, type OrderExportRange } from '../../../lib/orderExport';
 import {
   useMyStoreReviews,
   useRespondReview,
@@ -702,7 +702,7 @@ function OrderExportCard() {
   const [tooLarge, setTooLarge] = useState(false);
   const selectedStoreId = useStoreSwitcher((state) => state.selectedStoreId);
   const exportable = useOrderExportBranches();
-  const storeId = selectedStoreId ?? exportable.data?.branches?.[0]?.id ?? null;
+  const storeId = orderExportStore(selectedStoreId, exportable.data?.branches);
   const several = (exportable.data?.branches?.length ?? 0) > 1;
   const exportOrders = useVendorMutation({
     mutationFn: async () => {

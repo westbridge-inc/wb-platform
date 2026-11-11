@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { ORDER_EXPORT_PHONE_MAX_CHARS, ORDER_EXPORT_TOO_LARGE, guyanaDay, orderExportAllLabel, orderExportDays, orderExportRefusal, orderExportShareable, orderExportTitle } from './orderExport';
+import { ORDER_EXPORT_PHONE_MAX_CHARS, ORDER_EXPORT_TOO_LARGE, guyanaDay, orderExportStore, orderExportAllLabel, orderExportDays, orderExportRefusal, orderExportShareable, orderExportTitle } from './orderExport';
 
 // [ORDER-EXPORT] The phone's export presets are Guyana days, end today, and never exceed the server's 366 days.
 const span = (d: { from: string; to: string }) => (Date.parse(`${d.to}T00:00:00Z`) - Date.parse(`${d.from}T00:00:00Z`)) / 864e5 + 1;
@@ -56,5 +56,19 @@ describe('[REVIEW-2485-B S2-2] the phone share size guard', () => {
   it('a manager is offered the branches they manage, an owner all branches', () => {
     expect(orderExportAllLabel('manager')).toBe('All branches you manage');
     expect(orderExportAllLabel('owner')).toBe('All branches');
+  });
+});
+
+describe('[REVIEW-2485-DELTA S4-4] which store "This store" exports', () => {
+  const branches = [{ id: 'north' }, { id: 'camp' }];
+  it('the selected store when this login may export it', () => {
+    expect(orderExportStore('camp', branches)).toBe('camp');
+  });
+  it('a store where this login is only staff falls back to a managed branch (as the website does)', () => {
+    expect(orderExportStore('east', branches)).toBe('north');
+  });
+  it('before the list arrives, the selected store; nothing at all, nothing', () => {
+    expect(orderExportStore('east', undefined)).toBe('east');
+    expect(orderExportStore(null, [])).toBeNull();
   });
 });
