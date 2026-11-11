@@ -250,7 +250,10 @@ export default function VendorDetailPage({ params }: { params: Promise<{ id: str
   // certificate, and only while the seller is not named another way (an own-name trader, a legal name typed from the
   // paper, a name already confirmed): then nothing is asked and nothing is stamped.
   const seller = sellerNameOf(v);
-  const asksCertificate = seller?.basis === 'AWAITING_PERSON';
+  // [COORD Option A · final review S3-1] A store trading under its owner's own name is never offered a seller-name
+  // confirmation: the server refuses it (the name is a person's, shown only through the live own-name declaration).
+  const confirmableSeller = seller?.basis === 'AWAITING_PERSON' && v.tradesUnderOwnName !== true;
+  const asksCertificate = confirmableSeller;
   const activate = async () => show(await dialog.run({
     title: `Activate ${v.name} now?`,
     body: (
@@ -715,7 +718,7 @@ export default function VendorDetailPage({ params }: { params: Promise<{ id: str
               <Row label="Registration">{v.tradesUnderOwnName === true ? 'Owner’s own name (no business name registration)' : v.tradesUnderOwnName === false ? 'Business registration (business name or company)' : null}</Row>
               <Row label="Seller name customers see">
                 {sellerNameLine(seller)}
-                {seller?.basis === 'AWAITING_PERSON' ? <>{' '}<button type="button" className="mc-btn" onClick={() => void confirmSeller()}>Confirm seller name…</button></> : null}
+                {confirmableSeller ? <>{' '}<button type="button" className="mc-btn" onClick={() => void confirmSeller()}>Confirm seller name…</button></> : null}
               </Row>
               <Row label="Menu items"><span className="mc-numbers">{v._count?.items ?? 0}</span></Row>
               <Row label="Lifetime orders"><span className="mc-numbers">{v._count?.orders ?? 0}</span></Row>

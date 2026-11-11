@@ -24,7 +24,7 @@ import { Prisma, type VehicleType, UserRole, UserStatus, VendorStatus, VendorTyp
 import { idsByLiveDocuments, LIVE_DOCUMENTS_FILTER_CAP, withLiveDocuments } from './live-documents';
 import { NotificationService } from '../notification/notification.service';
 import { SupportService } from '../support/support.service';
-import { VerificationService, REJECTION_REASON_CODES, isAccountPersonsName, type StoreActivation } from '../verification/verification.service';
+import { VerificationService, REJECTION_REASON_CODES, approvalSellerNameTrail, isAccountPersonsName, type StoreActivation } from '../verification/verification.service';
 import { AdvertiserService } from '../ads/advertiser.service';
 import { CreativeService, CREATIVE_REJECT_REASONS, looksLikeMp4 } from '../ads/creative.service';
 import { AdsLifecycleService } from '../ads/lifecycle.service';
@@ -2086,7 +2086,7 @@ export async function adminRoutes(app: FastifyInstance) {
       // trail and the answer say so, and the console shows why.
       const activation = await verification.activateStore(goLive.ownerUserId, id, (tx, decided) => auditWithin(tx, request as unknown as AuditRequestLike, app.prefix, {
         extra: { previousStatus: vendor.status, previousSuspensionSource: vendor.suspensionSource, verdict: next,
-          sellerNameConfirmed: decided.sellerNameNotConfirmed ? null : shownName ?? null, sellerNameNotConfirmed: decided.sellerNameNotConfirmed?.code ?? null },
+          ...approvalSellerNameTrail(shownName, decided) },
       }), shownName !== undefined ? { by: request.user.userId, name: shownName } : undefined);
       sellerNameNotConfirmed = activation.sellerNameNotConfirmed;
       updated = await app.prisma.vendor.findUniqueOrThrow({ where: { id } });
@@ -2303,7 +2303,7 @@ export async function adminRoutes(app: FastifyInstance) {
     const confirmed = await app.prisma.$transaction(async (tx) => {
       await bindTenantTransaction(tx);
       await tx.$queryRaw`SELECT "id" FROM "vendors" WHERE "id" = ${id} FOR UPDATE /* admin-seller-name-check */`;
-      const vendor = await tx.vendor.findUnique({ where: { id }, select: { name: true, sellerNameCheckedName: true, owner: { select: { userId: true } } } });
+      const vendor = await tx.vendor.findUnique({ where: { id }, select: { name: true, sellerNameCheckedName: true, tradesUnderOwnName: true, owner: { select: { userId: true } } } });
       if (!vendor) throw new NotFoundError('Vendor', id);
       if (vendor.name.trim() !== name) {
         throw new AppError(409, 'SELLER_NAME_CHANGED', `The store's name is now “${vendor.name.trim()}”. Check that name, then confirm again.`);
@@ -2312,6 +2312,12 @@ export async function adminRoutes(app: FastifyInstance) {
       // name (the account holder's, or someone named in its letter of authority) is never stamped as a business's name,
       // for an own-name trader too. A trader under their own name is named only through their live own-name declaration
       // (the storefront's own-name basis), so the name goes when the declaration does; a stamp would outlive it.
+      // [final review S3-1] So a store trading under its owner's own name is refused whatever its name (as approval
+      // never stamps one): its name is the owner's, even where the full-name matcher would not see it (a bare surname).
+      if (vendor.tradesUnderOwnName) {
+        throw new AppError(400, 'SELLER_NAME_IS_A_PERSON',
+          'This store trades under its owner’s own name: a person’s name, shown to customers only through the owner’s approved own-name declaration, never confirmed as a business’s name.');
+      }
       if (await isAccountPersonsName(tx, vendor.owner.userId, name)) {
         throw new AppError(400, 'SELLER_NAME_IS_A_PERSON',
           'That is a person’s name (the account holder’s, or the person named in its letter of authority), not a business’s. A trader under their own name is named through the own-name declaration; otherwise the store needs its registered business or company name.');

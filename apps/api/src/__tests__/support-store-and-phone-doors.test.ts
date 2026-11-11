@@ -284,6 +284,41 @@ describe('[R3] a person confirms the seller name', () => {
     expect(await checked(store.id)).toMatchObject({ sellerNameCheckedName: null });
   });
 
+  // [final review S3-1] A bare surname is a valid own-name store name (the own-name rule accepts it) and the full-name
+  // matcher did not count it as a person's name: a flagged store whose declaration lapsed could still be confirmed by it.
+  // Every store with the own-name flag is refused here (as approval never stamps one), and the own-name rule's names
+  // count as the holder's name for every store.
+  it('[review-2479 S3-1] a flagged store named by the bare surname, its declaration revoked, is refused and nothing is stamped', async () => {
+    const owner = await makeUser('Surname');
+    const store = await makeStore(owner.id, { status: 'ACTIVE', isVerified: true, name: owner.lastName, tradesUnderOwnName: true });
+    const doc = await declaration(owner.id, 'APPROVED');
+    await app.prisma.verificationDocument.update({ where: { id: doc.id }, data: { state: 'REVOKED' } });
+    const res = await call('PUT', `/api/v1/admin/vendors/${store.id}/seller-name`, { name: store.name });
+    expect(res.statusCode, res.body).toBe(400);
+    expect(res.json().error.code).toBe('SELLER_NAME_IS_A_PERSON');
+    expect(await checked(store.id)).toMatchObject({ sellerNameCheckedName: null, sellerNameCheckedAt: null, sellerNameCheckedById: null });
+  });
+
+  it('[review-2479 S3-1] any flagged store is refused, whatever its name', async () => {
+    const owner = await makeUser('Anyname');
+    const store = await makeStore(owner.id, { status: 'ACTIVE', isVerified: true, tradesUnderOwnName: true });
+    const res = await call('PUT', `/api/v1/admin/vendors/${store.id}/seller-name`, { name: store.name });
+    expect(res.statusCode, res.body).toBe(400);
+    expect(res.json().error.code).toBe('SELLER_NAME_IS_A_PERSON');
+    expect((await checked(store.id)).sellerNameCheckedName).toBeNull();
+  });
+
+  it('[review-2479 S3-1] an unflagged store named by the bare surname (or a hyphenated surname) is refused too', async () => {
+    for (const lastName of ['Surnameonly', 'Persaud-Singh']) {
+      const owner = await makeUser('Plain');
+      await app.prisma.user.update({ where: { id: owner.id }, data: { lastName: `${lastName}${seq}` } });
+      const store = await makeStore(owner.id, { status: 'ACTIVE', isVerified: true, name: `${lastName}${seq}` });
+      const res = await call('PUT', `/api/v1/admin/vendors/${store.id}/seller-name`, { name: store.name });
+      expect(res.statusCode, `${lastName}: ${res.body}`).toBe(400);
+      expect(res.json().error.code).toBe('SELLER_NAME_IS_A_PERSON');
+    }
+  });
+
   it('[review-2479 F6] an approved declaration that no longer counts (revoked) lets nothing through', async () => {
     const owner = await makeUser('Revoked');
     const store = await makeStore(owner.id, { status: 'ACTIVE', isVerified: true, name: `Revoked ${owner.lastName}`, tradesUnderOwnName: true });

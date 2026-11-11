@@ -20,7 +20,7 @@ import { socketPlugin } from '../plugins/socket';
 import { registerErrorHandler } from '../middleware/error-handler';
 import { customerRoutes } from '../modules/user/customer.routes';
 import { runWithTenant, runWithoutTenant } from '../plugins/tenant-context';
-import { VerificationService } from '../modules/verification/verification.service';
+import { VerificationService, approvalSellerNameTrail, SELLER_NAME_IS_A_PERSON_NOTICE } from '../modules/verification/verification.service';
 import { NotificationService } from '../modules/notification/notification.service';
 import { SandboxKycProvider } from '../providers/kyc/kyc-provider';
 import { seedDocRegistry, registryCode } from '../modules/verification/doc-registry';
@@ -384,6 +384,8 @@ describe('[R3 · review F1] the legal name typed from the registration paper', (
     await setStore(vendorId, { name: 'Priya Persaud16' });
     const answer = await approveWithName(userId, vendorId, 'Priya Persaud16');
     expect(await stampOf(vendorId)).toEqual({ status: 'ACTIVE', sellerNameCheckedName: null });
+    // [final review S3-2] the trail is told nothing was stamped
+    expect(answer?.sellerNameStamped).toBe(false);
     expect(answer?.sellerNameNotConfirmed).toMatchObject({ code: 'SELLER_NAME_IS_A_PERSON', message: expect.stringContaining('Ask the store') });
     expect(answer?.sellerNameNotConfirmed?.message).not.toMatch(/Priya|Persaud/);
     expect((await system(() => sellerNameViews(app.prisma, [vendorId]))).get(vendorId)?.basis).toBe('AWAITING_PERSON');
@@ -395,6 +397,25 @@ describe('[R3 · review F1] the legal name typed from the registration paper', (
     const answer = await approveWithName(userId, vendorId, `Sample Snackette ${RUN}17`);
     expect(await stampOf(vendorId)).toEqual({ status: 'ACTIVE', sellerNameCheckedName: `Sample Snackette ${RUN}17` });
     expect(answer?.sellerNameNotConfirmed).toBeNull();
+    expect(answer?.sellerNameStamped).toBe(true);
+  });
+
+  it('[review-2479 S3-2] the approval\'s audit row says a name was confirmed only when it was stamped', () => {
+    expect(approvalSellerNameTrail('Shown Name', { sellerNameStamped: true, sellerNameNotConfirmed: null })).toEqual({ sellerNameConfirmed: 'Shown Name', sellerNameNotConfirmed: null });
+    // an own-name store: nothing stamped, no person's-name notice
+    expect(approvalSellerNameTrail('P. Persaud', { sellerNameStamped: false, sellerNameNotConfirmed: null })).toEqual({ sellerNameConfirmed: null, sellerNameNotConfirmed: 'OWN_NAME_STORE' });
+    expect(approvalSellerNameTrail('Priya Persaud', { sellerNameStamped: false, sellerNameNotConfirmed: SELLER_NAME_IS_A_PERSON_NOTICE })).toEqual({ sellerNameConfirmed: null, sellerNameNotConfirmed: 'SELLER_NAME_IS_A_PERSON' });
+    // no name sent: nothing to confirm
+    expect(approvalSellerNameTrail(undefined, { sellerNameStamped: false, sellerNameNotConfirmed: null })).toEqual({ sellerNameConfirmed: null, sellerNameNotConfirmed: null });
+  });
+
+  // [final review S3-1 (b)] A bare surname is a name the own-name rule accepts for the holder: a person's name.
+  it('[review-2479 S3-1] approving a store named by the owner\'s bare surname goes live but stamps nothing, and says why', async () => {
+    const { userId, vendorId } = await store(18);
+    await setStore(vendorId, { name: 'Persaud18' });
+    const answer = await approveWithName(userId, vendorId, 'Persaud18');
+    expect(await stampOf(vendorId)).toEqual({ status: 'ACTIVE', sellerNameCheckedName: null });
+    expect(answer).toMatchObject({ sellerNameStamped: false, sellerNameNotConfirmed: { code: 'SELLER_NAME_IS_A_PERSON' } });
   });
 
   it('[review F6] a person approving an own-name trader\'s store stamps no store-name confirmation, whatever name is sent', async () => {
@@ -404,7 +425,11 @@ describe('[R3 · review F1] the legal name typed from the registration paper', (
     // every paper this own-name store's own checklist asks for
     const checklist = await system(() => service.activationChecklist(userId, 'RESTAURANT', { vendorId }));
     for (const item of checklist.items) await approved(userId, item.docType);
-    const answer = await system(() => service.activateStore(userId, vendorId, undefined, { by: 'approver-test', name: 'P. Persaud13' }));
+    // [final review S3-2] what the approval's audit row is handed: nothing was stamped
+    let audited: unknown;
+    const answer = await system(() => service.activateStore(userId, vendorId, async (_tx, decided) => { audited = decided; }, { by: 'approver-test', name: 'P. Persaud13' }));
+    expect(audited).toMatchObject({ sellerNameStamped: false });
+    expect(answer?.sellerNameStamped).toBe(false);
     expect(await system(() => app.prisma.vendor.findUniqueOrThrow({ where: { id: vendorId }, select: { status: true, sellerNameCheckedName: true } })))
       .toEqual({ status: 'ACTIVE', sellerNameCheckedName: null });
     // [review-2479] named by its approved declaration: no person's-name notice either

@@ -11,6 +11,7 @@ import { approveRegistrantLink, linkedAccountIds, normalizeRegistrationMark, pla
 import { POLICE_CLEARANCE_WITHDRAWN_NOTE } from './police-clearance-consent';
 import { ACCOUNT_HOLDER_ID_DOC_TYPE, AUTO_APPROVE_EXPIRY_DAYS, CERTIFICATE_OF_INCORPORATION_DOC_TYPE, BUCKET_OF, CERTIFICATE_YEAR_DOC_TYPES, FOOD_HANDLER_ATTESTATION_TYPE, isNeverAcceptedDocType, OWN_NAME_DOC_TYPE, OWN_NAME_TIER, PERSON_ONLY_DOC_TYPES, POLICE_CLEARANCE_DOC_TYPE, REGISTRATION_DOC_TYPES, registryCode, type RegistrationKind } from './doc-registry';
 import { accountTierOf } from '../vendor/account-basis';
+import { storeNameIsOwnName } from '../vendor/own-name';
 import { AUTHORITY_LETTER_DOC_TYPES, authorityConfirmationNote, type AuthorityConfirmation } from './authority-confirmation';
 import { guyanaWallClockParts, startOfGuyanaDay } from '../../utils/guyana-day';
 import type { ValidatorContext } from './validators';
@@ -549,10 +550,9 @@ export interface DecisionFacts {
  *  whole last name; or when it is their first and last names run together. A business word ("Holdings", "Trading",
  *  "Bakery") or an unknown name makes it not theirs. Lookalike letters from other scripts are not folded (an insider's
  *  trick, and every typed name is on the audit trail).
- *  [review-2479] A title ("Mr", "Dr.") and a generational suffix ("Jr.", "III") are ignored on both sides; an initial
- *  stands only for a first or middle name; and a recorded name with a company word ("Limited", "Inc.", "& Co") is a
- *  company's, never a person's (a letter's signer field is free text, and a company's name typed there by mistake must
- *  never block that company's own legal name). */
+ *  [review-2479] A title ("Mr", "Dr.") and a generational suffix ("Jr.", "III") are ignored on both sides, and an
+ *  initial stands only for a first or middle name. (A letter's free-text signer field holding a company's name is no
+ *  person: signerAsPerson. An account holder's own recorded name is always a person's, "Kim Co" included.) */
 const NAME_JOINERS = /['\u2018\u2019\u02BC`\u00B4\u2010-\u2015-]/gu;
 const foldName = (s: string) => s.normalize('NFKD').replace(/\p{M}+/gu, '').toLowerCase();
 /** Words around a name that are not the name: titles and generational suffixes (compared without their full stops). */
@@ -574,7 +574,6 @@ export function isPersonsFullName(typed: string, person: { firstName: string | n
   const first = recordedName(person.firstName);
   const last = recordedName(person.lastName);
   if (!first.whole && !last.whole) return false;
-  if ([...first.parts, ...last.parts].some((p) => COMPANY_WORDS.has(p))) return false;
   const words = typedNameWords(typed);
   if (words.length === 0) return false;
   const together = words.join('');
@@ -584,6 +583,12 @@ export function isPersonsFullName(typed: string, person: { firstName: string | n
   const namesFirst = !first.whole || words.some((w) => first.known.has(w) || (w.length === 1 && first.parts.some((p) => p[0] === w)));
   const namesLast = !last.whole || together.includes(last.whole);
   return namesFirst && namesLast;
+}
+/** [review-2479 F1 · final review S4-1] A letter's signer, typed as free text by the account holder, as a person; or
+ *  null when the field holds a company's name (a word only a company's name carries): a company's name typed there by
+ *  mistake must never block that company's own legal name. For signers only, never the account holder's own name. */
+export function signerAsPerson(signerName: string): { firstName: string; lastName: string } | null {
+  return foldName(signerName).split(/[^\p{L}\p{N}]+/u).some((w) => COMPANY_WORDS.has(w)) ? null : splitFullName(signerName);
 }
 /** A full name kept as one string (a letter's signer): its last word is taken as the last name, never a generational
  *  suffix after it ("John Smith Jr." is Smith). */
@@ -604,12 +609,27 @@ export async function isAccountPersonsName(
     db.user.findUnique({ where: { id: userId }, select: { firstName: true, lastName: true } }),
     db.authorityLetterRequest.findMany({ where: { userId }, select: { signerName: true } }),
   ]);
-  const people = [...(holder ? [holder] : []), ...letters.map((l) => splitFullName(l.signerName))];
+  // [final review S3-1] A name the own-name rule accepts for the holder (a bare or hyphenated surname, with or without
+  // first names or initials) is their name too, at every door.
+  if (holder && storeNameIsOwnName(name, holder.firstName ?? '', holder.lastName ?? '')) return true;
+  const people = [...(holder ? [holder] : []), ...letters.flatMap((l) => signerAsPerson(l.signerName) ?? [])];
   return people.some((person) => isPersonsFullName(name, person));
 }
 
 /** [COORD ruling 11 Nov 2026 · review-2479] What a store's activation decided about the name the person approving sent. */
-export interface StoreActivation { sellerNameNotConfirmed: { code: 'SELLER_NAME_IS_A_PERSON'; message: string } | null }
+export interface StoreActivation {
+  /** [final review S3-2] A seller-name confirmation was written by this activation. */
+  sellerNameStamped: boolean;
+  sellerNameNotConfirmed: { code: 'SELLER_NAME_IS_A_PERSON'; message: string } | null;
+}
+/** [final review S3-2] What the approval's audit row says of the name the approving person sent: confirmed only when it
+ *  was stamped; otherwise why not (a person's name, or a store trading under its owner's own name, which approval never
+ *  stamps). */
+export function approvalSellerNameTrail(shownName: string | undefined, decided: StoreActivation): { sellerNameConfirmed: string | null; sellerNameNotConfirmed: string | null } {
+  if (shownName === undefined) return { sellerNameConfirmed: null, sellerNameNotConfirmed: null };
+  if (decided.sellerNameStamped) return { sellerNameConfirmed: shownName, sellerNameNotConfirmed: null };
+  return { sellerNameConfirmed: null, sellerNameNotConfirmed: decided.sellerNameNotConfirmed?.code ?? 'OWN_NAME_STORE' };
+}
 /** The words never repeat the name: it is a person's. */
 export const SELLER_NAME_IS_A_PERSON_NOTICE = {
   code: 'SELLER_NAME_IS_A_PERSON',
@@ -2786,9 +2806,9 @@ export class VerificationService {
     userId: string, vendorId: string, onActivated?: (tx: Prisma.TransactionClient, decided: StoreActivation) => Promise<void>,
     sellerName?: { by: string; name: string },
   ): Promise<StoreActivation> {
-    let decided: StoreActivation = { sellerNameNotConfirmed: null };
+    let decided: StoreActivation = { sellerNameStamped: false, sellerNameNotConfirmed: null };
     await this.projectionTransaction(async (tx) => {
-      decided = { sellerNameNotConfirmed: null };
+      decided = { sellerNameStamped: false, sellerNameNotConfirmed: null };
       await tx.$queryRaw`SELECT "id" FROM "users" WHERE "id" = ${userId} FOR NO KEY UPDATE`;
       await tx.$queryRaw`SELECT "id" FROM "vendors" WHERE "id" = ${vendorId} FOR UPDATE`;
       const held = await tx.vendor.findUniqueOrThrow({ where: { id: vendorId }, select: { name: true, tradesUnderOwnName: true, subscription: { select: { id: true } } } });
@@ -2809,8 +2829,11 @@ export class VerificationService {
         // [COORD ruling 11 Nov 2026 · review-2479] A person's own name (the account holder's, or someone named in its
         // letter of authority) is never confirmed as the business's: the store still goes live (a name never blocks an
         // approval), nothing is stamped, the storefront names nobody, and the answer tells the person why.
-        if (await isAccountPersonsName(tx, userId, held.name.trim())) decided = { sellerNameNotConfirmed: SELLER_NAME_IS_A_PERSON_NOTICE };
-        else await tx.vendor.update({ where: { id: vendorId }, data: { sellerNameCheckedName: held.name.trim(), sellerNameCheckedAt: new Date(), sellerNameCheckedById: sellerName.by } });
+        if (await isAccountPersonsName(tx, userId, held.name.trim())) decided = { sellerNameStamped: false, sellerNameNotConfirmed: SELLER_NAME_IS_A_PERSON_NOTICE };
+        else {
+          await tx.vendor.update({ where: { id: vendorId }, data: { sellerNameCheckedName: held.name.trim(), sellerNameCheckedAt: new Date(), sellerNameCheckedById: sellerName.by } });
+          decided = { sellerNameStamped: true, sellerNameNotConfirmed: null };
+        }
       }
       // A person is approving this store now (the admin button): a branch waiting for a person goes through.
       await this.projectVendorActivation(tx, userId, { vendorId, personApproved: true });

@@ -42,7 +42,7 @@ import { registerErrorHandler } from '../middleware/error-handler';
 import { registerEmptyJsonBodyParser } from '../plugins/empty-json';
 import { adminRoutes } from '../modules/admin/admin.routes';
 import { clusterMemberIds } from '../modules/integrity/identity.service';
-import { isPersonsFullName, splitFullName } from '../modules/verification/verification.service';
+import { isPersonsFullName, signerAsPerson, splitFullName } from '../modules/verification/verification.service';
 
 const RUN = nanoid(8).replace(/[^a-zA-Z0-9]/g, '0');
 const NUM = String(Date.now()).slice(-5);
@@ -403,9 +403,15 @@ describe('[R3 · review-2476] the seller legal name typed at approval', () => {
     expect(await sellerOf(who)).toMatchObject({ sellerLegalName: companyName, sellerLegalNameDocId: doc.id });
   });
 
-  it('[review-2479 F1] a recorded name with a company word is never a person\'s name', () => {
+  // [review-2479 F1 · final review S4-1] The company-word rule is for a letter's free-text signer field only: a signer
+  // field holding a company's name is no person. An account holder's own recorded name (checked by a person against an
+  // ID) is never exempt: "Kim Co" is a person.
+  it('[review-2479 F1 · S4-1] a letter signer field with a company word is never a person; the holder\'s own name always is', () => {
     for (const name of ['Sample Holdings Limited', 'Sample Holdings Inc.', 'Persaud Trading Ltd', 'Persaud & Co', 'Persaud Company', 'Persaud Corp', 'Persaud Corporation', 'Persaud LLC', 'Persaud Incorporated'])
-      expect(isPersonsFullName(name, splitFullName(name)), name).toBe(false);
+      expect(signerAsPerson(name), name).toBeNull();
+    expect(signerAsPerson('John Smith Jr.')).toEqual({ firstName: 'John', lastName: 'Smith' });
+    expect(isPersonsFullName('Kim Co', { firstName: 'Kim', lastName: 'Co' })).toBe(true);
+    expect(isPersonsFullName('Co, Kim', { firstName: 'Kim', lastName: 'Co' })).toBe(true);
   });
 
   it('[review-2479 F2] initials stand for first and middle names only, never a part of the last name', () => {
