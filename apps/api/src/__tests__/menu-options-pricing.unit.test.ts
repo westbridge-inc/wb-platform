@@ -229,7 +229,7 @@ describe('[MENU-OPTIONS] the item rules the store tools are held to', () => {
     id, name: id, isRequired: false, minSelect: 0, maxSelect: 1, setsPrice: false, allowHalves: false, halfPricePercent: 100, options: [], ...extra,
   });
   it('accepts the pizza', () => {
-    expect(itemOptionRulesProblem(pizza().optionGroups.map((x) => ({ ...x, options: x.options.map((o) => ({ id: o.id, name: o.name, followUpGroupId: o.followUpGroupId })) })))).toBeNull();
+    expect(itemOptionRulesProblem(pizza().optionGroups.map((x) => ({ ...x, options: x.options.map((o) => ({ id: o.id, name: o.name, followUpGroupId: o.followUpGroupId ?? null })) })))).toBeNull();
   });
   it('refuses two price-setting groups, a size that is not pick-one, a half-and-half size', () => {
     expect(itemOptionRulesProblem([g('a', { setsPrice: true, isRequired: true }), g('b', { setsPrice: true, isRequired: true })])).toMatch(/only one group that sets the price/);

@@ -65,6 +65,9 @@ export const ORDER_EXPORT_COLUMNS = [
   'delivery_fee', 'service_fee', 'tip', 'tax', 'vat_included', 'total',
   'store_goods_net', 'store_delivery_fee_and_tip', 'rider_delivery_fee_and_tip',
   'cancelled_by', 'cancellation_reason', 'refund_owed', 'refund_paid', 'refund_note',
+  // [MENU-OPTIONS · owner 11 Nov 2026] What was ordered, with each line's choices (last, so every earlier column keeps
+  // its place in a store's existing spreadsheet).
+  'items',
 ] as const;
 
 export interface OrderExportPeriod { fromDay: string; toDay: string; from: Date; to: Date; days: number }
@@ -243,7 +246,7 @@ async function pageLines(db: Db, page: ExportOrder[], stores: Map<string, { name
   const ids = page.map((o) => o.id);
   const closedWithoutStamp = page.filter((o) => o.status === 'COMPLETED' && !o.deliveredAt).map((o) => o.id);
   const cancelled = page.filter((o) => o.status === 'CANCELLED');
-  const [counts, finished, mmgRefunds, people] = await Promise.all([
+  const [counts, finished, mmgRefunds, people, lines] = await Promise.all([
     // [REVIEW-2485-B S4-1] A line removed or declined at substitution was never charged (receipt.ts): not counted.
     db.orderItem.groupBy({ by: ['orderId'], where: { orderId: { in: ids }, subStatus: { notIn: ['REFUNDED', 'REJECTED'] } }, _sum: { quantity: true } }),
     closedWithoutStamp.length > 0
@@ -254,7 +257,21 @@ async function pageLines(db: Db, page: ExportOrder[], stores: Map<string, { name
       : [],
     db.mmgRefundObligation.findMany({ where: { orderId: { in: ids }, status: { not: 'VOIDED' } }, select: { orderId: true, amount: true, status: true } }),
     orderPeople(db, cancelled),
+    // [MENU-OPTIONS] The lines as made: a removed or declined line was never charged (not listed); a swapped line is
+    // the substitute, without the original's choices (substitution-view.ts lineOptionsAsMade).
+    db.orderItem.findMany({
+      where: { orderId: { in: ids }, subStatus: { notIn: ['REFUNDED', 'REJECTED'] } },
+      select: { orderId: true, name: true, quantity: true, subStatus: true, substituteName: true, selectedOptions: { select: { optionGroupName: true, optionName: true } } },
+      orderBy: { id: 'asc' },
+    }),
   ]);
+  const itemsByOrder = new Map<string, string[]>();
+  for (const l of lines) {
+    const swapped = l.subStatus === 'APPROVED';
+    const choices = swapped ? [] : l.selectedOptions.map((c) => `${c.optionGroupName}: ${c.optionName}`);
+    const words = `${l.quantity}× ${swapped && l.substituteName ? l.substituteName : l.name}${choices.length ? ` [${choices.join('; ')}]` : ''}`;
+    itemsByOrder.set(l.orderId, [...(itemsByOrder.get(l.orderId) ?? []), words]);
+  }
   const itemCount = new Map(counts.map((c) => [c.orderId, c._sum.quantity ?? 0]));
   const completedAt = new Map<string, Date>();
   for (const row of finished) if (!completedAt.has(row.orderId)) completedAt.set(row.orderId, row.createdAt);
@@ -315,6 +332,7 @@ async function pageLines(db: Db, page: ExportOrder[], stores: Map<string, { name
       sale ? amount(storeKeepsFee ? new Prisma.Decimal(0) : feeAndTip) : '',
       text(who ? who.by.toLowerCase() : ''), text(who ? cancellationWords(who.by, who.reason) : ''),
       anyRefund && owed.gt(0) ? amount(owed) : '', anyRefund && paid.gt(0) ? amount(paid) : '', text(notes.join('; ')),
+      text((itemsByOrder.get(o.id) ?? []).join(' | ')),
     ];
     return `${cells.join(',')}\r\n`;
   }).join('');

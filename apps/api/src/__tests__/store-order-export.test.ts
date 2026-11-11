@@ -152,6 +152,11 @@ beforeAll(async () => {
   await app.prisma.orderItem.create({ data: {
     orderId: northDelivered.id, itemId: 'export-item', name: 'Chicken', quantity: 3,
     basePrice: 500, markedUpPrice: 500, markupAmount: 0, totalBase: 1500, totalMarkup: 0, totalCustomer: 1500,
+    // [MENU-OPTIONS] the choices the line was made with (zero-priced here: the order money above stays as it was).
+    selectedOptions: { create: [
+      { optionGroupName: 'Size', optionName: 'Large', basePrice: 0, markedUpPrice: 0, markupAmount: 0, plainGroupName: 'Size', plainOptionName: 'Large', setsPrice: true, listedPrice: 500 },
+      { optionGroupName: 'Toppings', optionName: 'Pepper (left half)', basePrice: 0, markedUpPrice: 0, markupAmount: 0, plainGroupName: 'Toppings', plainOptionName: 'Pepper', placement: 'LEFT', listedPrice: 0 },
+    ] },
   } });
   await app.prisma.orderItem.create({ data: {
     orderId: northDelivered.id, itemId: 'export-item-2', name: 'Fries', quantity: 2,
@@ -356,6 +361,7 @@ describe('[ORDER-EXPORT] the columns', () => {
       'delivery_fee', 'service_fee', 'tip', 'tax', 'vat_included', 'total',
       'store_goods_net', 'store_delivery_fee_and_tip', 'rider_delivery_fee_and_tip',
       'cancelled_by', 'cancellation_reason', 'refund_owed', 'refund_paid', 'refund_note',
+      'items',
     ]);
     for (const pii of [CUSTOMER_FIRST, CUSTOMER_LAST, customerPhone, ADDRESS, NOTE, customer.userId, 'CUSTREF', '6.81', '-58.16']) {
       expect(res.body, pii).not.toContain(pii);
@@ -377,6 +383,8 @@ describe('[ORDER-EXPORT] the columns', () => {
       discount: '200.00', discount_store_funded: '200.00', discount_swift_funded_goods: '0.00', discount_swift_funded_delivery: '0.00',
       discount_estimated: 'yes', store_goods_net: '1800.00', store_delivery_fee_and_tip: '600.00', rider_delivery_fee_and_tip: '0.00',
       vat_included: '245.61', total: '2400.00', cancelled_by: '', refund_owed: '', refund_paid: '', refund_note: '',
+      // [MENU-OPTIONS] what was ordered, each line with its choices
+      items: '3× Chicken [Size: Large; Toppings: Pepper (left half)] | 2× Fries',
     });
     expect(row['promo_code']).toMatch(/^OEX/);
   });
