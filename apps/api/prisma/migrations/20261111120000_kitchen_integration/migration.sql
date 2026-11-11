@@ -12,6 +12,7 @@
 --  5. The tenant wall on both tables: RLS ENABLED and FORCED with the canonical policy (rlsDdlFor), and the tenant
 --     lineage triggers (tenantLineageDdl(), byte for byte): a connection is its store's tenant, a sync its order's.
 --  6. Shape: an enabled connection names its store number and its login; numbers are positive.
+--  7. A connection never changes store or provider (its order syncs name it).
 --
 -- New, empty tables; the enums are new; the two new columns are nullable with no default.
 --
@@ -111,7 +112,8 @@ ALTER TABLE "order_integration_syncs" ADD CONSTRAINT "order_integration_syncs_or
 ALTER TABLE "order_integration_syncs" ADD CONSTRAINT "order_integration_syncs_vendorIntegrationId_fkey" FOREIGN KEY ("vendorIntegrationId") REFERENCES "vendor_integrations"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
 
--- 5. The tenant wall (rlsDdlFor), then lineage (tenantLineageDdl).
+-- 5. The tenant wall (rlsDdlFor), then lineage (tenantLineageDdl). A sync row has two parents: its order and its
+--    connection must agree on tenant, store and provider.
 ALTER TABLE "vendor_integrations" ENABLE ROW LEVEL SECURITY;
 ALTER TABLE "vendor_integrations" FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS "tenant_isolation" ON "vendor_integrations";
@@ -153,11 +155,9 @@ CREATE TRIGGER vendor_integrations_tenant_matches_vendor BEFORE INSERT OR UPDATE
 CREATE OR REPLACE FUNCTION order_integration_syncs_tenant_matches_order() RETURNS trigger AS $$
       DECLARE parent_tenant TEXT;
       BEGIN
-        SELECT "tenantId" FROM orders WHERE id = NEW."orderId" INTO parent_tenant;
+        SELECT o."tenantId" FROM orders o JOIN vendor_integrations vi ON vi.id = NEW."vendorIntegrationId" WHERE o.id = NEW."orderId" AND vi."tenantId" = o."tenantId" AND vi."vendorId" = o."vendorId" AND vi.provider = NEW.provider INTO parent_tenant;
         IF parent_tenant IS NULL THEN
-          -- An UPDATE that unlinks the owner (an FK SET NULL when a mover or user is
-          -- deleted) leaves the row's tenant as it was; only a NEW row with no owner is refused.
-          IF TG_OP = 'UPDATE' THEN RETURN NEW; END IF;
+          -- A QR UPDATE with a missing/hidden non-null parent is refused too.
           RAISE EXCEPTION 'order_integration_syncs row % names orders row %, which does not exist or is not visible from this tenant [STA-1 lineage]',
             NEW.id, NEW."orderId" USING ERRCODE = 'check_violation';
         END IF;
@@ -171,7 +171,7 @@ CREATE OR REPLACE FUNCTION order_integration_syncs_tenant_matches_order() RETURN
         RETURN NEW;
       END $$ LANGUAGE plpgsql;
 DROP TRIGGER IF EXISTS order_integration_syncs_tenant_matches_order ON order_integration_syncs;
-CREATE TRIGGER order_integration_syncs_tenant_matches_order BEFORE INSERT OR UPDATE OF "tenantId", "orderId" ON order_integration_syncs FOR EACH ROW EXECUTE FUNCTION order_integration_syncs_tenant_matches_order();
+CREATE TRIGGER order_integration_syncs_tenant_matches_order BEFORE INSERT OR UPDATE OF "tenantId", "orderId", "vendorIntegrationId", "provider" ON order_integration_syncs FOR EACH ROW EXECUTE FUNCTION order_integration_syncs_tenant_matches_order();
 
 -- 6. Shape.
 ALTER TABLE "vendor_integrations"
@@ -179,3 +179,15 @@ ALTER TABLE "vendor_integrations"
   ADD CONSTRAINT "vendor_integrations_numbers_check" CHECK (("externalStoreNo" IS NULL OR "externalStoreNo" > 0) AND "nextExternalOrderNo" > 0 AND "pollUpdateStamp" >= 0);
 ALTER TABLE "order_integration_syncs"
   ADD CONSTRAINT "order_integration_syncs_numbers_check" CHECK ("externalOrderId" > 0 AND "dailyNo" >= 0 AND "attempts" >= 0);
+
+-- 7. A connection never moves to another store or provider: its order syncs name it.
+CREATE OR REPLACE FUNCTION vendor_integrations_identity_frozen() RETURNS trigger AS $$
+      BEGIN
+        IF NEW."vendorId" IS DISTINCT FROM OLD."vendorId" OR NEW."provider" IS DISTINCT FROM OLD."provider" THEN
+          RAISE EXCEPTION 'vendor_integrations row % never changes store or provider [KITCHEN-INTEGRATION]',
+            OLD.id USING ERRCODE = 'check_violation';
+        END IF;
+        RETURN NEW;
+      END $$ LANGUAGE plpgsql;
+DROP TRIGGER IF EXISTS vendor_integrations_identity_frozen ON vendor_integrations;
+CREATE TRIGGER vendor_integrations_identity_frozen BEFORE UPDATE OF "vendorId", "provider" ON vendor_integrations FOR EACH ROW EXECUTE FUNCTION vendor_integrations_identity_frozen();

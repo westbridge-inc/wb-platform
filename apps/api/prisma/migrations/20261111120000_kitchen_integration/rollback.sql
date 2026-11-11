@@ -11,6 +11,7 @@ DROP TABLE "order_integration_syncs";
 DROP TABLE "vendor_integrations";
 DROP FUNCTION IF EXISTS order_integration_syncs_tenant_matches_order();
 DROP FUNCTION IF EXISTS vendor_integrations_tenant_matches_vendor();
+DROP FUNCTION IF EXISTS vendor_integrations_identity_frozen();
 ALTER TABLE "options" DROP COLUMN "externalItemNo";
 ALTER TABLE "items" DROP COLUMN "externalItemNo";
 DROP TYPE "KitchenSyncState";

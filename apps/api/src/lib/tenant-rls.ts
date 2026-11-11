@@ -290,7 +290,11 @@ export const TENANT_LINEAGE_TABLES: readonly TenantLineageRule[] = [
   { table: 'pos_imports', trigger: 'pos_imports_tenant_matches_vendor', parent: 'vendors', fk: 'vendorId' },
   // [KITCHEN-INTEGRATION] one hop: a connection inherits its store, an order sync inherits its order
   { table: 'vendor_integrations', trigger: 'vendor_integrations_tenant_matches_vendor', parent: 'vendors', fk: 'vendorId' },
-  { table: 'order_integration_syncs', trigger: 'order_integration_syncs_tenant_matches_order', parent: 'orders', fk: 'orderId' },
+  // Two parents: the order and the connection must agree on tenant, store and provider, or the row is refused
+  // (an UPDATE too: both foreign keys are required, so a missing parent is never an unlink).
+  { table: 'order_integration_syncs', trigger: 'order_integration_syncs_tenant_matches_order', parent: 'orders', fk: 'orderId',
+    parentTenantSql: `SELECT o."tenantId" FROM orders o JOIN vendor_integrations vi ON vi.id = NEW."vendorIntegrationId" WHERE o.id = NEW."orderId" AND vi."tenantId" = o."tenantId" AND vi."vendorId" = o."vendorId" AND vi.provider = NEW.provider`,
+    watch: ['orderId', 'vendorIntegrationId', 'provider'], requiredParent: true },
   { table: 'delivery_cash_settlements', trigger: 'delivery_cash_settlements_tenant_matches_order', parent: 'orders', fk: 'orderId' },
   // [E02] an MMG refund obligation and a refund send belong to the tenant of their order
   { table: 'mmg_refund_obligations', trigger: 'mmg_refund_obligations_tenant_matches_order', parent: 'orders', fk: 'orderId' },
