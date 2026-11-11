@@ -245,6 +245,20 @@ describe('the weekly charge uses the ACTIVE instrument, through the provider rec
     expect(after.sub.failedAttempts).toBe(1);
   });
 
+  it('[review-2475 F2] a card another person enrolled (a store\'s previous account holder) is never charged for this fee', async () => {
+    const p = await cardSub();
+    seq += 1;
+    const other = await app.prisma.user.create({ data: {
+      phone: `${PHONE}${String(seq).padStart(2, '0')}`, firstName: 'Previous', lastName: `Holder${seq}`,
+      roles: ['CUSTOMER'] as UserRole[], activeRole: 'CUSTOMER', isPhoneVerified: true,
+    } });
+    userIds.push(other.id);
+    await card({ userId: other.id, subId: p.subId });
+    expect(await bill(p.subId)).toBe('failed');
+    expect(fake.charges).toEqual([]);
+    expect((await facts(p.subId)).failureNotes).toEqual([expect.stringMatching(/^There is no card on file/)]);
+  });
+
   it('an EXPIRED card is retired and never sent', async () => {
     const p = await cardSub();
     const inst = await card(p, { expMonth: 1, expYear: new Date().getUTCFullYear() - 1 });

@@ -7359,12 +7359,14 @@ export async function adminRoutes(app: FastifyInstance) {
   // with a reason: approved, everything switches in one transaction; refused, nothing changes and the store reads why.
   // Never decided by the account holder or the person named, nor by anyone the identity graph links to them.
   const accountChangeIdOf = (request: { params: unknown }) => (request.params as { id: string }).id;
-  const accountChangeRecusal = async (reviewerId: string, changeId: string) => {
+  // [review-2475 F6] Checked before the decision, then again INSIDE its transaction (under the identity lock every document
+  // decision takes), so an identity-graph link made in between is seen.
+  const accountChangeRecusal = async (reviewerId: string, changeId: string, db: Prisma.TransactionClient | PrismaClient = app.prisma) => {
     const { loadChange } = await import('../vendor/account-change');
-    const change = await loadChange(app.prisma, changeId);
+    const change = await loadChange(db, changeId);
     const people = [change.vendorOwner.userId, ...(change.newHolderId ? [change.newHolderId] : [])];
     if (people.includes(reviewerId)) throw new ForbiddenError('You cannot decide a change to your own account.');
-    for (const person of people) await assertNotRecused(app.prisma, reviewerId, person);
+    for (const person of people) await assertNotRecused(db, reviewerId, person);
   };
 
   app.get('/account-changes', { preHandler: [adminGuard] }, async (request) => {
@@ -7386,6 +7388,7 @@ export async function adminRoutes(app: FastifyInstance) {
     await accountChangeRecusal(request.user.userId, id);
     const { adminChangeView, approveAccountChange, loadChange } = await import('../vendor/account-change');
     const revoked = await verification.decideAccountChange(async (tx) => {
+      await accountChangeRecusal(request.user.userId, id, tx);
       const outcome = await approveAccountChange(tx, {
         changeId: id, adminId: request.user.userId, reason, sellerNames: body.sellerNames,
         audit: (t, change, facts) => auditIn(t, request.user.userId, change.kind === 'BUSINESS_TYPE' ? 'APPROVE_BUSINESS_TYPE_CHANGE' : 'APPROVE_ACCOUNT_HANDOVER', 'AccountChangeRequest', change.id, facts, request),
@@ -7417,6 +7420,8 @@ export async function adminRoutes(app: FastifyInstance) {
     const { adminChangeView, endAccountChange, loadChange } = await import('../vendor/account-change');
     const notices = await app.prisma.$transaction(async (tx) => {
       await bindTenantTransaction(tx);
+      await lockIdentityAuthority(tx);
+      await accountChangeRecusal(request.user.userId, id, tx);
       return endAccountChange(tx, {
         changeId: id, by: request.user.userId, outcome: 'REFUSED', reason,
         audit: (t, change) => auditIn(t, request.user.userId, 'REFUSE_ACCOUNT_CHANGE', 'AccountChangeRequest', change.id, { kind: change.kind }, request),

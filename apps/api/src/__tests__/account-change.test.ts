@@ -35,6 +35,23 @@ import { signupQuote, WEEKLY_FEE_ACK_VERSION } from '../modules/partner/weekly-f
 import { ownedVerificationFixture } from './helpers/verification-object';
 import { grantStepUp } from './helpers/step-up';
 import { wordFreeTag } from './helpers/fixture-ids';
+import { sealVaultToken } from '../modules/billing/card-vault';
+import { sellerNameViews } from '../modules/verification/storefront-disclosure';
+import { validRegistrationRecord } from '../modules/vendor/registration-record';
+
+// [review-2475 F6] The decision's recusal is read again inside its transaction: armed, the reviewer passes the check made
+// before the transaction and is recused at the one made inside it (as an identity link made in between would do).
+const recusal = vi.hoisted(() => ({ armedFor: null as string | null, seen: 0 }));
+vi.mock('../modules/verification/recusal', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../modules/verification/recusal')>();
+  return {
+    ...real,
+    assertNotRecused: async (...args: Parameters<typeof real.assertNotRecused>) => {
+      if (recusal.armedFor && args[1] === recusal.armedFor && ++recusal.seen > 1) throw real.recusedError();
+      return real.assertNotRecused(...args);
+    },
+  };
+});
 
 const RUN = wordFreeTag(8);
 const NUM = String(Date.now()).slice(-6);
@@ -631,5 +648,198 @@ describe('[R3 · review-2476] the seller legal name follows the change, never th
     expect(account).toMatchObject({ sellerLegalName: 'Persaud Chicken Limited', sellerLegalNameDocId: theirs.id, sellerLegalNameById: adminId });
     expect(await sellerName({ ...next, vendorId: o.vendorId })).toBe('Persaud Chicken Limited');
     expect((await legalNameTrail(account.id)).at(-1)?.changes).toMatchObject({ accountId: next.userId, documentId: theirs.id, changeId, fromDocumentId: oldPaper });
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------------
+// [review-2475] security fix round
+// ---------------------------------------------------------------------------------------------------------------------
+
+/** A company's account handed over (approved) to a new person; the old holder signs in again as a customer. */
+async function handedOver(x: Who) {
+  const next = await person('Devi', 'Singh');
+  const named = await nameNewHolder(x, next);
+  expect(named.statusCode, named.body).toBe(201);
+  const changeId = named.json().data.id as string;
+  expect((await call('POST', `/api/v1/customer/account-handovers/${changeId}/accept`, next)).statusCode).toBe(200);
+  for (const docType of COMPANY_STORE) await approve((await file(next.userId, docType)).id, docType);
+  const res = await admin('PUT', `/account-changes/${changeId}/approve`, {});
+  expect(res.statusCode, res.body).toBe(200);
+  x.token = await session(x.userId, 'CUSTOMER');
+  return { next, changeId };
+}
+
+describe('[review-2475 F1] a company\'s papers never follow the person to another account', () => {
+  it('the old holder\'s papers of the account leave service at the handover, in its transaction', async () => {
+    const x = await companyStore();
+    const before = await system(() => app.prisma.verificationDocument.findMany({ where: { userId: x.userId, docType: { in: COMPANY_STORE } }, select: { id: true } }));
+    const { changeId } = await handedOver(x);
+    const after = await system(() => app.prisma.verificationDocument.findMany({ where: { id: { in: before.map((d) => d.id) } }, select: { state: true } }));
+    expect(after.map((d) => d.state)).toEqual(before.map(() => 'REVOKED'));
+    expect(await recordEvidenceFor(app.prisma, x.userId, COMPANY_STORE, new Date())).toEqual([]);
+    const audit = await system(() => app.prisma.auditLog.findFirstOrThrow({ where: { entityId: changeId, action: 'APPROVE_ACCOUNT_HANDOVER' } }));
+    expect(audit.changes).toMatchObject({ oldHolderPapersRetired: before.length });
+  });
+
+  it('[P1] the ex-holder named for ANOTHER company files every paper for it: nothing of the first company counts', async () => {
+    const x = await companyStore();
+    await handedOver(x);
+    const y = await companyStore();
+    const named = await nameNewHolder(y, x);
+    expect(named.statusCode, named.body).toBe(201);
+    const changeId = named.json().data.id as string;
+    const accepted = (await call('POST', `/api/v1/customer/account-handovers/${changeId}/accept`, x)).json().data;
+    expect(accepted.papers.map((p: { docType: string; state: string }) => [p.docType, p.state])).toEqual(COMPANY_STORE.map((d) => [d, 'MISSING']));
+    expect(accepted.papersComplete).toBe(false);
+    const res = await admin('PUT', `/account-changes/${changeId}/approve`, {});
+    expect(res.statusCode).toBe(409);
+    expect(res.json().error.code).toBe('CHANGE_PAPERS_INCOMPLETE');
+    expect((await owner(y.userId)).userId).toBe(y.userId);
+  });
+
+  it('[P2] the ex-holder opens a NEW company store: it does not pass on the handed-over company\'s papers', async () => {
+    const x = await companyStore();
+    await handedOver(x);
+    x.vendorId = '';
+    await become(x, { accountBasis: 'COMPANY', name: `Other Company ${RUN} ${seq}` });
+    expect(await service.isRoleVerified(x.userId, 'STORE', app.prisma, x.vendorId)).toBe(false);
+  });
+
+  it('the console names the business the papers name: the legal name now, and the one typed for this change', async () => {
+    const o = await person('Ravi', 'Persaud');
+    await namedStore(o, 'OWNER', 'Persaud Trading');
+    const asked = (await call('POST', '/api/v1/vendor/account-change/business-type', o, { toOption: 'COMPANY' })).json().data;
+    const shown = async () => (await admin('GET', `/account-changes/${asked.id}`)).json().data.legalName;
+    expect(await shown()).toEqual({ account: 'Persaud Trading', change: null });
+    const certificate = await file(o.userId, 'certificate_of_incorporation');
+    await approve(certificate.id, 'certificate_of_incorporation', { legalName: 'Persaud Holdings Limited' });
+    expect(await shown()).toEqual({ account: 'Persaud Trading', change: 'Persaud Holdings Limited' });
+  });
+});
+
+describe('[review-2475 F2] a saved card never outlives its holder\'s hold on the store', () => {
+  it('the old holder\'s ACTIVE card on the store\'s weekly fee is revoked at the handover, its unsent charges closed, with a trail', async () => {
+    const x = await companyStore();
+    const sub = await system(async () => (await app.prisma.subscription.findFirst({ where: { vendorId: x.vendorId }, select: { id: true } }))
+      ?? app.prisma.subscription.create({ data: {
+        vendorId: x.vendorId, type: 'RETAIL_STORE', status: 'ACTIVE', weeklyRate: 1000, billingMethod: 'CARD',
+        currentPeriodStart: new Date(Date.now() - 7 * DAY), currentPeriodEnd: new Date(Date.now() + DAY), nextBillingDate: new Date(Date.now() + DAY),
+      }, select: { id: true } }));
+    const card = await system(async () => app.prisma.paymentInstrument.create({ data: {
+      subscriptionId: sub.id, userId: x.userId, provider: 'fakebank', environment: 'sandbox', providerAccount: `r2475-${RUN}`,
+      ...(await sealVaultToken(`tok_${nanoid(10)}`)), brand: 'VISA', last4: '1111', expMonth: 12, expYear: new Date().getUTCFullYear() + 3,
+      consentVersion: 'card-on-file-v1', consentAt: new Date(),
+    }, select: { id: true } }));
+    const { changeId } = await handedOver(x);
+    expect(await system(() => app.prisma.paymentInstrument.findUniqueOrThrow({ where: { id: card.id }, select: { status: true, revokedBy: true } })))
+      .toEqual({ status: 'REVOKED', revokedBy: adminId });
+    const trail = await system(() => app.prisma.auditLog.findFirstOrThrow({ where: { action: 'CARD_REVOKED_ACCOUNT_HANDOVER', entityId: card.id } }));
+    expect(trail.changes).toMatchObject({ subscriptionId: sub.id, changeId, status: 'REVOKED' });
+    expect((await system(() => app.prisma.auditLog.findFirstOrThrow({ where: { entityId: changeId, action: 'APPROVE_ACCOUNT_HANDOVER' } }))).changes).toMatchObject({ cardsRevoked: 1 });
+  });
+});
+
+describe('[review-2475 F3] the account holder never reads a reviewer\'s note on the person named\'s papers', () => {
+  it('[P3] the holder sees how far each paper got; the person named sees the note', async () => {
+    const x = await companyStore();
+    const next = await person('Ravi', 'Khan');
+    const changeId = (await nameNewHolder(x, next)).json().data.id as string;
+    await call('POST', `/api/v1/customer/account-handovers/${changeId}/accept`, next);
+    const doc = await file(next.userId, 'account_holder_id');
+    await service.rejectDocument(doc.id, adminId, 'PRIVATE NOTE ABOUT THE NAMED PERSONS ID');
+    const holderView = (await call('GET', '/api/v1/vendor/account-change', x)).json().data;
+    const paper = holderView.change.papers.find((p: { docType: string }) => p.docType === 'account_holder_id');
+    expect(paper).toMatchObject({ state: 'REJECTED', note: null, documentId: null });
+    expect(JSON.stringify(holderView)).not.toContain('PRIVATE NOTE');
+    expect(JSON.stringify(holderView)).not.toContain(doc.id);
+    const theirs = (await call('GET', '/api/v1/customer/account-handovers', next)).json().data[0];
+    expect(theirs.papers.find((p: { docType: string }) => p.docType === 'account_holder_id')).toMatchObject({ note: 'PRIVATE NOTE ABOUT THE NAMED PERSONS ID', documentId: doc.id });
+  });
+});
+
+describe('[review-2475 F5] the console and the registration check read the storefront\'s rule', () => {
+  it('a registration approved for a change still waiting: the console still names the own-name trader, and no registration is on file yet', async () => {
+    const o = await ownNameStore();
+    const asked = (await call('POST', '/api/v1/vendor/account-change/business-type', o, { toOption: 'REGISTERED' })).json().data;
+    const registration = await file(o.userId, 'business_registration');
+    expect(registration.accountChangeId).toBe(asked.id);
+    await approve(registration.id, 'business_registration', { legalName: 'Ramdin Supplies' });
+    expect(await sellerName(o)).toBe('Asha Ramdin');
+    expect((await sellerNameViews(app.prisma, [o.vendorId])).get(o.vendorId)).toEqual({ basis: 'OWN_NAME', value: 'Asha Ramdin' });
+    expect(await validRegistrationRecord(app.prisma, o.userId)).toBeNull();
+  });
+});
+
+describe('[review-2475 F6] recusal is checked again inside the decision\'s transaction', () => {
+  it.each(['approve', 'refuse'] as const)('%s: a reviewer recused between the first check and the decision decides nothing', async (verb) => {
+    const o = await ownNameStore();
+    const asked = (await call('POST', '/api/v1/vendor/account-change/business-type', o, { toOption: 'COMPANY' })).json().data;
+    if (verb === 'approve') await fileChangePapers(o.userId, asked);
+    const name = (await store(o.vendorId)).name;
+    recusal.armedFor = adminId; recusal.seen = 0;
+    try {
+      const res = await admin('PUT', `/account-changes/${asked.id}/${verb}`, verb === 'approve' ? { sellerNames: { [o.vendorId]: name } } : {});
+      expect(res.statusCode, res.body).toBe(403);
+      expect(res.json().error.code).toBe('REVIEWER_RECUSED');
+      expect(recusal.seen).toBe(2);
+    } finally { recusal.armedFor = null; }
+    expect(await system(() => app.prisma.accountChangeRequest.findUniqueOrThrow({ where: { id: asked.id }, select: { status: true } }))).toEqual({ status: 'PENDING' });
+  });
+});
+
+describe('[review-2475 F7] a change to "own name" is checked again when a person decides it', () => {
+  it('a store renamed, or a registration on file, since the ask: the approval is refused and nothing moves', async () => {
+    const o = await person('Asha', 'Ramdin');
+    await become(o, { name: 'Asha Ramdin' }); // a registered business's store, not live yet, named as its owner
+    const asked = await call('POST', '/api/v1/vendor/account-change/business-type', o, { toOption: 'OWN_NAME' });
+    expect(asked.statusCode, asked.body).toBe(201);
+    const changeId = asked.json().data.id as string;
+    const signed = await call('POST', '/api/v1/vendor/account-change/own-name', o, { accept: true, attestationVersion: 'v1' });
+    expect(signed.statusCode, signed.body).toBe(201);
+    await approve(signed.json().data.declaration.id, 'own_name_declaration');
+    await fileChangePapers(o.userId, (await call('GET', '/api/v1/vendor/account-change', o)).json().data.change);
+    // renamed since the ask
+    await system(() => app.prisma.vendor.update({ where: { id: o.vendorId }, data: { name: 'Ramdin Supplies' } }));
+    const renamed = await admin('PUT', `/account-changes/${changeId}/approve`, {});
+    expect(renamed.json().error?.code, renamed.body).toBe('OWN_NAME_MISMATCH');
+    // named as the owner again, but a business registration was approved meanwhile
+    await system(() => app.prisma.vendor.update({ where: { id: o.vendorId }, data: { name: 'Asha Ramdin' } }));
+    await approve((await file(o.userId, 'business_registration')).id, 'business_registration');
+    const registered = await admin('PUT', `/account-changes/${changeId}/approve`, {});
+    expect(registered.json().error?.code, registered.body).toBe('ALREADY_REGISTERED');
+    expect(await owner(o.userId)).toMatchObject({ accountBasis: 'OWNER' });
+    expect((await store(o.vendorId)).tradesUnderOwnName).toBe(false);
+    expect(await system(() => app.prisma.accountChangeRequest.findUniqueOrThrow({ where: { id: changeId }, select: { status: true } }))).toEqual({ status: 'PENDING' });
+  });
+});
+
+describe('[review-2475 F8] asking is limited', () => {
+  it('an ask -> withdraw loop stops at 3 asks a day', async () => {
+    const o = await ownNameStore();
+    for (let i = 0; i < 3; i += 1) {
+      const asked = await call('POST', '/api/v1/vendor/account-change/business-type', o, { toOption: 'COMPANY' });
+      expect(asked.statusCode, asked.body).toBe(201);
+      expect((await call('POST', `/api/v1/vendor/account-change/${asked.json().data.id}/withdraw`, o)).statusCode).toBe(200);
+    }
+    const fourth = await call('POST', '/api/v1/vendor/account-change/business-type', o, { toOption: 'COMPANY' });
+    expect(fourth.statusCode).toBe(429);
+    expect(fourth.json().error.code).toBe('BUSINESS_TYPE_DAILY_LIMIT');
+  });
+
+  it('naming numbers that can\'t be named counts too: after 5 tries a day, even a number that could be named gets the limit', async () => {
+    const o = await companyStore();
+    for (let i = 0; i < 5; i += 1) {
+      const res = await nameNewHolder(o, { phone: `+5926${NUM}${80 + i}` });
+      expect(res.statusCode, res.body).toBe(409);
+      expect(res.json().error.code).toBe('HANDOVER_PERSON_UNAVAILABLE');
+    }
+    const real = await person('Real', 'Person');
+    const sixth = await nameNewHolder(o, real);
+    expect(sixth.statusCode).toBe(429);
+    expect(sixth.json().error.code).toBe('HANDOVER_DAILY_LIMIT');
+    // no number is ever written down for a try
+    const tries = await system(() => app.prisma.auditLog.findMany({ where: { action: 'HANDOVER_NAME_REFUSED', userId: o.userId }, select: { changes: true } }));
+    expect(tries).toHaveLength(5);
+    expect(JSON.stringify(tries)).not.toContain(NUM);
   });
 });

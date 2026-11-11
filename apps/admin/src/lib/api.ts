@@ -962,6 +962,9 @@ export interface AccountChange {
   holder: { id: string; name: string };
   newHolder: { id: string; name: string } | null;
   decisionReason: string | null;
+  /** Which business the papers name: the seller's legal name customers see now, and the one typed from THIS change's
+   *  registration paper (null: none typed, so approving clears the account's). */
+  legalName?: { account: string | null; change: string | null };
 }
 export const fetchAccountChanges = (status: AccountChange['status'] = 'PENDING') =>
   apiFetch(`/api/v1/admin/account-changes?status=${status}`).then((r) => ((r as { data?: AccountChange[] }).data ?? []));

@@ -80,6 +80,13 @@ export const ERASURE_DEIDENTIFIED: Readonly<Record<string, string>> = {
 
 /** Link -> why the person's rows stay after erasure (they point at the de-identified account row). */
 export const ERASURE_KEPT: Readonly<Record<string, string>> = {
+  // [COMPANY-DOCS Part 3 · review-2475 F4] A decided account change is final (database trigger): who held a store
+  // account, who it passed to, and who decided, is the business record of who could act for those stores (Privacy
+  // Policy §6 business records, §7 administrative trail). Ids only: the person's name and papers go with the erasure.
+  'AccountChangeRequest.requestedById': 'the business record of a change to who a store account is (Privacy Policy §6, §7): ids only; a decided change is final',
+  'AccountChangeRequest.holderId': 'the business record of who held the store account before a handover (Privacy Policy §6, §7): ids only',
+  'AccountChangeRequest.newHolderId': 'the business record of who a store account was offered or handed to (Privacy Policy §6, §7): ids only',
+  'AccountChangeRequest.decidedById': 'the administrative trail of who decided an account change (Privacy Policy §7): ids only',
   'Order.customerId': 'order history, kept for disputes, payments Swift has decided to make, tax and legal duties (Privacy Policy §6)',
   'Order.riderId': 'order history (Privacy Policy §6)',
   'Order.driverId': 'ride history (Privacy Policy §6)',

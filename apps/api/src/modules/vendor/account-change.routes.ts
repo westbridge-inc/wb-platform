@@ -63,7 +63,8 @@ export function registerAccountChangeVendorRoutes(app: FastifyInstance, deps: De
     return { success: true, data: await holderAccountChange(app.prisma, request.user.userId) };
   });
 
-  app.post('/account-change/business-type', auth, async (request, reply) => {
+  // [review-2475 F8] An ask pages every reviewer: limited like the handover (and to 3 a day, account-change.ts).
+  app.post('/account-change/business-type', { ...auth, config: { rateLimit: { max: 10, timeWindow: '1 hour' } } }, async (request, reply) => {
     const owner = await requireHolder(app, request.user.userId);
     const { toOption } = z.object({ toOption: z.enum(BUSINESS_TYPE_OPTIONS) }).strict().parse(request.body ?? {});
     const change = await startBusinessTypeChange(app.prisma, request.user.userId, toOption);

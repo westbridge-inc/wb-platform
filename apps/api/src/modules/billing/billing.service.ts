@@ -1098,7 +1098,10 @@ export class BillingService {
 
     const cardRail = this.resolveCardRail();
     if (!cardRail) return { ok: false, deferred: true };
-    const instrument = await this.prisma.paymentInstrument.findFirst({ where: { subscriptionId: sub.id, status: 'ACTIVE' } });
+    // [review-2475 F2] Only the payer's own card: a card another person enrolled (a store's previous account holder)
+    // is never charged for this subscription's fee.
+    const payer = await subscriptionPayer(this.prisma, sub.id).catch(() => null);
+    const instrument = payer ? await this.prisma.paymentInstrument.findFirst({ where: { subscriptionId: sub.id, status: 'ACTIVE', userId: payer.userId } }) : null;
     if (!instrument) return { ok: false, reason: NO_CARD_REASON };
     if (cardExpiredAt(instrument, now)) {
       await this.prisma.paymentInstrument.updateMany({ where: { id: instrument.id, status: 'ACTIVE' }, data: { status: 'EXPIRED', expiredAt: now } });
@@ -1280,11 +1283,12 @@ export class BillingService {
     const { intentId, instrumentId, now } = input;
     const outcome = await this.prisma.$transaction(async (tx) => {
       const authority = await this.lockPaymentOutcomeAuthority(tx, sub);
-      const [card] = await tx.$queryRaw<Array<{ status: string; subscriptionId: string }>>`
-        SELECT "status", "subscriptionId" FROM "payment_instruments" WHERE "id" = ${instrumentId} FOR UPDATE
+      const [card] = await tx.$queryRaw<Array<{ status: string; subscriptionId: string; userId: string }>>`
+        SELECT "status", "subscriptionId", "userId" FROM "payment_instruments" WHERE "id" = ${instrumentId} FOR UPDATE
       `;
       await tx.$queryRaw`SELECT "id" FROM "subscription_payments" WHERE "id" = ${intentId} FOR UPDATE`;
-      if (!card || card.subscriptionId !== sub.id || card.status !== 'ACTIVE') {
+      // [review-2475 F2] the payer's own card only (see authorizeInstrumentCharge)
+      if (!card || card.subscriptionId !== sub.id || card.status !== 'ACTIVE' || card.userId !== (await subscriptionPayer(tx, sub.id)).userId) {
         await closeUnsentCardIntents(tx, { intentId }, 'CARD_OUT_OF_SERVICE', now);
         return 'card_changed' as const;
       }
@@ -1342,13 +1346,15 @@ export class BillingService {
     try {
       return await this.prisma.$transaction(async (tx) => {
         const authority = await this.lockPaymentOutcomeAuthority(tx, sub);
-        const [card] = await tx.$queryRaw<Array<{ status: string; subscriptionId: string }>>`
-          SELECT "status", "subscriptionId" FROM "payment_instruments" WHERE "id" = ${instrumentId} FOR UPDATE
+        const [card] = await tx.$queryRaw<Array<{ status: string; subscriptionId: string; userId: string }>>`
+          SELECT "status", "subscriptionId", "userId" FROM "payment_instruments" WHERE "id" = ${instrumentId} FOR UPDATE
         `;
         await this.observer.afterInstrumentChargeLocked?.(sub.id, instrumentId, tx);
         if (!card || card.subscriptionId !== sub.id || card.status !== 'ACTIVE') {
           return { outcome: 'card_changed' as const, cardStatus: card?.status ?? 'MISSING' };
         }
+        // [review-2475 F2] Under the payer lock: the card is the payer's own, or nothing is sent.
+        if (card.userId !== (await subscriptionPayer(tx, sub.id)).userId) return { outcome: 'card_changed' as const, cardStatus: 'NOT_THE_PAYERS' };
         const maySend = !await this.subscriptionHasConfirmationHold(tx, sub.id, undefined, now)
           && !authority.bankInsteadOfAdvance
           && !authority.suppressNotice
