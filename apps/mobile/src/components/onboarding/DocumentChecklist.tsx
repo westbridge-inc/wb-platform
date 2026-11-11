@@ -11,7 +11,7 @@ import { StoreWeeklyFeeCard, type StoreFeeScope } from './StoreWeeklyFeeCard';
 import { FOOD_HANDLERS_DOC } from './foodHandlers';
 import { ownNameApplies, ownNameOfferFits } from '../../lib/ownNameCopy';
 import { isTaxiChecklist, taxiDocumentHint, TAXI_TWO_LICENCES } from './taxiDocumentCopy';
-import { DOCUMENT_REVIEW_PROMISE, emptyChecklistCopy, optionalDocHint, optionalDocTypes } from './documentChecklistPresentation';
+import { DOCUMENT_REVIEW_PROMISE, checklistProgress, emptyChecklistCopy, latestChecklistDoc, optionalDocHint, optionalDocTypes } from './documentChecklistPresentation';
 import { SENSITIVE_DOC_TYPES, documentConsentGivenLine, documentConsentOnRecord, policeClearanceWordsFrom } from './documentConsentRecord';
 import type { UploadConsentVia } from '../../services/api';
 import { accountBasisNote, accountPaperHelp } from '../../lib/businessBasisCopy';
@@ -104,19 +104,9 @@ export function DocumentChecklist({
   const optional = optionalDocTypes(status);
   const documents: any[] = status?.documents ?? [];
 
-  const latestDoc = (docType: string) => {
-    const docs = documents
-      .filter((d) => d.docType === docType)
-      .sort((a, b) => (String(a.createdAt) < String(b.createdAt) ? 1 : -1));
-    // Precedence: an in-flight renewal shows as pending; else the current
-    // approved document (with its expiry); else the newest row (expired/
-    // rejected) which re-opens the upload.
-    return (
-      docs.find((d) => d.status === 'PENDING')
-      ?? docs.find((d) => d.status === 'APPROVED' && (!d.expiresAt || new Date(d.expiresAt) > new Date()))
-      ?? docs[0]
-    );
-  };
+  // Precedence (latestChecklistDoc): an in-flight renewal shows as pending; else the current approved document
+  // (with its expiry); else the newest row (expired/rejected) which re-opens the upload.
+  const latestDoc = (docType: string) => latestChecklistDoc(documents, docType);
 
   const nextDoc = checklist.find((dt) => latestDoc(dt)?.status !== 'APPROVED');
 
@@ -131,8 +121,8 @@ export function DocumentChecklist({
     );
   }
 
-  const approvedCount = checklist.filter((dt) => latestDoc(dt)?.status === 'APPROVED').length;
-  const allSubmitted = checklist.every((dt) => ['APPROVED', 'PENDING'].includes(latestDoc(dt)?.status));
+  // [FOLLOWUPS 11 Nov] One rule for the progress, shared with the mover's in-review status (checklistProgress).
+  const { approved: approvedCount, allSubmitted } = checklistProgress(status);
 
   return (
     <View>

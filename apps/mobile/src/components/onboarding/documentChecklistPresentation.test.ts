@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { emptyChecklistCopy, faceMatchedDocTypes, optionalDocHint, optionalDocTypes } from './documentChecklistPresentation';
+import { checklistProgress, emptyChecklistCopy, faceMatchedDocTypes, optionalDocHint, optionalDocTypes } from './documentChecklistPresentation';
 
 describe('empty verification checklist', () => {
   it('explains a service policy hold without claiming approval or a 24-hour review', () => {
@@ -83,3 +83,29 @@ describe('[VERIFY-DOCS] optional documents follow the server', () => {
     expect(optionalDocHint('national_id')).toBe('Optional. Not needed to start working.');
   });
 });
+
+// [FOLLOWUPS 11 Nov 2026] One rule for "every required paper is sent and some wait for a person" (the checklist's
+// progress line and the mover's in-review status read it).
+describe('checklistProgress', () => {
+  const d = (docType: string, status: string, createdAt = '2026-11-01T00:00:00Z', expiresAt: string | null = null) => ({ docType, status, createdAt, expiresAt });
+  const checklist = ['drivers_licence', 'vehicle_registration'];
+  it('in review: all sent, not all approved', () => {
+    expect(checklistProgress({ checklist, documents: [d('drivers_licence', 'APPROVED'), d('vehicle_registration', 'PENDING')] }))
+      .toEqual({ total: 2, approved: 1, allSubmitted: true, inReview: true });
+  });
+  it('not in review: a paper missing, sent back, expired (the expiry sweep\'s EXPIRED), or everything approved', () => {
+    expect(checklistProgress({ checklist, documents: [d('drivers_licence', 'PENDING')] }).inReview).toBe(false);
+    expect(checklistProgress({ checklist, documents: [d('drivers_licence', 'PENDING'), d('vehicle_registration', 'REJECTED')] }).inReview).toBe(false);
+    expect(checklistProgress({ checklist, documents: [d('drivers_licence', 'PENDING'), d('vehicle_registration', 'EXPIRED')] }).inReview).toBe(false);
+    expect(checklistProgress({ checklist, documents: [d('drivers_licence', 'APPROVED'), d('vehicle_registration', 'APPROVED')] }))
+      .toEqual({ total: 2, approved: 2, allSubmitted: true, inReview: false });
+  });
+  it('a renewal in flight speaks for its step (pending over the approved one); nothing from an empty or odd answer', () => {
+    expect(checklistProgress({ checklist, documents: [d('drivers_licence', 'APPROVED', '2026-10-01T00:00:00Z'), d('drivers_licence', 'PENDING'), d('vehicle_registration', 'APPROVED')] }))
+      .toMatchObject({ approved: 1, inReview: true });
+    for (const status of [null, undefined, {}, { checklist: 'x', documents: 'y' }]) {
+      expect(checklistProgress(status as never), JSON.stringify(status)).toEqual({ total: 0, approved: 0, allSubmitted: false, inReview: false });
+    }
+  });
+});
+

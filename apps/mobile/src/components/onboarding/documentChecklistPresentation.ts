@@ -66,3 +66,37 @@ export function optionalDocHint(docType: string): string {
   if (docType === 'police_clearance') return 'Optional. If Swift approves a current one, your account is recorded as police-cleared.';
   return 'Optional. Not needed to start working.';
 }
+
+type ChecklistDoc = { docType?: unknown; status?: unknown; createdAt?: unknown; expiresAt?: unknown };
+
+/** The document that speaks for a checklist step. Precedence: an in-flight renewal shows as pending; else the
+ *  current approved document (with its expiry); else the newest row (expired/rejected), which re-opens the upload. */
+export function latestChecklistDoc<D extends ChecklistDoc>(documents: readonly D[], docType: string, now = Date.now()): D | undefined {
+  const docs = documents
+    .filter((d) => d.docType === docType)
+    .sort((a, b) => (String(a.createdAt) < String(b.createdAt) ? 1 : -1));
+  return (
+    docs.find((d) => d.status === 'PENDING')
+    ?? docs.find((d) => d.status === 'APPROVED' && (!d.expiresAt || new Date(String(d.expiresAt)).getTime() > now))
+    ?? docs[0]
+  );
+}
+
+/** How far through the required steps a person is (optional documents never count). `inReview`: every step is
+ *  sent and at least one waits for a person on our team: nothing more for them to do but wait. */
+export function checklistProgress(status: { checklist?: unknown; documents?: unknown } | null | undefined, now = Date.now()) {
+  const checklist = Array.isArray(status?.checklist) ? (status!.checklist as unknown[]).filter((d): d is string => typeof d === 'string') : [];
+  const documents = Array.isArray(status?.documents) ? (status!.documents as ChecklistDoc[]) : [];
+  const stateOf = (docType: string) => latestChecklistDoc(documents, docType, now)?.status;
+  const approved = checklist.filter((dt) => stateOf(dt) === 'APPROVED').length;
+  const allSubmitted = checklist.length > 0 && checklist.every((dt) => stateOf(dt) === 'APPROVED' || stateOf(dt) === 'PENDING');
+  return { total: checklist.length, approved, allSubmitted, inReview: allSubmitted && approved < checklist.length };
+}
+
+/** [FOLLOWUPS 11 Nov 2026] A rider or driver whose papers are all sent and wait for approval opens the app on a plain
+ *  status, never on a sign-up pitch with the answer buried in the list below it. */
+export const MOVER_IN_REVIEW = {
+  title: 'Your documents are in review',
+  body: 'You have sent everything. A person on our team checks them Monday to Saturday, 8:00–16:00 Guyana time. You can go online once they are approved, and this screen changes by itself then.',
+} as const;
+
