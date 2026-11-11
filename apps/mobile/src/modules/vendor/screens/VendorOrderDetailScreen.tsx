@@ -10,7 +10,7 @@ import { ACCEPTED_OUT_OF_STOCK_WORDS, SHOW_ALL_LIMIT, mmgRemovalLocked, nothingL
 import { HANDOVER_WORDS, handoverNeedsNoCode, withHandoverSteps } from '../storeHandover';
 import { mmgDisputePaused } from '../order-dispute';
 import { RiderHandoverLine } from '../RiderHandoverLine';
-import { orderLineOptionsText } from '../orderLineOptions';
+import { orderLineOptionsParts, orderLineOptionsText } from '../orderLineOptions';
 import { rejectReasonsFor } from '../rejectReasons';
 import { promisedTimeName } from '../../../lib/storeKindWords';
 import { storeKeepsDelivery, ringMoney } from '../ringMoney';
@@ -497,10 +497,11 @@ function VendorOrderDetailBody({ navigation, route }: any) {
                     <T variant="label" weight="semibold" style={closed ? { textDecorationLine: 'line-through' } : undefined}>
                       {it.name}
                     </T>
-                    {/* [L09 · M026] What the customer chose, so the right item is made. */}
+                    {/* [L09 · M026] What the customer chose, so the right item is made. [MENU-OPTIONS] One line per
+                        group: "Large", "Crust: Stuffed crust → Cheese: Cheddar", "Toppings — Left: … / Right: …". */}
                     {orderLineOptionsText(it.options) ? (
                       <T variant="caption" weight="semibold" style={{ marginTop: 2 }}>
-                        {orderLineOptionsText(it.options)}
+                        {orderLineOptionsParts(it.options).join('\n')}
                       </T>
                     ) : null}
                     {it.specialInstructions ? (
