@@ -258,6 +258,18 @@ export function restoreSelection(groups: readonly SheetGroup[] | null | undefine
   return settle(all, kept, open);
 }
 
+/** A selection as the cart or a saved draft holds it (`choice | choice[]` per group), in the sheet's shape. Nothing
+ *  is judged here: the server's validator judges it before an Add. */
+export function asSheetSelection(raw: unknown): SheetSelection {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+  const out: SheetSelection = {};
+  for (const [groupId, value] of Object.entries(raw as Record<string, unknown>)) {
+    const choices = (Array.isArray(value) ? value : [value]).filter((v): v is string => typeof v === 'string' && v.length > 0);
+    if (choices.length) out[groupId] = choices;
+  }
+  return out;
+}
+
 /** The selection as the cart is sent it: a pick-one group as one choice, any other as a list; empty groups left out. */
 export function wireSelection(groups: readonly SheetGroup[] | null | undefined, selection: SheetSelection): Record<string, string | string[]> {
   const out: Record<string, string | string[]> = {};
