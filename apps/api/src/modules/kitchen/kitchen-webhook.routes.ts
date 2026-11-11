@@ -13,7 +13,7 @@ import { dragontailEvents, dragontailTime } from './dragontail/dragontail-mapper
  *
  * The spec defines no webhook authentication, so it is a setting (TODO-CONFIRM): a shared secret in a header,
  * an HMAC-SHA256 of the raw body (hex) in a header, or both (DRAGONTAIL_WEBHOOK_CHECK). The secret is the
- * connection's webhookSecretRef entry in the credentials secret, never a value on the row.
+ * credentials-secret entry under the connection's OWN derived webhook reference, never a value on the row.
  *
  *   switch off, unknown or disabled connection → 404 (nothing to find)
  *   no webhook secret configured                → 503 (nothing recorded)
@@ -72,7 +72,8 @@ export async function kitchenWebhookRoutes(app: FastifyInstance): Promise<void> 
     if (!integration || !integration.enabled || integration.provider !== 'DRAGONTAIL') {
       return reply.code(404).send({ status: 'faild', errDescription: 'not found' });
     }
-    const secret = kitchenWebhookSecretFor(integration.webhookSecretRef);
+    // Only this connection's own derived reference: never another store's secret.
+    const secret = kitchenWebhookSecretFor(integration);
     if (!secret) {
       log().error({ vendorIntegrationId: id }, '[KITCHEN] webhook arrived but the connection has no webhook secret; nothing recorded');
       return reply.code(503).send({ status: 'error', errDescription: 'not configured' });

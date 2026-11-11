@@ -53,11 +53,11 @@ const envOf = (deps: KitchenDeps) => deps.env ?? process.env;
 /** The provider for one connection, or null when its login does not resolve. */
 export function kitchenProviderFor(
   deps: KitchenDeps,
-  integration: Pick<VendorIntegration, 'provider' | 'secretRef'>,
+  integration: Pick<VendorIntegration, 'id' | 'provider'>,
   orderNumberOf: (order: KitchenOrder) => string = () => '',
 ): KitchenIntegrationProvider | null {
   const env = envOf(deps);
-  const login = kitchenLoginFor(integration.secretRef, env);
+  const login = kitchenLoginFor(integration, env);
   if (!login) return null;
   const settings = dragontailSettings(env);
   return new DragontailAdapter(

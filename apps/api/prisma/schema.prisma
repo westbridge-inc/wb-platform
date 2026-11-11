@@ -2194,10 +2194,12 @@ model VendorIntegration {
   /// The store's number in the kitchen system (Dragontail storeNo, an integer).
   externalStoreNo     Int?
   enabled             Boolean                @default(false)
-  /// The key of this store's login in the credentials secret; never the credential itself.
-  secretRef           String?
-  /// The key of this store's webhook secret in the credentials secret; never the secret itself.
-  webhookSecretRef    String?
+  /// The key of this store's login in the credentials secret; never the credential itself. DERIVED from this row's
+  /// id by the server (kitchen/<provider>/<id>/login), never supplied by a request: unique, and held equal to that
+  /// form by vendor_integrations_refs_check, so no connection can name another's login.
+  secretRef           String?                @unique
+  /// The key of this store's webhook secret (kitchen/<provider>/<id>/webhook); derived and held the same way.
+  webhookSecretRef    String?                @unique
   /// The next order number Swift will use with this store's kitchen system (added to the configured base).
   nextExternalOrderNo Int                    @default(1)
   /// Dragontail GetOrderUpdatesForPos: the last updateStamp processed (0 = from the start of the working day).

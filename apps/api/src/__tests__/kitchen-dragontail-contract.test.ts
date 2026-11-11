@@ -12,7 +12,7 @@ import {
 } from '../modules/kitchen/dragontail/dragontail-mapper';
 import { KitchenPermanentError, KitchenTransientError, type KitchenOrder } from '../modules/kitchen/kitchen-provider';
 import { dragontailIntegrationEnabled, dragontailSettings } from '../modules/kitchen/kitchen-switch';
-import { kitchenLoginFor, kitchenSecretStatus, kitchenWebhookSecretFor } from '../modules/kitchen/kitchen-credentials';
+import { kitchenLoginFor, kitchenLoginRef, kitchenSecretStatus, kitchenWebhookRef, kitchenWebhookSecretFor } from '../modules/kitchen/kitchen-credentials';
 import { kitchenEligibility } from '../modules/kitchen/kitchen-claim';
 import { kitchenWebhookAuthentic, kitchenWebhookSignature } from '../modules/kitchen/kitchen-webhook.routes';
 
@@ -75,16 +75,26 @@ describe('[KITCHEN] the switch and the settings', () => {
     expect(dragontailSettings({ DRAGONTAIL_WEBHOOK_CHECK: 'none', DRAGONTAIL_ACCEPT_ON: 'x', DRAGONTAIL_SOURCE_ID: '-3' })).toMatchObject({ webhookCheck: 'shared', acceptOn: 'INSERT_OK', sourceId: 2 });
   });
 
-  it('credentials come only from the secret, by reference; a value is never echoed', () => {
-    const env = { DRAGONTAIL_CREDENTIALS: JSON.stringify({ ph1: { userName: 'u', password: 'p' }, hook1: { webhookSecret: 's'.repeat(32) }, weak: { webhookSecret: 'short' } }) };
-    expect(kitchenLoginFor('ph1', env)).toEqual({ userName: 'u', password: 'p' });
-    expect(kitchenLoginFor('missing', env)).toBeNull();
-    expect(kitchenLoginFor('../ph1', env)).toBeNull();
-    expect(kitchenLoginFor('ph1', {})).toBeNull();
-    expect(kitchenLoginFor('ph1', { DRAGONTAIL_CREDENTIALS: 'not json' })).toBeNull();
-    expect(kitchenWebhookSecretFor('hook1', env)).toBe('s'.repeat(32));
-    expect(kitchenWebhookSecretFor('weak', env), 'a short webhook secret is no secret').toBeNull();
-    expect(JSON.stringify(kitchenSecretStatus('ph1', 'hook1', env))).toBe('{"credentialsLoaded":true,"login":true,"webhookSecret":true}');
+  it('credentials come only from the secret, under the connection OWN derived keys; a value is never echoed', () => {
+    const mine = { id: 'cmine000000000000000000001', provider: 'DRAGONTAIL' };
+    const other = { id: 'cother00000000000000000001', provider: 'DRAGONTAIL' };
+    expect(kitchenLoginRef(mine)).toBe('kitchen/dragontail/cmine000000000000000000001/login');
+    expect(kitchenWebhookRef(mine)).toBe('kitchen/dragontail/cmine000000000000000000001/webhook');
+    const env = { DRAGONTAIL_CREDENTIALS: JSON.stringify({
+      [kitchenLoginRef(other)]: { userName: 'u', password: 'p' },
+      [kitchenWebhookRef(other)]: { webhookSecret: 's'.repeat(32) },
+      [kitchenWebhookRef(mine)]: { webhookSecret: 'short' },
+    }) };
+    // [confused deputy] another store's entries never resolve for this connection, whatever its row says
+    expect(kitchenLoginFor(mine, env)).toBeNull();
+    expect(kitchenWebhookSecretFor(mine, env), 'a short webhook secret is no secret').toBeNull();
+    expect(kitchenLoginFor(other, env)).toEqual({ userName: 'u', password: 'p' });
+    expect(kitchenWebhookSecretFor(other, env)).toBe('s'.repeat(32));
+    expect(kitchenLoginFor({ id: '../x', provider: 'DRAGONTAIL' }, env), 'an id outside the shape names nothing').toBeNull();
+    expect(kitchenLoginFor(other, {})).toBeNull();
+    expect(kitchenLoginFor(other, { DRAGONTAIL_CREDENTIALS: 'not json' })).toBeNull();
+    expect(JSON.stringify(kitchenSecretStatus(other, env))).not.toContain('"p"');
+    expect(kitchenSecretStatus(other, env)).toMatchObject({ credentialsLoaded: true, login: true, webhookSecret: true });
   });
 
   it('carries only cash food orders, delivery only from a store that delivers itself', () => {

@@ -2,7 +2,7 @@ import type { PrismaClient } from '@prisma/client';
 import { z } from 'zod';
 import type { Server } from 'socket.io';
 import { AppError } from '../../utils/errors';
-import { SECRET_REF_SHAPE, kitchenSecretStatus } from './kitchen-credentials';
+import { kitchenLoginRef, kitchenSecretStatus, kitchenWebhookRef, newKitchenIntegrationId } from './kitchen-credentials';
 import { dragontailApiUrl, dragontailIntegrationEnabled, dragontailSettings } from './kitchen-switch';
 import { kitchenProviderFor } from './kitchen-sync';
 
@@ -16,16 +16,15 @@ import { kitchenProviderFor } from './kitchen-sync';
  *   GET  /vendors/:id/kitchen-integration/syncs         the sync log, newest first
  *   PUT  /vendors/:id/kitchen-integration/item-numbers  bulk-set kitchen item numbers on listings and choices
  *
- * Never returns a credential: only references and whether they resolve.
+ * Never returns a credential: only the keys the owner enters them under and whether they resolve. The keys are
+ * DERIVED from the connection's own id and written by the server; no request can name, set or move one (a
+ * request that tries is refused by the strict schema), so a store can never be pointed at another store's login
+ * or webhook secret. Credentials themselves are set only in the deploy secret store, by the owner.
  */
-
-const ref = z.string().trim().regex(SECRET_REF_SHAPE, 'A reference is letters, digits, - and _ (the secret itself is never entered here)');
 
 export const kitchenIntegrationSchema = z.object({
   enabled: z.boolean().optional(),
   externalStoreNo: z.number().int().positive().max(2_147_483_647).nullable().optional(),
-  secretRef: ref.nullable().optional(),
-  webhookSecretRef: ref.nullable().optional(),
   reason: z.string().optional(),
 }).strict();
 
@@ -47,9 +46,8 @@ function view(row: {
     connection: row
       ? {
         id: row.id, provider: row.provider, enabled: row.enabled, externalStoreNo: row.externalStoreNo,
-        secretRef: row.secretRef, webhookSecretRef: row.webhookSecretRef,
         webhookPath: `/api/v1/integrations/dragontail/notifications/${row.id}`,
-        secrets: kitchenSecretStatus(row.secretRef, row.webhookSecretRef, env),
+        secrets: kitchenSecretStatus(row, env),
         pollUpdateStamp: row.pollUpdateStamp.toString(),
         lastPolledAt: row.lastPolledAt, lastHealthyAt: row.lastHealthyAt, lastError: row.lastError, lastErrorAt: row.lastErrorAt,
         updatedAt: row.updatedAt,
@@ -77,12 +75,10 @@ export async function putKitchenIntegration(prisma: PrismaClient, vendorId: stri
   const next = {
     enabled: input.enabled ?? existing?.enabled ?? false,
     externalStoreNo: input.externalStoreNo !== undefined ? input.externalStoreNo : existing?.externalStoreNo ?? null,
-    secretRef: input.secretRef !== undefined ? input.secretRef : existing?.secretRef ?? null,
-    webhookSecretRef: input.webhookSecretRef !== undefined ? input.webhookSecretRef : existing?.webhookSecretRef ?? null,
   };
   if (next.enabled) {
-    if (next.externalStoreNo == null || !next.secretRef) {
-      throw new AppError(400, 'KITCHEN_INCOMPLETE', 'Set the store number and the login reference before switching the connection on.');
+    if (next.externalStoreNo == null) {
+      throw new AppError(400, 'KITCHEN_INCOMPLETE', 'Set the store number before switching the connection on.');
     }
     // A connected store's deliveries go with its own drivers: Swift riders never join a kitchen-system order.
     if (!vendor.selfDeliveryEnabled) {
@@ -96,9 +92,16 @@ export async function putKitchenIntegration(prisma: PrismaClient, vendorId: stri
     });
     if (taken) throw new AppError(409, 'KITCHEN_STORE_NO_TAKEN', 'Another Swift store already uses this kitchen store number.');
   }
-  const row = existing
-    ? await prisma.vendorIntegration.update({ where: { id: existing.id }, data: next })
-    : await prisma.vendorIntegration.create({ data: { vendorId, provider: 'DRAGONTAIL', ...next } });
+  let row;
+  if (existing) {
+    row = await prisma.vendorIntegration.update({ where: { id: existing.id }, data: next });
+  } else {
+    const id = newKitchenIntegrationId();
+    const keys = { id, provider: 'DRAGONTAIL' as const };
+    row = await prisma.vendorIntegration.create({
+      data: { ...keys, vendorId, ...next, secretRef: kitchenLoginRef(keys), webhookSecretRef: kitchenWebhookRef(keys) },
+    });
+  }
   return view(row);
 }
 
@@ -108,7 +111,7 @@ export async function testKitchenConnection(prisma: PrismaClient, io: Server, ve
   if (!row) throw new AppError(404, 'KITCHEN_NOT_SET_UP', 'This store has no kitchen-system connection yet.');
   const provider = kitchenProviderFor({ prisma, io }, row);
   if (!provider) {
-    return { ok: false, problem: 'The login reference does not resolve in the credentials secret.' };
+    return { ok: false, problem: `No login under ${kitchenLoginRef(row)} in the credentials secret.` };
   }
   try {
     await provider.testConnection();

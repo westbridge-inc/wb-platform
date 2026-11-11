@@ -11,7 +11,8 @@
 --     order id), so an order is never sent twice.
 --  5. The tenant wall on both tables: RLS ENABLED and FORCED with the canonical policy (rlsDdlFor), and the tenant
 --     lineage triggers (tenantLineageDdl(), byte for byte): a connection is its store's tenant, a sync its order's.
---  6. Shape: an enabled connection names its store number and its login; numbers are positive.
+--  6. Shape: an enabled connection names its store number and its login; numbers are positive; a credential
+--     reference is the connection's own (derived from its id, unique): never another store's login or secret.
 --  7. A connection never changes store or provider (its order syncs name it).
 --
 -- New, empty tables; the enums are new; the two new columns are nullable with no default.
@@ -83,6 +84,12 @@ CREATE TABLE "order_integration_syncs" (
 
 -- CreateIndex
 CREATE INDEX "vendor_integrations_tenantId_idx" ON "vendor_integrations"("tenantId");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "vendor_integrations_secretRef_key" ON "vendor_integrations"("secretRef");
+
+-- CreateIndex
+CREATE UNIQUE INDEX "vendor_integrations_webhookSecretRef_key" ON "vendor_integrations"("webhookSecretRef");
 
 -- CreateIndex
 CREATE UNIQUE INDEX "vendor_integrations_vendorId_provider_key" ON "vendor_integrations"("vendorId", "provider");
@@ -176,7 +183,12 @@ CREATE TRIGGER order_integration_syncs_tenant_matches_order BEFORE INSERT OR UPD
 -- 6. Shape.
 ALTER TABLE "vendor_integrations"
   ADD CONSTRAINT "vendor_integrations_enabled_check" CHECK (NOT "enabled" OR ("externalStoreNo" IS NOT NULL AND "secretRef" IS NOT NULL)),
-  ADD CONSTRAINT "vendor_integrations_numbers_check" CHECK (("externalStoreNo" IS NULL OR "externalStoreNo" > 0) AND "nextExternalOrderNo" > 0 AND "pollUpdateStamp" >= 0);
+  ADD CONSTRAINT "vendor_integrations_numbers_check" CHECK (("externalStoreNo" IS NULL OR "externalStoreNo" > 0) AND "nextExternalOrderNo" > 0 AND "pollUpdateStamp" >= 0),
+  -- [security review · confused deputy] A credential reference is the connection's own, derived from its id: never
+  -- another connection's (the unique indexes above also refuse a shared one).
+  ADD CONSTRAINT "vendor_integrations_refs_check" CHECK (
+    ("secretRef" IS NULL OR "secretRef" = 'kitchen/' || lower("provider"::text) || '/' || "id" || '/login')
+    AND ("webhookSecretRef" IS NULL OR "webhookSecretRef" = 'kitchen/' || lower("provider"::text) || '/' || "id" || '/webhook'));
 ALTER TABLE "order_integration_syncs"
   ADD CONSTRAINT "order_integration_syncs_numbers_check" CHECK ("externalOrderId" > 0 AND "dailyNo" >= 0 AND "attempts" >= 0);
 
