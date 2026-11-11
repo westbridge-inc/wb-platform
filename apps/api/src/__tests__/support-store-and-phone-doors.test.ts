@@ -22,6 +22,7 @@ import { WEEKLY_FEE_ACK_TYPE, WEEKLY_FEE_ACK_VERSION } from '../modules/partner/
 import { blankClosedNumberAsks, confirmPhoneChange } from '../modules/admin/phone-change';
 import { AuthService } from '../modules/auth/auth.service';
 import { getChannels } from '../providers/notifications/channels';
+import { sellerNameSweep, sweepLoginRefusal } from '../modules/verification/seller-name-sweep';
 
 // ---------------------------------------------------------------------------
 // [BUG-HUNT F22 · COORD 4 Nov 2026] Support can do what the screens tell people to ask support for. A store type picked
@@ -317,6 +318,37 @@ describe('[R3] a person confirms the seller name', () => {
       expect(res.statusCode, `${lastName}: ${res.body}`).toBe(400);
       expect(res.json().error.code).toBe('SELLER_NAME_IS_A_PERSON');
     }
+  });
+
+  // [R5 review S4-A] The bare surname is compared on the folded words: accents, titles and split or joined forms.
+  it('[review-2479 S4-A] a bare surname with or without accents, split or joined, or after a title, is refused', async () => {
+    for (const [lastName, storeName] of [['Pérez', 'Perez'], ['Perez', 'Pérez'], ['O’Brien', 'O Brien'], ['O’Brien', 'O`Brien'], ['Persaud', 'Mr Persaud'], ['Persaud', 'Mr. Persaud']] as const) {
+      const owner = await makeUser('Folded');
+      const tag = wordFreeTag(4);
+      await app.prisma.user.update({ where: { id: owner.id }, data: { lastName: `${lastName}${tag}` } });
+      const store = await makeStore(owner.id, { status: 'ACTIVE', isVerified: true, name: `${storeName}${tag}` });
+      const res = await call('PUT', `/api/v1/admin/vendors/${store.id}/seller-name`, { name: store.name });
+      expect(res.statusCode, `${lastName} / ${storeName}: ${res.body}`).toBe(400);
+      expect(res.json().error.code).toBe('SELLER_NAME_IS_A_PERSON');
+    }
+  });
+
+  // [R5 review S3-A] The deploy-day sweep reads across every tenant: on a login the tenant wall hides rows from, it
+  // would report a false "nothing to fix". It refuses such a login, and lists by id the stamps the rule would refuse.
+  it('[review-2479 S3-A] the sweep refuses a login that cannot see every tenant', () => {
+    const facts = { role: 'swift_app', roleResolved: true, isSuperuser: false, hasBypassRls: false, isBypassRoleMember: false, isOwnerRoleMember: false, tenantTables: 1, rlsDisabledTables: 0, ownedUnforcedTables: 0 };
+    expect(sweepLoginRefusal(facts)).toMatch(/SYSTEM_DATABASE_URL/);
+    expect(sweepLoginRefusal({ ...facts, roleResolved: false, isBypassRoleMember: true })).toMatch(/SYSTEM_DATABASE_URL/);
+    expect(sweepLoginRefusal({ ...facts, role: 'swift_system', isBypassRoleMember: true })).toBeNull();
+  });
+
+  it('[review-2479 S4-2] the sweep lists, by id only, a confirmed seller name that is the owner\'s surname', async () => {
+    const owner = await makeUser('Swept');
+    const store = await makeStore(owner.id, { status: 'ACTIVE', isVerified: true, name: owner.lastName!, sellerNameCheckedName: owner.lastName, sellerNameCheckedAt: new Date(), sellerNameCheckedById: 'sweep-test' });
+    const result = await sellerNameSweep(app.prisma);
+    expect(result.storesSeen).toBeGreaterThan(0);
+    expect(result.flagged).toContain(`store ${store.id}: confirmed seller name is a person's name`);
+    expect(result.flagged.join('\n')).not.toContain(owner.lastName!);
   });
 
   it('[review-2479 F6] an approved declaration that no longer counts (revoked) lets nothing through', async () => {

@@ -11,7 +11,6 @@ import { approveRegistrantLink, linkedAccountIds, normalizeRegistrationMark, pla
 import { POLICE_CLEARANCE_WITHDRAWN_NOTE } from './police-clearance-consent';
 import { ACCOUNT_HOLDER_ID_DOC_TYPE, AUTO_APPROVE_EXPIRY_DAYS, CERTIFICATE_OF_INCORPORATION_DOC_TYPE, BUCKET_OF, CERTIFICATE_YEAR_DOC_TYPES, FOOD_HANDLER_ATTESTATION_TYPE, isNeverAcceptedDocType, OWN_NAME_DOC_TYPE, OWN_NAME_TIER, PERSON_ONLY_DOC_TYPES, POLICE_CLEARANCE_DOC_TYPE, REGISTRATION_DOC_TYPES, registryCode, type RegistrationKind } from './doc-registry';
 import { accountTierOf } from '../vendor/account-basis';
-import { storeNameIsOwnName } from '../vendor/own-name';
 import { AUTHORITY_LETTER_DOC_TYPES, authorityConfirmationNote, type AuthorityConfirmation } from './authority-confirmation';
 import { guyanaWallClockParts, startOfGuyanaDay } from '../../utils/guyana-day';
 import type { ValidatorContext } from './validators';
@@ -584,6 +583,23 @@ export function isPersonsFullName(typed: string, person: { firstName: string | n
   const namesLast = !last.whole || together.includes(last.whole);
   return namesFirst && namesLast;
 }
+/** [final review S3-1 · R5 review S4-A] Is a typed name the person's whole surname, alone or with only their first
+ *  names or the initials of those (the names the own-name rule accepts), compared on the folded words: accents folded,
+ *  titles and suffixes dropped, split or joined forms equal ("O Brien" = "OBrien" = "O'Brien"). */
+export function namesHoldersSurname(typed: string, person: { firstName: string | null; lastName: string | null }): boolean {
+  const last = recordedName(person.lastName);
+  if (!last.whole) return false;
+  const first = recordedName(person.firstName);
+  const words = typedNameWords(typed);
+  const forename = (w: string) => first.known.has(w) || (w.length === 1 && first.parts.some((p) => p[0] === w));
+  for (let i = 0; i < words.length; i += 1) {
+    for (let j = i + 1; j <= words.length; j += 1) {
+      if (words.slice(i, j).join('') !== last.whole) continue;
+      if ([...words.slice(0, i), ...words.slice(j)].every(forename)) return true;
+    }
+  }
+  return false;
+}
 /** [review-2479 F1 · final review S4-1] A letter's signer, typed as free text by the account holder, as a person; or
  *  null when the field holds a company's name (a word only a company's name carries): a company's name typed there by
  *  mistake must never block that company's own legal name. For signers only, never the account holder's own name. */
@@ -609,9 +625,9 @@ export async function isAccountPersonsName(
     db.user.findUnique({ where: { id: userId }, select: { firstName: true, lastName: true } }),
     db.authorityLetterRequest.findMany({ where: { userId }, select: { signerName: true } }),
   ]);
-  // [final review S3-1] A name the own-name rule accepts for the holder (a bare or hyphenated surname, with or without
-  // first names or initials) is their name too, at every door.
-  if (holder && storeNameIsOwnName(name, holder.firstName ?? '', holder.lastName ?? '')) return true;
+  // [final review S3-1 · R5 review S4-A] A name the own-name rule accepts for the holder (a bare or hyphenated surname,
+  // with or without first names or initials) is their name too, at every door: compared on the folded words.
+  if (holder && namesHoldersSurname(name, holder)) return true;
   const people = [...(holder ? [holder] : []), ...letters.flatMap((l) => signerAsPerson(l.signerName) ?? [])];
   return people.some((person) => isPersonsFullName(name, person));
 }

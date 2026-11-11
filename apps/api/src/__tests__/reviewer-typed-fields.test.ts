@@ -42,7 +42,7 @@ import { registerErrorHandler } from '../middleware/error-handler';
 import { registerEmptyJsonBodyParser } from '../plugins/empty-json';
 import { adminRoutes } from '../modules/admin/admin.routes';
 import { clusterMemberIds } from '../modules/integrity/identity.service';
-import { isPersonsFullName, signerAsPerson, splitFullName } from '../modules/verification/verification.service';
+import { isPersonsFullName, namesHoldersSurname, signerAsPerson, splitFullName } from '../modules/verification/verification.service';
 
 const RUN = nanoid(8).replace(/[^a-zA-Z0-9]/g, '0');
 const NUM = String(Date.now()).slice(-5);
@@ -412,6 +412,17 @@ describe('[R3 · review-2476] the seller legal name typed at approval', () => {
     expect(signerAsPerson('John Smith Jr.')).toEqual({ firstName: 'John', lastName: 'Smith' });
     expect(isPersonsFullName('Kim Co', { firstName: 'Kim', lastName: 'Co' })).toBe(true);
     expect(isPersonsFullName('Co, Kim', { firstName: 'Kim', lastName: 'Co' })).toBe(true);
+  });
+
+  // [final review S3-1 (b) · R5 review S4-A] The holder's whole surname, alone or with only their first names or initials,
+  // compared on the folded words; never a name with anything else in it.
+  it('[review-2479 S4-A] the holder\'s bare surname, folded: accents, split or joined forms, titles; never with a business word', () => {
+    for (const [first, last, typed] of [['Ana', 'Pérez', 'Perez'], ['Ana', 'Perez', 'Pérez'], ['Pat', 'O’Brien', 'O Brien'], ['Pat', 'O’Brien', 'OBrien'], ['Pat', 'O’Brien', 'O`Brien'],
+      ['Ravi', 'Persaud', 'Mr Persaud'], ['Ravi', 'Persaud', 'Mr. Persaud'], ['Ravi', 'Persaud', 'R. Persaud'], ['Ravi', 'Persaud', 'PERSAUD'], ['Mary', 'Persaud-Singh', 'Persaud Singh'], ['Omar', 'O’Brien', 'O Brien']] as const)
+      expect(namesHoldersSurname(typed, { firstName: first, lastName: last }), `${last} / ${typed}`).toBe(true);
+    for (const typed of ['Persaud Trading', 'Persauds', 'Persaud’s', 'R Persaud & Sons', 'The Persaud', 'Singh', 'Ravi'])
+      expect(namesHoldersSurname(typed, { firstName: 'Ravi', lastName: 'Persaud' }), typed).toBe(false);
+    expect(namesHoldersSurname('Anything', { firstName: 'Ravi', lastName: null })).toBe(false);
   });
 
   it('[review-2479 F2] initials stand for first and middle names only, never a part of the last name', () => {
