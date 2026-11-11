@@ -103,7 +103,7 @@ describe('[CHAINS] the new-order alert names the branch', () => {
     const order = await pendingOrder(only.id, customer.id);
     await notifications.newOrderForVendor(owner.id, order.orderNumber, 2, 1500, order.id);
     const row = await alertOf(owner.id, order.id);
-    expect(row!.body).toBe(`Order ${order.orderNumber} — 2 item(s), $1,500 GYD`);
+    expect(row!.body).toBe(`Order ${order.orderNumber} — 2 item(s). Items: $1,500 GYD`); // [STORE-MONEY] the store's goods money, labelled
     expect(row!.data).toMatchObject({ orderId: order.id, vendorId: only.id });
   });
 });

@@ -1,3 +1,4 @@
+import { redemptionsFor, storeMoney } from '../billing/store-money';
 import { personTypedReason } from '../order/typed-reason';
 import { closeStoreSilentMmgCase, mmgAcceptedPayBy, mmgPayByStoreLine } from '../order/mmg-accept-expiry';
 import { drainPushesAfterResponse, pushAfterResponse } from '../../lib/push-after-response';
@@ -2575,8 +2576,12 @@ export async function vendorRoutes(app: FastifyInstance) {
     // [PROD-RIDER-TEST (a)1] The board card says "No rider found. Deliver it yourselves?" for an order whose search
     // came back empty (one journal read per riderless delivery on the page; everything else answers without one).
     const noRider = new Map(await Promise.all(orders.map(async (o) => [o.id, await noRiderStoreView(app.prisma, o)] as const)));
+    // [STORE-MONEY · owner 11 Nov 2026] The store's own money on each order (food, and whose the fee and tip are),
+    // by the sales statement's law — never the customer's total read as the store's.
+    const redemptions = await redemptionsFor(app.prisma, orders.map((o) => o.id));
     const data = orders.map((order) => withCounterpartPhones(request, redactCustomerContact({
       ...coerceMoney(order, ORDER_MONEY_FIELDS),
+      storeMoney: storeMoney({ ...order, promoRedemption: redemptions.get(order.id) ?? null }),
       ...handover.get(order.id),
       ...noRider.get(order.id),
       items: order.items.map((item) => vendorOrderLine(coerceMoney(item, ORDER_ITEM_MONEY_FIELDS))),
@@ -2614,7 +2619,9 @@ export async function vendorRoutes(app: FastifyInstance) {
     // an app update that reaches phones before this server never promises a cancellation that will not happen.
     // [PROD-RIDER-TEST (a)1] "No rider found. Deliver it yourselves?" — the card's prompt, from the dispatch journal.
     const noRider = await noRiderStoreView(app.prisma, order);
-    return { success: true, data: { ...redactCustomerContact({ ...order, ...handover, items: order.items.map(vendorOrderLine), respondBy, ...storeMmgPayBy(order), canConfirmPayment: canConfirmPayment(role), ...noShow, ...notCollected, mmgRefund, ...noRider }), custodyRecovery, outOfStockEndsOrder: true } };
+    // [STORE-MONEY · owner 11 Nov 2026] The store's own money on this order (the board's same answer).
+    const money = storeMoney({ ...order, promoRedemption: (await redemptionsFor(app.prisma, [order.id])).get(order.id) ?? null });
+    return { success: true, data: { ...redactCustomerContact({ ...order, ...handover, storeMoney: money, items: order.items.map(vendorOrderLine), respondBy, ...storeMmgPayBy(order), canConfirmPayment: canConfirmPayment(role), ...noShow, ...notCollected, mmgRefund, ...noRider }), custodyRecovery, outOfStockEndsOrder: true } };
   });
 
   /** [AF-MOB-006] POST /orders/:id/recovery/return-received — the store
