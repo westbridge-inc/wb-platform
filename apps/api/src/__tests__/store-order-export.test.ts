@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { nanoid } from 'nanoid';
 import type { Prisma, UserRole } from '@prisma/client';
@@ -10,7 +10,7 @@ import { vendorRoutes } from '../modules/vendor/vendor.routes';
 import { registerErrorHandler } from '../middleware/error-handler';
 import { registerEmptyJsonBodyParser } from '../plugins/empty-json';
 import { parseCsv } from '../utils/csv';
-import { ORDER_EXPORT_AUDIT_ACTION, ORDER_EXPORT_COLUMNS, ORDER_EXPORT_LOCK_PREFIX, guyanaStamp, orderExportLines, orderExportPageWhere, orderExportStream } from '../modules/vendor/order-export';
+import { ORDER_EXPORT_AUDIT_ACTION, ORDER_EXPORT_COLUMNS, ORDER_EXPORT_LOCK_PREFIX, guyanaStamp, orderExportLines, orderExportPageWhere, orderExportStream, releaseOrderExportLock } from '../modules/vendor/order-export';
 import { tenantContext } from '../plugins/tenant-context';
 import { aggregateSalesComponents } from '../modules/billing/sales-components';
 import { VENDOR_NO_RESPONSE_REASON } from '../modules/order/customer-cancellation';
@@ -229,6 +229,25 @@ beforeAll(async () => {
   // L7 / L8: the last instant of 25 Oct in Guyana (in), and the first of 26 Oct (out).
   L['lastInstant'] = await order(ledger.id, customer.userId, { placedAt: new Date('2026-10-26T03:59:59.999Z'), deliveredAt: new Date('2026-10-26T04:30:00.000Z'), tipAmount: 0, totalAmount: 2500 });
   L['nextDay'] = await order(ledger.id, customer.userId, { placedAt: new Date('2026-10-26T04:00:00.000Z') });
+  // [REVIEW-2485-DELTA S2-1] A Swift-funded code on an order that never became a sale: cancelled, and still in progress.
+  L['cancelledPromo'] = await order(ledger.id, customer.userId, {
+    placedAt: LEDGER_AT, status: 'CANCELLED', cancelledAt: new Date(LEDGER_AT.getTime() + 15 * 60_000), cancelledBy: owner.userId,
+    cancellationReason: 'Kitchen closed', subtotalBase: 2000, subtotalCustomer: 2000, discount: 300, deliveryFee: 500, tipAmount: 0, totalAmount: 2200,
+  });
+  await redeem(L['cancelledPromo'].id, platformPromo.id, 'PLATFORM', 300, 0);
+  L['inFlightPromo'] = await order(ledger.id, customer.userId, {
+    placedAt: LEDGER_AT, status: 'PREPARING', acceptedAt: LEDGER_AT, subtotalBase: 1000, subtotalCustomer: 1000, discount: 150,
+    deliveryFee: 500, tipAmount: 0, totalAmount: 1350,
+  });
+  await redeem(L['inFlightPromo'].id, platformPromo.id, 'PLATFORM', 100, 50);
+  // [REVIEW-2485-DELTA S3-2 / S4-5] 27 Oct (its own day): cash handed over short, a card order, a bank transfer.
+  const day27 = new Date('2026-10-27T15:00:00.000Z');
+  L['shortCash'] = await order(ledger.id, customer.userId, {
+    placedAt: day27, deliveredAt: day27, fulfillmentMode: 'PLATFORM_RIDER', paymentStatus: 'CAPTURED',
+    doorCashCollectedAmount: 2000, doorCashShortfallAmount: 600, doorCashMismatchAt: day27,
+  });
+  L['card'] = await order(ledger.id, customer.userId, { placedAt: day27, deliveredAt: day27, paymentMethod: 'CARD', paymentStatus: 'CAPTURED' });
+  L['bank'] = await order(ledger.id, customer.userId, { placedAt: day27, status: 'PENDING', paymentMethod: 'BANK_TRANSFER' });
 });
 
 afterAll(async () => {
@@ -442,7 +461,7 @@ describe('[REVIEW-2485-B] the store\'s money, split like the sales statement', (
     const numbers = new Set(rows.map((r) => r['order_number']));
     expect(numbers).toContain(L['lastInstant']!.orderNumber);
     expect(numbers).not.toContain(L['nextDay']!.orderNumber);
-    expect(rows).toHaveLength(7);
+    expect(rows).toHaveLength(9);
   });
 
   it('sum(store_goods_net) equals the sales statement total for the same days', async () => {
@@ -470,7 +489,7 @@ describe('[REVIEW-2485-B] the store\'s money, split like the sales statement', (
     expect(by('platformPromo')).toMatchObject({
       promo_code: platformCode, discount: '450.00', discount_store_funded: '0.00', discount_swift_funded_goods: '250.00',
       discount_swift_funded_delivery: '200.00', discount_estimated: 'no', store_goods_net: '2000.00',
-      store_delivery_fee_and_tip: '500.00', rider_delivery_fee_and_tip: '0.00', fulfilment: 'own_delivery',
+      store_delivery_fee_and_tip: '300.00', rider_delivery_fee_and_tip: '0.00', fulfilment: 'own_delivery',
       payment_status: 'cash_to_store_not_recorded_by_swift',
     });
   });
@@ -562,6 +581,74 @@ describe('[ORDER-EXPORT] large exports', () => {
 describe('[ORDER-EXPORT] guyanaStamp', () => {
   it('is the Guyana wall clock, UTC-4', () => {
     expect(guyanaStamp(new Date('2026-01-01T03:00:00.000Z'))).toBe('2025-12-31 23:00:00');
+  });
+});
+
+describe('[REVIEW-2485-DELTA] finished sales only, short cash, other payment methods', () => {
+  it('S2-1: the funder split is blank on a cancelled or unfinished order, so "Swift owes the store" sums to the statement', async () => {
+    const res = await get(owner.token, `/api/v1/vendor/orders/export?${LEDGER_RANGE}&branch=${ledger.id}`, north.id);
+    const rows = rowsOf(res.body);
+    const by = (key: string) => rows.find((r) => r['order_number'] === L[key]!.orderNumber)!;
+    for (const key of ['cancelledPromo', 'inFlightPromo']) {
+      expect(by(key), key).toMatchObject({
+        discount_store_funded: '', discount_swift_funded_goods: '', discount_swift_funded_delivery: '', discount_estimated: '', store_goods_net: '',
+      });
+      expect(by(key)['discount']).not.toBe('');
+    }
+    const swiftOwes = rows.reduce((sum, r) => sum + Math.round(Number(r['discount_swift_funded_goods'] || 0) * 100), 0) / 100;
+    const statement = await aggregateSalesComponents(app.prisma, { vendorId: ledger.id, from: startOfGuyanaDay('2026-10-20'), to: endOfGuyanaDay('2026-10-25') });
+    expect(statement.sponsorReceivable).toBe(250);
+    expect(swiftOwes).toBe(statement.sponsorReceivable);
+  });
+
+  it('S3-2 / S4-5: short cash in the receipt\'s words; card and bank transfer never called cash', async () => {
+    const res = await get(owner.token, `/api/v1/vendor/orders/export?from=2026-10-27&to=2026-10-27&branch=${ledger.id}`, north.id);
+    const rows = rowsOf(res.body);
+    const by = (key: string) => rows.find((r) => r['order_number'] === L[key]!.orderNumber)!;
+    expect(by('shortCash')).toMatchObject({ payment_status: 'cash_collected_short', payment_note: 'Paid 2000.00 in cash on delivery (600.00 not collected)' });
+    expect(by('card')).toMatchObject({ payment_method: 'card', payment_status: 'card_paid', payment_note: 'Paid by card' });
+    expect(by('bank')).toMatchObject({ payment_method: 'bank_transfer', payment_status: 'bank_transfer_pending', payment_note: 'Bank transfer, not confirmed' });
+  });
+});
+
+describe('[REVIEW-2485-DELTA S4] the export lock', () => {
+  it('releasing deletes only this export\'s own lock, never one another export took', async () => {
+    const key = `${ORDER_EXPORT_LOCK_PREFIX}release-test-${nanoid(6)}`;
+    await app.redis.set(key, 'other-export', 'EX', 60);
+    await releaseOrderExportLock(app.redis, key, 'my-export');
+    expect(await app.redis.get(key)).toBe('other-export');
+    await releaseOrderExportLock(app.redis, key, 'other-export');
+    expect(await app.redis.exists(key)).toBe(0);
+  });
+
+  it('a database error part-way through the file still frees the slot', async () => {
+    const member = await makeUser(['CUSTOMER'], 'CUSTOMER');
+    await app.prisma.vendorStaff.create({ data: { vendorId: north.id, userId: member.userId, role: 'MANAGER', invitedBy: owner.userId } });
+    const broken = vi.spyOn(app.prisma.vendor, 'findMany').mockRejectedValueOnce(new Error('database went away'));
+    try {
+      const res = await get(member.token, `/api/v1/vendor/orders/export?${RANGE}`, north.id).catch((err: unknown) => err);
+      expect(res).toBeDefined();
+    } finally {
+      broken.mockRestore();
+    }
+    await new Promise((r) => setTimeout(r, 50));
+    expect(await app.redis.exists(`${ORDER_EXPORT_LOCK_PREFIX}${member.userId}`)).toBe(0);
+    const again = await get(member.token, `/api/v1/vendor/orders/export?${RANGE}`, north.id);
+    expect(again.statusCode, again.body).toBe(200);
+  });
+
+  it('Redis down: a clear 503, no export and no audit row', async () => {
+    const member = await makeUser(['CUSTOMER'], 'CUSTOMER');
+    await app.prisma.vendorStaff.create({ data: { vendorId: north.id, userId: member.userId, role: 'MANAGER', invitedBy: owner.userId } });
+    const down = vi.spyOn(app.redis, 'set').mockRejectedValueOnce(new Error('connection refused'));
+    try {
+      const res = await get(member.token, `/api/v1/vendor/orders/export?${RANGE}`, north.id);
+      expect(res.statusCode, res.body).toBe(503);
+      expect(res.json().error).toMatchObject({ code: 'EXPORT_UNAVAILABLE', message: 'Export is unavailable right now. Try again shortly.' });
+    } finally {
+      down.mockRestore();
+    }
+    expect(await app.prisma.auditLog.count({ where: { userId: member.userId, action: ORDER_EXPORT_AUDIT_ACTION } })).toBe(0);
   });
 });
 

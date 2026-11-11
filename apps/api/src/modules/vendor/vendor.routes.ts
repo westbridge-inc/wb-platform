@@ -57,7 +57,7 @@ import { VerificationService } from '../verification/verification.service';
 import { getKycProvider } from '../../providers/kyc/kyc-provider';
 import { getStorageProvider } from '../../providers/storage/storage-provider';
 import { encryptBuffer, generateDek, getKeyProvider } from '../../providers/storage/envelope';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { publishLegalDocumentOnce, recordConsent, type ConsentSurface } from '../legal/consent.service';
 import { LEGAL_VERSION } from '../legal/legal.routes';
 import { OWN_NAME_CONSENT_TYPE, OWN_NAME_DECLARATION_V1, OWN_NAME_DECLARATION_VERSION, OWN_NAME_VENDOR_TYPES, renderOwnNamePdf, storeNameIsOwnName } from './own-name';
@@ -5653,7 +5653,7 @@ export async function vendorRoutes(app: FastifyInstance) {
    *  sales — an owner every branch, a team member only the stores they MANAGE (as GET /stores/summary). Staff never.
    *  At most 366 Guyana days; every export leaves an audit row (who, range, branches) before the first byte. */
   app.get('/orders/export', { ...auth, config: { rateLimit: { max: 30, timeWindow: '1 hour' } } }, async (request, reply) => {
-    const { orderExportPeriod, orderExportLines, orderExportStream, ORDER_EXPORT_AUDIT_ACTION, ORDER_EXPORT_LOCK_PREFIX, ORDER_EXPORT_LOCK_TTL_S } = await import('./order-export');
+    const { orderExportPeriod, orderExportLines, orderExportStream, releaseOrderExportLock, ORDER_EXPORT_AUDIT_ACTION, ORDER_EXPORT_LOCK_PREFIX, ORDER_EXPORT_LOCK_TTL_S } = await import('./order-export');
     const q = z.object({ from: z.string().max(10).optional(), to: z.string().max(10).optional(), branch: z.string().min(1).max(64).optional() })
       .parse(request.query ?? {});
     const { access, salesStores } = await exportStores(request);
@@ -5667,10 +5667,17 @@ export async function vendorRoutes(app: FastifyInstance) {
     const vendorIds = all ? salesStores : [branch!];
     // [REVIEW-2485-A S3-1] One export at a time per person, so a big chain export cannot be run many times over at once.
     const lockKey = `${ORDER_EXPORT_LOCK_PREFIX}${request.user.userId}`;
-    if (await app.redis.set(lockKey, '1', 'EX', ORDER_EXPORT_LOCK_TTL_S, 'NX') !== 'OK') {
+    const lockToken = randomUUID();
+    // [REVIEW-2485-DELTA S4] No lock store, no export (a heavy read is not run unguarded), said plainly.
+    const taken = await app.redis.set(lockKey, lockToken, 'EX', ORDER_EXPORT_LOCK_TTL_S, 'NX').catch((err: unknown) => {
+      request.log.warn({ err }, '[ORDER-EXPORT] lock store unavailable');
+      throw new AppError(503, 'EXPORT_UNAVAILABLE', 'Export is unavailable right now. Try again shortly.');
+    });
+    if (taken !== 'OK') {
       throw new AppError(429, 'EXPORT_ALREADY_RUNNING', 'An export is already running for you. Try again when it has finished.');
     }
-    const release = () => { void app.redis.del(lockKey).catch(() => undefined); };
+    // [REVIEW-2485-DELTA S4-1] Compare-and-delete: only this export's own token.
+    const release = () => { void releaseOrderExportLock(app.redis, lockKey, lockToken).catch(() => undefined); };
     let stream: ReturnType<typeof orderExportStream>;
     try {
       // [REVIEW-2485-A S4-3] An all-branches export is recorded against a store this person may export (their first),

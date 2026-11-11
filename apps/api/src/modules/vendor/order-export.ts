@@ -45,6 +45,17 @@ export const ORDER_EXPORT_LOCK_PREFIX = 'order-export:running:';
 /** The longest one export may hold the slot if its stream never closes (a crash): then it frees itself. */
 export const ORDER_EXPORT_LOCK_TTL_S = 15 * 60;
 
+/** [REVIEW-2485-DELTA S4-1] Delete the lock only if it still holds THIS export's token (an export that outlived the
+ *  TTL must never free the slot a later export took). */
+const RELEASE_IF_MINE = "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end";
+export async function releaseOrderExportLock(
+  redis: { eval: (script: string, keys: number, ...args: string[]) => Promise<unknown> },
+  key: string,
+  token: string,
+): Promise<void> {
+  await redis.eval(RELEASE_IF_MINE, 1, key, token);
+}
+
 export const ORDER_EXPORT_COLUMNS = [
   'order_number', 'branch', 'branch_city', 'order_status', 'fulfilment', 'express',
   'placed_at_guyana', 'placed_at_iso', 'accepted_at_guyana', 'accepted_at_iso', 'ready_at_guyana', 'ready_at_iso',
@@ -126,6 +137,12 @@ const FINISHED = new Set(['DELIVERED', 'COMPLETED']);
 function paymentState(o: ExportOrder): [string, string] {
   if (o.paymentStatus === 'REFUNDED') return ['refunded', 'Refunded'];
   if (o.paymentStatus === 'PARTIALLY_REFUNDED') return ['partly_refunded', 'Partly refunded'];
+  // [REVIEW-2485-DELTA S4-5] Not cash (no store order takes these today; never called cash if one appears).
+  if (o.paymentMethod === 'CARD') return o.paymentStatus === 'CAPTURED' ? ['card_paid', 'Paid by card'] : ['card_pending', 'Card payment, not confirmed'];
+  if (o.paymentMethod === 'BANK_TRANSFER') {
+    return o.paymentStatus === 'CAPTURED' ? ['bank_transfer_paid', 'Paid by bank transfer'] : ['bank_transfer_pending', 'Bank transfer, not confirmed'];
+  }
+  if (o.paymentMethod === 'WALLET') return [`wallet_${o.paymentStatus.toLowerCase()}`, 'Wallet'];
   if (o.paymentMethod === 'MOBILE_MONEY') {
     if (o.paymentStatus === 'CAPTURED') return ['mmg_confirmed', 'Paid by MMG — directly to the store'];
     if (o.paymentStatus === 'CLAIMED') return ['mmg_reported_by_store', 'MMG payment reported received by the store — not confirmed by the provider'];
@@ -133,6 +150,11 @@ function paymentState(o: ExportOrder): [string, string] {
   }
   const how = fulfilment(o);
   if (o.paymentStatus === 'CAPTURED') {
+    // [REVIEW-2485-DELTA S3-2] Handed over short (receipt.ts shortCash): the cash actually taken and what was not.
+    const short = o.doorCashShortfallAmount;
+    if (short != null && short.gt(0) && o.doorCashCollectedAmount != null) {
+      return ['cash_collected_short', `Paid ${amount(o.doorCashCollectedAmount)} in cash on delivery (${amount(short)} not collected)`];
+    }
     if (how === 'pickup') return ['cash_collected', 'Paid in cash at the store'];
     if (how === 'appointment') return ['cash_collected', 'Paid at the appointment'];
     return ['cash_collected', 'Paid in cash on delivery'];
@@ -172,7 +194,7 @@ const exportSelect = {
   mmgClaimMismatchAt: true, mmgClaimResolution: true, mmgClaimResolvedRevision: true, mmgClaimRevision: true,
   subtotalCustomer: true, deliveryFee: true, serviceFee: true, tipAmount: true, discount: true, totalAmount: true,
   vatAmount: true, taxAmount: true, isExpress: true, currencyCode: true,
-  refundOwedAmount: true, refundSettledAt: true, refundPaidAmount: true,
+  refundOwedAmount: true, refundSettledAt: true, refundPaidAmount: true, doorCashCollectedAmount: true, doorCashShortfallAmount: true,
   promoCode: { select: { code: true } },
   promoRedemption: { select: { funder: true, goodsDiscount: true, deliveryDiscount: true, promoCode: { select: { code: true } } } },
 } satisfies Prisma.OrderSelect;
@@ -280,12 +302,16 @@ async function pageLines(db: Db, page: ExportOrder[], stores: Map<string, { name
       text(mmgPaidClaim(o)), text(o.paymentMethod === 'MOBILE_MONEY' ? o.mmgAttestedRef : null),
       String(itemCount.get(o.id) ?? 0), text(o.currencyCode),
       amount(o.subtotalCustomer), amount(o.discount),
-      fixed(money.vendorPromoDiscount), fixed(money.sponsorReceivable), fixed(money.feeFunding), yesNo(money.estimated),
+      // [REVIEW-2485-DELTA S2-1] Who funded the discount counts only on a finished sale (as the statement): a cancelled or
+      // unfinished order owes nobody anything. `discount` above stays, as what the order carried.
+      ...(sale ? [fixed(money.vendorPromoDiscount), fixed(money.sponsorReceivable), fixed(money.feeFunding), yesNo(money.estimated)] : ['', '', '', '']),
       // [REVIEW-2485-B S3-2] A Swift code spread over a multi-store basket is on the redemption, not on every order.
       text(o.promoRedemption?.promoCode.code ?? o.promoCode?.code),
       amount(o.deliveryFee), amount(o.serviceFee), amount(o.tipAmount), amount(o.taxAmount), amount(o.vatAmount), amount(o.totalAmount),
       sale ? fixed(money.goodsSales - money.vendorPromoDiscount) : '',
-      sale ? amount(storeKeepsFee ? feeAndTip : new Prisma.Decimal(0)) : '',
+      // [REVIEW-2485-DELTA S3-1 · COORD ruling] On its own delivery the store collected the fee less the Swift-funded
+      // delivery discount (no rail pays that gap to a store), plus the tip.
+      sale ? (storeKeepsFee ? fixed(Math.max(0, Number(feeAndTip) - money.feeFunding)) : '0.00') : '',
       sale ? amount(storeKeepsFee ? new Prisma.Decimal(0) : feeAndTip) : '',
       text(who ? who.by.toLowerCase() : ''), text(who ? cancellationWords(who.by, who.reason) : ''),
       anyRefund && owed.gt(0) ? amount(owed) : '', anyRefund && paid.gt(0) ? amount(paid) : '', text(notes.join('; ')),
