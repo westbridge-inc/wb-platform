@@ -3014,7 +3014,7 @@ describe('[PT-4] real cards through HTTP: Swift\'s hosted page, the bank\'s chec
     it('[R1] REFUND answered: the refund\'s own transaction is kept on the session (shown to admins, a recorded money reference), written once and only beside REFUNDED', async () => {
       const finance = await makeFinance();
       const p = await makeStore();
-      const { sessionId, txnId } = await heldPayment(p);
+      const { sessionId, txnId } = await heldPayment(p, '203.0.113.49'); // its own source: the return page is rate-limited per address
       const refundId = `d4e5f6a7-0000-4000-8000-${randomBytes(6).toString('hex')}`;
       refundAnswer = (b) => ({ status: 200, body: { OriginalTrxnIdentifier: b['TransactionIdentifier'], TransactionType: 5, Approved: true, TransactionIdentifier: refundId, TotalAmount: b['TotalAmount'], CurrencyCode: b['CurrencyCode'], IsoResponseCode: '00', ResponseMessage: 'Transaction is approved' } });
       try {
@@ -3325,7 +3325,7 @@ describe('[PT-4] real cards through HTTP: Swift\'s hosted page, the bank\'s chec
     const held = await heldOf(session.sessionId);
     const forged = { IsoResponseCode: '3D0', SpiToken: 'spi-someone-else', TransactionIdentifier: held['txnId'], RiskManagement: { ThreeDSecure: { ResponseCode: '3D0', AuthenticationStatus: 'Y' } } };
     const before = completions();
-    const res = await ptz.inject({ method: 'POST', url: merchantResponsePath(), headers: { 'content-type': 'application/x-www-form-urlencoded' }, payload: `Response=${encodeURIComponent(JSON.stringify(forged))}` });
+    const res = await ptz.inject({ method: 'POST', url: merchantResponsePath(), headers: { 'content-type': 'application/x-www-form-urlencoded' }, payload: `Response=${encodeURIComponent(JSON.stringify(forged))}`, remoteAddress: '203.0.113.50' });
     expect(pageState(res.body)).toBe('FAILED');
     expect(completions()).toBe(before);
     expect((await money(p.subId)).successes).toBe(0);
