@@ -87,9 +87,9 @@ const typedPrice = (o: { additionalPrice?: unknown; vatListedAdditionalPrice?: u
   Number(o.vatListedAdditionalPrice ?? o.additionalPrice ?? o.price);
 
 /** A size choice's price: the item's whole price. */
-export function sizePriceLabel(o: { additionalPrice?: unknown; vatListedAdditionalPrice?: unknown; price?: unknown }, money: (_n: number) => string): string {
+export function sizePriceLabel(o: { additionalPrice?: unknown; vatListedAdditionalPrice?: unknown; price?: unknown }, format: (_n: number) => string): string {
   const n = Number(o.additionalPrice ?? o.price);
-  return `Price ${money(Number.isFinite(n) ? n : 0)}${o.vatListedAdditionalPrice != null ? ' incl. VAT' : ''}`;
+  return `Price ${format(Number.isFinite(n) ? n : 0)}${o.vatListedAdditionalPrice != null ? ' incl. VAT' : ''}`;
 }
 
 /** The price box of a new choice. */
@@ -105,8 +105,8 @@ export function lowestSizePrice(groups: readonly GroupLike[] | null | undefined)
   return prices.length ? Math.min(...prices) : null;
 }
 
-export function fromPriceWords(n: number, money: (_n: number) => string): string {
-  return `From ${money(n)} (lowest size)`;
+export function fromPriceWords(n: number, format: (_n: number) => string): string {
+  return `From ${format(n)} (lowest size)`;
 }
 
 /** Whether some choice of the item opens this group (it is a follow-up group). */

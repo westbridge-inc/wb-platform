@@ -18,7 +18,7 @@ const fx = vi.hoisted(() => ({
   menu: [] as any[],
   write: vi.fn(),
   toast: vi.fn(),
-  api: {} as Record<string, ReturnType<typeof vi.fn>>,
+  api: {} as Record<string, any>,
   token: new Proxy({}, { get: (_target, key): unknown => key === Symbol.toPrimitive ? () => 0 : fx.token }),
 }));
 
@@ -138,8 +138,8 @@ beforeEach(() => {
   fx.menu = [{ id: 'mains', items: [{ id: 'i-marg', name: 'Margherita' }, { id: 'i-veg', name: 'Veggie' }, { id: 'i-hawaii', name: 'Hawaiian' }] }];
   for (const k of ['orderModifierGroups', 'createModifierGroup', 'updateModifierGroup', 'deleteModifierGroup', 'addModifierOption',
     'updateModifierOption', 'deleteModifierOption', 'attachModifierGroup', 'detachModifierGroup']) fx.api[k] = vi.fn(() => ok({}));
-  fx.api.createModifierGroup = vi.fn(() => ok({ id: 'lib-new' }));
-  fx.api.deleteModifierGroup = vi.fn(() => ok({ deleted: true, removedFromItems: 2 }));
+  fx.api['createModifierGroup'] = vi.fn(() => ok({ id: 'lib-new' }));
+  fx.api['deleteModifierGroup'] = vi.fn(() => ok({ deleted: true, removedFromItems: 2 }));
   fx.write.mockImplementation(async (send: () => Promise<any>) => (await send())?.data?.data);
   host = document.createElement('div'); document.body.append(host); root = createRoot(host);
 });
@@ -180,7 +180,7 @@ describe('[MENU-OPTIONS] the option library', () => {
     expect(text()).toContain('Used by 2 items');
     expect(text()).toContain('Used by 0 items');
     await tap('Move Toppings up');
-    expect(fx.api.orderModifierGroups).toHaveBeenCalledWith(['lib-top', 'lib-size', 'lib-dips']);
+    expect(fx.api['orderModifierGroups']).toHaveBeenCalledWith(['lib-top', 'lib-size', 'lib-dips']);
   });
 
   it('a new shared group is created with its rules, then opens for its choices', async () => {
@@ -189,7 +189,7 @@ describe('[MENU-OPTIONS] the option library', () => {
     await type('Group name (e.g. Pizza size, Toppings)', 'Crust');
     await tap('Required');
     await tap('Create group');
-    expect(fx.api.createModifierGroup).toHaveBeenCalledWith({ name: 'Crust', isRequired: true, minSelect: 1, maxSelect: 1 });
+    expect(fx.api['createModifierGroup']).toHaveBeenCalledWith({ name: 'Crust', isRequired: true, minSelect: 1, maxSelect: 1 });
   });
 
   it('editing a shared group warns it changes every item, and saves every flag', async () => {
@@ -197,7 +197,7 @@ describe('[MENU-OPTIONS] the option library', () => {
     expect(text()).toContain('Changes apply to all 2 items');
     await tap('Full price');
     await tap('Save group');
-    expect(fx.api.updateModifierGroup).toHaveBeenCalledWith('lib-top', {
+    expect(fx.api['updateModifierGroup']).toHaveBeenCalledWith('lib-top', {
       name: 'Toppings', isRequired: false, minSelect: 0, maxSelect: 10, setsPrice: false, allowHalves: true, halfPricePercent: 100,
     });
   });
@@ -206,17 +206,17 @@ describe('[MENU-OPTIONS] the option library', () => {
     await open({ groupId: 'lib-top' });
     expect(text()).toContain('+$400 · Kitchen code PEP');
     await tap('Available');
-    expect(fx.api.updateModifierOption).toHaveBeenCalledWith('lo-pep', { isAvailable: false });
+    expect(fx.api['updateModifierOption']).toHaveBeenCalledWith('lo-pep', { isAvailable: false });
     await tap('Opens follow-up group');
     const offered = Array.from(host.querySelectorAll('[role="dialog"] button')).map((b) => b.textContent);
     expect(offered, 'never itself, never a group that sets the price').toEqual(['Dips', 'Opens nothing', 'Cancel']);
     await tap('Dips');
-    expect(fx.api.updateModifierOption).toHaveBeenCalledWith('lo-pep', { followUpGroupId: 'lib-dips' });
+    expect(fx.api['updateModifierOption']).toHaveBeenCalledWith('lo-pep', { followUpGroupId: 'lib-dips' });
     await type('Choice (e.g. Large)', 'Mushroom');
     await type('+GYD', '300');
     await type('Kitchen code (optional)', 'MSH');
     await tap('Add choice');
-    expect(fx.api.addModifierOption).toHaveBeenCalledWith('lib-top', { name: 'Mushroom', price: 300, externalCode: 'MSH' });
+    expect(fx.api['addModifierOption']).toHaveBeenCalledWith('lib-top', { name: 'Mushroom', price: 300, externalCode: 'MSH' });
   });
 
   it('a size group\'s choices are the price ("Price"), not an extra', async () => {
@@ -227,11 +227,11 @@ describe('[MENU-OPTIONS] the option library', () => {
   it('bulk attach / detach sends only the change', async () => {
     await open({ groupId: 'lib-top' });
     await tap('Choose items');
-    await tap('✓ Veggie');
+    await tap('Veggie');
     await tap('Hawaiian');
     await tap('Save items');
-    expect(fx.api.attachModifierGroup).toHaveBeenCalledWith('lib-top', ['i-hawaii']);
-    expect(fx.api.detachModifierGroup).toHaveBeenCalledWith('lib-top', ['i-veg']);
+    expect(fx.api['attachModifierGroup']).toHaveBeenCalledWith('lib-top', ['i-hawaii']);
+    expect(fx.api['detachModifierGroup']).toHaveBeenCalledWith('lib-top', ['i-veg']);
   });
 
   it('delete says how many items lose it, and tells how many it was removed from', async () => {
@@ -239,7 +239,7 @@ describe('[MENU-OPTIONS] the option library', () => {
     await tap('Delete group');
     expect(host.querySelector('[role="alertdialog"]')?.textContent).toContain('It is removed from 2 items that use it.');
     await tap('Delete group', 1);
-    expect(fx.api.deleteModifierGroup).toHaveBeenCalledWith('lib-top');
+    expect(fx.api['deleteModifierGroup']).toHaveBeenCalledWith('lib-top');
     expect(fx.toast).toHaveBeenCalledWith('Deleted. Removed from 2 items.');
   });
 

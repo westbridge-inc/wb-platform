@@ -345,6 +345,7 @@ vi.mock('./NewOrderTakeover', () => ({ NewOrderTakeover: 'NewOrderTakeover' }));
 vi.mock('./VatDocumentRow', () => ({ VatDocumentRow: 'VatDocumentRow' })); // [VAT-DOCS] the Documents list's optional VAT row (its camera picker needs a device)
 vi.mock('./screens/VendorAccountScreen', () => ({ VendorAccountScreen: 'VendorAccountScreen' }));
 vi.mock('./screens/VendorBulkImportScreen', () => ({ VendorBulkImportScreen: 'VendorBulkImportScreen' }));
+vi.mock('./screens/VendorOptionLibraryScreen', () => ({ VendorOptionLibraryScreen: 'VendorOptionLibraryScreen' }));
 vi.mock('./screens/VendorCategoryReviewScreen', () => ({ VendorCategoryReviewScreen: 'VendorCategoryReviewScreen' }));
 vi.mock('./screens/VendorInsightsScreen', () => ({ VendorInsightsScreen: 'VendorInsightsScreen' }));
 vi.mock('./screens/VendorItemEditorScreen', () => ({ VendorItemEditorScreen: 'VendorItemEditorScreen' }));

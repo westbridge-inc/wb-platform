@@ -107,6 +107,13 @@ export function draftOptionGroupsPayload(groups: DraftOptionGroup[], vatAdded = 
   }));
 }
 
+/** [MENU-OPTIONS] An item save without its price fields (a sized item's price is its lowest size, kept by the server). */
+export function withoutItemPrice<T extends Record<string, unknown>>(sized: boolean, data: T): T {
+  if (!sized) return data;
+  const { basePrice: _base, vatListedPrice: _listed, ...rest } = data;
+  return rest as T;
+}
+
 let draftKeys = 0;
 const nextDraftKey = () => `draft-${++draftKeys}`;
 
@@ -230,7 +237,7 @@ function ModifiersSection({ item, staged, vatPricing, navigation, onGroupsChange
 
   /** [MENU-OPTIONS] A saved group's size / half-and-half rule, changed at the tap (the server judges the item). */
   const changeFlags = async (g: any, next: Partial<GroupFlags>) => {
-    if (readOnly) return;
+    if (readOnly || write.isPending) return;
     setError(null);
     const flags = { ...flagsOf(g), ...next };
     if (staged) {
@@ -252,7 +259,7 @@ function ModifiersSection({ item, staged, vatPricing, navigation, onGroupsChange
   /** [MENU-OPTIONS] The group a choice opens (null = none). */
   const setFollowUp = async (pick: { groupId: string; optionId: string }, followUpGroupId: string | null) => {
     setFollowUpFor(null);
-    if (readOnly) return;
+    if (readOnly || write.isPending) return;
     setError(null);
     try {
       const answer = await write.mutateAsync(() => vendorApi.updateOption(pick.optionId, { followUpGroupId }));
@@ -267,7 +274,7 @@ function ModifiersSection({ item, staged, vatPricing, navigation, onGroupsChange
   /** [MENU-OPTIONS] A library group attached to this item. */
   const attachFromLibrary = async (libraryGroupId: string) => {
     setLibraryPick(false);
-    if (readOnly || !item?.id) return;
+    if (readOnly || write.isPending || !item?.id) return;
     setError(null);
     try {
       await write.mutateAsync(() => vendorApi.attachModifierGroup(libraryGroupId, [item.id]));
@@ -398,7 +405,7 @@ function ModifiersSection({ item, staged, vatPricing, navigation, onGroupsChange
               <LinkText label="Edit shared group" disabled={readOnly} onPress={() => navigation?.navigate?.('VendorOptionLibrary', { groupId: shared.libraryGroupId })} />
             </View>
           ) : (
-            <GroupRuleChips flags={flagsOf(g)} change={(next) => { void changeFlags(g, next); }} sizeTaken={sizeTaken && !g.setsPrice} disabled={readOnly || write.isPending} />
+            <GroupRuleChips flags={flagsOf(g)} onChange={(next) => { void changeFlags(g, next); }} sizeTaken={sizeTaken && !g.setsPrice} disabled={readOnly || write.isPending} />
           )}
 
           {(g.options ?? []).map((o: any) => (
@@ -408,7 +415,7 @@ function ModifiersSection({ item, staged, vatPricing, navigation, onGroupsChange
                   {o.name}{o.isAvailable === false ? ' · Sold out' : ''}
                 </T>
                 <T variant="label" tone="muted" style={{ marginRight: space.md }}>
-                  {g.setsPrice ? sizePriceLabel(o, money) : optionPriceLabel(o)}
+                  {g.setsPrice ? sizePriceLabel(o, money) : <>{optionPriceLabel(o)}</>}
                 </T>
                 {shared ? null : (
                   <Pressable disabled={readOnly} onPress={() => removeOption(g.id, o.id)} hitSlop={8} accessibilityRole="button" accessibilityLabel={`Remove ${o.name}`}>
@@ -440,13 +447,24 @@ function ModifiersSection({ item, staged, vatPricing, navigation, onGroupsChange
               onChangeText={(t: string) => setDrafts((s) => ({ ...s, [g.id]: { ...draft(g.id), name: t } }))}
               placeholder="Choice (e.g. Large)"
             />
-            <InlineInput
-              style={{ width: 96 }}
-              value={draft(g.id).price}
-              onChangeText={(t: string) => setDrafts((s) => ({ ...s, [g.id]: { ...draft(g.id), price: t } }))}
-              placeholder={choicePricePlaceholder(g.setsPrice === true, vatAdded)}
-              keyboardType="number-pad"
-            />
+            {g.setsPrice ? (
+              // [MENU-OPTIONS] A size's price is the item's whole price ("Price", not "+").
+              <InlineInput
+                style={{ width: 96 }}
+                value={draft(g.id).price}
+                onChangeText={(t: string) => setDrafts((s) => ({ ...s, [g.id]: { ...draft(g.id), price: t } }))}
+                placeholder={choicePricePlaceholder(true, vatAdded)}
+                keyboardType="number-pad"
+              />
+            ) : (
+              <InlineInput
+                style={{ width: 96 }}
+                value={draft(g.id).price}
+                onChangeText={(t: string) => setDrafts((s) => ({ ...s, [g.id]: { ...draft(g.id), price: t } }))}
+                placeholder={vatAdded ? '+GYD before VAT' : '+GYD'}
+                keyboardType="number-pad"
+              />
+            )}
             <Pressable onPress={() => submitOption(g.id)} disabled={readOnly || addOption.isPending}>
               {({ pressed }) => (
                 <View
@@ -479,7 +497,7 @@ function ModifiersSection({ item, staged, vatPricing, navigation, onGroupsChange
             </>
           ) : null}
         </View>
-        <GroupRuleChips flags={groupFlags} change={(next) => setGroupFlags((f) => ({ ...f, ...next }))} sizeTaken={sizeTaken} disabled={readOnly} />
+        <GroupRuleChips flags={groupFlags} onChange={(next) => setGroupFlags((f) => ({ ...f, ...next }))} sizeTaken={sizeTaken} disabled={readOnly} />
         <PillButton
           label="Add option group"
           variant="soft"
@@ -559,12 +577,14 @@ function ModifiersSection({ item, staged, vatPricing, navigation, onGroupsChange
           Add from option library
         </PopupTitle>
         <T variant="body" tone="muted" center style={{ marginTop: space.sm }}>
-          {addable.length > 0 ? 'A shared group: edit it once in the library and every item that uses it changes.' : 'No other groups in your option library yet.'}
+          {library.isError
+            ? 'Couldn’t load your option library. Check your connection and try again.'
+            : addable.length > 0 ? 'A shared group: edit it once in the library and every item that uses it changes.' : 'No other groups in your option library yet.'}
         </T>
         {addable.map((l) => (
           <Chip key={l.id} label={`${l.name} · ${usedByWords(l.usedByItemCount)}`} onPress={() => { void attachFromLibrary(l.id); }} style={{ height: 38, paddingHorizontal: space.md, marginTop: space.sm, alignSelf: 'stretch' }} />
         ))}
-        <PillButton label="Open option library" variant="outline" style={{ alignSelf: 'stretch', marginTop: space.lg }} onPress={() => { setLibraryPick(false); navigation?.navigate?.('VendorOptionLibrary'); }} />
+        <PillButton label="Open option library" variant="outline" style={{ alignSelf: 'stretch', marginTop: space.lg }} onPress={() => { setLibraryPick(false); afterDismiss(() => navigation?.navigate?.('VendorOptionLibrary')); }} />
         <PillButton label="Cancel" variant="soft" style={{ alignSelf: 'stretch', marginTop: space.md }} onPress={() => setLibraryPick(false)} />
       </PopupCard>
     </Card>
@@ -795,12 +815,12 @@ export function VendorItemEditorScreen({ navigation, route }: any) {
       id: existing?.id,
       authSession: owner,
       storeId: operationStoreId,
-      data: {
+      // [MENU-OPTIONS] A sized item's price is its lowest size, kept by the server: an edit never sends one.
+      data: withoutItemPrice(existing != null && sizedFrom != null, {
         categoryId,
         name: name.trim(),
         description: description.trim() || undefined,
-        // [MENU-OPTIONS] A sized item's price is its lowest size, kept by the server: an edit never sends one.
-        ...(existing && sizedFrom != null ? {} : itemPricePayload(existing, priceNum, vatAdded)),
+        ...itemPricePayload(existing, priceNum, vatAdded),
         isAvailable: available,
         isPopular: popular,
         ...(isService
@@ -817,7 +837,7 @@ export function VendorItemEditorScreen({ navigation, route }: any) {
               // [TAP-AUDIT] A new item's groups and choices travel with it (one request, not one per choice).
               ...(!existing && draftGroups.length > 0 ? { optionGroups: draftOptionGroupsPayload(draftGroups, vatAdded) } : {}),
             }),
-      },
+      }),
     });
     let current = requireAuthSessionForPrincipal(owner);
     const itemId = existing?.id ?? saved?.id;

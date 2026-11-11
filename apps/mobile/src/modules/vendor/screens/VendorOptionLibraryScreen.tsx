@@ -87,8 +87,11 @@ export function VendorOptionLibraryScreen({ navigation, route }: any) {
               Build a group once — like Pizza size, Crust or Toppings — and add it to many items. When you edit it, every item that uses it changes.
             </T>
             <PillButton label="New shared group" icon="plus" size="md" disabled={readOnly} onPress={() => { setError(null); setEditing('new'); }} />
-            {library.isLoading ? <T variant="caption" tone="muted" style={{ marginTop: space.md }}>Loading…</T> : null}
-            {!library.isLoading && groups.length === 0 ? (
+            {library.isError ? (
+              <T variant="caption" tone="error" style={{ marginTop: space.md }}>Couldn’t load your option library. Check your connection and try again.</T>
+            ) : library.isLoading ? (
+              <T variant="caption" tone="muted" style={{ marginTop: space.md }}>Loading…</T>
+            ) : groups.length === 0 ? (
               <T variant="caption" tone="muted" style={{ marginTop: space.md }}>No shared groups yet.</T>
             ) : null}
             {groups.map((g, i) => (
@@ -146,7 +149,7 @@ function LibraryGroupEditor({ group, groups, readOnly, onCreated, onDeleted, onE
   const changed = !group || name.trim() !== group.name || JSON.stringify(flags) !== JSON.stringify(savedFlags);
   const sizeTaken = false; // a library group may set the price; an item with two is refused at attach (server words)
   const send = async (call: () => Promise<any>): Promise<any> => {
-    if (readOnly) return undefined;
+    if (readOnly || write.isPending) return undefined;
     clearError();
     try {
       return await write.mutateAsync(call);
@@ -202,7 +205,7 @@ function LibraryGroupEditor({ group, groups, readOnly, onCreated, onDeleted, onE
             <Chip label="Multiple picks" selected={flags.multi} onPress={readOnly ? undefined : () => setFlags((f) => ({ ...f, multi: !f.multi }))} style={{ height: 38, paddingHorizontal: space.lg }} />
           </View>
         ) : null}
-        <GroupRuleChips flags={flags} change={(next) => setFlags((f) => ({ ...f, ...next }))} sizeTaken={sizeTaken} disabled={readOnly} />
+        <GroupRuleChips flags={flags} onChange={(next) => setFlags((f) => ({ ...f, ...next }))} sizeTaken={sizeTaken} disabled={readOnly} />
         <PillButton
           label={group ? 'Save group' : 'Create group'}
           size="md"
@@ -217,7 +220,7 @@ function LibraryGroupEditor({ group, groups, readOnly, onCreated, onDeleted, onE
         <>
           <Card style={{ marginTop: space.lg }}>
             <T variant="heading">Choices</T>
-            {group.options.length === 0 ? <T variant="caption" tone="muted" style={{ marginTop: space.sm }}>No choices yet.</T> : null}
+            {group.options.length === 0 ? <T variant="caption" tone="muted" style={{ marginTop: space.sm }}>Add the first choice below.</T> : null}
             {group.options.map((o) => (
               <View key={o.id} style={{ marginTop: space.md, borderRadius: radius.lg, backgroundColor: color.surface.subtle, padding: space.md }}>
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.sm }}>
@@ -316,7 +319,7 @@ function LibraryGroupEditor({ group, groups, readOnly, onCreated, onDeleted, onE
           {allItems.map((i) => {
             const on = pickItems?.includes(i.id) ?? false;
             return (
-              <Chip key={i.id} label={on ? `✓ ${i.name}` : i.name} selected={on}
+              <Chip key={i.id} label={i.name} selected={on}
                 onPress={() => setPickItems((list) => (list ? (on ? list.filter((id) => id !== i.id) : [...list, i.id]) : list))}
                 style={{ height: 38, paddingHorizontal: space.md, marginTop: space.sm, alignSelf: 'stretch' }} />
             );

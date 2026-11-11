@@ -223,6 +223,7 @@ vi.mock('../modules/vendor/NewOrderTakeover', () => ({ NewOrderTakeover: () => n
 vi.mock('../modules/vendor/screens/VendorOps', () => ({ VendorOps: () => null }));
 vi.mock('../modules/vendor/screens/VendorBillingSuspended', () => ({ VendorBillingSuspended: () => null }));
 vi.mock('../modules/vendor/screens/VendorBulkImportScreen', () => ({ VendorBulkImportScreen: () => null }));
+vi.mock('../modules/vendor/screens/VendorOptionLibraryScreen', () => ({ VendorOptionLibraryScreen: () => null }));
 vi.mock('../modules/vendor/screens/VendorCategoryReviewScreen', () => ({ VendorCategoryReviewScreen: () => null }));
 vi.mock('../modules/vendor/screens/VendorInsightsScreen', () => ({ VendorInsightsScreen: () => null }));
 vi.mock('../modules/vendor/screens/VendorItemEditorScreen', () => ({ VendorItemEditorScreen: () => null }));
