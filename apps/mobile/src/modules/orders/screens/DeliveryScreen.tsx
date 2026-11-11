@@ -524,6 +524,23 @@ export function DeliveryScreen() {
       void order.refetch();
     },
   });
+  // [PROD-RIDER-TEST (a)2] "Switch to pickup" after no rider was found: the server decides (a rider or the store may
+  // have taken it meanwhile) and its words are shown either way; the order is read again.
+  const switchToPickup = useMutation<unknown, any, { targetOrderId: string }>({
+    mutationFn: ({ targetOrderId }) => customerApi.switchToPickup(targetOrderId),
+    meta: { silent: true },
+    onSuccess: (_res, target) => {
+      void qc.invalidateQueries({ queryKey: customerKeys.homeAll });
+      if (target.targetOrderId !== activeOrderIdRef.current) return;
+      toast.show('Switched to pickup', 'The delivery fee is off. Collect your order from the store.');
+      void order.refetch();
+    },
+    onError: (error: any, target) => {
+      if (target.targetOrderId !== activeOrderIdRef.current) return;
+      toast.error('Couldn’t switch to pickup', errorMessage(error, 'Check the latest status of your order and try again.'));
+      void order.refetch();
+    },
+  });
   const decideSub = useDecideSubstitution();
   // [ORDER-SPINE S1-6] The customer's own claim about a direct-MMG payment —
   // their only first-party door to "I didn't pay". That statement can pause
@@ -1772,6 +1789,25 @@ export function DeliveryScreen() {
                   onPress={() => { void openExternal(`tel:${o.cancelUnavailable.contactPhone}`); }}
                 />
               ) : null}
+            </View>
+          ) : null}
+
+          {/* [PROD-RIDER-TEST (a)2] No rider was found: collect it instead, offered BEFORE the cancel (which stays,
+              last). The server's own words: what comes off and what is left to pay. */}
+          {!terminal && o.switchToPickup && typeof o.switchToPickup.message === 'string' ? (
+            <View
+              accessibilityRole="summary"
+              style={{ marginTop: space.md, padding: space.md, borderRadius: radius.md, backgroundColor: color.soft.info, gap: space.sm }}
+            >
+              <T variant="label" tone="info">{o.switchToPickup.message}</T>
+              <PillButton
+                label="Switch to pickup"
+                icon="shopping-bag"
+                size="md"
+                loading={switchToPickup.isPending}
+                disabled={switchToPickup.isPending || cancelOrder.isPending}
+                onPress={() => switchToPickup.mutate({ targetOrderId: orderId })}
+              />
             </View>
           ) : null}
 

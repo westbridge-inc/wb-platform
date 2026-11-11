@@ -303,6 +303,13 @@ const VendorOrderCard = React.memo(function VendorOrderCard({
           {HANDOVER_WORDS.handedToRider}
         </T>
       ) : null}
+      {/* [PROD-RIDER-TEST (a)1] The search for this order came back empty: the board says so in the server's words;
+          the order screen holds the one-tap "We'll deliver it" and "Find a rider". */}
+      {order.noRiderFound === true && typeof order.noRiderPrompt === 'string' ? (
+        <T variant="label" weight="semibold" style={{ marginTop: space.sm, color: color.warning }}>
+          {order.noRiderPrompt} Open the order to choose.
+        </T>
+      ) : null}
       {/* [STORE-DASH · O-4] Why there is no Accept: the customer is answering, or nothing is left. */}
       {customerDeciding(order) || nothingToAccept(order) ? (
         <T variant="label" weight="semibold" style={{ marginTop: space.sm, color: color.warning }}>

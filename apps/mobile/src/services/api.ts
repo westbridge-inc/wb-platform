@@ -519,6 +519,11 @@ export const customerApi = {
   cancelOrder: (id: string, reason?: string) =>
     api.post(`/customer/orders/${id}/cancel`, { reason })
       .then((res) => (res.data?.data ?? {}) as { message?: string }),
+  // [PROD-RIDER-TEST (a)2] No rider was found: collect it instead. The server takes the delivery fee and any rider
+  // tip off and answers with the new total (offered only when the order read carries `switchToPickup`).
+  switchToPickup: (id: string) =>
+    api.post(`/customer/orders/${id}/convert-to-pickup`, {})
+      .then((res) => (res.data?.data ?? {}) as { fulfillment?: string; totalAmount?: number }),
   // Order placement = checkout; it reads the server-side cart. (The old POST
   // /customer/orders had no backend route.)
   placeOrder: (data: {

@@ -282,6 +282,9 @@ function VendorOrderDetailBody({ navigation, route }: any) {
     riderId: order.riderId,
     riderPresent: Boolean(order.rider),
     selfDeliveryEnabled: order.vendor?.selfDeliveryEnabled,
+    noRiderFound: order.noRiderFound === true,
+    noRiderPrompt: order.noRiderPrompt,
+    noRiderDetail: order.noRiderDetail,
   });
 
   const runAction = (action: (typeof actions)[number]['action']) => {
@@ -724,7 +727,7 @@ function VendorOrderDetailBody({ navigation, route }: any) {
         {deliveryOwner.active ? (
           <Card style={{ marginBottom: space.md }}>
             <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: space.md }}>
-              <MaterialCommunityIcons name={deliveryOwner.selfDelivery ? 'storefront-outline' : 'bike-fast'} size={20} color={deliveryOwner.selfDelivery ? color.brand[600] : color.text.muted} />
+              <MaterialCommunityIcons name={deliveryOwner.selfDelivery ? 'storefront-outline' : deliveryOwner.noRider ? 'alert-circle-outline' : 'bike-fast'} size={20} color={deliveryOwner.selfDelivery || deliveryOwner.noRider ? color.brand[600] : color.text.muted} />
               <View style={{ flex: 1 }}>
                 <T variant="label" weight="semibold">{deliveryOwner.title}</T>
                 <T variant="caption" tone="muted" style={{ marginTop: 2 }}>
@@ -736,8 +739,8 @@ function VendorOrderDetailBody({ navigation, route }: any) {
               <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: space.sm, marginTop: space.md }}>
                 {deliveryOwner.canChooseVendor ? (
                   <PillButton
-                    label="We’ll deliver"
-                    variant="outline"
+                    label={deliveryOwner.vendorChoiceLabel}
+                    variant={deliveryOwner.noRider ? 'primary' : 'outline'}
                     size="md"
                     disabled={fulfillmentMode.isPending}
                     loading={fulfillmentMode.isPending}
@@ -773,10 +776,12 @@ function VendorOrderDetailBody({ navigation, route }: any) {
               <MaterialCommunityIcons name="bike-fast" size={20} color={color.text.muted} />
               <View style={{ flex: 1 }}>
                 <T variant="label" weight="semibold">
-                  No rider yet
+                  {deliveryOwner.noRider ? 'Or search for a Swift rider again' : 'No rider yet'}
                 </T>
                 <T variant="caption" tone="muted">
-                  Swift searches nearby movers automatically — retry if nobody took it.
+                  {deliveryOwner.noRider
+                    ? 'Swift asks the riders near your store again.'
+                    : 'Swift searches nearby movers automatically — retry if nobody took it.'}
                 </T>
               </View>
             </View>
