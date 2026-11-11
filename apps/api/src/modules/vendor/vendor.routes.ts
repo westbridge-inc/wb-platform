@@ -1846,7 +1846,8 @@ export async function vendorRoutes(app: FastifyInstance) {
     const legalName = `${user.firstName} ${user.lastName}`.trim();
     await app.prisma.$transaction(async (tx) => {
       // This store only: its name is the one checked, and the one the PDF and this consent row name.
-      await tx.vendor.update({ where: { id: vendor.id }, data: { tradesUnderOwnName: true } });
+      // [review-2479 F6] Switching to the own name ends a seller-name confirmation: a person confirms again, if at all.
+      await tx.vendor.update({ where: { id: vendor.id }, data: { tradesUnderOwnName: true, ...(vendor.tradesUnderOwnName ? {} : SELLER_NAME_UNCONFIRMED) } });
       await recordConsent(tx, {
         subjectType: 'vendor_user', subjectId: userId, documentType: OWN_NAME_CONSENT_TYPE, version: OWN_NAME_DECLARATION_VERSION,
         action: 'granted', surface, ip: request.ip,
@@ -1876,8 +1877,10 @@ export async function vendorRoutes(app: FastifyInstance) {
   app.delete('/onboarding/own-name', auth, async (request) => {
     const access = await requireVendor(app, request, 'OWNER');
     const userId = request.user.userId;
-    const vendor = await app.prisma.vendor.findUniqueOrThrow({ where: { id: access.vendorId }, select: { id: true, vendorType: true } });
-    await app.prisma.vendor.update({ where: { id: vendor.id }, data: { tradesUnderOwnName: false } });
+    const vendor = await app.prisma.vendor.findUniqueOrThrow({ where: { id: access.vendorId }, select: { id: true, vendorType: true, tradesUnderOwnName: true } });
+    // [review-2479 F6] Leaving the own name ends a seller-name confirmation given while it applied: the owner's name, once
+    // confirmed for an own-name trader, never stays as a business's seller name.
+    await app.prisma.vendor.update({ where: { id: vendor.id }, data: { tradesUnderOwnName: false, ...(vendor.tradesUnderOwnName ? SELLER_NAME_UNCONFIRMED : {}) } });
     await verification.reprojectVendorActivation(userId);
     const role = vendor.vendorType as 'RESTAURANT' | 'SUPERMARKET' | 'STORE' | 'SERVICE';
     return { success: true, data: { nameBasis: 'REGISTERED', status: await verification.getStatus(userId, role) } };

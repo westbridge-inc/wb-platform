@@ -13,7 +13,7 @@ import { withPreviousDecisions } from '../verification/previous-decision';
 import { REVIEW_QUEUE_SELECT, reviewQueueRow } from './review-queue-row';
 import type { FastifyInstance } from 'fastify';
 import { resolveVerificationObject } from '../verification/object-authority';
-import { SELLER_NAME_UNCONFIRMED, SELLER_UNNAMED_BASES, sellerNameViews, unnamedLiveStoreIds } from '../verification/storefront-disclosure';
+import { SELLER_NAME_UNCONFIRMED, SELLER_UNNAMED_BASES, ownNameDeclarationOnFile, sellerNameViews, unnamedLiveStoreIds } from '../verification/storefront-disclosure';
 import { staffInviteAcceptEnabled } from '../vendor/staff-invites';
 import { bindTenantTransaction, runWithoutTenant } from '../../plugins/prisma';
 import { countWaiting, type WaitingKey } from './dashboard-waiting';
@@ -2305,8 +2305,10 @@ export async function adminRoutes(app: FastifyInstance) {
       }
       // [owner ruling 10 Nov 2026 · review-2479 F6] The seller is the business: a person's own name (the account holder's,
       // or someone named in its letter of authority) is never confirmed as a business's name. Only a store trading under
-      // its owner's own name, which a person checked, may carry it.
-      if (!vendor.tradesUnderOwnName && await isAccountPersonsName(tx, vendor.owner.userId, name)) {
+      // its owner's own name may carry it, and only once a person approved its own-name declaration: the owner sets the
+      // flag by signing, so the flag alone never counts (and every change of it ends a confirmation: vendor.routes.ts).
+      const ownNameChecked = vendor.tradesUnderOwnName && await ownNameDeclarationOnFile(tx, vendor.owner.userId);
+      if (!ownNameChecked && await isAccountPersonsName(tx, vendor.owner.userId, name)) {
         throw new AppError(400, 'SELLER_NAME_IS_A_PERSON',
           'That is a person’s name (the account holder’s, or the person named in its letter of authority), not a business’s. A trader under their own name is named through the own-name declaration; otherwise the store needs its registered business or company name.');
       }

@@ -241,6 +241,11 @@ describe('[F22] a checked store name', () => {
 // before the check existed (or renamed since); approving a store confirms it too, and only the name the console showed.
 describe('[R3] a person confirms the seller name', () => {
   const checked = (id: string) => app.prisma.vendor.findUniqueOrThrow({ where: { id }, select: { sellerNameCheckedName: true, sellerNameCheckedAt: true, sellerNameCheckedById: true } });
+  /** The owner's own-name declaration, as filed (PENDING) or as a person approved it. */
+  const declaration = (userId: string, status: 'PENDING' | 'APPROVED') => app.prisma.verificationDocument.create({ data: {
+    userId, role: 'VENDOR_OWNER', docType: 'own_name_declaration', fileUrl: `/uploads/verification/${marker}/own-name-${nanoid(4)}.enc`, status,
+    ...(status === 'APPROVED' ? { reviewedBy: 'seller-name-test', reviewedAt: new Date() } : {}),
+  } });
 
   it('confirms exactly the name the console showed, with a trail', async () => {
     const owner = await makeUser('Seller');
@@ -267,9 +272,33 @@ describe('[R3] a person confirms the seller name', () => {
     expect(await app.prisma.auditLog.count({ where: { entityId: store.id, action: 'CONFIRM_SELLER_NAME' } })).toBe(0);
   });
 
-  it('[review-2479 F6] a store trading under its owner’s own name may confirm that name', async () => {
+  // [COORD security finding] The owner sets the flag by signing (the declaration then waits for a person): the flag
+  // alone is never enough. Only a declaration a person approved lets the owner's own name be confirmed.
+  it('[review-2479 F6] a store flagged as trading under its owner’s own name, its declaration not approved, is refused', async () => {
+    const owner = await makeUser('Flagonly');
+    const store = await makeStore(owner.id, { status: 'ACTIVE', isVerified: true, name: `Flagonly ${owner.lastName}`, tradesUnderOwnName: true });
+    await declaration(owner.id, 'PENDING');
+    const res = await call('PUT', `/api/v1/admin/vendors/${store.id}/seller-name`, { name: store.name });
+    expect(res.statusCode, res.body).toBe(400);
+    expect(res.json().error.code).toBe('SELLER_NAME_IS_A_PERSON');
+    expect(await checked(store.id)).toMatchObject({ sellerNameCheckedName: null });
+  });
+
+  it('[review-2479 F6] an approved declaration that no longer counts (revoked) lets nothing through', async () => {
+    const owner = await makeUser('Revoked');
+    const store = await makeStore(owner.id, { status: 'ACTIVE', isVerified: true, name: `Revoked ${owner.lastName}`, tradesUnderOwnName: true });
+    const doc = await declaration(owner.id, 'APPROVED');
+    await app.prisma.verificationDocument.update({ where: { id: doc.id }, data: { state: 'REVOKED' } });
+    expect((await app.prisma.documentRecord.findUniqueOrThrow({ where: { submissionId: doc.id } })).status).toBe('REVOKED');
+    const res = await call('PUT', `/api/v1/admin/vendors/${store.id}/seller-name`, { name: store.name });
+    expect(res.statusCode, res.body).toBe(400);
+    expect(res.json().error.code).toBe('SELLER_NAME_IS_A_PERSON');
+  });
+
+  it('[review-2479 F6] a store trading under its owner’s own name, its declaration approved by a person, may confirm that name', async () => {
     const owner = await makeUser('Ownname');
     const store = await makeStore(owner.id, { status: 'ACTIVE', isVerified: true, name: `Ownname ${owner.lastName}`, tradesUnderOwnName: true });
+    await declaration(owner.id, 'APPROVED');
     const res = await call('PUT', `/api/v1/admin/vendors/${store.id}/seller-name`, { name: store.name });
     expect(res.statusCode, res.body).toBe(200);
     expect(await checked(store.id)).toMatchObject({ sellerNameCheckedName: store.name });
