@@ -9,7 +9,7 @@ import { storeOrderStatusWords } from '@swift/types/src/order-words';
 import type { VendorOrder } from './vendor-api';
 import { promisedTimeName } from './store-kind-words';
 // [STORE-MONEY] The app's own reader of the store's money (plain file, imported as is).
-import { ownRiderDelivers, ringMoney } from '../../../mobile/src/modules/vendor/ringMoney';
+import { ringMoney, storeKeepsDelivery } from '../../../mobile/src/modules/vendor/ringMoney';
 
 /** The phone's pill words, from the one shared map (@swift/types order-words).
  *  A status this build does not know reads "Status unavailable", never the code. */
@@ -37,12 +37,6 @@ export function orderMoneyNotes(o: VendorOrder): string[] {
   return ringMoney(o).notes;
 }
 
-/** The store keeps the delivery fee and tip only when its own rider delivers (the server's word, else the app's rule). */
-function storeKeepsDelivery(o: VendorOrder): boolean {
-  if (o.fulfillment !== 'DELIVERY') return false;
-  const said = o.storeMoney?.delivery;
-  return typeof said === 'string' ? said === 'STORE_RIDER' : ownRiderDelivers(o);
-}
 
 /** The line under the money card: how this order is paid. A method with no
  *  line of its own gets none: a card order must never read as cash. */

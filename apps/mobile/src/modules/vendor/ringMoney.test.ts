@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { ringMoney } from './ringMoney';
+import { ringMoney, storeKeepsDelivery } from './ringMoney';
 
 // [RING-FOOD · owner bug 11 Nov 2026] A customer tipped the rider and the store's ringing new-order screen showed a
 // "Total" with the tip (and the rider's delivery fee) in it. The big number is the store's money for the goods.
@@ -65,5 +65,46 @@ describe('the ring screen shows the store its own money', () => {
     expect(screen).toContain('const ring = o ? ringMoney(o, storeKind) : null;');
     expect(screen).toContain('<Money amount={ring.food} size="l" />');
     expect(screen).not.toContain('o.totalAmount');
+  });
+});
+
+// [STORE-MONEY] A server that sends `storeMoney` (apps/api billing/store-money.ts) is the answer, verbatim.
+describe('the server\'s storeMoney is the answer on every store screen', () => {
+  const server = {
+    food: 4000, foodWord: 'Food', foodLabel: 'Food — you receive', delivery: 'SWIFT_RIDER', payment: 'MMG', swiftPaysYou: 400,
+    riderFeeAndTip: 800, yoursFeeAndTip: 0, customerPaysYou: 4400,
+    lines: ["Customer pays you $4,400 by MMG — $800 of it is the rider's, pay it at pickup", 'Swift pays you $400 (a Swift discount the customer got)'],
+  };
+
+  it('its food and its own lines win over the local rule (an MMG order, a Swift-paid discount)', () => {
+    const r = ringMoney(order({ paymentMethod: 'MOBILE_MONEY', discount: '400.00', storeMoney: server }));
+    expect(r.food).toBe(4000); // the local rule would read 3,600: it cannot see who paid the discount
+    expect(r.label).toBe('Food');
+    expect(r.longLabel).toBe('Food — you receive');
+    expect(r.notes).toEqual(server.lines);
+  });
+
+  it('a malformed storeMoney falls back to the rule, never to the customer\'s total', () => {
+    expect(ringMoney(order({ storeMoney: { food: 'x', foodWord: 'Food' } })).food).toBe(4000);
+    expect(ringMoney(order({ storeMoney: { food: 4000 } })).food).toBe(4000);
+  });
+
+  it('whose the fee and tip are: the server\'s word first, else the rule', () => {
+    expect(storeKeepsDelivery(order({ storeMoney: { ...server, delivery: 'STORE_RIDER' } }))).toBe(true);
+    expect(storeKeepsDelivery(order({ fulfillmentMode: 'VENDOR_DELIVERY', storeMoney: server }))).toBe(false);
+    expect(storeKeepsDelivery(order({ fulfillmentMode: 'VENDOR_DELIVERY' }))).toBe(true);
+    expect(storeKeepsDelivery(order({ fulfillment: 'PICKUP', fulfillmentMode: 'VENDOR_DELIVERY' }))).toBe(false);
+  });
+
+  it('the board card, the order screen, the history and the branches list all read the store\'s money', () => {
+    const read = (f: string) => readFileSync(join(process.cwd(), 'src/modules/vendor/screens', f), 'utf8');
+    const board = read('VendorOps.tsx');
+    expect(board).toContain('const boardMoney = ringMoney(order);');
+    expect(board).not.toContain('{money(order.totalAmount ?? order.total)}\n      </T>');
+    const detail = read('VendorOrderDetailScreen.tsx');
+    expect(detail).toContain('<InfoRow label={storeMoney.longLabel} value={money(storeMoney.food)} strong />');
+    expect(detail).not.toContain('<InfoRow label="Customer pays" value={money(order.totalAmount)} strong />');
+    expect(read('VendorOrderHistoryScreen.tsx')).toContain('{money(ringMoney(order).food)}');
+    expect(read('VendorBranchesScreen.tsx')).toContain('moneyIn(ringMoney(o).food)');
   });
 });

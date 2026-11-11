@@ -68,6 +68,13 @@ export function ownRiderDelivers(o: RingMoneyOrder): boolean {
   return o.vendor?.selfDeliveryEnabled === true;
 }
 
+/** The store keeps the delivery fee and tip only when its own rider delivers (the server's word, else the rule). */
+export function storeKeepsDelivery(o: RingMoneyOrder): boolean {
+  if ((o.fulfillment ?? 'DELIVERY') !== 'DELIVERY') return false;
+  const said = o.storeMoney?.delivery;
+  return typeof said === 'string' ? said === 'STORE_RIDER' : ownRiderDelivers(o);
+}
+
 /** The server's breakdown, when it is well formed; null otherwise (an older server, or a malformed payload). */
 function serverMoney(o: RingMoneyOrder): RingMoney | null {
   const m = o.storeMoney;
