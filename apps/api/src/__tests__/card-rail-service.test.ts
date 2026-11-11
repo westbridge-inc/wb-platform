@@ -1187,6 +1187,40 @@ describe('[CARD-READY] card money set aside at closing goes back to its card thr
     expect(await blockersOf(q.userId)).not.toContain('FEE_REFUND_PENDING');
   });
 
+  // [CARDS-FOLLOWUP] A refund to the card that did not go back is never silent: the admins are paged once, with the
+  // order, the amount and what to do; a refund that went back pages no one, and a replay pages no one again.
+  it('[PARTLY USED] a refused or unconfirmed refund to the card pages the admins once (what to do next); an approved one pages no one', async () => {
+    const pages: Array<{ message: string; dedupeKey: string }> = [];
+    const alertAdmins = async (message: string, dedupeKey: string) => { pages.push({ message, dedupeKey }); };
+    const send = (p: { subId: string }, setAsideId: string, cardSessionId: string, provider: CardRailProvider, approvalId: string, amount: number) =>
+      refundCardCreditToCard(app.prisma, () => provider, { adminId: 'admin-c', approvalId, subscriptionId: p.subId, setAsideId, cardSessionId, amount, alertAdmins });
+    // Refused: the partial refund of 4,000 of a 15,000 payment.
+    const { q, s, setAsideId } = await partlyUsedSetAside();
+    const refused = refunding(async () => ({ status: 'failed', reason: 'REFUND_REFUSED_12_384', rawSha256: '7'.repeat(64) }));
+    const asked = await approval(CARD_REFUND_ACTION, q.subId, 'admin-c', 'admin-b', { setAsideId, cardSessionId: s, amount: 4000 });
+    expect(await send(q, setAsideId, s, refused.provider, asked, 4000)).toMatchObject({ state: 'FAILED' });
+    expect(pages).toHaveLength(1);
+    expect(pages[0]!.message).toContain(`SWIFT-${s}`);
+    expect(pages[0]!.message).toContain('refused');
+    expect(pages[0]!.message).toContain('4000 GYD');
+    expect(pages[0]!.message).toContain('Record payout');
+    expect(pages[0]!.dedupeKey).toMatch(/^card-refund-not-done:/);
+    // The same approval applied again answers what happened and pages no one again.
+    expect(await send(q, setAsideId, s, refused.provider, asked, 4000)).toMatchObject({ state: 'FAILED', replayed: true });
+    expect(pages).toHaveLength(1);
+    // No answer: never sent again, and the page says so.
+    const { p, s1, s2, setAsideId: aside2 } = await twoCardWeeksSetAside();
+    const lost = refunding(async () => { throw new Error('socket hang up'); });
+    expect(await send(p, aside2, s1, lost.provider, await approval(CARD_REFUND_ACTION, p.subId, 'admin-c', 'admin-b'), WEEKLY)).toMatchObject({ state: 'UNKNOWN' });
+    expect(pages).toHaveLength(2);
+    expect(pages[1]!.message).toContain(`SWIFT-${s1}`);
+    expect(pages[1]!.message).toContain('never sent again');
+    // Approved: no page.
+    const ok = refunding(async () => ({ status: 'succeeded', providerRef: `d4e5f6a7-0000-4000-8000-${randomBytes(6).toString('hex')}`, rawSha256: '6'.repeat(64) }));
+    expect(await send(p, aside2, s2, ok.provider, await approval(CARD_REFUND_ACTION, p.subId, 'admin-c', 'admin-b'), WEEKLY)).toMatchObject({ state: 'REFUNDED' });
+    expect(pages).toHaveLength(2);
+  });
+
   it('[PARTLY USED] a card payment ALL of which paid weeks that started has nothing to go back to its card: refused, nothing sent', async () => {
     const r = await partner({ due: new Date(Date.now() + 60_000) });
     const s1 = await weekAhead(r);

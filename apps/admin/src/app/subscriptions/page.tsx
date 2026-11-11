@@ -410,7 +410,12 @@ export default function SubscriptionsPage() {
                                   if (!view?.setAside) return;
                                   const ready = view.cardPayments.filter((c) => c.refundable);
                                   const others = view.cardPayments.filter((c) => !c.refundable);
-                                  const otherLines = others.map((c) => `Order ${c.orderReference}: ${c.refund ? `refund ${CARD_REFUND_STATE[c.refund.state] ?? c.refund.state}` : c.inSetAside < c.amount ? `only GY$${c.inSetAside.toLocaleString()} of GY$${c.amount.toLocaleString()} is in this refund (the rest paid weekly fees): ask the owner` : 'cannot be refunded to its card now'}.`);
+                                  // [OWNER 10 Nov 2026 · CARDS-FOLLOWUP] Why each other card payment is not offered, and what to do: a refused refund
+                                  // is never silent (it says how the money is paid back), and a fully used payment has nothing to go back.
+                                  const otherLines = others.map((c) => `Order ${c.orderReference}: ${c.refund
+                                    ? c.refund.state === 'FAILED' ? 'refund refused by the card provider: nothing went back; pay it back with Record payout' : `refund ${CARD_REFUND_STATE[c.refund.state] ?? c.refund.state}`
+                                    : c.inSetAside <= 0 ? 'all of it paid weeks that started: nothing goes back to its card'
+                                    : `GY$${c.inSetAside.toLocaleString()} of GY$${c.amount.toLocaleString()} is in this refund but cannot go back to its card now: pay it back with Record payout, or ask the owner`}.`);
                                   if (ready.length === 0) {
                                     told(s.id, { kind: 'error', message: ['No card payment in this refund can go back to its card now.', sourcesLine(view), ...otherLines].filter(Boolean).join(' ') });
                                     return;
@@ -418,7 +423,7 @@ export default function SubscriptionsPage() {
                                   const answer = await dialog.askWith({
                                     title: `Refund a card payment to ${h.name}'s card?`,
                                     body: <><p>{sourcesLine(view)}</p>
-                                      <p>Swift asks the card provider once to refund the whole card payment to the card it came from. It counts as paid back only when the card provider approves it. A second admin approves first. Never refund it any other way.</p>
+                                      <p>Swift asks the card provider once to refund the card payment you choose to the card it came from: the whole payment, or only its weeks that have not started. It counts as paid back only when the card provider approves it. A second admin approves first. Never refund it any other way.</p>
                                       {ready.some((c) => c.partial) && <p>A card payment that already paid part of a week that started goes back only for its weeks that have not started: a partial refund of that payment, for exactly the amount shown. If the card provider refuses it, nothing moves and it stays here to pay back another way.</p>}
                                       {otherLines.length > 0 && <p>{otherLines.join(' ')}</p>}</>,
                                     confirmLabel: 'Refund to card',

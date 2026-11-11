@@ -183,6 +183,9 @@ export interface CardRefundAnswer extends CreditRefundState {
 export async function refundCardCreditToCard(prisma: PrismaClient, rail: CardRailSource, input: {
   adminId: string; approvalId: string; subscriptionId: string; setAsideId: string; cardSessionId: string; amount: number;
   onAudit?: OnAudit; now?: Date;
+  /** [CARDS-FOLLOWUP] Pages the admins when the refund did not go back (refused, pending or not confirmed): never
+   *  silent. Called once per refund (its dedupe key names it), never for an approved refund or a replay. */
+  alertAdmins?: (message: string, dedupeKey: string) => Promise<unknown>;
 }): Promise<CardRefundAnswer> {
   if (!input.approvalId) throw new AppError(403, 'APPROVAL_REQUIRED', 'A refund to the card needs a second admin.');
   const answer = async (row: { state: string; amount: unknown; providerRefundRef: string | null }, replayed: boolean): Promise<CardRefundAnswer> => ({
@@ -252,6 +255,18 @@ export async function refundCardCreditToCard(prisma: PrismaClient, rail: CardRai
   });
   if (done.state !== 'REFUNDED' && done.state !== 'FAILED') {
     log().error({ cardRefundId: row.id, state: done.state }, '[CARD-READY] a refund to the card is not confirmed: held for a person, never sent again');
+  }
+  // [CARDS-FOLLOWUP] A refund that did not go back is never silent: the admins are paged with the order, the amount and
+  // what to do next. A refusal moved nothing (the money stays in the refund, owed); an unconfirmed answer may still be
+  // money on its way, so nothing else may pay it until it is checked with the card provider.
+  if (done.state !== 'REFUNDED' && input.alertAdmins) {
+    const what = `The refund of ${Number(row.amount)} ${row.currencyCode} to the card for order ${orderReferenceOf(session.id)}${ofPayment}`;
+    const message = done.state === 'FAILED'
+      ? `${what} was refused by the card provider (${done.outcomeReason ?? 'no reason given'}). Nothing went back: the money stays in the refund, still owed, and this card payment is never sent to the card again. Pay it back with Record payout (two people), or ask the owner.`
+      : `${what} is not confirmed (${done.state.toLowerCase()}: ${done.outcomeReason ?? 'no answer'}). It is never sent again, and the money may be on its way back: do not pay it another way or release the refund. Check it with the card provider (Card payments) and escalate to the owner.`;
+    await input.alertAdmins(message, `card-refund-not-done:${row.id}`).catch((err: unknown) => {
+      log().error({ cardRefundId: row.id, err }, '[CARDS-FOLLOWUP] could not page the admins about a refund to the card that did not go back');
+    });
   }
   return answer(done, false);
 }

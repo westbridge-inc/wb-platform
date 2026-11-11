@@ -5337,6 +5337,15 @@ export async function adminRoutes(app: FastifyInstance) {
       adminId: request.user.userId, approvalId: approvalOf(request), subscriptionId: id,
       setAsideId: body.setAsideId, cardSessionId: body.cardSessionId, amount: body.amount,
       onAudit: (tx, facts) => auditWithin(tx, request as unknown as AuditRequestLike, app.prefix, { extra: facts }),
+      // [CARDS-FOLLOWUP] A refund to the card that did not go back (refused, pending, not confirmed) is never silent.
+      alertAdmins: async (message, dedupeKey) => {
+        const { notifyAdmins } = await import('../notification/notification.service');
+        return notifyAdmins(app.prisma, notifications, {
+          tenantId: getTenantId() ?? null, title: 'Refund to card did not go back', body: message,
+          data: { kind: 'billing_invariants', alert: 'card-refund-not-done', subscriptionId: id, cardSessionId: body.cardSessionId },
+          dedupeKey,
+        });
+      },
     });
     return { success: true, replayed: done.replayed, data: done };
   });
