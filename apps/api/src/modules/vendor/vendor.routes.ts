@@ -5653,7 +5653,7 @@ export async function vendorRoutes(app: FastifyInstance) {
    *  sales — an owner every branch, a team member only the stores they MANAGE (as GET /stores/summary). Staff never.
    *  At most 366 Guyana days; every export leaves an audit row (who, range, branches) before the first byte. */
   app.get('/orders/export', { ...auth, config: { rateLimit: { max: 30, timeWindow: '1 hour' } } }, async (request, reply) => {
-    const { orderExportPeriod, orderExportLines, orderExportStream, ORDER_EXPORT_AUDIT_ACTION } = await import('./order-export');
+    const { orderExportPeriod, orderExportLines, orderExportStream, ORDER_EXPORT_AUDIT_ACTION, ORDER_EXPORT_LOCK_PREFIX, ORDER_EXPORT_LOCK_TTL_S } = await import('./order-export');
     const q = z.object({ from: z.string().max(10).optional(), to: z.string().max(10).optional(), branch: z.string().min(1).max(64).optional() })
       .parse(request.query ?? {});
     const { access, salesStores } = await exportStores(request);
@@ -5665,15 +5665,31 @@ export async function vendorRoutes(app: FastifyInstance) {
     }
     const period = orderExportPeriod(q);
     const vendorIds = all ? salesStores : [branch!];
-    await app.prisma.auditLog.create({ data: {
-      userId: request.user.userId, action: ORDER_EXPORT_AUDIT_ACTION, entity: 'Vendor', entityId: all ? access.vendorId : branch!,
-      changes: { from: period.fromDay, to: period.toDay, scope: all ? 'all' : 'branch', vendorIds, role: access.role },
-    } });
+    // [REVIEW-2485-A S3-1] One export at a time per person, so a big chain export cannot be run many times over at once.
+    const lockKey = `${ORDER_EXPORT_LOCK_PREFIX}${request.user.userId}`;
+    if (await app.redis.set(lockKey, '1', 'EX', ORDER_EXPORT_LOCK_TTL_S, 'NX') !== 'OK') {
+      throw new AppError(429, 'EXPORT_ALREADY_RUNNING', 'An export is already running for you. Try again when it has finished.');
+    }
+    const release = () => { void app.redis.del(lockKey).catch(() => undefined); };
+    let stream: ReturnType<typeof orderExportStream>;
+    try {
+      // [REVIEW-2485-A S4-3] An all-branches export is recorded against a store this person may export (their first),
+      // never the selected store, where they may be only staff; the full list is in `vendorIds`.
+      await app.prisma.auditLog.create({ data: {
+        userId: request.user.userId, action: ORDER_EXPORT_AUDIT_ACTION, entity: 'Vendor', entityId: all ? salesStores[0]! : branch!,
+        changes: { from: period.fromDay, to: period.toDay, scope: all ? 'all' : 'branch', vendorIds, role: access.role },
+      } });
+      stream = orderExportStream(orderExportLines(app.prisma, { vendorIds, from: period.from, to: period.to }));
+    } catch (err) {
+      release();
+      throw err;
+    }
+    stream.once('close', release);
     const name = `swift-orders-${all ? 'all-branches-' : ''}${period.fromDay}-to-${period.toDay}.csv`;
     reply.type('text/csv; charset=utf-8')
       .header('content-disposition', `attachment; filename="${name}"`)
       .header('cache-control', 'no-store');
-    return reply.send(orderExportStream(orderExportLines(app.prisma, { vendorIds, from: period.from, to: period.to })));
+    return reply.send(stream);
   });
 
   app.get('/settlements', auth, async (request) => {

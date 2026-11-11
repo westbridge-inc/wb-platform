@@ -40,6 +40,10 @@ export const ORDER_EXPORT_AUDIT_ACTION = 'VENDOR_ORDERS_EXPORTED';
 /** The longest range one file may cover, in Guyana days (a leap year). */
 export const ORDER_EXPORT_MAX_DAYS = 366;
 export const ORDER_EXPORT_BATCH = 500;
+/** [REVIEW-2485-A S3-1] One export at a time per person (a Redis key, freed when the file ends or the client leaves). */
+export const ORDER_EXPORT_LOCK_PREFIX = 'order-export:running:';
+/** The longest one export may hold the slot if its stream never closes (a crash): then it frees itself. */
+export const ORDER_EXPORT_LOCK_TTL_S = 15 * 60;
 
 export const ORDER_EXPORT_COLUMNS = [
   'order_number', 'branch', 'branch_city', 'order_status', 'fulfilment', 'express',
@@ -175,6 +179,20 @@ const exportSelect = {
 type ExportOrder = Prisma.OrderGetPayload<{ select: typeof exportSelect }>;
 
 type Db = PrismaClient;
+type Cursor = { placedAt: Date; id: string };
+
+/**
+ * One page's filter. [REVIEW-2485-A S3-1] The placed-time range starts AT the cursor (not at the start of the range),
+ * so the database starts each page where the last one ended instead of re-reading everything before it; the OR only
+ * settles orders placed at the same instant as the cursor (by id).
+ */
+export function orderExportPageWhere(input: { vendorIds: string[]; from: Date; to: Date }, after: Cursor | null) {
+  return {
+    vendorId: { in: input.vendorIds },
+    placedAt: { gte: after ? after.placedAt : input.from, lte: input.to },
+    AND: after ? [{ OR: [{ placedAt: { gt: after.placedAt } }, { placedAt: after.placedAt, id: { gt: after.id } }] }] as Prisma.OrderWhereInput[] : [],
+  };
+}
 
 /** The CSV, a page of orders at a time: the header first, then one line per order (placed time, then id). */
 export async function* orderExportLines(db: Db, input: { vendorIds: string[]; from: Date; to: Date }): AsyncGenerator<string> {
@@ -182,17 +200,11 @@ export async function* orderExportLines(db: Db, input: { vendorIds: string[]; fr
   if (input.vendorIds.length === 0) return;
   const stores = new Map((await db.vendor.findMany({ where: { id: { in: input.vendorIds } }, select: { id: true, name: true, city: true } }))
     .map((s) => [s.id, s]));
-  let after: { placedAt: Date; id: string } | null = null;
+  let after: Cursor | null = null;
   for (;;) {
+    const bounds = orderExportPageWhere(input, after);
     const page: ExportOrder[] = await db.order.findMany({
-      where: {
-        vendorId: { in: input.vendorIds },
-        placedAt: { gte: input.from, lte: input.to },
-        AND: [
-          vendorVisibleFilter(db),
-          ...(after ? [{ OR: [{ placedAt: { gt: after.placedAt } }, { placedAt: after.placedAt, id: { gt: after.id } }] }] : []),
-        ],
-      },
+      where: { ...bounds, AND: [vendorVisibleFilter(db), ...bounds.AND] },
       orderBy: [{ placedAt: 'asc' }, { id: 'asc' }],
       take: ORDER_EXPORT_BATCH,
       select: exportSelect,

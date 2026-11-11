@@ -10,7 +10,8 @@ import { vendorRoutes } from '../modules/vendor/vendor.routes';
 import { registerErrorHandler } from '../middleware/error-handler';
 import { registerEmptyJsonBodyParser } from '../plugins/empty-json';
 import { parseCsv } from '../utils/csv';
-import { ORDER_EXPORT_AUDIT_ACTION, ORDER_EXPORT_COLUMNS, guyanaStamp } from '../modules/vendor/order-export';
+import { ORDER_EXPORT_AUDIT_ACTION, ORDER_EXPORT_COLUMNS, ORDER_EXPORT_LOCK_PREFIX, guyanaStamp, orderExportLines, orderExportPageWhere, orderExportStream } from '../modules/vendor/order-export';
+import { tenantContext } from '../plugins/tenant-context';
 import { aggregateSalesComponents } from '../modules/billing/sales-components';
 import { VENDOR_NO_RESPONSE_REASON } from '../modules/order/customer-cancellation';
 import { endOfGuyanaDay, startOfGuyanaDay } from '../utils/guyana-day';
@@ -534,10 +535,12 @@ describe('[REVIEW-2485-B] GET /orders/export/branches — the branches this logi
   });
 });
 
+let bigId = '';
 describe('[ORDER-EXPORT] large exports', () => {
   it('pages through more orders than one batch without losing or repeating one', async () => {
     const vo = await app.prisma.vendorOwner.findFirstOrThrow({ where: { userId: owner.userId } });
     const big = await store(vo.id, `Big Branch ${wordFreeTag(5)}`);
+    bigId = big.id;
     const at = new Date('2026-10-07T16:00:00.000Z');
     const rows = Array.from({ length: 1203 }, (_, i) => ({
       orderNumber: `OEXB-${nanoid(10)}`, orderType: 'FOOD_DELIVERY' as const, customerId: customer.userId, vendorId: big.id,
@@ -559,5 +562,65 @@ describe('[ORDER-EXPORT] large exports', () => {
 describe('[ORDER-EXPORT] guyanaStamp', () => {
   it('is the Guyana wall clock, UTC-4', () => {
     expect(guyanaStamp(new Date('2026-01-01T03:00:00.000Z'))).toBe('2025-12-31 23:00:00');
+  });
+});
+
+describe('[REVIEW-2485-A] load and tenant safety', () => {
+  it('S3-1: every page after the first starts its placed-time range at the cursor, not at the start of the range', () => {
+    const from = new Date('2026-10-01T04:00:00.000Z');
+    const to = new Date('2026-10-11T03:59:59.999Z');
+    const first = orderExportPageWhere({ vendorIds: ['v'], from, to }, null);
+    expect(first.placedAt).toEqual({ gte: from, lte: to });
+    const cursor = { placedAt: new Date('2026-10-05T12:00:00.000Z'), id: 'c1' };
+    const next = orderExportPageWhere({ vendorIds: ['v'], from, to }, cursor);
+    expect(next.placedAt).toEqual({ gte: cursor.placedAt, lte: to });
+    expect(JSON.stringify(next.AND)).toContain('"id":{"gt":"c1"}');
+  });
+
+  it('S4-1: each page reads inside the request tenant even when the stream is pulled outside it (unscoped reads denied)', async () => {
+    expect(bigId).not.toBe('');
+    const before = process.env['TENANT_UNSCOPED_ACCESS'];
+    process.env['TENANT_UNSCOPED_ACCESS'] = 'deny';
+    try {
+      const stream = tenantContext.run({ tenantId: 'swift-default', mode: 'request' }, () =>
+        orderExportStream(orderExportLines(app.prisma, { vendorIds: [bigId], from: startOfGuyanaDay('2026-10-01'), to: endOfGuyanaDay('2026-10-10') })));
+      // The socket pulls the file after the handler returned: here, with no tenant at all.
+      const body = await tenantContext.exit(async () => {
+        let out = '';
+        for await (const chunk of stream) out += String(chunk);
+        return out;
+      });
+      expect(rowsOf(body)).toHaveLength(1203);
+    } finally {
+      if (before === undefined) delete process.env['TENANT_UNSCOPED_ACCESS'];
+      else process.env['TENANT_UNSCOPED_ACCESS'] = before;
+    }
+  });
+
+  it('S3-1: one export at a time per person: a second while one runs is refused, and the slot frees when it ends', async () => {
+    const key = `${ORDER_EXPORT_LOCK_PREFIX}${owner.userId}`;
+    await app.redis.set(key, 'running', 'EX', 60);
+    try {
+      const busy = await get(owner.token, `/api/v1/vendor/orders/export?${RANGE}`, north.id);
+      expect(busy.statusCode, busy.body).toBe(429);
+      expect(busy.json().error.code).toBe('EXPORT_ALREADY_RUNNING');
+    } finally {
+      await app.redis.del(key);
+    }
+    const ok = await get(owner.token, `/api/v1/vendor/orders/export?${RANGE}`, north.id);
+    expect(ok.statusCode, ok.body).toBe(200);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(await app.redis.exists(key)).toBe(0);
+  });
+
+  it('S4-3: an all-branches audit row names a store the caller manages, never one where they are only staff', async () => {
+    const member = await makeUser(['CUSTOMER'], 'CUSTOMER');
+    await app.prisma.vendorStaff.create({ data: { vendorId: camp.id, userId: member.userId, role: 'STAFF', invitedBy: owner.userId } });
+    await app.prisma.vendorStaff.create({ data: { vendorId: north.id, userId: member.userId, role: 'MANAGER', invitedBy: owner.userId } });
+    const res = await get(member.token, `/api/v1/vendor/orders/export?${RANGE}&branch=all`, camp.id);
+    expect(res.statusCode, res.body).toBe(200);
+    const row = await app.prisma.auditLog.findFirstOrThrow({ where: { userId: member.userId, action: ORDER_EXPORT_AUDIT_ACTION } });
+    expect(row.entityId).toBe(north.id);
+    expect((row.changes as { vendorIds: string[] }).vendorIds).toEqual([north.id]);
   });
 });
