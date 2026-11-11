@@ -97,6 +97,9 @@ COPY apps/mobile/src/modules/vendor/storeOrderRules.ts apps/mobile/src/modules/v
 COPY apps/mobile/src/modules/vendor/ringMoney.ts apps/mobile/src/modules/vendor/ringMoney.ts
 COPY apps/mobile/src/modules/vendor/acceptedOutOfStock.ts apps/mobile/src/modules/vendor/acceptedOutOfStock.ts
 COPY apps/mobile/src/modules/vendor/storeHandover.ts apps/mobile/src/modules/vendor/storeHandover.ts
+# [MENU-OPTIONS] The kitchen view's formatter (web order window) and the store tools' option rules (web Products page).
+COPY apps/mobile/src/modules/vendor/orderLineOptions.ts apps/mobile/src/modules/vendor/orderLineOptions.ts
+COPY apps/mobile/src/lib/menuOptionsEditor.ts apps/mobile/src/lib/menuOptionsEditor.ts
 COPY apps/mobile/src/modules/vendor/screens/delivery-owner.ts apps/mobile/src/modules/vendor/screens/delivery-owner.ts
 # [REVIEW-LIGHT2 #2306 S3 · #2311] The Orders home's store status card reads a held store's hold the app's way (storeHoldOf; imports nothing).
 COPY apps/mobile/src/lib/vendorProfile.ts apps/mobile/src/lib/vendorProfile.ts

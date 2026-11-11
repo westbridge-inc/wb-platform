@@ -110,7 +110,9 @@ export function draftOptionGroupsPayload(groups: DraftOptionGroup[], vatAdded = 
 /** [MENU-OPTIONS] An item save without its price fields (a sized item's price is its lowest size, kept by the server). */
 export function withoutItemPrice<T extends Record<string, unknown>>(sized: boolean, data: T): T {
   if (!sized) return data;
-  const { basePrice: _base, vatListedPrice: _listed, ...rest } = data;
+  const rest: Record<string, unknown> = { ...data };
+  delete rest['basePrice'];
+  delete rest['vatListedPrice'];
   return rest as T;
 }
 
