@@ -90,13 +90,13 @@ export function followUpGroupIds(groups: readonly SheetGroup[]): Set<string> {
 }
 
 /** The groups the sheet lists at the top level, in menu order (follow-up groups are drawn under their opener). */
-export function topLevelGroups(groups: readonly SheetGroup[]): SheetGroup[] {
+export function topLevelGroups<G extends SheetGroup>(groups: readonly G[]): G[] {
   const followUps = followUpGroupIds(groups);
   return [...groups].filter((g) => !followUps.has(g.id)).sort(byMenuOrder);
 }
 
 /** The follow-up group this option opens, or null (an option inside a follow-up group never opens another). */
-export function followUpFor(groups: readonly SheetGroup[], group: SheetGroup, option: SheetOption): SheetGroup | null {
+export function followUpFor<G extends SheetGroup>(groups: readonly G[], group: SheetGroup, option: SheetOption): G | null {
   if (!option.followUpGroupId) return null;
   const followUps = followUpGroupIds(groups);
   if (followUps.has(group.id) || !followUps.has(option.followUpGroupId)) return null;

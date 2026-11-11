@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import * as server from '../../../api/src/modules/order/options';
 import * as phone from './menuOptionsEngine';
@@ -97,9 +99,9 @@ describe('[MENU-OPTIONS] the phone’s copy and the API module agree on every se
   // by both modules.
   const selections: Array<Record<string, unknown>> = [];
   const toppingSets: string[][] = [[]];
-  for (const a of choices.toppings!) { toppingSets.push([a]); for (const b of choices.toppings!) if (a < b) toppingSets.push([a, b]); }
-  for (const size of [undefined, ...choices.size!]) for (const crust of [undefined, ...choices.crust!])
-    for (const cheese of [undefined, ...choices.cheese!]) for (const toppings of toppingSets) {
+  for (const a of choices['toppings']!) { toppingSets.push([a]); for (const b of choices['toppings']!) if (a < b) toppingSets.push([a, b]); }
+  for (const size of [undefined, ...choices['size']!]) for (const crust of [undefined, ...choices['crust']!])
+    for (const cheese of [undefined, ...choices['cheese']!]) for (const toppings of toppingSets) {
       const sel: Record<string, unknown> = {};
       if (size) sel['size'] = size;
       if (crust) sel['crust'] = crust;
@@ -126,6 +128,11 @@ describe('[MENU-OPTIONS] the phone’s copy and the API module agree on every se
     for (let pct = 0; pct <= 101; pct++) for (const price of [0, 1, 99, 100, 175, 175.5, 301, 999.99, 12345, 99999999]) {
       expect(phone.halfPrice(price, pct), `${price} @ ${pct}%`).toBe(server.halfPrice(price, pct));
     }
+  });
+
+  it('below its header the phone’s file IS the API file, character for character (copy every change across)', () => {
+    const body = (path: string) => { const code = readFileSync(path, 'utf8'); return code.slice(code.indexOf('export type Placement')); };
+    expect(body(join(__dirname, 'menuOptionsEngine.ts'))).toBe(body(join(__dirname, '../../../api/src/modules/order/options.ts')));
   });
 
   it('the capability word is the server’s', () => {

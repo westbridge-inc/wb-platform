@@ -2,7 +2,7 @@
  * [MENU-OPTIONS · PHONE PORT · owner 11 Nov 2026] The server's option rules, for the phone's item sheet.
  *
  * This is apps/api/src/modules/order/options.ts, the ONE place the server prices and judges a selection, ported
- * line for line (the phone's bundler does not reach into the API folder): only `halfPrice` is written without BigInt.
+ * line for line (the phone's bundler does not reach into the API folder).
  * menuOptionsEngine.test.ts runs this file and the API's own side by side on the same menus and selections, and pins
  * the API tests' numbers, so the sheet's price and its Add button can never disagree with the server. The server
  * re-prices every line at cart add and again at checkout: the sheet's figure is a preview.
@@ -88,13 +88,13 @@ function canonicalChoice(id: string, placement: Placement | null): string {
 }
 
 /** [MENU-OPTIONS] A choice's price on one half: the store's percent of its price, half-up to the whole dollar.
- *  100% is the price itself, unrounded. Exact integer arithmetic on cents. [PHONE PORT] The server divides BigInt
- *  cents (truncating toward zero); here `(n - n % d) / d` on safe integers is that same division, with no BigInt. */
+ *  100% is the price itself, unrounded. Exact integer arithmetic on whole cents (the web build targets below ES2020). */
 export function halfPrice(price: number, percent: number): number {
   const pct = Number.isInteger(percent) && percent >= 1 && percent <= 100 ? percent : 100;
   if (pct === 100) return price;
-  const scaled = Math.round(price * 100) * pct + 5000;
-  return (scaled - (scaled % 10000)) / 10000;
+  // Whole cents times a whole percent stays far inside the exact integer range (prices are at most 10,000,000).
+  const cents = Math.round(price * 100);
+  return Math.floor((cents * pct + 5000) / 10000);
 }
 
 const byMenuOrder = <T extends { sortOrder?: number | null; id?: string }>(a: T, b: T) =>
