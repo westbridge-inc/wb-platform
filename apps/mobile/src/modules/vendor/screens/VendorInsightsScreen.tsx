@@ -13,7 +13,7 @@ import { errorMessage } from '../../../lib/apiError';
 import { StandingCard } from '../../../components/StandingCard';
 import { API_URL, vendorApi } from '../../../services/api';
 import { openPayLink } from '../../../lib/payLink';
-import { ORDER_EXPORT_RANGES, orderExportDays, orderExportRefusal, orderExportTitle, type OrderExportRange } from '../../../lib/orderExport';
+import { ORDER_EXPORT_RANGES, ORDER_EXPORT_TOO_LARGE, orderExportAllLabel, orderExportDays, orderExportRefusal, orderExportShareable, orderExportTitle, type OrderExportRange } from '../../../lib/orderExport';
 import {
   useMyStoreReviews,
   useRespondReview,
@@ -27,7 +27,7 @@ import {
   usePopularItems,
   useBusyHours,
   useRepeatCustomers,
-  useBranchStores,
+  useOrderExportBranches,
 } from '../../../hooks/vendorops';
 import { usePullToRefresh } from '../../../hooks/usePullToRefresh';
 import { getAuthSessionSnapshot, requireAuthSessionForPrincipal, requireAuthSessionSnapshot } from '../../../stores/authStore';
@@ -697,15 +697,17 @@ function RepeatCustomersCard() {
  * or all of them. No customer details are in the file.
  */
 function OrderExportCard() {
-  const [range, setRange] = useState<OrderExportRange>('last-month');
+  const [range, setRange] = useState<OrderExportRange>('this-month');
   const [allBranches, setAllBranches] = useState(false);
+  const [tooLarge, setTooLarge] = useState(false);
   const selectedStoreId = useStoreSwitcher((state) => state.selectedStoreId);
-  const stores = useBranchStores();
-  const storeId = selectedStoreId ?? stores.data?.selectedId ?? null;
-  const several = (stores.data?.stores?.length ?? 0) > 1;
+  const exportable = useOrderExportBranches();
+  const storeId = selectedStoreId ?? exportable.data?.branches?.[0]?.id ?? null;
+  const several = (exportable.data?.branches?.length ?? 0) > 1;
   const exportOrders = useVendorMutation({
     mutationFn: async () => {
       if (!storeId) throw new Error('Choose a store first.');
+      setTooLarge(false);
       const owner = requireAuthSessionSnapshot();
       const days = orderExportDays(range);
       const all = several && allBranches;
@@ -716,6 +718,11 @@ function OrderExportCard() {
       requireAuthSessionForPrincipal(owner);
       const csv = typeof r.data === 'string' ? r.data.replace(/^\uFEFF/, '') : '';
       if (!csv) throw new Error('The export came back empty.');
+      // [REVIEW-2485-B S2-2] Too big for the share sheet: say so (the website downloads any size), never a failed share.
+      if (!orderExportShareable(csv)) {
+        setTooLarge(true);
+        return;
+      }
       await Share.share({ title: orderExportTitle(days, all), message: csv });
     },
   });
@@ -724,13 +731,13 @@ function OrderExportCard() {
     <Card style={{ marginTop: space.lg }}>
       <T variant="body" weight="bold">Export orders</T>
       <T variant="caption" tone="muted" style={{ marginTop: 4, marginBottom: space.md }}>
-        A spreadsheet (CSV) of every order from {days.from} to {days.to}: times, payment, totals, cancellations and refunds. No customer details.
+        A spreadsheet (CSV) of the orders placed between {days.from} and {days.to}: times, payment, totals, who funded each discount, cancellations and refunds. No customer details.
       </T>
       <Segmented options={ORDER_EXPORT_RANGES} value={range} onChange={setRange} />
       {several ? (
         <Segmented
           style={{ marginTop: space.sm }}
-          options={[{ key: 'this', label: 'This store' }, { key: 'all', label: 'All branches' }] as const}
+          options={[{ key: 'this', label: 'This store' }, { key: 'all', label: orderExportAllLabel(exportable.data?.scope) }] as const}
           value={allBranches ? 'all' : 'this'}
           onChange={(key) => setAllBranches(key === 'all')}
         />
@@ -746,6 +753,11 @@ function OrderExportCard() {
       {exportOrders.isError ? (
         <T variant="caption" tone="error" center style={{ marginTop: space.sm }}>
           {errorMessage(exportOrders.error, 'Couldn’t export the orders — try again.')}
+        </T>
+      ) : null}
+      {tooLarge && !exportOrders.isError ? (
+        <T variant="caption" tone="error" center style={{ marginTop: space.sm }}>
+          {ORDER_EXPORT_TOO_LARGE}
         </T>
       ) : null}
     </Card>

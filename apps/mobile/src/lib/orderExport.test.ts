@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { guyanaDay, orderExportDays, orderExportRefusal, orderExportTitle } from './orderExport';
+import { ORDER_EXPORT_PHONE_MAX_CHARS, ORDER_EXPORT_TOO_LARGE, guyanaDay, orderExportAllLabel, orderExportDays, orderExportRefusal, orderExportShareable, orderExportTitle } from './orderExport';
 
 // [ORDER-EXPORT] The phone's export presets are Guyana days, end today, and never exceed the server's 366 days.
 const span = (d: { from: string; to: string }) => (Date.parse(`${d.to}T00:00:00Z`) - Date.parse(`${d.from}T00:00:00Z`)) / 864e5 + 1;
@@ -39,5 +39,22 @@ describe('orderExportRefusal', () => {
     expect(orderExportRefusal({ response: { data: body } })).toBe('This needs a manager');
     expect(orderExportRefusal({ response: { data: 'not json' } })).toBeNull();
     expect(orderExportRefusal(new Error('network'))).toBeNull();
+  });
+});
+
+describe('[REVIEW-2485-B S2-2] the phone share size guard', () => {
+  it('stays well under Android\'s ~1 MB share limit (text travels as UTF-16)', () => {
+    expect(ORDER_EXPORT_PHONE_MAX_CHARS * 2).toBeLessThanOrEqual(500_000);
+  });
+
+  it('shares a small file and refuses a large one with the website advice', () => {
+    expect(orderExportShareable('a'.repeat(ORDER_EXPORT_PHONE_MAX_CHARS))).toBe(true);
+    expect(orderExportShareable('a'.repeat(ORDER_EXPORT_PHONE_MAX_CHARS + 1))).toBe(false);
+    expect(ORDER_EXPORT_TOO_LARGE).toBe('Too large to share from the phone. Use the website (Insights, Export orders) or choose a shorter range.');
+  });
+
+  it('a manager is offered the branches they manage, an owner all branches', () => {
+    expect(orderExportAllLabel('manager')).toBe('All branches you manage');
+    expect(orderExportAllLabel('owner')).toBe('All branches');
   });
 });

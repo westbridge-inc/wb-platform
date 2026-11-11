@@ -57,3 +57,21 @@ export function orderExportRefusal(err: unknown): string | null {
     return null;
   }
 }
+
+/**
+ * [REVIEW-2485-B S2-2 · REVIEW-2485-A S4-2] The share sheet carries the CSV as text; Android sends it through a
+ * ~1 MB Binder transaction as UTF-16 (2 bytes a character), and chat apps cut long messages. Above this many
+ * characters the phone does not try (sharing a real file needs a native module: a later store build); it says to
+ * use the website or a shorter range instead.
+ */
+export const ORDER_EXPORT_PHONE_MAX_CHARS = 200_000;
+export const ORDER_EXPORT_TOO_LARGE = 'Too large to share from the phone. Use the website (Insights, Export orders) or choose a shorter range.';
+
+export function orderExportShareable(csv: string): boolean {
+  return csv.length <= ORDER_EXPORT_PHONE_MAX_CHARS;
+}
+
+/** What "all" covers for this login (GET /vendor/orders/export/branches `scope`). */
+export function orderExportAllLabel(scope: 'owner' | 'manager' | undefined): string {
+  return scope === 'manager' ? 'All branches you manage' : 'All branches';
+}

@@ -1532,6 +1532,7 @@ export const vendorApi = {
     api.get('/vendor/sales-statement', capturedAuthConfig(session, { params: { link: 1 } })),
   // [ORDER-EXPORT · owner 11 Nov 2026] The order history as CSV text (owners and managers; finance columns only).
   // branch: a store's id or 'all'. Read as text, never parsed as JSON.
+  exportBranches: () => api.get('/vendor/orders/export/branches'),
   exportOrders: (params: { from: string; to: string; branch: string }, storeId: string, session?: AuthSessionSnapshot) =>
     api.get<string>('/vendor/orders/export', capturedAuthConfig(session, {
       params, responseType: 'text', transformResponse: (data: unknown) => data, headers: { 'x-vendor-id': storeId },
