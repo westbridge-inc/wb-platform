@@ -24,7 +24,7 @@ import { Prisma, type VehicleType, UserRole, UserStatus, VendorStatus, VendorTyp
 import { idsByLiveDocuments, LIVE_DOCUMENTS_FILTER_CAP, withLiveDocuments } from './live-documents';
 import { NotificationService } from '../notification/notification.service';
 import { SupportService } from '../support/support.service';
-import { VerificationService, REJECTION_REASON_CODES, isAccountPersonsName } from '../verification/verification.service';
+import { VerificationService, REJECTION_REASON_CODES, isAccountPersonsName, type StoreActivation } from '../verification/verification.service';
 import { AdvertiserService } from '../ads/advertiser.service';
 import { CreativeService, CREATIVE_REJECT_REASONS, looksLikeMp4 } from '../ads/creative.service';
 import { AdsLifecycleService } from '../ads/lifecycle.service';
@@ -2072,6 +2072,7 @@ export async function adminRoutes(app: FastifyInstance) {
     let updated;
     // [#1541] Documents approved while billing holds the weekly fee: live under that hold, not open.
     let feeHeld = false;
+    let sellerNameNotConfirmed: StoreActivation['sellerNameNotConfirmed'] = null;
     if (next === 'CAN_ACTIVATE') {
       // The one authority that makes a store live, on every path (review,
       // auto-approval, the reconcile belt — and now this button), run for this
@@ -2081,9 +2082,13 @@ export async function adminRoutes(app: FastifyInstance) {
       // ONLY when the console sent the name it showed (`sellerName`); a different name under the lock is refused. With
       // no name sent (an older console, a script) the store goes live as before but nothing is confirmed: its storefront
       // names nobody until a person confirms the name (PUT /vendors/:id/seller-name). Never a name nobody was shown.
-      await verification.activateStore(goLive.ownerUserId, id, (tx) => auditWithin(tx, request as unknown as AuditRequestLike, app.prefix, {
-        extra: { previousStatus: vendor.status, previousSuspensionSource: vendor.suspensionSource, verdict: next, sellerNameConfirmed: shownName ?? null },
+      // [COORD ruling 11 Nov 2026 · review-2479] A person's own name is never confirmed (the store still goes live): the
+      // trail and the answer say so, and the console shows why.
+      const activation = await verification.activateStore(goLive.ownerUserId, id, (tx, decided) => auditWithin(tx, request as unknown as AuditRequestLike, app.prefix, {
+        extra: { previousStatus: vendor.status, previousSuspensionSource: vendor.suspensionSource, verdict: next,
+          sellerNameConfirmed: decided.sellerNameNotConfirmed ? null : shownName ?? null, sellerNameNotConfirmed: decided.sellerNameNotConfirmed?.code ?? null },
       }), shownName !== undefined ? { by: request.user.userId, name: shownName } : undefined);
+      sellerNameNotConfirmed = activation.sellerNameNotConfirmed;
       updated = await app.prisma.vendor.findUniqueOrThrow({ where: { id } });
       feeHeld = updated.status === 'SUSPENDED' && updated.suspensionSource === 'BILLING';
       if (updated.status !== 'ACTIVE' && !feeHeld) {
@@ -2181,7 +2186,7 @@ export async function adminRoutes(app: FastifyInstance) {
     });
 
     // [VERIFY-DOCS V5] The owner's VAT billing number never rides an admin store reply.
-    return { success: true, data: { ...updated, vatRegistrationNumber: undefined } };
+    return { success: true, data: { ...updated, vatRegistrationNumber: undefined, sellerNameNotConfirmed } };
   });
 
   app.put('/vendors/:id/suspend', { preHandler: [adminGuard] }, async (request) => {

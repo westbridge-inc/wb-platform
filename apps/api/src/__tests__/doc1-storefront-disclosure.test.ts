@@ -366,6 +366,37 @@ describe('[R3 · review F1] the legal name typed from the registration paper', (
     expect((await system(() => sellerNameViews(app.prisma, [vendorId]))).get(vendorId)).toEqual({ basis: 'LEGAL_NAME', value: 'Sample Holdings Limited' });
   });
 
+  // [COORD ruling 11 Nov 2026 under the owner's 10 Nov rule · review-2479] Approving with the store's name confirms it as
+  // the seller's only when it is not a person's own name (the account holder's, or someone named in its letter of
+  // authority). A person's name never blocks the approval: the store goes live, nothing is stamped, the storefront names
+  // nobody ("Ask the store"), and the answer says why.
+  /** Every paper this store's own checklist asks for, approved; then a person approves it with the name shown. */
+  const approveWithName = async (userId: string, vendorId: string, name: string) => {
+    await system(() => giveFoodHandlersTick(app.prisma, userId, vendorId));
+    const checklist = await system(() => service.activationChecklist(userId, 'RESTAURANT', { vendorId }));
+    for (const item of checklist.items) await approved(userId, item.docType);
+    return system(() => service.activateStore(userId, vendorId, undefined, { by: 'approver-test', name }));
+  };
+  const stampOf = (vendorId: string) => system(() => app.prisma.vendor.findUniqueOrThrow({ where: { id: vendorId }, select: { status: true, sellerNameCheckedName: true } }));
+
+  it('[review-2479 · COORD 11 Nov] approving a store named by its owner\'s own name goes live but stamps nothing, and says why', async () => {
+    const { userId, vendorId } = await store(16);
+    await setStore(vendorId, { name: 'Priya Persaud16' });
+    const answer = await approveWithName(userId, vendorId, 'Priya Persaud16');
+    expect(await stampOf(vendorId)).toEqual({ status: 'ACTIVE', sellerNameCheckedName: null });
+    expect(answer?.sellerNameNotConfirmed).toMatchObject({ code: 'SELLER_NAME_IS_A_PERSON', message: expect.stringContaining('Ask the store') });
+    expect(answer?.sellerNameNotConfirmed?.message).not.toMatch(/Priya|Persaud/);
+    expect((await system(() => sellerNameViews(app.prisma, [vendorId]))).get(vendorId)?.basis).toBe('AWAITING_PERSON');
+  });
+
+  it('[review-2479 · COORD 11 Nov] approving a store with a business name still confirms that name', async () => {
+    const { userId, vendorId } = await store(17);
+    await setStore(vendorId, { name: `Sample Snackette ${RUN}17` });
+    const answer = await approveWithName(userId, vendorId, `Sample Snackette ${RUN}17`);
+    expect(await stampOf(vendorId)).toEqual({ status: 'ACTIVE', sellerNameCheckedName: `Sample Snackette ${RUN}17` });
+    expect(answer?.sellerNameNotConfirmed).toBeNull();
+  });
+
   it('[review F6] a person approving an own-name trader\'s store stamps no store-name confirmation, whatever name is sent', async () => {
     const { userId, vendorId } = await store(13);
     await setStore(vendorId, { name: 'P. Persaud13', tradesUnderOwnName: true });
@@ -373,9 +404,11 @@ describe('[R3 · review F1] the legal name typed from the registration paper', (
     // every paper this own-name store's own checklist asks for
     const checklist = await system(() => service.activationChecklist(userId, 'RESTAURANT', { vendorId }));
     for (const item of checklist.items) await approved(userId, item.docType);
-    await system(() => service.activateStore(userId, vendorId, undefined, { by: 'approver-test', name: 'P. Persaud13' }));
+    const answer = await system(() => service.activateStore(userId, vendorId, undefined, { by: 'approver-test', name: 'P. Persaud13' }));
     expect(await system(() => app.prisma.vendor.findUniqueOrThrow({ where: { id: vendorId }, select: { status: true, sellerNameCheckedName: true } })))
       .toEqual({ status: 'ACTIVE', sellerNameCheckedName: null });
+    // [review-2479] named by its approved declaration: no person's-name notice either
+    expect(answer?.sellerNameNotConfirmed ?? null).toBeNull();
     expect((await blockOf(userId, vendorId)).legalName).toMatchObject({ value: 'Priya Persaud13', source: 'PROPRIETOR' });
   });
 });

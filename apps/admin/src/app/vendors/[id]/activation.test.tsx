@@ -143,6 +143,36 @@ describe('[MC-PR2] when the server says the rules are met', () => {
     expect(JSON.parse(String(init?.body))).toEqual({ sellerName: 'Target Store' });
   });
 
+  // [COORD ruling 11 Nov 2026 · review-2479] The server never confirms a person's own name as the seller's: the store goes
+  // live all the same, and the page says, in the server's words, that the name was not confirmed and why.
+  it('[review-2479] activating a store named by a person: says it is live AND that its name was not confirmed, and why', async () => {
+    const notice = { code: 'SELLER_NAME_IS_A_PERSON', message: 'The store’s name is a person’s name, so it was not confirmed as the seller’s name. Customers see “Ask the store”.' };
+    serve('PENDING_APPROVAL', checklistOf('CAN_ACTIVATE'), () => ({ body: { success: true, data: { ...storeOf('ACTIVE'), sellerNameNotConfirmed: notice } } }));
+    const { user } = page();
+    await user.click(await screen.findByRole('button', { name: 'Activate now…' }));
+    const dialog = screen.getByRole('dialog', { name: 'Activate Target Store now?' });
+    await user.click(within(dialog).getByRole('radio', { name: /^Yes: it matches the certificate/ }));
+    await user.type(within(dialog).getByRole('textbox', { name: 'Reason' }), REASON);
+    await user.click(within(dialog).getByRole('button', { name: 'Activate store' }));
+    const status = await screen.findByRole('status');
+    expect(status.textContent).toContain('Target Store is live and can take orders.');
+    expect(status.textContent).toContain(notice.message);
+    expect(status.textContent).not.toContain('SELLER_NAME_IS_A_PERSON');
+  });
+
+  it('[review-2479] a confirmed name adds no notice', async () => {
+    serve('PENDING_APPROVAL', checklistOf('CAN_ACTIVATE'), () => ({ body: { success: true, data: { ...storeOf('ACTIVE'), sellerNameNotConfirmed: null } } }));
+    const { user } = page();
+    await user.click(await screen.findByRole('button', { name: 'Activate now…' }));
+    const dialog = screen.getByRole('dialog', { name: 'Activate Target Store now?' });
+    await user.click(within(dialog).getByRole('radio', { name: /^Yes: it matches the certificate/ }));
+    await user.type(within(dialog).getByRole('textbox', { name: 'Reason' }), REASON);
+    await user.click(within(dialog).getByRole('button', { name: 'Activate store' }));
+    const status = await screen.findByRole('status');
+    expect(status.textContent).toContain('Target Store is live and can take orders.');
+    expect(status.textContent).not.toMatch(/not confirmed/);
+  });
+
   it('[owner #51 · DS1145 S3] a store suspended before it was ever live, with no phone, is lifted back to waiting — the page says so, never "live"', async () => {
     const fetchMock = serve('SUSPENDED', checklistOf('CAN_LIFT_TO_WAITING', { storeStatus: 'SUSPENDED', suspensionSource: 'ADMIN' }), () => ({ body: { success: true, data: { ...storeOf('PENDING_APPROVAL') } } }));
     const { user } = page();

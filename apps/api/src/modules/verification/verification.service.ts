@@ -608,6 +608,14 @@ export async function isAccountPersonsName(
   return people.some((person) => isPersonsFullName(name, person));
 }
 
+/** [COORD ruling 11 Nov 2026 · review-2479] What a store's activation decided about the name the person approving sent. */
+export interface StoreActivation { sellerNameNotConfirmed: { code: 'SELLER_NAME_IS_A_PERSON'; message: string } | null }
+/** The words never repeat the name: it is a person's. */
+export const SELLER_NAME_IS_A_PERSON_NOTICE = {
+  code: 'SELLER_NAME_IS_A_PERSON',
+  message: 'The store’s name is a person’s name (the account holder’s, or the person named in its letter of authority), so it was not confirmed as the seller’s name. Customers see “Ask the store” until the registered business or company name is typed from its registration paper, or the owner’s own-name declaration is approved.',
+} as const;
+
 /** [S2-29] The one command an approval's outbox row carries: the work that must follow the
  *  reviewer-typed identity capture (which runs on the system login, in its own transaction). */
 export const APPROVAL_TAIL = 'APPROVAL_TAIL';
@@ -2775,10 +2783,12 @@ export class VerificationService {
    * other stores are left to the document path and the daily belt.
    */
   async activateStore(
-    userId: string, vendorId: string, onActivated?: (tx: Prisma.TransactionClient) => Promise<void>,
+    userId: string, vendorId: string, onActivated?: (tx: Prisma.TransactionClient, decided: StoreActivation) => Promise<void>,
     sellerName?: { by: string; name: string },
-  ): Promise<void> {
+  ): Promise<StoreActivation> {
+    let decided: StoreActivation = { sellerNameNotConfirmed: null };
     await this.projectionTransaction(async (tx) => {
+      decided = { sellerNameNotConfirmed: null };
       await tx.$queryRaw`SELECT "id" FROM "users" WHERE "id" = ${userId} FOR NO KEY UPDATE`;
       await tx.$queryRaw`SELECT "id" FROM "vendors" WHERE "id" = ${vendorId} FOR UPDATE`;
       const held = await tx.vendor.findUniqueOrThrow({ where: { id: vendorId }, select: { name: true, tradesUnderOwnName: true, subscription: { select: { id: true } } } });
@@ -2796,7 +2806,11 @@ export class VerificationService {
         if (held.name.trim() !== sellerName.name.trim()) {
           throw new AppError(409, 'SELLER_NAME_CHANGED', `The store's name is now “${held.name.trim()}”. Check that name, then approve again.`);
         }
-        await tx.vendor.update({ where: { id: vendorId }, data: { sellerNameCheckedName: held.name.trim(), sellerNameCheckedAt: new Date(), sellerNameCheckedById: sellerName.by } });
+        // [COORD ruling 11 Nov 2026 · review-2479] A person's own name (the account holder's, or someone named in its
+        // letter of authority) is never confirmed as the business's: the store still goes live (a name never blocks an
+        // approval), nothing is stamped, the storefront names nobody, and the answer tells the person why.
+        if (await isAccountPersonsName(tx, userId, held.name.trim())) decided = { sellerNameNotConfirmed: SELLER_NAME_IS_A_PERSON_NOTICE };
+        else await tx.vendor.update({ where: { id: vendorId }, data: { sellerNameCheckedName: held.name.trim(), sellerNameCheckedAt: new Date(), sellerNameCheckedById: sellerName.by } });
       }
       // A person is approving this store now (the admin button): a branch waiting for a person goes through.
       await this.projectVendorActivation(tx, userId, { vendorId, personApproved: true });
@@ -2807,8 +2821,9 @@ export class VerificationService {
       if (after.status !== 'ACTIVE' && !heldForFee) throw new AppError(409, 'ACTIVATION_HELD', 'The store was not activated. Refresh its checklist.');
       // [CHAINS] The person's approval is spent: from now on the branch is projected like any store.
       await tx.vendor.update({ where: { id: vendorId }, data: { personApprovalRequired: false } });
-      await onActivated?.(tx);
+      await onActivated?.(tx, decided);
     });
+    return decided;
   }
 
   /**
