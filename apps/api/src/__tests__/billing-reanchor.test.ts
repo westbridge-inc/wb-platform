@@ -7,7 +7,7 @@ import { redisPlugin } from '../plugins/redis';
 import { authPlugin } from '../plugins/auth';
 import { socketPlugin } from '../plugins/socket';
 import { registerErrorHandler } from '../middleware/error-handler';
-import { BillingService } from '../modules/billing/billing.service';
+import { BillingService, cardPayNowSettlement } from '../modules/billing/billing.service';
 import { NotificationService } from '../modules/notification/notification.service';
 import { getPaymentProvider } from '../providers/payment/payment-provider';
 import { sandboxSetTxStatus } from '../providers/mmg/mmg-provider';
@@ -391,6 +391,28 @@ describe('BILLING-REANCHOR — a returning partner pays from the week they retur
     expect(await app.prisma.billingEvent.count({ where: { idempotencyKey: `bank:${capture.id}` } })).toBe(1);
     expect(await successes(v.subId)).toHaveLength(1);
     expect(await balance(v.subId)).toBe(RATE - 15_000);
+  });
+
+  // [N1 · CARD-STAGING-TEST R2 · owner 10 Nov 2026] A card payment that brings a suspended partner back is kept as fee
+  // credit and spent AT ONCE on the return week (above): the week is paid. The card rail's settlement says so
+  // (`advanced`), on the booking's own answer and on every repeat, never `banked` ("kept for your next weekly fee"),
+  // although a bank event is written for it. Money kept for a week that has not started stays `banked`.
+  it('[N1] a card return reports its week PAID (advanced), on the first answer and on a repeat; booked once', async () => {
+    const due = new Date(Date.now() - 10 * DAY);
+    const v = await brokeVendorSub(due);
+    await suspendFrom(v.subId, due);
+    const capture = await cardInstruction(v.subId, due, RATE);
+    const providerRef = `card-capture-${capture.id}`;
+    const from = Date.now();
+    expect(await billing.settleHostedCardPayment({ subscriptionId: v.subId, paymentId: capture.id, providerRef })).toEqual({ outcome: 'advanced' });
+    await expectReturnedAt(v.subId, due, from, Date.now());
+    expect(await app.prisma.billingEvent.count({ where: { idempotencyKey: `bank:${capture.id}` } })).toBe(1);
+    expect(await cardPayNowSettlement(app.prisma, capture.id)).toBe('advanced');
+    // Asked again (a racing confirmation, the sweep, a finance BOOK replay): nothing more is booked, and it is still the week paid.
+    expect(await billing.settleHostedCardPayment({ subscriptionId: v.subId, paymentId: capture.id, providerRef })).toEqual({ outcome: 'advanced' });
+    expect(await app.prisma.billingEvent.count({ where: { idempotencyKey: `bank:${capture.id}` } })).toBe(1);
+    expect(await successes(v.subId)).toHaveLength(1);
+    expect(await balance(v.subId)).toBe(0);
   });
 
   it('a repeated top-up key credits once and reinstates once', async () => {
