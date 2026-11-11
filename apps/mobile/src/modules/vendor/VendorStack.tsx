@@ -35,6 +35,7 @@ import { VendorBillingSuspended } from './screens/VendorBillingSuspended';
 import { VendorStoreBlocked } from './screens/VendorStoreBlocked';
 import { VendorMenuScreen } from './screens/VendorMenuScreen';
 import { VendorItemEditorScreen } from './screens/VendorItemEditorScreen';
+import { VendorOptionLibraryScreen } from './screens/VendorOptionLibraryScreen';
 import { VendorInsightsScreen } from './screens/VendorInsightsScreen';
 import { VendorAccountScreen } from './screens/VendorAccountScreen';
 import { VendorScheduleScreen } from './screens/VendorScheduleScreen';
@@ -188,6 +189,8 @@ function MenuStackNav() {
       <Stack.Screen name="VendorMenu" component={VendorMenuScreen} />
       {canEdit ? <Stack.Screen name="VendorItemEditor" component={VendorItemEditorScreen} /> : null}
       {canEdit ? <Stack.Screen name="VendorBulkImport" component={VendorBulkImportScreen} /> : null}
+      {/* [MENU-OPTIONS] The shared option library (a group built once, attached to many items). */}
+      {canEdit ? <Stack.Screen name="VendorOptionLibrary" component={VendorOptionLibraryScreen} /> : null}
     </Stack.Navigator>
   );
 }

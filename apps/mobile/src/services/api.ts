@@ -1361,6 +1361,17 @@ export interface VendorItemInput {
   vatClass?: 'STANDARD' | 'ZERO_RATED' | 'EXEMPT';
 }
 
+/** [MENU-OPTIONS] A shared library group's fields (all optional on an edit). */
+export type LibraryGroupBody = {
+  name?: string; isRequired?: boolean; minSelect?: number; maxSelect?: number; sortOrder?: number;
+  setsPrice?: boolean; allowHalves?: boolean; halfPricePercent?: number;
+};
+/** [MENU-OPTIONS] A shared library choice's fields; followUpGroupId is another LIBRARY group (or null), externalCode the kitchen code. */
+export type LibraryOptionBody = {
+  name?: string; price?: number; isDefault?: boolean; isAvailable?: boolean; sortOrder?: number;
+  followUpGroupId?: string | null; externalCode?: string | null;
+};
+
 export const vendorApi = {
   profile: (session?: AuthSessionSnapshot, storeId?: string | null) => api.get('/vendor/profile', capturedVendorAuthConfig(session, storeId)),
   /** [DOC-1 §3.6] The store's tier: caps, usage, what lifts the limits. */
@@ -1502,12 +1513,13 @@ export const vendorApi = {
       headers: { 'Content-Type': 'multipart/form-data' },
     })),
   // Modifiers (option groups + options on an item)
+  // [MENU-OPTIONS] setsPrice (size sets the price), allowHalves + halfPricePercent (half-and-half and its price rule).
   addOptionGroup: (
     itemId: string,
-    data: { name: string; isRequired?: boolean; minSelect?: number; maxSelect?: number },
+    data: { name: string; isRequired?: boolean; minSelect?: number; maxSelect?: number; setsPrice?: boolean; allowHalves?: boolean; halfPricePercent?: number },
     session?: AuthSessionSnapshot,
   ) => api.post(`/vendor/items/${itemId}/option-groups`, data, capturedAuthConfig(session)),
-  updateOptionGroup: (id: string, data: { name?: string; isRequired?: boolean; minSelect?: number; maxSelect?: number }) =>
+  updateOptionGroup: (id: string, data: { name?: string; isRequired?: boolean; minSelect?: number; maxSelect?: number; setsPrice?: boolean; allowHalves?: boolean; halfPricePercent?: number }) =>
     api.put(`/vendor/option-groups/${id}`, data),
   deleteOptionGroup: (id: string, session?: AuthSessionSnapshot) =>
     api.delete(`/vendor/option-groups/${id}`, capturedAuthConfig(session)),
@@ -1517,10 +1529,25 @@ export const vendorApi = {
     data: { name: string; additionalPrice?: number; vatListedAdditionalPrice?: number; isDefault?: boolean },
     session?: AuthSessionSnapshot,
   ) => api.post(`/vendor/option-groups/${groupId}/options`, data, capturedAuthConfig(session)),
-  updateOption: (id: string, data: { name?: string; additionalPrice?: number; isDefault?: boolean }) =>
+  // [MENU-OPTIONS] followUpGroupId: the group of the SAME item this choice opens (null = none); isAvailable alone is
+  // also taken on a shared group's choice (it marks the library choice sold out everywhere).
+  updateOption: (id: string, data: { name?: string; additionalPrice?: number; isDefault?: boolean; isAvailable?: boolean; followUpGroupId?: string | null }) =>
     api.put(`/vendor/options/${id}`, data),
   deleteOption: (id: string, session?: AuthSessionSnapshot) =>
     api.delete(`/vendor/options/${id}`, capturedAuthConfig(session)),
+  // [MENU-OPTIONS · owner 11 Nov 2026] The shared option library: a group built once, attached to many items; an edit
+  // changes every item that uses it. Prices are what the store types (before VAT where VAT is added).
+  modifierGroups: () => api.get('/vendor/modifier-groups'),
+  createModifierGroup: (data: LibraryGroupBody & { name: string; options?: LibraryOptionBody[] }) => api.post('/vendor/modifier-groups', data),
+  updateModifierGroup: (id: string, data: LibraryGroupBody) => api.put(`/vendor/modifier-groups/${id}`, data),
+  deleteModifierGroup: (id: string) => api.delete(`/vendor/modifier-groups/${id}`),
+  orderModifierGroups: (ids: string[]) => api.put('/vendor/modifier-groups/order', { ids }),
+  addModifierOption: (groupId: string, data: LibraryOptionBody & { name: string }) => api.post(`/vendor/modifier-groups/${groupId}/options`, data),
+  orderModifierOptions: (groupId: string, ids: string[]) => api.put(`/vendor/modifier-groups/${groupId}/options/order`, { ids }),
+  updateModifierOption: (id: string, data: LibraryOptionBody) => api.put(`/vendor/modifier-options/${id}`, data),
+  deleteModifierOption: (id: string) => api.delete(`/vendor/modifier-options/${id}`),
+  attachModifierGroup: (id: string, itemIds: string[]) => api.post(`/vendor/modifier-groups/${id}/attach`, { itemIds }),
+  detachModifierGroup: (id: string, itemIds: string[]) => api.post(`/vendor/modifier-groups/${id}/detach`, { itemIds }),
   // Insights / settings
   analytics: () => api.get('/vendor/analytics/overview'),
   analyticsRevenue: (days = 14) => api.get('/vendor/analytics/revenue', { params: { days } }),
