@@ -685,7 +685,8 @@ describe('[review-2475 F1] a company\'s papers never follow the person to anothe
     const x = await companyStore();
     await handedOver(x);
     const y = await companyStore();
-    const named = await nameNewHolder(y, x);
+    const xPhone = (await system(() => app.prisma.user.findUniqueOrThrow({ where: { id: x.userId }, select: { phone: true } }))).phone;
+    const named = await nameNewHolder(y, { phone: xPhone });
     expect(named.statusCode, named.body).toBe(201);
     const changeId = named.json().data.id as string;
     const accepted = (await call('POST', `/api/v1/customer/account-handovers/${changeId}/accept`, x)).json().data;
