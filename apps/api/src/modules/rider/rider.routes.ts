@@ -33,9 +33,9 @@ import { CashRulesService, customerTrustSummaries, gpsEvidence } from '../cash/c
 import { BillingService } from '../billing/billing.service';
 import { getPaymentProvider } from '../../providers/payment/payment-provider';
 import { DeliveryCashSettlementService, assertSettlementId, settlementAttestationSchema } from '../cash/delivery-cash-settlement.service';
-import { makeDispatchService, vehicleCanCarry, vehicleCanCarryParcel, cashMathForOffer } from '../dispatch/dispatch.service';
+import { makeDispatchService, vehicleCanCarry, vehicleCanCarryParcel, cashMathForOffer, CASH_MATH_SELECT, rememberCashUnshown } from '../dispatch/dispatch.service';
 import { FloatService, riderFloatForOrder, floatAdvice } from '../dispatch/float.service';
-import { assertCashShown } from '../dispatch/cash-limit';
+import { assertCashShown, UNSHOWN_CASH_MAX } from '../dispatch/cash-limit';
 import { explainEarning } from '../../utils/explain-earning';
 import { carNoParcelsClaim, passengersOnlyRefusal, riderStackingCapacity, riderLiveLegCount, settleRiderLegs } from '../dispatch/concurrency-policy';
 import { reopenPreCustodyLeg } from '../dispatch/delivery-watchdog';
@@ -1593,7 +1593,12 @@ export async function riderRoutes(app: FastifyInstance) {
       // from the LOCKED order: the amount the board row showed must not have gone up since (a basket can change while
       // the board sits open), and an app that showed none (an older app) keeps the board it was built under, up to
       // UNSHOWN_CASH_MAX; above it the rider takes the job from the offer card, which shows the cash.
-      assertCashShown(lockedFloatAmt, shownPayToVendor, order.vendor?.name);
+      // [PROD-RIDER-TEST (b)1] Today's board shows any split Swift can state (cashMathForOffer, from this locked row):
+      // no amount for such a job means an older app, and the refusal says to close and reopen Swift for the update.
+      const cashShowable = shownPayToVendor === undefined && lockedFloatAmt > UNSHOWN_CASH_MAX
+        ? cashMathForOffer(await tx.order.findUniqueOrThrow({ where: { id }, select: CASH_MATH_SELECT })) != null
+        : false;
+      assertCashShown(lockedFloatAmt, shownPayToVendor, order.vendor?.name, cashShowable);
       if (lockedFloatAmt > 0) {
         const floatReserved = await floatService.commit(tx, rider.id, lockedFloatAmt);
         if (!floatReserved) {
@@ -1606,6 +1611,13 @@ export async function riderRoutes(app: FastifyInstance) {
       }
 
       return staged;
+    }).catch(async (error: unknown) => {
+      // [PROD-RIDER-TEST (b)2] An app that could not show this job's cash is not offered it again either
+      // (dispatch skips this rider for this job until the app updates or the store searches afresh).
+      if (error instanceof AppError && error.code === 'CASH_AMOUNT_NOT_SHOWN') {
+        await rememberCashUnshown(app.redis, id, order.fulfillmentModeVersion, rider.id);
+      }
+      throw error;
     });
 
     // [REPORT-014 F-014-09] Board grab stages its own assignment, so retire the

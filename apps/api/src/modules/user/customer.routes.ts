@@ -1,5 +1,7 @@
 import { servedPhotoAddress } from '../../utils/photo-address';
-import { emitToOrderRoom } from '../order/order-room-emission.service';
+import { emitToOrderRoom, emitToStoreRoom } from '../order/order-room-emission.service';
+import { pickupSwitchOffer } from '../order/no-rider-fallback';
+import { withdrawOfferOfPickupSwitch } from '../dispatch/offer-withdrawal';
 import { customerTimeline } from '../order/customer-timeline';
 import { shownRatingFor, shownSurface } from '../rating/rating-groups';
 import { ownerWallSystem } from '../../lib/owner-rls';
@@ -3223,6 +3225,10 @@ export async function customerRoutes(app: FastifyInstance) {
         // [owner #46/#50] Why there is no Cancel, and who to contact instead —
         // the server's verdict, so no client re-derives the rule (additive).
         cancelUnavailable,
+        // [PROD-RIDER-TEST (a)2] No rider was found: before the free cancel, the customer may collect it instead
+        // (POST /orders/:id/convert-to-pickup: the delivery fee and any rider tip come off). Null when the
+        // conversion would refuse (MMG, a parcel or ride, a rider on it, the store delivering). Additive.
+        switchToPickup: pickupSwitchOffer(order, policyOrder.noMoverFound === true, order.vendor?.name),
       },
     };
   });
@@ -3349,9 +3355,10 @@ export async function customerRoutes(app: FastifyInstance) {
    * mid-request wins, the conversion loses, honestly.
    */
   app.post('/orders/:id/convert-to-pickup', async (request: AuthRequest) => {
-    if (process.env['DISPATCH_EXHAUSTION'] !== '1') {
-      throw new AppError(404, 'NOT_FOUND', 'Not available');
-    }
+    // [PROD-RIDER-TEST (a)2 · COORD 11 Nov 2026] With the switch off, the conversion is open for one case: the rider
+    // search for this order came back empty (readNoMoverFound — the fact that also frees the cancel). The customer's
+    // order screen offers it then ("switchToPickup"), before the cancel. Anything else stays invisible (404).
+    const flagOn = process.env['DISPATCH_EXHAUSTION'] === '1';
     const { id } = request.params as { id: string };
     const { userId } = request.user;
 
@@ -3361,9 +3368,13 @@ export async function customerRoutes(app: FastifyInstance) {
         id: true, status: true, fulfillment: true, riderId: true, vendorId: true,
         deliveryFee: true, tipAmount: true, totalAmount: true, orderNumber: true,
         paymentMethod: true, paymentStatus: true,
+        orderType: true, fulfillmentMode: true, fulfillmentModeVersion: true, driverId: true,
         vendor: { select: { name: true, ownerId: true, requirePickupCode: true } },
       },
     });
+    if (!flagOn && !(order && await readNoMoverFound(app.prisma, order))) {
+      throw new AppError(404, 'NOT_FOUND', 'Not available');
+    }
     if (!order) throw new NotFoundError('Order', id);
     if (order.fulfillment !== 'DELIVERY' || !order.vendorId) {
       throw new AppError(400, 'NOT_A_DELIVERY', 'Only delivery orders can switch to pickup.');
@@ -3408,11 +3419,22 @@ export async function customerRoutes(app: FastifyInstance) {
       await tx.$queryRaw`SELECT id FROM "orders" WHERE id = ${order.id} FOR UPDATE`;
       const locked = await tx.order.findFirst({
         where: { id: order.id, customerId: userId },
-        select: { status: true, fulfillment: true, riderId: true, paymentMethod: true, deliveryFee: true, tipAmount: true, totalAmount: true },
+        select: {
+          id: true, status: true, fulfillment: true, riderId: true, paymentMethod: true, deliveryFee: true, tipAmount: true, totalAmount: true,
+          orderType: true, fulfillmentMode: true, fulfillmentModeVersion: true, driverId: true,
+        },
       });
       if (!locked) throw new NotFoundError('Order', order.id);
       if (locked.riderId) {
         throw new AppError(409, 'RIDER_ALREADY_ASSIGNED', 'A rider just took this order — it is on its way.');
+      }
+      // [PROD-RIDER-TEST (a)2] The store's "we'll deliver it" and this switch take the same row lock: whichever
+      // commits first wins. A store now delivering it is not "no rider found" any more.
+      if (locked.fulfillmentMode === 'VENDOR_DELIVERY' && !flagOn) {
+        throw new AppError(409, 'STORE_DELIVERING', `${order.vendor?.name ?? 'The store'} is now delivering this order itself, so it cannot switch to pickup.`);
+      }
+      if (!flagOn && !(await readNoMoverFound(tx, locked))) {
+        throw new AppError(409, 'RIDER_SEARCH_OPEN', 'This order can no longer switch to pickup.');
       }
       if (locked.fulfillment !== 'DELIVERY' || locked.paymentMethod !== 'CASH') {
         throw new AppError(409, 'RIDER_ALREADY_ASSIGNED', 'This order can no longer switch to pickup.');
@@ -3466,6 +3488,10 @@ export async function customerRoutes(app: FastifyInstance) {
       })
       .catch(() => {});
 
+    // [PROD-RIDER-TEST S3-1] A rider card still ringing for this order (a re-sweep or the store's "Find a rider" may
+    // have rung one while the customer chose) goes now, through the one withdrawal point, and its mover is free.
+    await withdrawOfferOfPickupSwitch({ prisma: app.prisma, redis: app.redis, io: app.io }, order.id);
+
     // Both sides hear it now. [PICKUP · owner 30 Oct 2026 · REVIEW-F S3-1 on #2251] The words promise a code
     // only when the store asks for one; off (the default) the counter checks the first name and order number
     // (worded so it reads true on every store build: no button name).
@@ -3473,6 +3499,10 @@ export async function customerRoutes(app: FastifyInstance) {
     await emitToOrderRoom(app.prisma, app.io, order.id, 'order:status_changed', {
       orderId: order.id, status: statusAtConvert, fulfillment: 'PICKUP',
     });
+    // [PROD-RIDER-TEST (a)2] The store's board moves the card to its pickups at once (the push below may be late).
+    if (order.vendorId) {
+      await emitToStoreRoom(app.prisma, app.io, order.vendorId, 'order:status_changed', { orderId: order.id, status: statusAtConvert, fulfillment: 'PICKUP' });
+    }
     if (order.vendor) {
       const owner = await app.prisma.vendorOwner.findUnique({ where: { id: order.vendor.ownerId } });
       if (owner) {

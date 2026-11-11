@@ -230,6 +230,32 @@ describe('delivery owner controls', () => {
     });
   });
 
+  // [PROD-RIDER-TEST 11 Nov 2026 · COORD ruling (a)1] The search for this order came back empty: the store is asked
+  // "No rider found. Deliver it yourselves?", one tap takes it (no standing setting needed), and "Find a rider" stays.
+  it('[PROD-RIDER-TEST (a)1] no rider found: asks the store, one tap delivers it without the setting, the retry stays', async () => {
+    const { user, fetchMock } = await openDeliveryOwner({
+      fulfillmentMode: 'PLATFORM_RIDER',
+      vendor: { vendorType: 'RESTAURANT', selfDeliveryEnabled: false },
+      noRiderFound: true,
+      noRiderPrompt: 'No rider found. Deliver it yourselves?',
+      noRiderDetail: 'One tap and your store delivers this order with its own rider; the customer is told. Or search for a Swift rider again.',
+    });
+    expect(screen.getByText('No rider found. Deliver it yourselves?')).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Find a rider' })).toBeTruthy();
+    await user.click(screen.getByRole('button', { name: 'We’ll deliver it' }));
+    await waitFor(() => {
+      const call = fetchMock.mock.calls.find(([url]) => String(url).includes('/fulfillment-mode'));
+      expect(call).toBeTruthy();
+      expect(JSON.parse(String(call![1]?.body))).toEqual({ mode: 'VENDOR_DELIVERY' });
+    });
+  });
+
+  it('[PROD-RIDER-TEST (a)1] without the server\'s word, a store with the setting off is not offered its own delivery', async () => {
+    await openDeliveryOwner({ fulfillmentMode: 'PLATFORM_RIDER', vendor: { vendorType: 'RESTAURANT', selfDeliveryEnabled: false } });
+    expect(screen.queryByRole('button', { name: /We’ll deliver/ })).toBeNull();
+    expect(screen.queryByText('No rider found. Deliver it yourselves?')).toBeNull();
+  });
+
   it('names vendor self-delivery and never offers a rider retry for it', async () => {
     await openDeliveryOwner({ fulfillmentMode: 'VENDOR_DELIVERY' });
     expect(screen.getByText('Your store delivers this order')).toBeTruthy();

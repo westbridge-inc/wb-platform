@@ -142,6 +142,11 @@ export interface VendorOrder {
   pickupCodeRequired?: boolean;
   /** [O-2] When the store tapped "Handed to rider" (absent on an older server, which has no such step). */
   handedToRiderAt?: string | null;
+  /** [PROD-RIDER-TEST (a)1] The rider search for this order came back empty while it is still the store's to choose:
+   *  "No rider found. Deliver it yourselves?" (both routes; absent on an older server = false). */
+  noRiderFound?: boolean;
+  noRiderPrompt?: string | null;
+  noRiderDetail?: string | null;
   /**
    * The two routes select DIFFERENT vendor columns: the board sends
    * `{ id, name, selfDeliveryEnabled }`, the detail sends
