@@ -34,7 +34,7 @@ export interface RingMoneyOrder {
   tipAmount?: unknown;
   fulfillment?: string | null;
   fulfillmentMode?: string | null;
-  vendor?: { vendorType?: string | null; selfDeliveryEnabled?: boolean | null } | null;
+  vendor?: { vendorType?: string | null; selfDeliveryEnabled?: boolean | null; [key: string]: unknown } | null;
   storeMoney?: ServerStoreMoney | null;
 }
 
