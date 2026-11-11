@@ -2,6 +2,7 @@ import { activeOverdueMs, currentDunningClock, FULL_FEE_GRACE_MS, lockBillingAut
 import type { PrismaClient } from '@prisma/client';
 import { log } from '../../utils/logger';
 import { restoreBillingAccess } from './billing-access';
+import { openSetAsideIds } from './credit-refund';
 
 // Nightly invariants [san spec 24.2 mapped onto the real engine]. The DB
 // testifies; any failure pages. The wrongful-suspension detector AUTO-HEALS:
@@ -36,7 +37,14 @@ export interface InvariantReport {
    *  events (set aside − paid − released): money owed back that the books
    *  and the record do not agree on. */
   refundPayableMismatches: { subscriptionId: string; ledgerBalance: number; openSetAside: number }[];
+  /** [REVIEW-2484-B S4-1] Refunds to the card that did not go back and still need a person: refused while their
+   *  set-aside is still open (the money is owed: Record payout), not confirmed or pending (check it with the card
+   *  provider), or a claim stuck SENDING. Its own page is best-effort; this nightly page survives a lost one. */
+  cardRefundsNotDone: { subscriptionId: string; cardRefundId: string; state: string }[];
 }
+
+/** [REVIEW-2484-B S4-1] A refund claim still SENDING past this is stuck (its process stopped mid-call). */
+export const CARD_REFUND_STUCK_MS = 10 * 60 * 1000;
 
 /** Why a paid-through suspension was left for a person (row 167). */
 export type PaidSuspensionHold =
@@ -49,13 +57,13 @@ export function brokenInvariantCount(report: InvariantReport): number {
   return report.walletMismatches.length + report.wrongfulSuspensions.length + report.enforcementLeaks.length
     + report.unjudgedSubscriptions.length + report.paidSuspensionsLeftHeld.length
     + report.receiptGaps.length + report.ledgerWalletMismatches.length + report.refundPayableMismatches.length
-    + (report.ledgerTrialImbalance ? 1 : 0);
+    + report.cardRefundsNotDone.length + (report.ledgerTrialImbalance ? 1 : 0);
 }
 
 export async function runBillingInvariants(prisma: PrismaClient, now = new Date()): Promise<InvariantReport> {
   const report: InvariantReport = {
     walletsChecked: 0, walletMismatches: [], wrongfulSuspensions: [], paidSuspensionsLeftHeld: [], earlyBillingSuspensions: [], enforcementLeaks: [], unjudgedSubscriptions: [], receiptGaps: [],
-    ledgerTrialImbalance: null, ledgerWalletMismatches: [], refundPayableMismatches: [],
+    ledgerTrialImbalance: null, ledgerWalletMismatches: [], refundPayableMismatches: [], cardRefundsNotDone: [],
   };
 
   // 1. Balance provability: PrepaidBalance == Σ(PREPAID_TOPUP) − Σ(prepaid-settled charges)
@@ -230,9 +238,21 @@ export async function runBillingInvariants(prisma: PrismaClient, now = new Date(
     }
   }
 
+  // 8. [REVIEW-2484-B S4-1] Refunds to the card that did not go back. A refused one is final on its row, so it is
+  //    reported only while the set-aside it was asked from is still open (the money is still owed).
+  const notDone = await prisma.cardCreditRefund.findMany({
+    where: { OR: [{ state: { in: ['FAILED', 'UNKNOWN', 'PENDING'] } }, { state: 'SENDING', createdAt: { lte: new Date(now.getTime() - CARD_REFUND_STUCK_MS) } }] },
+    select: { id: true, subscriptionId: true, setAsideId: true, state: true }, orderBy: { createdAt: 'asc' },
+  });
+  const openAsides = notDone.length ? await openSetAsideIds(prisma, [...new Set(notDone.map((r) => r.subscriptionId))]) : new Map<string, string>();
+  for (const r of notDone) {
+    if (r.state === 'FAILED' && openAsides.get(r.subscriptionId) !== r.setAsideId) continue;
+    report.cardRefundsNotDone.push({ subscriptionId: r.subscriptionId, cardRefundId: r.id, state: r.state });
+  }
+
   const broken =
     report.walletMismatches.length + report.wrongfulSuspensions.length + report.earlyBillingSuspensions.length + report.enforcementLeaks.length +
-    report.receiptGaps.length + report.ledgerWalletMismatches.length + report.refundPayableMismatches.length + (report.ledgerTrialImbalance ? 1 : 0);
+    report.receiptGaps.length + report.ledgerWalletMismatches.length + report.refundPayableMismatches.length + report.cardRefundsNotDone.length + (report.ledgerTrialImbalance ? 1 : 0);
   if (broken > 0) {
     log().error({ report }, 'billing invariants: FAILURES detected (wrongful suspensions auto-healed)');
   }

@@ -158,7 +158,7 @@ describe('[row 167] the heal never skips a paid suspension silently', () => {
     expect(leftHeld(report, s.subId)).toEqual({ subscriptionId: s.subId, reasons: ['OWNER_NOT_ACTIVE'] });
     // The nightly page counts it: a report holding only this finding pages.
     const only = { ...report, walletMismatches: [], wrongfulSuspensions: [], earlyBillingSuspensions: [], enforcementLeaks: [], unjudgedSubscriptions: [],
-      receiptGaps: [], ledgerTrialImbalance: null, ledgerWalletMismatches: [], refundPayableMismatches: [], paidSuspensionsLeftHeld: [leftHeld(report, s.subId)!] };
+      receiptGaps: [], ledgerTrialImbalance: null, ledgerWalletMismatches: [], refundPayableMismatches: [], cardRefundsNotDone: [], paidSuspensionsLeftHeld: [leftHeld(report, s.subId)!] };
     expect(brokenInvariantCount(only)).toBe(1);
     await unchanged(s, 'BILLING');
   });
