@@ -5303,6 +5303,9 @@ export async function adminRoutes(app: FastifyInstance) {
   app.post('/subscriptions/:id/refund-credit/set-aside', { preHandler: [adminGuard] }, async (request) => {
     const id = await refundSubject(request);
     const body = z.object({ amount: refundAmount }).parse(request.body);
+    // [REVIEW-2484-A S4-6] A week that has started is never refunded: it is paid from the credit first (credit only).
+    // The set-aside then asks for exactly what is left (FEE_CREDIT_CHANGED names it when the week was just paid).
+    await billing.settleStartedWeekFromCredit(id);
     return refundAnswer(await setAsideCreditRefund(app.prisma, {
       adminId: request.user.userId, approvalId: approvalOf(request), subscriptionId: id, amount: body.amount,
       onAudit: (tx, facts) => auditWithin(tx, request as unknown as AuditRequestLike, app.prefix, { extra: facts }),
@@ -5338,10 +5341,10 @@ export async function adminRoutes(app: FastifyInstance) {
       setAsideId: body.setAsideId, cardSessionId: body.cardSessionId, amount: body.amount,
       onAudit: (tx, facts) => auditWithin(tx, request as unknown as AuditRequestLike, app.prefix, { extra: facts }),
       // [CARDS-FOLLOWUP] A refund to the card that did not go back (refused, pending, not confirmed) is never silent.
-      alertAdmins: async (message, dedupeKey) => {
+      alertAdmins: async (message, dedupeKey, tenantId) => {
         const { notifyAdmins } = await import('../notification/notification.service');
         return notifyAdmins(app.prisma, notifications, {
-          tenantId: getTenantId() ?? null, title: 'Refund to card did not go back', body: message,
+          tenantId, title: 'Refund to card did not go back', body: message,
           data: { kind: 'billing_invariants', alert: 'card-refund-not-done', subscriptionId: id, cardSessionId: body.cardSessionId },
           dedupeKey,
         });

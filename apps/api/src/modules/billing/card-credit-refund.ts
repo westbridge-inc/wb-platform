@@ -29,8 +29,8 @@ import {
 // refund of the same original transaction — the same documented call with the part as TotalAmount. PowerTranz's docs:
 // "Powertranz supports partial capture and refund ... You cannot void a transaction partially", and "Partial capture,
 // partial refund and void after capture, are features that should be supported by acquiring banks" (Authorization
-// Result, PowerTranz developer docs); its written answer to Swift (9 Nov 2026): partial refunds "are supported through
-// both the Merchant Portal and API calls". The owner asked PowerTranz to confirm partial refunds on Swift's account. A
+// Result, PowerTranz developer docs); PowerTranz also confirmed in writing (9 Nov 2026) that partial refunds work
+// through its API and its Merchant Portal (the answer itself is kept with Swift's records). The owner asked PowerTranz to confirm partial refunds on Swift's account. A
 // partial refund PowerTranz refuses (or does not offer) moves nothing: FAILED, exactly like any refused refund, and the
 // money stays set aside, owed, for a person to pay back the existing way (a payout record, two people) — never dropped.
 // None of it (all of it paid weeks that started): nothing goes back (CARD_PAYMENT_ALL_USED).
@@ -40,11 +40,11 @@ import {
 //   - a refund made by hand in the merchant portal (the guide names the portal only for page names, sec. 5.1, and
 //     order references in reports, sec. 9.2): nothing here records one;
 //   - the refund's own reference in the transaction lookup. PowerTranz's written answers to Swift (4 and 9 Nov 2026)
-//     give a transaction lookup (GET /api/Transactions/{id}) for unknown outcomes that "is supported for all
-//     transaction types", with OrderSummary.TotalCreditAmount on the original transaction — but not whether it lists
+//     give a transaction lookup (GET /api/Transactions/{id}) for unknown outcomes, for every transaction type, with
+//     OrderSummary.TotalCreditAmount on the original transaction — but not whether it lists
 //     each refund with its own TransactionIdentifier (asked). A refund whose answer is lost is never sent again: a
-//     person asks Swift to check it with the card provider (checkCardCreditRefund below, two people), and only the
-//     WHOLE payment credited back on the provider's own record closes it.
+//     person asks Swift to check it with the card provider (checkCardCreditRefund below, two people), and only
+//     EXACTLY what Swift asked back (the whole payment, or the part) credited on the provider's own record closes it.
 //
 // The law, in order:
 //   1. A person asks, with a reason; a second admin approves (C4); the asker of the set-aside never approves it.
@@ -123,7 +123,9 @@ async function cardPaymentInSetAside(tx: Tx, subscriptionId: string, setAsideId:
  *  exactly its money in the refund set aside, the weeks it paid for that have not started. All of it: the whole
  *  payment. Part of it (the rest already paid a week that started): that part, a PARTIAL refund of the same
  *  transaction. None of it: nothing. Never more than the payment, and only whole units of the currency (weekly fees and
- *  card payments are whole GYD, MAJOR_WHOLE), so the provider is asked for exactly that part, with no rounding. */
+ *  card payments are whole GYD). [REVIEW-2484-A S4-3] The whole-units rule is SWIFT'S own platform rule (MAJOR_WHOLE),
+ *  not PowerTranz's: its TotalAmount is a decimal and GYD cents would be exact. A part that breaks it is refused
+ *  safely (nothing is sent; the money stays owed for Record payout). */
 export type CardRefundPart = { cents: number; partial: boolean } | { refused: 'ALL_USED' | 'ABOVE_PAYMENT' | 'NOT_WHOLE_UNITS' };
 export function cardRefundPart(paymentCents: number, inSetAsideCents: number): CardRefundPart {
   if (!(inSetAsideCents > 0)) return { refused: 'ALL_USED' };
@@ -185,7 +187,7 @@ export async function refundCardCreditToCard(prisma: PrismaClient, rail: CardRai
   onAudit?: OnAudit; now?: Date;
   /** [CARDS-FOLLOWUP] Pages the admins when the refund did not go back (refused, pending or not confirmed): never
    *  silent. Called once per refund (its dedupe key names it), never for an approved refund or a replay. */
-  alertAdmins?: (message: string, dedupeKey: string) => Promise<unknown>;
+  alertAdmins?: (message: string, dedupeKey: string, tenantId: string) => Promise<unknown>;
 }): Promise<CardRefundAnswer> {
   if (!input.approvalId) throw new AppError(403, 'APPROVAL_REQUIRED', 'A refund to the card needs a second admin.');
   const answer = async (row: { state: string; amount: unknown; providerRefundRef: string | null }, replayed: boolean): Promise<CardRefundAnswer> => ({
@@ -261,14 +263,23 @@ export async function refundCardCreditToCard(prisma: PrismaClient, rail: CardRai
   // money on its way, so nothing else may pay it until it is checked with the card provider.
   if (done.state !== 'REFUNDED' && input.alertAdmins) {
     const what = `The refund of ${Number(row.amount)} ${row.currencyCode} to the card for order ${orderReferenceOf(session.id)}${ofPayment}`;
+    // [REVIEW-2484-B S4-2] The reason is built from the provider's own codes: only [A-Z0-9_] reaches a push.
+    const why = pushSafeCode(done.outcomeReason);
     const message = done.state === 'FAILED'
-      ? `${what} was refused by the card provider (${done.outcomeReason ?? 'no reason given'}). Nothing went back: the money stays in the refund, still owed, and this card payment is never sent to the card again. Pay it back with Record payout (two people), or ask the owner.`
-      : `${what} is not confirmed (${done.state.toLowerCase()}: ${done.outcomeReason ?? 'no answer'}). It is never sent again, and the money may be on its way back: do not pay it another way or release the refund. Check it with the card provider (Card payments) and escalate to the owner.`;
-    await input.alertAdmins(message, `card-refund-not-done:${row.id}`).catch((err: unknown) => {
+      ? `${what} was refused by the card provider (${why ?? 'no reason given'}). Nothing went back: the money stays in the refund, still owed, and this card payment is never sent to the card again. Pay it back with Record payout (two people), or ask the owner.`
+      : `${what} is not confirmed (${done.state.toLowerCase()}: ${why ?? 'no answer'}). It is never sent again, and the money may be on its way back: do not pay it another way or release the refund. Check it with the card provider (Card payments) and escalate to the owner.`;
+    // [REVIEW-2484-A S4-5] Paged in the card payment's own tenant, as every other card alert.
+    await input.alertAdmins(message, `card-refund-not-done:${row.id}`, session.tenantId).catch((err: unknown) => {
       log().error({ cardRefundId: row.id, err }, '[CARDS-FOLLOWUP] could not page the admins about a refund to the card that did not go back');
     });
   }
   return answer(done, false);
+}
+
+/** [REVIEW-2484-B S4-2] A reason code fit for a push: [A-Z0-9_] only (anything else becomes _), at most 80. */
+export function pushSafeCode(reason: string | null | undefined): string | null {
+  if (!reason) return null;
+  return reason.slice(0, 80).replace(/[^A-Z0-9_]/g, '_');
 }
 
 /** The refund's own reference must be new to Swift: one already on record is never this refund's proof. */
@@ -364,8 +375,8 @@ export async function creditRefundSources(db: PrismaClient | Tx, subscriptionId:
 // [CARD-REFUND-LOOKUP] "Check with the card provider" — a refund Swift sent whose answer is not known
 //
 // PowerTranz's written answers to Swift: the transaction lookup is for unknown outcomes only, never the normal flow
-// (4 Nov 2026), and "is supported for all transaction types"; refunds, partial and Merchant Portal ones included, are
-// supported (9 Nov 2026). Swift reads the ORIGINAL transaction's record (lookupRefund) when a person asks and a second
+// (4 Nov 2026), for every transaction type; refunds, partial and Merchant Portal ones included, are supported
+// (9 Nov 2026). Swift reads the ORIGINAL transaction's record (lookupRefund) when a person asks and a second
 // admin approves (C4). [OWNER 10 Nov 2026] A partial refund (part of the payment: its weeks that had not started) is
 // judged against that PART of Swift's whole capture: REFUNDED only when TotalCreditAmount is exactly the part asked;
 // the whole payment back, a void, or any other credit is held for the owner. What it may record:
@@ -419,9 +430,9 @@ export interface CreditRefundCheckAnswer {
 
 /**
  * Check a refund of set-aside credit to its card with the card provider (two people: the route is C4). Reads the
- * original transaction's record once (its backoff permitting); records REFUNDED only on the WHOLE payment credited
- * back, as the payout part the provider's own approved answer would have recorded. `alertOwner` is told of a credit
- * that is not the whole payment.
+ * original transaction's record once (its backoff permitting); records REFUNDED only when EXACTLY what Swift asked back
+ * is credited (the whole payment, or for a partial refund the part: judgeRefundRecord), as the payout part the
+ * provider's own approved answer would have recorded. `alertOwner` is told of any other credit.
  */
 export async function checkCardCreditRefund(prisma: PrismaClient, rail: CardRailSource, input: {
   adminId: string; tenantId: string; cardSessionId: string; onAudit?: OnAudit; now?: Date;

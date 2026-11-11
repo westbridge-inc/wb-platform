@@ -25,6 +25,7 @@ import { deleteRunKeys, runKeyPrefix } from './helpers/card-sim-keys';
 import { testPhone } from './helpers/fixture-ids';
 import { partnerObligations, verdictFor } from '../modules/user/partner-wind-down';
 import { recordCreditRefundPaid, refundReferenceOf, releaseCreditRefund, setAsideCreditRefund } from '../modules/billing/credit-refund';
+import { runBillingInvariants } from '../modules/billing/invariants';
 import { CARD_REFUND_ACTION, checkCardCreditRefund, creditRefundSources, lookupCreditReference, refundCardCreditToCard, validateCardRefundAsk } from '../modules/billing/card-credit-refund';
 
 // ---------------------------------------------------------------------------
@@ -1185,18 +1186,97 @@ describe('[CARD-READY] card money set aside at closing goes back to its card thr
     expect(await recordCreditRefundPaid(app.prisma, { adminId: 'admin-c', approvalId: part, subscriptionId: q.subId, amount: 4000, method: 'BANK_TRANSFER', reference: `TRF${RUN}PART`, setAsideId }))
       .toMatchObject({ refundSetAside: 0 });
     expect(await blockersOf(q.userId)).not.toContain('FEE_REFUND_PENDING');
+    // [REVIEW-2484-B S4-1] Paid back another way: the refused refund is no longer reported as owed.
+    expect((await runBillingInvariants(app.prisma)).cardRefundsNotDone.filter((r) => r.subscriptionId === q.subId)).toEqual([]);
+  });
+
+  // [REVIEW-2484-A S4-6] A week that has started is never refunded. Closing mid-week, before the billing run reached the
+  // started week, used to set the whole credit aside — the started week's money included — and a partial refund then
+  // sent it back to the card. Closing now pays the started week from the credit first; only the weeks that have not
+  // started go back.
+  it('[S4-6] closing mid-week with weeks paid ahead: the started week is paid from credit first; only the weeks not started go back to the card', async () => {
+    const due = new Date(Date.now() + 4_000);
+    const r = await partner({ due });
+    const s1 = await weekAhead(r);
+    const s2 = await weekAhead(r);
+    // The paid week ends and the next one starts (real time: the set-aside reads the clock); the hourly billing run has
+    // not reached it yet.
+    await new Promise((done) => setTimeout(done, Math.max(0, due.getTime() - Date.now() + 250)));
+    const setAside = async (amount: number) => setAsideCreditRefund(app.prisma, {
+      adminId: 'admin-a', approvalId: await approval('POST /subscriptions/:id/refund-credit/set-aside', r.subId, 'admin-a', 'admin-b'), subscriptionId: r.subId, amount,
+    });
+    // Setting the credit aside on its own is refused while a started week is unpaid: it would refund that week.
+    await expect(setAside(2 * WEEKLY)).rejects.toMatchObject({ code: 'STARTED_WEEK_UNPAID' });
+    // Closing pays it from the credit (credit only: nothing else is charged), then sets aside what is left.
+    const payments = await app.prisma.subscriptionPayment.count({ where: { subscriptionId: r.subId } });
+    expect(await billing.settleStartedWeekFromCredit(r.subId)).toBe('paid');
+    expect(Number((await app.prisma.prepaidBalance.findUniqueOrThrow({ where: { subscriptionId: r.subId } })).balance)).toBe(WEEKLY);
+    expect((await app.prisma.subscription.findUniqueOrThrow({ where: { id: r.subId } })).nextBillingDate.getTime()).toBeGreaterThan(Date.now());
+    expect(await app.prisma.subscriptionPayment.count({ where: { subscriptionId: r.subId } })).toBe(payments + 1);
+    expect(await billing.settleStartedWeekFromCredit(r.subId)).toBe('none');
+    await setAside(WEEKLY);
+    // The oldest money paid the started week: only the second payment, whole, can go back to its card.
+    const view = await creditRefundSources(app.prisma, r.subId);
+    expect(view.cardPayments.map((c) => [c.cardSessionId, c.refundAmount, c.partial, c.refundable])).toEqual([[s2, WEEKLY, false, true]]);
+    expect(view.cardPayments.some((c) => c.cardSessionId === s1 && c.refundable)).toBe(false);
+  });
+
+  it('[S4-6] a started week the credit cannot cover is never charged anywhere else at closing, and nothing is set aside', async () => {
+    const r = await partner({ due: new Date(Date.now() + 60_000) });
+    await weekAhead(r);
+    await app.prisma.subscription.update({ where: { id: r.subId }, data: { nextBillingDate: new Date(Date.now() - 60_000), weeklyRate: 2 * WEEKLY } });
+    const attempts = await app.prisma.billingEvent.count({ where: { subscriptionId: r.subId, type: 'CHARGE_ATTEMPT' } });
+    const payments = await app.prisma.subscriptionPayment.count({ where: { subscriptionId: r.subId } });
+    expect(await billing.settleStartedWeekFromCredit(r.subId)).toBe('not_covered');
+    expect(await app.prisma.billingEvent.count({ where: { subscriptionId: r.subId, type: 'CHARGE_ATTEMPT' } })).toBe(attempts);
+    expect(await app.prisma.subscriptionPayment.count({ where: { subscriptionId: r.subId } })).toBe(payments);
+    await expect(setAsideCreditRefund(app.prisma, {
+      adminId: 'admin-a', approvalId: await approval('POST /subscriptions/:id/refund-credit/set-aside', r.subId, 'admin-a', 'admin-b'), subscriptionId: r.subId, amount: WEEKLY,
+    })).rejects.toMatchObject({ code: 'STARTED_WEEK_UNPAID' });
+  });
+
+  it('[S4-6] a week that has not started, a suspended account, or a fee the partner stopped is not billed at closing: the credit is set aside whole', async () => {
+    for (const setup of [
+      { nextBillingDate: new Date(Date.now() + 2 * DAY) },
+      { status: 'SUSPENDED' as const, suspendedAt: new Date(), nextBillingDate: new Date(Date.now() - 60_000) },
+      { autoRenew: false, nextBillingDate: new Date(Date.now() - 60_000) },
+    ]) {
+      const r = await partner({ due: new Date(Date.now() + 60_000) });
+      await weekAhead(r);
+      await app.prisma.subscription.update({ where: { id: r.subId }, data: setup });
+      expect(await billing.settleStartedWeekFromCredit(r.subId), JSON.stringify(setup)).toBe('none');
+      await expect(setAsideCreditRefund(app.prisma, {
+        adminId: 'admin-a', approvalId: await approval('POST /subscriptions/:id/refund-credit/set-aside', r.subId, 'admin-a', 'admin-b'), subscriptionId: r.subId, amount: WEEKLY,
+      }), JSON.stringify(setup)).resolves.toMatchObject({ amount: WEEKLY });
+    }
+  });
+
+  // [REVIEW-2484-B S4-4] The database's own wall under cardRefundPart: a refund to the card is never more than its card
+  // payment, and in that payment's currency, whatever code writes it.
+  it('[S4-4] the database refuses a refund to the card above its card payment, or in another currency', async () => {
+    const { p, s1, setAsideId } = await twoCardWeeksSetAside();
+    const session = await app.prisma.cardSession.findUniqueOrThrow({ where: { id: s1 } });
+    const row = (over: Record<string, unknown>) => app.prisma.cardCreditRefund.create({ data: {
+      tenantId: session.tenantId, subscriptionId: p.subId, cardSessionId: s1, setAsideId, amount: WEEKLY, currencyCode: 'GYD',
+      requestedByUserId: 'admin-c', approvalId: `s44-${RUN}-${randomBytes(4).toString('hex')}`, ...over,
+    } });
+    await expect(row({ amount: WEEKLY + 1 })).rejects.toThrow(/never more than its card payment/);
+    await expect(row({ currencyCode: 'USD' })).rejects.toThrow(/never more than its card payment/);
+    const part = await row({ amount: WEEKLY - 100 });
+    expect(Number(part.amount)).toBe(WEEKLY - 100);
   });
 
   // [CARDS-FOLLOWUP] A refund to the card that did not go back is never silent: the admins are paged once, with the
   // order, the amount and what to do; a refund that went back pages no one, and a replay pages no one again.
   it('[PARTLY USED] a refused or unconfirmed refund to the card pages the admins once (what to do next); an approved one pages no one', async () => {
-    const pages: Array<{ message: string; dedupeKey: string }> = [];
-    const alertAdmins = async (message: string, dedupeKey: string) => { pages.push({ message, dedupeKey }); };
+    const pages: Array<{ message: string; dedupeKey: string; tenantId: string }> = [];
+    const alertAdmins = async (message: string, dedupeKey: string, tenantId: string) => { pages.push({ message, dedupeKey, tenantId }); };
     const send = (p: { subId: string }, setAsideId: string, cardSessionId: string, provider: CardRailProvider, approvalId: string, amount: number) =>
       refundCardCreditToCard(app.prisma, () => provider, { adminId: 'admin-c', approvalId, subscriptionId: p.subId, setAsideId, cardSessionId, amount, alertAdmins });
     // Refused: the partial refund of 4,000 of a 15,000 payment.
     const { q, s, setAsideId } = await partlyUsedSetAside();
-    const refused = refunding(async () => ({ status: 'failed', reason: 'REFUND_REFUSED_12_384', rawSha256: '7'.repeat(64) }));
+    // [REVIEW-2484-B S4-2] The reason carries the provider's own codes: only [A-Z0-9_] reaches a push.
+    const refused = refunding(async () => ({ status: 'failed', reason: 'REFUND_REFUSED_12_<b>see https://x.example</b>', rawSha256: '7'.repeat(64) }));
     const asked = await approval(CARD_REFUND_ACTION, q.subId, 'admin-c', 'admin-b', { setAsideId, cardSessionId: s, amount: 4000 });
     expect(await send(q, setAsideId, s, refused.provider, asked, 4000)).toMatchObject({ state: 'FAILED' });
     expect(pages).toHaveLength(1);
@@ -1205,6 +1285,10 @@ describe('[CARD-READY] card money set aside at closing goes back to its card thr
     expect(pages[0]!.message).toContain('4000 GYD');
     expect(pages[0]!.message).toContain('Record payout');
     expect(pages[0]!.dedupeKey).toMatch(/^card-refund-not-done:/);
+    expect(pages[0]!.message).toMatch(/\(REFUND_REFUSED_12_[A-Z0-9_]+\)/);
+    expect(pages[0]!.message).not.toMatch(/<|https|example/);
+    // [REVIEW-2484-A S4-5] Paged in the card payment's own tenant.
+    expect(pages[0]!.tenantId).toBe((await app.prisma.cardSession.findUniqueOrThrow({ where: { id: s } })).tenantId);
     // The same approval applied again answers what happened and pages no one again.
     expect(await send(q, setAsideId, s, refused.provider, asked, 4000)).toMatchObject({ state: 'FAILED', replayed: true });
     expect(pages).toHaveLength(1);
@@ -1215,6 +1299,13 @@ describe('[CARD-READY] card money set aside at closing goes back to its card thr
     expect(pages).toHaveLength(2);
     expect(pages[1]!.message).toContain(`SWIFT-${s1}`);
     expect(pages[1]!.message).toContain('never sent again');
+    // [REVIEW-2484-B S4-1] The page is best-effort; the nightly billing invariants report both too, so a lost page is
+    // still caught: the refused one while its money is still owed, the unconfirmed one until it is checked.
+    const notDone = (await runBillingInvariants(app.prisma)).cardRefundsNotDone;
+    expect(notDone).toEqual(expect.arrayContaining([
+      expect.objectContaining({ subscriptionId: q.subId, state: 'FAILED' }),
+      expect.objectContaining({ subscriptionId: p.subId, state: 'UNKNOWN' }),
+    ]));
     // Approved: no page.
     const ok = refunding(async () => ({ status: 'succeeded', providerRef: `d4e5f6a7-0000-4000-8000-${randomBytes(6).toString('hex')}`, rawSha256: '6'.repeat(64) }));
     expect(await send(p, aside2, s2, ok.provider, await approval(CARD_REFUND_ACTION, p.subId, 'admin-c', 'admin-b'), WEEKLY)).toMatchObject({ state: 'REFUNDED' });

@@ -90,12 +90,12 @@ import {
 //      know answers HTTP 204 with no body. readTransactionRecord reads that
 //      shape (see there).
 //   6. [CARD-REFUND-LOOKUP] PowerTranz's written answer to Swift (9 Nov 2026):
-//      the lookup "is supported for all transaction types", and refunds
+//      the lookup works for every transaction type, and refunds
 //      (partial ones and Merchant Portal ones included) are supported. So a
 //      refund Swift sent whose answer is not known is checked by reading the
 //      ORIGINAL transaction's record (lookupRefund): its OrderSummary
-//      TotalCreditAmount (or VoidDateTime) says whether the whole payment went
-//      back. Only when a person asks (two people), never as the normal flow;
+//      TotalCreditAmount (or VoidDateTime) says whether exactly what Swift
+//      asked back (the whole payment, or the part) went back. Only when a person asks (two people), never as the normal flow;
 //      the refund is never sent again.
 //   7. [OWNER 10 Nov 2026 · PARTLY USED CARD PAYMENT] A refund may be PART of
 //      the payment: "Powertranz supports partial capture and refund ... You

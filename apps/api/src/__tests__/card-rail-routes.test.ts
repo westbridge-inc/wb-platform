@@ -56,7 +56,7 @@ import { askAndApprove, injectWithApproval } from './helpers/admin-approval';
 import { setAsideCreditRefund } from '../modules/billing/credit-refund';
 import { CARD_REFUND_ACTION, refundCardCreditToCard } from '../modules/billing/card-credit-refund';
 import { TEST_ADMIN_REASON } from './helpers/admin-reason';
-import { setAppLogger } from '../utils/logger';
+import { log, setAppLogger } from '../utils/logger';
 import { STAGING_CARD_SUFFIX, STAGING_RETURN_SECRETS, leaksCardSuffix, stagingPageNotFoundPost, stagingReturnPost, stagingSaleRecord } from './fixtures/powertranz-staging-shapes';
 
 // ---------------------------------------------------------------------------
@@ -3046,6 +3046,21 @@ describe('[PT-4] real cards through HTTP: Swift\'s hosted page, the bank\'s chec
       try {
         expect((await resolve(finance, sessionId, { action: 'REFUND', providerReference: txnId, amount: 2100 })).json().data).toMatchObject({ resolution: 'REFUNDED', refund: 'succeeded' });
       } finally { refundAnswer = adjusted; }
+      expect(await rowOf(sessionId)).toMatchObject({ providerRefundState: 'REFUNDED', providerRefundRef: null });
+    });
+
+    // [REVIEW-2484-B S4-5] A malformed id of the refund's own is not kept, but it is said (a warning, never the value).
+    it('[R1] an approved refund naming a malformed id of its own keeps no refund reference and logs a warning', async () => {
+      const finance = await makeFinance();
+      const p = await makeStore();
+      const { sessionId, txnId } = await heldPayment(p, '203.0.113.51');
+      const warned = vi.spyOn(log(), 'warn');
+      refundAnswer = (b) => ({ status: 200, body: { OriginalTrxnIdentifier: b['TransactionIdentifier'], TransactionType: 5, Approved: true, TransactionIdentifier: 'not a ref; DROP', TotalAmount: b['TotalAmount'], CurrencyCode: b['CurrencyCode'], IsoResponseCode: '00' } });
+      try {
+        expect((await resolve(finance, sessionId, { action: 'REFUND', providerReference: txnId, amount: 2100 })).json().data).toMatchObject({ resolution: 'REFUNDED', refund: 'succeeded' });
+        expect(warned.mock.calls.some(([, msg]) => String(msg).includes('malformed refund reference'))).toBe(true);
+        expect(JSON.stringify(warned.mock.calls)).not.toContain('DROP');
+      } finally { refundAnswer = adjusted; warned.mockRestore(); }
       expect(await rowOf(sessionId)).toMatchObject({ providerRefundState: 'REFUNDED', providerRefundRef: null });
     });
 

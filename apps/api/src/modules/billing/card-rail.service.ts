@@ -1389,6 +1389,11 @@ export class CardRailService {
     // so it can never stop the state from being recorded.
     const ownRef = refunded.status === 'succeeded' ? refunded.providerRef.trim() : '';
     const refundRef = state === 'REFUNDED' && /^[A-Za-z0-9_-]{1,64}$/.test(ownRef) && ownRef.toLowerCase() !== ref.toLowerCase() ? { providerRefundRef: ownRef } : {};
+    if (state === 'REFUNDED' && ownRef && ownRef.toLowerCase() !== ref.toLowerCase() && !('providerRefundRef' in refundRef)) {
+      // [REVIEW-2484-B S4-5] PowerTranz named an id of its own that is not a reference's shape: not kept, but said, so
+      // finance can tell "no id named" from "a malformed one" (only its length is logged, never the value).
+      log().warn({ sessionId: session.id, length: ownRef.length }, '[R1] the approved refund named a malformed refund reference: not kept; match it in the portal by the order reference');
+    }
     await this.prisma.cardSession.updateMany({ where: { id: session.id, providerRefundState: 'SENDING' }, data: { providerRefundState: state, ...refundRef } });
     await recordCardObservation(this.prisma, this.observation(session, 'CONFIRM', refunded.rawSha256, observedStatus(refunded.status), 'ACCEPTED'));
     if (state === 'REFUNDED') {
