@@ -20,10 +20,13 @@ const TEXT_FIELDS: Array<Exclude<LetterField, 'signerPhone'>> = ['businessName',
  * resend and cancel. The server decides everything (the phone rule, the limits); the paper upload stays above it.
  * The app never opens the signing page itself: the link goes only to the signer, by text.
  */
-export function AuthorityLetterEsignCard({ role, docType, kind, docRejected = false }: {
+export function AuthorityLetterEsignCard({ role, docType, kind, docRejected = false, forChange = false }: {
   role: string; docType: string; kind: 'director' | 'owner';
   /** The letter on file was not accepted: the form is offered again. */
   docRejected?: boolean;
+  /** [FOLLOWUPS-2475] On a business type change's papers (ChangePapersList): the letter the change asks for, named, since
+   *  it is not the account's own (the server checks the change waiting asks for it). */
+  forChange?: boolean;
 }) {
   const qc = useQueryClient();
   const ownPhone = useAuthStore((s) => (s.user as { phone?: string } | null)?.phone ?? null);
@@ -37,7 +40,7 @@ export function AuthorityLetterEsignCard({ role, docType, kind, docRejected = fa
   const labels = esignFieldLabels(kind);
   const state = letterFormState({ ...form, ownPhone }, kind);
   const settle = () => void qc.invalidateQueries({ queryKey: ['authority-letter'] });
-  const ask = useMutation({ mutationFn: () => vendorApi.askAuthorityLetter(state.body), onSuccess: () => { setForm(EMPTY); setTouched({}); settle(); } });
+  const ask = useMutation({ mutationFn: () => vendorApi.askAuthorityLetter(forChange ? { ...state.body, docType } : state.body), onSuccess: () => { setForm(EMPTY); setTouched({}); settle(); } });
   const resend = useMutation({ mutationFn: (id: string) => vendorApi.resendAuthorityLetter(id), onSuccess: settle });
   const cancel = useMutation({ mutationFn: (id: string) => vendorApi.cancelAuthorityLetter(id), onSuccess: settle });
 
