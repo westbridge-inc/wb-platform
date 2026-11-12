@@ -4,11 +4,11 @@ import { use, useState } from 'react';
 import Link from 'next/link';
 import { ArrowLeft } from 'lucide-react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { fetchVendorDetail, fetchVendorActivationChecklist, approveVendor, activateVendor, confirmSellerName, changeStoreName, changeStoreType, suspendVendor, featureVendor, revokeStoreVat, revealVendorPartyPhone, setChainDeal, setChainBrand, setBranchListedAlone, changeChainDeal, withdrawChainDealChange, fetchVendorChain, type ChainDealOutcome, type DealChangeOutcome, type VendorActivationChecklist } from '@/lib/api';
+import { fetchVendorDetail, fetchVendorActivationChecklist, approveVendor, activateVendor, confirmSellerName, changeStoreName, changeStoreType, suspendVendor, featureVendor, revokeStoreVat, revealVendorPartyPhone, setChainDeal, setChainBrand, setBranchListedAlone, changeChainDeal, withdrawChainDealChange, fetchVendorChain, type ChainDealOutcome, type DealChangeOutcome, type VendorActivationChecklist, type SellerNameView } from '@/lib/api';
 import { label, ratingText, type Tone } from '@/lib/labels';
 import { JUDGED_FIELD_WORDS, PROHIBITED_CLASS_LABELS } from '@/lib/prohibited-items';
 import type { ProhibitedClass } from '@/lib/api';
-import type { Outcome } from '@/lib/outcome';
+import { succeeded, type Outcome } from '@/lib/outcome';
 import { ActionResult } from '@/components/mc/ActionResult';
 import { QueryFailed } from '@/components/mc/QueryFailed';
 import { useActionDialog } from '@/components/mc/ReasonDialog';
@@ -137,10 +137,46 @@ function sellerNameWords(name: string): string {
   return `Customers will see “${name.trim()}” as the seller on the store page. Check it is exactly the registered business or company name on the store’s certificate. The owner’s personal name is never shown for a business or company.`;
 }
 
-/** [R3] Who the storefront names as the seller, from what this page holds (the server decides; this only explains). */
-function sellerNameState(v: { name: string; tradesUnderOwnName?: boolean | null; sellerNameCheckedName?: string | null }): 'CONFIRMED' | 'OWN_NAME' | 'UNCONFIRMED' {
-  if (v.tradesUnderOwnName === true) return 'OWN_NAME';
-  return v.sellerNameCheckedName != null && v.sellerNameCheckedName === v.name.trim() ? 'CONFIRMED' : 'UNCONFIRMED';
+/** [COORD ruling 11 Nov 2026 · review-2479] The store is live; when the server did not confirm the name it was sent (a
+ *  person's own name is never the seller's), the server's words say so and why. */
+function activatedWords(name: string, result: unknown): Outcome {
+  const notice = (result as { data?: { sellerNameNotConfirmed?: { message?: unknown } | null } } | null)?.data?.sellerNameNotConfirmed;
+  const live = `${name} is live and can take orders.`;
+  return typeof notice?.message === 'string' ? succeeded(live, notice.message) : succeeded(live);
+}
+
+/** [R3 · review F5] The server's answer (GET /admin/vendors/:id `sellerName`), or null from an older server: the page
+ *  renders it and never re-derives who the storefront names. */
+function sellerNameOf(v: { sellerName?: SellerNameView | null }): SellerNameView | null {
+  const s = v.sellerName;
+  return s && typeof s.basis === 'string' ? s : null;
+}
+
+/** [R3 · review F5] Who customers see as the seller, in words, from the server's answer. */
+function sellerNameLine(s: SellerNameView | null): string {
+  if (!s) return 'Not known: refresh this page.';
+  switch (s.basis) {
+    case 'LEGAL_NAME': return `${s.value ?? ''} (the legal name typed from its registration paper)`;
+    case 'OWN_NAME': return `${s.value ?? ''} (the owner’s own name, which the store trades under)`;
+    case 'PERSON_CHECKED': return `${s.value ?? ''} (the store’s name, confirmed by a person)`;
+    case 'AWAITING_PERSON': return 'Nobody yet: customers see “Ask the store” until a person names the seller.';
+    case 'NONE': return 'Nobody: no ID or registration paper is on file yet.';
+  }
+}
+
+/** [R3 · review F4/F7] The explicit answer a person gives before a store name is confirmed as the seller's. Nothing is
+ *  pre-chosen. */
+const MATCHES_CERTIFICATE = 'matches';
+function certificateQuestion(name: string | null) {
+  return {
+    kind: 'choice' as const, name: 'certificate',
+    // [review-2476 F7] a name not typed yet is described, never quoted as if it were the name
+    label: name === null ? 'Is the new name exactly the registered name on the store’s certificate?' : `Is “${name.trim()}” exactly the registered name on the store’s certificate?`,
+    options: [
+      { value: MATCHES_CERTIFICATE, label: 'Yes: it matches the certificate. Confirm it as the seller’s name.' },
+      { value: 'differs', label: 'No, or not checked: do not confirm it. Customers see “Ask the store” until the legal name is typed.' },
+    ],
+  };
 }
 
 const STORE_TYPES = [
@@ -210,6 +246,14 @@ export default function VendorDetailPage({ params }: { params: Promise<{ id: str
 
   // [MC-PR2] "Approve" is no longer a decision of its own: the store goes live by itself when its last required
   // document is approved. These two buttons appear only when the server's verdict says the rules are met.
+  // [R3 · review F4/F6] Activating confirms the store's name as the seller's only when the person says it matches the
+  // certificate, and only while the seller is not named another way (an own-name trader, a legal name typed from the
+  // paper, a name already confirmed): then nothing is asked and nothing is stamped.
+  const seller = sellerNameOf(v);
+  // [COORD Option A · final review S3-1] A store trading under its owner's own name is never offered a seller-name
+  // confirmation: the server refuses it (the name is a person's, shown only through the live own-name declaration).
+  const confirmableSeller = seller?.basis === 'AWAITING_PERSON' && v.tradesUnderOwnName !== true;
+  const asksCertificate = confirmableSeller;
   const activate = async () => show(await dialog.run({
     title: `Activate ${v.name} now?`,
     body: (
@@ -218,15 +262,17 @@ export default function VendorDetailPage({ params }: { params: Promise<{ id: str
           Every required document is approved. Swift runs the same activation it runs when the last document is approved:
           the store goes live and its free trial starts. Only this store is activated.
         </p>
-        {/* [R3 · security review 10 Nov 2026] Activating also confirms the name shown here as the seller's name. */}
-        <p>{sellerNameWords(v.name)}</p>
+        {asksCertificate ? <p>{sellerNameWords(v.name)}</p> : null}
       </>
     ),
     confirmLabel: 'Activate store',
+    ...(asksCertificate ? { fields: [certificateQuestion(v.name)] } : {}),
     reason: { hint: 'Kept on the permanent record; not sent to the owner.' },
     context,
-    submit: ({ reason }) => activateVendor(id, v.name.trim(), reason),
-    success: () => `${v.name} is live and can take orders.`,
+    submit: ({ reason, values }) => (asksCertificate && values['certificate'] === MATCHES_CERTIFICATE
+      ? activateVendor(id, v.name.trim(), reason)
+      : approveVendor(id, reason)),
+    success: (result) => activatedWords(v.name, result),
   }));
 
   // [R3 · security review 10 Nov 2026] The storefront names the seller by the store's name only once a person confirmed
@@ -307,11 +353,24 @@ export default function VendorDetailPage({ params }: { params: Promise<{ id: str
     title: `Change the name of ${v.name}?`,
     body: <p>A person checks the new name before it is changed: the app sends owners here for that. The owner is told.</p>,
     confirmLabel: 'Change name',
-    fields: [{ kind: 'text', name: 'name', label: 'New store name', required: true, minLength: 2, maxLength: 100 }],
+    fields: [
+      { kind: 'text', name: 'name', label: 'New store name', required: true, minLength: 2, maxLength: 100 },
+      // [R3 · review F7] a new name is not a confirmed seller name: the person says whether it matches the certificate
+      certificateQuestion(null),
+    ],
     reason: { hint: 'How the new name was checked. Kept on the permanent record; not sent to the owner.' },
     context,
-    submit: ({ reason, values }) => changeStoreName(id, String(values['name']).trim(), reason),
-    success: () => `The store's name is changed and the owner is told.`,
+    // [R3 · review F7 · security review] Renaming never confirms a seller name. "Yes" asks, as a SECOND step, the
+    // seller-name door (its own authority: approving stores); a refusal there leaves the rename done and says so.
+    submit: async ({ reason, values }) => {
+      const name = String(values['name']).trim();
+      await changeStoreName(id, name, reason);
+      if (values['certificate'] !== MATCHES_CERTIFICATE) return 'renamed' as const;
+      try { await confirmSellerName(id, name, reason); return 'confirmed' as const; } catch { return 'not-confirmed' as const; }
+    },
+    success: (step) => step === 'confirmed' ? `The store's name is changed and confirmed as the seller’s name. The owner is told.`
+      : step === 'not-confirmed' ? `The store's name is changed and the owner is told. Confirming it as the seller’s name was refused: a person who approves stores confirms it on this page.`
+      : `The store's name is changed and the owner is told.`,
   }));
 
   // [STORE-VAT · owner O-5] Withdraw a store's approved VAT (e.g. the GRA cancelled its registration). New orders stop
@@ -482,6 +541,8 @@ export default function VendorDetailPage({ params }: { params: Promise<{ id: str
               {v.acceptingOrders ? 'Taking orders' : 'Not taking orders'}
             </span>
             {v.isFeatured ? <span className="mc-badge mc-tone-info">Featured</span> : null}
+            {/* [R3 · review F2] live, and customers see "Ask the store" as the seller */}
+            {v.status === 'ACTIVE' && (seller?.basis === 'AWAITING_PERSON' || seller?.basis === 'NONE') ? <span className="mc-badge mc-tone-warn">Seller not named</span> : null}
           </div>
           <p className="mc-muted mt-1.5">
             {[label('VendorType', v.vendorType), v.city, `Joined ${when(v.createdAt)}`].filter(Boolean).join(' · ')}
@@ -656,10 +717,8 @@ export default function VendorDetailPage({ params }: { params: Promise<{ id: str
                   business name or on its owner's own name (vendor/own-name.ts), and the checklist asks for that. */}
               <Row label="Registration">{v.tradesUnderOwnName === true ? 'Owner’s own name (no business name registration)' : v.tradesUnderOwnName === false ? 'Business registration (business name or company)' : null}</Row>
               <Row label="Seller name customers see">
-                {sellerNameState(v) === 'CONFIRMED' ? `${v.name.trim()} (confirmed by a person)`
-                  : sellerNameState(v) === 'OWN_NAME' ? 'The owner’s full name, once their own-name declaration is approved'
-                  : <>Nobody yet: customers see “Ask the store” until a person confirms the store’s name.{' '}
-                    <button type="button" className="mc-btn" onClick={() => void confirmSeller()}>Confirm seller name…</button></>}
+                {sellerNameLine(seller)}
+                {confirmableSeller ? <>{' '}<button type="button" className="mc-btn" onClick={() => void confirmSeller()}>Confirm seller name…</button></> : null}
               </Row>
               <Row label="Menu items"><span className="mc-numbers">{v._count?.items ?? 0}</span></Row>
               <Row label="Lifetime orders"><span className="mc-numbers">{v._count?.orders ?? 0}</span></Row>

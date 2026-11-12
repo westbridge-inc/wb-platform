@@ -11,6 +11,8 @@ import { readyTimeLabel } from '@/lib/store-kind-words';
 import { useStoreKind } from '@/lib/catalogue-name';
 // The app's own clock wording (plain file, imported as is).
 import { acceptClockLabel } from '../../../mobile/src/modules/vendor/acceptClock';
+// [RING-FOOD] The app's own store-money rule for the ring screen (plain file, imported as is).
+import { ringMoney } from '../../../mobile/src/modules/vendor/ringMoney';
 import { formatAppointmentSlot } from '@/lib/appointmentTime';
 import { acceptHeldForPayment, mmgPayBlockedReason } from '@/lib/mmg-pay-words';
 import { canAttestPayment } from '@/lib/vendor-hub';
@@ -262,6 +264,7 @@ export default function NewOrderTakeover({ orders, onOpenOrder }: { orders: Vend
   // [O-4] Every item came off: nothing to accept, only Reject with a reason.
   const nothingLeft = nothingToAccept(current);
   const customer = [current.customer?.firstName, current.customer?.lastName].filter(Boolean).join(' ') || 'Customer';
+  const ring = ringMoney(current, storeKind);
 
   return (
     <div
@@ -286,9 +289,12 @@ export default function NewOrderTakeover({ orders, onOpenOrder }: { orders: Vend
         <h2 id="new-order-title" className="mt-2 text-3xl font-extrabold text-[var(--swift-red)]">
           {current.fulfillment === 'APPOINTMENT' ? 'NEW BOOKING' : queue.length > 1 ? `${queue.length} NEW ORDERS` : 'NEW ORDER'}
         </h2>
+        {/* [RING-FOOD · owner 11 Nov 2026] The store's money for the goods, never the customer's whole total (that
+            carries the rider's delivery fee and tip) — the app's own rule (ringMoney.ts). */}
         <p className="mt-3 text-lg font-bold">
-          #{current.orderNumber} · {money(current.totalAmount)}
+          #{current.orderNumber} · {ring.label} {money(ring.food)}
         </p>
+        {ring.notes.map((line) => <p key={line} className="mt-1 text-sm text-[var(--swift-muted)]">{line}</p>)}
         <p className="mt-1 text-sm text-[var(--swift-muted)]">
           {customer} · {current.items.length} item{current.items.length === 1 ? '' : 's'} ·{' '}
           {current.fulfillment === 'APPOINTMENT' ? 'appointment' : current.fulfillment === 'PICKUP' ? 'pickup' : 'delivery'}

@@ -183,6 +183,22 @@ describe('[WEB-SETTINGS API] (2) a store a person checked keeps the name it was 
   });
 });
 
+// [review-2476 F3] A store nobody has checked yet renames freely: a seller-name confirmation was of the name a person saw,
+// so a new name (or a return to a name confirmed earlier) names nobody until a person confirms it again.
+describe('[review-2476 F3] a free rename ends the seller-name confirmation', () => {
+  it('renaming away and back to the confirmed name leaves it unconfirmed; the same name sent again keeps it', async () => {
+    const checkedBy = { sellerNameCheckedName: 'Confirmed Grocery', sellerNameCheckedAt: new Date(), sellerNameCheckedById: 'seller-name-approver' };
+    await sys(() => app.prisma.vendor.update({ where: { id: pendingId }, data: { name: 'Confirmed Grocery', ...checkedBy } }));
+    const same = await put(owner, pendingId, { name: 'Confirmed Grocery', description: 'Same shop' });
+    expect(same.statusCode, same.body).toBe(200);
+    expect((await row(pendingId)).sellerNameCheckedName).toBe('Confirmed Grocery');
+    expect((await put(owner, pendingId, { name: 'Another Grocery' })).statusCode).toBe(200);
+    expect((await put(owner, pendingId, { name: 'Confirmed Grocery' })).statusCode).toBe(200);
+    const after = await row(pendingId);
+    expect([after.name, after.sellerNameCheckedName, after.sellerNameCheckedAt, after.sellerNameCheckedById]).toEqual(['Confirmed Grocery', null, null, null]);
+  });
+});
+
 describe('[WEB-SETTINGS API] (3) the minimums are sign-up\'s', () => {
   it.each([
     ['a one-letter name', { name: 'A' }],

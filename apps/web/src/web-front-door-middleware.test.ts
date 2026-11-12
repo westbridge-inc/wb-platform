@@ -199,6 +199,8 @@ const ROUTE_CLASS: Record<string, 'ordering' | 'open'> = {
   '/login': 'open', '/signup': 'open',
   // [COMPANY-DOCS · owner 10 Nov 2026] the printable letters of authority a partner signs (linked from the app and Documents).
   '/letters/company-authority': 'open', '/letters/owner-authority': 'open',
+  // [COMPANY-DOCS PART 2] the page a director (or an owner) signs the letter of authority on, from Swift's text.
+  '/sign-letter': 'open',
   // [WEB-DELETE] Where a person lands once their account is deleted (signed out by then; partners delete before launch).
   '/account-deleted': 'open',
   // Partner consoles (stores, riders, drivers, advertisers) work before launch.

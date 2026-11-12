@@ -1,3 +1,4 @@
+import { loadStoreMoney } from '../billing/store-money';
 import { persistHandoverNotice, drainHandoverNotices } from '../handover/handover-notice';
 import { drainDeliveryLifts, liftAfterDelivery, persistDeliveryLift } from '../safety/delivery-lift';
 import { authorizeHandover, preflightHandoverDoor, verifyHandoverDecision, type HandoverDecision, type HandoverFailure } from '../handover/handover-decision';
@@ -30,10 +31,11 @@ import { generateOrderNumber, type DeliveryRates } from '../../utils/markup';
 import { getMapsProvider, type MapsProvider, type RouteSource } from '../../providers/maps/maps-provider';
 import { canonicalBillableKm } from '../../utils/billable-distance';
 import { allocateAcrossLines } from '../../utils/order-total';
-import { groupLinesByVendor, planFulfillment, planVendorGroup, priceBasket, priceCartLine, resolveTip } from './cart-plans';
+import { groupLinesByVendor, planFulfillment, planVendorGroup, priceBasket, priceCartLine, resolveTip, riderCashForLines } from './cart-plans';
 import { cancellationVerdict, mmgPaidCancelMessage, readAssignedAt, readNoMoverFound } from './cancel-policy';
 import { readStoreCannotHandOver } from '../vendor/store-hold';
 import { pickupCancelledStoreNotice } from './pickup-not-collected';
+import { noRiderCancelledStoreNotice, storeNoticeRecipients } from './no-rider-fallback';
 import { readTooLateToDeliver } from '../dispatch/rescue';
 import { readOrderSize, DEFAULT_LOAD_BANDS } from '../../utils/load';
 import { vehicleTypesForPackageSize } from '../../config/vehicle-classes';
@@ -64,7 +66,7 @@ import { canonicalSlotStart } from '../booking/availability';
 import { assertOneAppointment, isAppointmentOnlyGroup, storeFlagsAllowCheckout } from '../booking/appointment-checkout';
 import { storeHoursRefusal } from '../vendor/store-hours';
 import { orderingRestriction, CashRulesService, TAXI_FARE_OUTCOME_ENFORCED_AT, COURIER_CASH_OUTCOME_ENFORCED_AT } from '../cash/cash-rules.service';
-import { resolveSelectedOptions, optionsUnitPrice, OptionSelectionError, normalizeItemNote, rebuildSelectionFromSnapshot, selectionKey, validateSelectedOptions, type OptionSelection, type ResolvedOption } from './options';
+import { OptionSelectionError, normalizeItemNote, rebuildSelectionFromSnapshot, selectionKey, validateSelectedOptions, type OptionSelection, type ResolvedOption } from './options';
 import { isKitchenAtCapacity, KITCHEN_ACTIVE_STATUSES } from '../fulfillment/kitchen-capacity';
 import { log } from '../../utils/logger';
 import { dispatchHoldExpired, dispatchHoldExpiredFilter, riderDispatchableStatusesFor, withheldAwaitingReadiness } from '../dispatch/dispatch-trigger';
@@ -1253,17 +1255,21 @@ export class OrderService {
         // §2 checkout gate (availability spec, flag-gated): zero riders online
         // means an order that would strand food on a counter — honesty beats
         // accepting it. Pickup remains available; appointments never get here.
+        // [REVIEW-2469 S3-1] A store that delivers itself (selfDeliveryEnabled) needs no Swift rider — none to be
+        // near, none to front its cash — so the Swift-rider reads below never refuse it, nor add a Swift rider wait to
+        // its promise. Who delivers is decided later: the store's setting AT ACCEPT, and its own "Get a Swift rider"
+        // override (fulfillment-mode.ts). Both re-ask the rider-cash question before a CASH order reaches Swift
+        // riders (vendor.routes accept + fulfillment-mode, swiftRiderCashRefusal) [REVIEW-2472 A-1].
         if (
           process.env['DISPATCH_AVAILABILITY'] === '1'
           && process.env['DELIVERY_BLOCK_ON_NONE'] !== '0'
           && this.riderAvailability
+          && !vendor.selfDeliveryEnabled
         ) {
           // Mirror dispatch's cash-float gate: a CASH delivery needs a rider who
           // can front this order's vendor-cash. Probing float-blind would count
           // riders dispatch then skips → checkout says "yes", dispatch exhausts.
-          const cashFloat = input.paymentMethod === 'CASH'
-            ? items.reduce((s, ci) => s + (Number(ci.item.basePrice) + optionsUnitPrice(resolveSelectedOptions(ci.item, ci.selectedOptions))) * ci.quantity, 0)
-            : 0;
+          const cashFloat = input.paymentMethod === 'CASH' ? riderCashForLines(items) : 0;
           const storePoint = { lat: vendor.latitude, lng: vendor.longitude };
           const tooBig = () => new AppError(
             409,
@@ -2235,7 +2241,8 @@ export class OrderService {
               vendorOwner.userId,
               order.orderNumber,
               order.items.length,
-              Number(order.totalAmount),
+              // [STORE-MONEY] The store's goods money, never the customer's total (rider's fee + tip). A failed read falls back to the goods [REVIEW-2487 F4].
+              (await loadStoreMoney(this.prisma, order.id).catch(() => null)) ?? Number(order.subtotalCustomer),
               order.id,
               // [Q10] The same cut-off the auto-cancel row above was armed with.
               vendorRespondBy(order, { slaMinutes: queueTiming.vendorResponseSlaMinutes, holdMs: holdWindowMs() ?? 0 }),
@@ -3152,6 +3159,19 @@ export class OrderService {
       }
     }
 
+    // [PROD-RIDER-TEST (a)3] The store made (or is making) this order and was asked to deliver it: it is told plainly
+    // that the customer cancelled after no rider was found (the board's card turns cancelled by the socket above).
+    if (noMoverFree && order.vendorId && !heldNow && order.orderType !== 'COURIER' && order.orderType !== 'TAXI') {
+      // [review S4-2] Every store device the new-order alert rings (storeNoticeRecipients).
+      const ownerUserId = (await this.prisma.vendor.findUnique({ where: { id: order.vendorId }, select: { owner: { select: { userId: true } } } }))?.owner.userId;
+      for (const userId of await storeNoticeRecipients(this.prisma, order.vendorId, ownerUserId)) {
+        await this.notifications.send({
+          userId, type: 'ORDER_UPDATE', audience: 'business', ...noRiderCancelledStoreNotice(order.orderNumber),
+          data: { orderId, status: 'CANCELLED', kind: 'no_rider_cancelled' }, dedupeKey: `no-rider:cancelled:${orderId}`,
+        }).catch(() => undefined);
+      }
+    }
+
     // [Item 64] The plain reason, when the platform found nobody to do the job.
     // [owner #46/#52] ...and when it was running very late.
     const noun = cancelNoun(order);
@@ -3416,7 +3436,8 @@ export class OrderService {
               vendorOwner.userId,
               order.orderNumber,
               order.items.length,
-              Number(order.totalAmount),
+              // [STORE-MONEY] The store's goods money, never the customer's total (rider's fee + tip). A failed read falls back to the goods [REVIEW-2487 F4].
+              (await loadStoreMoney(this.prisma, order.id).catch(() => null)) ?? Number(order.subtotalCustomer),
               order.id,
               vendorRespondBy(order, { slaMinutes, holdMs: holdWindowMs() ?? 0 }),
             );

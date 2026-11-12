@@ -217,7 +217,7 @@ const E = {
   adRefundIntent: { model: 'adRefundIntent', fields: ['status', 'payoutRail', 'manualPayoutRef', 'providerRefundRef', 'completedAt'] },
   paymentConfirmation: { model: 'paymentConfirmationHold', fields: ['status', 'resolvedAt', 'resolvedBy', 'resolutionEvidence'] },
   // [PT-4] A held card payment's resolution: what finance decided and the provider actions it took.
-  cardSession: { model: 'cardSession', fields: ['status', 'failureCode', 'providerTransactionRef', 'providerVoidState', 'providerVoidRef', 'providerRefundState', 'bookClaimedAt', 'resolution', 'resolvedBy', 'resolvedAt'] },
+  cardSession: { model: 'cardSession', fields: ['status', 'failureCode', 'providerTransactionRef', 'providerVoidState', 'providerVoidRef', 'providerRefundState', 'providerRefundRef', 'bookClaimedAt', 'resolution', 'resolvedBy', 'resolvedAt'] },
   agentPayment: { model: 'mmgAgentPayment', fields: ['status', 'amount', 'subscriptionId'] },
   // [MMG REVERSAL] A return of a weekly-fee payment: where it stands and how a person resolved it.
   feeReversal: { model: 'mmgFeeReversal', fields: ['state', 'heldReason', 'resolution', 'resolvedBy', 'failedAt', 'reversedAt', 'walletDebitedAt'] },
@@ -305,7 +305,8 @@ export const ADMIN_ROUTE_AUTHORITY: Readonly<Record<AdminRouteKey, AdminRouteAut
   'PUT /vendors/:id/feature': c('C2', 'vendor.feature', E.vendor),
   // [BUG-HUNT F22] What the screens tell a store to ask support for: a type picked by mistake, a checked name.
   'PUT /vendors/:id/type': c('C3', 'vendor.edit', E.vendor),
-  'PUT /vendors/:id/name': c('C3', 'vendor.edit', E.vendor),
+  // [review-2476 F3] A rename ends the store name's seller-name confirmation: the diff names it.
+  'PUT /vendors/:id/name': c('C3', 'vendor.edit', { ...E.vendor, fields: [...E.vendor.fields, 'sellerNameCheckedName'] }),
   // [R3 · security review 10 Nov 2026] A person confirms the store's name as the seller's business or company name: the
   // same hands as approving a store (approving confirms it too).
   'PUT /vendors/:id/seller-name': c('C3', 'vendor.approve', { model: 'vendor', fields: ['sellerNameCheckedName', 'sellerNameCheckedAt', 'sellerNameCheckedById'] }),

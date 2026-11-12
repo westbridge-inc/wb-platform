@@ -222,6 +222,8 @@ export const KNOWN_PAYMENT_REFERENCE_COLUMNS: ReadonlyArray<readonly [table: str
   ['card_sessions', 'providerTransactionRef'], ['card_sessions', 'providerSessionRef'],
   // [CARD-STAGING-TEST 10 Nov 2026] A card void's own provider transaction (PowerTranz: its own type-4 transaction).
   ['card_sessions', 'providerVoidRef'],
+  // [R1 · CARD-STAGING-TEST R2] A HELD card payment's refund: its own provider transaction (its own type-5 transaction).
+  ['card_sessions', 'providerRefundRef'],
   // [CARD-READY] A refund to the card: its own provider transaction (guide v2.7 sec. 6 / 7.5).
   ['card_credit_refunds', 'providerRefundRef'],
   ['ad_invoices', 'providerRef'], ['ad_refund_intents', 'providerRefundRef'], ['ad_refund_intents', 'manualPayoutRef'],
@@ -304,6 +306,7 @@ async function namesAKnownPayment(tx: Tx, reversalId: string, reference: string)
       + (SELECT count(*) FROM "card_sessions" WHERE mmg_txn_canon("providerTransactionRef") = mmg_txn_canon(${reference}))
       + (SELECT count(*) FROM "card_sessions" WHERE mmg_txn_canon("providerSessionRef") = mmg_txn_canon(${reference}))
       + (SELECT count(*) FROM "card_sessions" WHERE mmg_txn_canon("providerVoidRef") = mmg_txn_canon(${reference}))
+      + (SELECT count(*) FROM "card_sessions" WHERE mmg_txn_canon("providerRefundRef") = mmg_txn_canon(${reference}))
       + (SELECT count(*) FROM "card_credit_refunds" WHERE mmg_txn_canon("providerRefundRef") = mmg_txn_canon(${reference}))
       + (SELECT count(*) FROM "ad_invoices" WHERE mmg_txn_canon("providerRef") = mmg_txn_canon(${reference}))
       + (SELECT count(*) FROM "ad_refund_intents" WHERE mmg_txn_canon("providerRefundRef") = mmg_txn_canon(${reference}))
@@ -359,6 +362,7 @@ async function mmgNamedIsAPayment(tx: Tx, reversalId: string, reference: string)
       + (SELECT count(*) FROM "card_sessions" WHERE mmg_txn_canon("providerTransactionRef") = mmg_txn_canon(${reference}))
       + (SELECT count(*) FROM "card_sessions" WHERE mmg_txn_canon("providerSessionRef") = mmg_txn_canon(${reference}))
       + (SELECT count(*) FROM "card_sessions" WHERE mmg_txn_canon("providerVoidRef") = mmg_txn_canon(${reference}))
+      + (SELECT count(*) FROM "card_sessions" WHERE mmg_txn_canon("providerRefundRef") = mmg_txn_canon(${reference}))
       + (SELECT count(*) FROM "card_credit_refunds" WHERE mmg_txn_canon("providerRefundRef") = mmg_txn_canon(${reference}))
       + (SELECT count(*) FROM "ad_invoices" WHERE mmg_txn_canon("providerRef") = mmg_txn_canon(${reference}))
       + (SELECT count(*) FROM "ad_refund_intents" WHERE mmg_txn_canon("providerRefundRef") = mmg_txn_canon(${reference}))

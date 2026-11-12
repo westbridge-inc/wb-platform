@@ -1816,6 +1816,16 @@ export async function createWorkers(ctx: JobContext, queues: SwiftQueues) {
             }),
           );
         }
+        // [COMPANY-DOCS PART 2] Letters of authority waiting to be signed: a link past its 72 hours expires (audited), and
+        // a request that ended unsigned 30 days ago is deleted with the signer's name and number. Contained: it never
+        // stops the document sweep.
+        try {
+          const { sweepAuthorityLetters } = await import('../modules/vendor/authority-letter/authority-letter.service');
+          const letters = await sweepAuthorityLetters(ctx.prisma);
+          if (letters.expired > 0 || letters.deleted > 0) ctx.log.info(letters, 'authority letters swept');
+        } catch (err) {
+          ctx.log.error({ err }, 'authority-letter sweep failed; the document sweep still runs');
+        }
         const expired = await verification.expireLapsedDocuments();
         const reminded = await verification.sendExpiryReminders();
         // [R24] A partner's rejected document gets its clock first (30 days after the rejection
@@ -2553,7 +2563,7 @@ export async function createWorkers(ctx: JobContext, queues: SwiftQueues) {
               // tenant's event. Explicitly null so it reads as a decision [NOC-A F45].
               tenantId: null,
               title: 'Billing invariant failures',
-              body: `${report.walletMismatches.length} fee-paid-ahead mismatch(es), ${report.wrongfulSuspensions.length} wrongful suspension(s) auto-healed, ${report.paidSuspensionsLeftHeld.length} paid suspension(s) left held for a person, ${report.enforcementLeaks.length} enforcement leak(s), ${report.unjudgedSubscriptions.length} subscription(s) needing an ownership review, ${report.receiptGaps.length} receipt gap(s), ${report.ledgerWalletMismatches.length} ledger vs fee-paid-ahead drift(s), ${report.refundPayableMismatches.length} refund set-aside drift(s)${report.ledgerTrialImbalance ? ', LEDGER TRIAL BALANCE BROKEN' : ''}.`,
+              body: `${report.walletMismatches.length} fee-paid-ahead mismatch(es), ${report.wrongfulSuspensions.length} wrongful suspension(s) auto-healed, ${report.paidSuspensionsLeftHeld.length} paid suspension(s) left held for a person, ${report.enforcementLeaks.length} enforcement leak(s), ${report.unjudgedSubscriptions.length} subscription(s) needing an ownership review, ${report.receiptGaps.length} receipt gap(s), ${report.ledgerWalletMismatches.length} ledger vs fee-paid-ahead drift(s), ${report.refundPayableMismatches.length} refund set-aside drift(s), ${report.cardRefundsNotDone.length} refund(s) to the card not done (refused with the money still owed, or not confirmed)${report.ledgerTrialImbalance ? ', LEDGER TRIAL BALANCE BROKEN' : ''}.`,
               data: { kind: 'billing_invariants', report: { ...report, walletsChecked: report.walletsChecked } },
             }),
           );

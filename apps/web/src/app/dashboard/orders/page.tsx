@@ -14,6 +14,8 @@ import { DataUnavailable } from '@/components/data-unavailable';
 import { focusableIn } from '@/components/modal';
 import { formatAppointmentSlot } from '@/lib/appointmentTime';
 import { getOrders, money, type VendorOrder } from '@/lib/vendor-api';
+// [STORE-MONEY] The app's own reader of the store's money (plain file, imported as is).
+import { ringMoney } from '../../../../../mobile/src/modules/vendor/ringMoney';
 import { preloadedPart } from '@/lib/preloaded-part';
 import { BoardNames, statusChip, timeAgo } from './order-chip';
 import { DeliveryStatusNotice } from '../delivery-status-notice';
@@ -105,19 +107,26 @@ export default function OrdersPage() {
   const other = BUCKETS.filter(b => !board.some(c => c.key === b.key));
   // A card is the order's summary (opens the order window) and, under it, the
   // app's one-tap actions for its state (VendorOrderCard).
-  const row = (o: VendorOrder) => <article key={o.id} aria-label={`Order ${o.orderNumber}`} className="sw-order-card">
+  const row = (o: VendorOrder) => { const sm = ringMoney(o); return <article key={o.id} aria-label={`Order ${o.orderNumber}`} className="sw-order-card">
     <button data-order-id={o.id} onClick={() => setSelected(o.id)} className="block w-full text-left">
       <div className="flex flex-wrap items-center justify-between gap-2"><p className="sw-label">#{o.orderNumber}</p>{statusChip((o.status || '').toUpperCase(), mmgDisputePaused(o))}</div>
       <p className="sw-caption mt-1">{timeAgo(o.placedAt)}</p>
       <BoardNames order={o} />
+      {/* [PROD-RIDER-TEST (a)1] The search for this order came back empty: the server's words; the order window holds
+          the one-tap "We'll deliver it" and "Find a rider". */}
+      {o.noRiderFound === true && typeof o.noRiderPrompt === 'string' && (
+        <p data-testid="board-no-rider" className="mt-2 text-sm font-semibold text-amber-800">{o.noRiderPrompt} Open the order to choose.</p>
+      )}
       <div className="my-3 space-y-1">{o.items.slice(0, 3).map(item => <p key={item.id} className="sw-label">{item.quantity}× {item.name}</p>)}{o.items.length > 3 && <p className="sw-caption">+{o.items.length - 3} more</p>}</div>
-      <div className="flex flex-wrap items-center justify-between gap-2 border-t border-[var(--swift-border)] pt-3"><span className="sw-caption">{o.paymentMethod === 'MOBILE_MONEY' ? 'MMG' : 'Cash'}</span><span className="sw-title text-[17px]">{money(o.totalAmount)}</span></div>
+      <div className="flex flex-wrap items-center justify-between gap-2 border-t border-[var(--swift-border)] pt-3"><span className="sw-caption">{o.paymentMethod === 'MOBILE_MONEY' ? 'MMG' : 'Cash'}</span><span className="sw-title text-[17px]">{sm.label} {money(sm.food)}</span></div>
+      {/* [STORE-MONEY · owner 11 Nov 2026] The store's own money, and whose the fee and tip are (the server's words). */}
+      {sm.notes.map((line) => <p key={line} className="sw-caption mt-1">{line}</p>)}
       {o.fulfillment === 'APPOINTMENT' && o.appointmentSlot && <p className="sw-caption mt-2">Appointment: {formatAppointmentSlot(o.appointmentSlot)}</p>}
       {o.vendor?.name && <p className="sw-caption mt-1">{o.vendor.name}</p>}
       <span className="mt-2 block text-[13px] font-semibold text-[var(--swift-red)]">View order</span>
     </button>
     <OrderCardActions order={o} onOpen={() => setSelected(o.id)} />
-  </article>;
+  </article>; };
   const newOrders = byBucket.get('new') ?? [];
   const activeCount = (['new', 'kitchen', 'handoff', 'moving'] as const).reduce((n, key) => n + (byBucket.get(key)?.length ?? 0), 0);
   // "All caught up" only when truly nothing is open: an order in a status this

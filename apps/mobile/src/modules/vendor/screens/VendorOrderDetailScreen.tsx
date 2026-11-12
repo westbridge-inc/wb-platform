@@ -13,6 +13,7 @@ import { RiderHandoverLine } from '../RiderHandoverLine';
 import { orderLineOptionsText } from '../orderLineOptions';
 import { rejectReasonsFor } from '../rejectReasons';
 import { promisedTimeName } from '../../../lib/storeKindWords';
+import { storeKeepsDelivery, ringMoney } from '../ringMoney';
 import { orderPaymentLine } from '../storeWords';
 import { storeTimelineLabel } from '../../../lib/orderStatus';
 import { useOrderAction, useRetryDispatch, useSetOrderFulfillmentMode, useVendorOrder, usePickingActions, usePendingPickLines, useVendorMenu, useReturnReceived } from '../../../hooks/vendorops';
@@ -263,6 +264,9 @@ function VendorOrderDetailBody({ navigation, route }: any) {
   const emptied = nothingLeftToHandOver(order) && !mmgDisputePaused(order);
   const isPickup = order.fulfillment === 'PICKUP';
   const isAppt = order.fulfillment === 'APPOINTMENT';
+  // [STORE-MONEY] The store's own money on this order (the server's storeMoney; ringMoney.ts reads it).
+  const storeMoney = ringMoney(order);
+  const feeYours = storeKeepsDelivery(order);
   const apptMobile = isAppt && !!order.deliveryAddress && order.deliveryAddress !== order.pickupAddress;
   // [STORE-DASH · O-2] The hand-overs ride on top of the shared steps (storeHandover).
   const actions = withHandoverSteps(order, orderActions(order), mmgDisputePaused(order));
@@ -288,6 +292,9 @@ function VendorOrderDetailBody({ navigation, route }: any) {
     riderId: order.riderId,
     riderPresent: Boolean(order.rider),
     selfDeliveryEnabled: order.vendor?.selfDeliveryEnabled,
+    noRiderFound: order.noRiderFound === true,
+    noRiderPrompt: order.noRiderPrompt,
+    noRiderDetail: order.noRiderDetail,
   });
 
   const runAction = (action: (typeof actions)[number]['action']) => {
@@ -662,10 +669,18 @@ function VendorOrderDetailBody({ navigation, route }: any) {
         {/* Money — recorded amounts only (cash model: payment before handover) */}
         <Card style={{ marginBottom: space.md }}>
           <InfoRow label="Items" value={money(order.subtotalBase)} />
-          {Number(order.deliveryFee) > 0 ? <InfoRow label="Delivery fee (rider's)" value={money(order.deliveryFee)} /> : null}
-          {Number(order.tipAmount) > 0 ? <InfoRow label="Tip" value={money(order.tipAmount)} /> : null}
+          {Number(order.deliveryFee) > 0 ? <InfoRow label={feeYours ? 'Delivery fee (yours)' : "Delivery fee (rider's)"} value={money(order.deliveryFee)} /> : null}
+          {Number(order.tipAmount) > 0 ? <InfoRow label={feeYours ? 'Tip (yours)' : "Tip (rider's)"} value={money(order.tipAmount)} /> : null}
           {Number(order.discount) > 0 ? <InfoRow label="Promo discount" value={`-${money(order.discount)}`} /> : null}
-          <InfoRow label="Customer pays" value={money(order.totalAmount)} strong />
+          <InfoRow label="Customer pays" value={money(order.totalAmount)} />
+          {/* [STORE-MONEY · owner 11 Nov 2026] The card ends on the STORE's money — the food after its own discount —
+              never the customer's total with the rider's fee and tip; the server's lines say whose the rest is. */}
+          <InfoRow label={storeMoney.longLabel} value={money(storeMoney.food)} strong />
+          {storeMoney.notes.map((line) => (
+            <T key={line} variant="caption" tone="muted" style={{ marginTop: 4 }}>
+              {line}
+            </T>
+          ))}
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginTop: space.sm }}>
             <MaterialCommunityIcons name="cash" size={16} color={color.success} />
             <T variant="caption" weight="semibold" tone="muted">
@@ -730,7 +745,7 @@ function VendorOrderDetailBody({ navigation, route }: any) {
         {deliveryOwner.active ? (
           <Card style={{ marginBottom: space.md }}>
             <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: space.md }}>
-              <MaterialCommunityIcons name={deliveryOwner.selfDelivery ? 'storefront-outline' : 'bike-fast'} size={20} color={deliveryOwner.selfDelivery ? color.brand[600] : color.text.muted} />
+              <MaterialCommunityIcons name={deliveryOwner.selfDelivery ? 'storefront-outline' : deliveryOwner.noRider ? 'alert-circle-outline' : 'bike-fast'} size={20} color={deliveryOwner.selfDelivery || deliveryOwner.noRider ? color.brand[600] : color.text.muted} />
               <View style={{ flex: 1 }}>
                 <T variant="label" weight="semibold">{deliveryOwner.title}</T>
                 <T variant="caption" tone="muted" style={{ marginTop: 2 }}>
@@ -742,8 +757,8 @@ function VendorOrderDetailBody({ navigation, route }: any) {
               <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: space.sm, marginTop: space.md }}>
                 {deliveryOwner.canChooseVendor ? (
                   <PillButton
-                    label="We’ll deliver"
-                    variant="outline"
+                    label={deliveryOwner.vendorChoiceLabel}
+                    variant={deliveryOwner.noRider ? 'primary' : 'outline'}
                     size="md"
                     disabled={fulfillmentMode.isPending}
                     loading={fulfillmentMode.isPending}
@@ -779,10 +794,12 @@ function VendorOrderDetailBody({ navigation, route }: any) {
               <MaterialCommunityIcons name="bike-fast" size={20} color={color.text.muted} />
               <View style={{ flex: 1 }}>
                 <T variant="label" weight="semibold">
-                  No rider yet
+                  {deliveryOwner.noRider ? 'Or search for a Swift rider again' : 'No rider yet'}
                 </T>
                 <T variant="caption" tone="muted">
-                  Swift searches nearby movers automatically — retry if nobody took it.
+                  {deliveryOwner.noRider
+                    ? 'Swift asks the riders near your store again.'
+                    : 'Swift searches nearby movers automatically — retry if nobody took it.'}
                 </T>
               </View>
             </View>

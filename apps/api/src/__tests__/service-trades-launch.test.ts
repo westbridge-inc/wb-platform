@@ -340,10 +340,10 @@ describe('[R16] a business registration: a yearly business name is checked every
   it('the reviewer must say what it is; a business name needs its year and lasts to 16 January', async () => {
     const doc = await pendingRegistration();
     expect(await code(doc.id, {})).toBe('REGISTRATION_KIND_REQUIRED');
-    expect(await code(doc.id, { registrationKind: 'BUSINESS_NAME' })).toBe('CERTIFICATE_YEAR_REQUIRED');
-    expect(await code(doc.id, { registrationKind: 'BUSINESS_NAME', certificateYear: year() - 2 })).toBe('CERTIFICATE_YEAR_LAPSED');
+    expect(await code(doc.id, { registrationKind: 'BUSINESS_NAME', legalName: 'Fixture Registered Name Ltd' })).toBe('CERTIFICATE_YEAR_REQUIRED');
+    expect(await code(doc.id, { registrationKind: 'BUSINESS_NAME', legalName: 'Fixture Registered Name Ltd', certificateYear: year() - 2 })).toBe('CERTIFICATE_YEAR_LAPSED');
     expect((await runWithoutTenant(() => app.prisma.verificationDocument.findUniqueOrThrow({ where: { id: doc.id } }))).status).toBe('PENDING');
-    expect(await code(doc.id, { registrationKind: 'BUSINESS_NAME', certificateYear: year() })).toBe('APPROVED');
+    expect(await code(doc.id, { registrationKind: 'BUSINESS_NAME', legalName: 'Fixture Registered Name Ltd', certificateYear: year() })).toBe('APPROVED');
     const recheck = startOfGuyanaDay(`${year() + 1}-01-16`);
     const approved = await runWithoutTenant(() => app.prisma.verificationDocument.findUniqueOrThrow({ where: { id: doc.id }, include: { renewalSchedule: true } }));
     expect(approved.status).toBe('APPROVED');
@@ -353,7 +353,7 @@ describe('[R16] a business registration: a yearly business name is checked every
 
   it('a company’s certificate of incorporation never expires and has no renewal schedule', async () => {
     const doc = await pendingRegistration();
-    expect(await code(doc.id, { registrationKind: 'COMPANY', certificateYear: year() })).toBe('APPROVED');
+    expect(await code(doc.id, { registrationKind: 'COMPANY', legalName: 'Fixture Registered Name Ltd', certificateYear: year() })).toBe('APPROVED');
     const approved = await runWithoutTenant(() => app.prisma.verificationDocument.findUniqueOrThrow({ where: { id: doc.id }, include: { renewalSchedule: true } }));
     expect(approved.status).toBe('APPROVED');
     expect(approved.expiresAt).toBeNull();

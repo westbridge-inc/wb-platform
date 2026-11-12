@@ -547,6 +547,11 @@ export const customerApi = {
   cancelOrder: (id: string, reason?: string) =>
     api.post(`/customer/orders/${id}/cancel`, { reason })
       .then((res) => (res.data?.data ?? {}) as { message?: string }),
+  // [PROD-RIDER-TEST (a)2] No rider was found: collect it instead. The server takes the delivery fee and any rider
+  // tip off and answers with the new total (offered only when the order read carries `switchToPickup`).
+  switchToPickup: (id: string) =>
+    api.post(`/customer/orders/${id}/convert-to-pickup`, {})
+      .then((res) => (res.data?.data ?? {}) as { fulfillment?: string; totalAmount?: number }),
   // Order placement = checkout; it reads the server-side cart. (The old POST
   // /customer/orders had no backend route.)
   placeOrder: (data: {
@@ -1364,6 +1369,15 @@ export const vendorApi = {
   signOwnName: () => api.post('/vendor/onboarding/own-name', { accept: true, attestationVersion: OWN_NAME_DECLARATION_VERSION }),
   /** [ROLE-DOCS] Use a registered business name instead: the store asks for its registration again. */
   dropOwnName: () => api.delete('/vendor/onboarding/own-name'),
+  /** [COMPANY-DOCS PART 2 · owner 10 Nov 2026] The account's newest in-app letter of authority (null when none). */
+  authorityLetter: () => api.get('/vendor/authority-letters'),
+  /** [COMPANY-DOCS PART 2] Swift writes the one-page letter and texts the director (or the owner) a link to sign. */
+  askAuthorityLetter: (body: { businessName: string; registrationNumber: string; requesterName: string; requesterRole: string; signerName: string; signerPhone: string }) =>
+    api.post('/vendor/authority-letters', body),
+  /** [COMPANY-DOCS PART 2] A new link (the old one stops working). */
+  resendAuthorityLetter: (id: string) => api.post(`/vendor/authority-letters/${encodeURIComponent(id)}/resend`, {}),
+  /** [COMPANY-DOCS PART 2] Withdraw it (a wrong number), then fill the form again. */
+  cancelAuthorityLetter: (id: string) => api.post(`/vendor/authority-letters/${encodeURIComponent(id)}/cancel`, {}),
   /** [FOOD-PERMIT · owner 24 Oct 2026] A registered restaurant's owner ticks, for ONE store (named by its id, so the tick
    *  never lands on whichever store happens to be selected): everyone who handles food there holds a current food
    *  handler's certificate. `version` is the server's (GET /verification/status → foodHandlerAttestation). */
@@ -1516,6 +1530,13 @@ export const vendorApi = {
   analyticsRepeatCustomers: () => api.get('/vendor/analytics/repeat-customers'),
   salesStatement: (session?: AuthSessionSnapshot) =>
     api.get('/vendor/sales-statement', capturedAuthConfig(session, { params: { link: 1 } })),
+  // [ORDER-EXPORT · owner 11 Nov 2026] The order history as CSV text (owners and managers; finance columns only).
+  // branch: a store's id or 'all'. Read as text, never parsed as JSON.
+  exportBranches: () => api.get('/vendor/orders/export/branches'),
+  exportOrders: (params: { from: string; to: string; branch: string }, storeId: string, session?: AuthSessionSnapshot) =>
+    api.get<string>('/vendor/orders/export', capturedAuthConfig(session, {
+      params, responseType: 'text', transformResponse: (data: unknown) => data, headers: { 'x-vendor-id': storeId },
+    })),
   hours: () => api.get('/vendor/hours'),
   bookings: (params?: { from?: string; to?: string }) => api.get('/vendor/bookings', { params }),
   // [BOOK-S5a · owner B2] The business moves a booking to another free time of the same service.

@@ -39,6 +39,8 @@ export const WAITING_QUEUES = [
   { key: 'claimsAutoToPay', reads: ['GET /cash-rules/claims'] },
   { key: 'returnsToDecide', reads: ['GET /returns'] },
   { key: 'refundsOwed', reads: ['GET /returns'] },
+  // [R3 · review F2] live stores whose storefront names no seller yet ("Ask the store"): a person names each one
+  { key: 'sellersUnnamed', reads: ['GET /vendors'] },
   { key: 'moderation', reads: ['GET /moderation/reports', 'GET /ratings/moderation'] },
 ] as const satisfies readonly { key: string; reads: readonly string[]; door?: readonly string[] }[];
 

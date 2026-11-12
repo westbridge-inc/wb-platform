@@ -62,6 +62,8 @@ import { PushOffStrip } from '../../../components/PushOffStrip';
 import { acceptedJobParams } from '../../../lib/acceptedJob';
 import { docLabel } from '../../../components/onboarding/docLabels';
 import { acceptRowState, moverCameraRegion } from '../../../lib/moverHomeMap';
+import { moverHomeResting } from '../../../lib/moverHomeResting';
+import { useOtaRestingRoute } from '../../../hooks/useOtaRestartHold';
 
 /**
  * The earner home (dashboard plan Phase B/C): light, map-first, demand-aware.
@@ -504,7 +506,11 @@ export function MoverHomeScreen({ navigation }: any) {
   const online = !!profile?.isOnline;
   // [PERF partner #4] A taxi driver's board rests during a ride (one ride at a time).
   const available = useAvailableJobs(kind, online, !!active.data);
-  const { offer, queuedBehind, dismiss } = useDispatchOffers(kind, online, dual === true && kind === 'DRIVER');
+  const { offer, queuedBehind, dismiss, recovering } = useDispatchOffers(kind, online, dual === true && kind === 'DRIVER');
+  // [PROD-RIDER-TEST (b)3] Home is a resting screen for a downloaded update ONLY while nothing can be cut: the job read
+  // has answered with no live job (and no run), and no offer card is up or queued. A ringing offer or a delivery is
+  // never interrupted; the restart waits for the next such moment.
+  useOtaRestingRoute('MoverRoot', moverHomeResting({ kind, jobKnown: active.isSuccess, activeJob: active.data, run, offer, queuedBehind, recovering }));
 
   const liveLocation = grantedLocationFix(latitude, longitude, locationStatus);
   const here = liveLocation

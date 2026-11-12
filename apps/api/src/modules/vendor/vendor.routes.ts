@@ -1,3 +1,4 @@
+import { redemptionsFor, storeMoney } from '../billing/store-money';
 import { personTypedReason } from '../order/typed-reason';
 import { closeStoreSilentMmgCase, mmgAcceptedPayBy, mmgPayByStoreLine } from '../order/mmg-accept-expiry';
 import { drainPushesAfterResponse, pushAfterResponse } from '../../lib/push-after-response';
@@ -43,7 +44,8 @@ import { fmtSlotTime, MAX_BUFFER_MINUTES, MAX_MIN_NOTICE_MINUTES, peakMoment } f
 import { appointmentMovedData, appointmentMovedDedupeKey } from '../booking/appointment-moved';
 import { INSTANT_BOOKING_OFF_MESSAGE, instantBookingSettingsForSave, mergeBookingConfig, overlappingWindows, overlappingWindowsMessage, windowsForSave } from '../booking/booking-config';
 import { instantBookingEnabled, NEW_BOOKABLE_LISTING_DEFAULTS } from '../booking/instant-booking';
-import { movedAppointmentFreeCancelEnd } from '../order/cancel-policy';
+import { movedAppointmentFreeCancelEnd, readNoMoverFound } from '../order/cancel-policy';
+import { NO_RIDER_STORE_DELIVERS_NOTE, noRiderStoreView, storeDeliversCustomerNotice, storeMayDeliverAfterNoRider } from '../order/no-rider-fallback';
 import { NO_SHOW_REASON, noShowCustomerNotice, noShowRefusal, noShowView, recordNoShowInTransaction } from '../booking/appointment-no-show';
 import { assertMmgRefundAmount } from '../order/mmg-refund-law';
 import { recordMmgRefundSent, refundSentCustomerNotice, storeRefundView } from '../order/mmg-refund-rail';
@@ -56,12 +58,13 @@ import { VerificationService } from '../verification/verification.service';
 import { getKycProvider } from '../../providers/kyc/kyc-provider';
 import { getStorageProvider } from '../../providers/storage/storage-provider';
 import { encryptBuffer, generateDek, getKeyProvider } from '../../providers/storage/envelope';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { publishLegalDocumentOnce, recordConsent, type ConsentSurface } from '../legal/consent.service';
 import { LEGAL_VERSION } from '../legal/legal.routes';
 import { OWN_NAME_CONSENT_TYPE, OWN_NAME_DECLARATION_V1, OWN_NAME_DECLARATION_VERSION, OWN_NAME_VENDOR_TYPES, renderOwnNamePdf, storeNameIsOwnName } from './own-name';
 import { FOOD_HANDLERS_CONSENT_TYPE, FOOD_HANDLERS_TICK_V1, FOOD_HANDLERS_VERSION, foodHandlerTickApplies, storeAttested } from './food-handlers';
 import { OWN_NAME_DOC_TYPE } from '../verification/doc-registry';
+import { SELLER_NAME_UNCONFIRMED } from '../verification/storefront-disclosure';
 import { UNREGISTERED_TIER_REMOVED_WORDS, validRegistrationRecord } from './registration-record';
 import { parseCsvWithHeader } from '../../utils/csv';
 import {
@@ -128,7 +131,7 @@ import { HANDED_TO_RIDER_NOTE, NO_CODE_HANDOVER_NOTE, handedToRiderSinceAssignme
 import { assertStorePinInMarket } from './store-pin';
 import { lockStorePin, recordStorePinMove } from './store-pin-move';
 import { registerPartnerCardRoutes, withCardPayAction } from '../billing/card-rail.routes';
-import { storeBacklogSentence, storeRiderBacklog } from '../dispatch/delivery-capacity';
+import { storeBacklogSentence, storeRiderBacklog, swiftRiderCashRefusal } from '../dispatch/delivery-capacity';
 import { deliveryPausedAt } from '../dispatch/delivery-pause';
 import { CLOSURE_PAUSE_REFUSAL, CLOSURE_PAUSE_REFUSAL_TEAM } from '../user/closure-pause';
 import { orderStageRefusal } from '../order/order-status-words';
@@ -1147,8 +1150,8 @@ export async function vendorRoutes(app: FastifyInstance) {
       fulfillment: string;
       fulfillmentMode: FulfillmentMode | null;
     },
-  ): Promise<void> {
-    if (source.fulfillment !== 'DELIVERY' || source.riderId || source.fulfillmentMode != null) return;
+  ): Promise<'PLATFORM_RIDER' | 'VENDOR_DELIVERY' | null> {
+    if (source.fulfillment !== 'DELIVERY' || source.riderId || source.fulfillmentMode != null) return null;
     const vendor = source.vendorId
       ? await tx.vendor.findUnique({ where: { id: source.vendorId }, select: { selfDeliveryEnabled: true } })
       : null;
@@ -1157,6 +1160,7 @@ export async function vendorRoutes(app: FastifyInstance) {
       where: { id: source.id },
       data: { fulfillmentMode: mode, fulfillmentModeVersion: { increment: 1 } },
     });
+    return mode;
   }
 
   // =========================================================================
@@ -1844,7 +1848,8 @@ export async function vendorRoutes(app: FastifyInstance) {
     const legalName = `${user.firstName} ${user.lastName}`.trim();
     await app.prisma.$transaction(async (tx) => {
       // This store only: its name is the one checked, and the one the PDF and this consent row name.
-      await tx.vendor.update({ where: { id: vendor.id }, data: { tradesUnderOwnName: true } });
+      // [review-2479 F6] Switching to the own name ends a seller-name confirmation: a person confirms again, if at all.
+      await tx.vendor.update({ where: { id: vendor.id }, data: { tradesUnderOwnName: true, ...(vendor.tradesUnderOwnName ? {} : SELLER_NAME_UNCONFIRMED) } });
       await recordConsent(tx, {
         subjectType: 'vendor_user', subjectId: userId, documentType: OWN_NAME_CONSENT_TYPE, version: OWN_NAME_DECLARATION_VERSION,
         action: 'granted', surface, ip: request.ip,
@@ -1874,8 +1879,10 @@ export async function vendorRoutes(app: FastifyInstance) {
   app.delete('/onboarding/own-name', auth, async (request) => {
     const access = await requireVendor(app, request, 'OWNER');
     const userId = request.user.userId;
-    const vendor = await app.prisma.vendor.findUniqueOrThrow({ where: { id: access.vendorId }, select: { id: true, vendorType: true } });
-    await app.prisma.vendor.update({ where: { id: vendor.id }, data: { tradesUnderOwnName: false } });
+    const vendor = await app.prisma.vendor.findUniqueOrThrow({ where: { id: access.vendorId }, select: { id: true, vendorType: true, tradesUnderOwnName: true } });
+    // [review-2479 F6] Leaving the own name ends a seller-name confirmation given while it applied: the owner's name, once
+    // confirmed for an own-name trader, never stays as a business's seller name.
+    await app.prisma.vendor.update({ where: { id: vendor.id }, data: { tradesUnderOwnName: false, ...(vendor.tradesUnderOwnName ? SELLER_NAME_UNCONFIRMED : {}) } });
     await verification.reprojectVendorActivation(userId);
     const role = vendor.vendorType as 'RESTAURANT' | 'SUPERMARKET' | 'STORE' | 'SERVICE';
     return { success: true, data: { nameBasis: 'REGISTERED', status: await verification.getStatus(userId, role) } };
@@ -2024,6 +2031,8 @@ export async function vendorRoutes(app: FastifyInstance) {
     // read or write, as the pin is. No shipped app sends them (builds 9-12 send money, number, rule and capacity settings).
     if (supplied && STORE_DETAIL_FIELDS.some((field) => supplied[field] !== undefined)) requireRole(access, 'OWNER');
     const body = updateVendorProfileSchema.parse(request.body);
+    // [review-2476 F3] A new name ends any seller-name confirmation of the old one (renaming back confirms nothing).
+    let renamed = false;
     if (body.name !== undefined) {
       // [MC-PR3] "TEST-" store names belong to test accounts (+5920…) only; an unchanged name is never re-judged.
       const current = await app.prisma.vendor.findUnique({ where: { id: vendorId }, select: { name: true, tradesUnderOwnName: true, isVerified: true, firstLiveAt: true, owner: { select: { user: { select: { phone: true } } } } } });
@@ -2041,6 +2050,7 @@ export async function vendorRoutes(app: FastifyInstance) {
       if (current && (current.firstLiveAt !== null || current.isVerified) && body.name.trim() !== current.name.trim()) {
         throw new AppError(409, 'CHECKED_NAME_RENAME', 'A person at Swift checked your store under this name, so it can’t be changed here. To use a new name, contact Swift support: we check the new name first.');
       }
+      renamed = !!current && body.name.trim() !== current.name.trim();
     }
     // [REVIEW-PARTNER · DL-5] The store-review fiction moves no money: an MMG pay link is
     // refused before it is even read, and before any step-up, write or owner notice.
@@ -2125,6 +2135,7 @@ export async function vendorRoutes(app: FastifyInstance) {
         where: { id: vendorId },
         data: {
           ...(body.name !== undefined && { name: body.name }),
+          ...(renamed && SELLER_NAME_UNCONFIRMED),
           ...(body.description !== undefined && { description: body.description }),
           ...(body.phone !== undefined && { phone: body.phone }),
           ...(body.email !== undefined && { email: body.email }),
@@ -2562,9 +2573,17 @@ export async function vendorRoutes(app: FastifyInstance) {
     // [S1 response-shaping] a terminal order no longer hands floor staff the
     // customer's phone, the rider's phone, or the delivery address/GPS — the
     // live order keeps all of it, which is the only thing a handover needs.
+    // [PROD-RIDER-TEST (a)1] The board card says "No rider found. Deliver it yourselves?" for an order whose search
+    // came back empty (one journal read per riderless delivery on the page; everything else answers without one).
+    const noRider = new Map(await Promise.all(orders.map(async (o) => [o.id, await noRiderStoreView(app.prisma, o)] as const)));
+    // [STORE-MONEY · owner 11 Nov 2026] The store's own money on each order (food, and whose the fee and tip are),
+    // by the sales statement's law — never the customer's total read as the store's.
+    const redemptions = await redemptionsFor(app.prisma, orders.map((o) => o.id));
     const data = orders.map((order) => withCounterpartPhones(request, redactCustomerContact({
       ...coerceMoney(order, ORDER_MONEY_FIELDS),
+      storeMoney: storeMoney({ ...order, promoRedemption: redemptions.get(order.id) ?? null }),
       ...handover.get(order.id),
+      ...noRider.get(order.id),
       items: order.items.map((item) => vendorOrderLine(coerceMoney(item, ORDER_ITEM_MONEY_FIELDS))),
       respondBy: vendorRespondBy(order, respondOpts),
       ...storeMmgPayBy(order),
@@ -2598,7 +2617,11 @@ export async function vendorRoutes(app: FastifyInstance) {
     // [OOS-FLOW · REVIEW-2 F2] outOfStockEndsOrder: this server ends an accepted order whose last item comes off
     // (with the store's confirmation). An app asks once, and words the wait for a swap, only when it reads this:
     // an app update that reaches phones before this server never promises a cancellation that will not happen.
-    return { success: true, data: { ...redactCustomerContact({ ...order, ...handover, items: order.items.map(vendorOrderLine), respondBy, ...storeMmgPayBy(order), canConfirmPayment: canConfirmPayment(role), ...noShow, ...notCollected, mmgRefund }), custodyRecovery, outOfStockEndsOrder: true } };
+    // [PROD-RIDER-TEST (a)1] "No rider found. Deliver it yourselves?" — the card's prompt, from the dispatch journal.
+    const noRider = await noRiderStoreView(app.prisma, order);
+    // [STORE-MONEY · owner 11 Nov 2026] The store's own money on this order (the board's same answer).
+    const money = storeMoney({ ...order, promoRedemption: (await redemptionsFor(app.prisma, [order.id])).get(order.id) ?? null });
+    return { success: true, data: { ...redactCustomerContact({ ...order, ...handover, storeMoney: money, items: order.items.map(vendorOrderLine), respondBy, ...storeMmgPayBy(order), canConfirmPayment: canConfirmPayment(role), ...noShow, ...notCollected, mmgRefund, ...noRider }), custodyRecovery, outOfStockEndsOrder: true } };
   });
 
   /** [AF-MOB-006] POST /orders/:id/recovery/return-received — the store
@@ -2664,6 +2687,13 @@ export async function vendorRoutes(app: FastifyInstance) {
     // PENDING -> ACCEPTED -> PREPARING in this one commit, one push to the customer. A booking or an
     // MMG order still waiting for "Paid by MMG" stops at ACCEPTED (preparationMayStart).
     const [acceptedStatus, preparingStatus] = STORE_ACCEPT_PATH;
+    // [REVIEW-2472 A-1] An unresolved DELIVERY order the accept may bind to Swift riders (the store's self-delivery
+    // off now, though it may have been on at checkout, which then asked no rider question): checkout's rider-cash
+    // question again. Asked here, outside the lock; applied under it, only when the bind (the store's setting read
+    // on the locked row) hands the order to Swift riders, so a setting flipped meanwhile cannot slip past it.
+    const cashRefusal = order.fulfillment === 'DELIVERY' && !order.riderId && order.fulfillmentMode == null
+      ? await swiftRiderCashRefusal(app.prisma, (probe) => dispatch.getDeliveryCapacity(probe), order.id, 'accept')
+      : null;
     const updated = await orderService.updateStatus(order.id, acceptedStatus, request.user.userId, 'Accepted by vendor', {
       continueTo: { target: preparingStatus, note: 'Preparing: the store accepted the order', when: preparationMayStart },
       withinTransaction: async (tx, lockedOrder) => {
@@ -2692,7 +2722,8 @@ export async function vendorRoutes(app: FastifyInstance) {
             data: { estimatedPrepTime: body.estimatedPrepTime },
           });
         }
-        await bindUnresolvedDeliveryMode(tx, lockedOrder);
+        // [REVIEW-2472 A-1] Refused before the accept commits: the order stays PENDING, nothing is sought.
+        if (await bindUnresolvedDeliveryMode(tx, lockedOrder) === 'PLATFORM_RIDER' && cashRefusal) throw cashRefusal;
       },
     });
     if (appointmentItemId) await bookingService.nudgeForItem(appointmentItemId).catch(() => {});
@@ -2894,7 +2925,7 @@ export async function vendorRoutes(app: FastifyInstance) {
     }
     if (order.status === 'PREPARING') {
       const updated = await orderService.updateStatus(order.id, 'READY_FOR_PICKUP', request.user.userId, 'Order ready for pickup', {
-        withinTransaction: bindUnresolvedDeliveryMode,
+        withinTransaction: async (tx, lockedOrder) => { await bindUnresolvedDeliveryMode(tx, lockedOrder); },
       });
       // FUL-005: ON_READY — dispatch NOW, when the food is ready, not at accept.
       // No-op under the ON_ACCEPT default (the rider was already dispatched); and
@@ -2929,6 +2960,12 @@ export async function vendorRoutes(app: FastifyInstance) {
     if (isTerminalOrderStatus(order.status)) {
       throw new AppError(409, 'ORDER_CLOSED', 'This order is already closed');
     }
+    // [REVIEW-2472 A-1] "Get a Swift rider" on a CASH order no Swift rider near may carry: refused in the store's
+    // words, before the switch is written — the order stays with the store's own delivery. Asked here, applied on
+    // the locked row below (only a switch that would hand it to Swift riders now).
+    const cashRefusal = mode === 'PLATFORM_RIDER' && !order.riderId
+      ? await swiftRiderCashRefusal(app.prisma, (probe) => dispatch.getDeliveryCapacity(probe), order.id, 'switch')
+      : null;
     // The rider claim path locks this same row. Whichever decision wins the
     // lock wins custody; the loser receives a conflict rather than producing
     // both a vendor courier and a Swift rider for one order.
@@ -2949,6 +2986,8 @@ export async function vendorRoutes(app: FastifyInstance) {
           orderType: true,
           paymentStatus: true,
           mmgClaimMismatchAt: true,
+          driverId: true,
+          orderNumber: true,
         },
       });
       if (live.fulfillment !== 'DELIVERY') {
@@ -2957,11 +2996,17 @@ export async function vendorRoutes(app: FastifyInstance) {
       if (isTerminalOrderStatus(live.status)) {
         throw new AppError(409, 'ORDER_CLOSED', 'This order is already closed');
       }
-      if (mode === 'VENDOR_DELIVERY') {
+      // [PROD-RIDER-TEST (a)1] "No rider found. Deliver it yourselves?": once the rider search for THIS order came
+      // back empty (the dispatch journal's fact, read on this locked row — the same one that frees the customer's
+      // cancel), one tap takes this order to the store's own delivery, without turning on the standing setting
+      // (that would send every later order to the store's own rider).
+      let afterNoRider = false;
+      if (mode === 'VENDOR_DELIVERY' && live.fulfillmentMode !== 'VENDOR_DELIVERY') {
         const vendor = live.vendorId
           ? await tx.vendor.findUnique({ where: { id: live.vendorId }, select: { selfDeliveryEnabled: true } })
           : null;
-        if (!vendor?.selfDeliveryEnabled) {
+        afterNoRider = storeMayDeliverAfterNoRider(live, await readNoMoverFound(tx, live));
+        if (!vendor?.selfDeliveryEnabled && !afterNoRider) {
           throw new AppError(400, 'SELF_DELIVERY_DISABLED', 'Turn on self-delivery in settings first');
         }
       }
@@ -2971,16 +3016,39 @@ export async function vendorRoutes(app: FastifyInstance) {
       if (mode === 'PLATFORM_RIDER' && live.fulfillmentMode === 'VENDOR_DELIVERY' && live.riderId) {
         throw new AppError(409, 'CUSTODY_CONFLICT', 'This order has conflicting delivery custody and needs operator review');
       }
-      if (live.fulfillmentMode === mode) return live;
-      return tx.order.update({
+      if (live.fulfillmentMode === mode) return { ...live, afterNoRider: false };
+      if (mode === 'PLATFORM_RIDER' && !live.riderId && cashRefusal) throw cashRefusal;
+      const switched = await tx.order.update({
         where: { id: order.id },
         data: { fulfillmentMode: mode, fulfillmentModeVersion: { increment: 1 } },
       });
+      if (afterNoRider) {
+        // Evidence in the same commit: who took the delivery, and why. The status itself does not move.
+        await tx.orderStatusLog.create({
+          data: { orderId: order.id, status: live.status, changedBy: request.user.userId, note: NO_RIDER_STORE_DELIVERS_NOTE },
+        });
+      }
+      return { ...switched, afterNoRider };
     });
     // Fallback: "get a rider instead" dispatches a platform rider now if none is
     // on it yet. VENDOR_DELIVERY needs no rider — the vendor's own courier delivers.
     if (mode === 'VENDOR_DELIVERY') {
       await dispatch.retireForVendorDelivery(order.id, committed.fulfillmentModeVersion);
+      if (committed.afterNoRider) {
+        // [PROD-RIDER-TEST (a)1] The customer was told no rider was found: now they are told who brings it, in the
+        // own-rider notice's words (the order screen shows the same notice from the order's mode).
+        await emitToOrderRoom(app.prisma, app.io, order.id, 'order:status_changed', { orderId: order.id, status: committed.status, fulfillmentMode: 'VENDOR_DELIVERY' });
+        if (order.customerId) {
+          await notifications.send({
+            userId: order.customerId,
+            type: 'ORDER_UPDATE',
+            ...storeDeliversCustomerNotice(committed.orderNumber, (await app.prisma.vendor.findUnique({ where: { id: order.vendorId! }, select: { name: true } }))?.name),
+            audience: 'customer',
+            data: { orderId: order.id, kind: 'store_delivers' },
+            dedupeKey: `store-delivers:${order.id}:${committed.fulfillmentModeVersion}`,
+          }).catch(() => undefined);
+        }
+      }
     } else if (!committed.riderId && !mmgDispatchBlocked(committed)) {
       // [#1848 follow-up · REVIEW-M S4-1] Like acceptance: an MMG order not yet "Paid by MMG" arms no
       // dispatch here — "Paid by MMG" arms it. Decided on the committed row (the locked read, or the row the
@@ -5568,6 +5636,77 @@ export async function vendorRoutes(app: FastifyInstance) {
     }
     reply.type('text/html; charset=utf-8');
     return buildVendorStatement(app.prisma, vendorId, period);
+  });
+
+  /** [ORDER-EXPORT] The stores this caller may export: where they may see sales (an owner every branch, a team
+   *  member only the stores they MANAGE, as GET /stores/summary). Staff-only callers are refused. */
+  const exportStores = async (request: FastifyRequest) => {
+    const access = await resolveVendor(app, request.user.userId, selectedVendorId(request));
+    const salesStores = access.role === 'OWNER' && access.ownerId
+      ? access.vendorIds
+      : (await app.prisma.vendorStaff.findMany({ where: { userId: request.user.userId, role: 'MANAGER', vendorId: { in: access.vendorIds } }, select: { vendorId: true } })).map((m) => m.vendorId);
+    if (salesStores.length === 0) requireRole(access, 'MANAGER');
+    return { access, salesStores };
+  };
+
+  /** [REVIEW-2485-B S4-7] GET /orders/export/branches — the branches the export may cover for this login (the website
+   *  and the phone offer only these), and whether "all" means every branch (owner) or the stores they manage. */
+  app.get('/orders/export/branches', auth, async (request) => {
+    const { access, salesStores } = await exportStores(request);
+    const branches = await app.prisma.vendor.findMany({ where: { id: { in: salesStores } }, orderBy: { createdAt: 'asc' }, select: { id: true, name: true, city: true } });
+    return { success: true, data: { scope: access.role === 'OWNER' && access.ownerId ? 'owner' : 'manager', branches } };
+  });
+
+  /** [ORDER-EXPORT · owner 11 Nov 2026] GET /orders/export?from=YYYY-MM-DD&to=YYYY-MM-DD&branch=<storeId>|all — the
+   *  order history as a CSV file for finance reconciliation (vendor/order-export.ts: finance columns only, no customer
+   *  details, formula-safe). One branch (default: the selected store) or `all`: every store where this caller may see
+   *  sales — an owner every branch, a team member only the stores they MANAGE (as GET /stores/summary). Staff never.
+   *  At most 366 Guyana days; every export leaves an audit row (who, range, branches) before the first byte. */
+  app.get('/orders/export', { ...auth, config: { rateLimit: { max: 30, timeWindow: '1 hour' } } }, async (request, reply) => {
+    const { orderExportPeriod, orderExportLines, orderExportStream, releaseOrderExportLock, ORDER_EXPORT_AUDIT_ACTION, ORDER_EXPORT_LOCK_PREFIX, ORDER_EXPORT_LOCK_TTL_S } = await import('./order-export');
+    const q = z.object({ from: z.string().max(10).optional(), to: z.string().max(10).optional(), branch: z.string().min(1).max(64).optional() })
+      .parse(request.query ?? {});
+    const { access, salesStores } = await exportStores(request);
+    const all = q.branch === 'all';
+    const branch = all ? null : (q.branch ?? access.vendorId);
+    if (branch !== null && !salesStores.includes(branch)) {
+      if (!access.vendorIds.includes(branch)) throw new AppError(403, 'STAFF_FORBIDDEN', 'You are not a member of this store');
+      throw new AppError(403, 'STAFF_FORBIDDEN', 'This needs a manager — ask the store owner to upgrade your role');
+    }
+    const period = orderExportPeriod(q);
+    const vendorIds = all ? salesStores : [branch!];
+    // [REVIEW-2485-A S3-1] One export at a time per person, so a big chain export cannot be run many times over at once.
+    const lockKey = `${ORDER_EXPORT_LOCK_PREFIX}${request.user.userId}`;
+    const lockToken = randomUUID();
+    // [REVIEW-2485-DELTA S4] No lock store, no export (a heavy read is not run unguarded), said plainly.
+    const taken = await app.redis.set(lockKey, lockToken, 'EX', ORDER_EXPORT_LOCK_TTL_S, 'NX').catch((err: unknown) => {
+      request.log.warn({ err }, '[ORDER-EXPORT] lock store unavailable');
+      throw new AppError(503, 'EXPORT_UNAVAILABLE', 'Export is unavailable right now. Try again shortly.');
+    });
+    if (taken !== 'OK') {
+      throw new AppError(429, 'EXPORT_ALREADY_RUNNING', 'An export is already running for you. Try again when it has finished.');
+    }
+    // [REVIEW-2485-DELTA S4-1] Compare-and-delete: only this export's own token.
+    const release = () => { void releaseOrderExportLock(app.redis, lockKey, lockToken).catch(() => undefined); };
+    let stream: ReturnType<typeof orderExportStream>;
+    try {
+      // [REVIEW-2485-A S4-3] An all-branches export is recorded against a store this person may export (their first),
+      // never the selected store, where they may be only staff; the full list is in `vendorIds`.
+      await app.prisma.auditLog.create({ data: {
+        userId: request.user.userId, action: ORDER_EXPORT_AUDIT_ACTION, entity: 'Vendor', entityId: all ? salesStores[0]! : branch!,
+        changes: { from: period.fromDay, to: period.toDay, scope: all ? 'all' : 'branch', vendorIds, role: access.role },
+      } });
+      stream = orderExportStream(orderExportLines(app.prisma, { vendorIds, from: period.from, to: period.to }));
+    } catch (err) {
+      release();
+      throw err;
+    }
+    stream.once('close', release);
+    const name = `swift-orders-${all ? 'all-branches-' : ''}${period.fromDay}-to-${period.toDay}.csv`;
+    reply.type('text/csv; charset=utf-8')
+      .header('content-disposition', `attachment; filename="${name}"`)
+      .header('cache-control', 'no-store');
+    return reply.send(stream);
   });
 
   app.get('/settlements', auth, async (request) => {

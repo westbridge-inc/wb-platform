@@ -13,6 +13,7 @@ import { withPreviousDecisions } from '../verification/previous-decision';
 import { REVIEW_QUEUE_SELECT, reviewQueueRow } from './review-queue-row';
 import type { FastifyInstance } from 'fastify';
 import { resolveVerificationObject } from '../verification/object-authority';
+import { SELLER_NAME_UNCONFIRMED, SELLER_UNNAMED_BASES, sellerNameViews, unnamedLiveStoreIds } from '../verification/storefront-disclosure';
 import { staffInviteAcceptEnabled } from '../vendor/staff-invites';
 import { bindTenantTransaction, runWithoutTenant } from '../../plugins/prisma';
 import { countWaiting, type WaitingKey } from './dashboard-waiting';
@@ -23,7 +24,7 @@ import { Prisma, type VehicleType, UserRole, UserStatus, VendorStatus, VendorTyp
 import { idsByLiveDocuments, LIVE_DOCUMENTS_FILTER_CAP, withLiveDocuments } from './live-documents';
 import { NotificationService } from '../notification/notification.service';
 import { SupportService } from '../support/support.service';
-import { VerificationService, REJECTION_REASON_CODES } from '../verification/verification.service';
+import { VerificationService, REJECTION_REASON_CODES, approvalSellerNameTrail, isAccountPersonsName, type StoreActivation } from '../verification/verification.service';
 import { AdvertiserService } from '../ads/advertiser.service';
 import { CreativeService, CREATIVE_REJECT_REASONS, looksLikeMp4 } from '../ads/creative.service';
 import { AdsLifecycleService } from '../ads/lifecycle.service';
@@ -135,6 +136,7 @@ import { MMG_SUPPORT_PAGE_DEFAULT, MMG_SUPPORT_PAGE_MAX, MMG_SUPPORT_STATUSES, d
 import { assertNotBannedGoods, catalogueChecksFor, flaggedItemsInTenant, prohibitedStoreCategory, storeCheckOf, storesHeldInTenant, STORE_WORDS_SELECT, wordsFor } from '../compliance/prohibited-gate';
 import { judgedWordsHash, notAllowedMessage, PROHIBITED_CLASSES, PROHIBITED_CLASS_LABELS, storeWordsHash, type CatalogueCheck } from '../compliance/prohibited-items';
 import { REGISTRATION_KINDS, SELFIE_COMPARE_DOC_TYPES } from '../verification/doc-registry';
+import { AUTHORITY_CONFIRMATION_METHODS, AUTHORITY_REASON_MAX, AUTHORITY_REASON_MIN } from '../verification/authority-confirmation';
 import { maskOrderPartyPhones, maskRowUserPhones, ORDER_CONTACT_PARTIES, revealOrderPartyPhone } from './order-contact';
 import { PROOF_PHOTO_NAMES, openProofPhoto } from './order-proof-photo';
 import { moverUserOf, PAYER_INCLUDE, subscriptionTenantWhere } from '../subscription/subscription-owner';
@@ -201,6 +203,8 @@ const vendorsQuerySchema = z.object({
   status: z.nativeEnum(VendorStatus).optional(),
   type: z.nativeEnum(VendorType).optional(),
   search: z.string().max(100).optional(),
+  // [R3 · review F2] only LIVE stores whose storefront names no seller yet ("Ask the store")
+  sellerName: z.enum(['unnamed']).optional(),
 });
 
 // Riders/drivers list filters use UI keywords, not DB enums
@@ -434,8 +438,14 @@ const approveDocSchema = z.object({
   certificateYear: z.coerce.number().int().min(1900).max(9999).optional(),
   // [R16] a business registration: a yearly business NAME (sole trader, partnership) or a COMPANY's incorporation
   registrationKind: z.enum(REGISTRATION_KINDS).optional(),
+  // [COMPANY-DOCS PART 2 · review F2] a letter of authority: how the reviewer confirmed its signer, and what they checked
+  authorityConfirmed: z.object({
+    method: z.enum(AUTHORITY_CONFIRMATION_METHODS), reason: z.string().trim().min(AUTHORITY_REASON_MIN).max(AUTHORITY_REASON_MAX),
+  }).strict().optional(),
   // [ROLE-DOCS · owner 21 Oct 2026] an own-name declaration: the reviewer confirms the store name against the owner's ID
   ownNameConfirmed: z.boolean().optional(),
+  // [R3 · review F1] a registration paper: the legal name printed on it, which the storefront names the seller by
+  legalName: z.string().trim().min(2).max(160).optional(),
   // [COMPANY-DOCS · review F3] a company's business-name registration: the proprietor named on it is a company
   proprietorIsCompany: z.boolean().optional(),
   // Insurance 5-point manual check (spec §3.4) — supplied for hire-insurance docs
@@ -1281,6 +1291,8 @@ export async function adminRoutes(app: FastifyInstance) {
       claimsAutoToPay: () => tenantPrisma.reimbursementClaim.count({ where: { status: 'AUTO_APPROVED' } }),
       returnsToDecide: () => tenantPrisma.returnRequest.count({ where: { status: 'REQUESTED' } }),
       refundsOwed: () => tenantPrisma.returnRequest.count({ where: { status: 'REFUND_DUE' } }),
+      // [R3 · review F2] live stores whose storefront names no seller yet: the vendors list's own filter
+      sellersUnnamed: async () => (await unnamedLiveStoreIds(app.prisma)).length,
       moderation: async () => {
         const [reports, ratings] = await Promise.all([
           tenantPrisma.contentReport.count({ where: { status: 'PENDING' } }),
@@ -1699,10 +1711,13 @@ export async function adminRoutes(app: FastifyInstance) {
 
   app.get('/vendors', { preHandler: [adminGuard] }, async (request) => {
     const { page, limit, skip } = parsePagination(request.query as Record<string, string>);
-    const { status, type, search } = vendorsQuerySchema.parse(request.query);
+    const { status, type, search, sellerName } = vendorsQuerySchema.parse(request.query);
     const { excludeFixtures } = excludeFixturesQuerySchema.parse(request.query);
+    // [R3 · review F2] the same rule the storefront applies (sellerNameOf), over the live stores
+    const unnamedIds = sellerName === 'unnamed' ? await unnamedLiveStoreIds(app.prisma) : null;
 
     const base: any = {
+      ...(unnamedIds && { id: { in: unnamedIds }, status: 'ACTIVE' }),
       ...(status && { status }),
       ...(type && { vendorType: type }),
       ...(search && {
@@ -1732,7 +1747,12 @@ export async function adminRoutes(app: FastifyInstance) {
 
     // [SEC-PII] The store's and its owner's numbers and emails masked unless the live grant holds vendor.contact.read.
     const contact = holdsPersonContact(request, 'vendor');
-    const rows = vendors.map((v) => ({ ...(contact ? v : maskVendorListRow(v)), vatRegistrationNumber: undefined }));
+    // [R3 · review F2] the badge: a LIVE store whose storefront names no seller yet
+    const views = await sellerNameViews(app.prisma, vendors.filter((v) => v.status === 'ACTIVE').map((v) => v.id));
+    const rows = vendors.map((v) => ({
+      ...(contact ? v : maskVendorListRow(v)), vatRegistrationNumber: undefined,
+      sellerNameUnnamed: v.status === 'ACTIVE' && SELLER_UNNAMED_BASES.includes(views.get(v.id)?.basis ?? 'NONE'),
+    }));
     const result = paginatedResponse(rows, total, { page, limit, skip });
     return { success: true, data: result.data, meta: { ...result.meta, hiddenTestRecords } };
   });
@@ -1797,6 +1817,8 @@ export async function adminRoutes(app: FastifyInstance) {
         prohibitedItems,
         // [owner 14 Oct, store names] Whether the store's own words are held for a person (or were approved).
         storeCheck: storeCheckOf(vendor),
+        // [R3 · review F5] who the storefront names as the seller, by the server's own rule (never re-derived by the console)
+        sellerName: (await sellerNameViews(app.prisma, [vendor.id])).get(vendor.id) ?? { basis: 'NONE', value: null },
       },
     };
   });
@@ -2050,6 +2072,7 @@ export async function adminRoutes(app: FastifyInstance) {
     let updated;
     // [#1541] Documents approved while billing holds the weekly fee: live under that hold, not open.
     let feeHeld = false;
+    let sellerNameNotConfirmed: StoreActivation['sellerNameNotConfirmed'] = null;
     if (next === 'CAN_ACTIVATE') {
       // The one authority that makes a store live, on every path (review,
       // auto-approval, the reconcile belt — and now this button), run for this
@@ -2059,9 +2082,13 @@ export async function adminRoutes(app: FastifyInstance) {
       // ONLY when the console sent the name it showed (`sellerName`); a different name under the lock is refused. With
       // no name sent (an older console, a script) the store goes live as before but nothing is confirmed: its storefront
       // names nobody until a person confirms the name (PUT /vendors/:id/seller-name). Never a name nobody was shown.
-      await verification.activateStore(goLive.ownerUserId, id, (tx) => auditWithin(tx, request as unknown as AuditRequestLike, app.prefix, {
-        extra: { previousStatus: vendor.status, previousSuspensionSource: vendor.suspensionSource, verdict: next, sellerNameConfirmed: shownName ?? null },
+      // [COORD ruling 11 Nov 2026 · review-2479] A person's own name is never confirmed (the store still goes live): the
+      // trail and the answer say so, and the console shows why.
+      const activation = await verification.activateStore(goLive.ownerUserId, id, (tx, decided) => auditWithin(tx, request as unknown as AuditRequestLike, app.prefix, {
+        extra: { previousStatus: vendor.status, previousSuspensionSource: vendor.suspensionSource, verdict: next,
+          ...approvalSellerNameTrail(shownName, decided) },
       }), shownName !== undefined ? { by: request.user.userId, name: shownName } : undefined);
+      sellerNameNotConfirmed = activation.sellerNameNotConfirmed;
       updated = await app.prisma.vendor.findUniqueOrThrow({ where: { id } });
       feeHeld = updated.status === 'SUSPENDED' && updated.suspensionSource === 'BILLING';
       if (updated.status !== 'ACTIVE' && !feeHeld) {
@@ -2159,7 +2186,7 @@ export async function adminRoutes(app: FastifyInstance) {
     });
 
     // [VERIFY-DOCS V5] The owner's VAT billing number never rides an admin store reply.
-    return { success: true, data: { ...updated, vatRegistrationNumber: undefined } };
+    return { success: true, data: { ...updated, vatRegistrationNumber: undefined, sellerNameNotConfirmed } };
   });
 
   app.put('/vendors/:id/suspend', { preHandler: [adminGuard] }, async (request) => {
@@ -2249,7 +2276,12 @@ export async function adminRoutes(app: FastifyInstance) {
     if (vendor.tradesUnderOwnName) {
       throw new AppError(409, 'OWN_NAME_RENAME', 'This store trades under its owner’s own name, which a person checked. A different name has to be registered as a business name first.');
     }
-    const updated = await app.prisma.vendor.update({ where: { id }, data: { name } });
+    // [R3 · review F7 · security review] A new name is not a confirmed seller name: the storefront names nobody for it
+    // until a person confirms it through PUT /vendors/:id/seller-name, which needs vendor.approve. This door (vendor.edit)
+    // never confirms one, whatever it is sent: the console offers that second, separately authorised step.
+    // [review-2476 F3] A rename also ends the old confirmation, so renaming back to a name confirmed earlier confirms
+    // nothing: a confirmation belongs to the moment a person gave it, not to the string.
+    const updated = await app.prisma.vendor.update({ where: { id }, data: { name, ...SELLER_NAME_UNCONFIRMED } });
     await audit(request.user.userId, 'CHANGE_VENDOR_NAME', 'Vendor', id, { from: vendor.name, to: name }, request);
     scheduleVendorSearchSync(app, id);
     await notifications.send({
@@ -2271,10 +2303,24 @@ export async function adminRoutes(app: FastifyInstance) {
     const confirmed = await app.prisma.$transaction(async (tx) => {
       await bindTenantTransaction(tx);
       await tx.$queryRaw`SELECT "id" FROM "vendors" WHERE "id" = ${id} FOR UPDATE /* admin-seller-name-check */`;
-      const vendor = await tx.vendor.findUnique({ where: { id }, select: { name: true, sellerNameCheckedName: true } });
+      const vendor = await tx.vendor.findUnique({ where: { id }, select: { name: true, sellerNameCheckedName: true, tradesUnderOwnName: true, owner: { select: { userId: true } } } });
       if (!vendor) throw new NotFoundError('Vendor', id);
       if (vendor.name.trim() !== name) {
         throw new AppError(409, 'SELLER_NAME_CHANGED', `The store's name is now “${vendor.name.trim()}”. Check that name, then confirm again.`);
+      }
+      // [owner ruling 10 Nov 2026 · review-2479 F6 · COORD Option A 11 Nov] The seller is the business: a person's own
+      // name (the account holder's, or someone named in its letter of authority) is never stamped as a business's name,
+      // for an own-name trader too. A trader under their own name is named only through their live own-name declaration
+      // (the storefront's own-name basis), so the name goes when the declaration does; a stamp would outlive it.
+      // [final review S3-1] So a store trading under its owner's own name is refused whatever its name (as approval
+      // never stamps one): its name is the owner's, even where the full-name matcher would not see it (a bare surname).
+      if (vendor.tradesUnderOwnName) {
+        throw new AppError(400, 'SELLER_NAME_IS_A_PERSON',
+          'This store trades under its owner’s own name: a person’s name, shown to customers only through the owner’s approved own-name declaration, never confirmed as a business’s name.');
+      }
+      if (await isAccountPersonsName(tx, vendor.owner.userId, name)) {
+        throw new AppError(400, 'SELLER_NAME_IS_A_PERSON',
+          'That is a person’s name (the account holder’s, or the person named in its letter of authority), not a business’s. A trader under their own name is named through the own-name declaration; otherwise the store needs its registered business or company name.');
       }
       if (vendor.sellerNameCheckedName === name) throw new AppError(409, 'NOTHING_TO_CHANGE', 'That name is already confirmed as the seller’s name.');
       const row = await tx.vendor.update({
@@ -5276,6 +5322,9 @@ export async function adminRoutes(app: FastifyInstance) {
   app.post('/subscriptions/:id/refund-credit/set-aside', { preHandler: [adminGuard] }, async (request) => {
     const id = await refundSubject(request);
     const body = z.object({ amount: refundAmount }).parse(request.body);
+    // [REVIEW-2484-A S4-6] A week that has started is never refunded: it is paid from the credit first (credit only).
+    // The set-aside then asks for exactly what is left (FEE_CREDIT_CHANGED names it when the week was just paid).
+    await billing.settleStartedWeekFromCredit(id);
     return refundAnswer(await setAsideCreditRefund(app.prisma, {
       adminId: request.user.userId, approvalId: approvalOf(request), subscriptionId: id, amount: body.amount,
       onAudit: (tx, facts) => auditWithin(tx, request as unknown as AuditRequestLike, app.prefix, { extra: facts }),
@@ -5310,6 +5359,15 @@ export async function adminRoutes(app: FastifyInstance) {
       adminId: request.user.userId, approvalId: approvalOf(request), subscriptionId: id,
       setAsideId: body.setAsideId, cardSessionId: body.cardSessionId, amount: body.amount,
       onAudit: (tx, facts) => auditWithin(tx, request as unknown as AuditRequestLike, app.prefix, { extra: facts }),
+      // [CARDS-FOLLOWUP] A refund to the card that did not go back (refused, pending, not confirmed) is never silent.
+      alertAdmins: async (message, dedupeKey, tenantId) => {
+        const { notifyAdmins } = await import('../notification/notification.service');
+        return notifyAdmins(app.prisma, notifications, {
+          tenantId, title: 'Refund to card did not go back', body: message,
+          data: { kind: 'billing_invariants', alert: 'card-refund-not-done', subscriptionId: id, cardSessionId: body.cardSessionId },
+          dedupeKey,
+        });
+      },
     });
     return { success: true, replayed: done.replayed, data: done };
   });
@@ -7164,14 +7222,23 @@ export async function adminRoutes(app: FastifyInstance) {
       ...(body.issuedOn !== undefined ? { issuedOn: body.issuedOn } : {}),
       ...(body.certificateYear !== undefined ? { certificateYear: body.certificateYear } : {}),
       ...(body.registrationKind !== undefined ? { registrationKind: body.registrationKind } : {}),
+      ...(body.authorityConfirmed !== undefined ? { authorityConfirmed: body.authorityConfirmed } : {}),
       ...(body.ownNameConfirmed !== undefined ? { ownNameConfirmed: body.ownNameConfirmed } : {}),
+      ...(body.legalName !== undefined ? { legalName: body.legalName } : {}),
       ...(body.proprietorIsCompany !== undefined ? { proprietorIsCompany: body.proprietorIsCompany } : {}),
     }, {
       // [S2-29 · KYC-DECISION-ATOMIC] The trail commits with the decision, in its transaction: the
       // action row and the canonical admin row. A decision cannot commit without them.
-      within: async (tx, decided) => {
+      within: async (tx, decided, facts) => {
         await auditIn(tx, request.user.userId, 'APPROVE_VERIFICATION_DOC', 'VerificationDocument', id,
-          { docType: decided.docType, ...(body.insurance ? { insurance: body.insurance } : {}) }, request);
+          { docType: decided.docType, ...(body.insurance ? { insurance: body.insurance } : {}), ...(body.authorityConfirmed ? { signerConfirmedBy: body.authorityConfirmed.method } : {}) }, request);
+        // [R3 · review-2476 F1] The seller's legal name typed from this paper names the seller of every branch of the
+        // account: who set it, when, for which account and paper, and what it replaced (a business name, not a person's).
+        if (facts?.legalName) {
+          const n = facts.legalName;
+          await auditIn(tx, request.user.userId, 'SET_SELLER_LEGAL_NAME', 'VendorOwner', n.vendorOwnerId,
+            { accountId: n.accountId, documentId: decided.id, docType: decided.docType, from: n.from, fromDocumentId: n.fromDocumentId, to: n.to }, request);
+        }
         await auditWithin(tx, request as unknown as AuditRequestLike, app.prefix);
       },
     });

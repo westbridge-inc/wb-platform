@@ -25,6 +25,7 @@ import { servicesRoutes } from './modules/services/services.routes';
 import { serviceCatalogRoutes } from './modules/services/service-catalog.routes';
 import { providerFeeRoutes } from './modules/services/provider-fee.routes';
 import { partnerRoutes } from './modules/partner/partner.routes';
+import { authorityLetterPublicRoutes, authorityLetterVendorRoutes } from './modules/vendor/authority-letter/authority-letter.routes';
 import { setAppLogger } from './utils/logger';
 import { evaluateSchedulerHealth, schedulerStallMs, workerCheckStatus } from './utils/scheduler-health';
 import { prismaPlugin, beginRequestTenantContext } from './plugins/prisma';
@@ -320,6 +321,9 @@ export async function buildApp(options: BuildAppOptions = {}) {
   await app.register(authRoutes, { prefix: '/api/v1/auth' });
   await app.register(customerRoutes, { prefix: '/api/v1/customer' });
   await app.register(vendorRoutes, { prefix: '/api/v1/vendor' });
+  // [COMPANY-DOCS PART 2] A company's (or a manager's) account holder asks the director (or the owner) to sign the
+  // letter of authority in Swift: the account holder only (authority-letter.routes.ts).
+  await app.register(authorityLetterVendorRoutes, { prefix: '/api/v1/vendor/authority-letters' });
   await app.register(riderRoutes, { prefix: '/api/v1/rider' });
   await app.register(driverRoutes, { prefix: '/api/v1/driver' });
   await app.register(adminRoutes, { prefix: '/api/v1/admin' });
@@ -354,6 +358,9 @@ export async function buildApp(options: BuildAppOptions = {}) {
   }
   // Unauthenticated read-only storefront pages (web SEO) — see module header.
   await app.register(publicRoutes, { prefix: '/api/v1/public' });
+  // [COMPANY-DOCS PART 2] The signing page a director (or an owner) opens from Swift's text: no account; the link's
+  // secret (POST body only) is the credential for its one letter; rate-limited by address and the SMS by number.
+  await app.register(authorityLetterPublicRoutes, { prefix: '/api/v1/public/authority-letter' });
   // Printed-QR short links: /s/{code} at the ROOT path (the production web
   // domain proxies /s/* here — LAUNCH_BLOCKERS deploy item). Public attack
   // surface; treatment and decision table live in the module header.

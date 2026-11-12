@@ -294,7 +294,7 @@ export const EXPORT_REGISTER: readonly ExportEntry[] = [
   },
   {
     category: 'cardPayments', model: 'CardSession', by: ['userId'], key: 'id',
-    fields: ['id', 'subscriptionId', 'userId', 'purpose', 'status', 'provider', 'environment', 'providerAccount', 'amount', 'currencyCode', 'periodStart', 'expiresAt', 'returnedAt', 'confirmedAt', 'lastCheckedAt', 'consentVersion', 'consentAt', 'failureCode', 'instrumentId', 'paymentId', 'providerTransactionRef', 'completionClaimedAt', 'providerVoidState', 'providerVoidAt', 'providerVoidRef', 'providerRefundState', 'providerRefundAt', 'bookClaimedAt', 'resolution', 'resolvedAt', 'createdAt', 'updatedAt'],
+    fields: ['id', 'subscriptionId', 'userId', 'purpose', 'status', 'provider', 'environment', 'providerAccount', 'amount', 'currencyCode', 'periodStart', 'expiresAt', 'returnedAt', 'confirmedAt', 'lastCheckedAt', 'consentVersion', 'consentAt', 'failureCode', 'instrumentId', 'paymentId', 'providerTransactionRef', 'completionClaimedAt', 'providerVoidState', 'providerVoidAt', 'providerVoidRef', 'providerRefundState', 'providerRefundAt', 'providerRefundRef', 'bookClaimedAt', 'resolution', 'resolvedAt', 'createdAt', 'updatedAt'],
   },
   {
     category: 'mmgCheckouts', model: 'MmgCheckoutIntent', by: ['createdByUserId'], key: 'id', omit: { candidates: 'SYSTEM' },
@@ -307,6 +307,20 @@ export const EXPORT_REGISTER: readonly ExportEntry[] = [
   {
     category: 'emergencyContacts', model: 'EmergencyContact', by: ['userId'], key: 'id',
     fields: ['id', 'userId', 'name', 'phoneE164', 'relationship', 'priority', 'verifiedAt', 'createdAt', 'updatedAt'],
+  },
+  {
+    // [COMPANY-DOCS PART 2] The letters of authority the person asked a director (or the business's owner) to sign in
+    // Swift: what they typed (as an emergency contact: the business, their own name and role, the signer's name and
+    // number) and how far it got. The signer's own evidence (their network address digest, browser and signature
+    // fingerprint) is the signer's, not the account holder's; the link and code are secrets; the PDF is a stored file.
+    category: 'authorityLetters', model: 'AuthorityLetterRequest', by: ['userId'], key: 'id',
+    omit: {
+      tokenHash: 'SECRET', codeHash: 'SECRET', signingKeyHash: 'SECRET', letterSha256: 'SECRET', pdfFileKey: 'STORED_FILE',
+      signerIpHmac: 'OTHER_PERSON', signerUserAgent: 'OTHER_PERSON', signatureSha256: 'OTHER_PERSON',
+      codeExpiresAt: 'SYSTEM', codeAttempts: 'SYSTEM', codeSends: 'SYSTEM', signingKeyExpiresAt: 'SYSTEM', signingClaimedAt: 'SYSTEM', accountBasis: 'SYSTEM',
+    },
+    fields: ['id', 'userId', 'docType', 'businessName', 'registrationNumber', 'requesterName', 'requesterRole', 'signerName', 'signerPhone',
+      'letterText', 'status', 'linkExpiresAt', 'sendCount', 'lastSentAt', 'openedAt', 'codeVerifiedAt', 'signedAt', 'documentId', 'endedAt', 'createdAt', 'updatedAt'],
   },
   {
     // [O-1] The Swift-bridged calls the person asked for on their orders: which party (a role, never a
@@ -347,8 +361,10 @@ export const EXPORT_REGISTER: readonly ExportEntry[] = [
     // [CHAINS] The chain deal is the owner's own commercial term: its weekly fee, currency and when it was set. Who at
     // Swift set it and the staff's reason are Swift's internal record.
     // [CHAINS PR3] The brand name customers see for all the owner's branches is the owner's own business name.
+    // [R3 · review F1] the business's legal name a person at Swift typed from its registration paper, when, and which of
+    // the person's own papers it was typed from (who typed it is another person: left out by the `…ById` rule)
     // [COMPANY-DOCS] Who holds the account (owner, a company's account holder, a business's manager): the person's own choice.
-    fields: ['id', 'userId', 'createdAt', 'dealWeeklyRate', 'dealCurrencyCode', 'dealSetAt', 'brandName', 'dealChangeKind', 'dealChangeFrom', 'dealChangeTo', 'dealChangeNotBefore', 'dealChangeSetAt', 'dealChangeSwitchedAt', 'accountBasis'],
+    fields: ['id', 'userId', 'createdAt', 'dealWeeklyRate', 'dealCurrencyCode', 'dealSetAt', 'brandName', 'dealChangeKind', 'dealChangeFrom', 'dealChangeTo', 'dealChangeNotBefore', 'dealChangeSetAt', 'dealChangeSwitchedAt', 'accountBasis', 'sellerLegalName', 'sellerLegalNameAt', 'sellerLegalNameDocId'],
     omit: { dealReason: 'INTERNAL_NOTE', dealSetBy: 'OTHER_PERSON', dealChangeReason: 'INTERNAL_NOTE', dealChangeSetBy: 'OTHER_PERSON' },
   },
   {

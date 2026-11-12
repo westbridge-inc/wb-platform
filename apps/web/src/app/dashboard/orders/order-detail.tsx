@@ -18,7 +18,7 @@ import { useFeedPollInterval } from '@/lib/store-live-feed';
 import { acceptHeldForPayment, mmgMovedLabel, mmgMoneyMoved, mmgPayBlockedReason } from '@/lib/mmg-pay-words';
 import { formatAppointmentSlot } from '@/lib/appointmentTime';
 import {
-  confirmedOrderFields, customerLines, orderMoneyRows, orderPaymentLine, prepTimeLine, recoveryView, storeCanConfirmReturn, vendorStatusLabel, whenLabel,
+  confirmedOrderFields, customerLines, orderMoneyNotes, orderMoneyRows, orderPaymentLine, prepTimeLine, recoveryView, storeCanConfirmReturn, vendorStatusLabel, whenLabel,
 } from '@/lib/vendor-order-view';
 import {
   acceptOrder, completePickup, confirmPayment, confirmReturnReceived, getItems, getOrder, markNotCollected,
@@ -551,18 +551,25 @@ export function OrderDetail({ id, onClose }: { id: string; onClose: () => void }
   const activeDelivery = isDelivery && !['DELIVERED', 'COMPLETED', 'CANCELLED', 'REFUNDED', 'FAILED'].includes(s);
   const mayChangeDeliveryOwner = !paused && activeDelivery && !riderAssigned
     && ['ACCEPTED', 'CONFIRMED', 'PREPARING', 'READY', 'READY_FOR_PICKUP'].includes(s);
-  const canChooseVendorDelivery = mayChangeDeliveryOwner && o.vendor?.selfDeliveryEnabled === true && !selfDelivery;
+  // [PROD-RIDER-TEST (a)1] No rider found for THIS order: one tap delivers it with the store's own rider, without the
+  // standing self-delivery setting (the server checks the same fact under the order lock).
+  const noRider = mayChangeDeliveryOwner && !selfDelivery && o.noRiderFound === true;
+  const canChooseVendorDelivery = mayChangeDeliveryOwner && (o.vendor?.selfDeliveryEnabled === true || noRider) && !selfDelivery;
   // A store-wide preference changing later must not strand an existing
   // VENDOR_DELIVERY order without a way back to platform dispatch.
   const canChoosePlatformRider = mayChangeDeliveryOwner && selfDelivery;
-  const deliveryOwnerTitle = selfDelivery
+  const deliveryOwnerTitle = noRider
+    ? (o.noRiderPrompt || 'No rider found. Deliver it yourselves?')
+    : selfDelivery
     ? 'Your store delivers this order'
     : riderAssigned
       ? 'A Swift rider delivers this order'
       : o.fulfillmentMode === 'PLATFORM_RIDER'
         ? 'Platform rider delivery selected'
         : 'Delivery owner not chosen yet';
-  const deliveryOwnerDescription = selfDelivery
+  const deliveryOwnerDescription = noRider
+    ? (o.noRiderDetail || 'One tap and your store delivers this order with its own rider; the customer is told. Or search for a Swift rider again.')
+    : selfDelivery
     ? 'No Swift rider will be sent for this order.'
     : riderAssigned
       ? 'The assigned rider is responsible for delivery.'
@@ -658,6 +665,7 @@ export function OrderDetail({ id, onClose }: { id: string; onClose: () => void }
             <span>{row.minus && row.value !== null ? `-${money(row.value)}` : money(row.value)}</span>
           </div>
         ))}
+        {orderMoneyNotes(o).map((line) => <p key={line} className="text-xs text-[var(--swift-muted)]">{line}</p>)}
         {orderPaymentLine(o) && <p className="pt-1 text-xs font-semibold text-[var(--swift-muted)]">{orderPaymentLine(o)}</p>}
       </section>
 
@@ -731,9 +739,11 @@ export function OrderDetail({ id, onClose }: { id: string; onClose: () => void }
                 <button
                   onClick={() => act.mutate('vendor-delivery')}
                   disabled={act.isPending}
-                  className="rounded-lg border border-[var(--swift-border)] px-4 py-2 text-sm font-semibold hover:bg-[var(--swift-card)] disabled:opacity-50"
+                  className={noRider
+                    ? 'min-h-11 rounded-lg bg-[var(--swift-red)] px-4 py-2 text-sm font-semibold text-white disabled:opacity-50'
+                    : 'rounded-lg border border-[var(--swift-border)] px-4 py-2 text-sm font-semibold hover:bg-[var(--swift-card)] disabled:opacity-50'}
                 >
-                  We’ll deliver
+                  {noRider ? 'We’ll deliver it' : 'We’ll deliver'}
                 </button>
               )}
               {canChoosePlatformRider && (
@@ -803,8 +813,8 @@ export function OrderDetail({ id, onClose }: { id: string; onClose: () => void }
             words as the phone; the server no-ops while an offer is live. */}
         {!paused && isDelivery && !selfDelivery && !riderAssigned && ['ACCEPTED', 'PREPARING', 'READY_FOR_PICKUP'].includes(s) && (
           <section aria-label="No rider yet" className="w-full rounded-lg bg-[var(--swift-subtle)] p-3">
-            <p className="text-sm font-semibold">No rider yet</p>
-            <p className="mt-1 text-sm text-[var(--swift-muted)]">Swift searches nearby riders automatically — retry if nobody took it.</p>
+            <p className="text-sm font-semibold">{noRider ? 'Or search for a Swift rider again' : 'No rider yet'}</p>
+            <p className="mt-1 text-sm text-[var(--swift-muted)]">{noRider ? 'Swift asks the riders near your store again.' : 'Swift searches nearby riders automatically — retry if nobody took it.'}</p>
             <button
               onClick={() => act.mutate('retry-dispatch')}
               disabled={act.isPending}

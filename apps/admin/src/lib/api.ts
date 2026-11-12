@@ -301,7 +301,7 @@ export const fetchDashboard = (): Promise<Envelope<DashboardOverview>> =>
 export type WaitingKey =
   | 'opsAlerts' | 'supportSafety' | 'supportSafetyInProgress' | 'documents' | 'approvals' | 'paymentConfirmations' | 'support'
   | 'supportInProgress' | 'catalogue' | 'storeVat' | 'custody' | 'claimsToDecide' | 'claimsToPay' | 'claimsAutoToPay'
-  | 'returnsToDecide' | 'refundsOwed' | 'moderation';
+  | 'returnsToDecide' | 'refundsOwed' | 'moderation' | 'sellersUnnamed';
 export interface WaitingCounts {
   /** `door: false` = this account may know the count but not open the queue's page. */
   queues: { key: WaitingKey; count: number | null; door?: boolean }[];
@@ -433,6 +433,10 @@ export const changeStoreType = (id: string, vendorType: string, reason: string) 
   apiFetch(`/api/v1/admin/vendors/${id}/type`, { method: 'PUT', body: JSON.stringify({ vendorType }), reason });
 export const changeStoreName = (id: string, name: string, reason: string) =>
   apiFetch(`/api/v1/admin/vendors/${id}/name`, { method: 'PUT', body: JSON.stringify({ name }), reason });
+/** [R3 · review F5] Who the storefront names as the seller, as the SERVER decides it (GET /admin/vendors/:id
+ *  `sellerName`). The console renders it; it never re-derives it. */
+export type SellerNameBasis = 'OWN_NAME' | 'LEGAL_NAME' | 'PERSON_CHECKED' | 'AWAITING_PERSON' | 'NONE';
+export interface SellerNameView { basis: SellerNameBasis; value: string | null }
 /** [BUG-HUNT F22] Move an account to a new number: a code goes to the new number, the person reads it back. */
 export const startPhoneChange = (id: string, phone: string, reason: string) =>
   apiFetch(`/api/v1/admin/users/${id}/phone-change`, { method: 'POST', body: JSON.stringify({ phone }), reason });
@@ -538,11 +542,14 @@ export interface RefundSources {
   cardPayments: Array<{
     cardSessionId: string; orderReference: string; providerTransactionRef: string | null; amount: number; currencyCode: string;
     inSetAside: number; paidAt: string | null; refund: { state: string; providerRefundRef: string | null } | null; refundable: boolean;
+    /** [OWNER 10 Nov 2026] What Refund to card sends: the whole payment, or (`partial`) its weeks that have not started. */
+    refundAmount: number; partial: boolean;
   }>;
 }
 export const fetchRefundSources = (id: string): Promise<{ data: RefundSources }> => apiFetch(`/api/v1/admin/subscriptions/${id}/refund-credit/sources`);
 /** [CARD-READY] Card money goes back to the same card only through the card provider's refund: Swift asks it once for the
- *  whole card payment, and it counts as paid back only on the provider's approval. Two people (C4). */
+ *  card payment's money in the refund (the whole payment, or [owner 10 Nov 2026] its weeks that have not started as a
+ *  partial refund), and it counts as paid back only on the provider's approval. Two people (C4). */
 export const refundCreditToCard = (id: string, setAsideId: string, cardSessionId: string, amount: number, reason: string) =>
   apiFetch(`/api/v1/admin/subscriptions/${id}/refund-credit/card`, {
     method: 'POST',
@@ -1084,7 +1091,7 @@ export const fetchSelfieChecks = () =>
   apiFetch('/api/v1/admin/verification/selfie-checks').then((r) => ((r as { data?: { pending?: SelfieCheck[] } }).data?.pending ?? []));
 export const decideSelfieCheck = (documentId: string, match: boolean, selfieCapturedAt: string, reason: string) =>
   apiFetch(`/api/v1/admin/verification/${documentId}/selfie-check`, { method: 'POST', body: JSON.stringify({ match, selfieCapturedAt }), reason });
-export const approveDoc = (id: string, body: { expiresAt?: string; insurance?: InsuranceCheck; documentNumber?: string; issuedOn?: string; certificateYear?: number; registrationKind?: 'BUSINESS_NAME' | 'COMPANY'; ownNameConfirmed?: boolean; proprietorIsCompany?: boolean } | undefined, reason: string) =>
+export const approveDoc = (id: string, body: { expiresAt?: string; insurance?: InsuranceCheck; documentNumber?: string; issuedOn?: string; certificateYear?: number; registrationKind?: 'BUSINESS_NAME' | 'COMPANY'; ownNameConfirmed?: boolean; proprietorIsCompany?: boolean; legalName?: string } | undefined, reason: string) =>
   apiFetch(`/api/v1/admin/verification/${id}/approve`, { method: 'PUT', body: JSON.stringify(body ?? {}), reason });
 // [ADMIN-CONSOLE] The route's whole body (admin.routes.ts rejectDocSchema): the
 // reviewer's words and the server's reason code. The words also ride the

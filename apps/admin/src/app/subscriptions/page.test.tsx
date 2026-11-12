@@ -312,14 +312,15 @@ describe('fee credit refund: set aside, pay, record, and every answer is shown',
     const view = {
       setAside: { id: 'evt-aside-1', amount: 5000, stillToPay: 5000, currencyCode: 'GYD' }, byRail: [{ rail: 'CARD', amount: 5000 }],
       cardPayments: [
-        { cardSessionId: 'cs_9', orderReference: 'SWIFT-cs_9', providerTransactionRef: 'T-9', amount: 5000, currencyCode: 'GYD', inSetAside: 5000, paidAt: '2026-11-01T12:00:00.000Z', refund: null, refundable: true },
+        { cardSessionId: 'cs_9', orderReference: 'SWIFT-cs_9', providerTransactionRef: 'T-9', amount: 5000, currencyCode: 'GYD', inSetAside: 5000, paidAt: '2026-11-01T12:00:00.000Z', refund: null, refundable: true, refundAmount: 5000, partial: false },
       ],
     };
     const fetchMock = refundServer(setAsideRow, () => queued, view);
     const { user } = renderWithQuery(<SubscriptionsPage />);
     expect(await screen.findByText('Shanta Kitchen')).toBeTruthy();
     const panel = await answerPanel(user, 'Refund to card', { choose: /Order SWIFT-cs_9 · GY\$5,000/ as unknown as string, reason: REASON });
-    expect(panel.textContent).toContain('Swift asks the card provider once to refund the whole card payment to the card it came from.');
+    expect(panel.textContent).toContain('Swift asks the card provider once to refund the card payment you choose to the card it came from: the whole payment, or only its weeks that have not started.');
+    expect(panel.textContent).not.toContain('refund the whole card payment');
     await confirmPanel(user, panel, 'Refund to card');
     await waitFor(() => expect(requestsByMethod(fetchMock, 'POST')).toHaveLength(1));
     const [url, init] = requestsByMethod(fetchMock, 'POST')[0]!;
@@ -328,19 +329,62 @@ describe('fee credit refund: set aside, pay, record, and every answer is shown',
     expect((await screen.findByRole('status')).textContent).toContain('Do not refund it any other way');
   });
 
+  // [OWNER 10 Nov 2026 · PARTLY USED CARD PAYMENT] A card payment that already paid part of a started week goes back only
+  // for its weeks that have not started: the console offers it for that part and sends exactly the server's figure.
+  it('[PARTLY USED] Refund to card offers a partly used card payment for its unstarted part, says it is a partial refund, and sends exactly that amount', async () => {
+    const view = {
+      setAside: { id: 'evt-aside-1', amount: 4000, stillToPay: 4000, currencyCode: 'GYD' }, byRail: [{ rail: 'CARD', amount: 4000 }],
+      cardPayments: [
+        { cardSessionId: 'cs_8', orderReference: 'SWIFT-cs_8', providerTransactionRef: 'T-8', amount: 12000, currencyCode: 'GYD', inSetAside: 4000, paidAt: null, refund: null, refundable: true, refundAmount: 4000, partial: true },
+      ],
+    };
+    const fetchMock = refundServer(setAsideRow, () => queued, view);
+    const { user } = renderWithQuery(<SubscriptionsPage />);
+    expect(await screen.findByText('Shanta Kitchen')).toBeTruthy();
+    const panel = await answerPanel(user, 'Refund to card', { choose: /Order SWIFT-cs_8 · GY\$4,000 of GY\$12,000 \(its weeks not started\)/ as unknown as string, reason: REASON });
+    expect(panel.textContent).toContain('goes back only for its weeks that have not started: a partial refund of that payment');
+    await confirmPanel(user, panel, 'Refund to card');
+    await waitFor(() => expect(requestsByMethod(fetchMock, 'POST')).toHaveLength(1));
+    const [url, init] = requestsByMethod(fetchMock, 'POST')[0]!;
+    expect(url).toBe(`${API_ORIGIN}/api/v1/admin/subscriptions/sub-1/refund-credit/card`);
+    expect(JSON.parse(String(init?.body))).toEqual({ setAsideId: 'evt-aside-1', cardSessionId: 'cs_8', amount: 4000 });
+  });
+
   it('[CARD-READY] when no card payment can go back to its card, Refund to card says why and asks nothing', async () => {
     const view = {
       setAside: { id: 'evt-aside-1', amount: 5000, stillToPay: 5000, currencyCode: 'GYD' }, byRail: [{ rail: 'CARD', amount: 5000 }],
       cardPayments: [
-        { cardSessionId: 'cs_7', orderReference: 'SWIFT-cs_7', providerTransactionRef: 'T-7', amount: 8000, currencyCode: 'GYD', inSetAside: 5000, paidAt: null, refund: null, refundable: false },
+        { cardSessionId: 'cs_7', orderReference: 'SWIFT-cs_7', providerTransactionRef: 'T-7', amount: 8000, currencyCode: 'GYD', inSetAside: 5000, paidAt: null, refund: null, refundable: false, refundAmount: 5000, partial: true },
       ],
     };
     const fetchMock = refundServer(setAsideRow, () => queued, view);
     const { user } = renderWithQuery(<SubscriptionsPage />);
     expect(await screen.findByText('Shanta Kitchen')).toBeTruthy();
     await user.click(screen.getByRole('button', { name: 'Refund to card' }));
-    expect((await screen.findByRole('alert')).textContent).toContain('Order SWIFT-cs_7: only GY$5,000 of GY$8,000 is in this refund (the rest paid weekly fees): ask the owner.');
+    const said = (await screen.findByRole('alert')).textContent;
+    expect(said).toContain('Order SWIFT-cs_7: GY$5,000 of GY$8,000 is in this refund but cannot go back to its card now: pay it back with Record payout, or ask the owner.');
+    expect(said).not.toContain('ask the owner how');
     expect(screen.queryByRole('dialog')).toBeNull();
+    expect(requestsByMethod(fetchMock, 'POST')).toHaveLength(0);
+  });
+
+  // [CARDS-FOLLOWUP] A refund to the card the provider refused is never silent: the console names it and says how the
+  // money is paid back; a card payment all of which paid started weeks says nothing goes back to its card.
+  it('[PARTLY USED] Refund to card names a refused refund with what to do next, and a fully used card payment as having nothing to go back', async () => {
+    const view = {
+      setAside: { id: 'evt-aside-1', amount: 4000, stillToPay: 4000, currencyCode: 'GYD' }, byRail: [{ rail: 'CARD', amount: 4000 }],
+      cardPayments: [
+        { cardSessionId: 'cs_6', orderReference: 'SWIFT-cs_6', providerTransactionRef: 'T-6', amount: 12000, currencyCode: 'GYD', inSetAside: 4000, paidAt: null, refund: { state: 'FAILED', providerRefundRef: null }, refundable: false, refundAmount: 4000, partial: true },
+        { cardSessionId: 'cs_5', orderReference: 'SWIFT-cs_5', providerTransactionRef: 'T-5', amount: 12000, currencyCode: 'GYD', inSetAside: 0, paidAt: null, refund: null, refundable: false, refundAmount: 0, partial: false },
+      ],
+    };
+    const fetchMock = refundServer(setAsideRow, () => queued, view);
+    const { user } = renderWithQuery(<SubscriptionsPage />);
+    expect(await screen.findByText('Shanta Kitchen')).toBeTruthy();
+    await user.click(screen.getByRole('button', { name: 'Refund to card' }));
+    const said = (await screen.findByRole('alert')).textContent;
+    expect(said).toContain('Order SWIFT-cs_6: refund refused by the card provider: nothing went back; pay it back with Record payout.');
+    expect(said).toContain('Order SWIFT-cs_5: all of it paid weeks that started: nothing goes back to its card.');
     expect(requestsByMethod(fetchMock, 'POST')).toHaveLength(0);
   });
 
