@@ -267,7 +267,7 @@ function GroupEditor({ storeId, group, groups, items, vatAdded, pending, send, o
   };
   const confirmSizeSwitch = async () => {
     if (!group || !sizeSwitch) return;
-    const read = sizeSwitchBody(group.options, sizeSwitch.typed, { turnOn: sizeSwitch.turnOn });
+    const read = sizeSwitchBody(group.options, sizeSwitch.typed, { turnOn: sizeSwitch.turnOn, halves: group.allowHalves });
     if ('problem' in read) { setSizeSwitch({ ...sizeSwitch, problem: read.problem }); return; }
     setSizeSwitch(null);
     const trimmed = name.trim();

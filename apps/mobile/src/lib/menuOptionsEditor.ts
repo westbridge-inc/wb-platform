@@ -275,15 +275,20 @@ export function sizeSwitchWords(rows: readonly SizeSwitchRow[], { turnOn, shared
 
 /** The one request of a confirmed switch: the switch and every choice's new typed price, each read like any typed price
  *  (a size above 0; an add-on left blank is free, a mistyped one refused). */
-export function sizeSwitchBody(options: ReadonlyArray<{ id: string; name: string }>, typed: Readonly<Record<string, string>>, { turnOn }: { turnOn: boolean }):
-  { body: { setsPrice: boolean; prices: Array<{ id: string; price: number }> } } | { problem: string } {
+export function sizeSwitchBody(
+  options: ReadonlyArray<{ id: string; name: string }>,
+  typed: Readonly<Record<string, string>>,
+  { turnOn, halves = false }: { turnOn: boolean; /** The group is half-and-half now (a size never is: it is turned off with the switch). */ halves?: boolean },
+): { body: { setsPrice: boolean; allowHalves?: false; prices: Array<{ id: string; price: number }> } } | { problem: string } {
   const prices: Array<{ id: string; price: number }> = [];
   for (const o of options) {
     const read = choicePriceInput(typed[o.id] ?? '', { size: turnOn });
     if ('problem' in read) return { problem: `${o.name}: ${read.problem}` };
     prices.push({ id: o.id, price: read.price });
   }
-  return { body: { setsPrice: turnOn, prices } };
+  // [DELTA REVIEW S4-b] A half-and-half group becoming a size turns its halves off in the same request (the server
+  // refuses a size that is half-and-half): converted, never refused.
+  return { body: { setsPrice: turnOn, ...(turnOn && halves ? { allowHalves: false as const } : {}), prices } };
 }
 
 // ── [REVIEW-MENU-B S3-2] An edit of a saved group sends only what changed ───

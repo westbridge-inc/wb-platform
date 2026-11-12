@@ -289,7 +289,7 @@ function ModifiersSection({ item, staged, vatPricing, navigation, onGroupsChange
   const confirmSizeSwitch = async () => {
     const ask = sizeSwitch;
     if (!ask || readOnly || write.isPending) return;
-    const read = sizeSwitchBody(ask.group.options ?? [], ask.typed, { turnOn: ask.turnOn });
+    const read = sizeSwitchBody(ask.group.options ?? [], ask.typed, { turnOn: ask.turnOn, halves: ask.group.allowHalves === true });
     if ('problem' in read) { setSizeSwitch({ ...ask, problem: read.problem }); return; }
     const priceOf = new Map(read.body.prices.map((p) => [p.id, p.price]));
     if (staged) {

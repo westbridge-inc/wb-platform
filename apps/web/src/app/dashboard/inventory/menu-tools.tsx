@@ -736,7 +736,7 @@ function OptionsSection({ storeId, item, drafts, setDrafts, vatPricing = null, v
     const ask = sizeSwitch;
     const g = ask ? groups.find((x) => x.id === ask.groupId) : undefined;
     if (!ask || !g || busy) return;
-    const read = sizeSwitchBody(g.options, ask.typed, { turnOn: ask.turnOn });
+    const read = sizeSwitchBody(g.options, ask.typed, { turnOn: ask.turnOn, halves: g.allowHalves === true });
     if ('problem' in read) { setSizeSwitch({ ...ask, problem: read.problem }); return; }
     if (!item) {
       const priceOf = new Map(read.body.prices.map((p) => [p.id, p.price]));

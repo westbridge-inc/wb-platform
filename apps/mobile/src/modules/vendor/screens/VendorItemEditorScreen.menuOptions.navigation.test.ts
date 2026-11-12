@@ -432,6 +432,18 @@ describe('[REVIEW-MENU-B S3-2] a rule chip sends only that rule', () => {
   });
 });
 
+describe('[DELTA REVIEW S4-b] a half-and-half group made a size', () => {
+  it('is converted, not refused: the confirm sends the switch, halves off and every price in one request', async () => {
+    fx.api.updateOptionGroup.mockImplementation((id: string, body: any) => Promise.resolve({ data: { data: { ...PIZZA.optionGroups[1], ...body } } }));
+    const halves = { ...PIZZA.optionGroups[1], id: 'g-half', name: 'Extras', allowHalves: true, halfPricePercent: 100, options: [{ id: 'o-x', name: 'Olives', additionalPrice: 100 }] };
+    await open({ item: { ...PIZZA, basePrice: 1500, optionGroups: [halves] } });
+    await tap('Sets the price', 0);
+    expect(fx.api.updateOptionGroup).not.toHaveBeenCalled();
+    await tap('Save these prices');
+    expect(fx.api.updateOptionGroup).toHaveBeenCalledWith('g-half', { setsPrice: true, allowHalves: false, prices: [{ id: 'o-x', price: 1600 }] }, OWNER);
+  });
+});
+
 describe('[REVIEW-MENU-B S3-3] a typed price is read, never guessed', () => {
   it('a size typed "1,500" is 1500; a size left blank is refused (never a $0 pizza)', async () => {
     fx.addOption.mockResolvedValue({ id: 'o-xl', name: 'XL', additionalPrice: 1500 });

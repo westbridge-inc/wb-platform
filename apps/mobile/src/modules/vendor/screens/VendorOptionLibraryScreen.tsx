@@ -195,7 +195,7 @@ function LibraryGroupEditor({ group, groups, readOnly, onCreated, onDeleted, onE
   const switchUsers = sizeSwitch && group ? ((menu.data ?? []) as any[]).flatMap((c) => c.items ?? []).filter((i: any) => group.usedByItems.some((u) => u.id === i.id)) : [];
   const confirmSizeSwitch = async () => {
     if (!group || !sizeSwitch) return;
-    const read = sizeSwitchBody(group.options, sizeSwitch.typed, { turnOn: sizeSwitch.turnOn });
+    const read = sizeSwitchBody(group.options, sizeSwitch.typed, { turnOn: sizeSwitch.turnOn, halves: group.allowHalves });
     if ('problem' in read) { setSizeSwitch({ ...sizeSwitch, problem: read.problem }); return; }
     setSizeSwitch(null);
     const trimmed = name.trim();

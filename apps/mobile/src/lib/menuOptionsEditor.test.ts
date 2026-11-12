@@ -236,6 +236,19 @@ describe('switching "Sets the price" on a group that already has choices', () =>
     expect(sizeSwitchBody(addOns, { 'o-s': '0', 'o-l': '5OO' }, { turnOn: false })).toEqual({ problem: `Large: ${PRICE_UNREADABLE}` });
   });
 
+  it('[DELTA S4-b] a half-and-half group made a size turns its halves off in the same request', () => {
+    expect(sizeSwitchBody(addOns, { 'o-s': '2000', 'o-l': '2500' }, { turnOn: true, halves: true }))
+      .toEqual({ body: { setsPrice: true, allowHalves: false, prices: [{ id: 'o-s', price: 2000 }, { id: 'o-l', price: 2500 }] } });
+    expect(sizeSwitchBody(addOns, { 'o-s': '0', 'o-l': '500' }, { turnOn: false, halves: true })).toEqual({ body: { setsPrice: false, prices: [{ id: 'o-s', price: 0 }, { id: 'o-l', price: 500 }] } });
+  });
+
+  it('[DELTA S2-N1] OFF converts against the lowest of ALL sizes, a sold-out one included (the server keeps that size as the item price)', () => {
+    const sizes = [{ id: 'o-s', name: 'Small', additionalPrice: 1200, isAvailable: false }, { id: 'o-l', name: 'Large', additionalPrice: 2400, isAvailable: true }];
+    expect(sizeSwitchRows(sizes, { turnOn: false, itemPrice: 2400 })).toEqual([{ id: 'o-s', name: 'Small', price: 0 }, { id: 'o-l', name: 'Large', price: 1200 }]);
+    expect(sizeSwitchWords(sizeSwitchRows(sizes, { turnOn: false, itemPrice: 2400 }), { turnOn: false }, money))
+      .toBe('Small +GYD 0 / Large +GYD 1,200 — the item keeps its smallest size as its price; these are added on top.');
+  });
+
   it('a switch needs the confirm only when the group has choices', () => {
     expect(needsSizeSwitchConfirm({ setsPrice: false, options: addOns }, { setsPrice: true })).toBe(true);
     expect(needsSizeSwitchConfirm({ setsPrice: true, options: addOns }, { setsPrice: false })).toBe(true);
