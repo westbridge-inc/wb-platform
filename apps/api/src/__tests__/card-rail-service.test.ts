@@ -108,6 +108,20 @@ async function money(subId: string) {
   return { sub, payments, successes, ledger, instruments, bank };
 }
 
+// [review-2475 delta D2 · D4] The fee changing hands, as a store's handover moves it: armed, the payer the card rail reads
+// for this subscription is another person (the profile tables refuse a real move of a mover's fee).
+const payer = vi.hoisted(() => ({ movedTo: null as { subscriptionId: string; userId: string } | null }));
+vi.mock('../modules/subscription/mover-fee-authority', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../modules/subscription/mover-fee-authority')>();
+  return {
+    ...real,
+    subscriptionPayer: async (...args: Parameters<typeof real.subscriptionPayer>) => {
+      const found = await real.subscriptionPayer(...args);
+      return payer.movedTo && args[1] === payer.movedTo.subscriptionId ? { ...found, userId: payer.movedTo.userId } : found;
+    },
+  };
+});
+
 const observations = (sessionId: string) =>
   app.prisma.cardObservation.findMany({ where: { sessionId }, orderBy: { createdAt: 'asc' }, select: { source: true, parsedStatus: true, verdict: true } });
 
@@ -248,6 +262,27 @@ describe('ENROLL: the provider’s answer adds the card — sealed, bound, shown
     await expect(card.removeInstrument({ userId: p.userId, instrumentId: x.id, subscriptionId: elsewhere.subId })).rejects.toMatchObject({ statusCode: 404 });
     expect((await money(p.subId)).instruments.map((i) => i.status), 'removed through a subscription it does not belong to').toEqual(['ACTIVE']);
     expect(await card.removeInstrument({ userId: p.userId, instrumentId: x.id, subscriptionId: p.subId })).toMatchObject({ card: { status: 'REVOKED' }, paymentInProgress: false });
+  });
+});
+
+describe('[review-2475 delta D2 · D4] a card is saved and shown only for the person who pays the fee now', () => {
+  it('an "add a card" started before the fee changed hands never replaces the payer\'s card nor saves the old payer\'s; their cards are not listed to the new payer', async () => {
+    const p = await partner();
+    const theirs = await enrolled(p);
+    const late = await start(p, 'ENROLL');
+    await returnWith(await press(late.sessionId, 'APPROVE'));
+    // the fee changes hands (a store's account handed over to another person) before the bank's answer is confirmed
+    payer.movedTo = { subscriptionId: p.subId, userId: `someone-else-${RUN}` };
+    try {
+      const confirmed = await card.confirm(late.sessionId);
+      expect(confirmed.status).toBe('CANCELLED');
+      const row = await app.prisma.cardSession.findUniqueOrThrow({ where: { id: late.sessionId }, select: { status: true, failureCode: true, instrumentId: true } });
+      expect(row).toEqual({ status: 'CANCELLED', failureCode: 'NOT_THE_PAYER', instrumentId: null });
+      expect((await money(p.subId)).instruments.map((i) => [i.id, i.status])).toEqual([[theirs.id, 'ACTIVE']]); // nothing replaced, nothing added
+      // the list shows only the payer's own cards: never one the previous payer enrolled
+      expect(await card.listInstruments(p.userId, p.subId)).toEqual([]);
+    } finally { payer.movedTo = null; }
+    expect((await card.listInstruments(p.userId, p.subId)).map((i) => i.id)).toEqual([theirs.id]);
   });
 });
 

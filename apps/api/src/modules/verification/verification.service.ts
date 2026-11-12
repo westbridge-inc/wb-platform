@@ -11,6 +11,7 @@ import { approveRegistrantLink, linkedAccountIds, normalizeRegistrationMark, pla
 import { POLICE_CLEARANCE_WITHDRAWN_NOTE } from './police-clearance-consent';
 import { ACCOUNT_HOLDER_ID_DOC_TYPE, AUTO_APPROVE_EXPIRY_DAYS, CERTIFICATE_OF_INCORPORATION_DOC_TYPE, BUCKET_OF, CERTIFICATE_YEAR_DOC_TYPES, FOOD_HANDLER_ATTESTATION_TYPE, isNeverAcceptedDocType, OWN_NAME_DOC_TYPE, OWN_NAME_TIER, PERSON_ONLY_DOC_TYPES, POLICE_CLEARANCE_DOC_TYPE, REGISTRATION_DOC_TYPES, registryCode, type RegistrationKind } from './doc-registry';
 import { accountTierOf } from '../vendor/account-basis';
+import { assertChangeTakesPapers, changePaperStaging, holdChangeLegalName, type HeldLegalName } from '../vendor/account-change';
 import { AUTHORITY_LETTER_DOC_TYPES, authorityConfirmationNote, type AuthorityConfirmation } from './authority-confirmation';
 import { guyanaWallClockParts, startOfGuyanaDay } from '../../utils/guyana-day';
 import type { ValidatorContext } from './validators';
@@ -539,6 +540,8 @@ export type DecisionWithin = (tx: Prisma.TransactionClient, decided: Verificatio
  *  name typed from this registration paper (who customers see as the seller of every branch), old and new. */
 export interface DecisionFacts {
   legalName?: { vendorOwnerId: string; accountId: string; from: string | null; fromDocumentId: string | null; to: string };
+  /** [COMPANY-DOCS Part 3] The name typed from a paper filed for a change still waiting: held on the change, not shown. */
+  legalNameHeld?: HeldLegalName;
 }
 
 /** [R3 · review-2476 F2 · delta B] Is a typed seller legal name this PERSON's name? Compared by the name's WORDS, so honest
@@ -781,6 +784,8 @@ export class VerificationService {
         throw new AppError(409, 'ACCOUNT_INACTIVE', 'This account is not active — documents cannot be submitted.');
       }
       if (review.authority) await revalidateSubmissionAuthority(tx, data.userId, review.authority);
+      // [COMPANY-DOCS Part 3] A paper for an account change is filed only while that change still waits for a person.
+      if (data.accountChangeId) await assertChangeTakesPapers(tx, data.accountChangeId);
       if (data.status === 'APPROVED') {
         try { await requireIdentityAuthority(tx, data.userId); }
         catch (err) {
@@ -999,6 +1004,13 @@ export class VerificationService {
         : await this.checklistFor(userId, user.countryCode, roleKey);
       checklist = [...required, ...await this.optionalFor(userId, user.countryCode, roleKey, required)];
     }
+    // [COMPANY-DOCS Part 3 · owner rulings 10 Nov 2026 (c), (d)] A pending account change takes its own papers (a new
+    // business type's, or a named new holder's: vendor/account-change.ts). One it holds counts for nothing until a person
+    // approves the change, and always waits for a person. Whatever files the paper (an upload, Part 2's signed letter)
+    // comes through here, so it is held the same way.
+    const staging = vatCertificate ? null : await changePaperStaging(this.prisma, userId, roleKey, user.countryCode);
+    if (staging) checklist = [...new Set([...checklist, ...staging.submittable])];
+    const accountChangeId = staging?.stages(docType) ? staging.changeId : null;
     if (!vatCertificate && !checklist.includes(docType)) {
       // [DOC-1 §18.3] A document type a category gate names in this country is
       // submittable by a vendor even when no checklist lists it — a shop that wants
@@ -1108,7 +1120,7 @@ export class VerificationService {
     // [ROLE-DOCS · security review] Fail closed: no engine, auto-approval or auto-rejection decides an own-name
     // declaration. A person compares the name with the owner's ID (approveDocument requires ownNameConfirmed).
     // [COMPANY-DOCS · owner 10 Nov 2026] Nor a company's or a manager's papers: "all checked by a person at Swift".
-    if (PERSON_ONLY_DOC_TYPES.has(docType) && result.status !== 'pending_manual') result = { ...result, status: 'pending_manual' as const };
+    if ((PERSON_ONLY_DOC_TYPES.has(docType) || accountChangeId) && result.status !== 'pending_manual') result = { ...result, status: 'pending_manual' as const };
 
     const autoExpiryDays = AUTO_APPROVE_EXPIRY_DAYS[docType];
     const doc = await this.createDocumentLively({
@@ -1119,6 +1131,7 @@ export class VerificationService {
         kycRef: result.referenceToken,
         consentAt: new Date(),
         privacyNoticeVersion,
+        ...(accountChangeId ? { accountChangeId } : {}),
         status:
           result.status === 'approved' ? 'APPROVED'
           : result.status === 'rejected' ? 'REJECTED'
@@ -1243,7 +1256,7 @@ export class VerificationService {
     // boundary — the conditional transition below still is.
     const candidate = await this.prisma.verificationDocument.findUnique({
       where: { id: docId },
-      select: { docType: true, expiresAt: true, status: true, userId: true, role: true },
+      select: { docType: true, expiresAt: true, status: true, userId: true, role: true, accountChangeId: true },
     });
     if (!candidate) throw new NotFoundError('VerificationDocument', docId);
     assertStoreVatDoor(candidate.docType, decision);
@@ -1326,6 +1339,7 @@ export class VerificationService {
       // that is a person's own name is refused for EVERY account. A trader under their own name is named through the
       // own-name declaration, never a registration paper. The people the server knows by name: the account holder, and
       // [delta B] whoever the account named in a letter of authority (a company's director, a business's owner).
+      // [COMPANY-DOCS Part 3] A paper filed for a change is the filer's: a handover's new holder's own name is refused too.
       const typedName = typed.legalName?.trim();
       if (REGISTRATION_DOC_TYPES.includes(candidate.docType) && typedName && await isAccountPersonsName(this.prisma, candidate.userId, typedName)) {
         throw new AppError(400, 'LEGAL_NAME_IS_A_PERSON',
@@ -1367,7 +1381,13 @@ export class VerificationService {
       // customers saw before (old -> new) and the decision's trail names who set it, for which account and paper.
       const typedLegalName = typed.legalName?.trim();
       const facts: DecisionFacts = {};
-      if (typedLegalName && REGISTRATION_DOC_TYPES.includes(decided.docType)) {
+      // [COMPANY-DOCS Part 3] A paper filed for a change still waiting names nobody yet: its name is held on the change
+      // (account-change holdChangeLegalName) and becomes the account's only if a person approves the change.
+      const forChange = typedLegalName && REGISTRATION_DOC_TYPES.includes(decided.docType) && decided.accountChangeId
+        ? await holdChangeLegalName(tx, decided.accountChangeId, { name: typedLegalName, at: new Date(), byId: adminId, documentId: decided.id })
+        : null;
+      if (forChange?.to === 'HELD') facts.legalNameHeld = forChange.held;
+      if (typedLegalName && REGISTRATION_DOC_TYPES.includes(decided.docType) && (!forChange || forChange.to === 'ACCOUNT')) {
         const [held] = await tx.$queryRaw<Array<{ id: string; sellerLegalName: string | null; sellerLegalNameDocId: string | null }>>`
           SELECT "id", "sellerLegalName", "sellerLegalNameDocId" FROM "vendor_owners" WHERE "userId" = ${decided.userId} FOR UPDATE /* seller-legal-name */`;
         if (held) {
@@ -2807,6 +2827,21 @@ export class VerificationService {
       }));
     }
     return out;
+  }
+
+  /**
+   * [COMPANY-DOCS Part 3] An account change's decision (vendor/account-change.ts): the caller's writes, then the activation
+   * projection for whoever holds the account AFTER the change, in ONE projection transaction — under the identity lock
+   * every document decision takes, so no paper is decided half-way through it. A throw anywhere rolls all of it back; the
+   * notices it wrote are published after the commit.
+   */
+  async decideAccountChange<T>(work: (tx: Prisma.TransactionClient) => Promise<{ result: T; holderUserId: string; notices: string[] }>): Promise<T> {
+    return this.projectionTransaction(async (tx) => {
+      const { result, holderUserId, notices } = await work(tx);
+      this.projectionNotices.get(tx)?.push(...notices);
+      await this.projectVendorActivation(tx, holderUserId);
+      return result;
+    });
   }
 
   /**

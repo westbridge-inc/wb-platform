@@ -113,6 +113,7 @@ import { counterpartPhone } from '../calls/counterpart-phone';
 import { ownRiderNotice } from '../order/own-rider-notice';
 import { customerPickupCode, saysPickupHandover } from '../order/pickup-code-view';
 import { orderStageRefusal } from '../order/order-status-words';
+import { registerAccountHandoverCustomerRoutes } from '../vendor/account-change.routes';
 
 // ---------------------------------------------------------------------------
 // Input schemas
@@ -877,6 +878,8 @@ export async function customerRoutes(app: FastifyInstance) {
 
   const support = new SupportService(app.prisma, notificationService);
   const account = new AccountService(app);
+  // [COMPANY-DOCS Part 3] A company's new account holder, named by the old one, answers here (account-change.routes.ts).
+  registerAccountHandoverCustomerRoutes(app, { notifications: notificationService });
   // [WEB-DELETE] Where a closure request was confirmed, for its ticket: the website names itself (W-01 client header).
   // (A request without headers, as some unit doubles build, is the app's.)
   const closureSurfaceOf = (request: AuthRequest) => ((request.headers ? browserClientOf(request) : null) === 'web' ? 'website' as const : 'app' as const);

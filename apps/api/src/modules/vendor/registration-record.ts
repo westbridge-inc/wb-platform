@@ -9,12 +9,14 @@
 import type { Prisma, PrismaClient } from '@prisma/client';
 import { validExpiryOr } from '../verification/document-validity';
 import { REGISTRATION_DOC_TYPES } from '../verification/doc-registry';
+import { liveSubmissionWhere } from '../verification/evidence';
 
 type Db = PrismaClient | Prisma.TransactionClient;
 
 export async function validRegistrationRecord(db: Db, ownerUserId: string, now = new Date()): Promise<{ id: string; docType: string } | null> {
   return db.documentRecord.findFirst({
-    where: { accountId: ownerUserId, docType: { in: [...REGISTRATION_DOC_TYPES] }, status: 'VALID', OR: validExpiryOr('expiresOn', now) },
+    // [review-2475 F5] a registration filed for an account change still waiting is not on file yet (liveSubmissionWhere)
+    where: { accountId: ownerUserId, docType: { in: [...REGISTRATION_DOC_TYPES] }, status: 'VALID', OR: validExpiryOr('expiresOn', now), submission: liveSubmissionWhere() },
     select: { id: true, docType: true },
   });
 }
