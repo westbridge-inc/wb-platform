@@ -280,7 +280,7 @@ describe('(c) a pending change keeps the store selling on its old checked papers
 });
 
 describe('(c) approved: the choice, the papers and the seller name switch together', () => {
-  it('a person approves with a reason; the company papers count, the own-name ones no longer gate, the company name is shown', async () => {
+  it('a person approves with a reason; the company papers count, the own-name ones no longer gate; a store name that is the owner\'s own is never stamped (#2479)', async () => {
     const o = await ownNameStore();
     const changeId = (await call('POST', '/api/v1/vendor/account-change/business-type', o, { toOption: 'COMPANY' })).json().data.id as string;
     const orderId = await placedOrder(o.vendorId);
@@ -308,17 +308,20 @@ describe('(c) approved: the choice, the papers and the seller name switch togeth
     expect(res.statusCode, res.body).toBe(200);
     expect(res.json().data).toMatchObject({ status: 'APPROVED', toOption: 'COMPANY' });
     expect(await owner(o.userId)).toMatchObject({ accountBasis: 'COMPANY' });
+    // [COORD ruling 11 Nov 2026 · review-2479] "Asha Ramdin" is the owner's own name: the approval goes through, nothing
+    // is stamped, and customers see "Ask the store" until the company's name is typed from its certificate.
     expect(await store(o.vendorId)).toMatchObject({
-      status: 'ACTIVE', isVerified: true, acceptingOrders: true, tradesUnderOwnName: false, sellerNameCheckedName: name, sellerNameCheckedById: adminId,
+      status: 'ACTIVE', isVerified: true, acceptingOrders: true, tradesUnderOwnName: false, sellerNameCheckedName: null, sellerNameCheckedById: null,
     });
     const status = (await call('GET', '/api/v1/verification/status?role=STORE', o)).json().data;
     expect(status.checklist).toEqual(['certificate_of_incorporation', 'account_holder_id', 'company_authority_letter', 'storefront_photo']);
     expect(status.accountBasis).toBe('COMPANY');
     expect(await service.isRoleVerified(o.userId, 'STORE', app.prisma, o.vendorId)).toBe(true);
     // the seller is the business now, never the owner's own name
-    expect(await sellerName(o)).toBe(name);
+    expect(await sellerName(o)).toBeNull();
     const audit = await system(() => app.prisma.auditLog.findFirst({ where: { entityId: changeId, action: 'APPROVE_BUSINESS_TYPE_CHANGE' } }));
     expect(audit?.userId).toBe(adminId);
+    expect(audit?.changes).toMatchObject({ sellerNamesConfirmed: [], sellerNamesNotConfirmed: [o.vendorId], sellerNameNotConfirmedCode: 'SELLER_NAME_IS_A_PERSON' });
     expect(await system(() => app.prisma.notification.count({ where: { userId: o.userId, data: { path: ['kind'], equals: 'account_change_approved' } } }))).toBe(1);
     // the open order did not move
     expect(await orderFacts(orderId)).toEqual(orderBefore);
@@ -556,15 +559,15 @@ async function fileChangePapers(paperHolder: string, view: { papers: Array<{ doc
 }
 
 describe('[R3 · review-2476] the seller legal name follows the change, never the old business type or holder', () => {
-  it.each(['COMPANY', 'MANAGER'] as const)('approved to %s with no name typed for it: the old legal name (here the owner\'s own name) is cleared, never shown for the new account', async (toOption) => {
+  it.each(['COMPANY', 'MANAGER'] as const)('approved to %s with no name typed for it: the old legal name is cleared, never shown for the new account', async (toOption) => {
     const o = await person('Asha', 'Ramdin');
-    // an owner's business-name registration may carry the owner's own name (#2476 F2: the reviewer's check stands)
-    const oldPaper = await namedStore(o, 'OWNER', 'Asha Ramdin');
+    // (#2479: a person's own name is refused on every registration paper, so the old name is a business's)
+    const oldPaper = await namedStore(o, 'OWNER', 'Ramdin Trading');
     const asked = await call('POST', '/api/v1/vendor/account-change/business-type', o, { toOption });
     expect(asked.statusCode, asked.body).toBe(201);
     const changeId = asked.json().data.id as string;
     await fileChangePapers(o.userId, asked.json().data); // nothing typed (an internal caller)
-    expect(await sellerName(o)).toBe('Asha Ramdin'); // still selling on the old papers while it waits
+    expect(await sellerName(o)).toBe('Ramdin Trading'); // still selling on the old papers while it waits
     const name = (await store(o.vendorId)).name;
 
     const res = await admin('PUT', `/account-changes/${changeId}/approve`, { sellerNames: { [o.vendorId]: name } });
@@ -573,11 +576,11 @@ describe('[R3 · review-2476] the seller legal name follows the change, never th
     expect(account).toEqual({ id: account.id, accountBasis: toOption, sellerLegalName: null, sellerLegalNameAt: null, sellerLegalNameById: null, sellerLegalNameDocId: null });
     // the storefront names the store the approving person confirmed, never the owner's own name
     expect(await sellerName(o)).toBe(name);
-    expect(await sellerName(o)).not.toBe('Asha Ramdin');
+    expect(await sellerName(o)).not.toBe('Ramdin Trading');
     // the trail: who cleared it, with which change, and what customers saw before
     const trail = await legalNameTrail(account.id);
     expect(trail.at(-1)).toEqual({ userId: adminId, entity: 'VendorOwner', changes: {
-      accountId: o.userId, documentId: null, docType: null, changeId, from: 'Asha Ramdin', fromDocumentId: oldPaper, to: null,
+      accountId: o.userId, documentId: null, docType: null, changeId, from: 'Ramdin Trading', fromDocumentId: oldPaper, to: null,
     } });
   });
 
@@ -1005,5 +1008,26 @@ describe('[review-2475 final G2] the old holder\'s letters of authority end at t
     expect(trail).toMatchObject({ userId: adminId, changes: { reason: 'account_handed_over', changeId } });
     expect((await system(() => app.prisma.auditLog.findFirstOrThrow({ where: { entityId: changeId, action: 'APPROVE_ACCOUNT_HANDOVER' } }))).changes).toMatchObject({ letterRequestsCancelled: 1 });
     await system(() => app.prisma.authorityLetterRequest.deleteMany({ where: { id: letter.id } }));
+  });
+});
+
+describe('[review-2479 × #2475] a held legal name that is a person\'s by the time of the decision is never stamped', () => {
+  it('a name held from the change\'s certificate, then given as the director\'s on a letter of authority: dropped at approval, the account names nobody by it', async () => {
+    const o = await person('Ravi', 'Persaud');
+    await namedStore(o, 'OWNER', 'Persaud Trading');
+    const asked = (await call('POST', '/api/v1/vendor/account-change/business-type', o, { toOption: 'COMPANY' })).json().data;
+    await fileChangePapers(o.userId, asked, { legalName: 'Devon Director' }); // no letter names Devon yet: held
+    expect((await system(() => app.prisma.accountChangeRequest.findUniqueOrThrow({ where: { id: asked.id }, select: { sellerLegalName: true } }))).sellerLegalName).toBe('Devon Director');
+    await system(() => app.prisma.authorityLetterRequest.create({ data: {
+      userId: o.userId, vendorId: o.vendorId, docType: 'company_authority_letter', accountBasis: 'COMPANY',
+      businessName: 'Synthetic Company Limited', registrationNumber: 'C-0001', requesterName: 'Ravi Persaud', requesterRole: 'Manager',
+      signerName: 'Devon Director', signerPhone: `+5926${NUM}65`, letterText: 'Letter\nline', letterSha256: 'b'.repeat(64),
+      tokenHash: Buffer.from(nanoid(32)).toString('hex'), linkExpiresAt: new Date(Date.now() + 72 * 3_600_000), lastSentAt: new Date(),
+    } }));
+    const name = (await store(o.vendorId)).name;
+    expect((await admin('PUT', `/account-changes/${asked.id}/approve`, { sellerNames: { [o.vendorId]: name } })).statusCode).toBe(200);
+    expect(await accountOf(o.userId)).toMatchObject({ accountBasis: 'COMPANY', sellerLegalName: null, sellerLegalNameDocId: null });
+    expect(await sellerName(o)).toBe(name); // the store name the person confirmed, never the director's
+    await system(() => app.prisma.authorityLetterRequest.deleteMany({ where: { userId: o.userId } }));
   });
 });
