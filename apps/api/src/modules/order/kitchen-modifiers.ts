@@ -1,8 +1,8 @@
 /**
  * [MENU-OPTIONS · kitchen-system hook] An order line's choices as a kitchen system reads them, from the order's own
- * snapshot (never today's menu). Nothing calls this yet: a kitchen integration (e.g. the Dragontail adapter, built
- * separately and switched off) maps each row to its catalogue by `optionId` (the menu option it came from, whose
- * kitchen number lives with the option) and places it on the pizza by `side`.
+ * snapshot (never today's menu). The kitchen sync (kitchen/kitchen-sync.ts, behind DRAGONTAIL_INTEGRATION) maps each row
+ * to its catalogue by `optionId` (the menu option it came from, whose kitchen number lives with the option; see
+ * kitchenOptionFor) and carries its `placement` on the line; `side` is the Dragontail number for it, not sent yet.
  *
  * `side` follows Dragontail's published POS API (OrderItem.Side): 0 = modifier on the whole pizza, 1 = Half1,
  * 2 = Half2, 3 = a main line. Which physical half is Half1 is an ASSUMPTION (left) to confirm with the store's

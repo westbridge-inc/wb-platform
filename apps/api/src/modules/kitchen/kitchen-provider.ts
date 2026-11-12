@@ -13,8 +13,12 @@ export interface KitchenLine {
   itemNo: string;
   name: string;
   quantity: number;
-  /** Choices on this line (toppings, sizes), in the order the customer picked them. */
-  choices: Array<{ itemNo: string; name: string }>;
+  /** Choices on this line (toppings, sizes), in the order the customer picked them. `name` is the order's own words
+   *  ("Pepperoni (left half)", a follow-up under its opener), so the half reaches the cook in words whatever Side is
+   *  sent. [MENU-OPTIONS · delta review S3-N2] `placement` (WHOLE / LEFT / RIGHT, null = not a topping placement) is
+   *  carried for the adapter; the Dragontail mapper still sends every choice as Side 0 until Half1/Half2 is confirmed
+   *  with the store's set-up (order/kitchen-modifiers.ts). */
+  choices: Array<{ itemNo: string; name: string; placement?: 'WHOLE' | 'LEFT' | 'RIGHT' | null }>;
   /** The customer's note on this line (cook instruction). */
   note: string | null;
 }

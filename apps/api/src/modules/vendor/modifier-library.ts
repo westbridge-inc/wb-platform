@@ -100,6 +100,23 @@ const GRAPH_SELECT = {
   options: { select: { id: true, name: true, followUpGroupId: true, additionalPrice: true, vatListedAdditionalPrice: true, isAvailable: true } },
 } as const;
 
+/** [DELTA REVIEW S2-N1] The price an item keeps when its group stops setting the price: its LOWEST size, sold-out sizes
+ *  included (as typed: before VAT while VAT is added). That is the figure the store tools convert the add-ons against
+ *  ("Large +1,200" over Small 1,200) and the one their confirm names ("the item keeps its smallest size as its price").
+ *  The "from" price while sizes set the price skips sold-out sizes, so without this an item whose cheapest size was
+ *  sold out at the switch kept the higher size and every add-on cost that gap on top. null = no size to keep. */
+export function lowestSizeTyped(options: ReadonlyArray<{ additionalPrice?: unknown; vatListedAdditionalPrice?: unknown; price?: unknown }>): number | null {
+  const typed = options.map((o) => Number(o.vatListedAdditionalPrice ?? o.additionalPrice ?? o.price)).filter((n) => Number.isFinite(n));
+  return typed.length ? Math.min(...typed) : null;
+}
+
+/** [DELTA REVIEW S2-N1] Each item whose size group was just switched off keeps its lowest size (lowestSizeTyped) as its
+ *  price. Called inside the switch's transaction, before settleItems reconciles the VAT of what was written. */
+export async function keepLowestSize(tx: Tx, vendorId: string, itemIds: readonly string[], lowest: number | null): Promise<void> {
+  if (lowest == null || itemIds.length === 0) return;
+  await tx.item.updateMany({ where: { id: { in: [...new Set(itemIds)] }, vendorId }, data: typedItemPrice(lowest) });
+}
+
 /**
  * After any write to items' option groups: refuse a broken graph, keep each item's "from" price at its lowest size
  * (an older app and every list show basePrice; checkout prices a sized item from the chosen size, never from it),

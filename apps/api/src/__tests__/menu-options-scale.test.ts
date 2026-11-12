@@ -120,3 +120,69 @@ describe('[B S2-2 · A S3-3] the library at a real menu\'s size', () => {
     expect(await app.prisma.optionGroup.count({ where: { libraryGroupId: groupId } })).toBe(0);
   }, 120_000);
 });
+
+// [DELTA REVIEW S4-a] The two shapes the first round did not measure: a shared SIZE group (every edit settles each item's
+// "from" price) and a shared group whose choice opens a follow-up (each copy's opener is re-pointed at its own item's
+// copy of the follow-up group), both on 500 items.
+describe('[DELTA S4-a] a shared size group and a follow-up opener on 500 items', () => {
+  const items: string[] = [];
+  let sizeId = '';
+  let small = '';
+  let crustId = '';
+  let stuffed = '';
+  let cheeseId = '';
+
+  beforeAll(async () => {
+    items.push(...(await app.prisma.item.findMany({ where: { vendorId: shop.vendorId }, select: { id: true }, orderBy: { name: 'asc' } })).map((i) => i.id));
+    expect(items).toHaveLength(500);
+    const size = await ownerCall('POST', '/modifier-groups', { name: 'Pizza size', setsPrice: true, options: [
+      { name: 'Small', price: 1200 }, { name: 'Medium', price: 1800 }, { name: 'Large', price: 2400 },
+    ] });
+    expect(size.statusCode, size.body).toBe(200);
+    sizeId = size.json().data.id;
+    small = size.json().data.options[0].id;
+    const cheese = await ownerCall('POST', '/modifier-groups', { name: 'Cheese', isRequired: true, minSelect: 1, options: [{ name: 'Cheddar', price: 0 }, { name: 'Mozzarella', price: 100 }] });
+    expect(cheese.statusCode, cheese.body).toBe(200);
+    cheeseId = cheese.json().data.id;
+    const crust = await ownerCall('POST', '/modifier-groups', { name: 'Crust', options: [{ name: 'Thin', price: 0 }, { name: 'Stuffed crust', price: 500 }] });
+    expect(crust.statusCode, crust.body).toBe(200);
+    crustId = crust.json().data.id;
+    stuffed = crust.json().data.options[1].id;
+    const opens = await ownerCall('PUT', `/modifier-options/${stuffed}`, { followUpGroupId: cheeseId });
+    expect(opens.statusCode, opens.body).toBe(200);
+  }, 120_000);
+
+  it('the size group attaches to all 500; each item\'s price becomes its smallest size', async () => {
+    const res = await ownerCall('POST', `/modifier-groups/${sizeId}/attach`, { itemIds: items });
+    expect(res.statusCode, res.body).toBe(200);
+    expect(await app.prisma.item.count({ where: { id: { in: items }, basePrice: 1200 } })).toBe(500);
+  }, 120_000);
+
+  it('a size price edit and a sold-out size each re-settle all 500 "from" prices in one step', async () => {
+    const edit = await ownerCall('PUT', `/modifier-options/${small}`, { price: 1300 });
+    expect(edit.statusCode, edit.body).toBe(200);
+    expect(await app.prisma.item.count({ where: { id: { in: items }, basePrice: 1300 } })).toBe(500);
+    const soldOut = await ownerCall('PUT', `/modifier-options/${small}`, { isAvailable: false });
+    expect(soldOut.statusCode, soldOut.body).toBe(200);
+    expect(await app.prisma.item.count({ where: { id: { in: items }, basePrice: 1800 } })).toBe(500);
+  }, 120_000);
+
+  it('the crust (its "Stuffed crust" opens Cheese) attaches to all 500, each opener pointed at its own item\'s Cheese', async () => {
+    const res = await ownerCall('POST', `/modifier-groups/${crustId}/attach`, { itemIds: items });
+    expect(res.statusCode, res.body).toBe(200);
+    const openers = await app.prisma.option.findMany({ where: { libraryOptionId: stuffed }, select: { followUpGroupId: true, optionGroup: { select: { itemId: true } } } });
+    expect(openers).toHaveLength(500);
+    const cheeseCopies = await app.prisma.optionGroup.findMany({ where: { libraryGroupId: cheeseId }, select: { id: true, itemId: true } });
+    expect(cheeseCopies).toHaveLength(500);
+    const cheeseOf = new Map(cheeseCopies.map((c) => [c.itemId, c.id]));
+    expect(openers.every((o) => o.followUpGroupId === cheeseOf.get(o.optionGroup.itemId))).toBe(true);
+  }, 120_000);
+
+  it('an edit of the opener re-writes all 500 copies, each still opening its own Cheese', async () => {
+    const res = await ownerCall('PUT', `/modifier-options/${stuffed}`, { price: 600 });
+    expect(res.statusCode, res.body).toBe(200);
+    const openers = await app.prisma.option.findMany({ where: { libraryOptionId: stuffed }, select: { additionalPrice: true, followUpGroupId: true } });
+    expect(openers).toHaveLength(500);
+    expect(openers.every((o) => Number(o.additionalPrice) === 600 && o.followUpGroupId)).toBe(true);
+  }, 120_000);
+});
