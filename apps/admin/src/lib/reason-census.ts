@@ -52,6 +52,9 @@ export const REASONED_CALLERS: readonly ReasonCaller[] = [
   // [R3 · security review 10 Nov 2026] "Activate now" sends the store name it showed; a person confirms the seller name
   { route: 'PUT /vendors/:id/approve', helper: 'activateVendor', args: ['vnd_1', 'Shown Store Name'], requiredBodyKeys: ['sellerName'] },
   { route: 'PUT /vendors/:id/seller-name', helper: 'confirmSellerName', args: ['vnd_1', 'Shown Store Name'], requiredBodyKeys: ['name'] },
+  // [COMPANY-DOCS Part 3] Deciding a change of business type (with the store names shown) or of account holder.
+  { route: 'PUT /account-changes/:id/approve', helper: 'approveAccountChange', args: ['chg_1', { vnd_1: 'Shown Store Name' }], requiredBodyKeys: ['sellerNames'] },
+  { route: 'PUT /account-changes/:id/refuse', helper: 'refuseAccountChange', args: ['chg_1'] },
   { route: 'PUT /vendors/:id/suspend', helper: 'suspendVendor', args: ['vnd_1'] },
   { route: 'PUT /vendors/:id/type', helper: 'changeStoreType', args: ['vnd_1', 'STORE'], requiredBodyKeys: ['vendorType'] },
   { route: 'PUT /vendors/:id/name', helper: 'changeStoreName', args: ['vnd_1', 'New Name'], requiredBodyKeys: ['name'] },

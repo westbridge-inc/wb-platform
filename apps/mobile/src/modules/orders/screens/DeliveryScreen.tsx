@@ -779,10 +779,18 @@ export function DeliveryScreen() {
     setCancelPreviewOrderId(null);
     setCancelMessage(null);
     setPendingMmgClaim(null);
+    setConfirmPickupFor(null);
     lastCourierServerFixAt.current = null;
     prevStatus.current = null;
     prevStatusRef.current = undefined;
   }, [orderId]);
+
+  // [FOLLOWUPS 11 Nov · REVIEW-2481-DELTA D-2] The "Switch to pickup" confirmation ends with its offer (the store
+  // delivers, a rider takes it, the switch landed): a later "no rider" offer on this order never re-opens it unasked.
+  const pickupSwitchOffered = !!o?.switchToPickup;
+  useEffect(() => {
+    if (!pickupSwitchOffered) setConfirmPickupFor(null);
+  }, [pickupSwitchOffered]);
 
   // Arrival popup once, on the transition into DELIVERED.
   useEffect(() => {

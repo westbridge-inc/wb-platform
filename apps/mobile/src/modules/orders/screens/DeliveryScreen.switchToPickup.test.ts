@@ -49,3 +49,19 @@ describe('[review S4-4] a confirmation before the switch', () => {
     expect(screen).toContain('visible={confirmPickupFor === orderId && !!o.switchToPickup}');
   });
 });
+
+// [FOLLOWUPS 11 Nov · REVIEW-2481-DELTA D-2] The confirmation is forgotten when its offer goes (the store delivers, a
+// rider takes it, the switch landed) and when the screen moves to another order: a later "no rider" offer on the same
+// order never re-opens it by itself, and order B never inherits order A's open confirmation.
+describe('[review D-2] the confirmation does not outlive its offer', () => {
+  it('closes for good when the server stops offering the switch', () => {
+    expect(screen).toContain('const pickupSwitchOffered = !!o?.switchToPickup;');
+    const effect = screen.slice(screen.indexOf('const pickupSwitchOffered = !!o?.switchToPickup;'));
+    expect(effect.slice(0, effect.indexOf('}, [pickupSwitchOffered]);'))).toContain('if (!pickupSwitchOffered) setConfirmPickupFor(null);');
+  });
+
+  it('closes when the screen is reused for another order', () => {
+    const reset = screen.slice(screen.indexOf('// React Navigation can reuse this screen with a different order id.'));
+    expect(reset.slice(0, reset.indexOf('}, [orderId]);'))).toContain('setConfirmPickupFor(null);');
+  });
+});

@@ -50,6 +50,8 @@ import { CATALOGUE_APPROVER_CAPABILITY, catalogueApproverRequired, holdsCatalogu
 import { isOwnSelfiePointer, signupSelfieFor, signupSelfieRequired } from '../verification/signup-selfie';
 import { isDocumentValidAt } from '../verification/document-validity';
 import { assertNotRecused } from '../verification/recusal';
+import { disconnectUserSockets } from '../../utils/socket-revocation';
+import { completeMoverSessionRevocation } from '../mover-authority';
 import { ADMIN_ACTION_CLASSES, ADMIN_REASON_HEADER, ADMIN_ROUTE_AUTHORITY, capabilitiesOf, capabilityMode, decideCapability, holdsCapability, reasonOf, reasonProblem, reasonRefusal, routeTemplateOf } from './admin-authority';
 import {
   APPROVAL_HEADER, approvalRefusalMessage, approvalSubjectOf, decideApproval, fillRouteTemplate,
@@ -7239,6 +7241,12 @@ export async function adminRoutes(app: FastifyInstance) {
           await auditIn(tx, request.user.userId, 'SET_SELLER_LEGAL_NAME', 'VendorOwner', n.vendorOwnerId,
             { accountId: n.accountId, documentId: decided.id, docType: decided.docType, from: n.from, fromDocumentId: n.fromDocumentId, to: n.to }, request);
         }
+        // [COMPANY-DOCS Part 3] A paper filed for a change still waiting: its name is held on the change, not shown yet.
+        if (facts?.legalNameHeld) {
+          const h = facts.legalNameHeld;
+          await auditIn(tx, request.user.userId, 'HOLD_SELLER_LEGAL_NAME', 'AccountChangeRequest', h.changeId,
+            { accountId: decided.userId, documentId: decided.id, docType: decided.docType, from: h.from, fromDocumentId: h.fromDocumentId, to: h.to }, request);
+        }
         await auditWithin(tx, request as unknown as AuditRequestLike, app.prefix);
       },
     });
@@ -7375,6 +7383,84 @@ export async function adminRoutes(app: FastifyInstance) {
     mode: z.enum(['PRICES_INCLUDE_VAT', 'ADD_VAT_AT_CHECKOUT']),
     reason: z.string().trim().min(3).max(500).optional(),
   }).refine((b) => b.approve || b.reason !== undefined, { message: 'Say why, in words the store will read.', path: ['reason'] });
+
+  // ─── [COMPANY-DOCS Part 3 · owner rulings 10 Nov 2026 (c), (d)] Account changes ─────────────────────────────────
+  // A store's change of business type, or a company's handover to a new account holder (vendor/account-change.ts).
+  // A person with the document reviewer grant checks each paper in the Documents queue, then decides the change here,
+  // with a reason: approved, everything switches in one transaction; refused, nothing changes and the store reads why.
+  // Never decided by the account holder or the person named, nor by anyone the identity graph links to them.
+  const accountChangeIdOf = (request: { params: unknown }) => (request.params as { id: string }).id;
+  // [review-2475 F6] Checked before the decision, then again INSIDE its transaction (under the identity lock every document
+  // decision takes), so an identity-graph link made in between is seen.
+  const accountChangeRecusal = async (reviewerId: string, changeId: string, db: Prisma.TransactionClient | PrismaClient = app.prisma) => {
+    const { loadChange } = await import('../vendor/account-change');
+    const change = await loadChange(db, changeId);
+    const people = [change.vendorOwner.userId, ...(change.newHolderId ? [change.newHolderId] : [])];
+    if (people.includes(reviewerId)) throw new ForbiddenError('You cannot decide a change to your own account.');
+    for (const person of people) await assertNotRecused(db, reviewerId, person);
+  };
+
+  app.get('/account-changes', { preHandler: [adminGuard] }, async (request) => {
+    const { status } = z.object({ status: z.enum(['PENDING', 'APPROVED', 'REFUSED', 'WITHDRAWN']).default('PENDING') }).parse(request.query ?? {});
+    const { adminChangeQueue } = await import('../vendor/account-change');
+    return { success: true, data: await adminChangeQueue(app.prisma, status) };
+  });
+
+  app.get('/account-changes/:id', { preHandler: [adminGuard] }, async (request) => {
+    const { adminChangeView, loadChange } = await import('../vendor/account-change');
+    return { success: true, data: await adminChangeView(app.prisma, await loadChange(app.prisma, accountChangeIdOf(request))) };
+  });
+
+  app.put('/account-changes/:id/approve', { preHandler: [adminGuard] }, async (request) => {
+    const id = accountChangeIdOf(request);
+    // The store names exactly as the console showed them (a business type change confirms them as the seller's).
+    const body = z.object({ sellerNames: z.record(z.string(), z.string().trim().min(1).max(100)).optional(), reason: z.string().max(500).optional() }).parse(request.body ?? {});
+    const reason = reasonOf(request.body, request.headers) ?? '';
+    await accountChangeRecusal(request.user.userId, id);
+    const { adminChangeView, approveAccountChange, loadChange } = await import('../vendor/account-change');
+    const revoked = await verification.decideAccountChange(async (tx) => {
+      await accountChangeRecusal(request.user.userId, id, tx);
+      const outcome = await approveAccountChange(tx, {
+        changeId: id, adminId: request.user.userId, reason, sellerNames: body.sellerNames,
+        audit: (t, change, facts) => auditIn(t, request.user.userId, change.kind === 'BUSINESS_TYPE' ? 'APPROVE_BUSINESS_TYPE_CHANGE' : 'APPROVE_ACCOUNT_HANDOVER', 'AccountChangeRequest', change.id, facts, request),
+        storeComplete: (t, holderUserId, store) => verification.isRoleVerified(holderUserId, store.vendorType as 'RESTAURANT' | 'SUPERMARKET' | 'STORE' | 'SERVICE', t, store.id),
+      });
+      // [R3 · review-2476 F1] The account's seller legal name moved with the change (set from its paper, or cleared):
+      // the same trail as a paper's approval, naming the change.
+      if (outcome.sellerLegalName) {
+        const n = outcome.sellerLegalName;
+        await auditIn(tx, request.user.userId, 'SET_SELLER_LEGAL_NAME', 'VendorOwner', n.vendorOwnerId,
+          { accountId: n.accountId, documentId: n.documentId, docType: n.docType, changeId: id, from: n.from, fromDocumentId: n.fromDocumentId, to: n.to }, request);
+      }
+      return { result: outcome.revoked ?? null, holderUserId: outcome.holderUserId, notices: outcome.notices };
+    });
+    if (revoked) {
+      // The old holder's open screens close now; the mover outbox finishes any mover authority their sessions held.
+      disconnectUserSockets(app.io, revoked.userId);
+      await completeMoverSessionRevocation(app, revoked.cleanup)
+        .catch((err: unknown) => request.log.error({ err, changeId: id }, 'account handover: mover session cleanup held for the outbox'));
+    }
+    return { success: true, data: await adminChangeView(app.prisma, await loadChange(app.prisma, id)) };
+  });
+
+  app.put('/account-changes/:id/refuse', { preHandler: [adminGuard] }, async (request) => {
+    const id = accountChangeIdOf(request);
+    z.object({ reason: z.string().max(500).optional() }).parse(request.body ?? {});
+    const reason = reasonOf(request.body, request.headers) ?? '';
+    await accountChangeRecusal(request.user.userId, id);
+    const { adminChangeView, endAccountChange, loadChange } = await import('../vendor/account-change');
+    const notices = await app.prisma.$transaction(async (tx) => {
+      await bindTenantTransaction(tx);
+      await lockIdentityAuthority(tx);
+      await accountChangeRecusal(request.user.userId, id, tx);
+      return endAccountChange(tx, {
+        changeId: id, by: request.user.userId, outcome: 'REFUSED', reason,
+        audit: (t, change) => auditIn(t, request.user.userId, 'REFUSE_ACCOUNT_CHANGE', 'AccountChangeRequest', change.id, { kind: change.kind }, request),
+      });
+    });
+    for (const noticeId of notices) await notifications.publishPersisted(noticeId).catch(() => undefined);
+    return { success: true, data: await adminChangeView(app.prisma, await loadChange(app.prisma, id)) };
+  });
 
   app.get('/store-vat/pending', { preHandler: [adminGuard] }, async () => {
     const { pendingStoreVat } = await import('../store-vat/store-vat-decisions');

@@ -21,6 +21,7 @@ import {
   type MoverSessionRevocationCleanup,
 } from '../mover-authority';
 import { persistMoverRevocationOutboxInTransaction } from '../mover-revocation-outbox';
+import { revokeAllSessionsInTransaction } from './session-revocation';
 import { captureError, securityAuditFailuresCounter } from '../../plugins/observability';
 import {
   hasPrivilegedSessionAssurance,
@@ -1309,19 +1310,8 @@ export class AuthService {
     userId: string,
     dedupeKey: string,
   ): Promise<MoverSessionRevocationCleanup> {
-    const moverCleanup = await retireMoverSessionAuthorityInTransaction(tx, userId, null);
-    const outboxId = await persistMoverRevocationOutboxInTransaction(tx, {
-      dedupeKey,
-      userId,
-      cleanup: moverCleanup,
-    });
-    await tx.session.deleteMany({ where: { userId } });
-    // Global revocation (logout-all, password reset) must silence a lost or
-    // stolen device as well as its API session. A future sign-in explicitly
-    // re-registers and reactivates the token on the current account.
-    // [item 20] Through the narrow action: an admin-forced reset acts for someone else (owner wall).
-    await revokeUserDevices(tx, userId);
-    return { ...moverCleanup, outboxId };
+    // [COMPANY-DOCS Part 3] The one core, shared with an account-holder handover (auth/session-revocation.ts).
+    return revokeAllSessionsInTransaction(tx, userId, dedupeKey);
   }
 
   async logoutAll(userId: string, underLock?: (tx: Prisma.TransactionClient) => Promise<void>) {

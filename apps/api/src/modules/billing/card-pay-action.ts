@@ -185,8 +185,10 @@ export async function cardPayAction(
   // past the four-week limit the door could only refuse, so there is no card button.
   if (!(await payAheadAllows(prisma, sub.id, payNow.amount, new Date()))) return CARD_OFF;
   const addCard = decision.provider.savesCards && cardEnrollEnabled();
-  const cardOnFile = addCard
-    ? await prisma.paymentInstrument.findFirst({ where: { subscriptionId: sub.id, status: 'ACTIVE' }, select: INSTRUMENT_DTO_SELECT })
+  // [review-2475 F2] Only the payer's own card is ever shown (never a previous account holder's).
+  const payer = addCard ? await subscriptionPayer(prisma, sub.id).catch(() => null) : null;
+  const cardOnFile = addCard && payer
+    ? await prisma.paymentInstrument.findFirst({ where: { subscriptionId: sub.id, status: 'ACTIVE', userId: payer.userId }, select: INSTRUMENT_DTO_SELECT })
     : null;
   const testModeLabel = decision.provider.simulator
     ? cardTestLabel({ provider: SIMULATOR_PROVIDER, environment: 'sandbox' })
