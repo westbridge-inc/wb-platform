@@ -588,7 +588,8 @@ export const customerApi = {
   teamInvites: () => api.get('/customer/team-invites'),
   acceptTeamInvite: (id: string) => api.post(`/customer/team-invites/${id}/accept`, {}),
   declineTeamInvite: (id: string) => api.post(`/customer/team-invites/${id}/decline`, {}),
-  reorder: (id: string, session?: AuthSessionSnapshot) => api.post(`/customer/orders/${id}/reorder`, {}, capturedAuthConfig(session)),
+  // [MENU-OPTIONS] A reorder is a cart write too: it says this app shows sizes, halves and follow-up choices.
+  reorder: (id: string, session?: AuthSessionSnapshot) => api.post(`/customer/orders/${id}/reorder`, { capabilities: cartWriteCapabilities() }, capturedAuthConfig(session)),
   ratingTags: () => api.get('/customer/rating-tags'),
   itemFeedback: (id: string, body: { itemId: string; verdict: 'UP' | 'DOWN' }) =>
     api.post(`/customer/orders/${id}/item-feedback`, body),

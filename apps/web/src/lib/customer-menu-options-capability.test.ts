@@ -4,6 +4,7 @@ const apiFetch = vi.hoisted(() => vi.fn(async (_path: string, _init?: RequestIni
 vi.mock('./auth', () => ({ apiFetch, getSessionPrincipal: vi.fn() }));
 
 import { addToCart, updateCartLine } from './customer';
+import { reorder } from './customer-orders';
 
 // ---------------------------------------------------------------------------
 // [MENU-OPTIONS · owner 11 Nov 2026] Every cart write from the website says it shows sizes that set the price,
@@ -31,5 +32,13 @@ describe('[MENU-OPTIONS] the website’s cart writes declare MENU_OPTIONS_V2', (
     expect(path).toBe('/api/v1/customer/cart/items/line-1');
     expect(init?.method).toBe('PUT');
     expect(JSON.parse(String(init!.body))).toEqual({ quantity: 2, capabilities: ['MENU_OPTIONS_V2'] });
+  });
+
+  it('a reorder sends it too (the server asks a client without it to update)', async () => {
+    await reorder('order-1');
+    const [path, init] = apiFetch.mock.calls[0]!;
+    expect(path).toBe('/api/v1/customer/orders/order-1/reorder');
+    expect(init?.method).toBe('POST');
+    expect(JSON.parse(String(init!.body))).toEqual({ capabilities: ['MENU_OPTIONS_V2'] });
   });
 });

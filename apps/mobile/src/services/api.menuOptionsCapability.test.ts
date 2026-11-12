@@ -59,4 +59,10 @@ describe('[MENU-OPTIONS] the cart writes declare MENU_OPTIONS_V2', () => {
       ['put', '/customer/cart/items/line-1', { quantity: 1, selectedOptions: { size: 'medium' }, capabilities: ['MENU_OPTIONS_V2'] }],
     ]);
   });
+
+  it('a reorder sends it too (the server asks an app without it to update)', async () => {
+    const seen = capture();
+    await customerApi.reorder('order-1');
+    expect(seen).toEqual([{ url: '/customer/orders/order-1/reorder', method: 'post', body: { capabilities: ['MENU_OPTIONS_V2'] } }]);
+  });
 });

@@ -157,6 +157,9 @@ export interface MarketItem {
   /** Is the item's store open now? Search shows closed stores' dishes too, marked
    *  (owner, 13 Oct). Absent from an older server: read as open, as before. */
   vendorIsCurrentlyOpen?: boolean;
+  /** [MENU-OPTIONS] A size sets the item's price: basePrice is its smallest size ("From"). Absent from an older
+   *  server: read as not sized, as before. */
+  pricedFrom?: boolean;
 }
 export interface MarketCategory { slug: string; name: string; vertical: string }
 

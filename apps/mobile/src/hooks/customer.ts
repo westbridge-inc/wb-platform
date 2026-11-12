@@ -219,6 +219,9 @@ export type MarketItem = {
   /** Recently listed. SERVER-DERIVED — the client never computes "new" from a
    *  timestamp of its own, or two screens would disagree about the same item. */
   isNew: boolean;
+  /** [MENU-OPTIONS] A size sets the item's price: basePrice is its smallest size ("From"). Absent from an older
+   *  server: read as not sized, as before. */
+  pricedFrom?: boolean;
 };
 
 /**

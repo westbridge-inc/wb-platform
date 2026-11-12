@@ -304,7 +304,7 @@ const PLACEMENT_WORD: Record<Placement, string> = { WHOLE: 'Whole', LEFT: 'Left'
 
 /**
  * "Size: Large", "Crust: Stuffed crust", under it "Cheese: Cheddar" (a follow-up), and a half-and-half group laid out
- * as "Toppings — Whole: Onion / Left: Pepperoni / Right: Mushroom". The API sends the choices in menu order with each
+ * as "Toppings — Left: Pepperoni / Right: Mushroom / Whole: Onion" (the kitchen's order). The API sends the choices in menu order with each
  * follow-up right after its opener. A row without the parts (an older order) reads "group: name".
  */
 export function orderLineChoices(options: readonly OrderLineChoice[] | null | undefined): ChoiceLine[] {
@@ -330,7 +330,8 @@ export function orderLineChoices(options: readonly OrderLineChoice[] | null | un
     const halves = bucket.picks.some((p) => p.placement === 'LEFT' || p.placement === 'RIGHT');
     let body: string;
     if (halves) {
-      body = (['WHOLE', 'LEFT', 'RIGHT'] as const)
+      // [REVIEW B S4] The kitchen's order (orderLineOptions.ts): Left, Right, then Whole.
+      body = (['LEFT', 'RIGHT', 'WHOLE'] as const)
         .map((at) => [at, bucket.picks.filter((p) => (p.placement ?? 'WHOLE') === at).map((p) => p.name)] as const)
         .filter(([, names]) => names.length > 0)
         .map(([at, names]) => `${PLACEMENT_WORD[at]}: ${names.join(', ')}`)

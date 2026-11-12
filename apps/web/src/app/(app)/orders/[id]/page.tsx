@@ -33,7 +33,8 @@ import { lineDisplayAmount } from '@/lib/money';
 import { mmgStorePaymentDeadline, mmgStorePaymentNote, orderPrepFacts, orderStepState, orderTimelineIndex, parseMmgStorePayment } from '@/lib/app-rules';
 import { appointmentBookingView } from '@/lib/booking-rules';
 import styles from './tracking.module.css';
-import { orderLineChoices, type OrderLineChoice } from '@/lib/menu-options';
+// [REVIEW B S4] The phone's import-free sheet model directly: lib/menu-options would bring the API engine into this page.
+import { orderLineChoices, type OrderLineChoice } from '../../../../../../mobile/src/lib/menuSheet';
 import { pickupCodeWords } from './pickup-words';
 import { lazyRetry } from '@/lib/chunk-retry';
 import { orderReadyEstimate } from '@/lib/store-kind-words';

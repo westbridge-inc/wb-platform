@@ -217,7 +217,7 @@ describe('[MENU-OPTIONS] an order line read back', () => {
       { text: 'Size: Large', followUp: false },
       { text: 'Crust: Stuffed crust', followUp: false },
       { text: 'Cheese: Cheddar', followUp: true },
-      { text: 'Toppings — Whole: Onion / Left: Pepperoni / Right: Mushroom', followUp: false },
+      { text: 'Toppings — Left: Pepperoni / Right: Mushroom / Whole: Onion', followUp: false },
     ]);
   });
 
