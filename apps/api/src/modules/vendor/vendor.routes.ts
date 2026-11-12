@@ -128,7 +128,7 @@ import { BULK_CHOICES, bulkUnitsForChoice, bulkChoiceForUnits, type BulkChoice }
 import { redactCustomerContact, riderCounterpartySelect } from '../../utils/counterparty';
 import { withCounterpartPhones } from '../calls/counterpart-phone';
 import { resolveAvatarUrls } from '../../utils/avatar-url';
-import { HANDED_TO_RIDER_NOTE, NO_CODE_HANDOVER_NOTE, handedToRiderSinceAssignment, handoverEpisodeRowsWhere } from '../order/store-handover-log';
+import { HANDED_TO_RIDER_NOTE, NO_CODE_HANDOVER_NOTE, STORE_PREPARING_WITH_RIDER_NOTE, STORE_READY_WITH_RIDER_NOTE, handedToRiderSinceAssignment, handoverEpisodeRowsWhere, timelineRows, STEP_ORDER } from '../order/store-handover-log';
 import { assertStorePinInMarket } from './store-pin';
 import { lockStorePin, recordStorePinMove } from './store-pin-move';
 import { registerPartnerCardRoutes, withCardPayAction } from '../billing/card-rail.routes';
@@ -858,7 +858,7 @@ async function storeHandoverFields(
   const riderIds = [...new Set(orders.filter(handoverLive).map((o) => o.riderId).filter((r): r is string => !!r))];
   const [handed, riders] = await Promise.all([
     ids.length ? app.prisma.orderStatusLog.findMany({
-      where: handoverEpisodeRowsWhere(ids), select: { orderId: true, status: true, note: true, createdAt: true }, orderBy: { createdAt: 'asc' },
+      where: handoverEpisodeRowsWhere(ids), select: { orderId: true, status: true, note: true, createdAt: true }, orderBy: STEP_ORDER,
     }) : [],
     riderIds.length ? app.prisma.rider.findMany({ where: { id: { in: riderIds } }, select: { id: true, user: { select: { avatar: true } } } }) : [],
   ]);
@@ -921,7 +921,7 @@ async function resolveOwnedOrder(app: FastifyInstance, userId: string, orderId: 
     omit: HANDOVER_SECRETS_OMIT,
     include: {
       items: VENDOR_ORDER_ITEMS,
-      statusHistory: { orderBy: { createdAt: 'desc' } },
+      statusHistory: { orderBy: [{ createdAt: 'desc' }, { id: 'desc' }] },
       // [COORD 17 Oct] The store order screen's Call button: first name + phone, never the last name.
       // [O-1] The customer's and rider's phones go only to an installed store build (below).
       customer: { select: { id: true, firstName: true, phone: true } },
@@ -2597,7 +2597,11 @@ export async function vendorRoutes(app: FastifyInstance) {
     const noRider = await noRiderStoreView(app.prisma, order);
     // [STORE-MONEY · owner 11 Nov 2026] The store's own money on this order (the board's same answer).
     const money = storeMoney({ ...order, promoRedemption: (await redemptionsFor(app.prisma, [order.id])).get(order.id) ?? null });
-    return { success: true, data: { ...redactCustomerContact({ ...order, ...handover, storeMoney: money, items: order.items.map(vendorOrderLine), respondBy, ...storeMmgPayBy(order), canConfirmPayment: canConfirmPayment(role), ...noShow, ...notCollected, mmgRefund, ...noRider }), custodyRecovery, outOfStockEndsOrder: true } };
+    // [FOLLOWUPS 11 Nov 2026 · REVIEW-2490 S3-2] The store's timeline rule (timelineRows, newest first as before): its
+    // kitchen taps made after a rider took the order read as "Preparing" / "Ready"; "Handed to rider" is said by the
+    // "Handed to rider" line (handedToRiderAt), not as a second "Rider at counter"; no other repeat of a rider status.
+    const statusHistory = timelineRows([...order.statusHistory].reverse()).reverse();
+    return { success: true, data: { ...redactCustomerContact({ ...order, statusHistory, ...handover, storeMoney: money, items: order.items.map(vendorOrderLine), respondBy, ...storeMmgPayBy(order), canConfirmPayment: canConfirmPayment(role), ...noShow, ...notCollected, mmgRefund, ...noRider }), custodyRecovery, outOfStockEndsOrder: true } };
   });
 
   /** [AF-MOB-006] POST /orders/:id/recovery/return-received — the store
@@ -2784,7 +2788,7 @@ export async function vendorRoutes(app: FastifyInstance) {
           orderId: order.id,
           status: live.status,
           changedBy: userId,
-          note: phase === 'PREPARING' ? 'Vendor started preparing (rider already assigned)' : 'Order ready for pickup (rider already assigned)',
+          note: phase === 'PREPARING' ? STORE_PREPARING_WITH_RIDER_NOTE : STORE_READY_WITH_RIDER_NOTE,
         },
       });
       return { row: next, alreadyStamped: false as const };
@@ -3616,7 +3620,7 @@ export async function vendorRoutes(app: FastifyInstance) {
       // Idempotent per rider: a tap already made for THIS rider's assignment answers again; one made for a
       // rider who since handed the order back does not speak for the new one.
       const episodeRows = await tx.orderStatusLog.findMany({
-        where: handoverEpisodeRowsWhere([order.id]), select: { orderId: true, status: true, note: true, createdAt: true }, orderBy: { createdAt: 'asc' },
+        where: handoverEpisodeRowsWhere([order.id]), select: { orderId: true, status: true, note: true, createdAt: true }, orderBy: STEP_ORDER,
       });
       // A rider who handed the order back leaves no current rider: an earlier tap answers nothing then.
       const already = live.riderId ? handedToRiderSinceAssignment(episodeRows).get(order.id) ?? null : null;

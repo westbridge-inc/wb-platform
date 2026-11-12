@@ -842,3 +842,44 @@ describe('optional documents are offered, never counted as required', () => {
     expect(text()).not.toContain('You can add these any time');
   });
 });
+
+// ---------------------------------------------------------------------------
+// [FOLLOWUPS 11 Nov 2026] A rider whose papers are ALL sent and wait for a person to approve them opened the app on
+// "Start earning with Swift" and the sign-up pitch, with "All submitted — in review" as small print in the list. The
+// screen now leads with that status. The list (each paper's state) and the way back to Swift stay.
+// ---------------------------------------------------------------------------
+describe('[FOLLOWUPS 11 Nov] a rider waiting for approval sees a plain status', () => {
+  const REQUIRED = ['drivers_licence', 'vehicle_registration', 'vehicle_insurance'];
+  async function riderWith(docs: Doc[]) {
+    server.moverVehicle = 'MOTORCYCLE';
+    server.moverDocs = docs;
+    server.statusExtra = { checklist: REQUIRED };
+    signIn({ id: 'rider-rae', roles: ['CUSTOMER', 'MOVER', 'RIDER'], activeRole: 'RIDER', lastMoverRole: 'RIDER' }, 'mover');
+    await launch();
+  }
+
+  it('every required paper sent (one approved, two in review): "Your documents are in review", no sign-up pitch', async () => {
+    await riderWith([doc('drivers_licence', 'APPROVED'), doc('vehicle_registration', 'PENDING'), doc('vehicle_insurance', 'PENDING')]);
+    expect(text()).toContain('Your documents are in review');
+    expect(text()).toContain('You can go online once they are approved');
+    expect(text()).not.toContain('Start earning with Swift');
+    expect(text()).not.toContain('Keep 100%');
+    // The list still says where each paper stands.
+    expect(text()).toContain('1 of 3 approved');
+    expect(text()).toContain('All submitted — in review');
+    expect(text()).toContain('Vehicle saved');
+    expect(control('Back to Swift'), 'the way back to Swift stays').toBeDefined();
+  });
+
+  it('a paper still to send: the application as before (it is theirs to act on)', async () => {
+    await riderWith([doc('drivers_licence', 'PENDING'), doc('vehicle_registration', 'PENDING')]);
+    expect(text()).toContain('Start earning with Swift');
+    expect(text()).not.toContain('Your documents are in review');
+  });
+
+  it('a paper sent back: the application as before', async () => {
+    await riderWith([doc('drivers_licence', 'PENDING'), doc('vehicle_registration', 'PENDING'), doc('vehicle_insurance', 'REJECTED', 'Photo is blurred')]);
+    expect(text()).toContain('Start earning with Swift');
+    expect(text()).not.toContain('Your documents are in review');
+  });
+});

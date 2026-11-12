@@ -7,7 +7,7 @@ import { mmgDispatchBlocked, mmgDispatchEligibleWhere } from '../modules/order/m
 import { drainCheckoutOutbox, persistDispatchCommandInTransaction } from '../modules/order/checkout-outbox';
 import { readOfferItinerary } from '../modules/rides/taxi-stops-read';
 import { offerCardAddresses } from '../modules/dispatch/board-privacy';
-import { assignmentLogWhere } from '../modules/order/store-handover-log';
+import { countStatusSteps } from '../modules/order/store-handover-log';
 
 // Execute production method bodies, not copies of the algorithm. Isolating the
 // class from module wiring makes accidental provider/service boot impossible.
@@ -54,9 +54,9 @@ const context = vm.createContext({
   // [ORDER-SPINE S1-6] dispatchOrder's direct-MMG offer gate — the production
   // predicate itself, not a copy (these orders are CASH, so it lets them by).
   mmgDispatchBlocked,
-  // [O-2] the assignment-episode count's predicate — the production one itself (the store's
-  // "Handed to rider" row never counts as an assignment).
-  assignmentLogWhere,
+  // [O-2 · FOLLOWUPS REVIEW-2490 S3-1] the assignment-episode count — the production one itself (only an
+  // assignment STEP counts: a row written at RIDER_ASSIGNED that repeats it never does).
+  countStatusSteps,
   // [PAYMENT-SIMPLIFY] the stuck reconciler's MMG filter — the production predicate itself (these orders are CASH).
   mmgDispatchEligibleWhere,
   // [TAXI multi-stop 3/8] the offer card's stops — the production reader itself
@@ -179,7 +179,7 @@ function setup() {
     create: async ({ data }: any) => { const row = { id: `search-${rows.length}`, startedAt: new Date(), ...data }; rows.push(row); return row; },
   };
   const episode = { sequence: 1 };
-  const tx = { $queryRaw: async () => [{ ...order }], order: { findFirst: async () => ({ id: order.id }), findUnique: async ({ select }: any = {}) => select ? Object.fromEntries(Object.keys(select).map(k => [k, (order as any)[k]])) : ({ ...order }) }, dispatchSearch: journal, orderStatusLog: { count: async () => episode.sequence } };
+  const tx = { $queryRaw: async () => [{ ...order }], order: { findFirst: async () => ({ id: order.id }), findUnique: async ({ select }: any = {}) => select ? Object.fromEntries(Object.keys(select).map(k => [k, (order as any)[k]])) : ({ ...order }) }, dispatchSearch: journal, orderStatusLog: { count: async () => episode.sequence, findMany: async () => Array.from({ length: episode.sequence }, () => [{ status: 'READY_FOR_PICKUP' }, { status: 'RIDER_ASSIGNED' }, { status: 'DRIVER_ASSIGNED' }]).flat().map((r) => ({ ...r, createdAt: new Date(0) })) } };
   const transaction = async (fn: (db: typeof tx) => any) => {
     const previous = mutex; const release = barrier(); mutex = release.promise;
     await previous;

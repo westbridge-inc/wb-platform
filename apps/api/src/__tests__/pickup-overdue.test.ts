@@ -488,3 +488,28 @@ describe('[OF-33 · #1890 owner wall] a blind or failing inbox read decides noth
     expect(count(await noticesOf(id, r.userId), NUDGE_TITLE)).toBe(1);
   }, 300_000);
 });
+
+describe('[FOLLOWUPS 11 Nov 2026] a store tap logged at the rider\'s status never restarts the rider\'s clock', () => {
+  it('the store marks Ready 15 min after the rider took the order: pickup is still due at the rider\'s own accept + 20', async () => {
+    const cast = await castWalk(w, 1);
+    const { orderId } = await placeCashOrder(w, cast);
+    const id = orderId!;
+    expect((await call(w, 'PUT', `/api/v1/vendor/orders/${id}/accept`, cast.vendorOwner.token)).statusCode).toBe(200);
+    await riderTakes(cast, id);
+    const r = cast.riders[0]!;
+    await ageWorld(w, 15 * MIN);
+    // The store's Ready, at RIDER_ASSIGNED: its status-log row carries the rider's status (store-handover-log).
+    expect((await call(w, 'PUT', `/api/v1/vendor/orders/${id}/ready`, cast.vendorOwner.token)).statusCode).toBe(200);
+    const assigned = await w.app.prisma.orderStatusLog.findMany({ where: { orderId: id, status: 'RIDER_ASSIGNED' }, orderBy: { createdAt: 'asc' } });
+    expect(assigned).toHaveLength(2);
+    // The rider's own accept row is aged with the world: re-read it for the tick.
+    const own = async () => (await w.app.prisma.orderStatusLog.findFirstOrThrow({ where: { id: assigned[0]!.id } })).createdAt.getTime();
+    // Due = the later of readyAt (accept + 15) and the rider's accept + 20 = accept + 20: the nudge at accept + 30.
+    // (Timed from the store's tap instead, the nudge would wait for accept + 45.)
+    await ageWorld(w, (TRAVEL_MIN + NUDGE_MIN) * MIN - (Date.now() - await own()) + 1_000);
+    await call(w, 'PUT', '/api/v1/rider/location', r.token, { latitude: r.lat, longitude: r.lng, accuracy: 8 });
+    await runSweeps(w);
+    await drainDue(w);
+    expect(count(await noticesOf(id, r.userId), NUDGE_TITLE)).toBe(1);
+  }, 300_000);
+});

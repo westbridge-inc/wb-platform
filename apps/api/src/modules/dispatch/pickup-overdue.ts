@@ -17,6 +17,7 @@ import { reopenPreCustodyLeg } from './delivery-watchdog';
 import { settleRiderLegs } from './concurrency-policy';
 import { dispatchDeclinedKey } from './dispatch-generation-keys';
 import { waitClock } from './rescue';
+import { latestStepAt } from '../order/store-handover-log';
 
 /**
  * [OF-33 · COORD ruling 21 Oct 2026] A rider who accepted an order and then
@@ -151,12 +152,9 @@ function cashInHand(o: { paymentMethod: string; paymentStatus: string }): boolea
 }
 
 async function riderAcceptedAt(prisma: PrismaClient | Prisma.TransactionClient, orderId: string, status: 'RIDER_ASSIGNED' | 'RIDER_ARRIVED_PICKUP' = 'RIDER_ASSIGNED'): Promise<Date | null> {
-  const row = await prisma.orderStatusLog.findFirst({
-    where: { orderId, status },
-    orderBy: { createdAt: 'desc' },
-    select: { createdAt: true },
-  });
-  return row?.createdAt ?? null;
+  // [FOLLOWUPS 11 Nov 2026 · REVIEW-2490 S3-1] The rider's own step into `status`, never a row written at it
+  // afterwards (a store's Ready or Handed to rider, a substitution, a courier's cash would restart the clock).
+  return latestStepAt(prisma, orderId, status);
 }
 
 export type PickupOutcome = 'NOT_DUE' | 'NUDGED' | 'WAITING' | 'RELEASED' | 'STORE_PAGED' | 'IGNORED';
