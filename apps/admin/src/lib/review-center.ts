@@ -30,6 +30,8 @@ export interface ReviewDocument {
   reviewedBy?: string | null;
   /** [BUG-HUNT F23] A reviewer checked this paper and it waits for ordering day: nobody needs to check it again. */
   approvalHeldAt?: string | null;
+  /** [ASSISTED SETUP] The admin who uploaded this paper for the store (null: the store sent it itself). */
+  assistedById?: string | null;
   user?: {
     /** `phone` arrives masked (its last 4 digits only) [DOC-SECURITY G3]: the full number is the person page's audited reveal. */
     id: string; firstName?: string; lastName?: string; phone?: string; countryCode?: string;
@@ -351,3 +353,9 @@ export function waitingSince(timestamp: number, now: number): string {
   const hours = Math.floor(minutes / 60);
   return hours < 24 ? `Waiting ${hours}h` : `Waiting ${Math.floor(hours / 24)}d ${hours % 24}h`;
 }
+
+/** [ASSISTED SETUP · owner 12 Nov 2026] A paper a Swift admin uploaded for a store, with the store's OK. */
+export const ASSISTED_UPLOAD_TITLE = 'Uploaded by Swift for the store';
+export const ASSISTED_UPLOAD_WORDS = 'A Swift admin uploaded this paper for the store, with the store’s recorded OK. Check it as you would any paper.';
+export const ASSISTED_OWN_UPLOAD_WORDS = 'You uploaded this paper. Another admin must approve it. If you are the only admin, you may approve it only after checking it yourself; Swift refuses it whenever a second admin exists.';
+export const SOLE_ADMIN_CHECK = 'I checked it myself, no second admin available';

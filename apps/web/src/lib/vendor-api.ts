@@ -208,6 +208,9 @@ export interface CatalogItem {
   /** [VAT-DOCS] The price the store typed before VAT, while Swift adds VAT to this item (basePrice = what customers
    *  pay); null otherwise. Such an item is edited by this price (lib/vat-price-edit.ts). */
   vatListedPrice?: number | null;
+  /** [ASSISTED SETUP] Added by Swift for the store with its OK (ISO date); the photo too, while it is still Swift's. */
+  addedBySwiftAt?: string;
+  photoAddedBySwiftAt?: string;
 }
 
 /** [STORE-VAT · owner O-5] Only STANDARD goods carry VAT, and only for a store whose VAT a person approved. */

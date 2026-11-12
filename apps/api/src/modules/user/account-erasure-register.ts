@@ -39,6 +39,7 @@ export const ERASURE_CLEARED: Readonly<Record<string, string>> = {
   'RideQueueEntry.customerId': 'ephemeral high-risk rows (NR-3 gap 6): exact-location queue rows',
   'SupplyWatch.customerId': 'ephemeral high-risk rows (NR-3 gap 6): exact-location watch rows',
   'CallSession.callerUserId': 'deleted with the account (the NR-3 ephemeral-rows step): the Swift-bridged calls the person asked for (roles and times; Swift stores no number for a call)',
+  'AssistedSetupConsent.holderId': 'deleted with the account (the NR-3 ephemeral-rows step): the OKs recorded for Swift to set up the person’s store, with the name a store person gave (the consent ledger row and the audit trail stay, ids only); their action rows go with them',
   'AuthorityLetterRequest.userId': 'deleted with the account (the NR-3 ephemeral-rows step): the letters of authority the person asked a director (or the owner) to sign, with that third person’s name and number (a signed letter itself is a verification document, purged with the others)',
   'FaceTemplate.accountId': 'identity-integrity purge: the biometric template, in every case',
   'IdentityKey.accountId': 'identity-integrity purge (kept only as salted fraud tombstones while IntegritySettings.tombstoneRetentionEnabled is ON; default OFF)',

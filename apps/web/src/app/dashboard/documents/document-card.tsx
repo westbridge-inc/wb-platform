@@ -7,8 +7,8 @@ import {
   submitPoliceClearance, submitStoreDocument, uploadStoreDocumentFile, withdrawPoliceClearance, type StoreUploadConsentVia,
 } from '@/lib/store-documents-api';
 import {
-  DOCUMENT_FILE_TYPES, POLICE_WITHDRAW_FAILED, POLICE_WITHDRAW_LINK, POLICE_WITHDRAW_TITLE, REPLACE_BODY, REPLACE_TITLE, STILL_UPLOADING,
-  docLabel, documentCardView, policeWithdrawOutcome, uploadErrorWords, type PoliceClearanceWords, type StoreDocumentRow,
+  ADDED_BY_SWIFT_REPLACE_HINT, DOCUMENT_FILE_TYPES, POLICE_WITHDRAW_FAILED, POLICE_WITHDRAW_LINK, POLICE_WITHDRAW_TITLE, REPLACE_BODY, REPLACE_TITLE, STILL_UPLOADING,
+  addedBySwiftLine, docLabel, documentCardView, policeWithdrawOutcome, uploadErrorWords, type PoliceClearanceWords, type StoreDocumentRow,
 } from '@/lib/store-documents';
 
 const BADGE_TONE = {
@@ -140,6 +140,8 @@ export function DocumentCard({ role, docType, doc, isNext, optionalHint, hint, h
           {hint && <span className="mt-0.5 block text-xs text-[var(--swift-muted)]">{hint}</span>}
           {hintLink && <a href={hintLink.href} target="_blank" rel="noopener" className="mt-0.5 block text-xs font-semibold text-[var(--swift-red)] underline" data-letter-link>{hintLink.label}</a>}
           {optionalHint && <span className="mt-0.5 block text-xs text-[var(--swift-muted)]">{optionalHint}</span>}
+          {/* [ASSISTED SETUP] A paper Swift added for the store with its OK; the store replaces it as its own. */}
+          {doc?.addedBySwift && <span className="mt-0.5 block text-xs text-[var(--swift-muted)]" data-testid="added-by-swift">{addedBySwiftLine(doc.createdAt)}. {ADDED_BY_SWIFT_REPLACE_HINT}</span>}
         </span>
         {send.isPending ? (
           <span role="status" className="text-xs font-semibold text-[var(--swift-muted)]">Uploading…</span>

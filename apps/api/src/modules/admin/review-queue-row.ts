@@ -26,6 +26,9 @@ export const REVIEW_QUEUE_SELECT = {
   // [BUG-HUNT F23] A paper a reviewer checked and held for ordering day (verification/approval-brake.ts).
   approvalHeldAt: true,
   approvalHeldBy: true,
+  // [ASSISTED SETUP] A paper a Swift admin uploaded for the store: who (an admin's user id). The console warns that admin
+  // before they approve their own upload (the server refuses it while a second admin exists).
+  assistedById: true,
   user: {
     select: {
       id: true, firstName: true, lastName: true, phone: true, countryCode: true,
@@ -55,6 +58,7 @@ export function reviewQueueRow(doc: ReviewQueueDocument & { previousDecision: Pr
     reviewedBy: doc.reviewedBy,
     approvalHeldAt: doc.approvalHeldAt,
     approvalHeldBy: doc.approvalHeldBy,
+    assistedById: doc.assistedById ?? null,
     previousDecision: doc.previousDecision,
     // [VERIFY-DOCS] What the reviewer must type to approve it.
     reviewerTypes: reviewerTypedFields(doc.docType),
