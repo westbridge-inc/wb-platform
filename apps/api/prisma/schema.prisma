@@ -4475,7 +4475,7 @@ model CardCreditRefund {
   tenantId          String
   subscriptionId    String
   /// The original card payment (a Pay now kept as fee credit). One reversal of each kind per payment, ever (partial
-  /// unique indexes, migration 20261112120000); a REFUND beside a VOID only once that void was refused and checked.
+  /// unique indexes, migration 20261112130000); a REFUND beside a VOID only once that void was refused and checked.
   cardSessionId     String
   /// [VOID-REFUND-CHECK F4] VOID (the whole payment, not yet certainly settled by the bank) or REFUND. Written once.
   kind              String    @default("REFUND")
