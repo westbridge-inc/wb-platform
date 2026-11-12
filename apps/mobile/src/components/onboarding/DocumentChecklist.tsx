@@ -238,6 +238,7 @@ export function DocumentChecklist({
             submittedAt={doc?.createdAt ?? null}
             reviewNote={doc?.reviewNote ?? null}
             replaced={doc?.replaced === true}
+            addedBySwift={doc?.addedBySwift === true}
             isNext={docType === nextDoc}
             hint={taxiDocumentHint(docType, checklist)}
             paperHelp={accountPaperHelp(docType, WEBSITE_URL)}
@@ -285,6 +286,7 @@ export function DocumentChecklist({
                 submittedAt={doc?.createdAt ?? null}
                 reviewNote={doc?.reviewNote ?? null}
                 replaced={doc?.replaced === true}
+                addedBySwift={doc?.addedBySwift === true}
                 optionalHint={optionalDocHint(docType)}
               />
             );

@@ -187,7 +187,8 @@ describe('[SEC-DOS F3] exceljs is handed only the bytes the guard measured', () 
   it('the import route hands exceljs the rebuilt archive, never the upload', async () => {
     const { readFileSync } = await import('node:fs');
     const { join } = await import('node:path');
-    const src = readFileSync(join(__dirname, '..', 'modules/vendor/vendor.routes.ts'), 'utf8');
+    // [ASSISTED SETUP] The workbook reader moved, unchanged, to menu-import.ts (the store's and the console's one reader).
+    const src = readFileSync(join(__dirname, '..', 'modules/vendor/menu-import.ts'), 'utf8');
     const at = src.indexOf('scanXlsxZip(buffer, XLSX_IMPORT_ZIP_BUDGET)');
     expect(at).toBeGreaterThan(-1);
     const after = src.slice(at, at + 2500);

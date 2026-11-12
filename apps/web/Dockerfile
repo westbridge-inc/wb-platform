@@ -92,6 +92,9 @@ COPY apps/mobile/src/lib/menuOptionsCapability.ts apps/mobile/src/lib/menuOption
 # role matrix, the accept clock, the MMG-dispute pause, the store-delivery rule
 # and the market-calendar helpers. None imports anything but @swift/types.
 COPY apps/mobile/src/lib/vendorRbac.ts apps/mobile/src/lib/vendorRbac.ts
+# [ASSISTED SETUP] The store's "Added by Swift on <date> with your OK" words (Documents, Products): the phone's own
+# pure module, no imports, so exactly this file.
+COPY apps/mobile/src/lib/assistedSetupCopy.ts apps/mobile/src/lib/assistedSetupCopy.ts
 COPY apps/mobile/src/lib/bulkWords.ts apps/mobile/src/lib/bulkWords.ts
 COPY apps/mobile/src/lib/appointmentTime.ts apps/mobile/src/lib/appointmentTime.ts
 COPY apps/mobile/src/modules/vendor/acceptClock.ts apps/mobile/src/modules/vendor/acceptClock.ts
