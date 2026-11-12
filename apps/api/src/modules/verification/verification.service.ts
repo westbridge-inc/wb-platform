@@ -11,7 +11,7 @@ import { approveRegistrantLink, linkedAccountIds, normalizeRegistrationMark, pla
 import { POLICE_CLEARANCE_WITHDRAWN_NOTE } from './police-clearance-consent';
 import { ACCOUNT_HOLDER_ID_DOC_TYPE, AUTO_APPROVE_EXPIRY_DAYS, CERTIFICATE_OF_INCORPORATION_DOC_TYPE, BUCKET_OF, CERTIFICATE_YEAR_DOC_TYPES, FOOD_HANDLER_ATTESTATION_TYPE, isNeverAcceptedDocType, OWN_NAME_DOC_TYPE, OWN_NAME_TIER, PERSON_ONLY_DOC_TYPES, POLICE_CLEARANCE_DOC_TYPE, REGISTRATION_DOC_TYPES, registryCode, type RegistrationKind } from './doc-registry';
 import { accountTierOf } from '../vendor/account-basis';
-import { assertChangeTakesPapers, changePaperStaging, holdChangeLegalName, type HeldLegalName } from '../vendor/account-change';
+import { assertChangeTakesPapers, changePaperStaging, holdChangeLegalName, isChangePersonsNameById, type HeldLegalName } from '../vendor/account-change';
 import { AUTHORITY_LETTER_DOC_TYPES, authorityConfirmationNote, type AuthorityConfirmation } from './authority-confirmation';
 import { guyanaWallClockParts, startOfGuyanaDay } from '../../utils/guyana-day';
 import type { ValidatorContext } from './validators';
@@ -1340,8 +1340,10 @@ export class VerificationService {
       // own-name declaration, never a registration paper. The people the server knows by name: the account holder, and
       // [delta B] whoever the account named in a letter of authority (a company's director, a business's owner).
       // [COMPANY-DOCS Part 3] A paper filed for a change is the filer's: a handover's new holder's own name is refused too.
+      // [review-2475 delta S4-1] And on a handover, the old holder's (and whoever their letters named): never the seller.
       const typedName = typed.legalName?.trim();
-      if (REGISTRATION_DOC_TYPES.includes(candidate.docType) && typedName && await isAccountPersonsName(this.prisma, candidate.userId, typedName)) {
+      if (REGISTRATION_DOC_TYPES.includes(candidate.docType) && typedName && (await isAccountPersonsName(this.prisma, candidate.userId, typedName)
+        || (candidate.accountChangeId !== null && await isChangePersonsNameById(this.prisma, candidate.accountChangeId, typedName)))) {
         throw new AppError(400, 'LEGAL_NAME_IS_A_PERSON',
           'That is a person’s name (the account holder’s, or the person named in its letter of authority). Type the registered business or company name printed on this paper: never the proprietor’s, a director’s or the account holder’s personal name.');
       }

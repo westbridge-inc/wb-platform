@@ -139,4 +139,50 @@ describe('[COMPANY-DOCS Part 3] Account changes queue', () => {
     expect(await screen.findByText(/a registered company$/)).toBeTruthy();
     expect(screen.queryByRole('note', { name: 'Seller legal name on approval' })).toBeNull();
   });
+
+  // [review-2475 delta S4-2] The console never promises a seller name the server declines to confirm: the server says
+  // which store names are a person's (a flag, never computed here), and the approval's answer says which were not
+  // confirmed and why.
+  it('a store whose name is a person’s: the tick says approval does not confirm it, and customers see “Ask the store”', async () => {
+    serve([{ ...change, stores: [{ ...change.stores[0], name: 'Sample Owner', nameIsAPerson: true }, { id: 'vnd-2', name: 'Sample Shop East', vendorType: 'STORE', status: 'ACTIVE', sellerNameCheckedName: null, nameIsAPerson: false }] }]);
+    renderWithQuery(<AccountChangesPage />);
+    const person = await screen.findByRole('checkbox', { name: /“Sample Owner” is a person’s name/ });
+    expect(person.closest('label')!.textContent).toContain('approval does not confirm it as the seller’s name; customers see “Ask the store” until the legal name is typed from the registration paper');
+    expect(screen.queryByRole('checkbox', { name: /“Sample Owner” is the business’s name/ })).toBeNull();
+    expect(screen.getByRole('checkbox', { name: /“Sample Shop East” is the business’s name on its papers/ })).toBeTruthy();
+  });
+
+  it('a held legal name that is a person’s: neither line promises customers will see it', async () => {
+    serve([{ ...change, legalName: { account: 'Sample Trading', change: 'Devon Director' },
+      sellerLegalNameOnApproval: { effect: 'CLEARED', from: 'Sample Trading', to: null, docType: null, heldNameIsAPerson: true } }]);
+    renderWithQuery(<AccountChangesPage />);
+    const note = await legalNameNote();
+    expect(note).toContain('The name typed from this change’s registration paper is a person’s name, so approval does not use it.');
+    expect(note).toContain('Approval clears “Sample Trading”');
+    expect(note).not.toContain('nobody typed');
+    const named = screen.getByLabelText('Business named on the papers').textContent;
+    expect(named).not.toContain('Customers see it as the seller once you approve');
+    expect(named).toContain('is a person’s name, so customers will not see it as the seller');
+  });
+
+  it('after approval: the answer’s unconfirmed stores are listed by name with the server’s reason', async () => {
+    const writes: ApiRequest[] = [];
+    let decided = false;
+    mockApi((r) => {
+      if (r.method === 'GET') return { body: { success: true, data: decided ? [] : [{ ...change, stores: [{ ...change.stores[0], name: 'Sample Owner', nameIsAPerson: true }] }] } };
+      writes.push(r); decided = true;
+      return { body: { success: true, data: { ...change, status: 'APPROVED', sellerLegalNameOnApproval: null,
+        sellerNamesNotConfirmed: { storeIds: ['vnd-1'], code: 'SELLER_NAME_IS_A_PERSON', message: 'The store’s name is a person’s name (server words).' },
+        sellerLegalNameNotUsed: { code: 'LEGAL_NAME_IS_A_PERSON', message: 'The legal name is a person’s name (server words).' } } } };
+    });
+    const user = userEvent.setup();
+    renderWithQuery(<AccountChangesPage />);
+    await user.click(await screen.findByRole('checkbox', { name: /“Sample Owner” is a person’s name/ }));
+    await user.type(screen.getByRole('textbox'), REASON);
+    await user.click(screen.getByRole('button', { name: 'Approve the change' }));
+    await waitFor(() => expect(writes).toHaveLength(1));
+    const said = await screen.findByRole('status', { name: 'What the approval did not confirm' });
+    expect(said.textContent).toContain('Seller name not confirmed for Sample Owner: The store’s name is a person’s name (server words).');
+    expect(said.textContent).toContain('Seller legal name not set: The legal name is a person’s name (server words).');
+  });
 });

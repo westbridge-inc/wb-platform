@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { approveAccountChange, fetchAccountChanges, refuseAccountChange, type AccountChange, type BusinessTypeOption, type SellerLegalNameOnApproval } from '@/lib/api';
+import { approveAccountChange, fetchAccountChanges, refuseAccountChange, type AccountChange, type AccountChangeApproval, type BusinessTypeOption, type SellerLegalNameOnApproval } from '@/lib/api';
 import { QueryFailed } from '@/components/mc/QueryFailed';
 import { docLabel } from '@/lib/review-center';
 import { gyDate } from '@/lib/dates';
@@ -31,6 +31,11 @@ const PAPER_WORDS: Record<AccountChange['papers'][number]['state'], string> = {
  * writing: sellerLegalNameOnApproval); this only puts it in words.
  */
 function legalNameOnApprovalWords(preview: SellerLegalNameOnApproval, change: Pick<AccountChange, 'kind'>, confirmsNames: boolean): string {
+  // [review-2475 delta S4-2] A name typed from the change's paper that is a person's is never promised to customers.
+  const personNote = preview.heldNameIsAPerson ? 'The name typed from this change’s registration paper is a person’s name, so approval does not use it. ' : '';
+  return personNote + effectWords(preview, change, confirmsNames);
+}
+function effectWords(preview: SellerLegalNameOnApproval, change: Pick<AccountChange, 'kind'>, confirmsNames: boolean): string {
   const paper = preview.docType ? docLabel(preview.docType) : 'registration paper';
   if (preview.effect === 'SET') {
     if (preview.from === null) return `Approval sets it to “${preview.to}”, as a person typed it from this change’s ${paper}.`;
@@ -41,12 +46,26 @@ function legalNameOnApprovalWords(preview: SellerLegalNameOnApproval, change: Pi
     return preview.from === null ? 'There is none now, and approval sets none.' : `Approval keeps “${preview.from}”.`;
   }
   const typedFor = change.kind === 'BUSINESS_TYPE' ? 'the old business type' : 'the old account holder’s papers';
-  return `Approval clears “${preview.from ?? ''}”: it was typed for ${typedFor}, and nobody typed a name from this change’s registration paper. `
+  return `Approval clears “${preview.from ?? ''}”: it was typed for ${typedFor}${preview.heldNameIsAPerson ? '' : ', and nobody typed a name from this change’s registration paper'}. `
     + `Customers then see “Ask the store” as the seller until a person confirms a name${confirmsNames ? ' (ticking each store’s name below does that)' : ''}.`;
+}
+
+/** [review-2475 delta S4-2] The approval's answer: what it did not confirm, by store name, with the server's reason. */
+type ApprovalSaid = { title: string; lines: string[] };
+function approvalLines(change: AccountChange, answer: AccountChangeApproval): string[] {
+  const lines: string[] = [];
+  const notConfirmed = answer.sellerNamesNotConfirmed;
+  if (notConfirmed?.storeIds.length) {
+    const names = notConfirmed.storeIds.map((id) => change.stores.find((s) => s.id === id)?.name ?? 'a store').join(', ');
+    lines.push(`Seller name not confirmed for ${names}: ${notConfirmed.message}`);
+  }
+  if (answer.sellerLegalNameNotUsed) lines.push(`Seller legal name not set: ${answer.sellerLegalNameNotUsed.message}`);
+  return lines;
 }
 
 export default function AccountChangesPage() {
   const changes = useQuery({ queryKey: ['account-changes', 'PENDING'], queryFn: () => fetchAccountChanges('PENDING') });
+  const [said, setSaid] = useState<ApprovalSaid | null>(null);
   if (changes.isError) return <QueryFailed what="the account changes" error={changes.error} onRetry={() => void changes.refetch()} />;
   if (!changes.data) return <p role="status" className="rc-muted">Loading…</p>;
   return (
@@ -55,14 +74,20 @@ export default function AccountChangesPage() {
         <h1 className="text-xl font-bold">Account changes</h1>
         <p className="rc-muted">A store&rsquo;s new business type, or a company&rsquo;s new account holder. Check each paper in Documents first; the store keeps selling on its old papers until you decide.</p>
       </div>
+      {said ? (
+        <div role="status" aria-label="What the approval did not confirm" className="rounded-2xl border border-[var(--border)] p-3">
+          <p className="font-semibold">Approved: {said.title}</p>
+          {said.lines.map((line) => <p key={line} className="rc-muted">{line}</p>)}
+        </div>
+      ) : null}
       {changes.data.length === 0
         ? <p className="rc-muted">No account change is waiting.</p>
-        : changes.data.map((change) => <AccountChangeRow key={change.id} change={change} />)}
+        : changes.data.map((change) => <AccountChangeRow key={change.id} change={change} onApproved={setSaid} />)}
     </section>
   );
 }
 
-function AccountChangeRow({ change }: { change: AccountChange }) {
+function AccountChangeRow({ change, onApproved }: { change: AccountChange; onApproved: (_said: ApprovalSaid | null) => void }) {
   const queryClient = useQueryClient();
   const [reason, setReason] = useState('');
   const [busy, setBusy] = useState(false);
@@ -78,7 +103,9 @@ function AccountChangeRow({ change }: { change: AccountChange }) {
     try {
       if (approve) {
         const sellerNames = namesToConfirm.length ? Object.fromEntries(namesToConfirm.map((s) => [s.id, s.name])) : undefined;
-        await approveAccountChange(change.id, sellerNames, reason.trim());
+        const answer = await approveAccountChange(change.id, sellerNames, reason.trim());
+        const lines = approvalLines(change, answer);
+        onApproved(lines.length ? { title, lines } : null);
       } else {
         await refuseAccountChange(change.id, reason.trim());
       }
@@ -111,7 +138,7 @@ function AccountChangeRow({ change }: { change: AccountChange }) {
         ))}
       </ul>
       {!change.papersComplete ? <p className="rc-muted">Approve each paper in Documents before deciding the change.</p> : null}
-      <LegalNameLine legalName={change.legalName} />
+      <LegalNameLine legalName={change.legalName} isAPerson={change.sellerLegalNameOnApproval?.heldNameIsAPerson === true} />
       {change.sellerLegalNameOnApproval ? (
         <div role="note" aria-label="Seller legal name on approval">
           <p className="font-semibold">Seller legal name</p>
@@ -124,7 +151,9 @@ function AccountChangeRow({ change }: { change: AccountChange }) {
           {namesToConfirm.map((s) => (
             <label key={s.id} className="flex gap-2 items-start">
               <input type="checkbox" checked={!!confirmed[s.id]} onChange={(e) => setConfirmed((c) => ({ ...c, [s.id]: e.target.checked }))} />
-              <span>&ldquo;{s.name}&rdquo; is the business&rsquo;s name on its papers</span>
+              {s.nameIsAPerson
+                ? <span>&ldquo;{s.name}&rdquo; is a person&rsquo;s name: approval does not confirm it as the seller&rsquo;s name; customers see &ldquo;Ask the store&rdquo; until the legal name is typed from the registration paper</span>
+                : <span>&ldquo;{s.name}&rdquo; is the business&rsquo;s name on its papers</span>}
             </label>
           ))}
         </fieldset>
@@ -143,8 +172,17 @@ function AccountChangeRow({ change }: { change: AccountChange }) {
 }
 
 /** [review-2475 F1] Which business the papers name, so a paper naming another business is seen before approving. */
-function LegalNameLine({ legalName }: { legalName: AccountChange['legalName'] }) {
+function LegalNameLine({ legalName, isAPerson }: { legalName: AccountChange['legalName']; isAPerson: boolean }) {
   if (!legalName) return null;
+  // [review-2475 delta S4-2] The server will not use a typed name that is a person's: never promise customers see it.
+  if (legalName.change && isAPerson) {
+    return (
+      <p aria-label="Business named on the papers">
+        Business named on this change&rsquo;s papers: &ldquo;{legalName.change}&rdquo;. It is a person&rsquo;s name, so customers will not see it as the seller
+        {legalName.account ? <> (now: &ldquo;{legalName.account}&rdquo;)</> : null}. If it is not this account&rsquo;s business, refuse.
+      </p>
+    );
+  }
   if (legalName.change) {
     return (
       <p aria-label="Business named on the papers">

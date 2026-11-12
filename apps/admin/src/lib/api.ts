@@ -961,7 +961,9 @@ export interface AccountChange {
   papers: AccountChangePaper[];
   papersComplete: boolean;
   accountBasis: 'OWNER' | 'COMPANY' | 'MANAGER';
-  stores: Array<{ id: string; name: string; vendorType: string; status: string; sellerNameCheckedName: string | null }>;
+  /** `nameIsAPerson` (server, review-2475 delta S4-2): approval leaves this store's seller name unconfirmed (a business type
+   *  change) or ends its confirmation (a handover), because the name is a person's. Never re-derived here. */
+  stores: Array<{ id: string; name: string; vendorType: string; status: string; sellerNameCheckedName: string | null; nameIsAPerson?: boolean }>;
   holder: { id: string; name: string };
   newHolder: { id: string; name: string } | null;
   decisionReason: string | null;
@@ -980,12 +982,20 @@ export interface SellerLegalNameOnApproval {
   to: string | null;
   /** SET: the change's own paper the name was typed from. */
   docType: string | null;
+  /** [review-2475 delta S4-2] A name was typed from the change's paper but it is a person's, so approval does not use it. */
+  heldNameIsAPerson?: boolean;
+}
+/** [review-2475 delta S4-2] What an approval did not confirm, and why: the server's words (never a name). */
+export interface AccountChangeApproval {
+  sellerNamesNotConfirmed?: { storeIds: string[]; code: string; message: string } | null;
+  sellerLegalNameNotUsed?: { code: string; message: string } | null;
 }
 export const fetchAccountChanges = (status: AccountChange['status'] = 'PENDING') =>
   apiFetch(`/api/v1/admin/account-changes?status=${status}`).then((r) => ((r as { data?: AccountChange[] }).data ?? []));
 /** Approving a business type change confirms each store's name exactly as shown (the seller name customers see). */
 export const approveAccountChange = (id: string, sellerNames: Record<string, string> | undefined, reason: string) =>
-  apiFetch(`/api/v1/admin/account-changes/${id}/approve`, { method: 'PUT', body: JSON.stringify(sellerNames ? { sellerNames } : {}), reason });
+  apiFetch(`/api/v1/admin/account-changes/${id}/approve`, { method: 'PUT', body: JSON.stringify(sellerNames ? { sellerNames } : {}), reason })
+    .then((r) => ((r as { data?: AccountChangeApproval } | null)?.data ?? {}));
 /** The reason is what the store (and the person named) read. */
 export const refuseAccountChange = (id: string, reason: string) =>
   apiFetch(`/api/v1/admin/account-changes/${id}/refuse`, { method: 'PUT', body: JSON.stringify({}), reason });
