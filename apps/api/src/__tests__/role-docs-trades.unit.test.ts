@@ -90,6 +90,6 @@ describe('[ROLE-DOCS · PR 3] each trade asks exactly what the law requires', ()
     // [DEPT-PRICE] 2026-10-29.1 carries it on too, with the department-store fee at 45,000; [CHECKLIST-LEGAL]
     // 2026-11-01.1 too, without the self-declared tier's lists; [O1] 2026-11-07.1 too (the lists unchanged); [COMPANY-DOCS]
     // 2026-11-10.1 too (adds the company and manager lists only)
-    expect(PLATFORM_CONFIG_VERSION).toBe('2026-11-10.1');
+    expect(PLATFORM_CONFIG_VERSION).toBe('2026-11-12.1');
   });
 });

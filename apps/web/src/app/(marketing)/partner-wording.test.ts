@@ -94,20 +94,25 @@ describe('[FLOW-QA2 NEW-5] the vendors page asks a business for what the store c
   // the step's words as the page shows them (its code comment may name what it no longer asks)
   const step = page.slice(page.indexOf("t: 'Send your documents'"), page.indexOf("t: 'We review them'")).replace(/\/\/.*$/gm, '');
 
-  it('no checklist asks for a TIN certificate (dropped 6 Oct 2026), so the page does not either', () => {
-    for (const key of ['RESTAURANT', 'SUPERMARKET', 'STORE', 'RESTAURANT_OWN_NAME', 'SUPERMARKET_OWN_NAME', 'STORE_OWN_NAME']) {
+  // [RESTAURANT-TIN · owner ruling 12 Nov 2026 — a DELIBERATE change] a restaurant sends its TIN certificate in the GRA
+  // licence's place; no other store does, and the page says so for the restaurant only
+  it('only a restaurant’s checklist asks for a TIN certificate, and the page names it for the restaurant only', () => {
+    for (const key of ['SUPERMARKET', 'STORE', 'SUPERMARKET_OWN_NAME', 'STORE_OWN_NAME']) {
       expect(checklist(key), key).not.toContain('tin_certificate');
     }
-    expect(step).not.toMatch(/\bTIN\b/);
+    for (const key of ['RESTAURANT', 'RESTAURANT_OWN_NAME']) expect(checklist(key), key).toContain('tin_certificate');
+    expect(step.match(/\bTIN\b/g)).toHaveLength(1);
+    expect(step).toContain('a restaurant adds its TIN certificate');
+    expect(step).not.toMatch(/GRA licence/);
   });
 
-  it('each document it names is on the checklists: owner ID, registration or the own-name declaration, storefront photo, a restaurant’s GRA licence, a service business’s owner ID only', () => {
+  it('each document it names is on the checklists: owner ID, registration or the own-name declaration, storefront photo, a restaurant’s TIN certificate, a service business’s owner ID only', () => {
     for (const key of ['SUPERMARKET', 'STORE']) expect(checklist(key)).toEqual(['owner_national_id', 'business_registration', 'storefront_photo']);
-    expect(checklist('RESTAURANT')).toEqual(['owner_national_id', 'business_registration', 'gra_restaurant_licence', 'storefront_photo']);
+    expect(checklist('RESTAURANT')).toEqual(['owner_national_id', 'business_registration', 'tin_certificate', 'storefront_photo']);
     expect(checklist('STORE_OWN_NAME')).toEqual(['owner_national_id', 'own_name_declaration', 'storefront_photo']);
     // [REVIEW-F3 S3-1] the page covers service businesses too: their checklist is the owner's ID only
     expect(checklist('SERVICE')).toEqual(['owner_national_id']);
-    expect(step).toContain('Owner ID, business registration (or a signed declaration if you trade under your own surname) and a photo of your storefront; a restaurant adds its GRA licence, and a service business sends only the owner’s ID.');
+    expect(step).toContain('Owner ID, business registration (or a signed declaration if you trade under your own surname) and a photo of your storefront; a restaurant adds its TIN certificate, and a service business sends only the owner’s ID.');
     // [COMPANY-DOCS · owner 10 Nov 2026] a registered company and a manager, as the platform's lists ask (never an owner's ID)
     expect(checklist('STORE_COMPANY')).toEqual(['certificate_of_incorporation', 'account_holder_id', 'company_authority_letter', 'storefront_photo']);
     expect(checklist('STORE_MANAGER')).toEqual(['account_holder_id', 'owner_authority_letter', 'business_registration', 'storefront_photo']);

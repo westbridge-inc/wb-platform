@@ -99,7 +99,11 @@ describe('CountryConfig — Guyana seeded, everything reads from config', () => 
     // — a DELIBERATE change to this pin] the self-declared tier whose home cook kept it required is removed: its list
     // is a retired key, read as no list at all
     expect(restaurantDocs).not.toContain('food_handler_cert');
-    expect(await countryConfig.getDocumentChecklist('GY', 'RESTAURANT_OPTIONAL')).toEqual(['food_handler_cert']);
+    // [RESTAURANT-TIN · owner ruling 12 Nov 2026 — a DELIBERATE change to this pin] restaurants only: the TIN certificate
+    // takes the GRA licence's required place, and the licence is optional
+    expect(restaurantDocs).toContain('tin_certificate');
+    expect(restaurantDocs).not.toContain('gra_restaurant_licence');
+    expect(await countryConfig.getDocumentChecklist('GY', 'RESTAURANT_OPTIONAL')).toEqual(['food_handler_cert', 'gra_restaurant_licence']);
     expect(await countryConfig.getDocumentChecklist('GY', 'RESTAURANT_UNREGISTERED')).toEqual([]);
   });
 

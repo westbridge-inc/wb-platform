@@ -163,10 +163,12 @@ describe('[V5 · ruling 8] the taxi’s seven documents', () => {
     expect(moverRequiredFrom(DEFAULT_DOCUMENT_CHECKLISTS, vt)).toEqual(TAXI7);
   });
 
-  it('no list anywhere names the old single permit or the TIN certificate', () => {
+  // [RESTAURANT-TIN · owner ruling 12 Nov 2026 — a DELIBERATE change] ruling 7 holds for every list but a RESTAURANT's:
+  // a restaurant sends its TIN certificate in the GRA licence's place (restaurant-tin-certificate.test.ts).
+  it('no list anywhere names the old single permit; only a restaurant’s names the TIN certificate', () => {
     for (const [key, list] of Object.entries(DEFAULT_DOCUMENT_CHECKLISTS)) {
       expect(list, key).not.toContain('hire_car_permit');
-      expect(list, key).not.toContain('tin_certificate');
+      if (!key.startsWith('RESTAURANT')) expect(list, key).not.toContain('tin_certificate');
     }
   });
 
@@ -404,8 +406,9 @@ describe('[V5 · ruling 7] TIN and the VAT number', () => {
   }
   const put = (token: string, body: Record<string, unknown>) => app.inject({ method: 'PUT', url: '/api/v1/vendor/profile', headers: { authorization: `Bearer ${token}` }, payload: body });
 
-  it('stores open without a TIN certificate', () => {
-    for (const key of ['RESTAURANT', 'SUPERMARKET', 'STORE']) expect(DEFAULT_DOCUMENT_CHECKLISTS[key], key).not.toContain('tin_certificate');
+  it('stores open without a TIN certificate — [RESTAURANT-TIN · owner 12 Nov 2026] all but a restaurant', () => {
+    for (const key of ['SUPERMARKET', 'STORE']) expect(DEFAULT_DOCUMENT_CHECKLISTS[key], key).not.toContain('tin_certificate');
+    expect(DEFAULT_DOCUMENT_CHECKLISTS['RESTAURANT']).toContain('tin_certificate');
   });
 
   it('the owner may add a VAT registration number (format-checked), change it, or take it off', async () => {

@@ -1779,6 +1779,8 @@ model Vendor {
   items                   Item[]
   /// [POS-SYNC] Till exports this store confirmed (one row per applied file).
   posImports              PosImport[]
+  /// [KITCHEN-INTEGRATION] The store's kitchen-system connections (one per provider; Dragontail today).
+  kitchenIntegrations     VendorIntegration[]
   isVerified              Boolean                  @default(false)
   // [REPORT-013 F-013-06] The wall-clock bound of the document authority
   // behind isVerified: min(expiresAt) over the checklist evidence, written
@@ -2050,6 +2052,9 @@ model Item {
   archivedAt        DateTime?
   isPopular         Boolean           @default(false)
   sku               String?
+  /// [KITCHEN-INTEGRATION] The item's number in the store's kitchen system's catalogue (Dragontail ItemNo). Null = not
+  /// mapped: an order with an unmapped line is never sent to the kitchen system; the store's tablet rings instead.
+  externalItemNo    String?
   barcode           String?
   unit              String?
 
@@ -2254,6 +2259,9 @@ model Option {
   /// so a copy's id (held by carts) never changes while the option exists in the library.
   libraryOptionId String?
   libraryOption   ModifierOption? @relation(fields: [libraryOptionId], references: [id], onDelete: SetNull)
+  /// [KITCHEN-INTEGRATION] The choice's number in the store's kitchen system's catalogue (Dragontail ItemNo of the
+  /// modifier). Null = not mapped (see Item.externalItemNo).
+  externalItemNo  String?
 
   @@index([followUpGroupId])
   @@index([libraryOptionId])
@@ -2311,6 +2319,140 @@ model ModifierOption {
   @@index([modifierGroupId])
   @@index([followUpGroupId])
   @@map("modifier_options")
+}
+
+/// [KITCHEN-INTEGRATION · owner 11 Nov 2026] The kitchen systems a store's orders can be sent to. Behind
+/// DRAGONTAIL_INTEGRATION (default off).
+enum KitchenProvider {
+  DRAGONTAIL
+}
+
+/// [KITCHEN-INTEGRATION] Where one order stands with its store's kitchen system. The edges live in
+/// modules/kitchen/kitchen-sync-state.ts, never here.
+enum KitchenSyncState {
+  /// Claimed when the store would have been alerted; waiting for the sender.
+  QUEUED
+  /// A sender holds the lease and is talking to the kitchen system.
+  SENDING
+  /// The kitchen system took the order.
+  SENT
+  /// [review B S3-3] The insert timed out (or its sender died mid-send): the kitchen MAY have it. Never re-sent and
+  /// never rung on the tablet while unknown (no double-make): operations are paged, kitchen events for it confirm it
+  /// (-> SENT), a Swift cancel tells the kitchen (-> CANCEL_QUEUED), and past the verify window with no sign of it a
+  /// cancel is sent and, once that goes through, the tablet rings (-> FALLBACK).
+  UNKNOWN
+  /// [delta review S3-1] An UNKNOWN send being cancelled at the kitchen right now: a kitchen event cannot confirm
+  /// (and so accept) it meanwhile. The cancel going through -> FALLBACK (rung); failing -> back to UNKNOWN.
+  CANCELLING
+  /// Never sent: the store's tablet was rung instead (the order is the store's on Swift, as for any store).
+  FALLBACK
+  /// The Swift order was cancelled after it was sent; the kitchen system still has to be told.
+  CANCEL_QUEUED
+  /// The kitchen system was told of the cancellation.
+  CANCELLED
+  /// The order finished (delivered or collected); nothing more is owed either way.
+  DONE
+}
+
+/// [KITCHEN-INTEGRATION] One store's connection to a kitchen system. Credentials are NEVER stored here: secretRef and
+/// webhookSecretRef name entries in the DRAGONTAIL_CREDENTIALS secret file (utils/secret-files.ts).
+model VendorIntegration {
+  id                  String                 @id @default(cuid())
+  vendorId            String
+  vendor              Vendor                 @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  /// The store's tenant, stamped from the vendor by vendor_integrations_tenant_matches_vendor.
+  tenantId            String                 @default("swift-default")
+  provider            KitchenProvider
+  /// The store's number in the kitchen system (Dragontail storeNo, an integer).
+  externalStoreNo     Int?
+  enabled             Boolean                @default(false)
+  /// The key of this store's login in the credentials secret; never the credential itself. DERIVED from this row's
+  /// id by the server (kitchen/<provider>/<id>/login), never supplied by a request: unique, and held equal to that
+  /// form by vendor_integrations_refs_check, so no connection can name another's login.
+  secretRef           String?                @unique
+  /// The key of this store's webhook secret (kitchen/<provider>/<id>/webhook); derived and held the same way.
+  webhookSecretRef    String?                @unique
+  /// Dragontail GetOrderUpdatesForPos: the last updateStamp processed (0 = from the start of the working day).
+  pollUpdateStamp     BigInt                 @default(0)
+  lastPolledAt        DateTime?
+  lastHealthyAt       DateTime?
+  /// The last failure, in operator words (never a credential, never a customer detail).
+  lastError           String?
+  lastErrorAt         DateTime?
+  createdAt           DateTime               @default(now())
+  updatedAt           DateTime               @updatedAt
+  syncs               OrderIntegrationSync[]
+
+  @@unique([vendorId, provider])
+  @@unique([provider, externalStoreNo])
+  @@index([tenantId])
+  @@map("vendor_integrations")
+}
+
+/// [KITCHEN-INTEGRATION · review B S4-1, A S2-1] Swift's order-number counter at one kitchen-system store, keyed by
+/// (provider, store number), NOT by the connection: Dragontail's key is (storeNo, orderId), so a recreated or
+/// renumbered connection continues the counter and never reuses an id. The base is frozen when the counter is
+/// born, so changing DRAGONTAIL_ORDER_ID_BASE later can never collide with ids already used. Holds no person data.
+model KitchenOrderCounter {
+  provider        KitchenProvider
+  externalStoreNo Int
+  /// The id base in force when this store's counter was born (DRAGONTAIL_ORDER_ID_BASE then).
+  orderIdBase     Int
+  /// The next sequence number to hand out (1 first).
+  next            Int             @default(1)
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  @@id([provider, externalStoreNo])
+  @@map("kitchen_order_counters")
+}
+
+/// [KITCHEN-INTEGRATION] One order's sync with its store's kitchen system. At most one per order and provider, so a
+/// sweep or a replay can never send an order twice.
+model OrderIntegrationSync {
+  id                  String            @id @default(cuid())
+  orderId             String
+  order               Order             @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  vendorIntegrationId String
+  vendorIntegration   VendorIntegration @relation(fields: [vendorIntegrationId], references: [id], onDelete: Cascade)
+  /// The order's tenant, stamped from the order by order_integration_syncs_tenant_matches_order.
+  tenantId            String            @default("swift-default")
+  provider            KitchenProvider
+  /// The order's id in the kitchen system (Dragontail orderId, an integer unique with the storeNo).
+  externalOrderId     Int
+  /// [security scan · d68ff3f6] The kitchen store number this order was claimed under, frozen at the claim: its send,
+  /// its cancel and its events always use this number, never the connection's current one.
+  externalStoreNo     Int
+  /// The number the kitchen shows (Dragontail dailyNo).
+  dailyNo             Int
+  state               KitchenSyncState  @default(QUEUED)
+  /// The last kitchen-system action applied (e.g. Prepared, Pack, Dispatched).
+  lastAction          String?
+  lastActionAt        DateTime?
+  /// Dragontail updateStamp from the last insert answer.
+  updateStamp         BigInt?
+  /// The kitchen system's own promise for the order, in seconds, when it gave one.
+  promiseSeconds      Int?
+  attempts            Int               @default(0)
+  /// A sender's lease: another sender leaves the row alone until it lapses.
+  leaseUntil          DateTime?
+  /// The last failure, in operator words (never a credential, never a customer detail).
+  lastError           String?
+  sentAt              DateTime?
+  fallbackAt          DateTime?
+  cancelledAt         DateTime?
+  dispatchedAt        DateTime?
+  createdAt           DateTime          @default(now())
+  updatedAt           DateTime          @updatedAt
+
+  @@unique([orderId, provider])
+  /// [delta review S3-2] Dragontail's own key: (storeNo, orderId), per provider. Never the connection's, so a
+  /// renumbered connection's new store number cannot collide with its own old ids.
+  @@unique([provider, externalStoreNo, externalOrderId])
+  @@index([vendorIntegrationId, externalOrderId])
+  @@index([state, leaseUntil])
+  @@index([tenantId])
+  @@map("order_integration_syncs")
 }
 
 // ==========================================
@@ -2687,6 +2829,8 @@ model Order {
   // [SAFE-B] Issued handover photos and the failed-handover filing (retained evidence).
   handoverPhotoProofs HandoverPhotoProof[]
   handoverEvidence    CashHandoverEvidence?
+  /// [KITCHEN-INTEGRATION] Where this order stands with its store's kitchen system (none for most stores).
+  kitchenSyncs        OrderIntegrationSync[]
   @@index([customerId])
   @@index([vendorId])
   @@index([riderId])
