@@ -225,6 +225,21 @@ const STATUS_TRANSITIONS: Record<string, { from: OrderStatus[]; to: OrderStatus;
   'arrived':         { from: ['EN_ROUTE_DELIVERY'], to: 'ARRIVED', note: 'Rider reported arriving at the customer' },
 };
 
+/** The answer to a rider step. `replayed` [FOLLOWUPS 11 Nov 2026]: the step was already taken (nothing was
+ *  written or sent this time); additive, the apps read only `status`. */
+function riderStepAnswer(order: { id: string; orderNumber: string }, status: OrderStatus, replayed: boolean) {
+  return {
+    success: true,
+    data: {
+      orderId: order.id,
+      orderNumber: order.orderNumber,
+      status,
+      updatedAt: new Date().toISOString(),
+      ...(replayed ? { replayed: true } : {}),
+    },
+  };
+}
+
 /** The two rungs that assert a position. Which endpoint the claim is about
  *  decides which point the distance is measured to. */
 const ARRIVAL_TARGET: Record<string, 'pickup' | 'dropoff'> = {
@@ -1657,6 +1672,11 @@ export async function riderRoutes(app: FastifyInstance) {
       const rider = await getRider(app, request.user.userId);
       const order = await getOwnedOrder(app, id, rider.id);
 
+      // [FOLLOWUPS 11 Nov 2026] A repeat of the step this rider already took (a double tap, a retry after a lost
+      // answer): the answer the first tap lost, with nothing written or sent again. The seam re-checks the same
+      // fact under the order lock for two taps that race (replayAtTarget).
+      if (order.status === to) return riderStepAnswer(order, to, true);
+
       if (!from.includes(order.status)) {
         throw new AppError(
           400,
@@ -1722,15 +1742,7 @@ export async function riderRoutes(app: FastifyInstance) {
         { riderId: rider.id, assignmentVersion: order.riderAssignmentVersion, allowedFrom: from },
       );
 
-      return {
-        success: true,
-        data: {
-          orderId: updated.id,
-          orderNumber: updated.orderNumber,
-          status: to,
-          updatedAt: new Date().toISOString(),
-        },
-      };
+      return riderStepAnswer(updated, to, false);
     });
   }
 
