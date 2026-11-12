@@ -105,6 +105,8 @@ const TENANT_QUERY_EXTENSIONS = {
   feeRefundCase: scoped,
   // [CARD-READY] A partner's card money paid back to their card.
   cardCreditRefund: scoped,
+  // [COMPANY-DOCS Part 3] A store account's change of business type or of account holder, walled like the account.
+  accountChangeRequest: scoped,
   billingDunningClock: scoped, billingObligationTransition: scoped, paymentConfirmationHold: scoped, billingFeeNotice: scoped, billingNoticeHandoff: scoped,
   tenantBillingCurrency: scoped, trialGrant: scoped,
   moverFeeAuthority: scoped, moverFeeSubscription: scoped,

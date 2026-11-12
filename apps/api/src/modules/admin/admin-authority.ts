@@ -217,12 +217,14 @@ const E = {
   adRefundIntent: { model: 'adRefundIntent', fields: ['status', 'payoutRail', 'manualPayoutRef', 'providerRefundRef', 'completedAt'] },
   paymentConfirmation: { model: 'paymentConfirmationHold', fields: ['status', 'resolvedAt', 'resolvedBy', 'resolutionEvidence'] },
   // [PT-4] A held card payment's resolution: what finance decided and the provider actions it took.
-  cardSession: { model: 'cardSession', fields: ['status', 'failureCode', 'providerTransactionRef', 'providerVoidState', 'providerVoidRef', 'providerRefundState', 'bookClaimedAt', 'resolution', 'resolvedBy', 'resolvedAt'] },
+  cardSession: { model: 'cardSession', fields: ['status', 'failureCode', 'providerTransactionRef', 'providerVoidState', 'providerVoidRef', 'providerRefundState', 'providerRefundRef', 'bookClaimedAt', 'resolution', 'resolvedBy', 'resolvedAt'] },
   agentPayment: { model: 'mmgAgentPayment', fields: ['status', 'amount', 'subscriptionId'] },
   // [MMG REVERSAL] A return of a weekly-fee payment: where it stands and how a person resolved it.
   feeReversal: { model: 'mmgFeeReversal', fields: ['state', 'heldReason', 'resolution', 'resolvedBy', 'failedAt', 'reversedAt', 'walletDebitedAt'] },
   settlementBatch: { model: 'settlementBatch', fields: ['status', 'expectedNetGyd', 'depositedGyd', 'depositedAt', 'bankRef'] },
   verification: { model: 'verificationDocument', fields: ['status', 'reviewedAt'] },
+  // [COMPANY-DOCS Part 3] An account change's decision (who decided, when, and why).
+  accountChange: { model: 'accountChangeRequest', fields: ['status', 'decidedAt', 'decidedById', 'decisionReason'] },
   // [STORE-VAT] A store's VAT decision (the number itself is never named in the trail's diff).
   storeVat: { model: 'vendor', routeParam: 'vendorId', fields: ['vatStatus', 'vatMode', 'vatModeRequested', 'vatEffectiveFrom', 'vatReviewedAt'] },
   // [ADM-002] `resolvedAt` does not exist on ReturnRequest (`reviewedAt` does).
@@ -593,6 +595,12 @@ export const ADMIN_ROUTE_AUTHORITY: Readonly<Record<AdminRouteKey, AdminRouteAut
   'PUT /verification/:id/reject': reviewed(c('C3', 'verification.decide', E.verification)),
   'PUT /verification/:id/revoke': reviewed(c('C3', 'verification.decide', E.verification)),
   // [STORE-VAT · owner O-5] A store's VAT certificate: decided by a document reviewer, like every document.
+  // [COMPANY-DOCS Part 3] A store's change of business type or of account holder: read and decided by a document
+  // reviewer (names and paper states, never a document); approving moves a business's papers, seller name or holder.
+  'GET /account-changes': reviewed(c('C1', 'verification.read')),
+  'GET /account-changes/:id': reviewed(c('C1', 'verification.read')),
+  'PUT /account-changes/:id/approve': reviewed(c('C3', 'verification.decide', E.accountChange)),
+  'PUT /account-changes/:id/refuse': reviewed(c('C3', 'verification.decide', E.accountChange)),
   'GET /store-vat/pending': c('C0', 'verification.read'),
   'POST /store-vat/:vendorId/approve': reviewed(c('C3', 'verification.decide', E.storeVat)),
   'POST /store-vat/:vendorId/reject': reviewed(c('C3', 'verification.decide', E.storeVat)),

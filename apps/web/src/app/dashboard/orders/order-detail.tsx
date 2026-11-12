@@ -18,7 +18,7 @@ import { useFeedPollInterval } from '@/lib/store-live-feed';
 import { acceptHeldForPayment, mmgMovedLabel, mmgMoneyMoved, mmgPayBlockedReason } from '@/lib/mmg-pay-words';
 import { formatAppointmentSlot } from '@/lib/appointmentTime';
 import {
-  confirmedOrderFields, customerLines, orderMoneyRows, orderPaymentLine, prepTimeLine, recoveryView, storeCanConfirmReturn, vendorStatusLabel, whenLabel,
+  confirmedOrderFields, customerLines, orderMoneyNotes, orderMoneyRows, orderPaymentLine, prepTimeLine, recoveryView, storeCanConfirmReturn, vendorStatusLabel, whenLabel,
 } from '@/lib/vendor-order-view';
 import {
   acceptOrder, completePickup, confirmPayment, confirmReturnReceived, getItems, getOrder, markNotCollected,
@@ -665,6 +665,7 @@ export function OrderDetail({ id, onClose }: { id: string; onClose: () => void }
             <span>{row.minus && row.value !== null ? `-${money(row.value)}` : money(row.value)}</span>
           </div>
         ))}
+        {orderMoneyNotes(o).map((line) => <p key={line} className="text-xs text-[var(--swift-muted)]">{line}</p>)}
         {orderPaymentLine(o) && <p className="pt-1 text-xs font-semibold text-[var(--swift-muted)]">{orderPaymentLine(o)}</p>}
       </section>
 

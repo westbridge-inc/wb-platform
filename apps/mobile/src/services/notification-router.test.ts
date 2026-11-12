@@ -513,6 +513,12 @@ const CENSUS: Case[] = [
   { k: 'staff_added', d: { vendorId: 'v1' }, to: { screen: 'VendorRoot' }, why: 'the person ADDED to a store team — the store’s own screen, selected by its vendorId; it is reached in Business mode, which the body tells them to choose' },
   { k: 'staff_invite', d: { vendorId: 'v1', audience: 'customer' }, to: { screen: 'Storefront', params: { screen: 'Notifications' } }, why: '[row 55] the invite is answered on the inbox Accept card' },
   { k: 'staff_joined', d: { vendorId: 'v1', audience: 'business' }, to: VENDOR_TAB('Account'), why: 'store owner — [row 55] someone accepted their invite; the team panel is on the Account tab' },
+  // [COMPANY-DOCS Part 3 · owner rulings 10 Nov 2026 (c), (d)] A change of business type or of account holder.
+  { k: 'account_change_approved', d: { changeId: 'c1' }, to: VENDOR_TAB('Account'), why: 'account holder — their business type changed: Account, where Change business type shows it' },
+  { k: 'account_change_refused', d: { changeId: 'c1' }, to: VENDOR_TAB('Account'), why: 'account holder — a change was refused or withdrawn: Account → Change business type shows the reason' },
+  { k: 'account_handover_named', d: { changeId: 'c1' }, to: { screen: 'AccountHandover' }, why: 'the person a company named as its new account holder — they say yes or no, then upload their papers, on that screen' },
+  { k: 'account_handover_completed', d: { changeId: 'c1' }, to: { screen: 'VendorRoot' }, why: 'the new account holder — the store is theirs now, reached in Business mode' },
+  { k: 'account_handover_ended', d: { changeId: 'c1' }, to: HOME, why: 'HOME: the old holder (signed out of the store), or the person named when it did not go through — the notice is the whole message' },
   { k: 'review_response', d: { ratingId: 'r1', vendorId: 'v1' }, to: { screen: 'VendorReviews', params: { vendorId: 'v1' } }, why: 'the customer who wrote the review — the store replied; the store’s reviews page shows the reply' },
   { k: 'rating_removed', to: HOME, why: 'HOME: the person whose review was removed — the payload names no rating and no store, so there is nothing to open; the notice is the whole message' },
   { k: 'category_request_resolved', to: VENDOR_TAB('Menu'), why: 'store owner — a category they asked for was added, mapped or declined; items are tagged in the catalogue tab' },
@@ -536,6 +542,7 @@ const CENSUS: Case[] = [
 
   // ── Admin / ops pages. null is CORRECT: there is no mobile admin app.
   { k: 'ops_error_spike', to: null, why: 'admins' },
+  { k: 'account_change_pending', to: null, why: 'admins — [COMPANY-DOCS Part 3] a change of business type or a handover to check; decided in the console' },
   { k: 'ops_fee_refund_overdue', to: null, why: 'admins' },
   { k: 'ops_error_sustained', to: null, why: 'admins' },
   { k: 'ops_ride_overdue', to: null, why: 'admins' },

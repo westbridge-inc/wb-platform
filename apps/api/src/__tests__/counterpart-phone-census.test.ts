@@ -41,7 +41,9 @@ const LEDGER: Record<string, { count: number; why: string }> = {
   'modules/driver/driver.routes.ts': { count: 3, why: `2 ${OWN}; 1 ${GATED}` },
   'modules/rider/rider.routes.ts': { count: 3, why: `2 ${OWN}; 1 ${GATED} (the store's account line is no longer selected)` },
   'modules/user/customer.routes.ts': { count: 4, why: `2 ${OWN}; 1 receipt input (the receipt prints only the seller's PUBLISHED phone); 1 ${GATED}` },
-  'modules/vendor/vendor.routes.ts': { count: 5, why: `3 ${GATED}; 1 ${OWN} (store team; GET+PUT /staff share staffMemberUserSelect); 1 ${INTERNAL} (reserved-name check)` },
+  'modules/vendor/vendor.routes.ts': { count: 6, why: `3 ${GATED}; 2 ${OWN} (store team; GET+PUT /staff share staffMemberUserSelect; GET /subscription compares the fee's MMG payer number with the caller's own [review-2475 G1]); 1 ${INTERNAL} (reserved-name check)` },
+  // [COMPANY-DOCS Part 3] the handover approval: the old holder's number is compared with each store's phones (a store phone that is theirs stops being the store's) and the new holder's becomes the private contact line. Never in a response or a notice.
+  'modules/vendor/account-change.ts': { count: 3, why: INTERNAL },
   // [KITCHEN-INTEGRATION · OWNER RULING 12 Nov 2026] a deliberate O-1 exception: a cash DELIVERY customer's number goes
   // to a PARTY, the store, through its own kitchen system, for its own driver (switch off by default).
   'modules/kitchen/kitchen-sync.ts': { count: 1, why: `owner ruling 12 Nov 2026 (O-1 exception): a cash delivery customer's number goes to the store's own kitchen system for its driver; never for a pickup, never the last name` },

@@ -90,13 +90,22 @@ import {
 //      know answers HTTP 204 with no body. readTransactionRecord reads that
 //      shape (see there).
 //   6. [CARD-REFUND-LOOKUP] PowerTranz's written answer to Swift (9 Nov 2026):
-//      the lookup "is supported for all transaction types", and refunds
+//      the lookup works for every transaction type, and refunds
 //      (partial ones and Merchant Portal ones included) are supported. So a
 //      refund Swift sent whose answer is not known is checked by reading the
 //      ORIGINAL transaction's record (lookupRefund): its OrderSummary
-//      TotalCreditAmount (or VoidDateTime) says whether the whole payment went
-//      back. Only when a person asks (two people), never as the normal flow;
+//      TotalCreditAmount (or VoidDateTime) says whether exactly what Swift
+//      asked back (the whole payment, or the part) went back. Only when a person asks (two people), never as the normal flow;
 //      the refund is never sent again.
+//   7. [OWNER 10 Nov 2026 · PARTLY USED CARD PAYMENT] A refund may be PART of
+//      the payment: "Powertranz supports partial capture and refund ... You
+//      cannot void a transaction partially", and "Partial capture, partial
+//      refund and void after capture, are features that should be supported by
+//      acquiring banks" (PowerTranz developer docs, Authorization Result); its
+//      written answer to Swift (9 Nov 2026) says the same. It is the same call
+//      (sec. 5.2 / 7.5) with the part as TotalAmount, and refund() counts only
+//      an approval of exactly the amount asked; a refusal is `failed`. The
+//      lookup judges a partial refund against that part (judgeRefundRecord).
 //
 // What the guide does NOT document, so this provider does not do it:
 //   - charging a saved card without the cardholder present: a token charge
@@ -870,20 +879,33 @@ type RefundVerdict = { status: 'refunded'; how: 'credit' | 'void'; reason: strin
  *     PowerTranz APPROVED (never a pending, declined or reversed attempt). The staging records of 10 Nov 2026 hold no
  *     refund yet: a real refund's record pins this before cards go live;
  *   - any other credit (part of it, or a capture that is not Swift's price): never "refunded" — held for the owner.
+ *
+ * [OWNER 10 Nov 2026 · PARTLY USED CARD PAYMENT] `refundMinor` below the payment (held.amountMinor) is a PARTIAL refund
+ * Swift sent (the payment's weeks that had not started; PowerTranz's docs: "Powertranz supports partial capture and
+ * refund"). It is `refunded` only when the capture is Swift's price and TotalCreditAmount is EXACTLY that part. More
+ * back (the whole payment, or a void — a void can only be whole), less, or any other credit is held for the owner; no
+ * credit yet is not refunded. Absent, or equal to the payment, it is the whole-payment rule above, unchanged.
  */
-export function judgeRefundRecord(record: PowerTranzTransactionRecord, held: HeldCompletion): RefundVerdict {
+export function judgeRefundRecord(record: PowerTranzTransactionRecord, held: HeldCompletion, refundMinor: number = held.amountMinor): RefundVerdict {
   if (record.transactionIdentifier.toLowerCase() !== held.txnId.toLowerCase()) return { status: 'unknown', reason: 'LOOKUP_OTHER_TRANSACTION' };
   // A Sale before anything else (a void's or a refund's own record is never the payment's).
   if (record.transactionType !== '2') return { status: 'unknown', reason: 'LOOKUP_NOT_A_SALE' };
   if (record.orderIdentifier === null) return { status: 'unknown', reason: 'LOOKUP_NO_ORDER' };
   if (record.orderIdentifier !== held.orderId) return { status: 'unknown', reason: 'LOOKUP_OTHER_ORDER' };
   if (record.currencyCode !== held.currencyCode) return { status: 'unknown', reason: 'LOOKUP_CURRENCY_MISMATCH' };
-  if (record.voided) return { status: 'refunded', how: 'void', reason: 'LOOKUP_VOIDED' };
+  const partial = refundMinor < held.amountMinor;
+  // A void returns the whole payment: for a partial refund that is more than Swift asked back.
+  if (record.voided) return partial ? { status: 'part_credited', reason: 'LOOKUP_VOIDED_NOT_THE_PART' } : { status: 'refunded', how: 'void', reason: 'LOOKUP_VOIDED' };
   if (record.totalCreditMinor === 0) return { status: 'not_refunded', reason: 'LOOKUP_NO_CREDIT' };
   if (record.totalCaptureMinor <= 0 || record.totalCreditMinor > record.totalCaptureMinor || record.creditCount < 1 || record.captureCount < 1) {
     return { status: 'unknown', reason: 'LOOKUP_CREDIT_UNREADABLE' };
   }
   if (record.approved === false || record.isoResponseCode !== '00') return { status: 'unknown', reason: 'LOOKUP_NOT_AN_APPROVED_SALE' };
+  if (partial) {
+    if (record.totalCaptureMinor !== held.amountMinor) return { status: 'part_credited', reason: 'LOOKUP_CREDIT_NOT_THE_PAYMENT' };
+    if (record.totalCreditMinor === refundMinor) return { status: 'refunded', how: 'credit', reason: 'LOOKUP_CREDITED' };
+    return { status: 'part_credited', reason: 'LOOKUP_CREDIT_NOT_THE_PART' };
+  }
   if (record.totalCreditMinor === record.totalCaptureMinor && record.totalCaptureMinor === held.amountMinor) return { status: 'refunded', how: 'credit', reason: 'LOOKUP_CREDITED' };
   return { status: 'part_credited', reason: record.totalCreditMinor < record.totalCaptureMinor ? 'LOOKUP_PARTIAL_CREDIT' : 'LOOKUP_CREDIT_NOT_THE_PAYMENT' };
 }
@@ -905,7 +927,7 @@ export interface PowerTranzDeps {
   keyPrefix?: string;
 }
 
-type LookupInput = { binding: CardRailBinding; providerRef: string; orderRef: string; amountMinor: number; currencyCode: string; notBefore?: Date };
+type LookupInput = { binding: CardRailBinding; providerRef: string; orderRef: string; amountMinor: number; refundMinor?: number; currencyCode: string; notBefore?: Date };
 
 const KEY_PREFIX_SHAPE = /^ptz:(?:[A-Za-z0-9_-]{1,64}:)?$/;
 const REF_SHAPE = /^ptz_[0-9a-f]{24}$/;
@@ -1394,7 +1416,7 @@ export class PowerTranzCardRailProvider implements CardRailProvider {
   async lookupRefund(input: LookupInput): Promise<CardRefundLookupOutcome> {
     const read = await this.readRecord(input);
     if (!('record' in read)) return read;
-    const verdict = judgeRefundRecord(read.record, { txnId: input.providerRef, orderId: input.orderRef, amountMinor: input.amountMinor, currencyCode: input.currencyCode });
+    const verdict = judgeRefundRecord(read.record, { txnId: input.providerRef, orderId: input.orderRef, amountMinor: input.amountMinor, currencyCode: input.currencyCode }, input.refundMinor);
     return { ...verdict, rawSha256: read.rawSha256 };
   }
 
@@ -1402,7 +1424,9 @@ export class PowerTranzCardRailProvider implements CardRailProvider {
   private async readRecord(input: LookupInput): Promise<{ record: PowerTranzTransactionRecord; rawSha256: string } | { status: 'unknown'; reason: string; backoff?: true; rawSha256: string }> {
     assertBinding(this.binding, input.binding);
     const digest = (extra: Record<string, unknown>) => rawDigest({ lookup: input.providerRef, ...extra });
-    if (!GUID.test(input.providerRef) || !CURRENCY_NUMERIC[input.currencyCode] || !Number.isSafeInteger(input.amountMinor) || input.amountMinor <= 0) {
+    if (!GUID.test(input.providerRef) || !CURRENCY_NUMERIC[input.currencyCode] || !Number.isSafeInteger(input.amountMinor) || input.amountMinor <= 0
+      // [OWNER 10 Nov 2026] A refund part is a positive whole number of minor units, never more than the payment.
+      || (input.refundMinor !== undefined && (!Number.isSafeInteger(input.refundMinor) || input.refundMinor <= 0 || input.refundMinor > input.amountMinor))) {
       return { status: 'unknown', reason: 'LOOKUP_REQUEST_INVALID', rawSha256: digest({ refused: true }) };
     }
     // [REVIEW-2460-A S4-2] Timed by Redis's own clock (inside the script), one clock for every server.

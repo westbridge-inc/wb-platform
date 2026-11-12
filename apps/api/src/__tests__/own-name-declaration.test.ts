@@ -286,6 +286,23 @@ describe('[ROLE-DOCS] the declaration replaces the business registration, checke
   });
 });
 
+// [review-2479 F6 · COORD security finding] The seller-name door lets a person confirm an owner's own name only for a
+// store trading under it. The owner sets and clears that flag, so every change of it ends a seller-name confirmation:
+// a store can never flip it on, get its holder's name confirmed, and flip it back.
+describe('[review-2479 F6] switching to or from the own name ends a seller-name confirmation', () => {
+  const confirmed = (vendorId: string, name: string) => system(() => app.prisma.vendor.update({ where: { id: vendorId }, data: { sellerNameCheckedName: name, sellerNameCheckedAt: new Date(), sellerNameCheckedById: 'own-name-test' } }));
+  const checkedOf = (vendorId: string) => system(() => app.prisma.vendor.findUniqueOrThrow({ where: { id: vendorId }, select: { tradesUnderOwnName: true, sellerNameCheckedName: true, sellerNameCheckedAt: true, sellerNameCheckedById: true } }));
+  it('signing the declaration and dropping it each clear the confirmed seller name', async () => {
+    const o = await owner('Ramesh', 'Persaud', 'R. Persaud');
+    await confirmed(o.vendorId, 'R. Persaud');
+    expect((await sign(o)).statusCode).toBe(201);
+    expect(await checkedOf(o.vendorId)).toEqual({ tradesUnderOwnName: true, sellerNameCheckedName: null, sellerNameCheckedAt: null, sellerNameCheckedById: null });
+    await confirmed(o.vendorId, 'R. Persaud');
+    expect((await call('DELETE', '/api/v1/vendor/onboarding/own-name', o)).statusCode).toBe(200);
+    expect(await checkedOf(o.vendorId)).toEqual({ tradesUnderOwnName: false, sellerNameCheckedName: null, sellerNameCheckedAt: null, sellerNameCheckedById: null });
+  });
+});
+
 describe('[ROLE-DOCS · security review] only the signed route creates an own-name declaration, and only a person approves it', () => {
   it('the generic upload route and the generic service path refuse the type, before anything is recorded', async () => {
     const o = await owner('Ramesh', 'Persaud', 'Persaud');

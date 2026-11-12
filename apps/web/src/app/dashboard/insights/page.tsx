@@ -6,6 +6,7 @@ import { storeKey, useStoreId } from '@/lib/store-scope';
 import { useStoreRole } from '@/lib/store-role';
 import { DataUnavailable } from '@/components/data-unavailable';
 import { CheckingLatest, useCheckingLatest } from '@/components/checking-latest';
+import { OrderExportCard } from './order-export';
 
 function Stat({ label, value, sub }: { label: string; value: string; sub?: string }) {
   return (
@@ -49,6 +50,7 @@ export default function InsightsPage() {
           <Stat label="Live items" value={String(d.activeMenuItems)} sub={`${d.vendor.totalOrders} lifetime orders`} />
         </div>
       )}
+      {manager && storeId && <OrderExportCard key={storeId} storeId={storeId} />}
       <p className="text-center text-xs text-[var(--swift-muted)]">Reconciled numbers only — a beautiful wrong number is still a lie.</p>
     </div>
   );

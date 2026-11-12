@@ -73,9 +73,9 @@ function ordersFor(type: VendorPreviewType, now: number) {
   const orderType = type === 'RESTAURANT' ? 'FOOD_DELIVERY' : type === 'SUPERMARKET' ? 'GROCERY_DELIVERY' : type === 'SERVICE' ? 'SERVICE' : 'STORE_DELIVERY';
   const rows = CATALOGUE[type];
   return [
-    { id: 'pv-o1', orderNumber: 'SW-3041', status: 'PENDING', orderType, fulfillment, isExpress: type === 'RESTAURANT', totalAmount: 2300, createdAt: agoIso(6 * MINUTE, now), customer: { firstName: 'Ava' }, items: [{ id: 'pv-o1-line-1', name: rows[0]!.name, quantity: 1 }] },
-    { id: 'pv-o2', orderNumber: 'SW-3040', status: 'ACCEPTED', orderType, fulfillment, totalAmount: 1600, createdAt: agoIso(24 * MINUTE, now), customer: { firstName: 'Ken' }, items: [{ id: 'pv-o2-line-1', name: rows[1 % rows.length]!.name, quantity: 2 }] },
-    { id: 'pv-o3', orderNumber: 'SW-3038', status: type === 'SERVICE' ? 'ACCEPTED' : 'READY_FOR_PICKUP', orderType, fulfillment, totalAmount: 3400, createdAt: agoIso(48 * MINUTE, now), customer: { firstName: 'Mara' }, items: [{ id: 'pv-o3-line-1', name: rows[2 % rows.length]!.name, quantity: 1 }] },
+    { id: 'pv-o1', orderNumber: 'SW-3041', status: 'PENDING', orderType, fulfillment, isExpress: type === 'RESTAURANT', totalAmount: 2300, subtotalCustomer: 2300, createdAt: agoIso(6 * MINUTE, now), customer: { firstName: 'Ava' }, items: [{ id: 'pv-o1-line-1', name: rows[0]!.name, quantity: 1 }] },
+    { id: 'pv-o2', orderNumber: 'SW-3040', status: 'ACCEPTED', orderType, fulfillment, totalAmount: 1600, subtotalCustomer: 1600, createdAt: agoIso(24 * MINUTE, now), customer: { firstName: 'Ken' }, items: [{ id: 'pv-o2-line-1', name: rows[1 % rows.length]!.name, quantity: 2 }] },
+    { id: 'pv-o3', orderNumber: 'SW-3038', status: type === 'SERVICE' ? 'ACCEPTED' : 'READY_FOR_PICKUP', orderType, fulfillment, totalAmount: 3400, subtotalCustomer: 3400, createdAt: agoIso(48 * MINUTE, now), customer: { firstName: 'Mara' }, items: [{ id: 'pv-o3-line-1', name: rows[2 % rows.length]!.name, quantity: 1 }] },
   ];
 }
 

@@ -96,6 +96,7 @@ vi.mock('../modules/chat/screens/ChatListScreen', () => ({ ChatListScreen: () =>
 vi.mock('../modules/chat/screens/ConversationScreen', () => ({ ConversationScreen: () => null }));
 vi.mock('../modules/profile/screens/ProfileScreen', () => fx.probeModule('ProfileScreen', 'Profile'));
 vi.mock('../modules/profile/screens/PersonalDataScreen', () => ({ PersonalDataScreen: () => null }));
+vi.mock('../modules/profile/screens/AccountHandoverScreen', () => ({ AccountHandoverScreen: () => null })); // [COMPANY-DOCS Part 3] its papers list carries a camera picker
 vi.mock('../modules/profile/screens/NotificationsScreen', () => ({ NotificationsScreen: () => null }));
 vi.mock('../modules/profile/screens/InviteFriendsScreen', () => ({ InviteFriendsScreen: () => null }));
 vi.mock('../modules/profile/screens/FaqScreen', () => ({ FaqScreen: () => null }));

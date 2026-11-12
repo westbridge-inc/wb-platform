@@ -126,6 +126,8 @@ export const TENANT_TABLES = [
   'fee_refund_cases',
   // [CARD-READY] A partner's card money paid back to their card: the payer's operator's money.
   'card_credit_refunds',
+  // [COMPANY-DOCS Part 3] A store account change waiting for a person, walled like the account.
+  'account_change_requests',
   'billing_dunning_clocks', 'payment_confirmation_holds', 'billing_fee_notices', 'billing_notice_handoffs',
   // [#1393] Consumed weekly-fee coverage: the paid or resumed obligation a clock moved past.
   'billing_obligation_transitions',

@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { randomBytes } from 'node:crypto';
 import { nanoid } from 'nanoid';
@@ -21,6 +21,23 @@ import { resetKeyProviderForTests } from '../providers/storage/envelope';
 import { cardRailWorkerSource } from '../modules/billing/card-rail-worker';
 import { cleanupBillingClocks } from './helpers/billing-clock-cleanup';
 import { testPhone } from './helpers/fixture-ids';
+
+// [review-2475 delta D3] The payer read the card choice makes can fail on its own (a dropped connection, an ownership
+// check): armed, the read made from attemptInstrumentCharge throws once.
+const payerRead = vi.hoisted(() => ({ failNext: false }));
+vi.mock('../modules/subscription/mover-fee-authority', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../modules/subscription/mover-fee-authority')>();
+  return {
+    ...real,
+    subscriptionPayer: async (...args: Parameters<typeof real.subscriptionPayer>) => {
+      if (payerRead.failNext && new Error().stack?.includes('attemptInstrumentCharge')) {
+        payerRead.failNext = false;
+        throw new Error('test: the payer could not be read');
+      }
+      return real.subscriptionPayer(...args);
+    },
+  };
+});
 
 // ---------------------------------------------------------------------------
 // [PT-1] The weekly fee on an enrolled card (CARD_RAIL_V2=1). The charge uses
@@ -243,6 +260,33 @@ describe('the weekly charge uses the ACTIVE instrument, through the provider rec
     const after = await facts(p.subId);
     expect(after.failureNotes).toEqual([expect.stringMatching(/^There is no card on file/)]);
     expect(after.sub.failedAttempts).toBe(1);
+  });
+
+  it('[review-2475 F2] a card another person enrolled (a store\'s previous account holder) is never charged for this fee', async () => {
+    const p = await cardSub();
+    seq += 1;
+    const other = await app.prisma.user.create({ data: {
+      phone: `${PHONE}${String(seq).padStart(2, '0')}`, firstName: 'Previous', lastName: `Holder${seq}`,
+      roles: ['CUSTOMER'] as UserRole[], activeRole: 'CUSTOMER', isPhoneVerified: true,
+    } });
+    userIds.push(other.id);
+    await card({ userId: other.id, subId: p.subId });
+    expect(await bill(p.subId)).toBe('failed');
+    expect(fake.charges).toEqual([]);
+    expect((await facts(p.subId)).failureNotes).toEqual([expect.stringMatching(/^There is no card on file/)]);
+  });
+
+  it('[review-2475 delta D3] the payer can\'t be read at the card choice: the attempt waits — never "no card on file", never a strike', async () => {
+    const p = await cardSub();
+    await card(p);
+    payerRead.failNext = true;
+    try {
+      expect(await bill(p.subId)).toBe('pending');
+    } finally { payerRead.failNext = false; }
+    expect(fake.charges).toEqual([]);
+    const after = await facts(p.subId);
+    expect(after.failures).toBe(0);
+    expect(after.sub.failedAttempts).toBe(0);
   });
 
   it('an EXPIRED card is retired and never sent', async () => {
