@@ -16,7 +16,6 @@ import { NOT_RETIRED_DOC } from './doc-state';
 import { AppError } from '../../utils/errors';
 import { FOOD_HANDLER_CERT_DOC_TYPE, GRA_RESTAURANT_LICENCE_DOC_TYPE, RESTAURANT_TIN_ROLE, TIN_CERTIFICATE_DOC_TYPE } from './doc-registry';
 import { foodHandlerTickApplies, storeAttested } from '../vendor/food-handlers';
-import { liveRestaurant, tinCertificateRevoked } from './restaurant-tin';
 import { docTypeName } from './doc-names';
 
 type Db = PrismaClient | Prisma.TransactionClient;
@@ -100,10 +99,15 @@ export function gateDocFor(legacyCode: string, displayName: string, store: GateC
  */
 async function storeHolds(prisma: Db, ctx: GateContext, legacyCode: string, now: Date): Promise<boolean> {
   if (await holdsValidDocument(prisma, ctx.ownerUserId, legacyCode, now)) return true;
-  // [RESTAURANT-TIN] A restaurant live today keeps its prepared food listed while it adds its TIN certificate
-  // (restaurant-tin.ts); one whose TIN certificate a person revoked is excused nothing.
-  if (legacyCode === TIN_CERTIFICATE_DOC_TYPE && ctx.store !== undefined && liveRestaurant({ vendorType: ctx.store.vendorType, isVerified: ctx.store.isVerified === true, status: ctx.store.status ?? 'PENDING_APPROVAL' })) {
-    return !(await tinCertificateRevoked(prisma, ctx.ownerUserId));
+  // [RESTAURANT-TIN · owner 12 Nov 2026, review S2-1] A restaurant live today keeps its prepared food listed while it
+  // still holds a valid GRA licence and no TIN certificate of its owner's was turned down (restaurant-tin.ts). Loaded at
+  // call time: restaurant-tin reads holdsValidDocument from this module.
+  if (legacyCode === TIN_CERTIFICATE_DOC_TYPE && ctx.store !== undefined) {
+    const { liveRestaurant, tinExemptionStands } = await import('./restaurant-tin');
+    if (liveRestaurant({ vendorType: ctx.store.vendorType, isVerified: ctx.store.isVerified === true, status: ctx.store.status ?? 'PENDING_APPROVAL' })) {
+      return tinExemptionStands(prisma, ctx.ownerUserId, now);
+    }
+    return false;
   }
   if (legacyCode !== FOOD_HANDLER_CERT_DOC_TYPE || ctx.store === undefined || !foodHandlerTickApplies(ctx.store)) return false;
   return storeAttested(prisma, ctx.ownerUserId, ctx.store.vendorId);

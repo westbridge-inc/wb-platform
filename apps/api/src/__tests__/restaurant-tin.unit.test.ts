@@ -2,7 +2,8 @@
  * [RESTAURANT-TIN · owner ruling 12 Nov 2026] The list rule and the gate's paper, without a database: a restaurant's TIN
  * certificate in the GRA Food Restaurant Licence's required place (the licence optional), over the code's lists AND over
  * a stored copy that still names the licence (production's, until the owner-signed seed of 2026-11-12.1). Every other
- * store kind is unchanged. A live restaurant is excused the TIN certificate unless a person revoked one of its owner's.
+ * store kind is unchanged. A live restaurant is excused the TIN certificate only while it holds a valid GRA licence, and never once a person
+ * rejected or revoked a TIN certificate of its owner's (owner ruling 12 Nov 2026, #2494 review S2-1).
  */
 import { describe, expect, it } from 'vitest';
 import { DEFAULT_DOCUMENT_CHECKLISTS, PLATFORM_CONFIG_VERSION, desiredPlatformConfig } from '../modules/ops/platform-config';
@@ -99,9 +100,14 @@ describe('[RESTAURANT-TIN] who is excused the TIN certificate', () => {
     expect(liveRestaurant({ vendorType: 'SUPERMARKET', isVerified: true, status: 'ACTIVE' })).toBe(false);
   });
 
-  const db = (stores: Array<{ id: string; isVerified: boolean; status: string }>, revoked: boolean) => ({
+  /** The owner's papers as the two reads see them: a valid GRA licence (held on a subject), and a TIN certificate turned down. */
+  const db = (stores: Array<{ id: string; isVerified: boolean; status: string }>, refused: boolean, gra = true) => ({
     vendorOwner: { findUnique: async () => ({ vendors: stores.map((s) => ({ ...s, vendorType: 'RESTAURANT' })) }) },
-    verificationDocument: { findFirst: async () => (revoked ? { id: 'revoked-tin' } : null) },
+    verificationDocument: {
+      findFirst: async (args: { where: { docType: string } }) => (args.where.docType === GRA
+        ? (gra ? { subjectId: 'subject', createdAt: new Date() } : null)
+        : (refused ? { id: 'refused-tin' } : null)),
+    },
   }) as never;
   const live = { id: 'a', isVerified: true, status: 'ACTIVE' };
   const waiting = { id: 'b', isVerified: false, status: 'PENDING_APPROVAL' };
@@ -115,7 +121,13 @@ describe('[RESTAURANT-TIN] who is excused the TIN certificate', () => {
     expect(await tinCertificateExcused(db([], false), 'u')).toBe(false);
   });
 
-  it('never once a person revoked a TIN certificate of the owner’s', async () => {
+  // [#2494 review S2-1 · owner 12 Nov 2026] only WHILE the GRA licence is valid
+  it('never without a valid GRA licence (lapsed, revoked, rejected or never held)', async () => {
+    expect(await tinCertificateExcused(db([live], false, false), 'u', 'a')).toBe(false);
+    expect(await tinCertificateExcused(db([live], false, false), 'u')).toBe(false);
+  });
+
+  it('never once a person rejected or revoked a TIN certificate of the owner’s', async () => {
     expect(await tinCertificateExcused(db([live], true), 'u', 'a')).toBe(false);
     expect(await tinCertificateExcused(db([live], true), 'u')).toBe(false);
   });

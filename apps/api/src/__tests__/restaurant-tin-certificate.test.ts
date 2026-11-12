@@ -32,6 +32,7 @@ import { NotificationService } from '../modules/notification/notification.servic
 import { ManualReviewKycProvider } from '../providers/kyc/kyc-provider';
 import { seedDocRegistry } from '../modules/verification/doc-registry';
 import { assertTaggable, gateVerdicts, vendorOwnerContext } from '../modules/verification/category-gate';
+import { changePaperStaging, loadChange, startBusinessTypeChange, viewOfChange } from '../modules/vendor/account-change';
 import { ownedVerificationFixture, signupSelfieFixture } from './helpers/verification-object';
 import { reviewerTyped } from './helpers/reviewer-typed';
 import { wordFreeTag } from './helpers/fixture-ids';
@@ -286,17 +287,143 @@ describe('[RESTAURANT-TIN] no claim that a restaurant needs its GRA licence', ()
     return sent[0]!.body;
   };
 
-  it('a restaurant’s GRA licence reminder says it is optional, never “renew it to avoid suspension”', async () => {
+  it('a restaurant holding its TIN certificate: the GRA licence reminder says it is optional, never “renew it to avoid suspension”', async () => {
     const o = await storeOwner();
-    await approveAll(o, 'RESTAURANT', [GRA]);
+    await approveAll(o, 'RESTAURANT', [GRA, TIN]);
     const body = await reminderOf(o);
     expect(body).toMatch(/It is optional for a restaurant and does not affect your store/);
     expect(body).not.toMatch(/avoid suspension/);
+  });
+
+  // [#2494 review S2-1 · owner 12 Nov 2026] a live restaurant stands on its GRA licence only while it is valid
+  it('a restaurant with no TIN certificate: the GRA licence reminder says to add the TIN certificate to keep operating', async () => {
+    const o = await storeOwner();
+    await approveAll(o, 'RESTAURANT', [GRA]);
+    const body = await reminderOf(o);
+    expect(body).toMatch(/add your TIN Certificate in Documents to keep operating/);
+    expect(body).not.toMatch(/optional|avoid suspension/);
   });
 
   it('a supermarket’s GRA licence (its prepared-food gate) keeps the old words', async () => {
     const o = await storeOwner({ vendorType: 'SUPERMARKET' });
     await approveAll(o, 'SUPERMARKET', [GRA]);
     expect(await reminderOf(o)).toMatch(/Renew it to avoid suspension\./);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------------
+// [#2494 review · owner ruling 12 Nov 2026 (S2-1)] A restaurant ALREADY LIVE stays live only WHILE its GRA licence is valid.
+// ---------------------------------------------------------------------------------------------------------------------
+
+/** A restaurant live before this change: its papers approved on the GRA licence, the tick given, then made live. */
+async function liveOnGra(extra: readonly string[] = []): Promise<Owner> {
+  const o = await storeOwner();
+  await approveAll(o, 'RESTAURANT', [...BASE, GRA, ...extra]);
+  expect((await tick(o)).statusCode).toBe(201);
+  await system(() => app.prisma.vendor.update({ where: { id: o.vendorId }, data: { status: 'ACTIVE', isVerified: true, acceptingOrders: true } }));
+  await service.reprojectVendorActivation(o.userId);
+  return o;
+}
+/** Let the owner's approved GRA licence lapse, through the daily expiry sweep; returns its 'Document expired' notice. */
+async function lapseGra(o: Owner): Promise<string> {
+  const doc = await system(() => app.prisma.verificationDocument.findFirstOrThrow({ where: { userId: o.userId, docType: GRA, status: 'APPROVED' }, select: { id: true } }));
+  await system(() => app.prisma.verificationDocument.update({ where: { id: doc.id }, data: { expiresAt: new Date(Date.now() - 3 * DAY) } }));
+  await runWithTenant('swift-default', () => service.expireLapsedDocuments());
+  const sent = (await system(() => app.prisma.notification.findMany({ where: { userId: o.userId, data: { path: ['docId'], equals: doc.id } } })))
+    .filter((n) => (n.data as { kind?: string } | null)?.kind === 'verification_expired');
+  expect(sent).toHaveLength(1);
+  return sent[0]!.body;
+}
+
+describe('[RESTAURANT-TIN · review S2-1] a live restaurant is excused the TIN certificate only while its GRA licence is valid', () => {
+  it('its GRA licence lapses: the TIN certificate is required like for a new restaurant — the store stops and its dishes go', async () => {
+    const o = await liveOnGra();
+    expect(await store(o)).toEqual({ status: 'ACTIVE', isVerified: true });
+    expect((await preparedFoodGate(o)).every((v) => v.ok)).toBe(true);
+
+    const notice = await lapseGra(o);
+    // [S3-1] the expiry notice is true: the restaurant now needs its TIN certificate
+    expect(notice).toMatch(/now needs its TIN Certificate: add it in Documents to keep operating/);
+    expect(notice).not.toMatch(/optional/);
+    expect((await store(o)).isVerified).toBe(false);
+    const status = await statusOf(o);
+    expect(status.missing).toEqual([TIN]);
+    expect((await preparedFoodGate(o)).map((v) => [v.requiredDocType, v.ok])).toEqual([[TIN, false], [TIN, false]]);
+
+    // it comes back with the TIN certificate
+    await approveAll(o, 'RESTAURANT', [TIN]);
+    expect(await store(o)).toEqual({ status: 'ACTIVE', isVerified: true });
+  });
+
+  it('[S3-1] a restaurant holding its TIN certificate: the GRA licence lapses quietly — optional, and the store stays live', async () => {
+    const o = await liveOnGra([TIN]);
+    const notice = await lapseGra(o);
+    expect(notice).toMatch(/It is optional for a restaurant: upload a new one only if you want it on file\./);
+    expect(notice).not.toMatch(/keep operating/);
+    expect(await store(o)).toEqual({ status: 'ACTIVE', isVerified: true });
+    expect((await preparedFoodGate(o)).every((v) => v.ok)).toBe(true);
+  });
+
+  it('a REJECTED TIN certificate ends the exemption: the store stops until a TIN certificate is approved', async () => {
+    const o = await liveOnGra();
+    const doc = await service.submitDocument(o.userId, 'RESTAURANT', TIN, await ownedVerificationFixture(app.prisma, o.userId, 'tin-rejected'), 'v1');
+    await service.rejectDocument(doc.id, adminId, 'The certificate names another business.');
+    await service.reprojectVendorActivation(o.userId);
+    expect((await store(o)).isVerified).toBe(false);
+    expect((await statusOf(o)).missing).toEqual([TIN]);
+    expect((await preparedFoodGate(o)).every((v) => !v.ok)).toBe(true);
+  });
+
+  it('a copy the owner REPLACED before review is no refusal: the exemption stands', async () => {
+    const o = await liveOnGra();
+    expect((await upload(o, 'RESTAURANT', TIN)).statusCode).toBe(201);
+    expect((await upload(o, 'RESTAURANT', TIN)).statusCode).toBe(201);
+    await service.reprojectVendorActivation(o.userId);
+    expect(await store(o)).toEqual({ status: 'ACTIVE', isVerified: true });
+    expect((await preparedFoodGate(o)).every((v) => v.ok)).toBe(true);
+  });
+});
+
+describe('[RESTAURANT-TIN · review S4-2] the TIN certificate is a restaurant’s paper only', () => {
+  it('a supermarket owner naming the RESTAURANT role is refused it', async () => {
+    const o = await storeOwner({ vendorType: 'SUPERMARKET' });
+    const res = await upload(o, 'RESTAURANT', TIN);
+    expect(res.statusCode, res.body).toBe(400);
+    expect(res.json().error.code).toBe('INVALID_DOC_TYPE');
+  });
+});
+
+describe('[RESTAURANT-TIN · review S4-1] a change of business type or of account holder is papered on the new rules', () => {
+  it('a live restaurant excused on its GRA licence must file a TIN certificate for a business-type change', async () => {
+    const o = await liveOnGra();
+    const view = await system(() => startBusinessTypeChange(app.prisma, o.userId, 'COMPANY'));
+    expect(view.papers.find((p) => p.docType === TIN)?.state).toBe('MISSING');
+    expect(view.papers.some((p) => p.docType === GRA)).toBe(false);
+    expect(view.papersComplete).toBe(false);
+    await system(() => app.prisma.accountChangeRequest.deleteMany({ where: { id: view.id } }));
+  });
+
+  it('a person taking over a live restaurant account must file a TIN certificate', async () => {
+    const o = await liveOnGra();
+    seq += 1;
+    const next = await system(() => app.prisma.user.create({ data: {
+      phone: `+5927${NUM}${String(seq).padStart(2, '0')}`, firstName: 'Next', lastName: `Holder${seq}`, roles: ['CUSTOMER'], activeRole: 'CUSTOMER',
+      countryCode: 'GY', status: 'ACTIVE', isPhoneVerified: true,
+    } }));
+    users.push(next.id);
+    const ownerRow = await system(() => app.prisma.vendorOwner.findUniqueOrThrow({ where: { userId: o.userId }, select: { id: true } }));
+    const change = await system(() => app.prisma.accountChangeRequest.create({ data: {
+      tenantId: 'swift-default', vendorOwnerId: ownerRow.id, kind: 'HOLDER_HANDOVER', requestedById: o.userId, holderId: o.userId,
+      newHolderId: next.id, newHolderAcceptedAt: new Date(),
+    } }));
+    try {
+      const staging = await system(() => changePaperStaging(app.prisma, next.id, 'RESTAURANT', 'GY'));
+      expect(staging?.submittable).toContain(TIN);
+      expect(staging?.submittable).not.toContain(GRA);
+      const view = await system(async () => viewOfChange(app.prisma, await loadChange(app.prisma, change.id)));
+      expect(view.papers.find((p) => p.docType === TIN)?.state).toBe('MISSING');
+    } finally {
+      await system(() => app.prisma.accountChangeRequest.deleteMany({ where: { id: change.id } }));
+    }
   });
 });

@@ -40,7 +40,7 @@ import { CountryConfigService, PricingConfigError } from '../country/country-con
 import { log } from '../../utils/logger';
 import { awaitingFirstGoLive, goLiveMissing, NEEDS_PUBLIC_PHONE_KIND, storeGoLive, type StoreGoLive } from '../vendor/go-live';
 import { storeFeeNotice, storeFeeNoticeDedupeKey, storeFeeStanding, type StoreFeeQuote } from '../partner/store-fee';
-import { tinCertificateExcused } from './restaurant-tin';
+import { restaurantLicenceStanding, tinCertificateExcused } from './restaurant-tin';
 import { FOOD_HANDLERS_NOTICE_KIND, FOOD_HANDLERS_TICK_V1, FOOD_HANDLERS_VERSION, FOOD_HANDLERS_WHERE, foodHandlerAttestationView, foodHandlersNotice, foodHandlerStoresOf, foodHandlerTickApplies, storeAttested } from '../vendor/food-handlers';
 import { carDeliveriesEnabled, isMotorVehicle, isPassengerVehicle, VEHICLE_CLASSES } from '../../config/vehicle-classes';
 import { docTypeName } from './doc-names';
@@ -1004,6 +1004,13 @@ export class VerificationService {
         ? await this.storeSubmittableChecklist(userId, user.countryCode, roleKey)
         : await this.checklistFor(userId, user.countryCode, roleKey);
       checklist = [...required, ...await this.optionalFor(userId, user.countryCode, roleKey, required)];
+      // [RESTAURANT-TIN · #2494 review S4-2] The TIN certificate is a restaurant's paper only (ruling 7 still holds for every
+      // other store): an owner whose stores are all of another kind, who names the RESTAURANT role, is refused it like any
+      // type off their lists. (An account with no store yet keeps the role's list, as for every other restaurant paper.)
+      if (docType === TIN_CERTIFICATE_DOC_TYPE && roleKey === RESTAURANT_TIN_ROLE) {
+        const stores = await this.prisma.vendor.findMany({ where: { owner: { userId } }, select: { vendorType: true } });
+        if (stores.length > 0 && !stores.some((v) => v.vendorType === RESTAURANT_TIN_ROLE)) checklist = checklist.filter((type) => type !== TIN_CERTIFICATE_DOC_TYPE);
+      }
     }
     // [COMPANY-DOCS Part 3 · owner rulings 10 Nov 2026 (c), (d)] A pending account change takes its own papers (a new
     // business type's, or a named new holder's: vendor/account-change.ts). One it holds counts for nothing until a person
@@ -2199,8 +2206,8 @@ export class VerificationService {
     // [ROLE-DOCS] A store trading under its owner's own name reads the role's own-name set; everyone else the standard
     // one. [CHECKLIST-LEGAL · owner 1 Nov 2026 (a)] There is no other tier: the self-declared one is removed.
     const list = await this.countryConfig.getDocumentChecklist(countryCode, roleKey, await this.vendorTierOf(userId, roleKey, db, vendorId), db);
-    // [RESTAURANT-TIN · owner 12 Nov 2026] A restaurant live today is asked to ADD its TIN certificate, never held for it
-    // (restaurant-tin.ts): its list leaves it out here, and optionalFor offers it.
+    // [RESTAURANT-TIN · owner 12 Nov 2026, review S2-1] A restaurant live today is asked to ADD its TIN certificate, never
+    // held for it, WHILE its GRA licence is valid (restaurant-tin.ts): its list leaves it out here, and optionalFor offers it.
     if (roleKey === RESTAURANT_TIN_ROLE && list.includes(TIN_CERTIFICATE_DOC_TYPE) && await tinCertificateExcused(db, userId, vendorId)) {
       return list.filter((docType) => docType !== TIN_CERTIFICATE_DOC_TYPE);
     }
@@ -3332,11 +3339,13 @@ export class VerificationService {
         // [VERIFY-DOCS] An optional document's lapse costs the person nothing but the police-cleared
         // flag — say so. No screen shows a badge yet, so the notice never promises one (GUARDRAILS §4).
         const optional = await this.isOptionalMoverDocument(doc.userId, doc.role, doc.docType);
+        // [RESTAURANT-TIN · #2494 review S3-1] a restaurant's GRA licence: optional, or "add your TIN certificate" (S2-1)
+        const restaurantLicence = optional ? null : await this.restaurantLicenceWords(doc.userId, doc.role, doc.docType, 'EXPIRED');
         await this.notifications.send({
           userId: doc.userId,
           type: 'SYSTEM_ANNOUNCEMENT',
           title: 'Document expired',
-          body: optional
+          body: restaurantLicence !== null ? restaurantLicence : optional
             ? `Your ${doc.docType.replace(/_/g, ' ')} has expired.${doc.docType === POLICE_CLEARANCE_DOC_TYPE ? ' You are no longer recorded as police-cleared until you upload a current one.' : ''} It is optional: you can keep working, and upload a new one any time.`
             : doc.docType === HIRE_PERMIT_DOC_TYPE
               ? `Your hire-car permit has expired. ${hireLicenceUploadWords(HIRE_SPLIT_DOC_TYPES)} in Documents to go online.`
@@ -3379,14 +3388,24 @@ export class VerificationService {
     return required.every((list) => !list.includes(docType));
   }
 
-  /** [RESTAURANT-TIN · owner 12 Nov 2026] The GRA Food Restaurant Licence of an owner whose every store is a restaurant: optional
-   *  for them (the TIN certificate is the required paper). An owner with another kind of store keeps the old words: a
-   *  supermarket selling prepared food still needs the licence at the listing gate (category-gate gateDocFor). */
-  private async isOptionalRestaurantLicence(userId: string, role: UserRole, docType: string): Promise<boolean> {
-    if (role !== 'VENDOR_OWNER' || docType !== GRA_RESTAURANT_LICENCE_DOC_TYPE) return false;
-    const owner = await this.prisma.vendorOwner.findUnique({ where: { userId }, select: { vendors: { select: { vendorType: true } } } });
-    const stores = owner?.vendors ?? [];
-    return stores.length > 0 && stores.every((v) => v.vendorType === RESTAURANT_TIN_ROLE);
+  /** [RESTAURANT-TIN · owner 12 Nov 2026, #2494 review S2-1 / S3-1] The words of a GRA Food Restaurant Licence's reminder
+   *  or expiry notice for an owner whose every store is a restaurant (restaurant-tin restaurantLicenceStanding): optional
+   *  when the owner holds a valid TIN certificate; otherwise the restaurant stands on this licence only while it is valid,
+   *  so they say to add the TIN certificate. Null for anyone else (a supermarket's prepared food still needs the licence:
+   *  the old words stand). */
+  private async restaurantLicenceWords(userId: string, role: UserRole, docType: string, moment: 'REMINDER' | 'EXPIRED'): Promise<string | null> {
+    if (role !== 'VENDOR_OWNER' || docType !== GRA_RESTAURANT_LICENCE_DOC_TYPE) return null;
+    const standing = await restaurantLicenceStanding(this.prisma, userId);
+    if (standing === null) return null;
+    const name = docTypeName(GRA_RESTAURANT_LICENCE_DOC_TYPE);
+    if (standing === 'OPTIONAL') {
+      return moment === 'REMINDER'
+        ? 'It is optional for a restaurant and does not affect your store: renew it only if you want it on file.'
+        : `Your ${name} has expired. It is optional for a restaurant: upload a new one only if you want it on file.`;
+    }
+    return moment === 'REMINDER'
+      ? `Your restaurant stays live on it only until then: add your ${docTypeName(TIN_CERTIFICATE_DOC_TYPE)} in Documents to keep operating.`
+      : `Your ${name} has expired. Your restaurant now needs its ${docTypeName(TIN_CERTIFICATE_DOC_TYPE)}: add it in Documents to keep operating.`;
   }
 
   /** One reminder per document, 30 days before expiry. */
@@ -3405,15 +3424,15 @@ export class VerificationService {
       if (doc.subjectId === null && await holdsValidDocument(this.prisma, n.subjectId, doc.docType, now, n.documentId)) continue;
       // [VERIFY-DOCS] Never threaten a suspension over a document nobody requires.
       const optional = await this.isOptionalMoverDocument(n.subjectId, doc.role, doc.docType);
-      // [RESTAURANT-TIN · owner 12 Nov 2026] a restaurant's GRA licence is optional: never "renew it to avoid suspension"
-      const restaurantLicence = !optional && await this.isOptionalRestaurantLicence(n.subjectId, doc.role, doc.docType);
+      // [RESTAURANT-TIN · owner 12 Nov 2026, review S2-1] a restaurant's GRA licence: optional, or "add your TIN certificate"
+      const restaurantLicence = optional ? null : await this.restaurantLicenceWords(n.subjectId, doc.role, doc.docType, 'REMINDER');
       await this.notifications.send({
         userId: n.subjectId,
         type: 'SYSTEM_ANNOUNCEMENT',
         title: n.daysLeft <= 1 ? 'Document expires tomorrow' : 'Document expiring soon',
         body: `Your ${doc.docType.replace(/_/g, ' ')} expires on ${n.expiresOn.toISOString().slice(0, 10)} — ${n.daysLeft} day${n.daysLeft === 1 ? '' : 's'} left. ${optional
           ? (doc.docType === POLICE_CLEARANCE_DOC_TYPE ? 'Renew it to stay recorded as police-cleared. It is optional and does not affect your work.' : 'It is optional and does not affect your work.')
-          : restaurantLicence ? 'It is optional for a restaurant and does not affect your store: renew it only if you want it on file.'
+          : restaurantLicence !== null ? restaurantLicence
           : doc.docType === HIRE_PERMIT_DOC_TYPE ? `This permit no longer counts on its own. ${hireLicenceUploadWords(HIRE_SPLIT_DOC_TYPES)} in Documents to go online.` : 'Renew it to avoid suspension.'}`,
         audience: audienceForRole(doc.role),
         data: { kind: 'verification_expiry_reminder', docId: n.documentId, daysLeft: n.daysLeft },

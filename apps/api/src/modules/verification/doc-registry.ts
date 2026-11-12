@@ -896,6 +896,9 @@ export const RESTAURANT_TIN_ROLE = 'RESTAURANT';
  * certificate (in its place), and the restaurant's `_OPTIONAL` list offers the GRA licence. It holds over a stored
  * (owner-signed) copy too: production's copy still names the GRA licence until the next owner-signed seed writes the
  * 2026-11-12.1 lists, and the owner's ruling applies from the deploy, not from that seed. Pure; never mutates `lists`.
+ * [#2494 review S4-3] While it runs in every reader, no signed copy can make the GRA licence a restaurant's required paper
+ * again: that would be a new owner ruling, and this rule is retired from the readers with it (or once production's stored
+ * copy is at 2026-11-12.1 or later, when it no longer changes anything).
  */
 export function withRestaurantTinRule(lists: Readonly<Record<string, string[]>>): Record<string, string[]> {
   const out: Record<string, string[]> = { ...lists };
