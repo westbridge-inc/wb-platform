@@ -16,7 +16,7 @@
 import type { PrismaClient } from '@prisma/client';
 import type { VerificationService } from './verification.service';
 import { CountryConfigService } from '../country/country-config.service';
-import { registryCompletenessGaps, BUCKET_OF, REGISTRY_TIER, type RegistryGap } from './doc-registry';
+import { registryCompletenessGaps, BUCKET_OF, REGISTRY_TIER, withRestaurantTinRule, type RegistryGap } from './doc-registry';
 import { resolvesImpl } from './validators';
 import { alwaysReview } from './extraction-ledger';
 
@@ -69,7 +69,8 @@ export async function rehearseActivation(
   // 2. Which requirement sets switch from the JSON to the registry, and do they say the same thing?
   const countryConfig = new CountryConfigService(prisma);
   const config = await countryConfig.getByCode(input.countryCode);
-  const json = (config.documentChecklists ?? {}) as Record<string, string[]>;
+  // [RESTAURANT-TIN] the stored copy read as every reader reads it (a restaurant's TIN certificate in the licence's place)
+  const json = withRestaurantTinRule((config.documentChecklists ?? {}) as Record<string, string[]>);
   const sets = await prisma.requirementSet.findMany({
     where: { countryCode: input.countryCode, tier: REGISTRY_TIER, effectiveFrom: { lte: activationDate }, OR: [{ effectiveTo: null }, { effectiveTo: { gt: activationDate } }] },
     include: { items: { include: { docType: { select: { code: true, legacyCode: true } } }, orderBy: { sortOrder: 'asc' } } },

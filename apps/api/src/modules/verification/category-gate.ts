@@ -14,8 +14,9 @@ import type { Prisma, PrismaClient, DiscoveryCategoryKind, GateEnforcement } fro
 import { validExpiryOr } from './document-validity';
 import { NOT_RETIRED_DOC } from './doc-state';
 import { AppError } from '../../utils/errors';
-import { FOOD_HANDLER_CERT_DOC_TYPE } from './doc-registry';
+import { FOOD_HANDLER_CERT_DOC_TYPE, GRA_RESTAURANT_LICENCE_DOC_TYPE, RESTAURANT_TIN_ROLE, TIN_CERTIFICATE_DOC_TYPE } from './doc-registry';
 import { foodHandlerTickApplies, storeAttested } from '../vendor/food-handlers';
+import { docTypeName } from './doc-names';
 
 type Db = PrismaClient | Prisma.TransactionClient;
 
@@ -68,13 +69,26 @@ export async function holdsValidDocument(prisma: Db, ownerUserId: string, legacy
   return revokedSince === null;
 }
 
-/** The store a gate is judged for: its owner, its market, and [FOOD-PERMIT] whether it is a registered restaurant. */
-export interface GateContext { ownerUserId: string; countryCode: string; store?: { vendorId: string; vendorType: string } }
+/** The store a gate is judged for: its owner, its market, and [FOOD-PERMIT] whether it is a registered restaurant.
+ *  [RESTAURANT-TIN] Whether it is live now (isVerified, status): a live restaurant is never held for its TIN certificate. */
+export interface GateContext { ownerUserId: string; countryCode: string; store?: { vendorId: string; vendorType: string; isVerified?: boolean; status?: string } }
 
 export async function vendorOwnerContext(prisma: Db, vendorId: string): Promise<GateContext> {
-  const vendor = await prisma.vendor.findUnique({ where: { id: vendorId }, select: { vendorType: true, owner: { select: { user: { select: { id: true, countryCode: true } } } } } });
+  const vendor = await prisma.vendor.findUnique({ where: { id: vendorId }, select: { vendorType: true, isVerified: true, status: true, owner: { select: { user: { select: { id: true, countryCode: true } } } } } });
   if (!vendor) throw new AppError(404, 'NOT_FOUND', 'Vendor not found');
-  return { ownerUserId: vendor.owner.user.id, countryCode: vendor.owner.user.countryCode, store: { vendorId, vendorType: vendor.vendorType } };
+  return { ownerUserId: vendor.owner.user.id, countryCode: vendor.owner.user.countryCode, store: { vendorId, vendorType: vendor.vendorType, isVerified: vendor.isVerified, status: vendor.status } };
+}
+
+/**
+ * [RESTAURANT-TIN · owner ruling 12 Nov 2026] The paper a gate asks of THIS store. The prepared-food gate (CUISINE /
+ * DISH) names the GRA Food Restaurant Licence; for a RESTAURANT it asks the TIN certificate in its place (the licence is
+ * optional for a restaurant). Every other store selling prepared food is unchanged: it still needs the licence.
+ */
+export function gateDocFor(legacyCode: string, displayName: string, store: GateContext['store']): { code: string; name: string } {
+  if (legacyCode === GRA_RESTAURANT_LICENCE_DOC_TYPE && store?.vendorType === RESTAURANT_TIN_ROLE) {
+    return { code: TIN_CERTIFICATE_DOC_TYPE, name: docTypeName(TIN_CERTIFICATE_DOC_TYPE) };
+  }
+  return { code: legacyCode, name: displayName };
 }
 
 /**
@@ -85,6 +99,16 @@ export async function vendorOwnerContext(prisma: Db, vendorId: string): Promise<
  */
 async function storeHolds(prisma: Db, ctx: GateContext, legacyCode: string, now: Date): Promise<boolean> {
   if (await holdsValidDocument(prisma, ctx.ownerUserId, legacyCode, now)) return true;
+  // [RESTAURANT-TIN · owner 12 Nov 2026, review S2-1] A restaurant live today keeps its prepared food listed while it
+  // still holds a valid GRA licence and no TIN certificate of its owner's was turned down (restaurant-tin.ts). Loaded at
+  // call time: restaurant-tin reads holdsValidDocument from this module.
+  if (legacyCode === TIN_CERTIFICATE_DOC_TYPE && ctx.store !== undefined) {
+    const { liveRestaurant, tinExemptionStands } = await import('./restaurant-tin');
+    if (liveRestaurant({ vendorType: ctx.store.vendorType, isVerified: ctx.store.isVerified === true, status: ctx.store.status ?? 'PENDING_APPROVAL' })) {
+      return tinExemptionStands(prisma, ctx.ownerUserId, now);
+    }
+    return false;
+  }
   if (legacyCode !== FOOD_HANDLER_CERT_DOC_TYPE || ctx.store === undefined || !foodHandlerTickApplies(ctx.store)) return false;
   return storeAttested(prisma, ctx.ownerUserId, ctx.store.vendorId);
 }
@@ -96,9 +120,9 @@ export async function gateVerdicts(prisma: Db, ctx: GateContext, categories: rea
   for (const category of categories) {
     for (const gate of gates) {
       if (!gateApplies(gate, category)) continue;
-      const code = gate.requiredDocType.legacyCode;
+      const { code, name } = gateDocFor(gate.requiredDocType.legacyCode, gate.requiredDocType.displayName, ctx.store);
       if (!validity.has(code)) validity.set(code, await storeHolds(prisma, ctx, code, now));
-      verdicts.push({ gateCode: gate.code, category, enforcement: gate.enforcement, requiredDocType: code, requiredDisplayName: gate.requiredDocType.displayName, ok: validity.get(code)! });
+      verdicts.push({ gateCode: gate.code, category, enforcement: gate.enforcement, requiredDocType: code, requiredDisplayName: name, ok: validity.get(code)! });
     }
   }
   return verdicts;
