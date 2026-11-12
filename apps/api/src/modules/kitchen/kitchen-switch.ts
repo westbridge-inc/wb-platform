@@ -12,8 +12,10 @@
  * (nothing is written to the kitchen tables), the webhook route does not exist and the poller does not run — every
  * store behaves exactly as before. If it is turned off with claims still waiting (a kill switch in an incident), the
  * tablet backstop (the alert ladder and the hold-release sweep) rings each such order on the store's tablet.
- * A leaf (no imports) so every reader shares one answer.
+ * A leaf (its only import is the runtime-mode parser) so every reader shares one answer.
  */
+
+import { runtimeMode } from '../../utils/runtime-mode';
 
 type Env = Record<string, string | undefined>;
 
@@ -38,6 +40,15 @@ export function dragontailApiUrl(env: Env = process.env): string {
   return (raw || DRAGONTAIL_DEFAULT_API_URL).replace(/\/+$/, '');
 }
 
+/** A test run, read through the one runtime-mode parser; an unset or unknown NODE_ENV is never a test run. */
+function isTestRun(env: Env): boolean {
+  try {
+    return runtimeMode(env) === 'test';
+  } catch {
+    return false;
+  }
+}
+
 /** [review A S3-3] The kitchen system's host family (the processor register's host). */
 export const DRAGONTAIL_HOST_SUFFIX = 'dragontailsystem.com';
 
@@ -54,7 +65,7 @@ export function dragontailApiUrlProblem(raw: string, env: Env = process.env): st
     return 'DRAGONTAIL_API_URL is not a URL';
   }
   const host = url.hostname.toLowerCase();
-  if (env['NODE_ENV'] === 'test' && url.protocol === 'http:' && (host === '127.0.0.1' || host === 'localhost')) return null;
+  if (isTestRun(env) && url.protocol === 'http:' && (host === '127.0.0.1' || host === 'localhost')) return null;
   if (url.protocol !== 'https:') return 'DRAGONTAIL_API_URL must be https';
   if (url.username || url.password) return 'DRAGONTAIL_API_URL must not carry a credential';
   if (host !== DRAGONTAIL_HOST_SUFFIX && !host.endsWith(`.${DRAGONTAIL_HOST_SUFFIX}`)) {
