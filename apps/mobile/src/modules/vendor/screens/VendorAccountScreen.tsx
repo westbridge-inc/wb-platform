@@ -61,6 +61,7 @@ import {
 } from '../../../hooks/vendorops';
 import { RoleSwitcherSheet } from '../../../components/RoleSwitcherSheet';
 import { useStepUp } from '../../../hooks/useStepUp';
+import { BUSINESS_TYPE_ROW, BUSINESS_TYPE_ROW_SUB } from '../../../lib/accountChangeCopy';
 import { isStepUpDismissed, serverMessage } from '../../../lib/stepUp';
 import { toast } from '../../../kit/toast';
 import { money } from '../../../lib/money';
@@ -260,6 +261,10 @@ export function VendorAccountScreen() {
             {/* [CHAINS PR2] Every branch at a glance, several at once, and (owner) adding one. */}
             {isManager ? (
               <SettingsRow icon="git-branch" label="Branches" sub={isOwner ? 'All your branches, and add a branch' : 'Your branches at a glance'} onPress={() => navigation.navigate('VendorBranches')} />
+            ) : null}
+            {/* [COMPANY-DOCS Part 3 · owner ruling 10 Nov 2026 (c)] The account holder corrects the kind of business it joined as. */}
+            {isOwner && !samplePreview ? (
+              <SettingsRow icon="briefcase" label={BUSINESS_TYPE_ROW} sub={BUSINESS_TYPE_ROW_SUB} onPress={() => navigation.navigate('VendorBusinessType')} />
             ) : null}
             <SettingsRow icon="user" label="Personal data & account closure" onPress={() => navigation.navigate('PersonalData' , { closureRequest: true })} />
             <JobAlertSettingsRow />

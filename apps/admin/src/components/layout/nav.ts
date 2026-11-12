@@ -48,6 +48,8 @@ export const NAV_GROUPS: NavGroup[] = [
     title: 'Queues',
     items: [
       { label: 'Documents', href: '/verification', icon: FileCheck2, blurb: 'Review each document and decide it', keywords: 'verification review center kyc id licence' },
+      // [COMPANY-DOCS Part 3] A store's change of business type, or a company's new account holder, waiting for a person.
+      { label: 'Account changes', href: '/account-changes', icon: FileCheck2, blurb: 'A store’s new business type, or a company’s new account holder, to check', keywords: 'business type company handover account holder director letter' },
       { label: 'Selfie checks', href: '/selfie-checks', icon: FileCheck2, blurb: 'Compare a home-visit business’s selfie with its approved ID', keywords: 'selfie photo id compare home visit face' },
       // [STORE-VAT · owner O-5] A store's VAT shows only after a person checked its GRA VAT certificate here.
       { label: 'Store VAT', href: '/store-vat', icon: Receipt, blurb: 'Stores waiting for a person to check their GRA VAT certificate', keywords: 'vat gra tax certificate registration' },
