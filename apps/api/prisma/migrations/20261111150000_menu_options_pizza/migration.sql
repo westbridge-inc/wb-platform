@@ -109,8 +109,10 @@ ALTER TABLE "option_groups" ADD CONSTRAINT "option_groups_sets_price_pick_one_ch
 ALTER TABLE "modifier_groups" ADD CONSTRAINT "modifier_groups_sets_price_pick_one_check"
   CHECK (NOT "setsPrice" OR ("isRequired" AND "minSelect" <= 1 AND "maxSelect" = 1));
 -- An order line's choice is placed on the whole item or one half, or (any other group) has no placement.
+-- [REVIEW A S4-2] Added NOT VALID (no table scan under the ACCESS EXCLUSIVE lock), then validated (a lighter lock).
 ALTER TABLE "order_item_options" ADD CONSTRAINT "order_item_options_placement_check"
-  CHECK ("placement" IS NULL OR "placement" IN ('WHOLE', 'LEFT', 'RIGHT'));
+  CHECK ("placement" IS NULL OR "placement" IN ('WHOLE', 'LEFT', 'RIGHT')) NOT VALID;
+ALTER TABLE "order_item_options" VALIDATE CONSTRAINT "order_item_options_placement_check";
 -- At most one price-setting group per item.
 CREATE UNIQUE INDEX "option_groups_one_sets_price_per_item" ON "option_groups"("itemId") WHERE "setsPrice";
 

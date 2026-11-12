@@ -3,7 +3,7 @@ import { MeiliSearch } from 'meilisearch';
 import type { PrismaClient } from '@prisma/client';
 import { VISIBLE_VENDOR, VISIBLE_VENDOR_REL, VISIBLE_VENDOR_SELECT, isVendorVisible } from '../vendor/vendor-visibility';
 import { ratingSurfaces } from '../rating/rating-surface';
-import { toItemSearchDoc } from './item-hit';
+import { ITEM_DOC_SIZE_INCLUDE, toItemSearchDoc } from './item-hit';
 import { ITEM_INDEX, VENDOR_INDEX, buildScopedFilter, docId, parseDocId, renderClause, type FilterClause } from './search-scope';
 import { getTenantId } from '../../plugins/tenant-context';
 import { searchIndexDocsGauge, searchScopeCounter } from '../../plugins/observability';
@@ -193,6 +193,7 @@ export class SearchService {
       include: {
         vendor: { select: { name: true, status: true, tenantId: true, isCurrentlyOpen: true } },
         category: { select: { name: true } },
+        ...ITEM_DOC_SIZE_INCLUDE,
       },
     });
 
@@ -384,6 +385,7 @@ export class SearchService {
         // fold while their store was already hidden.
         vendor: { select: { name: true, tenantId: true, isCurrentlyOpen: true, ...VISIBLE_VENDOR_SELECT } },
         category: { select: { name: true } },
+        ...ITEM_DOC_SIZE_INCLUDE,
       },
     });
 

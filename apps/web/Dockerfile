@@ -89,8 +89,8 @@ COPY apps/api/src/modules/order/options.ts apps/api/src/modules/order/options.ts
 # follow-up groups) are the phone's own sheet model, imported by path; it
 # imports nothing, so exactly this file.
 COPY apps/mobile/src/lib/menuSheet.ts apps/mobile/src/lib/menuSheet.ts
-# [MENU-OPTIONS] What every cart write declares (MENU_OPTIONS_V2): its own file
-# so the shared customer client does not carry the sheet model; imports nothing.
+# [MENU-OPTIONS] What every menu-options write declares (MENU_OPTIONS_V2): the
+# store tools and the customer's cart writes import it by path; imports nothing.
 COPY apps/mobile/src/lib/menuOptionsCapability.ts apps/mobile/src/lib/menuOptionsCapability.ts
 # The business console reuses the app's plain board files by path (PR A): the
 # role matrix, the accept clock, the MMG-dispute pause, the store-delivery rule
