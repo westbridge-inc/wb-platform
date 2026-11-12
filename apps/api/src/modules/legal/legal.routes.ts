@@ -246,7 +246,7 @@ import { OPERATOR, OPERATOR_ADDRESS } from './operator';
 // [2026-11-10 · LEGAL-CARDS · owner ruling 6 Oct 2026 (the refunds page's card words must match the in-app card flow
 // when cards go live) · review #2465-B F1/F2 · MATERIAL for partners: a new processor flow (PowerTranz takes a
 // partner's weekly-fee card payment on its hosted page), as 2026-10-25.1 · reaccept.ts MATERIAL_CHANGES, audience
-// 'partner' · DRAFT until the owner approves the words and a Guyana attorney reads them] Privacy Policy sections 1
+// 'partner' · owner approved the words 12 Nov 2026] Privacy Policy sections 1
 // (partner records: what Swift keeps of a card payment, never the card number), 2 (card details are typed on the card
 // processor's page, never into Swift) and 5 (processors: PowerTranz, what it receives, and that its page asks ipapi.co
 // for the IP location, as served on staging 10 Nov 2026). Mover and Business Agreements section 2: a closing refund of

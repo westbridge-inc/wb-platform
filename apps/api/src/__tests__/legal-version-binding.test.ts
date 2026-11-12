@@ -438,7 +438,7 @@ const PUBLISHED: Record<
     vendor_agreement: '340314a81c7db7f8ce31971a314cd563d528e8d7f125bc0001e6536930c25ac7',
   },
   // [2026-11-10 · LEGAL-CARDS · MATERIAL for partners (a new processor flow: PowerTranz takes a partner's weekly-fee
-  // card payment) · DRAFT until the owner approves the words and a Guyana attorney reads them] Privacy sections 1, 2 and
+  // card payment) · owner approved the words 12 Nov 2026] Privacy sections 1, 2 and
   // 5 (what Swift keeps of a card payment; card details are typed on the card processor's page; PowerTranz and ipapi.co)
   // and the Mover and Business Agreements section 2 (a closing refund to the card; a refused card refund stays as
   // credit until the partner agrees in writing). Checked mechanically before pinning: putting "9 November 2026" back in

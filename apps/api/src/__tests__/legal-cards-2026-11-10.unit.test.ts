@@ -7,7 +7,7 @@ import { MATERIAL_CHANGES, NON_MATERIAL_CHANGES, acceptanceStatus, materialVersi
 import { POLICY_NAMED_WITHOUT_EGRESS, processorByRef, coverageOfProviderDir } from '../modules/legal/processor-register';
 
 // ---------------------------------------------------------------------------
-// [LEGAL-CARDS · 10 Nov 2026 · DRAFT until the owner approves the words and a Guyana attorney reads them] Paying
+// [LEGAL-CARDS · 10 Nov 2026 · owner approved the words 12 Nov 2026] Paying
 // Swift's weekly fee by card, in the legal texts, before cards go live:
 //   - Privacy section 1 (what Swift keeps of a card payment, never the card number), section 2 (card details are typed
 //     on the card processor's page, never into Swift) and section 5 (PowerTranz as a processor, what it receives, and

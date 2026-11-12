@@ -10,7 +10,7 @@ export function retiredPaymentCopy(text: string) {
   const code = text.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
   return /\b(?:sanFormatted|payCashSteps|activationCopy)\b|(?:\?\.|\.)san\b|\[\s*[\x27\x22]san[\x27\x22]\s*\]|MMG[\s-]+agent|Swift[\s-]+Number|pay[^\n]{0,80}account[\s-]+number|(?:weekly fee|subscription)[^\n]{0,80}(?:paid by card|pay by card|pay in cash)|coming soon/i.test(code);
 }
-// [LEGAL-CARDS · owner's card wording, 10 Nov 2026 · DRAFT until the owner approves the words] The Privacy Policy's
+// [LEGAL-CARDS · owner's card wording, 10 Nov 2026 · owner approved the words 12 Nov 2026] The Privacy Policy's
 // "Partner records" bullet says what Swift keeps "if you pay by card" (a statement of what is recorded, not an offer).
 // That one bullet of the legal snapshot is the only text exempted: the rest of the snapshot, and every other file, is
 // checked exactly as before.

@@ -46,7 +46,7 @@ describe('refunds (research E5, ¶12, ¶13, ¶15)', () => {
     'These rules do not affect your rights under the Consumer Affairs Act 2011 to return goods or get a refund from the business.',
     'We reply within 2 business days; the business must refund within 72 hours of our contact.',
     'refunds the extra or mistaken charge in full, within 14 days, to the method you paid with',
-    // [LEGAL-CARDS · 10 Nov 2026 · DRAFT until the owner approves the words] a week paid by card goes back to that
+    // [LEGAL-CARDS · 10 Nov 2026 · owner approved the words 12 Nov 2026] a week paid by card goes back to that
     // card, and a refused card refund is never resent (the owner's card wording doc, section 5).
     'within 14 days, to the account you paid from, to the card you paid with, or, if you paid in person, by a way you and {site.tradeName} agree, records the refund, and then deletes your account.',
     'If a refund to your card is refused, {site.tradeName} does not send it to the card again: it tells you, keeps the money as credit for your weekly fees, and returns it another way only once you agree to that way in writing.',

@@ -29,7 +29,7 @@ function emitted(path: string): string {
   }).outputText;
 }
 const PROCESSOR = /power\s*-?\s*tranz/i;
-// [LEGAL-CARDS · owner's card wording, 10 Nov 2026 · DRAFT until the owner approves the words] The Privacy Policy must
+// [LEGAL-CARDS · owner's card wording, 10 Nov 2026 · owner approved the words 12 Nov 2026] The Privacy Policy must
 // name every processor that receives a partner's data, so its section 5 names PowerTranz, in the processors paragraph of
 // the legal snapshot the website renders. That one paragraph is the only place the name may appear: the rest of the
 // snapshot, and every other shipped file, is scanned exactly as before. The payment screens never show it (owner, 6 Oct).
