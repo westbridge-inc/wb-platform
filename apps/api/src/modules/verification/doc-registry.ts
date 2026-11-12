@@ -178,6 +178,8 @@ export const ALWAYS_REVIEW_LEGACY_CODES: ReadonlySet<string> = new Set([
   'own_name_declaration',
   // [COMPANY-DOCS · owner 10 Nov 2026] which company, and who may act for it, is a person's judgement
   'certificate_of_incorporation', 'company_authority_letter', 'owner_authority_letter',
+  // [RESTAURANT-TIN · owner 12 Nov 2026] whether a TIN certificate is the GRA's and names this business is a person's judgement
+  'tin_certificate',
 ]);
 
 export const registryCode = (countryCode: string, legacyCode: string) => `${countryCode}.${legacyCode}`;
@@ -193,8 +195,10 @@ export const registryCode = (countryCode: string, legacyCode: string) => `${coun
  * from the code (the liquor licence's annual printed expiry is gone), so the registry never carries recall.
  * [CHECKLIST-LEGAL · owner 1 Nov 2026 (a)] The unregistered trader's self-declaration joined them with its tier: the
  * route that filed it is gone, and a stored copy is described (BUSINESS bucket, no expiry) until its retention clock.
+ * [RESTAURANT-TIN · owner 12 Nov 2026] The TIN certificate is NOT retired any more: a restaurant's lists ask for it
+ * (withRestaurantTinRule), so the seed mints and describes it from the lists, as every listed type.
  */
-export const RETIRED_DOC_TYPES: readonly string[] = ['vehicle_plate_photo', 'tin_certificate', 'hire_car_permit', 'liquor_licence', 'pharmacy_authorisation', 'nis_employer_reg', 'self_declaration_unregistered'];
+export const RETIRED_DOC_TYPES: readonly string[] = ['vehicle_plate_photo', 'hire_car_permit', 'liquor_licence', 'pharmacy_authorisation', 'nis_employer_reg', 'self_declaration_unregistered'];
 const humanize = (code: string) => code.split('_').map((w) => (w === 'id' || w === 'tin' || w === 'gra' || w === 'gei' ? w.toUpperCase() : w[0]!.toUpperCase() + w.slice(1))).join(' ');
 
 export interface RegistrySeedResult { docTypes: number; requirementSets: number; requirementItems: number; validators: number; extraDocTypes: number; categoryGates: number }
@@ -289,6 +293,8 @@ export interface GateSeed {
  */
 export const CATEGORY_GATES: readonly GateSeed[] = [
   { code: 'GY:slug:meat-poultry:sanitary_certificate', categorySlug: 'meat-poultry', docType: 'sanitary_certificate', enforcement: 'BLOCK_LISTING', note: '§18.3: meat / butcher' },
+  // [RESTAURANT-TIN · owner 12 Nov 2026] For a RESTAURANT these two rows are judged against its TIN certificate
+  // (category-gate gateDocFor): the licence is optional for a restaurant. Any other store selling prepared food keeps them.
   { code: 'GY:kind:CUISINE:gra_restaurant_licence', categoryKind: 'CUISINE', docType: 'gra_restaurant_licence', enforcement: 'BLOCK_LISTING', note: '§18.3: prepared food' },
   { code: 'GY:kind:DISH:gra_restaurant_licence', categoryKind: 'DISH', docType: 'gra_restaurant_licence', enforcement: 'BLOCK_LISTING', note: '§18.3: prepared food' },
   { code: 'GY:kind:CUISINE:food_handler_cert', categoryKind: 'CUISINE', docType: 'food_handler_cert', enforcement: 'BLOCK_LISTING', note: '§18.3: prepared food — at least one food handler permit' },
@@ -439,6 +445,8 @@ export async function seedDocRegistry(prisma: PrismaClient): Promise<RegistrySee
     const lists: Record<string, string[]> = { ...DEFAULT_DOCUMENT_CHECKLISTS, ...((c.documentChecklists ?? {}) as Record<string, string[]>) };
     // [ROLE-DOCS · owner 21 Oct 2026] a retired list in a stored copy from an older seed declares nothing
     for (const key of RETIRED_REGISTRY_LIST_KEYS) delete lists[key];
+    // [RESTAURANT-TIN · owner 12 Nov 2026] a restaurant's TIN certificate in the GRA licence's required place; the licence optional
+    Object.assign(lists, withRestaurantTinRule(lists));
     // [VERIFY-DOCS] A type no list asks for any more keeps its registry row: documents of it already
     // exist (approved permits, TIN certificates) and their bucket and retention still have to be read.
     // A never-accepted type (a medical document) is never minted, whatever a stored list says.
@@ -864,7 +872,44 @@ export const PERSON_ID_DOC_TYPES: readonly string[] = [...IDENTITY_DOC_TYPES, AC
 /** [ROLE-DOCS · COMPANY-DOCS] Papers only a person at Swift decides: no engine, automatic approval or automatic rejection. */
 export const PERSON_ONLY_DOC_TYPES: ReadonlySet<string> = new Set([
   OWN_NAME_DOC_TYPE, CERTIFICATE_OF_INCORPORATION_DOC_TYPE, ACCOUNT_HOLDER_ID_DOC_TYPE, COMPANY_AUTHORITY_DOC_TYPE, OWNER_AUTHORITY_DOC_TYPE,
+  // [RESTAURANT-TIN · owner 12 Nov 2026] a restaurant's TIN certificate: a person reads which business and which TIN it names
+  'tin_certificate',
 ]);
+
+/**
+ * [RESTAURANT-TIN · owner ruling 12 Nov 2026, correcting the same day's first line] RESTAURANTS ONLY (vendorType
+ * RESTAURANT: the type the food handlers tick applies to; never a supermarket, a shop, a service business, a chef or a
+ * caterer): the GRA Food Restaurant Licence is OPTIONAL, and a TIN certificate takes its REQUIRED place, on every
+ * restaurant list (RESTAURANT, _OWN_NAME, _COMPANY, _MANAGER) and at the prepared-food listing gate (category-gate.ts
+ * judges the CUISINE / DISH gate for a restaurant against the TIN certificate). Supersedes the 6 Oct ruling 7 ("no TIN
+ * certificate on any store list") for restaurants only. No TIN is ever typed: the certificate is a document a person reads.
+ * An already-uploaded GRA licence stays valid evidence; nothing is deleted.
+ */
+export const TIN_CERTIFICATE_DOC_TYPE = 'tin_certificate';
+export const GRA_RESTAURANT_LICENCE_DOC_TYPE = 'gra_restaurant_licence';
+/** The one store type the rule applies to (the checklist role key and the vendor type are the same word). */
+export const RESTAURANT_TIN_ROLE = 'RESTAURANT';
+
+/**
+ * [RESTAURANT-TIN] The rule over a checklist map, applied by EVERY reader (country-config withoutRetiredLists and
+ * getOptionalDocuments, the registry seed): on each restaurant REQUIRED list the GRA licence is replaced by the TIN
+ * certificate (in its place), and the restaurant's `_OPTIONAL` list offers the GRA licence. It holds over a stored
+ * (owner-signed) copy too: production's copy still names the GRA licence until the next owner-signed seed writes the
+ * 2026-11-12.1 lists, and the owner's ruling applies from the deploy, not from that seed. Pure; never mutates `lists`.
+ */
+export function withRestaurantTinRule(lists: Readonly<Record<string, string[]>>): Record<string, string[]> {
+  const out: Record<string, string[]> = { ...lists };
+  for (const [key, codes] of Object.entries(lists)) {
+    const { actorRole, optional } = splitChecklistKey(key);
+    if (actorRole !== RESTAURANT_TIN_ROLE || optional || !Array.isArray(codes) || !codes.includes(GRA_RESTAURANT_LICENCE_DOC_TYPE)) continue;
+    const hasTin = codes.includes(TIN_CERTIFICATE_DOC_TYPE);
+    out[key] = codes.flatMap((code) => (code === GRA_RESTAURANT_LICENCE_DOC_TYPE ? (hasTin ? [] : [TIN_CERTIFICATE_DOC_TYPE]) : [code]));
+  }
+  const optionalKey = `${RESTAURANT_TIN_ROLE}${OPTIONAL_LIST_SUFFIX}`;
+  const offered = (Array.isArray(out[optionalKey]) ? out[optionalKey]! : []).filter((code) => code !== TIN_CERTIFICATE_DOC_TYPE);
+  out[optionalKey] = offered.includes(GRA_RESTAURANT_LICENCE_DOC_TYPE) ? offered : [...offered, GRA_RESTAURANT_LICENCE_DOC_TYPE];
+  return out;
+}
 /** [FOOD-PERMIT · owner ruling 24 Oct 2026] A food handler's certificate. Required of a chef and a caterer; OPTIONAL for a
  *  restaurant, which ticks the statement below instead. */
 export const FOOD_HANDLER_CERT_DOC_TYPE = 'food_handler_cert';

@@ -55,7 +55,9 @@ describe('[COMPANY-DOCS] the checklists per kind of sign-up', () => {
       expect(company.slice(0, 3), role).toEqual(COMPANY_PAPERS);
       expect(company.slice(3), role).toEqual(standard.filter((t) => t !== 'owner_national_id' && t !== 'business_registration'));
     }
-    expect(DEFAULT_DOCUMENT_CHECKLISTS['RESTAURANT_COMPANY']).toContain('gra_restaurant_licence');
+    // [RESTAURANT-TIN · owner 12 Nov 2026] a restaurant company sends its TIN certificate; the GRA licence is optional
+    expect(DEFAULT_DOCUMENT_CHECKLISTS['RESTAURANT_COMPANY']).toContain('tin_certificate');
+    expect(DEFAULT_DOCUMENT_CHECKLISTS['RESTAURANT_COMPANY']).not.toContain('gra_restaurant_licence');
     // a service business that is a company: the same three, in place of the owner's ID
     expect(DEFAULT_DOCUMENT_CHECKLISTS['SERVICE_COMPANY']).toEqual(COMPANY_PAPERS);
   });
@@ -72,10 +74,10 @@ describe('[COMPANY-DOCS] the checklists per kind of sign-up', () => {
     expect(DEFAULT_DOCUMENT_CHECKLISTS['SERVICE_MANAGER']).toBeUndefined();
   });
 
-  it('[review F1] a checklist change is a config change: 2026-11-10.1 carries the new lists into the next owner-signed seed', () => {
-    expect(PLATFORM_CONFIG_VERSION).toBe('2026-11-10.1');
+  it('[review F1] a checklist change is a config change: 2026-11-10.1 (and 2026-11-12.1 after it) carries the new lists into the next owner-signed seed', () => {
+    expect(PLATFORM_CONFIG_VERSION).toBe('2026-11-12.1');
     const desired = desiredPlatformConfig();
-    expect(desired.version).toBe('2026-11-10.1');
+    expect(desired.version).toBe('2026-11-12.1');
     for (const c of desired.countries) {
       const lists = c.policy['documentChecklists'] as Record<string, string[]>;
       for (const key of ['RESTAURANT_COMPANY', 'SUPERMARKET_COMPANY', 'STORE_COMPANY', 'SERVICE_COMPANY', 'RESTAURANT_MANAGER', 'SUPERMARKET_MANAGER', 'STORE_MANAGER']) {
@@ -282,7 +284,7 @@ describe('[COMPANY-DOCS] sign-up: the choice drives the server checklist', () =>
     expect(res.statusCode, res.body).toBeLessThan(300);
     expect(await basisOf(o.userId)).toBe('COMPANY');
     const status = await statusOf(o);
-    expect(status.checklist).toEqual(['certificate_of_incorporation', 'account_holder_id', 'company_authority_letter', 'gra_restaurant_licence', 'storefront_photo', 'food_handler_attestation']);
+    expect(status.checklist).toEqual(['certificate_of_incorporation', 'account_holder_id', 'company_authority_letter', 'tin_certificate', 'storefront_photo', 'food_handler_attestation']);
     expect(status.checklist).not.toContain('owner_national_id');
     expect(status.accountBasis).toBe('COMPANY');
     expect(status.nameBasis).toBe('REGISTERED');
@@ -409,7 +411,7 @@ describe('[COMPANY-DOCS] one set of papers for the whole account: branches uploa
   it('a company’s branch rides the company’s checked papers, and cannot sign up any other way', async () => {
     const o = await person();
     expect((await become(o, { accountBasis: 'COMPANY' })).statusCode).toBeLessThan(300);
-    await approveAll(o, 'RESTAURANT', ['certificate_of_incorporation', 'account_holder_id', 'company_authority_letter', 'gra_restaurant_licence', 'storefront_photo']);
+    await approveAll(o, 'RESTAURANT', ['certificate_of_incorporation', 'account_holder_id', 'company_authority_letter', 'tin_certificate', 'storefront_photo']);
     await system(() => app.prisma.vendor.update({ where: { id: o.vendorId }, data: { status: 'ACTIVE', isVerified: true, acceptingOrders: true } }));
     await grantStepUp(app, o.token);
     const quote = await signupQuote(app.prisma, o.userId, { role: 'VENDOR', vendorType: 'RESTAURANT' });

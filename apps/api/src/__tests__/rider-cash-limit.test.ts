@@ -61,7 +61,7 @@ describe('[O1] the seed plan: GY$100,000 rider cash limit; the store gets 10 min
 
   it('is a new configuration version', () => {
     // [COMPANY-DOCS] 2026-11-10.1 carries the cash limit and the 10 minutes on unchanged (company-signup-documents.test.ts)
-    expect(PLATFORM_CONFIG_VERSION).toBe('2026-11-10.1');
+    expect(PLATFORM_CONFIG_VERSION).toBe('2026-11-12.1');
     expect(spine.version).toBe(PLATFORM_CONFIG_VERSION);
   });
 });
