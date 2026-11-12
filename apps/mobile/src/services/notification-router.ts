@@ -142,6 +142,11 @@ export function destinationFor(data: Record<string, unknown> | null | undefined,
   // [Row 55] A store team invite is answered on the inbox, where its Accept /
   // Decline card sits (the invitee joins only by accepting there).
   if (kind === 'staff_invite') return { screen: 'Storefront', params: { screen: 'Notifications' } };
+  // [COMPANY-DOCS Part 3 · owner ruling 10 Nov 2026 (d)] A company named this person its new account holder: they answer,
+  // then upload their papers, on its own screen. A handover that ended (refused, withdrawn, or done for the old holder)
+  // is the whole message.
+  if (kind === 'account_handover_named') return { screen: 'AccountHandover' };
+  if (kind === 'account_handover_ended') return { screen: HOME_SCREEN };
 
   // Rides: queue outcomes + anything ride-flavoured lands on the taxi screen
   // (it reads the active ride itself — T21 restore does the rest).
@@ -364,6 +369,11 @@ export function destinationFor(data: Record<string, unknown> | null | undefined,
   if (kind === 'low_stock' || kind === 'category_request_resolved') return { screen: 'VendorRoot', params: { screen: 'Menu' } };
   // [row 55] Someone accepted the owner's invite: the team panel is on Account.
   if (kind === 'staff_joined') return { screen: 'VendorRoot', params: { screen: 'Account' } };
+  // [COMPANY-DOCS Part 3 · owner ruling 10 Nov 2026 (c), (d)] The answer to a change of business type (and to a handover,
+  // for the holder who asked): Account, where "Change business type" shows it and, on a refusal, why. The new account
+  // holder lands in the store, now theirs.
+  if (kind === 'account_change_approved' || kind === 'account_change_refused') return { screen: 'VendorRoot', params: { screen: 'Account' } };
+  if (kind === 'account_handover_completed') return { screen: 'VendorRoot' };
   // The person ADDED to a team: the store they joined (its vendorId selects
   // it), reached in Business mode, which the body tells them to choose.
   if (kind === 'staff_added') return { screen: 'VendorRoot' };

@@ -604,6 +604,9 @@ describe('[item 20] notifications: the narrow actions and the census', () => {
       'modules/user/inactivity.ts insertNoticeFor': 1,
       // [L04 #1550] 'Your email address was changed' to the account itself, inside the change's transaction
       'modules/user/profile-update.ts insertNoticeFor': 1,
+      // [COMPANY-DOCS Part 3] an account change, each inside its own transaction: the person named for a handover; the
+      // change ended (refused, withdrawn, a no); approved: business type changed, the new holder, the old holder
+      'modules/vendor/account-change.ts insertNoticeFor': 5,
       'modules/vendor/staff-invites.ts insertNoticeFor': 2,
       'modules/vendor/store-pin-move.ts insertNoticeFor': 1,
       // + [FOOD-PERMIT] the food handlers tick notice (askForFoodHandlerTick)

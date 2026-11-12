@@ -209,6 +209,7 @@ const ROUTE_CLASS: Record<string, 'ordering' | 'open'> = {
   '/dashboard/branches': 'open', '/dashboard/branches/add': 'open', '/dashboard/team': 'open', // [CHAINS PR2]
   '/dashboard/promotions': 'open', '/dashboard/categories': 'open', // [WEB-SETTINGS PR-B] ([CHECKLIST-LEGAL] no seller status)
   '/dashboard/settings/delete-account': 'open', // [WEB-DELETE] a store's people delete (or close) their own account
+  '/dashboard/settings/business-type': 'open', // [COMPANY-DOCS Part 3] the account holder changes the business type (no ordering)
   '/portal': 'open', '/portal/account': 'open', '/portal/documents': 'open', '/portal/history': 'open',
   '/portal/notifications': 'open', '/portal/weekly-fee': 'open', '/portal/account/delete': 'open', // [WEB-DELETE]
   '/portal/help': 'open', '/dashboard/help': 'open', // [BUG-HUNT F04] a partner's way to a person works before launch

@@ -944,6 +944,39 @@ export const activateVendor = (id: string, sellerName: string, reason: string) =
  *  company name: until then the storefront names nobody as the seller. */
 export const confirmSellerName = (id: string, name: string, reason: string) =>
   apiFetch(`/api/v1/admin/vendors/${id}/seller-name`, { method: 'PUT', body: JSON.stringify({ name }), reason });
+
+// [COMPANY-DOCS Part 3 · owner rulings 10 Nov 2026 (c), (d)] A store's change of business type, or a company's handover to
+// a new account holder: a document reviewer checks each paper in Documents, then decides the change here with a reason.
+export type BusinessTypeOption = 'COMPANY' | 'REGISTERED' | 'MANAGER' | 'OWN_NAME';
+export interface AccountChangePaper { docType: string; state: 'APPROVED' | 'PENDING' | 'REJECTED' | 'MISSING'; forChange: boolean; documentId: string | null; note: string | null }
+export interface AccountChange {
+  id: string;
+  kind: 'BUSINESS_TYPE' | 'HOLDER_HANDOVER';
+  status: 'PENDING' | 'APPROVED' | 'REFUSED' | 'WITHDRAWN';
+  fromOption: BusinessTypeOption | null;
+  toOption: BusinessTypeOption | null;
+  createdAt: string;
+  decidedAt: string | null;
+  accepted: boolean | null;
+  papers: AccountChangePaper[];
+  papersComplete: boolean;
+  accountBasis: 'OWNER' | 'COMPANY' | 'MANAGER';
+  stores: Array<{ id: string; name: string; vendorType: string; status: string; sellerNameCheckedName: string | null }>;
+  holder: { id: string; name: string };
+  newHolder: { id: string; name: string } | null;
+  decisionReason: string | null;
+  /** Which business the papers name: the seller's legal name customers see now, and the one typed from THIS change's
+   *  registration paper (null: none typed, so approving clears the account's). */
+  legalName?: { account: string | null; change: string | null };
+}
+export const fetchAccountChanges = (status: AccountChange['status'] = 'PENDING') =>
+  apiFetch(`/api/v1/admin/account-changes?status=${status}`).then((r) => ((r as { data?: AccountChange[] }).data ?? []));
+/** Approving a business type change confirms each store's name exactly as shown (the seller name customers see). */
+export const approveAccountChange = (id: string, sellerNames: Record<string, string> | undefined, reason: string) =>
+  apiFetch(`/api/v1/admin/account-changes/${id}/approve`, { method: 'PUT', body: JSON.stringify(sellerNames ? { sellerNames } : {}), reason });
+/** The reason is what the store (and the person named) read. */
+export const refuseAccountChange = (id: string, reason: string) =>
+  apiFetch(`/api/v1/admin/account-changes/${id}/refuse`, { method: 'PUT', body: JSON.stringify({}), reason });
 export const verifyRiderDocuments = (id: string, reason: string) => apiFetch(`/api/v1/admin/riders/${id}/verify-documents`, { method: 'PUT', reason });
 export const verifyDriverDocuments = (id: string, reason: string) => apiFetch(`/api/v1/admin/drivers/${id}/verify-documents`, { method: 'PUT', reason });
 export const setDriverRideClass = (id: string, rideClass: string, reason: string) =>

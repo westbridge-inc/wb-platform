@@ -690,6 +690,32 @@ describe('[COMPANY-DOCS PART 2] the director signs on their own phone', () => {
     expect((await pub('open', { token: 'short' })).statusCode).toBe(404);
   });
 
+  it('[review-2475 G2] a letter is filed only for the store it was asked from, while the asker still holds it: never their other store, and nothing is stored first', async () => {
+    const o = await storeAccount('COMPANY');
+    const { id, token, signerPhone } = await sentLetter(o);
+    const signingKey = await verified(token, signerPhone);
+    // the store passes to another account holder; the asker holds another store
+    const other = await storeAccount('COMPANY', 'RESTAURANT', ['Devi', 'Singh']);
+    const moved = await system(async () => {
+      const theirs = await app.prisma.vendorOwner.findUniqueOrThrow({ where: { userId: other.userId }, select: { id: true } });
+      const first = await app.prisma.vendor.findUniqueOrThrow({ where: { id: o.vendorId } });
+      await app.prisma.vendor.create({ data: {
+        ownerId: first.ownerId, name: `${first.name} Next`, slug: `${first.slug}-x-${nanoid(5).toLowerCase()}`, vendorType: first.vendorType, phone: first.phone,
+        addressLine1: first.addressLine1, city: first.city, region: first.region, latitude: first.latitude, longitude: first.longitude, tenantId: first.tenantId,
+      } });
+      return app.prisma.vendor.update({ where: { id: o.vendorId }, data: { ownerId: theirs.id }, select: { id: true } });
+    });
+    const stored = () => system(() => app.prisma.encryptedObject.count({ where: { createdBy: o.userId } }));
+    const before = await stored();
+    const res = await pub('sign', { token, signingKey, signature: dataUrl(drawnSignature()), agree: true });
+    expect(res.statusCode, res.body).toBe(404);
+    expect(res.json().error.code).toBe('LETTER_LINK_NOT_VALID');
+    expect(await stored()).toBe(before); // no orphan PDF of the signature
+    expect(await system(() => app.prisma.verificationDocument.count({ where: { userId: o.userId, docType: 'company_authority_letter' } }))).toBe(0);
+    expect((await rowOf(id)).status).toBe('SENT');
+    expect(moved.id).toBe(o.vendorId);
+  });
+
   it('the malware scan applies to the signed letter as to any document: a signature found refuses it and nothing is filed', async () => {
     const o = await storeAccount('COMPANY');
     const { id, token, signerPhone } = await sentLetter(o);
