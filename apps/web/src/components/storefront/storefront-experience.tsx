@@ -28,24 +28,12 @@ import {
 } from '@/lib/customer';
 import type { StorefrontDetail } from '@/lib/api';
 import { LIVE_MENU_MAX_AGE_MS, type ServerStoreMenu } from '@/lib/browse-keys';
-import {
-  OptionSelectionError,
-  basePrice,
-  chooseOption as chooseInSheet,
-  defaultSelection,
-  fromPrice,
-  isPlainLine,
-  opensChoices,
-  placeOption,
-  requiredChoiceSoldOut,
-  requiredCount,
-  restoreSelection,
-  selectionNames,
-  selectionPrice,
-  singleChoice,
-  type Placement,
-  validateSelectedOptions,
-} from '@/lib/menu-options';
+// [W6 · size] First paint lists items with the light rules only (lib/menu-prices). The API's option engine
+// (validateSelectedOptions, selectionPrice, selectionNames, OptionSelectionError) and the phone's sheet model
+// (defaultSelection, chooseOption, placeOption, restoreSelection, singleChoice), all from lib/menu-options, arrive
+// with the item sheet (`itemSheetModule`): a selection exists only once the sheet is open.
+import { basePrice, fromPrice, isPlainLine, opensChoices, requiredChoiceSoldOut, requiredCount } from '@/lib/menu-prices';
+import type { Placement } from '@/lib/menu-options';
 import { useOptionalCustomerSession } from '@/components/customer-session';
 import { useOrderingContext } from '@/components/ordering-context';
 import { MODE_LOCKED } from '@/lib/ordering-mode-lock';
@@ -121,7 +109,7 @@ const ITEM_SHEET_UNAVAILABLE = 'Swift could not open this item. Check your conne
 // lie a price can tell. A non-finite figure now renders an em-dash; a genuine
 // 0 still renders "GY$0". Same guarantee as `money()` on the vendor side.
 // [W-13] One parser, one em-dash. `null` now reaches here from itemPrice and
-// optionPrice — a price the server never sent, which must never render as free.
+// the sheet's selectionPrice — a price the server never sent, which must never render as free.
 // [WEB-REDESIGN] Customer prices read like the rest of the app (and the phone
 // app): `$2,500`, in Guyana dollars as the footer states.
 const gyMoney = (value: unknown) => formatAmount(value, '$');
@@ -179,18 +167,18 @@ function liveCatalog(store: StorefrontDetail, vendor: VendorDetail): DisplayVend
 // selection with the API's own resolver and judges it with the API's own
 // validator (the same one cart add, cart update and checkout run).
 const itemPrice = (item: DisplayItem): number | null => basePrice(item);
-const optionPrice = (item: DisplayItem, selected: Record<string, string[]>): number | null => selectionPrice(item, selected);
 
 /** [MENU-OPTIONS] The sheet as it opens: the store's pre-selected choices on sale (and those of a follow-up group a
  *  pre-selected choice opens): the phone's own sheet model, lib/menu-options. */
-function selectedDefaults(groups: OptionGroup[]): Record<string, string[]> {
-  return defaultSelection(groups);
-}
+type ItemSheetModule = typeof import('./item-sheet');
+/** How a sheet's opening selection is made, once the sheet's code (and the sheet model with it) is here. */
+type SelectionSeed = (_sheet: ItemSheetModule) => Record<string, string[]>;
+const selectedDefaults = (groups: OptionGroup[]): SelectionSeed => (sheet) => sheet.defaultSelection(groups);
 
 /** What the person is told when the validator refuses their choices. [STORE-WORDS] `catalogue` is the
  *  store's own word for its items ("the menu" only for a restaurant). */
 function choiceProblem(item: DisplayItem, error: unknown, catalogue: string): { message: string; groupId: string | null } {
-  if (!(error instanceof OptionSelectionError)) return { message: `These choices have changed. Close this panel and check ${catalogue} again.`, groupId: null };
+  if (!itemSheetModule || !(error instanceof itemSheetModule.OptionSelectionError)) return { message: `These choices have changed. Close this panel and check ${catalogue} again.`, groupId: null };
   const group = (item.optionGroups ?? []).find((candidate) => candidate.name === error.groupName) ?? null;
   if (error.reason === 'OPTION_REQUIRED' && group) {
     if (!group.options.some((option) => option.isAvailable !== false)) return { message: `“${group.name}” is sold out right now.`, groupId: group.id };
@@ -344,6 +332,19 @@ export function StorefrontExperience({ store, returnPath, fromQr = false, initia
   const [modalError, setModalError] = useState<string | null>(null);
   const [, setItemSheetLoaded] = useState(() => itemSheetModule !== null);
   const [selectedOptions, setSelectedOptions] = useState<Record<string, string[]>>({});
+  // [W6 · size] A sheet opened before its code arrived makes its opening selection (the store's defaults, or the
+  // choices kept across sign-in) when the code lands; nothing is drawn until then, so nothing shows the empty one.
+  const pendingSeed = useRef<SelectionSeed | null>(null);
+  const seedSelection = (seed: SelectionSeed) => {
+    if (itemSheetModule) { pendingSeed.current = null; setSelectedOptions(seed(itemSheetModule)); return; }
+    pendingSeed.current = seed;
+    setSelectedOptions({});
+  };
+  const applyPendingSeed = () => {
+    const seed = pendingSeed.current;
+    pendingSeed.current = null;
+    if (seed && itemSheetModule) setSelectedOptions(seed(itemSheetModule));
+  };
   // [BOOK-S6b] The bookable listing whose sheet is open (the sheet owns its Book in flight).
   const [bookingItem, setBookingItem] = useState<DisplayItem | null>(null);
   const restoringSession = useRef(false);
@@ -657,7 +658,7 @@ export function StorefrontExperience({ store, returnPath, fromQr = false, initia
 
   const openOptions = (item: DisplayItem, trigger?: HTMLElement) => {
     modalReturnFocus.current = trigger ?? null;
-    setSelectedOptions(selectedDefaults(item.optionGroups ?? []));
+    seedSelection(selectedDefaults(item.optionGroups ?? []));
     setItemQuantity(1);
     setModalError(null);
     setModalItem(item);
@@ -665,12 +666,16 @@ export function StorefrontExperience({ store, returnPath, fromQr = false, initia
 
   const addLocal = async (item: DisplayItem, quantity: number, selectedOptions: Record<string, string | string[]>) => {
     try {
-      const { addGuestLine, clearGuestBasket } = await import('@/lib/basket');
+      const [{ addGuestLine, clearGuestBasket }, sheet] = await Promise.all([
+        import('@/lib/basket'),
+        // [W6 · size] The engine that prices the line arrives with the sheet (fetched right after first paint).
+        loadItemSheet().catch(() => { throw new Error(ITEM_SHEET_UNAVAILABLE); }),
+      ]);
       // [MENU-OPTIONS] The basket keeps the choices as the API reads them (`id`, `id:left`) and the preview price by
       // the API's own rules (the size IS the price, a half at the store's half price); the upload re-prices it.
-      const unitPrice = selectionPrice(item, Object.fromEntries(Object.entries(selectedOptions).map(([k, v]) => [k, typeof v === 'string' ? [v] : v])));
+      const unitPrice = sheet.selectionPrice(item, Object.fromEntries(Object.entries(selectedOptions).map(([k, v]) => [k, typeof v === 'string' ? [v] : v])));
       if (unitPrice === null) throw new Error('Check the live item price before adding it.');
-      const names = selectionNames(item, selectedOptions);
+      const names = sheet.selectionNames(item, selectedOptions);
       const result = addGuestLine({ vendorId: catalog.id, storeSlug: store.slug, vendorName: catalog.name, itemId: item.id,
         name: item.name, quantity, unitPrice, selectedOptions, ...(names.length ? { selectedOptionNames: names } : {}), fulfillment: item.fulfillment, returnPath });
       if (result === 'DIFFERENT_STORE') {
@@ -734,7 +739,7 @@ export function StorefrontExperience({ store, returnPath, fromQr = false, initia
     const item = catalog.categories.flatMap(category => category.items).find(item => item.id === initialItemId);
     // A closed or paused store opens nothing: its Add could only refuse.
     if (item?.isAvailable && item.fulfillment === 'DELIVERY' && catalog.isCurrentlyOpen && catalog.acceptingOrders) {
-      setSelectedOptions(selectedDefaults(item.optionGroups ?? []));
+      seedSelection(selectedDefaults(item.optionGroups ?? []));
       setItemQuantity(1);
       setModalError(null);
       setModalItem(item);
@@ -760,7 +765,8 @@ export function StorefrontExperience({ store, returnPath, fromQr = false, initia
     // changes a cart, and the customer sees the current server price.
     // [MENU-OPTIONS] Kept choices against today's menu: on sale, a half only where halves are allowed, a follow-up
     // only while its opener is kept (lib/menu-options restoreSelection).
-    setSelectedOptions(restoreSelection(item.optionGroups ?? [], intent.selectedOptions));
+    const kept = intent.selectedOptions;
+    seedSelection((sheet) => sheet.restoreSelection(item.optionGroups ?? [], kept));
     setItemQuantity(intent.quantity ?? 1);
     setModalError(null);
     setModalItem(item);
@@ -774,10 +780,11 @@ export function StorefrontExperience({ store, returnPath, fromQr = false, initia
     // The code can land after the render that opened the sheet (a link or the
     // return from sign-in open it from an effect) but before this effect:
     // render again so the sheet shows now, not at the next unrelated update.
-    if (itemSheetModule) { setItemSheetLoaded(true); return; }
+    if (itemSheetModule) { applyPendingSeed(); setItemSheetLoaded(true); return; }
     let alive = true;
     loadItemSheet().then(() => {
       if (!alive) return;
+      applyPendingSeed();
       setItemSheetLoaded(true);
       // An earlier failed fetch is no longer news once the sheet opens.
       setError((current) => (current === ITEM_SHEET_UNAVAILABLE ? null : current));
@@ -810,19 +817,22 @@ export function StorefrontExperience({ store, returnPath, fromQr = false, initia
   const chooseOption = (group: OptionGroup, optionId: string) => {
     setModalError(null);
     const groups = modalItem?.optionGroups ?? [];
-    setSelectedOptions((current) => chooseInSheet(groups, current, group.id, optionId));
+    setSelectedOptions((current) => (itemSheetModule ? itemSheetModule.chooseOption(groups, current, group.id, optionId) : current));
   };
   const placeTopping = (group: OptionGroup, optionId: string, placement: Placement) => {
     setModalError(null);
     const groups = modalItem?.optionGroups ?? [];
-    setSelectedOptions((current) => placeOption(groups, current, group.id, optionId, placement));
+    setSelectedOptions((current) => (itemSheetModule ? itemSheetModule.placeOption(groups, current, group.id, optionId, placement) : current));
   };
 
   const confirmOptions = () => {
     if (!modalItem) return;
+    // The sheet is on screen only once its code (and the engine with it) has arrived.
+    const sheet = itemSheetModule;
+    if (!sheet) { setModalError(ITEM_SHEET_UNAVAILABLE); return; }
     if (cartHydrationPending) { setModalError('Your cart is still loading. Keep this item open and try again.'); return; }
     const liveItem = categoryItems.find((item) => item.id === modalItem.id);
-    if (!orderable || !liveItem?.isAvailable || liveItem.fulfillment !== 'DELIVERY' || optionPrice(liveItem, selectedOptions) === null) {
+    if (!orderable || !liveItem?.isAvailable || liveItem.fulfillment !== 'DELIVERY' || sheet.selectionPrice(liveItem, selectedOptions) === null) {
       setModalError(`This item is no longer verified as orderable on the live ${catalogueNoun}. Close this panel and check ${words.catalogue} again.`);
       return;
     }
@@ -830,11 +840,11 @@ export function StorefrontExperience({ store, returnPath, fromQr = false, initia
     // cart add, cart update and checkout run) must accept the selection first.
     let selected: Record<string, string | string[]>;
     try {
-      const validated = validateSelectedOptions(liveItem, selectedOptions).selection;
+      const validated = sheet.validateSelectedOptions(liveItem, selectedOptions).selection;
       // The shape the apps send: one id for a pick-one group, a list otherwise.
       selected = Object.fromEntries(Object.entries(validated).map(([groupId, ids]) => {
         const group = liveItem.optionGroups?.find(candidate => candidate.id === groupId);
-        const single = group ? singleChoice(group) : true;
+        const single = group ? sheet.singleChoice(group) : true;
         return [groupId, single && Array.isArray(ids) ? ids[0]! : ids];
       }));
     } catch (choiceError) {
@@ -870,7 +880,7 @@ export function StorefrontExperience({ store, returnPath, fromQr = false, initia
     ? `${catalog.displayRating.toFixed(1)} ${catalog.ratingBucket}`.trim()
     : catalog.ratingCount > 0 ? `New ${catalog.ratingBucket}`.trim() : 'No ratings yet';
   const storeMeta = [catalog.cuisineTypes?.[0], storeLabel, rating].filter(Boolean).join(' · ');
-  const modalUnitPrice = modalItem ? optionPrice(modalItem, selectedOptions) : null;
+  const modalUnitPrice = modalItem && itemSheetModule ? itemSheetModule.selectionPrice(modalItem, selectedOptions) : null;
 
   return (
     <div ref={page} className={styles.page} style={verticalStyle}>

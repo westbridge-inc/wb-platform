@@ -19,108 +19,18 @@
  * phone and the site behave the same; apps/web/Dockerfile copies it too).
  */
 import { parseAmount } from './money';
-import { halfPrice, lineBasePrice, normalizeItemNote, resolveSelectedOptions, validateSelectedOptions } from '../../../api/src/modules/order/options';
-import { followUpGroupIds, requiredGroup } from '../../../mobile/src/lib/menuSheet';
+import { lineBasePrice, resolveSelectedOptions, validateSelectedOptions } from '../../../api/src/modules/order/options';
+import { basePrice, type PricedGroup, type PricedItem } from './menu-prices';
 
 export { halfPrice, OptionSelectionError, resolveSelectedOptions, validateSelectedOptions } from '../../../api/src/modules/order/options';
 export type { OptionSelection, OptionSelectionReason, ValidatableGroup } from '../../../api/src/modules/order/options';
 export {
-  cartWriteCapabilities, chooseOption, choiceId, defaultSelection, followUpFor, groupGuidance, hasSizes, isChosen, onSale,
+  chooseOption, choiceId, defaultSelection, followUpFor, groupGuidance, hasSizes, isChosen, onSale,
   orderLineChoices, placeOption, placementOf, restoreSelection, singleChoice, clearableSingle, maxChoices, requiredGroup,
   sortedOptions, topLevelGroups, wireSelection,
 } from '../../../mobile/src/lib/menuSheet';
 export type { ChoiceLine, OrderLineChoice, Placement, SheetGroup, SheetSelection } from '../../../mobile/src/lib/menuSheet';
-
-type PricedOption = { id: string; name: string; additionalPrice: unknown; isAvailable?: boolean | null; isDefault?: boolean; sortOrder?: number | null; followUpGroupId?: string | null };
-type PricedGroup = {
-  id: string; name: string; isRequired: boolean; minSelect: number; maxSelect: number; options: PricedOption[];
-  sortOrder?: number | null; setsPrice?: boolean | null; allowHalves?: boolean | null; halfPricePercent?: number | null;
-};
-type PricedItem = { basePrice: unknown; customerPrice?: unknown; optionGroups?: PricedGroup[] | null };
-
-/** The item's own price, or null when the server's figure cannot be read. */
-export function basePrice(item: PricedItem): number | null {
-  return parseAmount(item.customerPrice ?? item.basePrice);
-}
-
-/** How many choices a group needs before the item can be added (the validator's rule for an empty group; a size is
- *  always needed). */
-export function requiredCount(group: PricedGroup): number {
-  return requiredGroup(group) ? Math.max(1, group.minSelect) : 0;
-}
-
-/** The groups needed whatever is chosen: every required group except a follow-up one (needed only once opened). */
-function alwaysRequired(item: PricedItem): PricedGroup[] {
-  const groups = item.optionGroups ?? [];
-  const followUps = followUpGroupIds(groups);
-  return groups.filter((group) => !followUps.has(group.id) && requiredCount(group) > 0);
-}
-
-/** The item cannot be added without opening its choices (a required group, or a size). */
-export function needsChoices(item: PricedItem): boolean {
-  return alwaysRequired(item).length > 0;
-}
-
-/**
- * The item's Add opens its choices first: a choice is required, or the store
- * pre-selects one (the phone app pre-selects the same picks). One tap must
- * neither drop a store's pick from the order nor add it, and its price, unseen.
- */
-export function opensChoices(item: PricedItem): boolean {
-  return needsChoices(item)
-    || (item.optionGroups ?? []).some((group) => group.setsPrice === true || group.allowHalves === true
-      || group.options.some((option) => (option.isDefault === true && option.isAvailable !== false) || !!option.followUpGroupId));
-}
-
-/**
- * A required group has fewer choices on sale than it needs, so the item
- * cannot be ordered with any selection right now (the sheet says which).
- */
-export function requiredChoiceSoldOut(item: PricedItem): boolean {
-  return alwaysRequired(item).some((group) =>
-    group.options.filter((option) => option.isAvailable !== false).length < requiredCount(group));
-}
-
-/**
- * The lowest price the item can be ordered at: its price plus the cheapest
- * choices each required group needs, counting only choices on sale. This is
- * the "From" figure on the menu. Null when any figure in it cannot be read,
- * and when a required choice is sold out: no price can be ordered at then.
- */
-export function fromPrice(item: PricedItem): number | null {
-  const base = basePrice(item);
-  if (base === null || requiredChoiceSoldOut(item)) return null;
-  let total = base;
-  for (const group of alwaysRequired(item)) {
-    const needed = requiredCount(group);
-    const deltas: number[] = [];
-    for (const option of group.options) {
-      if (option.isAvailable === false) continue;
-      const delta = parseAmount(option.additionalPrice);
-      if (delta === null) return null;
-      // [MENU-OPTIONS] A topping may go on one half, at the store's half price.
-      deltas.push(group.allowHalves === true ? Math.min(delta, halfPrice(delta, group.halfPricePercent ?? 100)) : delta);
-    }
-    deltas.sort((a, b) => a - b);
-    // [MENU-OPTIONS] A size IS the price: the cheapest size on sale replaces the item's price, never adds to it.
-    if (group.setsPrice === true) total += deltas[0]! - base;
-    else for (const delta of deltas.slice(0, needed)) total += delta;
-  }
-  return total;
-}
-
-/**
- * A cart line in the item's plain configuration: no choice and no note —
- * exactly what one tap adds (the server keys a line by item, choices and the
- * note it normalises with `normalizeItemNote`).
- */
-export function isPlainLine(line: { selectedOptions?: unknown; selectedOptionNames?: readonly string[] | null; specialInstructions?: string | null }): boolean {
-  const selection = line.selectedOptions;
-  const chosen = selection && typeof selection === 'object' && !Array.isArray(selection)
-    ? Object.values(selection as Record<string, unknown>).some((value) => (Array.isArray(value) ? value.length > 0 : Boolean(value)))
-    : false;
-  return !chosen && (line.selectedOptionNames?.length ?? 0) === 0 && normalizeItemNote(line.specialInstructions) === null;
-}
+export { basePrice, fromPrice, isPlainLine, needsChoices, noteIsEmpty, opensChoices, requiredChoiceSoldOut, requiredCount } from './menu-prices';
 
 /**
  * One unit's price with these choices, resolved against the item's OWN groups

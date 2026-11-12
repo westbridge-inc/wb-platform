@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
+import { MENU_OPTIONS_CAPABILITY, cartWriteCapabilities } from './menuOptionsCapability';
 import {
-  MENU_OPTIONS_CAPABILITY, cartWriteCapabilities, chooseOption, choiceId, choicePlacement, defaultSelection, encodeChoice, followUpFor,
+  chooseOption, choiceId, choicePlacement, defaultSelection, encodeChoice, followUpFor,
   groupGuidance, hasSizes, isChosen, openedFollowUps, orderLineChoices, placeOption, placementOf, restoreSelection, topLevelGroups,
   wireSelection, type SheetGroup, type SheetOption,
 } from './menuSheet';

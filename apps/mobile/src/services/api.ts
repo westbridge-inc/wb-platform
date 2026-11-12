@@ -23,7 +23,7 @@ import {
 } from './apiOrigin';
 import { explainDemoEnded, isReviewSessionClosed } from '../lib/reviewSessionClosed';
 import { CALL_BRIDGE_HEADER, CALL_BRIDGE_VERSION, type CallConfig, type CallTarget } from '../lib/callBridge';
-import { cartWriteCapabilities } from '../lib/menuSheet';
+import { cartWriteCapabilities } from '../lib/menuOptionsCapability';
 
 // Build-time override (set per EAS build profile, e.g. preview→staging,
 // production→prod). Development follows the current Expo/Metro bundle host so

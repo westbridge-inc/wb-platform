@@ -7,7 +7,7 @@ import { apiFetch, getSessionPrincipal } from './auth';
 import { formatAmount, parseAmount } from './money';
 import type { StorefrontDetail } from './api';
 import { BROWSER_API_ORIGIN as API_URL } from '@/lib/browser-api-origin';
-import { cartWriteCapabilities } from '../../../mobile/src/lib/menuSheet';
+import { cartWriteCapabilities } from '../../../mobile/src/lib/menuOptionsCapability';
 
 
 // ── Auth (customer) ────────────────────────────────────────────────────────

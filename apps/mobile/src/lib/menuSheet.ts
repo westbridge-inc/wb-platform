@@ -42,15 +42,6 @@ export type SheetGroup = {
 /** The sheet's choices: group id -> the choices as the API reads them. */
 export type SheetSelection = Record<string, string[]>;
 
-/** [MENU-OPTIONS] What every cart write declares: this app shows sizes that set the price, halves and follow-up
- *  choices (the API refuses such an item from an app that does not say so: 409 APP_UPDATE_REQUIRED). */
-export const MENU_OPTIONS_CAPABILITY = 'MENU_OPTIONS_V2';
-
-/** A fresh list for a request body. */
-export function cartWriteCapabilities(): string[] {
-  return [MENU_OPTIONS_CAPABILITY];
-}
-
 const SUFFIX: Record<string, Placement> = { left: 'LEFT', right: 'RIGHT', whole: 'WHOLE' };
 
 /** The option id a choice names. */

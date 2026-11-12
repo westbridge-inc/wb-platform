@@ -7,6 +7,7 @@ import {
   chooseOption, defaultSelection, fromPrice, halfPrice, needsChoices, opensChoices, orderLineChoices, requiredChoiceSoldOut, selectionComplete,
   selectionNames, selectionPrice, validateSelectedOptions, OptionSelectionError,
 } from './menu-options';
+import { followUpGroupIds, halfPrice as listHalfPrice, noteIsEmpty, requiredGroup } from './menu-prices';
 
 // [W6] The website judges and prices an item's choices with the API's own
 // module — the same functions, not a copy — so the store page can never accept
@@ -21,8 +22,55 @@ describe('[W6] the store page uses the server’s option rules', () => {
   it('is the API’s validator and resolver themselves, never a second copy', () => {
     expect(validateSelectedOptions).toBe(server.validateSelectedOptions);
     expect(OptionSelectionError).toBe(server.OptionSelectionError);
+    // [W6 · size] The store page reaches the engine through the item sheet's module (which re-exports these very
+    // functions from here), so the engine rides in the sheet's chunk, not the page's first load.
     const storePage = readFileSync(join(process.cwd(), 'src/components/storefront/storefront-experience.tsx'), 'utf8');
-    expect(storePage).toMatch(/validateSelectedOptions,\n\} from '@\/lib\/menu-options'/);
+    expect(storePage).toMatch(/sheet\.validateSelectedOptions\(liveItem, selectedOptions\)/);
+    expect(storePage).toMatch(/instanceof itemSheetModule\.OptionSelectionError/);
+    const sheet = readFileSync(join(process.cwd(), 'src/components/storefront/item-sheet.tsx'), 'utf8');
+    const reexport = sheet.match(/export \{([^}]*)\} from '@\/lib\/menu-options';/);
+    expect(reexport?.[1]?.split(',').map((name) => name.trim()).filter(Boolean).sort()).toEqual([
+      'OptionSelectionError', 'chooseOption', 'defaultSelection', 'placeOption', 'restoreSelection', 'selectionNames', 'selectionPrice',
+      'singleChoice', 'validateSelectedOptions',
+    ]);
+  });
+
+  it('[W6 · size] the store page’s first load never imports the engine or the sheet model: its list rules import only money', () => {
+    const storePage = readFileSync(join(process.cwd(), 'src/components/storefront/storefront-experience.tsx'), 'utf8');
+    // A type import is erased from the build; any other import of these modules would put them in the first load.
+    const valueImports = storePage.replace(/^import type [^;]+;$/gm, '');
+    expect(valueImports).not.toMatch(/from '@\/lib\/menu-options'/);
+    expect(valueImports).not.toMatch(/modules\/order\/options/);
+    expect(valueImports).not.toMatch(/mobile\/src\/lib\/menuSheet/);
+    expect(storePage).toMatch(/itemSheetModule\.chooseOption\(groups, current, group\.id, optionId\)/);
+    expect(storePage).toMatch(/sheet\.restoreSelection\(item\.optionGroups \?\? \[\], kept\)/);
+    const prices = readFileSync(join(process.cwd(), 'src/lib/menu-prices.ts'), 'utf8');
+    expect(prices.match(/^import .*$/gm)).toEqual(["import { parseAmount } from './money';"]);
+  });
+
+  it('the list’s group rules are the sheet model’s own', () => {
+    const option = (id: string, followUpGroupId: string | null = null) => ({ id, name: id, additionalPrice: '0', followUpGroupId });
+    const base = { name: 'g', minSelect: 0, maxSelect: 1 };
+    const groups = [
+      { ...base, id: 'size', isRequired: false, setsPrice: true, options: [option('s'), option('l')] },
+      { ...base, id: 'crust', isRequired: true, options: [option('stuffed', 'cheese'), option('thin', 'crust'), option('odd', 'missing')] },
+      { ...base, id: 'cheese', isRequired: false, options: [option('cheddar', 'size')] },
+      { ...base, id: 'extras', isRequired: false, setsPrice: false, options: [] },
+    ];
+    expect([...followUpGroupIds(groups)].sort()).toEqual([...phoneSheet.followUpGroupIds(groups)].sort());
+    expect([...followUpGroupIds(groups)].sort()).toEqual(['cheese', 'size']);
+    for (const group of groups) expect(requiredGroup(group), group.id).toBe(phoneSheet.requiredGroup(group));
+  });
+
+  it('a plain line’s note and the From figure’s half price are the engine’s own rules', () => {
+    for (const note of [null, undefined, '', ' ', '\n\t ', 'x', ' no onions ', '\u00a0']) {
+      expect(noteIsEmpty(note), JSON.stringify(note)).toBe(server.normalizeItemNote(note) === null);
+    }
+    for (const price of [0, 0.5, 0.6, 1, 1.2, 99, 100, 150, 175.5, 1234.56]) {
+      for (const percent of [0, 1, 33, 50, 51, 66, 99, 100, 101, 50.5, Number.NaN]) {
+        expect(listHalfPrice(price, percent), `${price} @ ${percent}%`).toBe(server.halfPrice(price, percent));
+      }
+    }
   });
 
   it('accepts exactly what the server accepts', () => {

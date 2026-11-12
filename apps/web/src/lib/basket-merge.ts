@@ -1,7 +1,7 @@
 import { apiFetch, ApiRequestError } from './auth';
 import { prepareGuestMerge, settleGuestMerge } from './basket';
 import { readCheckoutAttempt, type Cart } from './customer';
-import { cartWriteCapabilities } from '../../../mobile/src/lib/menuSheet';
+import { cartWriteCapabilities } from '../../../mobile/src/lib/menuOptionsCapability';
 export interface GuestMergeResult {
   applied: boolean;
   verdicts: Array<{ clientLineId: string; status: string; unitPrice?: number }>;
