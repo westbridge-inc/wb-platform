@@ -103,6 +103,8 @@ describe('[DGP-1] the register is complete for what the code can reach', () => {
     ['Cloudflare', 'CLOUDFLARE', /^Cloudflare\b/], ['Twilio', 'TWILIO', /^Twilio\b/], ['Expo', 'EXPO_PUSH', /^Expo\b/],
     ['GoDaddy', 'SMTP_EMAIL', /^GoDaddy\b/], ['Resend', 'RESEND_EMAIL', /^Resend\b/], ['MMG', 'MMG', /^Mobile Money Guyana\b/],
     ['Google Places', 'GOOGLE_PLACES', /^Google LLC \(Places API/], ['MapTiler', 'MAPTILER', /^MapTiler\b/],
+    // [LEGAL-CARDS · 2026-11-10] The card processor for a partner's weekly-fee card payment.
+    ['PowerTranz', 'POWERTRANZ', /^PowerTranz\b/],
   ];
   it('every processor the Privacy Policy names has a register row or a declared no-egress reason', () => {
     expect(processorsParagraph.length).toBeGreaterThan(200);
