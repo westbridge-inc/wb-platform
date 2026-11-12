@@ -44,6 +44,9 @@ const LEDGER: Record<string, { count: number; why: string }> = {
   'modules/vendor/vendor.routes.ts': { count: 6, why: `3 ${GATED}; 2 ${OWN} (store team; GET+PUT /staff share staffMemberUserSelect; GET /subscription compares the fee's MMG payer number with the caller's own [review-2475 G1]); 1 ${INTERNAL} (reserved-name check)` },
   // [COMPANY-DOCS Part 3] the handover approval: the old holder's number is compared with each store's phones (a store phone that is theirs stops being the store's) and the new holder's becomes the private contact line. Never in a response or a notice.
   'modules/vendor/account-change.ts': { count: 3, why: INTERNAL },
+  // [KITCHEN-INTEGRATION · OWNER RULING 12 Nov 2026] a deliberate O-1 exception: a cash DELIVERY customer's number goes
+  // to a PARTY, the store, through its own kitchen system, for its own driver (switch off by default).
+  'modules/kitchen/kitchen-sync.ts': { count: 1, why: `owner ruling 12 Nov 2026 (O-1 exception): a cash delivery customer's number goes to the store's own kitchen system for its driver; never for a pickup, never the last name` },
   'utils/counterparty.ts': { count: 1, why: 'the opt-in itself (riderCounterpartySelect withPhone)' },
   'modules/calls/call-bridge.ts': { count: 5, why: `${INTERNAL} (the Swift call bridge: each party's number, and the caller's own, read at the moment a leg is dialled and handed only to the voice provider; never in a response, a push or a call_sessions row)` },
   // [BOOK-FU2 · owner B3] +1: the missed-appointment review's customer row (masked unless user.contact.read, like the people list).
