@@ -384,6 +384,18 @@ export async function assertNotBanned(db: Db, itemId: string, options: { wordBan
   throw new AppError(409, 'PROHIBITED_ITEM', notAllowedMessage(check.prohibitedClass), { prohibitedClass: check.prohibitedClass });
 }
 
+/** [MENU-OPTIONS · REVIEW B S2-2] `assertNotBanned` for many items in one judgement (a bulk attach names up to 500):
+ *  the same rule, the first banned item refused, one read instead of one per item. */
+export async function assertNoneBanned(db: Db, itemIds: readonly string[], options: { wordBanEditable?: boolean } = {}): Promise<void> {
+  const checks = await catalogueChecksFor(db, itemIds);
+  for (const itemId of new Set(itemIds)) {
+    const check = checks.get(itemId);
+    if (check?.state !== 'BANNED') continue;
+    if (options.wordBanEditable && check.source === 'word') continue;
+    throw new AppError(409, 'PROHIBITED_ITEM', notAllowedMessage(check.prohibitedClass), { prohibitedClass: check.prohibitedClass });
+  }
+}
+
 /**
  * Stock coming back un-hides an item the stock engine hid ("zero hides, restock un-hides"), never one Swift does not
  * allow: a banned item stays off, and its stock is still counted. The stock adjust route, an order cancelled before

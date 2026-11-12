@@ -490,8 +490,9 @@ describe('the response is the EXISTING item shape', () => {
     const item = res.json().data.items[0];
     // [owner 13 Oct] `vendorIsCurrentlyOpen` joined the ONE shape (search marks a
     // closed store's dish); the market card receives the same field, never a fork.
+    // [MENU-OPTIONS] `pricedFrom` joined the same way: a sized item's card reads "From" on search and market alike.
     expect(Object.keys(item).sort()).toEqual(
-      ['basePrice', 'categoryName', 'id', 'imageUrl', 'isNew', 'name', 'vendorId', 'vendorIsCurrentlyOpen', 'vendorName'].sort(),
+      ['basePrice', 'categoryName', 'id', 'imageUrl', 'isNew', 'name', 'pricedFrom', 'vendorId', 'vendorIsCurrentlyOpen', 'vendorName'].sort(),
     );
     expect(typeof item.basePrice, 'price is a number, never a Decimal string').toBe('number');
   });

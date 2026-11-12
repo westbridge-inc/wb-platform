@@ -5,6 +5,19 @@ DO $$ BEGIN
     RAISE EXCEPTION 'menu options rollback refused: orders already carry half-and-half, size or nested choices';
   END IF;
 END $$;
+-- [REVIEW A S3-2] Refuse while any MENU uses the rules too: the older code prices a size as an add-on on top of the
+-- item's "from" price (a Large = from price + Large) and shows a follow-up group as always open, so rolling back (or
+-- only reverting the code) would overcharge every sized item. NEUTRALISE FIRST (runbook): for each size group set each
+-- size to (its price - the item's price) as an add-on, keep the item at its lowest size, clear "setsPrice"/"allowHalves"
+-- and every "followUpGroupId"; then this rollback runs.
+DO $$ BEGIN
+  IF EXISTS (SELECT 1 FROM option_groups WHERE "setsPrice" OR "allowHalves")
+     OR EXISTS (SELECT 1 FROM options WHERE "followUpGroupId" IS NOT NULL)
+     OR EXISTS (SELECT 1 FROM modifier_groups WHERE "setsPrice" OR "allowHalves")
+     OR EXISTS (SELECT 1 FROM modifier_options WHERE "followUpGroupId" IS NOT NULL) THEN
+    RAISE EXCEPTION 'menu options rollback refused: menus use sizes, halves or follow-up choices; neutralise them first (see the runbook line in this file)';
+  END IF;
+END $$;
 DROP TRIGGER IF EXISTS option_groups_library_same_store ON option_groups;
 DROP FUNCTION IF EXISTS option_groups_library_same_store();
 DROP TRIGGER IF EXISTS modifier_options_follow_up_same_store ON modifier_options;

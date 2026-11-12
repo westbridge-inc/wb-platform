@@ -3642,8 +3642,11 @@ export async function customerRoutes(app: FastifyInstance) {
   app.post('/orders/:id/reorder', async (request: AuthRequest) => {
     const { id } = request.params as { id: string };
     const { userId } = request.user;
+    // [MENU-OPTIONS · REVIEW S4] Reorder is a cart write too: an app that cannot show sizes, halves or follow-up
+    // choices is told to update rather than given a line it would misread.
+    const { capabilities } = z.object({ capabilities: z.array(z.string().max(40)).max(20).optional() }).parse(request.body ?? {});
 
-    const result = await orderService.reorder(userId, id);
+    const result = await orderService.reorder(userId, id, { rendersMenuOptions: declaresMenuOptionsV2(capabilities) });
 
     await app.redis.del(`cart:${userId}`).catch(() => {});
     const cart = await buildCartResponse(app, userId);
@@ -4118,7 +4121,9 @@ export async function customerRoutes(app: FastifyInstance) {
     let estimatedDiscount: number | null = null;
     const cart = await app.prisma.cart.findUnique({
       where: { customerId: userId, vendor: vendorTenantForCaller() },
-      include: { items: { where: { item: { vendor: vendorTenantForCaller() } }, include: { item: true } } },
+      // [MENU-OPTIONS · REVIEW A S3-1] Each line with its choices, priced by the one line pricer (a sized pizza is its
+      // size's price, never the item's "from" price), exactly as checkout prices it.
+      include: { items: { where: { item: { vendor: vendorTenantForCaller() } }, include: { item: { include: { optionGroups: { select: OPTION_GROUPS_PRICING_SELECT } } } } } },
     });
 
     if (cart && cart.items.length > 0) {
@@ -4130,10 +4135,7 @@ export async function customerRoutes(app: FastifyInstance) {
         throw new AppError(400, 'PROMO_WRONG_VENDOR', 'This code belongs to a different store — add their items to use it');
       }
       let subtotal = 0;
-      for (const ci of counted) {
-        const base = Number(ci.item.basePrice);
-        subtotal += base * ci.quantity;
-      }
+      for (const ci of counted) subtotal += priceCartLine(ci).lineTotal;
 
       if (promo.minOrderAmount && subtotal < Number(promo.minOrderAmount)) {
         throw new AppError(400, 'MIN_ORDER_PROMO',
