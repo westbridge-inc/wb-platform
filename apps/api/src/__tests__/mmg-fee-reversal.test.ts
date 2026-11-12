@@ -872,7 +872,9 @@ describe('[DS1118] a typed reference is checked against EVERY money reference Sw
     // Reference-named columns that are not money: documents, audit chain, moderation, validators.
     const NOT_MONEY = new Set(['verification_documents.kycRef', 'validator.implRef', 'doc_field.validatorRef', 'extraction_run.processorRef',
       'content_reports.authorityRef', 'content_reports.enforcementRef', 'audit_chain.subjectRef', 'audit_chain.submissionRef',
-      'doc_type.externalProcessingDecisionRef']);
+      'doc_type.externalProcessingDecisionRef',
+      // [KITCHEN-INTEGRATION] keys of a kitchen-system login and webhook secret in the credentials secret
+      'vendor_integrations.secretRef', 'vendor_integrations.webhookSecretRef']);
     // Columns the census reads on its own terms (this return's own row is excluded there).
     const HANDLED = new Set(['mmg_fee_reversals.providerReference', 'mmg_fee_reversals.mmgTransactionId']);
     const listed = new Set(KNOWN_PAYMENT_REFERENCE_COLUMNS.map(([t, c]) => `${t}.${c}`));

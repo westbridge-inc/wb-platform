@@ -18,7 +18,7 @@ import { normalizePhone } from '../../../utils/phone';
 import { smsDestinationAllowed } from '../../../utils/sms-budget';
 import { AuthorityLetterService, type ParsedForm } from './authority-letter.service';
 import { HIDDEN_CHARACTERS, cleanField } from './letter';
-import type { LetterBasis } from './letter';
+import { LETTER_DOC_TYPE, type LetterBasis } from './letter';
 import { authorityLetterEsignEnabled } from './esign-switch';
 
 /** [review F6] The refusal of a hidden character (control, bidi, zero-width, private-use), recognised by parseLetterForm. */
@@ -102,6 +102,22 @@ const letterBasis = (basis: string): LetterBasis => {
   throw new AppError(409, 'AUTHORITY_LETTER_NOT_NEEDED', 'Your account does not need a letter of authority.');
 };
 
+/**
+ * [FOLLOWUPS-2475 · Part 2 seam] Which letter the account holder asks for. No `docType` (the Documents checklist, and
+ * every app before this): the account's own basis's letter, as before. A `docType`: the account's own letter, or the one
+ * its business type change still waiting asks for (account-change.ts changeLetterBasis: a company's director, or a
+ * registered business's owner) — never any other.
+ */
+async function letterBasisFor(app: FastifyInstance, holder: { userId: string; basis: string }, docType: unknown): Promise<{ basis: LetterBasis; changeId?: string }> {
+  if (docType === undefined) return { basis: letterBasis(holder.basis) };
+  const asked = z.enum([LETTER_DOC_TYPE.COMPANY, LETTER_DOC_TYPE.MANAGER]).parse(docType);
+  if ((holder.basis === 'COMPANY' || holder.basis === 'MANAGER') && LETTER_DOC_TYPE[holder.basis] === asked) return { basis: holder.basis };
+  const { changeLetterBasis } = await import('../account-change');
+  const forChange = await changeLetterBasis(app.prisma, holder.userId);
+  if (forChange && LETTER_DOC_TYPE[forChange.basis] === asked) return forChange;
+  throw new AppError(409, 'AUTHORITY_LETTER_NOT_NEEDED', 'Your account does not need this letter of authority.');
+}
+
 export async function authorityLetterVendorRoutes(app: FastifyInstance) {
   const auth = { preHandler: [app.authenticate] };
   const service = new AuthorityLetterService(app);
@@ -117,10 +133,11 @@ export async function authorityLetterVendorRoutes(app: FastifyInstance) {
   /** POST / — write the letter and text the director (or the owner) the link. */
   app.post('/', { ...auth, config: { rateLimit: { max: 5, timeWindow: '1 minute' } } }, async (request, reply) => {
     const holder = await accountHolder(app, request);
-    const basis = letterBasis(holder.basis);
+    const { docType, ...fields } = request.body && typeof request.body === 'object' ? request.body as Record<string, unknown> : {};
+    const { basis, changeId } = await letterBasisFor(app, holder, docType);
     assertOn();
-    const form = parseLetterForm(request.body);
-    const view = await service.create({ userId: holder.userId, vendorId: holder.vendorId, basis, form, ip: request.ip });
+    const form = parseLetterForm(fields);
+    const view = await service.create({ userId: holder.userId, vendorId: holder.vendorId, basis, form, ip: request.ip, ...(changeId ? { changeId } : {}) });
     reply.code(201);
     return { success: true, data: { request: view } };
   });

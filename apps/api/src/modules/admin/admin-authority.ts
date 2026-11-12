@@ -323,6 +323,13 @@ export const ADMIN_ROUTE_AUTHORITY: Readonly<Record<AdminRouteKey, AdminRouteAut
   'PUT /vendors/:id/name': c('C3', 'vendor.edit', { ...E.vendor, fields: [...E.vendor.fields, 'sellerNameCheckedName'] }),
   // [R3 · security review 10 Nov 2026] A person confirms the store's name as the seller's business or company name: the
   // same hands as approving a store (approving confirms it too).
+  // [KITCHEN-INTEGRATION] A store's kitchen-system connection. Switching it on sends that store's orders (and, for
+  // a delivery, the customer's first name, number and address) to the store's own kitchen system: consequential, so a reason.
+  'GET /vendors/:id/kitchen-integration': c('C0', 'vendor.integration.read'),
+  'PUT /vendors/:id/kitchen-integration': c('C3', 'vendor.integration.manage'),
+  'POST /vendors/:id/kitchen-integration/test': c('C2', 'vendor.integration.manage'),
+  'GET /vendors/:id/kitchen-integration/syncs': c('C0', 'vendor.integration.read'),
+  'PUT /vendors/:id/kitchen-integration/item-numbers': c('C2', 'vendor.integration.manage'),
   'PUT /vendors/:id/seller-name': c('C3', 'vendor.approve', { model: 'vendor', fields: ['sellerNameCheckedName', 'sellerNameCheckedAt', 'sellerNameCheckedById'] }),
 
   // ── Movers ──────────────────────────────────────────────────────────────
@@ -974,6 +981,8 @@ export function reasonOf(body: unknown, headers?: Record<string, unknown>): stri
  *  holds this list closed: a C3-C5 route is either declared with an entity or
  *  named here with a reason a reviewer can check. */
 export const ADMIN_ROUTES_WITHOUT_ENTITY: Readonly<Record<AdminRouteKey, string>> = {
+  // [KITCHEN-INTEGRATION] the route names the store, and the connection row may not exist yet (the PUT creates it)
+  'PUT /vendors/:id/kitchen-integration': 'the route names the store and may create the connection row; the audit backstop records the request, and the row (one per store and provider) shows the result',
   'GET /legal/processors': 'code-declared register (DGP-1); no row to name',
   'POST /promos': 'creates the row; there is no before state to digest',
   // [OWNER-ASKS · security review 9 Nov 2026] the comparison IS the append-only audit row (SELFIE_ID_COMPARED)

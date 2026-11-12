@@ -137,7 +137,11 @@ const REVIEW_NOTES: Record<string, string> = {
   gei_electrical_licence: 'Government Electrical Inspectorate licence in this person’s name. Type the year it is for; it is checked again every January.',
   // [owner 16 Oct 2026] a store's yearly licences: the same January re-check as a business name
   // [CHECKLIST-LEGAL · COORD 1 Nov 2026 (d), delegated] the GRA's own name for it, and its provisional licence is accepted
+  // [RESTAURANT-TIN · owner 12 Nov 2026] optional for a restaurant now (the TIN certificate is the required paper); a store
+  // that sends it still has it checked, the same way
   gra_restaurant_licence: 'GRA Food Restaurant Licence for this store. A GRA Provisional Licence is accepted too. Type the year it is for; it is checked again every January.',
+  // [RESTAURANT-TIN · owner 12 Nov 2026] a restaurant's required paper in place of the GRA licence; a person reads it
+  tin_certificate: 'GRA Taxpayer Identification Number (TIN) certificate naming this business or its owner (for a company, the company). It has no expiry. Never copy the TIN anywhere: it stays on the certificate.',
   sanitary_certificate: 'Sanitary certificate for this store’s premises. Type the year it is for; it is checked again every January.',
   trade_licence: 'Trade licence for this store. Type the year it is for; it is checked again every January.',
 };

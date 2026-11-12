@@ -73,6 +73,7 @@ import { dispatchHoldExpired, dispatchHoldExpiredFilter, riderDispatchableStatus
 import { withdrawOfferOfClosedOrder } from '../dispatch/offer-withdrawal';
 import { CheckoutOutcomeUnknownError, checkoutQueueTiming, persistCheckoutOutboxInTransaction, persistCheckoutReceiptInTransaction, persistReleaseAlertLadderInTransaction, persistDispatchCommandInTransaction, vendorAlertLadderDelayMs } from './checkout-outbox';
 import { vendorRespondBy, vendorResponseSlaMinutes } from './response-sla';
+import { claimForKitchen } from '../kitchen/kitchen-claim';
 import { shapeCheckoutAnswer, type CheckoutAnswer } from './checkout-answer';
 import { orderHoldMinutes } from './hold-minutes';
 import { FloatService, riderFloatForOrder } from '../dispatch/float.service';
@@ -2223,7 +2224,16 @@ export class OrderService {
         // refreshes on a status change, and the team gets "New booking
         // (confirmed)"), never rung with a new order to accept.
         const confirmed = order.status === 'ACCEPTED';
-        if (!held && order.vendorId) {
+        // [KITCHEN-INTEGRATION] An unheld order (express, or the hold switched off) is claimed for its store's
+        // kitchen system here, where the store would be rung; claimed = no ring now (the sender rings the tablet
+        // on any failure). A claim that throws rings as always. Switch off: false, with no read.
+        const kitchen = !held && !confirmed && order.vendorId
+          ? await claimForKitchen(this.prisma, order.id).catch((err: unknown) => {
+            log().error({ err, orderId: order.id }, '[KITCHEN] claim at checkout failed; the store is rung as usual');
+            return false;
+          })
+          : false;
+        if (!held && order.vendorId && !kitchen) {
           if (confirmed) {
             await emitToStoreRoom(this.prisma, this.io, order.vendorId, 'order:status_changed', { orderId: order.id, status: order.status, timestamp: new Date().toISOString() }, { onlyWhileActive: true });
           } else {
@@ -2239,7 +2249,7 @@ export class OrderService {
             await this.notifications.instantBookingForVendor(vendorOwner.userId, {
               orderId: order.id, orderNumber: order.orderNumber, serviceName: order.items[0]?.name ?? 'A booking', slot: order.appointmentSlot,
             });
-          } else if (!held) {
+          } else if (!held && !kitchen) {
             await this.notifications.newOrderForVendor(
               vendorOwner.userId,
               order.orderNumber,
@@ -3448,7 +3458,12 @@ export class OrderService {
         continue;
       }
 
-      if (order.vendorId && order.vendor) {
+      // [KITCHEN-INTEGRATION] A store whose kitchen system takes its orders is not rung here: the claim (one sync
+      // row, in its OWN transaction after the release committed, so a failing claim never rolls back a release or
+      // stops this sweep; it answers false and the store is rung) is the work the sender drains. The alert ladder
+      // the release armed is the tablet backstop for a claim that gets stuck. Switch off: false, with no read.
+      const kitchen = order.vendorId && order.vendor ? await claimForKitchen(this.prisma, id) : false;
+      if (order.vendorId && order.vendor && !kitchen) {
         await emitToStoreRoom(this.prisma, this.io, order.vendorId, 'order:new', { orderId: order.id, vendorId: order.vendorId, orderNumber: order.orderNumber }, { onlyWhileActive: true });
         try {
           const vendorOwner = await this.prisma.vendorOwner.findUnique({ where: { id: order.vendor.ownerId } });
