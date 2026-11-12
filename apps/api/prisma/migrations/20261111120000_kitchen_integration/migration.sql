@@ -10,8 +10,10 @@
 --     number for a listing and for a choice. A catalogue change only (no rewrite, no scan).
 --  3. Table "vendor_integrations": one row per store and provider. No credential is ever stored: secretRef and
 --     webhookSecretRef name entries of the DRAGONTAIL_CREDENTIALS secret file.
---  4. Table "order_integration_syncs": at most one row per (order, provider), and one per (connection, external
---     order id), so an order is never sent twice; each row keeps the store number it was claimed under. Table "kitchen_order_counters": Swift's order-number counter per
+--  4. Table "order_integration_syncs": at most one row per (order, provider), and one per (provider, store number,
+--     external order id) — Dragontail's own key — so an order is never sent twice and a renumbered connection never
+--     collides with its own old ids; each row keeps the store number it was claimed under. Table
+--     "kitchen_order_counters": Swift's order-number counter per
 --     (provider, store number) with its id base frozen at birth, so a recreated or renumbered connection, or a
 --     changed DRAGONTAIL_ORDER_ID_BASE, never reuses an id at the kitchen system. Not tenant data: a store number
 --     belongs to one Swift store at a time (unique), and the row holds two numbers.
@@ -31,7 +33,7 @@ SET lock_timeout = '10s';
 CREATE TYPE "KitchenProvider" AS ENUM ('DRAGONTAIL');
 
 -- CreateEnum
-CREATE TYPE "KitchenSyncState" AS ENUM ('QUEUED', 'SENDING', 'SENT', 'UNKNOWN', 'FALLBACK', 'CANCEL_QUEUED', 'CANCELLED', 'DONE');
+CREATE TYPE "KitchenSyncState" AS ENUM ('QUEUED', 'SENDING', 'SENT', 'UNKNOWN', 'CANCELLING', 'FALLBACK', 'CANCEL_QUEUED', 'CANCELLED', 'DONE');
 
 -- AlterTable
 ALTER TABLE "items" ADD COLUMN     "externalItemNo" TEXT;
@@ -125,7 +127,10 @@ CREATE INDEX "order_integration_syncs_tenantId_idx" ON "order_integration_syncs"
 CREATE UNIQUE INDEX "order_integration_syncs_orderId_provider_key" ON "order_integration_syncs"("orderId", "provider");
 
 -- CreateIndex
-CREATE UNIQUE INDEX "order_integration_syncs_vendorIntegrationId_externalOrderId_key" ON "order_integration_syncs"("vendorIntegrationId", "externalOrderId");
+CREATE UNIQUE INDEX "order_integration_syncs_provider_externalStoreNo_externalOr_key" ON "order_integration_syncs"("provider", "externalStoreNo", "externalOrderId");
+
+-- CreateIndex
+CREATE INDEX "order_integration_syncs_vendorIntegrationId_externalOrderId_idx" ON "order_integration_syncs"("vendorIntegrationId", "externalOrderId");
 
 -- AddForeignKey
 ALTER TABLE "vendor_integrations" ADD CONSTRAINT "vendor_integrations_vendorId_fkey" FOREIGN KEY ("vendorId") REFERENCES "vendors"("id") ON DELETE CASCADE ON UPDATE CASCADE;

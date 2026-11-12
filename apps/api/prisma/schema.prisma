@@ -2259,6 +2259,9 @@ enum KitchenSyncState {
   /// (-> SENT), a Swift cancel tells the kitchen (-> CANCEL_QUEUED), and past the verify window with no sign of it a
   /// cancel is sent and, once that goes through, the tablet rings (-> FALLBACK).
   UNKNOWN
+  /// [delta review S3-1] An UNKNOWN send being cancelled at the kitchen right now: a kitchen event cannot confirm
+  /// (and so accept) it meanwhile. The cancel going through -> FALLBACK (rung); failing -> back to UNKNOWN.
+  CANCELLING
   /// Never sent: the store's tablet was rung instead (the order is the store's on Swift, as for any store).
   FALLBACK
   /// The Swift order was cancelled after it was sent; the kitchen system still has to be told.
@@ -2361,7 +2364,10 @@ model OrderIntegrationSync {
   updatedAt           DateTime          @updatedAt
 
   @@unique([orderId, provider])
-  @@unique([vendorIntegrationId, externalOrderId])
+  /// [delta review S3-2] Dragontail's own key: (storeNo, orderId), per provider. Never the connection's, so a
+  /// renumbered connection's new store number cannot collide with its own old ids.
+  @@unique([provider, externalStoreNo, externalOrderId])
+  @@index([vendorIntegrationId, externalOrderId])
   @@index([state, leaseUntil])
   @@index([tenantId])
   @@map("order_integration_syncs")

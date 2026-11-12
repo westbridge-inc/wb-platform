@@ -1127,8 +1127,8 @@ describe('KITCHEN · an express order at a Dragontail store, end to end', () => 
   });
 
   afterAll(async () => {
-    vi.stubEnv('DRAGONTAIL_INTEGRATION', '');
-    vi.stubEnv('NODE_ENV', 'development');
+    // Every stub back to what it was (the file's own afterAll unstubs the rest too).
+    vi.unstubAllEnvs();
     await mock.stop();
   });
 

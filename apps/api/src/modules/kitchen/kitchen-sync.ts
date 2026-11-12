@@ -262,8 +262,12 @@ export async function ringStoreForOrder(deps: Pick<KitchenDeps, 'prisma' | 'io'>
     const owner = await prisma.vendorOwner.findUnique({ where: { id: order.vendor.ownerId } });
     if (owner) {
       const slaMinutes = await vendorResponseSlaMinutes(prisma);
+      // [delta review S3-3 · #2487] The store's goods amount, exactly as the release path passes it: never the
+      // customer's whole total.
+      const { loadStoreMoney } = await import('../billing/store-money');
+      const storeMoney = (await loadStoreMoney(prisma, order.id).catch(() => null)) ?? Number(order.subtotalCustomer);
       await new NotificationService(prisma, io).newOrderForVendor(
-        owner.userId, order.orderNumber, order.items.length, Number(order.totalAmount), order.id,
+        owner.userId, order.orderNumber, order.items.length, storeMoney, order.id,
         vendorRespondBy(order, { slaMinutes, holdMs: holdWindowMs() ?? 0 }),
       );
     }
@@ -311,22 +315,28 @@ type SyncRef = { id: string; orderId: string; tenantId: string; vendorIntegratio
 type FromState =
   | { from: 'QUEUED' }
   | { from: 'SENDING'; lapsedOnly?: boolean }
-  | { from: 'UNKNOWN' };
+  | { from: 'UNKNOWN' }
+  | { from: 'CANCELLING'; lapsedOnly?: boolean };
 
 const fromWhere = (from: FromState, now: Date) => ({
   state: from.from,
-  ...(from.from === 'SENDING' && from.lapsedOnly ? { OR: [{ leaseUntil: null }, { leaseUntil: { lt: now } }] } : {}),
+  ...((from.from === 'SENDING' || from.from === 'CANCELLING') && from.lapsedOnly ? { OR: [{ leaseUntil: null }, { leaseUntil: { lt: now } }] } : {}),
 });
 
 /**
  * The kitchen does NOT have the order (never sent, refused, or — from UNKNOWN — told to cancel it): ring the store's
  * tablet, tell operations. Leaves the expected state exactly once; false when another hand moved the row first.
  */
+/** What the operations page says: the kitchen does not have it (default), it was cancelled there after an
+ *  unanswered send, or — the switch being off — it MAY also be in the kitchen. */
+type FallbackPage = 'default' | 'cancelled-there' | 'maybe-in-kitchen-switch-off';
+
 async function fallBack(
   deps: Pick<KitchenDeps, 'prisma' | 'io'>,
   sync: SyncRef,
   reason: string,
   from: FromState,
+  page: FallbackPage = 'default',
 ): Promise<boolean> {
   const now = new Date();
   const moved = await deps.prisma.orderIntegrationSync.updateMany({
@@ -340,10 +350,14 @@ async function fallBack(
   const number = await orderNumberOf(deps, sync.orderId);
   await pageOperations(deps, {
     orderId: sync.orderId, tenantId: sync.tenantId, key: `${sync.id}:fallback`,
-    title: from.from === 'UNKNOWN' ? 'Kitchen system: order cancelled there, rang the tablet' : 'Kitchen system: order rang the tablet instead',
-    body: from.from === 'UNKNOWN'
+    title: page === 'cancelled-there' ? 'Kitchen system: order cancelled there, rang the tablet'
+      : page === 'maybe-in-kitchen-switch-off' ? 'Kitchen system OFF: CALL THE STORE — order on the tablet, may also be in the kitchen'
+        : 'Kitchen system: order rang the tablet instead',
+    body: page === 'cancelled-there'
       ? `Order ${number}: the kitchen system showed no sign of it after its send got no answer, and it was told to cancel it (${reason}). ${rang ? "The store's Swift tablet was rung; check the store makes it once." : 'The order no longer waits for the store.'}`
-      : `Order ${number} could not go to the store's kitchen system (${reason}). ${rang ? "The store's Swift tablet was rung; check the store answers it." : 'The order no longer waits for the store.'}`,
+      : page === 'maybe-in-kitchen-switch-off'
+        ? `Order ${number}: the kitchen-system switch is off and this order's send got no answer (${reason}), so the store's kitchen system MAY also have it. ${rang ? "It is now on the store's Swift tablet." : 'The order no longer waits for the store.'} Call the store so it is made once: if the kitchen has it, make it there and accept it on the tablet; if not, make it from the tablet.`
+        : `Order ${number} could not go to the store's kitchen system (${reason}). ${rang ? "The store's Swift tablet was rung; check the store answers it." : 'The order no longer waits for the store.'}`,
   });
   return true;
 }
@@ -420,16 +434,37 @@ async function confirmLanded(deps: KitchenDeps, sync: SyncRef & { promiseSeconds
 /** [review B S2-1] A claim found stuck (switch off, sender not running, accept refused, no kitchen action in time):
  *  ring the tablet and tell operations — or, for a send whose lease lapsed, mark it UNKNOWN (it may have landed).
  *  Idempotent; true when it moved the claim. */
-export async function ringStuckKitchenClaim(deps: Pick<KitchenDeps, 'prisma' | 'io'>, orderId: string): Promise<boolean> {
+export async function ringStuckKitchenClaim(deps: Pick<KitchenDeps, 'prisma' | 'io' | 'env'>, orderId: string): Promise<boolean> {
   const sync = await deps.prisma.orderIntegrationSync.findUnique({ where: { orderId_provider: { orderId, provider: 'DRAGONTAIL' } } });
   if (!sync || sync.fallbackAt) return false;
+  const on = dragontailIntegrationEnabled(deps.env ?? process.env);
   if (sync.state === 'QUEUED') {
+    // [delta review S4-4] An order that no longer waits (cancelled, or answered on the tablet) is settled quietly,
+    // as the sender does: nothing to ring, nobody to page.
+    const order = await deps.prisma.order.findUnique({ where: { id: orderId }, select: { status: true } });
+    if (order && order.status !== 'PENDING') {
+      const settled = await deps.prisma.orderIntegrationSync.updateMany({
+        where: { id: sync.id, state: 'QUEUED' },
+        data: { state: order.status === 'CANCELLED' ? 'DONE' : 'FALLBACK', leaseUntil: null, lastError: `not sent: the order was ${order.status} first` },
+      });
+      return settled.count > 0;
+    }
     return fallBack(deps, sync, 'the order was never sent (the sender is not running, or the switch is off)', { from: 'QUEUED' });
   }
   if (sync.state === 'SENDING') {
     // A SENDING row is only stuck once its lease (and so its send's deadline) is gone; whether it landed is unknown.
     if (sync.leaseUntil && sync.leaseUntil > new Date()) return false;
+    // [delta review S2-1] With the switch OFF nothing would ever settle an UNKNOWN: the tablet rings now and
+    // operations call the store so it is made once (a restart that killed the sender is the usual way here).
+    if (!on) return fallBack(deps, sync, 'a sender stopped mid-send', { from: 'SENDING', lapsedOnly: true }, 'maybe-in-kitchen-switch-off');
     return markUnknown(deps, sync, 'a sender stopped mid-send', { from: 'SENDING', lapsedOnly: true });
+  }
+  if ((sync.state === 'UNKNOWN' || sync.state === 'CANCELLING') && !on) {
+    // [delta review S2-1] Switch OFF: no verify, no cancel will happen. Ring the tablet; operations call the store.
+    if (sync.state === 'CANCELLING' && sync.leaseUntil && sync.leaseUntil > new Date()) return false;
+    const order = await deps.prisma.order.findUnique({ where: { id: orderId }, select: { status: true } });
+    if (order?.status !== 'PENDING') return false;
+    return fallBack(deps, sync, sync.lastError ?? 'its send got no answer', sync.state === 'UNKNOWN' ? { from: 'UNKNOWN' } : { from: 'CANCELLING', lapsedOnly: true }, 'maybe-in-kitchen-switch-off');
   }
   if (sync.state === 'SENT') {
     const marked = await deps.prisma.orderIntegrationSync.updateMany({
@@ -450,9 +485,9 @@ export async function ringStuckKitchenClaim(deps: Pick<KitchenDeps, 'prisma' | '
 
 /** The ladder's kitchen check: 'WAIT' (re-arm the rung), 'RANG' (the tablet was just rung: re-arm, the next rung
  *  escalates as for any store), or 'GO' (no claim: escalate now). Never throws. */
-export async function kitchenLadderStep(deps: Pick<KitchenDeps, 'prisma' | 'io'>, orderId: string): Promise<'WAIT' | 'RANG' | 'GO'> {
+export async function kitchenLadderStep(deps: Pick<KitchenDeps, 'prisma' | 'io' | 'env'>, orderId: string): Promise<'WAIT' | 'RANG' | 'GO'> {
   try {
-    const decision = await kitchenLadderDecision(deps.prisma, orderId);
+    const decision = await kitchenLadderDecision(deps.prisma, orderId, new Date(), deps.env ?? process.env);
     if (decision === 'WAIT') return 'WAIT';
     if (decision === 'RING') {
       await ringStuckKitchenClaim(deps, orderId);
@@ -460,7 +495,7 @@ export async function kitchenLadderStep(deps: Pick<KitchenDeps, 'prisma' | 'io'>
       // (a send inside its lease, or UNKNOWN) -> WAIT; anything else -> GO. Never stop the ladder with nothing rung.
       const sync = await deps.prisma.orderIntegrationSync.findUnique({ where: { orderId_provider: { orderId, provider: 'DRAGONTAIL' } }, select: { state: true, fallbackAt: true } });
       if (sync?.fallbackAt) return 'RANG';
-      return sync && (sync.state === 'QUEUED' || sync.state === 'SENDING' || sync.state === 'UNKNOWN') ? 'WAIT' : 'GO';
+      return sync && (sync.state === 'QUEUED' || sync.state === 'SENDING' || sync.state === 'UNKNOWN' || sync.state === 'CANCELLING') ? 'WAIT' : 'GO';
     }
     return 'GO';
   } catch (err) {
@@ -722,51 +757,104 @@ async function cancelAtKitchen(
  * PENDING -> cancel it there; once that goes through, the tablet rings (-> FALLBACK). A cancel that does not go
  * through leaves it UNKNOWN (tried again shortly; operations paged to call the store), never rung while the kitchen
  * may be making it. A store that took it on the tablet meanwhile: operations check it is made once.
+ * [delta review S3-1] While its cancel is in flight the row is CANCELLING, which no kitchen event can confirm (and so
+ * accept); a CANCELLING row left by a process that died mid-cancel is picked up again once its lease lapses.
  */
 export async function resolveUnknownKitchenSyncs(deps: KitchenDeps, opts: KitchenWorkWindow = {}): Promise<number> {
   if (!dragontailIntegrationEnabled(envOf(deps))) return 0;
   const until = untilOf(opts);
   const now = nowOf(deps);
   const due = await deps.prisma.orderIntegrationSync.findMany({
-    where: { state: 'UNKNOWN', leaseUntil: { lt: now } },
-    include: { vendorIntegration: true, order: { select: { status: true, orderNumber: true } } },
+    where: { state: { in: ['UNKNOWN', 'CANCELLING'] }, leaseUntil: { lt: now } },
+    include: { vendorIntegration: true },
     orderBy: { leaseUntil: 'asc' },
     take: 20,
   });
   let settled = 0;
   for (const sync of due) {
     if (Date.now() >= until) break;
-    // Lease the attempt: the window moves on, so a second sweeper skips it.
-    const leased = await deps.prisma.orderIntegrationSync.updateMany({
-      where: { id: sync.id, state: 'UNKNOWN', leaseUntil: sync.leaseUntil },
-      data: { leaseUntil: new Date(Date.now() + KITCHEN_UNKNOWN_RETRY_MS), attempts: { increment: 1 } },
-    });
-    if (leased.count === 0) continue;
-    if (sync.order.status !== 'PENDING') {
-      // Cancelled orders go through propagateKitchenCancellations, finished ones to DONE. Any other: the store took it
-      // on the tablet while its kitchen may also have it. Operations check it is made once; nothing is retried.
-      if (sync.order.status === 'CANCELLED' || (FINISHED_STATUSES as readonly string[]).includes(sync.order.status)) continue;
-      await deps.prisma.orderIntegrationSync.updateMany({ where: { id: sync.id, state: 'UNKNOWN' }, data: { leaseUntil: null } });
+    const order = await deps.prisma.order.findUnique({ where: { id: sync.orderId }, select: { status: true, orderNumber: true } });
+    if (!order) continue;
+    if (order.status !== 'PENDING') {
+      // Cancelled orders go through propagateKitchenCancellations, finished ones to DONE (back to UNKNOWN for both).
+      // Any other: the store took it on the tablet while its kitchen may also have it. Operations check it is made
+      // once; nothing is retried.
+      const leftAlone = order.status === 'CANCELLED' || (FINISHED_STATUSES as readonly string[]).includes(order.status);
+      const parked = await deps.prisma.orderIntegrationSync.updateMany({
+        where: { id: sync.id, state: sync.state, leaseUntil: sync.leaseUntil },
+        data: { state: 'UNKNOWN', leaseUntil: leftAlone ? new Date(Date.now() + KITCHEN_UNKNOWN_RETRY_MS) : null },
+      });
+      if (parked.count === 0 || leftAlone) continue;
       await pageOperations(deps, {
         orderId: sync.orderId, tenantId: sync.tenantId, key: `${sync.id}:unknown-taken`,
         title: 'Kitchen system: order taken on the tablet; the kitchen may also have it',
-        body: `Order ${sync.order.orderNumber}: the store took it on the Swift tablet, but its kitchen system may also have it (its send got no answer). Call the store so it is made once.`,
+        body: `Order ${order.orderNumber}: the store took it on the Swift tablet, but its kitchen system may also have it (its send got no answer). Call the store so it is made once.`,
       });
       continue;
     }
+    // Take the row out of UNKNOWN for the whole cancel: a kitchen confirmation racing it cannot accept the order.
+    const leased = await deps.prisma.orderIntegrationSync.updateMany({
+      where: { id: sync.id, state: sync.state, leaseUntil: sync.leaseUntil },
+      data: { state: 'CANCELLING', leaseUntil: new Date(Date.now() + KITCHEN_CANCEL_BUDGET_MS + KITCHEN_UNKNOWN_RETRY_MS), attempts: { increment: 1 } },
+    });
+    if (leased.count === 0) continue;
     const outcome = await cancelAtKitchen(deps, sync);
     if (outcome.ok) {
-      if (await fallBack(deps, sync, 'the send got no answer and the kitchen showed no sign of it; it was told to cancel it', { from: 'UNKNOWN' })) settled += 1;
+      if (await fallBack(deps, sync, 'the send got no answer and the kitchen showed no sign of it; it was told to cancel it', { from: 'CANCELLING' }, 'cancelled-there')) {
+        settled += 1;
+      } else {
+        // The kitchen cancelled it, but the row was moved meanwhile (by hand, or a sweeper): never drop it silently.
+        await pageOperations(deps, {
+          orderId: sync.orderId, tenantId: sync.tenantId, key: `${sync.id}:cancelled-but-moved`,
+          title: 'Kitchen system: CALL THE STORE — cancelled in the kitchen, but Swift moved the order on',
+          body: `Order ${order.orderNumber}: Swift cancelled it in the store's kitchen system (its send had got no answer), but the order was moved on in Swift meanwhile. Call the store so it is made (once) from the Swift tablet, or cancel it on Swift.`,
+        });
+      }
       continue;
     }
-    await deps.prisma.orderIntegrationSync.updateMany({ where: { id: sync.id, state: 'UNKNOWN' }, data: { lastError: `cancel at the kitchen did not go through: ${outcome.problem}`.slice(0, 300) } });
+    await deps.prisma.orderIntegrationSync.updateMany({
+      where: { id: sync.id, state: 'CANCELLING' },
+      data: { state: 'UNKNOWN', leaseUntil: new Date(Date.now() + KITCHEN_UNKNOWN_RETRY_MS), lastError: `cancel at the kitchen did not go through: ${outcome.problem}`.slice(0, 300) },
+    });
     await pageOperations(deps, {
       orderId: sync.orderId, tenantId: sync.tenantId, key: `${sync.id}:unknown-cancel`,
       title: 'Kitchen system: CALL THE STORE — order may be in the kitchen, cancel failed',
-      body: `Order ${sync.order.orderNumber}: Swift cannot tell whether the store's kitchen system has it, and could not cancel it there (${outcome.problem}). The tablet was NOT rung. Call the store: if the kitchen has it, it makes it there; if not, the store accepts it on the Swift tablet. Swift keeps trying the cancel.`,
+      body: `Order ${order.orderNumber}: Swift cannot tell whether the store's kitchen system has it, and could not cancel it there (${outcome.problem}). The tablet was NOT rung. Call the store: if the kitchen has it, it makes it there; if not, the store accepts it on the Swift tablet. Swift keeps trying the cancel.`,
     });
   }
   return settled;
+}
+
+/** Marks a sync whose Swift cancel operations were already told the kitchen never heard (switch off). */
+const UNTOLD_CANCEL = 'switch off: the kitchen system was not told of the cancel';
+
+/**
+ * [delta review S2-1] Switch OFF: a Swift-cancelled order the kitchen may still hold (SENT, UNKNOWN, CANCEL_QUEUED)
+ * is never told to the kitchen (no call leaves Swift). Operations are paged ONCE per order to call the store; the
+ * row waits as CANCEL_QUEUED, so the kitchen is told when the switch is back on.
+ */
+async function pageUntoldKitchenCancels(deps: Pick<KitchenDeps, 'prisma' | 'io'>): Promise<void> {
+  const rows = await deps.prisma.orderIntegrationSync.findMany({
+    where: {
+      state: { in: ['SENT', 'UNKNOWN', 'CANCEL_QUEUED'] },
+      order: { status: 'CANCELLED' },
+      OR: [{ lastError: null }, { lastError: { not: UNTOLD_CANCEL } }],
+    },
+    select: { id: true, orderId: true, tenantId: true, state: true },
+    take: 50,
+  });
+  for (const row of rows) {
+    const marked = await deps.prisma.orderIntegrationSync.updateMany({
+      where: { id: row.id, state: row.state, OR: [{ lastError: null }, { lastError: { not: UNTOLD_CANCEL } }] },
+      data: { state: 'CANCEL_QUEUED', lastError: UNTOLD_CANCEL, leaseUntil: null, ...(row.state === 'CANCEL_QUEUED' ? {} : { attempts: 0 }) },
+    });
+    if (marked.count === 0) continue;
+    await runWithTenant(row.tenantId, async () => pageOperations(deps, {
+      orderId: row.orderId, tenantId: row.tenantId, key: `${row.id}:untold-cancel`,
+      title: 'Kitchen system OFF: CALL THE STORE — a cancelled order may still be in its kitchen',
+      body: `Order ${await orderNumberOf(deps, row.orderId)} was cancelled on Swift, but the kitchen-system switch is off, so the store's kitchen system was not told. Call the store so it does not make or send it. (The kitchen is told when the switch is back on.)`,
+    }));
+  }
 }
 
 /**
@@ -788,12 +876,19 @@ export async function kitchenBackstopSweep(deps: Pick<KitchenDeps, 'prisma' | 'i
         { state: 'QUEUED', ...(on ? { createdAt: { lt: new Date(now - KITCHEN_STUCK_MS) } } : {}) },
         { state: 'SENDING', leaseUntil: { lt: new Date(now) } },
         { state: 'SENT', sentAt: { lt: new Date(now - waitMs) }, order: { status: 'PENDING' } },
+        // [delta review S2-1] Switch OFF: an order whose send got no answer is never settled by the tick; the tablet
+        // rings it and operations call the store (made once).
+        ...(on ? [] : [
+          { state: 'UNKNOWN' as const, order: { status: 'PENDING' as const } },
+          { state: 'CANCELLING' as const, leaseUntil: { lt: new Date(now) }, order: { status: 'PENDING' as const } },
+        ]),
       ],
     },
     select: { orderId: true, tenantId: true },
     orderBy: { createdAt: 'asc' },
     take: 50,
   });
+  if (!on) await pageUntoldKitchenCancels(deps);
   let moved = 0;
   for (const row of stale) {
     try {
@@ -848,11 +943,12 @@ const STATUS_STEPS = new Set(['MAKE_LINE', 'PREPARED', 'COOKED', 'PACKED', 'DISP
 /** Apply one kitchen event to its order. Never throws. */
 export async function applyKitchenEvent(deps: KitchenDeps, integration: Pick<VendorIntegration, 'id' | 'externalStoreNo' | 'tenantId'>, event: KitchenEvent): Promise<KitchenEventOutcome> {
   try {
+    // [delta review S3-2] Found by Dragontail's own key (store number, order id); it must be this connection's, and an
+    // event counts only under the store number its order was claimed under [security scan · d68ff3f6].
     const sync = await deps.prisma.orderIntegrationSync.findUnique({
-      where: { vendorIntegrationId_externalOrderId: { vendorIntegrationId: integration.id, externalOrderId: event.externalOrderId } },
+      where: { provider_externalStoreNo_externalOrderId: { provider: 'DRAGONTAIL', externalStoreNo: event.storeNo, externalOrderId: event.externalOrderId } },
     });
-    // [security scan · d68ff3f6] An event counts only under the store number its order was claimed under.
-    if (!sync || sync.externalStoreNo !== event.storeNo) {
+    if (!sync || sync.vendorIntegrationId !== integration.id) {
       log().info({ storeNo: event.storeNo, action: event.action }, '[KITCHEN] event for an order Swift did not send — ignored');
       return 'unknown-order';
     }
@@ -866,9 +962,10 @@ export async function applyKitchenEvent(deps: KitchenDeps, integration: Pick<Ven
       log().info({ orderId: sync.orderId, action: event.action }, '[KITCHEN] kitchen action Swift does not act on — logged');
       return 'ignored';
     }
-    // A sync that fell back was never the kitchen's (the store runs it on the tablet); one still being sent is
-    // settled by its sender first (the poll catch-up replays anything this skips).
-    if (!landed && (sync.state === 'FALLBACK' || sync.state === 'QUEUED' || sync.state === 'SENDING' || sync.state === 'UNKNOWN')) return 'unchanged';
+    // A sync that fell back was never the kitchen's (the store runs it on the tablet); one still being sent (or being
+    // cancelled after an unanswered send) is settled by its sender first. Such an event is NOT replayed (the catch-up
+    // cursor moves on): the kitchen's later events carry the order forward, and the backstop rings it if none come.
+    if (!landed && (sync.state === 'FALLBACK' || sync.state === 'QUEUED' || sync.state === 'SENDING' || sync.state === 'UNKNOWN' || sync.state === 'CANCELLING')) return 'unchanged';
     return await runWithTenant(sync.tenantId, async () => {
       const order = await deps.prisma.order.findUnique({
         where: { id: sync.orderId },

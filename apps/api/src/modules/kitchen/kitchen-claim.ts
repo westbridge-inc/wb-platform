@@ -122,9 +122,17 @@ export async function claimForKitchen(prisma: PrismaClient, orderId: string, env
   try {
     return await prisma.$transaction((tx) => claimForKitchenInTransaction(tx, orderId, env));
   } catch (err) {
+    // [delta review S4-2] A commit whose answer was lost: the claim may be there after all. Ringing it too would
+    // have the store make it twice, so the row decides.
+    const there = await prisma.orderIntegrationSync.findUnique({
+      where: { orderId_provider: { orderId, provider: 'DRAGONTAIL' } },
+      select: { state: true },
+    }).catch(() => null);
+    if (there && there.state !== 'FALLBACK') return true;
     log().error({ err, orderId }, '[KITCHEN] claim failed; the store is rung as usual');
-    // A number already taken (only a hand-made row can do that) rolled the counter back with the claim: step past
-    // it, so the store's next order is not refused on the same number forever.
+    // A (provider, store number, order id) already taken — Dragontail's own key; only a row written by hand, or a
+    // counter row deleted by hand, can do that — rolled the counter back with the claim: step past it, so the
+    // store's next order is not refused on the same number forever.
     if ((err as { code?: string }).code === 'P2002') await skipKitchenNumber(prisma, orderId).catch(() => undefined);
     return false;
   }
@@ -163,11 +171,14 @@ export async function kitchenLadderDecision(
     if (!on) return 'RING';
     return now.getTime() - sync.createdAt.getTime() >= KITCHEN_STUCK_MS ? 'RING' : 'WAIT';
   }
-  if (sync.state === 'UNKNOWN') {
-    // [review B S3-3] The kitchen MAY have it: never rung by the ladder (no double-make). Operations were paged and
-    // the tick settles it (confirmed, or cancelled there and then rung); the order's own response deadline bounds it.
+  if (sync.state === 'UNKNOWN' || sync.state === 'CANCELLING') {
+    // [review B S3-3] The kitchen MAY have it: while the switch is on the ladder waits (no double-make) and the tick
+    // settles it (confirmed, or cancelled there and then rung). [delta review S2-1] With the switch OFF nothing will
+    // settle it: the tablet rings (the store is back on the tablet) and operations are told to call the store so it
+    // is made once.
     const order = await prisma.order.findUnique({ where: { id: orderId }, select: { status: true } });
-    return order?.status === 'PENDING' ? 'WAIT' : 'GO';
+    if (order?.status !== 'PENDING') return 'GO';
+    return on ? 'WAIT' : 'RING';
   }
   if (sync.state === 'SENT') {
     const order = await prisma.order.findUnique({ where: { id: orderId }, select: { status: true } });

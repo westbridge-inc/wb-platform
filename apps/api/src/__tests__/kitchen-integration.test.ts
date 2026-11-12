@@ -124,6 +124,8 @@ async function makeOrder(opts: { fulfillment?: 'DELIVERY' | 'PICKUP'; mapped?: b
 
 /** Operations pages about this order whose title contains `words`. */
 const opsPages = (orderId: string, words: string) => app.prisma.notification.count({ where: { userId: opsAdminId, title: { contains: words }, data: { path: ['orderId'], equals: orderId } } });
+/** Tablet rings ("New Order!") about these orders. */
+const ringsOfOrders = (orderIds: string[]) => app.prisma.notification.count({ where: { title: { contains: 'New' }, OR: orderIds.map((id) => ({ data: { path: ['orderId'], equals: id } })) } });
 const ringsFor = (userId: string) => app.prisma.notification.count({ where: { userId, title: { contains: 'New' } } });
 const syncOf = (orderId: string) => app.prisma.orderIntegrationSync.findUnique({ where: { orderId_provider: { orderId, provider: 'DRAGONTAIL' } } });
 const orderOf = (orderId: string) => app.prisma.order.findUniqueOrThrow({ where: { id: orderId } });
@@ -596,7 +598,7 @@ describe('[KITCHEN · reviews A and B] failure isolation, the tablet backstop, t
     expect(await kitchenLadderStep(deps(), order.id), 'once rung, the ladder carries on as for any store').toBe('GO');
   });
 
-  it('[B S2-1a · S3-3] a SENDING claim inside its lease waits; once the lease lapses it may have landed: UNKNOWN, never rung', async () => {
+  it('[B S2-1a · delta S2-1] switch OFF: a SENDING claim inside its lease waits; once it lapses the tablet rings and ops call the store', async () => {
     const order = await makeOrder();
     await releaseOnly();
     const id = { orderId_provider: { orderId: order.id, provider: 'DRAGONTAIL' as const } };
@@ -605,10 +607,11 @@ describe('[KITCHEN · reviews A and B] failure isolation, the tablet backstop, t
     const before = await ringsFor(ownerUserId);
     expect(await kitchenLadderStep(deps(), order.id)).toBe('WAIT');
     await app.prisma.orderIntegrationSync.update({ where: id, data: { leaseUntil: new Date(Date.now() - 1_000) } });
-    expect(await kitchenLadderStep(deps(), order.id)).toBe('WAIT');
-    expect((await syncOf(order.id))?.state).toBe('UNKNOWN');
-    expect(await ringsFor(ownerUserId), 'the kitchen may be making it: no tablet ring').toBe(before);
-    expect(await opsPages(order.id, 'MAY be in the kitchen')).toBe(1);
+    // With the switch off nothing would ever settle an unanswered send: rung now, ops call the store (made once).
+    expect(await kitchenLadderStep(deps(), order.id)).toBe('RANG');
+    expect((await syncOf(order.id))?.state).toBe('FALLBACK');
+    expect(await ringsFor(ownerUserId)).toBe(before + 1);
+    expect(await opsPages(order.id, 'CALL THE STORE')).toBe(1);
   });
 
   it('[B S2-1b] switch ON but no sender running: a claim older than the cap is rung, a younger one waits', async () => {
@@ -817,15 +820,17 @@ describe('[KITCHEN · reviews A and B] failure isolation, the tablet backstop, t
     await releaseOnly();
     await app.prisma.orderIntegrationSync.update({ where: { orderId_provider: { orderId: inFlight.id, provider: 'DRAGONTAIL' } }, data: { state: 'SENDING', leaseUntil: new Date(Date.now() + 60_000) } });
     setEnv(false);
-    const before = await ringsFor(ownerUserId);
+    // Rings for THIS test's orders (earlier tests leave other claims the sweep also rings while off).
+    const mine = [...queued.map((o) => o.id), accepting.id, inFlight.id];
+    const before = await ringsOfOrders(mine);
     await kitchenBackstopSweep({ prisma: app.prisma, io: app.io });
     for (const o of queued) expect((await syncOf(o.id))?.state, 'a waiting claim falls back').toBe('FALLBACK');
     expect((await syncOf(accepting.id))?.fallbackAt, 'a sent order not accepted is rung too').toBeTruthy();
     expect((await syncOf(inFlight.id))?.state, 'a send still inside its lease is left to its sender').toBe('SENDING');
-    expect(await ringsFor(ownerUserId)).toBe(before + 3);
+    expect(await ringsOfOrders(mine)).toBe(before + 3);
     expect(mock.requests).toEqual([]);
     await kitchenBackstopSweep({ prisma: app.prisma, io: app.io });
-    expect(await ringsFor(ownerUserId), 'once').toBe(before + 3);
+    expect(await ringsOfOrders(mine), 'once').toBe(before + 3);
   });
 
   it('[B S2-1b] switch ON: a claim past the time limit is rung by the sweep; a younger one is left to the sender', async () => {
@@ -964,5 +969,119 @@ describe('[KITCHEN · reviews A and B] failure isolation, the tablet backstop, t
       await app.prisma.vendorIntegration.update({ where: { id: integrationId }, data: { externalStoreNo: STORE_NO } });
       await app.prisma.orderIntegrationSync.updateMany({ where: { id: { in: live.map((r) => r.id) } }, data: { state: 'DONE' } });
     }
+  });
+
+  it('[delta S2-1] the kill switch with unanswered sends (switch OFF + restart): every one rings and ops call the store, once', async () => {
+    const a = await timedOutOrder();
+    const b = await timedOutOrder();
+    // A sender killed by the restart: its row is left SENDING, lease lapsed.
+    const c = await makeOrder();
+    await releaseOnly();
+    await app.prisma.orderIntegrationSync.update({ where: { orderId_provider: { orderId: c.id, provider: 'DRAGONTAIL' } }, data: { state: 'SENDING', leaseUntil: new Date(Date.now() - 1_000) } });
+    expect([a.sync.state, b.sync.state]).toEqual(['UNKNOWN', 'UNKNOWN']);
+    setEnv(false);
+    mock.reset();
+    const before = await ringsFor(ownerUserId);
+    expect(await kitchenLadderStep(deps(), a.order.id), 'the ladder rings it, never waits forever').toBe('RANG');
+    await kitchenBackstopSweep({ prisma: app.prisma, io: app.io });
+    for (const id of [a.order.id, b.order.id, c.id]) {
+      expect((await syncOf(id))?.state, id).toBe('FALLBACK');
+      expect(await opsPages(id, 'CALL THE STORE'), id).toBe(1);
+    }
+    expect(await ringsFor(ownerUserId)).toBe(before + 3);
+    await kitchenBackstopSweep({ prisma: app.prisma, io: app.io });
+    expect(await ringsFor(ownerUserId), 'once').toBe(before + 3);
+    expect(mock.requests, 'no call leaves Swift while off').toEqual([]);
+  });
+
+  it('[delta S2-1] switch OFF: a Swift-cancelled order the kitchen holds pages ops once; the kitchen is told when the switch is back on', async () => {
+    const { order, sync } = await sentOrder('DELIVERY');
+    await new OrderService(app.prisma, app.io).transitionOrderAtomically({
+      orderId: order.id, target: 'CANCELLED', allowedFrom: ['PREPARING'], changedBy: null, note: 'test cancel',
+      cancellation: { by: null, reason: 'test cancel' },
+    });
+    setEnv(false);
+    mock.reset();
+    await kitchenBackstopSweep({ prisma: app.prisma, io: app.io });
+    await kitchenBackstopSweep({ prisma: app.prisma, io: app.io });
+    expect((await syncOf(order.id))?.state).toBe('CANCEL_QUEUED');
+    expect(await opsPages(order.id, 'cancelled order may still be in its kitchen'), 'once').toBe(1);
+    expect(mock.requests).toEqual([]);
+    setEnv(true);
+    await propagateKitchenCancellations(deps());
+    expect((await syncOf(order.id))?.state).toBe('CANCELLED');
+    expect(insertsOf(sync.externalOrderId).at(-1)).toBe(2);
+  });
+
+  it('[delta S3-1] a kitchen confirmation racing the UNKNOWN cancel cannot accept the order (CANCELLING)', async () => {
+    const { order, sync } = await timedOutOrder();
+    await pastVerifyWindow(sync.id);
+    const before = await ringsFor(ownerUserId);
+    const raced: string[] = [];
+    mock.onRequest = async (r) => {
+      const body = r.body as { ordersItems?: Array<{ ItemsActions: number }> } | null;
+      if (r.path !== '/PosInsertOrders' || body?.ordersItems?.[0]?.ItemsActions !== 2) return;
+      raced.push(...await applyKitchenEvents(deps(), await integration(), [event(sync.externalOrderId, 'MAKE_LINE', 'ReachedTheMakeLine')]));
+      raced.push((await syncOf(order.id))!.state);
+    };
+    await resolveUnknownKitchenSyncs(deps());
+    mock.onRequest = null;
+    expect(raced).toEqual(['unchanged', 'CANCELLING']);
+    expect((await orderOf(order.id)).status, 'never accepted while it was being cancelled').toBe('PENDING');
+    expect((await syncOf(order.id))?.state).toBe('FALLBACK');
+    expect(await ringsFor(ownerUserId)).toBe(before + 1);
+  });
+
+  it('[delta S3-1] cancelled at the kitchen but the row was moved meanwhile: ops are paged, never a silent drop', async () => {
+    const { order, sync } = await timedOutOrder();
+    await pastVerifyWindow(sync.id);
+    mock.onRequest = async (r) => {
+      const body = r.body as { ordersItems?: Array<{ ItemsActions: number }> } | null;
+      if (r.path === '/PosInsertOrders' && body?.ordersItems?.[0]?.ItemsActions === 2) {
+        await app.prisma.orderIntegrationSync.update({ where: { id: sync.id }, data: { state: 'SENT' } });
+      }
+    };
+    await resolveUnknownKitchenSyncs(deps());
+    mock.onRequest = null;
+    expect(await opsPages(order.id, 'cancelled in the kitchen, but Swift moved the order on')).toBe(1);
+  });
+
+  it('[delta S3-2] a renumbered connection does not collide with its own old ids: the next claim is QUEUED, not rung', async () => {
+    const store = await makeStore(true);
+    const firstNo = STORE_NO + 500 + Math.floor(Math.random() * 400);
+    const conn = (await putKitchenIntegration(app.prisma, store.vendorId, { enabled: true, externalStoreNo: firstNo })).connection!;
+    process.env['DRAGONTAIL_CREDENTIALS'] = JSON.stringify({
+      ...JSON.parse(process.env['DRAGONTAIL_CREDENTIALS']!),
+      [kitchenLoginRef({ id: conn.id, provider: 'DRAGONTAIL' })]: { userName: 'pos-swift', password: 'pw-swift' },
+    });
+    const cat = await app.prisma.category.create({ data: { vendorId: store.vendorId, name: 'Pizza' } });
+    const item = await app.prisma.item.create({ data: { vendorId: store.vendorId, categoryId: cat.id, name: 'Pan Pizza XL', basePrice: 3500, externalItemNo: '8', optionGroups: { create: [{ name: 'Toppings', options: { create: [{ name: 'green pepper', externalItemNo: '121' }] } }] } } });
+    const place = async () => app.prisma.order.update({ where: { id: (await makeOrder({ store: store.vendorId })).id }, data: { items: { updateMany: { where: {}, data: { itemId: item.id } } } } });
+    const first = await place();
+    await releaseOnly();
+    await drainKitchenSyncs(deps(), { orderIds: [first.id] });
+    const firstSync = (await syncOf(first.id))!;
+    expect(firstSync.state).toBe('SENT');
+    await app.prisma.orderIntegrationSync.update({ where: { id: firstSync.id }, data: { state: 'DONE' } });
+    await putKitchenIntegration(app.prisma, store.vendorId, { externalStoreNo: firstNo + 1 });
+    const before = await ringsFor(store.ownerUserId);
+    const second = await place();
+    await releaseOnly();
+    const secondSync = (await syncOf(second.id))!;
+    expect(secondSync?.state, 'claimed, not rung').toBe('QUEUED');
+    expect(secondSync.externalStoreNo).toBe(firstNo + 1);
+    expect(secondSync.externalOrderId, 'the same id as before, under another store number: Dragontail own key allows it').toBe(firstSync.externalOrderId);
+    expect(await ringsFor(store.ownerUserId)).toBe(before);
+    await drainKitchenSyncs(deps(), { orderIds: [second.id] });
+    expect((await syncOf(second.id))?.state).toBe('SENT');
+  });
+
+  it('[delta S3-3 · #2487] a fallback ring shows the store its goods amount, never the customer total', async () => {
+    const order = await makeOrder({ mapped: false });
+    await releaseOnly();
+    await drainKitchenSyncs(deps(), { orderIds: [order.id] });
+    const ring = await app.prisma.notification.findFirst({ where: { userId: ownerUserId, title: 'New Order!', data: { path: ['orderId'], equals: order.id } }, orderBy: { createdAt: 'desc' } });
+    expect(ring?.body).toContain('$3,500 GYD');
+    expect(ring?.body).not.toContain('4,300');
   });
 });
