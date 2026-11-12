@@ -225,6 +225,18 @@ export const PROCESSOR_REGISTER: readonly ProcessorEntry[] = [
     country: 'US', leavesCountry: true, transferBasis: 'CONTRACT_CLAUSES', contractEnv: null,
     note: 'Adapter exists; not selected by any production configuration.',
   },
+  {
+    // [KITCHEN-INTEGRATION · owner 11 Nov 2026] Behind DRAGONTAIL_INTEGRATION (off). Reached only for a store that
+    // runs Dragontail and whose connection is switched on. The Privacy Policy does not name it yet: the owner
+    // approves the wording (a LEGAL_VERSION change) before the switch goes on.
+    ref: 'DRAGONTAIL', party: 'Dragontail Systems (a Yum! Brands company)',
+    service: "A connected store's own kitchen and delivery system (off; only for stores that use it)",
+    modelBacked: false,
+    providerDirs: [], hosts: ['dragontailsystem.com'],
+    payload: ['CONTACT', 'LOCATION'], lawfulBasis: 'CONTRACT',
+    country: 'unknown until Dragontail confirms (TODO-CONFIRM)', leavesCountry: true, transferBasis: 'CONTRACT_CLAUSES', contractEnv: null,
+    note: "Cash orders only. Order items; customer first name (never the last name); for a delivery also phone, address, location and delivery note, for the store's own driver (owner ruling 12 Nov 2026). Never documents or payment data.",
+  },
 ];
 
 /** Provider directories that are not a processor, with the reason the census accepts. */

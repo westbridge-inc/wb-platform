@@ -28,7 +28,8 @@ import { purgeFixtureAuditTrail } from './helpers/audit-fixture-purge';
 
 const DAY = 864e5;
 const SUPERMARKET_DOCS = ['owner_national_id', 'business_registration', 'tin_certificate', 'storefront_photo'];
-const RESTAURANT_DOCS = ['owner_national_id', 'business_registration', 'gra_restaurant_licence', 'storefront_photo'];
+// [RESTAURANT-TIN · owner 12 Nov 2026] a restaurant's TIN certificate in the GRA licence's place
+const RESTAURANT_DOCS = ['owner_national_id', 'business_registration', 'tin_certificate', 'storefront_photo'];
 const PUBLISHED = '+5926007788';
 
 let app: FastifyInstance;

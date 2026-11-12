@@ -223,6 +223,18 @@ export const DARK_FEATURES: DarkFeature[] = [
     impact: 'safety',
   },
   {
+    // [KITCHEN-INTEGRATION · owner 11 Nov 2026] Built from Dragontail's public spec before credentials exist.
+    key: 'dragontail_integration',
+    setting: 'DRAGONTAIL_INTEGRATION',
+    source: 'env',
+    // On only at '1' with blanks ignored (modules/kitchen/kitchen-switch.ts reads it so).
+    enabledWhenPattern: /^1$/,
+    title: "Orders straight to a store's kitchen system (Dragontail)",
+    whileOff:
+      "Every store, including one whose kitchen runs Dragontail, gets its Swift orders on the Swift tablet as today: the tablet rings, the store accepts, prepares and marks ready on Swift, and delivers with Swift riders or its own as it chose. No order, name, phone or address goes to any kitchen system, no call leaves Swift, the console refuses to set up or change a connection (or test one) and the Dragontail webhook address does not exist. Kept OFF until Dragontail issues credentials and a test store, the TODO-CONFIRM settings are answered, and the owner approves the privacy wording.",
+    impact: 'product',
+  },
+  {
     key: 'instant_booking',
     setting: 'INSTANT_BOOKING',
     source: 'env',

@@ -403,6 +403,16 @@ export async function buildApp(options: BuildAppOptions = {}) {
   const { inAppCallsRoutes, inAppVoiceRoutes } = await import('./modules/calls/inapp-calls.routes');
   await app.register(inAppCallsRoutes, { prefix: '/api/v1/calls/app' });
   await app.register(inAppVoiceRoutes, { prefix: '/api/v1/calls/voice' });
+  // [KITCHEN-INTEGRATION · owner 11 Nov 2026] Dragontail's order notifications (webhook; the poller is the
+  // fallback). Registered ONLY while DRAGONTAIL_INTEGRATION is on, so with the switch off the server is unchanged.
+  // Proof checked before the body is read (shared secret and/or HMAC, TODO-CONFIRM); rate-limited, body-capped.
+  {
+    const { dragontailIntegrationEnabled } = await import('./modules/kitchen/kitchen-switch');
+    if (dragontailIntegrationEnabled()) {
+      const { kitchenWebhookRoutes } = await import('./modules/kitchen/kitchen-webhook.routes');
+      await app.register(kitchenWebhookRoutes, { prefix: '/api/v1/integrations/dragontail' });
+    }
+  }
 
   // Background job queues.
   // SWIFT-AUD-D7-01: workers are opt-out per process. Default (unset) keeps

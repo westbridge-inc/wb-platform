@@ -130,7 +130,8 @@ async function approveAll(o: Owner, role: 'RESTAURANT' | 'SUPERMARKET', docTypes
     await service.approveDocument(doc.id, adminId, new Date(Date.now() + 200 * DAY), undefined, typed);
   }
 }
-const REGISTERED_DOCS = ['owner_national_id', 'business_registration', 'gra_restaurant_licence', 'storefront_photo'] as const;
+// [RESTAURANT-TIN · owner 12 Nov 2026] a restaurant's TIN certificate in the GRA licence's place
+const REGISTERED_DOCS = ['owner_national_id', 'business_registration', 'tin_certificate', 'storefront_photo'] as const;
 
 describe('[FOOD-PERMIT] what a registered restaurant is asked for', () => {
   it('the certificate is optional (uploadable, reviewed); the tick is the step, with the owner’s words served', async () => {

@@ -109,8 +109,13 @@ import { GUYANA_RIDER_CASH_LIMIT } from '../dispatch/cash-limit';
  *  and manager lists (RESTAURANT/SUPERMARKET/STORE_COMPANY, SERVICE_COMPANY, RESTAURANT/SUPERMARKET/STORE_MANAGER: the
  *  certificate of incorporation, the account holder's ID and a letter of authority in place of the owner's ID). Nothing
  *  else moves, and no existing list changes. Every reader merges the code's lists under the stored copy, so the new
- *  lists are read before any seed; the next owner-signed seed writes them into the stored copy. */
-export const PLATFORM_CONFIG_VERSION = '2026-11-10.1';
+ *  lists are read before any seed; the next owner-signed seed writes them into the stored copy.
+ *  2026-11-12.1 [RESTAURANT-TIN · owner ruling 12 Nov 2026 (corrected the same day)]: 2026-11-10.1 with, for RESTAURANTS
+ *  ONLY, the TIN certificate in the GRA Food Restaurant Licence's required place on RESTAURANT, RESTAURANT_OWN_NAME,
+ *  RESTAURANT_COMPANY and RESTAURANT_MANAGER, and the licence on RESTAURANT_OPTIONAL. Nothing else moves. Every reader
+ *  applies the same rule over the stored copy (doc-registry withRestaurantTinRule), so it holds from the deploy; the next
+ *  owner-signed seed writes these lists into the stored copy. */
+export const PLATFORM_CONFIG_VERSION = '2026-11-12.1';
 
 /**
  * The declaration a tier map carries to say it is the COMPLETE partner card:
@@ -217,13 +222,18 @@ export const DEFAULT_DOCUMENT_CHECKLISTS: Record<string, string[]> = {
     MOVER_TAXI_EXTRA_OPTIONAL: ['police_clearance'],
     MOVER_COMMERCIAL: ['road_service_licence', 'fitness_cert'],
     // [VERIFY-DOCS · ruling 7] No TIN certificate: no law found requires Swift to hold it, and the image
-    // pairs a person's name and address with their tax-account login. A VAT-registered store may type its
+    // pairs a person's name and address with their tax-account login. [RESTAURANT-TIN · owner 12 Nov 2026] Superseded
+    // for RESTAURANTS only (below): the owner asks a restaurant for its TIN certificate in place of the GRA licence. A VAT-registered store may type its
     // VAT registration number on its profile instead (vendor.vatRegistrationNumber, for VAT invoices).
     // [FOOD-PERMIT · owner 24 Oct 2026] A registered restaurant no longer has to upload a food handler's certificate:
     // its owner ticks that everyone who handles food there holds a current one (vendor/food-handlers.ts — asked of the
     // store by code, never a list item). The certificate stays one it MAY add: reviewed, and shown on the storefront.
-    RESTAURANT: ['owner_national_id', 'business_registration', 'gra_restaurant_licence', 'storefront_photo'],
-    RESTAURANT_OPTIONAL: ['food_handler_cert'],
+    // [RESTAURANT-TIN · owner ruling 12 Nov 2026] RESTAURANTS ONLY: a TIN certificate in the GRA Food Restaurant Licence's
+    // required place, and the licence OPTIONAL (shown, uploadable, reviewed; never a gate). Replaces ruling 7's "no TIN
+    // certificate" for restaurants only; every other store list is unchanged. No TIN is typed anywhere.
+    // (doc-registry withRestaurantTinRule applies the same rule over a stored copy that still names the licence.)
+    RESTAURANT: ['owner_national_id', 'business_registration', 'tin_certificate', 'storefront_photo'],
+    RESTAURANT_OPTIONAL: ['food_handler_cert', 'gra_restaurant_licence'],
     SUPERMARKET: ['owner_national_id', 'business_registration', 'storefront_photo'],
     STORE: ['owner_national_id', 'business_registration', 'storefront_photo'],
     // [ROLE-DOCS · owner 21 Oct 2026] A store trading under its owner's OWN name (Business Names (Registration) Act,
@@ -231,19 +241,19 @@ export const DEFAULT_DOCUMENT_CHECKLISTS: Record<string, string[]> = {
     // declaration in place of the business registration; everything else is unchanged (vendor/own-name.ts).
     // [CHECKLIST-LEGAL · owner 1 Nov 2026 (a)] There is no other way in: the self-declared (unregistered) tier and its
     // three lists are removed. A registered business or a trader under their own name joins; nobody else.
-    RESTAURANT_OWN_NAME: ['owner_national_id', 'own_name_declaration', 'gra_restaurant_licence', 'storefront_photo'],
+    RESTAURANT_OWN_NAME: ['owner_national_id', 'own_name_declaration', 'tin_certificate', 'storefront_photo'],
     SUPERMARKET_OWN_NAME: ['owner_national_id', 'own_name_declaration', 'storefront_photo'],
     STORE_OWN_NAME: ['owner_national_id', 'own_name_declaration', 'storefront_photo'],
     // [COMPANY-DOCS · owner rulings 10 Nov 2026 ~07:0xZ, ~07:2xZ] A registered COMPANY (incorporated, e.g. KFC) gives no owner's
     // ID: its certificate of incorporation (or the company's business registration), the ID of the ONE person who manages
     // the Swift account, and a letter of authority from a director (or the director listing). ONE set for the whole
     // account: its branches and its staff upload nothing. The type's other papers are unchanged.
-    RESTAURANT_COMPANY: ['certificate_of_incorporation', 'account_holder_id', 'company_authority_letter', 'gra_restaurant_licence', 'storefront_photo'],
+    RESTAURANT_COMPANY: ['certificate_of_incorporation', 'account_holder_id', 'company_authority_letter', 'tin_certificate', 'storefront_photo'],
     SUPERMARKET_COMPANY: ['certificate_of_incorporation', 'account_holder_id', 'company_authority_letter', 'storefront_photo'],
     STORE_COMPANY: ['certificate_of_incorporation', 'account_holder_id', 'company_authority_letter', 'storefront_photo'],
     // [COMPANY-DOCS] A registered business whose MANAGER signs up (the owner cannot give their ID): the manager's ID and a
     // letter of authority signed by the owner, with the business registration (which names that owner).
-    RESTAURANT_MANAGER: ['account_holder_id', 'owner_authority_letter', 'business_registration', 'gra_restaurant_licence', 'storefront_photo'],
+    RESTAURANT_MANAGER: ['account_holder_id', 'owner_authority_letter', 'business_registration', 'tin_certificate', 'storefront_photo'],
     SUPERMARKET_MANAGER: ['account_holder_id', 'owner_authority_letter', 'business_registration', 'storefront_photo'],
     STORE_MANAGER: ['account_holder_id', 'owner_authority_letter', 'business_registration', 'storefront_photo'],
     // Service businesses (owner ruling, 6 Oct 2026 ~21:25 GYT): the store opens on the owner's ID;
