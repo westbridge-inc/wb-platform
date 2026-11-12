@@ -39,7 +39,7 @@ import { site, launch } from '@/site.config';
  * week at a time. Owner, 6 Nov 2026: up to four weeks ahead (replaces #62).
  */
 
-const UPDATED = '6 November 2026';
+const UPDATED = '10 November 2026';
 
 export const metadata = policyMetadata(
   'Refunds and cancellations',
@@ -154,7 +154,7 @@ export default function RefundsPage() {
           MMG, or directly to {site.legalEntityName}, in person by cash or cheque, or by bank transfer; a cheque counts once it clears,
           and a payment counts once {site.tradeName} records it.
           You get a receipt for every payment. Never pay the fee through an agent or anyone else.{' '}
-          {cardsLive ? 'It can also be paid by Visa or Mastercard, through our bank’s card payment page.' : null}
+          {cardsLive ? 'It can also be paid by Visa or Mastercard, on our card processor’s secure payment page, shown inside the Swift app or website; Swift never sees your card number.' : null}
         </li>
         <li>
           <b>Charged twice, or by mistake?</b> {site.tradeName} refunds the extra or mistaken charge in full, within 14
@@ -174,7 +174,8 @@ export default function RefundsPage() {
         </li>
         <li>
           <b>Closing your account.</b> {site.tradeName} refunds any weekly fee you paid for a week that has not started,
-          within 14 days, to the account you paid from or, if you paid in person, by a way you and {site.tradeName} agree, records the refund, and then deletes your account. A week that has already started is not refunded.
+          within 14 days, to the account you paid from, to the card you paid with, or, if you paid in person, by a way you and {site.tradeName} agree, records the refund, and then deletes your account. A week that has already started is not refunded.
+          If a refund to your card is refused, {site.tradeName} does not send it to the card again: it tells you, keeps the money as credit for your weekly fees, and returns it another way only once you agree to that way in writing.
         </li>
       </ul>
 

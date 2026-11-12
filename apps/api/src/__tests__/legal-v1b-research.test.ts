@@ -75,7 +75,7 @@ describe('Terms of Service (Part 4)', () => {
 describe('Privacy Policy (Part 4)', () => {
   it.each([
     // [EMAIL-HTTPS · 2026-10-27] the "as of" date is LAST_UPDATED: it moves with the new day's version.
-    ['¶1 the Act is passed, not in force; Swift follows it now', "and the rights you have. Guyana's Data Protection Act 2023 has been passed but, as of 9 November 2026, has not been brought into force. Swift follows it now and will update this policy when it starts."],
+    ['¶1 the Act is passed, not in force; Swift follows it now', "and the rights you have. Guyana's Data Protection Act 2023 has been passed but, as of 10 November 2026, has not been brought into force. Swift follows it now and will update this policy when it starts."],
     ['¶2 controller and data protection officer', '<p>Westbridge Inc. (trading as Swift), registration no. 17703, Lot 165 New Trafalgar Building, Waterloo Street, Georgetown, Demerara, Guyana, is the data controller. Our data protection officer is the Data Protection Officer, Westbridge Inc., privacy@swiftgy.com.'],
     // [Owner ruling 24 Oct 2026 — NO CUSTOMER ID GATE] taxi rides and larger orders no longer need a customer's ID.
     // [CHECKLIST-LEGAL · owner 1 Nov 2026 (b) — a DELIBERATE change] nor anything else: Swift takes no customer ID.
@@ -110,7 +110,8 @@ describe('Mover and Business Agreements (Part 4)', () => {
   it.each([['Mover', DRIVER_AGREEMENT], ['Business', VENDOR_AGREEMENT]])('%s: the seller, the F2 price-change clause, refund timing, the 48-hour grace and reversals', (_n, doc) => {
     expect(doc).toContain(`<p>The weekly subscription is sold by Swift's operator, Westbridge Inc. (registration no. 17703), ${OPERATOR_ADDRESS}.</p>`);
     expect(doc).toContain(F2);
-    expect(doc).toContain('Swift refunds to you any weekly fee you paid for a week that has not started, within 14 days, to the account you paid from or, if you paid in person, by a way you and Swift agree,');
+    // [LEGAL-CARDS · 2026-11-10] the card a week was paid with is named too.
+    expect(doc).toContain('Swift refunds to you any weekly fee you paid for a week that has not started, within 14 days, to the account you paid from, to the card you paid with, or, if you paid in person, by a way you and Swift agree,');
     expect(doc).toContain('If the weekly fee is still unpaid 48 hours after it falls due,');
     expect(doc).toContain('If you pay twice or pay too much through MMG, Swift may return the whole payment through MMG instead of a manual refund');
     expect(doc).not.toMatch(/settlement records|settle any amounts|ledger both sides/);
@@ -187,6 +188,6 @@ describe('one version for the whole batch', () => {
   // [EXPRESS-FEE · owner 1 Nov 2026, non-material] the bump for the express Delivery-policy wording, as 2026-11-01.
   it('is 2026-11-01', () => {
     // served now under 2026-11-05 (the 5 Nov batch: material)
-    expect(LEGAL_VERSION).toBe('2026-11-09.2'); // [LEGAL-CALLS · owner 9 Nov 2026] served now under 2026-11-09 (in-app calls in the Privacy Policy: material)
+    expect(LEGAL_VERSION).toBe('2026-11-10'); // [LEGAL-CALLS · owner 9 Nov 2026] served now under 2026-11-09 (in-app calls in the Privacy Policy: material)
   });
 });

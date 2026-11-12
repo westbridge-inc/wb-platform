@@ -24,7 +24,7 @@ const flat = (s: string) => s.replace(/\s+/g, ' ');
 
 describe('LEGAL_VERSION 2026-11-09 for the in-app call wording: material, so everyone ticks again', () => {
   it('is served, and classed material exactly once, for everyone', () => {
-    expect(LEGAL_VERSION).toBe('2026-11-09.2');
+    expect(LEGAL_VERSION).toBe('2026-11-10');
     const entry = MATERIAL_CHANGES.filter((c) => c.version === '2026-11-09');
     expect(entry).toHaveLength(1);
     expect(entry[0]!.audience).toBeUndefined();
@@ -36,8 +36,10 @@ describe('LEGAL_VERSION 2026-11-09 for the in-app call wording: material, so eve
     ['a customer', ['CUSTOMER']], ['a rider', ['MOVER', 'CUSTOMER']], ['a store owner', ['VENDOR_OWNER', 'CUSTOMER']],
   ] as const)('%s at 2026-11-08 is asked once, with the in-app call summary alone; at 2026-11-09, not', (_who, roles) => {
     const summary = MATERIAL_CHANGES.find((c) => c.version === '2026-11-09')!.summary;
-    expect(acceptanceStatus({ tosVersion: '2026-11-08', roles: [...roles] as UserRole[] })).toMatchObject({ needsAcceptance: true, summary });
-    expect(acceptanceStatus({ tosVersion: '2026-11-09', roles: [...roles] as UserRole[] })).toMatchObject({ needsAcceptance: false, summary: [] });
+    // [LEGAL-CARDS] Read as served at 2026-11-09.2: from 2026-11-10 a partner is also asked for the card wording
+    // (legal-cards-2026-11-10.unit.test.ts).
+    expect(acceptanceStatus({ tosVersion: '2026-11-08', roles: [...roles] as UserRole[] }, '2026-11-09.2')).toMatchObject({ needsAcceptance: true, summary });
+    expect(acceptanceStatus({ tosVersion: '2026-11-09', roles: [...roles] as UserRole[] }, '2026-11-09.2')).toMatchObject({ needsAcceptance: false, summary: [] });
   });
 
   it('the summary says what Twilio receives, no recording, and the microphone', () => {
@@ -52,7 +54,7 @@ describe('LEGAL_VERSION 2026-11-09 for the in-app call wording: material, so eve
 
   it('only the Privacy Policy states in-app calls; the other texts change by their date alone', () => {
     for (const doc of [TERMS, DRIVER_AGREEMENT, VENDOR_AGREEMENT]) {
-      expect(doc).toContain('9 November 2026');
+      expect(doc).toContain('10 November 2026'); // [LEGAL-CARDS] the date moved with 2026-11-10
       expect(doc).not.toMatch(/in-app call/i);
     }
   });

@@ -116,7 +116,7 @@ describe('[2026-10-21] one material version: everyone re-accepts once, with the 
     // served now under 2026-11-09 (in-app calls in the Privacy Policy, owner 9 Nov 2026: material for everyone, so the
     // version everyone answers to is 2026-11-09; under 2026-11-08 it was 2026-11-08; under 2026-11-06, four weeks ahead
     // for partners only, it was 2026-11-05)
-    expect(LEGAL_VERSION).toBe('2026-11-09.2');
+    expect(LEGAL_VERSION).toBe('2026-11-10');
     expect(materialVersion('2026-11-08')).toBe('2026-11-08');
     expect(materialVersion('2026-11-06')).toBe('2026-11-05');
     expect(materialVersion('2026-10-25')).toBe('2026-10-21');
@@ -126,9 +126,10 @@ describe('[2026-10-21] one material version: everyone re-accepts once, with the 
     expect(materialVersion('2026-10-28')).toBe('2026-10-27');
     expect(MATERIAL_CHANGES.map((c) => c.version)).toContain('2026-10-21');
     expect(NON_MATERIAL_CHANGES.map((c) => c.version)).not.toContain('2026-10-21');
-    expect(MATERIAL_CHANGES.map((c) => c.version).slice(-9), 'newest last').toEqual(['2026-10-21', '2026-10-25.1', '2026-10-27', '2026-10-28.1', '2026-10-29.2', '2026-11-05', '2026-11-06', '2026-11-08', '2026-11-09']);
+    // [LEGAL-CARDS] 2026-11-10 (card payments, material for partners) is the newest entry.
+    expect(MATERIAL_CHANGES.map((c) => c.version).slice(-10), 'newest last').toEqual(['2026-10-21', '2026-10-25.1', '2026-10-27', '2026-10-28.1', '2026-10-29.2', '2026-11-05', '2026-11-06', '2026-11-08', '2026-11-09', '2026-11-10']);
     expect(MATERIAL_CHANGES.filter((c) => c.audience === 'provider').map((c) => c.version), 'provider-only versions').toEqual(['2026-10-29.2']);
-    expect(MATERIAL_CHANGES.filter((c) => c.audience === 'partner').map((c) => c.version), 'partner-only versions').toEqual(['2026-11-06']);
+    expect(MATERIAL_CHANGES.filter((c) => c.audience === 'partner').map((c) => c.version), 'partner-only versions').toEqual(['2026-11-06', '2026-11-10']);
   });
 
   it('the summary names both changes', () => {
