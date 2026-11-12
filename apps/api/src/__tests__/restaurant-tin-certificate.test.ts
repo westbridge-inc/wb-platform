@@ -32,7 +32,7 @@ import { NotificationService } from '../modules/notification/notification.servic
 import { ManualReviewKycProvider } from '../providers/kyc/kyc-provider';
 import { seedDocRegistry } from '../modules/verification/doc-registry';
 import { assertTaggable, gateVerdicts, vendorOwnerContext } from '../modules/verification/category-gate';
-import { changePaperStaging, loadChange, startBusinessTypeChange, viewOfChange } from '../modules/vendor/account-change';
+import { changePaperStaging, endAccountChange, loadChange, startBusinessTypeChange, viewOfChange } from '../modules/vendor/account-change';
 import { ownedVerificationFixture, signupSelfieFixture } from './helpers/verification-object';
 import { reviewerTyped } from './helpers/reviewer-typed';
 import { wordFreeTag } from './helpers/fixture-ids';
@@ -81,6 +81,9 @@ afterAll(async () => {
     await app.prisma.subscription.deleteMany({ where: { vendorId: { in: vendorIds } } });
     await app.prisma.vendor.deleteMany({ where: { id: { in: vendorIds } } });
     await app.prisma.vendorOwner.deleteMany({ where: { userId: { in: users } } });
+    // [delta S3-B] a confirmed fraud-class rejection opens a case and a legal hold on the subject
+    await app.prisma.docLegalHold.deleteMany({ where: { subjectUserId: { in: users } } });
+    await app.prisma.fraudCase.deleteMany({ where: { subjectUserId: { in: users } } });
     await app.prisma.user.deleteMany({ where: { id: { in: users } } });
   });
   await app.close();
@@ -295,13 +298,28 @@ describe('[RESTAURANT-TIN] no claim that a restaurant needs its GRA licence', ()
     expect(body).not.toMatch(/avoid suspension/);
   });
 
-  // [#2494 review S2-1 · owner 12 Nov 2026] a live restaurant stands on its GRA licence only while it is valid
-  it('a restaurant with no TIN certificate: the GRA licence reminder says to add the TIN certificate to keep operating', async () => {
+  // [#2494 review S2-1 · delta S3-C] the words follow where the restaurant stands
+  it('a restaurant not live (a pending application) with no TIN certificate: “add your TIN Certificate in Documents to go live”', async () => {
     const o = await storeOwner();
     await approveAll(o, 'RESTAURANT', [GRA]);
     const body = await reminderOf(o);
-    expect(body).toMatch(/add your TIN Certificate in Documents to keep operating/);
+    expect(body).toMatch(/add your TIN Certificate in Documents to go live\./);
+    expect(body).not.toMatch(/stays live|keep operating|avoid suspension/);
+  });
+
+  it('a restaurant live on its GRA licence: “stays live on it only until then: add your TIN Certificate…”', async () => {
+    const o = await liveOnGra();
+    const body = await reminderOf(o);
+    expect(body).toMatch(/Your restaurant stays live on it only until then: add your TIN Certificate in Documents to keep operating\./);
     expect(body).not.toMatch(/optional|avoid suspension/);
+  });
+
+  it('a TIN certificate waiting for a person: “your TIN Certificate is being checked”', async () => {
+    const o = await liveOnGra();
+    expect((await upload(o, 'RESTAURANT', TIN)).statusCode).toBe(201);
+    const body = await reminderOf(o);
+    expect(body).toMatch(/Your TIN Certificate is being checked/);
+    expect(body).not.toMatch(/add your TIN|avoid suspension/);
   });
 
   it('a supermarket’s GRA licence (its prepared-food gate) keeps the old words', async () => {
@@ -364,14 +382,40 @@ describe('[RESTAURANT-TIN · review S2-1] a live restaurant is excused the TIN c
     expect((await preparedFoodGate(o)).every((v) => v.ok)).toBe(true);
   });
 
-  it('a REJECTED TIN certificate ends the exemption: the store stops until a TIN certificate is approved', async () => {
+  // [COORD ruling 12 Nov 2026 · #2494 delta S3-B] only a certificate found FALSE ends the exemption
+  it('an ORDINARY rejection (unreadable) does not end it: the store stays live on its GRA licence and is asked for a fresh copy', async () => {
     const o = await liveOnGra();
-    const doc = await service.submitDocument(o.userId, 'RESTAURANT', TIN, await ownedVerificationFixture(app.prisma, o.userId, 'tin-rejected'), 'v1');
-    await service.rejectDocument(doc.id, adminId, 'The certificate names another business.');
+    const doc = await service.submitDocument(o.userId, 'RESTAURANT', TIN, await ownedVerificationFixture(app.prisma, o.userId, 'tin-blurry'), 'v1');
+    await service.rejectDocument(doc.id, adminId, 'The photo is blurred.', 'UNREADABLE');
+    await service.reprojectVendorActivation(o.userId);
+    expect(await store(o)).toEqual({ status: 'ACTIVE', isVerified: true });
+    expect((await preparedFoodGate(o)).every((v) => v.ok)).toBe(true);
+    expect((await statusOf(o)).optional).toContain(TIN);
+  });
+
+  it('a rejection a second reviewer confirms as FRAUD-CLASS ends it: the store stops until a TIN certificate is approved', async () => {
+    const o = await liveOnGra();
+    const second = await system(() => app.prisma.user.create({ data: {
+      phone: `+5927${NUM}99`, firstName: 'Second', lastName: 'Reviewer', roles: ['ADMIN'], activeRole: 'ADMIN', isPhoneVerified: true, admin: { create: { permissions: ['*'] } },
+    } }));
+    users.push(second.id);
+    const doc = await service.submitDocument(o.userId, 'RESTAURANT', TIN, await ownedVerificationFixture(app.prisma, o.userId, 'tin-forged'), 'v1');
+    await service.rejectDocument(doc.id, adminId, 'The certificate looks altered.', 'SUSPECTED_TAMPERING'); // escalates to a second reviewer
+    expect(await store(o)).toEqual({ status: 'ACTIVE', isVerified: true });
+    await service.rejectDocument(doc.id, second.id, 'Confirmed: altered.', 'SUSPECTED_TAMPERING');
     await service.reprojectVendorActivation(o.userId);
     expect((await store(o)).isVerified).toBe(false);
     expect((await statusOf(o)).missing).toEqual([TIN]);
     expect((await preparedFoodGate(o)).every((v) => !v.ok)).toBe(true);
+  });
+
+  it('a REVOKED TIN certificate ends it', async () => {
+    const o = await liveOnGra([TIN]);
+    const doc = await system(() => app.prisma.verificationDocument.findFirstOrThrow({ where: { userId: o.userId, docType: TIN, status: 'APPROVED' }, select: { id: true } }));
+    await service.revokeDocument(doc.id, adminId, 'The certificate names another business.');
+    await service.reprojectVendorActivation(o.userId);
+    expect((await store(o)).isVerified).toBe(false);
+    expect((await statusOf(o)).missing).toEqual([TIN]);
   });
 
   it('a copy the owner REPLACED before review is no refusal: the exemption stands', async () => {
@@ -401,6 +445,33 @@ describe('[RESTAURANT-TIN · review S4-1] a change of business type or of accoun
     expect(view.papers.some((p) => p.docType === GRA)).toBe(false);
     expect(view.papersComplete).toBe(false);
     await system(() => app.prisma.accountChangeRequest.deleteMany({ where: { id: view.id } }));
+  });
+
+  // [#2494 delta S3-A] papers retired with a withdrawn change are no refusal
+  it('a withdrawn change never ends the exemption, even when it retires a TIN certificate filed for it', async () => {
+    const o = await liveOnGra();
+    // A TIN certificate is filed FOR a change only when the change's target asks for one the account does not use yet. Every
+    // restaurant list holds it today, so the account's own (stored) list is read without it for the length of the change.
+    const before = await system(() => app.prisma.countryConfig.findUniqueOrThrow({ where: { code: 'GY' }, select: { documentChecklists: true } }));
+    const stored = { ...(before.documentChecklists as Record<string, string[]>) };
+    let changeId = '';
+    let tinId = '';
+    try {
+      await system(() => app.prisma.countryConfig.update({ where: { code: 'GY' }, data: { documentChecklists: { ...stored, RESTAURANT: [...BASE] } } }));
+      changeId = (await system(() => startBusinessTypeChange(app.prisma, o.userId, 'COMPANY'))).id;
+      const doc = await service.submitDocument(o.userId, 'RESTAURANT', TIN, await ownedVerificationFixture(app.prisma, o.userId, 'chg-tin'), 'v1');
+      tinId = doc.id;
+      expect((await system(() => app.prisma.verificationDocument.findUniqueOrThrow({ where: { id: tinId }, select: { accountChangeId: true } }))).accountChangeId).toBe(changeId);
+      await service.approveDocument(tinId, adminId);
+    } finally {
+      await system(() => app.prisma.countryConfig.update({ where: { code: 'GY' }, data: { documentChecklists: stored } }));
+    }
+    await system(() => app.prisma.$transaction((tx) => endAccountChange(tx, { changeId, by: o.userId, outcome: 'WITHDRAWN', audit: async () => undefined })));
+    // the withdrawal retired the paper filed for it (account-change retirePapers): no person's decision on the certificate
+    expect(await system(() => app.prisma.verificationDocument.findUniqueOrThrow({ where: { id: tinId }, select: { state: true } }))).toEqual({ state: 'REVOKED' });
+    await service.reprojectVendorActivation(o.userId);
+    expect(await store(o)).toEqual({ status: 'ACTIVE', isVerified: true });
+    expect((await preparedFoodGate(o)).every((v) => v.ok)).toBe(true);
   });
 
   it('a person taking over a live restaurant account must file a TIN certificate', async () => {

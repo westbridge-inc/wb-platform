@@ -3400,14 +3400,23 @@ export class VerificationService {
     const standing = await restaurantLicenceStanding(this.prisma, userId);
     if (standing === null) return null;
     const name = docTypeName(GRA_RESTAURANT_LICENCE_DOC_TYPE);
+    const tin = docTypeName(TIN_CERTIFICATE_DOC_TYPE);
     if (standing === 'OPTIONAL') {
       return moment === 'REMINDER'
         ? 'It is optional for a restaurant and does not affect your store: renew it only if you want it on file.'
         : `Your ${name} has expired. It is optional for a restaurant: upload a new one only if you want it on file.`;
     }
-    return moment === 'REMINDER'
-      ? `Your restaurant stays live on it only until then: add your ${docTypeName(TIN_CERTIFICATE_DOC_TYPE)} in Documents to keep operating.`
-      : `Your ${name} has expired. Your restaurant now needs its ${docTypeName(TIN_CERTIFICATE_DOC_TYPE)}: add it in Documents to keep operating.`;
+    // [#2494 delta S3-C] true for each case: a TIN certificate waiting for a person; a restaurant live on this licence
+    // right now; or none live on it (a pending application, a branch waiting, a store already stopped)
+    if (standing === 'TIN_PENDING') {
+      return moment === 'REMINDER'
+        ? `Your ${tin} is being checked: once it is approved, this licence is optional for your restaurant.`
+        : `Your ${name} has expired. Your restaurant now needs its ${tin}, which is being checked: nothing else to send.`;
+    }
+    if (moment === 'EXPIRED') return `Your ${name} has expired. Your restaurant now needs its ${tin}: add it in Documents to keep operating.`;
+    return standing === 'TIN_NEEDED_LIVE'
+      ? `Your restaurant stays live on it only until then: add your ${tin} in Documents to keep operating.`
+      : `It is optional for a restaurant: add your ${tin} in Documents to go live.`;
   }
 
   /** One reminder per document, 30 days before expiry. */

@@ -10,7 +10,8 @@ import { DEFAULT_DOCUMENT_CHECKLISTS, PLATFORM_CONFIG_VERSION, desiredPlatformCo
 import { withoutRetiredLists } from '../modules/country/country-config.service';
 import { ALWAYS_REVIEW_LEGACY_CODES, BUCKET_OF, PERSON_ONLY_DOC_TYPES, RETIRED_DOC_TYPES, withRestaurantTinRule } from '../modules/verification/doc-registry';
 import { gateDocFor } from '../modules/verification/category-gate';
-import { liveRestaurant, tinCertificateExcused } from '../modules/verification/restaurant-tin';
+import { liveRestaurant, TIN_FALSE_REASON_CODES, tinCertificateExcused } from '../modules/verification/restaurant-tin';
+import { FRAUD_CLASS_CODES } from '../modules/verification/verification.service';
 
 const TIN = 'tin_certificate';
 const GRA = 'gra_restaurant_licence';
@@ -127,7 +128,11 @@ describe('[RESTAURANT-TIN] who is excused the TIN certificate', () => {
     expect(await tinCertificateExcused(db([live], false, false), 'u')).toBe(false);
   });
 
-  it('never once a person rejected or revoked a TIN certificate of the owner’s', async () => {
+  it('[delta S3-B] a TIN certificate counts as false on exactly the fraud-class reason codes', () => {
+    expect([...TIN_FALSE_REASON_CODES].sort()).toEqual([...FRAUD_CLASS_CODES].sort());
+  });
+
+  it('never once a person found a TIN certificate of the owner’s false (revoked, or rejected as fraud-class)', async () => {
     expect(await tinCertificateExcused(db([live], true), 'u', 'a')).toBe(false);
     expect(await tinCertificateExcused(db([live], true), 'u')).toBe(false);
   });
