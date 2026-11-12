@@ -2299,6 +2299,33 @@ export async function adminRoutes(app: FastifyInstance) {
    * confirmation). The body is the exact name the console showed; a name changed since is refused, never confirmed
    * unseen. Until a person confirms, the storefront's seller block names nobody ("Ask the store"), never the owner.
    */
+  // [KITCHEN-INTEGRATION · owner 11 Nov 2026] A store's kitchen-system connection (Dragontail): status, settings,
+  // a login-only test, the sync log and the kitchen item numbers. Handlers in modules/kitchen/kitchen-admin.ts;
+  // nothing here returns a credential.
+  app.get('/vendors/:id/kitchen-integration', { preHandler: [adminGuard] }, async (request) => {
+    const { getKitchenIntegration } = await import('../kitchen/kitchen-admin');
+    return { success: true, data: await getKitchenIntegration(app.prisma, (request.params as { id: string }).id) };
+  });
+  app.put('/vendors/:id/kitchen-integration', { preHandler: [adminGuard] }, async (request) => {
+    const { putKitchenIntegration } = await import('../kitchen/kitchen-admin');
+    // [review A S4-5] enabling starts customer details flowing to the store's kitchen system: the audit row, in the
+    // same transaction, carries the before and after (no person data).
+    return { success: true, data: await putKitchenIntegration(app.prisma, (request.params as { id: string }).id, request.body,
+      (tx, entityId, facts) => auditWithin(tx, request as unknown as AuditRequestLike, app.prefix, { entityId, extra: facts })) };
+  });
+  app.post('/vendors/:id/kitchen-integration/test', { preHandler: [adminGuard] }, async (request) => {
+    const { testKitchenConnection } = await import('../kitchen/kitchen-admin');
+    return { success: true, data: await testKitchenConnection(app.prisma, (request.params as { id: string }).id) };
+  });
+  app.get('/vendors/:id/kitchen-integration/syncs', { preHandler: [adminGuard] }, async (request) => {
+    const { listKitchenSyncs } = await import('../kitchen/kitchen-admin');
+    return { success: true, data: await listKitchenSyncs(app.prisma, (request.params as { id: string }).id, request.query as { limit?: unknown }) };
+  });
+  app.put('/vendors/:id/kitchen-integration/item-numbers', { preHandler: [adminGuard] }, async (request) => {
+    const { setKitchenItemNumbers } = await import('../kitchen/kitchen-admin');
+    return { success: true, data: await setKitchenItemNumbers(app.prisma, (request.params as { id: string }).id, request.body) };
+  });
+
   app.put('/vendors/:id/seller-name', { preHandler: [adminGuard] }, async (request) => {
     const { id } = request.params as { id: string };
     const { name } = sellerNameConfirmSchema.parse(request.body ?? {});

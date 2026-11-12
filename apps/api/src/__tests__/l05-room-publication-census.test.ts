@@ -84,6 +84,8 @@ describe('sensitive room publication census', () => {
     //   canonical seam: its status change and its line's close (picking.service cancelForStockOut, both through the gate).
     // + [PROD-RIDER-TEST (a)1] no rider found: the store takes the order to its own delivery (vendor fulfillment-mode,
     //   the customer's screen told through the gate).
-    expect(orderPublishers).toBe(59);
+    // + [KITCHEN-INTEGRATION] the store's own driver has the order (order:kitchen_update) and its route estimate
+    //   (order:eta), both through the gate (kitchen-sync.ts; switch off by default).
+    expect(orderPublishers).toBe(61);
   });
 });

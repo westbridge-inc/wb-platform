@@ -516,7 +516,9 @@ describe('[#15] every publication to a store room goes through the team gate', (
     //   board hears it (picking.service cancelForStockOut, through the gate).
     // + [PROD-RIDER-TEST (a)2] no rider found, the customer switched to pickup: the store board hears it at once
     //   (customer convert-to-pickup, through the gate).
-    expect(publishers).toBe(21);
+    // + [KITCHEN-INTEGRATION] the tablet ring when a kitchen-system send falls back (order:new, the release's own
+    //   alert) and the store board hearing its driver left (order:kitchen_update), both through the gate.
+    expect(publishers).toBe(23);
   });
 });
 
