@@ -1383,8 +1383,9 @@ export const vendorApi = {
   dropOwnName: () => api.delete('/vendor/onboarding/own-name'),
   /** [COMPANY-DOCS PART 2 · owner 10 Nov 2026] The account's newest in-app letter of authority (null when none). */
   authorityLetter: () => api.get('/vendor/authority-letters'),
-  /** [COMPANY-DOCS PART 2] Swift writes the one-page letter and texts the director (or the owner) a link to sign. */
-  askAuthorityLetter: (body: { businessName: string; registrationNumber: string; requesterName: string; requesterRole: string; signerName: string; signerPhone: string }) =>
+  /** [COMPANY-DOCS PART 2] Swift writes the one-page letter and texts the director (or the owner) a link to sign.
+   *  [FOLLOWUPS-2475] `docType` names the letter a business type change waiting asks for (the server decides it may). */
+  askAuthorityLetter: (body: { businessName: string; registrationNumber: string; requesterName: string; requesterRole: string; signerName: string; signerPhone: string; docType?: string }) =>
     api.post('/vendor/authority-letters', body),
   /** [COMPANY-DOCS PART 2] A new link (the old one stops working). */
   resendAuthorityLetter: (id: string) => api.post(`/vendor/authority-letters/${encodeURIComponent(id)}/resend`, {}),

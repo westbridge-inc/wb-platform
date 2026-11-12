@@ -45,6 +45,7 @@ import { VerificationService } from '../modules/verification/verification.servic
 import { NotificationService } from '../modules/notification/notification.service';
 import { ManualReviewKycProvider } from '../providers/kyc/kyc-provider';
 import { reviewerTypedFields } from '../modules/verification/identity-signal-policy';
+import { registerAccountChangeVendorRoutes } from '../modules/vendor/account-change.routes';
 
 // ---------------------------------------------------------------------------------------------------------------------
 // Pictures: a drawn signature, a blank pad, and a PNG carrying a text chunk of its own.
@@ -230,6 +231,11 @@ beforeAll(async () => {
   await app.register(verificationRoutes, { prefix: '/api/v1/verification' });
   await app.register(authorityLetterVendorRoutes, { prefix: '/api/v1/vendor/authority-letters' });
   await app.register(authorityLetterPublicRoutes, { prefix: '/api/v1/public/authority-letter' });
+  // [FOLLOWUPS-2475] a business type change (Part 3) asks for its own letter
+  await app.register(async (scope) => {
+    const notifications = new NotificationService(scope.prisma, scope.io);
+    registerAccountChangeVendorRoutes(scope, { notifications, verification: new VerificationService(scope.prisma, notifications, new ManualReviewKycProvider()) });
+  }, { prefix: '/api/v1/vendor' });
   await app.ready();
   await system(() => seedDocRegistry(app.prisma));
 });
@@ -256,6 +262,7 @@ afterAll(async () => {
     await app.prisma.reviewCase.deleteMany({ where: { submissionId: { in: docs } } });
     await app.prisma.documentRecord.deleteMany({ where: { accountId: { in: users } } });
     await app.prisma.verificationDocument.deleteMany({ where: { userId: { in: users } } });
+    await app.prisma.accountChangeRequest.deleteMany({ where: { vendorOwner: { userId: { in: users } } } });
     await app.prisma.uploadScanDebt.deleteMany({ where: { fileKey: { contains: '/verification/' } , surface: 'verification', sealed: true, createdAt: { gt: new Date(Date.now() - DAY) } } }).catch(() => undefined);
     await app.prisma.encryptedObject.deleteMany({ where: { createdBy: { in: users } } });
     await app.prisma.notification.deleteMany({ where: { userId: { in: users } } });
@@ -896,5 +903,84 @@ describe('[COMPANY-DOCS PART 2] the director signs on their own phone', () => {
     await expect(system(() => app.prisma.authorityLetterRequest.update({ where: { id }, data: { signerPhone: '+5920599999' } }))).rejects.toThrow();
     await expect(system(() => app.prisma.authorityLetterRequest.update({ where: { id }, data: { letterText: 'changed' } }))).rejects.toThrow();
     await expect(system(() => app.prisma.authorityLetterRequest.update({ where: { id }, data: { status: 'SIGNED', signedAt: new Date() } }))).rejects.toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------------
+// [FOLLOWUPS-2475 · Part 2 seam] A business type change waiting (Part 3) asks for the NEW business type's letter: the
+// phone's change screen offers signing it in Swift beside its paper upload. Which letter, who signs and the phone rule are
+// the server's; the signed letter is filed through submitDocument, which holds it for the change; a change that ends
+// without switching cancels a letter still waiting, so nobody signs for nothing.
+// ---------------------------------------------------------------------------------------------------------------------
+describe('[FOLLOWUPS-2475] a business type change asks for its own letter in Swift', () => {
+  const askChange = async (o: Person, toOption: string) => {
+    const res = await call('POST', '/api/v1/vendor/account-change/business-type', o, { toOption });
+    expect(res.statusCode, res.body).toBe(201);
+    return res.json().data.id as string;
+  };
+
+  it('an owner\'s account changing to a company: the director\'s letter, named by its docType, held for the change once signed; never another letter', async () => {
+    const o = await storeAccount(); // an owner's account: no letter of its own
+    expect((await ask(o)).statusCode).toBe(409); // no docType: as before
+    expect((await ask(o, { docType: 'company_authority_letter' })).statusCode).toBe(409); // no change waiting: not needed
+    const changeId = await askChange(o, 'COMPANY');
+    expect((await ask(o, { docType: 'owner_authority_letter' })).statusCode).toBe(409); // the change asks for a company's
+    expect((await ask(o, { docType: 'business_registration' })).statusCode).toBe(400); // never another paper
+    expect((await ask(o)).statusCode).toBe(409); // the Documents path stays the account's own basis
+    expect(await system(() => app.prisma.authorityLetterRequest.count({ where: { userId: o.userId } }))).toBe(0);
+
+    const { id, token, signerPhone } = await sentLetter(o, { docType: 'company_authority_letter' });
+    // [review-2480 A S4-B] the letter's trail names the change it was asked for
+    expect((await audits(id))[0]).toMatchObject({ action: LETTER_AUDIT.created, changes: { docType: 'company_authority_letter', changeId } });
+    const row = await rowOf(id);
+    expect(row).toMatchObject({ docType: 'company_authority_letter', accountBasis: 'COMPANY', status: 'SENT' });
+    expect(row.letterText.split('\n')[0]).toBe('Letter of authority: Swift store account (company)');
+    expect((await call('GET', '/api/v1/vendor/authority-letters', o)).json().data).toMatchObject({ enabled: true, accountBasis: 'OWNER', request: { id, docType: 'company_authority_letter', signerKind: 'director' } });
+
+    const signingKey = await verified(token, signerPhone);
+    const signed = await pub('sign', { token, signingKey, signature: dataUrl(drawnSignature()), agree: true });
+    expect(signed.statusCode, signed.body).toBe(201);
+    const filedId = (await rowOf(id)).documentId!;
+    const doc = await system(() => app.prisma.verificationDocument.findUniqueOrThrow({ where: { id: filedId } }));
+    // held for the change: it counts for nothing until a person approves the change
+    expect(doc).toMatchObject({ userId: o.userId, docType: 'company_authority_letter', status: 'PENDING', accountChangeId: changeId });
+  });
+
+  it('a manager\'s account changing to a company: the Documents letter (the owner\'s) is unchanged; the change\'s (a director\'s) is asked by name', async () => {
+    const o = await storeAccount('MANAGER');
+    await askChange(o, 'COMPANY');
+    const own = await ask(o);
+    expect(own.statusCode, own.body).toBe(201);
+    expect(own.json().data.request).toMatchObject({ docType: 'owner_authority_letter', signerKind: 'owner' });
+    const ownCreated = (await audits(own.json().data.request.id as string))[0]!;
+    expect(ownCreated.action).toBe(LETTER_AUDIT.created);
+    expect(ownCreated.changes).not.toHaveProperty('changeId'); // the account's own letter: no change
+    const forChange = await ask(o, { docType: 'company_authority_letter' });
+    expect(forChange.statusCode, forChange.body).toBe(201);
+    expect(forChange.json().data.request).toMatchObject({ docType: 'company_authority_letter', signerKind: 'director' });
+    expect((await ask(o, { docType: 'owner_authority_letter' })).statusCode).toBe(201); // its own letter, named
+  });
+
+  it('the change withdrawn (or refused): its letter still waiting is cancelled (audited, the link dies); the account\'s own letter stays', async () => {
+    const o = await storeAccount();
+    const changeId = await askChange(o, 'MANAGER');
+    const { id, token } = await sentLetter(o, { docType: 'owner_authority_letter' });
+    expect((await rowOf(id)).accountBasis).toBe('MANAGER');
+    const withdrawn = await call('POST', `/api/v1/vendor/account-change/${changeId}/withdraw`, o);
+    expect(withdrawn.statusCode, withdrawn.body).toBe(200);
+    expect(await rowOf(id)).toMatchObject({ status: 'CANCELLED', signingKeyHash: null, codeHash: null });
+    expect((await audits(id)).at(-1)).toMatchObject({ action: LETTER_AUDIT.cancelled, userId: o.userId, changes: { reason: 'change-ended', changeId } });
+    expect((await pub('open', { token })).statusCode).toBe(404); // the link died
+    expect((await ask(o, { docType: 'owner_authority_letter' })).statusCode).toBe(409); // no change waiting: not needed
+    // a letter racing the change's end: written only while the change still waits (its row is held), else refused
+    const late = new AuthorityLetterService(app).create({ userId: o.userId, vendorId: o.vendorId, basis: 'MANAGER', form: { ...FORM, signerPhone: await freshNumber() }, ip: '127.0.0.1', changeId });
+    await expect(late).rejects.toMatchObject({ code: 'ACCOUNT_CHANGE_DECIDED' });
+    expect(await system(() => app.prisma.authorityLetterRequest.count({ where: { userId: o.userId, status: 'SENT' } }))).toBe(0);
+
+    const co = await storeAccount('COMPANY');
+    const ownLetter = await sentLetter(co); // the company's own director letter (Documents)
+    const coChange = await askChange(co, 'MANAGER');
+    expect((await call('POST', `/api/v1/vendor/account-change/${coChange}/withdraw`, co)).statusCode).toBe(200);
+    expect((await rowOf(ownLetter.id)).status).toBe('SENT');
   });
 });

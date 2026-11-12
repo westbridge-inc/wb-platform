@@ -238,9 +238,16 @@ describe('[MENU-OPTIONS] the item rules the store tools are held to', () => {
   });
   it('refuses a follow-up two levels deep, onto a size, onto its own group, or off the item', () => {
     expect(itemOptionRulesProblem([g('a', { options: [{ id: 'x', name: 'X', followUpGroupId: 'b' }] }), g('b', { options: [{ id: 'y', name: 'Y', followUpGroupId: 'c' }] }), g('c')])).toMatch(/one level only/);
-    expect(itemOptionRulesProblem([g('a', { options: [{ id: 'x', name: 'X', followUpGroupId: 's' }] }), g('s', { setsPrice: true, isRequired: true })])).toMatch(/always shown/);
+    expect(itemOptionRulesProblem([g('a', { options: [{ id: 'x', name: 'X', followUpGroupId: 's' }] }), g('s', { setsPrice: true, isRequired: true, options: [{ id: 'sm', name: 'Small', followUpGroupId: null, additionalPrice: 1000 }] })])).toMatch(/always shown/);
     expect(itemOptionRulesProblem([g('a', { options: [{ id: 'x', name: 'X', followUpGroupId: 'a' }] })])).toMatch(/its own group/);
     expect(itemOptionRulesProblem([g('a', { options: [{ id: 'x', name: 'X', followUpGroupId: 'zz' }] })])).toMatch(/not on this item/);
+  });
+  it('[review B S2-1 · S3-3] refuses a size group with no sizes, and a size at $0 (blank, mistyped or an add-on switched over)', () => {
+    expect(itemOptionRulesProblem([g('s', { setsPrice: true, isRequired: true })])).toMatch(/needs at least one size/);
+    expect(itemOptionRulesProblem([g('s', { setsPrice: true, isRequired: true, options: [{ id: 'sm', name: 'Small', followUpGroupId: null, additionalPrice: 0 }] })])).toMatch(/"Small" is a size of "s", so it needs its full price/);
+    expect(itemOptionRulesProblem([g('s', { setsPrice: true, isRequired: true, options: [{ id: 'sm', name: 'Small', followUpGroupId: null, additionalPrice: 1200 }] })])).toBeNull();
+    // An add-on group may have a free choice, as always.
+    expect(itemOptionRulesProblem([g('a', { options: [{ id: 'x', name: 'Plain', followUpGroupId: null, additionalPrice: 0 }] })])).toBeNull();
   });
   it('refuses a half rule outside 1-100% and a minimum above the maximum', () => {
     expect(itemOptionRulesProblem([g('a', { allowHalves: true, halfPricePercent: 0 })])).toMatch(/1% to 100%/);
