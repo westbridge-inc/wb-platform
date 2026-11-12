@@ -76,7 +76,7 @@ export type KitchenAuditFacts = Record<string, string | number | boolean | null>
 export type KitchenAudit = (tx: Prisma.TransactionClient, entityId: string, facts: KitchenAuditFacts) => Promise<void>;
 
 /** Sync states in which the kitchen system may still hold or act on an order. */
-const LIVE_SYNC_STATES = ['QUEUED', 'SENDING', 'SENT', 'CANCEL_QUEUED'] as const;
+const LIVE_SYNC_STATES = ['QUEUED', 'SENDING', 'SENT', 'UNKNOWN', 'CANCEL_QUEUED'] as const;
 
 /** [review A S3-2] The writing routes and the test answer only while the switch is on. */
 function assertSwitchOn(what: string): void {

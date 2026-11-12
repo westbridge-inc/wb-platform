@@ -2335,6 +2335,9 @@ model OrderIntegrationSync {
   provider            KitchenProvider
   /// The order's id in the kitchen system (Dragontail orderId, an integer unique with the storeNo).
   externalOrderId     Int
+  /// [security scan · d68ff3f6] The kitchen store number this order was claimed under, frozen at the claim: its send,
+  /// its cancel and its events always use this number, never the connection's current one.
+  externalStoreNo     Int
   /// The number the kitchen shows (Dragontail dailyNo).
   dailyNo             Int
   state               KitchenSyncState  @default(QUEUED)

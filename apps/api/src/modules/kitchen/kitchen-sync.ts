@@ -374,10 +374,28 @@ async function markUnknown(deps: Pick<KitchenDeps, 'prisma' | 'io'>, sync: SyncR
 
 /** [review B S2-1c] In INSERT_OK mode a sent order is accepted on the store's behalf; when that accept is refused
  *  the tablet rings at once (never left to auto-cancel while the kitchen cooks it). Only for an order still PENDING. */
-async function acceptSentOrder(deps: KitchenDeps, sync: { tenantId: string; orderId: string }, promiseSeconds: number | null): Promise<void> {
+async function acceptSentOrder(deps: KitchenDeps, sync: { id: string; tenantId: string; orderId: string }, promiseSeconds: number | null): Promise<void> {
   if (dragontailSettings(envOf(deps)).acceptOn !== 'INSERT_OK') return;
-  const order = await deps.prisma.order.findUnique({ where: { id: sync.orderId }, select: { status: true } });
+  const order = await deps.prisma.order.findUnique({ where: { id: sync.orderId }, select: { status: true, vendorId: true, orderNumber: true } });
   if (order?.status !== 'PENDING') return;
+  // [security scan · d68ff3f6] Accepting is the store's NEW work: its own gate first, exactly as its Accept button.
+  // A store that may not take new orders now is never accepted for: the order stays SENT and unaccepted, the
+  // tablet is rung (where the store's own refusal applies) and operations are told the kitchen has it.
+  const refused = order.vendorId ? await storeRefusal(deps, order.vendorId, 'NEW') : 'the order has no store';
+  if (refused) {
+    const marked = await deps.prisma.orderIntegrationSync.updateMany({
+      where: { id: sync.id, state: 'SENT', fallbackAt: null },
+      data: { fallbackAt: new Date(), lastError: `not accepted: ${refused}`.slice(0, 300) },
+    });
+    if (marked.count === 0) return;
+    await ringStoreForOrder(deps, sync.orderId);
+    await pageOperations(deps, {
+      orderId: sync.orderId, tenantId: sync.tenantId, key: `${sync.id}:held-accept`,
+      title: 'Kitchen system: order in the kitchen, store may not take it',
+      body: `Order ${order.orderNumber} is in the store's kitchen system, but ${refused}, so Swift did not accept it. Call the store: it should not make or send it unless the hold is lifted; cancel it on Swift if it will not.`,
+    });
+    return;
+  }
   const accepted = await runWithTenant(sync.tenantId, () => acceptForKitchen(deps, sync.orderId, promiseSeconds));
   if (!accepted) await ringStuckKitchenClaim(deps, sync.orderId);
 }
@@ -480,7 +498,7 @@ export async function acceptForKitchen(deps: KitchenDeps, orderId: string, promi
  *  line has a kitchen number, and there is a login. Anything else falls back (the kitchen does not have it); null. */
 async function prepareSend(
   deps: KitchenDeps,
-  sync: SyncRef & { externalOrderId: number; dailyNo: number; vendorIntegration: VendorIntegration },
+  sync: SyncRef & { externalOrderId: number; externalStoreNo: number; dailyNo: number; vendorIntegration: VendorIntegration },
   own: FromState,
 ): Promise<{ order: KitchenOrder; provider: KitchenIntegrationProvider } | null> {
   const order = await deps.prisma.order.findUnique({ where: { id: sync.orderId }, select: { status: true, vendorId: true } });
@@ -497,6 +515,11 @@ async function prepareSend(
     await fallBack(deps, sync, 'the connection was switched off', own);
     return null;
   }
+  // [security scan · d68ff3f6] The order goes to the store number it was claimed under, never a different one.
+  if (integration.externalStoreNo !== sync.externalStoreNo) {
+    await fallBack(deps, sync, "the connection's store number changed after the claim", own);
+    return null;
+  }
   // [review A S2-3] the store's own Accept gate: a held, closed or lapsed store takes no new order from the kitchen
   // either (the tablet then refuses it as usual).
   const refused = order.vendorId ? await storeRefusal(deps, order.vendorId, 'NEW') : 'the order has no store';
@@ -504,7 +527,7 @@ async function prepareSend(
     await fallBack(deps, sync, refused, own);
     return null;
   }
-  const built = await buildKitchenOrder(deps.prisma, sync, integration.externalStoreNo);
+  const built = await buildKitchenOrder(deps.prisma, sync, sync.externalStoreNo);
   if (!built.ok) {
     await fallBack(deps, sync, built.reason, own);
     return null;
@@ -675,10 +698,10 @@ export async function propagateKitchenCancellations(deps: KitchenDeps, opts: { b
 /** One cancel at the kitchen, within its own deadline. Never throws. */
 async function cancelAtKitchen(
   deps: KitchenDeps,
-  sync: { orderId: string; externalOrderId: number; dailyNo: number; vendorIntegration: VendorIntegration },
+  sync: { orderId: string; externalOrderId: number; externalStoreNo: number; dailyNo: number; vendorIntegration: VendorIntegration },
 ): Promise<{ ok: true } | { ok: false; problem: string }> {
-  const storeNo = sync.vendorIntegration.externalStoreNo;
-  if (storeNo == null) return { ok: false, problem: 'the connection has no store number' };
+  // [security scan · d68ff3f6] The store number the order was claimed (and sent) under, never the connection's current one.
+  const storeNo = sync.externalStoreNo;
   const built = await buildKitchenOrder(deps.prisma, sync, storeNo, { forCancel: true });
   if (!built.ok) return { ok: false, problem: built.reason };
   const answer = kitchenProvider(deps, sync.vendorIntegration, () => built.orderNumber);
@@ -825,16 +848,17 @@ const STATUS_STEPS = new Set(['MAKE_LINE', 'PREPARED', 'COOKED', 'PACKED', 'DISP
 /** Apply one kitchen event to its order. Never throws. */
 export async function applyKitchenEvent(deps: KitchenDeps, integration: Pick<VendorIntegration, 'id' | 'externalStoreNo' | 'tenantId'>, event: KitchenEvent): Promise<KitchenEventOutcome> {
   try {
-    if (integration.externalStoreNo == null || event.storeNo !== integration.externalStoreNo) return 'unknown-order';
     const sync = await deps.prisma.orderIntegrationSync.findUnique({
       where: { vendorIntegrationId_externalOrderId: { vendorIntegrationId: integration.id, externalOrderId: event.externalOrderId } },
     });
-    if (!sync) {
+    // [security scan · d68ff3f6] An event counts only under the store number its order was claimed under.
+    if (!sync || sync.externalStoreNo !== event.storeNo) {
       log().info({ storeNo: event.storeNo, action: event.action }, '[KITCHEN] event for an order Swift did not send — ignored');
       return 'unknown-order';
     }
     // [review B S3-3] Any sign of an order whose send got no answer proves the kitchen has it: SENT after all.
-    const landed = sync.state === 'UNKNOWN'
+    // An action Swift does not act on (a print request, an unknown name) proves nothing (security scan · d68ff3f6).
+    const landed = sync.state === 'UNKNOWN' && event.kind !== 'IGNORED'
       ? await confirmLanded(deps, sync, event.kind === 'SEEN' ? "it is in the kitchen's order updates" : `the kitchen reported "${event.action}"`)
       : false;
     if (event.kind === 'SEEN') return landed ? 'applied' : 'ignored';

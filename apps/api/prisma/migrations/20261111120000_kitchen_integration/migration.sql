@@ -11,7 +11,7 @@
 --  3. Table "vendor_integrations": one row per store and provider. No credential is ever stored: secretRef and
 --     webhookSecretRef name entries of the DRAGONTAIL_CREDENTIALS secret file.
 --  4. Table "order_integration_syncs": at most one row per (order, provider), and one per (connection, external
---     order id), so an order is never sent twice. Table "kitchen_order_counters": Swift's order-number counter per
+--     order id), so an order is never sent twice; each row keeps the store number it was claimed under. Table "kitchen_order_counters": Swift's order-number counter per
 --     (provider, store number) with its id base frozen at birth, so a recreated or renumbered connection, or a
 --     changed DRAGONTAIL_ORDER_ID_BASE, never reuses an id at the kitchen system. Not tenant data: a store number
 --     belongs to one Swift store at a time (unique), and the row holds two numbers.
@@ -80,6 +80,7 @@ CREATE TABLE "order_integration_syncs" (
     "tenantId" TEXT NOT NULL DEFAULT 'swift-default',
     "provider" "KitchenProvider" NOT NULL,
     "externalOrderId" INTEGER NOT NULL,
+    "externalStoreNo" INTEGER NOT NULL,
     "dailyNo" INTEGER NOT NULL,
     "state" "KitchenSyncState" NOT NULL DEFAULT 'QUEUED',
     "lastAction" TEXT,
@@ -209,7 +210,7 @@ ALTER TABLE "vendor_integrations"
 ALTER TABLE "kitchen_order_counters"
   ADD CONSTRAINT "kitchen_order_counters_numbers_check" CHECK ("externalStoreNo" > 0 AND "orderIdBase" >= 0 AND "next" > 0);
 ALTER TABLE "order_integration_syncs"
-  ADD CONSTRAINT "order_integration_syncs_numbers_check" CHECK ("externalOrderId" > 0 AND "dailyNo" >= 0 AND "attempts" >= 0);
+  ADD CONSTRAINT "order_integration_syncs_numbers_check" CHECK ("externalOrderId" > 0 AND "externalStoreNo" > 0 AND "dailyNo" >= 0 AND "attempts" >= 0);
 
 -- 7. A connection never moves to another store or provider: its order syncs name it.
 CREATE OR REPLACE FUNCTION vendor_integrations_identity_frozen() RETURNS trigger AS $$

@@ -477,7 +477,7 @@ describe('[KITCHEN · security review] walls: tenant lineage and credential keys
     const otherConn = await putKitchenIntegration(app.prisma, other.vendorId, { externalStoreNo: STORE_NO + 7 });
     const order = await makeOrder();
     await expect(app.prisma.orderIntegrationSync.create({
-      data: { orderId: order.id, vendorIntegrationId: otherConn.connection!.id, provider: 'DRAGONTAIL', externalOrderId: 1_999_999_001, dailyNo: 1 },
+      data: { orderId: order.id, vendorIntegrationId: otherConn.connection!.id, provider: 'DRAGONTAIL', externalOrderId: 1_999_999_001, externalStoreNo: STORE_NO + 7, dailyNo: 1 },
     })).rejects.toThrow(/lineage|check_violation|tenant/i);
     // …and moving a valid row onto it is refused too
     await releaseOnly();
@@ -526,7 +526,7 @@ describe('[KITCHEN · reviews A and B] failure isolation, the tablet backstop, t
     // A row already holding the id the next claim will take: that claim hits the unique index and throws.
     const blocker = await makeOrder();
     await app.prisma.order.update({ where: { id: blocker.id }, data: { holdExpiresAt: null } });
-    await app.prisma.orderIntegrationSync.create({ data: { orderId: blocker.id, vendorIntegrationId: integrationId, provider: 'DRAGONTAIL', externalOrderId: counter.orderIdBase + counter.next, dailyNo: 1, state: 'DONE' } });
+    await app.prisma.orderIntegrationSync.create({ data: { orderId: blocker.id, vendorIntegrationId: integrationId, provider: 'DRAGONTAIL', externalOrderId: counter.orderIdBase + counter.next, externalStoreNo: STORE_NO, dailyNo: 1, state: 'DONE' } });
     const before = await ringsFor(ownerUserId);
     const first = await makeOrder();
     await releaseOnly();
@@ -913,6 +913,56 @@ describe('[KITCHEN · reviews A and B] failure isolation, the tablet backstop, t
       expect((await orderOf(order.id)).status).toBe('PREPARING');
     } finally {
       delete process.env['DRAGONTAIL_WEBHOOK_MAX_AGE_SECONDS'];
+    }
+  });
+
+  it('[scan 1] an UNKNOWN order confirmed by the kitchen at a store that may no longer take new orders: SENT, NOT accepted; rung and paged', async () => {
+    const { order, sync } = await timedOutOrder();
+    await app.prisma.vendor.update({ where: { id: vendorId }, data: { status: 'SUSPENDED', suspensionSource: 'ADMIN' } });
+    const before = await ringsFor(ownerUserId);
+    try {
+      expect(await applyKitchenEvents(deps(), await integration(), [{ ...event(sync.externalOrderId, 'SEEN', 'OrderUpdate'), at: null }])).toEqual(['applied']);
+      const after = (await syncOf(order.id))!;
+      expect(after.state, 'the kitchen has it').toBe('SENT');
+      expect(after.lastError).toMatch(/not accepted: the store may not take new orders/);
+      expect((await orderOf(order.id)).status, 'never accepted past the store gate').toBe('PENDING');
+      expect(after.fallbackAt, 'back to the tablet path (a held store follows its own alert rules there)').toBeTruthy();
+      expect(await ringsFor(ownerUserId)).toBeGreaterThanOrEqual(before);
+      expect(await opsPages(order.id, 'store may not take it')).toBe(1);
+    } finally {
+      await app.prisma.vendor.update({ where: { id: vendorId }, data: { status: 'ACTIVE', suspensionSource: null } });
+    }
+  });
+
+  it('[scan 1] an action Swift does not act on (a print request) is no proof the order landed', async () => {
+    const { order, sync } = await timedOutOrder();
+    expect(await applyKitchenEvents(deps(), await integration(), [event(sync.externalOrderId, 'IGNORED', 'PrintRequest')])).toEqual(['ignored']);
+    expect((await syncOf(order.id))?.state).toBe('UNKNOWN');
+    expect((await orderOf(order.id)).status).toBe('PENDING');
+  });
+
+  it('[scan 2] renumbering is refused while an UNKNOWN order exists; send, cancel and events use the number frozen at the claim', async () => {
+    const { order, sync } = await timedOutOrder();
+    expect(sync.externalStoreNo).toBe(STORE_NO);
+    await expect(putKitchenIntegration(app.prisma, vendorId, { externalStoreNo: STORE_NO + 88 })).rejects.toMatchObject({ code: 'KITCHEN_ORDERS_LIVE' });
+    // Even if the connection's number moved (by hand), the cancel names the store the order went to ...
+    const live = await app.prisma.orderIntegrationSync.findMany({ where: { vendorIntegrationId: integrationId, state: { in: ['QUEUED', 'SENDING', 'SENT', 'UNKNOWN', 'CANCEL_QUEUED'] } }, select: { id: true, state: true } });
+    await app.prisma.orderIntegrationSync.updateMany({ where: { id: { in: live.map((r) => r.id) } }, data: { state: 'DONE' } });
+    await app.prisma.orderIntegrationSync.update({ where: { id: sync.id }, data: { state: 'UNKNOWN' } });
+    await app.prisma.vendorIntegration.update({ where: { id: integrationId }, data: { externalStoreNo: STORE_NO + 88 } });
+    try {
+      // ... events under the new number do not touch it; under its own number they do
+      const int = await integration();
+      expect(await applyKitchenEvents(deps(), int, [{ ...event(sync.externalOrderId, 'PACKED', 'Pack'), storeNo: STORE_NO + 88 }])).toEqual(['unknown-order']);
+      await pastVerifyWindow(sync.id);
+      await resolveUnknownKitchenSyncs(deps());
+      const cancel = mock.requests.filter((r) => r.path === '/PosInsertOrders').at(-1)!.body as { storeNo: number; orders: Array<{ storeNo: number }>; ordersItems: Array<{ StoreNo: number; ItemsActions: number }> };
+      expect(cancel.ordersItems[0]!.ItemsActions).toBe(2);
+      expect([cancel.storeNo, cancel.orders[0]!.storeNo, cancel.ordersItems[0]!.StoreNo]).toEqual([STORE_NO, STORE_NO, STORE_NO]);
+      expect((await syncOf(order.id))?.state).toBe('FALLBACK');
+    } finally {
+      await app.prisma.vendorIntegration.update({ where: { id: integrationId }, data: { externalStoreNo: STORE_NO } });
+      await app.prisma.orderIntegrationSync.updateMany({ where: { id: { in: live.map((r) => r.id) } }, data: { state: 'DONE' } });
     }
   });
 });

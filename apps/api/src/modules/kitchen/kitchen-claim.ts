@@ -89,6 +89,7 @@ export async function claimForKitchenInTransaction(tx: KitchenClaimDb, orderId: 
       vendorIntegrationId: integration.id,
       provider: 'DRAGONTAIL',
       externalOrderId: Number(counter.base) + sequence,
+      externalStoreNo: integration.externalStoreNo,
       // "if it's long, send only the last 4 digits" (spec, dailyNo): 1..9999, never 0
       dailyNo: ((sequence - 1) % 9_999) + 1,
       state: 'QUEUED',
