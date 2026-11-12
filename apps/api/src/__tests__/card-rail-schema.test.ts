@@ -154,6 +154,8 @@ describe('[PT-1] the three tables are walled like every tenant table', () => {
       // [R1 · CARD-STAGING-TEST R2] the refund's own provider transaction, only beside a confirmed refund (card_session_refund_ref)
       'card_sessions_refund_ref_check',
       'card_sessions_refund_state_check', 'card_sessions_resolution_check',
+      // [VOID-REFUND-CHECK F1/F3] finance's reversal: its kind (VOID / REFUND) and what a check of a refused one found
+      'card_sessions_reversal_check_check', 'card_sessions_reversal_kind_check',
       'card_sessions_state_hash_check',
       'card_sessions_void_needs_ref_check',
       // [CARD-STAGING-TEST 10 Nov 2026] the void's own provider transaction, only beside a confirmed void (card_void_ref)

@@ -413,7 +413,14 @@ export default function SubscriptionsPage() {
                                   // [OWNER 10 Nov 2026 · CARDS-FOLLOWUP] Why each other card payment is not offered, and what to do: a refused refund
                                   // is never silent (it says how the money is paid back), and a fully used payment has nothing to go back.
                                   const otherLines = others.map((c) => `Order ${c.orderReference}: ${c.refund
-                                    ? c.refund.state === 'FAILED' ? 'refund refused by the card provider: nothing went back; pay it back with Record payout' : `refund ${CARD_REFUND_STATE[c.refund.state] ?? c.refund.state}`
+                                    // [VOID-REFUND-CHECK F5] A refusal can mean the payment was already reversed (e.g. by hand in the portal):
+                                    // it is checked with the card provider before it is paid back any other way.
+                                    ? c.refund.state === 'FAILED'
+                                      ? c.refund.checked
+                                        ? `${c.refund.kind === 'VOID' ? 'void' : 'refund'} refused by the card provider, and its check found nothing went back: pay it back with Record payout`
+                                        : `${c.refund.kind === 'VOID' ? 'void' : 'refund'} refused by the card provider: check it with the card provider first (Card payments), then pay it back`
+                                      : `${c.refund.kind === 'VOID' ? 'void' : 'refund'} ${CARD_REFUND_STATE[c.refund.state] ?? c.refund.state}`
+                                    : c.notBefore ? `part of a payment the bank may not have settled yet: it can go back to its card from ${c.notBefore}`
                                     : c.inSetAside <= 0 ? 'all of it paid weeks that started: nothing goes back to its card'
                                     : `GY$${c.inSetAside.toLocaleString()} of GY$${c.amount.toLocaleString()} is in this refund but cannot go back to its card now: pay it back with Record payout, or ask the owner`}.`);
                                   if (ready.length === 0) {

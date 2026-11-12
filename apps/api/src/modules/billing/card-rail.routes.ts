@@ -18,7 +18,7 @@ import { SIMULATOR_PAGE, SimulatorCardRailProvider, SimulatorRefusal } from '../
 import { PowerTranzCardRailProvider, type PowerTranzHostedPage } from '../../providers/card/powertranz-provider';
 import { BillingService, cardPayNowSettlement } from './billing.service';
 import { creditRefundCheckable, heldRefundCheckable } from './card-credit-refund';
-import { CARD_ON_FILE_CONSENT_VERSION, CARD_RESOLVE_ACTIONS, CARD_SANDBOX_TEST_LABEL, CardRailService, INSTRUMENT_DTO_SELECT, cardTestLabel, type CardSessionDto, type PaymentInstrumentDto } from './card-rail.service';
+import { CARD_ON_FILE_CONSENT_VERSION, CARD_RESOLVE_ACTIONS, CARD_SANDBOX_TEST_LABEL, CardRailService, INSTRUMENT_DTO_SELECT, cardTestLabel, heldReversalRefused, type CardSessionDto, type PaymentInstrumentDto } from './card-rail.service';
 import { CARD_OFF, cardPayAction, cardSessionsAllowed, type CardPayAction } from './card-pay-action';
 import { clientPlatform, type PayAction } from './fee-pay-actions';
 import { LOCK_ICON, SWIFT_PAGE_HEADER, buttonLink, cardPageHtml, escapeHtml, testBanner, toneChip, type CardPageTone } from './card-page-look';
@@ -755,6 +755,9 @@ const ADMIN_SESSION_SELECT = {
   instrumentId: true, paymentId: true, createdAt: true,
   // [Review S2-2] What finance needs to look a held payment up and resolve it.
   providerTransactionRef: true, providerVoidState: true, providerRefundState: true, bookClaimedAt: true, resolution: true, resolvedBy: true, resolvedAt: true,
+  // [VOID-REFUND-CHECK F1/F3] What finance's reversal sent (VOID or REFUND), what a check of a refused one found, and
+  // whether the one further reversal was used.
+  providerReversalKind: true, reversalCheck: true, reversalRetryAt: true,
   // [CARD-STAGING-TEST 10 Nov 2026] The void's own provider transaction, when PowerTranz named it (the portal's Void row).
   providerVoidRef: true,
   // [R1 · CARD-STAGING-TEST R2] A HELD payment's refund: its own provider transaction, when PowerTranz named it (the portal's refund row).
@@ -799,14 +802,14 @@ export async function adminCardSessions(prisma: PrismaClient, query: unknown) {
   if (q.before && !cursor) throw new AppError(400, 'INVALID_CURSOR', 'There is no such card session to page from.');
   const unanswered = ['UNKNOWN', 'PENDING', 'SENDING'];
   const creditRefundSessions = q.refund
-    ? (await prisma.cardCreditRefund.findMany({ where: { tenantId, state: { in: unanswered } }, select: { cardSessionId: true } })).map((r) => r.cardSessionId)
+    ? (await prisma.cardCreditRefund.findMany({ where: { tenantId, OR: [{ state: { in: unanswered } }, { state: 'FAILED', checkedAt: null }] }, select: { cardSessionId: true } })).map((r) => r.cardSessionId)
     : [];
   const rows = await prisma.cardSession.findMany({
     where: {
       tenantId, ...(q.status ? { status: q.status } : {}), ...(q.purpose ? { purpose: q.purpose } : {}), ...(q.subscriptionId ? { subscriptionId: q.subscriptionId } : {}),
       AND: [
         ...(cursor ? [{ OR: [{ createdAt: { lt: cursor.createdAt } }, { createdAt: cursor.createdAt, id: { lt: cursor.id } }] }] : []),
-        ...(q.refund ? [{ OR: [{ status: 'HELD' as const, resolution: null, providerRefundState: { in: unanswered } }, { id: { in: creditRefundSessions } }] }] : []),
+        ...(q.refund ? [{ OR: [{ status: 'HELD' as const, resolution: null, providerRefundState: { in: [...unanswered, 'FAILED'] } }, { id: { in: creditRefundSessions } }] }] : []),
       ],
     },
     orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
@@ -818,7 +821,7 @@ export async function adminCardSessions(prisma: PrismaClient, query: unknown) {
   // [CARD-REFUND-LOOKUP] Beside each payment: its refund of set-aside credit to the card (if any), and whether a
   // refund of it can be checked with the card provider now ("Check with the card provider", two people).
   const refunds = page.length
-    ? await prisma.cardCreditRefund.findMany({ where: { tenantId, cardSessionId: { in: page.map((r) => r.id) } }, select: { cardSessionId: true, state: true, providerRefundRef: true, createdAt: true } })
+    ? await prisma.cardCreditRefund.findMany({ where: { tenantId, cardSessionId: { in: page.map((r) => r.id) } }, select: { cardSessionId: true, state: true, kind: true, checkedAt: true, providerRefundRef: true, createdAt: true }, orderBy: { createdAt: 'desc' } })
     : [];
   const now = new Date();
   return {
@@ -826,8 +829,8 @@ export async function adminCardSessions(prisma: PrismaClient, query: unknown) {
       const credit = refunds.find((r) => r.cardSessionId === row.id);
       return {
         ...withAmount(row),
-        cardRefund: credit ? { state: credit.state, providerRefundRef: credit.providerRefundRef } : null,
-        providerCheck: heldRefundCheckable({ ...row, providerRefundAt }, now) || (row.status !== 'HELD' && !!credit && creditRefundCheckable(credit, now)),
+        cardRefund: credit ? { state: credit.state, kind: credit.kind, checked: !!credit.checkedAt, providerRefundRef: credit.providerRefundRef } : null,
+        providerCheck: heldRefundCheckable({ ...row, providerRefundAt }, now) || heldReversalRefused(row) || (row.status !== 'HELD' && !!credit && creditRefundCheckable(credit, now)),
       };
     }),
     next: more ? page[page.length - 1]!.id : null,

@@ -8,6 +8,9 @@ export const CHECK_WORDS: Record<ProviderCheck, string> = {
   NO_REFUND_ON_RECORD: "PowerTranz's record shows no refund on this payment yet. Nothing was recorded, and nothing was sent again.",
   NOT_KNOWN: 'PowerTranz gave no answer Swift could read. Nothing was recorded, and nothing was sent again. Check its portal, or try again later.',
   ASKED_RECENTLY: 'This payment was looked up moments ago. Nothing was recorded. Try again in a few minutes.',
+  SALE_STANDS: "PowerTranz's record shows the sale approved and not reversed: the reversal Swift sent was refused, and nothing went back. One more reversal may now be sent (Refund it, two people). Nothing was sent yet.",
+  NOT_TAKEN_ON_RECORD: "PowerTranz's record shows this payment declined or never completed: nothing was taken. Record that nothing was taken (two people). Nothing was sent.",
+  ESCALATE: "PowerTranz's record of this payment fits no decision Swift can take (another amount or state). Nothing was recorded or sent: the owner has been told.",
 };
 
 /** The words for a check result, or null for anything else. */

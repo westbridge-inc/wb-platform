@@ -72,8 +72,17 @@ import {
 //      received"). When its outcome is not known (no answer, an unreadable
 //      one), Swift reads the transaction's record instead (5. below), never
 //      sends it again.
-//   4. A Sale settles automatically (sec. 2.2 1.9, 7.4). Refund (sec. 5.2,
-//      7.5) and void (sec. 5.2, 7.6) take the ORIGINAL TransactionIdentifier.
+//   4. Refund (sec. 5.2, 7.5) and void (sec. 5.2, 7.6) take the ORIGINAL
+//      TransactionIdentifier. [LEGAL-CARDS 12 Nov 2026] PowerTranz's written
+//      answer supersedes the guide's "settlement (controlled by PowerTranz)"
+//      (sec. 2.2 1.9) and its 4 Nov "Captured or Sale -> Refund": settlement
+//      is done by the acquiring BANK (since the Sept 2026 migration), typically
+//      in 2-3 business days, with no PowerTranz end-of-day batch; VOID while
+//      the bank has not settled a sale, REFUND once it has (refund after
+//      settlement recommended); a DECLINED transaction can never be refunded
+//      (Response Code 12). Swift has no settlement signal, so it uses a
+//      conservative time rule (card-settlement.ts SETTLED_CERTAIN): younger,
+//      void (whole only); older, refund. A refused reversal goes to a person.
 //   5. [CARD-LOOKUP] The transaction lookup is not in guide v2.7; it comes from
 //      PowerTranz's written answer to Swift (4 Nov 2026): GET <root>/api/
 //      Transactions/{TransactionIdentifier} with the PowerTranzId / Password
@@ -86,7 +95,7 @@ import {
 //      OrderSummary.OrderIdentifier, and VoidDateTime sits ONLY in
 //      OrderSummary (IsoResponseCode stays "00" after a void, and
 //      TotalCaptureAmount keeps the sale's amount); TransactionType is a
-//      number; dates carry no zone (UTC-4); a transaction PowerTranz does not
+//      number; dates carry no zone (Atlantic time, PowerTranz 12 Nov 2026); a transaction PowerTranz does not
 //      know answers HTTP 204 with no body. readTransactionRecord reads that
 //      shape (see there).
 //   6. [CARD-REFUND-LOOKUP] PowerTranz's written answer to Swift (9 Nov 2026):
@@ -125,10 +134,15 @@ import {
 //     id from it. A refund confirmed by the lookup (6.) is recorded under a
 //     reference Swift makes from the original transaction (ASSUMED enough for
 //     the books until PowerTranz says; the portal shows the refund's own id);
-//   - the time zone of the record's dates: none is named; the staging records
-//     of 10 Nov 2026 read as UTC-4 (Guyana). Bermuda, PowerTranz's home, is
-//     also UTC-4 in November but UTC-3 in summer, so a summer hour is not
-//     pinned (asked); every date window keeps a day's margin (VOID_DATE_SKEW_MS).
+//   - the time zone of the record's dates: none is named in the record;
+//     PowerTranz says its times are ADT (12 Nov 2026), and the staging records
+//     of 10 Nov 2026 read as UTC-4 (Atlantic time in November). Swift reads them
+//     as Atlantic time (RECORD_TIME_ZONE); whether production keeps UTC-3 all
+//     year is asked; every date window keeps a day's margin (VOID_DATE_SKEW_MS);
+//   - which code a void of a SETTLED sale, or a refund of an UNSETTLED one,
+//     answers (Appendix 1 has 386 "Trxn is closed" and 384 "Invalid refund",
+//     undocumented for these): Swift never branches on them; any refusal is
+//     `failed` and a person checks the payment with the card provider.
 // Any answer the guide does not document is `unknown`, never success.
 //
 // Secrets (sec. 4 headers) come from the secrets store through the process
@@ -162,15 +176,32 @@ const LOOKUP_GATE_TTL_MS = 24 * 60 * 60_000;
  *  shorter than the other calls, so the page answers well inside any proxy's patience. */
 export const LOOKUP_TIMEOUT_MS = 10_000;
 /** [REVIEW-2460-A S2-1 · B B2 · DELTA D1] A VoidDateTime counts only when it is a real date between the session's start
- *  and the read, each widened by this margin: the answer names no time zone (read as UTC-4, RECORD_ZONE), and a day
+ *  and the read, each widened by this margin: the answer names no time zone (read as Atlantic time, RECORD_TIME_ZONE), and a day
  *  covers any zone error. Earlier dates ("0001-01-01", a default) and later ones ("9999-12-31", a "no date" maximum)
  *  are not a reversal. */
 export const VOID_DATE_SKEW_MS = 24 * 60 * 60_000;
-/** [CARD-STAGING-TEST 10 Nov 2026] The zone PowerTranz's record dates are written in (they name none): UTC-4. The
- *  staging records were read at 05:04Z and dated 01:03 (a void Swift sent moments before). Guyana is UTC-4 all year;
- *  Bermuda (PowerTranz's home) is UTC-4 in winter and UTC-3 in summer, which the evidence cannot tell apart (asked):
- *  VOID_DATE_SKEW_MS covers that hour. */
-export const RECORD_ZONE = '-04:00';
+/** [VOID-REFUND-CHECK F8 · PowerTranz 12 Nov 2026: "PowerTranz times are ADT"] The zone PowerTranz's record dates are
+ *  written in (they name none): Atlantic time, read through the IANA zone (Bermuda, PowerTranz's home: UTC-4 in winter,
+ *  UTC-3 in summer), never a fixed offset. The staging records of 10 Nov 2026 (read at 05:04Z, dated 01:03, a void
+ *  Swift sent moments before) are UTC-4, as Atlantic time is in November. Whether production keeps ADT (UTC-3) all
+ *  year is asked (VOID-REFUND-CHECK Q-d): VOID_DATE_SKEW_MS covers that hour either way. */
+export const RECORD_TIME_ZONE = 'Atlantic/Bermuda';
+
+/** The zone's UTC offset at an instant, in ms (the wall clock read back as UTC, minus the instant). */
+function zoneOffsetMs(zone: string, at: number): number {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: zone, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+  }).formatToParts(new Date(at));
+  const get = (type: string) => Number(parts.find((x) => x.type === type)?.value ?? '0');
+  return Date.UTC(get('year'), get('month') - 1, get('day'), get('hour') % 24, get('minute'), get('second')) - Math.floor(at / 1000) * 1000;
+}
+
+/** A wall-clock time in RECORD_TIME_ZONE (given as if it were UTC) as the instant it names. */
+function recordWallClockToInstant(naiveUtcMs: number): number {
+  let instant = naiveUtcMs - zoneOffsetMs(RECORD_TIME_ZONE, naiveUtcMs);
+  instant = naiveUtcMs - zoneOffsetMs(RECORD_TIME_ZONE, instant);
+  return instant;
+}
 
 const REQUEST_TIMEOUT_MS = 15_000;
 /** The completion goes on to the issuing bank (sec. 2.2 1.7): give it longer. */
@@ -725,7 +756,7 @@ export function readCompletion(json: unknown, held: HeldCompletion): CompletionR
  *     the only sign of the void: it is read from OrderSummary (and from the top level too, should it ever appear);
  *   - a page only preprocessed or authenticated (IsoResponseCode SP4 / 3D0) has no order, currency or void in its
  *     OrderSummary, and OriginalTrxnDateTime "0001-01-01T00:00:00";
- *   - dates name no zone: UTC-4 (RECORD_ZONE).
+ *   - dates name no zone: Atlantic time (RECORD_TIME_ZONE; PowerTranz 12 Nov 2026: "ADT").
  * Every field above that every real record carries must be present and of its type (SettledAmount may be absent);
  * one that only some records carry must, when present, be of its type and agree with the rest (OrderSummary's
  * CurrencyCode with the top level's, OriginalTrxnIdentifier with TransactionIdentifier). Anything missing, mistyped,
@@ -751,14 +782,14 @@ export interface PowerTranzTransactionRecord {
 }
 
 /** A record date as an instant: ISO date and time (a space allowed for the T), optional fraction and zone; no zone
- *  is read as RECORD_ZONE (UTC-4). Null for anything else — a placeholder, a default date, an impossible date. */
+ *  is read as RECORD_TIME_ZONE (Atlantic time). Null for anything else — a placeholder, a default date, an impossible date. */
 export function voidDateOf(text: string): number | null {
   const m = /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2})(?:\.\d{1,7})?)?(Z|[+-]\d{2}:?\d{2})?$/.exec(text.trim());
   if (!m) return null;
   const [year, month, day, hour, minute, second] = [m[1], m[2], m[3], m[4], m[5], m[6] ?? '0'].map(Number) as [number, number, number, number, number, number];
   if (year < 2000 || month < 1 || month > 12 || day < 1 || day > 31 || hour > 23 || minute > 59 || second > 59) return null;
   if (new Date(Date.UTC(year, month - 1, day)).getUTCDate() !== day) return null; // 30 February and the like
-  const ms = Date.parse(m[7] ? text.trim().replace(' ', 'T') : `${text.trim().replace(' ', 'T')}${RECORD_ZONE}`);
+  const ms = m[7] ? Date.parse(text.trim().replace(' ', 'T')) : recordWallClockToInstant(Date.parse(`${text.trim().replace(' ', 'T')}Z`));
   return Number.isFinite(ms) ? ms : null;
 }
 
@@ -819,7 +850,10 @@ export function readTransactionRecord(json: unknown, voidNotBeforeMs = Date.UTC(
   };
 }
 
-type LookupVerdict = { status: 'confirmed' } | { status: 'reversed' | 'part_credited' | 'not_bookable' | 'unknown'; reason: string };
+type LookupVerdict =
+  | { status: 'confirmed' }
+  | { status: 'not_taken'; reason: string; stage: 'declined' | 'never_completed' }
+  | { status: 'reversed' | 'part_credited' | 'not_bookable' | 'unknown'; reason: string };
 
 const codeShown = (code: string) => code.replace(/[^A-Za-z0-9]/g, '').slice(0, 4) || 'NO_CODE';
 
@@ -830,6 +864,8 @@ const codeShown = (code: string) => code.replace(/[^A-Za-z0-9]/g, '').slice(0, 4
  *   - VoidDateTime present (a real date), or a credit of the WHOLE capture: reversed — never booked;
  *   - a credit smaller than the capture: part refunded, the rest still taken — never booked, never "nothing taken";
  *     a credit above the capture, with nothing captured, or with no credit counted, contradicts itself — unknown;
+ *   - [VOID-REFUND-CHECK F2] not approved, a code that is not "00" and not ambiguous, and nothing captured, credited or
+ *     voided: proven NOT taken (a decline, or a page that never completed) — not_taken, never voided;
  *   - not "00" (or an Approved that is false): not an approved sale — never booked (a page only preprocessed or
  *     authenticated reads SP4 / 3D0 / 3D6 here: PowerTranz's portal lists those as "Sale" rows, with nothing taken);
  *   - a record that names no order: unknown;
@@ -849,6 +885,18 @@ export function judgeTransactionRecord(record: PowerTranzTransactionRecord, held
     if (record.totalCaptureMinor <= 0 || record.totalCreditMinor > record.totalCaptureMinor || record.creditCount < 1) return { status: 'unknown', reason: 'LOOKUP_CREDIT_UNREADABLE' };
     if (record.totalCreditMinor === record.totalCaptureMinor) return { status: 'reversed', reason: 'LOOKUP_CREDITED' };
     return { status: 'part_credited', reason: 'LOOKUP_PARTIAL_CREDIT' };
+  }
+  // [VOID-REFUND-CHECK F2 · LEGAL-CARDS 12 Nov 2026] Proven NOT taken: not approved, a code that is the bank's own
+  // answer (not "00", not ambiguous), and nothing captured, credited or voided. A definitive decline, or a page only
+  // preprocessed or authenticated (SP4 / 3D0: the staging sandbox refused to void one, WRITES.md:63). PowerTranz (12 Nov
+  // 2026): a declined transaction cannot be refunded (Response Code 12); a void needs an approved authorization (guide
+  // sec. 3). So it is never voided: the session closes as unpaid. Anything short of all of these keeps the old path.
+  const iso = record.isoResponseCode;
+  if (record.approved !== true && iso !== '00' && /^[A-Za-z0-9]{2,3}$/.test(iso) && !AMBIGUOUS_ISO.has(iso)
+    && record.captureCount === 0 && record.totalCaptureMinor === 0 && record.creditCount === 0 && record.totalCreditMinor === 0 && !record.voided) {
+    return /^(SP|3D)/i.test(iso)
+      ? { status: 'not_taken', reason: `LOOKUP_NEVER_COMPLETED_${codeShown(iso)}`, stage: 'never_completed' }
+      : { status: 'not_taken', reason: `LOOKUP_DECLINED_${codeShown(iso)}`, stage: 'declined' };
   }
   if (record.approved === false || record.isoResponseCode !== '00') return { status: 'not_bookable', reason: `LOOKUP_NOT_APPROVED_${codeShown(record.isoResponseCode)}` };
   if (record.orderIdentifier === null) return { status: 'unknown', reason: 'LOOKUP_NO_ORDER' };
@@ -1362,7 +1410,11 @@ export class PowerTranzCardRailProvider implements CardRailProvider {
       const codes = errorCodes(json);
       if (json['Approved'] === true && iso === '00') {
         const mine = expect.ref.toLowerCase();
-        const namesIt = str(json['OriginalTrxnIdentifier'])?.toLowerCase() === mine || str(json['TransactionIdentifier'])?.toLowerCase() === mine;
+        // [VOID-REFUND-CHECK F7 · PowerTranz 12 Nov 2026: "refund/void responses include the original transaction
+        // details"] An answer that names an original names OURS; only one that names none may name ours as itself (the
+        // sec. 7.6 void sample answers with the original's own TransactionIdentifier).
+        const named = str(json['OriginalTrxnIdentifier'])?.trim();
+        const namesIt = named ? named.toLowerCase() === mine : str(json['TransactionIdentifier'])?.toLowerCase() === mine;
         const typeIt = String(json['TransactionType'] ?? '') === (action === 'void' ? '4' : '5');
         const amountIt = action === 'void' || (expect.currencyCode !== undefined
           && alphaOfCurrency(json['CurrencyCode']) === expect.currencyCode
@@ -1405,6 +1457,7 @@ export class PowerTranzCardRailProvider implements CardRailProvider {
     if (verdict.status === 'confirmed') {
       return { status: 'confirmed', providerRef: input.providerRef, amountMinor: record.totalCaptureMinor, currencyCode: record.currencyCode, rawSha256 };
     }
+    if (verdict.status === 'not_taken') return { status: 'not_taken', reason: verdict.reason, stage: verdict.stage, rawSha256 };
     return { status: verdict.status, reason: verdict.reason, rawSha256 };
   }
 

@@ -207,6 +207,10 @@ export type CardLookupOutcome = Evidence & (
   /** [REVIEW-2460] A credit smaller than the capture: part was refunded, the rest is still taken. */
   | { status: 'part_credited'; reason: string }
   | { status: 'not_bookable'; reason: string }
+  /** [VOID-REFUND-CHECK F2] The record proves nothing was taken: a definitive decline, or a page that never reached
+   *  completion (SP4 / 3D0 ...) — no capture, no credit, no void, not approved, and a code that is not ambiguous. Never
+   *  voided (PowerTranz refuses to void it, and refunds of a declined sale are impossible: 12 Nov 2026). */
+  | { status: 'not_taken'; reason: string; stage: 'declined' | 'never_completed' }
   | { status: 'unknown'; reason: string; backoff?: true }
 );
 

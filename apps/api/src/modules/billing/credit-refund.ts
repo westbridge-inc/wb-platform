@@ -132,10 +132,16 @@ export const PAID_ACTION = 'POST /subscriptions/:id/refund-credit/paid';
  *  approval row means the money may be on its way back: the set-aside is never released after it. */
 export const CARD_REFUND_ACTION = 'POST /subscriptions/:id/refund-credit/card';
 
+/** [VOID-REFUND-CHECK F5] The reversals to the card whose money may be on its way back (asked, pending, not known) —
+ *  or that the provider REFUSED and no "Check with the card provider" has yet read (a refusal can mean the payment was
+ *  already reversed, e.g. by hand in the portal): their amount is held, never paid back another way (Record payout). */
+export const CARD_REFUND_HELD_WHERE = { OR: [{ state: { in: ['SENDING', 'PENDING', 'UNKNOWN'] } }, { state: 'FAILED', checkedAt: null }] } satisfies Prisma.CardCreditRefundWhereInput;
+
 /** [CARD-READY] Refunds to the card of this set-aside the provider may still be answering or has not
- *  confirmed (asked, pending, or answer unknown): their money may already be on its way back. */
+ *  confirmed (asked, pending, or answer unknown): their money may already be on its way back. [F5] And refused ones
+ *  not yet checked. */
 export async function cardRefundsInFlight(tx: Prisma.TransactionClient, setAsideId: string): Promise<number> {
-  const rows = await tx.cardCreditRefund.findMany({ where: { setAsideId, state: { in: ['SENDING', 'PENDING', 'UNKNOWN'] } }, select: { amount: true } });
+  const rows = await tx.cardCreditRefund.findMany({ where: { setAsideId, ...CARD_REFUND_HELD_WHERE }, select: { amount: true } });
   return rows.reduce((sum, row) => sum + cents(row.amount), 0);
 }
 
@@ -330,13 +336,16 @@ export const PAID_REFUND_BODY = z.object({ amount: REFUND_AMOUNT, method: z.enum
  *  provider's transaction record (card-credit-refund.ts lookupCreditReference). Reserved: a payout typed by a person
  *  never carries it, so it can never be taken for (or hide behind) that recorded refund. */
 export const LOOKUP_CREDIT_PREFIX = 'LOOKUP-CREDIT-';
+/** [VOID-REFUND-CHECK F4] Swift's own reference for a void of a card payment whose answer names only the original
+ *  (card-credit-refund.ts voidCreditReference). Reserved the same way. */
+export const VOID_CREDIT_PREFIX = 'VOID-CREDIT-';
 export const refundReferenceOf = (raw: unknown) => {
   const reference = normaliseReference(raw, {
     required: 'Enter the MMG or bank reference, cheque number or receipt number of the refund you paid. It is the only proof the money went back.',
     invalid: 'That does not look like a reference. Copy it from the MMG or bank record, the cheque, or the receipt the partner signed.',
   }, 'REFUND_REFERENCE');
-  if (reference.startsWith(LOOKUP_CREDIT_PREFIX)) {
-    throw new AppError(400, 'REFUND_REFERENCE_RESERVED', 'References starting LOOKUP-CREDIT- are Swift\'s own, for refunds the card provider confirmed. Enter the reference of the transfer, cheque or receipt you paid.');
+  if (reference.startsWith(LOOKUP_CREDIT_PREFIX) || reference.startsWith(VOID_CREDIT_PREFIX)) {
+    throw new AppError(400, 'REFUND_REFERENCE_RESERVED', `References starting ${reference.startsWith(VOID_CREDIT_PREFIX) ? VOID_CREDIT_PREFIX : LOOKUP_CREDIT_PREFIX} are Swift's own, for refunds and voids the card provider confirmed. Enter the reference of the transfer, cheque or receipt you paid.`);
   }
   return reference;
 };
@@ -486,7 +495,9 @@ export async function releaseCreditRefund(prisma: PrismaClient, input: {
       // (the same filter as the approval gate's standing-ask lookup).
       where: { action: CARD_REFUND_ACTION, entityId: input.subscriptionId, status: { in: ['PENDING', 'APPROVED'] }, expiresAt: { gt: new Date() }, bodySnapshot: { path: ['body', 'setAsideId'], equals: open.opened.id } },
       select: { id: true },
-    }) ?? await tx.cardCreditRefund.findFirst({ where: { setAsideId: open.opened.id, state: { not: 'FAILED' } }, select: { id: true } });
+    // [VOID-REFUND-CHECK F5] ... and a refused one is free only once a check of the provider's record found nothing back
+    // (a refusal can mean the payment was already reversed by hand in the portal).
+    }) ?? await tx.cardCreditRefund.findFirst({ where: { setAsideId: open.opened.id, OR: [{ state: { not: 'FAILED' } }, { state: 'FAILED', checkedAt: null }] }, select: { id: true } });
     if (toCard) {
       throw new AppError(409, 'REFUND_PAYOUT_REPORTED', 'A refund of this money to the card was asked, so it cannot go back to the partner\'s fee money. Finish paying it back. Nothing was released.');
     }

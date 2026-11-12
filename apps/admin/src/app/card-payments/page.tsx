@@ -61,8 +61,9 @@ const DECISIONS: { action: CardDecision; label: string; asks: Asks; body: (_amou
   },
   {
     action: 'REFUND', label: 'Refund it', asks: 'amount',
-    body: (amount) => `Only when the provider's portal shows exactly ${amount} taken. Swift asks the card provider once to refund the whole ${amount} to the card, never a part of it, and never after the week was booked. If the portal shows any other amount, do not refund: escalate to the owner.`,
-    success: 'Refund sent. Check its answer on this payment.',
+    // [VOID-REFUND-CHECK F1] PowerTranz (12 Nov 2026): void a sale the bank has not settled, refund it once settled.
+    body: (amount) => `Only when the provider's portal shows exactly ${amount} taken. Swift asks the card provider once to refund the whole ${amount} to the card, never a part of it, and never after the week was booked: as a void while the bank may not have settled the payment (about 4 business days), as a refund after. If the portal shows any other amount, do not refund: escalate to the owner. If it shows the payment declined, record that nothing was taken instead.`,
+    success: 'Sent to the card provider. Check its answer on this payment.',
   },
   {
     action: 'NOTHING_TAKEN', label: 'Nothing was taken', asks: 'order',
@@ -105,11 +106,13 @@ interface CardPaymentRow {
   id: string; subscriptionId: string; status: string; amount: number | null; currencyCode: string | null; periodStart: string | null;
   createdAt: string; failureCode: string | null; environment: string;
   providerTransactionRef: string | null; providerVoidState: string | null; providerRefundState: string | null;
+  /** [VOID-REFUND-CHECK F1/F3] What finance's reversal sent; what a check of a refused one found; whether the one further reversal was used. */
+  providerReversalKind?: 'VOID' | 'REFUND' | null; reversalCheck?: 'SALE_STANDS' | 'NOT_TAKEN' | null; reversalRetryAt?: string | null;
   /** [R1 · REVIEW-2484-B S4-3] The void's and the refund's OWN provider transactions, when PowerTranz named them. */
   providerVoidRef?: string | null; providerRefundRef?: string | null;
   resolution: string | null; resolvedAt: string | null;
   /** [CARD-REFUND-LOOKUP] Its refund of set-aside credit to the card, if any; whether a refund of it can be checked now. */
-  cardRefund?: { state: string; providerRefundRef: string | null } | null;
+  cardRefund?: { state: string; providerRefundRef: string | null; kind?: 'VOID' | 'REFUND'; checked?: boolean } | null;
   providerCheck?: boolean;
 }
 
@@ -241,7 +244,7 @@ export default function CardPaymentsPage() {
                 </p>
                 {r.cardRefund && (
                   <p className="text-sm mc-muted mt-1">
-                    Refund to the card (at closing): {STATE_WORDS[r.cardRefund.state] ?? asCode(r.cardRefund.state)}
+                    {r.cardRefund.kind === 'VOID' ? 'Void' : 'Refund'} to the card (at closing): {STATE_WORDS[r.cardRefund.state] ?? asCode(r.cardRefund.state)}
                     {r.cardRefund.providerRefundRef && <> · <span className="font-mono break-all">{r.cardRefund.providerRefundRef}</span></>}
                   </p>
                 )}
@@ -249,7 +252,7 @@ export default function CardPaymentsPage() {
                 {(r.providerVoidState || r.providerRefundState || r.resolution) && (
                   <p className="text-sm mc-muted mt-1">
                     {[r.providerVoidState && `Void ${STATE_WORDS[r.providerVoidState] ?? asCode(r.providerVoidState)}`,
-                      r.providerRefundState && `Refund ${STATE_WORDS[r.providerRefundState] ?? asCode(r.providerRefundState)}`,
+                      r.providerRefundState && `${r.providerReversalKind === 'VOID' ? 'Void (finance)' : 'Refund'} ${STATE_WORDS[r.providerRefundState] ?? asCode(r.providerRefundState)}`,
                       r.resolution && `Decided: ${RESOLUTION_WORDS[r.resolution] ?? asCode(r.resolution)}${r.resolvedAt ? `, ${gyDateTime(r.resolvedAt)}` : ''}`].filter(Boolean).join(' · ')}
                   </p>
                 )}
@@ -269,6 +272,37 @@ export default function CardPaymentsPage() {
                 ) : open && r.failureCode === 'AMOUNT_MISMATCH' ? (
                   // [REVIEW-1 R3-2] The provider's own answer says money was taken, at another amount or currency: no decision here.
                   <p className="text-sm mt-3">The card provider says money was taken, but its amount or currency differs from Swift&apos;s price. It stays here until the owner settles it with the card provider: escalate it to the owner.</p>
+                ) : open && r.providerRefundState === 'FAILED' ? (
+                  // [VOID-REFUND-CHECK F3] The card provider REFUSED the reversal Swift sent: nothing moved, and nothing is
+                  // sent again by itself. The provider's record decides the next step (Check with the card provider).
+                  r.reversalCheck === 'NOT_TAKEN' ? (
+                    <>
+                      <p className="text-sm mt-3">PowerTranz&apos;s record shows this payment declined or never completed: nothing was taken. Record that nothing was taken.</p>
+                      {queued[r.id] ? <p role="status" className="text-sm mt-3">Waiting for approval: a second admin, on Approvals. Nothing has changed yet.</p> : (
+                        <div className="flex flex-wrap gap-2 mt-3">
+                          {DECISIONS.filter((d) => d.action === 'NOTHING_TAKEN').map((d) => <button key={d.action} type="button" className="mc-btn" onClick={() => decide(r, d)}>{d.label}</button>)}
+                        </div>
+                      )}
+                    </>
+                  ) : r.reversalCheck === 'SALE_STANDS' && !r.reversalRetryAt ? (
+                    <>
+                      <p className="text-sm mt-3">The card provider refused the {r.providerReversalKind === 'VOID' ? 'void' : 'refund'} Swift sent, and PowerTranz&apos;s record shows the sale approved and not reversed. Swift may send one more reversal ({r.providerReversalKind === 'VOID' ? 'a refund' : 'a void'}), once.</p>
+                      {queued[r.id] ? <p role="status" className="text-sm mt-3">Waiting for approval: a second admin, on Approvals. Nothing has changed yet.</p> : (
+                        <div className="flex flex-wrap gap-2 mt-3">
+                          {DECISIONS.filter((d) => d.action === 'REFUND').map((d) => <button key={d.action} type="button" className="mc-btn" onClick={() => decide(r, d)}>Send one more reversal</button>)}
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    <>
+                      <p className="text-sm mt-3">
+                        {r.reversalRetryAt
+                          ? 'The card provider refused both reversals Swift sent for this payment. Nothing more is sent: escalate it to the owner.'
+                          : `The card provider refused the ${r.providerReversalKind === 'VOID' ? 'void' : 'refund'} Swift sent. Nothing moved, and nothing is sent again by itself. Check it with the card provider: its record says whether the sale was taken.`}
+                      </p>
+                      {checkButton(r)}
+                    </>
+                  )
                 ) : open && r.providerRefundState ? (
                   // [REVIEW-1 R2-3] A refund was sent: money was taken. No decision closes it here; the owner settles it.
                   // [CARD-REFUND-LOOKUP] One whose answer is not known can be checked with the card provider.
@@ -283,7 +317,10 @@ export default function CardPaymentsPage() {
                 ) : !open && r.providerCheck ? (
                   // [CARD-REFUND-LOOKUP] A refund of set-aside credit to the card whose answer is not known.
                   <>
-                    <p className="text-sm mt-3">A refund of this payment to its card was sent and its answer is not known. Check it with the card provider: Swift records it refunded only if the whole payment went back.</p>
+                    <p className="text-sm mt-3">{r.cardRefund?.state === 'FAILED'
+                      // [VOID-REFUND-CHECK F5] A refusal can mean the payment was already reversed (e.g. by hand in the portal).
+                      ? 'The card provider refused the reversal Swift sent to this card. Before it is paid back any other way, check it with the card provider: a refusal can mean the payment was already reversed.'
+                      : 'A refund of this payment to its card was sent and its answer is not known. Check it with the card provider: Swift records it refunded only if the whole payment went back.'}</p>
                     {checkButton(r)}
                   </>
                 ) : open && (r.providerTransactionRef && r.amount !== null ? (

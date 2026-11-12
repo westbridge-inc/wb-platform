@@ -190,6 +190,29 @@ describe('[CARD-READY] card payments', () => {
     for (const name of ['Nothing was taken', 'Refund it', 'Book the week']) expect(screen.queryByRole('button', { name })).toBeNull();
   });
 
+  // [VOID-REFUND-CHECK F3] A reversal the card provider REFUSED: nothing moved and nothing is sent again by itself. The
+  // console never offers a refund before a check; the provider's record then decides: declined -> only "Nothing was
+  // taken"; the sale standing -> one more reversal, once; both refused -> the owner.
+  it('[VOID-REFUND-CHECK F3] a refused reversal: check first; NOT_TAKEN offers only "Nothing was taken"; SALE_STANDS offers one more reversal; after it, the owner', async () => {
+    const refused = { ...held, providerVoidState: 'FAILED', providerRefundState: 'FAILED', providerReversalKind: 'VOID' };
+    server([
+      { ...refused, id: 'cs_7', providerCheck: true },
+      { ...refused, id: 'cs_8', reversalCheck: 'NOT_TAKEN', providerCheck: true },
+      { ...refused, id: 'cs_9', reversalCheck: 'SALE_STANDS', providerCheck: true },
+      { ...refused, id: 'cs_10', providerReversalKind: 'REFUND', reversalCheck: null, reversalRetryAt: '2026-11-12T12:00:00.000Z', providerCheck: true },
+    ]);
+    renderWithQuery(<CardPaymentsPage />);
+    expect(await screen.findByText(/The card provider refused the void Swift sent\. Nothing moved, and nothing is sent again by itself\. Check it with the card provider/)).toBeTruthy();
+    expect(screen.getByText(/PowerTranz's record shows this payment declined or never completed: nothing was taken\. Record that nothing was taken\./)).toBeTruthy();
+    expect(screen.getByText(/PowerTranz's record shows the sale approved and not reversed\. Swift may send one more reversal \(a refund\), once\./)).toBeTruthy();
+    expect(screen.getByText(/The card provider refused both reversals Swift sent for this payment\. Nothing more is sent: escalate it to the owner\./)).toBeTruthy();
+    expect(screen.getAllByText(/Void \(finance\) refused/).length).toBeGreaterThan(0);
+    expect(screen.getAllByRole('button', { name: 'Check with the card provider' })).toHaveLength(2);
+    expect(screen.getAllByRole('button', { name: 'Nothing was taken' })).toHaveLength(1);
+    expect(screen.getAllByRole('button', { name: 'Send one more reversal' })).toHaveLength(1);
+    for (const name of ['Refund it', 'Book the week']) expect(screen.queryByRole('button', { name })).toBeNull();
+  });
+
   it('[CARD-REFUND-LOOKUP] "Refunds to check" asks the server for unconfirmed refunds; a refund to the card shows its state and, checked, what PowerTranz\'s record showed', async () => {
     const credit = { ...paid, cardRefund: { state: 'UNKNOWN', providerRefundRef: null }, providerCheck: true };
     const fetchMock = server([credit], () => ({ status: 200, body: { success: true, data: { kind: 'CARD_CREDIT_REFUND', check: 'REFUNDED', reason: 'LOOKUP_CREDITED', refund: { state: 'REFUNDED', providerRefundRef: 'LOOKUP-CREDIT-X' } } } }));
