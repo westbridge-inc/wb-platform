@@ -214,7 +214,8 @@ describe('[TAP-AUDIT] the web adds and edits items like the app', () => {
     await click(within(size).getByRole('button', { name: 'Remove Small' }));
     await waitFor(() => expect(within(size).queryByText('Small')).toBeNull());
     expect(writes.slice(1).map((w) => `${w.method} ${w.url.pathname}`)).toEqual(['POST /api/v1/vendor/option-groups/g-size/options', 'DELETE /api/v1/vendor/options/o-small']);
-    expect(body(writes[1]!)).toEqual({ name: 'Large', additionalPrice: 200 });
+    // [REVIEW-MENU-B S3-5] Every option write says the tools edit sizes, halves and follow-ups (an older app is refused).
+    expect(body(writes[1]!)).toEqual({ name: 'Large', additionalPrice: 200, capabilities: ['MENU_OPTIONS_V2'] });
   });
 
   it('Delete asks once ("Delete item?"), then the row leaves', async () => {

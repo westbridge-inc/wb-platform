@@ -13,9 +13,14 @@ import {
 // [MENU-OPTIONS · owner 11 Nov 2026 · owner rule 11 Oct: the website copies the app] The app's own rules and words for
 // sizes, half-and-half, follow-up groups and the shared library (a plain file, imported as is).
 import {
-  attachPlan, choicePricePlaceholder, flagsOf, followUpLabel, followUpTargets, groupFlagsBody, groupRuleWords, halfRuleWords,
-  libraryDeleteWords, menuOptionsRefusal, moved, parseHalfPercent, sharedEditWarning, sizePriceLabel, usedByWords, type GroupFlags,
+  attachPlan, choicePriceInput, choicePricePlaceholder, flagsOf, followUpLabel, followUpTargets, groupFlagsBody, groupFlagsEdit, groupRuleWords,
+  halfRuleWords, libraryBasePrice, libraryChoiceDeleteWords, libraryDeleteWords, menuOptionsRefusal, moved, needsSizeSwitchConfirm,
+  parseHalfPercent, sharedEditWarning, sizePriceLabel, sizeSwitchBody, sizeSwitchRows, sizeSwitchShown, sizeSwitchTyped, sizeSwitchWords,
+  usedByWords, type GroupFlags,
 } from '../../../../../mobile/src/lib/menuOptionsEditor';
+
+/** An item of the store, as the library's "Choose items" and a size switch read it (its price, as typed). */
+export type LibraryItem = { id: string; name: string; basePrice?: number | null; vatListedPrice?: number | null };
 
 // The phone's Option library screen (apps/mobile/src/modules/vendor/screens/VendorOptionLibraryScreen.tsx), wider:
 // the list in the store's order with how many items use each group, a group's rules and choices (price, sold out,
@@ -27,7 +32,7 @@ export const NEW_GROUP_FLAGS: GroupFlags = { required: false, multi: false, sets
 export const libraryKey = (storeId: string | null) => storeKey(storeId, 'modifier-groups');
 
 export function useLibrary(storeId: string | null, enabled = true) {
-  return useQuery({ queryKey: libraryKey(storeId), queryFn: getLibrary, enabled });
+  return useQuery({ queryKey: libraryKey(storeId), queryFn: () => getLibrary(storeId), enabled });
 }
 
 /** After a library write: the library and the items (every item that uses a shared group changed) are read again. */
@@ -46,16 +51,23 @@ function Chip({ label, on, onClick, disabled }: { label: string; on: boolean; on
 }
 
 /** A group's size / half-and-half rule (the app's GroupRuleChips). */
-export function GroupRules({ flags, onChange, sizeTaken, disabled, label }: {
+export function GroupRules({ flags, onChange, sizeTaken, disabled, label, live = false }: {
   flags: GroupFlags;
   onChange: (_next: Partial<GroupFlags>) => void;
   sizeTaken: boolean;
   disabled?: boolean;
   /** Names the controls of this group for a screen reader ("Size", "New group"). */
   label: string;
+  /** [REVIEW-MENU-B S3-2] A saved group (each change is saved at once): "% of the choice price" only opens the percent
+   *  box, and Set saves the percent the store typed (never a 50% nobody chose). */
+  live?: boolean;
 }) {
   const [pctText, setPctText] = useState(flags.halfPercent === 100 ? '50' : String(flags.halfPercent));
   const pct = parseHalfPercent(pctText);
+  const [pctOpen, setPctOpen] = useState(flags.halfPercent !== 100);
+  const percentMode = live ? pctOpen || flags.halfPercent !== 100 : flags.halfPercent !== 100;
+  const fullPrice = () => { setPctOpen(false); if (!live || flags.halfPercent !== 100) onChange({ halfPercent: 100 }); };
+  const percentOf = () => { setPctOpen(true); if (!live) onChange({ halfPercent: pct ?? 50 }); };
   return (
     <div className="mt-2 space-y-2" role="group" aria-label={`Rules: ${label}`}>
       <div className="flex flex-wrap gap-2">
@@ -69,10 +81,10 @@ export function GroupRules({ flags, onChange, sizeTaken, disabled, label }: {
         <div className="space-y-2">
           <p className="sw-field-label">A half costs</p>
           <div className="flex flex-wrap gap-2">
-            <Chip label="Full price" on={flags.halfPercent === 100} disabled={disabled} onClick={() => onChange({ halfPercent: 100 })} />
-            <Chip label="% of the choice price" on={flags.halfPercent !== 100} disabled={disabled} onClick={() => onChange({ halfPercent: pct ?? 50 })} />
+            <Chip label="Full price" on={!percentMode} disabled={disabled} onClick={fullPrice} />
+            <Chip label="% of the choice price" on={percentMode} disabled={disabled} onClick={percentOf} />
           </div>
-          {flags.halfPercent !== 100 ? (
+          {percentMode ? (
             <div className="flex items-center gap-2">
               <input className="sw-input w-28" inputMode="numeric" aria-label={`Half costs (%): ${label}`} placeholder="Half costs (%)" value={pctText} onChange={(e) => setPctText(e.target.value)} />
               <button type="button" className="sw-btn-outline min-h-11 rounded-lg px-3 text-sm font-semibold" disabled={disabled || pct == null || pct === flags.halfPercent}
@@ -82,6 +94,46 @@ export function GroupRules({ flags, onChange, sizeTaken, disabled, label }: {
           ) : null}
         </div>
       ) : null}
+    </div>
+  );
+}
+
+/** [REVIEW-MENU-B S2-1] The confirm of a "Sets the price" switch on a group with choices: the converted prices (each
+ *  editable), in the app's words, before anything is saved. */
+export function SizeSwitchConfirm({ rows, typed, turnOn, sharedBy, vatAdded, problem, pending, onType, onSave, onCancel, note }: {
+  rows: ReadonlyArray<{ id: string; name: string }>;
+  typed: Readonly<Record<string, string>>;
+  turnOn: boolean;
+  sharedBy?: number;
+  vatAdded: boolean;
+  problem: string | null;
+  pending: boolean;
+  onType: (_id: string, _text: string) => void;
+  onSave: () => void;
+  onCancel: () => void;
+  note?: string | null;
+}) {
+  const shown = sizeSwitchShown(rows, typed);
+  const title = turnOn ? 'Make these sizes?' : 'Stop setting the price?';
+  return (
+    <div role="dialog" aria-label={title} className="mt-3 rounded-xl border border-[var(--swift-border)] p-4">
+      <p className="font-bold">{title}</p>
+      <p className="sw-caption mt-1">{sizeSwitchWords(shown, { turnOn, ...(sharedBy != null ? { sharedBy } : {}) }, formatMoney)}</p>
+      {note ? <p className="sw-caption mt-1">{note}</p> : null}
+      <div className="mt-2 space-y-2">
+        {rows.map((r) => (
+          <label key={r.id} className="flex items-center gap-2 text-sm">
+            <span className="flex-1">{r.name}</span>
+            <input className="sw-input w-32" inputMode="numeric" aria-label={`${turnOn ? 'Price' : 'Extra price'}: ${r.name}`}
+              placeholder={choicePricePlaceholder(turnOn, vatAdded)} value={typed[r.id] ?? ''} onChange={(e) => onType(r.id, e.target.value)} />
+          </label>
+        ))}
+      </div>
+      {problem ? <p role="alert" className="mt-2 text-sm font-semibold text-[var(--swift-red)]">{problem}</p> : null}
+      <div className="mt-3 flex gap-3">
+        <button type="button" className="sw-btn sw-btn-md" disabled={pending} onClick={onSave}>Save these prices</button>
+        <button type="button" className="sw-btn-outline min-h-11 rounded-lg px-4 text-sm font-semibold" onClick={onCancel}>Cancel</button>
+      </div>
     </div>
   );
 }
@@ -97,8 +149,8 @@ export function OptionLibraryPanel({ storeId, vendorType, vatAdded, items, focus
   storeId: string | null;
   vendorType?: string;
   vatAdded: boolean;
-  /** The store's items, for "Choose items". */
-  items: Array<{ id: string; name: string }>;
+  /** The store's items, for "Choose items" (and their prices, for a size switch). */
+  items: LibraryItem[];
   focusGroupId?: string | null;
   /** Back from the group opened by `focusGroupId` (or from the list). */
   onDone: () => void;
@@ -130,7 +182,7 @@ export function OptionLibraryPanel({ storeId, vendorType, vatAdded, items, focus
       {error ? <p role="alert" className="mt-2 text-sm font-semibold text-[var(--swift-red)]">{error}</p> : null}
       {editing ? (
         editing === 'new' || current ? (
-          <GroupEditor key={editing} group={current} groups={groups} items={items} vatAdded={vatAdded} pending={write.isPending} send={send}
+          <GroupEditor key={editing} storeId={storeId} group={current} groups={groups} items={items} vatAdded={vatAdded} pending={write.isPending} send={send}
             onCreated={(id) => setEditing(id)} onDeleted={() => (focusGroupId ? onDone() : setEditing(null))} />
         ) : (
           <p className="sw-caption mt-3">{library.isLoading || library.isFetching ? 'Loading…' : 'This group is no longer in your option library.'}</p>
@@ -153,9 +205,9 @@ export function OptionLibraryPanel({ storeId, vendorType, vatAdded, items, focus
                   </span>
                 </button>
                 <button type="button" className="grid h-11 w-11 place-items-center text-[var(--swift-muted)] disabled:opacity-30" aria-label={`Move ${g.name} up`} disabled={i === 0 || write.isPending}
-                  onClick={() => void send(() => orderLibrary(moved(groups.map((x) => x.id), i, -1)))}>↑</button>
+                  onClick={() => void send(() => orderLibrary(storeId, moved(groups.map((x) => x.id), i, -1)))}>↑</button>
                 <button type="button" className="grid h-11 w-11 place-items-center text-[var(--swift-muted)] disabled:opacity-30" aria-label={`Move ${g.name} down`} disabled={i === groups.length - 1 || write.isPending}
-                  onClick={() => void send(() => orderLibrary(moved(groups.map((x) => x.id), i, 1)))}>↓</button>
+                  onClick={() => void send(() => orderLibrary(storeId, moved(groups.map((x) => x.id), i, 1)))}>↓</button>
               </li>
             ))}
           </ul>
@@ -165,10 +217,12 @@ export function OptionLibraryPanel({ storeId, vendorType, vatAdded, items, focus
   );
 }
 
-function GroupEditor({ group, groups, items, vatAdded, pending, send, onCreated, onDeleted }: {
+function GroupEditor({ storeId, group, groups, items, vatAdded, pending, send, onCreated, onDeleted }: {
+  /** [REVIEW-MENU-A S4-11] The store whose library this is: every write names it. */
+  storeId: string | null;
   group: LibraryGroup | null;
   groups: LibraryGroup[];
-  items: Array<{ id: string; name: string }>;
+  items: LibraryItem[];
   vatAdded: boolean;
   pending: boolean;
   send: (_call: () => Promise<unknown>) => Promise<unknown>;
@@ -182,7 +236,14 @@ function GroupEditor({ group, groups, items, vatAdded, pending, send, onCreated,
   const [pickItems, setPickItems] = useState<string[] | null>(null);
   const [deleteAsk, setDeleteAsk] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
+  // [REVIEW-MENU-B S3-3] A typed price that cannot be saved, said plainly (never a guessed $0).
+  const [problem, setProblem] = useState<string | null>(null);
+  // [REVIEW-MENU-B S3-4] A shared choice is removed from every item that uses the group: asked first.
+  const [deleteChoice, setDeleteChoice] = useState<LibraryOption | null>(null);
+  // [REVIEW-MENU-B S2-1] "Sets the price" switched on a group with choices: the new prices, confirmed first.
+  const [sizeSwitch, setSizeSwitch] = useState<{ turnOn: boolean; typed: Record<string, string>; problem: string | null } | null>(null);
   const usedBy = group?.usedByItemCount ?? 0;
+  const users = group ? items.filter((i) => group.usedByItems.some((u) => u.id === i.id)) : [];
   const changed = !group || name.trim() !== group.name || JSON.stringify(flags) !== JSON.stringify(flagsOf(group));
   const targets = group ? followUpTargets(groups, group.id) : [];
 
@@ -190,24 +251,43 @@ function GroupEditor({ group, groups, items, vatAdded, pending, send, onCreated,
     const trimmed = name.trim();
     if (!trimmed) return;
     if (!group) {
-      const created = (await send(() => createLibraryGroup({ name: trimmed, ...groupFlagsBody(flags) }))) as LibraryGroup | undefined;
+      const created = (await send(() => createLibraryGroup(storeId, { name: trimmed, ...groupFlagsBody(flags) }))) as LibraryGroup | undefined;
       if (created?.id) onCreated(created.id);
       return;
     }
-    const body: GroupBody = { name: trimmed, ...groupFlagsBody(flags, { explicit: true }) };
-    await send(() => updateLibraryGroup(group.id, body));
+    if (needsSizeSwitchConfirm(group, { setsPrice: flags.setsPrice })) {
+      const rows = sizeSwitchRows(group.options, { turnOn: flags.setsPrice, itemPrice: libraryBasePrice(users) });
+      setSizeSwitch({ turnOn: flags.setsPrice, typed: sizeSwitchTyped(rows), problem: null });
+      return;
+    }
+    // [REVIEW-MENU-B S3-2] Only what changed: a rule never rewrites the group's own limits.
+    const body: GroupBody = { ...(trimmed !== group.name ? { name: trimmed } : {}), ...groupFlagsEdit(group, flags) };
+    if (Object.keys(body).length === 0) return;
+    await send(() => updateLibraryGroup(storeId, group.id, body));
+  };
+  const confirmSizeSwitch = async () => {
+    if (!group || !sizeSwitch) return;
+    const read = sizeSwitchBody(group.options, sizeSwitch.typed, { turnOn: sizeSwitch.turnOn });
+    if ('problem' in read) { setSizeSwitch({ ...sizeSwitch, problem: read.problem }); return; }
+    setSizeSwitch(null);
+    const trimmed = name.trim();
+    const body: GroupBody = { ...(trimmed && trimmed !== group.name ? { name: trimmed } : {}), ...groupFlagsEdit(group, flags), ...read.body };
+    await send(() => updateLibraryGroup(storeId, group.id, body));
   };
   const addChoice = async () => {
     if (!group || !choice.name.trim()) return;
-    const added = await send(() => addLibraryOption(group.id, { name: choice.name.trim(), price: Number(choice.price) || 0, ...(choice.code.trim() ? { externalCode: choice.code.trim() } : {}) }));
+    const read = choicePriceInput(choice.price, { size: group.setsPrice });
+    if ('problem' in read) { setProblem(read.problem); return; }
+    setProblem(null);
+    const added = await send(() => addLibraryOption(storeId, group.id, { name: choice.name.trim(), price: read.price, ...(choice.code.trim() ? { externalCode: choice.code.trim() } : {}) }));
     if (added) setChoice({ name: '', price: '', code: '' });
   };
   const saveItems = async () => {
     if (!group || !pickItems) return;
     const plan = attachPlan(group.usedByItems.map((i) => i.id), pickItems);
     setPickItems(null);
-    if (plan.attach.length) await send(() => attachLibraryGroup(group.id, plan.attach));
-    if (plan.detach.length) await send(() => detachLibraryGroup(group.id, plan.detach));
+    if (plan.attach.length) await send(() => attachLibraryGroup(storeId, group.id, plan.attach));
+    if (plan.detach.length) await send(() => detachLibraryGroup(storeId, group.id, plan.detach));
   };
 
   return (
@@ -219,6 +299,7 @@ function GroupEditor({ group, groups, items, vatAdded, pending, send, onCreated,
         </div>
       ) : null}
       {notice ? <p role="status" className="text-sm font-semibold">{notice}</p> : null}
+      {problem ? <p role="alert" className="text-sm font-semibold text-[var(--swift-red)]">{problem}</p> : null}
 
       <div className="rounded-xl border border-[var(--swift-border)] p-4">
         <input className="sw-input" aria-label="Group name (e.g. Pizza size, Toppings)" placeholder="Group name (e.g. Pizza size, Toppings)" value={name} onChange={(e) => setName(e.target.value)} />
@@ -232,6 +313,13 @@ function GroupEditor({ group, groups, items, vatAdded, pending, send, onCreated,
         <button type="button" className="sw-btn sw-btn-md mt-3" disabled={pending || !name.trim() || !changed} onClick={() => void saveGroup()}>
           {group ? 'Save group' : 'Create group'}
         </button>
+        {group && sizeSwitch ? (
+          <SizeSwitchConfirm rows={group.options} typed={sizeSwitch.typed} turnOn={sizeSwitch.turnOn} sharedBy={usedBy} vatAdded={vatAdded}
+            problem={sizeSwitch.problem} pending={pending}
+            note={sizeSwitch.turnOn && users.length > 1 ? 'Started from the lowest price of the items that use it. Change any size before you save.' : null}
+            onType={(id, text) => setSizeSwitch((a) => (a ? { ...a, typed: { ...a.typed, [id]: text }, problem: null } : a))}
+            onSave={() => void confirmSizeSwitch()} onCancel={() => setSizeSwitch(null)} />
+        ) : null}
       </div>
 
       {group ? (
@@ -248,28 +336,42 @@ function GroupEditor({ group, groups, items, vatAdded, pending, send, onCreated,
                   </span>
                   {o.followUpGroupId || targets.length > 0 ? (
                     <select className="sw-input w-auto" aria-label={`Opens follow-up group: ${o.name}`} value={o.followUpGroupId ?? ''}
-                      onChange={(e) => void send(() => updateLibraryOption(o.id, { followUpGroupId: e.target.value || null }))}>
+                      onChange={(e) => void send(() => updateLibraryOption(storeId, o.id, { followUpGroupId: e.target.value || null }))}>
                       <option value="">Opens nothing</option>
                       {targets.map((t) => <option key={t.id} value={t.id}>{followUpLabel(groups, t.id)}</option>)}
                     </select>
                   ) : null}
                   <Chip label={o.isAvailable ? 'Available' : 'Sold out'} on={o.isAvailable} disabled={pending}
-                    onClick={() => void send(() => updateLibraryOption(o.id, { isAvailable: !o.isAvailable }))} />
+                    onClick={() => void send(() => updateLibraryOption(storeId, o.id, { isAvailable: !o.isAvailable }))} />
                   <button type="button" className="min-h-9 px-2 text-sm font-semibold text-[var(--swift-red)]" aria-label={`Edit ${o.name}`}
                     onClick={() => setEditOption({ id: o.id, name: o.name, price: String(o.price), code: o.externalCode ?? '' })}>Edit</button>
                   <button type="button" className="min-h-9 px-2 text-[var(--swift-muted)]" aria-label={`Remove ${o.name}`} disabled={pending}
-                    onClick={() => void send(() => deleteLibraryOption(o.id))}>✕</button>
+                    onClick={() => setDeleteChoice(o)}>✕</button>
                 </li>
               ))}
             </ul>
+            {deleteChoice ? (
+              <div role="dialog" aria-label={libraryChoiceDeleteWords(deleteChoice.name, usedBy).title} className="mt-3 rounded-lg border border-[var(--swift-border)] p-3">
+                <p className="font-bold">{libraryChoiceDeleteWords(deleteChoice.name, usedBy).title}</p>
+                <p className="sw-caption mt-1">{libraryChoiceDeleteWords(deleteChoice.name, usedBy).body}</p>
+                <div className="mt-3 flex gap-3">
+                  <button type="button" className="sw-btn sw-btn-md" disabled={pending} onClick={() => { const o = deleteChoice; setDeleteChoice(null); void send(() => deleteLibraryOption(storeId, o.id)); }}>Remove choice</button>
+                  <button type="button" className="sw-btn-outline min-h-11 rounded-lg px-4 text-sm font-semibold" onClick={() => setDeleteChoice(null)}>Keep it</button>
+                </div>
+              </div>
+            ) : null}
             {editOption ? (
               <div role="group" aria-label="Edit choice" className="mt-3 flex flex-wrap items-center gap-2 rounded-lg border border-[var(--swift-border)] p-3">
                 <input className="sw-input flex-1" aria-label="Choice name" value={editOption.name} onChange={(e) => setEditOption({ ...editOption, name: e.target.value })} />
                 <input className="sw-input w-32" inputMode="numeric" aria-label="Choice price" placeholder={choicePricePlaceholder(flags.setsPrice, vatAdded)} value={editOption.price} onChange={(e) => setEditOption({ ...editOption, price: e.target.value })} />
                 <input className="sw-input w-36" aria-label="Kitchen code (optional)" placeholder="Kitchen code (optional)" value={editOption.code} onChange={(e) => setEditOption({ ...editOption, code: e.target.value })} />
                 <button type="button" className="sw-btn sw-btn-sm" disabled={pending || !editOption.name.trim()} onClick={() => {
-                  const e = editOption; setEditOption(null);
-                  void send(() => updateLibraryOption(e.id, { name: e.name.trim(), price: Number(e.price) || 0, externalCode: e.code.trim() || null }));
+                  const e = editOption;
+                  // [REVIEW-MENU-B S3-3] Never a guessed $0: a blank or mistyped price is refused, a size needs its full price.
+                  const read = choicePriceInput(e.price, { size: group.setsPrice });
+                  if ('problem' in read) { setProblem(read.problem); return; }
+                  setProblem(null); setEditOption(null);
+                  void send(() => updateLibraryOption(storeId, e.id, { name: e.name.trim(), price: read.price, externalCode: e.code.trim() || null }));
                 }}>Save choice</button>
                 <button type="button" className="text-sm text-[var(--swift-muted)]" onClick={() => setEditOption(null)}>Cancel</button>
               </div>
@@ -315,7 +417,7 @@ function GroupEditor({ group, groups, items, vatAdded, pending, send, onCreated,
               <div className="mt-3 flex gap-3">
                 <button type="button" className="sw-btn sw-btn-md" disabled={pending} onClick={async () => {
                   setDeleteAsk(false);
-                  const answer = (await send(() => deleteLibraryGroup(group.id))) as { deleted?: boolean; removedFromItems?: number } | undefined;
+                  const answer = (await send(() => deleteLibraryGroup(storeId, group.id))) as { deleted?: boolean; removedFromItems?: number } | undefined;
                   if (answer?.deleted) {
                     const n = Number(answer.removedFromItems) || 0;
                     setNotice(n > 0 ? `Deleted. Removed from ${n} item${n === 1 ? '' : 's'}.` : 'Deleted.');
@@ -337,7 +439,7 @@ function GroupEditor({ group, groups, items, vatAdded, pending, send, onCreated,
 }
 
 /** The library in its own window (the Products page's "Option library"). */
-export function OptionLibraryDialog(props: { storeId: string | null; vendorType?: string; vatAdded: boolean; items: Array<{ id: string; name: string }>; onClose: () => void }) {
+export function OptionLibraryDialog(props: { storeId: string | null; vendorType?: string; vatAdded: boolean; items: LibraryItem[]; onClose: () => void }) {
   return (
     <Modal label="Option library" onClose={props.onClose} className="max-h-[92vh] w-full max-w-3xl overflow-y-auto bg-[var(--swift-card)] px-6 pb-6 pt-5">
       <OptionLibraryPanel storeId={props.storeId} vendorType={props.vendorType} vatAdded={props.vatAdded} items={props.items} onDone={props.onClose} />

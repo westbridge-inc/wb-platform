@@ -19,6 +19,7 @@ const fx = vi.hoisted(() => ({
   write: vi.fn(),
   toast: vi.fn(),
   api: {} as Record<string, any>,
+  storeId: 'store-A' as string | null,
   token: new Proxy({}, { get: (_target, key): unknown => key === Symbol.toPrimitive ? () => 0 : fx.token }),
 }));
 
@@ -103,11 +104,25 @@ vi.mock('../../../hooks/vendorops', () => ({
   useVendorProfile: () => ({ store: { vendorType: 'RESTAURANT' } }),
   useVendorMenu: () => ({ data: fx.menu, isLoading: false }),
 }));
-vi.mock('../../../hooks/menuOptions', () => ({
+// The real menuWriteScope (who and which store a write is for); the library read and the sender are stand-ins.
+vi.mock('../../../hooks/menuOptions', async (actual) => ({
+  ...(await actual<typeof import('../../../hooks/menuOptions')>()),
   useOptionLibrary: () => ({ data: fx.library, isLoading: false, isFetching: false }),
   useMenuOptionsWrite: () => ({ mutateAsync: fx.write, isPending: false }),
 }));
+// [REVIEW-MENU-A S4-11] The store selected when the tap happens rides on each library write (x-vendor-id).
+vi.mock('../../../stores/storeSwitcher', () => {
+  const state = () => ({ selectedStoreId: fx.storeId, storeGeneration: 1 });
+  return { useStoreSwitcher: Object.assign((select: (s: unknown) => unknown) => select(state()), { getState: state }) };
+});
 vi.mock('../../../stores/vendorPreview', () => ({ useVendorPreview: (select: (s: unknown) => unknown) => select({ previewType: null }) }));
+// [REVIEW-MENU-A S4-11] Each library write is pinned to the account that made it (OWNER) and its store (store-A).
+const OWNER = { userId: 'owner', generation: 1 };
+const STORE = 'store-A';
+vi.mock('../../../stores/authStore', () => ({
+  requireAuthSessionSnapshot: () => ({ userId: 'owner', generation: 1 }),
+  getAuthSessionSnapshot: () => ({ userId: 'owner', generation: 1 }),
+}));
 
 import { VendorOptionLibraryScreen } from './VendorOptionLibraryScreen';
 
@@ -134,6 +149,7 @@ let host: HTMLDivElement;
 let root: ReturnType<typeof createRoot>;
 beforeEach(() => {
   vi.clearAllMocks();
+  fx.storeId = 'store-A';
   fx.library = [SIZE, TOPPINGS, DIPS];
   fx.menu = [{ id: 'mains', items: [{ id: 'i-marg', name: 'Margherita' }, { id: 'i-veg', name: 'Veggie' }, { id: 'i-hawaii', name: 'Hawaiian' }] }];
   for (const k of ['orderModifierGroups', 'createModifierGroup', 'updateModifierGroup', 'deleteModifierGroup', 'addModifierOption',
@@ -180,7 +196,14 @@ describe('[MENU-OPTIONS] the option library', () => {
     expect(text()).toContain('Used by 2 items');
     expect(text()).toContain('Used by 0 items');
     await tap('Move Toppings up');
-    expect(fx.api['orderModifierGroups']).toHaveBeenCalledWith(['lib-top', 'lib-size', 'lib-dips']);
+    expect(fx.api['orderModifierGroups']).toHaveBeenCalledWith(['lib-top', 'lib-size', 'lib-dips'], OWNER, STORE);
+  });
+
+  it('[REVIEW-MENU-A S4-11] a write names the store selected at the tap, never another', async () => {
+    fx.storeId = 'store-B';
+    await open({ groupId: 'lib-top' });
+    await tap('Available');
+    expect(fx.api['updateModifierOption']).toHaveBeenCalledWith('lo-pep', { isAvailable: false }, OWNER, 'store-B');
   });
 
   it('a new shared group is created with its rules, then opens for its choices', async () => {
@@ -189,34 +212,33 @@ describe('[MENU-OPTIONS] the option library', () => {
     await type('Group name (e.g. Pizza size, Toppings)', 'Crust');
     await tap('Required');
     await tap('Create group');
-    expect(fx.api['createModifierGroup']).toHaveBeenCalledWith({ name: 'Crust', isRequired: true, minSelect: 1, maxSelect: 1 });
+    expect(fx.api['createModifierGroup']).toHaveBeenCalledWith({ name: 'Crust', isRequired: true, minSelect: 1, maxSelect: 1 }, OWNER, STORE);
   });
 
-  it('editing a shared group warns it changes every item, and saves every flag', async () => {
+  it('editing a shared group warns it changes every item, and saves only what changed (its own limits stay)', async () => {
     await open({ groupId: 'lib-top' });
     expect(text()).toContain('Changes apply to all 2 items');
     await tap('Full price');
     await tap('Save group');
-    expect(fx.api['updateModifierGroup']).toHaveBeenCalledWith('lib-top', {
-      name: 'Toppings', isRequired: false, minSelect: 0, maxSelect: 10, setsPrice: false, allowHalves: true, halfPricePercent: 100,
-    });
+    // [REVIEW-MENU-B S3-2] The half price rule alone: never a rewrite of the group's minSelect / maxSelect / isRequired.
+    expect(fx.api['updateModifierGroup']).toHaveBeenCalledWith('lib-top', { halfPricePercent: 100 }, OWNER, STORE);
   });
 
   it('a choice: its price, sold out, kitchen code and the follow-up group it opens', async () => {
     await open({ groupId: 'lib-top' });
     expect(text()).toContain('+$400 · Kitchen code PEP');
     await tap('Available');
-    expect(fx.api['updateModifierOption']).toHaveBeenCalledWith('lo-pep', { isAvailable: false });
+    expect(fx.api['updateModifierOption']).toHaveBeenCalledWith('lo-pep', { isAvailable: false }, OWNER, STORE);
     await tap('Opens follow-up group');
     const offered = Array.from(host.querySelectorAll('[role="dialog"] button')).map((b) => b.textContent);
     expect(offered, 'never itself, never a group that sets the price').toEqual(['Dips', 'Opens nothing', 'Cancel']);
     await tap('Dips');
-    expect(fx.api['updateModifierOption']).toHaveBeenCalledWith('lo-pep', { followUpGroupId: 'lib-dips' });
+    expect(fx.api['updateModifierOption']).toHaveBeenCalledWith('lo-pep', { followUpGroupId: 'lib-dips' }, OWNER, STORE);
     await type('Choice (e.g. Large)', 'Mushroom');
     await type('+GYD', '300');
     await type('Kitchen code (optional)', 'MSH');
     await tap('Add choice');
-    expect(fx.api['addModifierOption']).toHaveBeenCalledWith('lib-top', { name: 'Mushroom', price: 300, externalCode: 'MSH' });
+    expect(fx.api['addModifierOption']).toHaveBeenCalledWith('lib-top', { name: 'Mushroom', price: 300, externalCode: 'MSH' }, OWNER, STORE);
   });
 
   it('a size group\'s choices are the price ("Price"), not an extra', async () => {
@@ -230,8 +252,8 @@ describe('[MENU-OPTIONS] the option library', () => {
     await tap('Veggie');
     await tap('Hawaiian');
     await tap('Save items');
-    expect(fx.api['attachModifierGroup']).toHaveBeenCalledWith('lib-top', ['i-hawaii']);
-    expect(fx.api['detachModifierGroup']).toHaveBeenCalledWith('lib-top', ['i-veg']);
+    expect(fx.api['attachModifierGroup']).toHaveBeenCalledWith('lib-top', ['i-hawaii'], OWNER, STORE);
+    expect(fx.api['detachModifierGroup']).toHaveBeenCalledWith('lib-top', ['i-veg'], OWNER, STORE);
   });
 
   it('delete says how many items lose it, and tells how many it was removed from', async () => {
@@ -239,7 +261,7 @@ describe('[MENU-OPTIONS] the option library', () => {
     await tap('Delete group');
     expect(host.querySelector('[role="alertdialog"]')?.textContent).toContain('It is removed from 2 items that use it.');
     await tap('Delete group', 1);
-    expect(fx.api['deleteModifierGroup']).toHaveBeenCalledWith('lib-top');
+    expect(fx.api['deleteModifierGroup']).toHaveBeenCalledWith('lib-top', OWNER, STORE);
     expect(fx.toast).toHaveBeenCalledWith('Deleted. Removed from 2 items.');
   });
 
@@ -248,5 +270,54 @@ describe('[MENU-OPTIONS] the option library', () => {
     await open({ groupId: 'lib-top' });
     await tap('Available');
     expect(text()).toContain('"Pepperoni" cannot open its own group.');
+  });
+  // [REVIEW-MENU-B S3-4] A shared choice leaves every item that uses the group: asked first.
+  it('removing a shared choice asks first, naming how many items lose it', async () => {
+    await open({ groupId: 'lib-top' });
+    await tap('Remove Pepperoni');
+    expect(fx.api['deleteModifierOption'], 'nothing is removed at the tap').not.toHaveBeenCalled();
+    const ask = host.querySelector('[role="alertdialog"]')?.textContent ?? '';
+    expect(ask).toContain('Remove “Pepperoni”?');
+    expect(ask).toContain('It is removed from 2 items that use this group.');
+    await tap('Remove choice');
+    expect(fx.api['deleteModifierOption']).toHaveBeenCalledWith('lo-pep', OWNER, STORE);
+  });
+
+  // [REVIEW-MENU-B S2-1] "Sets the price" on a shared group with choices: every item that uses it gets these prices.
+  it('switching a shared group to "Sets the price" shows the sizes\' prices (from the lowest item price + add-on) and sends them with the switch', async () => {
+    fx.menu = [{ id: 'mains', items: [{ id: 'i-marg', name: 'Margherita', basePrice: 1800 }, { id: 'i-veg', name: 'Veggie', basePrice: 2200 }, { id: 'i-hawaii', name: 'Hawaiian', basePrice: 900 }] }];
+    await open({ groupId: 'lib-top' });
+    await tap('Sets the price');
+    await tap('Save group');
+    expect(fx.api['updateModifierGroup'], 'nothing saved before the prices are confirmed').not.toHaveBeenCalled();
+    expect(text()).toContain('Pepperoni $2,200 — every item that uses this group (2 items) costs these sizes’ prices.');
+    await tap('Save these prices');
+    expect(fx.api['updateModifierGroup']).toHaveBeenCalledWith('lib-top', { setsPrice: true, allowHalves: false, prices: [{ id: 'lo-pep', price: 2200 }] }, OWNER, STORE);
+  });
+
+  it('a size whose item price is not known starts blank: the store types it (never a guessed add-on-only price)', async () => {
+    await open({ groupId: 'lib-top' });
+    await tap('Sets the price');
+    await tap('Save group');
+    expect(text()).toContain('Pepperoni (type its price) — every item that uses this group (2 items) costs these sizes’ prices.');
+    await tap('Save these prices');
+    expect(text()).toContain('Pepperoni: Type this size’s full price (more than 0).');
+    expect(fx.api['updateModifierGroup']).not.toHaveBeenCalled();
+    // The confirm's own box (the last "Price" box on screen: the popup is drawn after the choices).
+    await type('Price', '2,400', host.querySelectorAll('input[aria-label="Price"]').length - 1);
+    await tap('Save these prices');
+    expect(fx.api['updateModifierGroup']).toHaveBeenCalledWith('lib-top', { setsPrice: true, allowHalves: false, prices: [{ id: 'lo-pep', price: 2400 }] }, OWNER, STORE);
+  });
+
+  // [REVIEW-MENU-B S3-3] A typed price is read, never guessed.
+  it('a shared size typed "3,900" is 3900; one left blank is refused', async () => {
+    await open({ groupId: 'lib-size' });
+    await type('Choice (e.g. Large)', 'XL');
+    await tap('Add choice');
+    expect(text()).toContain('Type this size’s full price (more than 0).');
+    expect(fx.api['addModifierOption']).not.toHaveBeenCalled();
+    await type('Price', '3,900');
+    await tap('Add choice');
+    expect(fx.api['addModifierOption']).toHaveBeenCalledWith('lib-size', { name: 'XL', price: 3900 }, OWNER, STORE);
   });
 });

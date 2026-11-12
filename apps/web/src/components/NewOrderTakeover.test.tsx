@@ -2,7 +2,7 @@ import { screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import NewOrderTakeover from './NewOrderTakeover';
 import { mockApi, renderWithQuery, stubAudioContext } from '@/test/test-utils';
-import { wireVendorOrder } from '@/test/vendor-wire-fixtures';
+import { wireOrderLine, wireVendorOrder } from '@/test/vendor-wire-fixtures';
 import { normalizeVendorOrder } from '@/lib/vendor-api';
 import { storeKey } from '@/lib/store-scope';
 import { getSelectedStore, setSelectedStore } from '@/lib/auth';
@@ -270,5 +270,33 @@ describe('MMG dispute during a new-order takeover', () => {
     await screen.findByRole('button', { name: 'Accept' });
     rerender(<NewOrderTakeover orders={[{ ...order, mmgClaimMismatchAt: '2026-10-07T12:00:00.000Z' } as typeof order]} />);
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Accept' })).toBeNull());
+  });
+  // [REVIEW-MENU-B S3-1] The website's ring shows what to make, as the app's ring does: one group per line, the halves
+  // as Left / Right / Whole, a follow-up under its opener. Before this it showed "1× Pizza" and nothing else.
+  it('[MENU-OPTIONS] shows each line\'s choices, halves included, like the app\'s ring', async () => {
+    const pizza = wireOrderLine({ name: 'Pizza', quantity: 1, totalCustomer: '4100.00', specialInstructions: null, options: [
+      { group: 'Size', name: 'Large', price: 0, plainGroup: 'Size', plainName: 'Large', placement: null, parentOptionName: null, setsPrice: true },
+      { group: 'Crust', name: 'Stuffed crust', price: 300, plainGroup: 'Crust', plainName: 'Stuffed crust', placement: null, parentOptionName: null, setsPrice: false },
+      { group: 'Cheese (Stuffed crust)', name: 'Cheddar', price: 0, plainGroup: 'Cheese', plainName: 'Cheddar', placement: null, parentOptionName: 'Stuffed crust', setsPrice: false },
+      { group: 'Toppings', name: 'Pepperoni (left half)', price: 200, plainGroup: 'Toppings', plainName: 'Pepperoni', placement: 'LEFT', parentOptionName: null, setsPrice: false },
+      { group: 'Toppings', name: 'Mushroom (right half)', price: 150, plainGroup: 'Toppings', plainName: 'Mushroom', placement: 'RIGHT', parentOptionName: null, setsPrice: false },
+    ] });
+    const { rerender } = renderWithQuery(<NewOrderTakeover orders={[]} />);
+    rerender(<NewOrderTakeover orders={[normalizeVendorOrder(wireVendorOrder({ items: [pizza] }))]} />);
+    await screen.findByText(new RegExp('SW-1001'));
+    await waitFor(() => expect(screen.getAllByTestId('ring-line-option').map((el) => el.textContent)).toEqual([
+      'Large', 'Crust: Stuffed crust → Cheese: Cheddar', 'Toppings — Left: Pepperoni / Right: Mushroom',
+    ]));
+  });
+
+  it('[MENU-OPTIONS] before the kitchen formatter arrives, each choice still shows in its own snapshot words', async () => {
+    // A fresh module whose formatter fetch never lands (a slow or dropped chunk).
+    vi.resetModules();
+    vi.doMock('../../../mobile/src/modules/vendor/orderLineOptions', () => new Promise(() => undefined));
+    const fresh = await import('./NewOrderTakeover');
+    expect(fresh.ringLineChoices([{ group: 'Size', name: 'Large' }, { group: 'Toppings', name: 'Pepperoni (left half)' }]))
+      .toEqual(['Size: Large', 'Toppings: Pepperoni (left half)']);
+    vi.doUnmock('../../../mobile/src/modules/vendor/orderLineOptions');
+    vi.resetModules();
   });
 });

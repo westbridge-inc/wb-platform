@@ -117,7 +117,9 @@ vi.mock('../shared', async () => {
 vi.mock('../../../services/api', () => ({ vendorApi: fx.api }));
 vi.mock('../../../hooks/storeVat', () => ({ useStoreVat: () => ({ data: undefined }) }));
 vi.mock('../../../hooks/useVendorMutation', () => ({ useVendorMutation: () => ({ mutate: vi.fn(), isPending: false }) }));
-vi.mock('../../../hooks/menuOptions', () => ({
+vi.mock('../../../hooks/menuOptions', async (actual) => ({
+  // The real menuWriteScope: who and which store a write is for.
+  ...(await actual<typeof import('../../../hooks/menuOptions')>()),
   useOptionLibrary: () => ({ data: fx.library, isLoading: false }),
   // The real sender runs the request and answers its `data` (hooks/menuOptions); a refusal rejects.
   useMenuOptionsWrite: () => ({ mutateAsync: fx.write, isPending: false }),
@@ -272,7 +274,8 @@ describe('[MENU-OPTIONS] a saved pizza', () => {
     const offered = Array.from(host.querySelectorAll('[role="dialog"] button')).map((b) => b.textContent);
     expect(offered).toEqual(['Cheese', 'Toppings', 'Opens nothing', 'Cancel']);
     await tap('Cheese');
-    expect(fx.api.updateOption).toHaveBeenCalledWith('o-stuffed', { followUpGroupId: 'g-cheese' });
+    // [REVIEW-MENU-A S4-11] Pinned to the account that made it, like every option write of the editor.
+    expect(fx.api.updateOption).toHaveBeenCalledWith('o-stuffed', { followUpGroupId: 'g-cheese' }, { userId: 'owner', generation: 1 });
     expect(buttons('Opens: Cheese'), 'the choice now names the group it opens').toHaveLength(1);
     expect(shown('Follow-up group: shown when its choice is picked.')).toBe(true);
   });
@@ -322,7 +325,147 @@ describe('[MENU-OPTIONS] a saved pizza', () => {
     expect(offered.some((t) => t?.startsWith('Toppings')), 'already on the item').toBe(false);
     expect(offered.some((t) => t?.startsWith('Sauce')), 'a follow-up group comes with its opener').toBe(false);
     await tap('Dips · Used by 0 items');
-    expect(fx.api.attachModifierGroup).toHaveBeenCalledWith('lib-dips', ['item-pizza']);
+    // [REVIEW-MENU-A S4-11] The account and the store the tap was made in.
+    expect(fx.api.attachModifierGroup).toHaveBeenCalledWith('lib-dips', ['item-pizza'], { userId: 'owner', generation: 1 }, 'store-A');
     expect(shown('Dips'), 'the item\'s groups are read again').toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// [REVIEW-MENU-B S2-1 · S3-2 · S3-3 · S3-5] An existing restaurant's "Size" is add-ons (Small +0 / Large +500 on a
+// 2,000 item). Switching it to "Sets the price" at one tap made the item cost $0 (a Small for nothing): the switch now
+// shows the converted prices first and sends them with it, in one request. A rule chip sends only that rule (a group's
+// own "pick 2 to 3" survives), a typed price is read ("1,500" = 1500, never a blank $0 size), and a new size group is
+// created with its first size (the server refuses a size group with none).
+// ---------------------------------------------------------------------------
+const OWNER = { userId: 'owner', generation: 1 };
+const CURRY = {
+  id: 'item-curry', name: 'Curry', categoryId: 'mains', basePrice: 2000, isAvailable: true,
+  optionGroups: [
+    { id: 'g-addon-size', name: 'Size', isRequired: true, minSelect: 1, maxSelect: 1, setsPrice: false, allowHalves: false, halfPricePercent: 100, libraryGroupId: null,
+      options: [{ id: 'o-small', name: 'Small', additionalPrice: 0 }, { id: 'o-large', name: 'Large', additionalPrice: 500 }] },
+    { id: 'g-sauces', name: 'Sauces', isRequired: true, minSelect: 2, maxSelect: 3, setsPrice: false, allowHalves: false, halfPricePercent: 100, libraryGroupId: null,
+      options: [{ id: 'o-bbq', name: 'BBQ', additionalPrice: 100 }] },
+  ],
+};
+const answerGroup = (id: string, body: any) => Promise.resolve({ data: { data: { ...CURRY.optionGroups.find((g) => g.id === id), ...body } } });
+
+describe('[REVIEW-MENU-B] switching "Sets the price" on a group that already has choices', () => {
+  it('ON: nothing is saved at the tap; the confirm shows each size\'s full price (item price + add-on) and sends them with the switch', async () => {
+    fx.api.updateOptionGroup.mockImplementation((id: string, body: any) => answerGroup(id, { ...body, setsPrice: true, options: [
+      { id: 'o-small', name: 'Small', additionalPrice: 2000 }, { id: 'o-large', name: 'Large', additionalPrice: 2500 }] }));
+    await open({ item: CURRY });
+    await tap('Sets the price', 0);
+    expect(fx.api.updateOptionGroup, 'no save at the tap').not.toHaveBeenCalled();
+    expect(shown('Small $2,000 / Large $2,500 — the item’s price becomes its sizes’ prices.')).toBe(true);
+    await tap('Save these prices');
+    expect(fx.api.updateOptionGroup).toHaveBeenCalledTimes(1);
+    expect(fx.api.updateOptionGroup).toHaveBeenCalledWith('g-addon-size', { setsPrice: true, prices: [{ id: 'o-small', price: 2000 }, { id: 'o-large', price: 2500 }] }, OWNER);
+    expect(shown('Price $2,500'), 'the sizes now read as prices').toBe(true);
+  });
+
+  it('a size left blank (or 0) in the confirm is refused there, and nothing is sent', async () => {
+    await open({ item: CURRY });
+    await tap('Sets the price', 0);
+    const box = host.querySelectorAll<HTMLInputElement>('[role="dialog"] input')[0]!;
+    const setter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(box), 'value')!.set!;
+    await act(async () => { setter.call(box, ''); box.dispatchEvent(new window.Event('input', { bubbles: true })); });
+    await tap('Save these prices');
+    expect(shown('Small: Type this size’s full price (more than 0).')).toBe(true);
+    expect(fx.api.updateOptionGroup).not.toHaveBeenCalled();
+  });
+
+  it('OFF: each choice becomes its price above the smallest size, confirmed and sent with the switch', async () => {
+    fx.api.updateOptionGroup.mockImplementation((id: string, body: any) => Promise.resolve({ data: { data: { ...PIZZA.optionGroups[0], ...body, setsPrice: false } } }));
+    await open({ item: PIZZA });
+    await tap('Sets the price', 0);
+    expect(fx.api.updateOptionGroup).not.toHaveBeenCalled();
+    expect(shown('Small +$0 / Large +$1,400 — the item keeps its smallest size as its price; these are added on top.')).toBe(true);
+    await tap('Save these prices');
+    expect(fx.api.updateOptionGroup).toHaveBeenCalledWith('g-size', { setsPrice: false, prices: [{ id: 'o-s', price: 0 }, { id: 'o-l', price: 1400 }] }, OWNER);
+  });
+
+  it('a NEW item: the sizes start from the price typed in the form, and go with the item in its one create request', async () => {
+    await open({});
+    await type('Item name', 'Curry');
+    await type('Price (GYD)', '2,000');
+    await type('New group (e.g. Size, Toppings)', 'Size');
+    await tap('Add option group');
+    await addChoice('Small', '0', '+GYD');
+    await addChoice('Large', '500', '+GYD');
+    await tap('Sets the price', 0);
+    expect(shown('Small $2,000 / Large $2,500 — the item’s price becomes its sizes’ prices.')).toBe(true);
+    await tap('Save these prices');
+    await tap('Add item');
+    const sent = fx.save.mock.calls[0]![0].data;
+    expect(sent.optionGroups).toEqual([
+      { name: 'Size', isRequired: true, minSelect: 1, maxSelect: 1, setsPrice: true, options: [{ name: 'Small', additionalPrice: 2000 }, { name: 'Large', additionalPrice: 2500 }] },
+    ]);
+  });
+
+  it('Cancel leaves the group as it was', async () => {
+    await open({ item: CURRY });
+    await tap('Sets the price', 0);
+    await tap('Cancel');
+    expect(fx.api.updateOptionGroup).not.toHaveBeenCalled();
+    expect(shown('Required · pick one')).toBe(true);
+  });
+});
+
+describe('[REVIEW-MENU-B S3-2] a rule chip sends only that rule', () => {
+  it('Half-and-half on a "pick 2 to 3" group keeps its limits', async () => {
+    fx.api.updateOptionGroup.mockImplementation((id: string, body: any) => answerGroup(id, body));
+    await open({ item: CURRY });
+    await tap('Half-and-half', 1);
+    expect(fx.api.updateOptionGroup).toHaveBeenCalledWith('g-sauces', { allowHalves: true }, OWNER);
+  });
+
+  it('"% of the choice price" saves nothing until the store sets its percent', async () => {
+    fx.api.updateOptionGroup.mockImplementation((id: string, body: any) => Promise.resolve({ data: { data: { ...PIZZA.optionGroups[1], ...body } } }));
+    const halves = { ...PIZZA.optionGroups[1], id: 'g-half', name: 'Extras', allowHalves: true, halfPricePercent: 100, options: [{ id: 'o-x', name: 'Olives', additionalPrice: 100 }] };
+    await open({ item: { ...PIZZA, optionGroups: [halves] } });
+    await tap('% of the choice price');
+    expect(fx.api.updateOptionGroup, 'no 50% nobody chose').not.toHaveBeenCalled();
+    await type('Half costs (%)', '60');
+    await tap('Set');
+    expect(fx.api.updateOptionGroup).toHaveBeenCalledWith('g-half', { halfPricePercent: 60 }, OWNER);
+  });
+});
+
+describe('[REVIEW-MENU-B S3-3] a typed price is read, never guessed', () => {
+  it('a size typed "1,500" is 1500; a size left blank is refused (never a $0 pizza)', async () => {
+    fx.addOption.mockResolvedValue({ id: 'o-xl', name: 'XL', additionalPrice: 1500 });
+    await open({ item: PIZZA });
+    await addChoice('XL', '', 'Price');
+    expect(shown('Type this size’s full price (more than 0).')).toBe(true);
+    expect(fx.addOption).not.toHaveBeenCalled();
+    await addChoice('XL', '1,500', 'Price');
+    expect(fx.addOption).toHaveBeenCalledWith({ groupId: 'g-size', data: { name: 'XL', additionalPrice: 1500 }, authSession: OWNER });
+  });
+
+  it('a mistyped add-on is refused; a blank add-on is free, as always', async () => {
+    fx.addOption.mockResolvedValue({ id: 'o-y', name: 'Garlic', additionalPrice: 0 });
+    await open({ item: PIZZA });
+    await addChoice('Garlic', '1.5O', '+GYD', 1, 0); // the Crust row (the size row's box says Price)
+    expect(shown('Type the price in whole dollars, like 1500.')).toBe(true);
+    expect(fx.addOption).not.toHaveBeenCalled();
+  });
+});
+
+describe('[REVIEW-MENU-B S2-1] a new size group comes with its first size', () => {
+  it('"Sets the price" asks for the first size and its full price, and sends them with the group', async () => {
+    fx.addGroup.mockResolvedValue({ id: 'g-new', name: 'Size', setsPrice: true, isRequired: true, minSelect: 1, maxSelect: 1, options: [{ id: 'o-r', name: 'Regular', additionalPrice: 1200 }] });
+    await open({ item: { ...PIZZA, optionGroups: [PIZZA.optionGroups[2]] } });
+    await type('New group (e.g. Size, Toppings)', 'Size');
+    await tap('Sets the price', 1); // the new group's chip (the saved Cheese group's comes first)
+    await tap('Add option group');
+    expect(shown('Add the first size (like Small) with its full price.')).toBe(true);
+    expect(fx.addGroup).not.toHaveBeenCalled();
+    await type('First size (e.g. Small)', 'Regular');
+    await type('Price', '1,200', 0);
+    await tap('Add option group');
+    expect(fx.addGroup).toHaveBeenCalledWith({ itemId: 'item-pizza', data: {
+      name: 'Size', isRequired: true, minSelect: 1, maxSelect: 1, setsPrice: true, options: [{ name: 'Regular', additionalPrice: 1200 }],
+    }, authSession: OWNER });
   });
 });

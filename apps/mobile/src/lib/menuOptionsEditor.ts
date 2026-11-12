@@ -17,6 +17,7 @@ type GroupLike = {
   id?: string;
   name?: string;
   isRequired?: boolean | null;
+  minSelect?: number | null;
   maxSelect?: number | null;
   setsPrice?: boolean | null;
   allowHalves?: boolean | null;
@@ -176,9 +177,150 @@ export function moved<T>(list: readonly T[], index: number, step: -1 | 1): T[] {
   return next;
 }
 
+/** [REVIEW-MENU-B S3-4] Deleting a shared choice asks first: it leaves every item that uses its group. */
+export function libraryChoiceDeleteWords(name: string, n: number): { title: string; body: string } {
+  const body = n <= 0 ? 'No item uses this group yet.'
+    : n === 1 ? 'It is removed from the 1 item that uses this group.' : `It is removed from ${items(n)} that use this group.`;
+  return { title: `Remove “${name}”?`, body };
+}
+
+// ── [REVIEW-MENU-B S3-3] A typed price ──────────────────────────────────────
+
+export const PRICE_UNREADABLE = 'Type the price in whole dollars, like 1500.';
+export const SIZE_PRICE_NEEDED = 'Type this size’s full price (more than 0).';
+
+/**
+ * A price as a store types it, on a phone or a desktop keyboard: whole dollars, with or without thousands commas or
+ * spaces, a "$" or "GYD" in front, ".00" after ("1,500", "1500.00", "$1,500" → 1500). A blank, a mistype, a negative or
+ * cents give null: never a guessed price (a "1,500" read as 0 once made a $0 pizza).
+ */
+export function parseStorePrice(text: string): number | null {
+  let t = text.trim().replace(/^(?:\$|GYD)\s*/i, '').replace(/[\s\u00a0]+/g, '');
+  if (!t) return null;
+  if (!/^(?:\d+|\d{1,3}(?:,\d{3})+)(?:\.0+)?$/.test(t)) return null;
+  t = t.replace(/,/g, '');
+  const n = Number(t);
+  return Number.isSafeInteger(n) ? n : null;
+}
+
+/** A choice's typed price, or the plain reason it cannot be saved: a size needs its full price above 0 (a blank size
+ *  is never a $0 pizza); an add-on left blank is free ("+GYD", as the tools always took it), and a mistype is refused. */
+export function choicePriceInput(text: string, { size }: { size: boolean }): { price: number } | { problem: string } {
+  if (!size && text.trim() === '') return { price: 0 };
+  const n = parseStorePrice(text);
+  if (size) return n != null && n > 0 ? { price: n } : { problem: SIZE_PRICE_NEEDED };
+  return n != null ? { price: n } : { problem: PRICE_UNREADABLE };
+}
+
+// ── [REVIEW-MENU-B S2-1] Switching "Sets the price" on a group with choices ─
+
+type PricedChoice = { id: string; name: string; additionalPrice?: unknown; vatListedAdditionalPrice?: unknown; price?: unknown };
+/** A converted price; null = not known (the store types it: never a guessed figure). */
+export type SizeSwitchRow = { id: string; name: string; price: number | null };
+
+/** The item's price as the store typed it (before VAT while VAT is added); null when unreadable. */
+export function itemTypedPrice(item: { basePrice?: unknown; vatListedPrice?: unknown }): number | null {
+  const raw = item.vatListedPrice ?? item.basePrice;
+  if (raw == null || raw === '') return null;
+  const n = Number(raw);
+  return Number.isFinite(n) ? n : null;
+}
+
+/** A shared group's items can cost different amounts: its sizes start from the lowest of them (null when no price is
+ *  known: the store types each size). */
+export function libraryBasePrice(items: ReadonlyArray<{ basePrice?: unknown; vatListedPrice?: unknown }>): number | null {
+  const prices = items.map(itemTypedPrice).filter((n): n is number => n != null);
+  return prices.length ? Math.min(...prices) : null;
+}
+
+/** Whether a rule change switches "Sets the price" on a group that has choices: their prices mean something else after
+ *  it (an add-on becomes a whole price, or back), so the store sees and confirms the converted prices first. */
+export function needsSizeSwitchConfirm(group: { setsPrice?: boolean | null; options?: readonly unknown[] | null }, next: Partial<GroupFlags>): boolean {
+  return next.setsPrice !== undefined && next.setsPrice !== (group.setsPrice === true) && (group.options ?? []).length > 0;
+}
+
+/**
+ * The converted prices. ON: each size's full price = the item's price + the choice's add-on (Small +0 / Large +500 on a
+ * 2,000 item → 2,000 / 2,500); with no known item price, each size is left for the store to type. OFF: each add-on = its
+ * price above the smallest size (the item keeps the smallest as its price). Every figure is what the store typed (before
+ * VAT while VAT is added).
+ */
+export function sizeSwitchRows(options: readonly PricedChoice[], { turnOn, itemPrice }: { turnOn: boolean; itemPrice: number | null }): SizeSwitchRow[] {
+  const typed = options.map((o) => ({ id: o.id, name: o.name, price: typedPrice(o) }));
+  if (turnOn) {
+    return typed.map((o) => ({ ...o, price: itemPrice != null && Number.isFinite(itemPrice) ? itemPrice + (Number.isFinite(o.price) ? o.price : 0) : null }));
+  }
+  const known = typed.map((o) => o.price).filter((n) => Number.isFinite(n));
+  const lowest = known.length ? Math.min(...known) : null;
+  return typed.map((o) => ({ ...o, price: Number.isFinite(o.price) && lowest != null ? o.price - lowest : null }));
+}
+
+/** The confirm's editable boxes, prefilled with the converted prices (a price not known starts blank). */
+export function sizeSwitchTyped(rows: readonly SizeSwitchRow[]): Record<string, string> {
+  return Object.fromEntries(rows.map((r) => [r.id, r.price == null ? '' : String(r.price)]));
+}
+
+/** The prices as the store has them typed in the confirm (for its sentence). */
+export function sizeSwitchShown(options: ReadonlyArray<{ id: string; name: string }>, typed: Readonly<Record<string, string>>): SizeSwitchRow[] {
+  return options.map((o) => ({ id: o.id, name: o.name, price: parseStorePrice(typed[o.id] ?? '') }));
+}
+
+/** The confirm's sentence. */
+export function sizeSwitchWords(rows: readonly SizeSwitchRow[], { turnOn, sharedBy }: { turnOn: boolean; sharedBy?: number }, format: (_n: number) => string): string {
+  const list = rows.map((r) => `${r.name} ${r.price == null ? '(type its price)' : `${turnOn ? '' : '+'}${format(r.price)}`}`).join(' / ');
+  const who = sharedBy != null ? `every item that uses this group (${items(sharedBy)})` : 'the item';
+  if (turnOn) return sharedBy != null ? `${list} — ${who} costs these sizes’ prices.` : `${list} — the item’s price becomes its sizes’ prices.`;
+  return `${list} — ${who} keeps its smallest size as its price; these are added on top.`;
+}
+
+/** The one request of a confirmed switch: the switch and every choice's new typed price, each read like any typed price
+ *  (a size above 0; an add-on left blank is free, a mistyped one refused). */
+export function sizeSwitchBody(options: ReadonlyArray<{ id: string; name: string }>, typed: Readonly<Record<string, string>>, { turnOn }: { turnOn: boolean }):
+  { body: { setsPrice: boolean; prices: Array<{ id: string; price: number }> } } | { problem: string } {
+  const prices: Array<{ id: string; price: number }> = [];
+  for (const o of options) {
+    const read = choicePriceInput(typed[o.id] ?? '', { size: turnOn });
+    if ('problem' in read) return { problem: `${o.name}: ${read.problem}` };
+    prices.push({ id: o.id, price: read.price });
+  }
+  return { body: { setsPrice: turnOn, prices } };
+}
+
+// ── [REVIEW-MENU-B S3-2] An edit of a saved group sends only what changed ───
+
+export type GroupFlagsEditBody = Partial<{ isRequired: boolean; minSelect: number; maxSelect: number; setsPrice: boolean; allowHalves: boolean; halfPricePercent: number }>;
+
+/** The edit of a saved group: only the rules the store changed. A rule chip never rewrites the group's own limits
+ *  (a "up to 3" group stays up to 3); Required / Multiple picks change them only when tapped; a size is made pick-one by
+ *  the server itself. */
+export function groupFlagsEdit(
+  saved: { isRequired?: boolean | null; minSelect?: number | null; maxSelect?: number | null; setsPrice?: boolean | null; allowHalves?: boolean | null; halfPricePercent?: number | null },
+  edited: GroupFlags,
+): GroupFlagsEditBody {
+  const out: GroupFlagsEditBody = {};
+  const was = { size: saved.setsPrice === true, halves: saved.allowHalves === true, min: saved.minSelect ?? 0, max: saved.maxSelect ?? 1 };
+  if (edited.setsPrice !== was.size) {
+    out.setsPrice = edited.setsPrice;
+    if (edited.setsPrice && was.halves) out.allowHalves = false;
+  }
+  if (edited.setsPrice) return out;
+  if (edited.allowHalves !== was.halves) out.allowHalves = edited.allowHalves;
+  if (edited.allowHalves && safePercent(edited.halfPercent) !== safePercent(saved.halfPricePercent ?? 100)) out.halfPricePercent = safePercent(edited.halfPercent);
+  if (!was.size && edited.required !== (saved.isRequired === true)) {
+    out.isRequired = edited.required;
+    out.minSelect = edited.required ? Math.max(1, was.min) : 0;
+  }
+  if (!was.size && edited.multi !== (was.max > 1)) {
+    out.maxSelect = edited.multi ? MULTI_PICK_MAX : 1;
+    if (!edited.multi && (out.minSelect ?? was.min) > 1) out.minSelect = 1;
+  }
+  return out;
+}
+
 // ── The server's refusal ────────────────────────────────────────────────────
 
-const OWN_WORDS = new Set(['MENU_OPTIONS_RULE', 'SHARED_OPTION_GROUP']);
+// [REVIEW-MENU-B S3-5] APP_UPDATE_REQUIRED: an edit an older app could not show right (the server's plain sentence).
+const OWN_WORDS = new Set(['MENU_OPTIONS_RULE', 'SHARED_OPTION_GROUP', 'APP_UPDATE_REQUIRED']);
 
 /** A broken option rule, or an edit of a shared copy: the server's own words (the phone's axios error, or the
  *  website's error with `code` and `message`). Anything else: null (the caller keeps its own sentence). */

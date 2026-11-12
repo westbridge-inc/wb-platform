@@ -1,6 +1,9 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { vendorApi } from '../services/api';
 import { useVendorPreview } from '../stores/vendorPreview';
+import { useStoreSwitcher } from '../stores/storeSwitcher';
+import { getAuthSessionSnapshot, requireAuthSessionSnapshot } from '../stores/authStore';
+import type { AuthSessionSnapshot } from '../lib/authSession';
 import { MENU_WRITE_KEY, rereadMenuSoon } from './vendorops';
 import { useVendorMutation } from './useVendorMutation';
 
@@ -24,17 +27,26 @@ export type LibraryGroup = {
   usedByItemCount: number; usedByItems: Array<{ id: string; name: string }>; options: LibraryOption[];
 };
 
-/** The store's library. A sample preview has none (nothing is read). */
+/** The store's library. A sample preview has none (nothing is read).
+ *  [REVIEW-MENU-A S4-11] Read for the selected store (its id in the key and on the request). */
 export function useOptionLibrary(enabled = true) {
   const preview = useVendorPreview((s) => s.previewType) != null;
+  const storeId = useStoreSwitcher((s) => s.selectedStoreId);
   return useQuery({
-    queryKey: OPTION_LIBRARY_KEY,
+    queryKey: [...OPTION_LIBRARY_KEY, storeId ?? null],
     queryFn: async () => {
-      const r = await vendorApi.modifierGroups();
+      const r = await vendorApi.modifierGroups(getAuthSessionSnapshot() ?? undefined, storeId);
       return ((r?.data?.data ?? []) as LibraryGroup[]);
     },
     enabled: enabled && !preview,
   });
+}
+
+/** [REVIEW-MENU-A S4-11] Who and which store an option write is for: the signed-in account and the store selected when
+ *  the tap happened (the write's own guard refuses it if the store changed before it left). */
+export type MenuWriteScope = { session: AuthSessionSnapshot; storeId: string | null };
+export function menuWriteScope(): MenuWriteScope {
+  return { session: requireAuthSessionSnapshot(), storeId: useStoreSwitcher.getState().selectedStoreId };
 }
 
 /** One option write: the caller passes the request; the answer is the server's `data`. */

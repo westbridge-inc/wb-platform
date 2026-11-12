@@ -9,14 +9,15 @@ import { GUTTER, InlineInput } from '../shared';
 import { GroupRuleChips, NEW_GROUP_FLAGS } from '../GroupRuleChips';
 import { vendorApi } from '../../../services/api';
 import { useVendorMenu, useVendorProfile } from '../../../hooks/vendorops';
-import { useMenuOptionsWrite, useOptionLibrary, type LibraryGroup, type LibraryOption } from '../../../hooks/menuOptions';
+import { menuWriteScope, useMenuOptionsWrite, useOptionLibrary, type LibraryGroup, type LibraryOption, type MenuWriteScope } from '../../../hooks/menuOptions';
 import { useVendorPreview } from '../../../stores/vendorPreview';
 import { vatPricingOf } from '../../../lib/storeVat';
 import { errorMessage } from '../../../lib/apiError';
 import { money } from '../../../lib/money';
 import {
-  attachPlan, choicePricePlaceholder, flagsOf, followUpLabel, followUpTargets, groupFlagsBody, groupRuleWords, libraryDeleteWords,
-  menuOptionsRefusal, moved, sharedEditWarning, sizePriceLabel, usedByWords, type GroupFlags,
+  attachPlan, choicePriceInput, choicePricePlaceholder, flagsOf, followUpLabel, followUpTargets, groupFlagsBody, groupFlagsEdit,
+  groupRuleWords, libraryBasePrice, libraryChoiceDeleteWords, libraryDeleteWords, menuOptionsRefusal, moved, needsSizeSwitchConfirm,
+  sharedEditWarning, sizePriceLabel, sizeSwitchBody, sizeSwitchRows, sizeSwitchShown, sizeSwitchTyped, sizeSwitchWords, usedByWords, type GroupFlags,
 } from '../../../lib/menuOptionsEditor';
 
 /**
@@ -49,7 +50,8 @@ export function VendorOptionLibraryScreen({ navigation, route }: any) {
     const ids = moved(groups.map((g) => g.id), index, step);
     setError(null);
     try {
-      await write.mutateAsync(() => vendorApi.orderModifierGroups(ids));
+      const scope = menuWriteScope();
+      await write.mutateAsync(() => vendorApi.orderModifierGroups(ids, scope.session, scope.storeId));
     } catch (e) {
       failed(e);
     }
@@ -144,48 +146,81 @@ function LibraryGroupEditor({ group, groups, readOnly, onCreated, onDeleted, onE
   const [followUpFor, setFollowUpFor] = useState<LibraryOption | null>(null);
   const [pickItems, setPickItems] = useState<string[] | null>(null);
   const [deleteAsk, setDeleteAsk] = useState(false);
+  // [REVIEW-MENU-B S3-4] A shared choice is removed from every item that uses the group: asked first.
+  const [deleteChoice, setDeleteChoice] = useState<LibraryOption | null>(null);
+  // [REVIEW-MENU-B S2-1] "Sets the price" switched on a group with choices: the new prices, shown to confirm.
+  const [sizeSwitch, setSizeSwitch] = useState<{ turnOn: boolean; typed: Record<string, string>; problem: string | null } | null>(null);
   const usedBy = group?.usedByItemCount ?? 0;
   const savedFlags = group ? flagsOf(group) : null;
   const changed = !group || name.trim() !== group.name || JSON.stringify(flags) !== JSON.stringify(savedFlags);
   const sizeTaken = false; // a library group may set the price; an item with two is refused at attach (server words)
-  const send = async (call: () => Promise<any>): Promise<any> => {
+  const send = async (call: (_scope: MenuWriteScope) => Promise<any>): Promise<any> => {
     if (readOnly || write.isPending) return undefined;
     clearError();
     try {
-      return await write.mutateAsync(call);
+      // [REVIEW-MENU-A S4-11] Each write is pinned to the account that made it and the store it was made in.
+      const scope = menuWriteScope();
+      return await write.mutateAsync(() => call(scope));
     } catch (e) {
       onError(e);
       return undefined;
     }
   };
 
+  // The store's items: "Choose items", and their prices for a size switch (read when a saved group opens, so they are
+  // there by the time the store saves; a price still unknown is left blank for the store to type).
+  const menu = useVendorMenu(group != null);
+
   const saveGroup = async () => {
     const trimmed = name.trim();
     if (!trimmed) return;
     if (!group) {
-      const created = await send(() => vendorApi.createModifierGroup({ name: trimmed, ...groupFlagsBody(flags) }));
+      const created = await send((s) => vendorApi.createModifierGroup({ name: trimmed, ...groupFlagsBody(flags) }, s.session, s.storeId));
       if (created?.id) onCreated(created.id);
       return;
     }
-    await send(() => vendorApi.updateModifierGroup(group.id, { name: trimmed, ...groupFlagsBody(flags, { explicit: true }) }));
+    // [REVIEW-MENU-B S2-1] Switching "Sets the price" with choices: the converted prices are confirmed first.
+    if (needsSizeSwitchConfirm(group, { setsPrice: flags.setsPrice })) {
+      const users = ((menu.data ?? []) as any[]).flatMap((c) => c.items ?? []).filter((i: any) => group.usedByItems.some((u) => u.id === i.id));
+      const rows = sizeSwitchRows(group.options, { turnOn: flags.setsPrice, itemPrice: libraryBasePrice(users) });
+      setSizeSwitch({ turnOn: flags.setsPrice, typed: sizeSwitchTyped(rows), problem: null });
+      return;
+    }
+    // [REVIEW-MENU-B S3-2] Only what changed: the group's own limits are not rewritten by a rule chip.
+    const edit = { ...(trimmed !== group.name ? { name: trimmed } : {}), ...groupFlagsEdit(group, flags) };
+    if (Object.keys(edit).length === 0) return;
+    await send((s) => vendorApi.updateModifierGroup(group.id, edit, s.session, s.storeId));
+  };
+
+  const switchUsers = sizeSwitch && group ? ((menu.data ?? []) as any[]).flatMap((c) => c.items ?? []).filter((i: any) => group.usedByItems.some((u) => u.id === i.id)) : [];
+  const confirmSizeSwitch = async () => {
+    if (!group || !sizeSwitch) return;
+    const read = sizeSwitchBody(group.options, sizeSwitch.typed, { turnOn: sizeSwitch.turnOn });
+    if ('problem' in read) { setSizeSwitch({ ...sizeSwitch, problem: read.problem }); return; }
+    setSizeSwitch(null);
+    const trimmed = name.trim();
+    const edit = { ...(trimmed && trimmed !== group.name ? { name: trimmed } : {}), ...groupFlagsEdit(group, flags), ...read.body };
+    await send((s) => vendorApi.updateModifierGroup(group.id, edit, s.session, s.storeId));
   };
 
   const addChoice = async () => {
     if (!group || !choice.name.trim()) return;
-    const answer = await send(() => vendorApi.addModifierOption(group.id, {
-      name: choice.name.trim(), price: Number(choice.price) || 0, ...(choice.code.trim() ? { externalCode: choice.code.trim() } : {}),
-    }));
+    // [REVIEW-MENU-B S3-3] A typed price is read, never guessed (a size needs its full price).
+    const read = choicePriceInput(choice.price, { size: group.setsPrice });
+    if ('problem' in read) { onError({ code: 'MENU_OPTIONS_RULE', message: read.problem }); return; }
+    const answer = await send((s) => vendorApi.addModifierOption(group.id, {
+      name: choice.name.trim(), price: read.price, ...(choice.code.trim() ? { externalCode: choice.code.trim() } : {}),
+    }, s.session, s.storeId));
     if (answer) setChoice({ name: '', price: '', code: '' });
   };
 
-  const menu = useVendorMenu(pickItems != null);
   const allItems: Array<{ id: string; name: string }> = ((menu.data ?? []) as any[]).flatMap((c) => c.items ?? []).filter((i: any) => i.fulfillment !== 'APPOINTMENT');
   const saveItems = async () => {
     if (!group || !pickItems) return;
     const plan = attachPlan(group.usedByItems.map((i) => i.id), pickItems);
     setPickItems(null);
-    if (plan.attach.length) await send(() => vendorApi.attachModifierGroup(group.id, plan.attach));
-    if (plan.detach.length) await send(() => vendorApi.detachModifierGroup(group.id, plan.detach));
+    if (plan.attach.length) await send((s) => vendorApi.attachModifierGroup(group.id, plan.attach, s.session, s.storeId));
+    if (plan.detach.length) await send((s) => vendorApi.detachModifierGroup(group.id, plan.detach, s.session, s.storeId));
   };
 
   return (
@@ -229,9 +264,9 @@ function LibraryGroupEditor({ group, groups, readOnly, onCreated, onDeleted, onE
                     <T variant="caption" tone="muted">{optionPrice(group, o, vatAdded)}{o.externalCode ? ` · Kitchen code ${o.externalCode}` : ''}</T>
                   </View>
                   <Chip label={o.isAvailable ? 'Available' : 'Sold out'} selected={o.isAvailable}
-                    onPress={readOnly ? undefined : () => { void send(() => vendorApi.updateModifierOption(o.id, { isAvailable: !o.isAvailable })); }}
+                    onPress={readOnly ? undefined : () => { void send((s) => vendorApi.updateModifierOption(o.id, { isAvailable: !o.isAvailable }, s.session, s.storeId)); }}
                     style={{ height: 32, paddingHorizontal: space.md }} />
-                  <Pressable disabled={readOnly} onPress={() => { void send(() => vendorApi.deleteModifierOption(o.id)); }} hitSlop={8} accessibilityRole="button" accessibilityLabel={`Remove ${o.name}`}>
+                  <Pressable disabled={readOnly} onPress={() => setDeleteChoice(o)} hitSlop={8} accessibilityRole="button" accessibilityLabel={`Remove ${o.name}`}>
                     <View style={{ width: 32, height: 32, alignItems: 'center', justifyContent: 'center' }}>
                       <Feather name="x" size={16} color={color.text.muted} />
                     </View>
@@ -286,8 +321,12 @@ function LibraryGroupEditor({ group, groups, readOnly, onCreated, onDeleted, onE
           disabled={readOnly || !editOption?.name.trim()}
           onPress={() => {
             const e = editOption;
+            if (!e || !group) return;
+            // [REVIEW-MENU-B S3-3] Never a guessed $0: a blank or mistyped price is refused, a size needs its full price.
+            const read = choicePriceInput(e.price, { size: group.setsPrice });
+            if ('problem' in read) { onError({ code: 'MENU_OPTIONS_RULE', message: read.problem }); return; }
             setEditOption(null);
-            if (e) void send(() => vendorApi.updateModifierOption(e.id, { name: e.name.trim(), price: Number(e.price) || 0, externalCode: e.code.trim() || null }));
+            void send((s) => vendorApi.updateModifierOption(e.id, { name: e.name.trim(), price: read.price, externalCode: e.code.trim() || null }, s.session, s.storeId));
           }}
         />
         <PillButton label="Cancel" variant="soft" style={{ alignSelf: 'stretch', marginTop: space.md }} onPress={() => setEditOption(null)} />
@@ -301,11 +340,11 @@ function LibraryGroupEditor({ group, groups, readOnly, onCreated, onDeleted, onE
         </T>
         {group && followUpFor ? followUpTargets(groups, group.id).map((t) => (
           <Chip key={t.id} label={t.name} selected={followUpFor.followUpGroupId === t.id}
-            onPress={() => { const o = followUpFor; setFollowUpFor(null); void send(() => vendorApi.updateModifierOption(o.id, { followUpGroupId: t.id })); }}
+            onPress={() => { const o = followUpFor; setFollowUpFor(null); void send((s) => vendorApi.updateModifierOption(o.id, { followUpGroupId: t.id }, s.session, s.storeId)); }}
             style={{ height: 38, paddingHorizontal: space.md, marginTop: space.sm, alignSelf: 'stretch' }} />
         )) : null}
         <Chip label="Opens nothing" selected={followUpFor?.followUpGroupId == null}
-          onPress={() => { const o = followUpFor; setFollowUpFor(null); if (o) void send(() => vendorApi.updateModifierOption(o.id, { followUpGroupId: null })); }}
+          onPress={() => { const o = followUpFor; setFollowUpFor(null); if (o) void send((s) => vendorApi.updateModifierOption(o.id, { followUpGroupId: null }, s.session, s.storeId)); }}
           style={{ height: 38, paddingHorizontal: space.md, marginTop: space.sm, alignSelf: 'stretch' }} />
         <PillButton label="Cancel" variant="soft" style={{ alignSelf: 'stretch', marginTop: space.lg }} onPress={() => setFollowUpFor(null)} />
       </PopupCard>
@@ -340,7 +379,7 @@ function LibraryGroupEditor({ group, groups, readOnly, onCreated, onDeleted, onE
         onConfirm={async () => {
           setDeleteAsk(false);
           if (!group) return;
-          const answer = await send(() => vendorApi.deleteModifierGroup(group.id));
+          const answer = await send((s) => vendorApi.deleteModifierGroup(group.id, s.session, s.storeId));
           if (answer?.deleted) {
             const n = Number(answer.removedFromItems) || 0;
             toast.show(n > 0 ? `Deleted. Removed from ${n} item${n === 1 ? '' : 's'}.` : 'Deleted.');
@@ -349,6 +388,60 @@ function LibraryGroupEditor({ group, groups, readOnly, onCreated, onDeleted, onE
         }}
         onClose={() => setDeleteAsk(false)}
       />
+
+      {/* [REVIEW-MENU-B S3-4] A shared choice leaves every item that uses the group: asked first. */}
+      <ConfirmDialog
+        open={!!deleteChoice}
+        title={deleteChoice ? libraryChoiceDeleteWords(deleteChoice.name, usedBy).title : ''}
+        body={deleteChoice ? libraryChoiceDeleteWords(deleteChoice.name, usedBy).body : ''}
+        confirmLabel="Remove choice"
+        cancelLabel="Keep it"
+        destructive
+        loading={write.isPending}
+        onConfirm={async () => {
+          const o = deleteChoice;
+          setDeleteChoice(null);
+          if (o) await send((s) => vendorApi.deleteModifierOption(o.id, s.session, s.storeId));
+        }}
+        onClose={() => setDeleteChoice(null)}
+      />
+
+      {/* [REVIEW-MENU-B S2-1] "Sets the price" on a shared group with choices: every item that uses it gets these prices,
+          shown (and editable) before anything is saved. */}
+      <PopupCard visible={!!sizeSwitch} onClose={() => setSizeSwitch(null)}>
+        <PopupTitle variant="title" center>{sizeSwitch?.turnOn ? 'Make these sizes?' : 'Stop setting the price?'}</PopupTitle>
+        {sizeSwitch && group ? (
+          <>
+            <T variant="body" tone="muted" center style={{ marginTop: space.sm }}>
+              {sizeSwitchWords(
+                sizeSwitchShown(group.options, sizeSwitch.typed),
+                { turnOn: sizeSwitch.turnOn, sharedBy: usedBy },
+                money,
+              )}
+            </T>
+            {sizeSwitch.turnOn && switchUsers.length > 1 ? (
+              <T variant="caption" tone="muted" center style={{ marginTop: space.xs }}>Started from the lowest price of the items that use it. Change any size before you save.</T>
+            ) : null}
+            <View style={{ gap: space.sm, marginTop: space.md, alignSelf: 'stretch' }}>
+              {group.options.map((o) => (
+                <View key={o.id} style={{ flexDirection: 'row', alignItems: 'center', gap: space.md }}>
+                  <T variant="label" style={{ flex: 1 }}>{o.name}</T>
+                  <InlineInput
+                    style={{ width: 120 }}
+                    value={sizeSwitch.typed[o.id] ?? ''}
+                    onChangeText={(t: string) => setSizeSwitch((a) => (a ? { ...a, typed: { ...a.typed, [o.id]: t }, problem: null } : a))}
+                    placeholder={choicePricePlaceholder(sizeSwitch.turnOn, vatAdded)}
+                    keyboardType="number-pad"
+                  />
+                </View>
+              ))}
+            </View>
+            {sizeSwitch.problem ? <T variant="caption" tone="error" center style={{ marginTop: space.sm }}>{sizeSwitch.problem}</T> : null}
+          </>
+        ) : null}
+        <PillButton label="Save these prices" style={{ alignSelf: 'stretch', marginTop: space.lg }} loading={write.isPending} disabled={readOnly} onPress={() => { void confirmSizeSwitch(); }} />
+        <PillButton label="Cancel" variant="soft" style={{ alignSelf: 'stretch', marginTop: space.md }} onPress={() => setSizeSwitch(null)} />
+      </PopupCard>
     </View>
   );
 }
