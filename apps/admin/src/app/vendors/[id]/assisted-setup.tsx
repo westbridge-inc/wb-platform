@@ -4,7 +4,8 @@ import { useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   applyAssistedMenu, fetchAssistedSetup, previewAssistedMenuCsv, previewAssistedMenuXlsx, recordAssistedConsent, uploadAssistedItemPhoto,
-  uploadAssistedPaper, type AssistedChannel, type AssistedConsent, type AssistedPaper, type AssistedSetupView, type MenuPreview,
+  uploadAssistedPaper, errorCode, errorDetails, type AssistedAgreedAs, type AssistedChannel, type AssistedConsent, type AssistedPaper,
+  type AssistedSetupView, type MenuColumnChoice, type MenuPreview,
 } from '@/lib/api';
 import { documentName } from '@/components/mc/ActivationChecklist';
 import { MutationError } from '@/components/MutationError';
@@ -15,7 +16,7 @@ import { gyDate } from '@/lib/dates';
 // ---------------------------------------------------------------------------
 // [ASSISTED SETUP · owner 12 Nov 2026] On a store's page: set the store up FOR it, with its OK.
 //
-// 1. Record the store's OK (who agreed, their role, how, when, a reference), after reading it the words below.
+// 1. Record the store's OK (who agreed: the account holder or a manager; how, when, a reference), after reading it the words.
 // 2. Upload its papers: its own required and optional list, each filed exactly as if the store sent it.
 // 3. Import its menu: preview first (the row errors the store itself would see), then apply.
 // 4. Add item photos.
@@ -30,6 +31,20 @@ export const ASSISTED_CHANNEL_WORDS: Record<AssistedChannel, string> = {
   EMAIL: 'Email',
 };
 
+/** [#2495 review] Who said yes, as a choice. A person's own papers (an ID) need the account holder's own OK. */
+export const ASSISTED_AGREED_AS_WORDS: Record<AssistedAgreedAs, string> = {
+  ACCOUNT_HOLDER: 'The account holder themself',
+  MANAGER: 'A manager at the store',
+};
+
+/** What the panel says on a step the store signs, ticks or consents to itself (no upload offered). */
+export const STORE_DOES_THIS_ITSELF = 'The store does this itself, in the Swift app or on the website.';
+/** On a person's own paper while the OK covering today is a manager's. */
+export const NEEDS_HOLDER_OK = 'A person’s own paper: Swift adds it only with the account holder’s own OK.';
+
+/** A refusal that means the OK no longer covers today (14 days passed, or the account changed hands): read it again. */
+export const OK_ENDED_CODES: ReadonlySet<string> = new Set(['ASSISTED_CONSENT_REQUIRED']);
+
 export const ASSISTED_SAME_ADMIN_NOTE =
   'A paper you upload here must be approved by another admin. If you are the only admin, the Review Center asks you to confirm you checked it yourself.';
 
@@ -38,19 +53,21 @@ export function liveConsentOf(consents: readonly AssistedConsent[]): AssistedCon
   return consents.find((c) => c.live) ?? null;
 }
 
-/** A paper's place on the store's list, from the newest copy the store has of that type. */
-export function paperState(docType: string, documents: readonly AssistedPaper[]): { words: string; tone: 'good' | 'warn' | 'bad' | 'neutral'; addedBySwift: boolean } {
+/** A paper's place on the store's list, from the newest copy the store has of that type. [#2495 review B S3-1] An expired
+ *  copy says so, and an approved copy the gate still counts as missing (past its date) is out of date. */
+export function paperState(docType: string, documents: readonly AssistedPaper[], missing: readonly string[] = []): { words: string; tone: 'good' | 'warn' | 'bad' | 'neutral'; addedBySwift: boolean } {
   const doc = documents.find((d) => d.docType === docType);
   if (!doc) return { words: 'Not sent yet', tone: 'neutral', addedBySwift: false };
   const addedBySwift = doc.addedBySwift === true;
-  if (doc.status === 'APPROVED') return { words: 'Approved', tone: 'good', addedBySwift };
+  if (doc.status === 'EXPIRED') return { words: 'Expired', tone: 'bad', addedBySwift };
+  if (doc.status === 'APPROVED') return missing.includes(docType) ? { words: 'Out of date', tone: 'bad', addedBySwift } : { words: 'Approved', tone: 'good', addedBySwift };
   if (doc.status === 'REJECTED') return { words: 'Rejected', tone: 'bad', addedBySwift };
   return { words: 'Waiting for review', tone: 'warn', addedBySwift };
 }
 
-/** One OK in words: who (their name and the role they gave, both as the admin typed them), how, when, the reference. */
+/** One OK in words: who (their name, as the admin typed it, and who they are), how, when, the reference. */
 export function consentLine(c: AssistedConsent): string {
-  const who = `${c.agreedByName} (${c.agreedByRole})`;
+  const who = `${c.agreedByName} (${(ASSISTED_AGREED_AS_WORDS[c.agreedAs] ?? 'Someone at the store').toLowerCase()})`;
   return `${who}, ${ASSISTED_CHANNEL_WORDS[c.channel].toLowerCase()}, ${gyDate(c.agreedAt)}${c.reference ? ` · ${c.reference}` : ''}`;
 }
 
@@ -62,7 +79,7 @@ const nowLocal = () => {
 function ConsentStep({ view, vendorId, onDone }: { view: AssistedSetupView; vendorId: string; onDone: () => void }) {
   const dialog = useActionDialog();
   const [name, setName] = useState('');
-  const [role, setRole] = useState('');
+  const [agreedAs, setAgreedAs] = useState<AssistedAgreedAs | ''>('');
   const [channel, setChannel] = useState<AssistedChannel>('IN_PERSON');
   const [agreedAt, setAgreedAt] = useState(nowLocal);
   const [reference, setReference] = useState('');
@@ -72,13 +89,13 @@ function ConsentStep({ view, vendorId, onDone }: { view: AssistedSetupView; vend
       const reason = await dialog.ask({ action: 'record this store’s OK for Swift to set it up', subject: view.store.name });
       if (!reason) return null;
       return recordAssistedConsent(vendorId, {
-        agreedByName: name.trim(), agreedByRole: role.trim(), channel, agreedAt: new Date(agreedAt).toISOString(),
+        agreedByName: name.trim(), agreedAs: agreedAs as AssistedAgreedAs, channel, agreedAt: new Date(agreedAt).toISOString(),
         ...(reference.trim() ? { reference: reference.trim() } : {}), consentVersion: view.script.consentVersion,
       }, reason);
     },
-    onSuccess: (result) => { if (result) { setName(''); setRole(''); setReference(''); setRead(false); onDone(); } },
+    onSuccess: (result) => { if (result) { setName(''); setAgreedAs(''); setReference(''); setRead(false); onDone(); } },
   });
-  const ready = name.trim().length >= 2 && role.trim().length >= 2 && read && !!agreedAt;
+  const ready = name.trim().length >= 2 && agreedAs !== '' && read && !!agreedAt;
   return (
     <div className="grid gap-3">
       <h3 className="font-semibold">1. The store’s OK</h3>
@@ -89,7 +106,10 @@ function ConsentStep({ view, vendorId, onDone }: { view: AssistedSetupView; vend
       </blockquote>
       <div className="grid gap-2 sm:grid-cols-2">
         <label className="mc-field">Who agreed (their name)<input className="mc-input" value={name} maxLength={120} onChange={(e) => setName(e.target.value)} /></label>
-        <label className="mc-field">Their role at the store<input className="mc-input" value={role} maxLength={60} placeholder="Owner, manager…" onChange={(e) => setRole(e.target.value)} /></label>
+        <label className="mc-field">Who they are<select className="mc-input" value={agreedAs} onChange={(e) => setAgreedAs(e.target.value as AssistedAgreedAs | '')}>
+          <option value="">Choose…</option>
+          {(Object.keys(ASSISTED_AGREED_AS_WORDS) as AssistedAgreedAs[]).map((a) => <option key={a} value={a}>{ASSISTED_AGREED_AS_WORDS[a]}</option>)}
+        </select></label>
         <label className="mc-field">How<select className="mc-input" value={channel} onChange={(e) => setChannel(e.target.value as AssistedChannel)}>
           {(Object.keys(ASSISTED_CHANNEL_WORDS) as AssistedChannel[]).map((c) => <option key={c} value={c}>{ASSISTED_CHANNEL_WORDS[c]}</option>)}
         </select></label>
@@ -115,7 +135,8 @@ function ConsentStep({ view, vendorId, onDone }: { view: AssistedSetupView; vend
   );
 }
 
-function PapersStep({ view, vendorId, consentId, onDone }: { view: AssistedSetupView; vendorId: string; consentId: string | null; onDone: () => void }) {
+function PapersStep({ view, vendorId, consent, onDone }: { view: AssistedSetupView; vendorId: string; consent: AssistedConsent | null; onDone: () => void }) {
+  const consentId = consent?.id ?? null;
   const dialog = useActionDialog();
   const [files, setFiles] = useState<Record<string, File | null>>({});
   const [notice, setNotice] = useState<string | null>(null);
@@ -134,7 +155,11 @@ function PapersStep({ view, vendorId, consentId, onDone }: { view: AssistedSetup
       setNotice(`${documentName(docType)} sent. It waits in the Review Center. ${ASSISTED_SAME_ADMIN_NOTE}`);
       onDone();
     },
+    // [#2495 review S4] An OK that ended while the panel was open: read it again, so it says "Ended".
+    onError: (error) => { if (OK_ENDED_CODES.has(errorCode(error) ?? '')) onDone(); },
   });
+  const storeOnly = new Set(view.papers.storeOnly ?? []);
+  const personal = new Set(view.papers.personal ?? []);
   const list: Array<{ docType: string; required: boolean }> = [
     ...view.papers.checklist.map((docType) => ({ docType, required: true })),
     ...view.papers.optional.filter((d) => !view.papers.checklist.includes(d)).map((docType) => ({ docType, required: false })),
@@ -146,17 +171,24 @@ function PapersStep({ view, vendorId, consentId, onDone }: { view: AssistedSetup
       {notice ? <p className="mc-muted text-sm" role="status">{notice}</p> : null}
       <ul className="grid gap-2">
         {list.map(({ docType, required }) => {
-          const state = paperState(docType, view.papers.documents);
+          const state = paperState(docType, view.papers.documents, view.papers.missing);
+          const own = storeOnly.has(docType);
+          // A person's own paper only on the account holder's own OK.
+          const needsHolder = personal.has(docType) && consent !== null && consent.agreedAs !== 'ACCOUNT_HOLDER';
           return (
             <li key={docType} className={`mc-doc mc-doc-${state.tone}`}>
               <div className="min-w-0 flex-1">
                 <p className="font-semibold">{documentName(docType)} <span className="mc-muted text-xs">{required ? 'Required' : 'Optional'}</span></p>
                 {state.addedBySwift ? <p className="mc-muted text-xs">Added by Swift with the store’s OK</p> : null}
-                <input aria-label={`File for ${documentName(docType)}`} type="file" accept="image/jpeg,image/png,image/webp,application/pdf" disabled={!consentId}
-                  onChange={(e) => setFiles((f) => ({ ...f, [docType]: e.target.files?.[0] ?? null }))} />
+                {own ? <p className="mc-muted text-xs">{STORE_DOES_THIS_ITSELF}</p> : null}
+                {needsHolder ? <p className="mc-muted text-xs">{NEEDS_HOLDER_OK}</p> : null}
+                {own ? null : (
+                  <input aria-label={`File for ${documentName(docType)}`} type="file" accept="image/jpeg,image/png,image/webp,application/pdf" disabled={!consentId || needsHolder}
+                    onChange={(e) => setFiles((f) => ({ ...f, [docType]: e.target.files?.[0] ?? null }))} />
+                )}
               </div>
               <span className={`mc-badge${state.tone === 'neutral' ? '' : ` mc-tone-${state.tone}`}`}>{state.words}</span>
-              <button type="button" className="mc-btn" disabled={!consentId || !files[docType] || upload.isPending} onClick={() => upload.mutate(docType)}>Upload…</button>
+              {own ? null : <button type="button" className="mc-btn" disabled={!consentId || needsHolder || !files[docType] || upload.isPending} onClick={() => upload.mutate(docType)}>Upload…</button>}
             </li>
           );
         })}
@@ -166,20 +198,39 @@ function PapersStep({ view, vendorId, consentId, onDone }: { view: AssistedSetup
   );
 }
 
+/** [#2495 review B S3-2] The columns a menu file must have, in words, for the column picker. */
+export const MENU_FIELD_WORDS: Record<string, string> = { name: 'Item name', basePrice: 'Price', category: 'Section' };
+
+/** What the server asks for when it cannot read a file by itself: a till store to choose, or columns to pick. */
+export function menuQuestion(error: unknown): { tillStores: string[] } | { headers: string[]; unmapped: string[] } | null {
+  const code = errorCode(error);
+  const details = errorDetails(error) ?? {};
+  if (code === 'CHOOSE_TILL_STORE' && Array.isArray(details['stores'])) return { tillStores: details['stores'] as string[] };
+  if (code === 'UNMAPPED_COLUMNS' && Array.isArray(details['headers'])) {
+    const mapping = (details['mapping'] ?? {}) as Record<string, string>;
+    return { headers: (details['headers'] as string[]).filter(Boolean), unmapped: Object.keys(MENU_FIELD_WORDS).filter((f) => !mapping[f]) };
+  }
+  return null;
+}
+
 function MenuStep({ view, vendorId, consentId, onDone }: { view: AssistedSetupView; vendorId: string; consentId: string | null; onDone: () => void }) {
   const dialog = useActionDialog();
   const [file, setFile] = useState<File | null>(null);
   const [preview, setPreview] = useState<MenuPreview | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  // The store's own choices, as its own import asks them: its till store, and the columns it picks.
+  const [choice, setChoice] = useState<MenuColumnChoice>({});
   const read = useMutation({
     mutationFn: async () => {
       if (!file || !consentId) return null;
       const isXlsx = /\.xlsx$/i.test(file.name);
-      const answer = isXlsx ? await previewAssistedMenuXlsx(vendorId, consentId, file, file.name) : await previewAssistedMenuCsv(vendorId, consentId, await file.text());
+      const answer = isXlsx ? await previewAssistedMenuXlsx(vendorId, consentId, file, file.name, choice) : await previewAssistedMenuCsv(vendorId, consentId, await file.text(), choice);
       return answer.data;
     },
     onSuccess: (data) => { setPreview(data ?? null); setNotice(null); },
+    onError: (error) => { if (OK_ENDED_CODES.has(errorCode(error) ?? '')) onDone(); },
   });
+  const question = read.isError ? menuQuestion(read.error) : null;
   const apply = useMutation({
     mutationFn: async () => {
       if (!preview || !consentId) return null;
@@ -193,6 +244,7 @@ function MenuStep({ view, vendorId, consentId, onDone }: { view: AssistedSetupVi
       setNotice(`Added ${result.imported} item${result.imported === 1 ? '' : 's'}.${result.failedCount ? ` ${result.failedCount} row${result.failedCount === 1 ? ' was' : 's were'} not added.` : ''}`);
       onDone();
     },
+    onError: (error) => { if (OK_ENDED_CODES.has(errorCode(error) ?? '')) onDone(); },
   });
   return (
     <div className="grid gap-3">
@@ -201,10 +253,28 @@ function MenuStep({ view, vendorId, consentId, onDone }: { view: AssistedSetupVi
       {!view.canAddItems ? <p className="mc-verdict mc-verdict-warn">This store cannot add new items until its papers are approved. You can preview a file now and apply it after.</p> : null}
       <div className="flex flex-wrap items-center gap-2">
         <input aria-label="Menu file" type="file" accept=".csv,text/csv,.xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" disabled={!consentId}
-          onChange={(e) => { setFile(e.target.files?.[0] ?? null); setPreview(null); }} />
+          onChange={(e) => { setFile(e.target.files?.[0] ?? null); setPreview(null); setChoice({}); }} />
         <button type="button" className="mc-btn" disabled={!consentId || !file || read.isPending} onClick={() => read.mutate()}>{read.isPending ? 'Reading…' : 'Preview'}</button>
       </div>
       <MutationError error={read.error} label="The file could not be read" />
+      {question && 'tillStores' in question ? (
+        <label className="mc-field">Which till store is this Swift store?<select className="mc-input" value={choice.tillStore ?? ''} onChange={(e) => setChoice((c) => ({ ...c, tillStore: e.target.value || undefined }))}>
+          <option value="">Choose…</option>
+          {question.tillStores.map((t) => <option key={t} value={t}>{t}</option>)}
+        </select></label>
+      ) : null}
+      {question && 'headers' in question ? (
+        <div className="grid gap-2 sm:grid-cols-3">
+          {question.unmapped.map((field) => (
+            <label key={field} className="mc-field">{MENU_FIELD_WORDS[field]} column<select className="mc-input" value={choice.mapping?.[field] ?? ''}
+              onChange={(e) => setChoice((c) => ({ ...c, mapping: { ...(c.mapping ?? {}), [field]: e.target.value } }))}>
+              <option value="">Choose…</option>
+              {question.headers.map((h) => <option key={h} value={h}>{h}</option>)}
+            </select></label>
+          ))}
+        </div>
+      ) : null}
+      {question ? <div><button type="button" className="mc-btn" disabled={read.isPending} onClick={() => read.mutate()}>Preview again with these choices</button></div> : null}
       {preview ? (
         <div className="grid gap-2">
           <p className="text-sm"><strong>{preview.plan.imported}</strong> item{preview.plan.imported === 1 ? '' : 's'} would be added; <strong>{preview.plan.failedCount}</strong> row{preview.plan.failedCount === 1 ? '' : 's'} would not.</p>
@@ -243,6 +313,7 @@ function PhotosStep({ data, vendorId, consentId, onDone }: { data: AssistedSetup
       return item.id;
     },
     onSuccess: (id) => { if (id) { setFiles((f) => ({ ...f, [id]: null })); onDone(); } },
+    onError: (error) => { if (OK_ENDED_CODES.has(errorCode(error) ?? '')) onDone(); },
   });
   return (
     <div className="grid gap-3">
@@ -290,7 +361,7 @@ export function AssistedSetupPanel({ vendorId }: { vendorId: string }) {
         <div className="grid gap-6 mt-3">
           <ConsentStep view={data} vendorId={vendorId} onDone={refresh} />
           {!consent ? <p className="mc-verdict mc-verdict-warn">Record the store’s OK first. Papers, menu and photos open after it.</p> : null}
-          <PapersStep view={data} vendorId={vendorId} consentId={consent?.id ?? null} onDone={refresh} />
+          <PapersStep view={data} vendorId={vendorId} consent={consent} onDone={refresh} />
           <MenuStep view={data} vendorId={vendorId} consentId={consent?.id ?? null} onDone={refresh} />
           <PhotosStep data={data} vendorId={vendorId} consentId={consent?.id ?? null} onDone={refresh} />
         </div>

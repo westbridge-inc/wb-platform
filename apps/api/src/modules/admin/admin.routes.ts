@@ -62,13 +62,13 @@ import { ABSENT, snapshot, type EntitySnapshot } from './audit-change';
 import { adminAuditRow, auditWithin, markReplayAudited, verifyInlineRow, wroteAuditInline, type AuditRequestLike } from './audit-within';
 import {
   ASSISTED_CONSENT_VALID_DAYS, ASSISTED_DOCUMENT_CONSENT, ASSISTED_PRIVACY_NOTICE_VERSION, ASSISTED_SETUP_QUESTION, assertAssistableDocType,
-  assistedItemMarks, consentInputSchema, consentsOf, liveConsent, publishAssistedConsentWords, recordAction, recordAssistedConsent,
-  recordAssistedFiling, storeForAssist,
+  NEVER_ASSISTED_DOC_TYPES, assertHolderTakesPapers, assistedItemMarks, consentInputSchema, consentsOf, isPersonalPaper, liveConsent,
+  recordAction, recordAssistedConsent, recordAssistedFiling, storeForAssist,
 } from './assisted-setup';
 import { sealVerificationUpload } from '../verification/upload-seal';
 import { listingAllowed } from '../vendor/listing-gate';
 import { setItemPhoto } from '../vendor/item-photo';
-import { XLSX_MAX_COMPRESSED_BYTES, automapBodySchema, automapRows, importCsvSchema, readXlsxRows, runMenuImport } from '../vendor/menu-import';
+import { XLSX_MAX_COMPRESSED_BYTES, automapBodySchema, automapRows, columnChoiceSchema, importCsvSchema, readXlsxRows, runMenuImport } from '../vendor/menu-import';
 import { keepPublicPhoto } from '../../utils/owned-photo-upload';
 import { parseCsvWithHeader } from '../../utils/csv';
 import { toSourceCsv } from '../../utils/catalogue-map';
@@ -2041,6 +2041,13 @@ export async function adminRoutes(app: FastifyInstance) {
   const assistedDeps = () => ({ prisma: app.prisma, storage: assistedPhotoStorage, log: app.log });
   const assistedAudit = (tx: Prisma.TransactionClient, request: unknown, entityId: string, extra: Record<string, string | number | boolean | null>) =>
     auditWithin(tx, request as AuditRequestLike, app.prefix, { entityId, extra });
+  /** [#2495 review A S3-1] The store an action is done for, never by an admin who is its account holder or shares an
+   *  identity with them (recusal, as for a review decision). */
+  const assistStoreFor = async (adminId: string, vendorId: string) => {
+    const store = await storeForAssist(app.prisma, vendorId);
+    await assertNotRecused(app.prisma, adminId, store.holderId);
+    return store;
+  };
   const assistedConsentIdOf = (request: { query: unknown }) =>
     z.object({ consentId: z.string().min(1).max(64).optional() }).passthrough().parse(request.query ?? {}).consentId;
 
@@ -2068,7 +2075,13 @@ export async function adminRoutes(app: FastifyInstance) {
         script: { question: ASSISTED_SETUP_QUESTION, consentText: ASSISTED_DOCUMENT_CONSENT.text, consentVersion: ASSISTED_DOCUMENT_CONSENT.version },
         validDays: ASSISTED_CONSENT_VALID_DAYS,
         consents,
-        papers: { checklist: papers.checklist, optional: papers.optional, missing: papers.missing, documents: papers.documents },
+        papers: {
+          checklist: papers.checklist, optional: papers.optional, missing: papers.missing, documents: papers.documents,
+          // [#2495 review] What the store signs, ticks or consents to itself (no upload), and a person's own papers (only on
+          // the account holder's own OK).
+          storeOnly: [...papers.checklist, ...papers.optional].filter((d) => NEVER_ASSISTED_DOC_TYPES.has(d)),
+          personal: [...papers.checklist, ...papers.optional].filter((d) => !NEVER_ASSISTED_DOC_TYPES.has(d) && isPersonalPaper(d)),
+        },
         items: items.map((i) => ({ id: i.id, name: i.name, category: i.category?.name ?? null, imageUrl: i.imageUrl, ...(marks.get(i.id) ?? {}) })),
         canAddItems,
       },
@@ -2079,12 +2092,12 @@ export async function adminRoutes(app: FastifyInstance) {
   app.post('/vendors/:id/assisted-setup/consent', { preHandler: [adminGuard] }, async (request, reply) => {
     const { id } = request.params as { id: string };
     const body = consentInputSchema.parse(request.body ?? {});
-    const store = await storeForAssist(app.prisma, id);
+    const store = await assistStoreFor(request.user.userId, id);
     const reason = reasonOf(request.body, request.headers as never) ?? '';
     const consent = await recordAssistedConsent(app.prisma, {
       store, adminId: request.user.userId, body, reason,
       audit: (tx, consentId) => assistedAudit(tx, request, store.id, {
-        assistedConsentId: consentId, channel: body.channel, agreedByRole: body.agreedByRole,
+        assistedConsentId: consentId, channel: body.channel, agreedAs: body.agreedAs,
         agreedAt: body.agreedAt.toISOString(), consentVersion: ASSISTED_DOCUMENT_CONSENT.version,
       }),
     });
@@ -2098,22 +2111,23 @@ export async function adminRoutes(app: FastifyInstance) {
     const { id } = request.params as { id: string };
     const { docType } = z.object({ docType: z.string().min(2).max(60) }).passthrough().parse(request.query ?? {});
     const consentId = assistedConsentIdOf(request);
-    const store = await storeForAssist(app.prisma, id);
+    const store = await assistStoreFor(request.user.userId, id);
     const consent = await liveConsent(app.prisma, store, consentId);
+    // [#2495 review B S2-1] Everything the filing would refuse is refused here, before the file is stored.
+    assertHolderTakesPapers(store);
     const lists = await verification.getStatus(store.holderId, store.vendorType);
-    assertAssistableDocType(docType, lists);
+    assertAssistableDocType(docType, lists, consent);
     const file = await request.file();
     if (!file) throw new AppError(400, 'NO_FILE', 'Attach a document file');
     const buffer = await file.toBuffer();
     const fileUrl = await sealVerificationUpload(app.prisma, notifications, { ownerUserId: store.holderId, buffer, mimetype: file.mimetype, log: request.log });
-    await publishAssistedConsentWords(app.prisma);
     const adminId = request.user.userId;
     const doc = await verification.submitDocument(store.holderId, store.vendorType, docType, fileUrl, ASSISTED_PRIVACY_NOTICE_VERSION, undefined, {
       assisted: {
         byId: adminId,
         consentId: consent.id,
         afterCreate: async (tx, filed) => {
-          await recordAssistedFiling(tx, { store, consentId: consent.id, channel: consent.channel, adminId, docId: filed.id, docType, ip: request.ip ?? null });
+          await recordAssistedFiling(tx, { store, consentId: consent.id, adminId, docId: filed.id, docType });
           await assistedAudit(tx, request, store.id, { assistedConsentId: consent.id, documentId: filed.id, docType, accountHolderId: store.holderId });
         },
       },
@@ -2134,7 +2148,7 @@ export async function adminRoutes(app: FastifyInstance) {
   app.post('/vendors/:id/assisted-setup/menu/preview', { preHandler: [adminGuard] }, async (request) => {
     const { id } = request.params as { id: string };
     const body = automapBodySchema.extend({ consentId: z.string().min(1).max(64) }).parse(request.body ?? {});
-    const store = await storeForAssist(app.prisma, id);
+    const store = await assistStoreFor(request.user.userId, id);
     await liveConsent(app.prisma, store, body.consentId);
     await assertStoreAllowed(app.prisma, store.id);
     const automap = await automapRows(parseCsvWithHeader(body.csv), { mode: 'add', ...(body.tillStore ? { tillStore: body.tillStore } : {}), ...(body.mapping ? { mapping: body.mapping } : {}) });
@@ -2145,7 +2159,13 @@ export async function adminRoutes(app: FastifyInstance) {
   app.post('/vendors/:id/assisted-setup/menu/preview-xlsx', { preHandler: [adminGuard] }, async (request) => {
     const { id } = request.params as { id: string };
     const consentId = assistedConsentIdOf(request);
-    const store = await storeForAssist(app.prisma, id);
+    // [#2495 review B S3-2] The store's own column choices ride along: its till store, and the columns it picked
+    // (a JSON object in the query, as the multipart body carries only the file).
+    const choiceQuery = z.object({ tillStore: z.string().trim().min(1).max(100).optional(), mapping: z.string().max(4000).optional() }).passthrough().parse(request.query ?? {});
+    let mapping: unknown;
+    try { mapping = choiceQuery.mapping ? JSON.parse(choiceQuery.mapping) : undefined; } catch { throw new AppError(400, 'BAD_MAPPING', 'The column choices could not be read. Choose the columns again.'); }
+    const choice = columnChoiceSchema.parse({ mode: 'add', ...(choiceQuery.tillStore ? { tillStore: choiceQuery.tillStore } : {}), ...(mapping ? { mapping } : {}) });
+    const store = await assistStoreFor(request.user.userId, id);
     await liveConsent(app.prisma, store, consentId);
     await assertStoreAllowed(app.prisma, store.id);
     let buffer: Buffer;
@@ -2162,7 +2182,7 @@ export async function adminRoutes(app: FastifyInstance) {
     }
     const { headers, rows } = await readXlsxRows(buffer);
     const sourceCsv = toSourceCsv(headers.filter(Boolean), rows);
-    const automap = await automapRows(rows, { mode: 'add' }, sourceCsv.length <= 2_000_000 ? sourceCsv : null);
+    const automap = await automapRows(rows, choice, sourceCsv.length <= 2_000_000 ? sourceCsv : null);
     return { success: true, data: await assistedMenuPreview(store.id, automap) };
   });
 
@@ -2171,7 +2191,7 @@ export async function adminRoutes(app: FastifyInstance) {
   app.post('/vendors/:id/assisted-setup/menu/apply', { preHandler: [adminGuard] }, async (request) => {
     const { id } = request.params as { id: string };
     const body = importCsvSchema.extend({ consentId: z.string().min(1).max(64), reason: z.string().optional() }).strict().parse(request.body ?? {});
-    const store = await storeForAssist(app.prisma, id);
+    const store = await assistStoreFor(request.user.userId, id);
     const consent = await liveConsent(app.prisma, store, body.consentId);
     // The store's own gate: an unverified store adds no new items, whoever presses the button.
     if (!(await listingAllowed(app.prisma, verification, store.id))) {
@@ -2199,7 +2219,7 @@ export async function adminRoutes(app: FastifyInstance) {
   app.post('/vendors/:id/assisted-setup/items/:itemId/photo', { preHandler: [adminGuard] }, async (request) => {
     const { id, itemId } = request.params as { id: string; itemId: string };
     const consentId = assistedConsentIdOf(request);
-    const store = await storeForAssist(app.prisma, id);
+    const store = await assistStoreFor(request.user.userId, id);
     const consent = await liveConsent(app.prisma, store, consentId);
     const existing = await tenantPrisma.item.findFirst({ where: { id: itemId, vendorId: store.id, archivedAt: null }, select: { id: true } });
     if (!existing) throw new NotFoundError('Item', itemId);

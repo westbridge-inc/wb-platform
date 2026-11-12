@@ -338,7 +338,7 @@ export const EXPORT_REGISTER: readonly ExportEntry[] = [
     // admin's id and their reason are staff work; the store row is bookkeeping.
     category: 'assistedSetupConsents', model: 'AssistedSetupConsent', by: ['holderId'], key: 'id',
     omit: { vendorId: 'SYSTEM', recordedByAdminId: 'OTHER_PERSON', reason: 'INTERNAL_NOTE' },
-    fields: ['id', 'holderId', 'agreedByName', 'agreedByRole', 'channel', 'agreedAt', 'reference', 'consentDocumentType', 'consentVersion', 'createdAt'],
+    fields: ['id', 'holderId', 'agreedByName', 'agreedAs', 'channel', 'agreedAt', 'reference', 'consentDocumentType', 'consentVersion', 'createdAt'],
   },
   {
     // [O-1] The Swift-bridged calls the person asked for on their orders: which party (a role, never a

@@ -1,9 +1,13 @@
-import type { AssistedActionKind, AssistedConsentChannel, Prisma, PrismaClient, VendorType } from '@prisma/client';
+import type { AssistedActionKind, AssistedAgreedAs, AssistedConsentChannel, Prisma, PrismaClient, VendorType } from '@prisma/client';
 import { z } from '../../lib/zod';
 import { AppError, NotFoundError } from '../../utils/errors';
-import { publishLegalDocumentOnce, recordConsent } from '../legal/consent.service';
-import { UPLOAD_CONSENT, consentSubjectForRole } from '../verification/upload-consent';
-import { POLICE_CLEARANCE_DOC_TYPE } from '../verification/doc-registry';
+import { UPLOAD_CONSENT } from '../verification/upload-consent';
+import { BUCKET_OF, FOOD_HANDLER_ATTESTATION_TYPE, OWN_NAME_DOC_TYPE, POLICE_CLEARANCE_DOC_TYPE } from '../verification/doc-registry';
+import { VAT_CERTIFICATE_DOC_TYPE } from '../store-vat/store-vat';
+import { isDocumentValidAt } from '../verification/document-validity';
+
+/** The filing's renewal window (verification.service REMINDER_WINDOW_DAYS): a current paper reopens 30 days before it lapses. */
+const RENEWAL_WINDOW_DAYS = 30;
 
 /**
  * [ASSISTED SETUP · owner 12 Nov 2026] "A Swift admin uploads a store's papers and menu for it from the console, with the
@@ -47,12 +51,31 @@ export const ASSISTED_SETUP_QUESTION =
 
 export const ASSISTED_CONSENT_CHANNELS = ['IN_PERSON', 'PHONE', 'WHATSAPP', 'EMAIL'] as const satisfies readonly AssistedConsentChannel[];
 
-/** Never filed by Swift for a store: a police clearance carries its own consent, given by the person themselves. */
-const NEVER_ASSISTED_DOC_TYPES: ReadonlySet<string> = new Set([POLICE_CLEARANCE_DOC_TYPE]);
+export const ASSISTED_AGREED_AS = ['ACCOUNT_HOLDER', 'MANAGER'] as const satisfies readonly AssistedAgreedAs[];
+
+/**
+ * [#2495 review B S2-1] Never filed by Swift for a store, refused BEFORE anything is stored: what the store signs, ticks
+ * or consents to itself. A police clearance carries its own consent, given by the person; the own-name declaration and
+ * the food-handlers tick are the owner's own signed words; the VAT certificate has its own route and a person's decision.
+ * The panel draws these as "The store does this itself", with no upload.
+ */
+export const NEVER_ASSISTED_DOC_TYPES: ReadonlySet<string> = new Set([
+  POLICE_CLEARANCE_DOC_TYPE, OWN_NAME_DOC_TYPE, FOOD_HANDLER_ATTESTATION_TYPE, VAT_CERTIFICATE_DOC_TYPE,
+]);
+
+/**
+ * [#2495 review A S2-1 / B S3-3 · COORD ruling 12 Nov 2026] A paper that is a PERSON's own (an ID, a personal licence: the
+ * registry's PERSONAL bucket; an unknown type counts as PERSONAL, the most careful reading) is filed by Swift only on an
+ * OK the account holder gave themself. Business papers may be OK'd by the holder or a manager.
+ */
+export function isPersonalPaper(docType: string): boolean {
+  return (BUCKET_OF[docType] ?? 'PERSONAL') === 'PERSONAL';
+}
 
 export const consentInputSchema = z.object({
   agreedByName: z.string().trim().min(2).max(120),
-  agreedByRole: z.string().trim().min(2).max(60),
+  /** Who said yes, as a choice: the account holder themself, or a manager at the store. Never free text. */
+  agreedAs: z.enum(ASSISTED_AGREED_AS),
   channel: z.enum(ASSISTED_CONSENT_CHANNELS),
   agreedAt: z.coerce.date(),
   reference: z.string().trim().min(1).max(120).optional(),
@@ -70,6 +93,15 @@ export interface AssistStore {
   vendorType: VendorType;
   status: string;
   holderId: string;
+  holderStatus: string;
+}
+
+/** [#2495 review B S2-1] A suspended account holder takes no new paper (the filing would refuse it): refused before the
+ *  file is stored. */
+export function assertHolderTakesPapers(store: AssistStore): void {
+  if (store.holderStatus === 'SUSPENDED') {
+    throw new AppError(409, 'ACCOUNT_INACTIVE', 'This store’s account is suspended. No paper can be added for it until it is reinstated.');
+  }
 }
 
 /** The store the admin acts for, read through the admin's tenant wall (another market's store: not found). */
@@ -82,7 +114,7 @@ export async function storeForAssist(db: PrismaClient, vendorId: string): Promis
   if (['DEACTIVATED', 'BANNED'].includes(store.owner.user.status)) {
     throw new AppError(409, 'ACCOUNT_INACTIVE', 'This store’s account is closed. Nothing can be added for it.');
   }
-  return { id: store.id, name: store.name, tenantId: store.tenantId, vendorType: store.vendorType, status: store.status, holderId: store.owner.userId };
+  return { id: store.id, name: store.name, tenantId: store.tenantId, vendorType: store.vendorType, status: store.status, holderId: store.owner.userId, holderStatus: store.owner.user.status };
 }
 
 export function consentStillLive(consent: { agreedAt: Date }, now = new Date()): boolean {
@@ -131,7 +163,7 @@ export async function recordAssistedConsent(
         vendorId: store.id,
         holderId: store.holderId,
         agreedByName: body.agreedByName,
-        agreedByRole: body.agreedByRole,
+        agreedAs: body.agreedAs,
         channel: body.channel,
         agreedAt: body.agreedAt,
         reference: body.reference ?? null,
@@ -146,46 +178,39 @@ export async function recordAssistedConsent(
   });
 }
 
-/** A doc type Swift may file for this store: on its checklist or its optional list, and never one that carries its own consent. */
-export function assertAssistableDocType(docType: string, lists: { checklist: readonly string[]; optional: readonly string[] }): void {
+/** A doc type Swift may file for this store, under this OK, checked before anything is stored: not one the store signs,
+ *  ticks or consents to itself; on the store's checklist or optional list; a person's own paper only on the account
+ *  holder's own OK; and not one already approved and current beyond its renewal window (the filing would refuse it). */
+export function assertAssistableDocType(
+  docType: string,
+  lists: { checklist: readonly string[]; optional: readonly string[]; documents?: ReadonlyArray<{ docType: string; status: string; expiresAt: Date | string | null }> },
+  consent: { agreedAs: AssistedAgreedAs },
+  now = new Date(),
+): void {
   if (NEVER_ASSISTED_DOC_TYPES.has(docType)) {
-    throw new AppError(400, 'NOT_ASSISTED_DOC_TYPE', 'A police clearance has its own consent: the person sends it themselves, in the Swift app or on the website.');
+    throw new AppError(400, 'NOT_ASSISTED_DOC_TYPE', 'The store does this itself, in the Swift app or on the website: it signs, ticks or consents to it there. Swift cannot add it for the store.');
   }
   if (!lists.checklist.includes(docType) && !lists.optional.includes(docType)) {
     throw new AppError(400, 'INVALID_DOC_TYPE', 'This paper is not on the store’s list.');
   }
+  if (isPersonalPaper(docType) && consent.agreedAs !== 'ACCOUNT_HOLDER') {
+    throw new AppError(403, 'ASSISTED_PERSONAL_PAPER_NEEDS_HOLDER',
+      'This paper is a person’s own (an ID or a personal licence). Swift adds it only with the account holder’s own OK. Record an OK from the account holder first.');
+  }
+  const renewalOpensAt = new Date(now.getTime() + RENEWAL_WINDOW_DAYS * 86_400_000);
+  const current = lists.documents?.find((d) => d.docType === docType && d.status === 'APPROVED'
+    && isDocumentValidAt(d.expiresAt == null ? null : new Date(d.expiresAt), renewalOpensAt));
+  if (current) throw new AppError(409, 'ALREADY_APPROVED', 'The store’s copy of this paper is approved and current. A renewal opens 30 days before it expires.');
 }
 
-/**
- * Inside the filing's transaction: the store's document-processing tick, recorded in the consent ledger as given through
- * the consent record (the same words, version and hash the store's own box shows, so the store's checklist shows its
- * tick as on record), the action row, and the audit row.
- */
+/** Inside the filing's transaction: the action row (the audit row is the caller's). [#2495 review A S2-1 · COORD ruling]
+ *  Never a row in the consent ledger: the account holder's own document-consent box is theirs to tick. The OK is
+ *  recorded under the assisted OK only (assisted_setup_consents, 14 days, that store and holder). */
 export async function recordAssistedFiling(
   tx: Prisma.TransactionClient,
-  input: { store: AssistStore; consentId: string; channel: AssistedConsentChannel; adminId: string; docId: string; docType: string; ip: string | null },
+  input: { store: AssistStore; consentId: string; adminId: string; docId: string; docType: string },
 ): Promise<void> {
-  await recordConsent(tx, {
-    subjectType: consentSubjectForRole(input.store.vendorType),
-    subjectId: input.store.holderId,
-    documentType: ASSISTED_DOCUMENT_CONSENT.documentType,
-    version: ASSISTED_DOCUMENT_CONSENT.version,
-    action: 'granted',
-    surface: 'admin',
-    ip: input.ip,
-    evidence: {
-      control: 'assisted_setup_consent', path: 'admin/assisted-setup', docType: input.docType,
-      assistedConsentId: input.consentId, channel: input.channel, recordedBy: input.adminId,
-    },
-  });
   await recordAction(tx, { store: input.store, consentId: input.consentId, adminId: input.adminId, kind: 'DOCUMENT', targetId: input.docId, detail: input.docType });
-}
-
-/** The words exist as a published version before any tick names them (consent ledger anchor). */
-export async function publishAssistedConsentWords(prisma: PrismaClient): Promise<void> {
-  await publishLegalDocumentOnce(prisma, {
-    documentType: ASSISTED_DOCUMENT_CONSENT.documentType, version: ASSISTED_DOCUMENT_CONSENT.version, renderedText: ASSISTED_DOCUMENT_CONSENT.text,
-  });
 }
 
 export async function recordAction(
@@ -235,7 +260,7 @@ export async function consentsOf(db: PrismaClient, store: AssistStore, now = new
     where: { vendorId: store.id },
     orderBy: { createdAt: 'desc' },
     take: 20,
-    select: { id: true, holderId: true, agreedByName: true, agreedByRole: true, channel: true, agreedAt: true, reference: true, recordedByAdminId: true, createdAt: true },
+    select: { id: true, holderId: true, agreedByName: true, agreedAs: true, channel: true, agreedAt: true, reference: true, recordedByAdminId: true, createdAt: true },
   });
   return rows.map(({ holderId, ...row }) => ({ ...row, live: holderId === store.holderId && consentStillLive(row, now) }));
 }

@@ -1669,8 +1669,10 @@ export const resolveHeldDoorCash = async (id: string, reason: string) => {
 
 // ── [ASSISTED SETUP · owner 12 Nov 2026] Setting a store up FOR it, with its OK ──────────────────────────────────────
 export type AssistedChannel = 'IN_PERSON' | 'PHONE' | 'WHATSAPP' | 'EMAIL';
+/** [#2495 review] Who said yes, as a choice: the account holder themself, or a manager at the store. */
+export type AssistedAgreedAs = 'ACCOUNT_HOLDER' | 'MANAGER';
 export interface AssistedConsent {
-  id: string; agreedByName: string; agreedByRole: string; channel: AssistedChannel; agreedAt: string; reference: string | null;
+  id: string; agreedByName: string; agreedAs: AssistedAgreedAs; channel: AssistedChannel; agreedAt: string; reference: string | null;
   recordedByAdminId: string; createdAt: string; live: boolean;
 }
 export interface AssistedPaper { id: string; docType: string; status: string; createdAt: string; expiresAt: string | null; reviewNote: string | null; addedBySwift?: boolean }
@@ -1680,7 +1682,9 @@ export interface AssistedSetupView {
   script: { question: string; consentText: string; consentVersion: string };
   validDays: number;
   consents: AssistedConsent[];
-  papers: { checklist: string[]; optional: string[]; missing: string[]; documents: AssistedPaper[] };
+  /** storeOnly: steps the store signs, ticks or consents to itself (never uploaded by Swift); personal: a person's own
+   *  papers, uploaded only on the account holder's own OK. */
+  papers: { checklist: string[]; optional: string[]; missing: string[]; documents: AssistedPaper[]; storeOnly?: string[]; personal?: string[] };
   items: AssistedItem[];
   canAddItems: boolean;
 }
@@ -1694,7 +1698,7 @@ export interface MenuPreview {
   plan: MenuImportPlan;
   canAddItems: boolean;
 }
-export interface ConsentEntry { agreedByName: string; agreedByRole: string; channel: AssistedChannel; agreedAt: string; reference?: string; consentVersion: string }
+export interface ConsentEntry { agreedByName: string; agreedAs: AssistedAgreedAs; channel: AssistedChannel; agreedAt: string; reference?: string; consentVersion: string }
 
 const assisted = (vendorId: string) => `/api/v1/admin/vendors/${encodeURIComponent(vendorId)}/assisted-setup`;
 const fileForm = (file: Blob, name: string) => { const form = new FormData(); form.append('file', file, name); return form; };
@@ -1704,10 +1708,12 @@ export const recordAssistedConsent = (vendorId: string, entry: ConsentEntry, rea
   apiFetch(`${assisted(vendorId)}/consent`, { method: 'POST', body: JSON.stringify({ ...entry, wordsRead: true }), reason });
 export const uploadAssistedPaper = (vendorId: string, consentId: string, docType: string, file: Blob, name: string, reason: string) =>
   apiFetch(`${assisted(vendorId)}/documents?${new URLSearchParams({ consentId, docType })}`, { method: 'POST', body: fileForm(file, name), reason });
-export const previewAssistedMenuCsv = (vendorId: string, consentId: string, csv: string): Promise<Envelope<MenuPreview>> =>
-  apiFetch(`${assisted(vendorId)}/menu/preview`, { method: 'POST', body: JSON.stringify({ consentId, csv }) });
-export const previewAssistedMenuXlsx = (vendorId: string, consentId: string, file: Blob, name: string): Promise<Envelope<MenuPreview>> =>
-  apiFetch(`${assisted(vendorId)}/menu/preview-xlsx?${new URLSearchParams({ consentId })}`, { method: 'POST', body: fileForm(file, name) });
+/** The store's own column choices (field -> the file's column, '' = not used) and, for a multi-store till export, its store. */
+export interface MenuColumnChoice { mapping?: Record<string, string>; tillStore?: string }
+export const previewAssistedMenuCsv = (vendorId: string, consentId: string, csv: string, choice: MenuColumnChoice = {}): Promise<Envelope<MenuPreview>> =>
+  apiFetch(`${assisted(vendorId)}/menu/preview`, { method: 'POST', body: JSON.stringify({ consentId, csv, ...choice }) });
+export const previewAssistedMenuXlsx = (vendorId: string, consentId: string, file: Blob, name: string, choice: MenuColumnChoice = {}): Promise<Envelope<MenuPreview>> =>
+  apiFetch(`${assisted(vendorId)}/menu/preview-xlsx?${new URLSearchParams({ consentId, ...(choice.tillStore ? { tillStore: choice.tillStore } : {}), ...(choice.mapping ? { mapping: JSON.stringify(choice.mapping) } : {}) })}`, { method: 'POST', body: fileForm(file, name) });
 export const applyAssistedMenu = (vendorId: string, consentId: string, csv: string, reason: string): Promise<Envelope<MenuImportPlan>> =>
   apiFetch(`${assisted(vendorId)}/menu/apply`, { method: 'POST', body: JSON.stringify({ consentId, csv }), reason });
 export const uploadAssistedItemPhoto = (vendorId: string, consentId: string, itemId: string, file: Blob, name: string, reason: string) =>

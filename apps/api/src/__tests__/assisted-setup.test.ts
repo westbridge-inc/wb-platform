@@ -112,12 +112,12 @@ const storeUpload = (o: Who, url: string, file: Buffer) => {
     headers: { authorization: `Bearer ${o.token}`, 'x-vendor-id': o.vendorId, 'content-type': `multipart/form-data; boundary=${boundary}` } });
 };
 
-async function store(vendorType = 'STORE'): Promise<Who> {
+async function store(vendorType = 'STORE', business: Record<string, unknown> = {}): Promise<Who> {
   const o = await person();
   const quote = await signupQuote(app.prisma, o.userId, { role: 'VENDOR', vendorType });
   const res = await call('POST', '/api/v1/partner/become', o, {
     role: 'VENDOR', acceptAgreement: true, weeklyFeeAck: { version: WEEKLY_FEE_ACK_VERSION, amount: quote.amount, currencyCode: quote.currencyCode },
-    business: { name: `Assist Shop ${RUN} ${seq}`, vendorType, phone: '+5926000000', addressLine1: '1 Assist Road', city: 'Georgetown', region: 'Demerara-Mahaica', latitude: 6.8, longitude: -58.16 },
+    business: { name: `Assist Shop ${RUN} ${seq}`, vendorType, phone: '+5926000000', addressLine1: '1 Assist Road', city: 'Georgetown', region: 'Demerara-Mahaica', latitude: 6.8, longitude: -58.16, ...business },
   });
   expect(res.statusCode, res.body).toBeLessThan(300);
   o.vendorId = (await system(() => app.prisma.vendor.findFirstOrThrow({ where: { owner: { userId: o.userId } }, select: { id: true } }))).id;
@@ -125,11 +125,11 @@ async function store(vendorType = 'STORE'): Promise<Who> {
   return o;
 }
 const consentBody = (over: Record<string, unknown> = {}) => ({
-  agreedByName: 'Shan Persaud', agreedByRole: 'Owner', channel: 'IN_PERSON', agreedAt: new Date(Date.now() - 60_000).toISOString(),
+  agreedByName: 'Shan Persaud', agreedAs: 'ACCOUNT_HOLDER', channel: 'IN_PERSON', agreedAt: new Date(Date.now() - 60_000).toISOString(),
   reference: 'Visit at the shop', wordsRead: true, consentVersion: UPLOAD_CONSENT.document_v1.version, ...over,
 });
-async function consentFor(o: Who, who = adminA): Promise<string> {
-  const res = await admin(who, 'POST', `/vendors/${o.vendorId}/assisted-setup/consent`, consentBody());
+async function consentFor(o: Who, who = adminA, over: Record<string, unknown> = {}): Promise<string> {
+  const res = await admin(who, 'POST', `/vendors/${o.vendorId}/assisted-setup/consent`, consentBody(over));
   expect(res.statusCode, res.body).toBe(201);
   return res.json().data.id as string;
 }
@@ -203,6 +203,9 @@ describe('who may act for a store', () => {
       ['POST', `/vendors/${o.vendorId}/assisted-setup/consent`],
       ['POST', `/vendors/${o.vendorId}/assisted-setup/menu/preview`],
       ['POST', `/vendors/${o.vendorId}/assisted-setup/menu/apply`],
+      ['POST', `/vendors/${o.vendorId}/assisted-setup/menu/preview-xlsx`],
+      ['POST', `/vendors/${o.vendorId}/assisted-setup/documents?docType=storefront_photo`],
+      ['POST', `/vendors/${o.vendorId}/assisted-setup/items/any-item/photo`],
     ];
     for (const [method, url] of doors) {
       const res = await admin(narrowed, method, url, method === 'POST' ? consentBody() : undefined);
@@ -233,11 +236,13 @@ describe('the store’s OK comes first', () => {
     expect(future.statusCode).toBe(400);
     const notRead = await admin(adminA, 'POST', `/vendors/${o.vendorId}/assisted-setup/consent`, consentBody({ wordsRead: false }));
     expect(notRead.statusCode).toBe(400);
+    // [#2495 review] Who agreed is a choice (the account holder, or a manager), never free text.
+    expect((await admin(adminA, 'POST', `/vendors/${o.vendorId}/assisted-setup/consent`, consentBody({ agreedAs: 'Cashier' }))).statusCode).toBe(400);
 
     const consentId = await consentFor(o);
     const row = await system(() => app.prisma.assistedSetupConsent.findUniqueOrThrow({ where: { id: consentId } }));
     expect(row).toMatchObject({
-      vendorId: o.vendorId, holderId: o.userId, agreedByName: 'Shan Persaud', agreedByRole: 'Owner', channel: 'IN_PERSON',
+      vendorId: o.vendorId, holderId: o.userId, agreedByName: 'Shan Persaud', agreedAs: 'ACCOUNT_HOLDER', channel: 'IN_PERSON',
       reference: 'Visit at the shop', recordedByAdminId: adminA.id, reason: REASON, consentVersion: UPLOAD_CONSENT.document_v1.version,
     });
     const audits = await auditRows({ userId: adminA.id, entityId: o.vendorId, action: { contains: '/assisted-setup/consent' } });
@@ -275,7 +280,7 @@ describe('the store’s OK comes first', () => {
 });
 
 describe('papers filed for the store', () => {
-  it('filed exactly as the store’s own upload, naming the admin and the OK; waits for a person; the store sees it and its tick', async () => {
+  it('filed exactly as the store’s own upload, naming the admin and the OK; waits for a person; the store sees it, and its OWN tick stays unticked', async () => {
     const o = await store();
     const consentId = await consentFor(o);
     const res = await adminUpload(adminA, `/vendors/${o.vendorId}/assisted-setup/documents?docType=storefront_photo&consentId=${consentId}`, uniquePng(`as-doc-${RUN}`));
@@ -286,29 +291,82 @@ describe('papers filed for the store', () => {
     expect(doc!.fileUrl).toContain(`verification/${o.userId}/`);
     const object = await system(() => app.prisma.encryptedObject.findUniqueOrThrow({ where: { fileKey: doc!.fileUrl } }));
     expect(object.createdBy).toBe(o.userId);
-    // The record, the audit row and the store's tick, all naming the OK.
+    // The record and the audit row, both naming the OK.
     expect(await system(() => app.prisma.assistedSetupAction.findMany({ where: { vendorId: o.vendorId } }))).toEqual([
       expect.objectContaining({ kind: 'DOCUMENT', targetId: doc!.id, consentId, adminId: adminA.id, detail: 'storefront_photo' }),
     ]);
     const audits = await auditRows({ userId: adminA.id, action: { contains: '/assisted-setup/documents' } });
     expect(audits.some((a) => JSON.stringify(a.changes).includes(doc!.id) && JSON.stringify(a.changes).includes(consentId))).toBe(true);
-    const tick = await system(() => app.prisma.consentRecord.findFirst({ where: { subjectId: o.userId, documentType: 'document_processing_consent' }, orderBy: { capturedAt: 'desc' } }));
-    expect(tick).toMatchObject({ action: 'granted', surface: 'admin' });
-    expect(JSON.stringify(tick!.evidence)).toContain(consentId);
+    // [#2495 review A S2-1 · COORD ruling 12 Nov] The OK is recorded under the assisted OK only: the account holder's own
+    // document-consent box is never ticked for them, and their own later upload cannot stand on it ("record").
+    expect(await system(() => app.prisma.consentRecord.count({ where: { subjectId: o.userId, documentType: 'document_processing_consent' } }))).toBe(0);
     const status = (await call('GET', '/api/v1/verification/status?role=STORE', o)).json().data;
-    expect(status.documentConsent.given).toBe(true);
+    expect(status.documentConsent.given).toBe(false);
+    const up = await storeUpload(o, '/api/v1/verification/upload', uniquePng(`as-own-after-${RUN}`));
+    expect(up.statusCode, up.body).toBe(200);
+    const onRecord = await call('POST', '/api/v1/verification/documents', o, {
+      role: 'STORE', docType: 'business_registration', fileUrl: up.json().data.url, consent: true, privacyNoticeVersion: 'web-v1', consentTick: 'document_v1', consentVia: 'record',
+    });
+    expect(onRecord.statusCode, onRecord.body).toBe(409);
+    expect(onRecord.body).toContain('CONSENT_NOT_ON_RECORD');
     expect(status.documents.find((d: { id: string }) => d.id === doc!.id)).toMatchObject({ addedBySwift: true });
     // Who at Swift is never shown to the store.
     expect(JSON.stringify(status)).not.toContain(adminA.id);
   });
 
-  it('a paper that is not on the store’s list, or carries its own consent, is refused before anything is stored', async () => {
+  it('a paper that is not on the store’s list, or the store signs, ticks or consents to itself, is refused before anything is stored', async () => {
     const o = await store();
     const consentId = await consentFor(o);
-    for (const docType of ['police_clearance', 'own_name_declaration', 'not_a_paper']) {
+    for (const docType of ['police_clearance', 'own_name_declaration', 'food_handler_attestation', 'vat_registration_certificate', 'not_a_paper']) {
       const res = await adminUpload(adminA, `/vendors/${o.vendorId}/assisted-setup/documents?docType=${docType}&consentId=${consentId}`, uniquePng(`as-${docType}-${RUN}`));
       expect(res.statusCode, `${docType} ${res.body}`).toBe(400);
     }
+    expect(await system(() => app.prisma.encryptedObject.count({ where: { createdBy: o.userId } }))).toBe(0);
+  });
+
+  it('an own-name store and a restaurant awaiting its food-handlers tick: the signed or ticked step is refused, no file is stored', async () => {
+    const own = await store('STORE', { name: 'Shan Persaud' });
+    // An own-name store: it trades under its owner's own name (its list asks for the signed declaration).
+    await system(() => app.prisma.vendor.update({ where: { id: own.vendorId }, data: { tradesUnderOwnName: true } }));
+    const kitchen = await store('RESTAURANT');
+    for (const [o, docType, role] of [[own, 'own_name_declaration', 'STORE'], [kitchen, 'food_handler_attestation', 'RESTAURANT']] as const) {
+      const lists = (await call('GET', `/api/v1/verification/status?role=${role}`, o)).json().data as { checklist: string[]; optional: string[] };
+      expect([...lists.checklist, ...lists.optional], `${docType} on the ${role} list`).toContain(docType);
+      const consentId = await consentFor(o);
+      const res = await adminUpload(adminA, `/vendors/${o.vendorId}/assisted-setup/documents?docType=${docType}&consentId=${consentId}`, uniquePng(`as-tick-${docType}-${RUN}`));
+      expect(res.statusCode, res.body).toBe(400);
+      expect(res.body).toContain('NOT_ASSISTED_DOC_TYPE');
+      expect(await system(() => app.prisma.encryptedObject.count({ where: { createdBy: o.userId } }))).toBe(0);
+      // The panel draws it as the store's own step, with no upload.
+      const panel = (await admin(adminA, 'GET', `/vendors/${o.vendorId}/assisted-setup`)).json().data;
+      expect(panel.papers.storeOnly).toContain(docType);
+    }
+    // The restaurant's TIN certificate (#2494) is a business paper: filed for it.
+    const consentId = await consentFor(kitchen, adminA, { agreedAs: 'MANAGER', agreedByName: 'Ravi Singh' });
+    const tin = await adminUpload(adminA, `/vendors/${kitchen.vendorId}/assisted-setup/documents?docType=tin_certificate&consentId=${consentId}`, uniquePng(`as-tin-${RUN}`));
+    expect(tin.statusCode, tin.body).toBe(201);
+  });
+
+  it('a person’s own ID is filed only on the account holder’s own OK; a manager may OK business papers', async () => {
+    const o = await store();
+    const managerOk = await consentFor(o, adminA, { agreedAs: 'MANAGER', agreedByName: 'Ravi Singh' });
+    const id = await adminUpload(adminA, `/vendors/${o.vendorId}/assisted-setup/documents?docType=owner_national_id&consentId=${managerOk}`, uniquePng(`as-id-mgr-${RUN}`));
+    expect(id.statusCode, id.body).toBe(403);
+    expect(id.body).toContain('ASSISTED_PERSONAL_PAPER_NEEDS_HOLDER');
+    expect(await system(() => app.prisma.encryptedObject.count({ where: { createdBy: o.userId } }))).toBe(0);
+    const business = await adminUpload(adminA, `/vendors/${o.vendorId}/assisted-setup/documents?docType=storefront_photo&consentId=${managerOk}`, uniquePng(`as-biz-mgr-${RUN}`));
+    expect(business.statusCode, business.body).toBe(201);
+    const holderOk = await consentFor(o);
+    const own = await adminUpload(adminA, `/vendors/${o.vendorId}/assisted-setup/documents?docType=owner_national_id&consentId=${holderOk}`, uniquePng(`as-id-holder-${RUN}`));
+    expect(own.statusCode, own.body).toBe(201);
+  });
+
+  it('a suspended account holder: refused before anything is stored', async () => {
+    const o = await store();
+    const consentId = await consentFor(o);
+    await system(() => app.prisma.user.update({ where: { id: o.userId }, data: { status: 'SUSPENDED' } }));
+    const res = await adminUpload(adminA, `/vendors/${o.vendorId}/assisted-setup/documents?docType=storefront_photo&consentId=${consentId}`, uniquePng(`as-susp-${RUN}`));
+    expect(res.statusCode, res.body).toBe(409);
     expect(await system(() => app.prisma.encryptedObject.count({ where: { createdBy: o.userId } }))).toBe(0);
   });
 
@@ -481,6 +539,52 @@ describe('item photos added for the store', () => {
   });
 });
 
+describe('[#2495 review] recusal, a change of account holder, and the paper-to-OK link', () => {
+  it('an admin who IS the account holder may not set up their own store (recusal)', async () => {
+    const o = await store();
+    await system(() => app.prisma.user.update({ where: { id: o.userId }, data: { roles: { push: 'ADMIN' }, admin: { create: { permissions: ['*', 'documents.review'] } } } }));
+    const self = { id: o.userId, token: await session(o.userId, 'ADMIN') };
+    const res = await admin(self, 'POST', `/vendors/${o.vendorId}/assisted-setup/consent`, consentBody());
+    expect(res.statusCode, res.body).toBe(403);
+    expect(res.body).toContain('REVIEWER_RECUSED');
+    expect(await system(() => app.prisma.assistedSetupConsent.count({ where: { vendorId: o.vendorId } }))).toBe(0);
+  });
+
+  it('when the account changes hands, the old OK covers nothing: every door refuses and the panel says it ended', async () => {
+    const o = await store();
+    const consentId = await consentFor(o);
+    const item = await system(async () => {
+      const category = await app.prisma.category.create({ data: { vendorId: o.vendorId, name: 'Drinks' } });
+      return app.prisma.item.create({ data: { vendorId: o.vendorId, categoryId: category.id, name: 'Mauby', basePrice: 300, dietaryTags: [], allergens: [] } });
+    });
+    const next = await person();
+    await system(() => app.prisma.vendorOwner.update({ where: { userId: o.userId }, data: { userId: next.userId } }));
+    const doc = await adminUpload(adminA, `/vendors/${o.vendorId}/assisted-setup/documents?docType=storefront_photo&consentId=${consentId}`, uniquePng(`as-handover-${RUN}`));
+    expect(doc.statusCode, doc.body).toBe(409);
+    const apply = await admin(adminA, 'POST', `/vendors/${o.vendorId}/assisted-setup/menu/apply`, { consentId, csv: 'category,name,basePrice\nDrinks,Sorrel,300' });
+    expect(apply.statusCode, apply.body).toBe(409);
+    const photo = await adminUpload(adminA, `/vendors/${o.vendorId}/assisted-setup/items/${item.id}/photo?consentId=${consentId}`, await drawnPng());
+    expect(photo.statusCode, photo.body).toBe(409);
+    const panel = (await admin(adminA, 'GET', `/vendors/${o.vendorId}/assisted-setup`)).json().data;
+    expect(panel.consents.find((c: { id: string }) => c.id === consentId)).toMatchObject({ live: false });
+    expect(await system(() => app.prisma.encryptedObject.count({ where: { createdBy: { in: [o.userId, next.userId] } } }))).toBe(0);
+  });
+
+  it('the database refuses a paper linked to an OK given for someone else', async () => {
+    const o = await store();
+    const other = await store();
+    const otherConsent = await consentFor(other);
+    await expect(system(() => app.prisma.verificationDocument.create({ data: {
+      userId: o.userId, role: 'VENDOR_OWNER', docType: 'storefront_photo', fileUrl: '', status: 'PENDING', consentAt: new Date(), privacyNoticeVersion: 'v1',
+      assistedById: adminA.id, assistedConsentId: otherConsent,
+    } }))).rejects.toThrow(/not the account holder/);
+    await expect(system(() => app.prisma.verificationDocument.create({ data: {
+      userId: o.userId, role: 'VENDOR_OWNER', docType: 'storefront_photo', fileUrl: '', status: 'PENDING', consentAt: new Date(), privacyNoticeVersion: 'v1',
+      assistedById: adminA.id,
+    } }))).rejects.toThrow(/named together/);
+  });
+});
+
 describe('the tenant wall on the new tables', () => {
   it('both tables force row-level security with the tenant policy, and another market reads none of the rows', async () => {
     const o = await store();
@@ -498,11 +602,11 @@ describe('the tenant wall on the new tables', () => {
     expect(await runWithTenant('swift-default', () => app.prisma.assistedSetupConsent.count({ where: { id: consentId } }))).toBe(1);
     // The database refuses a consent named for the wrong market or the wrong account holder.
     await expect(system(() => app.prisma.assistedSetupConsent.create({ data: {
-      tenantId: OTHER_TENANT, vendorId: o.vendorId, holderId: o.userId, agreedByName: 'X Y', agreedByRole: 'Owner', channel: 'PHONE', agreedAt: new Date(),
+      tenantId: OTHER_TENANT, vendorId: o.vendorId, holderId: o.userId, agreedByName: 'X Y', agreedAs: 'MANAGER', channel: 'PHONE', agreedAt: new Date(),
       consentDocumentType: 'document_processing_consent', consentVersion: 'v1', recordedByAdminId: adminA.id, reason: REASON,
     } }))).rejects.toThrow(/lineage/);
     await expect(system(() => app.prisma.assistedSetupConsent.create({ data: {
-      tenantId: 'swift-default', vendorId: o.vendorId, holderId: adminA.id, agreedByName: 'X Y', agreedByRole: 'Owner', channel: 'PHONE', agreedAt: new Date(),
+      tenantId: 'swift-default', vendorId: o.vendorId, holderId: adminA.id, agreedByName: 'X Y', agreedAs: 'MANAGER', channel: 'PHONE', agreedAt: new Date(),
       consentDocumentType: 'document_processing_consent', consentVersion: 'v1', recordedByAdminId: adminA.id, reason: REASON,
     } }))).rejects.toThrow(/account holder/);
   });

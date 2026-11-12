@@ -14,6 +14,9 @@ CREATE TYPE "AssistedConsentChannel" AS ENUM ('IN_PERSON', 'PHONE', 'WHATSAPP', 
 -- CreateEnum
 CREATE TYPE "AssistedActionKind" AS ENUM ('DOCUMENT', 'MENU_ITEM', 'ITEM_PHOTO');
 
+-- CreateEnum
+CREATE TYPE "AssistedAgreedAs" AS ENUM ('ACCOUNT_HOLDER', 'MANAGER');
+
 -- AlterTable (nullable, no default: metadata-only)
 ALTER TABLE "verification_documents" ADD COLUMN     "assistedById" TEXT,
 ADD COLUMN     "assistedConsentId" TEXT;
@@ -25,7 +28,7 @@ CREATE TABLE "assisted_setup_consents" (
     "vendorId" TEXT NOT NULL,
     "holderId" TEXT NOT NULL,
     "agreedByName" TEXT NOT NULL,
-    "agreedByRole" TEXT NOT NULL,
+    "agreedAs" "AssistedAgreedAs" NOT NULL,
     "channel" "AssistedConsentChannel" NOT NULL,
     "agreedAt" TIMESTAMP(3) NOT NULL,
     "reference" TEXT,
@@ -83,10 +86,10 @@ ALTER TABLE "assisted_setup_actions" ADD CONSTRAINT "assisted_setup_actions_vend
 -- AddForeignKey
 ALTER TABLE "assisted_setup_actions" ADD CONSTRAINT "assisted_setup_actions_consentId_fkey" FOREIGN KEY ("consentId") REFERENCES "assisted_setup_consents"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
--- What the store agreed to is typed in full: a name, a role, a reason; a reference is never an empty string.
+-- What the store agreed to is typed in full: a name, a reason; a reference is never an empty string.
 ALTER TABLE "assisted_setup_consents"
   ADD CONSTRAINT "assisted_setup_consents_shape" CHECK (
-    length(btrim("agreedByName")) > 0 AND length(btrim("agreedByRole")) > 0 AND length(btrim("reason")) > 0
+    length(btrim("agreedByName")) > 0 AND length(btrim("reason")) > 0
     AND ("reference" IS NULL OR length(btrim("reference")) > 0));
 
 -- A consent is written once, for the store's own tenant and its account holder at the time. It is never changed; it goes
@@ -126,17 +129,32 @@ END $$ LANGUAGE plpgsql;
 CREATE TRIGGER assisted_setup_actions_guard BEFORE INSERT OR UPDATE ON "assisted_setup_actions"
   FOR EACH ROW EXECUTE FUNCTION assisted_setup_actions_guard();
 
--- A paper is filed by Swift for the store, or not, when it is filed: never moved into or out of that later. (The consent
--- link may only be cleared, by the consent's own erasure: ON DELETE SET NULL.)
+-- A paper is filed by Swift for the store, or not, when it is filed: never moved into or out of that later. Its uploader and
+-- its OK are named together, and the OK is one given for THIS paper's account holder, in its tenant [#2495 review A S4-1].
+-- (The consent link may only be cleared by the consent's own erasure: ON DELETE SET NULL.)
 CREATE OR REPLACE FUNCTION verification_documents_assisted_fixed() RETURNS trigger AS $$
+DECLARE consent_holder TEXT; consent_tenant TEXT; holder_tenant TEXT;
 BEGIN
+  IF TG_OP = 'INSERT' THEN
+    IF (NEW."assistedById" IS NULL) <> (NEW."assistedConsentId" IS NULL) THEN
+      RAISE EXCEPTION 'verification_documents: a paper Swift filed names its uploader and its OK, named together [ASSISTED SETUP]' USING ERRCODE = 'check_violation';
+    END IF;
+    IF NEW."assistedConsentId" IS NOT NULL THEN
+      SELECT c."holderId", c."tenantId" INTO consent_holder, consent_tenant FROM assisted_setup_consents c WHERE c.id = NEW."assistedConsentId";
+      SELECT u."tenantId" INTO holder_tenant FROM users u WHERE u.id = NEW."userId";
+      IF consent_holder IS DISTINCT FROM NEW."userId" OR consent_tenant IS DISTINCT FROM holder_tenant THEN
+        RAISE EXCEPTION 'verification_documents: the OK named was given for a store whose account holder is not the account holder of this paper [ASSISTED SETUP]' USING ERRCODE = 'check_violation';
+      END IF;
+    END IF;
+    RETURN NEW;
+  END IF;
   IF NEW."assistedById" IS DISTINCT FROM OLD."assistedById"
      OR (NEW."assistedConsentId" IS DISTINCT FROM OLD."assistedConsentId" AND NEW."assistedConsentId" IS NOT NULL) THEN
     RAISE EXCEPTION 'verification_documents row %: who filed a paper is fixed [ASSISTED SETUP]', OLD.id USING ERRCODE = 'check_violation';
   END IF;
   RETURN NEW;
 END $$ LANGUAGE plpgsql;
-CREATE TRIGGER verification_documents_assisted_fixed BEFORE UPDATE OF "assistedById", "assistedConsentId" ON "verification_documents"
+CREATE TRIGGER verification_documents_assisted_fixed BEFORE INSERT OR UPDATE OF "assistedById", "assistedConsentId" ON "verification_documents"
   FOR EACH ROW EXECUTE FUNCTION verification_documents_assisted_fixed();
 
 -- [ASSISTED SETUP] The account erasure deletes a closed account's consents (account-erasure-register:

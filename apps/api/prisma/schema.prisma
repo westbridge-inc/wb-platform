@@ -784,9 +784,10 @@ model AssistedSetupConsent {
   vendor            Vendor                 @relation(fields: [vendorId], references: [id], onDelete: Cascade)
   /// The store's account holder at the time (vendor_owners.userId): the person whose papers are filed.
   holderId          String
-  /// Who at the store said yes, as the admin typed it: a name and their role (owner, manager...).
+  /// Who at the store said yes: their name as the admin typed it, and WHO they are, as a choice (the account holder
+  /// themself, or a manager). A person's own papers (an ID) are filed only on the account holder's own OK [#2495 review].
   agreedByName      String
-  agreedByRole      String
+  agreedAs          AssistedAgreedAs
   channel           AssistedConsentChannel
   agreedAt          DateTime
   reference         String?
@@ -827,6 +828,11 @@ model AssistedSetupAction {
   @@index([vendorId, kind, targetId])
   @@index([consentId])
   @@map("assisted_setup_actions")
+}
+
+enum AssistedAgreedAs {
+  ACCOUNT_HOLDER
+  MANAGER
 }
 
 enum AssistedConsentChannel {

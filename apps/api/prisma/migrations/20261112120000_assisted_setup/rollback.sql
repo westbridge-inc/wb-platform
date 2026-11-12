@@ -21,5 +21,6 @@ DROP TABLE "assisted_setup_consents";
 DROP FUNCTION IF EXISTS assisted_setup_actions_guard();
 DROP FUNCTION IF EXISTS assisted_setup_consents_guard();
 DROP TYPE IF EXISTS "AssistedActionKind";
+DROP TYPE IF EXISTS "AssistedAgreedAs";
 DROP TYPE IF EXISTS "AssistedConsentChannel";
 COMMIT;
