@@ -121,6 +121,8 @@ COPY apps/mobile/src/lib/uploadConsentCopy.ts apps/mobile/src/lib/uploadConsentC
 COPY apps/mobile/src/lib/ownNameCopy.ts apps/mobile/src/lib/ownNameCopy.ts
 # [COMPANY-DOCS] the sign-up's three-option choice and the company/manager papers' words (ownNameCopy re-exports from it)
 COPY apps/mobile/src/lib/businessBasisCopy.ts apps/mobile/src/lib/businessBasisCopy.ts
+# [COMPANY-DOCS Part 3] the business-type change and handover words, shared with the phone (imports businessBasisCopy and ownNameCopy only)
+COPY apps/mobile/src/lib/accountChangeCopy.ts apps/mobile/src/lib/accountChangeCopy.ts
 # [COMPANY-DOCS PART 2] the in-app letter of authority's words and form rules (the Documents page's "ask the director to sign")
 COPY apps/mobile/src/lib/authorityLetterCopy.ts apps/mobile/src/lib/authorityLetterCopy.ts
 # [WEB-SETTINGS] The store's MMG number card speaks the phone's hold sentence and its "takes effect" time (each imports nothing).

@@ -57,11 +57,12 @@ import { guyanaDayKey, isDateOnly, startOfGuyanaDay } from '../../utils/guyana-d
 import { VerificationService } from '../verification/verification.service';
 import { getKycProvider } from '../../providers/kyc/kyc-provider';
 import { getStorageProvider } from '../../providers/storage/storage-provider';
-import { encryptBuffer, generateDek, getKeyProvider } from '../../providers/storage/envelope';
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { publishLegalDocumentOnce, recordConsent, type ConsentSurface } from '../legal/consent.service';
 import { LEGAL_VERSION } from '../legal/legal.routes';
-import { OWN_NAME_CONSENT_TYPE, OWN_NAME_DECLARATION_V1, OWN_NAME_DECLARATION_VERSION, OWN_NAME_VENDOR_TYPES, renderOwnNamePdf, storeNameIsOwnName } from './own-name';
+import { OWN_NAME_DECLARATION_VERSION, OWN_NAME_VENDOR_TYPES, storeNameIsOwnName } from './own-name';
+import { fileOwnNameDeclaration } from './own-name-filing';
+import { registerAccountChangeVendorRoutes } from './account-change.routes';
 import { FOOD_HANDLERS_CONSENT_TYPE, FOOD_HANDLERS_TICK_V1, FOOD_HANDLERS_VERSION, foodHandlerTickApplies, storeAttested } from './food-handlers';
 import { OWN_NAME_DOC_TYPE } from '../verification/doc-registry';
 import { SELLER_NAME_UNCONFIRMED } from '../verification/storefront-disclosure';
@@ -128,7 +129,7 @@ import { BULK_CHOICES, bulkUnitsForChoice, bulkChoiceForUnits, type BulkChoice }
 import { redactCustomerContact, riderCounterpartySelect } from '../../utils/counterparty';
 import { withCounterpartPhones } from '../calls/counterpart-phone';
 import { resolveAvatarUrls } from '../../utils/avatar-url';
-import { HANDED_TO_RIDER_NOTE, NO_CODE_HANDOVER_NOTE, handedToRiderSinceAssignment, handoverEpisodeRowsWhere } from '../order/store-handover-log';
+import { HANDED_TO_RIDER_NOTE, NO_CODE_HANDOVER_NOTE, STORE_PREPARING_WITH_RIDER_NOTE, STORE_READY_WITH_RIDER_NOTE, handedToRiderSinceAssignment, handoverEpisodeRowsWhere, timelineRows, STEP_ORDER } from '../order/store-handover-log';
 import { assertStorePinInMarket } from './store-pin';
 import { lockStorePin, recordStorePinMove } from './store-pin-move';
 import { registerPartnerCardRoutes, withCardPayAction } from '../billing/card-rail.routes';
@@ -908,7 +909,7 @@ async function storeHandoverFields(
   const riderIds = [...new Set(orders.filter(handoverLive).map((o) => o.riderId).filter((r): r is string => !!r))];
   const [handed, riders] = await Promise.all([
     ids.length ? app.prisma.orderStatusLog.findMany({
-      where: handoverEpisodeRowsWhere(ids), select: { orderId: true, status: true, note: true, createdAt: true }, orderBy: { createdAt: 'asc' },
+      where: handoverEpisodeRowsWhere(ids), select: { orderId: true, status: true, note: true, createdAt: true }, orderBy: STEP_ORDER,
     }) : [],
     riderIds.length ? app.prisma.rider.findMany({ where: { id: { in: riderIds } }, select: { id: true, user: { select: { avatar: true } } } }) : [],
   ]);
@@ -971,7 +972,7 @@ async function resolveOwnedOrder(app: FastifyInstance, userId: string, orderId: 
     omit: HANDOVER_SECRETS_OMIT,
     include: {
       items: VENDOR_ORDER_ITEMS,
-      statusHistory: { orderBy: { createdAt: 'desc' } },
+      statusHistory: { orderBy: [{ createdAt: 'desc' }, { id: 'desc' }] },
       // [COORD 17 Oct] The store order screen's Call button: first name + phone, never the last name.
       // [O-1] The customer's and rider's phones go only to an installed store build (below).
       customer: { select: { id: true, firstName: true, phone: true } },
@@ -1107,6 +1108,8 @@ export async function vendorRoutes(app: FastifyInstance) {
     getKycProvider(),
   );
   const storage = getStorageProvider();
+  // [COMPANY-DOCS Part 3] Change business type and hand over the account (account-change.routes.ts).
+  registerAccountChangeVendorRoutes(app, { verification, notifications });
   /** [IMAGES-E2E PR4] After a store photo's pointer change commits: delete each photo now. A
    *  delete that fails stays owed and the standing retry (retryStorageOrphans) finishes it. */
   const deleteQueuedPhotos = async (orphanIds: string[]) => {
@@ -1882,41 +1885,14 @@ export async function vendorRoutes(app: FastifyInstance) {
     if (!storeNameIsOwnName(vendor.name, user.firstName, user.lastName)) {
       throw new AppError(400, 'OWN_NAME_MISMATCH', `“${vendor.name}” is not just your surname with your first names or initials, so the law asks you to register it as a business name. Upload your business registration instead.`);
     }
-    // Acquire and wrap the key BEFORE publishing words, changing the store, or recording consent (as the declaration).
-    const dek = generateDek();
-    let wrappedDek: Buffer;
-    try {
-      const keys = getKeyProvider();
-      if (!keys) throw new Error('Envelope encryption unavailable');
-      wrappedDek = await keys.wrapDek(dek);
-    } catch {
-      throw new AppError(503, 'VERIFICATION_UPLOAD_UNAVAILABLE', 'Verification uploads are temporarily unavailable. Try again later.');
-    }
-    await publishLegalDocumentOnce(app.prisma, { documentType: OWN_NAME_CONSENT_TYPE, version: OWN_NAME_DECLARATION_VERSION, renderedText: OWN_NAME_DECLARATION_V1 });
-    const signedAt = new Date();
     const platform = String(request.headers['x-client-platform'] ?? '').toLowerCase();
     const surface: ConsentSurface = platform === 'ios' || platform === 'android' ? platform : 'vendor_web';
-    const legalName = `${user.firstName} ${user.lastName}`.trim();
-    await app.prisma.$transaction(async (tx) => {
-      // This store only: its name is the one checked, and the one the PDF and this consent row name.
-      // [review-2479 F6] Switching to the own name ends a seller-name confirmation: a person confirms again, if at all.
-      await tx.vendor.update({ where: { id: vendor.id }, data: { tradesUnderOwnName: true, ...(vendor.tradesUnderOwnName ? {} : SELLER_NAME_UNCONFIRMED) } });
-      await recordConsent(tx, {
-        subjectType: 'vendor_user', subjectId: userId, documentType: OWN_NAME_CONSENT_TYPE, version: OWN_NAME_DECLARATION_VERSION,
-        action: 'granted', surface, ip: request.ip,
-        evidence: { vendorId, storeName: vendor.name, signedAt: signedAt.toISOString() },
-      });
+    // [COMPANY-DOCS Part 3] The one signing-and-filing path (own-name-filing.ts), shared with a change of business type.
+    const doc = await fileOwnNameDeclaration(app.prisma, verification, {
+      userId, vendor, legalName: `${user.firstName} ${user.lastName}`.trim(), privacyNoticeVersion: body.privacyNoticeVersion,
+      surface, ip: request.ip, markStore: true,
     });
-    const pdf = await renderOwnNamePdf({ storeName: vendor.name, legalName, signedAt });
-    const storage = getStorageProvider();
-    const { ciphertext, iv, authTag } = encryptBuffer(pdf, dek);
-    const { url: fileUrl } = await storage.upload({ buffer: ciphertext, filename: `own-name-${OWN_NAME_DECLARATION_VERSION}.pdf.enc`, mimeType: 'application/octet-stream', folder: `verification/${userId}` });
-    await app.prisma.encryptedObject.create({ data: {
-      fileKey: fileUrl, iv: new Uint8Array(iv), authTag: new Uint8Array(authTag), wrappedDek: new Uint8Array(wrappedDek),
-      mimeType: 'application/pdf', sizeBytes: pdf.length, sha256: createHash('sha256').update(pdf).digest('hex'), createdBy: userId,
-    } });
     const role = vendor.vendorType as 'RESTAURANT' | 'SUPERMARKET' | 'STORE';
-    const doc = await verification.submitDocument(userId, role, OWN_NAME_DOC_TYPE, fileUrl, body.privacyNoticeVersion, undefined, { ownNameSigned: true });
     reply.code(201);
     return { success: true, data: { nameBasis: 'OWN_NAME', declaration: { id: doc.id, status: doc.status, docType: doc.docType }, status: await verification.getStatus(userId, role) } };
   });
@@ -2672,7 +2648,11 @@ export async function vendorRoutes(app: FastifyInstance) {
     const noRider = await noRiderStoreView(app.prisma, order);
     // [STORE-MONEY · owner 11 Nov 2026] The store's own money on this order (the board's same answer).
     const money = storeMoney({ ...order, promoRedemption: (await redemptionsFor(app.prisma, [order.id])).get(order.id) ?? null });
-    return { success: true, data: { ...redactCustomerContact({ ...order, ...handover, storeMoney: money, items: order.items.map(vendorOrderLine), respondBy, ...storeMmgPayBy(order), canConfirmPayment: canConfirmPayment(role), ...noShow, ...notCollected, mmgRefund, ...noRider }), custodyRecovery, outOfStockEndsOrder: true } };
+    // [FOLLOWUPS 11 Nov 2026 · REVIEW-2490 S3-2] The store's timeline rule (timelineRows, newest first as before): its
+    // kitchen taps made after a rider took the order read as "Preparing" / "Ready"; "Handed to rider" is said by the
+    // "Handed to rider" line (handedToRiderAt), not as a second "Rider at counter"; no other repeat of a rider status.
+    const statusHistory = timelineRows([...order.statusHistory].reverse()).reverse();
+    return { success: true, data: { ...redactCustomerContact({ ...order, statusHistory, ...handover, storeMoney: money, items: order.items.map(vendorOrderLine), respondBy, ...storeMmgPayBy(order), canConfirmPayment: canConfirmPayment(role), ...noShow, ...notCollected, mmgRefund, ...noRider }), custodyRecovery, outOfStockEndsOrder: true } };
   });
 
   /** [AF-MOB-006] POST /orders/:id/recovery/return-received — the store
@@ -2859,7 +2839,7 @@ export async function vendorRoutes(app: FastifyInstance) {
           orderId: order.id,
           status: live.status,
           changedBy: userId,
-          note: phase === 'PREPARING' ? 'Vendor started preparing (rider already assigned)' : 'Order ready for pickup (rider already assigned)',
+          note: phase === 'PREPARING' ? STORE_PREPARING_WITH_RIDER_NOTE : STORE_READY_WITH_RIDER_NOTE,
         },
       });
       return { row: next, alreadyStamped: false as const };
@@ -3691,7 +3671,7 @@ export async function vendorRoutes(app: FastifyInstance) {
       // Idempotent per rider: a tap already made for THIS rider's assignment answers again; one made for a
       // rider who since handed the order back does not speak for the new one.
       const episodeRows = await tx.orderStatusLog.findMany({
-        where: handoverEpisodeRowsWhere([order.id]), select: { orderId: true, status: true, note: true, createdAt: true }, orderBy: { createdAt: 'asc' },
+        where: handoverEpisodeRowsWhere([order.id]), select: { orderId: true, status: true, note: true, createdAt: true }, orderBy: STEP_ORDER,
       });
       // A rider who handed the order back leaves no current rider: an earlier tap answers nothing then.
       const already = live.riderId ? handedToRiderSinceAssignment(episodeRows).get(order.id) ?? null : null;
@@ -6079,10 +6059,15 @@ export async function vendorRoutes(app: FastifyInstance) {
     const { feeStatusFor } = await import('../billing/fee-status');
     if (!subscription) return { success: true, data: null };
     const fee = await payInfo(app.prisma, subscription);
+    // [review-2475 G1] An MMG payer number is shown only to the person whose number it is: never one a store's previous
+    // account holder left on the fee (a handover clears it; this never shows another person's number in any case).
+    const caller = await app.prisma.user.findUnique({ where: { id: request.user.userId }, select: { phone: true } });
+    const ownMmgNumber = subscription.mmgPayerMsisdn && caller?.phone === subscription.mmgPayerMsisdn ? subscription.mmgPayerMsisdn : null;
     return {
       success: true,
       data: {
         ...subscription,
+        mmgPayerMsisdn: ownMmgNumber,
         // "My Swift Number" + Pay-screen block [san spec 2.4/6.1].
         ...(await sanDisplay(app.prisma, subscription)),
         ...fee,
@@ -6116,7 +6101,9 @@ export async function vendorRoutes(app: FastifyInstance) {
     const billingSvc = new BillingService(app.prisma, notifications, getPaymentProvider());
     const updated = body.method === 'NONE'
       ? await billingSvc.stopBilling(sub.id, request.user.userId)
-      : await billingSvc.setBillingRail(sub.id, body.method, body.mmgPayerMsisdn);
+      // [review-2475 G1] A plan already on MMG resumes on its stored number when none is typed (the app no longer reads a
+      // number that is not the caller's own login number, so it may send none).
+      : await billingSvc.setBillingRail(sub.id, body.method, body.mmgPayerMsisdn ?? (body.method === 'MOBILE_MONEY' && sub.billingMethod === 'MOBILE_MONEY' ? sub.mmgPayerMsisdn ?? undefined : undefined));
     return { success: true, data: { billingMethod: updated.billingMethod, mmgPayerMsisdn: updated.mmgPayerMsisdn } };
   });
 

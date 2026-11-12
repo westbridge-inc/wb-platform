@@ -213,6 +213,10 @@ export function useDispatchOffers(kind: MoverKind | null, online: boolean, alsoD
     const stopPush = onForegroundPush((data) => { if (data['kind'] === 'dispatch_offer') void recover(); });
     return () => {
       gone = true;
+      // [FOLLOWUPS 11 Nov · REVIEW-2481-DELTA D-1] This run's reads no longer count down (`gone`), so the next run
+      // starts from none in flight: a re-run while online (kind or "also deliveries" changed) cannot leave
+      // `recovering` stuck true, which would hold the OTA catch-up off Home for the session.
+      setRecoveriesInFlight(0);
       s.off('dispatch:offer', onOffer);
       s.off('dispatch:offer_withdrawn', onWithdrawn);
       s.off('connect', recover);

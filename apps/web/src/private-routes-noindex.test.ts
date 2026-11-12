@@ -83,6 +83,7 @@ const PRIVATE_PAGES = [
   'dashboard/qr/page.tsx', // [STORE-LINK] the store's own QR code and share link (owners and managers)
   'dashboard/schedule/page.tsx', // a Services store's bookings (customer first names)
   'dashboard/settings/page.tsx',
+  'dashboard/settings/business-type/page.tsx', // [COMPANY-DOCS Part 3] the account holder changes the business type (its papers)
   'dashboard/settings/delete-account/page.tsx', // [WEB-DELETE] a store's people delete (or close) their own account
   'dashboard/settings/vat-report/page.tsx', // [O-5] a store's own VAT report (its order numbers and VAT figures)
   'dashboard/weekly-fee/page.tsx',

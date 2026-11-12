@@ -12,6 +12,8 @@ import { VendorCategoryReviewScreen } from './screens/VendorCategoryReviewScreen
 import { VendorTierScreen } from './screens/VendorTierScreen';
 import { VendorBranchesScreen } from './screens/VendorBranchesScreen';
 import { VendorAddBranchScreen } from './screens/VendorAddBranchScreen';
+import { VendorBusinessTypeScreen } from './screens/VendorBusinessTypeScreen';
+import { VendorHandoverScreen } from './screens/VendorHandoverScreen';
 import { PersonalDataScreen } from '../profile/screens/PersonalDataScreen';
 import { SelfieCaptureScreen } from '../../screens/auth/SelfieCaptureScreen';
 import { GetHelpScreen } from '../profile/screens/GetHelpScreen';
@@ -305,6 +307,10 @@ export function VendorStack() {
           the app (HomeVisitPhotoCard: the Menu tab's editor and the Account tab), never at the door. Pushed, so "Not now"
           goes back and a saved photo returns where it was asked. */}
       <Stack.Screen name="Selfie" component={SelfieCaptureScreen} />
+      {/* [COMPANY-DOCS Part 3 · owner rulings 10 Nov 2026 (c), (d)] The account's business type and its account holder:
+          the whole account's, not one store's, so outside the store group (reached from the Account tab). */}
+      <Stack.Screen name="VendorBusinessType" component={VendorBusinessTypeScreen} />
+      <Stack.Screen name="VendorHandover" component={VendorHandoverScreen} />
     </Stack.Navigator>
   );
 }

@@ -1,5 +1,6 @@
 import { readFeePause } from '../billing/mmg-pause';
 import { validExpiryOr } from './document-validity';
+import { liveSubmissionWhere } from './evidence';
 /**
  * [DOC-1 Part XIX · DOC-INV-27 · P19] The storefront disclosure compiler.
  *
@@ -120,7 +121,9 @@ export async function sellerNameViews(db: Db, vendorIds: readonly string[], now 
   const accounts = [...new Set(stores.map((s) => s.owner.userId))];
   const rows = accounts.length ? (await db.documentRecord.findMany({
     where: { accountId: { in: accounts }, status: 'VALID', OR: validExpiryOr('expiresOn', now),
-      docType: { in: [...IDENTITY_DOC_TYPES, ...REGISTRATION_DOC_TYPES, OWN_NAME_DOC_TYPE] }, submission: { purgedAt: null } },
+      docType: { in: [...IDENTITY_DOC_TYPES, ...REGISTRATION_DOC_TYPES, OWN_NAME_DOC_TYPE] },
+      // [review-2475 F5] the storefront's own rule: a paper waiting for its account change names nobody yet
+      submission: { purgedAt: null, ...liveSubmissionWhere() } },
     select: { tenantId: true, accountId: true, docType: true, subjectId: true, submissionId: true,
       submission: { select: { userId: true, docType: true, subjectId: true } } },
   })).filter((r) => r.docType === r.submission.docType && r.subjectId === r.submission.subjectId && r.submission.userId === r.accountId) : [];
@@ -245,8 +248,10 @@ async function compileDisclosure(db: Db, vendor: DisclosureVendor, purpose: Disc
   const missing: string[] = [];
   const accountId = vendor.owner.userId;
   const records = (await db.documentRecord.findMany({
+    // [COMPANY-DOCS Part 3] A paper waiting for its account change names nobody and lends nothing (liveSubmissionWhere):
+    // the seller block switches with the change, never a paper at a time.
     where: { tenantId: vendor.tenantId, accountId, status: 'VALID', OR: validExpiryOr('expiresOn', now),
-      submission: { userId: accountId, purgedAt: null } },
+      submission: { userId: accountId, purgedAt: null, ...liveSubmissionWhere() } },
     select: { id: true, tenantId: true, accountId: true, subjectId: true, docType: true, submissionId: true, updatedAt: true,
       submission: { select: { docType: true, subjectId: true } } },
   })).filter(r => r.docType === r.submission.docType && r.subjectId === r.submission.subjectId);

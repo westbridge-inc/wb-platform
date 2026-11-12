@@ -26,6 +26,8 @@ const fx = vi.hoisted(() => ({
   }>,
 }));
 vi.mock('../profile/screens/PersonalDataScreen', () => ({ PersonalDataScreen: 'PersonalDataScreen' }));
+vi.mock('./screens/VendorBusinessTypeScreen', () => ({ VendorBusinessTypeScreen: 'VendorBusinessTypeScreen' })); // [COMPANY-DOCS Part 3] its papers list carries a camera picker
+vi.mock('./screens/VendorHandoverScreen', () => ({ VendorHandoverScreen: 'VendorHandoverScreen' }));
 vi.mock('../../screens/auth/SelfieCaptureScreen', () => ({ SelfieCaptureScreen: () => null })); // [OWNER-ASKS 9 Nov] the business stack's pushed photo screen
 vi.mock('react-native', async () => {
   const R = await import('react');

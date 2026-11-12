@@ -103,6 +103,8 @@ vi.mock('./screens/VendorMenuScreen', () => fx.probeModule('VendorMenuScreen', '
 vi.mock('./screens/VendorInsightsScreen', () => fx.probeModule('VendorInsightsScreen', 'Insights'));
 vi.mock('./screens/VendorAccountScreen', () => fx.probeModule('VendorAccountScreen', 'Account'));
 vi.mock('../profile/screens/PersonalDataScreen', () => ({ PersonalDataScreen: () => null }));
+vi.mock('./screens/VendorBusinessTypeScreen', () => ({ VendorBusinessTypeScreen: () => null })); // [COMPANY-DOCS Part 3] its papers list carries a camera picker
+vi.mock('./screens/VendorHandoverScreen', () => ({ VendorHandoverScreen: () => null }));
 vi.mock('../../screens/auth/SelfieCaptureScreen', () => ({ SelfieCaptureScreen: () => null })); // [OWNER-ASKS 9 Nov] the business stack's pushed photo screen
 vi.mock('../profile/screens/GetHelpScreen', () => ({ GetHelpScreen: () => null }));
 vi.mock('../billing/screens/WeeklyFeeRouteScreen', () => ({ WeeklyFeeRouteScreen: () => null }));
