@@ -68,12 +68,11 @@ import { OWN_NAME_DOC_TYPE } from '../verification/doc-registry';
 import { SELLER_NAME_UNCONFIRMED } from '../verification/storefront-disclosure';
 import { UNREGISTERED_TIER_REMOVED_WORDS, validRegistrationRecord } from './registration-record';
 import { parseCsvWithHeader } from '../../utils/csv';
+import { toImportCsv, toSourceCsv } from '../../utils/catalogue-map';
 import {
-  applyMapping, toImportCsv, toSourceCsv, planColumns, unknownOverrideHeaders, missingForSync,
-  TillStoreChoiceError, REQUIRED_FIELDS, MAPPABLE_FIELDS, type ColumnMapping,
-} from '../../utils/catalogue-map';
-import { previewSync, confirmSync, skuKey } from '../inventory/pos-sync';
-import { scanXlsxZip, XlsxZipGuardError, XLSX_IMPORT_ZIP_BUDGET } from '../../utils/xlsx-zip-guard';
+  MAX_IMPORT_ROWS, XLSX_MAX_COMPRESSED_BYTES, automapBodySchema, automapRows, columnChoiceSchema, importCsvSchema, readXlsxRows, runMenuImport,
+} from './menu-import';
+import { previewSync, confirmSync } from '../inventory/pos-sync';
 import { parseMenuText } from '../../utils/menu-text-parse';
 import { extractMenuPdf } from '../../utils/menu-pdf-process';
 import { parsePagination, paginatedResponse } from '../../utils/pagination';
@@ -87,16 +86,18 @@ import { getPaymentProvider } from '../../providers/payment/payment-provider';
 import { throwForMissingProfile } from '../../utils/role-gate';
 import { registerChainMmgCheckoutRoutes, registerPartnerMmgCheckoutRoutes } from '../billing/mmg-checkout.routes';
 import { keepPublicPhoto } from '../../utils/owned-photo-upload';
-import { IMPORT_PHOTO_ADDRESS_NOTE, uploadOnlyPhotoField } from '../../utils/photo-address';
+import { uploadOnlyPhotoField } from '../../utils/photo-address';
 import { retryStorageOrphan } from '../../lib/storage-orphans';
 import { runAsSystem } from '../../plugins/tenant-context';
 import { queueStorePhotoDeletions } from './store-photos';
+import { setItemPhoto } from './item-photo';
+import { listingAllowed as listingGate } from './listing-gate';
+import { assistedItemMarks } from '../admin/assisted-setup';
 import { MENU_COPY_AUDIT_ACTION, assertCopyable, copyPhotos, judgeSourceItems, menuExportCsv, menuHasAnything, priorCopy, readLiveMenu, writeMenuCopy, type MenuCopyResult } from './menu-copy';
 import { scheduleVendorSearchSync } from '../search/search-sync';
 import { LIBRARY_TX, assertLibraryRules, attachLibraryGroup, deleteLibraryGroup, detachCopy, detachLibraryGroup, keepLowestSize, libraryGroupOf, lowestSizeTyped, menuOptionsRule, normalizedGroupFlags, readLibrary, setLibraryOptionAvailability, settleItems, sharedGroupEditRefusal, syncLibraryGroup } from './modifier-library';
 import { declaresMenuOptionsV2 } from '../order/options';
 import { assertNoneBanned, assertNotBanned, assertNotBannedGoods, assertStoreAllowed, catalogueChecksFor, partnerStoreView, partnerView, storeCheckOf, unhideRestocked } from '../compliance/prohibited-gate';
-import { certainGoods, notAllowedMessage } from '../compliance/prohibited-items';
 import { SearchService } from '../search/search.service';
 import { subscriptionOperability } from '../subscription/operate-gate';
 import { QrService } from '../qr/qr.service';
@@ -458,21 +459,6 @@ const operatingHoursSchema = z.object({
     .max(7),
 });
 
-const importCsvSchema = z.object({
-  csv: z.string().min(1).max(2_000_000),
-});
-
-/** [POS-SYNC] How the columns are read: 'sync' (a till re-upload, matched by
- *  SKU) or the default add-new import; a multi-store Loyverse export's store;
- *  and any column the store chose itself in the preview ('' = not used). */
-const columnChoiceSchema = z.object({
-  mode: z.enum(['add', 'sync']).optional(),
-  tillStore: z.string().trim().min(1).max(100).optional(),
-  // (partialRecord: a store chooses only the columns it changes.)
-  mapping: z.partialRecord(z.enum(MAPPABLE_FIELDS as unknown as [string, ...string[]]), z.string().max(200)).optional(),
-});
-const automapBodySchema = importCsvSchema.merge(columnChoiceSchema);
-
 const syncPreviewSchema = importCsvSchema.extend({
   missing: z.enum(['LEAVE', 'SOLD_OUT']).default('LEAVE'),
 });
@@ -480,34 +466,6 @@ const syncConfirmSchema = syncPreviewSchema.extend({
   uploadId: z.string().regex(/^[A-Za-z0-9_-]{16,64}$/),
   contentHash: z.string().regex(/^[0-9a-f]{64}$/),
   planDigest: z.string().regex(/^[0-9a-f]{64}$/),
-});
-
-const MAX_IMPORT_ROWS = 5000;
-// Excel-import guards (audit DS107 High #5): the zip-bomb budget lives in
-// utils/xlsx-zip-guard; these bound the workbook shape once exceljs has parsed
-// it. 1 MB compressed is generous for a catalogue workbook (text compresses
-// ~10:1, and the confirm step already caps 5000 rows).
-const XLSX_MAX_COMPRESSED_BYTES = 1 * 1024 * 1024;
-const MAX_XLSX_COLUMNS = 100;
-const MAX_XLSX_CELL_TEXT = 2000;
-
-/** One CSV row of the import template. Coercions keep messy files importable. */
-const csvRowSchema = z.object({
-  category: z.string().trim().min(1).max(100),
-  name: z.string().trim().min(1).max(150),
-  description: z.string().max(2000).optional().default(''),
-  // [POS-SYNC] A blank price used to coerce to 0 and import a free item. A
-  // price is required; it is never invented.
-  basePrice: z.string().trim().min(1, 'A price is required').pipe(z.coerce.number<string>().min(0).max(10_000_000)),
-  sku: z.string().max(64).optional().default(''),
-  unit: z.string().max(30).optional().default(''),
-  stockQuantity: z
-    .union([z.literal(''), z.coerce.number().int().min(0)])
-    .optional()
-    .default(''),
-  isAvailable: z.enum(['true', 'false', '']).optional().default(''),
-  fulfillment: z.enum(['DELIVERY', 'PICKUP', 'APPOINTMENT', '']).optional().default(''),
-  imageUrl: z.string().max(2048).optional().default(''),
 });
 
 // [IMAGES-E2E PR4 · COORD ruling 19 Oct (a)] No photo column: photos are uploaded, never
@@ -720,21 +678,14 @@ async function requireListingAllowed(
 }
 
 /** The listing gate's answer without throwing: a till sync still updates the
- *  items a store already has, and lists the new ones as needing verification. */
+ *  items a store already has, and lists the new ones as needing verification.
+ *  [ASSISTED SETUP] One rule (listing-gate.ts), shared with the admin console's assisted setup. */
 async function listingAllowed(
   app: FastifyInstance,
   verification: VerificationService,
   vendorId: string,
 ): Promise<boolean> {
-  const vendorRecord = await app.prisma.vendor.findUniqueOrThrow({
-    where: { id: vendorId },
-    select: { isVerified: true, vendorType: true, status: true },
-  });
-  const verified = vendorRecord.isVerified
-    || await verification.isRoleVerified(await vendorOwnerUserId(app, vendorId), vendorRecord.vendorType, app.prisma, vendorId);
-  if (verified) return true;
-  const draftableStatus = vendorRecord.status !== 'ACTIVE' && vendorRecord.status !== 'SUSPENDED';
-  return process.env['PREVIEW_MODE'] === '1' && draftableStatus;
+  return listingGate(app.prisma, verification, vendorId);
 }
 
 /** The selected store from the `x-vendor-id` header (multi-store switch). */
@@ -4006,9 +3957,11 @@ export async function vendorRoutes(app: FastifyInstance) {
     const { vendorId } = await resolveVendor(app, request.user.userId, selectedVendorId(request));
     const categories = await menu.listCategories(vendorId);
     const checks = await catalogueChecksFor(app.prisma, categories.flatMap((c) => c.items.map((i) => i.id)));
+    // [ASSISTED SETUP] The phone's menu reads its items here: the same additive marks as GET /items.
+    const assisted = await assistedItemMarks(app.prisma, [vendorId], categories.flatMap((c) => c.items));
     const data = categories.map((category) => ({
       ...category,
-      items: category.items.map((item) => ({ ...withBulkWord(item), catalogueCheck: partnerView(checks.get(item.id)) })),
+      items: category.items.map((item) => ({ ...withBulkWord(item), catalogueCheck: partnerView(checks.get(item.id)), ...(assisted.get(item.id) ?? {}) })),
     }));
     return { success: true, data };
   });
@@ -4193,6 +4146,9 @@ export async function vendorRoutes(app: FastifyInstance) {
     // [GUARDRAILS §8] The partner reads, per item, whether Swift does not allow it
     // or is holding it for a quick check — and why (the word and the field).
     const checks = await catalogueChecksFor(app.prisma, items.map((i) => i.id));
+    // [ASSISTED SETUP · owner 12 Nov 2026] An item (or photo) Swift added for the store with its OK says so: additive
+    // `addedBySwiftAt` / `photoAddedBySwiftAt` (ISO dates); older apps ignore them.
+    const assisted = await assistedItemMarks(app.prisma, [vendorId], items);
     const data = items.map((item) => ({
       ...coerceMoney(withBulkWord(item), ITEM_MONEY_FIELDS),
       optionGroups: item.optionGroups.map((group) => ({
@@ -4200,6 +4156,7 @@ export async function vendorRoutes(app: FastifyInstance) {
         options: group.options.map((option) => coerceMoney(option, OPTION_MONEY_FIELDS)),
       })),
       catalogueCheck: partnerView(checks.get(item.id)),
+      ...(assisted.get(item.id) ?? {}),
     }));
     return { success: true, data };
   });
@@ -4318,67 +4275,6 @@ export async function vendorRoutes(app: FastifyInstance) {
     return CSV_TEMPLATE;
   });
 
-  /** Shared automap core: raw header->value rows in, confirm-ready preview out.
-   *  Never imports; only relabels columns, never invents prices (spec §4.5).
-   *  [POS-SYNC] A recognised till export is read by its exact profile; the
-   *  store's own column choices go on top; `mode: 'sync'` asks only for what a
-   *  re-upload needs (a SKU, and a price or a count). `sourceCsv` (a workbook's
-   *  own columns) rides along so the store can re-map an Excel file. */
-  async function automapRows(
-    rows: Record<string, string>[],
-    choice: z.infer<typeof columnChoiceSchema>,
-    sourceCsv?: string | null,
-  ) {
-    if (rows.length === 0) {
-      throw new AppError(400, 'EMPTY_CSV', 'No data rows found');
-    }
-    const headers = Object.keys(rows[0]!);
-    const extra = sourceCsv !== undefined ? { sourceCsv } : {};
-    const unknown = unknownOverrideHeaders(headers, choice.mapping as ColumnMapping | undefined);
-    if (unknown.length > 0) {
-      throw new AppError(400, 'UNKNOWN_COLUMN', `This file has no column called "${unknown[0]}".`, { headers, ...extra });
-    }
-
-    // [NO-AI] The synonym table and the till-export profiles in
-    // `utils/catalogue-map.ts` are the whole mapper. When a required column is
-    // not recognised the honest answer is to say WHICH, and let the vendor pick
-    // the column or use the template — the 422 below. Nothing is guessed.
-    let plan: ReturnType<typeof planColumns>;
-    try {
-      plan = planColumns(headers, { tillStore: choice.tillStore, override: choice.mapping as ColumnMapping | undefined });
-    } catch (err) {
-      if (err instanceof TillStoreChoiceError) {
-        throw new AppError(422, 'CHOOSE_TILL_STORE',
-          err.asked
-            ? `"${err.asked}" is not one of the till stores in this file. Choose one of: ${err.stores.join(', ')}.`
-            : 'This file has columns for more than one till store. Choose which one is this Swift store.',
-          { stores: err.stores, headers, ...extra });
-      }
-      throw err;
-    }
-    const mapping: ColumnMapping = plan.mapping;
-
-    const missing = choice.mode === 'sync' ? missingForSync(mapping) : REQUIRED_FIELDS.filter((f) => !mapping[f]);
-    if (missing.length > 0) {
-      throw new AppError(422, 'UNMAPPED_COLUMNS',
-        `Could not map required columns (${missing.join(', ')}). Rename them or use the template.`,
-        { mapping, headers, profile: plan.profile, ...extra });
-    }
-
-    const normalized = applyMapping(rows, mapping);
-    return {
-      mapping,
-      profile: plan.profile,
-      headers,
-      tillStores: plan.tillStores,
-      tillStore: plan.tillStore,
-      rowCount: normalized.length,
-      preview: normalized.slice(0, 10),
-      normalizedCsv: toImportCsv(normalized),
-      ...extra,
-    };
-  }
-
   /** POST /items/import/automap — map a messy store CSV's columns to Swift
    *  fields (a deterministic synonym table plus exact till-export profiles;
    *  unmapped columns go to the vendor). Returns a preview + a canonical
@@ -4412,88 +4308,8 @@ export async function vendorRoutes(app: FastifyInstance) {
       }
       throw err;
     }
-    // Zip-bomb guard: refuse by the ZIP central directory's ADVERTISED sizes
-    // BEFORE exceljs inflates anything. A tiny .xlsx can legally declare a
-    // multi-GB sharedStrings.xml; exceljs would try to inflate it and OOM the
-    // process before any header validation could refuse it.
-    // [SEC-DOS F3] exceljs gets the guard's rebuilt archive of exactly the bytes it measured, never the upload.
-    let measured: Buffer;
-    try {
-      measured = scanXlsxZip(buffer, XLSX_IMPORT_ZIP_BUDGET).archive;
-    } catch (err) {
-      if (err instanceof XlsxZipGuardError) {
-        throw new AppError(400, 'BAD_XLSX', `That workbook is not importable: ${err.message}`);
-      }
-      throw err;
-    }
-
-    const ExcelJS = (await import('exceljs')).default;
-    const workbook = new ExcelJS.Workbook();
-    try {
-      await workbook.xlsx.load(measured as unknown as ArrayBuffer);
-    } catch {
-      throw new AppError(400, 'BAD_XLSX', 'That file is not a readable Excel workbook (.xlsx)');
-    }
-    const sheet = workbook.worksheets[0];
-    if (!sheet || sheet.rowCount < 2) {
-      throw new AppError(400, 'EMPTY_CSV', 'No data rows found in the first worksheet');
-    }
-    // Post-load shape caps: the central-directory guard bounds what exceljs
-    // can inflate; these bound what the row loop below can build. Keep the
-    // row cap in lock-step with the CSV confirm step's MAX_IMPORT_ROWS.
-    if (sheet.rowCount - 1 > MAX_IMPORT_ROWS) {
-      throw new AppError(400, 'TOO_MANY_ROWS', `Import is limited to ${MAX_IMPORT_ROWS} rows per file (got ${sheet.rowCount - 1})`);
-    }
-    if (sheet.columnCount > MAX_XLSX_COLUMNS) {
-      throw new AppError(400, 'BAD_XLSX', `Import is limited to ${MAX_XLSX_COLUMNS} columns per file (got ${sheet.columnCount})`);
-    }
-
-    const cellText = (v: unknown, where: string): string => {
-      let text: string;
-      if (v === null || v === undefined) {
-        text = '';
-      } else if (typeof v === 'object') {
-        const rich = v as { richText?: Array<{ text: string }>; text?: string; result?: unknown };
-        if (rich.richText) text = rich.richText.map((t) => t.text).join('');
-        else if (rich.text) text = rich.text;
-        else if (rich.result !== undefined) text = String(rich.result);
-        else text = '';
-      } else {
-        text = String(v);
-      }
-      if (text.length > MAX_XLSX_CELL_TEXT) {
-        throw new AppError(400, 'BAD_XLSX', `Cell text at ${where} exceeds ${MAX_XLSX_CELL_TEXT} characters.`);
-      }
-      return text;
-    };
-
-    // [POS-SYNC] A code typed as a number in a zero-padded format ("00123",
-    // a barcode) is stored as 123 and shown as 00123. Read such a cell as the
-    // digits the store sees, or the SKU loses its leading zeros and never matches.
-    const readCell = (cell: { value: unknown; numFmt?: string }): unknown => {
-      const fmt = cell.numFmt ?? '';
-      return typeof cell.value === 'number' && /^0+$/.test(fmt) && Number.isSafeInteger(cell.value) && cell.value >= 0
-        ? String(cell.value).padStart(fmt.length, '0')
-        : cell.value;
-    };
-
-    const headerRow = sheet.getRow(1);
-    const headers: string[] = [];
-    headerRow.eachCell({ includeEmpty: false }, (cell, col) => { headers[col - 1] = cellText(cell.value, `header column ${col}`).trim(); });
-
-    const rows: Record<string, string>[] = [];
-    sheet.eachRow({ includeEmpty: false }, (row, rowNumber) => {
-      if (rowNumber === 1) return;
-      const record: Record<string, string> = {};
-      let hasValue = false;
-      headers.forEach((h, i) => {
-        if (!h) return;
-        const value = cellText(readCell(row.getCell(i + 1)), `row ${rowNumber}, column ${i + 1}`).trim();
-        record[h] = value;
-        if (value) hasValue = true;
-      });
-      if (hasValue) rows.push(record);
-    });
+    // [ASSISTED SETUP] Read by the one reader (menu-import.ts), shared with the admin console's assisted setup.
+    const { headers, rows } = await readXlsxRows(buffer);
 
     // The workbook's own columns as CSV, so the store can re-map it through
     // the JSON automap route (when it fits that route's size cap).
@@ -4579,128 +4395,14 @@ export async function vendorRoutes(app: FastifyInstance) {
     const { csv } = importCsvSchema.parse(request.body);
     // [GUARDRAILS §8 · #54] Nor imports anything.
     await assertStoreAllowed(app.prisma, vendorId);
-    const rows = parseCsvWithHeader(csv);
-
-    if (rows.length === 0) {
-      throw new AppError(400, 'EMPTY_CSV', 'No data rows found — download the template to see the format');
-    }
-    if (rows.length > MAX_IMPORT_ROWS) {
-      throw new AppError(400, 'TOO_MANY_ROWS', `Import is limited to ${MAX_IMPORT_ROWS} rows per file (got ${rows.length})`);
-    }
-
-    const failures: Array<{ row: number; errors: string[] }> = [];
-    // [IMAGES-E2E PR4 · COORD ruling 19 Oct (a)] A row that names a photo address is imported
-    // WITHOUT it (photos are uploaded), and the answer says so for that row.
-    const notes: Array<{ row: number; note: string }> = [];
-    const valid: Array<{ rowNumber: number; data: z.infer<typeof csvRowSchema> }> = [];
-
-    rows.forEach((raw, index) => {
-      const parsed = csvRowSchema.safeParse(raw);
-      if (parsed.success) {
-        valid.push({ rowNumber: index + 2, data: parsed.data }); // +2: 1-based + header
-      } else {
-        failures.push({
-          row: index + 2,
-          errors: parsed.error.issues.map((issue) => `${issue.path.join('.')}: ${issue.message}`),
-        });
-      }
-    });
-
-    // Categories resolve by name (case-insensitive), created on demand
-    // [owner 11 Oct] An archived category never takes new rows: a row naming
-    // it files into a new live category of the same name.
-    const categories = await app.prisma.category.findMany({ where: { vendorId, archivedAt: null } });
-    const categoryIds = new Map(categories.map((c) => [c.name.toLowerCase(), c.id]));
-
-    // [POS-SYNC] This route only ADDS. A row whose SKU the store already has
-    // (trimmed, any case) used to become a second copy of that item on every
-    // re-upload; it is refused now and pointed at the update flow. Rows
-    // without a SKU cannot be checked and import as before.
-    const knownSkus = new Set(
-      (await app.prisma.item.findMany({ where: { vendorId, sku: { not: null }, archivedAt: null }, select: { sku: true } }))
-        .map((i) => skuKey(i.sku)).filter(Boolean),
-    );
-
-    let imported = 0;
-    const importedIds: Array<{ id: string; row: number; name: string }> = [];
-    for (const { rowNumber, data } of valid) {
-      // [GUARDRAILS §8 · #55] A row whose name IS banned goods is refused and listed; the rest import.
-      const bannedGoods = certainGoods(data.name);
-      if (bannedGoods) {
-        failures.push({ row: rowNumber, errors: [notAllowedMessage(bannedGoods.prohibitedClass)] });
-        continue;
-      }
-      const sku = skuKey(data.sku);
-      if (sku && knownSkus.has(sku)) {
-        failures.push({ row: rowNumber, errors: ['This SKU is already in your store, so it was not added again. To update items from a file, use "Import or update your items" on the web dashboard.'] });
-        continue;
-      }
-      const key = data.category.toLowerCase();
-      let categoryId = categoryIds.get(key);
-      if (!categoryId) {
-        const created = await app.prisma.category.create({
-          data: { vendorId, name: data.category, sortOrder: categoryIds.size },
-        });
-        categoryId = created.id;
-        categoryIds.set(key, categoryId);
-      }
-
-      try {
-        // [MKT-2 · POS-SYNC F2] The count an item is born with is written by
-        // the ledger's opening balance, in the same transaction as the item —
-        // never assigned here — so the ledger explains it from day one.
-        const createdId = await app.prisma.$transaction(async (tx) => {
-          const created = await tx.item.create({
-            data: {
-              vendorId,
-              categoryId,
-              name: data.name,
-              description: data.description || undefined,
-              // [VAT-DOCS] A file's price is the price the store typed (before VAT for a store that adds it).
-              ...typedItemPrice(data.basePrice),
-              sku: data.sku || undefined,
-              unit: data.unit || undefined,
-              isAvailable: data.isAvailable === '' ? true : data.isAvailable === 'true',
-              fulfillment: data.fulfillment === '' ? 'DELIVERY' : data.fulfillment,
-              dietaryTags: [],
-              allergens: [],
-            },
-            select: { id: true },
-          });
-          await recordOpeningBalance(tx, created.id, data.stockQuantity === '' ? null : data.stockQuantity, request.user.userId);
-          await reconcileVatPricing(tx, vendorId, { itemIds: [created.id] });
-          return created.id;
-        });
-        importedIds.push({ id: createdId, row: rowNumber, name: data.name });
-        if (sku) knownSkus.add(sku);
-        imported += 1;
-        if (data.imageUrl.trim() !== '') notes.push({ row: rowNumber, note: IMPORT_PHOTO_ADDRESS_NOTE });
-      } catch {
-        failures.push({ row: rowNumber, errors: ['Database rejected this row'] });
-      }
-    }
+    // [ASSISTED SETUP] The rows judged and added by the one import (menu-import.ts), shared with the admin console's
+    // assisted setup, so both refuse exactly the same rows.
+    const { rows: added, ...outcome } = await runMenuImport(app.prisma, { vendorId, csv, actorId: request.user.userId });
+    void added; // the store's answer is what it always was: no row list
 
     scheduleVendorSearchSync(app, vendorId);
 
-    // [GUARDRAILS §8] Imported rows a banned word is holding for a quick check, by row.
-    const importChecks = await catalogueChecksFor(app.prisma, importedIds.map((i) => i.id));
-    const waitingForCheck = importedIds
-      .filter((i) => importChecks.get(i.id)?.state === 'WAITING')
-      .map((i) => ({ row: i.row, name: i.name }));
-
-    return {
-      success: true,
-      data: {
-        imported,
-        waitingForCheck: waitingForCheck.slice(0, 100),
-        waitingForCheckCount: waitingForCheck.length,
-        failedCount: failures.length,
-        // Cap the detail list so a fully-broken huge file stays readable
-        failures: failures.slice(0, 100),
-        notes: notes.slice(0, 100),
-        notesCount: notes.length,
-      },
-    };
+    return { success: true, data: outcome };
   });
 
   // -------------------------------------------------------------------------
@@ -4844,26 +4546,10 @@ export async function vendorRoutes(app: FastifyInstance) {
 
     const url = await storeOwnPhoto(request, vendorId);
 
-    // [IMAGES-E2E PR4] Under the item's lock; the photo it replaces is queued for deletion in the
-    // same transaction and deleted after (a photo the row could not take is deleted too).
-    const { item, orphanIds } = await app.prisma.$transaction(async (tx) => {
-      const rows = await tx.$queryRaw<Array<{ imageUrl: string | null }>>`
-        SELECT "imageUrl" FROM "items" WHERE "id" = ${request.params.id} AND "vendorId" = ${vendorId} AND "archivedAt" IS NULL
-        FOR UPDATE /* item-photo-authority */
-      `;
-      if (!rows[0]) throw new NotFoundError('Item', request.params.id);
-      const queued = await queueStorePhotoDeletions(tx, vendorId, [rows[0].imageUrl]);
-      const row = await tx.item.update({
-        where: { id: request.params.id, archivedAt: null },
-        data: { imageUrl: url },
-        select: { id: true, name: true, imageUrl: true },
-      });
-      return { item: row, orphanIds: queued };
-    }).catch(async (err: unknown) => {
-      await discardKeptPhoto(vendorId, url);
-      return goneIfArchived(request.params.id)(err);
-    });
-    await deleteQueuedPhotos(orphanIds);
+    // [IMAGES-E2E PR4 · ASSISTED SETUP] Set under the item's lock by the one helper (item-photo.ts), shared with the
+    // admin console's assisted setup: the photo it replaces is queued for deletion in the same transaction and deleted
+    // after (a photo the row could not take is deleted too).
+    const item = await setItemPhoto({ prisma: app.prisma, storage, log: app.log }, { vendorId, itemId: request.params.id, url });
 
     scheduleVendorSearchSync(app, vendorId);
 

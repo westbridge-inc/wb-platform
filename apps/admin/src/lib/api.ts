@@ -94,7 +94,8 @@ async function apiFetch(path: string, options?: RequestInit & { reason?: string 
       ...requestOptions,
       credentials: 'include',
       headers: {
-        'Content-Type': 'application/json',
+        // [ASSISTED SETUP] A file travels as multipart: the browser writes its own Content-Type (with the boundary).
+        ...(typeof FormData !== 'undefined' && requestOptions.body instanceof FormData ? {} : { 'Content-Type': 'application/json' }),
         ...clientHeaders,
         ...(reason ? { [REASON_HEADER]: reason } : {}),
         ...requestOptions.headers,
@@ -1146,7 +1147,7 @@ export const fetchSelfieChecks = () =>
   apiFetch('/api/v1/admin/verification/selfie-checks').then((r) => ((r as { data?: { pending?: SelfieCheck[] } }).data?.pending ?? []));
 export const decideSelfieCheck = (documentId: string, match: boolean, selfieCapturedAt: string, reason: string) =>
   apiFetch(`/api/v1/admin/verification/${documentId}/selfie-check`, { method: 'POST', body: JSON.stringify({ match, selfieCapturedAt }), reason });
-export const approveDoc = (id: string, body: { expiresAt?: string; insurance?: InsuranceCheck; documentNumber?: string; issuedOn?: string; certificateYear?: number; registrationKind?: 'BUSINESS_NAME' | 'COMPANY'; ownNameConfirmed?: boolean; proprietorIsCompany?: boolean; legalName?: string } | undefined, reason: string) =>
+export const approveDoc = (id: string, body: { expiresAt?: string; insurance?: InsuranceCheck; documentNumber?: string; issuedOn?: string; certificateYear?: number; registrationKind?: 'BUSINESS_NAME' | 'COMPANY'; ownNameConfirmed?: boolean; proprietorIsCompany?: boolean; legalName?: string; soleAdminChecked?: boolean } | undefined, reason: string) =>
   apiFetch(`/api/v1/admin/verification/${id}/approve`, { method: 'PUT', body: JSON.stringify(body ?? {}), reason });
 // [ADMIN-CONSOLE] The route's whole body (admin.routes.ts rejectDocSchema): the
 // reviewer's words and the server's reason code. The words also ride the
@@ -1665,3 +1666,55 @@ export const resolveHeldDoorCash = async (id: string, reason: string) => {
   if (response?.success !== true || response.data?.orderId !== id || response.data?.doorCashReturn?.status !== 'RESOLVED') throw unreadableOrderAction();
   return response;
 };
+
+// ── [ASSISTED SETUP · owner 12 Nov 2026] Setting a store up FOR it, with its OK ──────────────────────────────────────
+export type AssistedChannel = 'IN_PERSON' | 'PHONE' | 'WHATSAPP' | 'EMAIL';
+/** [#2495 review] Who said yes, as a choice: the account holder themself, or a manager at the store. */
+export type AssistedAgreedAs = 'ACCOUNT_HOLDER' | 'MANAGER';
+export interface AssistedConsent {
+  id: string; agreedByName: string; agreedAs: AssistedAgreedAs; channel: AssistedChannel; agreedAt: string; reference: string | null;
+  recordedByAdminId: string; createdAt: string; live: boolean;
+}
+export interface AssistedPaper { id: string; docType: string; status: string; createdAt: string; expiresAt: string | null; reviewNote: string | null; addedBySwift?: boolean }
+export interface AssistedItem { id: string; name: string; category: string | null; imageUrl: string | null; addedBySwiftAt?: string; photoAddedBySwiftAt?: string }
+export interface AssistedSetupView {
+  store: { id: string; name: string; vendorType: string; status: string };
+  script: { question: string; consentText: string; consentVersion: string };
+  validDays: number;
+  consents: AssistedConsent[];
+  /** storeOnly: steps the store signs, ticks or consents to itself (never uploaded by Swift); personal: a person's own
+   *  papers, uploaded only on the account holder's own OK. */
+  papers: { checklist: string[]; optional: string[]; missing: string[]; documents: AssistedPaper[]; storeOnly?: string[]; personal?: string[] };
+  items: AssistedItem[];
+  canAddItems: boolean;
+}
+export interface MenuImportPlan {
+  imported: number; failedCount: number; failures: Array<{ row: number; errors: string[] }>;
+  notes: Array<{ row: number; note: string }>; notesCount: number; waitingForCheckCount: number;
+  rows: Array<{ row: number; name: string; category: string; basePrice: number }>;
+}
+export interface MenuPreview {
+  automap: { rowCount: number; normalizedCsv: string; mapping: Record<string, string>; headers: string[] };
+  plan: MenuImportPlan;
+  canAddItems: boolean;
+}
+export interface ConsentEntry { agreedByName: string; agreedAs: AssistedAgreedAs; channel: AssistedChannel; agreedAt: string; reference?: string; consentVersion: string }
+
+const assisted = (vendorId: string) => `/api/v1/admin/vendors/${encodeURIComponent(vendorId)}/assisted-setup`;
+const fileForm = (file: Blob, name: string) => { const form = new FormData(); form.append('file', file, name); return form; };
+
+export const fetchAssistedSetup = (vendorId: string): Promise<Envelope<AssistedSetupView>> => apiFetch(assisted(vendorId));
+export const recordAssistedConsent = (vendorId: string, entry: ConsentEntry, reason: string) =>
+  apiFetch(`${assisted(vendorId)}/consent`, { method: 'POST', body: JSON.stringify({ ...entry, wordsRead: true }), reason });
+export const uploadAssistedPaper = (vendorId: string, consentId: string, docType: string, file: Blob, name: string, reason: string) =>
+  apiFetch(`${assisted(vendorId)}/documents?${new URLSearchParams({ consentId, docType })}`, { method: 'POST', body: fileForm(file, name), reason });
+/** The store's own column choices (field -> the file's column, '' = not used) and, for a multi-store till export, its store. */
+export interface MenuColumnChoice { mapping?: Record<string, string>; tillStore?: string }
+export const previewAssistedMenuCsv = (vendorId: string, consentId: string, csv: string, choice: MenuColumnChoice = {}): Promise<Envelope<MenuPreview>> =>
+  apiFetch(`${assisted(vendorId)}/menu/preview`, { method: 'POST', body: JSON.stringify({ consentId, csv, ...choice }) });
+export const previewAssistedMenuXlsx = (vendorId: string, consentId: string, file: Blob, name: string, choice: MenuColumnChoice = {}): Promise<Envelope<MenuPreview>> =>
+  apiFetch(`${assisted(vendorId)}/menu/preview-xlsx?${new URLSearchParams({ consentId, ...(choice.tillStore ? { tillStore: choice.tillStore } : {}), ...(choice.mapping ? { mapping: JSON.stringify(choice.mapping) } : {}) })}`, { method: 'POST', body: fileForm(file, name) });
+export const applyAssistedMenu = (vendorId: string, consentId: string, csv: string, reason: string): Promise<Envelope<MenuImportPlan>> =>
+  apiFetch(`${assisted(vendorId)}/menu/apply`, { method: 'POST', body: JSON.stringify({ consentId, csv }), reason });
+export const uploadAssistedItemPhoto = (vendorId: string, consentId: string, itemId: string, file: Blob, name: string, reason: string) =>
+  apiFetch(`${assisted(vendorId)}/items/${encodeURIComponent(itemId)}/photo?${new URLSearchParams({ consentId })}`, { method: 'POST', body: fileForm(file, name), reason });

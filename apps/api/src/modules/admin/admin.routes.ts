@@ -60,6 +60,19 @@ import {
 } from './admin-approval';
 import { ABSENT, snapshot, type EntitySnapshot } from './audit-change';
 import { adminAuditRow, auditWithin, markReplayAudited, verifyInlineRow, wroteAuditInline, type AuditRequestLike } from './audit-within';
+import {
+  ASSISTED_CONSENT_VALID_DAYS, ASSISTED_DOCUMENT_CONSENT, ASSISTED_PRIVACY_NOTICE_VERSION, ASSISTED_SETUP_QUESTION, assertAssistableDocType,
+  NEVER_ASSISTED_DOC_TYPES, assertHolderTakesPapers, assistedItemMarks, consentInputSchema, consentsOf, isPersonalPaper, liveConsent,
+  recordAction, recordAssistedConsent, recordAssistedFiling, storeForAssist,
+} from './assisted-setup';
+import { sealVerificationUpload } from '../verification/upload-seal';
+import { listingAllowed } from '../vendor/listing-gate';
+import { setItemPhoto } from '../vendor/item-photo';
+import { XLSX_MAX_COMPRESSED_BYTES, automapBodySchema, automapRows, columnChoiceSchema, importCsvSchema, readXlsxRows, runMenuImport } from '../vendor/menu-import';
+import { keepPublicPhoto } from '../../utils/owned-photo-upload';
+import { parseCsvWithHeader } from '../../utils/csv';
+import { toSourceCsv } from '../../utils/catalogue-map';
+import { assertStoreAllowed } from '../compliance/prohibited-gate';
 import { cancelChainDealChange, chainOf, changeChainDeal, setChainDeal } from '../vendor/chain-deal';
 import { completeMmgClaimNotice, mmgClaimView, resolveMmgClaimDisagreement } from '../order/mmg-claim.service';
 import { tellCustomersOfStoreSuspension } from '../vendor/store-suspension-notices';
@@ -450,6 +463,9 @@ const approveDocSchema = z.object({
   legalName: z.string().trim().min(2).max(160).optional(),
   // [COMPANY-DOCS · review F3] a company's business-name registration: the proprietor named on it is a company
   proprietorIsCompany: z.boolean().optional(),
+  // [ASSISTED SETUP · owner 12 Nov 2026] the admin who uploaded this paper for the store, approving it alone: "I checked
+  // it myself, no second admin available" (refused whenever a second admin exists; audited)
+  soleAdminChecked: z.boolean().optional(),
   // Insurance 5-point manual check (spec §3.4) — supplied for hire-insurance docs
   insurance: z.object({
     insurerName: z.string().min(1).max(120),
@@ -2014,6 +2030,210 @@ export async function adminRoutes(app: FastifyInstance) {
         next,
       },
     };
+  });
+
+  // ─── [ASSISTED SETUP · owner 12 Nov 2026] A Swift admin sets a store up FOR it ──────────────────────────────────
+  // Never AS it: no session for the store, no login-as. The store's OK is recorded first (who agreed, how, when, the
+  // words read to them), and every action names it: its papers filed by the store's own filing, its menu by the store's
+  // own import behind the store's own listing gate, its item photos by the store's own photo keeping; each audited under
+  // the admin's own id in the action's transaction. See modules/admin/assisted-setup.ts.
+  const assistedPhotoStorage = getStorageProvider();
+  const assistedDeps = () => ({ prisma: app.prisma, storage: assistedPhotoStorage, log: app.log });
+  const assistedAudit = (tx: Prisma.TransactionClient, request: unknown, entityId: string, extra: Record<string, string | number | boolean | null>) =>
+    auditWithin(tx, request as AuditRequestLike, app.prefix, { entityId, extra });
+  /** [#2495 review A S3-1] The store an action is done for, never by an admin who is its account holder or shares an
+   *  identity with them (recusal, as for a review decision). */
+  const assistStoreFor = async (adminId: string, vendorId: string) => {
+    const store = await storeForAssist(app.prisma, vendorId);
+    await assertNotRecused(app.prisma, adminId, store.holderId);
+    return store;
+  };
+  const assistedConsentIdOf = (request: { query: unknown }) =>
+    z.object({ consentId: z.string().min(1).max(64).optional() }).passthrough().parse(request.query ?? {}).consentId;
+
+  /** GET /vendors/:id/assisted-setup — the panel: the store's OKs, its paper list (required and optional, each paper's
+   *  state), its items, the words to read, and whether it may add items yet. */
+  app.get('/vendors/:id/assisted-setup', { preHandler: [adminGuard] }, async (request) => {
+    const { id } = request.params as { id: string };
+    const store = await storeForAssist(app.prisma, id);
+    const [consents, papers, items, canAddItems] = await Promise.all([
+      consentsOf(app.prisma, store),
+      verification.getStatus(store.holderId, store.vendorType),
+      tenantPrisma.item.findMany({
+        where: { vendorId: store.id, archivedAt: null },
+        select: { id: true, name: true, imageUrl: true, category: { select: { name: true } } },
+        orderBy: [{ category: { sortOrder: 'asc' } }, { sortOrder: 'asc' }, { name: 'asc' }],
+        take: 500,
+      }),
+      listingAllowed(app.prisma, verification, store.id),
+    ]);
+    const marks = await assistedItemMarks(app.prisma, [store.id], items);
+    return {
+      success: true,
+      data: {
+        store: { id: store.id, name: store.name, vendorType: store.vendorType, status: store.status },
+        script: { question: ASSISTED_SETUP_QUESTION, consentText: ASSISTED_DOCUMENT_CONSENT.text, consentVersion: ASSISTED_DOCUMENT_CONSENT.version },
+        validDays: ASSISTED_CONSENT_VALID_DAYS,
+        consents,
+        papers: {
+          checklist: papers.checklist, optional: papers.optional, missing: papers.missing, documents: papers.documents,
+          // [#2495 review] What the store signs, ticks or consents to itself (no upload), and a person's own papers (only on
+          // the account holder's own OK).
+          storeOnly: [...papers.checklist, ...papers.optional].filter((d) => NEVER_ASSISTED_DOC_TYPES.has(d)),
+          personal: [...papers.checklist, ...papers.optional].filter((d) => !NEVER_ASSISTED_DOC_TYPES.has(d) && isPersonalPaper(d)),
+        },
+        items: items.map((i) => ({ id: i.id, name: i.name, category: i.category?.name ?? null, imageUrl: i.imageUrl, ...(marks.get(i.id) ?? {}) })),
+        canAddItems,
+      },
+    };
+  });
+
+  /** POST /vendors/:id/assisted-setup/consent — record the store's OK. Nothing else happens without one. */
+  app.post('/vendors/:id/assisted-setup/consent', { preHandler: [adminGuard] }, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const body = consentInputSchema.parse(request.body ?? {});
+    const store = await assistStoreFor(request.user.userId, id);
+    const reason = reasonOf(request.body, request.headers as never) ?? '';
+    const consent = await recordAssistedConsent(app.prisma, {
+      store, adminId: request.user.userId, body, reason,
+      audit: (tx, consentId) => assistedAudit(tx, request, store.id, {
+        assistedConsentId: consentId, channel: body.channel, agreedAs: body.agreedAs,
+        agreedAt: body.agreedAt.toISOString(), consentVersion: ASSISTED_DOCUMENT_CONSENT.version,
+      }),
+    });
+    reply.code(201);
+    return { success: true, data: { id: consent.id, agreedAt: consent.agreedAt, channel: consent.channel, validDays: ASSISTED_CONSENT_VALID_DAYS } };
+  });
+
+  /** POST /vendors/:id/assisted-setup/documents?consentId&docType — one paper for the store's account holder (multipart
+   *  file; the reason in the x-swift-reason header), filed exactly as the store's own upload, under the consent. */
+  app.post('/vendors/:id/assisted-setup/documents', { preHandler: [adminGuard], config: { rateLimit: { max: 20, timeWindow: '1 minute' } } }, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const { docType } = z.object({ docType: z.string().min(2).max(60) }).passthrough().parse(request.query ?? {});
+    const consentId = assistedConsentIdOf(request);
+    const store = await assistStoreFor(request.user.userId, id);
+    const consent = await liveConsent(app.prisma, store, consentId);
+    // [#2495 review B S2-1] Everything the filing would refuse is refused here, before the file is stored.
+    assertHolderTakesPapers(store);
+    const lists = await verification.getStatus(store.holderId, store.vendorType);
+    assertAssistableDocType(docType, lists, consent);
+    const file = await request.file();
+    if (!file) throw new AppError(400, 'NO_FILE', 'Attach a document file');
+    const buffer = await file.toBuffer();
+    const fileUrl = await sealVerificationUpload(app.prisma, notifications, { ownerUserId: store.holderId, buffer, mimetype: file.mimetype, log: request.log });
+    const adminId = request.user.userId;
+    const doc = await verification.submitDocument(store.holderId, store.vendorType, docType, fileUrl, ASSISTED_PRIVACY_NOTICE_VERSION, undefined, {
+      assisted: {
+        byId: adminId,
+        consentId: consent.id,
+        afterCreate: async (tx, filed) => {
+          await recordAssistedFiling(tx, { store, consentId: consent.id, adminId, docId: filed.id, docType });
+          await assistedAudit(tx, request, store.id, { assistedConsentId: consent.id, documentId: filed.id, docType, accountHolderId: store.holderId });
+        },
+      },
+    });
+    reply.code(201);
+    return { success: true, data: { id: doc.id, docType: doc.docType, status: doc.status, createdAt: doc.createdAt, addedBySwift: true } };
+  });
+
+  /** The preview both menu routes answer: the columns read (the store's own automap) and, row by row, what the import
+   *  would add and refuse (the store's own rules, nothing written). */
+  const assistedMenuPreview = async (storeId: string, automap: Awaited<ReturnType<typeof automapRows>>) => {
+    const plan = await runMenuImport(app.prisma, { vendorId: storeId, csv: automap.normalizedCsv, actorId: 'preview', dryRun: true });
+    const canAddItems = await listingAllowed(app.prisma, verification, storeId);
+    return { automap, plan, canAddItems };
+  };
+
+  /** POST /vendors/:id/assisted-setup/menu/preview — a CSV file's text, read and judged for the store. Writes nothing. */
+  app.post('/vendors/:id/assisted-setup/menu/preview', { preHandler: [adminGuard] }, async (request) => {
+    const { id } = request.params as { id: string };
+    const body = automapBodySchema.extend({ consentId: z.string().min(1).max(64) }).parse(request.body ?? {});
+    const store = await assistStoreFor(request.user.userId, id);
+    await liveConsent(app.prisma, store, body.consentId);
+    await assertStoreAllowed(app.prisma, store.id);
+    const automap = await automapRows(parseCsvWithHeader(body.csv), { mode: 'add', ...(body.tillStore ? { tillStore: body.tillStore } : {}), ...(body.mapping ? { mapping: body.mapping } : {}) });
+    return { success: true, data: await assistedMenuPreview(store.id, automap) };
+  });
+
+  /** POST /vendors/:id/assisted-setup/menu/preview-xlsx?consentId — an Excel workbook (multipart), read and judged. */
+  app.post('/vendors/:id/assisted-setup/menu/preview-xlsx', { preHandler: [adminGuard] }, async (request) => {
+    const { id } = request.params as { id: string };
+    const consentId = assistedConsentIdOf(request);
+    // [#2495 review B S3-2] The store's own column choices ride along: its till store, and the columns it picked
+    // (a JSON object in the query, as the multipart body carries only the file).
+    const choiceQuery = z.object({ tillStore: z.string().trim().min(1).max(100).optional(), mapping: z.string().max(4000).optional() }).passthrough().parse(request.query ?? {});
+    let mapping: unknown;
+    try { mapping = choiceQuery.mapping ? JSON.parse(choiceQuery.mapping) : undefined; } catch { throw new AppError(400, 'BAD_MAPPING', 'The column choices could not be read. Choose the columns again.'); }
+    const choice = columnChoiceSchema.parse({ mode: 'add', ...(choiceQuery.tillStore ? { tillStore: choiceQuery.tillStore } : {}), ...(mapping ? { mapping } : {}) });
+    const store = await assistStoreFor(request.user.userId, id);
+    await liveConsent(app.prisma, store, consentId);
+    await assertStoreAllowed(app.prisma, store.id);
+    let buffer: Buffer;
+    try {
+      const file = await request.file({ limits: { fileSize: XLSX_MAX_COMPRESSED_BYTES, files: 1 } });
+      if (!file) throw new AppError(400, 'NO_FILE', 'Attach an .xlsx file');
+      buffer = await file.toBuffer();
+    } catch (err) {
+      if (err instanceof AppError) throw err;
+      if ((err as { code?: string }).code === 'FST_REQ_FILE_TOO_LARGE') {
+        throw new AppError(400, 'XLSX_TOO_LARGE', `That workbook is too large: the compressed file must be under ${XLSX_MAX_COMPRESSED_BYTES / (1024 * 1024)} MB.`);
+      }
+      throw err;
+    }
+    const { headers, rows } = await readXlsxRows(buffer);
+    const sourceCsv = toSourceCsv(headers.filter(Boolean), rows);
+    const automap = await automapRows(rows, choice, sourceCsv.length <= 2_000_000 ? sourceCsv : null);
+    return { success: true, data: await assistedMenuPreview(store.id, automap) };
+  });
+
+  /** POST /vendors/:id/assisted-setup/menu/apply — the previewed file (its read-out CSV) imported for the store, under the
+   *  consent, behind the store's own listing gate: each item added names the consent and is audited with it. */
+  app.post('/vendors/:id/assisted-setup/menu/apply', { preHandler: [adminGuard] }, async (request) => {
+    const { id } = request.params as { id: string };
+    const body = importCsvSchema.extend({ consentId: z.string().min(1).max(64), reason: z.string().optional() }).strict().parse(request.body ?? {});
+    const store = await assistStoreFor(request.user.userId, id);
+    const consent = await liveConsent(app.prisma, store, body.consentId);
+    // The store's own gate: an unverified store adds no new items, whoever presses the button.
+    if (!(await listingAllowed(app.prisma, verification, store.id))) {
+      throw new AppError(403, 'VERIFICATION_REQUIRED', 'Complete document verification before listing items');
+    }
+    await assertStoreAllowed(app.prisma, store.id);
+    const adminId = request.user.userId;
+    const { rows: added, ...outcome } = await runMenuImport(app.prisma, {
+      vendorId: store.id, csv: body.csv, actorId: adminId,
+      onCreated: async (tx, item) => {
+        await recordAction(tx, { store, consentId: consent.id, adminId, kind: 'MENU_ITEM', targetId: item.id, detail: `row ${item.row}` });
+        await auditIn(tx, adminId, 'ASSISTED_MENU_ITEM_ADDED', 'Item', item.id, { vendorId: store.id, assistedConsentId: consent.id, row: item.row }, request);
+      },
+    });
+    void added;
+    if (outcome.imported > 0) scheduleVendorSearchSync(app, store.id);
+    await app.prisma.$transaction((tx) => assistedAudit(tx, request, store.id, {
+      assistedConsentId: consent.id, imported: outcome.imported, failedCount: outcome.failedCount, waitingForCheckCount: outcome.waitingForCheckCount,
+    }));
+    return { success: true, data: outcome };
+  });
+
+  /** POST /vendors/:id/assisted-setup/items/:itemId/photo?consentId — one item's photo (multipart), kept and set exactly
+   *  as the store's own upload, under the consent. Another store's item: not found. */
+  app.post('/vendors/:id/assisted-setup/items/:itemId/photo', { preHandler: [adminGuard] }, async (request) => {
+    const { id, itemId } = request.params as { id: string; itemId: string };
+    const consentId = assistedConsentIdOf(request);
+    const store = await assistStoreFor(request.user.userId, id);
+    const consent = await liveConsent(app.prisma, store, consentId);
+    const existing = await tenantPrisma.item.findFirst({ where: { id: itemId, vendorId: store.id, archivedAt: null }, select: { id: true } });
+    if (!existing) throw new NotFoundError('Item', itemId);
+    const url = await keepPublicPhoto(request, assistedPhotoStorage, `items/${store.id}`, 'store-media');
+    const adminId = request.user.userId;
+    const item = await setItemPhoto(assistedDeps(), {
+      vendorId: store.id, itemId, url,
+      within: async (tx, set) => {
+        await recordAction(tx, { store, consentId: consent.id, adminId, kind: 'ITEM_PHOTO', targetId: set.id, detail: url });
+        await assistedAudit(tx, request, store.id, { assistedConsentId: consent.id, itemId: set.id });
+      },
+    });
+    scheduleVendorSearchSync(app, store.id);
+    return { success: true, data: { ...item, photoAddedBySwift: true } };
   });
 
   /**
@@ -7255,12 +7475,20 @@ export async function adminRoutes(app: FastifyInstance) {
       ...(body.ownNameConfirmed !== undefined ? { ownNameConfirmed: body.ownNameConfirmed } : {}),
       ...(body.legalName !== undefined ? { legalName: body.legalName } : {}),
       ...(body.proprietorIsCompany !== undefined ? { proprietorIsCompany: body.proprietorIsCompany } : {}),
+      ...(body.soleAdminChecked !== undefined ? { soleAdminChecked: body.soleAdminChecked } : {}),
     }, {
       // [S2-29 · KYC-DECISION-ATOMIC] The trail commits with the decision, in its transaction: the
       // action row and the canonical admin row. A decision cannot commit without them.
       within: async (tx, decided, facts) => {
+        // [ASSISTED SETUP] The uploader approving their own upload alone (the service refused it otherwise) says so on the record.
+        const ownUpload = decided.assistedById === request.user.userId;
         await auditIn(tx, request.user.userId, 'APPROVE_VERIFICATION_DOC', 'VerificationDocument', id,
-          { docType: decided.docType, ...(body.insurance ? { insurance: body.insurance } : {}), ...(body.authorityConfirmed ? { signerConfirmedBy: body.authorityConfirmed.method } : {}) }, request);
+          { docType: decided.docType, ...(body.insurance ? { insurance: body.insurance } : {}), ...(body.authorityConfirmed ? { signerConfirmedBy: body.authorityConfirmed.method } : {}),
+            ...(ownUpload ? { assistedUploadedBySameAdmin: true, soleAdminChecked: true, assistedConsentId: decided.assistedConsentId } : {}) }, request);
+        if (ownUpload) {
+          await auditIn(tx, request.user.userId, 'ASSISTED_SAME_ADMIN_APPROVAL', 'VerificationDocument', id,
+            { docType: decided.docType, assistedConsentId: decided.assistedConsentId, acknowledgement: 'I checked it myself, no second admin available' }, request);
+        }
         // [R3 · review-2476 F1] The seller's legal name typed from this paper names the seller of every branch of the
         // account: who set it, when, for which account and paper, and what it replaced (a business name, not a person's).
         if (facts?.legalName) {

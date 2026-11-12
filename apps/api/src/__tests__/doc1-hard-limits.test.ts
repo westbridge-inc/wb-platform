@@ -215,6 +215,9 @@ describe('[DOC-1 §0.5] hard limits', () => {
     const files = walk(API_SRC);
     const uploaders = files.filter((f) => /request\.file\(|req\.file\(|\.parts\(\)/.test(readFileSync(f, 'utf8'))).map((f) => relative(API_SRC, f)).sort();
     expect(uploaders).toEqual([
+      // [ASSISTED SETUP · owner 12 Nov 2026] The console's assisted setup: papers through the verification sealer and
+      // filing (upload-seal.ts, submitDocument), photos through owned-photo-upload, a workbook through menu-import.
+      'modules/admin/admin.routes.ts',
       'modules/ads/ads.routes.ts', 'modules/auth/auth.routes.ts', 'modules/chat/chat.routes.ts', 'modules/courier/courier.routes.ts',
       'modules/driver/driver.routes.ts', 'modules/rider/rider.routes.ts', 'modules/safety/safety.routes.ts', 'modules/vendor/vendor.routes.ts',
       'modules/verification/verification.routes.ts',
