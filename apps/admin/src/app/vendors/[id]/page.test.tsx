@@ -59,6 +59,14 @@ function vendorHandler(mutation: (_request: ApiRequest) => { body: unknown; stat
     if (request.method === 'GET' && request.url.pathname === '/api/v1/admin/vendors/vendor-target/activation-checklist') {
       return { body: { success: true, data: liveChecklist } };
     }
+    // [ASSISTED SETUP] ...and its assisted-setup panel (no OK recorded yet)
+    if (request.method === 'GET' && request.url.pathname === '/api/v1/admin/vendors/vendor-target/assisted-setup') {
+      return { body: { success: true, data: {
+        store: { id: 'vendor-target', name: 'Target Store', vendorType: 'RESTAURANT', status: 'ACTIVE' },
+        script: { question: 'May Swift add your store’s papers?', consentText: 'Synthetic consent words.', consentVersion: 'v1' },
+        validDays: 14, consents: [], papers: { checklist: [], optional: [], missing: [], documents: [] }, items: [], canAddItems: true,
+      } } };
+    }
     return mutation(request);
   };
 }
@@ -159,8 +167,11 @@ describe('vendor suspension mutation', () => {
     expect(screen.getByRole('heading', { name: 'Target Store' })).toBeTruthy();
     expect(screen.getByText('Live')).toBeTruthy();
     expect(requestsByMethod(fetchMock, 'PUT')).toHaveLength(1);
-    // two reads on load — the store and its activation checklist [MC-PR2]; the refusal re-read nothing
-    expect(requestsByMethod(fetchMock, 'GET')).toHaveLength(2);
+    // three reads on load — the store, its activation checklist [MC-PR2] and its assisted-setup panel [ASSISTED SETUP];
+    // the refusal re-read nothing
+    expect(requestsByMethod(fetchMock, 'GET').map(([url]) => new URL(String(url)).pathname).sort()).toEqual([
+      '/api/v1/admin/vendors/vendor-target', '/api/v1/admin/vendors/vendor-target/activation-checklist', '/api/v1/admin/vendors/vendor-target/assisted-setup',
+    ]);
 
     // closing the panel does not make the refusal vanish: the page keeps it
     await user.click(within(dialog).getByRole('button', { name: 'Close' }));

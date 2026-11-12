@@ -1,5 +1,6 @@
 'use client';
 
+import { addedBySwiftLine, photoAddedBySwiftLine } from '../../../../../mobile/src/lib/assistedSetupCopy';
 import { memo, Suspense, useCallback, useDeferredValue, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useMutation, useMutationState, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -126,6 +127,8 @@ const ItemRow = memo(function ItemRow({ item: i, pending, pricePending, manager,
       </span>
       <div className={`min-w-0 flex-1 ${i.isAvailable ? '' : 'opacity-60'}`}><h2 className="sw-label">{i.name}</h2><p className="sw-caption">{i.category?.name ?? 'Uncategorised'}</p>
         {i.catalogueCheck && <CatalogueCheckNote check={i.catalogueCheck} />}
+        {/* [ASSISTED SETUP] Added by Swift with the store's OK: the store edits or replaces it as its own. */}
+        {(i.addedBySwiftAt || i.photoAddedBySwiftAt) && <p className="sw-caption" data-testid="added-by-swift">{[i.addedBySwiftAt ? addedBySwiftLine(i.addedBySwiftAt) : null, i.photoAddedBySwiftAt ? photoAddedBySwiftLine(i.photoAddedBySwiftAt) : null].filter(Boolean).join(' · ')}</p>}
         {i.imageUrl && <RowPhotoNote url={i.imageUrl} />}
         {editingPrice ? <RowTool tool="price" item={i} onSave={(price) => onPrice(i, price)} onDone={() => onEditPrice(null)} /> : <button onClick={() => onEditPrice(i.id)} disabled={pricePending} className={`min-h-8 font-semibold hover:underline ${pricePending ? 'opacity-60' : ''}`}>{money(i.basePrice)}</button>}
       </div>
