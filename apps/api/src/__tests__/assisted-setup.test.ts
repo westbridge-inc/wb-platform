@@ -187,6 +187,9 @@ afterAll(async () => {
     await app.prisma.vendorOwner.deleteMany({ where: { userId: { in: users } } });
     await app.prisma.session.deleteMany({ where: { userId: { in: users } } });
     await app.prisma.user.deleteMany({ where: { id: { in: users } } });
+    // The second market goes too: a second ACTIVE tenant left behind makes every public catalogue read in the shared
+    // database refuse (PUBLIC_TENANT_UNRESOLVED).
+    await app.prisma.tenant.deleteMany({ where: { id: OTHER_TENANT } });
   });
   await app.close();
 });

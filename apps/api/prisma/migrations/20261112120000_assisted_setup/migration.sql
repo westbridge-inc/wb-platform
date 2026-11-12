@@ -139,6 +139,12 @@ END $$ LANGUAGE plpgsql;
 CREATE TRIGGER verification_documents_assisted_fixed BEFORE UPDATE OF "assistedById", "assistedConsentId" ON "verification_documents"
   FOR EACH ROW EXECUTE FUNCTION verification_documents_assisted_fixed();
 
+-- [ASSISTED SETUP] The account erasure deletes a closed account's consents (account-erasure-register:
+-- AssistedSetupConsent.holderId CLEARED); the restore replay deletes them from a restored copy too
+-- (deploy/restore-replay-erasures.sql), so each delete is captured in the erasure ledger like every other table the replay
+-- deletes from. Dropped with the table on rollback.
+CREATE TRIGGER erasure_ledger_deleted_row AFTER DELETE ON "assisted_setup_consents" FOR EACH ROW EXECUTE FUNCTION erasure_ledger_capture_closed_row('holderId', 'id');
+
 ALTER TABLE "assisted_setup_consents" ENABLE ROW LEVEL SECURITY;
 ALTER TABLE "assisted_setup_consents" FORCE ROW LEVEL SECURITY;
 DROP POLICY IF EXISTS "tenant_isolation" ON "assisted_setup_consents";
