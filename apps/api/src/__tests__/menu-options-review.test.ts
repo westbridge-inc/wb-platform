@@ -172,6 +172,43 @@ describe('[B S2-1] "Sets the price" on a live group carries every choice\'s new 
     expect((await choices(size.id)).map((c) => c.price)).toEqual([0, 800]);
   });
 
+  // [DELTA REVIEW S2-N1] The tools convert OFF against the LOWEST of all sizes and the confirm says "the item keeps its
+  // smallest size as its price". The "from" price skips a sold-out size, so the item had to be set to that lowest size
+  // on the switch, or every add-on cost the gap on top (Large 2400 + 1200 = 3600).
+  it('off while the cheapest size is sold out: the item keeps the LOWEST size (sold out included), and a Large still costs 2400', async () => {
+    const pizza = await item('Flip Off Sold Out', 0);
+    const created = await ownerCall('POST', `/items/${pizza}/option-groups`, {
+      name: 'Size', setsPrice: true, options: [{ name: 'Small', additionalPrice: 1200 }, { name: 'Large', additionalPrice: 2400 }], ...CAP,
+    });
+    expect(created.statusCode).toBe(200);
+    const size = created.json().data as { id: string; options: Array<{ id: string; name: string }> };
+    const [small, large] = size.options;
+    expect((await ownerCall('PUT', `/options/${small!.id}`, { isAvailable: false, ...CAP })).statusCode).toBe(200);
+    expect(await price(pizza), 'the "from" price skips the sold-out Small').toBe(2400);
+    const res = await ownerCall('PUT', `/option-groups/${size.id}`, { setsPrice: false, prices: [{ id: small!.id, price: 0 }, { id: large!.id, price: 1200 }], ...CAP });
+    expect(res.statusCode).toBe(200);
+    expect(await price(pizza), 'the smallest size, as the confirm said').toBe(1200);
+    const add = await inject('POST', '/api/v1/customer/cart/items', customer.token, { vendorId: shop.vendorId, itemId: pizza, selectedOptions: { [size.id]: large!.id }, ...CAP });
+    expect(add.statusCode, JSON.stringify(add.json())).toBe(201);
+    const line = add.json().data.cart.items.find((l: { itemId: string }) => l.itemId === pizza);
+    expect(line.customerPrice, 'a Large costs what it cost before the switch').toBe(2400);
+    await app.prisma.cart.deleteMany({ where: { customerId: customer.userId } });
+  });
+
+  it('a shared size group off while its cheapest size is sold out: every item that uses it keeps the lowest size', async () => {
+    const a = await item('Shared Off A', 0);
+    const b = await item('Shared Off B', 0);
+    const lib = await ownerCall('POST', '/modifier-groups', { name: 'Size', setsPrice: true, options: [{ name: 'Small', price: 1200 }, { name: 'Large', price: 2400 }], ...CAP });
+    expect(lib.statusCode).toBe(200);
+    const group = lib.json().data as { id: string; options: Array<{ id: string }> };
+    expect((await ownerCall('POST', `/modifier-groups/${group.id}/attach`, { itemIds: [a, b], ...CAP })).statusCode).toBe(200);
+    expect((await ownerCall('PUT', `/modifier-options/${group.options[0]!.id}`, { isAvailable: false, ...CAP })).statusCode).toBe(200);
+    expect([await price(a), await price(b)]).toEqual([2400, 2400]);
+    const res = await ownerCall('PUT', `/modifier-groups/${group.id}`, { setsPrice: false, prices: [{ id: group.options[0]!.id, price: 0 }, { id: group.options[1]!.id, price: 1200 }], ...CAP });
+    expect(res.statusCode).toBe(200);
+    expect([await price(a), await price(b)]).toEqual([1200, 1200]);
+  });
+
   it('prices that miss a choice, or name another group\'s choice, are refused', async () => {
     const pizza = await item('Flip Partial', 2000);
     const size = await addOnSizes(pizza);
@@ -368,5 +405,18 @@ describe('[A S3-2] the rollback refuses while menus use the rules', () => {
       }).catch(() => undefined);
     }
     expect(refusals.join('\n')).toMatch(/menu options rollback refused: menus use sizes, halves or follow-up choices; neutralise them first/);
+  });
+
+  // [DELTA REVIEW S3-N1] Without a transaction a plain `psql -f` reports the refusal and goes on to the DROPs.
+  it('the whole file is one transaction: BEGIN before the first guard, COMMIT after the last DROP (a refusal stops every DROP)', () => {
+    const sql = readFileSync(join(process.cwd(), 'prisma/migrations/20261111150000_menu_options_pizza/rollback.sql'), 'utf8');
+    const statements = sql.split('\n').filter((l) => l.trim() !== '' && !l.trimStart().startsWith('--'));
+    expect(statements[0]).toBe('BEGIN;');
+    expect(statements[1]).toBe("SET LOCAL lock_timeout = '10s';");
+    expect(statements.at(-1)).toBe('COMMIT;');
+    expect(sql.indexOf('BEGIN;')).toBeLessThan(sql.indexOf('DO $$'));
+    expect(sql.lastIndexOf('DROP ')).toBeLessThan(sql.lastIndexOf('COMMIT;'));
+    expect(sql.match(/^BEGIN;$/gm)).toHaveLength(1);
+    expect(sql.match(/^COMMIT;$/gm)).toHaveLength(1);
   });
 });

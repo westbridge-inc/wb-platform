@@ -5,6 +5,7 @@ import type Redis from 'ioredis';
 import { runWithTenant } from '../../plugins/tenant-context';
 import { log } from '../../utils/logger';
 import { isTerminalOrderStatus, ORDER_TRANSITIONS } from '../order/order-status';
+import { kitchenModifiers } from '../order/kitchen-modifiers';
 import { emitToOrderRoom, emitToStoreRoom } from '../order/order-room-emission.service';
 import { vendorOperateRefusal, type StoreRoleVerifier } from '../vendor/vendor-operate';
 import { kitchenLoginFor } from './kitchen-credentials';
@@ -153,6 +154,28 @@ async function storeRefusal(deps: KitchenDeps, vendorId: string, work: 'NEW' | '
 
 type BuildResult = { ok: true; order: KitchenOrder; orderNumber: string } | { ok: false; reason: string };
 
+/** [MENU-OPTIONS · delta review S3-N2] The menu option an order's choice came from, for its kitchen number: by the
+ *  snapshot's option id (stable across library edits and renames), else by its plain group and choice names, else by
+ *  the order's words (rows written before the snapshot kept ids). Never by display words alone: "Pepperoni (left half)"
+ *  or "Cheese (Stuffed crust)" name no menu option, and a mapped half or follow-up would be refused as unmapped. */
+export function kitchenOptionFor<O extends { id: string; name: string }>(
+  groups: ReadonlyArray<{ name: string; options: readonly O[] }>,
+  choice: { optionId?: string | null; optionGroupName: string; optionName: string; plainGroupName?: string | null; plainOptionName?: string | null },
+): O | undefined {
+  if (choice.optionId) {
+    for (const g of groups) {
+      const hit = g.options.find((o) => o.id === choice.optionId);
+      if (hit) return hit;
+    }
+  }
+  const byWords = (group: string, name: string) => groups.find((g) => g.name === group)?.options.find((o) => o.name === name);
+  if (choice.plainGroupName && choice.plainOptionName) {
+    const hit = byWords(choice.plainGroupName, choice.plainOptionName);
+    if (hit) return hit;
+  }
+  return byWords(choice.optionGroupName, choice.optionName);
+}
+
 /** The order as the kitchen needs it, or why it cannot be sent (an unmapped line names how many, not which). */
 export async function buildKitchenOrder(
   prisma: PrismaClient,
@@ -171,7 +194,12 @@ export async function buildKitchenOrder(
       items: {
         select: {
           itemId: true, name: true, quantity: true, specialInstructions: true, subStatus: true,
-          selectedOptions: { select: { optionGroupName: true, optionName: true } },
+          // [MENU-OPTIONS · delta review S3-N2] The snapshot's stable keys: the menu option it came from, its plain words
+          // (the display words carry "(left half)" / the opener) and where it sits on the item.
+          selectedOptions: { select: {
+            optionId: true, optionGroupName: true, optionName: true, plainGroupName: true, plainOptionName: true,
+            placement: true, parentOptionName: true, setsPrice: true,
+          } },
         },
         orderBy: { id: 'asc' },
       },
@@ -186,7 +214,7 @@ export async function buildKitchenOrder(
     where: { id: { in: lines.map((l) => l.itemId) } },
     select: {
       id: true, externalItemNo: true,
-      optionGroups: { select: { name: true, options: { select: { name: true, externalItemNo: true } } } },
+      optionGroups: { select: { name: true, options: { select: { id: true, name: true, externalItemNo: true } } } },
     },
   });
   const byId = new Map(catalogue.map((c) => [c.id, c]));
@@ -195,11 +223,12 @@ export async function buildKitchenOrder(
     const item = byId.get(line.itemId);
     const itemNo = item?.externalItemNo?.trim() ?? '';
     if (!itemNo) unmapped += 1;
-    const choices = line.selectedOptions.map((choice) => {
-      const option = item?.optionGroups.find((g) => g.name === choice.optionGroupName)?.options.find((o) => o.name === choice.optionName);
+    const modifiers = kitchenModifiers(line.selectedOptions);
+    const choices = line.selectedOptions.map((choice, k) => {
+      const option = kitchenOptionFor(item?.optionGroups ?? [], choice);
       const no = option?.externalItemNo?.trim() ?? '';
       if (!no) unmapped += 1;
-      return { itemNo: no, name: choice.optionName };
+      return { itemNo: no, name: choice.optionName, placement: modifiers[k]!.placement };
     });
     return { itemNo, name: line.name, quantity: line.quantity, choices, note: line.specialInstructions?.trim() || null };
   });

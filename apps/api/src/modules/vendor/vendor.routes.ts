@@ -93,7 +93,7 @@ import { runAsSystem } from '../../plugins/tenant-context';
 import { queueStorePhotoDeletions } from './store-photos';
 import { MENU_COPY_AUDIT_ACTION, assertCopyable, copyPhotos, judgeSourceItems, menuExportCsv, menuHasAnything, priorCopy, readLiveMenu, writeMenuCopy, type MenuCopyResult } from './menu-copy';
 import { scheduleVendorSearchSync } from '../search/search-sync';
-import { LIBRARY_TX, assertLibraryRules, attachLibraryGroup, deleteLibraryGroup, detachCopy, detachLibraryGroup, libraryGroupOf, menuOptionsRule, normalizedGroupFlags, readLibrary, setLibraryOptionAvailability, settleItems, sharedGroupEditRefusal, syncLibraryGroup } from './modifier-library';
+import { LIBRARY_TX, assertLibraryRules, attachLibraryGroup, deleteLibraryGroup, detachCopy, detachLibraryGroup, keepLowestSize, libraryGroupOf, lowestSizeTyped, menuOptionsRule, normalizedGroupFlags, readLibrary, setLibraryOptionAvailability, settleItems, sharedGroupEditRefusal, syncLibraryGroup } from './modifier-library';
 import { declaresMenuOptionsV2 } from '../order/options';
 import { assertNoneBanned, assertNotBanned, assertNotBannedGoods, assertStoreAllowed, catalogueChecksFor, partnerStoreView, partnerView, storeCheckOf, unhideRestocked } from '../compliance/prohibited-gate';
 import { certainGoods, notAllowedMessage } from '../compliance/prohibited-items';
@@ -5179,7 +5179,7 @@ export async function vendorRoutes(app: FastifyInstance) {
     const { vendorId } = await requireVendor(app, request, 'MANAGER');
     const existing = await app.prisma.optionGroup.findFirst({
       where: { id: request.params.id, item: { vendorId, archivedAt: null } },
-      select: { id: true, itemId: true, libraryGroupId: true, setsPrice: true, allowHalves: true, options: { select: { id: true } } },
+      select: { id: true, itemId: true, libraryGroupId: true, setsPrice: true, allowHalves: true, options: { select: { id: true, additionalPrice: true, vatListedAdditionalPrice: true } } },
     });
     if (!existing) throw new NotFoundError('OptionGroup', request.params.id);
     // [MENU-OPTIONS] A shared group is edited only in the library (every item that uses it changes together).
@@ -5195,6 +5195,9 @@ export async function vendorRoutes(app: FastifyInstance) {
     const priceEdits = groupPriceEdits(existing.options.map((o) => o.id), existing.setsPrice, parsed.setsPrice, parsed.prices);
 
     const group = await app.prisma.$transaction(async (tx) => {
+      // [DELTA REVIEW S2-N1] Sizes switched off: the item keeps its lowest size (sold-out ones included, as typed before
+      // this edit), the price the tools converted the add-ons against.
+      if (existing.setsPrice && parsed.setsPrice === false) await keepLowestSize(tx, vendorId, [existing.itemId], lowestSizeTyped(existing.options));
       for (const [optionId, price] of priceEdits) await tx.option.update({ where: { id: optionId }, data: typedOptionPrice(price) });
       await tx.optionGroup.update({
         where: { id: request.params.id },
@@ -5424,6 +5427,12 @@ export async function vendorRoutes(app: FastifyInstance) {
       const body = normalizedGroupFlags({ ...parsed, setsPrice: parsed.setsPrice ?? existing.setsPrice, allowHalves: parsed.allowHalves ?? existing.allowHalves });
       // [REVIEW B S2-1] A switch of "Sets the price" carries every shared choice's new price (the store confirms them).
       const priceEdits = groupPriceEdits(existing.options.map((o) => o.id), existing.setsPrice, parsed.setsPrice, parsed.prices);
+      if (existing.setsPrice && parsed.setsPrice === false) {
+        // [DELTA REVIEW S2-N1] Every item that uses it keeps the group's lowest size (sold-out ones included, as typed
+        // before this edit), the price the tools converted the add-ons against.
+        const users = await tx.optionGroup.findMany({ where: { libraryGroupId: existing.id, item: { vendorId } }, select: { itemId: true } });
+        await keepLowestSize(tx, vendorId, users.map((u) => u.itemId), lowestSizeTyped(existing.options));
+      }
       for (const [optionId, price] of priceEdits) await tx.modifierOption.update({ where: { id: optionId }, data: { price } });
       if (priceEdits.size > 0) {
         // [REVIEW A S4-1] One edit can re-price every item that uses the group: who, which prices, how many items.
