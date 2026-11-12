@@ -5,6 +5,8 @@ import { BrandCheckbox, Card, CheckRow, PillButton, T } from '../../kit';
 import { DOCUMENT_CONSENT_TEXT } from '../../lib/uploadConsentCopy';
 import { documentConsentGivenLine, documentConsentOnRecord } from './documentConsentRecord';
 import { DocumentUploadCard } from './DocumentUploadCard';
+import { AuthorityLetterEsignCard } from './AuthorityLetterEsignCard';
+import { esignSignerFor } from '../../lib/authorityLetterCopy';
 import { OwnNameDeclarationText } from './OwnNameChoiceCard';
 import { accountPaperHelp } from '../../lib/businessBasisCopy';
 import { OWN_NAME_HINT, OWN_NAME_TICK } from '../../lib/ownNameCopy';
@@ -21,10 +23,16 @@ const OWN_NAME_DOC = 'own_name_declaration';
  * [COMPANY-DOCS Part 3] The papers of a change waiting for a person: the new business type's (the account holder), or a
  * new account holder's (the person named). Each upload goes through the ordinary document path (POST
  * /verification/documents), which holds it for the change on the server — so whatever files a paper (this upload card,
- * or Part 2's in-app signed letter, which plugs in beside the letter rows exactly as on the Documents checklist) is held
- * the same way. The consent tick is the person's own, as on the Documents checklist.
+ * or Part 2's in-app signed letter) is held the same way. The consent tick is the person's own, as on the Documents
+ * checklist.
+ *
+ * [FOLLOWUPS-2475] `signLetterInSwift` (the account holder's business type change): a letter of authority still to give
+ * offers "Ask a director (the owner) to sign in Swift" right under its paper upload, exactly as on the Documents
+ * checklist — not once one is on file (waiting or approved), again after a person did not accept it. The card shows
+ * nothing while the server's AUTHORITY_LETTER_ESIGN switch is off. Not on a handover: the letter route serves the
+ * account holder only, so the person named uploads the signed paper letter.
  */
-export function ChangePapersList({ papers, onChanged }: { papers: ChangePaper[]; onChanged: () => void }) {
+export function ChangePapersList({ papers, onChanged, signLetterInSwift = false }: { papers: ChangePaper[]; onChanged: () => void; signLetterInSwift?: boolean }) {
   // The consent record is the person's own (any store kind reads it); each paper is filed under its own kind.
   const status = useVerificationStatus(papers[0]?.role ?? 'STORE');
   const [choice, setChoice] = useState<boolean | null>(null);
@@ -51,22 +59,28 @@ export function ChangePapersList({ papers, onChanged }: { papers: ChangePaper[];
           {recordLine ? <T variant="micro" tone="muted">{recordLine}</T> : null}
         </View>
       </Pressable>
-      {papers.map((paper) => paper.docType === OWN_NAME_DOC ? (
-        <OwnNameForChange key={paper.docType} paper={paper} />
-      ) : (
-        <View key={paper.docType}>
-          <DocumentUploadCard
-            role={paper.role}
-            docType={paper.docType}
-            status={paper.state === 'MISSING' ? undefined : paper.state}
-            reviewNote={paper.note}
-            consented={consented}
-            consentVia={choice === true ? 'checkbox' : 'record'}
-            paperHelp={accountPaperHelp(paper.docType, WEBSITE_URL)}
-          />
-          {!paper.forChange && paper.state === 'APPROVED' ? <T variant="micro" tone="muted">Already on file: nothing to upload.</T> : null}
-        </View>
-      ))}
+      {papers.map((paper) => {
+        if (paper.docType === OWN_NAME_DOC) return <OwnNameForChange key={paper.docType} paper={paper} />;
+        // A letter of authority still to give (none on file, or one a person did not accept): offered in Swift too.
+        const signer = signLetterInSwift && (paper.state === 'MISSING' || paper.state === 'REJECTED') ? esignSignerFor(paper.docType) : null;
+        return (
+          <View key={paper.docType}>
+            <DocumentUploadCard
+              role={paper.role}
+              docType={paper.docType}
+              status={paper.state === 'MISSING' ? undefined : paper.state}
+              reviewNote={paper.note}
+              consented={consented}
+              consentVia={choice === true ? 'checkbox' : 'record'}
+              paperHelp={accountPaperHelp(paper.docType, WEBSITE_URL)}
+            />
+            {!paper.forChange && paper.state === 'APPROVED' ? <T variant="micro" tone="muted">Already on file: nothing to upload.</T> : null}
+            {signer ? (
+              <AuthorityLetterEsignCard role={paper.role} docType={paper.docType} kind={signer} docRejected={paper.state === 'REJECTED'} forChange />
+            ) : null}
+          </View>
+        );
+      })}
     </View>
   );
 }

@@ -48,7 +48,7 @@ export function VendorBusinessTypeScreen({ navigation }: { navigation?: { naviga
             ) : null}
             {pending ? (
               <>
-                <ChangePapersList papers={pending.papers} onChanged={refetch} />
+                <ChangePapersList papers={pending.papers} onChanged={refetch} signLetterInSwift />
                 <PillButton label={WITHDRAW_BUTTON} variant="soft" loading={withdraw.isPending} onPress={() => withdraw.mutate(pending.id)} />
                 {withdraw.isError ? <T variant="caption" tone="error">{errorMessage(withdraw.error, 'Couldn’t withdraw the change. Try again.')}</T> : null}
               </>
