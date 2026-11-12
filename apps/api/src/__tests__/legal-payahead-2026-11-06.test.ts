@@ -33,7 +33,7 @@ describe('[owner 6 Nov] the four weeks in the words are the four weeks in the co
   });
 
   it('the refunds page says the same, and what stopping a plan does to weeks already paid', () => {
-    expect(REFUNDS).toContain("const UPDATED = '6 November 2026';");
+    expect(REFUNDS).toContain("const UPDATED = '10 November 2026';"); // [LEGAL-CARDS] moved with the card wording, 10 Nov
     expect(REFUNDS).toContain('<b>Up to four weeks ahead.</b> You can pay the fee for one week, or up to four weeks ahead: while a week runs you can pay for the four weeks after it, and no further.');
     expect(REFUNDS).toContain('Weeks you paid for that have not started are not used while your plan is stopped: they pay your fee if you start again, or are refunded when you close your account.');
     expect(REFUNDS).not.toMatch(/One week at a time/);
@@ -48,13 +48,14 @@ describe('[owner 6 Nov] the four weeks in the words are the four weeks in the co
 
 describe('classification: material for partners, and only partners are asked', () => {
   it('2026-11-06 is served, material once, for partners only; the version everyone answers to stays 2026-11-05', () => {
-    expect(LEGAL_VERSION).toBe('2026-11-09.2'); // [LEGAL-CALLS · owner 9 Nov 2026] served now under 2026-11-09 (in-app calls in the Privacy Policy: material)
+    expect(LEGAL_VERSION).toBe('2026-11-10'); // [LEGAL-CALLS · owner 9 Nov 2026] served now under 2026-11-09 (in-app calls in the Privacy Policy: material)
     expect(MATERIAL_CHANGES.filter((c) => c.version === '2026-11-06')).toHaveLength(1);
     expect(SUMMARY.audience).toBe('partner');
     expect(NON_MATERIAL_CHANGES.map((c) => c.version)).not.toContain('2026-11-06');
     expect(materialVersion(SERVED)).toBe('2026-11-05');
     expect(partnerMaterialVersion(SERVED)).toBe('2026-11-06');
-    expect(partnerMaterialVersion(LEGAL_VERSION)).toBe('2026-11-06');
+    // [LEGAL-CARDS] since 2026-11-10 the newest partner-material version is the card wording (legal-cards-2026-11-10).
+    expect(partnerMaterialVersion(LEGAL_VERSION)).toBe('2026-11-10');
     expect(partnerMaterialVersion('2026-11-05')).toBeNull();
   });
 
