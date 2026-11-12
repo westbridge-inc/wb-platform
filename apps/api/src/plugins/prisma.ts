@@ -105,6 +105,8 @@ const TENANT_QUERY_EXTENSIONS = {
   cardCreditRefund: scoped,
   // [MENU-OPTIONS] A store's shared option-group library.
   modifierGroup: scoped,
+  // [COMPANY-DOCS Part 3] A store account's change of business type or of account holder, walled like the account.
+  accountChangeRequest: scoped,
   billingDunningClock: scoped, billingObligationTransition: scoped, paymentConfirmationHold: scoped, billingFeeNotice: scoped, billingNoticeHandoff: scoped,
   tenantBillingCurrency: scoped, trialGrant: scoped,
   moverFeeAuthority: scoped, moverFeeSubscription: scoped,

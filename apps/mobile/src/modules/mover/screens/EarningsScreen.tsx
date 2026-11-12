@@ -16,6 +16,7 @@ import { openPayLink } from '../../../lib/payLink';
 import { BillingStatusBlock } from '../../../components/billing/BillingSurfaces';
 import { weeksCovered } from '../../../lib/billing';
 import { feeStatusOf, type FeeSubscription } from '../../../lib/weeklyFee';
+import { earningsFeeDoor, feeKeepLine, feePayHandler, FEE_HELP_LINK, FEE_HELP_PARAMS, FEE_NOT_PAYABLE_IN_APP, FEE_PAY_IN_PERSON_LINK } from '../../../lib/earningsFee';
 import { feeStatusPill } from '../../../lib/feeStatusPill';
 import {
   getAuthSessionSnapshot,
@@ -235,7 +236,7 @@ function StoreOwesYouCard({ ledger }: { ledger: unknown }) {
 }
 
 /** The mover's flat weekly fee — status straight off the subscription engine. */
-function WeeklyFeeCard({ sub, onPay }: { sub: unknown; onPay?: () => void }) {
+export function WeeklyFeeCard({ sub, kind, onPay }: { sub: unknown; kind: 'RIDER' | 'DRIVER' | null | undefined; onPay?: () => void }) {
   const source = serverRecord(sub);
   if (!source) return null;
   const status = serverText(source['status'])?.toUpperCase();
@@ -263,23 +264,27 @@ function WeeklyFeeCard({ sub, onPay }: { sub: unknown; onPay?: () => void }) {
       ) : null}
       {feeStatus ? <T variant="label" tone="muted" style={{ marginTop: space.sm }} testID="earnings-fee-status">{feeStatus.headline}</T> : null}
       {feeStatus?.detail ? <T variant="caption" tone="muted" style={{ marginTop: space.xs }}>{feeStatus.detail}</T> : null}
+      {/* [FOLLOWUPS 11 Nov] What this mover keeps: a rider every delivery fee, a driver every fare. */}
       <T variant="caption" tone="muted" style={{ marginTop: space.sm }}>
-        The flat fee is Swift&apos;s only charge — every fare stays yours.
+        {feeKeepLine(kind)}
       </T>
-      {needsAttention ? <BillingStatusBlock sub={sub} onPay={onPay} compact /> : null}
+      {/* [REVIEW-2490 S2-1] Its "Pay now" / "Weekly fee" button only where the Weekly fee screen has something to do. */}
+      {needsAttention ? <BillingStatusBlock sub={sub} onPay={onPay ? feePayHandler(sub, onPay) : undefined} compact /> : null}
     </Card>
   );
 }
 
-function EarningsTools({
+export function EarningsTools({
   sub,
   onPayFee,
+  onHelp,
   onStatement,
   statementLoading,
   statementError,
 }: {
   sub: unknown;
   onPayFee: () => void;
+  onHelp: () => void;
   onStatement: () => void;
   statementLoading: boolean;
   statementError: boolean;
@@ -292,6 +297,10 @@ function EarningsTools({
   const paidAhead = serverNumber(source?.['walletBalanceGyd']);
   const showPaidAhead = paidAhead != null && paidAhead > 0;
   const weeks = weeksCovered(paidAhead, serverNumber(source?.['weeklyFeeGyd'] ?? source?.['customRate'] ?? source?.['weeklyRate']));
+  // [FOLLOWUPS 11 Nov · the rider fee check] "Pay weekly fee" opened a screen with nothing to pay while MMG checkout
+  // was off. The button is drawn only when that screen can take a payment (the same server answer, payActions); a fee
+  // owed with no way to pay here says so; anything else (paused, trial, paid) is said by the fee card above.
+  const door = earningsFeeDoor(sub);
   return (
     <Card style={{ marginTop: space.md }}>
       {showPaidAhead ? (
@@ -305,13 +314,20 @@ function EarningsTools({
           ) : null}
         </View>
       ) : null}
-      {source ? (
+      {door.kind === 'pay' ? (
         <PillButton
           label="Pay weekly fee"
           size="md"
           onPress={onPayFee}
           style={{ marginTop: showPaidAhead ? space.md : undefined }}
         />
+      ) : door.kind === 'cannot-pay-here' ? (
+        <View testID="earnings-fee-not-payable" style={{ marginTop: showPaidAhead ? space.md : undefined, gap: space.xs }}>
+          <T variant="caption" tone="muted">{FEE_NOT_PAYABLE_IN_APP}</T>
+          {door.inPerson ? <LinkText label={FEE_PAY_IN_PERSON_LINK} onPress={onPayFee} /> : null}
+          {/* [REVIEW-2490 S4-4] Never a dead end: Swift support, about a payment. */}
+          <LinkText label={FEE_HELP_LINK} onPress={onHelp} />
+        </View>
       ) : null}
       <PillButton
         label="Get earnings statement"
@@ -319,7 +335,7 @@ function EarningsTools({
         size="md"
         loading={statementLoading}
         onPress={onStatement}
-        style={{ marginTop: source ? space.md : undefined }}
+        style={{ marginTop: door.kind !== 'none' || showPaidAhead ? space.md : undefined }}
       />
       {statementError ? (
         <T variant="caption" tone="error" center style={{ marginTop: space.sm }}>
@@ -550,11 +566,12 @@ export function EarningsScreen({ navigation }: any) {
             )
           ) : null}
 
-          <WeeklyFeeCard sub={subQ.data} onPay={() => navigation?.navigate?.('WeeklyFee')} />
+          <WeeklyFeeCard sub={subQ.data} kind={kind} onPay={() => navigation?.navigate?.('WeeklyFee')} />
 
           <EarningsTools
             sub={subQ.data}
             onPayFee={() => navigation?.navigate?.('WeeklyFee')}
+            onHelp={() => navigation?.navigate?.('GetHelp', FEE_HELP_PARAMS)}
             onStatement={() => statement.mutate()}
             statementLoading={statement.isPending}
             statementError={statement.isError}

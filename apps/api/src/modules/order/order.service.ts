@@ -15,7 +15,7 @@ import { lockIdentityAuthority } from '../integrity/identity-review';
 import { orderLimitCounts } from '../integrity/velocity';
 import { taxiNotificationData } from '../rides/taxi-notification';
 import { Prisma } from '@prisma/client';
-import { assignmentLogWhere } from './store-handover-log';
+import { countStatusSteps } from './store-handover-log';
 import type {
   PrismaClient,
   Order,
@@ -793,6 +793,11 @@ export interface CanonicalOrderTransitionInput {
   };
   /** [O-3] The instant this transition stamps. Set only by a walk's next hop. */
   at?: Date;
+  /** [FOLLOWUPS 11 Nov 2026] A mover's repeat of the step the order already stands at (a double tap, a
+   *  retry after a lost answer) is answered as done: on the LOCKED row, when the status is already
+   *  `target` and the expected mover and assignment still hold, nothing is written (no status-log row)
+   *  and nothing is published (no socket, no customer push). Any other status is refused as before. */
+  replayAtTarget?: boolean;
 }
 
 export interface CanonicalOrderTransitionResult {
@@ -945,9 +950,7 @@ export class OrderService {
       where: { id: input.orderId },
       select: RIDER_ASSIGNMENT_SNAPSHOT_SELECT,
     });
-    const dispatchAssignmentSequence = await tx.orderStatusLog.count({
-      where: assignmentLogWhere(input.orderId, 'RIDER_ASSIGNED'),
-    });
+    const dispatchAssignmentSequence = await countStatusSteps(tx, input.orderId, 'RIDER_ASSIGNED');
     return { ...assigned, dispatchAssignmentSequence };
   }
 
@@ -2485,6 +2488,18 @@ export class OrderService {
     await tx.$queryRaw`SELECT id FROM "orders" WHERE id = ${input.orderId} FOR UPDATE`;
     const source = await tx.order.findUnique({ where: { id: input.orderId } });
     if (!source) throw new AppError(404, 'NOT_FOUND', 'Order not found');
+    // [FOLLOWUPS 11 Nov 2026] The same mover's repeat of the step already taken: done, nothing written twice.
+    // A changed mover or assignment is never a repeat (it falls through to the refusals below).
+    if (
+      input.replayAtTarget
+      && !input.handover
+      && source.status === input.target
+      && (input.expectedRiderId === undefined || source.riderId === input.expectedRiderId)
+      && (input.expectedRiderAssignmentVersion === undefined || source.riderAssignmentVersion === input.expectedRiderAssignmentVersion)
+    ) {
+      const order = await tx.order.findUniqueOrThrow({ where: { id: input.orderId }, omit: HANDOVER_SECRETS_OMIT, include: CANONICAL_TRANSITION_INCLUDE });
+      return { order, sourceStatus: source.status, cancelledSearches: 0, earningNotices: [], replayed: true };
+    }
     if (!input.handover && !input.allowedFrom.includes(source.status)) {
       throw input.invalidStatus?.(source.status)
         ?? new AppError(409, 'INVALID_TRANSITION', orderStageRefusal(source.status, STEP_GONE));
@@ -3214,6 +3229,9 @@ export class OrderService {
       expectedRiderId: authority.riderId,
       expectedRiderAssignmentVersion: authority.assignmentVersion,
       allowedFrom: authority.allowedFrom,
+      // [FOLLOWUPS 11 Nov 2026] Two identical taps (or a retry racing the first) log the step once and tell
+      // the customer once: the second finds the step taken, under the order lock, and changes nothing.
+      replayAtTarget: true,
     });
   }
 
@@ -3232,6 +3250,8 @@ export class OrderService {
       expectedDriverId?: string | null;
       expectedFulfillment?: FulfillmentType;
       expectedFulfillmentMode?: FulfillmentMode;
+      /** [FOLLOWUPS 11 Nov 2026] See CanonicalOrderTransitionInput.replayAtTarget. */
+      replayAtTarget?: boolean;
       /** [O-3] See CanonicalOrderTransitionInput.continueTo. The customer is told
        *  ONCE, in the words of the transition asked for; the live events carry
        *  the status the order actually reached. */
@@ -3261,6 +3281,7 @@ export class OrderService {
       ...(opts?.expectedFulfillment !== undefined ? { expectedFulfillment: opts.expectedFulfillment } : {}),
       ...(opts?.expectedFulfillmentMode !== undefined ? { expectedFulfillmentMode: opts.expectedFulfillmentMode } : {}),
       ...(opts?.continueTo ? { continueTo: opts.continueTo } : {}),
+      ...(opts?.replayAtTarget ? { replayAtTarget: true } : {}),
       invalidStatus: (current) => new AppError(
         409,
         'INVALID_TRANSITION',
