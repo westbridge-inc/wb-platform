@@ -234,7 +234,7 @@ export const EXPORT_REGISTER: readonly ExportEntry[] = [
   },
   {
     category: 'verificationDocuments', model: 'VerificationDocument', by: ['userId'], key: 'id', omit: { approvalHeldAt: 'SYSTEM', accountChangeId: 'SYSTEM' },
-    fields: ['id', 'userId', 'role', 'docType', 'status', 'state', 'expiresAt', 'reviewNote', 'reviewedAt', 'insurerName', 'policyNumber', 'coverageClass', 'hireClassConfirmed', 'plateCrossChecked', 'consentAt', 'privacyNoticeVersion', 'retentionExpiresAt', 'purgedAt', 'createdAt', 'updatedAt', 'subjectId', 'imagePurgedAt'],
+    fields: ['id', 'userId', 'role', 'docType', 'status', 'state', 'expiresAt', 'reviewNote', 'reviewedAt', 'insurerName', 'policyNumber', 'coverageClass', 'hireClassConfirmed', 'plateCrossChecked', 'consentAt', 'privacyNoticeVersion', 'retentionExpiresAt', 'purgedAt', 'createdAt', 'updatedAt', 'subjectId', 'imagePurgedAt', 'assistedConsentId'],
   },
   {
     category: 'uploadedFiles', model: 'EncryptedObject', by: ['createdBy'], key: 'fileKey',
@@ -331,6 +331,14 @@ export const EXPORT_REGISTER: readonly ExportEntry[] = [
     omit: { holderId: 'OTHER_PERSON', vendorOwnerId: 'SYSTEM', sellerLegalNameDocId: 'SYSTEM' },
     fields: ['id', 'kind', 'status', 'requestedById', 'fromOption', 'toOption', 'newHolderId', 'newHolderAcceptedAt', 'decidedAt', 'decisionReason',
       'sellerLegalName', 'sellerLegalNameAt', 'createdAt', 'updatedAt'],
+  },
+  {
+    // [ASSISTED SETUP · owner 12 Nov 2026] The OKs recorded for Swift to set up the person's store from the console:
+    // who at the store agreed (as the admin typed it), how, when, the reference and the consent words' version. The
+    // admin's id and their reason are staff work; the store row is bookkeeping.
+    category: 'assistedSetupConsents', model: 'AssistedSetupConsent', by: ['holderId'], key: 'id',
+    omit: { vendorId: 'SYSTEM', recordedByAdminId: 'OTHER_PERSON', reason: 'INTERNAL_NOTE' },
+    fields: ['id', 'holderId', 'agreedByName', 'agreedByRole', 'channel', 'agreedAt', 'reference', 'consentDocumentType', 'consentVersion', 'createdAt'],
   },
   {
     // [O-1] The Swift-bridged calls the person asked for on their orders: which party (a role, never a

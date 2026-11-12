@@ -11,7 +11,7 @@ import DocumentsPage from './page';
 // document locked, a waiting copy replaced only after asking, the own-name declaration. Synthetic stores and files only.
 // ---------------------------------------------------------------------------
 
-type Doc = { id: string; docType: string; status: string; expiresAt: string | null; reviewNote: string | null; createdAt: string; replaced?: boolean };
+type Doc = { id: string; docType: string; status: string; expiresAt: string | null; reviewNote: string | null; createdAt: string; replaced?: boolean; addedBySwift?: boolean };
 const writes: Array<{ method: string; path: string; store: string | undefined; body: unknown }> = [];
 const reads: string[] = [];
 
@@ -119,6 +119,21 @@ describe('[OPEN-EARLY PR-2] the store’s documents on the website', () => {
     // [OWNNAME-FIT · COORD 7 Nov 2026] no business registration yet, but no own-name answer from the server (an older
     // server): the own-name route is not offered
     expect(screen.queryByText('No business name? Trade under your own name')).toBeNull();
+  });
+
+  // [ASSISTED SETUP · owner 12 Nov 2026] A paper Swift added for the store with its OK says so, with its date, and the
+  // store can still replace it like its own; one it sent itself says nothing of the kind.
+  it('a paper Swift added with the store’s OK says so (with the date), and stays replaceable', async () => {
+    api({ consentOnRecord: true, documents: [
+      { id: 'd1', docType: 'storefront_photo', status: 'PENDING', expiresAt: null, reviewNote: null, createdAt: '2026-11-12T14:00:00.000Z', addedBySwift: true },
+      { id: 'd2', docType: 'tin_certificate', status: 'PENDING', expiresAt: null, reviewNote: null, createdAt: '2026-11-11T14:00:00.000Z' },
+    ] });
+    renderWithQuery(<DocumentsPage />);
+    const lines = await screen.findAllByTestId('added-by-swift');
+    expect(lines).toHaveLength(1);
+    expect(lines[0]!.textContent).toBe('Added by Swift on 12 Nov 2026 with your OK. You can replace it any time.');
+    expect(card('Storefront Photo').textContent).toContain('Added by Swift on 12 Nov 2026');
+    expect(card('Storefront Photo').disabled).toBe(false);
   });
 
   // [OWNNAME-FIT · COORD ruling 7 Nov 2026, Business Names (Registration) Act Cap. 90:05 s.3] The own-name route is

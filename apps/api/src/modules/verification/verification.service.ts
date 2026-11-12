@@ -2,6 +2,7 @@ import { accountErasedUnderLock } from '../user/account-closure';
 import { documentLapsesAt, isDocumentValidAt, lapsedExpiryAnd, validExpiryOr } from './document-validity';
 import { bindTenantTransaction } from '../../plugins/prisma';
 import { Prisma, type PrismaClient, type VerificationDocument, type UserRole, type VehicleType } from '@prisma/client';
+import { sameUploaderDecision } from './assisted-uploader';
 import type { DocState, ReviewQueue } from '@prisma/client';
 import { hopDocState, NOT_RETIRED_DOC } from './doc-state';
 import { holdsValidDocument } from './category-gate';
@@ -283,6 +284,10 @@ export interface ReviewerTypedInput {
   proprietorIsCompany?: boolean;
   /** The reviewer console's contract: the fields this type needs must be typed. */
   required?: boolean;
+  /** [ASSISTED SETUP · owner 12 Nov 2026] The admin who uploaded this paper for the store approves it themselves, while
+   *  they are the only admin: "I checked it myself, no second admin available" (audited). Refused outright whenever a
+   *  second admin exists (sameUploaderDecision). */
+  soleAdminChecked?: boolean;
 }
 
 /** A police clearance is re-checked a year after it was issued. */
@@ -489,7 +494,10 @@ export function applicantDocumentView<D extends { [K in (typeof APPLICANT_DOCUME
   for (const key of APPLICANT_DOCUMENT_FIELDS) view[key] = document[key];
   if (document.replaced) view['replaced'] = true;
   view['reviewNote'] = applicantReason(document as { state?: string | null; reviewNote?: string | null });
-  return view as { [K in (typeof APPLICANT_DOCUMENT_FIELDS)[number]]: D[K] } & { replaced?: true; reviewNote: string | null };
+  // [ASSISTED SETUP · owner 12 Nov 2026] A paper Swift added for the store with its OK says so ("Added by Swift on <date>
+  // with your OK"); never who at Swift. Additive: older apps ignore it.
+  if ((document as { assistedById?: string | null }).assistedById) view['addedBySwift'] = true;
+  return view as { [K in (typeof APPLICANT_DOCUMENT_FIELDS)[number]]: D[K] } & { replaced?: true; reviewNote: string | null; addedBySwift?: true };
 }
 
 /** [DOC-1 §24 · DOC-INV-32] A fraud hold is reviewed within 90 days (ruling; the spec sets no figure). */
@@ -772,7 +780,11 @@ export class VerificationService {
    *  paused (KYC latency), cannot land new PII after the purge committed. */
   private async createDocumentLively(
     data: Prisma.VerificationDocumentUncheckedCreateInput,
-    review: { queue: ReviewQueue; extraction?: ExtractionPlan; authority?: SubmissionAuthority } = { queue: 'STANDARD' },
+    review: {
+      queue: ReviewQueue; extraction?: ExtractionPlan; authority?: SubmissionAuthority;
+      /** [ASSISTED SETUP] Runs last, in the filing's transaction: a paper Swift filed for a store is never on file without its record. */
+      afterCreate?: (tx: Prisma.TransactionClient, doc: VerificationDocument) => Promise<void>;
+    } = { queue: 'STANDARD' },
   ) {
     const doc = await this.projectionTransaction(async (tx) => {
       const exclusive = review.authority;
@@ -851,6 +863,7 @@ export class VerificationService {
           createdAt: queuedAt, slaDueAt: new Date(queuedAt.getTime() + REVIEW_SLA_HOURS * 3_600_000),
         } });
       }
+      if (review.afterCreate) await review.afterCreate(tx, doc);
       return doc;
     });
     if (review.extraction) recordExtractionMetrics(review.extraction);
@@ -945,7 +958,13 @@ export class VerificationService {
     /** [ROLE-DOCS · security review] `ownNameSigned`: set ONLY by the signed own-name route (vendor.routes POST /onboarding/own-name).
      *  [STORE-VAT] `storeVatCertificate`: set ONLY by the store-VAT certificate route (vendor.routes POST /vat/certificate); the
      *  generic document route can never file one. */
-    internal: { ownNameSigned?: true; storeVatCertificate?: true } = {},
+    internal: {
+      ownNameSigned?: true; storeVatCertificate?: true;
+      /** [ASSISTED SETUP · owner 12 Nov 2026] Set ONLY by the admin console's assisted setup: a Swift admin files this paper
+       *  for the store under its recorded consent. Filed exactly as the store's own upload, except it names its uploader and
+       *  the consent, always waits for a person, and `afterCreate` (the record and the audit row) commits with it. */
+      assisted?: { byId: string; consentId: string; afterCreate: (tx: Prisma.TransactionClient, doc: VerificationDocument) => Promise<void> };
+    } = {},
   ) {
     // [ROLE-DOCS · owner 21 Oct 2026 · security review] An own-name declaration is the signed words the owner ticked,
     // filed by its own route — never an uploaded file. Refused before anything is read or recorded.
@@ -1121,6 +1140,9 @@ export class VerificationService {
     // declaration. A person compares the name with the owner's ID (approveDocument requires ownNameConfirmed).
     // [COMPANY-DOCS · owner 10 Nov 2026] Nor a company's or a manager's papers: "all checked by a person at Swift".
     if ((PERSON_ONLY_DOC_TYPES.has(docType) || accountChangeId) && result.status !== 'pending_manual') result = { ...result, status: 'pending_manual' as const };
+    // [ASSISTED SETUP · owner 12 Nov 2026] A paper a Swift admin uploaded for a store is always checked by a person: no
+    // engine approves or rejects what Swift itself put on file (and a person who uploaded it may not approve it alone).
+    if (internal.assisted && result.status !== 'pending_manual') result = { ...result, status: 'pending_manual' as const };
 
     const autoExpiryDays = AUTO_APPROVE_EXPIRY_DAYS[docType];
     const doc = await this.createDocumentLively({
@@ -1132,6 +1154,7 @@ export class VerificationService {
         consentAt: new Date(),
         privacyNoticeVersion,
         ...(accountChangeId ? { accountChangeId } : {}),
+        ...(internal.assisted ? { assistedById: internal.assisted.byId, assistedConsentId: internal.assisted.consentId } : {}),
         status:
           result.status === 'approved' ? 'APPROVED'
           : result.status === 'rejected' ? 'REJECTED'
@@ -1144,7 +1167,7 @@ export class VerificationService {
           ...(autoExpiryDays && { expiresAt: autoApprovalExpiry(docType, autoExpiryDays) }),
         }),
         ...(result.status === 'rejected' && { reviewedBy: 'kyc:auto', reviewedAt: new Date(), reviewNote: result.reason }),
-    }, { queue: (result as { collided?: boolean }).collided ? 'SECOND_REVIEW' : 'STANDARD', extraction, authority });
+    }, { queue: (result as { collided?: boolean }).collided ? 'SECOND_REVIEW' : 'STANDARD', extraction, authority, ...(internal.assisted ? { afterCreate: internal.assisted.afterCreate } : {}) });
 
     // Provider listability is the first post-document projection. Everything
     // below (audit, integrity, notifications, trials) may fail independently;
@@ -1256,7 +1279,7 @@ export class VerificationService {
     // boundary — the conditional transition below still is.
     const candidate = await this.prisma.verificationDocument.findUnique({
       where: { id: docId },
-      select: { docType: true, expiresAt: true, status: true, userId: true, role: true, accountChangeId: true },
+      select: { docType: true, expiresAt: true, status: true, userId: true, role: true, accountChangeId: true, assistedById: true },
     });
     if (!candidate) throw new NotFoundError('VerificationDocument', docId);
     assertStoreVatDoor(candidate.docType, decision);
@@ -1266,6 +1289,9 @@ export class VerificationService {
     // [DOC-1 §8.6 · R16] Recusal before anything the reviewer typed is judged: a recused reviewer is told so, never
     // asked for a certificate's year or a registration's kind first. (The decision boundary checks it again.)
     await assertNotRecused(this.prisma, adminId, candidate.userId);
+    // [ASSISTED SETUP · owner 12 Nov 2026] The admin who uploaded this paper for the store may not approve it while a second
+    // admin exists, and alone only with "I checked it myself, no second admin available" (assisted-uploader.ts).
+    if (candidate.status === 'PENDING') await sameUploaderDecision(this.prisma, candidate, adminId, typed.soleAdminChecked === true);
     // [VERIFY-DOCS · owner ruling 6 Oct 2026] What the reviewer must TYPE for
     // this type: the ID/licence number (kept only as a blind-index identity
     // key) or the police clearance's issue date (the re-check falls due a year

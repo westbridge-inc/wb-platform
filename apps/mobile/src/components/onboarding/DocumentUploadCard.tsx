@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { ADDED_BY_SWIFT_REPLACE_HINT, addedBySwiftLine } from '../../lib/assistedSetupCopy';
 import { Alert, Linking, Pressable, View, ActivityIndicator } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
 import { useNavigation } from '@react-navigation/native';
@@ -45,6 +46,7 @@ export function DocumentUploadCard({
   reviewNote,
   isNext,
   replaced = false,
+  addedBySwift = false,
   optionalHint,
   hint,
   paperHelp,
@@ -62,6 +64,8 @@ export function DocumentUploadCard({
   isNext?: boolean;
   /** [REPLACE-PENDING] This copy replaced an earlier one that was still waiting for review. */
   replaced?: boolean;
+  /** [ASSISTED SETUP · owner 12 Nov 2026] A Swift admin added this paper for the store with its OK (the date is submittedAt). */
+  addedBySwift?: boolean;
   /** [VERIFY-DOCS] Set for a document the person MAY add: what it is for. Never a gate, so no
    *  "keep operating" copy and no "next step" nudge. */
   optionalHint?: string;
@@ -302,6 +306,11 @@ function explainPermissionDenied(
           {optionalHint ? (
             <T variant="micro" tone="muted" style={{ marginTop: 2 }}>
               {optionalHint}
+            </T>
+          ) : null}
+          {addedBySwift ? (
+            <T variant="micro" tone="muted" style={{ marginTop: 2 }}>
+              {`${addedBySwiftLine(submittedAt)}. ${ADDED_BY_SWIFT_REPLACE_HINT}`}
             </T>
           ) : null}
         </View>

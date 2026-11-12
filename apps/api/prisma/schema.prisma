@@ -753,6 +753,13 @@ model VerificationDocument {
   /// changed (database trigger). Null for every other paper.
   accountChangeId      String?
   accountChange        AccountChangeRequest?      @relation(fields: [accountChangeId], references: [id], onDelete: NoAction)
+  /// [ASSISTED SETUP · owner 12 Nov 2026] A paper a Swift admin uploaded FOR the store from the admin console, with the
+  /// store's recorded consent: who uploaded it (the admin's user id) and under which consent record. Null for every paper
+  /// the store sent itself. Set when the paper is filed, never changed (database trigger). The uploader may not approve it
+  /// while a second admin exists (verification.service approveDocument).
+  assistedById         String?
+  assistedConsentId    String?
+  assistedConsent      AssistedSetupConsent?      @relation(fields: [assistedConsentId], references: [id], onDelete: SetNull)
 
   @@index([status])
   @@index([userId])
@@ -762,7 +769,77 @@ model VerificationDocument {
   @@index([state])
   @@index([subjectId])
   @@index([accountChangeId])
+  @@index([assistedConsentId])
   @@map("verification_documents")
+}
+
+/// [ASSISTED SETUP · owner 12 Nov 2026] The store's OK for a Swift admin to set it up from the admin console (upload its
+/// papers, import its menu, add item photos): who at the store agreed (as the admin typed it), how, when, an optional
+/// reference, and the consent words read to them. Created FIRST: no assisted upload happens without one, and every
+/// assisted action names it (assisted_setup_actions, the audit trail). Written once (database trigger). Behind the tenant wall.
+model AssistedSetupConsent {
+  id                String                 @id @default(cuid())
+  tenantId          String
+  vendorId          String
+  vendor            Vendor                 @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  /// The store's account holder at the time (vendor_owners.userId): the person whose papers are filed.
+  holderId          String
+  /// Who at the store said yes, as the admin typed it: a name and their role (owner, manager...).
+  agreedByName      String
+  agreedByRole      String
+  channel           AssistedConsentChannel
+  agreedAt          DateTime
+  reference         String?
+  /// The document-processing consent words read to the store (upload-consent.ts UPLOAD_CONSENT.document_v1).
+  consentDocumentType String
+  consentVersion    String
+  /// The admin who recorded it, and why.
+  recordedByAdminId String
+  reason            String
+  createdAt         DateTime               @default(now())
+  actions           AssistedSetupAction[]
+  documents         VerificationDocument[]
+
+  @@index([tenantId])
+  @@index([vendorId, createdAt])
+  @@map("assisted_setup_consents")
+}
+
+/// [ASSISTED SETUP] One thing a Swift admin did for a store under a consent record: a paper filed, a menu item imported,
+/// an item photo added. The store's Documents and Menu read these to show "Added by Swift on <date> with your OK".
+/// Written once (database trigger). Behind the tenant wall.
+model AssistedSetupAction {
+  id        String                 @id @default(cuid())
+  tenantId  String
+  vendorId  String
+  vendor    Vendor                 @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  consentId String
+  consent   AssistedSetupConsent   @relation(fields: [consentId], references: [id], onDelete: Cascade)
+  adminId   String
+  kind      AssistedActionKind
+  /// The row the action made or changed: a verification document's id, or an item's id.
+  targetId  String
+  /// DOCUMENT: the doc type. ITEM_PHOTO: the photo address set (a public store photo). MENU_ITEM: the import row.
+  detail    String?
+  createdAt DateTime               @default(now())
+
+  @@index([tenantId])
+  @@index([vendorId, kind, targetId])
+  @@index([consentId])
+  @@map("assisted_setup_actions")
+}
+
+enum AssistedConsentChannel {
+  IN_PERSON
+  PHONE
+  WHATSAPP
+  EMAIL
+}
+
+enum AssistedActionKind {
+  DOCUMENT
+  MENU_ITEM
+  ITEM_PHOTO
 }
 
 /// Liability shield (founder directive 2026-07-15): the ENFORCEMENT layer
@@ -1777,6 +1854,9 @@ model Vendor {
   estimatedPrepTime       Int                      @default(30)
   categories              Category[]
   items                   Item[]
+  /// [ASSISTED SETUP] The store's consents for Swift to set it up, and what was done under them.
+  assistedConsents        AssistedSetupConsent[]
+  assistedActions         AssistedSetupAction[]
   /// [POS-SYNC] Till exports this store confirmed (one row per applied file).
   posImports              PosImport[]
   isVerified              Boolean                  @default(false)

@@ -302,6 +302,18 @@ export const ADMIN_ROUTE_AUTHORITY: Readonly<Record<AdminRouteKey, AdminRouteAut
   'GET /vendors/:id/party-phone': c('C1', 'vendor.contact.read'),
   // [MC-PR2] which of the owner's documents are approved, waiting, rejected or missing — document status, so C1
   'GET /vendors/:id/activation-checklist': c('C1', 'vendor.read'),
+  // [ASSISTED SETUP · owner 12 Nov 2026] A Swift admin sets a store up FOR it from the console, never as it (no login-as):
+  // its consent recorded first, then its papers, menu and item photos, each audited under the admin with the consent.
+  // `store.assist`: ADMIN and SUPER_ADMIN hold it by their role; a narrowed grant leaves it out unless named.
+  // The overview names the store's papers and who at the store agreed (C1, read logged).
+  'GET /vendors/:id/assisted-setup': c('C1', 'store.assist'),
+  'POST /vendors/:id/assisted-setup/consent': c('C3', 'store.assist', E.vendor),
+  'POST /vendors/:id/assisted-setup/documents': c('C3', 'store.assist', E.vendor),
+  // A preview writes nothing: what the import would add and refuse, row by row.
+  'POST /vendors/:id/assisted-setup/menu/preview': c('C2', 'store.assist'),
+  'POST /vendors/:id/assisted-setup/menu/preview-xlsx': c('C2', 'store.assist'),
+  'POST /vendors/:id/assisted-setup/menu/apply': c('C3', 'store.assist', E.vendor),
+  'POST /vendors/:id/assisted-setup/items/:itemId/photo': c('C3', 'store.assist', E.vendor),
   'PUT /vendors/:id/approve': c('C3', 'vendor.approve', E.vendor),
   'PUT /vendors/:id/suspend': c('C3', 'vendor.suspend', E.vendor),
   'PUT /vendors/:id/feature': c('C2', 'vendor.feature', E.vendor),

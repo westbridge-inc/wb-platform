@@ -125,6 +125,8 @@ export const TENANT_TABLES = [
   'card_credit_refunds',
   // [COMPANY-DOCS Part 3] A store account change waiting for a person, walled like the account.
   'account_change_requests',
+  // [ASSISTED SETUP] A store's consent for Swift to set it up from the console, and what was done under it.
+  'assisted_setup_consents', 'assisted_setup_actions',
   'billing_dunning_clocks', 'payment_confirmation_holds', 'billing_fee_notices', 'billing_notice_handoffs',
   // [#1393] Consumed weekly-fee coverage: the paid or resumed obligation a clock moved past.
   'billing_obligation_transitions',
