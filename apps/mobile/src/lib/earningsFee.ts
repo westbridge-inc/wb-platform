@@ -25,6 +25,18 @@ export function earningsFeeDoor(raw: unknown): EarningsFeeDoor {
   return { kind: 'none' };
 }
 
+/** [REVIEW-2490 S2-1] The "Pay now" / "Weekly fee" handler a fee surface may draw (BillingStatusBlock draws none
+ *  without one): only where the Weekly fee screen has something to do, a way to pay or the in-person door. Never a
+ *  button that opens a screen with nothing to pay. */
+export function feePayHandler(raw: unknown, open: () => void): (() => void) | undefined {
+  const door = earningsFeeDoor(raw);
+  return door.kind === 'pay' || (door.kind === 'cannot-pay-here' && door.inPerson) ? open : undefined;
+}
+
+/** [REVIEW-2490 S4-4] The way out when the fee can't be paid here: Swift support, about a payment. */
+export const FEE_HELP_LINK = 'Get help';
+export const FEE_HELP_PARAMS = { category: 'PAYMENT', subject: 'I can’t pay my weekly fee in the app' } as const;
+
 /** Said in place of the button while the fee is owed and no way to pay is open in the app. */
 export const FEE_NOT_PAYABLE_IN_APP = 'Paying the weekly fee in the app is not open right now.';
 /** The door to paying Swift in person (the Weekly fee screen asks Swift to arrange it). */

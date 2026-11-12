@@ -29,6 +29,7 @@ import { money } from '../../../lib/money';
 import { mediaUrl } from '../../../lib/images';
 import { BillingStatusBlock, BillingStopControl } from '../../../components/billing/BillingSurfaces';
 import { resumeBillingMethod } from '../../../lib/billing';
+import { feePayHandler } from '../../../lib/earningsFee';
 import { useMoverPreview } from '../../../stores/moverPreview';
 
 export function MoverAccountScreen({ navigation }: any) {
@@ -260,7 +261,8 @@ export function MoverAccountScreen({ navigation }: any) {
         {/* Honest billing status — wallet balance, grace deadline, or the
             paused block. Silent on a healthy account (the row above is the way
             in). */}
-        <BillingStatusBlock sub={sub} onPay={() => navigation?.navigate?.('WeeklyFee')} compact />
+        {/* [REVIEW-2490 S2-1] "Weekly fee" / "Pay now" only where that screen has a way to pay (or the in-person door). */}
+        <BillingStatusBlock sub={sub} onPay={feePayHandler(sub, () => navigation?.navigate?.('WeeklyFee'))} compact />
         <BillingStopControl
           sub={sub}
           who={kind === 'DRIVER' ? 'driver' : 'rider'}

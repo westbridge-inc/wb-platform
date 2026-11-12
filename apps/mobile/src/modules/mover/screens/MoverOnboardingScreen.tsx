@@ -303,11 +303,15 @@ export function MoverOnboardingScreen({ status }: { status: any }) {
   const pricing = usePartnerPricing(countryCode);
   const savedOffered = !savedVehicle || vehicleOffered(savedVehicle, pricing.data);
   const savedLabel = VTYPES.find((v) => v.key === (savedVehicle ?? vt))?.label ?? 'Your vehicle';
-  const { data: preview, isLoading: statusLoading, isError: statusError, refetch: refetchStatus } = useVerificationStatus<any>('MOVER', vt);
+  // [REVIEW-2490 S4-3] While the papers are in review this read polls too (as the root's does), so a paper sent back
+  // shows here by itself, as the in-review words promise, and not only an approval (which the root's poll carries).
+  const [pollInReview, setPollInReview] = useState(false);
+  const { data: preview, isLoading: statusLoading, isError: statusError, refetch: refetchStatus } = useVerificationStatus<any>('MOVER', vt, { poll: pollInReview });
   const checklistStatus = preview ?? status;
   // [FOLLOWUPS 11 Nov 2026] Everything sent for the saved vehicle, waiting for a person to approve it: the screen
   // opens on that plain status (the list below still shows each paper), never on the sign-up pitch.
   const inReview = vehicleSaved && !changing && checklistProgress(checklistStatus).inReview;
+  useEffect(() => { setPollInReview(inReview); }, [inReview]);
 
   return (
     <BackToSwiftScreen onBack={back.leave}>

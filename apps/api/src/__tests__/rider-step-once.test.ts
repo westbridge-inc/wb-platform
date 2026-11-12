@@ -12,7 +12,7 @@ import { registerErrorHandler } from '../middleware/error-handler';
 import { customerRoutes } from '../modules/user/customer.routes';
 import { vendorRoutes } from '../modules/vendor/vendor.routes';
 import { riderRoutes } from '../modules/rider/rider.routes';
-import { HANDED_TO_RIDER_NOTE, assignmentLogWhere } from '../modules/order/store-handover-log';
+import { HANDED_TO_RIDER_NOTE, countStatusSteps, latestStepAt } from '../modules/order/store-handover-log';
 import { freshOrderPlaceBudget } from './helpers/order-place-budget';
 
 // ---------------------------------------------------------------------------
@@ -35,13 +35,19 @@ import { freshOrderPlaceBudget } from './helpers/order-place-budget';
 //   - a "Ready" tap at RIDER_ASSIGNED started a new "handed to rider" episode
 //     (the store's tap was forgotten and could be logged again);
 //   - the pickup-overdue clock (pickup-overdue.test.ts) restarted from it.
-// Now one predicate (store-handover-log STORE_EVIDENCE_NOTES) keeps them out of
-// every such reader, and the timelines show the kitchen tap as the kitchen step.
+// The same is true of every row written AT the current status (a grocery
+// substitution, a courier's "cash collected from sender"). [REVIEW-2490 S3-1]
+// Now one positive rule decides what a step is: a row that CHANGED the status
+// (store-handover-log stepFlags / countStatusSteps / latestStepAt / timelineRows),
+// and the timelines show the kitchen tap as the kitchen step.
 //
-// Also: a repeat of the step the rider already took (a double tap, a retry
-// after a lost answer, two taps that race) is answered as done, with no second
-// log row and no second customer push. A genuine reassignment (another rider)
-// is still logged as its own step. Real routes, production composition.
+// Also, a separate change: a repeat of the step the rider already took (a double
+// tap, a retry after a lost answer, two taps that race) used to be REFUSED (it
+// never wrote twice); it is now answered as done, still with no second log row
+// and no second customer push. [REVIEW-2490 S4-1] So the "one row" assertions
+// below guard that the new answer writes nothing; what was red before was the
+// refusal. A genuine reassignment (another rider, or the same rider taking the
+// order again) is still logged as its own step. Real routes, production composition.
 // ---------------------------------------------------------------------------
 
 const PHONE_PREFIX = '+5920383';
@@ -64,6 +70,7 @@ let customer: Actor;
 let owner: Actor;
 let vendorId: string;
 let itemId: string;
+let substituteId: string;
 const asStore = () => ({ 'x-vendor-id': vendorId });
 
 async function makeUser(firstName: string, roles: UserRole[], activeRole: UserRole): Promise<Actor> {
@@ -123,7 +130,7 @@ const storeTimeline = async (orderId: string) => {
   expect(res.statusCode, res.body).toBe(200);
   return res.json().data as { statusHistory: Array<{ status: string; note: string | null }>; handedToRiderAt: string | null };
 };
-const assignmentEpisodes = (orderId: string) => sys(() => app.prisma.orderStatusLog.count({ where: assignmentLogWhere(orderId, 'RIDER_ASSIGNED') }));
+const assignmentEpisodes = (orderId: string) => sys(() => countStatusSteps(app.prisma, orderId, 'RIDER_ASSIGNED'));
 
 async function placeDelivery(): Promise<string> {
   expect((await call('DELETE', '/api/v1/customer/cart', customer.token)).statusCode).toBe(200);
@@ -211,6 +218,7 @@ beforeAll(async () => {
   }))).id;
   const category = await sys(() => app.prisma.category.create({ data: { vendorId, name: 'Mains', sortOrder: 0 } }));
   itemId = (await sys(() => app.prisma.item.create({ data: { vendorId, categoryId: category.id, name: 'Cook-up', basePrice: 1800, isAvailable: true } }))).id;
+  substituteId = (await sys(() => app.prisma.item.create({ data: { vendorId, categoryId: category.id, name: 'Pepperpot', basePrice: 1800, isAvailable: true } }))).id;
 });
 
 afterAll(async () => {
@@ -242,6 +250,11 @@ describe('[FOLLOWUPS 11 Nov] the store taps a rider\'s order: one rider step eac
     const store = await storeTimeline(id);
     expect(countOf(store.statusHistory, 'RIDER_ASSIGNED')).toBe(1);
     expect(countOf(store.statusHistory, 'RIDER_EN_ROUTE_PICKUP')).toBe(1);
+    // [REVIEW-2490 S3-2] "Rider at counter" once: the store's "Handed to rider" tap is said by its own line
+    // (handedToRiderAt), never as a second rider-at-counter step.
+    expect(countOf(store.statusHistory, 'RIDER_ARRIVED_PICKUP')).toBe(1);
+    expect(store.statusHistory.map((r) => r.note)).not.toContain(HANDED_TO_RIDER_NOTE);
+    expect(store.handedToRiderAt).toEqual(expect.any(String));
     expect(store.statusHistory.find((r) => r.note === STORE_READY_WITH_RIDER_NOTE)?.status).toBe('READY_FOR_PICKUP');
 
     // The dispatch journal counts one assignment, not two.
@@ -263,7 +276,7 @@ describe('[FOLLOWUPS 11 Nov] the store taps a rider\'s order: one rider step eac
   });
 });
 
-describe('[FOLLOWUPS 11 Nov] the same rider step twice: logged once, the customer told once', () => {
+describe('[FOLLOWUPS 11 Nov] the same rider step twice: answered as done (it used to be refused), still one row and one customer notice', () => {
   it('two identical "On the way to pickup" taps: both answered, one log row', async () => {
     const rider = await makeRider('Chandra');
     const id = await takenWhilePreparing(rider);
@@ -333,3 +346,57 @@ describe('[FOLLOWUPS 11 Nov] the same rider step twice: logged once, the custome
     expect(countOf(await logs(id), 'RIDER_EN_ROUTE_PICKUP')).toBe(2);
   });
 });
+
+describe('[REVIEW-2490 S3-1] any row written at the rider\'s status that does not change it is not a step', () => {
+  it('a grocery substitution proposed while the rider holds the order: one assignment, one step on each timeline, "Handed to rider" kept', async () => {
+    const rider = await makeRider('Ishaan');
+    const id = await takenWhilePreparing(rider);
+    expect((await handedToRider(id)).statusCode).toBe(200);
+    const line = (await sys(() => app.prisma.orderItem.findFirstOrThrow({ where: { orderId: id } }))).id;
+    const swap = await call('POST', `/api/v1/vendor/orders/${id}/items/${line}/substitute`, owner.token, { substituteItemId: substituteId }, asStore());
+    expect(swap.statusCode, swap.body).toBe(200);
+    const raw = await logs(id);
+    expect(raw.filter((r) => r.status === 'RIDER_ASSIGNED').map((r) => r.note)).toContain('Substitution proposed: Cook-up → Pepperpot');
+    expect(await assignmentEpisodes(id)).toBe(1);
+    expect((await storeTimeline(id)).handedToRiderAt).toEqual(expect.any(String)); // the same rider's episode
+    expect(countOf(await customerTimeline(id), 'RIDER_ASSIGNED')).toBe(1);
+    expect(countOf((await storeTimeline(id)).statusHistory, 'RIDER_ASSIGNED')).toBe(1);
+    // The rider's clock still starts at the rider's own accept.
+    const accept = raw.find((r) => r.status === 'RIDER_ASSIGNED')!;
+    expect((await sys(() => latestStepAt(app.prisma, id, 'RIDER_ASSIGNED')))?.toISOString()).toBe(accept.createdAt.toISOString());
+  });
+
+  it('a courier\'s "cash collected from sender" row (written as cash-rules writes it: at the current status, no actor) is not a step', async () => {
+    const rider = await makeRider('Jaya');
+    const id = await takenWhilePreparing(rider);
+    expect((await riderStep(id, rider, 'en-route-pickup')).statusCode).toBe(200);
+    expect((await riderStep(id, rider, 'arrived-pickup')).statusCode).toBe(200);
+    const arrived = (await logs(id)).find((r) => r.status === 'RIDER_ARRIVED_PICKUP')!;
+    await sys(() => app.prisma.orderStatusLog.create({ data: { orderId: id, status: 'RIDER_ARRIVED_PICKUP', note: 'cash collected from sender — gps:6.80130,-58.15510' } }));
+    expect((await sys(() => latestStepAt(app.prisma, id, 'RIDER_ARRIVED_PICKUP')))?.toISOString()).toBe(arrived.createdAt.toISOString());
+    expect(countOf(await customerTimeline(id), 'RIDER_ARRIVED_PICKUP')).toBe(1);
+    expect(countOf((await storeTimeline(id)).statusHistory, 'RIDER_ARRIVED_PICKUP')).toBe(1);
+    expect(await assignmentEpisodes(id)).toBe(1);
+  });
+});
+
+describe('[REVIEW-2490 S4-2] the same rider hands the order back and takes it again', () => {
+  it('a new assignment and a new step (never a replay of the old one); a repeat after that is the replay', async () => {
+    const rider = await makeRider('Kavi');
+    const id = await takenWhilePreparing(rider);
+    expect((await riderStep(id, rider, 'en-route-pickup')).statusCode).toBe(200);
+    const back = await call('POST', `/api/v1/rider/orders/${id}/handback`, rider.token, { reason: 'wrong turn, coming back' });
+    expect(back.statusCode, back.body).toBe(200);
+    const again = await call('POST', `/api/v1/rider/orders/${id}/accept`, rider.token, {});
+    expect(again.statusCode, again.body).toBe(200);
+    expect(await assignmentEpisodes(id)).toBe(2);
+    const step = await riderStep(id, rider, 'en-route-pickup');
+    expect(step.statusCode, step.body).toBe(200);
+    expect(step.json().data.replayed).toBeUndefined(); // a real step on the new assignment
+    expect(countOf(await logs(id), 'RIDER_EN_ROUTE_PICKUP')).toBe(2);
+    const repeat = await riderStep(id, rider, 'en-route-pickup');
+    expect(repeat.json().data).toMatchObject({ status: 'RIDER_EN_ROUTE_PICKUP', replayed: true });
+    expect(countOf(await logs(id), 'RIDER_EN_ROUTE_PICKUP')).toBe(2);
+  });
+});
+

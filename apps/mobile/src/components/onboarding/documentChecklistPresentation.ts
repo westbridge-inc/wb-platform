@@ -97,6 +97,6 @@ export function checklistProgress(status: { checklist?: unknown; documents?: unk
  *  status, never on a sign-up pitch with the answer buried in the list below it. */
 export const MOVER_IN_REVIEW = {
   title: 'Your documents are in review',
-  body: 'You have sent everything. A person on our team checks them Monday to Saturday, 8:00–16:00 Guyana time. You can go online once they are approved, and this screen changes by itself then.',
+  body: 'You have sent everything. A person on our team checks them Monday to Saturday, 8:00–16:00 Guyana time. You can go online once they are approved. This screen updates by itself: when they are approved, or if one is sent back.',
 } as const;
 

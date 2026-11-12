@@ -2894,7 +2894,7 @@ export async function customerRoutes(app: FastifyInstance) {
             selectedOptions: true,
           },
         },
-        statusHistory: { orderBy: { createdAt: 'asc' } },
+        statusHistory: { orderBy: [{ createdAt: 'asc' }, { id: 'asc' }] },
         // [F-027-07 / F-028-11] Was a whole-relation `include`, which pulls
         // every Rider column — KYC document URLs, enforcement state, float —
         // into memory. The response below hand-projects, so nothing leaked,

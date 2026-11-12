@@ -15,7 +15,7 @@ import { lockIdentityAuthority } from '../integrity/identity-review';
 import { orderLimitCounts } from '../integrity/velocity';
 import { taxiNotificationData } from '../rides/taxi-notification';
 import { Prisma } from '@prisma/client';
-import { assignmentLogWhere } from './store-handover-log';
+import { countStatusSteps } from './store-handover-log';
 import type {
   PrismaClient,
   Order,
@@ -950,9 +950,7 @@ export class OrderService {
       where: { id: input.orderId },
       select: RIDER_ASSIGNMENT_SNAPSHOT_SELECT,
     });
-    const dispatchAssignmentSequence = await tx.orderStatusLog.count({
-      where: assignmentLogWhere(input.orderId, 'RIDER_ASSIGNED'),
-    });
+    const dispatchAssignmentSequence = await countStatusSteps(tx, input.orderId, 'RIDER_ASSIGNED');
     return { ...assigned, dispatchAssignmentSequence };
   }
 

@@ -17,64 +17,102 @@ export const STORE_PREPARING_WITH_RIDER_NOTE = 'Vendor started preparing (rider 
 export const STORE_READY_WITH_RIDER_NOTE = 'Order ready for pickup (rider already assigned)';
 
 /**
- * [FOLLOWUPS 11 Nov 2026 · production rider test: 6 of 13 orders "logged the same rider step 2-3
- * times"] The store's rows written at the order's CURRENT status while a rider holds it: the kitchen
- * steps above and "Handed to rider". They are append-only evidence and stay in the log; they are
- * never a rider step. Every reader that counts or times a rider step (assignment episodes, the
- * pickup-overdue clock, the handed-to-rider episode, the customer's and the store's timelines)
- * leaves them out through this ONE list, so none of them reads a store tap as a repeated step.
+ * [FOLLOWUPS 11 Nov 2026 · production rider test: 6 of 13 orders "logged the same rider step 2-3 times"
+ * · REVIEW-2490 S3-1] WHICH ROWS ARE STEPS. A step is a row that CHANGED the order's status: the first
+ * row, or a row whose status differs from the row before it (oldest first, STEP_ORDER). Every transition
+ * writes its row (the canonical seam, the two claim doors, the pre-custody reopen kernel all do), so a
+ * status change always opens a new run. Every other row is written AT the order's current status and
+ * repeats it: the store's kitchen taps and "Handed to rider", a grocery substitution / refund / withdrawn
+ * question (picking.service), a courier's "cash collected from sender" (cash-rules), an MMG attestation,
+ * a custody relay. Those are append-only evidence and stay in the log, but none of them is a step: not an
+ * assignment episode, not a new handed-to-rider episode, not the start of a rider's clock, and never a
+ * second step on a timeline. The rule is positive (a status change), so a new kind of evidence row, with
+ * any note, is never read as a step either.
  */
-export const STORE_EVIDENCE_NOTES: readonly string[] = [HANDED_TO_RIDER_NOTE, STORE_PREPARING_WITH_RIDER_NOTE, STORE_READY_WITH_RIDER_NOTE];
+export const STEP_ORDER: Prisma.OrderStatusLogOrderByWithRelationInput[] = [{ createdAt: 'asc' }, { id: 'asc' }];
 
-/** True for a store evidence row (above): a store tap at the rider's status, never a rider step. */
-export function isStoreEvidenceRow(row: { note: string | null }): boolean {
-  return row.note != null && STORE_EVIDENCE_NOTES.includes(row.note);
+/** For rows of ONE order, oldest first: whether each row is a step (changed the status). */
+export function stepFlags(rows: ReadonlyArray<{ status: string }>): boolean[] {
+  return rows.map((row, i) => i === 0 || rows[i - 1]!.status !== row.status);
 }
 
-/** The where-clause half that keeps only the rows that ARE steps (`note` is nullable: a bare `notIn`
- *  would also drop rows with no note). */
-export function notStoreEvidenceWhere(): Prisma.OrderStatusLogWhereInput {
-  return { OR: [{ note: null }, { note: { notIn: [...STORE_EVIDENCE_NOTES] } }] };
-}
+type StepReader = { orderStatusLog: { findMany: (args: { where: { orderId: string }; select: { status: true; createdAt: true }; orderBy: typeof STEP_ORDER }) => Promise<Array<{ status: string; createdAt: Date }>> } };
 
-/** [FOLLOWUPS 11 Nov 2026] The step a status-log row SHOWS on a timeline: a store kitchen tap made
- *  while a rider held the order reads as the kitchen step it was ("Preparing" / "Ready"), never as a
- *  second "Rider assigned" / "Rider on the way" / "Rider at the store". Every other row: its status. */
-export function timelineStepOf(row: { status: string; note: string | null }): string {
-  if (row.note === STORE_PREPARING_WITH_RIDER_NOTE) return 'PREPARING';
-  if (row.note === STORE_READY_WITH_RIDER_NOTE) return 'READY_FOR_PICKUP';
-  return row.status;
+/** The order's steps (rows that changed its status), oldest first. */
+export async function readStatusSteps(db: StepReader, orderId: string): Promise<Array<{ status: string; createdAt: Date }>> {
+  const rows = await db.orderStatusLog.findMany({ where: { orderId }, select: { status: true, createdAt: true }, orderBy: STEP_ORDER });
+  const steps = stepFlags(rows);
+  return rows.filter((_, i) => steps[i]);
 }
 
 /**
- * The status-log rows that COUNT a mover's assignment episodes (the dispatch journal compares this
- * count before and after an assignment). The store's rows (STORE_EVIDENCE_NOTES: "Handed to rider"
- * and the kitchen steps taken after a rider took the order) can be written while the order sits at
- * RIDER_ASSIGNED; they are not assignments, so they are left out. Every counter of assignment
- * episodes uses this ONE predicate, so they always agree.
+ * How many times the order was assigned to a mover (`status` RIDER_ASSIGNED or DRIVER_ASSIGNED): its
+ * assignment STEPS. The dispatch journal compares this count before and after an assignment; every
+ * counter of assignment episodes uses this ONE function, so they always agree. A row written at
+ * RIDER_ASSIGNED that is not a step (a store tap, a substitution, a courier's cash) is never an episode;
+ * a release always writes its own step (the reopen kernel), so the next assignment is always a new one.
  */
-export function assignmentLogWhere(orderId: string, status: OrderStatus): Prisma.OrderStatusLogWhereInput {
-  return { orderId, status, ...notStoreEvidenceWhere() };
+export async function countStatusSteps(db: StepReader, orderId: string, status: OrderStatus): Promise<number> {
+  return (await readStatusSteps(db, orderId)).filter((row) => row.status === status).length;
 }
 
-/** The status-log rows that decide whether the CURRENT rider was handed the order: the store's taps
- *  and the rider assignments (a rider who hands the order back and the next rider who takes it start
- *  a new episode, so an earlier tap never speaks for the new rider). Read them ordered by createdAt. */
+/** When the order last stepped into `status` (its latest step there), or null. */
+export async function latestStepAt(db: StepReader, orderId: string, status: OrderStatus): Promise<Date | null> {
+  const steps = await readStatusSteps(db, orderId);
+  for (let i = steps.length - 1; i >= 0; i -= 1) if (steps[i]!.status === status) return steps[i]!.createdAt;
+  return null;
+}
+
+/** The statuses a rider holds the order in before pickup. A row there that is not a step is evidence
+ *  written beside the rider (a store tap, a substitution, a courier's cash): never shown as a step. */
+const RIDER_PRE_PICKUP: ReadonlySet<string> = new Set(['RIDER_ASSIGNED', 'RIDER_EN_ROUTE_PICKUP', 'RIDER_ARRIVED_PICKUP']);
+
+/**
+ * [FOLLOWUPS 11 Nov 2026 · REVIEW-2490 S3-2] An order's status history as a TIMELINE (rows oldest first),
+ * for the customer's and the store's screens:
+ * - a store kitchen tap made while a rider held the order reads as the kitchen step it was ("Preparing" /
+ *   "Ready"), never as a second "Rider assigned" / "Rider en route" / "Rider at counter";
+ * - "Handed to rider" is left out (both store apps already say "Handed to rider" from handedToRiderAt;
+ *   as a row it read as a second "Rider at counter");
+ * - every other row at a rider's pre-pickup status that is not a step is left out;
+ * - everything else as it is. Every status shown is one every store and customer build has words for.
+ */
+export function timelineRows<Row extends { status: string; note: string | null }>(rowsOldestFirst: ReadonlyArray<Row>): Array<Row & { status: string }> {
+  const steps = stepFlags(rowsOldestFirst);
+  const out: Array<Row & { status: string }> = [];
+  rowsOldestFirst.forEach((row, i) => {
+    if (row.note === HANDED_TO_RIDER_NOTE) return;
+    if (row.note === STORE_PREPARING_WITH_RIDER_NOTE) { out.push({ ...row, status: 'PREPARING' }); return; }
+    if (row.note === STORE_READY_WITH_RIDER_NOTE) { out.push({ ...row, status: 'READY_FOR_PICKUP' }); return; }
+    if (!steps[i] && RIDER_PRE_PICKUP.has(row.status)) return;
+    out.push(row);
+  });
+  return out;
+}
+
+/** The status-log rows that decide whether the CURRENT rider was handed the order: every row of the
+ *  orders (whether a RIDER_ASSIGNED row is a new episode depends on the row before it). Read them in
+ *  STEP_ORDER. */
 export function handoverEpisodeRowsWhere(orderIds: readonly string[]): Prisma.OrderStatusLogWhereInput {
-  return { orderId: { in: [...orderIds] }, OR: [{ note: HANDED_TO_RIDER_NOTE }, { status: 'RIDER_ASSIGNED' }] };
+  return { orderId: { in: [...orderIds] } };
 }
 
-/** Per order: the first "Handed to rider" tap since the latest rider assignment (rows oldest first). */
+/** Per order: the first "Handed to rider" tap since the latest rider assignment step (every row of the
+ *  orders, in STEP_ORDER). */
 export function handedToRiderSinceAssignment(
   rows: ReadonlyArray<{ orderId: string; status: OrderStatus; note: string | null; createdAt: Date }>,
 ): Map<string, Date> {
   const handed = new Map<string, Date>();
+  const previous = new Map<string, string>();
   for (const row of rows) {
+    const step = previous.get(row.orderId) !== row.status;
+    previous.set(row.orderId, row.status);
     if (row.note === HANDED_TO_RIDER_NOTE) {
       if (!handed.has(row.orderId)) handed.set(row.orderId, row.createdAt);
-    } else if (row.status === 'RIDER_ASSIGNED' && !isStoreEvidenceRow(row)) {
-      // A new rider episode: an earlier tap was for an earlier rider. [FOLLOWUPS 11 Nov] A store kitchen
-      // tap at RIDER_ASSIGNED is not one (the same rider still holds the order).
+    } else if (row.status === 'RIDER_ASSIGNED' && step) {
+      // A new rider episode: an earlier tap was for an earlier rider. [FOLLOWUPS 11 Nov · REVIEW-2490 S3-1]
+      // Only an assignment STEP is one: a row written at RIDER_ASSIGNED that repeats it (a kitchen tap, a
+      // substitution) is the same rider's episode.
       handed.delete(row.orderId);
     }
   }

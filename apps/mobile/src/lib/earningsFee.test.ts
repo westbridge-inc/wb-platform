@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { earningsFeeDoor, feeKeepLine, FEE_NOT_PAYABLE_IN_APP, FEE_PAY_IN_PERSON_LINK } from './earningsFee';
+import { earningsFeeDoor, feeKeepLine, feePayHandler, FEE_HELP_PARAMS, FEE_NOT_PAYABLE_IN_APP, FEE_PAY_IN_PERSON_LINK } from './earningsFee';
 import type { FeeSubscription } from './weeklyFee';
 
 // [FOLLOWUPS 11 Nov 2026 · the rider weekly-fee check] With MMG checkout off, Earnings' "Pay weekly fee" opened a
@@ -74,3 +74,22 @@ describe('[FOLLOWUPS] the Earnings screen reads these', () => {
     expect(FEE_PAY_IN_PERSON_LINK).toBe('Pay Swift in person');
   });
 });
+
+describe('[REVIEW-2490 S2-1 / S4-4] the handler a fee surface may draw a pay button with', () => {
+  const open = () => undefined;
+  it('only for a way to pay, or the in-person door', () => {
+    expect(feePayHandler(due({ payActions: mmgLive }), open)).toBe(open);
+    expect(feePayHandler(due({ payActions: allOff, inPerson: { open: true, waitingGyd: null } }), open)).toBe(open);
+    expect(feePayHandler(due({ payActions: allOff }), open)).toBeUndefined();
+    expect(feePayHandler({ status: 'ACTIVE', feeStatus: { state: 'FEE_PAUSED', headline: 'x', detail: null, date: null }, payActions: allOff }, open)).toBeUndefined();
+    expect(feePayHandler(null, open)).toBeUndefined();
+  });
+  it('the help door asks Swift support about a payment', () => {
+    expect(FEE_HELP_PARAMS).toEqual({ category: 'PAYMENT', subject: 'I can’t pay my weekly fee in the app' });
+  });
+  it('the account screen draws its fee button through it too', () => {
+    const account = readFileSync(new URL('../modules/mover/screens/MoverAccountScreen.tsx', import.meta.url), 'utf8');
+    expect(account).toContain("<BillingStatusBlock sub={sub} onPay={feePayHandler(sub, () => navigation?.navigate?.('WeeklyFee'))} compact />");
+  });
+});
+

@@ -12,7 +12,7 @@ import { registerErrorHandler } from '../middleware/error-handler';
 import { customerRoutes } from '../modules/user/customer.routes';
 import { vendorRoutes, HANDED_TO_RIDER_NOTE } from '../modules/vendor/vendor.routes';
 import { riderRoutes } from '../modules/rider/rider.routes';
-import { assignmentLogWhere } from '../modules/order/store-handover-log';
+import { countStatusSteps } from '../modules/order/store-handover-log';
 import { verifyHandoverDecision } from '../modules/handover/handover-decision';
 import { freshOrderPlaceBudget } from './helpers/order-place-budget';
 
@@ -389,7 +389,7 @@ describe('[O-2] delivery: the store taps "Handed to rider"; custody stays the ri
     // The dispatch journal counts assignment episodes by RIDER_ASSIGNED rows: the store's evidence row
     // (written while the order sits at RIDER_ASSIGNED) must never look like a second assignment.
     expect(before.status).toBe('RIDER_ASSIGNED');
-    const episodes = () => sys(() => app.prisma.orderStatusLog.count({ where: assignmentLogWhere(orderId, 'RIDER_ASSIGNED') }));
+    const episodes = () => sys(() => countStatusSteps(app.prisma, orderId, 'RIDER_ASSIGNED'));
     const episodesBefore = await episodes();
     expect(episodesBefore).toBe(1);
 
