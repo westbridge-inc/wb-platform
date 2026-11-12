@@ -94,6 +94,7 @@ COPY apps/mobile/src/lib/appointmentTime.ts apps/mobile/src/lib/appointmentTime.
 COPY apps/mobile/src/modules/vendor/acceptClock.ts apps/mobile/src/modules/vendor/acceptClock.ts
 COPY apps/mobile/src/modules/vendor/order-dispute.ts apps/mobile/src/modules/vendor/order-dispute.ts
 COPY apps/mobile/src/modules/vendor/storeOrderRules.ts apps/mobile/src/modules/vendor/storeOrderRules.ts
+COPY apps/mobile/src/modules/vendor/ringMoney.ts apps/mobile/src/modules/vendor/ringMoney.ts
 COPY apps/mobile/src/modules/vendor/acceptedOutOfStock.ts apps/mobile/src/modules/vendor/acceptedOutOfStock.ts
 COPY apps/mobile/src/modules/vendor/storeHandover.ts apps/mobile/src/modules/vendor/storeHandover.ts
 COPY apps/mobile/src/modules/vendor/screens/delivery-owner.ts apps/mobile/src/modules/vendor/screens/delivery-owner.ts
