@@ -457,6 +457,8 @@ describe('composition root ↔ matrix drift guard, by plugin [SWIFT-092 · T1]',
     'agentCashRoutes', 'attributionRoutes', 'discoveryRoutes', 'marketRoutes', 'mmgCheckoutPublicRoutes',
     'cardRailPublicRoutes', 'publicRoutes', 'qrPublicRoutes', 'qrResolverRoutes', 'legalRoutes', 'testControlRoutes',
     'smsInboundRoutes', 'callVoiceRoutes', 'inAppVoiceRoutes', 'authorityLetterPublicRoutes',
+    // [KITCHEN-INTEGRATION] Dragontail's webhook: no account, its own proof (shared secret and/or HMAC), only while the switch is on.
+    'kitchenWebhookRoutes',
   ]);
 
   it('flags a route plugin the matrix never mounts, even under a prefix it already sweeps (red-first)', () => {
