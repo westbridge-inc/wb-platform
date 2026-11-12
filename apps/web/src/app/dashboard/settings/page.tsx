@@ -22,6 +22,7 @@ import { StorePhotosCard } from './store-photos-card';
 import { VatCard } from './vat-card';
 import { VatReportLink } from './vat-report-link';
 import { StoreDetailsCard } from './store-details-card';
+import { BUSINESS_TYPE_ROW, BUSINESS_TYPE_ROW_SUB } from '@/lib/account-change-api';
 import { lazyRetry } from '@/lib/chunk-retry';
 
 // [WEB-SETTINGS · owner 31 Oct 2026] The store's pin and address, and its MMG number: loaded with the page, but in their
@@ -303,6 +304,17 @@ export default function SettingsPage() {
             <p className="mt-1 text-sm text-[var(--swift-muted)]">Upload your store&apos;s documents and renewals, and see where each one stands.</p>
           </div>
           <Link href="/dashboard/documents" className="sw-chip">Documents</Link>
+        </div>
+      )}
+
+      {/* [COMPANY-DOCS Part 3 · owner ruling 10 Nov 2026 (c)] The account holder corrects the kind of business it joined as. */}
+      {isOwner && (
+        <div className="sw-card flex flex-wrap items-center gap-3 p-6">
+          <div className="min-w-0 flex-1">
+            <h2 className="font-bold">{BUSINESS_TYPE_ROW}</h2>
+            <p className="mt-1 text-sm text-[var(--swift-muted)]">{BUSINESS_TYPE_ROW_SUB}</p>
+          </div>
+          <Link href="/dashboard/settings/business-type" className="sw-chip">Business type</Link>
         </div>
       )}
 

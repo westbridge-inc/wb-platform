@@ -241,7 +241,10 @@ describe('[item 20] device tokens: writes for someone else inside a transaction'
       for (const form of delegateEscapes(text, 'deviceToken')) escapes.push(`${rel} ${form}`);
     }
     expect(calls).toEqual({
-      'modules/auth/auth.service.ts': 3,
+      'modules/auth/auth.service.ts': 2,
+      // [COMPANY-DOCS Part 3] the global revocation core moved here from auth.service.ts (log out everywhere, a password
+      // reset, and the old holder of a handed-over store account all run it): the same site, one file over.
+      'modules/auth/session-revocation.ts': 1,
       'modules/mover-authority.ts': 1,
       'modules/user/account.service.ts': 1,
     });

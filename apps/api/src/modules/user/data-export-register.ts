@@ -233,7 +233,7 @@ export const EXPORT_REGISTER: readonly ExportEntry[] = [
     fields: ['id', 'userId', 'platform', 'isActive', 'createdAt', 'alertsVersion'],
   },
   {
-    category: 'verificationDocuments', model: 'VerificationDocument', by: ['userId'], key: 'id', omit: { approvalHeldAt: 'SYSTEM' },
+    category: 'verificationDocuments', model: 'VerificationDocument', by: ['userId'], key: 'id', omit: { approvalHeldAt: 'SYSTEM', accountChangeId: 'SYSTEM' },
     fields: ['id', 'userId', 'role', 'docType', 'status', 'state', 'expiresAt', 'reviewNote', 'reviewedAt', 'insurerName', 'policyNumber', 'coverageClass', 'hireClassConfirmed', 'plateCrossChecked', 'consentAt', 'privacyNoticeVersion', 'retentionExpiresAt', 'purgedAt', 'createdAt', 'updatedAt', 'subjectId', 'imagePurgedAt'],
   },
   {
@@ -321,6 +321,16 @@ export const EXPORT_REGISTER: readonly ExportEntry[] = [
     },
     fields: ['id', 'userId', 'docType', 'businessName', 'registrationNumber', 'requesterName', 'requesterRole', 'signerName', 'signerPhone',
       'letterText', 'status', 'linkExpiresAt', 'sendCount', 'lastSentAt', 'openedAt', 'codeVerifiedAt', 'signedAt', 'documentId', 'endedAt', 'createdAt', 'updatedAt'],
+  },
+  {
+    // [COMPANY-DOCS Part 3 · review-2475 F4] A change of business type, or of account holder, the person asked for
+    // (requestedById: the holder) or was named in (newHolderId: the person named), and how it was decided (the reason
+    // is the words the store and the person named read). The previous holder's id (holderId: the asker) and the
+    // deciding person's id are not repeated; the account row and the paper ids are bookkeeping.
+    category: 'accountChanges', model: 'AccountChangeRequest', by: ['requestedById', 'newHolderId'], key: 'id',
+    omit: { holderId: 'OTHER_PERSON', vendorOwnerId: 'SYSTEM', sellerLegalNameDocId: 'SYSTEM' },
+    fields: ['id', 'kind', 'status', 'requestedById', 'fromOption', 'toOption', 'newHolderId', 'newHolderAcceptedAt', 'decidedAt', 'decisionReason',
+      'sellerLegalName', 'sellerLegalNameAt', 'createdAt', 'updatedAt'],
   },
   {
     // [O-1] The Swift-bridged calls the person asked for on their orders: which party (a role, never a
@@ -509,6 +519,11 @@ export const WITHHELD: Readonly<Record<string, { readonly reason: WithheldReason
   'CashHandoverEvidence.customerId': { reason: 'OTHER_PEOPLE', note: 'the cash handover record a mover filed for an order of yours' },
   'Admin.userId': { reason: 'STAFF_WORK', note: 'your Swift staff permissions' },
   'AdCreative.reviewedByUserId': { reason: 'STAFF_WORK', note: 'ad reviews done as staff' },
+  // [review-2475 D5] The person at Swift who typed a seller's legal name, or confirmed a store's name, from its papers.
+  'AccountChangeRequest.sellerLegalNameById': { reason: 'STAFF_WORK', note: 'seller names typed from papers as staff' },
+  'VendorOwner.sellerLegalNameById': { reason: 'STAFF_WORK', note: 'seller names typed from papers as staff' },
+  'Vendor.sellerNameCheckedById': { reason: 'STAFF_WORK', note: 'store names confirmed as staff' },
+  'AccountChangeRequest.decidedById': { reason: 'STAFF_WORK', note: 'account changes decided as staff (a change the person asked for, or was named in, is in the file with its answer)' },
   'CardCreditRefund.requestedByUserId': { reason: 'STAFF_WORK', note: 'card refunds of weekly-fee money asked by staff' },
   'FeeRefundCase.openedByUserId': { reason: 'STAFF_WORK', note: 'weekly-fee refund cases recorded as staff' },
   'AdCampaign.destinationApprovedByUserId': { reason: 'STAFF_WORK', note: 'ad links approved as staff' },
@@ -569,6 +584,7 @@ export const PLACES_NOT_EXPORTED: Readonly<Record<string, string>> = {
 export const ALSO_COVERED: Readonly<Record<string, string>> = {
   'HandoverPhotoProof.actorId': 'handoverPhotoProofs',
   'CashHandoverEvidence.actorId': 'cashHandoverRecords',
+  'AccountChangeRequest.holderId': 'accountChanges', // the holder who asked: always requestedById on a handover
 };
 
 /** Columns whose name looks like a person link but that hold something else. */

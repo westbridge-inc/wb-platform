@@ -31,6 +31,7 @@ import { ConversationScreen } from '../modules/chat/screens/ConversationScreen';
 import { ProfileScreen } from '../modules/profile/screens/ProfileScreen';
 import { PersonalDataScreen } from '../modules/profile/screens/PersonalDataScreen';
 import { NotificationsScreen } from '../modules/profile/screens/NotificationsScreen';
+import { AccountHandoverScreen } from '../modules/profile/screens/AccountHandoverScreen';
 import { InviteFriendsScreen } from '../modules/profile/screens/InviteFriendsScreen';
 import { FaqScreen } from '../modules/profile/screens/FaqScreen';
 import { ContactUsScreen } from '../modules/profile/screens/ContactUsScreen';
@@ -176,6 +177,8 @@ export function CustomerStack() {
       {/* Profile */}
       <Stack.Screen name="PersonalData" component={PersonalDataScreen} />
       <Stack.Screen name="Notifications" component={NotificationsScreen} />
+      {/* [COMPANY-DOCS Part 3 · owner ruling 10 Nov 2026 (d)] A company named this person its new account holder. */}
+      <Stack.Screen name="AccountHandover" component={AccountHandoverScreen} />
       <Stack.Screen name="InviteFriends" component={InviteFriendsScreen} />
       <Stack.Screen name="Faq" component={FaqScreen} />
       <Stack.Screen name="ContactUs" component={ContactUsScreen} />
