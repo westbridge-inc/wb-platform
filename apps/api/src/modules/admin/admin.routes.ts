@@ -2301,11 +2301,14 @@ export async function adminRoutes(app: FastifyInstance) {
   });
   app.put('/vendors/:id/kitchen-integration', { preHandler: [adminGuard] }, async (request) => {
     const { putKitchenIntegration } = await import('../kitchen/kitchen-admin');
-    return { success: true, data: await putKitchenIntegration(app.prisma, (request.params as { id: string }).id, request.body) };
+    // [review A S4-5] enabling starts customer details flowing to the store's kitchen system: the audit row, in the
+    // same transaction, carries the before and after (no person data).
+    return { success: true, data: await putKitchenIntegration(app.prisma, (request.params as { id: string }).id, request.body,
+      (tx, entityId, facts) => auditWithin(tx, request as unknown as AuditRequestLike, app.prefix, { entityId, extra: facts })) };
   });
   app.post('/vendors/:id/kitchen-integration/test', { preHandler: [adminGuard] }, async (request) => {
     const { testKitchenConnection } = await import('../kitchen/kitchen-admin');
-    return { success: true, data: await testKitchenConnection(app.prisma, app.io, app.redis, (request.params as { id: string }).id) };
+    return { success: true, data: await testKitchenConnection(app.prisma, (request.params as { id: string }).id) };
   });
   app.get('/vendors/:id/kitchen-integration/syncs', { preHandler: [adminGuard] }, async (request) => {
     const { listKitchenSyncs } = await import('../kitchen/kitchen-admin');

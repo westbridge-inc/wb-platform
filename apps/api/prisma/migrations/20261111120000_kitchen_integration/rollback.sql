@@ -8,6 +8,7 @@ DO $$ BEGIN
   END IF;
 END $$;
 DROP TABLE "order_integration_syncs";
+DROP TABLE "kitchen_order_counters";
 DROP TABLE "vendor_integrations";
 DROP FUNCTION IF EXISTS order_integration_syncs_tenant_matches_order();
 DROP FUNCTION IF EXISTS vendor_integrations_tenant_matches_vendor();

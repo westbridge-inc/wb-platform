@@ -20,9 +20,11 @@ import {
  * [KITCHEN-INTEGRATION] The Dragontail adapter: KitchenIntegrationProvider over the spec's endpoints.
  *
  *   insert / update / cancel → POST /PosInsertOrders ("Can handle inserting new orders, updating existing ones, or
- *                              canceling orders"); 200 with status "ok" is success, anything else is a refusal
- *   pollNotifications        → GET /GetPosNotification?storeNo= (recommended every 15 s) and, when Swift holds a
- *                              cursor, POST /GetOrderUpdatesForPos { storeNo, updateStamp } as the catch-up
+ *                              canceling orders"); 200 with status "ok" is success, anything else is a refusal.
+ *                              The login happens first, so a write that times out is known to be the write.
+ *   pollNotifications        → POST /GetOrderUpdatesForPos { storeNo, updateStamp } (read-only catch-up), and
+ *                              GET /GetPosNotification?storeNo=&id=<consumer> only when DRAGONTAIL_POLL_QUEUE=1
+ *                              (it may be consume-on-read; the consumer id keeps Swift off the store POS's queue).
  *   parseWebhook             → the PosNotification body ({ time, orders: Notification[] })
  */
 export class DragontailAdapter implements KitchenIntegrationProvider {
@@ -38,13 +40,18 @@ export class DragontailAdapter implements KitchenIntegrationProvider {
     this.client = new DragontailClient(clientOptions);
   }
 
+  setDeadline(at: number | null): void {
+    this.client.setDeadline(at);
+  }
+
   async testConnection(): Promise<void> {
     await this.client.login();
   }
 
   private async postOrders(body: unknown, what: string): Promise<KitchenInsertResult> {
-    const answer = await this.client.call('POST', '/PosInsertOrders', body);
-    const json = (answer.json ?? {}) as { status?: unknown; updateStamp?: unknown; orders?: unknown; errDescription?: unknown };
+    await this.client.ensureToken();
+    const answer = await this.client.call('POST', '/PosInsertOrders', body, false);
+    const json = (answer.json ?? {}) as { status?: unknown; updateStamp?: unknown; orders?: unknown };
     const status = typeof json.status === 'string' ? json.status : '';
     if (answer.status !== 200 || status.toLowerCase() !== 'ok') {
       // parseError / validationError / dbError / flowError …: the same request would be refused again.
@@ -67,26 +74,35 @@ export class DragontailAdapter implements KitchenIntegrationProvider {
   }
 
   async cancelOrder(order: KitchenOrder): Promise<void> {
-    // A refund ticket needs an id of its own in Swift's range: the order's id with the top of the range flipped
-    // would collide, so it is the order's id offset by half the range (TODO-CONFIRM with REFUND_TICKET mode).
+    // REFUND_TICKET mode: the refund ticket needs an id of its own; the order's id + 100,000,000 (TODO-CONFIRM the
+    // range with Dragontail before using that mode).
     const refundTicketId = order.externalOrderId + 100_000_000;
     await this.postOrders(dragontailCancelBody(order, this.settings, this.orderNumberOf(order), refundTicketId), 'cancellation');
   }
 
   async pollNotifications(storeNo: number, cursor: bigint): Promise<KitchenPollResult> {
-    const pending = await this.client.call('GET', `/GetPosNotification?storeNo=${encodeURIComponent(String(storeNo))}`);
-    // 404 "wrong storeNo, content not found" and 400 are answers, not outages: no events.
-    const events: KitchenEvent[] = pending.status === 200 ? dragontailEvents(pending.json) : [];
-    if (pending.status !== 200 && pending.status !== 404) {
-      throw new KitchenPermanentError(`Dragontail GetPosNotification answered HTTP ${pending.status}`);
+    const events: KitchenEvent[] = [];
+    if (this.settings.pollQueue) {
+      const query = `storeNo=${encodeURIComponent(String(storeNo))}&id=${encodeURIComponent(this.settings.consumerId)}`;
+      const pending = await this.client.call('GET', `/GetPosNotification?${query}`);
+      // 404 "wrong storeNo, content not found" is an answer, not an outage: no events.
+      if (pending.status === 200) events.push(...dragontailEvents(pending.json));
+      else if (pending.status !== 404) throw new KitchenPermanentError(`Dragontail GetPosNotification answered HTTP ${pending.status}`);
     }
     // The catch-up: everything since the last stamp Swift processed (0 = the current working day).
-    const updates = await this.client.call('POST', '/GetOrderUpdatesForPos', { storeNo, updateStamp: Number(cursor) });
+    const updates = await this.client.call('POST', '/GetOrderUpdatesForPos', { storeNo, updateStamp: Number(cursor) }, true);
     let nextCursor: bigint | null = null;
     if (updates.status === 200) {
+      const answer = (updates.json ?? {}) as { updateStamp?: unknown; loggedOut?: unknown };
+      // The spec's answer can say the session is gone: the next call logs in afresh.
+      if (answer.loggedOut === true) this.client.forgetToken();
       events.push(...dragontailUpdateEvents(updates.json));
-      const stamp = (updates.json as { updateStamp?: unknown } | null)?.updateStamp;
-      if (typeof stamp === 'number' && Number.isSafeInteger(stamp) && stamp >= 0) nextCursor = BigInt(stamp);
+      const stamp = answer.updateStamp;
+      if (typeof stamp === 'number' && Number.isSafeInteger(stamp) && stamp >= 0) {
+        // The answer carries everything since the cursor, so the cursor moves past all of it. A stamp BELOW the
+        // cursor is a new working day ("within the current working day", TODO-CONFIRM 19): start over from it.
+        nextCursor = BigInt(stamp);
+      }
     }
     return { events: events.filter((e) => e.storeNo === storeNo), nextCursor };
   }

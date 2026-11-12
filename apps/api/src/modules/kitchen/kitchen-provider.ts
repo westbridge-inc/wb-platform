@@ -40,9 +40,11 @@ export interface KitchenOrder {
   /** Cash the driver collects at the door (cash orders), else 0. */
   cashToCollect: number;
   isPaid: boolean;
+  /** [review A S2-2 · owner ruling 12 Nov 2026] The first name only (never the last name). A delivery adds the
+   *  customer's phone and the address/location for the store's own driver (a deliberate O-1 exception); a pickup
+   *  carries none of them. */
   customer: {
     firstName: string | null;
-    lastName: string | null;
     phone: string | null;
     address: string | null;
     lat: number | null;
@@ -64,6 +66,8 @@ export type KitchenEventKind =
   | 'DELIVERED'
   | 'UNASSIGNED' // taken off a driver
   | 'UNDELIVERED'
+  | 'BACK_TO_STORE' // the driver is back at the store (a delivery not marked delivered is an operations matter)
+  | 'SEEN' // the kitchen system knows the order (a GetOrderUpdatesForPos row): confirms an insert whose answer was lost
   | 'IGNORED'; // a print request, back-to-store, or an action Swift does not know
 
 export interface KitchenEvent {
@@ -92,15 +96,18 @@ export class KitchenPermanentError extends Error {
 
 /** A failure that might pass (5xx after the retries, a timeout, the network). */
 export class KitchenTransientError extends Error {
-  constructor(message: string) {
+  /** [review B S3-3] A write that timed out or lost its connection: the kitchen system may HAVE the order. */
+  readonly mayHaveLanded: boolean;
+  constructor(message: string, mayHaveLanded = false) {
     super(message);
     this.name = 'KitchenTransientError';
+    this.mayHaveLanded = mayHaveLanded;
   }
 }
 
 export interface KitchenPollResult {
   events: KitchenEvent[];
-  /** For providers with a resumable cursor (Dragontail GetOrderUpdatesForPos updateStamp). */
+  /** For providers with a resumable cursor (Dragontail GetOrderUpdatesForPos updateStamp); null = keep the cursor. */
   nextCursor: bigint | null;
 }
 
@@ -108,6 +115,8 @@ export interface KitchenIntegrationProvider {
   readonly name: 'DRAGONTAIL';
   /** Log in only: proves the credentials and the address. */
   testConnection(): Promise<void>;
+  /** Every request until the next call must finish by `at` (ms since epoch); null clears it. */
+  setDeadline(at: number | null): void;
   insertOrder(order: KitchenOrder): Promise<KitchenInsertResult>;
   updateOrder(order: KitchenOrder): Promise<KitchenInsertResult>;
   cancelOrder(order: KitchenOrder): Promise<void>;

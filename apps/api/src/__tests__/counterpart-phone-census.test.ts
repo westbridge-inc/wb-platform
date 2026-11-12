@@ -42,8 +42,9 @@ const LEDGER: Record<string, { count: number; why: string }> = {
   'modules/rider/rider.routes.ts': { count: 3, why: `2 ${OWN}; 1 ${GATED} (the store's account line is no longer selected)` },
   'modules/user/customer.routes.ts': { count: 4, why: `2 ${OWN}; 1 receipt input (the receipt prints only the seller's PUBLISHED phone); 1 ${GATED}` },
   'modules/vendor/vendor.routes.ts': { count: 5, why: `3 ${GATED}; 1 ${OWN} (store team; GET+PUT /staff share staffMemberUserSelect); 1 ${INTERNAL} (reserved-name check)` },
-  // [KITCHEN-INTEGRATION] the customer's number goes to the store's OWN kitchen system for its own driver, delivery only (switch off by default)
-  'modules/kitchen/kitchen-sync.ts': { count: 1, why: `${INTERNAL}: the delivery customer's number for the store's own kitchen system (its driver), never in a party response` },
+  // [KITCHEN-INTEGRATION · OWNER RULING 12 Nov 2026] a deliberate O-1 exception: a cash DELIVERY customer's number goes
+  // to a PARTY, the store, through its own kitchen system, for its own driver (switch off by default).
+  'modules/kitchen/kitchen-sync.ts': { count: 1, why: `owner ruling 12 Nov 2026 (O-1 exception): a cash delivery customer's number goes to the store's own kitchen system for its driver; never for a pickup, never the last name` },
   'utils/counterparty.ts': { count: 1, why: 'the opt-in itself (riderCounterpartySelect withPhone)' },
   'modules/calls/call-bridge.ts': { count: 5, why: `${INTERNAL} (the Swift call bridge: each party's number, and the caller's own, read at the moment a leg is dialled and handed only to the voice provider; never in a response, a push or a call_sessions row)` },
   // [BOOK-FU2 · owner B3] +1: the missed-appointment review's customer row (masked unless user.contact.read, like the people list).

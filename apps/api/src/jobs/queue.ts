@@ -316,17 +316,20 @@ export function createQueues(
   }
 }
 
-/** [KITCHEN-INTEGRATION] While a store's kitchen system is being given an order, its alert ladder waits a rung
- *  instead of ringing the tablet (true = re-armed, the caller stops); once the send settles (or falls back) the
- *  ladder rings as for any store. With DRAGONTAIL_INTEGRATION off this is false without a database read. */
+/** [KITCHEN-INTEGRATION] THE TABLET BACKSTOP for a claimed order. While a store's kitchen system is being given an
+ *  order, its alert ladder waits a rung instead of ringing the tablet (true = re-armed, the caller stops), never past
+ *  KITCHEN_STUCK_MS. A claim that is stuck, sent but not accepted, or left waiting when the switch was turned off is
+ *  RUNG on the tablet here, and the ladder then carries on as for any store (false). One unique-key read per rung,
+ *  switch on or off; nothing else changes for an order with no claim. Never throws. */
 async function kitchenAlertWaits(
-  prisma: JobContext['prisma'],
+  ctx: Pick<JobContext, 'prisma' | 'io'>,
   queues: Pick<SwiftQueues, 'notificationQueue'>,
   orderId: string,
   level: number,
 ): Promise<boolean> {
-  const { kitchenDefersStoreAlert } = await import('../modules/kitchen/kitchen-claim');
-  if (!(await kitchenDefersStoreAlert(prisma, orderId).catch(() => false))) return false;
+  const { kitchenLadderStep } = await import('../modules/kitchen/kitchen-sync');
+  const next = await inTenantOf(ctx.prisma, { order: orderId }, () => kitchenLadderStep({ prisma: ctx.prisma, io: ctx.io }, orderId));
+  if (next === 'GO') return false;
   // The same rung again in 30 s: waiting never skips the re-alert or jumps to the text.
   await queues.notificationQueue.add('vendor-alert-escalate', { orderId, level }, { delay: 30_000, removeOnComplete: 100, removeOnFail: 50 });
   return true;
@@ -832,6 +835,15 @@ export async function releaseHeldOrdersJob(
     await drainCheckoutOutbox({ prisma: ctx.prisma, queues, log: ctx.log }, { orderIds: released })
       .catch((err: unknown) => ctx.log.error({ err }, '[Q12] release ladder drain failed — the outbox sweep will publish'));
     ctx.log.info({ count: released.length }, 'Held orders released to vendors/dispatch (+escalation ladders armed)');
+  }
+  // [KITCHEN-INTEGRATION · review B S2-1] The tablet backstop, switch on or OFF: a claim left waiting (the switch
+  // turned off, or no sender running) or a sent order not accepted in time is rung on the store's tablet here too,
+  // never left to auto-cancel. No outside call; one indexed read when nothing is stuck. Never fails the release.
+  try {
+    const { kitchenBackstopSweep } = await import('../modules/kitchen/kitchen-sync');
+    await kitchenBackstopSweep({ prisma: ctx.prisma, io: ctx.io });
+  } catch (err) {
+    ctx.log.error({ err }, '[KITCHEN] backstop sweep failed — the alert ladder still rings each order');
   }
   return released;
 }
@@ -2086,7 +2098,7 @@ export async function createWorkers(ctx: JobContext, queues: SwiftQueues) {
       const { getChannels } = await import('../providers/notifications/channels');
 
       const { orderId, level = 0 } = job.data;
-      if (await kitchenAlertWaits(ctx.prisma, queues, orderId, level)) return; // [KITCHEN] see the helper
+      if (await kitchenAlertWaits(ctx, queues, orderId, level)) return; // [KITCHEN] see the helper
       const outcome = await inTenantOf(ctx.prisma, { order: orderId }, () => escalateVendorAlert(ctx.prisma, ctx.io, getChannels(), orderId, level));
 
       if (outcome === 'realerted') {

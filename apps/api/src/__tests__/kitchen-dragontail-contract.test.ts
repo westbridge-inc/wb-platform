@@ -11,10 +11,10 @@ import {
   parseDragontailTime,
 } from '../modules/kitchen/dragontail/dragontail-mapper';
 import { KitchenPermanentError, KitchenTransientError, type KitchenOrder } from '../modules/kitchen/kitchen-provider';
-import { dragontailIntegrationEnabled, dragontailSettings } from '../modules/kitchen/kitchen-switch';
+import { assertKitchenIntegrationConfig, dragontailApiUrlProblem, dragontailIntegrationEnabled, dragontailSettings } from '../modules/kitchen/kitchen-switch';
 import { kitchenLoginFor, kitchenLoginRef, kitchenSecretStatus, kitchenWebhookRef, kitchenWebhookSecretFor } from '../modules/kitchen/kitchen-credentials';
 import { kitchenEligibility } from '../modules/kitchen/kitchen-claim';
-import { kitchenWebhookAuthentic, kitchenWebhookSignature } from '../modules/kitchen/kitchen-webhook.routes';
+import { kitchenWebhookAuthentic, kitchenWebhookFresh, kitchenWebhookSignature } from '../modules/kitchen/kitchen-webhook.routes';
 
 // ---------------------------------------------------------------------------
 // [KITCHEN-INTEGRATION · owner 11 Nov 2026] The Dragontail contract, service-free: the HTTP rules (login, token,
@@ -44,7 +44,7 @@ const ORDER: KitchenOrder = {
   prepaidTips: 0,
   cashToCollect: 4300,
   isPaid: false,
-  customer: { firstName: 'Ann', lastName: 'Test', phone: '+5926000000', address: '9 Test Street, Georgetown', lat: 6.81, lng: -58.16 },
+  customer: { firstName: 'Ann', phone: '+5926000000', address: '9 Test Street, Georgetown', lat: 6.81, lng: -58.16 },
   driverNote: 'Blue gate',
   cookNote: null,
   lines: [
@@ -70,7 +70,9 @@ describe('[KITCHEN] the switch and the settings', () => {
       sourceId: 2, mmgPaymentCode: 2, userLevel: -1, timeoutMs: 8_000, orderIdBase: 1_900_000_000,
       webhookCheck: 'shared', webhookHeader: 'x-dragontail-shared', webhookSignatureHeader: 'x-dragontail-signature',
       acceptOn: 'INSERT_OK', ackTimeoutMs: 180_000, cancelMode: 'REMOVE_ITEMS', pollSeconds: 15,
+      consumerId: 'swift', pollQueue: false, webhookMaxAgeSeconds: 0,
     });
+    expect(dragontailSettings({ DRAGONTAIL_TIMEOUT_MS: '60000' }).timeoutMs, 'a timeout that cannot fit the send budget falls back').toBe(8_000);
     // A value outside its allowed set falls back, never half-applies.
     expect(dragontailSettings({ DRAGONTAIL_WEBHOOK_CHECK: 'none', DRAGONTAIL_ACCEPT_ON: 'x', DRAGONTAIL_SOURCE_ID: '-3' })).toMatchObject({ webhookCheck: 'shared', acceptOn: 'INSERT_OK', sourceId: 2 });
   });
@@ -152,17 +154,79 @@ describe('[KITCHEN] Dragontail HTTP rules (spec: Authentication + Important note
     expect(mock.count('/PosInsertOrders')).toBe(1 + DRAGONTAIL_MAX_RETRIES);
   });
 
-  it('a request that outlives its timeout is retried and then fails as transient', async () => {
+  it('a WRITE that outlives its timeout is never re-sent: it fails at once, saying it may have arrived', async () => {
     const c = client({ timeoutMs: 100 });
     await c.login();
-    mock.delayMs = 400;
-    await expect(c.call('POST', '/PosInsertOrders', {})).rejects.toThrow(/timed out/);
+    mock.pathDelays.set('/PosInsertOrders', 400);
+    const err = await c.call('POST', '/PosInsertOrders', {}).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(KitchenTransientError);
+    expect((err as KitchenTransientError).mayHaveLanded).toBe(true);
+    expect((err as Error).message).toMatch(/timed out.*may have arrived/);
+    expect(mock.count('/PosInsertOrders')).toBe(1);
+  });
+
+  it('a READ that times out is retried (it changes nothing at Dragontail)', async () => {
+    const c = client({ timeoutMs: 100 });
+    await c.login();
+    mock.pathDelays.set('/GetPosNotification', 400);
+    const err = await c.call('GET', '/GetPosNotification?storeNo=42').catch((e: unknown) => e);
+    expect((err as KitchenTransientError).mayHaveLanded).toBe(false);
+    expect(mock.count('/GetPosNotification')).toBe(1 + DRAGONTAIL_MAX_RETRIES);
+  });
+
+  it('one deadline for the whole chain: nothing is sent once it has passed', async () => {
+    const c = client();
+    c.setDeadline(Date.now() - 1);
+    await expect(c.login()).rejects.toBeInstanceOf(KitchenTransientError);
+    expect(mock.requests).toEqual([]);
+  });
+
+  it('a redirect is refused: the login is never re-sent to another address', async () => {
+    const elsewhere = new MockDragontail();
+    await elsewhere.start();
+    try {
+      mock.redirects.set('/login', `${elsewhere.url}/login`);
+      await expect(client().login()).rejects.toBeInstanceOf(KitchenTransientError);
+      expect(elsewhere.requests, 'the redirect target never saw the credentials').toEqual([]);
+    } finally {
+      await elsewhere.stop();
+    }
+  });
+
+  it('a token is reused until Dragontail answers 403 (no login per call)', async () => {
+    const seen: Array<string | null> = [];
+    const cached = client();
+    const t = await cached.login();
+    mock.reset();
+    const reuse = client({ token: t, onToken: (x) => seen.push(x) });
+    await reuse.call('POST', '/PosInsertOrders', dragontailInsertBody(ORDER, SETTINGS, 'SW-1'));
+    await reuse.call('POST', '/PosInsertOrders', dragontailInsertBody(ORDER, SETTINGS, 'SW-1'));
+    expect(mock.count('/login')).toBe(0);
+    mock.expireTokens();
+    await reuse.call('POST', '/PosInsertOrders', dragontailInsertBody(ORDER, SETTINGS, 'SW-1'));
+    expect(mock.count('/login'), 'one re-login after the 403').toBe(1);
+    expect(seen.at(-1)).toMatch(/^AE/);
   });
 
   it('the adapter treats a 200 that is not status "ok" as a refusal (the same order would be refused again)', async () => {
     const adapter = new DragontailAdapter({ baseUrl: mock.url, login: LOGIN, userLevel: -1, timeoutMs: 2_000, sleep: async () => {} }, SETTINGS, () => 'SW-1');
     mock.refuse('/PosInsertOrders', 200, { time: 'x', rowCount: 0, status: 'validationError' });
     await expect(adapter.insertOrder(ORDER)).rejects.toThrow(/validationError/);
+  });
+
+  it('[B S4-3] the catch-up cursor moves past a big answer; "loggedOut" makes the next call log in afresh', async () => {
+    const adapter = new DragontailAdapter({ baseUrl: mock.url, login: LOGIN, userLevel: -1, timeoutMs: 2_000, sleep: async () => {} }, { ...SETTINGS, pollQueue: false }, () => 'SW-1');
+    mock.updates = Array.from({ length: 600 }, (_, i) => ({ stamp: i + 1, storeNo: 42, orderId: 10_000 + i, reachedTheMakeLineTime: '2026-11-11 12:00:00' }));
+    const first = await adapter.pollNotifications(42, 0n);
+    expect(first.nextCursor, 'never stuck re-reading the same rows').toBe(600n);
+    expect(first.events.filter((e) => e.kind === 'SEEN')).toHaveLength(600);
+    expect(mock.count('/GetPosNotification'), 'the queue is not read unless DRAGONTAIL_POLL_QUEUE=1').toBe(0);
+    mock.loggedOut = true;
+    await adapter.pollNotifications(42, 600n);
+    const logins = mock.count('/login');
+    mock.loggedOut = false;
+    await adapter.pollNotifications(42, 600n);
+    expect(mock.count('/login')).toBe(logins + 1);
   });
 
   it('the adapter reads updateStamp and promiseTimeSeconds from a successful insert', async () => {
@@ -174,6 +238,12 @@ describe('[KITCHEN] Dragontail HTTP rules (spec: Authentication + Important note
 });
 
 describe('[KITCHEN] PosInsertOrders mapping, field by field (spec: Order, OrderItem, PosInsertOrders)', () => {
+  it('never the last name; cook instructions within the spec 150 characters', () => {
+    const body = dragontailInsertBody({ ...ORDER, lines: [{ ...ORDER.lines[0]!, note: 'x'.repeat(400) }] }, SETTINGS, 'SW-1');
+    expect(body.orders[0]).not.toHaveProperty('lastName');
+    expect(String(body.orders[0]!['cookInstructions']).length).toBeLessThanOrEqual(150);
+  });
+
   it('a delivery: every required field, the customer for the driver, items in the spec position scheme', () => {
     const body = dragontailInsertBody(ORDER, SETTINGS, 'SW-261111-007ABC', 0, new Date('2026-11-11T16:20:19.000Z'));
     expect(body).toEqual({
@@ -196,7 +266,6 @@ describe('[KITCHEN] PosInsertOrders mapping, field by field (spec: Order, OrderI
         tips: 0,
         isNotPaid: 1,
         firstName: 'Ann',
-        lastName: 'Test',
         phone: '+5926000000',
         street: '9 Test Street, Georgetown',
         lat: 6.81,
@@ -205,10 +274,10 @@ describe('[KITCHEN] PosInsertOrders mapping, field by field (spec: Order, OrderI
         cookInstructions: 'Pan Pizza XL: well done',
       }],
       ordersItems: [
-        { StoreNo: 42, OrderId: 1_900_000_007, Position: '001', OrderStatus: 0, ItemsActions: 0, ItemNo: '8', Quantity: 1, Description: 'Pan Pizza XL', Side: 3 },
-        { StoreNo: 42, OrderId: 1_900_000_007, Position: '001001', OrderStatus: 0, ItemsActions: 0, ItemNo: '121', Quantity: 1, Description: 'green pepper', Side: 0 },
-        { StoreNo: 42, OrderId: 1_900_000_007, Position: '001002', OrderStatus: 0, ItemsActions: 0, ItemNo: '233', Quantity: 1, Description: 'black olives', Side: 0 },
-        { StoreNo: 42, OrderId: 1_900_000_007, Position: '002', OrderStatus: 0, ItemsActions: 0, ItemNo: '23', Quantity: 2, Description: 'Pan Pizza L', Side: 3 },
+        { StoreNo: 42, OrderId: 1_900_000_007, Position: '001', OrderStatus: 0, ItemsActions: 0, Action: 0, ItemNo: '8', Quantity: 1, Description: 'Pan Pizza XL', Side: 3 },
+        { StoreNo: 42, OrderId: 1_900_000_007, Position: '001001', OrderStatus: 0, ItemsActions: 0, Action: 0, ItemNo: '121', Quantity: 1, Description: 'green pepper', Side: 0 },
+        { StoreNo: 42, OrderId: 1_900_000_007, Position: '001002', OrderStatus: 0, ItemsActions: 0, Action: 0, ItemNo: '233', Quantity: 1, Description: 'black olives', Side: 0 },
+        { StoreNo: 42, OrderId: 1_900_000_007, Position: '002', OrderStatus: 0, ItemsActions: 0, Action: 0, ItemNo: '23', Quantity: 2, Description: 'Pan Pizza L', Side: 3 },
       ],
       translations: [],
     });
@@ -241,7 +310,7 @@ describe('[KITCHEN] PosInsertOrders mapping, field by field (spec: Order, OrderI
 
   it('a cancel re-sends every item as removed (ItemsActions 2), or as a refund ticket naming the order', () => {
     const removed = dragontailCancelBody(ORDER, SETTINGS, 'SW-1', 2_000_000_007);
-    expect((removed.ordersItems as Array<Record<string, unknown>>).every((r) => r['ItemsActions'] === 2)).toBe(true);
+    expect((removed.ordersItems as Array<Record<string, unknown>>).every((r) => r['ItemsActions'] === 2 && r['Action'] === 2), 'both item-action fields say removed').toBe(true);
     const refund = dragontailCancelBody(ORDER, { ...SETTINGS, cancelMode: 'REFUND_TICKET' }, 'SW-1', 2_000_000_007);
     expect(refund.orders[0]).toMatchObject({ orderId: 2_000_000_007, refundFor: '1900000007' });
     expect(refund.ordersItems).toEqual([]);
@@ -263,10 +332,20 @@ describe('[KITCHEN] notifications → Swift events (spec: Notification.action)',
     expect(dragontailEvents(body).map((e) => [e.action, e.kind])).toEqual([
       ['ReachedTheMakeLine', 'MAKE_LINE'], ['Prepared', 'PREPARED'], ['Cook', 'COOKED'], ['Pack', 'PACKED'],
       ['Dispatched', 'DISPATCHED'], ['ETA', 'ETA'], ['Delivered', 'DELIVERED'], ['Unassigned', 'UNASSIGNED'],
-      ['Undelivered', 'UNDELIVERED'], ['PrintRequest', 'IGNORED'], ['BackToStore', 'IGNORED'], ['SomethingNew', 'IGNORED'],
+      ['Undelivered', 'UNDELIVERED'], ['PrintRequest', 'IGNORED'], ['BackToStore', 'BACK_TO_STORE'], ['SomethingNew', 'IGNORED'],
     ]);
     expect(dragontailEvents(body)[5]!.etaSeconds).toBe(600);
     expect(dragontailEvents(body)[0]!.at!.toISOString()).toBe('2016-04-19T17:08:19.000Z');
+  });
+
+  it('inherited names are unknown actions; an estimate beyond six hours is capped at six hours', () => {
+    for (const action of ['constructor', '__proto__', 'toString', 'hasOwnProperty']) {
+      expect(dragontailEvents({ orders: [n(action)] })[0]!.kind, action).toBe('IGNORED');
+    }
+    expect(dragontailEvents({ orders: [n('ETA', { ETASeconds: 6 * 3600 })] })[0]!.etaSeconds).toBe(21_600);
+    expect(dragontailEvents({ orders: [n('ETA', { ETASeconds: 6 * 3600 + 1 })] })[0]!.etaSeconds, 'capped at six hours').toBe(21_600);
+    expect(dragontailEvents({ orders: [n('ETA', { ETASeconds: Number.MAX_SAFE_INTEGER })] })[0]!.etaSeconds).toBe(21_600);
+    expect(dragontailEvents({ orders: [n('ETA', { ETASeconds: -5 })] })[0]!.etaSeconds).toBeNull();
   });
 
   it('a malformed body yields no events', () => {
@@ -277,7 +356,47 @@ describe('[KITCHEN] notifications → Swift events (spec: Notification.action)',
 
   it('GetOrderUpdatesForPos timestamps become the kitchen steps they imply, in kitchen order', () => {
     const events = dragontailUpdateEvents({ orders: [{ storeNo: 42, orderId: 77, reachedTheMakeLineTime: '2026-11-11 12:00:00', preparationTime: '2026-11-11 12:05:00', packTime: '2026-11-11 12:15:00', dispatchTime: '', deliveryTime: '0001-01-01 00:00:00' }] });
-    expect(events.map((e) => e.kind)).toEqual(['MAKE_LINE', 'PREPARED', 'PACKED']);
+    // Each row is first a SEEN (the kitchen knows the order: it confirms an insert whose answer was lost).
+    expect(events.map((e) => e.kind)).toEqual(['SEEN', 'MAKE_LINE', 'PREPARED', 'PACKED']);
+    // Back at the store is carried too (operations are paged when it comes without a Delivered).
+    expect(dragontailUpdateEvents({ orders: [{ storeNo: 42, orderId: 77, backToStoreTime: '2026-11-11 13:00:00' }] }).map((e) => e.kind)).toEqual(['SEEN', 'BACK_TO_STORE']);
+  });
+
+  it('[B S4-3] a catch-up answer is read past the old 500-row cap (the cursor moves past all of it)', () => {
+    const rows = Array.from({ length: 1_200 }, (_, i) => ({ storeNo: 42, orderId: i + 1 }));
+    expect(dragontailUpdateEvents({ orders: rows }).filter((e) => e.kind === 'SEEN')).toHaveLength(1_200);
+  });
+});
+
+describe('[KITCHEN · review A S3-3] the address a login may go to', () => {
+  it('https on Dragontail own host (or a subdomain) only; loopback http only in a test run', () => {
+    expect(dragontailApiUrlProblem('https://api.dragontailsystem.com', {})).toBeNull();
+    expect(dragontailApiUrlProblem('https://dragontailsystem.com', {})).toBeNull();
+    expect(dragontailApiUrlProblem('http://api.dragontailsystem.com', {})).toMatch(/https/);
+    expect(dragontailApiUrlProblem('https://dragontailsystem.com.evil.example', {})).toMatch(/subdomain/);
+    expect(dragontailApiUrlProblem('https://evildragontailsystem.com', {})).toMatch(/subdomain/);
+    expect(dragontailApiUrlProblem('https://u:p@api.dragontailsystem.com', {})).toMatch(/credential/);
+    expect(dragontailApiUrlProblem('http://127.0.0.1:9', { NODE_ENV: 'production' })).toMatch(/https/);
+    expect(dragontailApiUrlProblem('http://127.0.0.1:9', { NODE_ENV: 'test' })).toBeNull();
+    expect(dragontailApiUrlProblem('not a url', {})).toMatch(/not a URL/);
+  });
+
+  it('boot refuses the switch ON with a bad address, and checks nothing while it is off', () => {
+    expect(() => assertKitchenIntegrationConfig({ DRAGONTAIL_INTEGRATION: '1', DRAGONTAIL_API_URL: 'http://api.dragontailsystem.com', NODE_ENV: 'production' })).toThrow(/Refusing to start/);
+    expect(() => assertKitchenIntegrationConfig({ DRAGONTAIL_INTEGRATION: '1', NODE_ENV: 'production' })).not.toThrow();
+    expect(() => assertKitchenIntegrationConfig({ DRAGONTAIL_API_URL: 'http://anything' })).not.toThrow();
+  });
+});
+
+describe('[KITCHEN · review A S4-1] webhook replay window (the spec body carries a signed `time`, no nonce)', () => {
+  it('off by default; when set, a body whose time is missing or outside the window is not fresh', () => {
+    expect(dragontailSettings({}).webhookMaxAgeSeconds).toBe(0);
+    expect(dragontailSettings({ DRAGONTAIL_WEBHOOK_MAX_AGE_SECONDS: '300' }).webhookMaxAgeSeconds).toBe(300);
+    const now = new Date('2026-11-11T16:20:19.000Z'); // 12:20:19 Guyana
+    expect(kitchenWebhookFresh({ time: '2026-11-11 12:18:00' }, 300, now)).toBe(true);
+    expect(kitchenWebhookFresh({ time: '2026-11-11 12:10:00' }, 300, now), 'a replay ten minutes later').toBe(false);
+    expect(kitchenWebhookFresh({ time: '2026-11-11 12:40:00' }, 300, now)).toBe(false);
+    expect(kitchenWebhookFresh({ orders: [] }, 300, now)).toBe(false);
   });
 });
 

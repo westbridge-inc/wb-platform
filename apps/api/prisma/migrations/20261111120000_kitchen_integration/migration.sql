@@ -1,5 +1,8 @@
 -- [KITCHEN-INTEGRATION · owner 11 Nov 2026] A store's orders can go straight to its own kitchen system (Dragontail
--- today), behind DRAGONTAIL_INTEGRATION (default off). While the switch is off nothing reads or writes these tables.
+-- today), behind DRAGONTAIL_INTEGRATION (default off). While the switch is off nothing writes these tables (no claim,
+-- no send, no event, and the console's writing routes and connection test are refused) and only the tablet backstop
+-- reads them: the alert ladder (one unique-key read per rung) and the hold-release sweep (one indexed read), so a
+-- claim left waiting when the switch was turned off is rung on the store's tablet, never left to auto-cancel.
 --
 -- FORWARD
 --  1. Enums KitchenProvider (DRAGONTAIL) and KitchenSyncState.
@@ -8,7 +11,10 @@
 --  3. Table "vendor_integrations": one row per store and provider. No credential is ever stored: secretRef and
 --     webhookSecretRef name entries of the DRAGONTAIL_CREDENTIALS secret file.
 --  4. Table "order_integration_syncs": at most one row per (order, provider), and one per (connection, external
---     order id), so an order is never sent twice.
+--     order id), so an order is never sent twice. Table "kitchen_order_counters": Swift's order-number counter per
+--     (provider, store number) with its id base frozen at birth, so a recreated or renumbered connection, or a
+--     changed DRAGONTAIL_ORDER_ID_BASE, never reuses an id at the kitchen system. Not tenant data: a store number
+--     belongs to one Swift store at a time (unique), and the row holds two numbers.
 --  5. The tenant wall on both tables: RLS ENABLED and FORCED with the canonical policy (rlsDdlFor), and the tenant
 --     lineage triggers (tenantLineageDdl(), byte for byte): a connection is its store's tenant, a sync its order's.
 --  6. Shape: an enabled connection names its store number and its login; numbers are positive; a credential
@@ -25,7 +31,7 @@ SET lock_timeout = '10s';
 CREATE TYPE "KitchenProvider" AS ENUM ('DRAGONTAIL');
 
 -- CreateEnum
-CREATE TYPE "KitchenSyncState" AS ENUM ('QUEUED', 'SENDING', 'SENT', 'FALLBACK', 'CANCEL_QUEUED', 'CANCELLED', 'DONE');
+CREATE TYPE "KitchenSyncState" AS ENUM ('QUEUED', 'SENDING', 'SENT', 'UNKNOWN', 'FALLBACK', 'CANCEL_QUEUED', 'CANCELLED', 'DONE');
 
 -- AlterTable
 ALTER TABLE "items" ADD COLUMN     "externalItemNo" TEXT;
@@ -43,7 +49,6 @@ CREATE TABLE "vendor_integrations" (
     "enabled" BOOLEAN NOT NULL DEFAULT false,
     "secretRef" TEXT,
     "webhookSecretRef" TEXT,
-    "nextExternalOrderNo" INTEGER NOT NULL DEFAULT 1,
     "pollUpdateStamp" BIGINT NOT NULL DEFAULT 0,
     "lastPolledAt" TIMESTAMP(3),
     "lastHealthyAt" TIMESTAMP(3),
@@ -53,6 +58,18 @@ CREATE TABLE "vendor_integrations" (
     "updatedAt" TIMESTAMP(3) NOT NULL,
 
     CONSTRAINT "vendor_integrations_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "kitchen_order_counters" (
+    "provider" "KitchenProvider" NOT NULL,
+    "externalStoreNo" INTEGER NOT NULL,
+    "orderIdBase" INTEGER NOT NULL,
+    "next" INTEGER NOT NULL DEFAULT 1,
+    "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" TIMESTAMP(3) NOT NULL,
+
+    CONSTRAINT "kitchen_order_counters_pkey" PRIMARY KEY ("provider","externalStoreNo")
 );
 
 -- CreateTable
@@ -183,12 +200,14 @@ CREATE TRIGGER order_integration_syncs_tenant_matches_order BEFORE INSERT OR UPD
 -- 6. Shape.
 ALTER TABLE "vendor_integrations"
   ADD CONSTRAINT "vendor_integrations_enabled_check" CHECK (NOT "enabled" OR ("externalStoreNo" IS NOT NULL AND "secretRef" IS NOT NULL)),
-  ADD CONSTRAINT "vendor_integrations_numbers_check" CHECK (("externalStoreNo" IS NULL OR "externalStoreNo" > 0) AND "nextExternalOrderNo" > 0 AND "pollUpdateStamp" >= 0),
+  ADD CONSTRAINT "vendor_integrations_numbers_check" CHECK (("externalStoreNo" IS NULL OR "externalStoreNo" > 0) AND "pollUpdateStamp" >= 0),
   -- [security review · confused deputy] A credential reference is the connection's own, derived from its id: never
   -- another connection's (the unique indexes above also refuse a shared one).
   ADD CONSTRAINT "vendor_integrations_refs_check" CHECK (
     ("secretRef" IS NULL OR "secretRef" = 'kitchen/' || lower("provider"::text) || '/' || "id" || '/login')
     AND ("webhookSecretRef" IS NULL OR "webhookSecretRef" = 'kitchen/' || lower("provider"::text) || '/' || "id" || '/webhook'));
+ALTER TABLE "kitchen_order_counters"
+  ADD CONSTRAINT "kitchen_order_counters_numbers_check" CHECK ("externalStoreNo" > 0 AND "orderIdBase" >= 0 AND "next" > 0);
 ALTER TABLE "order_integration_syncs"
   ADD CONSTRAINT "order_integration_syncs_numbers_check" CHECK ("externalOrderId" > 0 AND "dailyNo" >= 0 AND "attempts" >= 0);
 

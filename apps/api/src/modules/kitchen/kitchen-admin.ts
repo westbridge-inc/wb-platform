@@ -1,11 +1,9 @@
-import type { PrismaClient } from '@prisma/client';
+import type { Prisma, PrismaClient } from '@prisma/client';
 import { z } from '../../lib/zod';
-import type { Server } from 'socket.io';
-import type Redis from 'ioredis';
 import { AppError } from '../../utils/errors';
 import { kitchenLoginRef, kitchenSecretStatus, kitchenWebhookRef, newKitchenIntegrationId } from './kitchen-credentials';
 import { dragontailApiUrl, dragontailIntegrationEnabled, dragontailSettings } from './kitchen-switch';
-import { kitchenProviderFor } from './kitchen-sync';
+import { kitchenProvider } from './kitchen-sync';
 
 /**
  * [KITCHEN-INTEGRATION] The operations console's door to a store's kitchen-system connection (UI later). Handlers
@@ -16,6 +14,10 @@ import { kitchenProviderFor } from './kitchen-sync';
  *   POST /vendors/:id/kitchen-integration/test          log in only (no order is sent)
  *   GET  /vendors/:id/kitchen-integration/syncs         the sync log, newest first
  *   PUT  /vendors/:id/kitchen-integration/item-numbers  bulk-set kitchen item numbers on listings and choices
+ *
+ * [review A S3-2] While the switch (DRAGONTAIL_INTEGRATION) is off the two writing routes and the test are REFUSED
+ * (409 KITCHEN_SWITCH_OFF): nothing is written to the kitchen tables and no call leaves Swift. The reads still
+ * answer. Switching on enables nothing by itself: each store's connection is then enabled here, one by one.
  *
  * Never returns a credential: only the keys the owner enters them under and whether they resolve. The keys are
  * DERIVED from the connection's own id and written by the server; no request can name, set or move one (a
@@ -69,7 +71,22 @@ export async function getKitchenIntegration(prisma: PrismaClient, vendorId: stri
   return view(row);
 }
 
-export async function putKitchenIntegration(prisma: PrismaClient, vendorId: string, body: unknown) {
+/** [review A S4-5] What an enabling/renumbering change looked like, for the inline audit row (no person data). */
+export type KitchenAuditFacts = Record<string, string | number | boolean | null>;
+export type KitchenAudit = (tx: Prisma.TransactionClient, entityId: string, facts: KitchenAuditFacts) => Promise<void>;
+
+/** Sync states in which the kitchen system may still hold or act on an order. */
+const LIVE_SYNC_STATES = ['QUEUED', 'SENDING', 'SENT', 'CANCEL_QUEUED'] as const;
+
+/** [review A S3-2] The writing routes and the test answer only while the switch is on. */
+function assertSwitchOn(what: string): void {
+  if (!dragontailIntegrationEnabled()) {
+    throw new AppError(409, 'KITCHEN_SWITCH_OFF', `The kitchen-system switch (DRAGONTAIL_INTEGRATION) is off: ${what} is refused while it is off.`);
+  }
+}
+
+export async function putKitchenIntegration(prisma: PrismaClient, vendorId: string, body: unknown, audit?: KitchenAudit) {
+  assertSwitchOn('changing a connection');
   const input = kitchenIntegrationSchema.parse(body ?? {});
   const vendor = await vendorOrThrow(prisma, vendorId);
   const existing = await prisma.vendorIntegration.findUnique({ where: { vendorId_provider: { vendorId, provider: 'DRAGONTAIL' } } });
@@ -93,27 +110,46 @@ export async function putKitchenIntegration(prisma: PrismaClient, vendorId: stri
     });
     if (taken) throw new AppError(409, 'KITCHEN_STORE_NO_TAKEN', 'Another Swift store already uses this kitchen store number.');
   }
-  let row;
-  if (existing) {
-    row = await prisma.vendorIntegration.update({ where: { id: existing.id }, data: next });
-  } else {
-    const id = newKitchenIntegrationId();
-    const keys = { id, provider: 'DRAGONTAIL' as const };
-    row = await prisma.vendorIntegration.create({
-      data: { ...keys, vendorId, ...next, secretRef: kitchenLoginRef(keys), webhookSecretRef: kitchenWebhookRef(keys) },
-    });
+  // [review B S4-1] Renumbering while the kitchen still holds orders would send their cancels (and read their
+  // events) under the wrong store: refused until every order with it is finished.
+  if (existing && existing.externalStoreNo != null && next.externalStoreNo !== existing.externalStoreNo) {
+    const live = await prisma.orderIntegrationSync.count({ where: { vendorIntegrationId: existing.id, state: { in: [...LIVE_SYNC_STATES] } } });
+    if (live > 0) throw new AppError(409, 'KITCHEN_ORDERS_LIVE', `${live} order(s) are still with the kitchen system under the current store number; change it when they are finished.`);
   }
+  const row = await prisma.$transaction(async (tx) => {
+    let written;
+    if (existing) {
+      written = await tx.vendorIntegration.update({ where: { id: existing.id }, data: next });
+    } else {
+      const id = newKitchenIntegrationId();
+      const keys = { id, provider: 'DRAGONTAIL' as const };
+      written = await tx.vendorIntegration.create({
+        data: { ...keys, vendorId, ...next, secretRef: kitchenLoginRef(keys), webhookSecretRef: kitchenWebhookRef(keys) },
+      });
+    }
+    await audit?.(tx, written.id, {
+      enabledBefore: existing?.enabled ?? null, enabledAfter: written.enabled,
+      storeNoBefore: existing?.externalStoreNo ?? null, storeNoAfter: written.externalStoreNo,
+      created: !existing,
+    });
+    return written;
+  });
   return view(row);
 }
 
-export async function testKitchenConnection(prisma: PrismaClient, io: Server, redis: Redis, vendorId: string) {
+export async function testKitchenConnection(prisma: PrismaClient, vendorId: string) {
+  // [review A S3-2] No call leaves Swift while the switch is off, a login test included.
+  assertSwitchOn('a login test (nothing is sent to any kitchen system)');
   await vendorOrThrow(prisma, vendorId);
   const row = await prisma.vendorIntegration.findUnique({ where: { vendorId_provider: { vendorId, provider: 'DRAGONTAIL' } } });
   if (!row) throw new AppError(404, 'KITCHEN_NOT_SET_UP', 'This store has no kitchen-system connection yet.');
-  const provider = kitchenProviderFor({ prisma, io, redis }, row);
-  if (!provider) {
-    return { ok: false, problem: `No login under ${kitchenLoginRef(row)} in the credentials secret.` };
+  // A fresh login, never the sender's cached token.
+  const answer = kitchenProvider({}, row, () => '', { freshToken: true });
+  if (!answer.ok) {
+    return { ok: false, problem: answer.problem === 'the store login is not in the credentials secret' ? `No login under ${kitchenLoginRef(row)} in the credentials secret.` : answer.problem };
   }
+  const provider = answer.provider;
+  provider.setDeadline(Date.now() + 20_000);
   try {
     await provider.testConnection();
     await prisma.vendorIntegration.update({ where: { id: row.id }, data: { lastHealthyAt: new Date() } });
@@ -142,21 +178,26 @@ export async function listKitchenSyncs(prisma: PrismaClient, vendorId: string, q
 }
 
 export async function setKitchenItemNumbers(prisma: PrismaClient, vendorId: string, body: unknown) {
+  assertSwitchOn('setting kitchen item numbers');
   const input = kitchenItemNumbersSchema.parse(body ?? {});
   await vendorOrThrow(prisma, vendorId);
+  // [review B S4-8] Ownership is checked in two reads up front (a foreign id refuses the whole change before any
+  // write), and the writes get a timeout that fits a large menu.
+  const itemIds = [...new Set(input.items.map((r) => r.itemId))];
+  const optionIds = [...new Set(input.options.map((r) => r.optionId))];
+  const ownItems = itemIds.length ? await prisma.item.count({ where: { id: { in: itemIds }, vendorId } }) : 0;
+  const ownOptions = optionIds.length ? await prisma.option.count({ where: { id: { in: optionIds }, optionGroup: { item: { vendorId } } } }) : 0;
+  const unknown = itemIds.length - ownItems + optionIds.length - ownOptions;
+  if (unknown > 0) throw new AppError(400, 'KITCHEN_UNKNOWN_LINES', `${unknown} listing(s) or choice(s) are not this store's; nothing was changed.`);
   return prisma.$transaction(async (tx) => {
     let items = 0;
     let options = 0;
     for (const row of input.items) {
-      const r = await tx.item.updateMany({ where: { id: row.itemId, vendorId }, data: { externalItemNo: row.externalItemNo || null } });
-      items += r.count;
+      items += (await tx.item.updateMany({ where: { id: row.itemId, vendorId }, data: { externalItemNo: row.externalItemNo || null } })).count;
     }
     for (const row of input.options) {
-      const r = await tx.option.updateMany({ where: { id: row.optionId, optionGroup: { item: { vendorId } } }, data: { externalItemNo: row.externalItemNo || null } });
-      options += r.count;
+      options += (await tx.option.updateMany({ where: { id: row.optionId, optionGroup: { item: { vendorId } } }, data: { externalItemNo: row.externalItemNo || null } })).count;
     }
-    const unknown = input.items.length - items + input.options.length - options;
-    if (unknown > 0) throw new AppError(400, 'KITCHEN_UNKNOWN_LINES', `${unknown} listing(s) or choice(s) are not this store's; nothing was changed.`);
     return { items, options };
-  });
+  }, { timeout: 120_000, maxWait: 10_000 });
 }

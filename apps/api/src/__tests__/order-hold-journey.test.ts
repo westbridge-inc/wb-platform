@@ -19,6 +19,10 @@ import { getChannels, devChannelLog } from '../providers/notifications/channels'
 import { guyanaDayKey, startOfGuyanaDay } from '../utils/guyana-day';
 import { GUYANA_MIDNIGHT_WAIT_TIMEOUT_MS, waitClearOfGuyanaMidnight } from './helpers/guyana-day-clock';
 import { orderSocketFixture } from './helpers/order-socket-fixture';
+import { MockDragontail } from './helpers/mock-dragontail';
+import { putKitchenIntegration } from '../modules/kitchen/kitchen-admin';
+import { kitchenLoginRef } from '../modules/kitchen/kitchen-credentials';
+import { drainKitchenSyncs } from '../modules/kitchen/kitchen-sync';
 
 // ---------------------------------------------------------------------------
 // Q12 · THE FIVE-MINUTE WINDOW NEVER REACHES THE STORE. The owner, 2026-09-24:
@@ -1089,5 +1093,77 @@ describe('Q12 · MMG — the one thing the store is told about an order cancelle
     expect(refused.json().error.code).toBe('MMG_CANCEL_UNAVAILABLE');
     const mine = await call('GET', `/api/v1/customer/orders/${paid.id}`, buyer.token);
     expect(mine.json().data).toMatchObject({ paymentStatus: 'CLAIMED', canCancel: false, cancellationFee: 0, freeCancellationExpiresAt: null });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// [KITCHEN-INTEGRATION · reviews A/B] An express order at a store whose kitchen runs Dragontail, end to end through
+// the real checkout: never held, so the checkout tail claims it (no tablet ring), the sender gives it to the kitchen
+// and accepts it as the store's own delivery. And the kill switch: turned off with a claim waiting, the real
+// hold-release job rings the store's tablet (the backstop), never leaving it to auto-cancel.
+// ---------------------------------------------------------------------------
+
+describe('KITCHEN · an express order at a Dragontail store, end to end', () => {
+  const mock = new MockDragontail();
+  const storeNo = 60_000 + Math.floor(Math.random() * 30_000);
+  let store: Store;
+  let buyer: Actor;
+
+  beforeAll(async () => {
+    await mock.start();
+    mock.users.set('pos-journey', 'pw-journey');
+    // Only a test run may point the kitchen client at the loopback mock.
+    vi.stubEnv('NODE_ENV', 'test');
+    vi.stubEnv('DRAGONTAIL_INTEGRATION', '1');
+    vi.stubEnv('DRAGONTAIL_API_URL', mock.url);
+    store = await makeStore('RESTAURANT');
+    await app.prisma.vendor.update({ where: { id: store.vendorId }, data: { selfDeliveryEnabled: true } });
+    await app.prisma.item.update({ where: { id: store.itemId }, data: { externalItemNo: '8' } });
+    const view = await putKitchenIntegration(app.prisma, store.vendorId, { enabled: true, externalStoreNo: storeNo });
+    vi.stubEnv('DRAGONTAIL_CREDENTIALS', JSON.stringify({
+      [kitchenLoginRef({ id: view.connection!.id, provider: 'DRAGONTAIL' })]: { userName: 'pos-journey', password: 'pw-journey' },
+    }));
+    buyer = await makeCustomer('Kofi');
+  });
+
+  afterAll(async () => {
+    vi.stubEnv('DRAGONTAIL_INTEGRATION', '');
+    vi.stubEnv('NODE_ENV', 'development');
+    await mock.stop();
+  });
+
+  const syncOf = (orderId: string) => app.prisma.orderIntegrationSync.findUnique({ where: { orderId_provider: { orderId, provider: 'DRAGONTAIL' } } });
+
+  it('express: claimed at checkout instead of ringing, sent once, accepted as the store own delivery', async () => {
+    const order = await placeOrder(buyer, store, 1, { paymentMethod: 'CASH', express: true });
+    const row = await orderRow(order.id);
+    expect(row.isExpress).toBe(true);
+    expect(row.holdExpiresAt).toBeNull();
+    expect((await syncOf(order.id))?.state, 'the checkout tail claimed it').toBe('QUEUED');
+    expect((await storeHeard(store, order)).pushes, 'no "New Order!" for a claimed order').toEqual([]);
+
+    await drainKitchenSyncs({ prisma: app.prisma, io: app.io, redis: app.redis, client: { backoffMs: 1 } }, { orderIds: [order.id] });
+    expect((await syncOf(order.id))?.state).toBe('SENT');
+    expect(mock.count('/PosInsertOrders')).toBe(1);
+    const sent = (mock.inserted[0] as { orders: Array<Record<string, unknown>> }).orders[0]!;
+    expect(sent).toMatchObject({ storeNo, saleType: 2, paymentMethod: 0, firstName: 'Kofi' });
+    expect(sent).not.toHaveProperty('lastName');
+    const after = await orderRow(order.id);
+    expect(after.status).toBe('PREPARING');
+    expect(after.fulfillmentMode, 'the store own driver: never Swift rider dispatch').toBe('VENDOR_DELIVERY');
+    expect((await storeHeard(store, order)).pushes).toEqual([]);
+  });
+
+  it('the switch turned OFF with an express claim waiting: the real hold-release job rings the tablet', async () => {
+    const order = await placeOrder(buyer, store, 1, { paymentMethod: 'CASH', express: true });
+    expect((await syncOf(order.id))?.state).toBe('QUEUED');
+    vi.stubEnv('DRAGONTAIL_INTEGRATION', '');
+    try {
+      await releaseSweep();
+    } finally {
+      vi.stubEnv('DRAGONTAIL_INTEGRATION', '1');
+    }
+    expect((await syncOf(order.id))?.state).toBe('FALLBACK');
+    expect((await storeHeard(store, order)).pushes).toEqual(['New Order!']);
   });
 });

@@ -72,7 +72,7 @@ import { dispatchHoldExpired, dispatchHoldExpiredFilter, riderDispatchableStatus
 import { withdrawOfferOfClosedOrder } from '../dispatch/offer-withdrawal';
 import { CheckoutOutcomeUnknownError, checkoutQueueTiming, persistCheckoutOutboxInTransaction, persistCheckoutReceiptInTransaction, persistReleaseAlertLadderInTransaction, persistDispatchCommandInTransaction, vendorAlertLadderDelayMs } from './checkout-outbox';
 import { vendorRespondBy, vendorResponseSlaMinutes } from './response-sla';
-import { claimForKitchen, claimForKitchenInTransaction } from '../kitchen/kitchen-claim';
+import { claimForKitchen } from '../kitchen/kitchen-claim';
 import { shapeCheckoutAnswer, type CheckoutAnswer } from './checkout-answer';
 import { orderHoldMinutes } from './hold-minutes';
 import { FloatService, riderFloatForOrder } from '../dispatch/float.service';
@@ -3404,11 +3404,7 @@ export class OrderService {
         const dispatch = store.orderType === 'COURIER'
           ? await persistDispatchCommandInTransaction(tx, { orderId: id, tenantId: store.tenantId, reason: 'courier-hold-released' })
           : null;
-        // [KITCHEN-INTEGRATION] A store whose kitchen system takes its orders is not rung here: the claim (the
-        // sync row, in this commit) is the work the sender drains, and any failure rings the tablet then. The
-        // ladder above stays armed as the backstop. Switch off: false, with no read.
-        const kitchen = store.vendorId ? await claimForKitchenInTransaction(tx, id) : false;
-        return { dispatchId: dispatch?.id, kitchen };
+        return { dispatchId: dispatch?.id };
       });
       if (!releasedNow) continue;
       await holdReleaseObserver.afterRelease?.({ orderId: id });
@@ -3439,7 +3435,12 @@ export class OrderService {
         continue;
       }
 
-      if (order.vendorId && order.vendor && !releasedNow.kitchen) {
+      // [KITCHEN-INTEGRATION] A store whose kitchen system takes its orders is not rung here: the claim (one sync
+      // row, in its OWN transaction after the release committed, so a failing claim never rolls back a release or
+      // stops this sweep; it answers false and the store is rung) is the work the sender drains. The alert ladder
+      // the release armed is the tablet backstop for a claim that gets stuck. Switch off: false, with no read.
+      const kitchen = order.vendorId && order.vendor ? await claimForKitchen(this.prisma, id) : false;
+      if (order.vendorId && order.vendor && !kitchen) {
         await emitToStoreRoom(this.prisma, this.io, order.vendorId, 'order:new', { orderId: order.id, vendorId: order.vendorId, orderNumber: order.orderNumber }, { onlyWhileActive: true });
         try {
           const vendorOwner = await this.prisma.vendorOwner.findUnique({ where: { id: order.vendor.ownerId } });

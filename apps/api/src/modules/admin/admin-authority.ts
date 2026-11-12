@@ -310,7 +310,7 @@ export const ADMIN_ROUTE_AUTHORITY: Readonly<Record<AdminRouteKey, AdminRouteAut
   // [R3 · security review 10 Nov 2026] A person confirms the store's name as the seller's business or company name: the
   // same hands as approving a store (approving confirms it too).
   // [KITCHEN-INTEGRATION] A store's kitchen-system connection. Switching it on sends that store's orders (and, for
-  // a delivery, the customer's name, number and address) to the store's own kitchen system: consequential, so a reason.
+  // a delivery, the customer's first name, number and address) to the store's own kitchen system: consequential, so a reason.
   'GET /vendors/:id/kitchen-integration': c('C0', 'vendor.integration.read'),
   'PUT /vendors/:id/kitchen-integration': c('C3', 'vendor.integration.manage'),
   'POST /vendors/:id/kitchen-integration/test': c('C2', 'vendor.integration.manage'),

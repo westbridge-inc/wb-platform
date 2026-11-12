@@ -17,6 +17,8 @@ import type { AddressInfo } from 'node:net';
 export interface MockRequest {
   method: string;
   path: string;
+  /** The query string, e.g. '?storeNo=42&id=swift'. */
+  search: string;
   headers: http.IncomingHttpHeaders;
   body: unknown;
 }
@@ -30,10 +32,18 @@ export class MockDragontail {
   readonly inserted: Array<Record<string, unknown>> = [];
   pending: Array<Record<string, unknown>> = [];
   updates: Array<Record<string, unknown>> = [];
+  /** Runs for every request after it is logged and before it is answered (tests: interleave work mid-request). */
+  onRequest: ((request: MockRequest) => Promise<void>) | null = null;
+  /** GetOrderUpdatesForPos answers loggedOut: true (the session is gone). */
+  loggedOut = false;
   updateStamp = 0;
   promiseTimeSeconds = 1500;
   /** Delay (ms) before answering, to drive timeouts. */
   delayMs = 0;
+  /** Delay (ms) for one path only. */
+  readonly pathDelays = new Map<string, number>();
+  /** Answer a path with a redirect to this address. */
+  readonly redirects = new Map<string, string>();
   private server: http.Server | null = null;
   private seq = 0;
   url = '';
@@ -69,6 +79,10 @@ export class MockDragontail {
     this.failures.clear();
     this.refusal = null;
     this.delayMs = 0;
+    this.pathDelays.clear();
+    this.loggedOut = false;
+    this.onRequest = null;
+    this.redirects.clear();
   }
 
   count(path: string): number {
@@ -87,8 +101,17 @@ export class MockDragontail {
     try { body = raw ? JSON.parse(raw) : null; } catch { body = raw; }
     const url = new URL(req.url ?? '/', 'http://x');
     const path = url.pathname;
-    this.requests.push({ method: req.method ?? '', path, headers: req.headers, body });
-    if (this.delayMs > 0) await new Promise((r) => setTimeout(r, this.delayMs));
+    const logged: MockRequest = { method: req.method ?? '', path, search: url.search, headers: req.headers, body };
+    this.requests.push(logged);
+    if (this.onRequest) await this.onRequest(logged);
+    const delay = this.pathDelays.get(path) ?? this.delayMs;
+    if (delay > 0) await new Promise((r) => setTimeout(r, delay));
+    const redirect = this.redirects.get(path);
+    if (redirect) {
+      res.writeHead(307, { Location: redirect });
+      res.end();
+      return;
+    }
     const send = (status: number, json: unknown) => {
       if (res.writableEnded || res.destroyed) return;
       res.writeHead(status, { 'Content-Type': 'application/json' });
@@ -152,7 +175,7 @@ export class MockDragontail {
       const rows = this.updates.filter((u) => u['storeNo'] === b?.storeNo && Number(u['stamp']) > since)
         .map(({ stamp: _stamp, ...rest }) => rest);
       const top = Math.max(since, ...this.updates.map((u) => Number(u['stamp'])));
-      send(200, { time: this.now(), updateStamp: top, loggedOut: false, orders: rows, status: null });
+      send(200, { time: this.now(), updateStamp: top, loggedOut: this.loggedOut, orders: rows, status: null });
       return;
     }
     send(404, { time: this.now(), status: 'faild', errDescription: 'not found' });

@@ -231,7 +231,7 @@ export const DARK_FEATURES: DarkFeature[] = [
     enabledWhenPattern: /^1$/,
     title: "Orders straight to a store's kitchen system (Dragontail)",
     whileOff:
-      "Every store, including one whose kitchen runs Dragontail, gets its Swift orders on the Swift tablet as today: the tablet rings, the store accepts, prepares and marks ready on Swift, and delivers with Swift riders or its own as it chose. No order, name or address goes to any kitchen system, no connection settings take effect and the Dragontail webhook address does not exist. Kept OFF until Dragontail issues credentials and a test store, the TODO-CONFIRM settings are answered, and the owner approves the privacy wording.",
+      "Every store, including one whose kitchen runs Dragontail, gets its Swift orders on the Swift tablet as today: the tablet rings, the store accepts, prepares and marks ready on Swift, and delivers with Swift riders or its own as it chose. No order, name, phone or address goes to any kitchen system, no call leaves Swift, the console refuses to set up or change a connection (or test one) and the Dragontail webhook address does not exist. Kept OFF until Dragontail issues credentials and a test store, the TODO-CONFIRM settings are answered, and the owner approves the privacy wording.",
     impact: 'product',
   },
   {

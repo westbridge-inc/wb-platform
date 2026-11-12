@@ -235,7 +235,7 @@ export const PROCESSOR_REGISTER: readonly ProcessorEntry[] = [
     providerDirs: [], hosts: ['dragontailsystem.com'],
     payload: ['CONTACT', 'LOCATION'], lawfulBasis: 'CONTRACT',
     country: 'unknown until Dragontail confirms (TODO-CONFIRM)', leavesCountry: true, transferBasis: 'CONTRACT_CLAUSES', contractEnv: null,
-    note: "Order items; customer first name; for a delivery also last name, phone, address, location and delivery note, for the store's own driver. Never documents or payment data.",
+    note: "Cash orders only. Order items; customer first name (never the last name); for a delivery also phone, address, location and delivery note, for the store's own driver (owner ruling 12 Nov 2026). Never documents or payment data.",
   },
 ];
 

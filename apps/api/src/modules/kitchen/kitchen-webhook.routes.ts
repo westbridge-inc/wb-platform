@@ -5,7 +5,7 @@ import { log } from '../../utils/logger';
 import { kitchenWebhookSecretFor } from './kitchen-credentials';
 import { dragontailIntegrationEnabled, dragontailSettings } from './kitchen-switch';
 import { applyKitchenEvents } from './kitchen-sync';
-import { dragontailEvents, dragontailTime } from './dragontail/dragontail-mapper';
+import { dragontailEvents, dragontailTime, parseDragontailTime } from './dragontail/dragontail-mapper';
 
 /**
  * [KITCHEN-INTEGRATION] Dragontail's webhook: POST /api/v1/integrations/dragontail/notifications/:vendorIntegrationId
@@ -18,6 +18,7 @@ import { dragontailEvents, dragontailTime } from './dragontail/dragontail-mapper
  *   switch off, unknown or disabled connection → 404 (nothing to find)
  *   no webhook secret configured                → 503 (nothing recorded)
  *   wrong / missing proof                       → 403 (nothing recorded)
+ *   outside the replay window (when set)        → 403 (nothing recorded)
  *   accepted                                    → 200 { time, status: "ok", rowCount } (the spec's answer)
  *
  * Rate-limited and body-capped; the body is never logged (it carries customer order ids and times only, but the
@@ -54,6 +55,12 @@ export function kitchenWebhookAuthentic(
   return shared && signature;
 }
 
+/** Is the body's own `time` within `maxAgeSeconds` of now (either way)? Missing or unreadable = no. */
+export function kitchenWebhookFresh(body: unknown, maxAgeSeconds: number, now: Date = new Date()): boolean {
+  const at = parseDragontailTime(body && typeof body === 'object' ? (body as { time?: unknown }).time : undefined);
+  return at !== null && Math.abs(now.getTime() - at.getTime()) <= maxAgeSeconds * 1000;
+}
+
 export async function kitchenWebhookRoutes(app: FastifyInstance): Promise<void> {
   // The raw text is kept for the signature; JSON is parsed here, after the proof.
   app.addContentTypeParser('application/json', { parseAs: 'string', bodyLimit: KITCHEN_WEBHOOK_BODY_LIMIT }, (_request, body, done) => {
@@ -88,6 +95,13 @@ export async function kitchenWebhookRoutes(app: FastifyInstance): Promise<void> 
       body = JSON.parse(raw);
     } catch {
       return reply.code(400).send({ time: dragontailTime(new Date()), status: 'error', rowCount: 0, errNum: 1, errDescription: 'Invalid data received' });
+    }
+    // [review A S4-1] Replay window: the spec's body carries a `time` (covered by the signature) and no nonce. While
+    // DRAGONTAIL_WEBHOOK_MAX_AGE_SECONDS is set, a body whose time is missing or outside the window is refused.
+    const settings = dragontailSettings();
+    if (settings.webhookMaxAgeSeconds > 0 && !kitchenWebhookFresh(body, settings.webhookMaxAgeSeconds)) {
+      log().warn({ vendorIntegrationId: id }, '[KITCHEN] webhook refused: its time is outside the replay window');
+      return reply.code(403).send({ status: 'error', errDescription: 'stale' });
     }
     const events = dragontailEvents(body);
     const outcomes = await runWithTenant(integration.tenantId, async () => {

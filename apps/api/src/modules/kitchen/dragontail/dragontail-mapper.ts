@@ -1,5 +1,5 @@
 import type { KitchenEvent, KitchenEventKind, KitchenOrder } from '../kitchen-provider';
-import type { DragontailSettings } from '../kitchen-switch';
+import { KITCHEN_MAX_ETA_SECONDS, type DragontailSettings } from '../kitchen-switch';
 
 /**
  * [KITCHEN-INTEGRATION] Swift ⇄ Dragontail field mapping, from the public POS API spec (v1.1.0) only. Pure
@@ -15,7 +15,9 @@ import type { DragontailSettings } from '../kitchen-switch';
  *   OrderItem required: StoreNo, OrderId, Position, OrderStatus, ItemsActions, ItemNo, Quantity, Description, Side.
  *   Position: '001' for a top-level item, '001001' for its first sub-item.
  *   Side: 3 = main item (default), 0 = modifier/topping.
- *   ItemsActions: 0 AddNewItem, 1 ChangeInItem, 2 ItemRemoveFromBill.
+ *   ItemsActions: 0 AddNewItem, 1 ChangeInItem, 2 ItemRemoveFromBill. Action (same codes; "If Action node is missing,
+ *   the ALGO treats all actions as 'add'"): sent too, with the same value, so a removal is never read as an add.
+ *   cookInstructions: maxLength 150.
  *   OrderStatus (order status codes): 0 NewOrderMakeline.
  *   Request required: time, storeNo, fullLoad, orders, ordersItems, translations.
  *
@@ -57,6 +59,7 @@ export function dragontailItems(order: KitchenOrder, itemsAction: ItemsAction) {
       Position: position,
       OrderStatus: DRAGONTAIL_ORDER_STATUS_NEW,
       ItemsActions: itemsAction,
+      Action: itemsAction,
       ItemNo: line.itemNo,
       Quantity: line.quantity,
       Description: line.name.slice(0, 120),
@@ -69,6 +72,7 @@ export function dragontailItems(order: KitchenOrder, itemsAction: ItemsAction) {
         Position: `${position}${pos(j + 1)}`,
         OrderStatus: DRAGONTAIL_ORDER_STATUS_NEW,
         ItemsActions: itemsAction,
+        Action: itemsAction,
         ItemNo: choice.itemNo,
         Quantity: 1,
         Description: choice.name.slice(0, 120),
@@ -82,10 +86,13 @@ export function dragontailItems(order: KitchenOrder, itemsAction: ItemsAction) {
 /** The cook instructions: the order-level note, then each line's own note, named by the line. */
 function cookInstructions(order: KitchenOrder): string | undefined {
   const parts = [order.cookNote, ...order.lines.filter((l) => l.note).map((l) => `${l.name}: ${l.note}`)];
-  return clip(parts.filter(Boolean).join(' | '), 500);
+  // [review B S3-5] The spec's maxLength is 150: longer would be a validationError (and a tablet fallback every time).
+  return clip(parts.filter(Boolean).join(' | '), 150);
 }
 
-/** The Order row. Customer details only where the spec's delivery needs them; a takeaway carries a first name. */
+/** The Order row. A first name always (never the last name); for a delivery, the phone, the address, location and
+ *  the driver note (owner ruling 12 Nov 2026: the store's own driver must reach the customer); a takeaway carries the
+ *  first name only. */
 export function dragontailOrder(order: KitchenOrder, settings: Pick<DragontailSettings, 'sourceId' | 'mmgPaymentCode'>) {
   const delivery = order.saleType === 'DELIVERY';
   const row: Record<string, unknown> = {
@@ -106,10 +113,8 @@ export function dragontailOrder(order: KitchenOrder, settings: Pick<DragontailSe
   const firstName = clip(order.customer.firstName, 60);
   if (firstName) row['firstName'] = firstName;
   if (delivery) {
-    const lastName = clip(order.customer.lastName, 60);
     const phone = clip(order.customer.phone, 32);
     const street = clip(order.customer.address, 250);
-    if (lastName) row['lastName'] = lastName;
     if (phone) row['phone'] = phone;
     if (street) row['street'] = street;
     if (order.customer.lat !== null) row['lat'] = order.customer.lat;
@@ -179,7 +184,7 @@ const ACTIONS: Record<string, KitchenEventKind> = {
   Unassigned: 'UNASSIGNED',
   Undelivered: 'UNDELIVERED',
   PrintRequest: 'IGNORED',
-  BackToStore: 'IGNORED',
+  BackToStore: 'BACK_TO_STORE',
 };
 
 /** "2016-04-19 13:08:19" in Guyana local time → a Date; null when unreadable. */
@@ -210,9 +215,11 @@ export function dragontailEvent(raw: unknown): KitchenEvent | null {
     storeNo,
     externalOrderId,
     action: action.slice(0, 40),
-    kind: ACTIONS[action] ?? 'IGNORED',
+    // [review A S4-3] own keys only: 'constructor' or '__proto__' is an unknown action, not an inherited object
+    kind: Object.hasOwn(ACTIONS, action) ? ACTIONS[action]! : 'IGNORED',
     at: parseDragontailTime(n['actionTime']),
-    etaSeconds: eta !== null && eta >= 0 ? eta : null,
+    // [review A S4-2] capped: an estimate beyond six hours is taken as six hours, never months
+    etaSeconds: eta !== null && eta >= 0 ? Math.min(eta, KITCHEN_MAX_ETA_SECONDS) : null,
   };
 }
 
@@ -223,9 +230,15 @@ export function dragontailEvents(body: unknown): KitchenEvent[] {
   return orders.slice(0, 500).map(dragontailEvent).filter((e): e is KitchenEvent => e !== null);
 }
 
+/** The most GetOrderUpdatesForPos rows read from one answer. The answer carries everything since the stamp (the
+ *  store's own POS orders too, a whole working day at stamp 0), and the cursor moves past all of it, so the bound is
+ *  generous: Swift's own orders among them are picked out before anything touches the database. */
+export const DRAGONTAIL_MAX_UPDATE_ROWS = 20_000;
+
 /**
  * GetOrderUpdatesForPos rows ({ orders: [{ storeNo, orderId, reachedTheMakeLineTime, preparationTime, cookedTime,
- * packTime, dispatchTime, deliveryTime, … }] }) → the events their timestamps imply, in kitchen order. This is the
+ * packTime, dispatchTime, deliveryTime, … }] }) → the events their timestamps imply, in kitchen order, each row
+ * first as a SEEN event (the kitchen knows this order: it confirms an insert whose answer was lost). This is the
  * catch-up for a missed webhook: replaying an event Swift already applied changes nothing (the state machine
  * refuses a step backwards or a step twice).
  */
@@ -239,14 +252,17 @@ export function dragontailUpdateEvents(body: unknown): KitchenEvent[] {
     ['packTime', 'PACKED', 'Pack'],
     ['dispatchTime', 'DISPATCHED', 'Dispatched'],
     ['deliveryTime', 'DELIVERED', 'Delivered'],
+    // [review B S3-9] back at the store: after a Delivered it changes nothing; without one, operations are paged
+    ['backToStoreTime', 'BACK_TO_STORE', 'BackToStore'],
   ];
   const out: KitchenEvent[] = [];
-  for (const raw of orders.slice(0, 500)) {
+  for (const raw of orders.slice(0, DRAGONTAIL_MAX_UPDATE_ROWS)) {
     if (!raw || typeof raw !== 'object') continue;
     const row = raw as Record<string, unknown>;
     const storeNo = asInt(row['storeNo']);
     const externalOrderId = asInt(row['orderId']);
     if (storeNo === null || externalOrderId === null) continue;
+    out.push({ storeNo, externalOrderId, kind: 'SEEN', action: 'OrderUpdate', at: null, etaSeconds: null });
     for (const [field, kind, action] of steps) {
       const at = parseDragontailTime(row[field]);
       if (at) out.push({ storeNo, externalOrderId, kind, action, at, etaSeconds: null });

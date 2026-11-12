@@ -56,9 +56,6 @@ const REVIEWED_WRITERS: Record<string, string> = {
     'counts one handover-code comparison (pickupCodeAttempts or ridePinAttempts increment) under the order lock; never the status.',
   'modules/dispatch/delivery-watchdog.ts#reopenPreCustodyLeg':
     'reopens a released leg to its kitchen stage (releaseStageFor: ACCEPTED, PREPARING or READY_FOR_PICKUP); never CANCELLED.',
-  // [KITCHEN-INTEGRATION]
-  'modules/kitchen/kitchen-sync.ts#acceptForKitchen':
-    'inside the ACCEPTED transition (withinTransaction): binds own delivery (fulfillmentMode VENDOR_DELIVERY) and the kitchen prep estimate; never the status, never CANCELLED.',
   // [STORE-VAT · owner O-5]
   'modules/store-vat/order-vat.ts#recomputeOrderVat':
     'writes only the VAT the order froze (orderVatAmountFields: vatAmount, vatBase and the goods by class); never the status.',
