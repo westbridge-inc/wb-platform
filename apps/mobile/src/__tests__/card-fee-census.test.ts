@@ -29,13 +29,28 @@ function emitted(path: string): string {
   }).outputText;
 }
 const PROCESSOR = /power\s*-?\s*tranz/i;
+// [LEGAL-CARDS · owner's card wording, 10 Nov 2026 · owner approved the words 12 Nov 2026] The Privacy Policy must
+// name every processor that receives a partner's data, so its section 5 names PowerTranz, in the processors paragraph of
+// the legal snapshot the website renders. That one paragraph is the only place the name may appear: the rest of the
+// snapshot, and every other shipped file, is scanned exactly as before. The payment screens never show it (owner, 6 Oct).
+const LEGAL_SNAPSHOT = root('../web/src/legal/generated.ts');
+const PROCESSORS_PARAGRAPH = /<p><b>Technical service providers \(processors\):<\/b>[\s\S]*?<\/p>/g;
+const withoutProcessorsParagraph = (text: string) => text.replace(PROCESSORS_PARAGRAPH, '');
 
 describe('the card processor is never named to a partner', () => {
   it('appears in no string or markup of the phone app or the website (types and comments erased, as in the bundle)', () => {
     const list = shipped();
     expect(list.length).toBeGreaterThan(400);
-    expect(list.filter((f) => PROCESSOR.test(emitted(f)))).toEqual([]);
+    expect(list).toContain(LEGAL_SNAPSHOT);
+    expect(list.filter((f) => PROCESSOR.test(f === LEGAL_SNAPSHOT ? withoutProcessorsParagraph(emitted(f)) : emitted(f)))).toEqual([]);
   }, 60_000);
+  it('the legal snapshot names it only in the Privacy Policy’s processors paragraph, as the card processor', () => {
+    const text = emitted(LEGAL_SNAPSHOT);
+    const paragraphs = text.match(PROCESSORS_PARAGRAPH) ?? [];
+    expect(paragraphs).toHaveLength(1);
+    expect(paragraphs[0]).toContain('PowerTranz, our card processor, outside Guyana');
+    expect(withoutProcessorsParagraph(text)).not.toMatch(PROCESSOR);
+  });
   it('appears in no static file the website or the phone app serves', () => {
     const statics = [...files(root('../web/public'), TEXT), ...files(root('assets'), TEXT)];
     expect(statics.filter((f) => PROCESSOR.test(readFileSync(f, 'utf8')))).toEqual([]);
