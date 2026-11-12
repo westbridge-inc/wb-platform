@@ -4,6 +4,7 @@ import Link from 'next/link';
 import { useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { DataUnavailable } from '@/components/dashboard/DataUnavailable';
+import { QueryFailed } from '@/components/mc/QueryFailed';
 import { MutationError } from '@/components/MutationError';
 import { Modal } from '@/components/Modal';
 import { DocumentViewer } from '@/components/verification/DocumentViewer';
@@ -374,6 +375,7 @@ export default function VerificationPage() {
           <div className="rc-review-body">
             <div className="rc-document-heading"><h3>{docLabel(selected.docType)}</h3><Chip status={selected.status} /></div>
             {uploadedBySwift && <aside role="note" aria-label={ASSISTED_UPLOAD_TITLE} className="rc-previous"><strong>{ASSISTED_UPLOAD_TITLE}</strong><span>{ownUpload ? ASSISTED_OWN_UPLOAD_WORDS : ASSISTED_UPLOAD_WORDS}</span>
+              {me.isError && <QueryFailed what="who you are (to tell whether you uploaded it)" error={me.error} onRetry={() => void me.refetch()} />}
               {ownUpload && <label className="rc-check"><input type="checkbox" aria-label={SOLE_ADMIN_CHECK} checked={soleAdminChecked} onChange={(e) => setSoleAdminChecked(e.target.checked)} disabled={busy} />{SOLE_ADMIN_CHECK}</label>}</aside>}
             {heldForOrderingDayLine(selected) && <aside role="note" aria-label={HELD_FOR_ORDERING_DAY} className="rc-previous"><strong>{HELD_FOR_ORDERING_DAY}</strong><span>{heldForOrderingDayLine(selected)}</span></aside>}
             {selected.previousDecision && <aside role="note" aria-label="Earlier decision" className="rc-previous">

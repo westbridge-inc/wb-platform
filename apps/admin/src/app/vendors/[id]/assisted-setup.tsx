@@ -48,6 +48,12 @@ export function paperState(docType: string, documents: readonly AssistedPaper[])
   return { words: 'Waiting for review', tone: 'warn', addedBySwift };
 }
 
+/** One OK in words: who (their name and the role they gave, both as the admin typed them), how, when, the reference. */
+export function consentLine(c: AssistedConsent): string {
+  const who = `${c.agreedByName} (${c.agreedByRole})`;
+  return `${who}, ${ASSISTED_CHANNEL_WORDS[c.channel].toLowerCase()}, ${gyDate(c.agreedAt)}${c.reference ? ` · ${c.reference}` : ''}`;
+}
+
 const nowLocal = () => {
   const d = new Date(Date.now() - new Date().getTimezoneOffset() * 60_000);
   return d.toISOString().slice(0, 16);
@@ -100,7 +106,7 @@ function ConsentStep({ view, vendorId, onDone }: { view: AssistedSetupView; vend
           {view.consents.map((c) => (
             <li key={c.id} className="flex flex-wrap items-center gap-2">
               <span className={`mc-badge${c.live ? ' mc-tone-good' : ''}`}>{c.live ? 'Covers today' : 'Ended'}</span>
-              <span>{c.agreedByName} ({c.agreedByRole}), {ASSISTED_CHANNEL_WORDS[c.channel].toLowerCase()}, {gyDate(c.agreedAt)}{c.reference ? ` · ${c.reference}` : ''}</span>
+              <span>{consentLine(c)}</span>
             </li>
           ))}
         </ul>
@@ -223,7 +229,8 @@ function MenuStep({ view, vendorId, consentId, onDone }: { view: AssistedSetupVi
   );
 }
 
-function PhotosStep({ view, vendorId, consentId, onDone }: { view: AssistedSetupView; vendorId: string; consentId: string | null; onDone: () => void }) {
+function PhotosStep({ data, vendorId, consentId, onDone }: { data: AssistedSetupView; vendorId: string; consentId: string | null; onDone: () => void }) {
+  const view = data;
   const dialog = useActionDialog();
   const [files, setFiles] = useState<Record<string, File | null>>({});
   const upload = useMutation({
@@ -240,7 +247,7 @@ function PhotosStep({ view, vendorId, consentId, onDone }: { view: AssistedSetup
   return (
     <div className="grid gap-3">
       <h3 className="font-semibold">4. Item photos</h3>
-      {view.items.length === 0 ? <p className="mc-muted text-sm">No items yet.</p> : (
+      {data && data.items.length === 0 ? <p className="mc-muted text-sm">No items yet.</p> : (
         <ul className="grid gap-2">
           {view.items.map((item) => (
             <li key={item.id} className="mc-doc mc-doc-neutral">
@@ -267,21 +274,25 @@ export function AssistedSetupPanel({ vendorId }: { vendorId: string }) {
     void queryClient.invalidateQueries({ queryKey: ['assisted-setup', vendorId] });
     void queryClient.invalidateQueries({ queryKey: ['vendor-checklist', vendorId] });
   };
-  const data = view.data?.data;
+  // An answer without the panel's shape (an older server) is not drawn as an empty setup.
+  const answer = view.data?.data;
+  const data = answer && Array.isArray(answer.consents) && Array.isArray(answer.items) && answer.papers && answer.script ? answer : undefined;
+  const malformed = view.isSuccess && !data;
   const consent = data ? liveConsentOf(data.consents) : null;
   return (
     <section aria-labelledby="assisted-setup" className="mc-card">
       <h2 id="assisted-setup" className="mc-label">Assisted setup</h2>
       <p className="mc-muted text-sm">Set this store up for it, with its OK: its papers, its menu and its item photos. Everything is recorded under your name.</p>
       {view.isError ? <QueryFailed what="the assisted setup" error={view.error} onRetry={() => void view.refetch()} /> : null}
-      {!data && !view.isError ? <p aria-busy="true" className="mc-muted">Loading…</p> : null}
+      {malformed ? <p className="mc-muted text-sm">This server does not offer assisted setup yet.</p> : null}
+      {!data && !view.isError && !malformed ? <p aria-busy="true" className="mc-muted">Loading…</p> : null}
       {data ? (
         <div className="grid gap-6 mt-3">
           <ConsentStep view={data} vendorId={vendorId} onDone={refresh} />
           {!consent ? <p className="mc-verdict mc-verdict-warn">Record the store’s OK first. Papers, menu and photos open after it.</p> : null}
           <PapersStep view={data} vendorId={vendorId} consentId={consent?.id ?? null} onDone={refresh} />
           <MenuStep view={data} vendorId={vendorId} consentId={consent?.id ?? null} onDone={refresh} />
-          <PhotosStep view={data} vendorId={vendorId} consentId={consent?.id ?? null} onDone={refresh} />
+          <PhotosStep data={data} vendorId={vendorId} consentId={consent?.id ?? null} onDone={refresh} />
         </div>
       ) : null}
     </section>
