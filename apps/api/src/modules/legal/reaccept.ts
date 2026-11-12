@@ -18,6 +18,8 @@ import { OPERATOR } from './operator';
  * [PAYAHEAD-4W · 2026-11-06] An entry with `audience: 'partner'` changes only the partner agreements (the Mover and the
  * Business Agreement): it asks every partner (a rider, a driver, a store owner, or a pro) for a fresh tick, and only a
  * partner sees its summary. A customer, whose Terms and Privacy Policy changed only by their date, is not asked.
+ * [LEGAL-CARDS · 2026-11-10] It may also carry a Privacy Policy change that concerns partners only (how a partner's
+ * weekly-fee card payment is processed): a customer pays Swift nothing, so nothing in it concerns them.
  */
 export const MATERIAL_CHANGES: ReadonlyArray<MaterialChange> = [
   {
@@ -124,6 +126,18 @@ export const MATERIAL_CHANGES: ReadonlyArray<MaterialChange> = [
       'Privacy: when Swift’s in-app calls are switched on, you can call the other people on an order inside the Swift app, over the internet. Their phone shows Swift and your role on the order, never your name or your number.',
       'Privacy: Twilio carries these calls. It receives your phone’s push token for calls, so it can ring your phone; a code for your phone that is not your name, number or account; the call’s sound, live; the call’s times; and technical details of the connection. Calls are never recorded.',
       'Privacy: the app uses your microphone only during an in-app call you place or answer, once you allow it. Without it, you can still call through Swift’s phone line where it is on, or message in the order chat.',
+    ],
+  },
+  {
+    // [LEGAL-CARDS · 10 Nov 2026 · MATERIAL for partners: a new processor flow (PowerTranz takes a partner's weekly-fee
+    // card payment), as 2026-10-25.1, and the partner agreements' closing refund for card payments. Only partners pay
+    // Swift's weekly fee, so only partners are asked; a customer's texts change by nothing that concerns them]
+    version: '2026-11-10',
+    audience: 'partner',
+    summary: [
+      'Privacy: if you pay Swift’s weekly fee by card, you type your card details on our card processor’s secure payment page, shown inside the Swift app or website. PowerTranz, our card processor, receives them, never Swift.',
+      'Privacy: PowerTranz also receives your device’s network (IP) address and browser details, for the payment and the bank’s security check, and its page asks ipapi.co, an IP-location service, where your network address is located. Swift keeps the payment’s reference, amount and result, never your card number.',
+      'Partners: when you close your account, a weekly fee you paid by card for a week that has not started goes back to that card. If that card refund is refused, Swift keeps the money as credit for your weekly fees and returns it another way only once you agree to that way in writing.',
     ],
   },
 ];
