@@ -78,6 +78,15 @@ describe('[COMPANY-DOCS Part 3] Account changes queue', () => {
     expect((screen.getByRole('button', { name: 'Approve the change' }) as HTMLButtonElement).disabled).toBe(true);
   });
 
+  it('[review-2475 F1] names the business the change\'s papers name, and what approving does to the legal name customers see', async () => {
+    serve([{ ...change, id: 'chg-2', legalName: { account: 'Sample Trading', change: 'Sample Holdings Limited' } },
+      { ...change, id: 'chg-3', legalName: { account: 'Sample Trading', change: null } }]);
+    renderWithQuery(<AccountChangesPage />);
+    const named = await screen.findAllByLabelText('Business named on the papers');
+    expect(named[0]!.textContent).toMatch(/“Sample Holdings Limited”\. Customers see it as the seller once you approve \(now: “Sample Trading”\)/);
+    expect(named[1]!.textContent).toMatch(/No business name was typed from this change’s papers\. Approving removes “Sample Trading”/);
+  });
+
   it('nothing waiting says so; a failed read is a failure, never an empty queue', async () => {
     serve([]);
     renderWithQuery(<AccountChangesPage />);

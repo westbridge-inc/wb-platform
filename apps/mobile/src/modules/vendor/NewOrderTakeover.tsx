@@ -15,6 +15,7 @@ import { useJobRing } from '../../hooks/useJobRing';
 import { RING_PERIOD_MS } from '../../services/jobRinger';
 import { hasJobRing } from '../../services/jobRingCapability';
 import { takeoverRingCopy } from './takeoverRingCopy';
+import { ringMoney } from './ringMoney';
 
 /**
  * The NEW-ORDER takeover (alerts spec §A1 + design-100× Part 5 moment 2):
@@ -117,6 +118,8 @@ export function NewOrderTakeover({
     ? Math.max(0, Math.min(1, (respondByMs - nowTs) / (respondByMs - createdMs)))
     : null;
   const items: any[] = o?.items ?? [];
+  // [RING-FOOD] The store's goods money and whose the fee and tip are (ringMoney.ts, shared with the website).
+  const ring = o ? ringMoney(o, storeKind) : null;
   const customer = o?.customer ? [o.customer.firstName, o.customer.lastName].filter(Boolean).join(' ') : '';
   const busy = act.isPending || picking.refundLine.isPending;
   // [O-4] Every item came off: nothing to accept, only Reject with a reason.
@@ -246,10 +249,19 @@ export function NewOrderTakeover({
           ))}
         </ScrollView>
 
-        {o?.totalAmount != null ? (
-          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', paddingVertical: space.lg, borderTopWidth: 1, borderTopColor: color.border.subtle }}>
-            <T variant="bodyStrong">Total</T>
-            <Money amount={Number(o.totalAmount)} size="l" />
+        {/* [RING-FOOD · owner 11 Nov 2026] The store's money for the goods, never the customer's whole total (that
+            carries the rider's delivery fee and tip). One plain line says whose the fee and tip are. */}
+        {ring?.food != null ? (
+          <View style={{ paddingVertical: space.lg, borderTopWidth: 1, borderTopColor: color.border.subtle }}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+              <T variant="bodyStrong">{ring.label}</T>
+              <Money amount={ring.food} size="l" />
+            </View>
+            {ring.notes.map((line) => (
+              <T key={line} variant="caption" tone="muted" style={{ marginTop: space.xs }}>
+                {line}
+              </T>
+            ))}
           </View>
         ) : null}
 

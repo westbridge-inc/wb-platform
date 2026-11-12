@@ -547,6 +547,11 @@ export const customerApi = {
   cancelOrder: (id: string, reason?: string) =>
     api.post(`/customer/orders/${id}/cancel`, { reason })
       .then((res) => (res.data?.data ?? {}) as { message?: string }),
+  // [PROD-RIDER-TEST (a)2] No rider was found: collect it instead. The server takes the delivery fee and any rider
+  // tip off and answers with the new total (offered only when the order read carries `switchToPickup`).
+  switchToPickup: (id: string) =>
+    api.post(`/customer/orders/${id}/convert-to-pickup`, {})
+      .then((res) => (res.data?.data ?? {}) as { fulfillment?: string; totalAmount?: number }),
   // Order placement = checkout; it reads the server-side cart. (The old POST
   // /customer/orders had no backend route.)
   placeOrder: (data: {
@@ -1526,6 +1531,13 @@ export const vendorApi = {
   analyticsRepeatCustomers: () => api.get('/vendor/analytics/repeat-customers'),
   salesStatement: (session?: AuthSessionSnapshot) =>
     api.get('/vendor/sales-statement', capturedAuthConfig(session, { params: { link: 1 } })),
+  // [ORDER-EXPORT · owner 11 Nov 2026] The order history as CSV text (owners and managers; finance columns only).
+  // branch: a store's id or 'all'. Read as text, never parsed as JSON.
+  exportBranches: () => api.get('/vendor/orders/export/branches'),
+  exportOrders: (params: { from: string; to: string; branch: string }, storeId: string, session?: AuthSessionSnapshot) =>
+    api.get<string>('/vendor/orders/export', capturedAuthConfig(session, {
+      params, responseType: 'text', transformResponse: (data: unknown) => data, headers: { 'x-vendor-id': storeId },
+    })),
   hours: () => api.get('/vendor/hours'),
   bookings: (params?: { from?: string; to?: string }) => api.get('/vendor/bookings', { params }),
   // [BOOK-S5a · owner B2] The business moves a booking to another free time of the same service.

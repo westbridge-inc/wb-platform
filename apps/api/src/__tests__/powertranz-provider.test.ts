@@ -727,6 +727,18 @@ describe('refund and void (sec. 5.2, 7.5, 7.6): the original transaction, at mos
     expect(await p.refund({ binding: p.binding, providerRef: original, amountMinor: 210_000, currencyCode: 'GYD', idempotencyKey: key })).toEqual(first);
     expect(gw.calls).toHaveLength(1);
   });
+  // [OWNER 10 Nov 2026 · PARTLY USED] A partial refund is the same documented call (POST /api/refund, the ORIGINAL
+  // transaction) with the part as TotalAmount ("Powertranz supports partial capture and refund"). Only PowerTranz's
+  // approval of THAT amount is a refund; an approval of the whole payment (or anything else) is unknown, never done.
+  it('[PARTLY USED] a partial refund: the part is the TotalAmount sent; only an approval of exactly that part succeeds', async () => {
+    const answer = (total: number) => gateway({ '/api/refund': () => ({ status: 200, body: { OriginalTrxnIdentifier: original, TransactionType: 5, Approved: true, TransactionIdentifier: '5c1e0f3a-8b7d-4e2a-9f6b-1d2c3b4a5e6f', TotalAmount: total, CurrencyCode: '328', IsoResponseCode: '00' } }) });
+    const gw = answer(1000);
+    const p = provider(gw);
+    expect(await p.refund({ binding: p.binding, providerRef: original, amountMinor: 100_000, currencyCode: 'GYD', idempotencyKey: `refund-${nanoid(6)}` })).toMatchObject({ status: 'succeeded', providerRef: '5c1e0f3a-8b7d-4e2a-9f6b-1d2c3b4a5e6f' });
+    expect(JSON.parse(gw.calls[0]!.body!)).toEqual({ Refund: true, TransactionIdentifier: original, TotalAmount: 1000, CurrencyCode: '328' });
+    const whole = provider(answer(2100));
+    expect(await whole.refund({ binding: whole.binding, providerRef: original, amountMinor: 100_000, currencyCode: 'GYD', idempotencyKey: `refund-${nanoid(6)}` })).toMatchObject({ status: 'unknown', reason: 'REFUND_APPROVAL_NOT_FOR_THIS_AMOUNT' });
+  });
   it('a refund whose answer was lost is unknown and is never sent again under its key; a refused one is failed', async () => {
     const lost = gateway({ '/api/refund': () => 'timeout' });
     const p = provider(lost);
@@ -1104,6 +1116,29 @@ describe('[CARD-REFUND-LOOKUP] a refund whose answer is not known: the original 
     expect(await ask(fresh(at({ status: 200, body: record({}, credited(2100, { TotalCaptureAmount: 2200 })) })))).toMatchObject({ status: 'part_credited', reason: 'LOOKUP_PARTIAL_CREDIT' });
     // Swift's price differs from the record's whole credit: never refunded.
     expect(await ask(fresh(at({ status: 200, body: record({}, credited(2100)) })), 200_000)).toMatchObject({ status: 'part_credited', reason: 'LOOKUP_CREDIT_NOT_THE_PAYMENT' });
+  });
+
+  // [OWNER 10 Nov 2026 · PARTLY USED] A partial refund Swift sent (the payment's weeks that have not started) is judged
+  // against the PART asked (refundMinor), of Swift's whole capture: refunded only when TotalCreditAmount is exactly that
+  // part and the capture is Swift's price. More back (the whole payment, a void), less, or another capture: never
+  // "refunded" — held for the owner. A part that is not below the payment is the whole-payment rule above.
+  it('[PARTLY USED] a partial refund: exactly the part credited of Swift\'s capture -> refunded; the whole payment, a void, less or more -> part_credited (the owner)', async () => {
+    const part = (p: PowerTranzCardRailProvider, refundMinor = 100_000) =>
+      p.lookupRefund({ binding: p.binding, providerRef: txn, orderRef: order, amountMinor: 210_000, refundMinor, currencyCode: 'GYD' });
+    expect(await part(fresh(at({ status: 200, body: record({}, credited(1000)) })))).toMatchObject({ status: 'refunded', how: 'credit', reason: 'LOOKUP_CREDITED' });
+    for (const credit of [2100, 999.99, 1500, 1]) {
+      expect(await part(fresh(at({ status: 200, body: record({}, credited(credit)) }))), String(credit)).toMatchObject({ status: 'part_credited', reason: 'LOOKUP_CREDIT_NOT_THE_PART' });
+    }
+    expect(await part(fresh(at({ status: 200, body: record({}, { VoidDateTime: '2026-11-09T12:00:00' }) })))).toMatchObject({ status: 'part_credited', reason: 'LOOKUP_VOIDED_NOT_THE_PART' });
+    expect(await part(fresh(at({ status: 200, body: record({}, credited(1000, { TotalCaptureAmount: 2000 })) })))).toMatchObject({ status: 'part_credited', reason: 'LOOKUP_CREDIT_NOT_THE_PAYMENT' });
+    expect(await part(fresh(at({ status: 200, body: record() })))).toMatchObject({ status: 'not_refunded', reason: 'LOOKUP_NO_CREDIT' });
+    expect(await part(fresh(at({ status: 200, body: record({}, credited(2100)) })), 210_000)).toMatchObject({ status: 'refunded', reason: 'LOOKUP_CREDITED' });
+    // A part that is no amount, or more than the payment, is never asked: unknown, no call.
+    for (const bad of [0, -1, 210_001, 1.5]) {
+      const gw = at({ status: 200, body: record({}, credited(1000)) });
+      expect(await part(fresh(gw), bad), String(bad)).toMatchObject({ status: 'unknown', reason: 'LOOKUP_REQUEST_INVALID' });
+      expect(gw.calls).toHaveLength(0);
+    }
   });
 
   it('no credit and no void on the record -> not_refunded (nothing to record yet)', async () => {

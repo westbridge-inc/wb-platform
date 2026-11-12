@@ -1502,6 +1502,16 @@ export type BranchTerms = {
   foodHandlers?: { version: string; tick: string } | null;
 };
 
+/** [ORDER-EXPORT · REVIEW-2485-B S4-7] The branches this login may export (owner: every branch; a manager: the stores they manage). */
+export function useOrderExportBranches(enabled = true) {
+  const pv = usePreviewDataset();
+  return useQuery({
+    queryKey: ['vendor', 'order-export', 'branches'],
+    queryFn: () => unwrap<{ scope: 'owner' | 'manager'; branches: Array<{ id: string; name: string; city: string | null }> }>(vendorApi.exportBranches()),
+    enabled: enabled && !pv,
+  });
+}
+
 /** Every store this account works in (GET /vendor/stores), with which branch waits for Swift's approval. */
 export function useBranchStores(enabled = true) {
   const pv = usePreviewDataset();

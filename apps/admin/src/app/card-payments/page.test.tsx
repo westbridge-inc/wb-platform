@@ -206,6 +206,20 @@ describe('[CARD-READY] card payments', () => {
     expect(await screen.findByText(/PowerTranz's record shows the whole payment back\. Recorded as refunded\./)).toBeTruthy();
   });
 
+  // [REVIEW-2484-B S4-3] A void and a refund are PowerTranz's own transactions: the page shows their ids beside the
+  // sale's, so finance matches the portal's Void and Refund rows.
+  it('[R1] a held payment voided or refunded shows the void\'s and the refund\'s own provider transactions', async () => {
+    const VOID = 'b1b2c3d4-0000-4000-8000-0000000000aa';
+    const REFUND = 'c1b2c3d4-0000-4000-8000-0000000000bb';
+    server([
+      { ...held, id: 'cs_7', providerVoidState: 'VOIDED', providerVoidRef: VOID },
+      { ...held, id: 'cs_8', providerVoidState: 'FAILED', providerRefundState: 'REFUNDED', providerRefundRef: REFUND },
+    ]);
+    renderWithQuery(<CardPaymentsPage />);
+    expect((await screen.findByText(VOID)).closest('p')?.textContent).toContain('Void transaction');
+    expect(screen.getByText(REFUND).closest('p')?.textContent).toContain('Refund transaction');
+  });
+
   it('without a recorded provider transaction nothing can be decided here', async () => {
     server([noRef]);
     renderWithQuery(<CardPaymentsPage />);

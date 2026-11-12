@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   AWAY_MS, CHECK_EVERY_MS, LAUNCH_WINDOW_MS, RETURN_WINDOW_MS, SETTLE_MS, SIGN_IN_WINDOW_MS,
-  createOtaCatchUp, holdOtaRestart, onOtaHoldsReleased, otaRestartHeld, resetOtaHoldsForTests, type OtaCatchUpDeps,
+  claimOtaRestingRoute, createOtaCatchUp, holdOtaRestart, onOtaHoldsReleased, otaRestartHeld, otaRouteResting, resetOtaHoldsForTests,
+  type OtaCatchUpDeps,
 } from './otaCatchUp';
 
 afterEach(() => resetOtaHoldsForTests());
@@ -248,7 +249,9 @@ describe('the settle after a launch and a return', () => {
     expect(reload).not.toHaveBeenCalled();
   });
 
-  it('left and back within a glance inside the settle: the first return\'s timer never restarts the app', () => {
+  // [PROD-RIDER-TEST (b)3] Was: "a glance away: no new window" with an update downloaded. With one downloaded, the
+  // ruling makes any return from the background a moment; the guard kept here is the first return's timer.
+  it('left and back within a glance inside the settle: the first return\'s timer never restarts the app; the second return\'s own settle does', () => {
     const { s, c, reload, tick } = rig();
     s.route = 'Home';
     tick(LAUNCH_WINDOW_MS + 1);
@@ -259,9 +262,11 @@ describe('the settle after a launch and a return', () => {
     tick(1_000);
     c.backgrounded();
     tick(1_000);
-    expect(c.foregrounded()).toBe(false); // a glance away: no new window, no new settle
-    tick(SETTLE_MS);
-    expect(reload).not.toHaveBeenCalled();
+    expect(c.foregrounded()).toBe(true); // reopened with an update waiting: a window and a fresh settle
+    tick(SETTLE_MS - 1_000);
+    expect(reload).not.toHaveBeenCalled(); // when the first return's settle would have ended: nothing
+    tick(1_000);
+    expect(reload).toHaveBeenCalledTimes(1);
   });
 
   it('disposed: the settle timer does nothing', () => {
@@ -271,5 +276,79 @@ describe('the settle after a launch and a return', () => {
     c.dispose();
     tick(SETTLE_MS);
     expect(reload).not.toHaveBeenCalled();
+  });
+});
+
+// [PROD-RIDER-TEST 11 Nov 2026 · COORD ruling (b)3] A rider's phone ran JS older than the cash card: the mover's home was
+// never a resting screen, so a downloaded update waited for a true cold start, two opens later.
+describe('[PROD-RIDER-TEST (b)3] a downloaded update applies on the next open, never over an offer or a job', () => {
+  it('the rider\'s home rests only while it says so (no offer card, no live job): then it restarts, else never', () => {
+    const { s, c, reload } = rig();
+    s.t += SETTLE_MS;
+    s.pending = true;
+    s.route = 'MoverRoot';
+    expect(c.evaluate()).toBe(false); // an offer card or a live job: no claim, no restart
+    const release = claimOtaRestingRoute('MoverRoot');
+    expect(otaRouteResting('MoverRoot')).toBe(true);
+    release();
+    release(); // idempotent
+    expect(otaRouteResting('MoverRoot')).toBe(false);
+    expect(c.evaluate()).toBe(false);
+    claimOtaRestingRoute('MoverRoot');
+    expect(c.evaluate()).toBe(true);
+    expect(reload).toHaveBeenCalledTimes(1);
+  });
+
+  it('a claim made inside a window is a moment: the catch-up looks again (the job just finished)', () => {
+    const look = vi.fn();
+    onOtaHoldsReleased(look);
+    const release = claimOtaRestingRoute('MoverRoot');
+    expect(look).toHaveBeenCalledTimes(1);
+    release();
+  });
+
+  it('a claim never beats a busy moment or the background: a call, a write, a hold', () => {
+    const { s, c, reload } = rig();
+    s.t += SETTLE_MS;
+    s.pending = true;
+    s.route = 'MoverRoot';
+    claimOtaRestingRoute('MoverRoot');
+    s.busy = true;
+    expect(c.evaluate()).toBe(false);
+    s.busy = false;
+    s.active = false;
+    expect(c.evaluate()).toBe(false);
+    expect(reload).not.toHaveBeenCalled();
+  });
+
+  it('downloaded while in use (after the window): the next return from the background applies it, however short', () => {
+    const { s, c, reload, tick } = rig();
+    s.route = 'Home';
+    tick(LAUNCH_WINDOW_MS + 60_000); // the download landed mid-use: no window, no restart
+    s.pending = true;
+    expect(c.evaluate()).toBe(false);
+    c.backgrounded(); // "close Swift"…
+    tick(3_000); // …"and open it again", a few seconds later (before: under a minute away opened nothing)
+    expect(c.foregrounded()).toBe(true);
+    tick(SETTLE_MS);
+    expect(reload).toHaveBeenCalledTimes(1);
+  });
+
+  it('a blip that never left the screen (the notification shade) is not a return', () => {
+    const { s, c, reload, tick } = rig();
+    s.route = 'Home';
+    tick(LAUNCH_WINDOW_MS + 60_000);
+    s.pending = true;
+    expect(c.foregrounded()).toBe(false); // 'active' again with no 'background' before it
+    tick(SETTLE_MS);
+    expect(reload).not.toHaveBeenCalled();
+  });
+
+  it('nothing downloaded: a glance away still opens nothing (the 60-second rule stands)', () => {
+    const { c, tick } = rig();
+    tick(LAUNCH_WINDOW_MS + 60_000);
+    c.backgrounded();
+    tick(3_000);
+    expect(c.foregrounded()).toBe(false);
   });
 });

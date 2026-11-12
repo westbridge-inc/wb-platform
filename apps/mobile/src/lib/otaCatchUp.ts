@@ -29,6 +29,17 @@
 // 30 minutes). Known limit: a store tablet kept awake and never left does not
 // check until it is next opened from cold.
 //
+// [PROD-RIDER-TEST 11 Nov 2026 · COORD ruling (b)3] A rider's app ran JS older than the cash card for days: their home
+// screen was never a resting one, so a downloaded update waited for a true cold start (in practice two opens later).
+// Now:
+// - a screen part may say "resting now" (claimOtaRestingRoute): the rider's and driver's home claims it only while no
+//   offer card is up and no job is live (and the job read has answered), so a ringing offer or a delivery is never cut;
+// - an update already downloaded applies on the NEXT return from the background, however short the trip (the rider
+//   told "close and reopen Swift" is not made to wait a minute away); a blip that never left the screen is not a return.
+// Nothing else changes: no restart in the background, never mid-call, mid-write, mid-typing or mid-checkout (a
+// checkout is never a resting screen), and the settle still lets a tapped notification land first.
+// OTA-safe: JS only, no new native module.
+//
 // Pure: no React, no native module (services/otaCatchUp.ts wires it).
 // ---------------------------------------------------------------------------
 
@@ -66,15 +77,42 @@ export function holdOtaRestart(): () => void {
 export function otaRestartHeld(): boolean {
   return holds.size > 0;
 }
-/** Called when the last hold is released. Returns the unsubscribe. */
+/** Called when the last hold is released, and when a screen claims rest (a moment to look again). Returns the
+ *  unsubscribe. */
 export function onOtaHoldsReleased(listener: () => void): () => void {
   releaseListeners.add(listener);
   return () => { releaseListeners.delete(listener); };
+}
+
+// ─── Resting claims [PROD-RIDER-TEST (b)3] ────────────────────────────────────
+// A screen that is resting only some of the time (the rider's home: resting with no offer card and no live job)
+// claims its route while it is. Like REST_ROUTES, a claim only allows a restart: the window, the settle, the screen
+// being on and nothing busy are still required.
+const restingClaims = new Map<string, number>();
+
+/** `route` counts as a resting screen until the returned release is called (idempotent). */
+export function claimOtaRestingRoute(route: string): () => void {
+  restingClaims.set(route, (restingClaims.get(route) ?? 0) + 1);
+  let released = false;
+  // Became resting inside a window (a job just finished, an offer card just closed): look again.
+  for (const l of [...releaseListeners]) { try { l(); } catch { /* one listener never stops the rest */ } }
+  return () => {
+    if (released) return;
+    released = true;
+    const left = (restingClaims.get(route) ?? 1) - 1;
+    if (left > 0) restingClaims.set(route, left);
+    else restingClaims.delete(route);
+  };
+}
+/** Is `route` a resting screen now (always, or by a live claim)? */
+export function otaRouteResting(route: string): boolean {
+  return REST_ROUTES.includes(route) || restingClaims.has(route);
 }
 /** Tests only. */
 export function resetOtaHoldsForTests(): void {
   holds.clear();
   releaseListeners.clear();
+  restingClaims.clear();
 }
 
 export interface OtaCatchUpDeps {
@@ -128,7 +166,7 @@ export function createOtaCatchUp(deps: OtaCatchUpDeps): OtaCatchUp {
     if (deps.now() > windowEnds || deps.now() < settleEnds) return false;
     if (!deps.active()) return false;
     const route = deps.route();
-    if (route !== null && !REST_ROUTES.includes(route)) return false;
+    if (route !== null && !otaRouteResting(route)) return false;
     if (deps.busy()) return false;
     restarting = true;
     // A refused restart leaves this JS running; the next cold start applies the update.
@@ -159,11 +197,15 @@ export function createOtaCatchUp(deps: OtaCatchUpDeps): OtaCatchUp {
       cancelSettle = null;
     },
     foregrounded() {
-      const away = awaySince === null ? 0 : deps.now() - awaySince;
+      const wasAway = awaySince !== null;
+      const away = wasAway ? deps.now() - (awaySince as number) : 0;
       awaySince = null;
-      if (away < AWAY_MS) return false;
+      // [PROD-RIDER-TEST (b)3] An update already downloaded: the next return from the background is the moment,
+      // however short the trip ("close and reopen Swift"). Without one, a glance away still opens nothing.
+      const reopenedWithUpdate = wasAway && deps.pending();
+      if (away < AWAY_MS && !reopenedWithUpdate) return false;
       open(RETURN_WINDOW_MS);
-      if (deps.now() - lastCheck >= CHECK_EVERY_MS) {
+      if (away >= AWAY_MS && deps.now() - lastCheck >= CHECK_EVERY_MS) {
         lastCheck = deps.now();
         // The download's end is a pending change: services/otaCatchUp.ts evaluates it then.
         void deps.checkAndFetch().catch(() => undefined);

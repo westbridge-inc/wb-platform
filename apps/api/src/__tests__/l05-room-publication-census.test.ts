@@ -82,6 +82,8 @@ describe('sensitive room publication census', () => {
     // + [BUG-HUNT-2 G20] "Not collected": a pickup closed by its store (vendor not-collected, through the gate).
     // + [OOS-FLOW · owner 8 Nov 2026] an accepted order whose last item is out of stock, closed through the
     //   canonical seam: its status change and its line's close (picking.service cancelForStockOut, both through the gate).
-    expect(orderPublishers).toBe(58);
+    // + [PROD-RIDER-TEST (a)1] no rider found: the store takes the order to its own delivery (vendor fulfillment-mode,
+    //   the customer's screen told through the gate).
+    expect(orderPublishers).toBe(59);
   });
 });

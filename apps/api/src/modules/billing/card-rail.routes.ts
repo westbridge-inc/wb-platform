@@ -16,7 +16,7 @@ import type { CardRailProvider, CardRailSource } from '../../providers/card/card
 import type { OnAudit } from '../../lib/audit-writer';
 import { SIMULATOR_PAGE, SimulatorCardRailProvider, SimulatorRefusal } from '../../providers/card/simulator-provider';
 import { PowerTranzCardRailProvider, type PowerTranzHostedPage } from '../../providers/card/powertranz-provider';
-import { BillingService } from './billing.service';
+import { BillingService, cardPayNowSettlement } from './billing.service';
 import { creditRefundCheckable, heldRefundCheckable } from './card-credit-refund';
 import { CARD_ON_FILE_CONSENT_VERSION, CARD_RESOLVE_ACTIONS, CARD_SANDBOX_TEST_LABEL, CardRailService, INSTRUMENT_DTO_SELECT, cardTestLabel, type CardSessionDto, type PaymentInstrumentDto } from './card-rail.service';
 import { CARD_OFF, cardPayAction, cardSessionsAllowed, type CardPayAction } from './card-pay-action';
@@ -155,8 +155,8 @@ export interface CardSessionView {
   amount?: number;
   currencyCode?: string;
   card?: PaymentInstrumentDto;
-  /** PAY_NOW that SUCCEEDED: the paid week moved (`advanced`), or the money
-   *  went to the balance because that week was already covered (`banked`). */
+  /** PAY_NOW that SUCCEEDED: a week was paid (`advanced`: the paid week moved, or a return's money paid its return
+   *  week at once), or the money was kept as fee credit for a week that has not started (`banked`). */
   settlement?: 'advanced' | 'banked';
   /** FAILED, EXPIRED or CANCELLED: why, in one plain category the screen can word. */
   failure?: CardSessionFailure;
@@ -331,9 +331,10 @@ async function cardSessionView(
   const card = s.instrumentId
     ? await prisma.paymentInstrument.findUnique({ where: { id: s.instrumentId }, select: INSTRUMENT_DTO_SELECT })
     : null;
-  // The same evidence settleHostedCardPayment reads: a bank event for this payment means it was banked.
+  // [N1] The same answer settleHostedCardPayment gives: kept as fee credit (`banked`), or a week paid (`advanced`) — a
+  // RETURN included, whose credit paid the return week at once (cardPayNowSettlement).
   const settlement = s.purpose === 'PAY_NOW' && s.status === 'SUCCEEDED' && s.paymentId
-    ? ((await prisma.billingEvent.findUnique({ where: { idempotencyKey: `bank:${s.paymentId}` }, select: { id: true } })) ? 'banked' as const : 'advanced' as const)
+    ? await cardPayNowSettlement(prisma, s.paymentId)
     : undefined;
   const testModeLabel = cardTestLabel(s);
   const testMode = testModeLabel !== undefined;
@@ -756,6 +757,8 @@ const ADMIN_SESSION_SELECT = {
   providerTransactionRef: true, providerVoidState: true, providerRefundState: true, bookClaimedAt: true, resolution: true, resolvedBy: true, resolvedAt: true,
   // [CARD-STAGING-TEST 10 Nov 2026] The void's own provider transaction, when PowerTranz named it (the portal's Void row).
   providerVoidRef: true,
+  // [R1 · CARD-STAGING-TEST R2] A HELD payment's refund: its own provider transaction, when PowerTranz named it (the portal's refund row).
+  providerRefundRef: true,
 } as const;
 
 const ADMIN_CARD_SELECT = {

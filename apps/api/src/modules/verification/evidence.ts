@@ -75,7 +75,7 @@ export async function countableVehicleSubjectIds(db: EvidenceDb, userId: string,
 
 /** The records themselves: the evidence rule. */
 export async function recordEvidenceFor(
-  db: EvidenceDb, userId: string, checklist: readonly string[], now: Date, opts: { withChange?: string } = {},
+  db: EvidenceDb, userId: string, checklist: readonly string[], now: Date, opts: { withChange?: string; onlyChange?: string } = {},
 ): Promise<EvidenceRow[]> {
   const vehicleIds = await countableVehicleSubjectIds(db, userId);
   const records = await db.documentRecord.findMany({
@@ -89,6 +89,8 @@ export async function recordEvidenceFor(
         { submission: { purgedAt: null, OR: [{ retentionExpiresAt: null }, { retentionExpiresAt: { gt: now } }] } },
         // [COMPANY-DOCS Part 3] never a paper waiting for its account change (liveSubmissionWhere)
         { submission: liveSubmissionWhere(opts.withChange) },
+        // [review-2475 F1] a handover reads only the papers filed for it (never one the person holds from another account)
+        ...(opts.onlyChange ? [{ submission: { accountChangeId: opts.onlyChange } }] : []),
       ],
     },
     select: {

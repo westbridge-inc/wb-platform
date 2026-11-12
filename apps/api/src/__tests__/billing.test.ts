@@ -945,6 +945,23 @@ describe('fee credit refund — set aside, then paid, recorded once, two people,
   // [CARD-READY · REVIEW-2 F1] Card money goes back only through the card provider's documented refund, recorded on its
   // own answer (card-credit-refund.ts): a person never records a CARD payout, and a refund to the card that could never
   // be sent is refused when it is asked, before any approval exists.
+  // [REVIEW-2484-A S4-6] Closing mid-week: the week that started is paid from the credit before anything is set aside,
+  // so it is never refunded; the console then asks for exactly what is left.
+  it('[S4-6] setting credit aside first pays the week that has started from that credit: a started week is never refunded', async () => {
+    const fx = await storeWithCredit(20000, 15000);
+    // The paid week ended and the next began; the hourly billing run has not reached it yet.
+    await app.prisma.subscription.update({ where: { id: fx.subId }, data: { nextBillingDate: new Date(Date.now() - 60_000) } });
+    const first = await setAside(fx.subId, 20000);
+    expect(first.statusCode, first.payload).toBe(409);
+    expect(first.json().error.code).toBe('FEE_CREDIT_CHANGED');
+    expect(await wallet(fx.subId)).toBe(5000);
+    expect((await app.prisma.subscription.findUniqueOrThrow({ where: { id: fx.subId } })).nextBillingDate.getTime()).toBeGreaterThan(Date.now());
+    const left = await setAside(fx.subId, 5000);
+    expect(left.statusCode, left.payload).toBe(200);
+    expect(left.json().data).toMatchObject({ amount: 5000, refundSetAside: 5000 });
+    await booksAgree(fx.subId);
+  });
+
   it('a person cannot record a card payout; an impossible refund to the card is refused when asked', async () => {
     const fx = await storeWithCredit(6000);
     expect((await setAside(fx.subId, 6000)).statusCode).toBe(200);

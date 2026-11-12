@@ -15,6 +15,7 @@ import {
 } from '../../../lib/branches';
 import { orderStatusLabel } from '../../../lib/orderStatus';
 import { catalogueMeta } from '../shared';
+import { ringMoney } from '../ringMoney';
 
 const TERMINAL = new Set(['DELIVERED', 'COMPLETED', 'CANCELLED', 'REJECTED', 'FAILED', 'REFUNDED', 'RETURNED']);
 
@@ -147,7 +148,7 @@ export function VendorBranchesScreen({ navigation }: { navigation?: { navigate?:
             <View key={o.id} style={{ marginTop: space.sm, flexDirection: 'row', alignItems: 'center', gap: space.sm }}>
               <View style={{ flex: 1 }}>
                 <T variant="label" weight="semibold">{`#${o.orderNumber} · ${o.vendor?.name ?? nameOf(o.vendorId)}`}</T>
-                <T variant="caption" tone="muted">{`${orderStatusLabel(o.status)} · ${moneyIn(Number(o.totalAmount))}`}</T>
+                <T variant="caption" tone="muted">{`${orderStatusLabel(o.status)} · ${ringMoney(o).label} ${moneyIn(ringMoney(o).food)}`}</T>
               </View>
               {o.vendor?.id && o.vendor.id !== store?.id ? (
                 <PillButton label="Open branch" size="sm" variant="soft" onPress={() => setSelectedStore(o.vendor.id)} />

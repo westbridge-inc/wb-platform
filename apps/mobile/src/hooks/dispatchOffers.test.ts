@@ -399,3 +399,43 @@ describe('[STORE-ALERT-RECONNECT] the offer card recovers on the screen\'s retur
     expect(asked).toBe(0);
   });
 });
+
+// [PROD-RIDER-TEST review S3-2] After a return to the screen the card the server holds is not drawn until the
+// recovery read answers; until then the hook says `recovering`, and the rider's home is not a resting screen for an
+// OTA restart (lib/moverHomeResting).
+/** The recovery read (unwrap, then the finally) needs a few more ticks than a card to land. */
+async function landRider() {
+  for (let i = 0; i < 8; i += 1) await Promise.resolve();
+  return render('RIDER');
+}
+
+describe('[review S3-2] the hook says when an offer recovery is in flight', () => {
+  it('true from a return to the screen until the slow read answers (with the card), then false', async () => {
+    expect(render('RIDER').recovering).toBe(true); // the mount's own read is in flight
+    await landRider();
+    expect(render('RIDER').recovering).toBe(false);
+    let answer!: (v: unknown) => void;
+    h.riderOverride.currentOffer = () => new Promise((resolve) => { answer = resolve; });
+    emitAppForeground();
+    let view = render('RIDER');
+    expect(view.recovering).toBe(true);
+    expect(view.offer).toBeNull(); // the card is still on the server, not on screen
+    answer({ data: { data: { offer: { orderId: 'R1', offerAttemptId: 'r1', expiresInSeconds: 12 } } } });
+    view = await landRider();
+    expect(view.offer?.orderId).toBe('R1');
+    expect(view.recovering).toBe(false);
+  });
+
+  it('a failed read still ends the in-flight state', async () => {
+    render('RIDER');
+    await landRider();
+    h.riderOverride.currentOffer = () => Promise.reject(new Error('offline'));
+    emitAppForeground();
+    expect(render('RIDER').recovering).toBe(true);
+    expect((await landRider()).recovering).toBe(false);
+  });
+
+  it('offline: never recovering', () => {
+    expect(render('RIDER', false).recovering).toBe(false);
+  });
+});

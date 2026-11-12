@@ -40,6 +40,14 @@ export const WITHDRAWN_CARD_SCREEN_SKEW_MS = 3_000;
 export const dispatchDeclinedKey = (orderId: string, version?: number | null): string =>
   `dispatch:declined:${orderId}${deliveryGenerationSuffix(version)}`;
 
+/** [PROD-RIDER-TEST (b)2] Riders whose app could not show this job's cash (CASH_AMOUNT_NOT_SHOWN). Unlike the
+ *  declined set, an exhausted search does not clear it: re-offering a job to an app that cannot take it only burns
+ *  the search. It expires (CASH_UNSHOWN_SKIP_SECONDS), and the store's "Find a rider" clears it, so a rider who
+ *  updated the app is asked again; the open board serves an updated app meanwhile. */
+export const dispatchCashUnshownKey = (orderId: string, version?: number | null): string =>
+  `dispatch:cash-unshown:${orderId}${deliveryGenerationSuffix(version)}`;
+export const CASH_UNSHOWN_SKIP_SECONDS = 10 * 60;
+
 export const dispatchRoundKey = (orderId: string, version?: number | null): string =>
   `dispatch:round:${orderId}${deliveryGenerationSuffix(version)}`;
 

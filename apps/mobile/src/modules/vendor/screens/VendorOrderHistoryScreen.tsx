@@ -9,6 +9,7 @@ import { Card, Chip, EmptyState, ErrorState, LoadingBlock, PillButton, Screen, T
 import { useVendorOrderHistory, useVendorProfile } from '../../../hooks/vendorops';
 import { money } from '../../../lib/money';
 import { GUTTER, InlineInput, OrderStatusPill, SubHeader, fmtWhen } from '../shared';
+import { ringMoney } from '../ringMoney';
 
 const FILTERS: { label: string; status?: string }[] = [
   { label: 'All' },
@@ -38,7 +39,8 @@ function HistoryRow({ order, onPress }: { order: any; onPress: () => void }) {
                 : ''}
             </T>
             <T variant="label" weight="semibold">
-              {money(order.totalAmount ?? order.total)}
+              {/* [STORE-MONEY] The store's own money on the order, never the customer's total with the rider's tip. */}
+              {money(ringMoney(order).food)}
             </T>
           </View>
         </Card>

@@ -11,6 +11,8 @@ import { feeReversalOpenInTx } from './dunning-clock';
 import { feeReturnMayStillLandInTx, referenceOnRecord } from './mmg-fee-reversal';
 import { formatGuyanaTime } from '../../utils/guyana-day';
 import { recordSetAsideReleasedInTx, recordWalletDebitInTx } from './fee-receipt-allocation';
+import { closureHoldsWeek } from './closure-fee-hold';
+import { feePauseHoldsBilling } from './mmg-pause';
 
 // ---------------------------------------------------------------------------
 // [Owner ruling 2026-10-07] Unused prepaid weekly-fee credit is refunded, then
@@ -223,6 +225,33 @@ export interface CreditRefundStep extends CreditRefundState {
  * admin's approval this request carries; it names the step, so applying it
  * again is a replay.
  */
+/**
+ * [REVIEW-2484-A S4-6] A week that has started is never refunded. Its fee is owed, and the partner's credit pays it
+ * before anything is set aside for a refund. Without this, closing an account after its week started but before the
+ * billing run reached it set the whole credit aside, that week's money included, and a refund then sent it back (to
+ * the card, as a partial refund, or by a payout).
+ *
+ * Owed means the billing engine itself would charge the week now:
+ * - the plan renews (`autoRenew`) and is ACTIVE or PAST_DUE (still operating);
+ * - the week's start (`nextBillingDate`) has passed;
+ * - an open closure request does not hold it (a week that starts at or after the hold is not born, owner ruling
+ *   2 Nov 2026: closure-fee-hold.ts);
+ * - the fee is not paused for want of a way to pay (mmg-pause.ts).
+ * Nothing is owed when the partner stopped the fee (it lapses at the end of the paid week, owing nothing), when the
+ * account is suspended (the time suspended is not billed: BILLING-REANCHOR), or during a trial.
+ * BillingService.settleStartedWeekFromCredit pays such a week from credit only; this is the wall under it.
+ */
+export async function startedWeekOwed(
+  db: Prisma.TransactionClient | PrismaClient,
+  sub: { id: string; autoRenew: boolean; status: string; nextBillingDate: Date; closureHoldAt: Date | null },
+  now: Date,
+): Promise<boolean> {
+  if (!sub.autoRenew || (sub.status !== 'ACTIVE' && sub.status !== 'PAST_DUE')) return false;
+  if (sub.nextBillingDate.getTime() > now.getTime() || closureHoldsWeek(sub, sub.nextBillingDate)) return false;
+  return !(await feePauseHoldsBilling(db, sub.id));
+}
+export const STARTED_WEEK_SUB_SELECT = { id: true, autoRenew: true, status: true, nextBillingDate: true, closureHoldAt: true } as const;
+
 export async function setAsideCreditRefund(prisma: PrismaClient, input: {
   adminId: string;
   approvalId: string;
@@ -251,6 +280,11 @@ export async function setAsideCreditRefund(prisma: PrismaClient, input: {
       throw new AppError(409, 'REFUND_REVERSAL_WATCHED', 'unbookedReturn' in pending
         ? 'MMG returned one of this partner\'s weekly-fee payments after it was closed as not returned, and that return is not booked yet. Nothing was set aside: book it first (ask for the return again on that payment), then ask again for the credit that is left.'
         : `MMG may still return one of this partner's weekly-fee payments (a return closed as not returned is watched for a week). Nothing was set aside: ask again after ${formatGuyanaTime(pending.watchedUntil, { day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit', hour12: false })} (Guyana time), or once that return is settled.`);
+    }
+    // [REVIEW-2484-A S4-6] Under the payer lock: a started week that is still unpaid comes out of this credit first.
+    const running = await tx.subscription.findUniqueOrThrow({ where: { id: input.subscriptionId }, select: STARTED_WEEK_SUB_SELECT });
+    if (await startedWeekOwed(tx, running, new Date())) {
+      throw new AppError(409, 'STARTED_WEEK_UNPAID', `The week that started ${formatGuyanaTime(running.nextBillingDate, { day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit', hour12: false })} (Guyana time) is not paid yet, and a week that has started is never refunded: its fee comes out of this credit first. Nothing was set aside. If the credit covers it, asking again pays it first; if not, settle that week before refunding what is left.`);
     }
     if (await openSetAside(tx, input.subscriptionId)) {
       throw new AppError(409, 'REFUND_ALREADY_SET_ASIDE', 'A refund is already set aside for this account. Record its payout, or release it, first.');

@@ -42,12 +42,14 @@ import { closeOpenMmgStagesFor } from '../integrity/money-surface';
 import { CountryConfigService } from '../country/country-config.service';
 import { recordEvidenceFor } from '../verification/evidence';
 import { hopDocState } from '../verification/doc-state';
-import { OWN_NAME_TIER } from '../verification/doc-registry';
+import { ACCOUNT_HOLDER_ID_DOC_TYPE, BUCKET_OF, OWN_NAME_TIER } from '../verification/doc-registry';
 import { revokeAllSessionsInTransaction } from '../auth/session-revocation';
 import type { MoverSessionRevocationCleanup } from '../mover-authority';
 import { accountBasisApplies, accountTierOf, type AccountBasis } from './account-basis';
 import { OWN_NAME_VENDOR_TYPES, storeNameIsOwnName } from './own-name';
 import { validRegistrationRecord } from './registration-record';
+import { SELLER_NAME_UNCONFIRMED } from '../verification/storefront-disclosure';
+import { isAccountPersonsName, SELLER_NAME_IS_A_PERSON_NOTICE } from '../verification/verification.service';
 
 type Db = Prisma.TransactionClient | PrismaClient;
 
@@ -58,6 +60,11 @@ export const STORE_ACCOUNT_ROLES: ReadonlySet<string> = new Set(['RESTAURANT', '
 
 /** How long a holder waits between handover requests they start (a cap on naming numbers, one at a time anyway). */
 const HANDOVER_STARTS_PER_DAY = 3;
+/** [review-2475 F8] Every try at naming someone, named or not, counts here: a holder learns at most this many numbers'
+ *  answers a day. */
+const HANDOVER_TRIES_PER_DAY = 5;
+/** [review-2475 F8] Asks for a business type a day (an ask -> withdraw -> ask loop pages every reviewer each time). */
+const BUSINESS_TYPE_ASKS_PER_DAY = 3;
 
 /** What an answer makes the account: its basis, and whether its stores trade under the owner's own name. */
 export interface AccountShape { basis: AccountBasis; ownName: boolean }
@@ -215,10 +222,13 @@ async function changeRequirement(db: Db, change: ChangeRow): Promise<{ paperHold
 
 async function readChangePapers(db: Db, change: ChangeRow, now = new Date()): Promise<{ papers: ChangePaper[]; complete: boolean; perStore: Map<string, string[]>; paperHolderId: string }> {
   const { paperHolderId, list, perStore } = await changeRequirement(db, change);
-  const counting = change.status === 'PENDING' ? { withChange: change.id } : {};
+  // [review-2475 F1] A handover's papers are the person named's OWN papers filed FOR THIS handover: a paper they hold from
+  // another account (a company they held before) names that other business, and never counts for this one.
+  const handover = change.kind === 'HOLDER_HANDOVER';
+  const counting = handover ? { onlyChange: change.id, withChange: change.id } : change.status === 'PENDING' ? { withChange: change.id } : {};
   const approved = new Set((await recordEvidenceFor(db, paperHolderId, list, now, counting)).map((r) => r.docType));
   const filed = await db.verificationDocument.findMany({
-    where: { userId: paperHolderId, docType: { in: list }, OR: [{ accountChangeId: null }, { accountChangeId: change.id }] },
+    where: { userId: paperHolderId, docType: { in: list }, ...(handover ? { accountChangeId: change.id } : { OR: [{ accountChangeId: null }, { accountChangeId: change.id }] }) },
     orderBy: { createdAt: 'desc' },
     select: { id: true, docType: true, status: true, state: true, reviewNote: true, accountChangeId: true },
   });
@@ -237,9 +247,17 @@ async function readChangePapers(db: Db, change: ChangeRow, now = new Date()): Pr
   return { papers, complete: papers.every((p) => p.state === 'APPROVED'), perStore, paperHolderId };
 }
 
-export async function viewOfChange(db: Db, change: ChangeRow): Promise<ChangeView> {
-  const { papers, complete } = change.status === 'PENDING' || change.status === 'APPROVED'
+/**
+ * [review-2475 F3] A handover's papers are the person named's: the account holder sees how far each one got, never a
+ * reviewer's note on it or its document id (a refusal note is about a third person). The person named and the console
+ * pass `paperDetails`.
+ */
+export async function viewOfChange(db: Db, change: ChangeRow, opts: { paperDetails?: boolean } = {}): Promise<ChangeView> {
+  const read = change.status === 'PENDING' || change.status === 'APPROVED'
     ? await readChangePapers(db, change) : { papers: [], complete: false };
+  const complete = read.complete;
+  const papers = change.kind === 'HOLDER_HANDOVER' && !opts.paperDetails
+    ? read.papers.map((p) => ({ ...p, note: null, documentId: null })) : read.papers;
   return {
     id: change.id, kind: change.kind, status: change.status, fromOption: change.fromOption, toOption: change.toOption,
     createdAt: change.createdAt.toISOString(), decidedAt: change.decidedAt?.toISOString() ?? null,
@@ -299,6 +317,10 @@ export async function startBusinessTypeChange(prisma: PrismaClient, userId: stri
   });
   if (!owner || owner.vendors.length === 0) throw new AppError(403, 'STAFF_FORBIDDEN', 'Only the account holder can change the business type');
   if (owner.user.status !== 'ACTIVE') throw new AppError(409, 'ACCOUNT_INACTIVE', 'This account is not active.');
+  const since = new Date(Date.now() - 86_400_000);
+  if (await prisma.accountChangeRequest.count({ where: { vendorOwnerId: owner.id, kind: 'BUSINESS_TYPE', createdAt: { gt: since } } }) >= BUSINESS_TYPE_ASKS_PER_DAY) {
+    throw new AppError(429, 'BUSINESS_TYPE_DAILY_LIMIT', 'You can ask to change your business type up to 3 times a day. Try again tomorrow.');
+  }
   const fromOption = currentOptionOf(owner);
   const target = shapeOf(toOption);
   const unchanged = target.basis === owner.accountBasis
@@ -352,11 +374,18 @@ export async function startHandover(prisma: PrismaClient, userId: string, phone:
   }
   if (owner.user.status !== 'ACTIVE') throw new AppError(409, 'ACCOUNT_INACTIVE', 'This account is not active.');
   const since = new Date(Date.now() - 86_400_000);
-  if (await prisma.accountChangeRequest.count({ where: { vendorOwnerId: owner.id, kind: 'HOLDER_HANDOVER', createdAt: { gt: since } } }) >= HANDOVER_STARTS_PER_DAY) {
-    throw new AppError(429, 'HANDOVER_DAILY_LIMIT', 'You can name a new account holder up to 3 times a day. Try again tomorrow.');
+  const started = await prisma.accountChangeRequest.count({ where: { vendorOwnerId: owner.id, kind: 'HOLDER_HANDOVER', createdAt: { gt: since } } });
+  // [review-2475 F8] A number that can't be named leaves a row (never the number), so the tries are counted too.
+  const unnamed = await prisma.auditLog.count({ where: { action: 'HANDOVER_NAME_REFUSED', entity: 'VendorOwner', entityId: owner.id, createdAt: { gt: since } } });
+  if (started >= HANDOVER_STARTS_PER_DAY || started + unnamed >= HANDOVER_TRIES_PER_DAY) {
+    throw new AppError(429, 'HANDOVER_DAILY_LIMIT', 'You have named new account holders too many times today. Try again tomorrow.');
   }
   const target = await prisma.user.findUnique({ where: { phone }, select: { id: true, status: true, tenantId: true, vendorOwner: { select: { id: true } } } });
   if (!target || target.id === userId || target.status !== 'ACTIVE' || target.tenantId !== owner.user.tenantId || target.vendorOwner) {
+    await prisma.$transaction(async (tx) => {
+      await bindTenantTransaction(tx);
+      await tx.auditLog.create({ data: { userId, action: 'HANDOVER_NAME_REFUSED', entity: 'VendorOwner', entityId: owner.id } });
+    });
     throw new AppError(409, 'HANDOVER_PERSON_UNAVAILABLE', 'That number can’t be named. Ask the person to sign in to Swift on their own phone first. Someone who already holds a store account can’t be named.');
   }
   const { refuseReviewAccountRoleGrant } = await import('../review/demo-policy');
@@ -388,7 +417,7 @@ function storeNames(vendors: readonly { name: string }[]): string {
 export async function handoversNaming(db: Db, userId: string): Promise<Array<ChangeView & { storeNames: string[]; basis: VendorAccountBasis }>> {
   const rows = await db.accountChangeRequest.findMany({ where: { newHolderId: userId, kind: 'HOLDER_HANDOVER', status: 'PENDING' }, select: CHANGE_SELECT, orderBy: { createdAt: 'desc' } });
   const out: Array<ChangeView & { storeNames: string[]; basis: VendorAccountBasis }> = [];
-  for (const row of rows) out.push({ ...(await viewOfChange(db, row)), storeNames: row.vendorOwner.vendors.map((v) => v.name), basis: row.vendorOwner.accountBasis });
+  for (const row of rows) out.push({ ...(await viewOfChange(db, row, { paperDetails: true })), storeNames: row.vendorOwner.vendors.map((v) => v.name), basis: row.vendorOwner.accountBasis });
   return out;
 }
 
@@ -407,7 +436,7 @@ export async function acceptHandover(prisma: PrismaClient, userId: string, chang
   const change = await prisma.accountChangeRequest.findFirst({ where: { id: changeId, newHolderId: userId }, select: CHANGE_SELECT });
   if (!change) throw new NotFoundError('AccountChange', changeId);
   if (!won && change.status !== 'PENDING') throw new AppError(409, 'ACCOUNT_CHANGE_DECIDED', 'This handover has already been decided.');
-  return viewOfChange(prisma, change);
+  return viewOfChange(prisma, change, { paperDetails: true });
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -417,16 +446,69 @@ export async function acceptHandover(prisma: PrismaClient, userId: string, chang
 /** The papers filed for a change that will never be approved leave review (waiting) or are withdrawn (approved), in the
  *  same transaction, so nothing of it can count later and the next change may file the same types again. */
 async function closeChangePapers(tx: Prisma.TransactionClient, changeId: string, note: string, by: string): Promise<void> {
-  const papers = await tx.verificationDocument.findMany({ where: { accountChangeId: changeId }, select: { id: true, userId: true, state: true } });
+  await retirePapers(tx, { accountChangeId: changeId }, note, by);
+}
+
+/** Papers leave service in the decision's transaction: approved ones are withdrawn (REVOKED, their records with them),
+ *  waiting ones leave review (EXPIRED). Returns how many. */
+async function retirePapers(tx: Prisma.TransactionClient, where: Prisma.VerificationDocumentWhereInput, note: string, by: string): Promise<number> {
+  const papers = await tx.verificationDocument.findMany({ where, select: { id: true, userId: true, state: true } });
   const now = new Date();
+  let retired = 0;
   for (const paper of papers) {
     if (paper.state === 'COMMITTED') {
       await hopDocState(tx, { id: paper.id, userId: paper.userId }, 'COMMITTED', 'REVOKED', { status: 'REJECTED', reviewedBy: by, reviewedAt: now, reviewNote: `REVOKED: ${note}` });
+      retired += 1;
     } else if (paper.state === 'REVIEW_QUEUED' || paper.state === 'IN_REVIEW' || paper.state === 'INFO_REQUESTED') {
       await hopDocState(tx, { id: paper.id, userId: paper.userId }, paper.state, 'EXPIRED', { reviewNote: note });
       await tx.reviewCase.updateMany({ where: { submissionId: paper.id, closedAt: null }, data: { closedAt: now } });
+      retired += 1;
     }
   }
+  return retired;
+}
+
+/**
+ * [review-2475 F2] A saved card belongs to the person who enrolled it, for their own weekly fee: the old holder's cards on
+ * the account's stores leave service in the handover's transaction (the removeInstrument path: REVOKED, its unsent
+ * charges closed, a charge already handed off finishes and is reconciled), so the new holder is never charged on, or
+ * shown, another person's card. Locked in the order a charge takes: payer -> subscription -> card.
+ */
+async function retireHolderCards(tx: Prisma.TransactionClient, storeIds: readonly string[], holderId: string, by: string, changeId: string): Promise<number> {
+  const subs = await tx.subscription.findMany({ where: { vendorId: { in: [...storeIds] } }, select: { id: true } });
+  if (subs.length === 0) return 0;
+  // [delta D2] An "add a card" the old holder started and has not finished ends here: it can never save their card on
+  // the account (the card rail also refuses a card whose owner is not the payer). A Pay now session is left to settle:
+  // it may already have moved money, and it pays the store's fee.
+  await tx.cardSession.updateMany({
+    where: { subscriptionId: { in: subs.map((s) => s.id) }, userId: holderId, purpose: 'ENROLL', status: { in: ['OPEN', 'UNKNOWN'] } },
+    data: { status: 'CANCELLED', failureCode: 'ACCOUNT_HANDED_OVER', confirmedAt: new Date() },
+  });
+  const cards = await tx.paymentInstrument.findMany({ where: { subscriptionId: { in: subs.map((s) => s.id) }, userId: holderId, status: 'ACTIVE' }, select: { id: true, subscriptionId: true } });
+  if (cards.length === 0) return 0;
+  const { closeUnsentCardIntents } = await import('../billing/billing.service');
+  const { lockSubscriptionPayer } = await import('../subscription/mover-fee-authority');
+  let revoked = 0;
+  for (const card of cards) {
+    await lockSubscriptionPayer(tx, card.subscriptionId);
+    await tx.$queryRaw`SELECT "id" FROM "payment_instruments" WHERE "id" = ${card.id} FOR UPDATE /* account-handover-card */`;
+    const now = new Date();
+    const out = await tx.paymentInstrument.updateMany({ where: { id: card.id, userId: holderId, status: 'ACTIVE' }, data: { status: 'REVOKED', revokedAt: now, revokedBy: by } });
+    if (out.count !== 1) continue;
+    const unsent = await closeUnsentCardIntents(tx, { instrumentId: card.id }, 'CARD_OUT_OF_SERVICE', now);
+    // [delta D4] The fee's own history, as a removal writes it (card-rail removeInstrument).
+    const facts = await tx.paymentInstrument.findUniqueOrThrow({ where: { id: card.id }, select: { brand: true, last4: true, subscription: { select: { currencyCode: true } } } });
+    await tx.billingEvent.create({ data: {
+      subscriptionId: card.subscriptionId, type: 'TIER_CHANGE', currencyCode: facts.subscription.currencyCode, idempotencyKey: `card:revoked:${card.id}`,
+      note: `Card ${facts.brand} ending ${facts.last4} removed: the account was handed over to a new account holder; no card is charged until the new holder adds one or chooses another way to pay`,
+    } });
+    await tx.auditLog.create({ data: {
+      userId: by, action: 'CARD_REVOKED_ACCOUNT_HANDOVER', entity: 'PaymentInstrument', entityId: card.id,
+      changes: { subscriptionId: card.subscriptionId, changeId, status: 'REVOKED', unsentChargesClosed: unsent },
+    } });
+    revoked += 1;
+  }
+  return revoked;
 }
 
 /**
@@ -501,17 +583,6 @@ export async function changeLetterBasis(db: Db, userId: string): Promise<{ basis
 // The seller's legal name (#2476: VendorOwner.sellerLegalName*, typed by the person who approves a registration paper)
 // ---------------------------------------------------------------------------------------------------------------------
 
-/** [R3 · review-2476 F2] The account a paper filed for a change would belong to: its basis is the one a typed legal name
- *  is checked against (a company's or a manager's seller is never a person). A business type change: the basis it asks
- *  for; a handover: the account's own (only a company's or a manager's account is handed over). */
-export async function changeBasisOf(db: Db, changeId: string): Promise<VendorAccountBasis | null> {
-  const change = await db.accountChangeRequest.findUnique({
-    where: { id: changeId }, select: { kind: true, toOption: true, vendorOwner: { select: { accountBasis: true } } },
-  });
-  if (!change) return null;
-  return change.kind === 'BUSINESS_TYPE' && change.toOption ? shapeOf(change.toOption).basis : change.vendorOwner.accountBasis;
-}
-
 export interface TypedLegalName { name: string; at: Date; byId: string; documentId: string }
 export type HeldLegalName = { changeId: string; from: string | null; fromDocumentId: string | null; to: string };
 
@@ -567,12 +638,15 @@ const NO_LEGAL_NAME = { sellerLegalName: null, sellerLegalNameAt: null, sellerLe
  * their own name. The storefront then falls to the store names a person confirmed, or "Ask the store", until a person
  * types a name from a paper again.
  */
-async function planSellerLegalName(db: Db, changeId: string, vendorOwnerId: string) {
+async function planSellerLegalName(db: Db, changeId: string, vendorOwnerId: string, holderAfter: string) {
   const held = await db.accountChangeRequest.findUniqueOrThrow({
     where: { id: changeId }, select: { sellerLegalName: true, sellerLegalNameAt: true, sellerLegalNameById: true, sellerLegalNameDocId: true },
   });
   const account = await db.vendorOwner.findUniqueOrThrow({ where: { id: vendorOwnerId }, select: { sellerLegalName: true, sellerLegalNameDocId: true } });
-  const next = held.sellerLegalName && held.sellerLegalNameDocId ? held : NO_LEGAL_NAME;
+  // [review-2479] A person's own name is never stamped as the seller's: a held name that is one (the account's holder after
+  // the change, or someone named in its letter of authority) is dropped, as if none was typed.
+  const usable = held.sellerLegalName && held.sellerLegalNameDocId && !(await isAccountPersonsName(db, holderAfter, held.sellerLegalName));
+  const next = usable ? held : NO_LEGAL_NAME;
   const effect: SellerLegalNameOnApproval['effect'] =
     account.sellerLegalName === next.sellerLegalName && account.sellerLegalNameDocId === next.sellerLegalNameDocId ? 'KEPT'
       : next.sellerLegalName ? 'SET' : 'CLEARED';
@@ -584,7 +658,7 @@ async function planSellerLegalName(db: Db, changeId: string, vendorOwnerId: stri
 /** On approval, in the decision's transaction (the account's row is locked): planSellerLegalName, applied. Nothing
  *  changed: null. */
 async function settleSellerLegalName(tx: Prisma.TransactionClient, change: ChangeRow, holderAfter: string): Promise<SellerLegalNameMove | null> {
-  const plan = await planSellerLegalName(tx, change.id, change.vendorOwner.id);
+  const plan = await planSellerLegalName(tx, change.id, change.vendorOwner.id, holderAfter);
   if (plan.effect === 'KEPT') return null;
   await tx.vendorOwner.update({ where: { id: change.vendorOwner.id }, data: plan.next });
   return {
@@ -596,7 +670,8 @@ async function settleSellerLegalName(tx: Prisma.TransactionClient, change: Chang
 /** The console's preview of settleSellerLegalName for a change still waiting (a decided change: null). Read-only. */
 export async function sellerLegalNameOnApproval(db: Db, change: ChangeRow): Promise<SellerLegalNameOnApproval | null> {
   if (change.status !== 'PENDING') return null;
-  const plan = await planSellerLegalName(db, change.id, change.vendorOwner.id);
+  const holderAfter = change.kind === 'HOLDER_HANDOVER' && change.newHolderId ? change.newHolderId : change.vendorOwner.userId;
+  const plan = await planSellerLegalName(db, change.id, change.vendorOwner.id, holderAfter);
   return { effect: plan.effect, from: plan.account.sellerLegalName, to: plan.next.sellerLegalName, docType: plan.docType };
 }
 
@@ -624,6 +699,33 @@ export interface ApprovalOutcome {
   revoked?: { userId: string; cleanup: MoverSessionRevocationCleanup };
   /** The account's seller legal name moved (set from this change's paper, or cleared): the caller's trail row. */
   sellerLegalName?: SellerLegalNameMove;
+}
+
+/** [delta D1] A store holder's business papers, whatever business type asked for them: every BUSINESS-bucket type, and
+ *  the account holder's ID (asked only of a company's or a manager's holder). Never a personal ID other roles use. */
+const STORE_BUSINESS_PAPERS: string[] = [...Object.entries(BUCKET_OF).filter(([, bucket]) => bucket === 'BUSINESS').map(([docType]) => docType), ACCOUNT_HOLDER_ID_DOC_TYPE];
+
+/**
+ * [review-2475 G1] The weekly fee's rail after a handover: the old holder's MMG payer number (the phone a push would ask)
+ * is never kept, and a card rail left with no card (the old holder's revoked) is not either. Each such fee goes back to
+ * what a new fee is born with (CASH: the fee is paid through the MMG checkout page), in the fee's history.
+ */
+async function resetHolderFeeRails(tx: Prisma.TransactionClient, storeIds: readonly string[], changeId: string): Promise<number> {
+  const subs = await tx.subscription.findMany({ where: { vendorId: { in: [...storeIds] } }, select: { id: true, billingMethod: true, mmgPayerMsisdn: true, currencyCode: true } });
+  let reset = 0;
+  for (const sub of subs) {
+    const cardLeft = sub.billingMethod === 'CARD' ? await tx.paymentInstrument.count({ where: { subscriptionId: sub.id, status: 'ACTIVE' } }) : 0;
+    const was = sub.mmgPayerMsisdn !== null || sub.billingMethod === 'MOBILE_MONEY' ? 'MMG number' : sub.billingMethod === 'CARD' && cardLeft === 0 ? 'card' : null;
+    if (!was) continue;
+    await tx.$queryRaw`SELECT "id" FROM "subscriptions" WHERE "id" = ${sub.id} FOR UPDATE /* account-handover-rail */`;
+    await tx.subscription.update({ where: { id: sub.id }, data: { billingMethod: 'CASH', mmgPayerMsisdn: null } });
+    await tx.billingEvent.create({ data: {
+      subscriptionId: sub.id, type: 'TIER_CHANGE', currencyCode: sub.currencyCode, idempotencyKey: `rail:handover:${changeId}:${sub.id}`,
+      note: `Billing rail set to CASH: the account was handed over to a new account holder, so the previous holder's ${was} no longer pays the weekly fee; it is paid through the MMG checkout page`,
+    } });
+    reset += 1;
+  }
+  return reset;
 }
 
 const paperWords = (missing: readonly string[]) => missing.map((t) => t.replace(/_/g, ' ')).join(', ');
@@ -671,7 +773,19 @@ export async function approveAccountChange(tx: Prisma.TransactionClient, input: 
     }
     // The seller name customers see [#2473]: a person confirms each store's exact name as the business's (a trader under
     // their own name is named by their own name instead, from the own-name declaration now counting).
-    const confirmed: string[] = [];
+    // [review-2475 F7] A change to "own name" is checked again at the decision, on the stores and papers as they are now:
+    // every such store's name is the holder's own name, and no business or company registration is on file.
+    if (target.ownName) {
+      const holderNames = await tx.user.findUniqueOrThrow({ where: { id: holderBefore }, select: { firstName: true, lastName: true } });
+      const misfit = live.find((s) => {
+        const kind = stores.find((x) => x.id === s.id)?.vendorType;
+        return kind !== undefined && ownNameKind(kind) && !storeNameIsOwnName(s.name, holderNames.firstName, holderNames.lastName);
+      });
+      if (misfit) throw new AppError(409, 'OWN_NAME_MISMATCH', `“${misfit.name.trim()}” is not the account holder’s own name now, so it can’t trade under their own name. Refuse the change.`);
+      if (await validRegistrationRecord(tx, holderBefore)) {
+        throw new AppError(409, 'ALREADY_REGISTERED', 'A business or company registration is on file for this account now, so it can’t trade under a person’s own name. Refuse the change.');
+      }
+    }
     if (!target.ownName) {
       for (const store of live) {
         const shown = input.sellerNames?.[store.id];
@@ -679,18 +793,32 @@ export async function approveAccountChange(tx: Prisma.TransactionClient, input: 
         if (shown.trim() !== store.name.trim()) {
           throw new AppError(409, 'SELLER_NAME_CHANGED', `The store's name is now “${store.name.trim()}”. Check that name, then approve again.`);
         }
-        confirmed.push(store.id);
-      }
-      for (const store of live) {
-        await tx.vendor.update({ where: { id: store.id }, data: { sellerNameCheckedName: store.name.trim(), sellerNameCheckedAt: now, sellerNameCheckedById: input.adminId } });
       }
     }
     await tx.vendorOwner.update({ where: { id: change.vendorOwner.id }, data: { accountBasis: target.basis } });
+    // [review-2479 F6] Switching to or from the own name ends a seller-name confirmation given before (the person
+    // approving confirms again below, where a store name may be confirmed at all).
     for (const store of stores) {
       const ownName = target.ownName && ownNameKind(store.vendorType);
-      if (store.tradesUnderOwnName !== ownName) await tx.vendor.update({ where: { id: store.id }, data: { tradesUnderOwnName: ownName } });
+      if (store.tradesUnderOwnName !== ownName) await tx.vendor.update({ where: { id: store.id }, data: { tradesUnderOwnName: ownName, ...SELLER_NAME_UNCONFIRMED } });
     }
-    await input.audit(tx, change, { fromOption: change.fromOption, toOption: change.toOption, stores: stores.length, sellerNamesConfirmed: confirmed });
+    // The person approving confirms each store's exact name as the business's [#2473]. [COORD ruling 11 Nov 2026 ·
+    // review-2479] Never a person's own name (the holder's, or someone named in the account's letter of authority): such
+    // a store is not stamped (a name never blocks the approval), and the storefront names nobody until the legal name is
+    // typed from a registration paper. A trader under their own name is named by their declaration, never a stamp.
+    const confirmed: string[] = [];
+    const notConfirmed: string[] = [];
+    if (!target.ownName) {
+      for (const store of live) {
+        if (await isAccountPersonsName(tx, holderBefore, store.name.trim())) { notConfirmed.push(store.id); continue; }
+        await tx.vendor.update({ where: { id: store.id }, data: { sellerNameCheckedName: store.name.trim(), sellerNameCheckedAt: now, sellerNameCheckedById: input.adminId } });
+        confirmed.push(store.id);
+      }
+    }
+    await input.audit(tx, change, {
+      fromOption: change.fromOption, toOption: change.toOption, stores: stores.length, sellerNamesConfirmed: confirmed,
+      ...(notConfirmed.length ? { sellerNamesNotConfirmed: notConfirmed, sellerNameNotConfirmedCode: SELLER_NAME_IS_A_PERSON_NOTICE.code } : {}),
+    });
     notices.push((await insertNoticeFor(tx, {
       userId: holderBefore, type: 'SYSTEM_ANNOUNCEMENT', title: 'Business type changed',
       body: 'Swift checked your new papers and changed your business type. Your store kept selling the whole time; nothing else changes.',
@@ -719,11 +847,30 @@ export async function approveAccountChange(tx: Prisma.TransactionClient, input: 
         data: { roles: { set: roles.length ? roles : ['CUSTOMER'] }, ...(old.activeRole === 'VENDOR_OWNER' ? { activeRole: 'CUSTOMER' } : {}) },
       });
     }
-    // Money never follows the old holder: every MMG destination they set (and any change of it still waiting) is
-    // cleared; the new holder sets the company's own, through its usual hold. Customers can pay cash meanwhile. An open
-    // order keeps the number it was placed with (Order.mmgNumberSnapshot).
+    // Money never follows the old holder. The stores' MMG numbers customers pay (and any change of one still waiting) are
+    // cleared; the new holder sets the company's own, through its usual hold, and customers can pay cash meanwhile. An
+    // open order keeps the number it was placed with (Order.mmgNumberSnapshot). The weekly fee's own rail is reset
+    // below (resetHolderFeeRails): the old holder's MMG payer number, and a card rail left with no card, are not kept.
     await tx.vendor.updateMany({ where: { id: { in: storeIds } }, data: { ...VENDOR_MMG_DESTINATION_CLEARED } });
     await closeOpenMmgStagesFor(tx, storeIds);
+    // [review-2475 F2] Nor does a card: the old holder's saved cards on these stores leave service.
+    const cardsRevoked = await retireHolderCards(tx, storeIds, holderBefore, input.adminId, change.id);
+    // [review-2475 G1] Nor the fee's MMG payer number: each fee rail that was the old holder's goes back to a new fee's.
+    const railsReset = await resetHolderFeeRails(tx, storeIds, change.id);
+    // [review-2475 G2] Nor a letter of authority the old holder asked a director to sign: its link ends now.
+    const { cancelLettersForHandover } = await import('./authority-letter/authority-letter.service');
+    const lettersCancelled = await cancelLettersForHandover(tx, { holderId: holderBefore, vendorIds: storeIds, by: input.adminId, changeId: change.id });
+    // [review-2475 F1 · delta D1] The account's papers name this business: they never follow the old holder to another
+    // account (a company that names them next, or a store they open). Every paper of the account's lists they hold leaves
+    // service, AND every business paper they filed as a store's holder under any earlier business type (a registration
+    // from before the account became a company, an own-name declaration, a manager's letter). Their personal IDs
+    // (owner_national_id, national_id) stay: a person's own ID is theirs, and other roles use it.
+    const accountPapers = unionOf(perStore.values());
+    const papersRetired = await retirePapers(tx, { userId: holderBefore, OR: [
+      { role: 'VENDOR_OWNER', docType: { in: accountPapers } },
+      { role: 'VENDOR_OWNER', docType: { in: STORE_BUSINESS_PAPERS } },
+    ] },
+      'the account was handed over to its new account holder; these papers belong to that business', input.adminId);
     // A store phone that is the old holder's own number stops being the store's: the published one is withdrawn, Swift's
     // private contact line becomes the new holder's number.
     for (const store of live) {
@@ -732,11 +879,11 @@ export async function approveAccountChange(tx: Prisma.TransactionClient, input: 
     }
     // The old holder loses access now: every session and device, in this transaction.
     const cleanup = await revokeAllSessionsInTransaction(tx, holderBefore, `account-handover:${change.id}`);
-    await input.audit(tx, change, { stores: stores.length, staffPlacesEnded: staffEnded.count, mmgCleared: storeIds.length, oldHolderSessionsEnded: true });
+    await input.audit(tx, change, { stores: stores.length, staffPlacesEnded: staffEnded.count, mmgCleared: storeIds.length, cardsRevoked, feeRailsReset: railsReset, letterRequestsCancelled: lettersCancelled, oldHolderPapersRetired: papersRetired, oldHolderSessionsEnded: true });
     const names = storeNames(stores);
     notices.push((await insertNoticeFor(tx, {
       userId: newHolder, type: 'SYSTEM_ANNOUNCEMENT', title: 'You now hold the account',
-      body: `Swift checked your papers. You now hold the Swift account for ${names}. Add the business’s MMG number in Account so customers can pay by MMG again.`,
+      body: `Swift checked your papers. You now hold the Swift account for ${names}. Add the business’s MMG number in Account so customers can pay by MMG again.${cardsRevoked > 0 ? ' The previous account holder’s card no longer pays the weekly fee: add your own card, or pay through the MMG checkout page.' : railsReset > 0 ? ' The previous account holder’s MMG number no longer pays the weekly fee: pay it through the MMG checkout page.' : ''}`,
       data: { kind: 'account_handover_completed', changeId: change.id },
     })).id);
     notices.push((await insertNoticeFor(tx, {
@@ -776,6 +923,9 @@ export interface AdminChangeView extends ChangeView {
   holder: { id: string; name: string };
   newHolder: { id: string; name: string } | null;
   decisionReason: string | null;
+  /** [review-2475 F1] Which business the papers name: the legal name customers see now (`account`), and the one a person
+   *  typed from THIS change's registration paper (`change`; null: none typed, so approving clears `account`). */
+  legalName: { account: string | null; change: string | null };
   /** A change waiting: what approving it does to the account's seller legal name (settleSellerLegalName's own rule). */
   sellerLegalNameOnApproval: SellerLegalNameOnApproval | null;
 }
@@ -784,20 +934,22 @@ const personName = (u: { firstName: string | null; lastName: string | null } | n
   [u?.firstName, u?.lastName].filter((x) => x && x.trim()).join(' ') || 'Unnamed';
 
 export async function adminChangeView(db: Db, change: ChangeRow): Promise<AdminChangeView> {
-  const view = await viewOfChange(db, change);
-  const [stores, holder, newHolder, legalName] = await Promise.all([
+  const view = await viewOfChange(db, change, { paperDetails: true });
+  const [stores, holder, newHolder, names, onApproval] = await Promise.all([
     db.vendor.findMany({ where: { ownerId: change.vendorOwner.id }, orderBy: { createdAt: 'asc' }, select: { id: true, name: true, vendorType: true, status: true, sellerNameCheckedName: true } }),
     db.user.findUnique({ where: { id: change.holderId ?? change.requestedById }, select: { id: true, firstName: true, lastName: true } }),
     change.newHolderId ? db.user.findUnique({ where: { id: change.newHolderId }, select: { id: true, firstName: true, lastName: true } }) : null,
+    db.accountChangeRequest.findUniqueOrThrow({ where: { id: change.id }, select: { sellerLegalName: true, vendorOwner: { select: { sellerLegalName: true } } } }),
     sellerLegalNameOnApproval(db, change),
   ]);
   return {
+    legalName: { account: names.vendorOwner.sellerLegalName, change: names.sellerLegalName },
     ...view, vendorOwnerId: change.vendorOwner.id, accountBasis: change.vendorOwner.accountBasis,
     stores: stores.map((s) => ({ ...s, vendorType: String(s.vendorType), status: String(s.status) })),
     holder: { id: holder?.id ?? change.requestedById, name: personName(holder) },
     newHolder: newHolder ? { id: newHolder.id, name: personName(newHolder) } : null,
     decisionReason: change.decisionReason,
-    sellerLegalNameOnApproval: legalName,
+    sellerLegalNameOnApproval: onApproval,
   };
 }
 

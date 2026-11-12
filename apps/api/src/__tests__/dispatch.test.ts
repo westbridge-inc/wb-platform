@@ -922,7 +922,7 @@ describe('The offer cascade', () => {
       where: { userId: customerId, title: 'No riders available right now' },
     });
     const vendorNote = await app.prisma.notification.findFirst({
-      where: { userId: vendorOwnerUserId, title: 'No riders available' },
+      where: { userId: vendorOwnerUserId, title: 'No rider found' }, // [PROD-RIDER-TEST (a)1] "Deliver it yourselves?"
     });
     expect(customerNote).not.toBeNull();
     expect(vendorNote).not.toBeNull();

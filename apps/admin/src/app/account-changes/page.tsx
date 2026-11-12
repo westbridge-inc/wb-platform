@@ -98,7 +98,7 @@ function AccountChangeRow({ change }: { change: AccountChange }) {
         {change.kind === 'HOLDER_HANDOVER' ? (
           <p className="rc-muted">
             {change.accepted ? `${change.newHolder?.name ?? 'The person named'} said yes and files their own papers.` : `${change.newHolder?.name ?? 'The person named'} has not said yes yet.`}
-            {' '}On approval the account moves to them for every branch, the old holder is signed out everywhere, and the stores&rsquo; MMG numbers are cleared for the new holder to set.
+            {' '}On approval the account moves to them for every branch, the old holder is signed out everywhere, their papers for this business and their saved cards stop counting, and the stores&rsquo; MMG numbers are cleared for the new holder to set.
           </p>
         ) : null}
       </div>
@@ -111,6 +111,7 @@ function AccountChangeRow({ change }: { change: AccountChange }) {
         ))}
       </ul>
       {!change.papersComplete ? <p className="rc-muted">Approve each paper in Documents before deciding the change.</p> : null}
+      <LegalNameLine legalName={change.legalName} />
       {change.sellerLegalNameOnApproval ? (
         <div role="note" aria-label="Seller legal name on approval">
           <p className="font-semibold">Seller legal name</p>
@@ -138,5 +139,24 @@ function AccountChangeRow({ change }: { change: AccountChange }) {
         <button type="button" className="rc-btn" disabled={busy || reason.trim().length === 0} onClick={() => void decide(false)}>Refuse</button>
       </div>
     </article>
+  );
+}
+
+/** [review-2475 F1] Which business the papers name, so a paper naming another business is seen before approving. */
+function LegalNameLine({ legalName }: { legalName: AccountChange['legalName'] }) {
+  if (!legalName) return null;
+  if (legalName.change) {
+    return (
+      <p aria-label="Business named on the papers">
+        Business named on this change&rsquo;s papers: &ldquo;{legalName.change}&rdquo;. Customers see it as the seller once you approve
+        {legalName.account ? <> (now: &ldquo;{legalName.account}&rdquo;)</> : null}. If it is not this account&rsquo;s business, refuse.
+      </p>
+    );
+  }
+  return (
+    <p aria-label="Business named on the papers" className="rc-muted">
+      No business name was typed from this change&rsquo;s papers.
+      {legalName.account ? <> Approving removes &ldquo;{legalName.account}&rdquo; as the seller&rsquo;s legal name until a person types one from a paper.</> : null}
+    </p>
   );
 }

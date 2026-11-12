@@ -1,3 +1,4 @@
+import { loadStoreMoney } from '../billing/store-money';
 import { persistHandoverNotice, drainHandoverNotices } from '../handover/handover-notice';
 import { drainDeliveryLifts, liftAfterDelivery, persistDeliveryLift } from '../safety/delivery-lift';
 import { authorizeHandover, preflightHandoverDoor, verifyHandoverDecision, type HandoverDecision, type HandoverFailure } from '../handover/handover-decision';
@@ -34,6 +35,7 @@ import { groupLinesByVendor, planFulfillment, planVendorGroup, priceBasket, pric
 import { cancellationVerdict, mmgPaidCancelMessage, readAssignedAt, readNoMoverFound } from './cancel-policy';
 import { readStoreCannotHandOver } from '../vendor/store-hold';
 import { pickupCancelledStoreNotice } from './pickup-not-collected';
+import { noRiderCancelledStoreNotice, storeNoticeRecipients } from './no-rider-fallback';
 import { readTooLateToDeliver } from '../dispatch/rescue';
 import { readOrderSize, DEFAULT_LOAD_BANDS } from '../../utils/load';
 import { vehicleTypesForPackageSize } from '../../config/vehicle-classes';
@@ -2239,7 +2241,8 @@ export class OrderService {
               vendorOwner.userId,
               order.orderNumber,
               order.items.length,
-              Number(order.totalAmount),
+              // [STORE-MONEY] The store's goods money, never the customer's total (rider's fee + tip). A failed read falls back to the goods [REVIEW-2487 F4].
+              (await loadStoreMoney(this.prisma, order.id).catch(() => null)) ?? Number(order.subtotalCustomer),
               order.id,
               // [Q10] The same cut-off the auto-cancel row above was armed with.
               vendorRespondBy(order, { slaMinutes: queueTiming.vendorResponseSlaMinutes, holdMs: holdWindowMs() ?? 0 }),
@@ -3156,6 +3159,19 @@ export class OrderService {
       }
     }
 
+    // [PROD-RIDER-TEST (a)3] The store made (or is making) this order and was asked to deliver it: it is told plainly
+    // that the customer cancelled after no rider was found (the board's card turns cancelled by the socket above).
+    if (noMoverFree && order.vendorId && !heldNow && order.orderType !== 'COURIER' && order.orderType !== 'TAXI') {
+      // [review S4-2] Every store device the new-order alert rings (storeNoticeRecipients).
+      const ownerUserId = (await this.prisma.vendor.findUnique({ where: { id: order.vendorId }, select: { owner: { select: { userId: true } } } }))?.owner.userId;
+      for (const userId of await storeNoticeRecipients(this.prisma, order.vendorId, ownerUserId)) {
+        await this.notifications.send({
+          userId, type: 'ORDER_UPDATE', audience: 'business', ...noRiderCancelledStoreNotice(order.orderNumber),
+          data: { orderId, status: 'CANCELLED', kind: 'no_rider_cancelled' }, dedupeKey: `no-rider:cancelled:${orderId}`,
+        }).catch(() => undefined);
+      }
+    }
+
     // [Item 64] The plain reason, when the platform found nobody to do the job.
     // [owner #46/#52] ...and when it was running very late.
     const noun = cancelNoun(order);
@@ -3420,7 +3436,8 @@ export class OrderService {
               vendorOwner.userId,
               order.orderNumber,
               order.items.length,
-              Number(order.totalAmount),
+              // [STORE-MONEY] The store's goods money, never the customer's total (rider's fee + tip). A failed read falls back to the goods [REVIEW-2487 F4].
+              (await loadStoreMoney(this.prisma, order.id).catch(() => null)) ?? Number(order.subtotalCustomer),
               order.id,
               vendorRespondBy(order, { slaMinutes, holdMs: holdWindowMs() ?? 0 }),
             );

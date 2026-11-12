@@ -121,7 +121,9 @@ export async function sellerNameViews(db: Db, vendorIds: readonly string[], now 
   const accounts = [...new Set(stores.map((s) => s.owner.userId))];
   const rows = accounts.length ? (await db.documentRecord.findMany({
     where: { accountId: { in: accounts }, status: 'VALID', OR: validExpiryOr('expiresOn', now),
-      docType: { in: [...IDENTITY_DOC_TYPES, ...REGISTRATION_DOC_TYPES, OWN_NAME_DOC_TYPE] }, submission: { purgedAt: null } },
+      docType: { in: [...IDENTITY_DOC_TYPES, ...REGISTRATION_DOC_TYPES, OWN_NAME_DOC_TYPE] },
+      // [review-2475 F5] the storefront's own rule: a paper waiting for its account change names nobody yet
+      submission: { purgedAt: null, ...liveSubmissionWhere() } },
     select: { tenantId: true, accountId: true, docType: true, subjectId: true, submissionId: true,
       submission: { select: { userId: true, docType: true, subjectId: true } } },
   })).filter((r) => r.docType === r.submission.docType && r.subjectId === r.submission.subjectId && r.submission.userId === r.accountId) : [];

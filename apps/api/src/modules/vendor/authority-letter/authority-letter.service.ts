@@ -111,6 +111,27 @@ export async function cancelChangeLetters(tx: Prisma.TransactionClient, input: {
   return cancelled;
 }
 
+/**
+ * [review-2475 G2] A handover ends the old holder's letter requests for the account's stores, in the handover's
+ * transaction: the link stops working (CANCELLED, keys cleared), each audited, so a director can no longer sign a letter
+ * for a person who no longer holds the account. A signature being filed right now is left to its own check (fileSigned
+ * refuses a store the requester no longer holds).
+ */
+export async function cancelLettersForHandover(tx: Prisma.TransactionClient, input: { holderId: string; vendorIds: readonly string[]; by: string; changeId: string; now?: Date }): Promise<number> {
+  const now = input.now ?? new Date();
+  const open = await tx.authorityLetterRequest.findMany({
+    where: { userId: input.holderId, vendorId: { in: [...input.vendorIds] }, status: { in: ['SENT', 'EXPIRED'] }, ...notBeingSigned(now) }, select: { id: true, status: true },
+  });
+  let cancelled = 0;
+  for (const r of open) {
+    const moved = await tx.authorityLetterRequest.updateMany({ where: { id: r.id, status: r.status, ...notBeingSigned(now) }, data: { status: 'CANCELLED', endedAt: now, signingKeyHash: null, codeHash: null } });
+    if (moved.count !== 1) continue;
+    await audit(tx, LETTER_AUDIT.cancelled, r.id, input.by, { reason: 'account_handed_over', changeId: input.changeId });
+    cancelled += 1;
+  }
+  return cancelled;
+}
+
 /** What the account holder sees of their request (their Documents page). */
 export interface LetterRequestView {
   id: string;
@@ -469,6 +490,12 @@ export class AuthorityLetterService {
   private async fileSigned(r: AuthorityLetterRequest, signature: { png: Buffer; sha256: string }, input: { ip: string; userAgent: string | null; log?: FastifyBaseLogger; now: Date }): Promise<void> {
     const holder = await runAsSystem('authority-letter-signing', () => this.prisma.user.findUnique({ where: { id: r.userId }, select: { tenantId: true } }));
     if (!holder) throw linkNotValid();
+    // [review-2475 G2] Only for the store it was asked from, while the person who asked still holds it: never another
+    // store of theirs (after a handover, their next account), and checked before anything is rendered or stored.
+    const vendor = await runWithTenant(holder.tenantId, () => this.prisma.vendor.findFirst({
+      where: { id: r.vendorId, owner: { userId: r.userId } }, select: { id: true, vendorType: true },
+    }));
+    if (!vendor) throw linkNotValid();
     // The key is acquired before anything is written (as every document store).
     const dek = generateDek();
     let wrappedDek: Buffer;
@@ -497,11 +524,7 @@ export class AuthorityLetterService {
       mimeType: 'application/pdf', sizeBytes: pdf.length, sha256: createHash('sha256').update(pdf).digest('hex'), createdBy: r.userId,
     } });
     await recordUnscannedUpload(this.prisma, scan, { surface: 'verification', fileKey: fileUrl, buffer: pdf, sealed: true, storage });
-    // The store it was asked from (its type names the checklist), else the account's first store if that one is gone.
-    const vendor = await runWithTenant(holder.tenantId, async () => (await this.prisma.vendor.findFirst({
-      where: { id: r.vendorId, owner: { userId: r.userId } }, select: { id: true, vendorType: true },
-    })) ?? this.prisma.vendor.findFirst({ where: { owner: { userId: r.userId } }, orderBy: { createdAt: 'asc' }, select: { id: true, vendorType: true } }));
-    if (!vendor) throw linkNotValid();
+    // The store it was asked from: its type names the checklist.
     const role = vendor.vendorType as 'RESTAURANT' | 'SUPERMARKET' | 'STORE' | 'SERVICE';
     const verification = new VerificationService(this.prisma, new NotificationService(this.prisma, this.app.io), getKycProvider());
     const doc = await runWithTenant(holder.tenantId, () => verification.submitDocument(r.userId, role, r.docType, fileUrl, LEGAL_VERSION));
