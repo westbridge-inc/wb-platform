@@ -82,7 +82,8 @@ describe('[row 658] the weekly fee is payable in the app or on swiftgy.com', () 
     const fee = /<p>You pay Swift a flat weekly subscription[\s\S]*?<\/p>/.exec(doc)?.[0];
     expect(fee).toContain("payable in the Swift app or on swiftgy.com through MMG's checkout, by card where the app offers it, or directly to Westbridge Inc., in person by cash or cheque, or by bank transfer. A cheque counts only once it has cleared. A payment counts once Swift records it. You get a receipt for every payment. Never pay the weekly fee through an agent or anyone else.");
     expect(fee).toContain('If you pay twice or pay too much through MMG, Swift may return');
-    expect(fee).toContain('within 14 days, to the account you paid from or, if you paid in person, by a way you and Swift agree, records the refund');
+    // [LEGAL-CARDS · 2026-11-10] the card a week was paid with is named too (legal-cards-2026-11-10.unit.test.ts).
+    expect(fee).toContain('within 14 days, to the account you paid from, to the card you paid with, or, if you paid in person, by a way you and Swift agree, records the refund');
     // [REVIEW-G18 S3-2 + S4-3] the rise and the cut are told apart where the change is first named; a cut never reaches a week paid or charged.
     expect(fee).toContain('Swift may change the weekly fee. If it goes up, we will tell you in the app at least 14 days before the change, and the new fee applies from your first weekly fee due after that date.');
     // [2026-11-06 · owner 6 Nov] A cut also reaches weeks paid ahead (money paid ahead is charged at the rate of the week it pays).
@@ -238,7 +239,7 @@ describe('[5 Nov read] what ships now, in the words', () => {
 
 describe('classification', () => {
   it('2026-11-05 is material, and classed once (served now under 2026-11-06, partner-only)', () => {
-    expect(LEGAL_VERSION).toBe('2026-11-09.2'); // [LEGAL-CALLS · owner 9 Nov 2026] served now under 2026-11-09 (in-app calls in the Privacy Policy: material)
+    expect(LEGAL_VERSION).toBe('2026-11-10'); // [LEGAL-CALLS · owner 9 Nov 2026] served now under 2026-11-09 (in-app calls in the Privacy Policy: material)
     expect(MATERIAL_CHANGES.filter((c) => c.version === '2026-11-05')).toHaveLength(1);
     expect(NON_MATERIAL_CHANGES.map((c) => c.version)).not.toContain('2026-11-05');
   });
