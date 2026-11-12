@@ -20,6 +20,7 @@ import { ActivationChecklist } from '@/components/mc/ActivationChecklist';
 import { billDateLabel } from '@/lib/bill-date';
 import { chargedWeeklyFee } from '@/lib/weekly-fee';
 import { gyDate } from '@/lib/dates';
+import { AssistedSetupPanel } from './assisted-setup';
 
 // ---------------------------------------------------------------------------
 // [MISSION CONTROL · PR-1 pilot] One store, the whole story — and every action
@@ -585,6 +586,9 @@ export default function VendorDetailPage({ params }: { params: Promise<{ id: str
           ) : (
             <QueryFailed error={checklist.error} what="the document checklist" onRetry={() => void checklist.refetch()} retrying={checklist.isFetching} />
           )}
+          {/* [ASSISTED SETUP · owner 12 Nov 2026] Papers, menu and photos added for the store, with its OK. */}
+          <AssistedSetupPanel vendorId={v.id} />
+
           <section aria-labelledby="recent-orders" className="space-y-2">
             <h2 id="recent-orders" className="mc-label">Recent orders</h2>
             <DataTable<RecentOrder>

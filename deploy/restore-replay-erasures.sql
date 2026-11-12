@@ -167,6 +167,11 @@ INSERT INTO restore_replay_changes SELECT 'swift calls', count(*) FROM c;
 WITH c AS (DELETE FROM authority_letter_requests t USING restore_closed_ids x WHERE t."userId" = x.id
   AND NOT EXISTS (SELECT 1 FROM restore_kept_rows k WHERE k.tbl = 'authority_letter_requests' AND k.id = t.id::text) RETURNING 1)
 INSERT INTO restore_replay_changes SELECT 'authority letters', count(*) FROM c;
+-- [ASSISTED SETUP] The OKs a closed account's stores gave for Swift to set them up (a store person's name; deleted with
+-- the account; their action rows go with them).
+WITH c AS (DELETE FROM assisted_setup_consents t USING restore_closed_ids x WHERE t."holderId" = x.id
+  AND NOT EXISTS (SELECT 1 FROM restore_kept_rows k WHERE k.tbl = 'assisted_setup_consents' AND k.id = t.id::text) RETURNING 1)
+INSERT INTO restore_replay_changes SELECT 'assisted setup consents', count(*) FROM c;
 
 -- 6. Rating text by or about a closed account (scores stay, the words go).
 WITH c AS (

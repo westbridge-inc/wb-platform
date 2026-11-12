@@ -16,6 +16,7 @@ export {
 } from '../../../mobile/src/components/onboarding/documentConsentRecord';
 export type { PoliceClearanceWords } from '../../../mobile/src/components/onboarding/documentConsentRecord';
 export { FOOD_HANDLERS_DOC } from '../../../mobile/src/components/onboarding/foodHandlers';
+export { ADDED_BY_SWIFT_REPLACE_HINT, addedBySwiftLine, photoAddedBySwiftLine } from '../../../mobile/src/lib/assistedSetupCopy';
 export { DOCUMENT_CONSENT_TEXT } from '../../../mobile/src/lib/uploadConsentCopy';
 export {
   OWN_NAME_DECLARATION_V1, OWN_NAME_DECLARATION_VERSION, OWN_NAME_HINT, OWN_NAME_TICK, ownNameApplies, ownNameDeclarationDisplay, ownNameOfferFits, ownNameSigningFor,
@@ -84,6 +85,8 @@ export interface StoreDocumentRow {
   reviewNote: string | null;
   createdAt: string;
   replaced?: boolean;
+  /** [ASSISTED SETUP] A Swift admin added this paper for the store with its OK (the date is createdAt). */
+  addedBySwift?: boolean;
 }
 
 /** GET /verification/status?role=<store type>: the fields the page reads (others are passed through untouched). */
