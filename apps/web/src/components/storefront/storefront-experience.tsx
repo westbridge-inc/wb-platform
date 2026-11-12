@@ -28,17 +28,9 @@ import {
 } from '@/lib/customer';
 import type { StorefrontDetail } from '@/lib/api';
 import { LIVE_MENU_MAX_AGE_MS, type ServerStoreMenu } from '@/lib/browse-keys';
-import {
-  OptionSelectionError,
-  basePrice,
-  fromPrice,
-  isPlainLine,
-  opensChoices,
-  requiredChoiceSoldOut,
-  requiredCount,
-  selectionPrice,
-  validateSelectedOptions,
-} from '@/lib/menu-options';
+// [W6 · size] First paint lists items with the light rules only; the API's option engine (validateSelectedOptions,
+// selectionPrice, OptionSelectionError from lib/menu-options) arrives with the item sheet (`itemSheetModule`).
+import { basePrice, fromPrice, isPlainLine, opensChoices, requiredChoiceSoldOut, requiredCount } from '@/lib/menu-prices';
 import { useOptionalCustomerSession } from '@/components/customer-session';
 import { useOrderingContext } from '@/components/ordering-context';
 import { MODE_LOCKED } from '@/lib/ordering-mode-lock';
@@ -114,7 +106,7 @@ const ITEM_SHEET_UNAVAILABLE = 'Swift could not open this item. Check your conne
 // lie a price can tell. A non-finite figure now renders an em-dash; a genuine
 // 0 still renders "GY$0". Same guarantee as `money()` on the vendor side.
 // [W-13] One parser, one em-dash. `null` now reaches here from itemPrice and
-// optionPrice — a price the server never sent, which must never render as free.
+// the sheet's selectionPrice — a price the server never sent, which must never render as free.
 // [WEB-REDESIGN] Customer prices read like the rest of the app (and the phone
 // app): `$2,500`, in Guyana dollars as the footer states.
 const gyMoney = (value: unknown) => formatAmount(value, '$');
@@ -172,7 +164,6 @@ function liveCatalog(store: StorefrontDetail, vendor: VendorDetail): DisplayVend
 // selection with the API's own resolver and judges it with the API's own
 // validator (the same one cart add, cart update and checkout run).
 const itemPrice = (item: DisplayItem): number | null => basePrice(item);
-const optionPrice = (item: DisplayItem, selected: Record<string, string[]>): number | null => selectionPrice(item, selected);
 
 function selectedDefaults(groups: OptionGroup[]): Record<string, string[]> {
   return Object.fromEntries(
@@ -189,7 +180,7 @@ function selectedDefaults(groups: OptionGroup[]): Record<string, string[]> {
 /** What the person is told when the validator refuses their choices. [STORE-WORDS] `catalogue` is the
  *  store's own word for its items ("the menu" only for a restaurant). */
 function choiceProblem(item: DisplayItem, error: unknown, catalogue: string): { message: string; groupId: string | null } {
-  if (!(error instanceof OptionSelectionError)) return { message: `These choices have changed. Close this panel and check ${catalogue} again.`, groupId: null };
+  if (!itemSheetModule || !(error instanceof itemSheetModule.OptionSelectionError)) return { message: `These choices have changed. Close this panel and check ${catalogue} again.`, groupId: null };
   const group = (item.optionGroups ?? []).find((candidate) => candidate.name === error.groupName) ?? null;
   if (error.reason === 'OPTION_REQUIRED' && group) {
     if (!group.options.some((option) => option.isAvailable !== false)) return { message: `“${group.name}” is sold out right now.`, groupId: group.id };
@@ -664,8 +655,12 @@ export function StorefrontExperience({ store, returnPath, fromQr = false, initia
 
   const addLocal = async (item: DisplayItem, quantity: number, selectedOptions: Record<string, string | string[]>) => {
     try {
-      const { addGuestLine, clearGuestBasket } = await import('@/lib/basket');
-      const unitPrice = selectionPrice(item, Object.fromEntries(Object.entries(selectedOptions).map(([k, v]) => [k, typeof v === 'string' ? [v] : v])));
+      const [{ addGuestLine, clearGuestBasket }, sheet] = await Promise.all([
+        import('@/lib/basket'),
+        // [W6 · size] The engine that prices the line arrives with the sheet (fetched right after first paint).
+        loadItemSheet().catch(() => { throw new Error(ITEM_SHEET_UNAVAILABLE); }),
+      ]);
+      const unitPrice = sheet.selectionPrice(item, Object.fromEntries(Object.entries(selectedOptions).map(([k, v]) => [k, typeof v === 'string' ? [v] : v])));
       if (unitPrice === null) throw new Error('Check the live item price before adding it.');
       const result = addGuestLine({ vendorId: catalog.id, storeSlug: store.slug, vendorName: catalog.name, itemId: item.id,
         name: item.name, quantity, unitPrice, selectedOptions, fulfillment: item.fulfillment, returnPath });
@@ -823,9 +818,12 @@ export function StorefrontExperience({ store, returnPath, fromQr = false, initia
 
   const confirmOptions = () => {
     if (!modalItem) return;
+    // The sheet is on screen only once its code (and the engine with it) has arrived.
+    const sheet = itemSheetModule;
+    if (!sheet) { setModalError(ITEM_SHEET_UNAVAILABLE); return; }
     if (cartHydrationPending) { setModalError('Your cart is still loading. Keep this item open and try again.'); return; }
     const liveItem = categoryItems.find((item) => item.id === modalItem.id);
-    if (!orderable || !liveItem?.isAvailable || liveItem.fulfillment !== 'DELIVERY' || optionPrice(liveItem, selectedOptions) === null) {
+    if (!orderable || !liveItem?.isAvailable || liveItem.fulfillment !== 'DELIVERY' || sheet.selectionPrice(liveItem, selectedOptions) === null) {
       setModalError(`This item is no longer verified as orderable on the live ${catalogueNoun}. Close this panel and check ${words.catalogue} again.`);
       return;
     }
@@ -833,7 +831,7 @@ export function StorefrontExperience({ store, returnPath, fromQr = false, initia
     // cart add, cart update and checkout run) must accept the selection first.
     let selected: Record<string, string | string[]>;
     try {
-      const validated = validateSelectedOptions(liveItem, selectedOptions).selection;
+      const validated = sheet.validateSelectedOptions(liveItem, selectedOptions).selection;
       // The shape the apps send: one id for a pick-one group, a list otherwise.
       selected = Object.fromEntries(Object.entries(validated).map(([groupId, ids]) => {
         const single = (liveItem.optionGroups?.find(group => group.id === groupId)?.maxSelect ?? 1) <= 1;
@@ -872,7 +870,7 @@ export function StorefrontExperience({ store, returnPath, fromQr = false, initia
     ? `${catalog.displayRating.toFixed(1)} ${catalog.ratingBucket}`.trim()
     : catalog.ratingCount > 0 ? `New ${catalog.ratingBucket}`.trim() : 'No ratings yet';
   const storeMeta = [catalog.cuisineTypes?.[0], storeLabel, rating].filter(Boolean).join(' · ');
-  const modalUnitPrice = modalItem ? optionPrice(modalItem, selectedOptions) : null;
+  const modalUnitPrice = modalItem && itemSheetModule ? itemSheetModule.selectionPrice(modalItem, selectedOptions) : null;
 
   return (
     <div ref={page} className={styles.page} style={verticalStyle}>
