@@ -30,12 +30,12 @@ const PAPER_WORDS: Record<AccountChange['papers'][number]['state'], string> = {
  * branch), said plainly before a person decides. The effect is the server's own (the approval's rule, read without
  * writing: sellerLegalNameOnApproval); this only puts it in words.
  */
-function legalNameOnApprovalWords(preview: SellerLegalNameOnApproval, change: Pick<AccountChange, 'kind'>, confirmsNames: boolean): string {
+function legalNameOnApprovalWords(preview: SellerLegalNameOnApproval, change: Pick<AccountChange, 'kind' | 'toOption'>, confirmsNames: boolean): string {
   // [review-2475 delta S4-2] A name typed from the change's paper that is a person's is never promised to customers.
   const personNote = preview.heldNameIsAPerson ? 'The name typed from this change’s registration paper is a person’s name, so approval does not use it. ' : '';
   return personNote + effectWords(preview, change, confirmsNames);
 }
-function effectWords(preview: SellerLegalNameOnApproval, change: Pick<AccountChange, 'kind'>, confirmsNames: boolean): string {
+function effectWords(preview: SellerLegalNameOnApproval, change: Pick<AccountChange, 'kind' | 'toOption'>, confirmsNames: boolean): string {
   const paper = preview.docType ? docLabel(preview.docType) : 'registration paper';
   if (preview.effect === 'SET') {
     if (preview.from === null) return `Approval sets it to “${preview.to}”, as a person typed it from this change’s ${paper}.`;
@@ -47,7 +47,12 @@ function effectWords(preview: SellerLegalNameOnApproval, change: Pick<AccountCha
   }
   const typedFor = change.kind === 'BUSINESS_TYPE' ? 'the old business type' : 'the old account holder’s papers';
   return `Approval clears “${preview.from ?? ''}”: it was typed for ${typedFor}${preview.heldNameIsAPerson ? '' : ', and nobody typed a name from this change’s registration paper'}. `
-    + `Customers then see “Ask the store” as the seller until a person confirms a name${confirmsNames ? ' (ticking each store’s name below does that)' : ''}.`;
+    // [review-2480 B S4-2] What customers then see, by the storefront's own order: an own-name trader's own name; else each
+    // store's confirmed name; else "Ask the store". A tick confirms a store's name only when it is not a person's.
+    + (change.kind === 'BUSINESS_TYPE' && change.toOption === 'OWN_NAME'
+      ? 'Customers then see the owner’s own name as the seller (from the own-name declaration).'
+      : 'Customers then see each store’s confirmed name as the seller, or “Ask the store” for a store with none, until a person types a legal name from a registration paper'
+        + `${confirmsNames ? ' (ticking a store’s name below confirms it, unless it is a person’s name)' : ''}.`);
 }
 
 /** [review-2475 delta S4-2] The approval's answer: what it did not confirm, by store name, with the server's reason. */
@@ -96,6 +101,8 @@ function AccountChangeRow({ change, onApproved }: { change: AccountChange; onApp
   // A change to anything but "own name" names the seller by each store's name: the reviewer confirms each one they see.
   const namesToConfirm = change.kind === 'BUSINESS_TYPE' && change.toOption !== 'OWN_NAME' ? change.stores : [];
   const namesReady = namesToConfirm.every((s) => confirmed[s.id]);
+  // [review-2480 B S4-1] A handover confirms no name, but ends a confirmation that is a person's: shown before deciding.
+  const endsOnHandover = change.kind === 'HOLDER_HANDOVER' ? change.stores.filter((s) => s.nameIsAPerson) : [];
   const handoverReady = change.kind !== 'HOLDER_HANDOVER' || change.accepted === true;
   const canApprove = change.papersComplete && namesReady && handoverReady && reason.trim().length > 0 && !busy;
   const decide = async (approve: boolean) => {
@@ -145,6 +152,15 @@ function AccountChangeRow({ change, onApproved }: { change: AccountChange; onApp
           <p className="rc-muted">{legalNameOnApprovalWords(change.sellerLegalNameOnApproval, change, namesToConfirm.length > 0)}</p>
         </div>
       ) : null}
+      {endsOnHandover.length ? (
+        <div role="note" aria-label="Seller names approval ends" className="space-y-1">
+          {endsOnHandover.map((s) => (
+            <p key={s.id} className="rc-muted">
+              {s.name}: its confirmed seller name &ldquo;{s.sellerNameCheckedName ?? s.name}&rdquo; is a person&rsquo;s name, so approval ends it; customers then see the account&rsquo;s legal name if one is set, otherwise &ldquo;Ask the store&rdquo;.
+            </p>
+          ))}
+        </div>
+      ) : null}
       {namesToConfirm.length ? (
         <fieldset className="space-y-1">
           <legend className="font-semibold">Seller name customers will see</legend>
@@ -152,7 +168,7 @@ function AccountChangeRow({ change, onApproved }: { change: AccountChange; onApp
             <label key={s.id} className="flex gap-2 items-start">
               <input type="checkbox" checked={!!confirmed[s.id]} onChange={(e) => setConfirmed((c) => ({ ...c, [s.id]: e.target.checked }))} />
               {s.nameIsAPerson
-                ? <span>&ldquo;{s.name}&rdquo; is a person&rsquo;s name: approval does not confirm it as the seller&rsquo;s name; customers see &ldquo;Ask the store&rdquo; until the legal name is typed from the registration paper</span>
+                ? <span>&ldquo;{s.name}&rdquo; is a person&rsquo;s name: approval does not confirm it as the seller&rsquo;s name; customers see the account&rsquo;s legal name if one is set, otherwise &ldquo;Ask the store&rdquo;</span>
                 : <span>&ldquo;{s.name}&rdquo; is the business&rsquo;s name on its papers</span>}
             </label>
           ))}

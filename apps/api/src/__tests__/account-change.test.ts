@@ -1146,6 +1146,10 @@ describe('[review-2475 delta S4-1] a handover never makes the old holder\'s own 
       expect(await store(id), id).toMatchObject({ sellerNameCheckedName: null, sellerNameCheckedAt: null, sellerNameCheckedById: null, status: 'ACTIVE' });
     }
     expect(await store(branches.business)).toMatchObject({ sellerNameCheckedName: `Persaud Chicken ${RUN} East`, sellerNameCheckedById: adminId });
+    // [review-2480 B S4-5] every store stays live: the projection never marks one unverified (status alone would not show it)
+    for (const id of [o.vendorId, branches.newHolders, branches.oldHolders, branches.business]) {
+      expect(await store(id), id).toMatchObject({ status: 'ACTIVE', isVerified: true, acceptingOrders: true });
+    }
     const audit = await system(() => app.prisma.auditLog.findFirstOrThrow({ where: { entityId: changeId, action: 'APPROVE_ACCOUNT_HANDOVER' } }));
     expect(audit.changes).toMatchObject({ sellerNamesNotConfirmed: [branches.newHolders, branches.oldHolders].sort(), sellerNameNotConfirmedCode: 'SELLER_NAME_IS_A_PERSON' });
   });
@@ -1170,6 +1174,24 @@ describe('[review-2475 delta S4-2] the account-change console reads which names 
     expect(answer.sellerNamesNotConfirmed.message).not.toContain('Ramdin');
     expect(answer.sellerLegalNameNotUsed).toBeNull();
     expect((await store(o.vendorId)).sellerNameCheckedName).toBeNull();
+  });
+
+  it('[review-2480 B S3-1] a legacy confirmation that is the holder\'s name ends at a business type change: the storefront never names the person', async () => {
+    const o = await person('Ravi', 'Persaud');
+    await namedStore(o, 'OWNER', 'Persaud Trading');
+    // a stamp written before #2479 refused a person's name (legacy row)
+    await system(() => app.prisma.vendor.update({ where: { id: o.vendorId }, data: { name: 'Ravi Persaud', sellerNameCheckedName: 'Ravi Persaud', sellerNameCheckedAt: new Date(), sellerNameCheckedById: adminId } }));
+    const asked = (await call('POST', '/api/v1/vendor/account-change/business-type', o, { toOption: 'COMPANY' })).json().data;
+    await fileChangePapers(o.userId, asked); // nothing typed: approval clears the account's legal name
+    const view = (await admin('GET', `/account-changes/${asked.id}`)).json().data;
+    expect(view.stores).toEqual([expect.objectContaining({ id: o.vendorId, nameIsAPerson: true })]);
+    expect(view.sellerLegalNameOnApproval).toMatchObject({ effect: 'CLEARED' });
+    const res = await admin('PUT', `/account-changes/${asked.id}/approve`, { sellerNames: { [o.vendorId]: 'Ravi Persaud' } });
+    expect(res.statusCode, res.body).toBe(200);
+    expect(res.json().data.sellerNamesNotConfirmed).toMatchObject({ storeIds: [o.vendorId], code: 'SELLER_NAME_IS_A_PERSON' });
+    expect(await store(o.vendorId)).toMatchObject({ sellerNameCheckedName: null, sellerNameCheckedAt: null, sellerNameCheckedById: null, status: 'ACTIVE', isVerified: true, acceptingOrders: true });
+    expect(await sellerName(o)).not.toBe('Ravi Persaud');
+    expect(await sellerName(o)).toBeNull(); // "Ask the store", as the console said
   });
 
   it('a business\'s own name: not flagged, confirmed, and the answer lists nothing', async () => {

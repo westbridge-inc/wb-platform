@@ -638,7 +638,13 @@ export const SELLER_LEGAL_NAME_IS_A_PERSON_NOTICE = {
 export const HANDOVER_SELLER_NAME_IS_A_PERSON_NOTICE = {
   // The same code as SELLER_NAME_IS_A_PERSON_NOTICE (verification.service), spelled here: the two modules import each other.
   code: 'SELLER_NAME_IS_A_PERSON',
-  message: 'The seller name confirmed for this store is a person’s name (the new or the previous account holder’s, or someone named in a letter of authority), so the handover ended that confirmation. Customers see “Ask the store” until the registered business or company name is typed from its registration paper.',
+  message: 'The seller name confirmed for this store is a person’s name (the new or the previous account holder’s, or someone named in a letter of authority), so the handover ended that confirmation. Customers see the account’s legal name if one is set, otherwise “Ask the store”, until a business name is confirmed.',
+} as const;
+/** [review-2480 B S4-2] A business type change left a store's name unconfirmed because it is a person's (the approval's
+ *  answer; the same code as SELLER_NAME_IS_A_PERSON_NOTICE, in words that hold whatever else the approval set). */
+export const CHANGE_SELLER_NAME_IS_A_PERSON_NOTICE = {
+  code: 'SELLER_NAME_IS_A_PERSON',
+  message: 'The store’s name is a person’s name (the account holder’s, or someone named in its letter of authority), so it was not confirmed as the seller’s name, and a confirmation given before ended. Customers see the account’s legal name if one is set, otherwise “Ask the store”.',
 } as const;
 
 /** The people a change is about, as the person-name rule reads them (never a name: user ids). */
@@ -863,7 +869,12 @@ export async function approveAccountChange(tx: Prisma.TransactionClient, input: 
     const notConfirmed: string[] = [];
     if (!target.ownName) {
       for (const store of live) {
-        if (await storeNameIsAPerson(tx, change, { name: store.name, sellerNameCheckedName: null })) { notConfirmed.push(store.id); continue; }
+        if (await storeNameIsAPerson(tx, change, { name: store.name, sellerNameCheckedName: null })) {
+          // [review-2480 B S3-1] A confirmation written before #2479 (a person's name) ends too: never left naming the person.
+          await tx.vendor.update({ where: { id: store.id }, data: SELLER_NAME_UNCONFIRMED });
+          notConfirmed.push(store.id);
+          continue;
+        }
         await tx.vendor.update({ where: { id: store.id }, data: { sellerNameCheckedName: store.name.trim(), sellerNameCheckedAt: now, sellerNameCheckedById: input.adminId } });
         confirmed.push(store.id);
       }
@@ -878,7 +889,7 @@ export async function approveAccountChange(tx: Prisma.TransactionClient, input: 
       data: { kind: 'account_change_approved', changeId: change.id },
     })).id);
     outcome = { holderUserId: holderBefore, notices };
-    if (notConfirmed.length) outcome.sellerNamesNotConfirmed = { storeIds: [...notConfirmed].sort(), ...SELLER_NAME_IS_A_PERSON_NOTICE };
+    if (notConfirmed.length) outcome.sellerNamesNotConfirmed = { storeIds: [...notConfirmed].sort(), ...CHANGE_SELLER_NAME_IS_A_PERSON_NOTICE };
   } else {
     const newHolder = change.newHolderId!;
     if (!change.newHolderAcceptedAt) throw new AppError(409, 'HANDOVER_NOT_ACCEPTED', 'The person named has not said yes yet.');

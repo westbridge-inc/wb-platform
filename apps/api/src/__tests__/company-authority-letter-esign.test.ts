@@ -930,6 +930,8 @@ describe('[FOLLOWUPS-2475] a business type change asks for its own letter in Swi
     expect(await system(() => app.prisma.authorityLetterRequest.count({ where: { userId: o.userId } }))).toBe(0);
 
     const { id, token, signerPhone } = await sentLetter(o, { docType: 'company_authority_letter' });
+    // [review-2480 A S4-B] the letter's trail names the change it was asked for
+    expect((await audits(id))[0]).toMatchObject({ action: LETTER_AUDIT.created, changes: { docType: 'company_authority_letter', changeId } });
     const row = await rowOf(id);
     expect(row).toMatchObject({ docType: 'company_authority_letter', accountBasis: 'COMPANY', status: 'SENT' });
     expect(row.letterText.split('\n')[0]).toBe('Letter of authority: Swift store account (company)');
@@ -950,6 +952,9 @@ describe('[FOLLOWUPS-2475] a business type change asks for its own letter in Swi
     const own = await ask(o);
     expect(own.statusCode, own.body).toBe(201);
     expect(own.json().data.request).toMatchObject({ docType: 'owner_authority_letter', signerKind: 'owner' });
+    const ownCreated = (await audits(own.json().data.request.id as string))[0]!;
+    expect(ownCreated.action).toBe(LETTER_AUDIT.created);
+    expect(ownCreated.changes).not.toHaveProperty('changeId'); // the account's own letter: no change
     const forChange = await ask(o, { docType: 'company_authority_letter' });
     expect(forChange.statusCode, forChange.body).toBe(201);
     expect(forChange.json().data.request).toMatchObject({ docType: 'company_authority_letter', signerKind: 'director' });

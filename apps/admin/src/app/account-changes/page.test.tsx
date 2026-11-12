@@ -108,7 +108,8 @@ describe('[COMPANY-DOCS Part 3] Account changes queue', () => {
     renderWithQuery(<AccountChangesPage />);
     const note = await legalNameNote();
     expect(note).toContain('Approval clears “Sample Owner”: it was typed for the old business type');
-    expect(note).toContain('Customers then see “Ask the store” as the seller until a person confirms a name (ticking each store’s name below does that).');
+    // [review-2480 B S4-2] accurate: a store's confirmed name shows, else "Ask the store"; a tick confirms only a business's name
+    expect(note).toContain('Customers then see each store’s confirmed name as the seller, or “Ask the store” for a store with none, until a person types a legal name from a registration paper (ticking a store’s name below confirms it, unless it is a person’s name).');
   });
 
   it('cleared on a handover: typed for the old holder’s papers; no store-name ticks to point at', async () => {
@@ -117,7 +118,7 @@ describe('[COMPANY-DOCS Part 3] Account changes queue', () => {
     renderWithQuery(<AccountChangesPage />);
     const note = await legalNameNote();
     expect(note).toContain('it was typed for the old account holder’s papers');
-    expect(note).toContain('until a person confirms a name.');
+    expect(note).toContain('until a person types a legal name from a registration paper.');
     expect(note).not.toContain('ticking');
   });
 
@@ -147,7 +148,7 @@ describe('[COMPANY-DOCS Part 3] Account changes queue', () => {
     serve([{ ...change, stores: [{ ...change.stores[0], name: 'Sample Owner', nameIsAPerson: true }, { id: 'vnd-2', name: 'Sample Shop East', vendorType: 'STORE', status: 'ACTIVE', sellerNameCheckedName: null, nameIsAPerson: false }] }]);
     renderWithQuery(<AccountChangesPage />);
     const person = await screen.findByRole('checkbox', { name: /“Sample Owner” is a person’s name/ });
-    expect(person.closest('label')!.textContent).toContain('approval does not confirm it as the seller’s name; customers see “Ask the store” until the legal name is typed from the registration paper');
+    expect(person.closest('label')!.textContent).toContain('approval does not confirm it as the seller’s name; customers see the account’s legal name if one is set, otherwise “Ask the store”');
     expect(screen.queryByRole('checkbox', { name: /“Sample Owner” is the business’s name/ })).toBeNull();
     expect(screen.getByRole('checkbox', { name: /“Sample Shop East” is the business’s name on its papers/ })).toBeTruthy();
   });
@@ -184,5 +185,32 @@ describe('[COMPANY-DOCS Part 3] Account changes queue', () => {
     const said = await screen.findByRole('status', { name: 'What the approval did not confirm' });
     expect(said.textContent).toContain('Seller name not confirmed for Sample Owner: The store’s name is a person’s name (server words).');
     expect(said.textContent).toContain('Seller legal name not set: The legal name is a person’s name (server words).');
+  });
+
+  it('[review-2480 B S4-2] cleared on a change to own name: customers see the owner’s own name, never “Ask the store”', async () => {
+    serve([{ ...change, fromOption: 'REGISTERED', toOption: 'OWN_NAME', sellerLegalNameOnApproval: { effect: 'CLEARED', from: 'Sample Trading', to: null, docType: null, heldNameIsAPerson: false } }]);
+    renderWithQuery(<AccountChangesPage />);
+    const note = await legalNameNote();
+    expect(note).toContain('Customers then see the owner’s own name as the seller (from the own-name declaration).');
+    expect(note).not.toContain('Ask the store');
+  });
+
+  it('[review-2480 B S4-1] a handover: a store whose confirmed seller name is a person’s is shown BEFORE approval as ending', async () => {
+    serve([{ ...change, kind: 'HOLDER_HANDOVER', fromOption: null, toOption: null, accepted: true, accountBasis: 'COMPANY', newHolder: { id: 'u2', name: 'Next Holder' },
+      stores: [{ id: 'vnd-1', name: 'Next Holder', vendorType: 'STORE', status: 'ACTIVE', sellerNameCheckedName: 'Next Holder', nameIsAPerson: true },
+        { id: 'vnd-2', name: 'Sample Shop East', vendorType: 'STORE', status: 'ACTIVE', sellerNameCheckedName: 'Sample Shop East', nameIsAPerson: false }] }]);
+    renderWithQuery(<AccountChangesPage />);
+    const ends = await screen.findByRole('note', { name: 'Seller names approval ends' });
+    expect(ends.textContent).toContain('Next Holder: its confirmed seller name “Next Holder” is a person’s name, so approval ends it; customers then see the account’s legal name if one is set, otherwise “Ask the store”.');
+    expect(ends.textContent).not.toContain('Sample Shop East');
+    expect(screen.queryByRole('checkbox')).toBeNull(); // still no ticks on a handover
+  });
+
+  it('a handover with no such store: no line', async () => {
+    serve([{ ...change, kind: 'HOLDER_HANDOVER', fromOption: null, toOption: null, accepted: true, accountBasis: 'COMPANY', newHolder: { id: 'u2', name: 'Next Holder' },
+      stores: [{ id: 'vnd-2', name: 'Sample Shop East', vendorType: 'STORE', status: 'ACTIVE', sellerNameCheckedName: 'Sample Shop East', nameIsAPerson: false }] }]);
+    renderWithQuery(<AccountChangesPage />);
+    expect(await screen.findByText('Account holder: Sample Owner → Next Holder')).toBeTruthy();
+    expect(screen.queryByRole('note', { name: 'Seller names approval ends' })).toBeNull();
   });
 });

@@ -258,7 +258,8 @@ export class AuthorityLetterService {
         letterText: words.text, letterSha256: words.sha256, tokenHash: secretDigest(token),
         linkExpiresAt: new Date(now.getTime() + LINK_TTL_MS), lastSentAt: now,
       } });
-      await audit(tx, LETTER_AUDIT.created, row.id, userId, { docType, letterSha256: words.sha256, replaced: live.length });
+      // [review-2480 A S4-B] A change's letter names its change in the trail (ids only).
+      await audit(tx, LETTER_AUDIT.created, row.id, userId, { docType, letterSha256: words.sha256, replaced: live.length, ...(input.changeId ? { changeId: input.changeId } : {}) });
       return row;
     }).catch(async (error: unknown) => { await budget.refund().catch(() => undefined); throw error; });
     await this.textLink(created, token, budget.refund, userId, LETTER_AUDIT.sent);
