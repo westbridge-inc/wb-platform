@@ -113,7 +113,7 @@ describe('[R048-005] the plan applies once; a replay changes nothing', () => {
     // 7 Nov] Guyana's rider cash limit at GY$100,000 and the store's 10 minutes to accept as 2026-11-07.1, and
     // [COMPANY-DOCS · owner 10 Nov] the registered-company and manager document lists as 2026-11-10.1
     // (production follows only when the owner signs a new seed plan; no boot check compares versions).
-    expect(desiredPlatformConfig().version).toBe('2026-11-10.1');
+    expect(desiredPlatformConfig().version).toBe('2026-11-12.1');
   });
 
   it.each(['create', 'policy'] as const)('seeds owner-confirmed emergency numbers for the Guyana %s path', (path) => {
