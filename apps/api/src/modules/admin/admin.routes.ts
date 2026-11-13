@@ -1,5 +1,5 @@
 import { emitToOrderRoom, emitToStoreRoom } from '../order/order-room-emission.service';
-import { assertNotSecurityControlConfigKey } from './security-config';
+import { assertGenericConfigWritable } from './security-config';
 import { scanUpload } from '../../lib/malware-scan';
 import { documentScanState, uploadScanRefusal, retryHeldEvidenceScan } from '../../lib/upload-scan-debt';
 import { vatTracker } from '../billing/vat-tracker';
@@ -937,11 +937,12 @@ export async function adminRoutes(app: FastifyInstance) {
     throw new ValidationError(reasonRefusal(problem, authority.cls));
   });
 
-  // [money review on #2499] A security-control config key is refused before the two-person gate can store an ask,
-  // and on every request that would write it (the apply replay passes this hook too). See security-config.ts.
+  // [money review on #2499 · coordinator ruling] The generic config route writes only the Config page's keys: any
+  // other key is refused before the two-person gate can store an ask, and on every request that would write it (the
+  // apply replay passes this hook too). See security-config.ts.
   app.addHook('preValidation', async (request: any) => {
     if (request.method === 'PUT' && routeTemplateOf(request, app.prefix) === '/config/:key') {
-      assertNotSecurityControlConfigKey((request.params as { key?: unknown } | undefined)?.key);
+      assertGenericConfigWritable((request.params as { key?: unknown } | undefined)?.key);
     }
   });
 

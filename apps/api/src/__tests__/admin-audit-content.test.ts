@@ -87,7 +87,7 @@ afterAll(async () => {
   await cleanupSecondApprovers(app);
   await runWithoutTenant(async () => {
     await app.prisma.privilegedApproval.deleteMany({ where: { requestedBy: { in: userIds } } }).catch(() => {});
-    await app.prisma.platformConfig.deleteMany({ where: { key: { startsWith: 'ADM004_' } } }).catch(() => {});
+    await app.prisma.platformConfig.deleteMany({ where: { key: { startsWith: 'test.ADM004_' } } }).catch(() => {});
     await purgeSensitiveReadLogs(app.prisma, { actorUserId: { in: userIds } }, 'test-cleanup:admin-audit-content').catch(() => 0);
     await purgeAuditLogs(app.prisma, { userId: { in: userIds } }, 'test-cleanup:admin-audit-content').catch(() => 0);
     await app.prisma.session.deleteMany({ where: { userId: { in: userIds } } }).catch(() => {});
@@ -100,7 +100,7 @@ afterAll(async () => {
 
 describe('[ADM-004] the row says what changed', () => {
   it('a config write records the before and after digest and names the field that moved', async () => {
-    const key = `ADM004_${RUN}`;
+    const key = `test.ADM004_${RUN}`;
     await runWithoutTenant(() => app.prisma.platformConfig.create({ data: { key, value: { rate: 1 } } }), 'test-seed');
     const res = await call('PUT', `/api/v1/admin/config/${key}`, { value: { rate: 2 }, reason: REASON });
     expect(res.statusCode, res.body).toBe(200);
@@ -116,7 +116,7 @@ describe('[ADM-004] the row says what changed', () => {
   });
 
   it('the raw request body is NOT in the row — the payload was the privacy problem', async () => {
-    const key = `ADM004_${RUN}_pii`;
+    const key = `test.ADM004_${RUN}_pii`;
     await runWithoutTenant(() => app.prisma.platformConfig.create({ data: { key, value: { note: 'before' } } }), 'test-seed');
     // a body carrying exactly the shapes a document number, a phone and an
     // address take when an operator pastes them into a form

@@ -104,7 +104,9 @@ afterAll(async () => {
 // ---------------------------------------------------------------------------
 
 // [REVIEW-2499-A S3-3] an SOS war-room emission excepts the people it names: .to(rooms).except(named).emit
-const room = { emit: () => true, except: () => room, fetchSockets: async () => [{ id: 'connected-but-silent' }] };
+// [REVIEW-2499-A S3-3] the connected-but-silent socket belongs to the paged admin (the audience is judged per account)
+let silentAdminId = '';
+const room = { emit: () => true, except: () => room, fetchSockets: async () => [{ id: 'connected-but-silent', data: { userId: silentAdminId } }] };
 const io = { to: () => room, in: () => room, emit: () => true } as unknown as Server;
 const sos = () => new SosService(app.prisma, io);
 const notifications = () => new NotificationService(app.prisma, io);
@@ -117,6 +119,7 @@ const oncallTexts = () => devChannelLog.filter((e) => e.channel === 'sms' && (e 
 async function activeSos() {
   const passenger = await makeUser(['CUSTOMER']);
   const admin = await makeUser(['ADMIN']);
+  silentAdminId = admin.userId;
   // a privileged session needs its assurance (the auth plugin refuses an ADMIN session without one)
   await app.prisma.session.updateMany({ where: { userId: admin.userId }, data: { authMethod: 'OTP' } });
   const alert = await sos().create({ actorUserId: passenger.userId, actorRole: 'CUSTOMER', immediate: true, lat: 6.8, lng: -58.15 });

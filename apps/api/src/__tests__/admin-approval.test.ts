@@ -65,7 +65,7 @@ const call = (token: string, method: string, url: string, payload?: unknown, hea
 
 /** The money action used throughout: a config write is C5, deterministic, and
  *  leaves a row this suite can read to prove nothing happened. */
-const CONFIG_KEY = `ADM005_${RUN}`;
+const CONFIG_KEY = `test.ADM005_${RUN}`; // [#2499] test.* keys are writable in tests
 const writeConfig = (token: string, value: unknown, approvalId?: string) =>
   call(token, 'PUT', `/api/v1/admin/config/${CONFIG_KEY}`, { value, reason: REASON },
     approvalId ? { [APPROVAL_HEADER]: approvalId } : {});
@@ -92,7 +92,7 @@ beforeAll(async () => {
 afterAll(async () => {
   await runWithoutTenant(async () => {
     await app.prisma.privilegedApproval.deleteMany({ where: { requestedBy: { in: userIds } } }).catch(() => {});
-    await app.prisma.platformConfig.deleteMany({ where: { key: { startsWith: 'ADM005_' } } }).catch(() => {});
+    await app.prisma.platformConfig.deleteMany({ where: { key: { startsWith: 'test.ADM005_' } } }).catch(() => {});
     await purgeAuditLogs(app.prisma, { userId: { in: userIds } }, 'test-cleanup:admin-approval').catch(() => 0);
     await app.prisma.session.deleteMany({ where: { userId: { in: userIds } } }).catch(() => {});
     await app.prisma.admin.deleteMany({ where: { userId: { in: userIds } } }).catch(() => {});
@@ -626,17 +626,31 @@ describe('[AUDIT-20261113 F11] a plain admin cannot squat a founder-only ask', (
   });
 });
 
-// [money review on #2499 · coordinator] The generic config route must not move a security control: the solo-approval
-// cool-off (approvals.*), backup evidence or scanner state. Refused before anyone is asked, and never written.
-describe('[REVIEW #2499] the generic config route refuses a security-control key', () => {
-  it('approvals.solo.cooloff_hours (any case) and the other security keys: 409, no ask, nothing written', async () => {
-    for (const key of ['approvals.solo.cooloff_hours', 'APPROVALS.SOLO.COOLOFF_HOURS', 'last_backup_at', 'malware_scanner:consecutive_failures', 'security.anything']) {
+// [money review on #2499 · coordinator ruling] The generic config route writes only the Config page's keys. A security
+// control (the solo-approval cool-off), a machine-owned state (billing pauses, the reaper's heartbeat, ops pages,
+// document retention) or any unknown key is refused before anyone is asked, and never written.
+describe('[REVIEW #2499] the generic config route is an allowlist', () => {
+  it('a key off the allowlist (any case): 409, no ask, nothing written', async () => {
+    for (const key of ['approvals.solo.cooloff_hours', 'APPROVALS.SOLO.COOLOFF_HOURS', 'last_reaper_run_at', 'ops_page:anything', 'documents.personal_image_days', 'billing.mmg_pause.open', 'DELIVERY_FEE', 'last_backup_at', `unknown_${RUN}`]) {
       const res = await call(requester.token, 'PUT', `/api/v1/admin/config/${encodeURIComponent(key)}`, { value: 0.01, reason: REASON });
       expect(res.statusCode, `${key}: ${res.body}`).toBe(409);
-      expect(res.json().error.code).toBe('CONFIG_KEY_SECURITY_CONTROL');
+      expect(res.json().error.code).toBe('CONFIG_KEY_NOT_WRITABLE');
       expect(await app.prisma.privilegedApproval.count({ where: { action: 'PUT /config/:key', entityId: key } })).toBe(0);
-      expect(await app.prisma.platformConfig.count({ where: { key } })).toBe(0);
     }
   });
-});
 
+  it('the allowlist is exactly the Config page\'s keys', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { join } = await import('node:path');
+    const { CONSOLE_WRITABLE_CONFIG_KEYS } = await import('../modules/admin/security-config');
+    const page = readFileSync(join(__dirname, '..', '..', '..', 'admin', 'src', 'app', 'config', 'page.tsx'), 'utf8');
+    const onPage = [...page.matchAll(/key: '([a-z0-9_.]+)'/g)].map((m) => m[1]!).sort();
+    expect([...CONSOLE_WRITABLE_CONFIG_KEYS].sort()).toEqual(onPage);
+  });
+
+  it('a Config-page key still goes through the two-person gate', async () => {
+    const res = await call(requester.token, 'PUT', '/api/v1/admin/config/order_auto_reject_minutes', { value: 7, reason: REASON });
+    expect(res.statusCode, res.body).toBe(202);
+    await runWithoutTenant(() => app.prisma.privilegedApproval.updateMany({ where: { action: 'PUT /config/:key', entityId: 'order_auto_reject_minutes', status: 'PENDING' }, data: { status: 'CANCELLED' } }), 'test-reset:allowlist');
+  });
+});

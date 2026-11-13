@@ -45,7 +45,7 @@ const RUN = nanoid(6).toLowerCase();
 const userIds: string[] = [];
 let token = '';
 const REASON = 'Rate corrected after the September reconciliation, ref GY-4471';
-const KEY = `ADM002_${RUN}`;
+const KEY = `test.ADM002_${RUN}`; // [#2499] test.* keys are writable in tests
 
 const call = (method: string, url: string, payload?: unknown) =>
   injectWithApproval(app, {
@@ -96,7 +96,7 @@ afterAll(async () => {
   await cleanupSecondApprovers(app);
   await runWithoutTenant(async () => {
     await app.prisma.privilegedApproval.deleteMany({ where: { requestedBy: { in: userIds } } }).catch(() => {});
-    await app.prisma.platformConfig.deleteMany({ where: { key: { startsWith: `ADM002_${RUN}` } } }).catch(() => {});
+    await app.prisma.platformConfig.deleteMany({ where: { key: { startsWith: `test.ADM002_${RUN}` } } }).catch(() => {});
     await app.prisma.promoCode.deleteMany({ where: { code: { startsWith: `AD2${RUN.toUpperCase()}` } } }).catch(() => {});
     await purgeSensitiveReadLogs(app.prisma, { actorUserId: { in: userIds } }, 'test-cleanup:admin-audit-txn').catch(() => 0);
     await purgeAuditLogs(app.prisma, { userId: { in: userIds } }, 'test-cleanup:admin-audit-txn').catch(() => 0);
@@ -166,7 +166,7 @@ describe('[ADM-002] a refused audit row takes the action down with it', () => {
   });
 
   it('the row is already committed when the response arrives — not written afterwards', async () => {
-    const key = `ADM002_${RUN}_single`;
+    const key = `test.ADM002_${RUN}_single`;
     await runWithoutTenant(() => app.prisma.platformConfig.create({ data: { key, value: { n: 1 } } }), 'test-seed');
     const res = await call('PUT', `/api/v1/admin/config/${key}`, { value: { n: 2 }, reason: REASON });
     expect(res.statusCode, res.body).toBe(200);
@@ -269,7 +269,7 @@ describe('[ADM-002] swift_admin_audit_total says which writer produced the row',
   // like one that works. These two tests are the difference — the same shape
   // that left 19 of 21 config fields dead and looking wired.
   it('a MIGRATED route increments writer=inline', async () => {
-    const key = `ADM002_${RUN}_inline`;
+    const key = `test.ADM002_${RUN}_inline`;
     await runWithoutTenant(() => app.prisma.platformConfig.create({ data: { key, value: { n: 1 } } }), 'test-seed');
     const before = await byWriter();
     const res = await call('PUT', `/api/v1/admin/config/${key}`, { value: { n: 2 }, reason: REASON });

@@ -313,7 +313,7 @@ describe('[GUARDRAILS §3] an app-store reviewer\'s demo SOS never pages real op
         const target = { emit: (event: string, payload: { sosAlertId?: unknown }) => { emits.push({ event, rooms: [rooms].flat(), sosAlertId: payload?.sosAlertId }); return true; }, except: () => target };
         return target;
       },
-      in: () => { const target = { fetchSockets: async () => [], except: () => target }; return target; },
+      in: () => ({ fetchSockets: async () => [] }),
     } as unknown as Server;
     const sos = new SosService(app.prisma, capture);
     const raised: Record<string, string> = {};

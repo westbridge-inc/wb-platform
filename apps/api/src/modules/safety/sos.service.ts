@@ -4,7 +4,7 @@ import { Prisma } from '@prisma/client';
 import type { Server } from 'socket.io';
 import { AppError, NotFoundError } from '../../utils/errors';
 import { NotificationService, notifyAdmins, tenantOfUser, isReviewTenantId } from '../notification/notification.service';
-import { OPS_WAR_ROOM, namedUserRooms, warRoomsFor } from './war-room';
+import { OPS_WAR_ROOM, sosWarRoomExclusions, warRoomsFor } from './war-room';
 import { runWithoutTenant } from '../../plugins/tenant-context';
 import { log } from '../../utils/logger';
 import { stageEscalations, drainSosEscalations, SOS_SMS_NAME_MAX } from './sos-escalation';
@@ -266,9 +266,9 @@ export class SosService {
           // [GUARDRAILS §3] the store-review fiction's repeat press stays in its own tenant's room
           const fiction = live.tenantId ? await runWithoutTenant(() => isReviewTenantId(this.prisma, live.tenantId!)) : false;
           const rooms = warRoomsFor(live.tenantId).filter((room) => !(fiction && room === OPS_WAR_ROOM));
-          // [REVIEW-2499-A S3-3] never to the people the SOS names (or their linked accounts)
-          const namedRooms = await namedUserRooms(this.prisma, [live.actorUserId, live.counterpartyUserId]);
-          this.io.to(rooms).except(namedRooms).emit('sos:retrigger', {
+          // [REVIEW-2499-A S3-3] decided per socket at emission (grant now, never the named people), fail closed
+          const audience = await sosWarRoomExclusions(this.io, this.prisma, rooms, [live.actorUserId, live.counterpartyUserId]);
+          if (audience) this.io.to(rooms).except(audience.excluded).emit('sos:retrigger', {
             sosAlertId: live.id, actorUserId: live.actorUserId, orderId: live.orderId,
             at: now, source, lat: input.lat ?? null, lng: input.lng ?? null,
             retriggerCount: merged.seq, note: input.note ?? null,

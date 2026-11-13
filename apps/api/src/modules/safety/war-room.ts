@@ -1,4 +1,7 @@
 import type { PrismaClient } from '@prisma/client';
+import type { Server } from 'socket.io';
+import { consoleRoleOf } from '../auth/console-role';
+import { log } from '../../utils/logger';
 import { capabilitiesOf, holdsCapability } from '../admin/admin-authority';
 import { identityAuthority } from '../integrity/identity-review';
 import { runWithoutTenant } from '../../plugins/tenant-context';
@@ -67,16 +70,50 @@ export async function holdsWarRoomGrant(prisma: Pick<PrismaClient, 'admin'>, use
   return holdsCapability(capabilitiesOf({ role, permissions: grant?.permissions ?? null }), WAR_ROOM_CAPABILITY);
 }
 
-/** The personal rooms of everyone an SOS names, linked accounts included: excepted from its war-room emission. */
-export async function namedUserRooms(prisma: PrismaClient, people: ReadonlyArray<string | null | undefined>): Promise<string[]> {
-  const ids = new Set<string>();
-  for (const person of people) {
-    if (!person) continue;
-    ids.add(person);
-    try {
-      const identity = await runWithoutTenant(() => identityAuthority(prisma, person), 'war-room-named');
-      for (const member of identity.memberIds) ids.add(member);
-    } catch { /* the person themself is still excepted */ }
+/**
+ * [REVIEW-2499-A S3-3 · automated review] Who must NOT hear an SOS event in the war room, decided per socket AT
+ * EMISSION. A socket is heard only when its account is ACTIVE, holds an admin role, its live grant holds
+ * safety.sos.read NOW (a grant narrowed, a role removed or an account suspended since it joined is not heard), and it
+ * is neither a person the SOS names nor linked to one, read from BOTH sides (its own cluster and each named person's).
+ * Every other socket in the rooms is returned, to be excepted from the emission (which stays addressed to the war
+ * rooms). Fail closed: a socket whose identity cannot be read is excepted; when the sockets or a named person's
+ * identity cannot be read at all, null — the caller sends nothing (the ops page, pushes and on-call texts still go,
+ * and the board's HTTP reload applies the same rule).
+ */
+export async function sosWarRoomExclusions(
+  io: Pick<Server, 'in'>,
+  prisma: PrismaClient,
+  rooms: string[],
+  people: ReadonlyArray<string | null | undefined>,
+): Promise<{ excluded: string[]; listeners: number } | null> {
+  const named = new Set(people.filter((p): p is string => !!p));
+  try {
+    const sockets = await io.in(rooms).fetchSockets();
+    const userOf = (socket: { data?: unknown }) => (socket.data as { userId?: unknown } | undefined)?.userId;
+    const userIds = [...new Set(sockets.map(userOf).filter((id): id is string => typeof id === 'string'))];
+    const users = userIds.length === 0 ? [] : await runWithoutTenant(() => prisma.user.findMany({
+      where: { id: { in: userIds } }, select: { id: true, roles: true, status: true, admin: { select: { permissions: true } } },
+    }), 'war-room-audience');
+    const clear = new Set<string>();
+    for (const user of users) {
+      if (user.status !== 'ACTIVE' || named.has(user.id)) continue;
+      const role = consoleRoleOf(user.roles);
+      if (!role || !holdsCapability(capabilitiesOf({ role, permissions: user.admin?.permissions ?? null }), WAR_ROOM_CAPABILITY)) continue;
+      try {
+        const identity = await runWithoutTenant(() => identityAuthority(prisma, user.id), 'war-room-audience');
+        if (identity.memberIds.some((member) => named.has(member))) continue;
+      } catch { continue; }
+      clear.add(user.id);
+    }
+    for (const person of named) {
+      const identity = await runWithoutTenant(() => identityAuthority(prisma, person), 'war-room-audience');
+      for (const member of identity.memberIds) clear.delete(member);
+    }
+    const excluded = sockets.filter((socket) => !clear.has(String(userOf(socket) ?? ''))).map((socket) => socket.id);
+    return { excluded, listeners: sockets.length - excluded.length };
+  } catch (err) {
+    log().error({ err }, '[REVIEW-2499-A S3-3] war-room audience could not be decided: SOS event not sent over the socket (pages and pushes still go)');
+    return null;
   }
-  return [...ids].map((id) => `user:${id}`);
 }
+
