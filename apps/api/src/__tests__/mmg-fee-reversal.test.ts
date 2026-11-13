@@ -873,6 +873,9 @@ describe('[DS1118] a typed reference is checked against EVERY money reference Sw
     const NOT_MONEY = new Set(['verification_documents.kycRef', 'validator.implRef', 'doc_field.validatorRef', 'extraction_run.processorRef',
       'content_reports.authorityRef', 'content_reports.enforcementRef', 'audit_chain.subjectRef', 'audit_chain.submissionRef',
       'doc_type.externalProcessingDecisionRef',
+      // [REVIEW-2496-B S3-2] how a REFUSED card refund was checked (LOOKUP:<record sha256> or PORTAL:<the portal's id for the
+      // card payment>): evidence that nothing went back, never a reference money moved under (nothing is recorded with it).
+      'card_credit_refunds.checkedRef',
       // [KITCHEN-INTEGRATION] keys of a kitchen-system login and webhook secret in the credentials secret
       'vendor_integrations.secretRef', 'vendor_integrations.webhookSecretRef']);
     // Columns the census reads on its own terms (this return's own row is excluded there).
