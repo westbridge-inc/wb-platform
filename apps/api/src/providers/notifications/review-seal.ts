@@ -123,7 +123,8 @@ export function sealSms(inner: SmsProvider): SmsProvider {
       const why = await reviewSendSuppression('sms', [to]);
       if (why) { suppressed('sms', why); return { ref: SMS_REF_REVIEW_SUPPRESSED }; }
       // [AUDIT-20261113 S3-6] Only the life-safety mark crosses the seal (it never carried a handoff).
-      return inner.sendSms(to, body, options?.lifeSafety ? { lifeSafety: true } : undefined);
+      const marks: SmsOptions = { ...(options?.lifeSafety ? { lifeSafety: true } : {}), ...(options?.budgeted ? { budgeted: true } : {}) };
+      return inner.sendSms(to, body, marks.lifeSafety || marks.budgeted ? marks : undefined);
     },
   };
 }

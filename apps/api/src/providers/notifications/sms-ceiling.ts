@@ -10,17 +10,21 @@ import { log } from '../../utils/logger';
 // Sign-in codes and safety texts have budgets of their own; everything else
 // (store backup texts, STOP replies, fee notices, on-call re-pages ...) had no
 // overall ceiling, and the 1 Nov spike came from exactly such an uncounted
-// class. Every text the real provider sends is now counted, in message PARTS,
-// against one Guyana-day ceiling (SMS_DAILY_PARTS_CEILING, default 10000).
-// Past it, a text is refused (the caller sees a provider failure, as for any
-// refused send) — except a LIFE-SAFETY text (an SOS text to a contact, an
-// on-call page), which is counted but never refused. 80% logs an error once.
+// class. Every text WITHOUT a budget of its own is now counted, in message
+// PARTS, against one Guyana-day ceiling (SMS_DAILY_PARTS_CEILING, default
+// 5000); past it such a text is refused (the caller sees a provider failure, as
+// for any refused send). 80% logs an error once.
+// [REVIEW-2499-A S2-2] Two kinds are neither counted nor refused here, so each
+// paid class has exactly ONE daily cap and the ceiling can never lock anyone
+// out: a LIFE-SAFETY text (an SOS text to a contact, an on-call page; capped
+// per alert) and a BUDGETED code (sign-in, reset, step-up, solo, seed, number
+// change; capped by the OTP budgets, the admin reserve included).
 // Redis trouble never blocks a text: the ceiling is a backstop, Twilio's own
 // usage trigger is the outside one.
 // ---------------------------------------------------------------------------
 
 const CEILING_PREFIX = 'sms_parts_day:';
-export const DEFAULT_SMS_DAILY_PARTS_CEILING = 10_000;
+export const DEFAULT_SMS_DAILY_PARTS_CEILING = 5_000;
 
 let store: Pick<Redis, 'incrby' | 'decrby' | 'expire'> | null = null;
 /** The Redis the ceiling counts in (set by the redis plugin). Without one, nothing is counted or refused. */
@@ -52,7 +56,7 @@ export function withSmsCeiling(inner: SmsProvider): SmsProvider {
   const wrapped: SmsProvider = {
     sendSms: async (to: string, body: string, options?: SmsOptions) => {
       const redis = store;
-      if (!redis) return inner.sendSms(to, body, options);
+      if (!redis || options?.lifeSafety || options?.budgeted) return inner.sendSms(to, body, options);
       const parts = billedParts(body);
       const key = `${CEILING_PREFIX}${guyanaDayKey(new Date())}`;
       let count: number | null = null;
@@ -66,9 +70,9 @@ export function withSmsCeiling(inner: SmsProvider): SmsProvider {
         const cap = ceiling();
         const warnAt = Math.ceil(cap * 0.8);
         if (count - parts < warnAt && count >= warnAt) log().error({ cap }, '[S3-6] 80% of the daily SMS parts ceiling is spent');
-        if (count > cap && !options?.lifeSafety) {
+        if (count > cap) {
           await redis.decrby(key, parts).catch(() => undefined);
-          log().error({ cap }, '[S3-6] daily SMS parts ceiling reached: a non-life-safety text was refused');
+          log().error({ cap }, '[S3-6] daily SMS parts ceiling reached: a text with no budget of its own was refused');
           throw new SmsCeilingReachedError();
         }
       }

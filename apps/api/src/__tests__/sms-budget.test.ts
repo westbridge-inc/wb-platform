@@ -522,6 +522,15 @@ describe('safety texts: a budget of their own, launch-market numbers only (AUD-L
     expect(await shared()).toEqual(before);
     expect(smsDestinationAllowed(home)).toBe(true);
   });
+  // [REVIEW-2499-A S3-4(c)] An admin's step-up code draws from the admins' own reserve, as their sign-in code does.
+  it('an admin step-up code is counted in the admin reserve, never the known budget', async () => {
+    const admin = await mkUser(gy(), 'Reserve');
+    await fixture(() => app.prisma.user.update({ where: { id: admin.id }, data: { roles: ['ADMIN', 'CUSTOMER'] } }));
+    const before = { admin: await count(`sms_admin_day:${day}`), known: await count(`sms_known_day:${day}`) };
+    await asRequest(() => sendStepUpOtp(app, admin.id));
+    expect(await count(`sms_admin_day:${day}`)).toBe(before.admin + 1);
+    expect(await count(`sms_known_day:${day}`)).toBe(before.known);
+  });
 });
 
 describe('[AUDIT-20261113 S4] addressBucket', () => {

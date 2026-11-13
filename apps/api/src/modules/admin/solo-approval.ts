@@ -196,7 +196,7 @@ export async function sendSoloText(to: string | null, body: string): Promise<voi
   if (!to || !smsDestinationAllowed(to)) throw soloRefusal('sms-unavailable');
   let ref: string;
   try {
-    ({ ref } = await getChannels().sms.sendSms(to, body.slice(0, 480)));
+    ({ ref } = await getChannels().sms.sendSms(to, body.slice(0, 480), { budgeted: true }));
   } catch (err) {
     log().error({ err }, '[solo approval] text could not be sent — refusing the solo step');
     throw soloRefusal('sms-unavailable');

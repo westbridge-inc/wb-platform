@@ -24,6 +24,9 @@ export interface SmsOptions {
   handoff?: NotificationHandoff;
   /** [AUDIT-20261113 S3-6] An SOS text to a contact or an on-call page: counted against the daily ceiling, never refused by it. */
   lifeSafety?: boolean;
+  /** [REVIEW-2499-A S2-2] A code that has its own daily budget (sign-in, reset, step-up, solo, seed, number change):
+   *  never counted against the paid-SMS ceiling and never refused by it. */
+  budgeted?: boolean;
 }
 export interface SmsProvider {
   supportsHandoff?: true;

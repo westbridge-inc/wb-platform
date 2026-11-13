@@ -225,6 +225,8 @@ export class AuthService {
         purpose === 'password-reset'
           ? `Your Swift password reset code is: ${otp}`
           : `Your Swift verification code is: ${otp}`,
+        // [REVIEW-2499-A S2-2] A code has its own daily budget above: the paid-SMS ceiling never refuses it.
+        { budgeted: true },
       );
     } catch (err) {
       // The provider failed: give back the budget this attempt just spent so
