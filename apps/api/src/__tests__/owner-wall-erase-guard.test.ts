@@ -16,6 +16,9 @@
  *    so the first pass now also ledgers every row its cleanup removes ('deleted_rows'); it only appends to
  *    the ledger. Its closed-account entry needs the complete tombstone (checked with a person already named
  *    'Deleted User', for whom it fires at the cut-off: the restore's rule still keeps none of the removed rows).
+ *    [REVIEW-2499-B S2-1] Also allowed, in one exact shape only: the users.statusChangedAt stamp (a BEFORE trigger
+ *    that sets the written row's own date to now() and reads nothing), whose result is the same wherever the
+ *    tombstone sits in the transaction.
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { readFileSync } from 'node:fs';
@@ -270,7 +273,7 @@ describe('[row 622] pinned: nothing between the tombstone and its old place read
     expect(stripComments(notices)).toContain('SELECT public.swift_owner_wall_erase_notices(${userId})');
   });
 
-  it('on the cleanup\'s deletes only the off-site ledger\'s row capture fires (none on its money-command update), and users triggers ignore status, phone and avatar or need the complete tombstone', async () => {
+  it('on the cleanup\'s deletes only the off-site ledger\'s row capture fires (none on its money-command update), and users triggers ignore status, phone and avatar or need the complete tombstone or only date their own row\'s status change', async () => {
     const deleted = ['sessions', 'device_tokens', 'verification_decision_outbox', 'notifications', 'money_surface_commands',
       'mover_revocation_outbox', 'guardian_checkin_deliveries', 'renewal_schedule', 'admins'];
     const fired = await owner.$queryRaw<Array<{ table: string; name: string; fn: string; tgtype: number }>>`
@@ -315,13 +318,31 @@ describe('[row 622] pinned: nothing between the tombstone and its old place read
     // removes after it is ledgered as deleted (checked above with such a person).
     const completeTombstone = ['(new."firstName" = \'Deleted\'::text)', '(new."lastName" = \'User\'::text)', '(new.email IS NULL)',
       '(new."passwordHash" IS NULL)', '(new."lastKnownLat" IS NULL)', '(new."lastKnownLng" IS NULL)'];
+    // [REVIEW-2499-B S2-1] And one that DOES fire on the tombstone write, allowed only in this exact shape: the
+    // lock-out date stamp. A BEFORE trigger on the written row itself whose whole body sets that row's
+    // "statusChangedAt" to now() and returns it: it reads no table (users or any other), writes no other row or
+    // table, and now() is the transaction's start time, so its result is identical wherever the tombstone sits in
+    // the closure's transaction. It cannot see or change the cleanup, the guard or the ledger. It must fire on the
+    // closure: a closed admin's lock-out has to be dated, or closing the only other admin would switch the owner's
+    // solo approval on at once. Any other body (a read, a write elsewhere) fails here.
+    const stampDef = 'CREATE TRIGGER users_stamp_status_changed_at BEFORE UPDATE OF status ON public.users FOR EACH ROW '
+      + 'WHEN ((old.status IS DISTINCT FROM new.status)) EXECUTE FUNCTION users_stamp_status_changed_at()';
+    const [stampFn] = await owner.$queryRaw<Array<{ src: string; lang: string; definer: boolean }>>`
+      SELECT p.prosrc AS src, l.lanname::text AS lang, p.prosecdef AS definer
+        FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace AND n.nspname = 'public' JOIN pg_language l ON l.oid = p.prolang
+       WHERE p.proname = 'users_stamp_status_changed_at'`;
+    const stampBodyOnly = stampFn !== undefined && stampFn.lang === 'plpgsql' && stampFn.definer === false
+      && stampFn.src.replace(/\s+/g, ' ').trim() === 'BEGIN NEW."statusChangedAt" := now(); RETURN NEW; END';
+    expect(stampBodyOnly, 'the status stamp sets its own row\'s date and nothing else').toBe(true);
     for (const t of onUsers) {
       const keyed = t.columns.length > 0 && !t.columns.some((c) => ['status', 'phone', 'avatar'].includes(c));
       const tenantOnly = /WHEN \(\(old\."tenantId" IS DISTINCT FROM new\."tenantId"\)\) EXECUTE/.test(t.def);
       const ledger = t.name === 'erasure_ledger_closed_accounts' && t.fn === 'erasure_ledger_capture_closed_account'
         && /^CREATE TRIGGER erasure_ledger_closed_accounts AFTER UPDATE ON public\.users FOR EACH ROW WHEN /.test(t.def)
         && completeTombstone.every((c) => t.def.includes(c));
-      expect(keyed || tenantOnly || ledger, `${t.name}: ${t.def}`).toBe(true);
+      const stamp = t.name === 'users_stamp_status_changed_at' && t.fn === 'users_stamp_status_changed_at'
+        && t.def === stampDef && t.columns.join() === 'status' && stampBodyOnly;
+      expect(keyed || tenantOnly || ledger || stamp, `${t.name}: ${t.def}`).toBe(true);
     }
     const [account] = await owner.$queryRaw<Array<{ src: string }>>`
       SELECT p.prosrc AS src FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace AND n.nspname = 'public'
