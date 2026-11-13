@@ -76,7 +76,7 @@ import { PickingService } from '../order/picking.service';
 import { isRemovalQuestion, legacySwapItemFields, lineOptionsAsMade, onlyItemLeft, substitutionView } from '../order/substitution-view';
 import { dispatchSearchesCounter } from '../../plugins/observability';
 import { groupLinesByVendor, planFulfillment, planVendorGroup, priceBasket, priceCartLine, resolveTip, riderCashForLines, type VendorPlan } from '../order/cart-plans';
-import { lineOptionsIssue, normalizeItemNote, OptionSelectionError, selectionKey, validateSelectedOptions, type OptionSelection } from '../order/options';
+import { declaresMenuOptionsV2, itemNeedsMenuOptionsV2, lineOptionsIssue, MENU_OPTIONS_APP_UPDATE_MESSAGE, normalizeItemNote, OPTION_GROUPS_PRICING_SELECT, OptionSelectionError, selectionKey, validateSelectedOptions, type OptionSelection } from '../order/options';
 import { RatingService } from '../rating/rating.service';
 import { scheduleVendorSearchSync } from '../search/search-sync';
 import { searchTiers } from '../search/forgiving-text';
@@ -182,6 +182,8 @@ const addCartItemSchema = z.object({
   quantity: z.number().int().min(1).max(99).optional(),
   selectedOptions: z.record(z.string(), z.unknown()).optional(),
   specialInstructions: z.string().max(500).optional(),
+  // [MENU-OPTIONS] What the app can render: MENU_OPTIONS_V2 = sizes that set the price, halves, follow-up choices.
+  capabilities: z.array(z.string().max(40)).max(20).optional(),
 });
 
 const updateCartItemSchema = z.object({
@@ -189,7 +191,16 @@ const updateCartItemSchema = z.object({
   quantity: z.number().int().max(99),
   selectedOptions: z.record(z.string(), z.unknown()).optional(),
   specialInstructions: z.string().max(500).optional(),
+  capabilities: z.array(z.string().max(40)).max(20).optional(),
 });
+
+/** [MENU-OPTIONS] An item with sizes that set the price, halves or follow-up choices is put in a cart only by an app
+ *  that declares it can show them; an older app is told, in plain words, to update (never a mispriced line). */
+function assertAppRendersOptions(item: Parameters<typeof itemNeedsMenuOptionsV2>[0] & { id: string }, capabilities: unknown): void {
+  if (itemNeedsMenuOptionsV2(item) && !declaresMenuOptionsV2(capabilities)) {
+    throw new AppError(409, 'APP_UPDATE_REQUIRED', MENU_OPTIONS_APP_UPDATE_MESSAGE, { itemId: [item.id] });
+  }
+}
 
 const cartAddressSchema = z.object({
   addressId: z.string().min(1),
@@ -429,12 +440,8 @@ async function buildCartResponse(
               vatClass: true,
               // [F4] Everything the one option validator reads, so the quote
               // marks a line whose choice sold out exactly as checkout refuses it.
-              optionGroups: {
-                select: {
-                  id: true, name: true, isRequired: true, minSelect: true, maxSelect: true,
-                  options: { select: { id: true, name: true, additionalPrice: true, isAvailable: true } },
-                },
-              },
+              // [MENU-OPTIONS] ...and the pizza rules (size sets the price, halves, follow-ups) pricing reads.
+              optionGroups: { select: OPTION_GROUPS_PRICING_SELECT },
               // [E01] Each line prices against ITS OWN vendor — the tracked
               // `cart.vendor` is only the most recently added store.
               vendor: { select: { id: true, name: true, latitude: true, longitude: true, minOrderAmount: true } },
@@ -2226,6 +2233,8 @@ export async function customerRoutes(app: FastifyInstance) {
       throw new AppError(400, 'VENDOR_UNAVAILABLE', 'This vendor is not currently available');
     }
 
+    // [MENU-OPTIONS] An older app never adds an item it cannot show right.
+    assertAppRendersOptions(item, body.capabilities);
     // [M023] The one option validator (cart add, cart update and checkout).
     const selectedOptions = validatedSelection(item, body.selectedOptions);
     const note = normalizeItemNote(body.specialInstructions);
@@ -2319,15 +2328,16 @@ export async function customerRoutes(app: FastifyInstance) {
       assertOneAppointment(lineItem.fulfillment, body.quantity);
     }
     // [M023] An edited selection passes the same validator as an added one.
-    const editedSelection = body.selectedOptions === undefined || body.quantity <= 0
-      ? undefined
-      : validatedSelection(
-        await app.prisma.item.findUniqueOrThrow({
-          where: { id: cartItem.itemId },
-          select: { optionGroups: { include: { options: true } } },
-        }),
-        body.selectedOptions,
-      );
+    let editedSelection: OptionSelection | undefined;
+    if (body.selectedOptions !== undefined && body.quantity > 0) {
+      const edited = await app.prisma.item.findUniqueOrThrow({
+        where: { id: cartItem.itemId },
+        select: { id: true, optionGroups: { include: { options: true } } },
+      });
+      // [MENU-OPTIONS] Choices are re-made only by an app that can show them (a quantity change is always fine).
+      assertAppRendersOptions(edited, body.capabilities);
+      editedSelection = validatedSelection(edited, body.selectedOptions);
+    }
 
     if (body.quantity <= 0) {
       await app.prisma.cartItem.delete({ where: { id } });
@@ -2832,7 +2842,9 @@ export async function customerRoutes(app: FastifyInstance) {
       include: {
         vendor: { select: { name: true, addressLine1: true, city: true, phone: true } },
         customer: { select: { firstName: true, lastName: true } },
-        items: { select: { name: true, quantity: true, totalCustomer: true, subStatus: true, vatClass: true } },
+        items: { select: { name: true, quantity: true, totalCustomer: true, subStatus: true, vatClass: true,
+          // [MENU-OPTIONS] The receipt lists each line's choices.
+          selectedOptions: { select: { optionGroupName: true, optionName: true, markedUpPrice: true } } } },
         // [BUG-HUNT-2 G16] "The parties shown above" named nobody on a ride.
         driver: { select: { licensePlate: true, vehicleColor: true, vehicleMake: true, vehicleModel: true, user: { select: { firstName: true } } } },
       },
@@ -3294,7 +3306,7 @@ export async function customerRoutes(app: FastifyInstance) {
           where: { item: { vendorId: vendor.id } },
           select: {
             quantity: true, selectedOptions: true,
-            item: { select: { basePrice: true, bulkUnits: true, optionGroups: { select: { name: true, options: { select: { id: true, name: true, additionalPrice: true } } } } } },
+            item: { select: { basePrice: true, bulkUnits: true, optionGroups: { select: OPTION_GROUPS_PRICING_SELECT } } },
           },
         },
       },
@@ -3630,8 +3642,11 @@ export async function customerRoutes(app: FastifyInstance) {
   app.post('/orders/:id/reorder', async (request: AuthRequest) => {
     const { id } = request.params as { id: string };
     const { userId } = request.user;
+    // [MENU-OPTIONS · REVIEW S4] Reorder is a cart write too: an app that cannot show sizes, halves or follow-up
+    // choices is told to update rather than given a line it would misread.
+    const { capabilities } = z.object({ capabilities: z.array(z.string().max(40)).max(20).optional() }).parse(request.body ?? {});
 
-    const result = await orderService.reorder(userId, id);
+    const result = await orderService.reorder(userId, id, { rendersMenuOptions: declaresMenuOptionsV2(capabilities) });
 
     await app.redis.del(`cart:${userId}`).catch(() => {});
     const cart = await buildCartResponse(app, userId);
@@ -4106,7 +4121,9 @@ export async function customerRoutes(app: FastifyInstance) {
     let estimatedDiscount: number | null = null;
     const cart = await app.prisma.cart.findUnique({
       where: { customerId: userId, vendor: vendorTenantForCaller() },
-      include: { items: { where: { item: { vendor: vendorTenantForCaller() } }, include: { item: true } } },
+      // [MENU-OPTIONS · REVIEW A S3-1] Each line with its choices, priced by the one line pricer (a sized pizza is its
+      // size's price, never the item's "from" price), exactly as checkout prices it.
+      include: { items: { where: { item: { vendor: vendorTenantForCaller() } }, include: { item: { include: { optionGroups: { select: OPTION_GROUPS_PRICING_SELECT } } } } } },
     });
 
     if (cart && cart.items.length > 0) {
@@ -4118,10 +4135,7 @@ export async function customerRoutes(app: FastifyInstance) {
         throw new AppError(400, 'PROMO_WRONG_VENDOR', 'This code belongs to a different store — add their items to use it');
       }
       let subtotal = 0;
-      for (const ci of counted) {
-        const base = Number(ci.item.basePrice);
-        subtotal += base * ci.quantity;
-      }
+      for (const ci of counted) subtotal += priceCartLine(ci).lineTotal;
 
       if (promo.minOrderAmount && subtotal < Number(promo.minOrderAmount)) {
         throw new AppError(400, 'MIN_ORDER_PROMO',

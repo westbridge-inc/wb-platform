@@ -9,6 +9,13 @@ import { Sheet } from '@/components/sheet';
 import styles from './storefront.module.css';
 
 /**
+ * [W6 · size] The API's own option engine (judge and price a selection) arrives with the sheet, never in the store
+ * page's first load: a selection only exists once the sheet is open. The page reaches these through this module
+ * (storefront-experience.tsx `itemSheetModule` / `loadItemSheet`); they are lib/menu-options' functions themselves.
+ */
+export { OptionSelectionError, selectionPrice, validateSelectedOptions } from '@/lib/menu-options';
+
+/**
  * [W6] An item's sheet on the store page: its choices, the quantity and the
  * Add. It is only needed after a tap (or a link that names an item), so the
  * store page loads this code after its first paint instead of before it

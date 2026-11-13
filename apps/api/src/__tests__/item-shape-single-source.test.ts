@@ -133,6 +133,14 @@ describe('the shapes actually agree, not just structurally', () => {
     expect(itemHitFromSearchDoc({ id: 'x', name: 'Old doc', basePrice: 10, vendorId: 'v', vendorName: 'S' }).vendorIsCurrentlyOpen).toBe(false);
   });
 
+  it('[MENU-OPTIONS] both paths say when a size sets the price ("From" on the card); an older document reads as not sized', () => {
+    expect(toItemHit(row).pricedFrom).toBe(false);
+    const sized = { ...row, optionGroups: [{ id: 'size' }] };
+    expect(toItemHit(sized).pricedFrom).toBe(true);
+    expect(itemHitFromSearchDoc(toItemSearchDoc(sized, []) as never)).toEqual(toItemHit(sized));
+    expect(itemHitFromSearchDoc({ id: 'x', name: 'Old doc', basePrice: 10, vendorId: 'v', vendorName: 'S' }).pricedFrom).toBe(false);
+  });
+
   it('an item too old for the badge is not new on either path', () => {
     const old = { ...row, createdAt: new Date(Date.now() - (NEW_ITEM_WINDOW_DAYS + 5) * 86_400_000) };
     expect(toItemHit(old).isNew).toBe(false);

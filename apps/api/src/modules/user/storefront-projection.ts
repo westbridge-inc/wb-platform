@@ -24,6 +24,7 @@ interface OptionRow {
   isDefault: boolean;
   isAvailable: boolean;
   sortOrder: number;
+  followUpGroupId?: string | null;
 }
 
 interface OptionGroupRow {
@@ -33,6 +34,9 @@ interface OptionGroupRow {
   minSelect: number;
   maxSelect: number;
   sortOrder: number;
+  setsPrice?: boolean;
+  allowHalves?: boolean;
+  halfPricePercent?: number;
   options: OptionRow[];
 }
 
@@ -79,6 +83,8 @@ function publicOption(o: OptionRow) {
     isDefault: o.isDefault,
     isAvailable: o.isAvailable,
     sortOrder: o.sortOrder,
+    // [MENU-OPTIONS] The follow-up group this choice opens (nested, one level), or null.
+    followUpGroupId: o.followUpGroupId ?? null,
   };
 }
 
@@ -90,6 +96,12 @@ function publicOptionGroup(g: OptionGroupRow) {
     minSelect: g.minSelect,
     maxSelect: g.maxSelect,
     sortOrder: g.sortOrder,
+    // [MENU-OPTIONS] The pizza rules the item sheet shows; the server prices by the same columns (order/options.ts).
+    // setsPrice: an option's additionalPrice is then the WHOLE item price. allowHalves: whole / left / right, a half
+    // costing halfPricePercent% of the choice's price (half-up to the whole dollar).
+    setsPrice: g.setsPrice ?? false,
+    allowHalves: g.allowHalves ?? false,
+    halfPricePercent: g.halfPricePercent ?? 100,
     options: g.options.map(publicOption),
   };
 }

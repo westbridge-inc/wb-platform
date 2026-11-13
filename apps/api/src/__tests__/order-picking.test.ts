@@ -171,6 +171,11 @@ afterAll(async () => {
   await app.close();
 });
 
+
+/** [MENU-OPTIONS] A row written without the pizza parts reads back with its plain names = its words, no placement,
+ *  no opener, not a size: what every screen gets for an order placed before them. */
+const asMade = (o: { group: string; name: string; price: number }) => ({ ...o, plainGroup: o.group, plainName: o.name, placement: null, parentOptionName: null, setsPrice: false });
+
 describe('pick list + ready gate', () => {
   // [O-4 · owner 22 Oct 2026] The store accepts the WHOLE order: a tick is a tool, never a gate. Only an
   // open customer question holds the bag (proved below); the ticks still work.
@@ -757,7 +762,7 @@ describe('[L09 · M028] the customer sees the actual substitute and decides on i
     expect(pending.substitution).toEqual({
       state: 'PENDING',
       kind: 'SWAP', // [O-4] a swap, as against a removal question asked before acceptance
-      original: { name: original.name, unitPrice: 1450, options: chosen },
+      original: { name: original.name, unitPrice: 1450, options: chosen.map(asMade) },
       proposed: { itemId: substitute.id, name: substitute.name, unitPrice: 1150 },
       priceDelta: -300,
       decisions: { approve: true, reject: true },
@@ -766,10 +771,10 @@ describe('[L09 · M028] the customer sees the actual substitute and decides on i
       decideBy: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/),
       ifNoAnswer: 'REMOVE',
     });
-    expect(pending.options).toEqual(chosen);
+    expect(pending.options).toEqual(chosen.map(asMade));
     // The store still sees what was ordered while the customer decides.
     const storePending = (await inject('GET', `/api/v1/vendor/orders/${order.id}`, owner.token)).json().data.items.find((i: { id: string }) => i.id === line.id);
-    expect(storePending.options).toEqual(expect.arrayContaining(chosen));
+    expect(storePending.options).toEqual(expect.arrayContaining(chosen.map(asMade)));
 
     const totalBefore = Number((await app.prisma.order.findUniqueOrThrow({ where: { id: order.id } })).totalAmount);
     expect((await inject('POST', `/api/v1/customer/orders/${order.id}/items/${line.id}/substitution`, customer.token, { approve: true })).statusCode).toBe(200);
@@ -858,7 +863,7 @@ describe('[L09 · M026] the store sees the options the customer chose', () => {
     const expected = [
       { group: 'Size', name: 'Large', price: 300 },
       { group: 'Extras', name: 'Cheese', price: 150 },
-    ];
+    ].map(asMade);
     const detail = await inject('GET', `/api/v1/vendor/orders/${order.id}`, owner.token);
     expect(detail.statusCode, detail.body).toBe(200);
     expect(detail.json().data.items[0].options).toEqual(expect.arrayContaining(expected));

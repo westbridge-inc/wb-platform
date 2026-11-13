@@ -31,7 +31,10 @@ export const WALLED_BY_PARENT: Record<string, readonly string[]> = {
   VendorStaff: ['Vendor', 'User'],
   VendorImage: ['Vendor'],
   OperatingHours: ['Vendor'],
-  OptionGroup: ['Item'],
+  // [MENU-OPTIONS] An item's copy of a shared group also names that library group (same store, a DB trigger holds it).
+  OptionGroup: ['Item', 'ModifierGroup'],
+  // [MENU-OPTIONS] A shared library choice: walled by its library group (tenantId, RLS, scoped), deleted with it.
+  ModifierOption: ['ModifierGroup'],
   OrderItem: ['Order'],
   StockAdjustment: ['Item'],
   OrderStatusLog: ['Order'],

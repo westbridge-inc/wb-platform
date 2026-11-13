@@ -44,7 +44,12 @@ export type ItemHit = {
    *  at, not ordered until the store opens (checkout refuses VENDOR_CLOSED).
    *  Read live from the database on every path; the index copy is never trusted. */
   vendorIsCurrentlyOpen: boolean;
+  /** [MENU-OPTIONS · review S4] The item's size sets its price, so `basePrice` is its lowest size: cards read "From". */
+  pricedFrom: boolean;
 };
+
+/** [MENU-OPTIONS] The one read of "does a size set this item's price" for every card outside the store. */
+const SIZE_GROUP_SELECT = { where: { setsPrice: true }, select: { id: true }, take: 1 } as const;
 
 /**
  * How long a listing wears `NEW`.
@@ -69,7 +74,11 @@ export const ITEM_HIT_SELECT = {
   vendorId: true,
   vendor: { select: { name: true, isCurrentlyOpen: true } },
   category: { select: { name: true } },
+  optionGroups: SIZE_GROUP_SELECT,
 } as const;
+
+/** The same size read for the index sync's item rows (search.service). */
+export const ITEM_DOC_SIZE_INCLUDE = { optionGroups: SIZE_GROUP_SELECT } as const;
 
 type ItemHitRow = {
   id: string;
@@ -80,6 +89,7 @@ type ItemHitRow = {
   vendorId: string;
   vendor: { name: string; isCurrentlyOpen: boolean } | null;
   category: { name: string } | null;
+  optionGroups?: ReadonlyArray<{ id: string }>;
 };
 
 /**
@@ -105,6 +115,7 @@ export function toItemHit(row: ItemHitRow): ItemHit {
     isNew: Date.now() - new Date(row.createdAt).getTime() < NEW_ITEM_WINDOW_MS,
     // a missing store reads as closed: degraded data only makes a surface more conservative [L6]
     vendorIsCurrentlyOpen: row.vendor?.isCurrentlyOpen === true,
+    pricedFrom: (row.optionGroups?.length ?? 0) > 0,
   };
 }
 
@@ -145,6 +156,8 @@ export type ItemSearchDoc = {
   /** The store's open state at the last sync. A COPY: the search route
    *  replaces it with the live value before anything is served. */
   vendorIsCurrentlyOpen: boolean;
+  /** [MENU-OPTIONS] A size sets the item's price ("From" on the card). */
+  pricedFrom: boolean;
 };
 
 type ItemDocRow = {
@@ -162,6 +175,7 @@ type ItemDocRow = {
   dietaryTags: string[];
   allergens: string[];
   totalOrdered: number;
+  optionGroups?: ReadonlyArray<{ id: string }>;
 };
 
 /** The ONE index-document builder. Both syncs (`syncAllItems` and
@@ -188,6 +202,7 @@ export function toItemSearchDoc(row: ItemDocRow, categories: string[]): ItemSear
     totalOrdered: row.totalOrdered,
     categories,
     vendorIsCurrentlyOpen: row.vendor.isCurrentlyOpen,
+    pricedFrom: (row.optionGroups?.length ?? 0) > 0,
   };
 }
 
@@ -216,5 +231,8 @@ export function itemHitFromSearchDoc(h: Record<string, unknown>): ItemHit {
     // a document indexed before this field existed reads as closed (never a guess);
     // the search route overwrites it with the live state in any case
     vendorIsCurrentlyOpen: h['vendorIsCurrentlyOpen'] === true,
+    // [MENU-OPTIONS] A document indexed before this field existed reads as not sized; its next sync (every size
+    // edit schedules one) brings "From" back.
+    pricedFrom: h['pricedFrom'] === true,
   };
 }
