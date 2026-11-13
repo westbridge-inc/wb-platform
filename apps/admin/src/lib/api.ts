@@ -658,9 +658,13 @@ export const resolveCardPayment = (id: string, action: CardDecision, providerRef
  *  provider's own record. Two people (C4); it never sends a refund. The answer's `check` says what was found. */
 export type ProviderCheck = 'REFUNDED' | 'OWNER_HOLD' | 'NO_REFUND_ON_RECORD' | 'NOT_KNOWN' | 'ASKED_RECENTLY'
   /** [VOID-REFUND-CHECK F3] A held payment whose reversal the card provider refused. */
-  | 'SALE_STANDS' | 'NOT_TAKEN_ON_RECORD' | 'ESCALATE';
+  | 'SALE_STANDS' | 'NOT_TAKEN_ON_RECORD' | 'ESCALATE' | 'REVERSED_ON_RECORD' | 'CHECKED_NOTHING_BACK';
 export const checkCardProvider = (id: string, reason: string) =>
   apiFetch(`/api/v1/admin/billing/card-sessions/${encodeURIComponent(id)}/check-provider`, { method: 'POST', body: JSON.stringify({}), reason });
+/** [REVIEW-2496-B S3-2 · OWNER RULING 12 Nov 2026] The owner and a second person confirm PowerTranz's portal shows nothing
+ *  went back for a refused refund to the card (with the portal's reference). Frees the held money; sends nothing. */
+export const confirmPortalNothingBack = (id: string, portalReference: string, reason: string) =>
+  apiFetch(`/api/v1/admin/billing/card-sessions/${encodeURIComponent(id)}/portal-checked`, { method: 'POST', body: JSON.stringify({ portalReference }), reason });
 /** [BUG-HUNT-2 G08] What stores owe customers back by MMG. Swift holds none of it: these are records. */
 export const fetchMmgRefunds = (filter: 'open' | 'overdue' | 'disputed') =>
   apiFetch(`/api/v1/admin/mmg-refunds?limit=50&filter=${filter}`);

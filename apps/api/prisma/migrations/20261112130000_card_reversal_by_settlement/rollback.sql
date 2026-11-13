@@ -116,7 +116,7 @@ BEGIN
 END $$ LANGUAGE plpgsql;
 
 ALTER TABLE "card_credit_refunds" DROP CONSTRAINT IF EXISTS "card_credit_refunds_kind_check";
-ALTER TABLE "card_credit_refunds" DROP COLUMN IF EXISTS "checkedAt", DROP COLUMN IF EXISTS "kind";
+ALTER TABLE "card_credit_refunds" DROP COLUMN IF EXISTS "checkedRef", DROP COLUMN IF EXISTS "checkedBy", DROP COLUMN IF EXISTS "checkedAt", DROP COLUMN IF EXISTS "kind";
 ALTER TABLE "card_sessions" DROP CONSTRAINT IF EXISTS "card_sessions_reversal_check_check", DROP CONSTRAINT IF EXISTS "card_sessions_reversal_kind_check";
 ALTER TABLE "card_sessions" DROP COLUMN IF EXISTS "reversalRetryAt", DROP COLUMN IF EXISTS "reversalCheck", DROP COLUMN IF EXISTS "providerReversalKind";
 

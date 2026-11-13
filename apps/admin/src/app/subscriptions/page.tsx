@@ -430,8 +430,8 @@ export default function SubscriptionsPage() {
                                   const answer = await dialog.askWith({
                                     title: `Refund a card payment to ${h.name}'s card?`,
                                     body: <><p>{sourcesLine(view)}</p>
-                                      <p>Swift asks the card provider once to refund the card payment you choose to the card it came from: the whole payment, or only its weeks that have not started. It counts as paid back only when the card provider approves it. A second admin approves first. Never refund it any other way.</p>
-                                      {ready.some((c) => c.partial) && <p>A card payment that already paid part of a week that started goes back only for its weeks that have not started: a partial refund of that payment, for exactly the amount shown. If the card provider refuses it, nothing moves and it stays here to pay back another way.</p>}
+                                      <p>Swift asks the card provider once to give the card payment you choose back to the card it came from: the whole payment, or only its weeks that have not started. A payment the bank may not have settled yet (about 4 business days) goes back as a void, whole; after that as a refund. It counts as paid back only when the card provider approves it. A second admin approves first. Never refund it any other way.</p>
+                                      {ready.some((c) => c.partial) && <p>A card payment that already paid part of a week that started goes back only for its weeks that have not started: a partial refund of that payment, for exactly the amount shown. If the card provider refuses it, nothing moves: check it with the card provider first (Card payments), then pay it back another way.</p>}
                                       {otherLines.length > 0 && <p>{otherLines.join(' ')}</p>}</>,
                                     confirmLabel: 'Refund to card',
                                     fields: [

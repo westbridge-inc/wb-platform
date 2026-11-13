@@ -74,6 +74,7 @@ export const REASONED_CALLERS: readonly ReasonCaller[] = [
   { route: 'POST /subscriptions/:id/refund-credit/card', helper: 'refundCreditToCard', args: ['sub_1', 'evt_aside_1', 'cs_1', 1000], requiredBodyKeys: ['setAsideId', 'cardSessionId', 'amount'] },
   { route: 'POST /billing/card-sessions/:id/resolve', helper: 'resolveCardPayment', args: ['cs_1', 'NOTHING_TAKEN', 'TXN-1', null], requiredBodyKeys: ['action', 'providerReference'] },
   { route: 'POST /billing/card-sessions/:id/check-provider', helper: 'checkCardProvider', args: ['cs_1'] },
+  { route: 'POST /billing/card-sessions/:id/portal-checked', helper: 'confirmPortalNothingBack', args: ['cs_1', 'PTZ-0001'], requiredBodyKeys: ['portalReference'] },
   { route: 'POST /mmg-refunds/:id/void', helper: 'voidMmgRefund', args: ['obl_1', 'Settled in cash'], requiredBodyKeys: ['note'], reply: { id: 'obl_1', status: 'VOIDED' } },
   { route: 'POST /orders/:id/door-cash-return/resolve', helper: 'resolveHeldDoorCash', args: ['ord_1'], reply: { orderId: 'ord_1', doorCashReturn: { status: 'RESOLVED' } } },
 

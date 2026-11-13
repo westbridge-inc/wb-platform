@@ -891,12 +891,16 @@ export function judgeTransactionRecord(record: PowerTranzTransactionRecord, held
   // preprocessed or authenticated (SP4 / 3D0: the staging sandbox refused to void one, WRITES.md:63). PowerTranz (12 Nov
   // 2026): a declined transaction cannot be refunded (Response Code 12); a void needs an approved authorization (guide
   // sec. 3). So it is never voided: the session closes as unpaid. Anything short of all of these keeps the old path.
+  // [REVIEW-2496-A S3-2] Only a 2-digit numeric ISO is the bank's own answer (a decline); SP* / 3D* are page stages that
+  // never completed (closed only after NOT_TAKEN_FINAL_MS). Any other code — HP0, TK0, FC0 (Appendix 1 "completed"
+  // stages) or one not documented — proves nothing: the old path (one void, then a person).
   const iso = record.isoResponseCode;
-  if (record.approved !== true && iso !== '00' && /^[A-Za-z0-9]{2,3}$/.test(iso) && !AMBIGUOUS_ISO.has(iso)
+  const stage = /^\d{2}$/.test(iso) ? 'declined' as const : /^(SP|3D)[A-Za-z0-9]{1,2}$/i.test(iso) ? 'never_completed' as const : null;
+  if (stage && record.approved !== true && iso !== '00' && !AMBIGUOUS_ISO.has(iso)
     && record.captureCount === 0 && record.totalCaptureMinor === 0 && record.creditCount === 0 && record.totalCreditMinor === 0 && !record.voided) {
-    return /^(SP|3D)/i.test(iso)
-      ? { status: 'not_taken', reason: `LOOKUP_NEVER_COMPLETED_${codeShown(iso)}`, stage: 'never_completed' }
-      : { status: 'not_taken', reason: `LOOKUP_DECLINED_${codeShown(iso)}`, stage: 'declined' };
+    return stage === 'never_completed'
+      ? { status: 'not_taken', reason: `LOOKUP_NEVER_COMPLETED_${codeShown(iso)}`, stage }
+      : { status: 'not_taken', reason: `LOOKUP_DECLINED_${codeShown(iso)}`, stage };
   }
   if (record.approved === false || record.isoResponseCode !== '00') return { status: 'not_bookable', reason: `LOOKUP_NOT_APPROVED_${codeShown(record.isoResponseCode)}` };
   if (record.orderIdentifier === null) return { status: 'unknown', reason: 'LOOKUP_NO_ORDER' };

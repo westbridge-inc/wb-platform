@@ -319,7 +319,9 @@ describe('fee credit refund: set aside, pay, record, and every answer is shown',
     const { user } = renderWithQuery(<SubscriptionsPage />);
     expect(await screen.findByText('Shanta Kitchen')).toBeTruthy();
     const panel = await answerPanel(user, 'Refund to card', { choose: /Order SWIFT-cs_9 · GY\$5,000/ as unknown as string, reason: REASON });
-    expect(panel.textContent).toContain('Swift asks the card provider once to refund the card payment you choose to the card it came from: the whole payment, or only its weeks that have not started.');
+    expect(panel.textContent).toContain('Swift asks the card provider once to give the card payment you choose back to the card it came from: the whole payment, or only its weeks that have not started.');
+    // [REVIEW-2496-B S4-7] A young payment goes back as a void.
+    expect(panel.textContent).toContain('goes back as a void, whole; after that as a refund');
     expect(panel.textContent).not.toContain('refund the whole card payment');
     await confirmPanel(user, panel, 'Refund to card');
     await waitFor(() => expect(requestsByMethod(fetchMock, 'POST')).toHaveLength(1));

@@ -64,6 +64,9 @@ const MOVEABLE_HOLIDAYS: ReadonlySet<string> = new Set([
   '2027-03-22', '2027-03-23', '2027-05-16', '2027-05-17', '2027-08-14', '2027-08-15', '2027-08-16', '2027-10-28', '2027-10-29',
 ]);
 
+/** The years MOVEABLE_HOLIDAYS covers (a test turns red from 1 Oct of the last one: extend it, or use the bank's calendar). */
+export const MOVEABLE_HOLIDAY_YEARS: readonly number[] = [...new Set([...MOVEABLE_HOLIDAYS].map((d) => Number(d.slice(0, 4))))].sort();
+
 /** Guyana's public holidays of a year that follow the civil calendar, with the Monday after one that falls on a Sunday
  *  (Saturday ones too for Christmas and Boxing Day, generously). */
 function fixedHolidays(year: number): Set<string> {

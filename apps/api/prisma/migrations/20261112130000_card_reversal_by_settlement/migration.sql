@@ -35,7 +35,11 @@ ALTER TABLE "card_sessions"
 
 ALTER TABLE "card_credit_refunds"
   ADD COLUMN "kind" TEXT NOT NULL DEFAULT 'REFUND',
-  ADD COLUMN "checkedAt" TIMESTAMP(3);
+  ADD COLUMN "checkedAt" TIMESTAMP(3),
+  -- [REVIEW-2496-B S3-2 · OWNER 12 Nov 2026] Who checked it, and how: LOOKUP:<record sha256> (the provider's record), or
+  -- PORTAL:<typed portal reference> (the owner and a second person confirmed in the console that nothing went back).
+  ADD COLUMN "checkedBy" TEXT,
+  ADD COLUMN "checkedRef" TEXT;
 
 ALTER TABLE "card_credit_refunds"
   ADD CONSTRAINT "card_credit_refunds_kind_check" CHECK ("kind" IN ('VOID', 'REFUND'));
@@ -56,13 +60,15 @@ BEGIN
   IF OLD."providerTransactionRef" IS NOT NULL AND NEW."providerTransactionRef" IS DISTINCT FROM OLD."providerTransactionRef" THEN
     RAISE EXCEPTION 'card_sessions row %: the provider transaction reference is written once [PT-4]', OLD.id USING ERRCODE = 'check_violation';
   END IF;
-  IF NEW."providerVoidState" IS DISTINCT FROM OLD."providerVoidState" AND NOT (
+  IF NEW."providerVoidState" IS DISTINCT FROM OLD."providerVoidState" AND NOT COALESCE(
        (OLD."providerVoidState" IS NULL AND NEW."providerVoidState" = 'SENDING')
-    OR (OLD."providerVoidState" = 'SENDING' AND NEW."providerVoidState" IN ('VOIDED', 'FAILED', 'UNKNOWN'))
-  ) THEN
+    OR (OLD."providerVoidState" = 'SENDING' AND NEW."providerVoidState" IN ('VOIDED', 'FAILED', 'UNKNOWN')),
+    false) THEN
     RAISE EXCEPTION 'card_sessions row %: a void claim only moves forward (% -> %) [PT-4]', OLD.id, OLD."providerVoidState", NEW."providerVoidState" USING ERRCODE = 'check_violation';
   END IF;
-  IF NEW."providerRefundState" IS DISTINCT FROM OLD."providerRefundState" AND NOT (
+  -- [REVIEW-2496 round 2] COALESCE(..., false): a comparison with a NULL state is NULL, and NOT NULL would let any move
+  -- through (NULL -> REFUNDED passed the earlier guard). Every allowed move must be TRUE.
+  IF NEW."providerRefundState" IS DISTINCT FROM OLD."providerRefundState" AND NOT COALESCE(
        (OLD."providerRefundState" IS NULL AND NEW."providerRefundState" = 'SENDING')
     OR (OLD."providerRefundState" IN ('SENDING', 'PENDING') AND NEW."providerRefundState" IN ('PENDING', 'REFUNDED', 'FAILED', 'UNKNOWN'))
     -- [CARD-REFUND-LOOKUP] A refund whose answer was lost is REFUNDED once the provider's own record shows the whole
@@ -71,10 +77,11 @@ BEGIN
     -- [VOID-REFUND-CHECK F3] A reversal the provider REFUSED is checked with the card provider (two people): its record
     -- shows the payment voided or credited back (REFUNDED), or the sale still standing, approved and unreversed — then
     -- ONE more reversal may be claimed, once (reversalRetryAt, written once), under a new key. Never a third.
-    OR (OLD."providerRefundState" = 'FAILED' AND NEW."providerRefundState" = 'REFUNDED')
+    -- [REVIEW-2496-A S4-3] ... only on a payment still HELD for a person.
+    OR (OLD."providerRefundState" = 'FAILED' AND NEW."providerRefundState" = 'REFUNDED' AND OLD."status" = 'HELD')
     OR (OLD."providerRefundState" = 'FAILED' AND NEW."providerRefundState" = 'SENDING'
-        AND OLD."reversalRetryAt" IS NULL AND NEW."reversalRetryAt" IS NOT NULL AND OLD."reversalCheck" = 'SALE_STANDS')
-  ) THEN
+        AND OLD."reversalRetryAt" IS NULL AND NEW."reversalRetryAt" IS NOT NULL AND OLD."reversalCheck" = 'SALE_STANDS'),
+    false) THEN
     RAISE EXCEPTION 'card_sessions row %: a refund claim only moves forward (% -> %) [PT-4]', OLD.id, OLD."providerRefundState", NEW."providerRefundState" USING ERRCODE = 'check_violation';
   END IF;
   IF OLD."bookClaimedAt" IS NOT NULL AND NEW."bookClaimedAt" IS DISTINCT FROM OLD."bookClaimedAt" THEN
@@ -102,12 +109,22 @@ BEGIN
        OR EXISTS (SELECT 1 FROM "billing_events" e WHERE e."idempotencyKey" = 'bank:' || NEW."paymentId")) THEN
     RAISE EXCEPTION 'card_sessions row %: a booked payment is never refunded here [PT-4]', OLD.id USING ERRCODE = 'check_violation';
   END IF;
+  -- [REVIEW-2496-B S3-1] Every reversal claim spends the check that allowed it: a claim that keeps one is refused, so a
+  -- stale "the sale stands" can never authorise a later retry.
+  IF NEW."providerRefundState" = 'SENDING' AND OLD."providerRefundState" IS DISTINCT FROM 'SENDING' AND NEW."reversalCheck" IS NOT NULL THEN
+    RAISE EXCEPTION 'card_sessions row %: a reversal claim spends its check [REVIEW-2496-B S3-1]', OLD.id USING ERRCODE = 'check_violation';
+  END IF;
+  -- [REVIEW-2496-A S4-3] A check's verdict is written only on a payment whose reversal was refused, or whose own void got no answer.
+  IF NEW."reversalCheck" IS NOT NULL AND NEW."reversalCheck" IS DISTINCT FROM OLD."reversalCheck"
+     AND NOT COALESCE(OLD."status" = 'HELD' AND (OLD."providerRefundState" = 'FAILED' OR (OLD."providerRefundState" IS NULL AND OLD."providerVoidState" = 'UNKNOWN')), false) THEN
+    RAISE EXCEPTION 'card_sessions row %: a check is recorded only on a refused or unanswered reversal [REVIEW-2496-A S4-3]', OLD.id USING ERRCODE = 'check_violation';
+  END IF;
   IF OLD."reversalRetryAt" IS NOT NULL AND NEW."reversalRetryAt" IS DISTINCT FROM OLD."reversalRetryAt" THEN
     RAISE EXCEPTION 'card_sessions row %: the one further reversal is claimed once [VOID-REFUND-CHECK F3]', OLD.id USING ERRCODE = 'check_violation';
   END IF;
   -- The kind of finance's reversal (VOID or REFUND) is written only with the claim that sends it.
   IF NEW."providerReversalKind" IS DISTINCT FROM OLD."providerReversalKind"
-     AND NOT (NEW."providerRefundState" = 'SENDING' AND OLD."providerRefundState" IS DISTINCT FROM 'SENDING') THEN
+     AND NOT COALESCE(NEW."providerRefundState" = 'SENDING' AND OLD."providerRefundState" IS DISTINCT FROM 'SENDING', false) THEN
     RAISE EXCEPTION 'card_sessions row %: a reversal''s kind is written with its claim only [VOID-REFUND-CHECK F1]', OLD.id USING ERRCODE = 'check_violation';
   END IF;
   IF OLD."resolution" IS NOT NULL AND (NEW."resolution" IS DISTINCT FROM OLD."resolution"
@@ -144,7 +161,7 @@ BEGIN
     -- [VOID-REFUND-CHECK F5] A REFUSED reversal whose original the provider's own record shows voided or credited
     -- back (a person asked, two people): REFUNDED, once, under Swift's lookup reference only (never a typed one), and
     -- never paid back a second way.
-    OR (OLD."state" = 'FAILED' AND NEW."state" = 'REFUNDED' AND NEW."providerRefundRef" LIKE 'LOOKUP-CREDIT-%')) THEN
+    OR (OLD."state" = 'FAILED' AND NEW."state" = 'REFUNDED' AND NEW."providerRefundRef" LIKE 'LOOKUP-CREDIT-%' AND OLD."checkedAt" IS NULL)) THEN
     RAISE EXCEPTION 'card_credit_refunds row %: a refund claim only moves forward, once (% -> %) [CARD-READY]', OLD.id, OLD."state", NEW."state" USING ERRCODE = 'check_violation';
   END IF;
   IF OLD."state" <> 'SENDING'
@@ -162,8 +179,9 @@ BEGIN
     RAISE EXCEPTION 'card_credit_refunds row %: a reversal''s kind is written once [VOID-REFUND-CHECK F4]', OLD.id USING ERRCODE = 'check_violation';
   END IF;
   -- [VOID-REFUND-CHECK F5] A check that found nothing back is recorded once, and only on a refused reversal.
-  IF NEW."checkedAt" IS DISTINCT FROM OLD."checkedAt"
-     AND NOT (OLD."checkedAt" IS NULL AND OLD."state" = 'FAILED' AND NEW."state" = 'FAILED') THEN
+  IF (NEW."checkedAt" IS DISTINCT FROM OLD."checkedAt" OR NEW."checkedBy" IS DISTINCT FROM OLD."checkedBy" OR NEW."checkedRef" IS DISTINCT FROM OLD."checkedRef")
+     AND NOT (OLD."checkedAt" IS NULL AND OLD."checkedBy" IS NULL AND OLD."checkedRef" IS NULL AND OLD."state" = 'FAILED' AND NEW."state" = 'FAILED'
+              AND NEW."checkedAt" IS NOT NULL AND NEW."checkedBy" IS NOT NULL AND NEW."checkedRef" IS NOT NULL) THEN
     RAISE EXCEPTION 'card_credit_refunds row %: a refused reversal is checked once [VOID-REFUND-CHECK F5]', OLD.id USING ERRCODE = 'check_violation';
   END IF;
   RETURN NEW;

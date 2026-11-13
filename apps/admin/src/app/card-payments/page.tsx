@@ -2,7 +2,7 @@
 
 import { useState, type FormEvent } from 'react';
 import { useInfiniteQuery, useQueryClient } from '@tanstack/react-query';
-import { checkCardProvider, fetchCardPayments, resolveCardPayment, type CardDecision, type CardPaymentsFilter } from '@/lib/api';
+import { checkCardProvider, confirmPortalNothingBack, fetchCardPayments, resolveCardPayment, type CardDecision, type CardPaymentsFilter } from '@/lib/api';
 import { checkWords } from '@/lib/card-check-words';
 import type { ReasonField } from '@/components/mc/ReasonDialog';
 import { StatusPill } from '@/components/detail';
@@ -186,6 +186,31 @@ export default function CardPaymentsPage() {
   }).then((outcome) => {
     if (outcome?.tone === 'queued') setQueued((all) => ({ ...all, [r.id]: true }));
   });
+  // [REVIEW-2496-B S3-2 · OWNER RULING 12 Nov 2026] The owner and a second person: the portal shows nothing went back.
+  const portalChecked = (r: CardPaymentRow) => void actions.run({
+    title: `PowerTranz portal checked: nothing went back for this ${money(r.amount, r.currencyCode)} card payment?`,
+    body: (
+      <p>
+        Only the owner, with a second person. Confirm only when PowerTranz&apos;s Merchant Portal shows that NOTHING went back for
+        order <span className="font-mono break-all">{orderRef(r.id)}</span> after the refused reversal. Type the portal&apos;s
+        reference. Swift sends nothing: the money is freed to be paid back another way. Never when the portal shows a refund or void.
+      </p>
+    ),
+    confirmLabel: 'Portal checked: nothing went back',
+    fields: [{ kind: 'text', name: 'portal', label: 'Reference in the PowerTranz portal', required: true, maxLength: 64, pattern: /^[A-Za-z0-9_-]{4,64}$/,
+      hint: 'As the portal shows it.', patternMessage: 'Letters, digits, - and _ only, 4 to 64.' }],
+    submit: ({ reason, values }) => confirmPortalNothingBack(r.id, String(values['portal']), reason),
+    success: (answer) => checkWords((answer as { data?: { check?: unknown } } | null)?.data?.check) ?? 'Recorded.',
+  }).then((outcome) => {
+    if (outcome?.tone === 'queued') setQueued((all) => ({ ...all, [r.id]: true }));
+  });
+  /** [REVIEW-2496-B S3-1] What finance's next reversal would be (reversalPlanOf, card-rail.service.ts): the kind not yet refused, or none. */
+  const nextReversal = (r: CardPaymentRow): 'a void' | 'a refund' | null => {
+    const voidRefused = r.providerVoidState === 'FAILED' || r.providerVoidState === 'UNKNOWN' || (r.providerRefundState === 'FAILED' && r.providerReversalKind === 'VOID');
+    const refundRefused = r.providerRefundState === 'FAILED' && (r.providerReversalKind ?? 'REFUND') === 'REFUND';
+    if (r.reversalRetryAt || (voidRefused && refundRefused)) return null;
+    return voidRefused ? 'a refund' : 'a void';
+  };
   const checkButton = (r: CardPaymentRow) => (!r.providerCheck ? null : queued[r.id] ? (
     <p role="status" className="text-sm mt-3">Waiting for approval: a second admin, on Approvals. Nothing has changed yet.</p>
   ) : (
@@ -284,9 +309,9 @@ export default function CardPaymentsPage() {
                         </div>
                       )}
                     </>
-                  ) : r.reversalCheck === 'SALE_STANDS' && !r.reversalRetryAt ? (
+                  ) : r.reversalCheck === 'SALE_STANDS' && nextReversal(r) ? (
                     <>
-                      <p className="text-sm mt-3">The card provider refused the {r.providerReversalKind === 'VOID' ? 'void' : 'refund'} Swift sent, and PowerTranz&apos;s record shows the sale approved and not reversed. Swift may send one more reversal ({r.providerReversalKind === 'VOID' ? 'a refund' : 'a void'}), once.</p>
+                      <p className="text-sm mt-3">The card provider refused the {r.providerReversalKind === 'VOID' ? 'void' : 'refund'} Swift sent, and PowerTranz&apos;s record shows the sale approved and not reversed. Swift may send one more reversal ({nextReversal(r)}), once.</p>
                       {queued[r.id] ? <p role="status" className="text-sm mt-3">Waiting for approval: a second admin, on Approvals. Nothing has changed yet.</p> : (
                         <div className="flex flex-wrap gap-2 mt-3">
                           {DECISIONS.filter((d) => d.action === 'REFUND').map((d) => <button key={d.action} type="button" className="mc-btn" onClick={() => decide(r, d)}>Send one more reversal</button>)}
@@ -296,8 +321,8 @@ export default function CardPaymentsPage() {
                   ) : (
                     <>
                       <p className="text-sm mt-3">
-                        {r.reversalRetryAt
-                          ? 'The card provider refused both reversals Swift sent for this payment. Nothing more is sent: escalate it to the owner.'
+                        {r.reversalRetryAt || (r.reversalCheck === 'SALE_STANDS' && !nextReversal(r))
+                          ? 'The card provider refused every reversal Swift can send for this payment. Nothing more is sent: escalate it to the owner.'
                           : `The card provider refused the ${r.providerReversalKind === 'VOID' ? 'void' : 'refund'} Swift sent. Nothing moved, and nothing is sent again by itself. Check it with the card provider: its record says whether the sale was taken.`}
                       </p>
                       {checkButton(r)}
@@ -314,14 +339,46 @@ export default function CardPaymentsPage() {
                     </p>
                     {checkButton(r)}
                   </>
+                ) : open && r.providerVoidState === 'UNKNOWN' && !r.providerRefundState ? (
+                  // [REVIEW-2496-B S2-1] Swift's own void got no answer: it may have gone through. Nothing is refunded or
+                  // booked until a check of PowerTranz's record (ten minutes after the void) shows the sale standing.
+                  r.reversalCheck === 'SALE_STANDS' ? (
+                    <>
+                      <p className="text-sm mt-3">PowerTranz&apos;s record shows the sale approved and not voided: Swift&apos;s void did not go through. Refund it, once.</p>
+                      {queued[r.id] ? <p role="status" className="text-sm mt-3">Waiting for approval: a second admin, on Approvals. Nothing has changed yet.</p> : (
+                        <div className="flex flex-wrap gap-2 mt-3">
+                          {DECISIONS.filter((d) => d.action === 'REFUND').map((d) => <button key={d.action} type="button" className="mc-btn" onClick={() => decide(r, d)}>{d.label}</button>)}
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    <>
+                      <p className="text-sm mt-3">
+                        {r.reversalCheck === 'NOT_TAKEN'
+                          ? "PowerTranz's record shows nothing taken (Swift's void went through, or the payment never completed). Record that nothing was taken."
+                          : "Swift's void got no answer: it may have gone through. Check it with the card provider first (ten minutes after the void): if voided, record that nothing was taken; if the sale stands, refund it once."}
+                      </p>
+                      {r.reversalCheck !== 'NOT_TAKEN' && checkButton(r)}
+                      {!queued[r.id] && (
+                        <div className="flex flex-wrap gap-2 mt-3">
+                          {DECISIONS.filter((d) => d.action === 'NOTHING_TAKEN').map((d) => <button key={d.action} type="button" className="mc-btn" onClick={() => decide(r, d)}>{d.label}</button>)}
+                        </div>
+                      )}
+                    </>
+                  )
                 ) : !open && r.providerCheck ? (
                   // [CARD-REFUND-LOOKUP] A refund of set-aside credit to the card whose answer is not known.
                   <>
                     <p className="text-sm mt-3">{r.cardRefund?.state === 'FAILED'
                       // [VOID-REFUND-CHECK F5] A refusal can mean the payment was already reversed (e.g. by hand in the portal).
-                      ? 'The card provider refused the reversal Swift sent to this card. Before it is paid back any other way, check it with the card provider: a refusal can mean the payment was already reversed.'
+                      ? 'The card provider refused the reversal Swift sent to this card. Before it is paid back any other way, check it with the card provider: a refusal can mean the payment was already reversed. If PowerTranz\'s record cannot settle it, the owner and a second person may confirm from the portal that nothing went back.'
                       : 'A refund of this payment to its card was sent and its answer is not known. Check it with the card provider: Swift records it refunded only if the whole payment went back.'}</p>
                     {checkButton(r)}
+                    {r.cardRefund?.state === 'FAILED' && !queued[r.id] && (
+                      <div className="flex flex-wrap gap-2 mt-3">
+                        <button type="button" className="mc-btn" onClick={() => portalChecked(r)}>Portal checked: nothing went back</button>
+                      </div>
+                    )}
                   </>
                 ) : open && (r.providerTransactionRef && r.amount !== null ? (
                   queued[r.id] ? <p role="status" className="text-sm mt-3">Waiting for approval: a second admin, on Approvals. Nothing has changed yet.</p> : (

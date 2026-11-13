@@ -4568,6 +4568,10 @@ model CardCreditRefund {
   /// [VOID-REFUND-CHECK F5] A check of a REFUSED reversal found nothing back on the provider's record: only then may the
   /// money be paid back another way (Record payout), or a refused void be followed by one refund to the card.
   checkedAt         DateTime?
+  /// [REVIEW-2496-B S3-2 · OWNER 12 Nov 2026] Who checked it (written with checkedAt, once).
+  checkedBy         String?
+  /// How: LOOKUP:<record sha256>, or PORTAL:<portal reference> (owner + a second person, "nothing went back").
+  checkedRef        String?
   /// The open refund set-aside (its PREPAID_REFUND_RESERVED event) this refund pays part of.
   setAsideId        String
   /// The whole card payment, frozen when asked.

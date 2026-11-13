@@ -981,6 +981,18 @@ describe('[CARD-LOOKUP] the transaction lookup: read strictly, judged against wh
     expect(await ask(fresh(at({ status: 200, body: record({ IsoResponseCode: '' }, { TotalCaptureAmount: 0, CaptureCount: 0 }) })))).toMatchObject({ status: 'not_bookable' });
   });
 
+  // [REVIEW-2496-A S3-2] Appendix 1 lists HP0 "HPP preprocessing complete", TK0 "Tokenize complete", FC0 "Fraud Check
+  // complete" as completed STAGES, not bank declines: only a 2-digit numeric code is a decline. Anything else proves
+  // nothing — the old path (one void, then a person), never "declined, closed unpaid at once".
+  it('[REVIEW-2496-A S3-2] HP0 / TK0 / FC0 (stage codes) or any undocumented code with capture 0 -> never declined: not_bookable (the old void-then-person path)', async () => {
+    for (const code of ['HP0', 'TK0', 'FC0', 'XY9', '5A']) {
+      expect(await ask(fresh(at({ status: 200, body: record({ IsoResponseCode: code }, { TotalCaptureAmount: 0, CaptureCount: 0 }) }))), code).toMatchObject({ status: 'not_bookable', reason: `LOOKUP_NOT_APPROVED_${code}` });
+    }
+    // SP* / 3D* still wait as never completed; a 2-digit numeric decline still closes at once.
+    expect(await ask(fresh(at({ status: 200, body: record({ IsoResponseCode: '3D6' }, { TotalCaptureAmount: 0, CaptureCount: 0 }) })))).toMatchObject({ status: 'not_taken', stage: 'never_completed' });
+    expect(await ask(fresh(at({ status: 200, body: record({ IsoResponseCode: '14' }, { TotalCaptureAmount: 0, CaptureCount: 0 }) })))).toMatchObject({ status: 'not_taken', stage: 'declined' });
+  });
+
   it('an unreadable answer is unknown, never success: another transaction or order, missing or mistyped fields, HTTP errors, no answer', async () => {
     const noSummary: Record<string, unknown> = record();
     delete noSummary['OrderSummary'];

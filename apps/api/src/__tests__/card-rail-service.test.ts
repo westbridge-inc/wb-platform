@@ -26,7 +26,7 @@ import { testPhone } from './helpers/fixture-ids';
 import { partnerObligations, verdictFor } from '../modules/user/partner-wind-down';
 import { recordCreditRefundPaid, refundReferenceOf, releaseCreditRefund, setAsideCreditRefund } from '../modules/billing/credit-refund';
 import { runBillingInvariants } from '../modules/billing/invariants';
-import { CARD_REFUND_ACTION, checkCardCreditRefund, creditRefundSources, lookupCreditReference, refundCardCreditToCard, validateCardRefundAsk } from '../modules/billing/card-credit-refund';
+import { CARD_REFUND_ACTION, checkCardCreditRefund, confirmPortalNothingBack, creditRefundSources, lookupCreditReference, refundCardCreditToCard, validateCardRefundAsk } from '../modules/billing/card-credit-refund';
 
 // ---------------------------------------------------------------------------
 // [PT-1] The hosted card loop, end to end, on the real simulator and the real
@@ -1226,7 +1226,7 @@ describe('[CARD-READY] card money set aside at closing goes back to its card thr
     const reads: unknown[] = [];
     const checked = await checkCardCreditRefund(app.prisma, () => ({ ...refused.provider, lookupRefund: async (i) => { reads.push(i); return { status: 'not_refunded', reason: 'LOOKUP_NO_CREDIT', rawSha256: '8'.repeat(64) }; } }) as CardRailProvider,
       { adminId: 'admin-d', tenantId: (await app.prisma.cardCreditRefund.findFirstOrThrow({ where: { cardSessionId: s } })).tenantId, cardSessionId: s });
-    expect(checked).toMatchObject({ check: 'NO_REFUND_ON_RECORD', refund: { state: 'FAILED' } });
+    expect(checked).toMatchObject({ check: 'CHECKED_NOTHING_BACK', refund: { state: 'FAILED' } });
     expect(reads).toHaveLength(1);
     expect((await app.prisma.cardCreditRefund.findFirstOrThrow({ where: { cardSessionId: s } })).checkedAt).not.toBeNull();
     expect(refused.calls).toHaveLength(1);
@@ -1327,7 +1327,7 @@ describe('[CARD-READY] card money set aside at closing goes back to its card thr
       expect(r.refunds).toHaveLength(0);
       // The check: nothing back on the record -> checked; the money is free again.
       const checked = await checkCardCreditRefund(app.prisma, () => r.provider, { adminId: 'admin-d', tenantId: await tenantOf(s1), cardSessionId: s1 });
-      expect(checked).toMatchObject({ check: 'NO_REFUND_ON_RECORD', refund: { state: 'FAILED' } });
+      expect(checked).toMatchObject({ check: 'CHECKED_NOTHING_BACK', refund: { state: 'FAILED' } });
       expect((await creditRefundSources(app.prisma, p.subId)).setAside).toMatchObject({ stillToPay: 2 * WEEKLY });
       expect((await creditRefundSources(app.prisma, p.subId)).cardPayments.find((c) => c.cardSessionId === s1)).toMatchObject({ refund: { state: 'FAILED', kind: 'VOID', checked: true }, refundable: true });
       // ONE refund to the card (never a second void), whatever the payment's age.
@@ -1340,6 +1340,55 @@ describe('[CARD-READY] card money set aside at closing goes back to its card thr
       // The database refuses a second void, or a refund beside an unchecked refused void.
       await expect(app.prisma.cardCreditRefund.create({ data: { tenantId: await tenantOf(s1), subscriptionId: p.subId, cardSessionId: s1, setAsideId, amount: WEEKLY, currencyCode: 'GYD', requestedByUserId: 'admin-c', approvalId: `fixture-${RUN}-${nanoid(6)}`, kind: 'VOID' } }))
         .rejects.toThrow();
+    });
+
+    // [REVIEW-2496-B S3-2 · OWNER RULING 12 Nov 2026] A refused refund to the card the lookup cannot settle: released ONLY
+    // by the owner and one second person confirming the PowerTranz portal shows nothing went back, with its reference.
+    it('[REVIEW-2496-B S3-2] "portal checked: nothing went back": owner + a second person only, never alone or solo, never while a check is asked; then the money is free (Record payout)', async () => {
+      const { p, s1, setAsideId } = await twoCardWeeksSetAside();
+      const r = reversing({ refundAnswer: async () => ({ status: 'failed', reason: 'REFUND_REFUSED_12', rawSha256: '3'.repeat(64) }), record: () => ({ status: 'unknown', reason: 'LOOKUP_NOT_FOUND', rawSha256: '2'.repeat(64) }) });
+      expect(await toCard(p, setAsideId, s1, r.provider, await approval(CARD_REFUND_ACTION, p.subId, 'admin-c', 'admin-b'))).toMatchObject({ state: 'FAILED' });
+      const tenantId = await tenantOf(s1);
+      // The lookup cannot settle it: nothing recorded, the money stays held.
+      expect(await checkCardCreditRefund(app.prisma, () => r.provider, { adminId: 'admin-d', tenantId, cardSessionId: s1 })).toMatchObject({ check: 'NOT_KNOWN' });
+      expect((await creditRefundSources(app.prisma, p.subId)).setAside).toMatchObject({ stillToPay: WEEKLY });
+      const person = async (roles: UserRole[]) => {
+        seq += 1;
+        const u = await app.prisma.user.create({ data: { phone: `${PHONE}${String(seq).padStart(2, '0')}`, firstName: 'Card', lastName: `A${seq}`, roles, activeRole: roles[0]!, isPhoneVerified: true } });
+        userIds.push(u.id);
+        return u.id;
+      };
+      const owner = await person(['SUPER_ADMIN']);
+      const finance = await person(['ADMIN']);
+      const other = await person(['ADMIN']);
+      const asked = async (requestedBy: string, approvedBy: string, extra: Record<string, unknown> = {}) => (await app.prisma.privilegedApproval.create({ data: {
+        action: 'POST /billing/card-sessions/:id/portal-checked', cls: 'C4', capability: 'billing.card.resolve', entityId: s1, fingerprint: `portal-${RUN}-${nanoid(8)}`,
+        bodySnapshot: { params: {}, body: {}, query: {} } as Prisma.InputJsonValue, status: 'APPROVED', requestedBy, reason: 'test: portal checked',
+        approvedBy, decidedAt: new Date(), expiresAt: new Date(Date.now() + DAY), ...extra,
+      } })).id;
+      const confirm = (approvalId: string, adminId = owner) => confirmPortalNothingBack(app.prisma, { adminId, approvalId, tenantId, cardSessionId: s1, portalReference: 'ptz-portal-0001' });
+      // The owner alone, under the solo ceremony (the only way one person decides a C4): never enough here.
+      await expect(confirm(await asked(owner, owner, { decidedSolo: true, soloRequestedAt: new Date(Date.now() - DAY), soloEligibleAt: new Date(Date.now() - 60_000) }))).rejects.toMatchObject({ code: 'PORTAL_CHECK_TWO_PEOPLE' });
+      await expect(confirm(await asked(finance, other), finance)).rejects.toMatchObject({ code: 'PORTAL_CHECK_OWNER_ONLY' });
+      // Not while a check with the card provider of the same payment is still asked.
+      const check = await app.prisma.privilegedApproval.create({ data: {
+        action: 'POST /billing/card-sessions/:id/check-provider', cls: 'C4', capability: 'billing.card.resolve', entityId: s1, fingerprint: `check-${RUN}-${nanoid(8)}`,
+        bodySnapshot: { params: {}, body: {}, query: {} } as Prisma.InputJsonValue, status: 'PENDING', requestedBy: finance, reason: 'test: check pending', expiresAt: new Date(Date.now() + DAY),
+      } });
+      await expect(confirm(await asked(finance, owner))).rejects.toMatchObject({ code: 'PROVIDER_CHECK_PENDING' });
+      await app.prisma.privilegedApproval.update({ where: { id: check.id }, data: { status: 'REJECTED' } });
+      await expect(confirmPortalNothingBack(app.prisma, { adminId: owner, approvalId: await asked(finance, owner), tenantId, cardSessionId: s1, portalReference: 'no spaces!' })).rejects.toMatchObject({ code: 'PORTAL_REFERENCE_INVALID' });
+      expect(await confirm(await asked(finance, owner))).toMatchObject({ check: 'CHECKED_NOTHING_BACK', reason: 'PORTAL_CHECKED' });
+      expect(await app.prisma.cardCreditRefund.findFirstOrThrow({ where: { cardSessionId: s1 } })).toMatchObject({ state: 'FAILED', checkedBy: owner, checkedRef: 'PORTAL:PTZ-PORTAL-0001' });
+      const trail = await app.prisma.auditLog.findFirst({ where: { entityId: p.subId, action: 'PREPAID_REFUND_CARD_REFUND_PORTAL_CHECKED_NOTHING_BACK' } });
+      expect(trail?.changes).toMatchObject({ portalReference: 'PTZ-PORTAL-0001', requestedBy: finance, approvedBy: owner, cardSessionId: s1 });
+      // Freed: Record payout of the whole set-aside now fits; confirmed again: nothing to check.
+      expect((await creditRefundSources(app.prisma, p.subId)).setAside).toMatchObject({ stillToPay: 2 * WEEKLY });
+      await expect(confirm(await asked(finance, owner))).rejects.toMatchObject({ code: 'NOTHING_TO_CHECK' });
+      // [REVIEW-2496-A S4-3] The database: a checked refusal (its money possibly paid another way) never becomes REFUNDED.
+      const event = await app.prisma.billingEvent.create({ data: { subscriptionId: p.subId, type: 'TIER_CHANGE', currencyCode: 'GYD', idempotencyKey: `fixture-chk-${RUN}-${nanoid(6)}`, note: 'fixture' } });
+      await expect(app.prisma.cardCreditRefund.updateMany({ where: { cardSessionId: s1 }, data: { state: 'REFUNDED', providerRefundRef: `LOOKUP-CREDIT-${RUN}`, billingEventId: event.id } })).rejects.toThrow();
+      expect(r.refunds).toHaveLength(1);
     });
 
     it('[F5] a check on a FAILED card refund that reads LOOKUP_CREDITED records REFUNDED (no payout possible), the owner told', async () => {
@@ -1696,7 +1745,7 @@ describe('[CARD-READY] card money set aside at closing goes back to its card thr
       const refused = refunding(async () => ({ status: 'failed', reason: 'REFUND_REFUSED_12_384', rawSha256: '6'.repeat(64) }));
       await toCard(q.p, q.setAsideId, q.s2, refused.provider, await approval(CARD_REFUND_ACTION, q.p.subId, 'admin-c', 'admin-b'));
       const look = looking(() => ({ status: 'not_refunded', reason: 'LOOKUP_NO_CREDIT', rawSha256: '5'.repeat(64) }));
-      expect(await checkIt(sessionRow.tenantId, q.s2, look.provider)).toMatchObject({ check: 'NO_REFUND_ON_RECORD', refund: { state: 'FAILED' } });
+      expect(await checkIt(sessionRow.tenantId, q.s2, look.provider)).toMatchObject({ check: 'CHECKED_NOTHING_BACK', refund: { state: 'FAILED' } });
       expect(look.reads).toHaveLength(1);
       await expect(checkIt(sessionRow.tenantId, q.s2, look.provider)).rejects.toMatchObject({ code: 'NOTHING_TO_CHECK' });
       expect(look.reads).toHaveLength(1);

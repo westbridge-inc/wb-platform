@@ -13,7 +13,8 @@ const TXN = 'a1b2c3d4-0000-4000-8000-000000000001';
 const held = {
   id: 'cs_1', subscriptionId: 'sub_1', userId: 'usr_1', purpose: 'PAY_NOW', status: 'HELD', provider: 'powertranz', environment: 'live', providerAccount: 'swift-main',
   amount: 2100, currencyCode: 'GYD', periodStart: '2026-11-10T04:00:00.000Z', createdAt: '2026-11-09T12:00:00.000Z',
-  failureCode: 'APPROVED_UNPROVEN', providerTransactionRef: TXN, providerVoidState: 'UNKNOWN', providerRefundState: null,
+  // [REVIEW-2496-B S2-1] Its void was REFUSED: book, refund or nothing taken are all open (an UNKNOWN void is its own case below).
+  failureCode: 'APPROVED_UNPROVEN', providerTransactionRef: TXN, providerVoidState: 'FAILED', providerRefundState: null,
   resolution: null, resolvedAt: null,
 };
 const noRef = { ...held, id: 'cs_2', providerTransactionRef: null };
@@ -49,7 +50,7 @@ describe('[CARD-READY] card payments', () => {
     // [REVIEW-2 F3] The OrderIdentifier Swift sends: what the provider's Merchant Portal and reports look a payment up by.
     expect(screen.getByText('SWIFT-cs_1')).toBeTruthy();
     expect(screen.getByText(/could not be booked/)).toBeTruthy();
-    expect(screen.getByText(/Void not confirmed/)).toBeTruthy();
+    expect(screen.getByText(/Void refused/)).toBeTruthy();
     expect(screen.getByText('GY$2,100')).toBeTruthy();
     const url = new URL(String(requestsByMethod(fetchMock, 'GET')[0]![0]));
     expect(url.searchParams.get('status')).toBe('HELD');
@@ -190,6 +191,49 @@ describe('[CARD-READY] card payments', () => {
     for (const name of ['Nothing was taken', 'Refund it', 'Book the week']) expect(screen.queryByRole('button', { name })).toBeNull();
   });
 
+  // [REVIEW-2496-B S2-1] Swift's own void got no answer: Refund is refused by the server until a check shows the sale
+  // standing, so the console offers the check (and "nothing taken"), never Refund or Book, until then.
+  it('[REVIEW-2496-B S2-1] a held payment whose void got no answer: the Check button, "Nothing was taken", no Refund or Book; after SALE_STANDS only "Refund it"', async () => {
+    const unknown = { ...held, providerVoidState: 'UNKNOWN', providerCheck: true };
+    server([unknown, { ...unknown, id: 'cs_6', reversalCheck: 'SALE_STANDS', providerCheck: false }]);
+    renderWithQuery(<CardPaymentsPage />);
+    expect(await screen.findByText(/Swift's void got no answer: it may have gone through\. Check it with the card provider first/)).toBeTruthy();
+    expect(screen.getByText(/the sale approved and not voided: Swift's void did not go through\. Refund it, once\./)).toBeTruthy();
+    expect(screen.getAllByRole('button', { name: 'Check with the card provider' })).toHaveLength(1);
+    expect(screen.getAllByRole('button', { name: 'Nothing was taken' })).toHaveLength(1);
+    expect(screen.getAllByRole('button', { name: 'Refund it' })).toHaveLength(1);
+    expect(screen.queryByRole('button', { name: 'Book the week' })).toBeNull();
+  });
+
+  // [REVIEW-2496-B S3-2 · OWNER RULING 12 Nov 2026] A refused refund to the card the lookup cannot settle: the owner and a
+  // second person may confirm from the portal that nothing went back, typing the portal's reference.
+  it('[REVIEW-2496-B S3-2] a refused refund to the card offers the check and "Portal checked: nothing went back" (portal reference, two people)', async () => {
+    const credit = { ...paid, cardRefund: { state: 'FAILED', providerRefundRef: null, kind: 'REFUND', checked: false }, providerCheck: true };
+    const fetchMock = server([credit], queued);
+    const { user } = renderWithQuery(<CardPaymentsPage />);
+    await user.click(await screen.findByRole('button', { name: 'Refunds to check' }));
+    expect(await screen.findByText(/a refusal can mean the payment was already reversed/)).toBeTruthy();
+    expect(screen.getAllByRole('button', { name: 'Check with the card provider' })).toHaveLength(1);
+    await user.click(await screen.findByRole('button', { name: 'Portal checked: nothing went back' }));
+    const panel = await screen.findByRole('dialog');
+    expect(panel.textContent).toContain('Only the owner, with a second person.');
+    await user.type(within(panel).getByRole('textbox', { name: /Reference in the PowerTranz portal/ }), 'PTZ-12345');
+    await user.type(within(panel).getByRole('textbox', { name: 'Reason' }), REASON);
+    await user.click(within(panel).getByRole('button', { name: 'Portal checked: nothing went back' }));
+    await waitFor(() => expect(requestsByMethod(fetchMock, 'POST')).toHaveLength(1));
+    expect(new URL(String(requestsByMethod(fetchMock, 'POST')[0]![0])).pathname).toBe('/api/v1/admin/billing/card-sessions/cs_3/portal-checked');
+    expect(bodyOf(fetchMock)).toEqual({ portalReference: 'PTZ-12345' });
+  });
+
+  // [REVIEW-2496-B S3-1] The SALE_STANDS offer mirrors the server's plan: with Swift's void unanswered and a refund
+  // refused, nothing more can be sent, so the console sends the person to the owner, never offers a reversal.
+  it('[REVIEW-2496-B S3-1] SALE_STANDS after both kinds were refused: no "Send one more reversal", the owner', async () => {
+    server([{ ...held, providerVoidState: 'UNKNOWN', providerRefundState: 'FAILED', providerReversalKind: 'REFUND', reversalCheck: 'SALE_STANDS', providerCheck: true }]);
+    renderWithQuery(<CardPaymentsPage />);
+    expect(await screen.findByText(/refused every reversal Swift can send for this payment\. Nothing more is sent: escalate it to the owner\./)).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Send one more reversal' })).toBeNull();
+  });
+
   // [VOID-REFUND-CHECK F3] A reversal the card provider REFUSED: nothing moved and nothing is sent again by itself. The
   // console never offers a refund before a check; the provider's record then decides: declined -> only "Nothing was
   // taken"; the sale standing -> one more reversal, once; both refused -> the owner.
@@ -205,7 +249,7 @@ describe('[CARD-READY] card payments', () => {
     expect(await screen.findByText(/The card provider refused the void Swift sent\. Nothing moved, and nothing is sent again by itself\. Check it with the card provider/)).toBeTruthy();
     expect(screen.getByText(/PowerTranz's record shows this payment declined or never completed: nothing was taken\. Record that nothing was taken\./)).toBeTruthy();
     expect(screen.getByText(/PowerTranz's record shows the sale approved and not reversed\. Swift may send one more reversal \(a refund\), once\./)).toBeTruthy();
-    expect(screen.getByText(/The card provider refused both reversals Swift sent for this payment\. Nothing more is sent: escalate it to the owner\./)).toBeTruthy();
+    expect(screen.getByText(/The card provider refused every reversal Swift can send for this payment\. Nothing more is sent: escalate it to the owner\./)).toBeTruthy();
     expect(screen.getAllByText(/Void \(finance\) refused/).length).toBeGreaterThan(0);
     expect(screen.getAllByRole('button', { name: 'Check with the card provider' })).toHaveLength(2);
     expect(screen.getAllByRole('button', { name: 'Nothing was taken' })).toHaveLength(1);

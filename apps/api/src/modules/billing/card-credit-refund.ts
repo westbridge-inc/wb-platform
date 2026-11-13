@@ -449,7 +449,11 @@ export async function creditRefundSources(db: PrismaClient | Tx, subscriptionId:
 export type ProviderCheck = 'REFUNDED' | 'OWNER_HOLD' | 'NO_REFUND_ON_RECORD' | 'NOT_KNOWN' | 'ASKED_RECENTLY'
   /** [VOID-REFUND-CHECK F3] A held payment's refused reversal: the sale approved and unreversed (one more reversal may be
    *  sent); proven not taken ("nothing taken" may be recorded); or a record that fits no decision (the owner). */
-  | 'SALE_STANDS' | 'NOT_TAKEN_ON_RECORD' | 'ESCALATE';
+  | 'SALE_STANDS' | 'NOT_TAKEN_ON_RECORD' | 'ESCALATE'
+  /** [REVIEW-2496-B S4-1] Swift's own unanswered void went through (or the payment was credited back): nothing is owed. */
+  | 'REVERSED_ON_RECORD'
+  /** [REVIEW-2496-B S4-2] A REFUSED reversal to the card whose record shows nothing back: checked, its money now free. */
+  | 'CHECKED_NOTHING_BACK';
 export function providerCheckOf(outcome: CardRefundLookupOutcome): ProviderCheck {
   switch (outcome.status) {
     case 'refunded': return 'REFUNDED';
@@ -551,12 +555,14 @@ export async function checkCardCreditRefund(prisma: PrismaClient, rail: CardRail
         await tx.$queryRaw`SELECT "id" FROM "card_credit_refunds" WHERE "id" = ${row.id} FOR UPDATE`;
         const fresh = await tx.cardCreditRefund.findUniqueOrThrow({ where: { id: row.id } });
         if (fresh.state !== 'FAILED' || fresh.checkedAt) return false;
-        await tx.cardCreditRefund.update({ where: { id: row.id }, data: { checkedAt: now } });
+        await tx.cardCreditRefund.update({ where: { id: row.id }, data: { checkedAt: now, checkedBy: input.adminId, checkedRef: `LOOKUP:${looked.rawSha256.slice(0, 64)}` } });
         await audit(tx, who, { ...facts, checkedAt: now.toISOString() });
         return true;
       })
       : false;
     if (!freed) await prisma.$transaction(async (tx) => { await audit(tx, who, facts); });
+    // [REVIEW-2496-B S4-2] Checked and freed: say so, and what comes next.
+    if (freed) return answer(row.state as CardRefundState, row.providerRefundRef, 'CHECKED_NOTHING_BACK');
     if (looked.status === 'part_credited') {
       log().error({ cardRefundId: row.id, reason: looked.reason, partial }, '[CARD-REFUND-LOOKUP] the provider record shows a credit that is not what Swift asked back — held for the owner');
       await input.alertOwner?.(`The card provider's record of order ${orderRef} (transaction ${original}) shows a refund that is not the ${asked} (${looked.reason}). Nothing was recorded or sent. The owner settles it with PowerTranz.`).catch(() => {});
@@ -615,3 +621,58 @@ export async function checkCardCreditRefund(prisma: PrismaClient, rail: CardRail
 }
 
 export { CARD_REFUND_ACTION };
+
+// ---------------------------------------------------------------------------
+// [REVIEW-2496-B S3-2 · OWNER RULING 12 Nov 2026] "Checked the PowerTranz portal: nothing went back"
+//
+// Money held after a REFUSED refund (or void) to the card that the PowerTranz lookup cannot settle is released ONLY by
+// the OWNER and one second person in the console, confirming that the portal shows nothing went back, with the typed
+// portal reference; fully audited. Then it may be paid back another way (Record payout) or released. Two different
+// people, the owner (SUPER_ADMIN) one of them, never the solo ceremony; refused while a "Check with the card provider"
+// of the same payment is still asked (pending or approved, not yet applied). It sends nothing and records no money:
+// it only marks the refused row checked (checkedAt / checkedBy / checkedRef PORTAL:<reference>, written once).
+// ---------------------------------------------------------------------------
+
+export const PORTAL_REFERENCE = /^[A-Za-z0-9_-]{4,64}$/;
+/** The approval action of a check with the card provider (card-rail.routes.ts CARD_PROVIDER_CHECK_ACTION). */
+const CHECK_ACTION = 'POST /billing/card-sessions/:id/check-provider';
+
+export async function confirmPortalNothingBack(prisma: PrismaClient, input: {
+  adminId: string; approvalId: string; tenantId: string; cardSessionId: string; portalReference: string; onAudit?: OnAudit; now?: Date;
+}): Promise<CreditRefundCheckAnswer> {
+  const now = input.now ?? new Date();
+  const portalReference = input.portalReference.trim().toUpperCase();
+  if (!PORTAL_REFERENCE.test(portalReference)) throw new AppError(400, 'PORTAL_REFERENCE_INVALID', 'Type the reference PowerTranz\'s portal shows for this payment: letters, digits, - and _ only.');
+  const approval = input.approvalId ? await prisma.privilegedApproval.findUnique({ where: { id: input.approvalId }, select: { requestedBy: true, approvedBy: true, decidedSolo: true } }) : null;
+  if (!approval?.approvedBy || approval.approvedBy === approval.requestedBy || approval.decidedSolo) {
+    refuse('PORTAL_CHECK_TWO_PEOPLE', 'Only the owner and a second person can confirm this: two different people, never alone. Nothing was recorded.');
+  }
+  const people = await prisma.user.findMany({ where: { id: { in: [approval.requestedBy, approval.approvedBy] } }, select: { roles: true } });
+  if (!people.some((u) => u.roles.includes('SUPER_ADMIN'))) {
+    refuse('PORTAL_CHECK_OWNER_ONLY', 'Only the owner (with a second person) can confirm that the portal shows nothing went back. Nothing was recorded.');
+  }
+  const pending = await prisma.privilegedApproval.findFirst({
+    where: { action: CHECK_ACTION, entityId: input.cardSessionId, status: { in: ['PENDING', 'APPROVED'] }, expiresAt: { gt: now } }, select: { id: true },
+  });
+  if (pending) refuse('PROVIDER_CHECK_PENDING', 'A "Check with the card provider" of this payment is still asked: finish it first. Nothing was recorded.');
+  const rows = await prisma.cardCreditRefund.findMany({ where: { cardSessionId: input.cardSessionId }, orderBy: { createdAt: 'desc' } });
+  const row = rows.find((r) => r.state === 'FAILED' && !r.checkedAt);
+  if (!row || row.tenantId !== input.tenantId) refuse('NOTHING_TO_CHECK', 'This card payment has no refused refund to the card waiting for a check. Nothing was recorded.');
+  const who = { adminId: input.adminId, subscriptionId: row.subscriptionId, ...(input.onAudit ? { onAudit: input.onAudit } : {}) };
+  const done = await prisma.$transaction(async (tx) => {
+    await lockPayer(tx, row.subscriptionId);
+    await lockCreditRefundAsks(tx, row.subscriptionId);
+    await tx.$queryRaw`SELECT "id" FROM "card_credit_refunds" WHERE "id" = ${row.id} FOR UPDATE`;
+    const fresh = await tx.cardCreditRefund.findUniqueOrThrow({ where: { id: row.id } });
+    if (fresh.state !== 'FAILED' || fresh.checkedAt) return null;
+    const checked = await tx.cardCreditRefund.update({ where: { id: row.id }, data: { checkedAt: now, checkedBy: input.adminId, checkedRef: `PORTAL:${portalReference}` } });
+    await audit(tx, who, {
+      step: 'CARD_REFUND_PORTAL_CHECKED_NOTHING_BACK', cardSessionId: row.cardSessionId, cardRefundId: row.id, kind: row.kind, amount: Number(row.amount),
+      currencyCode: row.currencyCode, orderReference: orderReferenceOf(row.cardSessionId), portalReference, requestedBy: approval.requestedBy, approvedBy: approval.approvedBy,
+    });
+    return checked;
+  });
+  if (!done) refuse('NOTHING_TO_CHECK', 'This refused refund was checked or changed meanwhile. Nothing more was recorded.');
+  log().warn({ cardRefundId: row.id }, '[REVIEW-2496-B S3-2] the owner and a second person confirmed in the console that PowerTranz\'s portal shows nothing went back');
+  return { check: 'CHECKED_NOTHING_BACK', reason: 'PORTAL_CHECKED', refund: { state: 'FAILED', providerRefundRef: null } };
+}

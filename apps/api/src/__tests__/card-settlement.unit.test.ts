@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  CARD_SALE_WITHIN_MS, SETTLED_CERTAIN_BUSINESS_DAYS, cardSaleLatestAt, isGuyanaBusinessDay, isGuyanaPublicHoliday, reversalKindByAge, settledCertainAt,
+  CARD_SALE_WITHIN_MS, MOVEABLE_HOLIDAY_YEARS, SETTLED_CERTAIN_BUSINESS_DAYS, cardSaleLatestAt, isGuyanaBusinessDay, isGuyanaPublicHoliday, reversalKindByAge, settledCertainAt,
 } from '../modules/billing/card-settlement';
 import { reversalPlanOf } from '../modules/billing/card-rail.service';
 
@@ -41,6 +41,14 @@ describe('[VOID-REFUND-CHECK §3] settledCertainAt: 4 Guyana business days after
     }
     expect(isGuyanaBusinessDay('2026-11-12')).toBe(true);
     expect(isGuyanaBusinessDay('2026-11-14')).toBe(false); // Saturday
+  });
+
+  // [REVIEW-2496-A S4-6] The moveable holidays are listed by year: this turns red from 1 Oct of the last listed year, so
+  // the next year's dates (or the bank's own calendar) are added before they are needed.
+  it('[REVIEW-2496-A S4-6] the moveable-holiday list covers next year from 1 October on (else: add it, or take the bank\'s calendar)', () => {
+    const now = new Date();
+    const needed = now.getUTCMonth() >= 9 ? now.getUTCFullYear() + 1 : now.getUTCFullYear();
+    expect(MOVEABLE_HOLIDAY_YEARS, `Guyana's moveable holidays for ${needed} are not listed in card-settlement.ts`).toContain(needed);
   });
 
   it('anchors a hosted Pay now\'s sale at the LATEST it can have been made (its session + 30 minutes): a later anchor only keeps the void', () => {

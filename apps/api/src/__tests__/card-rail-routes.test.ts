@@ -24,7 +24,7 @@ import { BillingService } from '../modules/billing/billing.service';
 import { resolveConfirmationInTx, ACTIVE_CONFIRMATION_STATES, hasConfirmationInTx, readDunningClock } from '../modules/billing/dunning-clock';
 import { readFeePaymentDecision } from '../modules/billing/fee-payment-authority';
 import { confirmationReviewQueue, resolveFinanceConfirmation } from '../modules/billing/confirmation-finance';
-import { CARD_ON_FILE_CONSENT_VERSION, CARD_SANDBOX_TEST_LABEL, CardRailService, NOT_TAKEN_FINAL_MS, type CardConfirmResult } from '../modules/billing/card-rail.service';
+import { CARD_ON_FILE_CONSENT_VERSION, CARD_SANDBOX_TEST_LABEL, CardRailService, NOT_TAKEN_FINAL_MS, VOID_CHECK_WAIT_MS, type CardConfirmResult } from '../modules/billing/card-rail.service';
 import { CARD_CHECKOUT_PLATFORMS_KEY, resetCardCheckoutSwitchCache } from '../modules/billing/card-pay-action';
 import {
   CARD_APP_RETURN_LINK,
@@ -3290,15 +3290,15 @@ describe('[PT-4] real cards through HTTP: Swift\'s hosted page, the bank\'s chec
       expect(early.json().error?.code, early.body).toBe('VOID_MAY_HAVE_TAKEN_EFFECT');
       lookupAnswer = (id) => id.toLowerCase() !== txnId.toLowerCase() ? { status: 404, body: 'not found' }
         : { status: 200, body: stagingSaleRecord({ txn: txnId, order: `SWIFT-${session.sessionId}`, top: { TotalAmount: 2100 }, summary: { TotalCaptureAmount: 2100 } }) };
-      // The lost completion was already looked up once (its backoff window): a person's check comes later.
+      // The lost completion was already looked up once (its backoff window): a person's check comes later — and
+      // [REVIEW-2496-A S3-1] only ten minutes after Swift's void was sent (a void still in flight may yet land).
       await redis.del(`${PTZ_PREFIX}l:${real.binding.account}:${txnId.toLowerCase()}`);
-      const checked = await injectWithApproval(ptz, {
-        method: 'POST', url: `/api/v1/admin/billing/card-sessions/${session.sessionId}/check-provider`,
-        headers: { authorization: `Bearer ${finance.token}`, 'content-type': 'application/json', 'x-swift-reason': TEST_ADMIN_REASON }, payload: {} as never,
-      });
-      expect(checked.json().data, checked.body).toMatchObject({ check: 'SALE_STANDS' });
-      const refund = await resolve(finance, session.sessionId, { action: 'REFUND', providerReference: txnId, amount: 2100 });
-      expect(refund.json().data, refund.body).toMatchObject({ status: 'FAILED', resolution: 'REFUNDED', refund: 'succeeded', reversal: 'REFUND' });
+      const row = await rowOf(session.sessionId);
+      const later = new Date(row.providerVoidAt!.getTime() + VOID_CHECK_WAIT_MS + 1_000);
+      const checked = await serviceOf().checkWithCardProvider({ sessionId: session.sessionId, tenantId: row.tenantId, adminUserId: finance.userId, now: later });
+      expect(checked).toMatchObject({ check: 'SALE_STANDS' });
+      const refund = await serviceOf().resolveHeld({ sessionId: session.sessionId, tenantId: row.tenantId, action: 'REFUND', providerReference: txnId, amount: 2100, adminUserId: finance.userId, now: later });
+      expect(refund).toMatchObject({ status: 'FAILED', resolution: 'REFUNDED', refund: 'succeeded', reversal: 'REFUND' });
       expect(sent('/api/refund').filter((b) => b['TransactionIdentifier'] === txnId)).toHaveLength(1);
       expect(sent('/api/void').filter((b) => b['TransactionIdentifier'] === txnId)).toHaveLength(1);
       expect((await money(p.subId)).successes).toBe(0);
@@ -3564,6 +3564,91 @@ describe('[PT-4] real cards through HTTP: Swift\'s hosted page, the bank\'s chec
       expect(refundsOf(txnId)).toHaveLength(0);
       expect(voidsOf(txnId)).toHaveLength(1);
       expect((await rowOf(session.sessionId)).providerRefundState).toBeNull();
+    });
+
+    /** A HELD payment whose own void got no answer (UNKNOWN), its completion's lookup gate cleared for a person's check. */
+    async function voidUnknown(p: Partner) {
+      payment = () => 'network';
+      voidAnswer = () => 'network';
+      const session = (await open(p)).json().data;
+      const txnId = (await heldOf(session.sessionId))['txnId']!;
+      await bankFramePosts(session.sessionId, 'Y', {}, from());
+      voidAnswer = adjusted;
+      payment = approve();
+      await redis.del(`${PTZ_PREFIX}l:${real.binding.account}:${txnId.toLowerCase()}`);
+      const row = await rowOf(session.sessionId);
+      expect(row).toMatchObject({ status: 'HELD', providerVoidState: 'UNKNOWN', providerRefundState: null });
+      return { sessionId: session.sessionId as string, txnId, row };
+    }
+    const lookupsOf = (txnId: string) => calls.filter((c) => c.path === `/api/Transactions/${txnId}`).length;
+
+    it('[REVIEW-2496-A S3-1] void UNKNOWN 1 min ago -> the check is refused (wait), no lookup; 11 min later -> SALE_STANDS -> one refund, never a double reversal', async () => {
+      const finance = await makeFinance();
+      const p = await makeStore();
+      const { sessionId, txnId, row } = await voidUnknown(p);
+      lookupAnswer = recordOf(txnId, sessionId);
+      const soon = new Date(row.providerVoidAt!.getTime() + 60_000);
+      const before = lookupsOf(txnId);
+      await expect(serviceOf().checkWithCardProvider({ sessionId, tenantId: row.tenantId, adminUserId: finance.userId, now: soon })).rejects.toMatchObject({ code: 'NOTHING_TO_CHECK' });
+      expect(lookupsOf(txnId) - before).toBe(0);
+      const later = new Date(row.providerVoidAt!.getTime() + VOID_CHECK_WAIT_MS + 60_000);
+      expect(await serviceOf().checkWithCardProvider({ sessionId, tenantId: row.tenantId, adminUserId: finance.userId, now: later })).toMatchObject({ check: 'SALE_STANDS' });
+      expect(lookupsOf(txnId) - before).toBe(1);
+      // Even with the check, a refund sent before the void's ten minutes would be refused (the same gate, at the send).
+      await expect(serviceOf().resolveHeld({ sessionId, tenantId: row.tenantId, action: 'REFUND', providerReference: txnId, amount: 2100, adminUserId: finance.userId, now: soon }))
+        .rejects.toMatchObject({ code: 'VOID_MAY_HAVE_TAKEN_EFFECT' });
+      // [REVIEW-2496-A S4-1] The record shows the sale standing: never "nothing taken".
+      await expect(serviceOf().resolveHeld({ sessionId, tenantId: row.tenantId, action: 'NOTHING_TAKEN', providerReference: txnId, adminUserId: finance.userId, now: later }))
+        .rejects.toMatchObject({ code: 'PROVIDER_SAYS_TAKEN' });
+      expect(await serviceOf().resolveHeld({ sessionId, tenantId: row.tenantId, action: 'REFUND', providerReference: txnId, amount: 2100, adminUserId: finance.userId, now: later }))
+        .toMatchObject({ status: 'FAILED', resolution: 'REFUNDED', reversal: 'REFUND' });
+      expect(refundsOf(txnId)).toHaveLength(1);
+      expect(voidsOf(txnId)).toHaveLength(1);
+    });
+
+    it('[REVIEW-2496-B S3-1] void UNKNOWN -> check SALE_STANDS -> refund refused: the check is spent (reversalCheck null), the check is offered again, and nothing more can be sent (owner)', async () => {
+      const finance = await makeFinance();
+      const p = await makeStore();
+      const { sessionId, txnId, row } = await voidUnknown(p);
+      lookupAnswer = recordOf(txnId, sessionId);
+      const later = new Date(row.providerVoidAt!.getTime() + VOID_CHECK_WAIT_MS + 60_000);
+      expect(await serviceOf().checkWithCardProvider({ sessionId, tenantId: row.tenantId, adminUserId: finance.userId, now: later })).toMatchObject({ check: 'SALE_STANDS' });
+      refundAnswer = refusedAnswer;
+      expect(await serviceOf().resolveHeld({ sessionId, tenantId: row.tenantId, action: 'REFUND', providerReference: txnId, amount: 2100, adminUserId: finance.userId, now: later }))
+        .toMatchObject({ status: 'HELD', refund: 'failed', reversal: 'REFUND', next: 'CHECK_WITH_CARD_PROVIDER' });
+      refundAnswer = adjusted;
+      expect(await rowOf(sessionId)).toMatchObject({ providerRefundState: 'FAILED', reversalCheck: null });
+      const listed = await ptz.inject({ method: 'GET', url: '/api/v1/admin/billing/card-sessions?status=HELD&limit=200', headers: { authorization: `Bearer ${finance.token}` } });
+      expect(listed.json().data.sessions.find((x: { id: string }) => x.id === sessionId), listed.body).toMatchObject({ providerCheck: true, reversalCheck: null });
+      // Checked again: the sale still stands — but both kinds were refused (Swift's void, then the refund): the owner.
+      await redis.del(`${PTZ_PREFIX}l:${real.binding.account}:${txnId.toLowerCase()}`);
+      expect(await serviceOf().checkWithCardProvider({ sessionId, tenantId: row.tenantId, adminUserId: finance.userId, now: later })).toMatchObject({ check: 'SALE_STANDS' });
+      await expect(serviceOf().resolveHeld({ sessionId, tenantId: row.tenantId, action: 'REFUND', providerReference: txnId, amount: 2100, adminUserId: finance.userId, now: later }))
+        .rejects.toMatchObject({ code: 'REVERSAL_ALREADY_RETRIED' });
+      expect(refundsOf(txnId)).toHaveLength(1);
+      expect(voidsOf(txnId)).toHaveLength(1);
+      // The database: a claim that keeps a check is refused (a stale check can never authorise a retry), and a check is
+      // never recorded on a payment whose reversal was neither refused nor unanswered.
+      await expect(app.prisma.cardSession.update({ where: { id: sessionId }, data: { providerRefundState: 'SENDING', reversalRetryAt: new Date() } })).rejects.toThrow(/spends its check/);
+      const fresh = await makeStore();
+      const { sessionId: other } = await verifiedHeldPayment(fresh, from());
+      await expect(app.prisma.cardSession.update({ where: { id: other }, data: { reversalCheck: 'NOT_TAKEN' } })).rejects.toThrow(/refused or unanswered reversal/);
+      // [REVIEW-2496 round 2] A NULL state never slips past the guards (NOT NULL is not TRUE): no reversal is ever
+      // recorded done, or a void done, without its claim.
+      await expect(app.prisma.cardSession.update({ where: { id: other }, data: { providerRefundState: 'REFUNDED' } })).rejects.toThrow(/only moves forward/);
+      await expect(app.prisma.cardSession.update({ where: { id: other }, data: { providerVoidState: 'VOIDED' } })).rejects.toThrow(/only moves forward/);
+    });
+
+    it('[REVIEW-2496-A S4-2] BOOK after a refused reversal needs a check first (a refusal can mean it was already reversed)', async () => {
+      const finance = await makeFinance();
+      const p = await makeStore();
+      const { sessionId, txnId } = await verifiedHeldPayment(p, from());
+      voidAnswer = refusedAnswer;
+      expect((await resolve(finance, sessionId, { action: 'REFUND', providerReference: txnId, amount: 2100 })).json().data).toMatchObject({ refund: 'failed', reversal: 'VOID' });
+      voidAnswer = adjusted;
+      const book = await resolve(finance, sessionId, { action: 'BOOK', providerReference: txnId, amount: 2100 });
+      expect(book.json().error?.code, book.body).toBe('REVERSAL_CHECK_REQUIRED');
+      expect((await money(p.subId)).successes).toBe(0);
     });
   });
 
