@@ -3,10 +3,13 @@
 import { useEffect, useState } from 'react';
 import {
   confirmAdminMfaEnrolment,
+  confirmAdminMfaReplacement,
   errorCode,
   fetchAdminMfaStatus,
+  regenerateAdminRecoveryCodes,
   sendStepUpCode,
   startAdminMfaEnrolment,
+  startAdminMfaReplacement,
   verifyAdminMfa,
   verifyStepUpCode,
   type AdminMfaStatus,
@@ -20,9 +23,12 @@ import { gyDate } from '@/lib/dates';
 //   types the app's 6-digit code to confirm; ten recovery codes are shown ONCE to write down.
 // - Sign in: the 6-digit code from the app, or one recovery code.
 // Setting up needs a fresh proof it is the account holder: the sign-in code just used, or a code texted now.
+// [REVIEW-2501-A S4-6] Once set up (Security page): new recovery codes, or a move to a new app, each proved by the
+// current app code or one recovery code.
 // ---------------------------------------------------------------------------
 
-type Stage = 'loading' | 'verify' | 'intro' | 'step-up' | 'enrol' | 'recovery' | 'done';
+type Stage = 'loading' | 'verify' | 'intro' | 'step-up' | 'enrol' | 'recovery' | 'done' | 'prove';
+type Intent = 'codes' | 'replace';
 
 const groups = (secret: string) => secret.replace(/(.{4})/g, '$1 ').trim();
 
@@ -33,6 +39,8 @@ export function AdminMfaSteps({ onDone, mode }: { onDone: () => void; mode: 'sig
   const [recoveryCodes, setRecoveryCodes] = useState<string[]>([]);
   const [code, setCode] = useState('');
   const [useRecovery, setUseRecovery] = useState(false);
+  const [intent, setIntent] = useState<Intent>('codes');
+  const [replacing, setReplacing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -84,10 +92,27 @@ export function AdminMfaSteps({ onDone, mode }: { onDone: () => void; mode: 'sig
   });
 
   const confirm = () => run(async () => {
-    const done = await confirmAdminMfaEnrolment(code.trim());
+    const done = replacing ? await confirmAdminMfaReplacement(code.trim()) : await confirmAdminMfaEnrolment(code.trim());
     setRecoveryCodes(done.recoveryCodes);
     setCode('');
     setStage('recovery');
+  });
+
+  const beginProof = (next: Intent) => { setIntent(next); setUseRecovery(false); setCode(''); setError(null); setStage('prove'); };
+  const prove = () => run(async () => {
+    const proof = useRecovery ? { recoveryCode: code.trim() } : { code: code.trim() };
+    if (intent === 'codes') {
+      const done = await regenerateAdminRecoveryCodes(proof);
+      setRecoveryCodes(done.recoveryCodes);
+      setCode('');
+      setStage('recovery');
+      return;
+    }
+    const started = await startAdminMfaReplacement(proof);
+    setEnrolment(started);
+    setReplacing(true);
+    setCode('');
+    setStage('enrol');
   });
 
   const verify = () => run(async () => {
@@ -185,10 +210,33 @@ export function AdminMfaSteps({ onDone, mode }: { onDone: () => void; mode: 'sig
       )}
 
       {stage === 'done' && mode === 'settings' && (
-        <p className="mc-muted">
-          An authenticator app is set up{status?.enrolledAt ? ` since ${gyDate(status.enrolledAt)}` : ''}.
-          {' '}{status?.recoveryCodesLeft ?? 0} recovery codes left.
-        </p>
+        <>
+          <p className="mc-muted">
+            An authenticator app is set up{status?.enrolledAt ? ` since ${gyDate(status.enrolledAt)}` : ''}.
+            {' '}{status?.recoveryCodesLeft ?? 0} recovery codes left.
+          </p>
+          <button onClick={() => beginProof('codes')} className="mc-btn w-full">Make new recovery codes</button>
+          <button onClick={() => beginProof('replace')} className="mc-btn w-full">Move to a new authenticator app</button>
+        </>
+      )}
+
+      {stage === 'prove' && (
+        <>
+          <p className="mc-muted">
+            {intent === 'codes'
+              ? 'New recovery codes replace all the old ones. First confirm it is you.'
+              : 'Moving to a new app stops the old app and the old recovery codes. First confirm it is you.'}
+            {' '}{useRecovery ? 'Enter one of your recovery codes (it is used up).' : 'Enter the 6-digit code from your current authenticator app.'}
+          </p>
+          {codeInput(useRecovery ? 'Recovery code' : 'Authenticator code', !useRecovery, prove)}
+          <button onClick={prove} disabled={busy || code.trim().length < 6} className="mc-btn mc-btn-primary w-full">
+            {busy ? 'Checking…' : 'Continue'}
+          </button>
+          <button onClick={() => { setUseRecovery(!useRecovery); setCode(''); setError(null); }} className="mc-btn mc-btn-quiet w-full">
+            {useRecovery ? 'Use the authenticator app instead' : 'Use a recovery code'}
+          </button>
+          <button onClick={() => { setCode(''); setError(null); setStage('done'); }} className="mc-btn mc-btn-quiet w-full">Cancel</button>
+        </>
       )}
 
       {error && <p role="alert" className="mc-alert">{error}</p>}

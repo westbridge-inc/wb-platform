@@ -218,6 +218,10 @@ model Session {
   createdAt            DateTime  @default(now())
   /// [AUDIT-20261113 FABLE-03 #2] When this session proved an authenticator code (admin second factor).
   mfaVerifiedAt        DateTime?
+  /// [REVIEW-2501-A S3-1] Set when the admin web console's own sign-in issued this session (its credentials went
+  /// out only as HttpOnly cookies to the console origin). ADMIN_API_CONSOLE_ONLY=1 accepts only such a session, so a
+  /// token from the desktop or the phone, re-sent as a cookie with copied headers, is refused.
+  consoleBoundAt       DateTime?
 
   @@map("sessions")
   @@index([expiresAt]) // retention sweep cutoff [F-021-20]

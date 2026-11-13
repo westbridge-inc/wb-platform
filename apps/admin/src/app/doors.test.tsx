@@ -243,7 +243,7 @@ describe('[G05] a ride stuck on wrong codes', () => {
     await user.click(await screen.findByRole('button', { name: 'New ride code' }));
     await waitFor(() => expect(paths).toEqual(['/api/v1/auth/step-up']));
     const dialog = await screen.findByRole('dialog', { name: 'Give SW-2002 a new ride code?' });
-    await user.type(within(dialog).getByRole('textbox', { name: 'Code sent to your phone' }), '654321');
+    await user.type(within(dialog).getByRole('textbox', { name: 'Code from your text or authenticator app' }), '654321');
     await user.type(within(dialog).getByRole('textbox', { name: 'Reason' }), REASON);
     await user.click(within(dialog).getByRole('button', { name: 'Give a new code' }));
     await waitFor(() => expect(paths).toEqual(['/api/v1/auth/step-up', '/api/v1/auth/step-up/verify', '/api/v1/admin/orders/ord-d-1/handover-secret/reset-ride-pin']));

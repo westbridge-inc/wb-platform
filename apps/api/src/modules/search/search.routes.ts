@@ -17,6 +17,7 @@ import { ITEM_HIT_SELECT, itemHitFromSearchDoc, toItemHit, type ItemHit } from '
 import { fillFromTiers, nameMatcher, searchTiers, type Tier } from './forgiving-text';
 import { SEARCH_DB_BUDGET_MS, boundedRead, isOutOfTime } from './search-budget';
 import { consoleRoleOf } from '../auth/console-role';
+import { assertStaffSurfacePosture } from '../auth/admin-mfa';
 import { brandFactsFor, collapseBrands } from '../vendor/brand';
 import { applyItemStoreOpenNow, applyOpenNow, hoursOpenByVendor } from '../vendor/store-hours';
 
@@ -690,6 +691,8 @@ export async function searchRoutes(app: FastifyInstance) {
     if (!consoleRoleOf(request.heldRoles)) {
       throw new ForbiddenError('Admin only');
     }
+    // [REVIEW-2501-A S2-1] An admin power: the staff posture (authenticator code, 12-hour session) when it is on.
+    await assertStaffSurfacePosture(app, request);
 
     if (!searchService) {
       throw new AppError(503, 'UNAVAILABLE', 'Search service not available');

@@ -76,4 +76,47 @@ describe('[FABLE-03 #2] the authenticator step of an admin sign-in', () => {
     await user.click(screen.getByRole('button', { name: 'I have written them down' }));
     expect(nav.replace).toHaveBeenCalledWith('/dashboard');
   });
+
+  // [REVIEW-2501-A S4-6] Self-service once the app is set up, each proved by the current factor.
+  const enrolledStatus = { body: { success: true, data: { required: true, enrolled: true, enrolledAt: '2026-11-13T12:00:00.000Z', sessionVerified: true, recoveryCodesLeft: 3 } } };
+  const tenCodes = Array.from({ length: 10 }, (_, i) => `NEWCD-${String(i).padStart(5, '0')}`);
+
+  it('Security: new recovery codes need the current app code, then show ten new codes once', async () => {
+    let proof: Record<string, unknown> | null = null;
+    const fetch = mockApi((r) => {
+      if (r.url.pathname.endsWith('/auth/admin-mfa') && r.method === 'GET') return enrolledStatus;
+      if (r.url.pathname.endsWith('/auth/admin-mfa/recovery-codes')) { proof = bodyOf(r); return { body: { success: true, data: { recoveryCodes: tenCodes } } }; }
+      throw new Error(`Unexpected request: ${r.method} ${r.url}`);
+    });
+    const { user } = renderWithQuery(<SecurityPage />);
+    await user.click(await screen.findByRole('button', { name: 'Make new recovery codes' }));
+    await user.type(screen.getByLabelText('Authenticator code'), '246802');
+    await user.click(screen.getByRole('button', { name: 'Continue' }));
+    const list = await screen.findByLabelText('Recovery codes');
+    expect(list.querySelectorAll('li')).toHaveLength(10);
+    expect(proof).toEqual({ code: '246802' });
+    expect(paths(fetch)).toContain('/api/v1/auth/admin-mfa/recovery-codes');
+  });
+
+  it('Security: moving to a new app is proved by a recovery code, then confirmed with a code from the new app', async () => {
+    let started: Record<string, unknown> | null = null;
+    let confirmed: Record<string, unknown> | null = null;
+    mockApi((r) => {
+      if (r.url.pathname.endsWith('/auth/admin-mfa') && r.method === 'GET') return enrolledStatus;
+      if (r.url.pathname.endsWith('/auth/admin-mfa/replace')) { started = bodyOf(r); return { body: { success: true, data: { secret: 'JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP', otpauthUrl: 'otpauth://totp/Swift%3ASwift%20admin?secret=JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PXP', expiresInSeconds: 600 } } }; }
+      if (r.url.pathname.endsWith('/auth/admin-mfa/replace/confirm')) { confirmed = bodyOf(r); return { body: { success: true, data: { replaced: true, recoveryCodes: tenCodes } } }; }
+      throw new Error(`Unexpected request: ${r.method} ${r.url}`);
+    });
+    const { user } = renderWithQuery(<SecurityPage />);
+    await user.click(await screen.findByRole('button', { name: 'Move to a new authenticator app' }));
+    await user.click(screen.getByRole('button', { name: 'Use a recovery code' }));
+    await user.type(screen.getByLabelText('Recovery code'), 'ABCDE-23456');
+    await user.click(screen.getByRole('button', { name: 'Continue' }));
+    expect(await screen.findByLabelText('Authenticator key')).toBeTruthy();
+    await user.type(screen.getByLabelText('Code from the app'), '135791');
+    await user.click(screen.getByRole('button', { name: 'Confirm' }));
+    expect((await screen.findByLabelText('Recovery codes')).querySelectorAll('li')).toHaveLength(10);
+    expect(started).toEqual({ recoveryCode: 'ABCDE-23456' });
+    expect(confirmed).toEqual({ code: '135791' });
+  });
 });

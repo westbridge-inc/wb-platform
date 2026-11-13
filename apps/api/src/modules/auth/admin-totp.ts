@@ -16,7 +16,11 @@ import { AppError } from '../../utils/errors';
 // wrapped by MASTER_KEK, the same envelope as verification documents). A code
 // is accepted once (the last accepted step is kept), within one step either
 // side for clock drift. Ten recovery codes are shown once at enrolment and
-// stored as SHA-256 digests; each works once.
+// stored as keyed digests (HMAC-SHA256 under a key derived from the account's
+// own authenticator secret, which exists only encrypted under MASTER_KEK): a
+// copy of the database or a backup alone cannot test a guess. Each works once.
+// [REVIEW-2501-A S1-1] A bare SHA-256 of a 50-bit code is cracked offline in
+// hours on one GPU; the key makes every guess need the server's KEK.
 // ---------------------------------------------------------------------------
 
 export const TOTP_STEP_SECONDS = 30;
@@ -134,4 +138,12 @@ export function newRecoveryCodes(): string[] {
   });
 }
 export const normaliseRecoveryCode = (code: string): string => code.toUpperCase().replace(/[^A-Z0-9]/g, '');
-export const recoveryDigest = (code: string): string => crypto.createHash('sha256').update(`swift-admin-recovery:${normaliseRecoveryCode(code)}`).digest('hex');
+/** The stored form of a recovery code: versioned, keyed by the account's authenticator secret (see the header). */
+export const RECOVERY_DIGEST_VERSION = 'h1';
+function recoveryKey(secret: Buffer): Buffer {
+  return Buffer.from(crypto.hkdfSync('sha256', secret, Buffer.alloc(0), 'swift-admin-recovery-v1', 32));
+}
+export function recoveryDigest(secret: Buffer, code: string): string {
+  const mac = crypto.createHmac('sha256', recoveryKey(secret)).update(normaliseRecoveryCode(code)).digest('hex');
+  return `${RECOVERY_DIGEST_VERSION}:${mac}`;
+}

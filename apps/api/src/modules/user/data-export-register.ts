@@ -230,7 +230,7 @@ export const EXPORT_REGISTER: readonly ExportEntry[] = [
   },
   {
     category: 'sessions', model: 'Session', by: ['userId'], key: 'id',
-    fields: ['id', 'userId', 'authMethod', 'rotatedAt', 'deviceType', 'ipAddress', 'userAgent', 'expiresAt', 'createdAt', 'mfaVerifiedAt'],
+    fields: ['id', 'userId', 'authMethod', 'rotatedAt', 'deviceType', 'ipAddress', 'userAgent', 'expiresAt', 'createdAt', 'mfaVerifiedAt', 'consoleBoundAt'],
   },
   {
     category: 'devices', model: 'DeviceToken', by: ['userId'], key: 'id',
