@@ -588,7 +588,8 @@ export const customerApi = {
   teamInvites: () => api.get('/customer/team-invites'),
   acceptTeamInvite: (id: string) => api.post(`/customer/team-invites/${id}/accept`, {}),
   declineTeamInvite: (id: string) => api.post(`/customer/team-invites/${id}/decline`, {}),
-  reorder: (id: string, session?: AuthSessionSnapshot) => api.post(`/customer/orders/${id}/reorder`, {}, capturedAuthConfig(session)),
+  // [MENU-OPTIONS] A reorder is a cart write too: it says this app shows sizes, halves and follow-up choices.
+  reorder: (id: string, session?: AuthSessionSnapshot) => api.post(`/customer/orders/${id}/reorder`, { capabilities: cartWriteCapabilities() }, capturedAuthConfig(session)),
   ratingTags: () => api.get('/customer/rating-tags'),
   itemFeedback: (id: string, body: { itemId: string; verdict: 'UP' | 'DOWN' }) =>
     api.post(`/customer/orders/${id}/item-feedback`, body),
@@ -610,18 +611,21 @@ export const customerApi = {
   // [RIDER-SAFE 1] Whether delivery from this store can be ordered now, for this basket and address.
   getDeliveryAvailability: (vendorId: string, paymentMethod: 'CASH' | 'MOBILE_MONEY') =>
     api.get('/customer/delivery-availability', { params: { vendorId, paymentMethod } }),
+  // [MENU-OPTIONS] Every cart write says this app shows sizes that set the price, halves and follow-up choices
+  // (MENU_OPTIONS_V2): the server refuses such an item from an app that does not (409 APP_UPDATE_REQUIRED).
   addToCart: (data: {
     vendorId: string;
     itemId: string;
     quantity?: number;
     selectedOptions?: Record<string, unknown>;
     specialInstructions?: string;
-  }, session?: AuthSessionSnapshot) => api.post('/customer/cart/items', data, capturedAuthConfig(session)),
+  }, session?: AuthSessionSnapshot) =>
+    api.post('/customer/cart/items', { ...data, capabilities: cartWriteCapabilities() }, capturedAuthConfig(session)),
   updateCartItem: (
     id: string,
     data: { quantity: number; selectedOptions?: Record<string, unknown>; specialInstructions?: string },
     session?: AuthSessionSnapshot,
-  ) => api.put(`/customer/cart/items/${id}`, data, capturedAuthConfig(session)),
+  ) => api.put(`/customer/cart/items/${id}`, { ...data, capabilities: cartWriteCapabilities() }, capturedAuthConfig(session)),
   removeCartItem: (id: string, session?: AuthSessionSnapshot) => api.delete(`/customer/cart/items/${id}`, capturedAuthConfig(session)),
   clearCart: (session?: AuthSessionSnapshot) => api.delete('/customer/cart', capturedAuthConfig(session)),
   setCartAddress: (addressId: string, session?: AuthSessionSnapshot) => api.put('/customer/cart/address', { addressId }, capturedAuthConfig(session)),

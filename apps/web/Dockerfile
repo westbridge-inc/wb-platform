@@ -85,6 +85,10 @@ COPY apps/mobile/src/lib/reorderNotice.ts apps/mobile/src/lib/reorderNotice.ts
 # (src/lib/menu-options.ts imports it by path, never a second copy). It is a
 # pure module with no imports of its own, so exactly this file.
 COPY apps/api/src/modules/order/options.ts apps/api/src/modules/order/options.ts
+# [MENU-OPTIONS] The item sheet's choices (size sets the price, half-and-half,
+# follow-up groups) are the phone's own sheet model, imported by path; it
+# imports nothing, so exactly this file.
+COPY apps/mobile/src/lib/menuSheet.ts apps/mobile/src/lib/menuSheet.ts
 # [MENU-OPTIONS] What every menu-options write declares (MENU_OPTIONS_V2): the
 # store tools and the customer's cart writes import it by path; imports nothing.
 COPY apps/mobile/src/lib/menuOptionsCapability.ts apps/mobile/src/lib/menuOptionsCapability.ts

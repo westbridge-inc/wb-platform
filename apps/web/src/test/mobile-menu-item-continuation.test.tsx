@@ -42,6 +42,10 @@ vi.mock('../../../mobile/src/kit', () => ({
   PopupCard: ({ children, visible }: any) => visible ? <div>{children}</div> : null,
   PopupTitle: ({ children }: any) => <h2>{children}</h2>,
   Chip: ({ label, onPress, selected }: any) => <button aria-pressed={selected} onClick={onPress}>{label}</button>,
+  // [MENU-OPTIONS] The item's choices are kit CheckRows (round for pick-one), with Required pills and the halves switch.
+  CheckRow: ({ label, onToggle, checked }: any) => <button aria-pressed={checked} onClick={onToggle}>{label}</button>,
+  TonePill: ({ label }: any) => <span>{label}</span>,
+  Segmented: () => null,
   CircleChip: ({ label, onPress }: any) => <button onClick={onPress}>{label}</button>,
   PillButton: ({ label, onPress, disabled }: any) => <button disabled={disabled} onClick={onPress}>{label}</button>,
   QtyStepper: ({ value, onInc }: any) => <button onClick={onInc}>Quantity {value}</button>,

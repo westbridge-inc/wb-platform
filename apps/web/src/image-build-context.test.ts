@@ -80,4 +80,15 @@ describe('[Q11] the image build context carries what the site imports', () => {
       expect(code, target).not.toMatch(/\bimport\s*\(|\brequire\s*\(/);
     }
   });
+
+  it('[MENU-OPTIONS] the phone’s item-sheet model and cart-write capability the site imports by path import nothing themselves (the image copies exactly those files)', () => {
+    for (const target of ['apps/mobile/src/lib/menuSheet', 'apps/mobile/src/lib/menuOptionsCapability']) {
+      expect(importsOutsideTheSite()).toContain(target);
+      const code = readFileSync(join(REPO_ROOT, `${target}.ts`), 'utf8')
+        .replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1');
+      expect(code, target).not.toMatch(/^\s*import[\s{*'"]/m);
+      expect(code, target).not.toMatch(/^\s*export\s*(type\s*)?(\*|\{[^}]*\})\s*(as\s+\w+\s*)?from\s*['"]/m);
+      expect(code, target).not.toMatch(/\bimport\s*\(|\brequire\s*\(/);
+    }
+  });
 });

@@ -2,7 +2,12 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import * as server from '../../../api/src/modules/order/options';
-import { fromPrice, needsChoices, noteIsEmpty, requiredChoiceSoldOut, selectionComplete, selectionPrice, validateSelectedOptions, OptionSelectionError } from './menu-options';
+import * as phoneSheet from '../../../mobile/src/lib/menuSheet';
+import {
+  chooseOption, defaultSelection, fromPrice, halfPrice, needsChoices, opensChoices, orderLineChoices, requiredChoiceSoldOut, selectionComplete,
+  selectionNames, selectionPrice, validateSelectedOptions, OptionSelectionError,
+} from './menu-options';
+import { followUpGroupIds, halfPrice as listHalfPrice, noteIsEmpty, requiredGroup } from './menu-prices';
 
 // [W6] The website judges and prices an item's choices with the API's own
 // module — the same functions, not a copy — so the store page can never accept
@@ -23,20 +28,48 @@ describe('[W6] the store page uses the server’s option rules', () => {
     expect(storePage).toMatch(/sheet\.validateSelectedOptions\(liveItem, selectedOptions\)/);
     expect(storePage).toMatch(/instanceof itemSheetModule\.OptionSelectionError/);
     const sheet = readFileSync(join(process.cwd(), 'src/components/storefront/item-sheet.tsx'), 'utf8');
-    expect(sheet).toMatch(/export \{ OptionSelectionError, selectionPrice, validateSelectedOptions \} from '@\/lib\/menu-options';/);
+    const reexport = sheet.match(/export \{([^}]*)\} from '@\/lib\/menu-options';/);
+    expect(reexport?.[1]?.split(',').map((name) => name.trim()).filter(Boolean).sort()).toEqual([
+      'OptionSelectionError', 'chooseOption', 'defaultSelection', 'placeOption', 'restoreSelection', 'selectionNames', 'selectionPrice',
+      'singleChoice', 'validateSelectedOptions',
+    ]);
   });
 
-  it('[W6 · size] the store page’s first load never imports the engine: its list rules import nothing but money', () => {
+  it('[W6 · size] the store page’s first load never imports the engine or the sheet model: its list rules import only money', () => {
     const storePage = readFileSync(join(process.cwd(), 'src/components/storefront/storefront-experience.tsx'), 'utf8');
-    expect(storePage).not.toMatch(/from '@\/lib\/menu-options'/);
-    expect(storePage).not.toMatch(/modules\/order\/options/);
+    // A type import is erased from the build; any other import of these modules would put them in the first load.
+    const valueImports = storePage.replace(/^import type [^;]+;$/gm, '');
+    expect(valueImports).not.toMatch(/from '@\/lib\/menu-options'/);
+    expect(valueImports).not.toMatch(/modules\/order\/options/);
+    expect(valueImports).not.toMatch(/mobile\/src\/lib\/menuSheet/);
+    expect(storePage).toMatch(/itemSheetModule\.chooseOption\(groups, current, group\.id, optionId\)/);
+    expect(storePage).toMatch(/sheet\.restoreSelection\(item\.optionGroups \?\? \[\], kept\)/);
     const prices = readFileSync(join(process.cwd(), 'src/lib/menu-prices.ts'), 'utf8');
     expect(prices.match(/^import .*$/gm)).toEqual(["import { parseAmount } from './money';"]);
   });
 
-  it('a plain line’s note is judged by the server’s own note rule', () => {
+  it('the list’s group rules are the sheet model’s own', () => {
+    const option = (id: string, followUpGroupId: string | null = null) => ({ id, name: id, additionalPrice: '0', followUpGroupId });
+    const base = { name: 'g', minSelect: 0, maxSelect: 1 };
+    const groups = [
+      { ...base, id: 'size', isRequired: false, setsPrice: true, options: [option('s'), option('l')] },
+      { ...base, id: 'crust', isRequired: true, options: [option('stuffed', 'cheese'), option('thin', 'crust'), option('odd', 'missing')] },
+      { ...base, id: 'cheese', isRequired: false, options: [option('cheddar', 'size')] },
+      { ...base, id: 'extras', isRequired: false, setsPrice: false, options: [] },
+    ];
+    expect([...followUpGroupIds(groups)].sort()).toEqual([...phoneSheet.followUpGroupIds(groups)].sort());
+    expect([...followUpGroupIds(groups)].sort()).toEqual(['cheese', 'size']);
+    for (const group of groups) expect(requiredGroup(group), group.id).toBe(phoneSheet.requiredGroup(group));
+  });
+
+  it('a plain line’s note and the From figure’s half price are the engine’s own rules', () => {
     for (const note of [null, undefined, '', ' ', '\n\t ', 'x', ' no onions ', '\u00a0']) {
       expect(noteIsEmpty(note), JSON.stringify(note)).toBe(server.normalizeItemNote(note) === null);
+    }
+    for (const price of [0, 0.5, 0.6, 1, 1.2, 99, 100, 150, 175.5, 1234.56]) {
+      for (const percent of [0, 1, 33, 50, 51, 66, 99, 100, 101, 50.5, Number.NaN]) {
+        expect(listHalfPrice(price, percent), `${price} @ ${percent}%`).toBe(server.halfPrice(price, percent));
+      }
     }
   });
 
@@ -97,5 +130,79 @@ describe('[W6] "From" and the sheet’s price', () => {
     expect(selectionPrice(item, { size: ['l'], roti: ['d'] })).toBe(1800);
     // An id that belongs to no group of this item is never priced.
     expect(selectionPrice(item, { size: ['l'], roti: ['not-this-item'] })).toBe(1600);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// [MENU-OPTIONS · owner 11 Nov 2026] Size sets the price, half-and-half, follow-up groups: the website's figures
+// by the API's own rules, and the sheet's taps by the phone's own model (imported by path, never a copy).
+// ---------------------------------------------------------------------------
+
+describe('[MENU-OPTIONS] the website prices pizza-grade choices exactly as the server does', () => {
+  const choice = (id: string, additionalPrice: string, extra: Record<string, unknown> = {}) =>
+    ({ id, name: id, additionalPrice, isAvailable: true, isDefault: false, sortOrder: 0, followUpGroupId: null as string | null, ...extra });
+  const pizza = (halfPricePercent = 50) => ({
+    basePrice: 1200,
+    optionGroups: [
+      { id: 'size', name: 'Size', isRequired: true, minSelect: 1, maxSelect: 1, sortOrder: 0, setsPrice: true, options: [choice('personal', '1200'), choice('large', '3500', { sortOrder: 1 })] },
+      { id: 'crust', name: 'Crust', isRequired: true, minSelect: 1, maxSelect: 1, sortOrder: 1, options: [choice('thin', '0'), choice('stuffed', '500', { sortOrder: 1, followUpGroupId: 'cheese' })] },
+      { id: 'cheese', name: 'Cheese', isRequired: true, minSelect: 1, maxSelect: 1, sortOrder: 2, options: [choice('mozz', '0'), choice('cheddar', '100', { sortOrder: 1 })] },
+      { id: 'toppings', name: 'Toppings', isRequired: false, minSelect: 0, maxSelect: 3, sortOrder: 3, allowHalves: true, halfPricePercent,
+        options: [choice('pep', '300'), choice('mush', '175', { sortOrder: 1 }), choice('onion', '100', { sortOrder: 2 })] },
+    ],
+  });
+
+  it('the chosen size IS the price (never item + size), extras on top; the same figure as the server’s cart line', () => {
+    const sel = { size: ['large'], crust: ['thin'], toppings: ['onion'] };
+    expect(selectionPrice(pizza(), sel)).toBe(3600);
+    expect(selectionPrice(pizza(), { size: ['large'], crust: ['thin'] })).toBe(3500);
+    const resolved = server.resolveSelectedOptions(pizza(), sel);
+    expect(selectionPrice(pizza(), sel)).toBe(server.lineBasePrice(1200, resolved) + server.optionsUnitPrice(resolved));
+  });
+
+  it('halves at 50% (87.5 → 88) and at 100%', () => {
+    expect(selectionPrice(pizza(), { size: ['personal'], crust: ['thin'], toppings: ['pep:left', 'mush:right', 'onion'] })).toBe(1200 + 150 + 88 + 100);
+    expect(selectionPrice(pizza(100), { size: ['personal'], crust: ['thin'], toppings: ['pep:left'] })).toBe(1500);
+  });
+
+  it('a follow-up choice adds its price; without its opener the server’s validator refuses it', () => {
+    expect(selectionPrice(pizza(), { size: ['large'], crust: ['stuffed'], cheese: ['cheddar'] })).toBe(3500 + 500 + 100);
+    expect(selectionComplete(pizza(), { size: ['large'], crust: ['stuffed'] })).toBe(false);
+    expect(selectionComplete(pizza(), { size: ['large'], crust: ['stuffed'], cheese: ['mozz'] })).toBe(true);
+    expect(selectionComplete(pizza(), { size: ['large'], crust: ['thin'], cheese: ['mozz'] })).toBe(false);
+  });
+
+  it('From is the cheapest size on sale (not item + size), a follow-up group never adds to it, a half topping counts at its half price', () => {
+    expect(fromPrice(pizza())).toBe(1200);
+    const smallSoldOut = pizza();
+    smallSoldOut.optionGroups[0]!.options[0]!.isAvailable = false;
+    expect(fromPrice(smallSoldOut)).toBe(3500);
+    const requiredTopping = pizza();
+    Object.assign(requiredTopping.optionGroups[3]!, { isRequired: true, minSelect: 1 });
+    expect(fromPrice(requiredTopping)).toBe(1200 + 50); // onion 100, on one half at 50%
+    // A follow-up group whose every choice is sold out does not make the whole pizza sold out.
+    const cheeseGone = pizza();
+    for (const o of cheeseGone.optionGroups[2]!.options) o.isAvailable = false;
+    expect(requiredChoiceSoldOut(cheeseGone)).toBe(false);
+    expect(fromPrice(cheeseGone)).toBe(1200);
+  });
+
+  it('a sized, half-and-half or follow-up item opens its sheet instead of a one-tap add', () => {
+    expect(needsChoices(pizza())).toBe(true);
+    const onlyHalves = { basePrice: 800, optionGroups: [pizza().optionGroups[3]!] };
+    expect(needsChoices(onlyHalves)).toBe(false);
+    expect(opensChoices(onlyHalves)).toBe(true);
+  });
+
+  it('the basket keeps the server’s own display words for each choice', () => {
+    expect(selectionNames(pizza(), { size: 'large', crust: 'stuffed', cheese: 'cheddar', toppings: ['pep:left'] }))
+      .toEqual(['large', 'stuffed', 'cheddar', 'pep (left half)']); // the fixture names each choice by its id
+  });
+
+  it('the sheet’s taps are the phone’s own model, imported by path (never a copy)', () => {
+    expect(chooseOption).toBe(phoneSheet.chooseOption);
+    expect(defaultSelection).toBe(phoneSheet.defaultSelection);
+    expect(orderLineChoices).toBe(phoneSheet.orderLineChoices);
+    expect(halfPrice).toBe(server.halfPrice);
   });
 });
