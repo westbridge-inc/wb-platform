@@ -319,7 +319,7 @@ export function substitutionView(line: ViewLine, order: ViewOrder, ctx: { onlyIt
     // [O-4 · REVIEW-F S3-1] Declining the only item left would empty the order: not offered.
     // [OOS-FLOW · REVIEW-1 S3-1] On an accepted order's only item a decline cancels the order: offered only to a
     // client that labels it so (lastItemDecline); older cards read "Rejecting removes the item".
-    decisions: { approve: !approvalHold && !negativeTotal && (adjustable || delta === 0), reject: adjustable && !waitingLast && (!acceptedLast || ctx.lastItemDecline === true) },
+    decisions: { approve: !approvalHold && !negativeTotal && (adjustable || totalChange === 0), reject: adjustable && !waitingLast && (!acceptedLast || ctx.lastItemDecline === true) },
     ...(lastItem ? { lastItem: true } : {}),
     settlementGuidance,
     // [SUBSTITUTION] The wait is bounded and the customer is told how: answer

@@ -429,7 +429,8 @@ export class PickingService {
         userId: line.order.customerId,
         type: 'ORDER_UPDATE',
         title: `${line.name} removed from your order`,
-        body: `It's out of stock at the store. Order #${line.order.orderNumber}'s total went down by $${Number(line.totalCustomer).toLocaleString()}.`,
+        // [Review B S3-1] What the total did (the line less the discount that went with it), as the app shows it.
+        body: `It's out of stock at the store. Order #${line.order.orderNumber}'s total went down by $${closed.decTotal.toLocaleString()}.`,
         data: { orderId, kind: 'line_refunded', lineId },
       });
       return this.prisma.orderItem.findUnique({ where: { id: lineId } });
@@ -495,7 +496,10 @@ export class PickingService {
       orderId, lineId: line.id, originalName: line.name, substituteName: null, substitutePrice: null,
       quantity: line.quantity, status: 'PENDING', kind: 'REMOVAL', decideBy: decideBy.toISOString(),
     });
-    const lower = Math.min(Number(line.totalCustomer), Number(line.order.totalAmount));
+    // [Review B S3-1] The push names the same net change the in-app card shows (line-discount.ts).
+    const discountNow = (await this.prisma.order.findUnique({ where: { id: orderId }, select: { discount: true } }))?.discount ?? 0;
+    const back = await lineChangeDiscountInTx(this.prisma as unknown as Prisma.TransactionClient, orderId, { lineId: line.id, newLineTotal: 0 }, discountNow);
+    const lower = Math.min(Math.max(0, Number(line.totalCustomer) - back.amount), Number(line.order.totalAmount));
     await this.notifications.send({
       userId: line.order.customerId,
       type: 'ORDER_UPDATE',
@@ -628,12 +632,13 @@ export class PickingService {
       // [F-006-02] On MMG, a dearer substitute records money never collected
       // and a cheaper one an unrecorded refund — any payment status. Only a
       // same-price swap may proceed until the adjustment/refund ledger exists.
-      if (delta !== 0) assertMmgMoneyAdjustable(order);
       // [Review A S3-1 on #2500] The discount follows the goods (line-discount.ts): a cheaper substitute on a
       // discounted order gives back the part of the discount that went with the difference, so the other lines are
       // never discounted twice. The total moves by the line's change less that part: what the customer was shown.
       const discountBack = await lineChangeDiscountInTx(tx, orderId, { lineId, newLineTotal }, order.discount);
       const totalChange = delta + discountBack.amount;
+      // [Review B S3-2] The money guard reads what the TOTAL does: on MMG, only a swap that leaves it where it was.
+      if (totalChange !== 0) assertMmgMoneyAdjustable(order);
 
       // A substitute may reduce a line's price but must NEVER drive the ORDER
       // total below zero. On a discounted order a free/cheap substitute could
