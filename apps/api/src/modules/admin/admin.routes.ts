@@ -102,8 +102,8 @@ import { MmgCheckoutService } from '../billing/mmg-checkout.service';
 import { feeRefundCaseOf, listFeeRefundCases, openFeeRefundCase } from '../billing/fee-refund-case';
 import { MAJOR_AMOUNT_CEILING } from '../../utils/currency-amount';
 import {
-  approverRoster, cancelOwnApproval, decideSoloApproval, emailChannelConfigured, soloCoolOffHours, soloRowState,
-  startSoloApproval,
+  approverRoster, assertNoticeable, cancelOwnApproval, decideSoloApproval, emailChannelConfigured, guyanaTime, ownerContact,
+  sendSoloEmail, sendSoloText, soloCoolOffHours, soloRowState, startSoloApproval,
 } from './solo-approval';
 import { AuthService, sanitizeUser } from '../auth/auth.service';
 import { blankApprovedNumber, confirmPhoneChange, lastFour, startPhoneChange } from './phone-change';
@@ -6931,6 +6931,59 @@ export async function adminRoutes(app: FastifyInstance) {
       (tx, facts) => auditWithin(tx, request as unknown as AuditRequestLike, app.prefix, { extra: facts }),
     );
     return { success: true, data: reversalOut(row as never) };
+  });
+
+  // [OWNER RULING 13 Nov 2026] A weekly-fee payment made on MMG's page after the checkout closed. The owner alone
+  // credits it, only on MMG's own records (a fresh lookup and history), with the MMG reference typed from MMG's
+  // statement and a reason; at most once; audited; then a second person reviews it once a second admin exists.
+  const lateCredits = new MmgCheckoutService(app.prisma, billing, notifications);
+  const mmgReferenceShape = z.string().trim().min(3).max(128).regex(/^[A-Za-z0-9][A-Za-z0-9._:-]*$/, 'Use the reference exactly as MMG shows it');
+  app.post('/billing/mmg-checkouts/:id/credit-late', { preHandler: [adminGuard] }, async (request) => {
+    const tenantId = requireTenantId();
+    const { id } = z.object({ id: z.string().min(1).max(64) }).parse(request.params);
+    const body = z.object({ mmgReference: mmgReferenceShape, reason: z.string().trim().max(500).optional() }).strict().parse(request.body ?? {});
+    const reason = reasonOf(request.body, request.headers as never) ?? body.reason ?? '';
+    if (reason.length < 8) throw new AppError(400, 'REASON_REQUIRED', 'Say why this late payment is being credited.');
+    // The owner alone (the service checks it again, inside): refused before any code is spent or notice prepared.
+    const roles = (await app.prisma.user.findUnique({ where: { id: request.user.userId }, select: { roles: true } }))?.roles ?? [];
+    if (!roles.includes('SUPER_ADMIN')) throw new AppError(403, 'OWNER_ONLY', 'Only the owner can credit a payment made after the checkout closed.');
+    // [Review S3-1] As every solo money decision: the owner's email and text can go, and a fresh sign-in code is spent.
+    const contact = await ownerContact(app.prisma, request.user.userId);
+    assertNoticeable(contact, new Date());
+    if (!emailChannelConfigured()) throw new AppError(503, 'SOLO_EMAIL_UNAVAILABLE', 'The owner is emailed when a late payment is credited, and Swift\'s email is not set up. Nothing was credited.');
+    await requireStepUp(app, request as never, { consume: true });
+    const result = await lateCredits.creditLateByOwner({ tenantId, checkoutId: id, actorId: request.user.userId, mmgReference: body.mmgReference, reason }, new Date(), {
+      // [Review A S4-B · Review B S4-1] Sent as the credit's last step before it commits: "is being credited" (a commit
+      // can still fail after it), the text first (the owner's own phone, and the channel likelier to fail).
+      ownerNotice: async (facts) => {
+        const at = guyanaTime(new Date());
+        await sendSoloText(contact.phone, `Swift admin: a late MMG payment is being credited by you alone (checkout ${facts.checkoutId}) at ${at}. If the console showed an error, nothing was credited. If this was not you, sign out of every device.`);
+        await sendSoloEmail(contact.email, 'Swift: a late MMG payment is being credited by you (owner alone)', [
+          'Someone signed in as you, with a sign-in code sent to your phone, is crediting a weekly-fee payment made on MMG after its checkout closed:',
+          '', `  Checkout: ${facts.checkoutId}`, `  MMG transaction: ${facts.mmgTransactionId}`, `  Amount: ${facts.amount} ${facts.currencyCode}`,
+          `  Reason given: ${reason}`, `  Time: ${at}`, '',
+          'If the console showed an error, nothing was credited. Otherwise a second person reviews it.',
+          'If this was not you: sign out of every device, change your sign-in, and have the payment checked against the MMG statement.',
+        ].join('\n'));
+      },
+    });
+    await auditWithin(app.prisma, request as unknown as AuditRequestLike, app.prefix, {
+      extra: { checkoutId: id, checkoutStatus: result.status, mmgTransactionId: result.mmgTransactionId, secondReviewNeeded: result.secondReviewNeeded },
+    });
+    return { success: true, data: result };
+  });
+  // [Review S4-2] The owner's late credits still waiting for a second person (a newly added admin finds them here).
+  app.get('/billing/mmg-checkouts/late-credit-reviews', { preHandler: [adminGuard] }, async () => {
+    const tenantId = requireTenantId();
+    return { success: true, data: await lateCredits.pendingLateCreditReviews(tenantId) };
+  });
+  app.post('/billing/mmg-checkouts/:id/late-credit-review', { preHandler: [adminGuard] }, async (request) => {
+    const tenantId = requireTenantId();
+    const { id } = z.object({ id: z.string().min(1).max(64) }).parse(request.params);
+    const body = z.object({ outcome: z.enum(['AGREED', 'DISPUTED']), note: z.string().trim().min(8).max(500) }).strict().parse(request.body ?? {});
+    const result = await lateCredits.reviewOwnerLateCredit({ tenantId, checkoutId: id, actorId: request.user.userId, outcome: body.outcome, note: body.note });
+    await auditWithin(app.prisma, request as unknown as AuditRequestLike, app.prefix, { extra: { checkoutId: id, outcome: body.outcome } });
+    return { success: true, data: result };
   });
 
   // [Audit FABLE-01 C1-1] A weekly-fee payment held for review, checked with MMG again (C4: a reason and a second

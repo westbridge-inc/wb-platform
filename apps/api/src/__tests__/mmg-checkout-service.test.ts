@@ -16,7 +16,7 @@ import { registerErrorHandler } from '../middleware/error-handler';
 import { BillingService } from '../modules/billing/billing.service';
 import { NotificationService } from '../modules/notification/notification.service';
 import { getPaymentProvider } from '../providers/payment/payment-provider';
-import { MMG_CHECKOUT_TTL_MS, MmgCheckoutService } from '../modules/billing/mmg-checkout.service';
+import { MMG_CHECKOUT_TTL_MS, MmgCheckoutService, mmgCreationInstant } from '../modules/billing/mmg-checkout.service';
 import { FakeMmgHistory, mmgHistoryRow, mmgTimeOf } from './helpers/mmg-history-fake';
 import { FEE_CHECKOUT_PLATFORMS_KEY, resetFeeCheckoutSwitchCache } from '../modules/billing/fee-pay-actions';
 import { readPayAhead } from '../modules/billing/pay-ahead';
@@ -2776,6 +2776,560 @@ describe('[DS632 · 7 Oct] MMG’s time for the payment (its history record) is 
     expect(await topups(s.subId)).toHaveLength(0);
     expect(await identityOf(near)).toBeNull();
     await expect(service.recheckHeld({ tenantId: 'another-tenant', checkoutId: row.id, actorId: 'admin-recheck' })).rejects.toMatchObject({ statusCode: 404 });
+  });
+
+  describe('[OWNER RULING 13 Nov] a payment made after the checkout closed: the owner alone credits it, on MMG’s own records', () => {
+    const person = async (roles: Array<'SUPER_ADMIN' | 'ADMIN'>) => {
+      const u = await app.prisma.user.create({ data: { phone: `+${phoneBase + 31000 + (seq += 1)}`, firstName: 'Late', lastName: 'Credit', roles, activeRole: roles[0]!, isPhoneVerified: true } });
+      userIds.push(u.id);
+      return u.id;
+    };
+    /** A checkout opened 40 minutes ago that closed 10 minutes ago, paid on MMG's page 5 minutes ago (after it closed). */
+    const latePaid = async (label: string) => {
+      const s = await makeSub({ due: new Date(Date.now() - 60_000) });
+      const opened = await intentOf((await start(s)).checkout.ref);
+      await app.prisma.mmgCheckoutIntent.update({ where: { id: opened.id }, data: { createdAt: new Date(Date.now() - 40 * 60_000), expiresAt: new Date(Date.now() - 10 * 60_000) } });
+      const row = await intentOf(opened.id);
+      const txn = tx(label);
+      approved(row, txn, 2100, echoOf(row), { creationDate: mmgTimeOf(new Date()) }, { modificationDate: mmgTimeOf(new Date(Date.now() - 5 * 60_000)) });
+      await codeReply(row, '0', txn, 'NOTIFY');
+      expect(await intentOf(row.id)).toMatchObject({ status: 'HELD', reason: 'PAYMENT_TIME_OUTSIDE_WINDOW' });
+      return { s, row, txn };
+    };
+
+    it('credits once, on MMG’s lookup and history and the reference typed from MMG’s statement; audited; flagged for a second person', async () => {
+      const owner = await person(['SUPER_ADMIN']);
+      const second = await person(['ADMIN']);
+      const { s, row, txn } = await latePaid('LATEOWNER');
+      const credit = (actorId: string, mmgReference: string) => service.creditLateByOwner({ tenantId: row.tenantId, checkoutId: row.id, actorId, mmgReference, reason: 'Paid on MMG three minutes late; seen on the statement' });
+      // Not the owner: refused. A reference MMG does not show for it: refused. Nothing credited either way.
+      await expect(credit(second, txn)).rejects.toMatchObject({ code: 'OWNER_ONLY' });
+      await expect(credit(owner, 'SOMEOTHERREF123')).rejects.toMatchObject({ code: 'MMG_DOES_NOT_SHOW_IT' });
+      expect(await topups(s.subId)).toHaveLength(0);
+      // The owner, with MMG's own transaction number: credited exactly as any confirmation.
+      expect(await credit(owner, txn.toLowerCase())).toMatchObject({ status: 'CONFIRMED', secondReviewNeeded: true, repeat: false });
+      expect(await topups(s.subId)).toHaveLength(1);
+      expect(await identityOf(txn)).toMatchObject({ status: 'CREDITED', creditedPaymentId: `mco:${row.id}` });
+      expect(await intentOf(row.id)).toMatchObject({ status: 'CONFIRMED', reason: 'OWNER_LATE_CREDIT' });
+      const trail = await app.prisma.auditLog.findFirst({ where: { action: 'MMG_LATE_PAYMENT_CREDITED_BY_OWNER', entityId: row.id } });
+      expect(trail).toMatchObject({ userId: owner });
+      expect(trail!.changes).toMatchObject({ typedReference: txn.toLowerCase(), mmgTransactionId: txn, heldReason: 'PAYMENT_TIME_OUTSIDE_WINDOW', secondReview: 'PENDING' });
+      // At most once: asking again changes nothing.
+      expect(await credit(owner, txn)).toMatchObject({ status: 'CONFIRMED', repeat: true });
+      expect(await topups(s.subId)).toHaveLength(1);
+      expect(await app.prisma.auditLog.count({ where: { action: 'MMG_LATE_PAYMENT_CREDITED_BY_OWNER', entityId: row.id } })).toBe(1);
+      // The second person's review: never the owner who credited it; once.
+      const review = (actorId: string) => service.reviewOwnerLateCredit({ tenantId: row.tenantId, checkoutId: row.id, actorId, outcome: 'AGREED', note: 'Matches the MMG statement line' });
+      await expect(review(owner)).rejects.toMatchObject({ code: 'SECOND_PERSON_ONLY' });
+      expect(await review(second)).toEqual({ reason: 'OWNER_LATE_CREDIT_REVIEWED' });
+      await expect(review(second)).rejects.toMatchObject({ code: 'NO_LATE_CREDIT_TO_REVIEW' });
+    });
+
+    it('never credits a payment MMG dates before the checkout opened, nor a hold for any other reason', async () => {
+      const owner = await person(['SUPER_ADMIN']);
+      const s = await makeSub();
+      const row = await intentOf((await start(s)).checkout.ref);
+      const early = tx('LATEEARLY');
+      approved(row, early, 2100, {}, { creationDate: mmgTimeOf(new Date()) }, { modificationDate: mmgTimeOf(new Date(row.createdAt.getTime() - 5 * 60_000)) });
+      await codeReply(row, '0', early);
+      expect(await intentOf(row.id)).toMatchObject({ status: 'HELD', reason: 'PAYMENT_TIME_OUTSIDE_WINDOW' });
+      await expect(service.creditLateByOwner({ tenantId: row.tenantId, checkoutId: row.id, actorId: owner, mmgReference: early, reason: 'trying an early payment' }))
+        .rejects.toMatchObject({ code: 'MMG_DOES_NOT_SHOW_IT' });
+      expect(await topups(s.subId)).toHaveLength(0);
+
+      checkoutProvider = () => sandboxIn(null);
+      const z = await makeSub({ due: new Date(Date.now() - 60_000) });
+      const zrow = await intentOf((await start(z)).checkout.ref);
+      const ztxn = tx('LATEZONE');
+      approved(zrow, ztxn, 2100);
+      await codeReply(zrow, '0', ztxn, 'NOTIFY');
+      expect(await intentOf(zrow.id)).toMatchObject({ status: 'HELD', reason: 'CREATION_ZONE_UNVERIFIED' });
+      await expect(service.creditLateByOwner({ tenantId: zrow.tenantId, checkoutId: zrow.id, actorId: owner, mmgReference: ztxn, reason: 'not a late payment' }))
+        .rejects.toMatchObject({ code: 'NOT_A_LATE_PAYMENT' });
+      expect(await topups(z.subId)).toHaveLength(0);
+    });
+  });
+
+  // [Review A on #2502] The reviewer's attacks, adopted (RV1, RV3-RV10), plus the fixes they asked for.
+  describe('[review #2502] the owner late credit under attack', () => {
+    const owner = async () => {
+      const u = await app.prisma.user.create({ data: { phone: `+${phoneBase + 41000 + (seq += 1)}`, firstName: 'Rv', lastName: 'Owner', roles: ['SUPER_ADMIN'], activeRole: 'SUPER_ADMIN', isPhoneVerified: true } });
+      userIds.push(u.id);
+      return u.id;
+    };
+    const latePaid = async (label: string, minutesLate = 5, closedAgo = 10) => {
+      const s = await makeSub({ due: new Date(Date.now() - 60_000) });
+      const opened = await intentOf((await start(s)).checkout.ref);
+      await app.prisma.mmgCheckoutIntent.update({ where: { id: opened.id }, data: { createdAt: new Date(Date.now() - (closedAgo + 30) * 60_000), expiresAt: new Date(Date.now() - closedAgo * 60_000) } });
+      const row = await intentOf(opened.id);
+      const txn = tx(label);
+      approved(row, txn, 2100, echoOf(row), { creationDate: mmgTimeOf(new Date()) }, { modificationDate: mmgTimeOf(new Date(Date.now() - (closedAgo - minutesLate) * 60_000)) });
+      await codeReply(row, '0', txn, 'NOTIFY');
+      return { s, row: await intentOf(row.id), txn };
+    };
+    const credit = (row: { tenantId: string; id: string }, actorId: string, ref: string) =>
+      service.creditLateByOwner({ tenantId: row.tenantId, checkoutId: row.id, actorId, mmgReference: ref, reason: 'reviewer attack test' });
+
+    it('RV1 three clicks at once (two with the transaction, one with the ledger number): one credit, one audit row', async () => {
+      const o = await owner();
+      const { s, row, txn } = await latePaid('RVDOUBLE');
+      expect(row).toMatchObject({ status: 'HELD', reason: 'PAYMENT_TIME_OUTSIDE_WINDOW' });
+      await Promise.allSettled([credit(row, o, txn), credit(row, o, txn), credit(row, o, ledgerOf(txn))]);
+      expect(await topups(s.subId)).toHaveLength(1);
+      expect(await app.prisma.auditLog.count({ where: { action: 'MMG_LATE_PAYMENT_CREDITED_BY_OWNER', entityId: row.id } })).toBe(1);
+    });
+
+    it('RV3 MMG’s fresh lookup now says reversed, another amount, merchant or currency, or errors: refused, nothing credited', async () => {
+      const o = await owner();
+      for (const [label, patch] of [
+        ['RVREV', { status: 'reversed' }], ['RVAMT', { amountMinor: 200000 }], ['RVMER', { creditAccounts: ['6000009'] }], ['RVCUR', { currencyCode: 'USD' }],
+      ] as const) {
+        const { s, row, txn } = await latePaid(label);
+        lookups.set(txn, { ...lookups.get(txn)! as Found, ...(patch as Partial<Found>) });
+        await expect(credit(row, o, txn)).rejects.toMatchObject({ code: 'MMG_DOES_NOT_SHOW_IT' });
+        expect(await topups(s.subId)).toHaveLength(0);
+      }
+      const { s, row, txn } = await latePaid('RVERR');
+      lookups.set(txn, { outcome: 'error' } as never);
+      await expect(credit(row, o, txn)).rejects.toMatchObject({ code: 'MMG_DOES_NOT_SHOW_IT' });
+      expect(await topups(s.subId)).toHaveLength(0);
+    });
+
+    it('RV4 MMG’s fresh history names another checkout reference: refused', async () => {
+      const o = await owner();
+      const { s, row, txn } = await latePaid('RVHIST');
+      history.reset();
+      history.holds(txn, 2100, { external_id: 'SOMEOTHERCHECKOUTREF', modificationDate: mmgTimeOf(new Date(Date.now() - 5 * 60_000)) });
+      await expect(credit(row, o, txn)).rejects.toMatchObject({ code: 'MMG_DOES_NOT_SHOW_IT' });
+      expect(await topups(s.subId)).toHaveLength(0);
+    });
+
+    it('RV5 [S2-1] MMG answered NOT PAID naming the transaction, with no success answer: never credited', async () => {
+      const o = await owner();
+      const s = await makeSub({ due: new Date(Date.now() - 60_000) });
+      const opened = await intentOf((await start(s)).checkout.ref);
+      await app.prisma.mmgCheckoutIntent.update({ where: { id: opened.id }, data: { createdAt: new Date(Date.now() - 40 * 60_000), expiresAt: new Date(Date.now() - 10 * 60_000) } });
+      const row = await intentOf(opened.id);
+      const txn = tx('RVNOTPAID');
+      approved(row, txn, 2100, echoOf(row), { creationDate: mmgTimeOf(new Date()) }, { modificationDate: mmgTimeOf(new Date(Date.now() - 5 * 60_000)) });
+      await codeReply(row, '1', txn, 'NOTIFY');
+      await app.prisma.mmgCheckoutIntent.update({ where: { id: row.id }, data: { nextCheckAt: new Date(Date.now() - 1000) } });
+      await service.pollIntents(new Date());
+      expect(await intentOf(row.id)).toMatchObject({ status: 'HELD', reason: 'PAYMENT_TIME_OUTSIDE_WINDOW' });
+      await expect(credit(row, o, txn)).rejects.toMatchObject({ code: 'MMG_ANSWERS_DISAGREE' });
+      expect(await topups(s.subId)).toHaveLength(0);
+    });
+
+    it('RV6 the owner’s credit racing finance’s UNPAID close: never both, and a lost race is a 409, not a success', async () => {
+      const o = await owner();
+      for (let i = 0; i < 3; i += 1) {
+        const { s, row, txn } = await latePaid(`RVRACE${i}`);
+        const hold = await holdOf(row.id);
+        const clock = await clockOf(s.subId);
+        const r = await Promise.allSettled([
+          credit(row, o, txn),
+          resolveFinanceConfirmation(app.prisma, { id: hold.id, tenantId: hold.tenantId, actorId: 'finance-test', sourceId: row.id,
+            epoch: hold.sourceEpoch, clockVersion: clock.version, decision: 'UNPAID', evidenceReference: 'statement checked' } as never, async () => {}),
+        ]);
+        const after = await intentOf(row.id);
+        const n = (await topups(s.subId)).length;
+        expect(n).toBeLessThanOrEqual(1);
+        expect(n === 1 ? after.status === 'CONFIRMED' : after.status === 'NOT_PAID').toBe(true);
+        expect(r[1]!.status === 'fulfilled' && n === 1, 'never both a finance UNPAID close and a credit').toBe(false);
+        if (n === 0) expect(r[0]!.status, 'a credit that did not happen is never a success').toBe('rejected');
+      }
+    });
+
+    it('RV7 the request’s tenant: another tenant cannot see the checkout', async () => {
+      const o = await owner();
+      const { s, row, txn } = await latePaid('RVTENANT');
+      await expect(runWithTenant('some-other-tenant', () => service.creditLateByOwner({ tenantId: 'some-other-tenant', checkoutId: row.id, actorId: o, mmgReference: txn, reason: 'cross tenant' })))
+        .rejects.toMatchObject({ statusCode: expect.any(Number) });
+      expect(await topups(s.subId)).toHaveLength(0);
+      expect(await runWithTenant(row.tenantId, () => credit(row, o, txn))).toMatchObject({ status: 'CONFIRMED' });
+    });
+
+    it('RV8 [S3-3] the MMG transaction is already credited elsewhere: 409 ALREADY_CREDITED, held as such, paged, nothing credited', async () => {
+      const o = await owner();
+      const { s, row, txn } = await latePaid('RVDUPE');
+      await app.prisma.providerPayment.create({ data: { provider: 'MMG', providerTxnId: txn.toUpperCase(), amount: 2100, currencyCode: 'GYD', tenantId: row.tenantId, status: 'CREDITED', creditedPaymentId: 'other-channel', creditedAt: new Date() } });
+      await expect(credit(row, o, txn)).rejects.toMatchObject({ code: 'ALREADY_CREDITED' });
+      expect(await intentOf(row.id)).toMatchObject({ status: 'HELD', reason: 'ALREADY_CREDITED' });
+      expect(await topups(s.subId)).toHaveLength(0);
+    });
+
+    it('RV9 [S3-2] paid 30 minutes after the checkout closed, as MMG shows it: the owner can credit it', async () => {
+      const o = await owner();
+      const { s, row, txn } = await latePaid('RVLATE30', 30, 40);
+      if (row.status !== 'HELD') {
+        await app.prisma.mmgCheckoutIntent.update({ where: { id: row.id }, data: { nextCheckAt: new Date(Date.now() - 1000) } });
+        await service.pollIntents(new Date(Date.now() + 25 * 3_600_000));
+      }
+      expect((await intentOf(row.id)).status).toBe('HELD');
+      expect(await credit(row, o, txn)).toMatchObject({ status: 'CONFIRMED', repeat: false });
+      expect(await topups(s.subId)).toHaveLength(1);
+    });
+
+    it('RV10 MMG answered both paid and not paid: refused', async () => {
+      const o = await owner();
+      const { s, row, txn } = await latePaid('RVBOTH');
+      await app.prisma.mmgCheckoutObservation.create({ data: { tenantId: row.tenantId, intentId: row.id, source: 'NOTIFY', detail: 'MMG_RESULT_1',
+        body: { merchantTransactionId: row.merchantTransactionId, transactionId: txn, ResultCode: '1' } } });
+      await expect(credit(row, o, txn)).rejects.toMatchObject({ code: 'MMG_ANSWERS_DISAGREE' });
+      expect(await topups(s.subId)).toHaveLength(0);
+    });
+
+    it('[S4-3] an already confirmed payment answers 409 to any other reference; the notice runs inside the credit and its failure undoes it', async () => {
+      const o = await owner();
+      const { s, row, txn } = await latePaid('RVNOTICE');
+      await expect(service.creditLateByOwner({ tenantId: row.tenantId, checkoutId: row.id, actorId: o, mmgReference: txn, reason: 'notice fails' }, new Date(), {
+        ownerNotice: async () => { throw new Error('email down'); },
+      })).rejects.toThrow('email down');
+      expect(await topups(s.subId)).toHaveLength(0);
+      expect((await intentOf(row.id)).status).toBe('HELD');
+      const told: string[] = [];
+      expect(await service.creditLateByOwner({ tenantId: row.tenantId, checkoutId: row.id, actorId: o, mmgReference: txn, reason: 'notice goes' }, new Date(), {
+        ownerNotice: async (f) => { told.push(f.mmgTransactionId); },
+      })).toMatchObject({ status: 'CONFIRMED' });
+      expect(told).toEqual([txn]);
+      await expect(credit(row, o, 'ANOTHERREF999')).rejects.toMatchObject({ code: 'ALREADY_CONFIRMED' });
+      expect(await credit(row, o, ledgerOf(txn))).toMatchObject({ status: 'CONFIRMED', repeat: true });
+      expect(await topups(s.subId)).toHaveLength(1);
+    });
+
+    it('[merge with #2500] a re-check of a late hold changes nothing; a re-check racing the owner’s credit gives one credit; a re-check that credits is never the owner’s', async () => {
+      const o = await owner();
+      const { s, row, txn } = await latePaid('MRGRECHECK');
+      const before = await intentOf(row.id);
+      expect(before).toMatchObject({ status: 'HELD', reason: 'PAYMENT_TIME_OUTSIDE_WINDOW' });
+      expect(await service.recheckHeld({ tenantId: row.tenantId, checkoutId: row.id, actorId: 'admin-recheck' })).toMatchObject({ status: 'HELD', reason: 'PAYMENT_TIME_OUTSIDE_WINDOW' });
+      const still = await intentOf(row.id);
+      expect([still.reason, still.checkAttempts, still.nextCheckAt]).toEqual([before.reason, before.checkAttempts, before.nextCheckAt]);
+      expect(await topups(s.subId)).toHaveLength(0);
+      await Promise.allSettled([service.recheckHeld({ tenantId: row.tenantId, checkoutId: row.id, actorId: 'admin-recheck' }), credit(row, o, txn)]);
+      expect(await topups(s.subId)).toHaveLength(1);
+      expect(await intentOf(row.id)).toMatchObject({ status: 'CONFIRMED', reason: 'OWNER_LATE_CREDIT' });
+
+      checkoutProvider = () => sandboxIn(null);
+      const z = await makeSub({ due: new Date(Date.now() - 60_000) });
+      const zrow = await intentOf((await start(z)).checkout.ref);
+      const ztxn = tx('MRGZONE');
+      approved(zrow, ztxn, 2100);
+      await codeReply(zrow, '0', ztxn, 'NOTIFY');
+      expect(await intentOf(zrow.id)).toMatchObject({ status: 'HELD', reason: 'CREATION_ZONE_UNVERIFIED' });
+      checkoutProvider = () => sandbox;
+      expect(await service.recheckHeld({ tenantId: zrow.tenantId, checkoutId: zrow.id, actorId: 'admin-recheck' })).toMatchObject({ status: 'CONFIRMED' });
+      expect(await intentOf(zrow.id)).toMatchObject({ status: 'CONFIRMED', reason: null });
+      expect(await app.prisma.auditLog.count({ where: { action: 'MMG_LATE_PAYMENT_CREDITED_BY_OWNER', entityId: zrow.id } })).toBe(0);
+    });
+
+    it('[S4-2] the review: never through an account linked to the owner; a dispute is paged; pending reviews are listed', async () => {
+      const o = await owner();
+      const { row, txn } = await latePaid('RVREVIEW');
+      await credit(row, o, txn);
+      expect((await service.pendingLateCreditReviews(row.tenantId)).map((r) => r.checkoutId)).toContain(row.id);
+      // A second account of the owner's, linked in one identity cluster: refused.
+      const alt = await app.prisma.user.create({ data: { phone: `+${phoneBase + 42000 + (seq += 1)}`, firstName: 'Rv', lastName: 'Alt', roles: ['ADMIN'], activeRole: 'ADMIN', isPhoneVerified: true } });
+      userIds.push(alt.id);
+      const cluster = await app.prisma.identityCluster.create({ data: {} as never });
+      await app.prisma.identityClusterMember.createMany({ data: [{ clusterId: cluster.id, accountId: o, linkedVia: [] }, { clusterId: cluster.id, accountId: alt.id, linkedVia: [] }] });
+      await expect(service.reviewOwnerLateCredit({ tenantId: row.tenantId, checkoutId: row.id, actorId: alt.id, outcome: 'AGREED', note: 'matches the statement' }))
+        .rejects.toMatchObject({ code: 'SECOND_PERSON_ONLY' });
+      const reviewer = await app.prisma.user.create({ data: { phone: `+${phoneBase + 43000 + (seq += 1)}`, firstName: 'Rv', lastName: 'Second', roles: ['ADMIN'], activeRole: 'ADMIN', isPhoneVerified: true } });
+      userIds.push(reviewer.id);
+      expect(await service.reviewOwnerLateCredit({ tenantId: row.tenantId, checkoutId: row.id, actorId: reviewer.id, outcome: 'DISPUTED', note: 'not on the statement' }))
+        .toEqual({ reason: 'OWNER_LATE_CREDIT_DISPUTED' });
+      expect((await service.pendingLateCreditReviews(row.tenantId)).map((r) => r.checkoutId)).not.toContain(row.id);
+      await app.prisma.identityClusterMember.deleteMany({ where: { clusterId: cluster.id } });
+      await app.prisma.identityCluster.deleteMany({ where: { id: cluster.id } });
+    });
+  });
+
+  // [Review A delta + Review B on #2502, round 3] Both reviewers' probes and attacks, adopted, and the fixes they asked
+  // for: the review's own record (B S3-1), clear of the payer (B S3-2), the late window read whole (B S3-3 · A S4-C),
+  // the notice last (A S4-B · B S4-1), one success per credit (B S4-2), each "not paid" check pinned alone (A S4-A ·
+  // B S4-4), the backfill gate, and never the owner's own fee.
+  describe('[review #2502 round 3] the owner late credit, both reviewers’ findings', () => {
+    const person = async (roles: Array<'SUPER_ADMIN' | 'ADMIN'>) => {
+      const u = await app.prisma.user.create({ data: { phone: `+${phoneBase + 51000 + (seq += 1)}`, firstName: 'R3', lastName: 'Person', roles, activeRole: roles[0]!, isPhoneVerified: true } });
+      userIds.push(u.id);
+      return u.id;
+    };
+    /** Opened `closedAgo + 30` minutes ago, closed `closedAgo` minutes ago, paid on MMG `minutesLate` after it closed. */
+    const latePaid = async (label: string, minutesLate = 5, closedAgo = 10, code = '0') => {
+      const s = await makeSub({ due: new Date(Date.now() - 60_000) });
+      const opened = await intentOf((await start(s)).checkout.ref);
+      await app.prisma.mmgCheckoutIntent.update({ where: { id: opened.id }, data: { createdAt: new Date(Date.now() - (closedAgo + 30) * 60_000), expiresAt: new Date(Date.now() - closedAgo * 60_000) } });
+      const row = await intentOf(opened.id);
+      const txn = tx(label);
+      approved(row, txn, 2100, echoOf(row), { creationDate: mmgTimeOf(new Date()) }, { modificationDate: mmgTimeOf(new Date(Date.now() - (closedAgo - minutesLate) * 60_000)) });
+      await codeReply(row, code, txn, 'NOTIFY');
+      if ((await intentOf(row.id)).status === 'CONFIRMING') {
+        await app.prisma.mmgCheckoutIntent.update({ where: { id: row.id }, data: { nextCheckAt: new Date(Date.now() - 1000) } });
+        await service.pollIntents(new Date(Date.now() + 25 * 3_600_000));
+      }
+      return { s, row: await intentOf(row.id), txn };
+    };
+    const credit = (row: { tenantId: string; id: string }, actorId: string, ref: string, ownerNotice?: () => Promise<void>) =>
+      service.creditLateByOwner({ tenantId: row.tenantId, checkoutId: row.id, actorId, mmgReference: ref, reason: 'round 3 test' }, new Date(), ownerNotice ? { ownerNotice } : {});
+    const review = (row: { tenantId: string; id: string }, actorId: string, outcome: 'AGREED' | 'DISPUTED' = 'AGREED') =>
+      service.reviewOwnerLateCredit({ tenantId: row.tenantId, checkoutId: row.id, actorId, outcome, note: 'checked against the MMG statement' });
+    const pendingIds = async (tenantId: string) => (await service.pendingLateCreditReviews(tenantId)).map((p) => p.checkoutId);
+
+    it('[B S3-1 · PB2] finance resolving the confirmation PAID after the owner’s credit never erases the second review it owes', async () => {
+      const o = await person(['SUPER_ADMIN']);
+      const second = await person(['ADMIN']);
+      const { s, row, txn } = await latePaid('R3PAID');
+      expect(row).toMatchObject({ status: 'HELD', reason: 'PAYMENT_TIME_OUTSIDE_WINDOW' });
+      // The re-bill after the commit fails (it is only logged): the confirmation stays open for finance.
+      const spy = vi.spyOn(billing, 'afterTopUpCommitted').mockRejectedValue(new Error('re-bill down'));
+      try {
+        expect(await credit(row, o, txn)).toMatchObject({ status: 'CONFIRMED', repeat: false });
+      } finally {
+        spy.mockRestore();
+      }
+      const hold = await holdOf(row.id);
+      expect(hold.status).toBe('SETTLEMENT_APPLY_PENDING');
+      const after = await intentOf(row.id);
+      await resolveFinanceConfirmation(app.prisma, { id: hold.id, tenantId: hold.tenantId, actorId: 'finance-test', sourceId: row.id,
+        epoch: hold.sourceEpoch, clockVersion: (await clockOf(s.subId)).version, decision: 'PAID', evidenceReference: 'statement', providerPaymentId: after.providerPaymentId! } as never, async () => {});
+      expect((await intentOf(row.id)).reason, 'finance rewrote the checkout row').toBeNull();
+      expect(await pendingIds(row.tenantId)).toContain(row.id);
+      // A repeat is still this door's own credit, still waiting for its review.
+      expect(await credit(row, o, txn)).toMatchObject({ status: 'CONFIRMED', repeat: true, secondReviewNeeded: true });
+      expect(await review(row, second)).toEqual({ reason: 'OWNER_LATE_CREDIT_REVIEWED' });
+      expect(await pendingIds(row.tenantId)).not.toContain(row.id);
+      expect(await app.prisma.mmgLateCreditReview.findUniqueOrThrow({ where: { checkoutId: row.id } })).toMatchObject({ creditedBy: o, reviewedBy: second, outcome: 'AGREED' });
+      expect(await credit(row, o, ledgerOf(txn))).toMatchObject({ status: 'CONFIRMED', repeat: true, secondReviewNeeded: false });
+      await expect(review(row, second)).rejects.toMatchObject({ code: 'NO_LATE_CREDIT_TO_REVIEW' });
+      expect(await topups(s.subId)).toHaveLength(1);
+    });
+
+    it('[B S3-1] a recorded review is written once: the database refuses rewriting it or the credit it records', async () => {
+      const o = await person(['SUPER_ADMIN']);
+      const second = await person(['ADMIN']);
+      const { row, txn } = await latePaid('R3ONCE');
+      await credit(row, o, txn);
+      await review(row, second, 'DISPUTED');
+      await expect(app.prisma.mmgLateCreditReview.update({ where: { checkoutId: row.id }, data: { outcome: 'AGREED' } })).rejects.toThrow(/already recorded/);
+      const fresh = await latePaid('R3ONCE2');
+      await credit(fresh.row, o, fresh.txn);
+      await expect(app.prisma.mmgLateCreditReview.update({ where: { checkoutId: fresh.row.id }, data: { creditedBy: second } })).rejects.toThrow(/cannot change/);
+      await expect(app.prisma.mmgLateCreditReview.update({ where: { checkoutId: fresh.row.id }, data: { reviewedBy: o, reviewedAt: new Date(), outcome: 'AGREED', note: 'self' } })).rejects.toThrow();
+    });
+
+    it('[B S3-2 · PB3a] the payer of the credited fee never records its second review; a colleague’s own fee goes to a super admin who is neither', async () => {
+      const o = await person(['SUPER_ADMIN']);
+      const { s, row, txn } = await latePaid('R3PAYER');
+      await app.prisma.user.update({ where: { id: s.userId }, data: { roles: ['VENDOR_OWNER', 'ADMIN'] } });
+      expect(await credit(row, o, txn)).toMatchObject({ status: 'CONFIRMED' });
+      await expect(review(row, s.userId)).rejects.toMatchObject({ code: 'SECOND_PERSON_ONLY' });
+      // A second account of the payer's, linked in one identity cluster: refused too.
+      const alt = await person(['ADMIN']);
+      const cluster = await app.prisma.identityCluster.create({ data: {} as never });
+      await app.prisma.identityClusterMember.createMany({ data: [{ clusterId: cluster.id, accountId: s.userId, linkedVia: [] }, { clusterId: cluster.id, accountId: alt, linkedVia: [] }] });
+      try {
+        await expect(review(row, alt)).rejects.toMatchObject({ code: 'SECOND_PERSON_ONLY' });
+        // Another admin: the payer is staff, so it is a super admin's who is neither the owner nor the payer.
+        const colleague = await person(['ADMIN']);
+        await expect(review(row, colleague)).rejects.toMatchObject({ code: 'SECOND_PERSON_ONLY' });
+        const otherOwner = await person(['SUPER_ADMIN']);
+        expect(await review(row, otherOwner)).toEqual({ reason: 'OWNER_LATE_CREDIT_REVIEWED' });
+      } finally {
+        await app.prisma.identityClusterMember.deleteMany({ where: { clusterId: cluster.id } });
+        await app.prisma.identityCluster.deleteMany({ where: { id: cluster.id } });
+      }
+      // An ordinary partner's fee: an admin who is neither the owner nor the payer reviews it.
+      const plain = await latePaid('R3PLAIN');
+      await credit(plain.row, o, plain.txn);
+      expect(await review(plain.row, await person(['ADMIN']))).toEqual({ reason: 'OWNER_LATE_CREDIT_REVIEWED' });
+    });
+
+    it('[B S4-4 · PB3b] the owner never credits his own fee, nor one paid through an account linked to him', async () => {
+      const { s, row, txn } = await latePaid('R3OWNPAY');
+      await app.prisma.user.update({ where: { id: s.userId }, data: { roles: ['VENDOR_OWNER', 'SUPER_ADMIN'] } });
+      await expect(credit(row, s.userId, txn)).rejects.toMatchObject({ code: 'OWNER_IS_THE_PAYER' });
+      expect(await topups(s.subId)).toHaveLength(0);
+      expect(await identityOf(txn)).toBeNull();
+      expect(await intentOf(row.id)).toMatchObject({ status: 'HELD', reason: 'PAYMENT_TIME_OUTSIDE_WINDOW' });
+      expect(await app.prisma.mmgLateCreditReview.count({ where: { checkoutId: row.id } })).toBe(0);
+
+      const o = await person(['SUPER_ADMIN']);
+      const linked = await latePaid('R3OWNLINK');
+      const cluster = await app.prisma.identityCluster.create({ data: {} as never });
+      await app.prisma.identityClusterMember.createMany({ data: [{ clusterId: cluster.id, accountId: o, linkedVia: [] }, { clusterId: cluster.id, accountId: linked.s.userId, linkedVia: [] }] });
+      try {
+        await expect(credit(linked.row, o, linked.txn)).rejects.toMatchObject({ code: 'OWNER_IS_THE_PAYER' });
+        expect(await topups(linked.s.subId)).toHaveLength(0);
+      } finally {
+        await app.prisma.identityClusterMember.deleteMany({ where: { clusterId: cluster.id } });
+        await app.prisma.identityCluster.deleteMany({ where: { id: cluster.id } });
+      }
+      expect(await credit(linked.row, o, linked.txn)).toMatchObject({ status: 'CONFIRMED' });
+    });
+
+    it('[B S3-3 · PB4] paid 3 h late on a busy merchant: the late window is read page by page, from the close, and the payment is credited', async () => {
+      const o = await person(['SUPER_ADMIN']);
+      const { s, row, txn } = await latePaid('R3BUSY', 180, 185);
+      expect(row).toMatchObject({ status: 'HELD' });
+      // 250 other payments to Swift's merchant account between the close and the late payment.
+      for (let i = 0; i < 250; i += 1) history.holds(tx(`R3OTHER${i}`), 2100, { external_id: `OTHER${i}`, modificationDate: mmgTimeOf(new Date(row.expiresAt.getTime() + (i + 1) * 40_000)) });
+      history.queries.length = 0;
+      expect(await credit(row, o, txn)).toMatchObject({ status: 'CONFIRMED', repeat: false });
+      expect(await topups(s.subId)).toHaveLength(1);
+      expect(history.queries.length).toBeGreaterThanOrEqual(3);
+      // The window starts at the close (less the clock tolerance and margin), never at the checkout's opening.
+      const from = mmgCreationInstant(history.queries[0]!.fromdate, 'GUYANA_WALL_CLOCK')!;
+      expect(from).toBeGreaterThanOrEqual(row.expiresAt.getTime() - 12 * 60_000 - 1000);
+      const seen = await app.prisma.mmgCheckoutObservation.findFirst({ where: { intentId: row.id, source: 'HISTORY' }, orderBy: { createdAt: 'desc' } });
+      expect(seen!.body).toMatchObject({ truncated: false, pages: history.queries.length });
+      for (let i = 0; i < 250; i += 1) history.rows.delete(tx(`R3OTHER${i}`));
+    });
+
+    it('[B S3-3] MMG’s history cut short or not answering: "MMG history incomplete", never "MMG does not show it"; nothing credited', async () => {
+      const o = await person(['SUPER_ADMIN']);
+      const { s, row, txn } = await latePaid('R3CUT');
+      const saved = history.answer;
+      try {
+        // A full page every time, all in one second: the start cannot move forward.
+        const stamp = mmgTimeOf(new Date(row.expiresAt.getTime() + 60_000));
+        history.answer = async (q) => ({ outcome: 'rows', rows: Array.from({ length: q.rows }, (_v, i) => mmgHistoryRow(tx(`R3SAME${i}`), 2100, { external_id: `SAME${i}`, modificationDate: stamp })) });
+        await expect(credit(row, o, txn)).rejects.toMatchObject({ code: 'MMG_HISTORY_INCOMPLETE' });
+        // Full pages that keep moving, past the page limit.
+        let page = 0;
+        history.answer = async (q) => {
+          page += 1;
+          const base = row.expiresAt.getTime() - 11 * 60_000 + page * q.rows * 1000;
+          return { outcome: 'rows', rows: Array.from({ length: q.rows }, (_v, i) => mmgHistoryRow(tx(`R3MOVE${page}x${i}`), 2100, { external_id: `MOVE${i}`, modificationDate: mmgTimeOf(new Date(base + i * 1000)) })) };
+        };
+        await expect(credit(row, o, txn)).rejects.toMatchObject({ code: 'MMG_HISTORY_INCOMPLETE' });
+        // MMG not answering.
+        history.answer = async () => ({ outcome: 'error', reason: 'MMG history HTTP 503' });
+        await expect(credit(row, o, txn)).rejects.toMatchObject({ code: 'MMG_HISTORY_INCOMPLETE' });
+        // A reference MMG's records do not name is still "does not show it".
+        await expect(credit(row, o, 'NOTTHEPAYMENT123')).rejects.toMatchObject({ code: 'MMG_DOES_NOT_SHOW_IT' });
+      } finally {
+        history.answer = saved;
+      }
+      expect(await topups(s.subId)).toHaveLength(0);
+      expect(await credit(row, o, txn)).toMatchObject({ status: 'CONFIRMED' });
+    });
+
+    it('[A S4-B · B S4-1] the owner’s notice is the last step before the commit: the settlement mark is already written when it goes', async () => {
+      const o = await person(['SUPER_ADMIN']);
+      const { s, row, txn } = await latePaid('R3LAST');
+      const hold = await holdOf(row.id);
+      let probe = 'not run';
+      expect(await credit(row, o, txn, async () => {
+        // From another connection: the confirmation hold is already locked by this credit's settlement mark.
+        probe = await app.prisma.$transaction(async (other) => {
+          await other.$executeRawUnsafe(`SET LOCAL lock_timeout = '300ms'`);
+          try {
+            await other.$queryRaw`SELECT "id" FROM "payment_confirmation_holds" WHERE "id" = ${hold.id} FOR UPDATE`;
+            return 'free';
+          } catch (err) {
+            return String((err as Error).message);
+          }
+        });
+      })).toMatchObject({ status: 'CONFIRMED' });
+      expect(probe).toMatch(/lock timeout|55P03/i);
+      expect(await topups(s.subId)).toHaveLength(1);
+    });
+
+    it('[A D3 · B PB1] the notice "goes" then throws: nothing stands, no identity, review record or audit row is left, a retry credits once', async () => {
+      const o = await person(['SUPER_ADMIN']);
+      const { s, row, txn } = await latePaid('R3NOTICE');
+      let sent = 0;
+      await expect(credit(row, o, txn, async () => { sent += 1; throw new Error('email down'); })).rejects.toThrow('email down');
+      expect(sent).toBe(1);
+      expect(await topups(s.subId)).toHaveLength(0);
+      expect(await identityOf(txn)).toBeNull();
+      expect(await app.prisma.mmgLateCreditReview.count({ where: { checkoutId: row.id } })).toBe(0);
+      expect(await app.prisma.auditLog.count({ where: { action: 'MMG_LATE_PAYMENT_CREDITED_BY_OWNER', entityId: row.id } })).toBe(0);
+      expect(await intentOf(row.id)).toMatchObject({ status: 'HELD', reason: 'PAYMENT_TIME_OUTSIDE_WINDOW' });
+      expect(await credit(row, o, txn, async () => {})).toMatchObject({ status: 'CONFIRMED', repeat: false });
+      expect(await topups(s.subId)).toHaveLength(1);
+    });
+
+    it('[B S4-2 · PB5] two owner clicks at once: one credit, one success that says it credited and pages; the other is a repeat that pages nobody', async () => {
+      const o = await person(['SUPER_ADMIN']);
+      await person(['ADMIN']);
+      const { s, row, txn } = await latePaid('R3TWICE');
+      const pages = vi.spyOn(service as unknown as { pageReviewers: (...a: unknown[]) => Promise<void> }, 'pageReviewers');
+      try {
+        const r = await Promise.allSettled([credit(row, o, txn), credit(row, o, ledgerOf(txn))]);
+        expect(r.map((x) => x.status)).toEqual(['fulfilled', 'fulfilled']);
+        const values = r.map((x) => (x as PromiseFulfilledResult<{ repeat: boolean }>).value.repeat).sort();
+        expect(values).toEqual([false, true]);
+        expect(pages.mock.calls.filter((c) => c[4] === 'mmg-owner-late-credit')).toHaveLength(1);
+      } finally {
+        pages.mockRestore();
+      }
+      expect(await topups(s.subId)).toHaveLength(1);
+    });
+
+    it('[A S4-A · B S4-4 · D5] a declined first attempt (code 1, no transaction) then a late paid one: refused by the checkout-wide check alone', async () => {
+      const o = await person(['SUPER_ADMIN']);
+      const { s, row, txn } = await latePaid('R3DECLINED');
+      await app.prisma.mmgCheckoutObservation.create({ data: { tenantId: row.tenantId, intentId: row.id, source: 'RETURN', detail: 'MMG_RESULT_1',
+        body: { merchantTransactionId: row.merchantTransactionId, ResultCode: '1' } } });
+      await expect(credit(row, o, txn)).rejects.toMatchObject({ code: 'MMG_ANSWERS_DISAGREE' });
+      expect(await topups(s.subId)).toHaveLength(0);
+    });
+
+    it('[B S4-3 · PB6 · COORD ruling] MMG said "timed out" (7, no transaction) before the late payment: refused; settled with MMG, never a Swift credit', async () => {
+      const o = await person(['SUPER_ADMIN']);
+      const { s, row, txn } = await latePaid('R3TIMEOUT');
+      await app.prisma.mmgCheckoutObservation.create({ data: { tenantId: row.tenantId, intentId: row.id, source: 'RETURN', detail: 'MMG_RESULT_7',
+        body: { merchantTransactionId: row.merchantTransactionId, ResultCode: '7' }, createdAt: new Date(row.expiresAt.getTime() - 60_000) } });
+      await expect(credit(row, o, txn)).rejects.toMatchObject({ code: 'MMG_ANSWERS_DISAGREE' });
+      expect(await topups(s.subId)).toHaveLength(0);
+      expect(await intentOf(row.id)).toMatchObject({ status: 'HELD' });
+    });
+
+    it('[A S4-A · B S4-4 · D6] a not-paid answer naming the transaction on ANOTHER checkout: refused by that check alone', async () => {
+      const o = await person(['SUPER_ADMIN']);
+      const { s, row, txn } = await latePaid('R3ELSEWHERE');
+      const other = await latePaid('R3OTHERCHK');
+      await app.prisma.mmgCheckoutObservation.create({ data: { tenantId: other.row.tenantId, intentId: other.row.id, source: 'NOTIFY', detail: 'MMG_RESULT_2',
+        body: { merchantTransactionId: other.row.merchantTransactionId, transactionId: txn, ResultCode: '2' } } });
+      await expect(credit(row, o, txn)).rejects.toMatchObject({ code: 'MMG_ANSWERS_DISAGREE' });
+      expect(await topups(s.subId)).toHaveLength(0);
+    });
+
+    it('[A S4-A · B S4-4 · N4/M13] the provider-identity backfill gate: nothing credited until it has run', async () => {
+      const o = await person(['SUPER_ADMIN']);
+      const { s, row, txn } = await latePaid('R3BACKFILL');
+      const saved = await app.prisma.platformConfig.findUnique({ where: { key: PROVIDER_IDENTITY_BACKFILL_KEY } });
+      await app.prisma.platformConfig.deleteMany({ where: { key: PROVIDER_IDENTITY_BACKFILL_KEY } });
+      resetProviderIdentityBackfillCacheForTests();
+      try {
+        await expect(credit(row, o, txn)).rejects.toMatchObject({ code: 'IDENTITY_BACKFILL_PENDING' });
+        expect(await topups(s.subId)).toHaveLength(0);
+      } finally {
+        if (saved) await app.prisma.platformConfig.create({ data: { key: saved.key, value: saved.value as Prisma.InputJsonValue } });
+        resetProviderIdentityBackfillCacheForTests();
+      }
+      expect(await credit(row, o, txn)).toMatchObject({ status: 'CONFIRMED' });
+    });
+
+    it('[A D-RV2 · D1 · D2] another checkout’s numbers, a payment now dated inside the window, or another amount: refused', async () => {
+      const o = await person(['SUPER_ADMIN']);
+      const a = await latePaid('R3CROSSA');
+      const b = await latePaid('R3CROSSB');
+      await expect(credit(a.row, o, b.txn)).rejects.toMatchObject({ code: 'MMG_DOES_NOT_SHOW_IT' });
+      await expect(credit(a.row, o, ledgerOf(b.txn))).rejects.toMatchObject({ code: 'MMG_DOES_NOT_SHOW_IT' });
+      const inside = await latePaid('R3INSIDE', -5, 10); // paid 5 minutes before the close: inside
+      history.rows.delete(inside.txn);
+      await app.prisma.mmgCheckoutIntent.update({ where: { id: inside.row.id }, data: { status: 'HELD', reason: 'PAYMENT_TIME_NOT_IN_HISTORY' } });
+      history.holds(inside.txn, 2100, { external_id: inside.row.merchantTransactionId, modificationDate: mmgTimeOf(new Date(Date.now() - 15 * 60_000)) });
+      await expect(credit(inside.row, o, inside.txn)).rejects.toMatchObject({ code: 'MMG_DOES_NOT_SHOW_IT' });
+      const amount = await latePaid('R3AMOUNT', 2, 40);
+      await app.prisma.mmgCheckoutIntent.update({ where: { id: amount.row.id }, data: { status: 'HELD', reason: 'PAYMENT_TIME_NOT_IN_HISTORY' } });
+      history.holds(amount.txn, 2000, { external_id: amount.row.merchantTransactionId, modificationDate: mmgTimeOf(new Date(Date.now() - 38 * 60_000)) });
+      await expect(credit(amount.row, o, amount.txn)).rejects.toMatchObject({ code: 'MMG_DOES_NOT_SHOW_IT' });
+      for (const x of [a, b, inside, amount]) expect(await topups(x.s.subId)).toHaveLength(0);
+    });
   });
 
   it.each([

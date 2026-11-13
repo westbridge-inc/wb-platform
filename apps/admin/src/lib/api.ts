@@ -1594,6 +1594,24 @@ export const resolveMmgFeeReversal = (reversalId: string, outcome: 'NOT_RETURNED
     body: JSON.stringify({ outcome, mmgReference, reason }),
     reason,
   });
+// [Owner ruling 13 Nov 2026] A payment made on MMG after the checkout closed: the owner alone credits it, on MMG's own
+// records, with the MMG reference from the statement and a reason. A second person then reviews it.
+export const creditLateMmgPayment = (checkoutId: string, mmgReference: string, reason: string) =>
+  apiFetch(`/api/v1/admin/billing/mmg-checkouts/${encodeURIComponent(checkoutId)}/credit-late`, {
+    method: 'POST',
+    body: JSON.stringify({ mmgReference, reason }),
+    reason,
+  });
+// [Review A S4-2 on #2502] The owner's late credits still waiting for a second person.
+export interface LateCreditReviewRow { checkoutId: string; mmgTransactionId: string | null; amount: number; currencyCode: string; confirmedAt: string | null }
+export const fetchLateCreditReviews = (): Promise<Envelope<LateCreditReviewRow[]>> =>
+  apiFetch('/api/v1/admin/billing/mmg-checkouts/late-credit-reviews');
+export const reviewLateMmgCredit = (checkoutId: string, outcome: 'AGREED' | 'DISPUTED', note: string) =>
+  apiFetch(`/api/v1/admin/billing/mmg-checkouts/${encodeURIComponent(checkoutId)}/late-credit-review`, {
+    method: 'POST',
+    body: JSON.stringify({ outcome, note }),
+    reason: note,
+  });
 // [Audit FABLE-01 C1-1] A weekly-fee payment held for review, checked with MMG again (a reason and a second admin).
 // Credited only if MMG's own records now meet every condition; otherwise it stays held.
 export const recheckHeldMmgCheckout = (checkoutId: string, reason: string) =>

@@ -543,6 +543,12 @@ export const ADMIN_ROUTE_AUTHORITY: Readonly<Record<AdminRouteKey, AdminRouteAut
   'GET /billing/mmg-checkouts/:id/reversal': c('C0', 'billing.read'),
   'POST /billing/mmg-checkouts/:id/reverse': c('C4', 'billing.mmg.reverse'),
   'POST /billing/mmg-fee-reversals/:id/check': c('C2', 'billing.mmg.reverse.check'),
+  // [OWNER RULING 13 Nov 2026] A payment made on MMG after the checkout closed: the OWNER alone credits it, on MMG's own
+  // records, with a reason (C3; the service refuses anyone but a SUPER_ADMIN). A second person then reviews it (C3).
+  'POST /billing/mmg-checkouts/:id/credit-late': c('C3', 'billing.mmg.credit.late', E.mmgCheckout),
+  'POST /billing/mmg-checkouts/:id/late-credit-review': c('C3', 'billing.mmg.late.review', E.mmgCheckout),
+  // [Review B S4-4] Transaction numbers, amounts and times, no person: C0 (no sensitive-read row per page load).
+  'GET /billing/mmg-checkouts/late-credit-reviews': c('C0', 'billing.mmg.read'),
   // [Audit FABLE-01 C1-1] A held weekly-fee payment checked with MMG again: it may credit (only on MMG's own records), so C4.
   'POST /billing/mmg-checkouts/:id/recheck': c('C4', 'billing.mmg.recheck', E.mmgCheckout),
   // [Row 156] A partner asked for a weekly-fee payment back: a clock and a record, no money. A reason, one person; the

@@ -4603,6 +4603,8 @@ model MmgCheckoutIntent {
   confirmationHold      PaymentConfirmationHold?
   /// [ENTERPRISE · E1] A chain checkout's branches: who it pays and how much of the one MMG payment each gets.
   parts                 MmgCheckoutPart[]
+  /// [OWNER RULING 13 Nov 2026] The owner's late credit of this checkout, and its second person's review.
+  lateCreditReview      MmgLateCreditReview?
 
   @@index([tenantId])
   @@index([subscriptionId, createdAt])
@@ -4704,6 +4706,29 @@ model CardCreditRefund {
   @@index([setAsideId])
   @@index([cardSessionId])
   @@map("card_credit_refunds")
+}
+
+/// [OWNER RULING 13 Nov 2026 · REVIEW-2502-B S3-1] A late MMG weekly-fee payment the owner credited alone, and the
+/// second person's review of it. Written only by that credit (in its commit) and by the review: no money path (finance's
+/// resolution, a re-check, a reversal) writes it, so nothing that settles the payment can erase the review it still owes.
+model MmgLateCreditReview {
+  id               String            @id @default(cuid())
+  tenantId         String
+  checkoutId       String            @unique
+  checkout         MmgCheckoutIntent @relation(fields: [checkoutId], references: [id], onDelete: Cascade)
+  /// The owner who credited it, and when (the MMG transaction is the checkout's own).
+  creditedBy       String
+  creditedAt       DateTime
+  /// The second person, once they have looked: AGREED (matches the MMG statement) or DISPUTED. Written once.
+  reviewedBy       String?
+  reviewedAt       DateTime?
+  outcome          String?
+  note             String?
+  createdAt        DateTime          @default(now())
+
+  @@index([tenantId])
+  @@index([tenantId, reviewedAt])
+  @@map("mmg_late_credit_reviews")
 }
 
 model MmgFeeReversal {

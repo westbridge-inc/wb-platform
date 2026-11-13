@@ -102,6 +102,8 @@ const TENANT_QUERY_EXTENSIONS = {
   mmgCheckoutIntent: scoped, mmgCheckoutKey: scoped, mmgCheckoutObservation: scoped, mmgCheckoutPart: scoped,
   // [MMG REVERSAL] A fee payment returned to the payer: their operator's money.
   mmgFeeReversal: scoped,
+  // [OWNER RULING 13 Nov 2026] The owner's late MMG credit and its second review: the payer's operator's money.
+  mmgLateCreditReview: scoped,
   feeRefundCase: scoped,
   // [CARD-READY] A partner's card money paid back to their card.
   cardCreditRefund: scoped,
