@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, afterAll } from 'vitest';
 import { Queue } from 'bullmq';
 import Redis from 'ioredis';
-import { scheduleRecurringJobs, RATINGS_RELEASE_RELEVEL_JOB_ID } from '../jobs/queue';
+import { scheduleRecurringJobs, RATINGS_RELEASE_RELEVEL_JOB_ID, bullProducerOpts } from '../jobs/queue';
 import { wordFreeTag } from './helpers/fixture-ids';
 
 // ---------------------------------------------------------------------------
@@ -44,7 +44,7 @@ describe('the post-deploy catch-up re-level runs once [RATINGS-RELEASE S3-1]', (
 
   describe('with real BullMQ: a second boot adds nothing', () => {
     const redis = new Redis(process.env['REDIS_URL']!, { maxRetriesPerRequest: null });
-    const queue = new Queue(`ratings-release-once-${wordFreeTag(8)}`, { connection: redis });
+    const queue = new Queue(`ratings-release-once-${wordFreeTag(8)}`, { connection: bullProducerOpts(redis) });
     afterAll(async () => {
       await queue.obliterate({ force: true }).catch(() => undefined);
       await queue.close();
