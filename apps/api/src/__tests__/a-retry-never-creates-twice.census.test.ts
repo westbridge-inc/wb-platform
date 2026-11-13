@@ -243,6 +243,12 @@ const SCOPE: Record<string, Entry> = {
 
 /** Verb-matched routes that create none of the eight things (reviewed). */
 const OUT: Record<string, string> = {
+  // [AUDIT-20261113 FABLE-03 #2] Confirming an authenticator app sets a factor on the admin's own row (compare-and-set
+  // on the pending secret: a replay finds it already enrolled and is refused 409). It creates none of the eight.
+  'modules/auth/auth.routes.ts|POST|/admin-mfa/enrol/confirm': 'confirms the admin\'s own authenticator factor (compare-and-set; a replay is refused 409): creates no order, money row or payment',
+  // [REVIEW-2501-A S4-6] Moving to a new authenticator app: compare-and-set on the pending secret (a replay finds it
+  // spent and is refused 409). It changes the admin's own factor and creates none of the eight.
+  'modules/auth/auth.routes.ts|POST|/admin-mfa/replace/confirm': 'moves the admin\'s own authenticator factor to a new app (compare-and-set; a replay is refused 409): creates no order, money row or payment',
   // [BUG-HUNT-2 G08] A finding on one send: decided once under the order lock, compare-and-set on its revision. Moves no money.
   'modules/admin/admin.routes.ts|POST|/mmg-refunds/sends/:id/resolve': 'A support finding on a refund already recorded: a repeat is refused, it creates none of the eight.',
   // [Row 156] A note that a clock started, not one of the eight: it moves no money, and checkoutId is unique, so a retry is 409.

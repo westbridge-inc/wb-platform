@@ -70,6 +70,8 @@ interface DeviceInfo {
   deviceType: string;
   ipAddress: string;
   userAgent: string;
+  /** [REVIEW-2501-A S3-1] The admin web console's own sign-in issues this session (cookies only, console origin). */
+  consoleBound?: boolean;
 }
 
 /** Public signup roles (locked model) mapped to internal UserRole values. */
@@ -92,6 +94,8 @@ const NO_ACCOUNT_ID = '';
 /** Fields that must never leave the API on a user object. A deny-list (not a
  *  select) so the response keeps its shape — the app reads roles and the
  *  rider/driver/vendorOwner includes to route the account to its surface. */
+/** [REVIEW-2501-A S1-1] The admin row's fields a sign-in answer may carry. Never a `totp*` column. */
+export const SIGNED_IN_ADMIN_FIELDS = { id: true, userId: true, permissions: true, createdAt: true } as const;
 const SENSITIVE_USER_FIELDS = [
   'passwordHash',
   'failedLoginAttempts',
@@ -313,7 +317,9 @@ export class AuthService {
       where: { id: userId },
       // tenant.kind rides the login response: the app's "Demo environment"
       // chip (STA-1 DL-1) reads it, and nothing else about the response differs.
-      include: { customer: true, rider: true, driver: true, vendorOwner: true, admin: true, tenant: { select: { kind: true } }, vendorStaffMemberships: { select: { id: true }, take: 1 } },
+      // [REVIEW-2501-A S1-1] The admin row is SELECTED, never included whole: it holds the authenticator secret
+      // and the recovery-code digests, which must never ride a sign-in answer.
+      include: { customer: true, rider: true, driver: true, vendorOwner: true, admin: { select: SIGNED_IN_ADMIN_FIELDS }, tenant: { select: { kind: true } }, vendorStaffMemberships: { select: { id: true }, take: 1 } },
     });
     if (!user) throw new AppError(400, 'INVALID_OTP', 'Invalid or expired OTP');
     // [COORD 18 Oct, option S] The signed-in person never gets the live averageRating/totalRatings of their own
@@ -1367,6 +1373,7 @@ export class AuthService {
         deviceType: deviceInfo.deviceType,
         ipAddress: deviceInfo.ipAddress,
         userAgent: deviceInfo.userAgent,
+        ...(deviceInfo.consoleBound ? { consoleBoundAt: new Date() } : {}),
         expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
       },
     });

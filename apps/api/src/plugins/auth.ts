@@ -13,6 +13,7 @@ import {
 } from '../modules/auth/session-assurance';
 import { adoptCookieCredential, bearerOrCookieToken } from '../modules/auth/browser-session';
 import { refuseUnexpectedPrincipal } from '../modules/auth/expected-principal';
+import { sessionToRevokeOf } from '../modules/auth/admin-mfa';
 import { AppError } from '../utils/errors';
 
 declare module 'fastify' {
@@ -122,6 +123,19 @@ export const authPlugin = fp(async (app: FastifyInstance) => {
   /** The assurance logout, in the session's own tenant. */
   const logoutInTenant = (session: { id: string; user: { id: string; tenantId: string } }) =>
     runWithTenant(session.user.tenantId, () => authService.logout(session.id, session.user.id));
+
+  // [REVIEW-2501-A S4-7] An admin session past its 12 hours is REVOKED by the refusal that says so
+  // (ADMIN_SESSION_EXPIRED, auth/admin-mfa.ts), on whichever staff surface met it first: the row never lives on to
+  // reach the routes that do not check the posture. Best effort: the refusal stands whatever happens here.
+  app.addHook('onError', async (request, _reply, error) => {
+    const revoke = sessionToRevokeOf(error);
+    if (!revoke || !request.tenantId) return;
+    try {
+      await runWithTenant(request.tenantId, () => authService.logout(revoke.sessionId, revoke.userId));
+    } catch (err) {
+      request.log.error({ err }, '[admin-session] an expired admin session could not be revoked');
+    }
+  });
 
   app.decorate('authenticate', async (request: FastifyRequest, _reply: FastifyReply) => {
     let reviewTenant = false;
