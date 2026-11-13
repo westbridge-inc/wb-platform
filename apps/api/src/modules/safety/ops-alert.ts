@@ -164,7 +164,7 @@ async function isFiction(prisma: PrismaClient, tenantId: string | null): Promise
 /** Anything that can send one text: in production, `getChannels().sms` — the
  *  one outbound SMS seam, so every SMS rule (the non-production recipient
  *  allowlist, the provider deadline) applies to ops pages too. */
-export type OpsSms = { sendSms: (to: string, body: string) => Promise<unknown> };
+export type OpsSms = { sendSms: (to: string, body: string, options?: { lifeSafety?: boolean }) => Promise<unknown> };
 
 export interface OpsResponders {
   /** People paged in-app + push, who can acknowledge. */
