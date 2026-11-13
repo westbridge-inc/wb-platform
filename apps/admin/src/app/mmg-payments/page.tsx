@@ -246,6 +246,12 @@ function Detail({ id }: { id: string }) {
     refetchOnWindowFocus: false,
     staleTime: Infinity,
   });
+  // [Review B S3-1 on #2502] Whether the owner's late credit still waits for its second review comes from the review's
+  // own record (the pending list), never from the checkout's reason, which finance's resolution may rewrite.
+  const reviews = useQuery({ queryKey: ['mmg-late-credit-reviews'], queryFn: fetchLateCreditReviews, refetchOnWindowFocus: false, retry: false });
+  const reviewRows = (reviews.data as { data?: unknown } | undefined)?.data;
+  // A failed read shows no review panel here; the list above the search says it could not be loaded.
+  const reviewPending = !reviews.isError && Array.isArray(reviewRows) && (reviewRows as LateCreditReviewRow[]).some((r) => r.checkoutId === id);
   useEffect(() => {
     if (detail.data) panel.current?.scrollIntoView?.({ block: 'start', behavior: 'smooth' });
   }, [detail.data]);
@@ -277,7 +283,7 @@ function Detail({ id }: { id: string }) {
           </dl>
           {d.creditedPeriod ? <Credited period={d.creditedPeriod} /> : null}
           {d.status === 'HELD' && (d.reason === 'PAYMENT_TIME_OUTSIDE_WINDOW' || d.reason === 'PAYMENT_TIME_NOT_IN_HISTORY') ? <LateCreditPanel checkoutId={d.id} /> : null}
-          {d.status === 'CONFIRMED' && d.reason === 'OWNER_LATE_CREDIT' ? <LateCreditReviewPanel checkoutId={d.id} /> : null}
+          {d.status === 'CONFIRMED' && reviewPending ? <LateCreditReviewPanel checkoutId={d.id} /> : null}
           {d.status === 'HELD' ? <RecheckHeldPanel checkoutId={d.id} /> : null}
           {d.status === 'CONFIRMED' ? <RefundCasePanel checkoutId={d.id} /> : null}
           {d.status === 'CONFIRMED' ? <ReturnPanel checkoutId={d.id} amount={d.amount} currencyCode={d.currencyCode} /> : null}
@@ -630,7 +636,10 @@ function LateCreditPanel({ checkoutId }: { checkoutId: string }) {
       await verifyStepUpCode(code.trim());
       return creditLateMmgPayment(checkoutId, reference.trim(), reason.trim());
     },
-    onSettled: () => qc.invalidateQueries({ queryKey: ['mmg-checkout', checkoutId] }),
+    onSettled: () => {
+      void qc.invalidateQueries({ queryKey: ['mmg-checkout', checkoutId] });
+      void qc.invalidateQueries({ queryKey: ['mmg-late-credit-reviews'] });
+    },
   });
   const ok = reference.trim().length >= 3 && reason.trim().length >= REASON_MIN && /^\d{4,8}$/.test(code.trim());
   const done = (ask.data as { data?: { status?: string } } | undefined)?.data?.status === 'CONFIRMED';
@@ -700,7 +709,10 @@ function LateCreditReviewPanel({ checkoutId }: { checkoutId: string }) {
   const sending = useRef(false);
   const ask = useMutation({
     mutationFn: (outcome: 'AGREED' | 'DISPUTED') => reviewLateMmgCredit(checkoutId, outcome, note.trim()),
-    onSettled: () => qc.invalidateQueries({ queryKey: ['mmg-checkout', checkoutId] }),
+    onSettled: () => {
+      void qc.invalidateQueries({ queryKey: ['mmg-checkout', checkoutId] });
+      void qc.invalidateQueries({ queryKey: ['mmg-late-credit-reviews'] });
+    },
   });
   const ok = note.trim().length >= REASON_MIN;
   const send = (outcome: 'AGREED' | 'DISPUTED') => {

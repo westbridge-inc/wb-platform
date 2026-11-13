@@ -125,6 +125,8 @@ export const TENANT_TABLES = [
   'mmg_checkout_intents', 'mmg_checkout_keys', 'mmg_checkout_observations', 'mmg_checkout_parts',
   // [MMG REVERSAL] returning a whole weekly-fee payment: the payer's operator's money.
   'mmg_fee_reversals',
+  // [OWNER RULING 13 Nov 2026] The owner's late MMG credit and its second review.
+  'mmg_late_credit_reviews',
   'fee_refund_cases',
   // [CARD-READY] A partner's card money paid back to their card: the payer's operator's money.
   'card_credit_refunds',

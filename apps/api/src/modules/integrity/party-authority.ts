@@ -22,16 +22,31 @@ export async function assertClearOfParties(
   actorId: string,
   parties: readonly string[],
   refusals: { own: AppError; staff: AppError },
-  /** `staffMayDecide`: the matter is a staff member's own act by nature (a second person reviewing the owner's
-   *  decision), so a staff party does not send it to a SUPER_ADMIN; the own-account rule still holds in full. */
-  options: { superAdminThroughReview?: boolean; staffMayDecide?: boolean } = {},
+  options: {
+    superAdminThroughReview?: boolean;
+    /**
+     * [Review A S4-D on #2502] ONLY for a second person's REVIEW of a staff member's own decision, a review that moves
+     * no money (today: reviewOwnerLateCredit, the owner's late MMG credit). Names that decider, who must be one of the
+     * parties: their console role (and their own linked accounts') does not send the review to a SUPER_ADMIN, since the
+     * owner is always staff and his act must be reviewable by someone other than him. Every other party's staff role,
+     * and the own-account and linked-identity rules for every party (the decider included), hold in full.
+     * A money door never passes it (census: party-authority-review-exemption.test.ts).
+     */
+    reviewOfStaffDecisionBy?: string;
+  } = {},
 ): Promise<{ identityReviewReasons: string[] }> {
+  const decider = options.reviewOfStaffDecisionBy;
+  if (decider !== undefined && !parties.includes(decider)) throw new Error('reviewOfStaffDecisionBy must name one of the parties');
   const people = new Set(parties);
+  const deciderSide = new Set<string>(decider === undefined ? [] : [decider]);
   const reasons = new Set<string>();
   for (const party of parties) {
     const identity = await identityAuthority(tx, party);
     if (identity.status === 'REVIEW_REQUIRED') reasons.add(identity.reason);
-    for (const member of identity.memberIds) people.add(member);
+    for (const member of identity.memberIds) {
+      people.add(member);
+      if (party === decider) deciderSide.add(member);
+    }
   }
   if (people.has(actorId)) throw refusals.own;
   const rows = await tx.user.findMany({ where: { id: { in: [actorId, ...people] } }, select: { id: true, roles: true } });
@@ -40,7 +55,7 @@ export async function assertClearOfParties(
     if (!(options.superAdminThroughReview && consoleRole(actorId) === 'SUPER_ADMIN')) throw new IdentityReviewRequiredError();
     await assertActorClearOfLineage(tx, actorId, parties, refusals.own);
   }
-  if (!options.staffMayDecide && [...people].some((person) => consoleRole(person) !== null) && consoleRole(actorId) !== 'SUPER_ADMIN') throw refusals.staff;
+  if ([...people].some((person) => !deciderSide.has(person) && consoleRole(person) !== null) && consoleRole(actorId) !== 'SUPER_ADMIN') throw refusals.staff;
   return { identityReviewReasons: [...reasons] };
 }
 

@@ -6953,15 +6953,18 @@ export async function adminRoutes(app: FastifyInstance) {
     if (!emailChannelConfigured()) throw new AppError(503, 'SOLO_EMAIL_UNAVAILABLE', 'The owner is emailed when a late payment is credited, and Swift\'s email is not set up. Nothing was credited.');
     await requireStepUp(app, request as never, { consume: true });
     const result = await lateCredits.creditLateByOwner({ tenantId, checkoutId: id, actorId: request.user.userId, mmgReference: body.mmgReference, reason }, new Date(), {
+      // [Review A S4-B · Review B S4-1] Sent as the credit's last step before it commits: "is being credited" (a commit
+      // can still fail after it), the text first (the owner's own phone, and the channel likelier to fail).
       ownerNotice: async (facts) => {
         const at = guyanaTime(new Date());
-        await sendSoloEmail(contact.email, 'Swift: you credited a late MMG payment (owner alone)', [
-          'Someone signed in as you, with a sign-in code sent to your phone, credited a weekly-fee payment made on MMG after its checkout closed:',
+        await sendSoloText(contact.phone, `Swift admin: a late MMG payment is being credited by you alone (checkout ${facts.checkoutId}) at ${at}. If the console showed an error, nothing was credited. If this was not you, sign out of every device.`);
+        await sendSoloEmail(contact.email, 'Swift: a late MMG payment is being credited by you (owner alone)', [
+          'Someone signed in as you, with a sign-in code sent to your phone, is crediting a weekly-fee payment made on MMG after its checkout closed:',
           '', `  Checkout: ${facts.checkoutId}`, `  MMG transaction: ${facts.mmgTransactionId}`, `  Amount: ${facts.amount} ${facts.currencyCode}`,
-          `  Reason given: ${reason}`, `  Credited: ${at}`, '',
-          'A second person reviews it. If this was not you: sign out of every device, change your sign-in, and have the payment checked against the MMG statement.',
+          `  Reason given: ${reason}`, `  Time: ${at}`, '',
+          'If the console showed an error, nothing was credited. Otherwise a second person reviews it.',
+          'If this was not you: sign out of every device, change your sign-in, and have the payment checked against the MMG statement.',
         ].join('\n'));
-        await sendSoloText(contact.phone, `Swift admin: a late MMG payment was credited by you alone (checkout ${facts.checkoutId}) at ${at}. If this was not you, sign out of every device.`);
       },
     });
     await auditWithin(app.prisma, request as unknown as AuditRequestLike, app.prefix, {
