@@ -13,7 +13,7 @@ afterEach(() => { vi.unstubAllGlobals(); });
 describe('the desktop sign-in names its app', () => {
   it('verify-otp carries x-device-type: desktop', async () => {
     const sent: Array<{ url: string; headers: Record<string, string> }> = [];
-    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: Parameters<typeof fetch>[1]) => {
       sent.push({ url, headers: (init?.headers ?? {}) as Record<string, string> });
       return new Response(JSON.stringify({ success: false, error: { message: 'That code is not valid.' } }), { status: 400 });
     }));
