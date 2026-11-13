@@ -238,3 +238,28 @@ describe('[L04 #1550] a customer email change takes a fresh code on this session
     expect(await notices(f.user.id)).toHaveLength(1);
   });
 });
+
+// [AUDIT-20261113 F3] Without the code, a taken address and a free one get the same answer: the session cannot
+// test which emails have accounts. With the code, a taken address is refused and the code is NOT spent.
+describe('[AUDIT-20261113 F3] the email check is not an account oracle', () => {
+  it('a taken address answers STEP_UP_REQUIRED without the code, exactly as a free one', async () => {
+    const holder = await fixture();
+    const f = await fixture();
+    const taken = await put(f.token, { email: holder.user.email! });
+    const free = await put(f.token, { email: email() });
+    expect(taken.statusCode, taken.body).toBe(403);
+    expect(taken.json().error.code).toBe('STEP_UP_REQUIRED');
+    expect(free.json().error.code).toBe('STEP_UP_REQUIRED');
+  });
+
+  it('with the code, a taken address is refused and the code is kept for the next try', async () => {
+    const holder = await fixture();
+    const f = await fixture();
+    await app.redis.set(stepUpKey(f.session.id), '1', 'EX', 600);
+    const res = await put(f.token, { email: holder.user.email! });
+    expect(res.statusCode).toBe(409);
+    expect(res.json().error.code).toBe('EMAIL_TAKEN');
+    expect(await app.redis.exists(stepUpKey(f.session.id))).toBe(1);
+  });
+});
+

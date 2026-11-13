@@ -40,10 +40,6 @@ const PROFILE_SELECT = {
  */
 export async function updateCustomerProfile(app: FastifyInstance, userId: string, sessionId: string | null, body: ProfileUpdate) {
   await assertNameNotLocked(app.prisma, userId, body);
-  if (body.email) {
-    const existing = await app.prisma.user.findFirst({ where: { email: body.email, id: { not: userId } }, select: { id: true } });
-    if (existing) throw emailTaken();
-  }
 
   const previous = body.email !== undefined
     ? await app.prisma.user.findUnique({ where: { id: userId }, select: { email: true, roles: true, activeRole: true, phone: true } })
@@ -52,10 +48,18 @@ export async function updateCustomerProfile(app: FastifyInstance, userId: string
   const admin = previous !== null && isAdminAccount(previous);
   const changedAt = new Date();
   if (previous && emailChanged) {
-    // Cheap refusals first (above); then the code, then (admins) the old address.
-    await requireStepUp(app, { user: { userId }, authSessionId: sessionId }, { consume: true }).catch((error: unknown) => {
+    const stepUp = (consume: boolean) => requireStepUp(app, { user: { userId }, authSessionId: sessionId }, { consume }).catch((error: unknown) => {
       throw isStepUpRequired(error) ? emailStepUpRequired(error) : error;
     });
+    // [AUDIT-20261113 F3] The proof comes BEFORE the uniqueness check: answering EMAIL_TAKEN to a session with
+    // no code let any session test which addresses have accounts. The code is checked, not spent, so a taken
+    // address costs the person no second code; then it is spent; then (admins) the old address is told.
+    await stepUp(false);
+    if (body.email) {
+      const existing = await app.prisma.user.findFirst({ where: { email: body.email, id: { not: userId } }, select: { id: true } });
+      if (existing) throw emailTaken();
+    }
+    await stepUp(true);
     if (admin && previous.email) await sendAdminEmailChangeNotice(previous.email, body.email!, changedAt);
   }
 
