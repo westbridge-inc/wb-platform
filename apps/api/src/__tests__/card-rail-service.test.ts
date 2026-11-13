@@ -1370,6 +1370,9 @@ describe('[CARD-READY] card money set aside at closing goes back to its card thr
       // The owner alone, under the solo ceremony (the only way one person decides a C4): never enough here.
       await expect(confirm(await asked(owner, owner, { decidedSolo: true, soloRequestedAt: new Date(Date.now() - DAY), soloEligibleAt: new Date(Date.now() - 60_000) }))).rejects.toMatchObject({ code: 'PORTAL_CHECK_TWO_PEOPLE' });
       await expect(confirm(await asked(finance, other), finance)).rejects.toMatchObject({ code: 'PORTAL_CHECK_OWNER_ONLY' });
+      // [audit FABLE-01 M-4] An approval for another action, or for another card payment, is not this one's.
+      await expect(confirm(await asked(finance, owner, { action: 'POST /billing/confirmations/:id/resolve' }))).rejects.toMatchObject({ code: 'PORTAL_CHECK_APPROVAL_MISMATCH' });
+      await expect(confirm(await asked(finance, owner, { entityId: `another-session-${RUN}` }))).rejects.toMatchObject({ code: 'PORTAL_CHECK_APPROVAL_MISMATCH' });
       // Not while a check with the card provider of the same payment is still asked.
       const check = await app.prisma.privilegedApproval.create({ data: {
         action: 'POST /billing/card-sessions/:id/check-provider', cls: 'C4', capability: 'billing.card.resolve', entityId: s1, fingerprint: `check-${RUN}-${nanoid(8)}`,

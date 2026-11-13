@@ -220,6 +220,8 @@ const E = {
   cardSession: { model: 'cardSession', fields: ['status', 'failureCode', 'providerTransactionRef', 'providerVoidState', 'providerVoidRef', 'providerRefundState', 'providerRefundRef', 'providerReversalKind', 'reversalCheck', 'reversalRetryAt', 'bookClaimedAt', 'resolution', 'resolvedBy', 'resolvedAt'] },
   agentPayment: { model: 'mmgAgentPayment', fields: ['status', 'amount', 'subscriptionId'] },
   // [MMG REVERSAL] A return of a weekly-fee payment: where it stands and how a person resolved it.
+  // [Audit C1-1] A weekly-fee MMG checkout: where it stands and what credited it.
+  mmgCheckout: { model: 'mmgCheckoutIntent', fields: ['status', 'reason', 'providerPaymentId', 'mmgTransactionId', 'confirmedAt'] },
   feeReversal: { model: 'mmgFeeReversal', fields: ['state', 'heldReason', 'resolution', 'resolvedBy', 'failedAt', 'reversedAt', 'walletDebitedAt'] },
   settlementBatch: { model: 'settlementBatch', fields: ['status', 'expectedNetGyd', 'depositedGyd', 'depositedAt', 'bankRef'] },
   verification: { model: 'verificationDocument', fields: ['status', 'reviewedAt'] },
@@ -541,6 +543,8 @@ export const ADMIN_ROUTE_AUTHORITY: Readonly<Record<AdminRouteKey, AdminRouteAut
   'GET /billing/mmg-checkouts/:id/reversal': c('C0', 'billing.read'),
   'POST /billing/mmg-checkouts/:id/reverse': c('C4', 'billing.mmg.reverse'),
   'POST /billing/mmg-fee-reversals/:id/check': c('C2', 'billing.mmg.reverse.check'),
+  // [Audit FABLE-01 C1-1] A held weekly-fee payment checked with MMG again: it may credit (only on MMG's own records), so C4.
+  'POST /billing/mmg-checkouts/:id/recheck': c('C4', 'billing.mmg.recheck', E.mmgCheckout),
   // [Row 156] A partner asked for a weekly-fee payment back: a clock and a record, no money. A reason, one person; the
   // return itself stays the C4 above. A case closes only on a REVERSED reversal, never from here.
   'GET /billing/fee-refund-cases': c('C1', 'billing.mmg.read'),

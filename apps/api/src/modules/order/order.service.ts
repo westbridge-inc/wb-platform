@@ -1794,10 +1794,18 @@ export class OrderService {
         await tx.$queryRaw`SELECT id FROM "promo_codes" WHERE id = ${promoCodeId} FOR UPDATE`;
         const fresh = await tx.promoCode.findUniqueOrThrow({
           where: { id: promoCodeId },
-          select: { currentUses: true, maxUses: true, maxUsesPerUser: true, funder: true },
+          select: { currentUses: true, maxUses: true, maxUsesPerUser: true, funder: true, isActive: true, validFrom: true, validUntil: true, termsVersion: true },
         });
         // [Ruling 1 Nov 2026] The enforcement point refuses a Swift-paid code too (swift-paid.ts).
         assertPromoNotSwiftPaid(fresh);
+        // [Audit FABLE-01 A-6] Switched off, out of its window, or re-termed since the basket was priced: the code as it
+        // stands now, under its lock, is the one that counts (the same answers validatePromoCode gives).
+        if (!fresh.isActive) throw new AppError(400, 'INVALID_PROMO', 'This promo code is no longer active');
+        const lockedAt = new Date();
+        if (lockedAt < fresh.validFrom || lockedAt > fresh.validUntil) throw new AppError(400, 'EXPIRED_PROMO', 'This promo code has expired');
+        if (promoTerms && fresh.termsVersion !== promoTerms.termsVersion) {
+          throw new AppError(409, 'PROMO_CHANGED', 'This promo code changed while you were checking out. Check your total and try again.');
+        }
         if (fresh.maxUses && fresh.currentUses >= fresh.maxUses) {
           throw new AppError(400, 'USED_PROMO', 'This promo code has reached its usage limit');
         }

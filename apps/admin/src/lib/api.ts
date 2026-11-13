@@ -1594,6 +1594,14 @@ export const resolveMmgFeeReversal = (reversalId: string, outcome: 'NOT_RETURNED
     body: JSON.stringify({ outcome, mmgReference, reason }),
     reason,
   });
+// [Audit FABLE-01 C1-1] A weekly-fee payment held for review, checked with MMG again (a reason and a second admin).
+// Credited only if MMG's own records now meet every condition; otherwise it stays held.
+export const recheckHeldMmgCheckout = (checkoutId: string, reason: string) =>
+  apiFetch(`/api/v1/admin/billing/mmg-checkouts/${encodeURIComponent(checkoutId)}/recheck`, {
+    method: 'POST',
+    body: '{}',
+    reason,
+  });
 export const checkMmgFeeReversal = (reversalId: string) =>
   apiFetch(`/api/v1/admin/billing/mmg-fee-reversals/${encodeURIComponent(reversalId)}/check`, { method: 'POST', body: '{}' });
 // [Row 156] A partner asked for a weekly-fee payment back: 3 business days. A case is that ask and its clock. It moves no

@@ -1,5 +1,6 @@
 import { emitToOrderRoom, emitToStoreRoom } from '../order/order-room-emission.service';
 import { assertAdminSessionPosture } from '../auth/admin-mfa';
+import { assertConfigKeyWritable } from './machine-owned-config';
 import { scanUpload } from '../../lib/malware-scan';
 import { documentScanState, uploadScanRefusal, retryHeldEvidenceScan } from '../../lib/upload-scan-debt';
 import { vatTracker } from '../billing/vat-tracker';
@@ -97,6 +98,7 @@ import { maskPhone } from '../auth/step-up';
 import { maskOwnPhone } from './person-contact';
 import { consoleRoleOf } from '../auth/console-role';
 import { MmgFeeReversalService } from '../billing/mmg-fee-reversal';
+import { MmgCheckoutService } from '../billing/mmg-checkout.service';
 import { feeRefundCaseOf, listFeeRefundCases, openFeeRefundCase } from '../billing/fee-refund-case';
 import { MAJOR_AMOUNT_CEILING } from '../../utils/currency-amount';
 import {
@@ -4763,6 +4765,8 @@ export async function adminRoutes(app: FastifyInstance) {
 
   app.put('/config/:key', { preHandler: [platformControlGuard] }, async (request) => {
     const key = configKeySchema.parse((request.params as { key: string }).key);
+    // [AUDIT C2-2] Refused at the ask too (admin-approval.ts); checked again where it is written.
+    assertConfigKeyWritable(key);
     const { value } = configValueSchema.parse(request.body);
 
     // [ADM-002] The config row and its audit row commit together. This used
@@ -6929,6 +6933,20 @@ export async function adminRoutes(app: FastifyInstance) {
     return { success: true, data: reversalOut(row as never) };
   });
 
+  // [Audit FABLE-01 C1-1] A weekly-fee payment held for review, checked with MMG again (C4: a reason and a second
+  // person, or solo). The same lookups and conditions as every automatic check: credited once if MMG's records now
+  // meet them all, otherwise it stays held and nothing changes. Nothing typed here is evidence.
+  const heldCheckouts = new MmgCheckoutService(app.prisma, billing, notifications);
+  app.post('/billing/mmg-checkouts/:id/recheck', { preHandler: [adminGuard] }, async (request) => {
+    const tenantId = requireTenantId();
+    const { id } = z.object({ id: z.string().min(1).max(64) }).parse(request.params);
+    const result = await heldCheckouts.recheckHeld({ tenantId, checkoutId: id, actorId: request.user.userId });
+    await auditWithin(app.prisma, request as unknown as AuditRequestLike, app.prefix, {
+      extra: { checkoutId: id, checkoutStatus: result.status, checkoutReason: result.reason },
+    });
+    return { success: true, data: result };
+  });
+
   // [DS1112] A person resolves a HELD return (C4: a reason and a second
   // person, or solo): "MMG shows nothing was returned" (only while MMG's
   // lookup shows the payment standing) or "returned, here is MMG's reference"
@@ -8301,7 +8319,7 @@ export async function adminRoutes(app: FastifyInstance) {
     // [ADM-002] The claim transition and its audit row commit together;
     // `E.claim` declares the diff (status, amount, paidAt, paymentRef, paidAmount).
     const claim = await cashRules.approveClaim(id, request.user.userId, body.reason,
-      (tx, facts) => auditWithin(tx, request as unknown as AuditRequestLike, app.prefix, { extra: facts }));
+      (tx, facts) => auditWithin(tx, request as unknown as AuditRequestLike, app.prefix, { extra: facts }), { approvalId: typeof request.headers[APPROVAL_HEADER] === 'string' ? request.headers[APPROVAL_HEADER] : undefined });
     return { success: true, data: claim };
   });
 
@@ -8331,7 +8349,7 @@ export async function adminRoutes(app: FastifyInstance) {
     // evidence and the audit row commit together. `E.claim` declares paymentRef
     // and paidAmount, so the diff IS the evidence — the legacy row is retired.
     const claim = await cashRules.markClaimPaid(id, request.user.userId, body.reference, body.amount,
-      (tx, facts) => auditWithin(tx, request as unknown as AuditRequestLike, app.prefix, { extra: facts }), { evidenceReason: body.evidenceReason });
+      (tx, facts) => auditWithin(tx, request as unknown as AuditRequestLike, app.prefix, { extra: facts }), { evidenceReason: body.evidenceReason, approvalId: typeof request.headers[APPROVAL_HEADER] === 'string' ? request.headers[APPROVAL_HEADER] : undefined });
     return { success: true, data: claim };
   });
 
