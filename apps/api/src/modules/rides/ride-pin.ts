@@ -20,6 +20,9 @@ export function freshRidePinReset(): {
   ridePinAttempts: number;
   ridePinVerified: boolean;
   ridePinVerifiedAt: null;
+  ridePinIssuedAt: Date;
 } {
-  return { ridePin: newRidePin(), ridePinAttempts: 0, ridePinVerified: false, ridePinVerifiedAt: null };
+  // [AUDIT-20261113 F2] Every re-issue is dated: chat history is never re-judged against a PIN issued after a
+  // message was written (that re-judging was a read oracle for the new PIN).
+  return { ridePin: newRidePin(), ridePinAttempts: 0, ridePinVerified: false, ridePinVerifiedAt: null, ridePinIssuedAt: new Date() };
 }

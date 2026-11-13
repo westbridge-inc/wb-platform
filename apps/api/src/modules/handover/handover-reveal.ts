@@ -228,7 +228,7 @@ export async function resetDeliveryPin(deps: HandoverRevealDeps, input: RevealIn
   const { audit } = await deps.prisma.$transaction(async (tx) => {
     const updated = await tx.order.updateMany({
       where: { id: order.id, ridePin: order.ridePin },
-      data: { ridePin: next, ridePinAttempts: 0 },
+      data: { ridePin: next, ridePinAttempts: 0, ridePinIssuedAt: new Date() },
     });
     if (updated.count !== 1) {
       throw new AppError(409, 'ROTATION_RACED', 'This delivery PIN was reset by someone else — reload the order.');
@@ -291,7 +291,7 @@ export async function resetRidePin(deps: HandoverRevealDeps, input: RevealInput)
       throw new AppError(409, 'RIDE_PIN_CLOSED', 'A ride code can be reset only before it has been verified.');
     }
     await assertMayResetRideCode(tx, input.actorId, [order.customerId, ...(order.driver ? [order.driver.userId] : [])]);
-    await tx.order.update({ where: { id: order.id }, data: { ridePin: next, ridePinAttempts: 0 } });
+    await tx.order.update({ where: { id: order.id }, data: { ridePin: next, ridePinAttempts: 0, ridePinIssuedAt: new Date() } });
     const row = await tx.auditLog.create({
       data: {
         userId: input.actorId, action: 'RESET_RIDE_PIN', entity: 'Order', entityId: order.id,

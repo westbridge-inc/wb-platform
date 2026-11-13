@@ -48,6 +48,8 @@
 export interface OrderSecrets {
   ridePin?: string | null;
   pickupCode?: string | null;
+  /** [AUDIT-20261113 F2] When the current ride PIN was issued (null/absent: at order creation). */
+  ridePinIssuedAt?: Date | null;
 }
 
 export const SECRET_REDACTION = '[code removed]';
@@ -156,8 +158,9 @@ export interface RedactionResult {
  *
  * Two tiers, because obfuscation is evidence of intent:
  *
- *  - The code appears as literal digits ⇒ replace just that span. Ordinary
- *    text around it survives.
+ *  - The code appears as literal digits ⇒ the WHOLE body is replaced too
+ *    ([AUDIT-20261113 F2]: replacing just the span told the sender where the
+ *    code sat in their own digits — a position oracle).
  *  - The code only appears once the text is NORMALISED (spelled out, or in
  *    non-ASCII digits) ⇒ replace the WHOLE body. Someone writing "four eight
  *    one nine zero two" is not making an incidental remark, and mapping the
@@ -181,20 +184,15 @@ export function redactOrderSecrets(
   const codes = liveCodes(secrets);
   if (codes.length === 0) return { text, redacted: false };
 
-  let out = text;
-  let redacted = false;
-
   // Tier 1 — literal digits in the raw text.
+  // [AUDIT-20261113 F2] The WHOLE body goes here too. Replacing only the matched span told the sender exactly
+  // which of their own digits were the live code — a position oracle: a stream of every possible code, read
+  // back, named the PIN. A redaction now says only "this message held a code", never where.
   for (const code of codes) {
     const re = matcherFor(code);
     if (!re) continue;
-    const next = out.replace(re, SECRET_REDACTION);
-    if (next !== out) {
-      out = next;
-      redacted = true;
-    }
+    if (re.test(text)) return { text: SECRET_REDACTION, redacted: true, wholeMessage: true };
   }
-  if (redacted) return { text: out, redacted: true };
 
   // Tier 2 — visible only after normalisation, or only when joined to what
   // this sender already sent. Either way the body goes.
