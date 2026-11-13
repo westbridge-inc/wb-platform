@@ -124,6 +124,7 @@ import { PRICING_KINDS, PRICING_SCHEMA_VERSION, PRICING_UNITS, readPricingConfig
 import { readFareBreakdown } from '../rides/taxi-waiting';
 import { readAdminItinerary } from '../rides/taxi-stops-read';
 import { createHash } from 'node:crypto';
+import { auditChangesForReaders } from './audit-redaction';
 import { adminAuditCounter, adminApprovalCounter, adminCapabilityCounter, adminReasonCounter, sensitiveReadCounter, billingTopupMissingKeyCounter, ratingReportTenancyCounter, returnRefundCounter, orderRefundCounter } from '../../plugins/observability';
 import { isUsableTopUpKey, TOPUP_KEY_MAX, TOPUP_KEY_MIN } from '../billing/billing.service';
 import { recoveryFor, requeueRefusal } from '../../jobs/recovery-policy';
@@ -7483,7 +7484,9 @@ export async function adminRoutes(app: FastifyInstance) {
         // [ASSISTED SETUP] The uploader approving their own upload alone (the service refused it otherwise) says so on the record.
         const ownUpload = decided.assistedById === request.user.userId;
         await auditIn(tx, request.user.userId, 'APPROVE_VERIFICATION_DOC', 'VerificationDocument', id,
-          { docType: decided.docType, ...(body.insurance ? { insurance: body.insurance } : {}), ...(body.authorityConfirmed ? { signerConfirmedBy: body.authorityConfirmed.method } : {}),
+          // [SEC-AUDIT 13 Nov 2026 · F9] The reviewer's CHECKS only: the insurer and the policy number stay on the
+          // document row (behind documents.review, purged with it), never in the append-only trail any audit.read admin reads.
+          { docType: decided.docType, ...(body.insurance ? { insurance: { coverageClass: body.insurance.coverageClass, hireClassConfirmed: body.insurance.hireClassConfirmed, plateCrossChecked: body.insurance.plateCrossChecked } } : {}), ...(body.authorityConfirmed ? { signerConfirmedBy: body.authorityConfirmed.method } : {}),
             ...(ownUpload ? { assistedUploadedBySameAdmin: true, soleAdminChecked: true, assistedConsentId: decided.assistedConsentId } : {}) }, request);
         if (ownUpload) {
           await auditIn(tx, request.user.userId, 'ASSISTED_SAME_ADMIN_APPROVAL', 'VerificationDocument', id,
@@ -8627,7 +8630,7 @@ export async function adminRoutes(app: FastifyInstance) {
     ]);
 
     const names = await accountNames(logs.map((log) => log.userId));
-    const rows = logs.map((log) => ({ ...log, actorName: (log.userId && names.get(log.userId)) ?? null, reason: statedReason(log.changes) }));
+    const rows = logs.map((log) => ({ ...log, changes: auditChangesForReaders(log.action, log.changes), actorName: (log.userId && names.get(log.userId)) ?? null, reason: statedReason(log.changes) }));
     return { success: true, ...paginatedResponse(rows, total, { page, limit, skip }) };
   });
 
