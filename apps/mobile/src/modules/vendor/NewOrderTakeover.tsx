@@ -9,7 +9,7 @@ import { haptic } from '../../lib/haptics';
 import { useVendorOrder, useOrderAction, usePickingActions, useVendorProfile } from '../../hooks/vendorops';
 import { OUT_OF_STOCK_WORDS, canMarkOutOfStock, lastLineStanding, lineStockWords, nothingToAccept } from './storeOrderRules';
 import { rejectReasonsFor } from './rejectReasons';
-import { orderLineOptionsText } from './orderLineOptions';
+import { orderLineOptionsParts, orderLineOptionsText } from './orderLineOptions';
 import { acceptClockLabel, takeoverSettled } from './acceptClock';
 import { useJobRing } from '../../hooks/useJobRing';
 import { RING_PERIOD_MS } from '../../services/jobRinger';
@@ -206,10 +206,11 @@ export function NewOrderTakeover({
                 <T variant="heading" numberOfLines={2}>
                   {i.name}
                 </T>
-                {/* [L09 · M026] What the customer chose, so the right item is made. */}
+                {/* [L09 · M026] What the customer chose, so the right item is made. [MENU-OPTIONS] One line per
+                    group, a pizza's size, crust and halves each on its own line (orderLineOptions). */}
                 {orderLineOptionsText(i.options) ? (
-                  <T variant="label" weight="semibold" numberOfLines={3}>
-                    {orderLineOptionsText(i.options)}
+                  <T variant="label" weight="semibold" numberOfLines={8}>
+                    {orderLineOptionsParts(i.options).join('\n')}
                   </T>
                 ) : null}
               </View>

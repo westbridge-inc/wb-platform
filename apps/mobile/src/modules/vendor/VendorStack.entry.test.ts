@@ -347,6 +347,7 @@ vi.mock('./screens/VendorAccountScreen', () => ({ VendorAccountScreen: 'VendorAc
 vi.mock('./screens/VendorBusinessTypeScreen', () => ({ VendorBusinessTypeScreen: 'VendorBusinessTypeScreen' })); // [COMPANY-DOCS Part 3] its papers list carries a camera picker
 vi.mock('./screens/VendorHandoverScreen', () => ({ VendorHandoverScreen: 'VendorHandoverScreen' }));
 vi.mock('./screens/VendorBulkImportScreen', () => ({ VendorBulkImportScreen: 'VendorBulkImportScreen' }));
+vi.mock('./screens/VendorOptionLibraryScreen', () => ({ VendorOptionLibraryScreen: 'VendorOptionLibraryScreen' }));
 vi.mock('./screens/VendorCategoryReviewScreen', () => ({ VendorCategoryReviewScreen: 'VendorCategoryReviewScreen' }));
 vi.mock('./screens/VendorInsightsScreen', () => ({ VendorInsightsScreen: 'VendorInsightsScreen' }));
 vi.mock('./screens/VendorItemEditorScreen', () => ({ VendorItemEditorScreen: 'VendorItemEditorScreen' }));

@@ -1049,7 +1049,7 @@ export function useAddOptionGroup() {
     mutationKey: MENU_WRITE_KEY,
     mutationFn: ({ itemId, data, authSession }: {
       itemId: string;
-      data: { name: string; isRequired?: boolean; minSelect?: number; maxSelect?: number };
+      data: Parameters<typeof vendorApi.addOptionGroup>[1];
       authSession?: AuthSessionSnapshot;
     }) => unwrap<any>(vendorApi.addOptionGroup(itemId, data, authSession)),
     onMutate: menuScope,
