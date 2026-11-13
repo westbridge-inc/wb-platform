@@ -176,6 +176,23 @@ describe('[ADM-005] one person cannot move money alone', () => {
     expect(written.value).not.toEqual({ rate: 9999 });
   });
 
+  // [AUDIT-20261113 F10] The fingerprint leaves the reason out, but the reason is what the second person read,
+  // and several acts store it (a waiver's reason is shown to the partner). Re-sending the approved request with
+  // other words is refused at the gate: the act runs only with the reason that was approved.
+  it('an approved act cannot carry a different reason than the one approved', async () => {
+    const asked = await writeConfig(requester.token, { rate: 11 });
+    const approvalId = asked.json().error.details.approvalId as string;
+    await decide(approver.token, approvalId, true);
+    const other = 'A different justification the approver never read at all';
+    const reworded = await call(requester.token, 'PUT', `/api/v1/admin/config/${CONFIG_KEY}`, { value: { rate: 11 }, reason: other }, { [APPROVAL_HEADER]: approvalId });
+    expect(reworded.statusCode).toBe(403);
+    const byHeader = await call(requester.token, 'PUT', `/api/v1/admin/config/${CONFIG_KEY}`, { value: { rate: 11 }, reason: REASON }, { [APPROVAL_HEADER]: approvalId, 'x-swift-reason': other });
+    expect(byHeader.statusCode).toBe(403);
+    expect((await app.prisma.privilegedApproval.findUniqueOrThrow({ where: { id: approvalId } })).status).toBe('APPROVED');
+    // the approved words still work
+    expect((await writeConfig(requester.token, { rate: 11 }, approvalId)).statusCode).toBe(200);
+  });
+
   it('an approval authorises ONE act — a replay is refused, not repeated (it was spent at the gate)', async () => {
     const asked = await writeConfig(requester.token, { rate: 4 });
     const approvalId = asked.json().error.details.approvalId as string;
