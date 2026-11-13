@@ -18,6 +18,8 @@
 // FIRST: secrets delivered as files (NAME_FILE) become NAME in this process
 // before any module below can read process.env. Keep this import on top.
 import './boot/secret-files';
+// [REVIEW-2503-A D-3] Second: the previous worker's boot record is forgotten before anything else loads.
+import './boot/worker-boot-reset';
 import Redis from 'ioredis';
 import { Server } from 'socket.io';
 import { pino } from 'pino';
@@ -35,9 +37,12 @@ import { createScopedProcessClient } from './plugins/prisma';
 import { attestTenantWallAtBoot } from './boot/tenant-wall';
 import { attestSystemLoginAtBoot } from './boot/system-login';
 import { assertDeploymentIdentityMatchesMode } from './utils/deployment-identity';
+import { recordWorkerBoot } from './boot/worker-probe';
 
 async function main() {
   assertSafeBootConfig();
+  // [FABLE-05 3.2] Which process the container probe may restart when the scheduler stalls, and since when.
+  recordWorkerBoot();
   // SWIFT-042: the worker is a SEPARATE process — it must initialize Sentry
   // itself, or every job failure (captureError in the workers) is silently
   // dropped. The API server does this via observabilityPlugin; the worker never

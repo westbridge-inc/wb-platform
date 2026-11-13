@@ -34,7 +34,13 @@ set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
 BASE=(docker compose --project-directory "$HERE" -f "$HERE/docker-compose.yml")
-JOURNEYS=("${BASE[@]}" -f "$HERE/docker-compose.journeys.yml" --profile journeys)
+# [FABLE-05 3.4] The hardened stack (STACK_HARDENING=1 in deploy/.env): the same overlays pilot-up.sh adds.
+if [ -f "$HERE/.env" ] && [ "$(grep -E '^STACK_HARDENING=' "$HERE/.env" | head -1 | cut -d= -f2- | sed -E 's/[[:space:]]+#.*$//; s/[[:space:]]+$//')" = 1 ]; then
+  BASE+=(-f "$HERE/docker-compose.hardening.yml")
+  JOURNEYS=("${BASE[@]}" -f "$HERE/docker-compose.journeys.yml" -f "$HERE/docker-compose.journeys.hardening.yml" --profile journeys)
+else
+  JOURNEYS=("${BASE[@]}" -f "$HERE/docker-compose.journeys.yml" --profile journeys)
+fi
 
 die() { echo "FATAL: $*" >&2; exit 1; }
 env_value() {

@@ -34,7 +34,8 @@
 # The reader works on bytes in python3 (present on the host, installed by
 # provision-ubuntu.sh) and never consults the host locale.
 
-SECRET_CONSUMER_ALIASES="PGPASSWORD MEILI_MASTER_KEY"
+# [FABLE-05 3.4] REDIS_PASSWORD: read by the Redis container only (STACK_HARDENING=1).
+SECRET_CONSUMER_ALIASES="PGPASSWORD MEILI_MASTER_KEY REDIS_PASSWORD"
 
 # secret_allowlist ROOT — the allowlisted names, one per line; fails when the
 # source cannot be read, so a caller never guesses.

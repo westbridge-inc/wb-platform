@@ -36,7 +36,7 @@ import { testPhone, wordFreeTag } from './helpers/fixture-ids';
 grantSuiteCapability('ddl');
 
 const TEST_URL = process.env['DATABASE_URL'] || 'postgresql://swift:swift@localhost:5434/swift_test';
-const ENV_KEYS = ['DATABASE_URL', 'SYSTEM_DATABASE_URL', 'TENANT_UNSCOPED_ACCESS', 'TENANT_RLS_BIND', 'RUN_WORKERS', 'LOG_LEVEL', 'SCHEDULER_STALL_ALERT_MINUTES', 'ERROR_RATE_ALERT_PER_MIN'] as const;
+const ENV_KEYS = ['DATABASE_URL', 'SYSTEM_DATABASE_URL', 'TENANT_UNSCOPED_ACCESS', 'TENANT_RLS_BIND', 'RUN_WORKERS', 'LOG_LEVEL', 'SCHEDULER_STALL_ALERT_MINUTES', 'ERROR_RATE_ALERT_PER_MIN', 'SCHEDULER_STALL_PAGE_GRACE_SECONDS'] as const;
 const priorEnv: Partial<Record<(typeof ENV_KEYS)[number], string | undefined>> = {};
 const RUN = wordFreeTag(8);
 /** The admin's operator: a tenant of this suite's own. */
@@ -95,6 +95,9 @@ beforeAll(async () => {
   process.env['TENANT_RLS_BIND'] = '1';
   process.env['RUN_WORKERS'] = '0';
   process.env['LOG_LEVEL'] = 'silent';
+  // [REVIEW-2503-A S4-3] This suite pages a worker that died long ago at once, in a process seconds old:
+  // the post-deploy grace (a stall window by default) is off here.
+  process.env['SCHEDULER_STALL_PAGE_GRACE_SECONDS'] = '0';
   prismaModule = await import('../plugins/prisma');
   channels = await import('../providers/notifications/channels');
   const { buildApp } = await import('../app');

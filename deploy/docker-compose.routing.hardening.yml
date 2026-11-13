@@ -1,0 +1,17 @@
+# [FABLE-05 3.4] With STACK_HARDENING=1 (deploy/docker-compose.hardening.yml), the
+# routing and address-search services sit on their own network, shared with the
+# API and the worker only, never with the database, Redis or search.
+services:
+  osrm:
+    networks: !override [routing]
+  vroom:
+    networks: !override [routing]
+  photon:
+    networks: !override [routing]
+  nominatim:
+    networks: !override [routing]
+
+networks:
+  routing:
+    name: swift-pilot-routing
+    external: true
