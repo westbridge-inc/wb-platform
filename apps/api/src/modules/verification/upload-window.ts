@@ -28,7 +28,12 @@ export function assertClaimableUpload(object: { createdAt: Date }, now: Date = n
  */
 export const MAX_UNCLAIMED_UPLOADS_PER_DAY = 20;
 
-/** Refuses (429) an upload while the account holds MAX_UNCLAIMED_UPLOADS_PER_DAY unclaimed uploads from the last day. */
+/**
+ * Refuses (429) an upload while the account holds MAX_UNCLAIMED_UPLOADS_PER_DAY unclaimed uploads from the last day.
+ * [REVIEW-2498-A S4-2] "Claimed" here means a document names it. The erasure sweep also counts the legacy mover
+ * columns and an account recovery's photos as claims; those flows are rare and, at worst, use a place in a rolling
+ * day. A check-then-store, so uploads sent at the same instant can pass it by a few: a soft cap on storage, by design.
+ */
 export async function assertUnclaimedUploadRoom(db: Pick<PrismaClient, 'encryptedObject' | 'verificationDocument'>, userId: string, now: Date = new Date()): Promise<void> {
   const recent = await db.encryptedObject.findMany({
     // A sealed photo (profile photo, shift selfie) is not an upload; its own folder says so.

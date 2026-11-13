@@ -18,6 +18,7 @@ SHA256="bbb64b9695866ce4a7a8f5c9592002c5961cab378577fa3f8a040df362b9b2ea"
 TARBALL="trivy_${VERSION}_Linux-64bit.tar.gz"
 URL="https://github.com/aquasecurity/trivy/releases/download/v${VERSION}/${TARBALL}"
 TMP="$(mktemp -d)"
+trap 'rm -rf "${TMP}"' EXIT
 
 curl -sSfL -o "${TMP}/${TARBALL}" "${URL}"
 if ! echo "${SHA256}  ${TMP}/${TARBALL}" | sha256sum -c - >/dev/null 2>&1; then
