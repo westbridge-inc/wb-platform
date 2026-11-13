@@ -62,7 +62,7 @@ const call = (token: string, method: string, url: string, payload?: unknown, hea
 
 let keySeq = 0;
 /** A config key of its own per case, so no case inherits another's open ask. */
-const freshKey = () => `U06DUP_${RUN}_${++keySeq}`;
+const freshKey = () => `test.U06DUP_${RUN}_${++keySeq}`; // [#2499] test.* keys are writable in tests
 const writeConfig = (token: string, key: string, value: unknown, approvalId?: string) =>
   call(token, 'PUT', `/api/v1/admin/config/${key}`, { value, reason: REASON }, approvalId ? { [APPROVAL_HEADER]: approvalId } : {});
 const decide = (token: string, id: string, approve: boolean) =>

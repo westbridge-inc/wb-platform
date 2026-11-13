@@ -20,6 +20,7 @@ import { setMarketingConsent } from '../modules/legal/marketing-consent';
 import {
   marketingSmsText, marketingEmailContent, sendMarketingSms, sendMarketingEmail, isStopKeyword, inboundStopConfigured,
 } from '../modules/notification/marketing-message';
+import { redisPlugin } from '../plugins/redis';
 import { smsInboundRoutes, twilioSignature, STOP_CONFIRMATION } from '../modules/notification/sms-inbound.routes';
 import type { EmailProvider, SmsProvider } from '../providers/notifications/channels';
 
@@ -86,6 +87,7 @@ beforeAll(async () => {
   app = Fastify({ logger: false });
   registerErrorHandler(app);
   await app.register(prismaPlugin);
+  await app.register(redisPlugin);
   await app.register(smsInboundRoutes, { prefix: '/api/v1/sms' });
   await app.ready();
 });
@@ -226,3 +228,24 @@ describe('[R22] a texted STOP withdraws marketing consent', () => {
     expect(unknown.body).toContain(`<Message>${STOP_CONFIRMATION}</Message>`);
   });
 });
+
+// [AUDIT-20261113 FABLE-03 S4 3.10] The reply to STOP is a paid text: one per number per day, only to a
+// launch-market number, under a small daily ceiling. The opt-out itself is always recorded.
+describe('[AUDIT-20261113 S4] the STOP reply is budgeted', () => {
+  it('one confirmation per number per day; a second STOP the same day is recorded but not answered by text', async () => {
+    setEnv(READY);
+    const { phone } = await person();
+    const first = await stopFrom(phone);
+    expect(first.body).toContain(`<Message>${STOP_CONFIRMATION}</Message>`);
+    const second = await stopFrom(phone, 'STOPALL');
+    expect(second.statusCode).toBe(200);
+    expect(second.body).not.toContain('<Message>');
+  });
+  it('a number outside the launch market gets no paid reply', async () => {
+    setEnv(READY);
+    const res = await stopFrom(`+1555${NUM}12`);
+    expect(res.statusCode).toBe(200);
+    expect(res.body).not.toContain('<Message>');
+  });
+});
+

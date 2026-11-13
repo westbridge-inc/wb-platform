@@ -126,6 +126,8 @@ export async function guestSearchApp(max = 200) {
     actorRatingStat: { findMany: vi.fn(async () => []) },
     session: { findUnique: vi.fn(async ({ where }: Row) => sessions.get(where.token) ?? null) },
     user: { findUnique: vi.fn(async ({ where }: Row) => users.get(where.id) ?? null) },
+    // [AUDIT-20261113 F5] /search/sync reads the admin's live grant: no fixture admin has a grant row (role default).
+    admin: { findUnique: vi.fn(async () => null) },
     discoveryCategory: delegate(categories),
     categoryDocumentGate: { findMany: vi.fn(async () => [{ code: 'licence', categorySlug: 'licensed', categoryKind: null, enforcement: 'BLOCK_LISTING', requiredDocType: { legacyCode: 'LICENCE', displayName: 'Licence' } }]) },
     verificationDocument: { findFirst: vi.fn(async (): Promise<{ id: string } | null> => null) },

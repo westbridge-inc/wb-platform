@@ -959,3 +959,52 @@ describe('[CALLS-REACH follow-up 4] a register refused for no live order also cl
     expect(await app.redis.get(`${INAPP_REGISTRY_PREFIX}${id(stranger)}`)).toBeNull();
   });
 });
+
+// [AUDIT-20261113 F14] In-app calls honour blocks: a blocked party can never make the blocker's app ring.
+describe('[AUDIT-20261113 F14] in-app calls honour user blocks', () => {
+  it('the rider the customer blocked is refused before any row, in both directions', async () => {
+    const o = await liveFood();
+    const row = await system(() => app.prisma.userBlock.create({ data: { tenantId: 'swift-default', blockerId: diner.id, blockedId: riderP.id } }));
+    try {
+      const res = await start(riderP.token, o.id, 'customer');
+      expect(res.statusCode, res.body).toBe(403);
+      expect(res.json().error.code).toBe('USER_BLOCKED');
+      expect((await start(diner.token, o.id, 'rider')).statusCode).toBe(403);
+      expect(await rowsFor(o.id)).toHaveLength(0);
+    } finally {
+      await system(() => app.prisma.userBlock.delete({ where: { id: row.id } }));
+    }
+  });
+});
+
+// [REVIEW-2499-A S4-1] The two later re-judges: a block placed after the start drops the blocked person from the
+// ring set when the caller's app connects, and stops the phone fallback.
+describe('[REVIEW-2499-A S4-1] a block placed during an in-app call', () => {
+  const block = (blockerId: string, blockedId: string) => system(() => app.prisma.userBlock.create({ data: { tenantId: 'swift-default', blockerId, blockedId } }));
+  const unblock = (row: { id: string }) => system(() => app.prisma.userBlock.delete({ where: { id: row.id } }));
+
+  it('blocked after the start: when the caller connects, the blocked person\'s app is not rung', async () => {
+    const o = await liveFood();
+    const { callId } = (await start(diner.token, o.id, 'rider')).json().data;
+    const row = await block(riderP.id, diner.id);
+    try {
+      const { r } = await connect(callId, diner);
+      expect(r.body).not.toContain(`<Identity>${id(riderP)}</Identity>`);
+      expect(r.body).not.toContain('<Client');
+    } finally { await unblock(row); }
+  });
+
+  it('blocked while the app rang: no phone fallback after it', async () => {
+    setEnv({ ...INAPP_ON, ...RELAY_ON });
+    const o = await liveFood();
+    const { callId } = (await start(diner.token, o.id, 'rider')).json().data;
+    await connect(callId, diner);
+    const row = await block(riderP.id, diner.id);
+    try {
+      const done = await hook('app-dial-done', { DialCallStatus: 'no-answer' }, { s: callId });
+      expect(done.body).not.toContain('<Dial');
+      expect((await session(callId)).status).toBe('NOT_CONNECTED');
+    } finally { await unblock(row); }
+  });
+});
+

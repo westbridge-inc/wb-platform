@@ -83,7 +83,7 @@ export async function startPhoneChange(
   await storeOtp(deps.redis, codeKey(input.userId, phone), code);
   await deps.redis.set(pendingKey(input.userId), phone, 'EX', CODE_LIFE_S);
   try {
-    await deps.channels.sms.sendSms(phone, `Your Swift code to move your account to this number is: ${code}. Read it to Swift support, and to nobody else.`);
+    await deps.channels.sms.sendSms(phone, `Your Swift code to move your account to this number is: ${code}. Read it to Swift support, and to nobody else.`, { budgeted: true });
   } catch {
     await budget.refund?.().catch(() => undefined);
     await deps.redis.del(pendingKey(input.userId));

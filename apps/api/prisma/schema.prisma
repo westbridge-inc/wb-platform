@@ -47,6 +47,13 @@ model User {
   /// work app across devices and reinstalls. Null means genuinely unknown.
   lastMoverRole    MoverRole?
   status           UserStatus @default(ACTIVE)
+  /// [REVIEW-2499-B S2-1] When `status` last changed. Written ONLY by the database triggers
+  /// users_stamp_status_changed_at / _created_at (at creation, and on any write that changes status,
+  /// whatever path made it); no
+  /// application code writes it. Dates a lock-out for the "an admin locked out in the last 14 days
+  /// still counts" rule (solo approval, the only eligible responder). Null = unchanged since before
+  /// the column existed (backfilled from the lock-out audit rows where one exists).
+  statusChangedAt  DateTime?
   isPhoneVerified  Boolean    @default(false)
   isEmailVerified  Boolean    @default(false)
 
@@ -2880,6 +2887,11 @@ model Order {
   ridePinVerified    Boolean   @default(false)
   ridePinAttempts    Int       @default(0)
   ridePinVerifiedAt  DateTime?
+  /// [AUDIT-20261113 F2] When the CURRENT ride PIN was issued (null: at order creation). A chat row written
+  /// before it cannot carry knowledge of it, so history is never re-judged against a later PIN (no read oracle).
+  ridePinIssuedAt    DateTime?
+  /// [AUDIT-20261113 F2] When the CURRENT pickup code was issued (null: at order creation); same rule as ridePinIssuedAt.
+  pickupCodeIssuedAt DateTime?
   /// HND-001: failed pickup-code attempts, for the same brute-force lockout the
   /// taxi ride PIN already has (a 6-digit handover code is guessable without it).
   pickupCodeAttempts Int       @default(0)

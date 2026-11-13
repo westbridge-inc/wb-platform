@@ -36,6 +36,8 @@ import { testPhone } from './helpers/fixture-ids';
 // capability comes from, so a route inherits the law by being classified.
 // ---------------------------------------------------------------------------
 
+/** [#2499] the generic config route writes only Config-page keys, and test.* keys in tests. */
+const PROBE_KEY = ['test', 'ADM006_PROBE'].join('.');
 let app: FastifyInstance;
 const RUN = nanoid(6).toLowerCase();
 const userIds: string[] = [];
@@ -79,7 +81,7 @@ afterAll(async () => {
   await cleanupSecondApprovers(app);
   await runWithoutTenant(async () => {
     await app.prisma.privilegedApproval.deleteMany({ where: { requestedBy: { in: userIds } } }).catch(() => {});
-    await app.prisma.platformConfig.deleteMany({ where: { key: { startsWith: 'ADM006_' } } }).catch(() => {});
+    await app.prisma.platformConfig.deleteMany({ where: { key: { startsWith: 'test.ADM006_' } } }).catch(() => {});
     await purgeAuditLogs(app.prisma, { userId: { in: userIds } }, 'test-cleanup:admin-reason').catch(() => 0);
     await app.prisma.session.deleteMany({ where: { userId: { in: userIds } } }).catch(() => {});
     await app.prisma.admin.deleteMany({ where: { userId: { in: userIds } } }).catch(() => {});
@@ -141,10 +143,10 @@ describe('[ADM-006] a consequential action is refused until it says why', () => 
   });
 
   it('the refusal happens BEFORE the handler — an unexplained action changes nothing', async () => {
-    const before = await app.prisma.platformConfig.findUnique({ where: { key: 'ADM006_PROBE' } });
-    const res = await call('PUT', '/api/v1/admin/config/ADM006_PROBE', { value: { probe: true } });
+    const before = await app.prisma.platformConfig.findUnique({ where: { key: PROBE_KEY } });
+    const res = await call('PUT', `/api/v1/admin/config/${PROBE_KEY}`, { value: { probe: true } });
     expect(res.statusCode).toBe(400);
-    const after = await app.prisma.platformConfig.findUnique({ where: { key: 'ADM006_PROBE' } });
+    const after = await app.prisma.platformConfig.findUnique({ where: { key: PROBE_KEY } });
     expect(after).toEqual(before);
   });
 });
@@ -164,7 +166,7 @@ describe('[ADM-006] the reason is on the record, by name', () => {
       // [ADM-005] a config write is a platform action now: it takes a second
       // admin, and this suite gets one the way the console will
       const probe = await injectWithApproval(app, {
-        method: 'PUT', url: '/api/v1/admin/config/ADM006_AUDIT',
+        method: 'PUT', url: '/api/v1/admin/config/test.ADM006_AUDIT',
         headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
         payload: { value: { ok: true }, reason },
       });

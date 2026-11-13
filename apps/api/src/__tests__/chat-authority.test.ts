@@ -381,3 +381,56 @@ describe('[R048-004] room authority is the order’s CURRENT people', () => {
     expect(view.redacted).toBe(true);
   });
 });
+
+// [AUDIT-20261113 F2] Reading history must not be an oracle for a PIN issued AFTER a message was written.
+// A sender can fill earlier messages with every possible code; re-scrubbing those rows against the CURRENT
+// PIN on read would show exactly which row (and, before, which digits) hold it. A row written before the
+// PIN was issued cannot carry knowledge of it, so it is not judged against it; a row written after is
+// judged, and a match hides the whole body.
+describe('[AUDIT-20261113 F2] history is not an oracle for the current ride PIN', () => {
+  it('a row written before the PIN was issued is not judged against it; a later row that holds it is hidden whole', async () => {
+    const FUTURE_PIN = '613579';
+    // an earlier test closed the room; this one reads and writes it open again
+    await app.prisma.chatRoom.update({ where: { id: roomId }, data: { isActive: true } });
+    await app.prisma.order.update({ where: { id: orderId }, data: { ridePin: '246802', ridePinAttempts: 0 } });
+    const written = new Date(Date.now() - 60_000);
+    const crafted = (await app.prisma.chatMessage.create({ data: { chatRoomId: roomId, senderId: driverUserId, message: `codes 99${FUTURE_PIN}11 ok`, messageType: 'text', createdAt: written } })).id;
+    // the PIN is re-issued after the row was written (the shape of a rotation)
+    await app.prisma.order.update({ where: { id: orderId }, data: { ridePin: FUTURE_PIN, ridePinIssuedAt: new Date() } as never });
+    const later = (await app.prisma.chatMessage.create({ data: { chatRoomId: roomId, senderId: driverUserId, message: `again ${FUTURE_PIN} please`, messageType: 'text', createdAt: new Date(Date.now() + 10_000) } })).id;
+    const res = await inject('GET', `/rooms/${roomId}/messages`, customerToken);
+    expect(res.statusCode).toBe(200);
+    const rows = res.json().data as Array<{ id: string; message: string }>;
+    expect(rows.find((r) => r.id === crafted)!.message).toBe(`codes 99${FUTURE_PIN}11 ok`);
+    expect(rows.find((r) => r.id === later)!.message).toBe(SECRET_REDACTION);
+  });
+
+  it('a chat rotation stamps when the new PIN was issued', async () => {
+    const pin = (await app.prisma.order.findUniqueOrThrow({ where: { id: orderId }, select: { ridePin: true } })).ridePin!;
+    const before = Date.now();
+    const res = await inject('POST', `/rooms/${roomId}/messages`, customerToken, { message: `pin ${pin}` });
+    expect(res.statusCode).toBe(200);
+    const order = await app.prisma.order.findUniqueOrThrow({ where: { id: orderId } }) as unknown as { ridePin: string; ridePinIssuedAt: Date | null };
+    expect(order.ridePin).not.toBe(pin);
+    expect(order.ridePinIssuedAt).toBeInstanceOf(Date);
+    expect(order.ridePinIssuedAt!.getTime()).toBeGreaterThanOrEqual(before - 1000);
+  });
+});
+
+// [AUDIT-20261113 F2 · review parity] The pickup code can be re-issued too (support's rotate): a row written
+// before that is not judged against the new code on read either.
+describe('[AUDIT-20261113 F2] history is not an oracle for a re-issued pickup code', () => {
+  it('a row written before the pickup code was issued is shown as written; a later row holding it is hidden', async () => {
+    const NEW_CODE = '864213';
+    await app.prisma.chatRoom.update({ where: { id: roomId }, data: { isActive: true } });
+    const crafted = (await app.prisma.chatMessage.create({ data: { chatRoomId: roomId, senderId: customerId, message: `list 77${NEW_CODE}55`, messageType: 'text', createdAt: new Date(Date.now() - 60_000) } })).id;
+    await app.prisma.order.update({ where: { id: orderId }, data: { pickupCode: NEW_CODE, pickupCodeIssuedAt: new Date() } as never });
+    const later = (await app.prisma.chatMessage.create({ data: { chatRoomId: roomId, senderId: customerId, message: `code ${NEW_CODE}`, messageType: 'text', createdAt: new Date(Date.now() + 10_000) } })).id;
+    const res = await inject('GET', `/rooms/${roomId}/messages`, customerToken);
+    expect(res.statusCode).toBe(200);
+    const rows = res.json().data as Array<{ id: string; message: string }>;
+    expect(rows.find((r) => r.id === crafted)!.message).toBe(`list 77${NEW_CODE}55`);
+    expect(rows.find((r) => r.id === later)!.message).toBe(SECRET_REDACTION);
+  });
+});
+

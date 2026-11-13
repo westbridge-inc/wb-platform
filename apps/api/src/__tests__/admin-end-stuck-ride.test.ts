@@ -1,4 +1,10 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+
+// [REVIEW-2499-A S3-1] "The only eligible responder" is decided platform-wide: the route test pins the decision.
+vi.mock('../modules/integrity/sole-responder', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../modules/integrity/sole-responder')>();
+  return { ...real, isSoleEligibleResponder: vi.fn(real.isSoleEligibleResponder) };
+});
 import Fastify, { type FastifyInstance } from 'fastify';
 import { nanoid } from 'nanoid';
 import { prismaPlugin } from '../plugins/prisma';
@@ -17,6 +23,7 @@ import { OrderService } from '../modules/order/order.service';
 import { NotificationService } from '../modules/notification/notification.service';
 import { ACTIVE_TAXI_STATUSES } from '../modules/rides/rides.service';
 import { walkOrderStatus } from './helpers/order-status-walk';
+import { SELF_RESOLVED_FLAG, isSoleEligibleResponder } from '../modules/integrity/sole-responder';
 import { testPhone } from './helpers/fixture-ids';
 import { TEST_ADMIN_REASON } from './helpers/admin-reason';
 
@@ -553,5 +560,27 @@ describe('support ends a ride whose driver is gone', () => {
     await app.prisma.driver.update({ where: { id: r.driverId }, data: { currentRideId: other.orderId } });
     expect((await end(r.orderId)).statusCode).toBe(200);
     expect(await app.prisma.driver.findUniqueOrThrow({ where: { id: r.driverId } })).toMatchObject({ isOnline: true, currentRideId: other.orderId });
+  });
+});
+
+// [REVIEW-2499-A S3-1 · coordinator ruling] Production has one admin identity. A ride that names the ONLY eligible
+// responder could otherwise never be ended: they end it, with the reason the door already demands, and the audit
+// row is flagged for a second person's review. Where another eligible admin exists, the refusal above holds.
+describe('[REVIEW-2499-A S3-1] the only eligible responder may end a ride that names them, flagged for review', () => {
+  it('the owner on the ride, with nobody else who could end it, ends it; the row is flagged', async () => {
+    const owner = await staff(['*'], 'SUPER_ADMIN');
+    const r = await ride('RIDE_IN_PROGRESS', {}, { passenger: owner.id });
+    vi.mocked(isSoleEligibleResponder).mockResolvedValue(true);
+    try {
+      const res = await end(r.orderId, owner.token);
+      expect(res.statusCode, res.payload).toBe(200);
+      const row = await app.prisma.auditLog.findFirstOrThrow({ where: { action: 'END_STUCK_RIDE', entityId: r.orderId } });
+      expect(row.changes).toMatchObject({ selfResolved: true, review: SELF_RESOLVED_FLAG });
+      expect(vi.mocked(isSoleEligibleResponder)).toHaveBeenCalledWith(expect.anything(), owner.id, 'order.ride.end', 'swift-default');
+    } finally {
+      vi.mocked(isSoleEligibleResponder).mockReset();
+      const real = await vi.importActual<typeof import('../modules/integrity/sole-responder')>('../modules/integrity/sole-responder');
+      vi.mocked(isSoleEligibleResponder).mockImplementation(real.isSoleEligibleResponder);
+    }
   });
 });

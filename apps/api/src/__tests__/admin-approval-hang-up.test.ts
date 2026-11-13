@@ -32,7 +32,7 @@ import { testPhone } from './helpers/fixture-ids';
 let app: FastifyInstance;
 let port = 0;
 const RUN = nanoid(6).toLowerCase().replace(/[^a-z0-9]/g, 'x');
-const KEY_PREFIX = `HANGUP_${RUN}`;
+const KEY_PREFIX = `test.HANGUP_${RUN}`; // [#2499] the generic config route writes only Config-page keys, and test.* in tests
 const userIds: string[] = [];
 const REASON = 'Bank confirmed the transfer cleared on the 3rd, reference GY-88213';
 const SLOW_MS = 150;

@@ -45,7 +45,9 @@ const ONCALL = `+5926${String(Date.now()).slice(-6)}1`;
 let seq = 0;
 const SUITE_START = new Date();
 
-const io = { to: () => ({ emit: () => {} }), in: () => ({ fetchSockets: async () => [] }) } as unknown as Server;
+// [REVIEW-2499-A S3-3] an SOS war-room emission excepts the people it names: .to(rooms).except(named).emit
+const room = { emit: () => true, except: () => room, fetchSockets: async () => [] };
+const io = { to: () => room, in: () => room } as unknown as Server;
 const notifications = () => new NotificationService(app.prisma, io);
 const oncallTexts = () => devChannelLog.filter((e) => e.channel === 'sms' && (e as { to?: string }).to === ONCALL);
 
@@ -307,7 +309,10 @@ describe('[GUARDRAILS §3] an app-store reviewer\'s demo SOS never pages real op
     // A socket server that records every room an emit is addressed to.
     const emits: Array<{ event: string; rooms: string[]; sosAlertId: unknown }> = [];
     const capture = {
-      to: (rooms: string | string[]) => ({ emit: (event: string, payload: { sosAlertId?: unknown }) => { emits.push({ event, rooms: [rooms].flat(), sosAlertId: payload?.sosAlertId }); return true; } }),
+      to: (rooms: string | string[]) => {
+        const target = { emit: (event: string, payload: { sosAlertId?: unknown }) => { emits.push({ event, rooms: [rooms].flat(), sosAlertId: payload?.sosAlertId }); return true; }, except: () => target };
+        return target;
+      },
       in: () => ({ fetchSockets: async () => [] }),
     } as unknown as Server;
     const sos = new SosService(app.prisma, capture);

@@ -1,4 +1,5 @@
 import type { FastifyInstance } from 'fastify';
+import { secretEquals } from '../utils/secret-equals';
 import fp from 'fastify-plugin';
 import client from 'prom-client';
 import * as Sentry from '@sentry/node';
@@ -550,6 +551,15 @@ export const pushNoDeviceCounter = new client.Counter({
 /** [L04 · SMS allowlist] Outside production, a text to a number that is not on
  *  SMS_RECIPIENT_ALLOWLIST is not sent and counted here. No label carries the
  *  number: the count is the evidence, never the recipient. */
+/** [REVIEW-2499-B S3-2] Sign-in/step-up codes refused by a daily OTP budget, by lane (phone_daily, ip_daily,
+ *  known_ip_daily, admin_daily, known_daily, global_daily). No label carries a number or an address. */
+export const otpBudgetRefusalCounter = new client.Counter({
+  name: 'swift_otp_budget_refusals_total',
+  help: 'OTP sends refused by a daily budget lane',
+  labelNames: ['lane'] as const,
+  registers: [registry],
+});
+
 export const smsRecipientNotAllowlistedCounter = new client.Counter({
   name: 'swift_sms_recipient_not_allowlisted_total',
   help: 'Non-production SMS not sent because the recipient is not on SMS_RECIPIENT_ALLOWLIST',
@@ -1279,7 +1289,8 @@ async function observability(app: FastifyInstance) {
   app.get('/metrics', async (request, reply) => {
     const token = process.env['METRICS_TOKEN'];
     if (!token) throw new AppError(404, 'NOT_FOUND', 'Not found'); // off by default
-    if (request.headers.authorization !== `Bearer ${token}`) {
+    // [AUDIT-20261113 S4] constant-time compare
+    if (!secretEquals(request.headers.authorization, `Bearer ${token}`)) {
       throw new AppError(401, 'UNAUTHORIZED', 'Metrics token required');
     }
     reply.header('content-type', registry.contentType);

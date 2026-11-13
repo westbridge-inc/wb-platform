@@ -5,7 +5,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from '../../lib/zod';
 import { detectOffPlatformContact, OFF_PLATFORM_WARNING } from './off-platform';
 import { chatContentFilterEnabled, chatContentReason } from './content-filter';
-import { digitRun, mediaUrlCarriesSecret, redactOrderSecrets, SECRET_REDACTED_WARNING } from './secret-guard';
+import { digitRun, mediaUrlCarriesSecret, redactOrderSecrets, SECRET_REDACTED_WARNING, withoutLiveCodes } from './secret-guard';
 import {
   assertRoomAccess, chatMediaFolder, isServerIssuedMediaId, reconcileParticipants, resolveRoomAuthority, rotateLeakedRidePin,
   serializeChatMessage, serializeChatMessages,
@@ -275,7 +275,10 @@ export async function chatRoutes(app: FastifyInstance) {
       // Content admission judges the exact text that would be stored, under the
       // same lock: refusing here rolls the write back, so a refused message is
       // never stored, broadcast or pushed. Off until the launch switch is on.
-      const contentReason = chatContentFilterEnabled() ? chatContentReason(guarded.text) : undefined;
+      // [AUDIT-20261113 F2] A body redacted whole is also judged on what was typed around the code.
+      const contentReason = chatContentFilterEnabled()
+        ? chatContentReason(guarded.text) ?? (guarded.wholeMessage ? chatContentReason(withoutLiveCodes(message, current.secrets)) : undefined)
+        : undefined;
       if (contentReason) {
         chatGuardCounter.labels('send', 'content_refused').inc();
         throw new AppError(400, 'CHAT_CONTENT_NOT_ALLOWED',

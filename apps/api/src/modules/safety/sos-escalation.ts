@@ -3,7 +3,7 @@ import { Prisma } from '@prisma/client';
 import type { Server } from 'socket.io';
 import { NotificationService, isReviewTenantId } from '../notification/notification.service';
 import { openOpsAlert, type OpsSms } from './ops-alert';
-import { OPS_WAR_ROOM, warRoomsFor } from './war-room';
+import { OPS_WAR_ROOM, sosWarRoomExclusions, warRoomsFor } from './war-room';
 import { isOwnNumber } from './emergency-contact.service';
 import { log } from '../../utils/logger';
 import { maskPii } from '../rating/review-scrub';
@@ -152,10 +152,12 @@ async function deliver(prisma: PrismaClient, io: Server, notifications: Notifica
       // person on the ride is never in them. A repeat press's own words ride
       // on sos:retrigger (sos.service.ts); this carries the note the alert
       // was raised with.
-      io.to(rooms).emit('sos:active', { sosAlertId: alert.id, tenantId: alert.tenantId, actorRole: alert.actorRole, orderId: alert.orderId, serviceJobId: alert.serviceJobId, lat: alert.triggerLat, lng: alert.triggerLng, triggeredAt: alert.triggeredAt, note: alert.triggerNote });
+      // [REVIEW-2499-A S3-3] decided per socket at emission: a live grant now, never the people the SOS names
+      // (or their linked accounts), fail closed. An empty audience sends nothing.
+      const audience = await sosWarRoomExclusions(io, prisma, rooms, [alert.actorUserId, alert.counterpartyUserId]);
+      if (audience) io.to(rooms).except(audience.excluded).emit('sos:active', { sosAlertId: alert.id, tenantId: alert.tenantId, actorRole: alert.actorRole, orderId: alert.orderId, serviceJobId: alert.serviceJobId, lat: alert.triggerLat, lng: alert.triggerLng, triggeredAt: alert.triggeredAt, note: alert.triggerNote });
       // [F-027-16] Count the sockets actually in the room — a silence receipt has to be able to say zero.
-      let listeners = 0;
-      try { listeners = (await io.in(rooms).fetchSockets()).length; } catch { listeners = 0; }
+      const listeners = audience?.listeners ?? 0;
       if (listeners === 0) {
         sosEscalationCounter.labels('zero_listeners').inc();
         log().error({ sosAlertId: alert.id, tenantId: alert.tenantId, rooms }, 'SOS escalation: war-room emit reached ZERO sockets — nobody is watching the live board');
@@ -178,7 +180,7 @@ async function deliver(prisma: PrismaClient, io: Server, notifications: Notifica
       const where = alert.triggerLat != null && alert.triggerLng != null ? ` Last known location: https://maps.google.com/?q=${alert.triggerLat},${alert.triggerLng}.` : '';
       // [REVIEW-PARTNER] Declared on behalf of the alert's tenant: the outbound seal stops a fiction's text.
       const { sendOnBehalfOf } = await import('../../providers/notifications/review-seal');
-      await sendOnBehalfOf(alert.tenantId, () => getChannels().sms.sendSms(contact.phoneE164, sosContactText(authority.who, where)));
+      await sendOnBehalfOf(alert.tenantId, () => getChannels().sms.sendSms(contact.phoneE164, sosContactText(authority.who, where), { lifeSafety: true }));
       return { status: 'SENT', receipt: { id: contact.id, ok: true, ...(authority.fromEscrow ? { source: 'safety-escrow' } : {}) } };
     }
     case 'EVIDENCE': {

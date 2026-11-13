@@ -415,7 +415,7 @@ export class AuthorityLetterService {
     });
     if (moved.count !== 1) { await budget.refund().catch(() => undefined); throw new AppError(409, 'LETTER_CHANGED', 'This letter just changed. Open the link again.'); }
     try {
-      await this.channels.sms.sendSms(phone, letterCodeSms(code));
+      await this.channels.sms.sendSms(phone, letterCodeSms(code), { budgeted: true });
     } catch (err) {
       await budget.refund().catch(() => undefined);
       await this.prisma.authorityLetterRequest.updateMany({ where: { id: r.id }, data: { codeHash: null, codeExpiresAt: null } });

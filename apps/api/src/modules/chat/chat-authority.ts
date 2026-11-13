@@ -70,7 +70,7 @@ export async function resolveRoomAuthority(prisma: ChatAuthorityDb, roomId: stri
   if (room.orderId) {
     const order = await prisma.order.findUnique({
       where: { id: room.orderId },
-      select: { tenantId: true, customerId: true, status: true, ridePin: true, pickupCode: true, rider: { select: { userId: true } }, driver: { select: { userId: true } } },
+      select: { tenantId: true, customerId: true, status: true, ridePin: true, ridePinIssuedAt: true, pickupCode: true, pickupCodeIssuedAt: true, rider: { select: { userId: true } }, driver: { select: { userId: true } } },
     });
     if (!order) return null;
     participants.set(order.customerId, 'customer');
@@ -79,7 +79,7 @@ export async function resolveRoomAuthority(prisma: ChatAuthorityDb, roomId: stri
     return {
       roomId: room.id, tenantId: order.tenantId, orderId: room.orderId, serviceJobId: null, participants,
       isActive: room.isActive, writable: room.isActive && !TERMINAL_ORDERS.has(order.status),
-      secrets: { ridePin: order.ridePin, pickupCode: order.pickupCode },
+      secrets: { ridePin: order.ridePin, pickupCode: order.pickupCode, ridePinIssuedAt: order.ridePinIssuedAt, pickupCodeIssuedAt: order.pickupCodeIssuedAt },
     };
   }
   if (room.serviceJobId) {
@@ -200,7 +200,7 @@ export interface ChatMessageView {
  * Redactions are counted by surface, never logged as text.
  */
 export async function serializeChatMessage(row: StoredChatMessage, authority: Pick<RoomAuthority, 'roomId' | 'secrets'>, surface: ChatSurface): Promise<ChatMessageView> {
-  const scrubbed = redactOrderSecrets(row.message, authority.secrets);
+  const scrubbed = redactOrderSecrets(row.message, secretsKnowableBy(row, authority.secrets));
   let mediaUrl: string | null = null;
   let mediaHidden = false;
   if (row.mediaUrl) {
@@ -215,6 +215,26 @@ export async function serializeChatMessage(row: StoredChatMessage, authority: Pi
   return {
     id: row.id, roomId: row.chatRoomId, senderId: row.senderId, message: scrubbed.text, messageType: row.messageType, mediaUrl,
     createdAt: row.createdAt, offPlatformFlag: row.offPlatformFlag ?? false, isRead: row.isRead ?? false, redacted: scrubbed.redacted || mediaHidden,
+  };
+}
+
+/**
+ * [AUDIT-20261113 F2] The codes a stored row can carry KNOWLEDGE of. A row written before the current ride PIN
+ * was issued was judged at send time against the PIN of that moment; any digits it shares with the new PIN are
+ * a coincidence or a planted stream, never a leak. Re-judging such a row against the new PIN on every read was
+ * the oracle: a sender who wrote every possible code learned which row now held the PIN. Rows written after
+ * the PIN was issued (and every row when it was issued with the order) are still judged against it, so a
+ * legacy vector the send-time guard missed is still caught. The window absorbs clock skew between the app's
+ * stamp and the row's creation, in the safe direction (a row inside it is treated as older).
+ */
+export const RIDE_PIN_ISSUE_SKEW_MS = 5_000;
+export function secretsKnowableBy(row: Pick<StoredChatMessage, 'createdAt'>, secrets: OrderSecrets): OrderSecrets {
+  // Every re-issuable code follows the one rule: the ride PIN and the pickup code (support's rotation).
+  const predates = (issuedAt: Date | null | undefined) => !!issuedAt && row.createdAt.getTime() < issuedAt.getTime() + RIDE_PIN_ISSUE_SKEW_MS;
+  return {
+    ...secrets,
+    ...(secrets.ridePin && predates(secrets.ridePinIssuedAt) ? { ridePin: null } : {}),
+    ...(secrets.pickupCode && predates(secrets.pickupCodeIssuedAt) ? { pickupCode: null } : {}),
   };
 }
 

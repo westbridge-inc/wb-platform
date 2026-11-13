@@ -37,16 +37,16 @@ const RUN = nanoid(6).toLowerCase();
 const userIds: string[] = [];
 const REASON = 'Bank confirmed the transfer cleared on the 3rd, reference GY-88213';
 
-async function makeAdmin(permissions: string[]): Promise<{ token: string; userId: string }> {
+async function makeAdmin(permissions: string[], role: 'SUPER_ADMIN' | 'ADMIN' = 'SUPER_ADMIN'): Promise<{ token: string; userId: string }> {
   const phone = testPhone();
   const user = await app.prisma.user.create({
     data: {
-      phone, firstName: 'Approver', lastName: `A${RUN}${userIds.length}`, roles: ['SUPER_ADMIN', 'CUSTOMER'],
-      activeRole: 'SUPER_ADMIN', status: 'ACTIVE', isPhoneVerified: true, admin: { create: { permissions } },
+      phone, firstName: 'Approver', lastName: `A${RUN}${userIds.length}`, roles: [role, 'CUSTOMER'],
+      activeRole: role, status: 'ACTIVE', isPhoneVerified: true, admin: { create: { permissions } },
     },
   });
   userIds.push(user.id);
-  const token = app.jwt.sign({ userId: user.id, role: 'SUPER_ADMIN', jti: nanoid(8) });
+  const token = app.jwt.sign({ userId: user.id, role, jti: nanoid(8) });
   await app.prisma.session.create({
     data: {
       userId: user.id, token, refreshToken: nanoid(48), authMethod: 'OTP',
@@ -65,7 +65,7 @@ const call = (token: string, method: string, url: string, payload?: unknown, hea
 
 /** The money action used throughout: a config write is C5, deterministic, and
  *  leaves a row this suite can read to prove nothing happened. */
-const CONFIG_KEY = `ADM005_${RUN}`;
+const CONFIG_KEY = `test.ADM005_${RUN}`; // [#2499] test.* keys are writable in tests
 const writeConfig = (token: string, value: unknown, approvalId?: string) =>
   call(token, 'PUT', `/api/v1/admin/config/${CONFIG_KEY}`, { value, reason: REASON },
     approvalId ? { [APPROVAL_HEADER]: approvalId } : {});
@@ -92,7 +92,7 @@ beforeAll(async () => {
 afterAll(async () => {
   await runWithoutTenant(async () => {
     await app.prisma.privilegedApproval.deleteMany({ where: { requestedBy: { in: userIds } } }).catch(() => {});
-    await app.prisma.platformConfig.deleteMany({ where: { key: { startsWith: 'ADM005_' } } }).catch(() => {});
+    await app.prisma.platformConfig.deleteMany({ where: { key: { startsWith: 'test.ADM005_' } } }).catch(() => {});
     await purgeAuditLogs(app.prisma, { userId: { in: userIds } }, 'test-cleanup:admin-approval').catch(() => 0);
     await app.prisma.session.deleteMany({ where: { userId: { in: userIds } } }).catch(() => {});
     await app.prisma.admin.deleteMany({ where: { userId: { in: userIds } } }).catch(() => {});
@@ -174,6 +174,23 @@ describe('[ADM-005] one person cannot move money alone', () => {
     expect(switched.json().error.message).toMatch(/not what was approved/);
     const written = await app.prisma.platformConfig.findUniqueOrThrow({ where: { key: CONFIG_KEY } });
     expect(written.value).not.toEqual({ rate: 9999 });
+  });
+
+  // [AUDIT-20261113 F10] The fingerprint leaves the reason out, but the reason is what the second person read,
+  // and several acts store it (a waiver's reason is shown to the partner). Re-sending the approved request with
+  // other words is refused at the gate: the act runs only with the reason that was approved.
+  it('an approved act cannot carry a different reason than the one approved', async () => {
+    const asked = await writeConfig(requester.token, { rate: 11 });
+    const approvalId = asked.json().error.details.approvalId as string;
+    await decide(approver.token, approvalId, true);
+    const other = 'A different justification the approver never read at all';
+    const reworded = await call(requester.token, 'PUT', `/api/v1/admin/config/${CONFIG_KEY}`, { value: { rate: 11 }, reason: other }, { [APPROVAL_HEADER]: approvalId });
+    expect(reworded.statusCode).toBe(403);
+    const byHeader = await call(requester.token, 'PUT', `/api/v1/admin/config/${CONFIG_KEY}`, { value: { rate: 11 }, reason: REASON }, { [APPROVAL_HEADER]: approvalId, 'x-swift-reason': other });
+    expect(byHeader.statusCode).toBe(403);
+    expect((await app.prisma.privilegedApproval.findUniqueOrThrow({ where: { id: approvalId } })).status).toBe('APPROVED');
+    // the approved words still work
+    expect((await writeConfig(requester.token, { rate: 11 }, approvalId)).statusCode).toBe(200);
   });
 
   it('an approval authorises ONE act — a replay is refused, not repeated (it was spent at the gate)', async () => {
@@ -593,5 +610,48 @@ describe('[DS110] the stored body is what executes — and only that', () => {
     });
     expect(rebuilt).not.toBeNull();
     expect(fingerprintOf(rebuilt!)).toBe(fingerprintOf({ ...base, query: { mode: 'dry' } }));
+  });
+});
+
+// [AUDIT-20261113 F11] A founder-only route refuses a plain ADMIN BEFORE the two-person gate: otherwise the
+// gate stored their ask first, and the one-open-ask-per-act rule then blocked the founder's own change.
+describe('[AUDIT-20261113 F11] a plain admin cannot squat a founder-only ask', () => {
+  it('a non-founder admin is refused and no ask is written', async () => {
+    const plain = await makeAdmin(['*'], 'ADMIN');
+    const res = await writeConfig(plain.token, { rate: 77 });
+    expect(res.statusCode, res.body).toBe(403);
+    expect(await runWithoutTenant(() => app.prisma.privilegedApproval.count({ where: { requestedBy: plain.userId } }), 'test-read:f11')).toBe(0);
+    // the founder can still ask
+    expect((await writeConfig(requester.token, { rate: 77 })).statusCode).toBe(202);
+  });
+});
+
+// [money review on #2499 · coordinator ruling] The generic config route writes only the Config page's keys. A security
+// control (the solo-approval cool-off), a machine-owned state (billing pauses, the reaper's heartbeat, ops pages,
+// document retention) or any unknown key is refused before anyone is asked, and never written.
+describe('[REVIEW #2499] the generic config route is an allowlist', () => {
+  it('a key off the allowlist (any case): 409, no ask, nothing written', async () => {
+    for (const key of ['approvals.solo.cooloff_hours', 'APPROVALS.SOLO.COOLOFF_HOURS', 'last_reaper_run_at', 'ops_page:anything', 'documents.personal_image_days', 'billing.mmg_pause.open', 'DELIVERY_FEE', 'last_backup_at', `unknown_${RUN}`]) {
+      const res = await call(requester.token, 'PUT', `/api/v1/admin/config/${encodeURIComponent(key)}`, { value: 0.01, reason: REASON });
+      expect(res.statusCode, `${key}: ${res.body}`).toBe(409);
+      // a machine-owned key answers in #2500's own words; every other key off the allowlist in this PR's
+      expect(['CONFIG_KEY_NOT_WRITABLE', 'CONFIG_KEY_MACHINE_OWNED']).toContain(res.json().error.code);
+      expect(await app.prisma.privilegedApproval.count({ where: { action: 'PUT /config/:key', entityId: key } })).toBe(0);
+    }
+  });
+
+  it('the allowlist is exactly the Config page\'s keys', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { join } = await import('node:path');
+    const { CONSOLE_WRITABLE_CONFIG_KEYS } = await import('../modules/admin/security-config');
+    const page = readFileSync(join(__dirname, '..', '..', '..', 'admin', 'src', 'app', 'config', 'page.tsx'), 'utf8');
+    const onPage = [...page.matchAll(/key: '([a-z0-9_.]+)'/g)].map((m) => m[1]!).sort();
+    expect([...CONSOLE_WRITABLE_CONFIG_KEYS].sort()).toEqual(onPage);
+  });
+
+  it('a Config-page key still goes through the two-person gate', async () => {
+    const res = await call(requester.token, 'PUT', '/api/v1/admin/config/order_auto_reject_minutes', { value: 7, reason: REASON });
+    expect(res.statusCode, res.body).toBe(202);
+    await runWithoutTenant(() => app.prisma.privilegedApproval.updateMany({ where: { action: 'PUT /config/:key', entityId: 'order_auto_reject_minutes', status: 'PENDING' }, data: { status: 'CANCELLED' } }), 'test-reset:allowlist');
   });
 });

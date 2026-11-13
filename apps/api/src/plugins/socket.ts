@@ -22,7 +22,7 @@ import {
   socketAuthUserRoom,
 } from '../utils/socket-revocation';
 import { guardRedisCommandPromises } from '../utils/redis-command-guard';
-import { warRoomsForSocket } from '../modules/safety/war-room';
+import { holdsWarRoomGrant, warRoomsForSocket } from '../modules/safety/war-room';
 import { ADMIN_SESSION_MAX_HOURS, adminApiConsoleOnly, staffSessionVerdict } from '../modules/auth/admin-mfa';
 import { adminTotpRequired } from '../modules/auth/admin-totp';
 import { isProduction, usesSocketRedisAdapter } from '../utils/runtime-mode';
@@ -851,6 +851,8 @@ export const socketPlugin = fp(async (app: FastifyInstance) => {
         // room, because these payloads carry another person's role, order id
         // and coordinates (the leak F-026-15 closed on the push channel).
         let warRooms = warRoomsForSocket(authority.role, tenantId);
+        // [REVIEW-2499-A S3-3] ...and only while the admin's live grant holds safety.sos.read (as the HTTP console).
+        if (warRooms.length > 0 && !(await holdsWarRoomGrant(app.prisma, userId, authority.role))) warRooms = [];
         // [REVIEW-2501-A S2-1] The war room carries live SOS coordinates: an admin power, so it needs the staff
         // posture (authenticator code, session under 12 hours) while ADMIN_TOTP_REQUIRED=1. A socket without it
         // stays connected for the person's own rooms; the next reconnect after the code is proved joins.

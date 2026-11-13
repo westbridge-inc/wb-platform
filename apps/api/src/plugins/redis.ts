@@ -2,6 +2,7 @@ import fp from 'fastify-plugin';
 import Redis from 'ioredis';
 import type { FastifyInstance } from 'fastify';
 import { positiveDurationMs, withTimeout } from '../utils/async-lifecycle';
+import { releaseSmsCeilingStore, setSmsCeilingStore } from '../providers/notifications/sms-ceiling';
 
 declare module 'fastify' {
   interface FastifyInstance {
@@ -52,8 +53,11 @@ export const redisPlugin = fp(async (app: FastifyInstance) => {
   }
 
   app.decorate('redis', redis);
+  // [AUDIT-20261113 S3-6] The daily paid-SMS ceiling counts in this Redis.
+  setSmsCeilingStore(redis);
 
   app.addHook('onClose', async () => {
+    releaseSmsCeilingStore(redis);
     if (redis.status === 'end') return;
     // Not connected: QUIT would sit in the offline queue behind whatever is there.
     if (redis.status !== 'ready') {

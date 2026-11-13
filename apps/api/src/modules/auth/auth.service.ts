@@ -185,16 +185,18 @@ export class AuthService {
     // — a flood of new-number requests can never lock real logins out. The
     // lookup is a system-mode read: authentication runs before any tenant is
     // bound, and the deny posture must not turn the budget classifier into a 500.
-    const knownPhone = await runWithoutTenant(
+    const { knownPhone, adminPhone } = await runWithoutTenant(
       () => this.app.prisma.user.findUnique({
         where: { phone },
-        select: { isPhoneVerified: true, roles: true },
-      }).then((u) =>
-        !!u && (u.isPhoneVerified || u.roles.includes('ADMIN') || u.roles.includes('SUPER_ADMIN')),
-      ),
+        select: { isPhoneVerified: true, roles: true, status: true },
+      }).then((u) => {
+        // [AUDIT-20261113 S3-5] An ACTIVE account holding an admin role draws from the admins' own reserve.
+        const admin = !!u && u.status === 'ACTIVE' && (u.roles.includes('ADMIN') || u.roles.includes('SUPER_ADMIN'));
+        return { knownPhone: !!u && (u.isPhoneVerified || u.roles.includes('ADMIN') || u.roles.includes('SUPER_ADMIN')), adminPhone: admin };
+      }),
       'otp-known-phone-budget',
     );
-    const budget = await checkOtpDailyBudget(this.app.redis, phone, { ip, knownPhone });
+    const budget = await checkOtpDailyBudget(this.app.redis, phone, { ip, knownPhone, adminPhone });
     if (!budget.allowed) {
       if (budget.reason === 'global_daily') {
         this.app.log.error('[sms-budget] global daily OTP cap reached — refusing further sends until reset');
@@ -228,6 +230,8 @@ export class AuthService {
         purpose === 'password-reset'
           ? `Your Swift password reset code is: ${otp}`
           : `Your Swift verification code is: ${otp}`,
+        // [REVIEW-2499-A S2-2] A code has its own daily budget above: the paid-SMS ceiling never refuses it.
+        { budgeted: true },
       );
     } catch (err) {
       // The provider failed: give back the budget this attempt just spent so
@@ -1072,7 +1076,8 @@ export class AuthService {
       const previous = !sessionCredentialMatches(session.refreshToken, refreshToken);
       if (previous) {
         if (!sessionCredentialMatches(session.previousRefreshToken, refreshToken)) return { kind: 'invalid' as const };
-        const graceMs = Number(process.env['REFRESH_REUSE_GRACE_MS'] ?? 10_000);
+        // [AUDIT-20261113 S4] Clamped: a large value would switch reuse detection off. At most 60 s.
+        const graceMs = Math.min(60_000, Math.max(0, Number(process.env['REFRESH_REUSE_GRACE_MS'] ?? 10_000) || 0));
         const age = session.rotatedAt ? Date.now() - session.rotatedAt.getTime() : Infinity;
         if (!(age <= graceMs)) {
           const cleanup = await this.revokeLockedSession(tx, session.id, session.userId);

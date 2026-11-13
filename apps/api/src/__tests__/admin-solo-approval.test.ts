@@ -20,6 +20,7 @@ import {
   SOLO_COOLOFF_CONFIG_KEY, SOLO_COOLOFF_DEFAULT_HOURS, clampCoolOffHours, decideSoloApproval, soloCoolOffHours,
 } from '../modules/admin/solo-approval';
 import { testPhone } from './helpers/fixture-ids';
+import { isSoleApprover } from '../modules/admin/solo-approval';
 
 // ---------------------------------------------------------------------------
 // [OWNER #13 · 13 Oct] SOLO MODE — the owner is the only admin.
@@ -703,3 +704,24 @@ describe('[Opus S3] the solo rollback guard cannot be blinded by row-level secur
     expect(off).toBeLessThan(sql.indexOf('IF EXISTS'));
   });
 });
+
+// [AUDIT-20261113 FABLE-03 S3-4] Suspending the only other approver must not switch solo approval back on: a
+// one-person act (suspend, C3) would otherwise remove the two-person rule. An admin locked out in the last
+// 14 days still counts; one locked out longer ago does not.
+describe('[AUDIT-20261113 S3-4] a recently suspended second admin still counts', () => {
+  it('suspended now: the owner is not the sole approver; suspended 15 days ago: they are', async () => {
+    const tenantId = await makeTenant();
+    const owner = await makeAdmin(tenantId);
+    const second = await makeAdmin(tenantId, { role: 'ADMIN' });
+    const sole = () => runWithTenant(tenantId, () => isSoleApprover(app.prisma, owner.userId, 'batching.settings'));
+    expect(await sole()).toBe(false);
+    await runWithoutTenant(() => app.prisma.user.update({ where: { id: second.userId }, data: { status: 'SUSPENDED' } }), 'test-fixture:solo');
+    expect(await sole()).toBe(false);
+    await runWithoutTenant(() => app.prisma.$executeRaw`UPDATE "users" SET "statusChangedAt" = now() - interval '15 days' WHERE id = ${second.userId}`, 'test-fixture:solo');
+    expect(await sole()).toBe(true);
+    // [REVIEW-2499-B S2-1] a later unrelated write to the old suspended row does not switch solo off again
+    await runWithoutTenant(() => app.prisma.user.update({ where: { id: second.userId }, data: { lastName: 'Touched' } }), 'test-fixture:solo');
+    expect(await sole()).toBe(true);
+  });
+});
+

@@ -78,7 +78,7 @@ async function reviewStepUpCredential(app: FastifyInstance, user: { phone: strin
 
 /** Text a confirmation code to the phone on the account. */
 export async function sendStepUpOtp(app: FastifyInstance, userId: string): Promise<{ sentTo: string; validForSeconds: number }> {
-  const user = await app.prisma.user.findUnique({ where: { id: userId }, select: { phone: true, tenantId: true } });
+  const user = await app.prisma.user.findUnique({ where: { id: userId }, select: { phone: true, tenantId: true, roles: true, status: true } });
   if (!user) throw new AppError(401, 'UNAUTHORIZED', 'This account is no longer active');
   // [REVIEW-2501-A S3-3] An admin who set up an authenticator app confirms with it, never with a text to the SIM
   // the second factor exists to back up. Nothing is texted; the answer says which code to enter.
@@ -109,7 +109,10 @@ export async function sendStepUpOtp(app: FastifyInstance, userId: string): Promi
   // The account exists and holds a live session: its phone is KNOWN, so it
   // draws from the separate known-phone budget — a flood of new-number
   // requests cannot lock an existing user's step-up out (audit High #2).
-  const budget = await checkOtpDailyBudget(app.redis, user.phone, { knownPhone: true });
+  // [REVIEW-2499-A S3-4(c)] An admin's step-up (PIN reveal, solo decision, email change) draws from the admins'
+  // own reserve, as their sign-in code does: a flood of the known budget never locks the console's decisions out.
+  const adminPhone = user.status === 'ACTIVE' && (user.roles.includes('ADMIN') || user.roles.includes('SUPER_ADMIN'));
+  const budget = await checkOtpDailyBudget(app.redis, user.phone, { knownPhone: true, adminPhone });
   if (!budget.allowed) {
     if (budget.reason === 'global_daily') log().error('[sms-budget] global daily OTP cap reached — refusing a step-up send');
     else if (budget.reason === 'known_daily') log().error('[sms-budget] known-phone daily OTP cap reached — refusing a step-up send');
@@ -119,7 +122,7 @@ export async function sendStepUpOtp(app: FastifyInstance, userId: string): Promi
   const code = generateOtp();
   await storeOtp(app.redis, stepUpCodeKey(userId), code);
   try {
-    await getChannels().sms.sendSms(user.phone, `Your Swift confirmation code is ${code}. It confirms a change to your account. Swift will never ask you for it.`);
+    await getChannels().sms.sendSms(user.phone, `Your Swift confirmation code is ${code}. It confirms a change to your account. Swift will never ask you for it.`, { budgeted: true });
   } catch (err) {
     await budget.refund?.().catch(() => {});
     log().error({ err, userId }, 'step-up: SMS send failed');

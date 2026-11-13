@@ -4,13 +4,16 @@ import { Prisma } from '@prisma/client';
 import type { Server } from 'socket.io';
 import { AppError, NotFoundError } from '../../utils/errors';
 import { NotificationService, notifyAdmins, tenantOfUser, isReviewTenantId } from '../notification/notification.service';
-import { OPS_WAR_ROOM, warRoomsFor } from './war-room';
+import { OPS_WAR_ROOM, sosWarRoomExclusions, warRoomsFor } from './war-room';
 import { runWithoutTenant } from '../../plugins/tenant-context';
 import { log } from '../../utils/logger';
 import { stageEscalations, drainSosEscalations, SOS_SMS_NAME_MAX } from './sos-escalation';
 import { appendRetrigger } from './sos-retrigger';
 import { acknowledgeOpsAlert } from './ops-alert';
 import { gsm7Name } from '../../utils/sms-text';
+
+/** Work that commits in the same transaction as an SOS move (REVIEW-2499-A D-2). */
+export type WithinTransition = (tx: Prisma.TransactionClient) => Promise<void>;
 
 // SOS engine — the life-safety state machine (safety spec §4). Server-owned,
 // exactly like the order machine: an explicit transition table, compare-and-set
@@ -266,7 +269,9 @@ export class SosService {
           // [GUARDRAILS §3] the store-review fiction's repeat press stays in its own tenant's room
           const fiction = live.tenantId ? await runWithoutTenant(() => isReviewTenantId(this.prisma, live.tenantId!)) : false;
           const rooms = warRoomsFor(live.tenantId).filter((room) => !(fiction && room === OPS_WAR_ROOM));
-          this.io.to(rooms).emit('sos:retrigger', {
+          // [REVIEW-2499-A S3-3] decided per socket at emission (grant now, never the named people), fail closed
+          const audience = await sosWarRoomExclusions(this.io, this.prisma, rooms, [live.actorUserId, live.counterpartyUserId]);
+          if (audience) this.io.to(rooms).except(audience.excluded).emit('sos:retrigger', {
             sosAlertId: live.id, actorUserId: live.actorUserId, orderId: live.orderId,
             at: now, source, lat: input.lat ?? null, lng: input.lng ?? null,
             retriggerCount: merged.seq, note: input.note ?? null,
@@ -493,8 +498,8 @@ export class SosService {
    *  Closes the loop: the emergency contacts who were alarmed get an all-clear.
    *  ONLY ops resolution does this — "I'm safe" must NOT (a coerced victim could
    *  be forced to tap it; §4.1). Best-effort, never fails the resolve. */
-  async resolve(id: string, opsUserId: string, resolutionCode: SosResolutionCode, notes?: string) {
-    const resolved = await this.transition(id, 'RESOLVED', { resolvedAt: new Date(), resolvedBy: opsUserId, resolutionCode, resolutionNotes: notes ?? null });
+  async resolve(id: string, opsUserId: string, resolutionCode: SosResolutionCode, notes?: string, withinTransaction?: WithinTransition) {
+    const resolved = await this.transition(id, 'RESOLVED', { resolvedAt: new Date(), resolvedBy: opsUserId, resolutionCode, resolutionNotes: notes ?? null }, withinTransaction);
     await this.fanOutResolved(id).catch(() => {});
     // [AG-XF-013] Resolving may have been the LAST obligation holding someone's
     // erasure open. Release re-enumerates rather than trusting this one closure
@@ -525,16 +530,28 @@ export class SosService {
     return resolved;
   }
 
-  /** The single CAS transition point — rejects and logs any illegal move. */
-  private async transition(id: string, to: SosStatus, extra: Record<string, unknown>) {
+  /** The single CAS transition point — rejects and logs any illegal move.
+   *  [REVIEW-2499-A D-2] `withinTransaction` runs in the same commit as the move (an audit row that must exist
+   *  whenever the move does): if it throws, the move is rolled back. */
+  private async transition(id: string, to: SosStatus, extra: Record<string, unknown>, withinTransaction?: WithinTransition) {
     const alert = await this.prisma.sosAlert.findUnique({ where: { id }, select: { status: true } });
     if (!alert) throw new NotFoundError('SosAlert', id);
     if (!SOS_TRANSITIONS[alert.status].includes(to)) {
       log().warn({ sosAlertId: id, from: alert.status, to }, 'illegal SOS transition rejected');
       throw new AppError(409, 'INVALID_SOS_TRANSITION', `Cannot move an SOS from ${alert.status} to ${to}.`);
     }
-    const moved = await this.prisma.sosAlert.updateMany({ where: { id, status: alert.status }, data: { status: to, ...extra } });
-    if (moved.count === 0) throw new AppError(409, 'SOS_TRANSITION_RACE', 'The alert changed underneath this action — retry.');
+    const move = async (db: Prisma.TransactionClient | PrismaClient) => {
+      const moved = await db.sosAlert.updateMany({ where: { id, status: alert.status }, data: { status: to, ...extra } });
+      if (moved.count === 0) throw new AppError(409, 'SOS_TRANSITION_RACE', 'The alert changed underneath this action — retry.');
+    };
+    if (withinTransaction) {
+      await this.prisma.$transaction(async (tx) => {
+        await move(tx);
+        await withinTransaction(tx);
+      });
+    } else {
+      await move(this.prisma);
+    }
     return this.prisma.sosAlert.findUniqueOrThrow({ where: { id } });
   }
 
@@ -587,7 +604,7 @@ export class SosService {
     const notice: Array<{ id: string; ok: boolean }> = [];
     for (const c of contacts) {
       // [REVIEW-PARTNER] Declared on behalf of the alert's tenant: the outbound seal stops a fiction's text.
-      try { await sendOnBehalfOf(alert.tenantId, () => sms.sendSms(c.phoneE164, body)); notice.push({ id: c.id, ok: true }); }
+      try { await sendOnBehalfOf(alert.tenantId, () => sms.sendSms(c.phoneE164, body, { lifeSafety: true })); notice.push({ id: c.id, ok: true }); }
       catch { notice.push({ id: c.id, ok: false }); }
     }
     const existing = (alert.deliveryReceipts as Record<string, unknown> | null) ?? {};

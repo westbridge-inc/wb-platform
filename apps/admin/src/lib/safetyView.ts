@@ -104,6 +104,28 @@ export interface SosRow {
   retriggerCount: number;
 }
 
+/**
+ * [REVIEW-2499-A D-1] An SOS that names you, listed only while you are the only admin who could resolve it. The server
+ * sends its id, status, when it was raised and a fixed label, nothing else: no person, place, notes or other party.
+ */
+export interface NamedSosRow {
+  id: string;
+  status: SosStatus;
+  triggeredAt: string;
+  namesYou: true;
+  label: string;
+}
+
+export type SosBoardRow = SosRow | NamedSosRow;
+
+export const isNamedSos = (a: SosBoardRow): a is NamedSosRow => (a as NamedSosRow).namesYou === true;
+
+/** The one move on a resolve-only row: Resolve, when the server's state machine allows it. Never Acknowledge (refused to the person it names). */
+export const namedSosCanResolve = (a: NamedSosRow): boolean => (SOS_TRANSITIONS[a.status] ?? []).includes('RESOLVED');
+
+/** [REVIEW-2499-A S3-1] The server's minimum for the typed self-resolve reason (selfResolveReason). */
+export const SELF_RESOLVE_REASON_MIN = 12;
+
 export interface IncidentRow {
   id: string;
   caseNumber: string;
@@ -126,6 +148,26 @@ export interface IncidentRow {
   createdAt: string;
 }
 
+/**
+ * [REVIEW-2499-B S2-2] A case that names you, while you are the only admin who could work it: the server lists its
+ * number, status, severity, interim action and when it was opened, with a fixed label. Never its summary, category,
+ * people, notes or evidence. Acknowledge, decide, close and lift go with a typed reason recorded for review.
+ */
+export interface NamedCaseRow {
+  id: string;
+  caseNumber: string;
+  status: IncidentStatus;
+  severity: IncidentSeverity;
+  interimAction: string;
+  createdAt: string;
+  namesYou: true;
+  label: string;
+}
+
+export type CaseQueueRow = IncidentRow | NamedCaseRow;
+
+export const isNamedCase = (c: CaseQueueRow): c is NamedCaseRow => (c as NamedCaseRow).namesYou === true;
+
 export type SosAction = 'ack' | 'resolve';
 export type CaseAction = 'ack' | 'decide' | 'close' | 'lift-interim';
 
@@ -137,7 +179,7 @@ export function sosActions(a: SosRow): SosAction[] {
   return out;
 }
 
-export function caseActions(c: IncidentRow): CaseAction[] {
+export function caseActions(c: Pick<IncidentRow, 'status' | 'interimAction'>): CaseAction[] {
   const next = INCIDENT_TRANSITIONS[c.status] ?? [];
   const out: CaseAction[] = [];
   if (next.includes('TRIAGED')) out.push('ack');
@@ -245,7 +287,7 @@ export function worstSla(c: IncidentRow, now = new Date()): SlaState {
 }
 
 /** Severity first, then newest, then id: the order the server pages in. */
-export function queueOrder(rows: IncidentRow[]): IncidentRow[] {
+export function queueOrder<R extends Pick<IncidentRow, 'severity' | 'createdAt' | 'id'>>(rows: R[]): R[] {
   return [...rows].sort((a, b) =>
     a.severity.localeCompare(b.severity)
     || new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()

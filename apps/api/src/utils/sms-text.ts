@@ -51,13 +51,19 @@ export function gsm7Parts(text: string): number {
  * A person's name made safe to put in a text: `toGsm7` (look-alikes mapped, so
  * O\u2019Neil keeps its apostrophe; letters outside the GSM alphabet fall back
  * to their base letter, ā → a; anything else dropped), cut to `max` characters.
- * Returns '' when no letter or digit is left: punctuation alone is not a name,
- * and the caller supplies its own words.
+ * Returns '' when no letter is left, or when anything but letters, spaces,
+ * apostrophes and hyphens was typed (AUDIT-20261113 F19): the caller supplies
+ * its own words.
  */
 export function gsm7Name(raw: string | null | undefined, max: number): string {
   if (!raw) return '';
-  const out = toGsm7(raw.normalize('NFC')).slice(0, max).trim();
-  return /[\p{L}\p{N}]/u.test(out) ? out : '';
+  const out = toGsm7(raw.normalize('NFC')).replace(/\s+/g, ' ').trim();
+  // [AUDIT-20261113 F19] The name is free text and the text goes from Swift's own sender to a number the
+  // account holder chose: only letters, spaces, apostrophes and hyphens are a name. Digits, a link, a price
+  // or any other mark ("Pay GY$500 at swft-pay.co") is not carried at all: the caller's own words go instead.
+  if (!/^[\p{L}\p{M}' -]+$/u.test(out)) return '';
+  const cut = out.slice(0, max).trim();
+  return /\p{L}/u.test(cut) ? cut : '';
 }
 
 // ---------------------------------------------------------------------------

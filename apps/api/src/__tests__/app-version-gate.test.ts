@@ -191,6 +191,7 @@ describe('builds 9–11 are never refused because of it', () => {
     const importers = files.filter((f) => /from '[^']*ops\/app-version'|from '\.\/app-version'/.test(read(f))).map((f) => relative(src, f));
     expect(importers).toEqual(['modules/public/public.routes.ts']);
     const named = files.filter((f) => KEYS.some((k) => read(f).includes(`'${k}'`))).map((f) => relative(src, f));
-    expect(named).toEqual(['modules/ops/app-version.ts']);
+    // [#2499] security-config.ts names the keys only to let the Config page WRITE them (the generic config allowlist); it reads nothing.
+    expect(named).toEqual(['modules/admin/security-config.ts', 'modules/ops/app-version.ts']);
   });
 });

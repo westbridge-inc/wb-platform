@@ -1,6 +1,7 @@
 import { Prisma, type PrismaClient } from '@prisma/client';
 import { AppError } from '../../utils/errors';
 import { log } from '../../utils/logger';
+import { contactBlockedUserIds } from '../moderation/user-block.service';
 import { isTerminalOrderStatus } from '../order/order-status';
 import { publishedStorePhone } from '../../utils/vendor-public-phone';
 import type { CallProvider, CallStep, ProviderWebhook } from '../../providers/voice/call-provider';
@@ -128,6 +129,7 @@ export interface CallBridgeDeps {
 
 export const ORDER_PARTIES = {
   id: true,
+  tenantId: true,
   orderNumber: true,
   orderType: true,
   status: true,
@@ -213,6 +215,25 @@ function peopleFor(order: PartyOrder, role: CallTarget): string[] {
   }
 }
 
+/**
+ * [AUDIT-20261113 F13 · F14] Who among `people` is behind a block with `callerUserId` (either direction), in the
+ * order's tenant. A block is a safety control: Swift never rings a person for someone they blocked or who
+ * blocked them — at the start, and again at the moment a phone or an app would ring.
+ */
+export async function blockedWithCaller(prisma: PrismaClient, order: Pick<PartyOrder, 'tenantId'>, callerUserId: string, people: readonly string[]): Promise<Set<string>> {
+  if (people.length === 0) return new Set();
+  const blocked = new Set(await contactBlockedUserIds(prisma, order.tenantId, callerUserId));
+  return new Set(people.filter((id) => blocked.has(id)));
+}
+
+/** The neutral refusal chat and services use: never says which side blocked. */
+export const callBlockedError = () => new AppError(403, 'USER_BLOCKED', 'Contact is unavailable between these accounts.');
+
+/** The accounts behind a party for the block check (the bridge rings the store's owner line). */
+export function bridgePeopleFor(order: PartyOrder, role: CallTarget): string[] {
+  return peopleFor(order, role);
+}
+
 export const webhookUrl = (config: Pick<CallRelayConfig, 'webhookBase'>, step: CallStepName, callId: string) =>
   `${config.webhookBase}/${step}?s=${encodeURIComponent(callId)}`;
 
@@ -277,6 +298,8 @@ export async function startBridgeCall(deps: CallBridgeDeps, input: StartCallInpu
   if (!callerRole) {
     throw new AppError(400, 'CALL_TARGET_INVALID', 'Swift cannot connect that call on this order.');
   }
+  // [AUDIT-20261113 F13] A block in either direction refuses the call before anything is written or rung.
+  if ((await blockedWithCaller(deps.prisma, order, input.userId, peopleFor(order, input.target))).size > 0) throw callBlockedError();
   const caller = await deps.prisma.user.findUnique({ where: { id: input.userId }, select: { phone: true } });
   // [REVIEW-M17 S1-1] Both legs through the one dial guard: Swift rings only complete Guyana lines.
   const callerNumber = dialableNumber(caller?.phone, deps.config.callerId);
@@ -440,7 +463,9 @@ export async function handleVoiceStep(
       const order = await loadOrder(deps.prisma, session.orderId);
       // [REVIEW-M17 S1-1] The same dial guard at the moment of dialling leg 2.
       const to = order && !isTerminalOrderStatus(order.status) ? dialFor(order, session.calleeRole as CallTarget, deps.config.callerId) : null;
-      if (!order || !to) {
+      // [AUDIT-20261113 F13] A block placed while the caller's own phone rang: leg 2 never dials.
+      const blockedNow = order ? (await blockedWithCaller(deps.prisma, order, session.callerUserId, peopleFor(order, session.calleeRole as CallTarget))).size > 0 : false;
+      if (!order || !to || blockedNow) {
         await deps.prisma.callSession.updateMany({ where: { id: session.id, endedAt: null }, data: notConnected });
         return hangup(notReachedWords);
       }

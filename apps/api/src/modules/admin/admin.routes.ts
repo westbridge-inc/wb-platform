@@ -1,4 +1,5 @@
 import { emitToOrderRoom, emitToStoreRoom } from '../order/order-room-emission.service';
+import { assertGenericConfigWritable } from './security-config';
 import { assertAdminSessionPosture } from '../auth/admin-mfa';
 import { assertConfigKeyWritable } from './machine-owned-config';
 import { scanUpload } from '../../lib/malware-scan';
@@ -120,6 +121,7 @@ import { AccountService, ACCOUNT_CLOSURE_CONFIRMED, ACCOUNT_CLOSURE_SUBJECT } fr
 import { LIVE_SOS_STATUSES } from '../safety/sos.service';
 import { hasTaxiPassengerCustody } from '../rides/passenger-custody';
 import { assertMayEndRide } from '../rides/end-ride-authority';
+import { isSoleEligibleResponder, SELF_RESOLVED_FLAG } from '../integrity/sole-responder';
 import { assertPromoTerms, recordPromoTermsVersion, rollbackPromoTerms, updatePromoTerms } from '../promo/promo-terms';
 import { assertSwiftPaidPromoWritable } from '../promo/swift-paid';
 import {
@@ -844,6 +846,20 @@ export async function adminRoutes(app: FastifyInstance) {
     }
   };
 
+  // [AUDIT-20261113 F11] A founder-only (or canonical-tenant) route refuses the wrong admin BEFORE the
+  // two-person gate. Its guard ran as a preHandler, after the preValidation gate had already stored a PENDING
+  // ask, so a plain ADMIN could hold the one-open-ask slot and block the founder's own change. Every route
+  // whose preHandler names one of these guards also runs it at onRequest (after the plugin's admin and
+  // capability hooks); the preHandler stays, and re-running a guard is idempotent.
+  const EARLY_GUARDS = new Set<unknown>([founderGuard, platformControlGuard, canonicalTenantGuard]);
+  app.addHook('onRoute', (route: any) => {
+    const pre = ([] as unknown[]).concat(route.preHandler ?? []);
+    const early = pre.filter((h) => EARLY_GUARDS.has(h));
+    if (early.length === 0) return;
+    const onRequest = ([] as unknown[]).concat(route.onRequest ?? []);
+    route.onRequest = [...onRequest, ...early.filter((h) => !onRequest.includes(h))];
+  });
+
   // Belt-and-suspenders (pre-launch audit): the guard is applied per-route on
   // all 42 routes today, but a future admin route that forgets its preHandler
   // would be unauthenticated. This plugin-scoped onRequest hook enforces admin
@@ -928,6 +944,18 @@ export async function adminRoutes(app: FastifyInstance) {
     }
     adminReasonCounter.labels(problem, authority.cls).inc();
     throw new ValidationError(reasonRefusal(problem, authority.cls));
+  });
+
+  // [money review on #2499 · coordinator ruling] The generic config route writes only the Config page's keys: any
+  // other key is refused before the two-person gate can store an ask, and on every request that would write it (the
+  // apply replay passes this hook too). See security-config.ts.
+  app.addHook('preValidation', async (request: any) => {
+    if (request.method === 'PUT' && routeTemplateOf(request, app.prefix) === '/config/:key') {
+      const key = (request.params as { key?: unknown } | undefined)?.key;
+      // #2500's machine-owned refusal first (its own words), then this allowlist, which subsumes it.
+      assertConfigKeyWritable(key);
+      assertGenericConfigWritable(key);
+    }
   });
 
   // [ADM-005] A MONEY OR PLATFORM ACTION TAKES TWO PEOPLE.
@@ -3985,13 +4013,22 @@ export async function adminRoutes(app: FastifyInstance) {
         { userId: locked.customerId, body: `${closed} If you paid the driver or have a question, open Get Help.`, audience: 'customer' as const },
         ...(driver ? [{ userId: driver.userId, body: `${closed} You are offline until you go online again. If you have a question, open Get Help.`, audience: 'earner' as const }] : []),
       ];
-      const { identityReviewReasons } = await assertMayEndRide(tx, request.user.userId, parties.map((party) => party.userId));
+      // [REVIEW-2499-A S3-1 · coordinator ruling] The only eligible responder (no other active admin holds
+      // order.ride.end) may end a ride that names them: the reason is required anyway (C3), and the audit row is
+      // flagged for a second person's review once a second admin exists. Otherwise the ride could never close.
+      let selfEnded = false;
+      const { identityReviewReasons } = await assertMayEndRide(tx, request.user.userId, parties.map((party) => party.userId)).catch(async (err: unknown) => {
+        const partyRefusal = err instanceof AppError && (err.code === 'OWN_RIDE' || err.code === 'STAFF_ON_RIDE');
+        if (!partyRefusal || !(await isSoleEligibleResponder(tx, request.user.userId, 'order.ride.end', locked.tenantId))) throw err;
+        selfEnded = true;
+        return { identityReviewReasons: [] as string[] };
+      });
       if (await tx.sosAlert.count({ where: { orderId: id, status: { in: LIVE_SOS_STATUSES } } }) > 0) {
         throw new AppError(409, 'SOS_LIVE', 'An SOS is open on this ride. Resolve it first.');
       }
       await tx.auditLog.create({ data: {
         userId: request.user.userId, action: 'END_STUCK_RIDE', entity: 'Order', entityId: id,
-        changes: { reason, previousStatus: neverStarted ? 'DRIVER_ARRIVED' : 'RIDE_IN_PROGRESS', ...(identityReviewReasons.length > 0 ? { identityUnderReview: true, identityReviewReasons } : {}) },
+        changes: { reason, previousStatus: neverStarted ? 'DRIVER_ARRIVED' : 'RIDE_IN_PROGRESS', ...(identityReviewReasons.length > 0 ? { identityUnderReview: true, identityReviewReasons } : {}), ...(selfEnded ? { selfResolved: true, review: SELF_RESOLVED_FLAG } : {}) },
         ipAddress: request.ip, userAgent: request.headers['user-agent'],
       } });
       for (const party of parties) {

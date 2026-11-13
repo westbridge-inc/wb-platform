@@ -263,8 +263,10 @@ describe('[A-15] a code that has been read is spent', () => {
     expect(rotate.json().data.rotated).toBe(true);
     expect(rotate.payload).not.toContain('123321');
 
-    const after = await app.prisma.order.findUnique({ where: { id: order.id }, select: { pickupCode: true, pickupCodeAttempts: true } });
+    const after = await app.prisma.order.findUnique({ where: { id: order.id }, select: { pickupCode: true, pickupCodeAttempts: true, pickupCodeIssuedAt: true } });
     expect(after?.pickupCode).not.toBe('123321');
+    // [REVIEW-2499-A S3-2] the new code is dated: chat written before it is never judged against it
+    expect(after?.pickupCodeIssuedAt).toBeInstanceOf(Date);
     expect(after?.pickupCode).toMatch(/^\d{6}$/);
     expect(after?.pickupCodeAttempts).toBe(0);
 

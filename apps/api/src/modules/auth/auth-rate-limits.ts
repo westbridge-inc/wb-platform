@@ -2,6 +2,7 @@ import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { createHash } from 'node:crypto';
 import { AppError } from '../../utils/errors';
 import { normalizePhone } from '../../utils/phone';
+import { addressBucket } from '../../utils/sms-budget';
 
 // ---------------------------------------------------------------------------
 // [FLOW-QA F15 · 2 Nov 2026] Sign-in limits that do not lock out a whole carrier.
@@ -85,7 +86,8 @@ export function perCredential(
     timeWindow: WINDOW_MS,
     keyGenerator: (request: FastifyRequest) => scope === 'credential'
       ? `auth-${name}:${digest(credential(request) ?? '')}`
-      : `auth-${name}:${request.ip}:${digest(credential(request) ?? '')}`,
+      // [AUDIT-20261113 S4] an IPv6 client holds a whole /64: one /64 is one address here
+      : `auth-${name}:${addressBucket(request.ip)}:${digest(credential(request) ?? '')}`,
   });
   return async (request: FastifyRequest) => {
     if (!credential(request)) return;

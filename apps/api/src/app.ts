@@ -1,4 +1,5 @@
 import Fastify, { type RouteOptions } from 'fastify';
+import { secretEquals } from './utils/secret-equals';
 import cors from '@fastify/cors';
 import helmet from '@fastify/helmet';
 import rateLimit from '@fastify/rate-limit';
@@ -241,7 +242,7 @@ export async function buildApp(options: BuildAppOptions = {}) {
     const detailToken = process.env['HEALTH_DETAIL_TOKEN'];
     const showDetail =
       isDevelopment() ||
-      (!!detailToken && request.headers['x-health-detail'] === detailToken);
+      (!!detailToken && secretEquals(request.headers['x-health-detail'], detailToken));
     if (!showDetail) {
       return { status, timestamp: new Date().toISOString() };
     }

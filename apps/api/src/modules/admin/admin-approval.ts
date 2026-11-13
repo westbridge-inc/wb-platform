@@ -304,6 +304,26 @@ export function approvalRefusalMessage(code: ApprovalRefusal): string {
   }
 }
 
+/** Every value under a key named `reason`, at any depth, in document order (the keys the fingerprint skips). */
+function reasonsIn(value: unknown, out: string[] = []): string[] {
+  if (Array.isArray(value)) { for (const v of value) reasonsIn(v, out); return out; }
+  if (value && typeof value === 'object') {
+    for (const [key, v] of Object.entries(value as Record<string, unknown>).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) {
+      if (key === 'reason') out.push(JSON.stringify(v ?? null));
+      else reasonsIn(v, out);
+    }
+  }
+  return out;
+}
+
+/** [AUDIT-20261113 F10] The body's reasons are the ones the stored, reviewed body carried. A legacy row with no
+ *  snapshot has nothing to compare: the presented reason check above still holds. */
+function sameReasons(body: unknown, snapshot: unknown): boolean {
+  const stored = (snapshot as { body?: unknown } | null | undefined)?.body;
+  if (stored === undefined) return true;
+  return JSON.stringify(reasonsIn(body ?? {})) === JSON.stringify(reasonsIn(stored ?? {}));
+}
+
 /**
  * Resolve the approval for one request.
  *
@@ -403,6 +423,12 @@ export async function resolveApproval(
     if (actor.role !== SOLO_ROLE || !(await isSoleApprover(prisma, actor.userId, approval.capability))) {
       return { outcome: 'refused', code: 'solo-ended', approvalId };
     }
+  }
+  // [AUDIT-20261113 F10] The fingerprint leaves the reason out (rewording is not a different act), but the act
+  // runs with a reason the second person read: the presented reason, and every `reason` in the body, must be
+  // the approved ones. Several acts store the body's reason (a waiver's reason is shown to the partner).
+  if (reason !== (approval.reason ?? '') || !sameReasons(subject.body, (approval as { bodySnapshot?: unknown }).bodySnapshot)) {
+    return { outcome: 'refused', code: 'request-changed', approvalId };
   }
   // Spent AT THE GATE, not after the act. Checking here and marking afterwards
   // leaves a window exactly as wide as the handler: two requests carrying the

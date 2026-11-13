@@ -85,8 +85,9 @@ describe('admin audit trail', () => {
 
     // Read-modify-write the same value: state-neutral for other tests, but a
     // successful mutation as far as the trail is concerned.
-    const current = await app.prisma.platformConfig.findUnique({ where: { key: 'delivery_base_fee' } });
-    const res = await inject('PUT', '/api/v1/admin/config/delivery_base_fee', {
+    // [#2499] the generic config route writes only Config-page keys (and test.* in tests): a test key of its own
+    const current = await app.prisma.platformConfig.upsert({ where: { key: 'test.delivery_base_fee' }, create: { key: 'test.delivery_base_fee', value: 500 }, update: {} });
+    const res = await inject('PUT', '/api/v1/admin/config/test.delivery_base_fee', {
       value: current!.value,
     });
     expect(res.statusCode).toBe(200);
@@ -106,7 +107,7 @@ describe('admin audit trail', () => {
     });
     expect(row).not.toBeNull();
     expect(row!.action).toContain('/config/:key');
-    expect(row!.entityId).toBe('delivery_base_fee');
+    expect(row!.entityId).toBe('test.delivery_base_fee');
     expect(row!.userId).toBeTruthy();
   });
 

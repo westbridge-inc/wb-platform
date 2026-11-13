@@ -243,6 +243,132 @@ describe('[SAFETY BOARD] an open SOS', () => {
   });
 });
 
+// [REVIEW-2499-A D-1] The board leaves out an SOS that names you. When you are the only admin who could resolve it, the
+// server lists it as a minimal row (id, status, when, a fixed label) so you can still close it: Resolve only, with the
+// typed reason the server requires. Nothing about the person, the place or the other party is read or shown.
+describe('[REVIEW-2499-A D-1] an SOS that names you, when you are the only admin', () => {
+  const namedRow = (over: Record<string, unknown> = {}) => ({ id: 'sos-named', status: 'ACTIVE', triggeredAt: TRIGGERED, namesYou: true, label: 'This alert names you: resolve only', ...over });
+  const namedCard = () => screen.findByRole('listitem', { name: /^SOS naming you/ });
+
+  it('the board asks for these rows; the row says so, reads no person or order, and offers Resolve only', async () => {
+    const { fetchMock } = serve({ alerts: [namedRow()] });
+    renderWithQuery(<SafetyPage />);
+    const card = await namedCard();
+    expect(card.textContent).toContain('This alert names you: resolve only');
+    expect(card.textContent).toContain('5 Nov 2026, 10:04');
+    expect(within(card).queryByRole('button', { name: /Acknowledge/ })).toBeNull();
+    expect(within(card).getByRole('button', { name: 'Resolve…' })).toBeTruthy();
+    const listCall = fetchMock.mock.calls.map(([url]) => new URL(String(url))).find((u) => u.pathname === '/api/v1/safety/sos')!;
+    expect(listCall.searchParams.get('named')).toBe('resolve');
+    const reads = fetchMock.mock.calls.map(([url]) => new URL(String(url)).pathname);
+    expect(reads.filter((p) => p.startsWith('/api/v1/admin/'))).toEqual([]);
+  });
+
+  it('Resolve will not go without a code and a typed reason of at least 12 characters, then sends both', async () => {
+    const { fetchMock } = serve({ alerts: [namedRow()], onWrite: () => ok({ id: 'sos-named', status: 'RESOLVED', resolutionCode: 'FALSE_ALARM', selfResolved: true }) });
+    const { user } = renderWithQuery(<SafetyPage />);
+    await user.click(within(await namedCard()).getByRole('button', { name: 'Resolve…' }));
+    const dialog = screen.getByRole('dialog', { name: 'Resolve this SOS that names you?' });
+    expect(dialog.textContent).toMatch(/second person/);
+    await user.click(within(dialog).getByRole('radio', { name: 'False alarm' }));
+    await user.click(within(dialog).getByRole('button', { name: 'Resolve' }));
+    expect(posts(fetchMock)).toEqual([]);
+    const reason = within(dialog).getByRole('textbox', { name: /Why you are resolving it yourself/ });
+    await user.type(reason, 'too short');
+    await user.click(within(dialog).getByRole('button', { name: 'Resolve' }));
+    expect(posts(fetchMock)).toEqual([]);
+    await user.type(reason, ' — pressed by mistake');
+    await user.click(within(dialog).getByRole('button', { name: 'Resolve' }));
+    await waitFor(() => expect(posts(fetchMock)).toEqual([{ path: '/api/v1/safety/sos/sos-named/resolve', body: { resolutionCode: 'FALSE_ALARM', selfResolveReason: 'too short — pressed by mistake' } }]));
+  });
+
+  // [REVIEW-2499-B S4-4] The server trims the reason before its 12-character minimum; so does the console: spaces
+  // around a short reason never pass here and fail there.
+  it('a short reason padded with spaces is refused here, as the server would, and nothing is sent', async () => {
+    const { fetchMock } = serve({ alerts: [namedRow()], onWrite: () => ok({ id: 'sos-named', status: 'RESOLVED' }) });
+    const { user } = renderWithQuery(<SafetyPage />);
+    await user.click(within(await namedCard()).getByRole('button', { name: 'Resolve…' }));
+    const dialog = screen.getByRole('dialog', { name: 'Resolve this SOS that names you?' });
+    await user.click(within(dialog).getByRole('radio', { name: 'False alarm' }));
+    await user.type(within(dialog).getByRole('textbox', { name: /Why you are resolving it yourself/ }), '      oops        ');
+    await user.click(within(dialog).getByRole('button', { name: 'Resolve' }));
+    expect(dialog.textContent).toContain('Enter at least 12 characters.');
+    expect(posts(fetchMock)).toEqual([]);
+  });
+
+  it('a row that can no longer be resolved offers nothing', async () => {
+    serve({ alerts: [namedRow({ status: 'TRIGGER_PENDING' })] });
+    renderWithQuery(<SafetyPage />);
+    expect(within(await namedCard()).queryByRole('button', { name: /Resolve/ })).toBeNull();
+  });
+
+  it('an ordinary SOS card no longer asks for the self-resolve reason', async () => {
+    serve({ alerts: [sos()] });
+    const { user } = renderWithQuery(<SafetyPage />);
+    await user.click(within(await alertCard()).getByRole('button', { name: 'Resolve…' }));
+    const dialog = screen.getByRole('dialog', { name: 'Resolve this SOS?' });
+    expect(within(dialog).queryByRole('textbox', { name: /yourself/ })).toBeNull();
+  });
+});
+
+// [REVIEW-2499-B S2-2] The queue leaves out a case that names you. When you are the only admin who could work it, the
+// server lists it as a minimal row (number, status, severity, interim action, when) so it can still be worked: every
+// move asks for the typed reason the server records for review. Nothing about the people or the report is read or shown.
+describe('[REVIEW-2499-B S2-2] a case that names you, when you are the only admin', () => {
+  const namedCase = (over: Record<string, unknown> = {}) => ({ id: 'case-named', caseNumber: 'INC-NAMED', status: 'OPEN', severity: 'S1', interimAction: 'SUSPENDED_PENDING_REVIEW', createdAt: '2026-11-05T13:00:00.000Z', namesYou: true, label: 'This case names you: act on it only with a reason', ...over });
+  const namedCaseCard = () => screen.findByRole('listitem', { name: 'Case INC-NAMED naming you' });
+
+  it('the queue asks for these rows; the row says so, reads no person, and offers the moves the state allows', async () => {
+    const { fetchMock } = serve({ cases: [namedCase()] });
+    renderWithQuery(<SafetyPage />);
+    const card = await namedCaseCard();
+    expect(card.textContent).toContain('This case names you: act on it only with a reason');
+    expect(within(card).getByRole('button', { name: 'Acknowledge…' })).toBeTruthy();
+    expect(within(card).getByRole('button', { name: /^Lift / })).toBeTruthy();
+    expect(within(card).queryByRole('link')).toBeNull();
+    const listCall = fetchMock.mock.calls.map(([url]) => new URL(String(url))).find((u) => u.pathname === '/api/v1/safety/incidents')!;
+    expect(listCall.searchParams.get('named')).toBe('resolve');
+    expect(fetchMock.mock.calls.map(([url]) => new URL(String(url)).pathname).filter((p) => p.startsWith('/api/v1/admin/'))).toEqual([]);
+  });
+
+  it('Acknowledge and Lift will not go without a typed reason of at least 12 characters (trimmed), then send it', async () => {
+    const { fetchMock } = serve({ cases: [namedCase()], onWrite: () => ok({ id: 'case-named', status: 'TRIAGED' }) });
+    const { user } = renderWithQuery(<SafetyPage />);
+    await user.click(within(await namedCaseCard()).getByRole('button', { name: 'Acknowledge…' }));
+    let dialog = screen.getByRole('dialog', { name: 'Acknowledge case INC-NAMED that names you?' });
+    expect(dialog.textContent).toMatch(/second person/);
+    await user.click(within(dialog).getByRole('button', { name: 'Acknowledge' }));
+    expect(posts(fetchMock)).toEqual([]);
+    const reason = within(dialog).getByRole('textbox', { name: /Why you are acting on it yourself/ });
+    await user.type(reason, '     short      ');
+    await user.click(within(dialog).getByRole('button', { name: 'Acknowledge' }));
+    expect(posts(fetchMock)).toEqual([]);
+    await user.clear(reason);
+    await user.type(reason, 'I reported this myself as a test');
+    await user.click(within(dialog).getByRole('button', { name: 'Acknowledge' }));
+    await waitFor(() => expect(posts(fetchMock)).toEqual([{ path: '/api/v1/safety/incidents/case-named/ack', body: { selfResolveReason: 'I reported this myself as a test' } }]));
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: /Acknowledge case/ })).toBeNull());
+    await user.click(within(await namedCaseCard()).getByRole('button', { name: /^Lift / }));
+    dialog = screen.getByRole('dialog', { name: /^Lift the .* on case INC-NAMED that names you\?$/ });
+    await user.type(within(dialog).getByRole('textbox', { name: /Why you are acting on it yourself/ }), 'The driver did nothing wrong here');
+    await user.click(within(dialog).getByRole('button', { name: /^Lift / }));
+    await waitFor(() => expect(posts(fetchMock).at(-1)).toEqual({ path: '/api/v1/safety/incidents/case-named/lift-interim', body: { selfResolveReason: 'The driver did nothing wrong here' } }));
+  });
+
+  it('Decide sends the code and the reason', async () => {
+    const { fetchMock } = serve({ cases: [namedCase({ status: 'TRIAGED', interimAction: 'NONE' })], onWrite: () => ok({ id: 'case-named', status: 'DECIDED' }) });
+    const { user } = renderWithQuery(<SafetyPage />);
+    const card = await namedCaseCard();
+    expect(within(card).queryByRole('button', { name: /^Lift / })).toBeNull();
+    await user.click(within(card).getByRole('button', { name: 'Decide…' }));
+    const dialog = screen.getByRole('dialog', { name: 'Decide case INC-NAMED that names you?' });
+    await user.click(within(dialog).getByRole('radio', { name: 'Dismissed' }));
+    await user.type(within(dialog).getByRole('textbox', { name: /Why you are acting on it yourself/ }), 'Reported by mistake from my phone');
+    await user.click(within(dialog).getByRole('button', { name: 'Record the decision' }));
+    await waitFor(() => expect(posts(fetchMock)).toEqual([{ path: '/api/v1/safety/incidents/case-named/decide', body: { decisionCode: 'DISMISSED', selfResolveReason: 'Reported by mistake from my phone' } }]));
+  });
+});
+
 describe('[SAFETY BOARD] the person behind an SOS', () => {
   it('the number is the audited read: a reason, sent as the reason header, the full number for this view only', async () => {
     const seen: ApiRequest[] = [];

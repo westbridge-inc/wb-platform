@@ -10,6 +10,9 @@ import {
   CALL_STATUS,
   CALL_WORDS,
   PARTNER_ROLES,
+  blockedWithCaller,
+  bridgePeopleFor,
+  callBlockedError,
   callerRolesOn,
   dialFor,
   loadOrder,
@@ -292,10 +295,14 @@ export async function startInAppCall(deps: InAppDeps, input: StartInAppInput): P
   }
   const callerRole = roles.find((r) => pairAllowed(r, input.target, order.orderType));
   if (!callerRole) throw new AppError(400, 'CALL_TARGET_INVALID', 'Swift cannot connect that call on this order.');
-  const people = (await appPeopleFor(deps.prisma, order, input.target)).filter((id) => id !== input.userId);
-  if (people.length === 0) {
+  const party = (await appPeopleFor(deps.prisma, order, input.target)).filter((id) => id !== input.userId);
+  if (party.length === 0) {
     throw new AppError(409, 'INAPP_NO_ONE', 'There is no one to call in the app for this. Message them in chat, or ask support.');
   }
+  // [AUDIT-20261113 F14] Nobody behind a block with the caller (either direction) is rung; with nobody left, refused.
+  const blocked = await blockedWithCaller(deps.prisma, order, input.userId, party);
+  const people = party.filter((id) => !blocked.has(id));
+  if (people.length === 0) throw callBlockedError();
   // [CALLS-REACH 8 Nov] Live test: the store called a customer whose phone had never registered, with the phone
   // bridge off. The call was started and only then hung up with "We couldn't reach them", spending one of the
   // order's attempts. Now: no phone of theirs can ring in the app and Swift cannot ring their phone instead ->
@@ -442,9 +449,12 @@ export async function handleInAppStep(
         return hangup();
       }
       const order = await loadOrder(deps.prisma, session.orderId);
-      const people = order && !isTerminalOrderStatus(order.status)
+      const party = order && !isTerminalOrderStatus(order.status)
         ? (await appPeopleFor(deps.prisma, order, session.calleeRole as CallTarget)).filter((id) => id !== session.callerUserId)
         : [];
+      // [AUDIT-20261113 F14] Re-judged when the call connects: a block placed since the start drops that person.
+      const blockedNow = order ? await blockedWithCaller(deps.prisma, order, session.callerUserId, party) : new Set<string>();
+      const people = party.filter((id) => !blockedNow.has(id));
       const { identities: clients, registryOk } = await ringableCheck(deps, people, now);
       // Single use: the first connect takes the row; a replay of the same call id is hung up.
       const taken = await deps.prisma.callSession.updateMany({
@@ -524,7 +534,7 @@ function phoneCanTakeIt(deps: Pick<InAppDeps, 'relay'>, order: PartyOrder, targe
  */
 async function phoneFallback(
   deps: InAppDeps,
-  session: { id: string; orderId: string; callerRole: string; calleeRole: string },
+  session: { id: string; orderId: string; callerUserId: string; callerRole: string; calleeRole: string },
   dialStatus: string,
   enabled: boolean,
 ): Promise<{ step: CallStep } | null> {
@@ -533,6 +543,8 @@ async function phoneFallback(
   // [REVIEW-M17 S1-1] The bridge's one dial guard: a complete Guyana line, never Swift's own number, an ACTIVE store.
   const to = order && !isTerminalOrderStatus(order.status) ? dialFor(order, session.calleeRole as CallTarget, deps.relay.config.callerId) : null;
   if (!order || !to) return null;
+  // [AUDIT-20261113 F14] Never ring a phone whose account is behind a block with the caller.
+  if ((await blockedWithCaller(deps.prisma, order, session.callerUserId, bridgePeopleFor(order, session.calleeRole as CallTarget))).size > 0) return null;
   const moved = await deps.prisma.callSession.updateMany({
     where: { id: session.id, status: INAPP_STATUS.RINGING_APP, endedAt: null },
     data: { status: CALL_STATUS.CALLER_CONFIRMED },

@@ -3479,6 +3479,8 @@ export async function customerRoutes(app: FastifyInstance) {
           tipAmount: 0,
           totalAmount: { decrement: moneyOff },
           pickupCode,
+          // [REVIEW-2499-A S3-2] A code issued now: older chat history is never judged against it (no read oracle).
+          pickupCodeIssuedAt: new Date(),
         },
       });
       if (converted.count === 0) {

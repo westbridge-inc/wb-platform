@@ -673,7 +673,7 @@ async function confirmSignInCode(prisma: PrismaClient, owner: OnlyAdmin, verifie
   const code = generateOtp();
   let sent: unknown;
   try {
-    sent = await getChannels().sms.sendSms(owner.phone, `Your Swift confirmation code is ${code}. It applies the production settings re-seed you approve alone (${reseedWords(plan)}) now. If you did not start it, do not share the code.`);
+    sent = await getChannels().sms.sendSms(owner.phone, `Your Swift confirmation code is ${code}. It applies the production settings re-seed you approve alone (${reseedWords(plan)}) now. If you did not start it, do not share the code.`, { budgeted: true });
   } catch {
     throw new SeedRefused('SOLO_SMS_UNAVAILABLE', 'the sign-in code could not be texted; nothing ran. Try again later');
   }

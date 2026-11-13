@@ -589,8 +589,10 @@ describe('MKT-F057 — a locked door has a support reset (decision 5: 5 attempts
     expect(reset.payload).not.toContain('135790');
 
     // Durable: a new PIN, a clear budget, and the reason on the record.
-    const after = await app.prisma.order.findUniqueOrThrow({ where: { id: order.id }, select: { ridePin: true, ridePinAttempts: true, status: true } });
+    const after = await app.prisma.order.findUniqueOrThrow({ where: { id: order.id }, select: { ridePin: true, ridePinAttempts: true, status: true, ridePinIssuedAt: true } });
     expect(after.ridePin).toMatch(/^\d{6}$/);
+    // [REVIEW-2499-A S3-2] the new PIN is dated: chat written before it is never judged against it
+    expect(after.ridePinIssuedAt).toBeInstanceOf(Date);
     expect(after.ridePin).not.toBe('135790');
     expect(after).toMatchObject({ ridePinAttempts: 0, status: 'ARRIVED' });
     const audit = await app.prisma.auditLog.findFirst({ where: { action: 'RESET_DELIVERY_PIN', entityId: order.id } });

@@ -352,3 +352,20 @@ describe('the send path never stores, broadcasts or pushes a live code', () => {
     }
   });
 });
+
+// [AUDIT-20261113 F2] Redaction must never say WHERE a code sat. A span replaced in place told a sender
+// which digits of their own message were the live code: a position oracle. Any match hides the whole body.
+describe('[AUDIT-20261113 F2] a redaction never reveals where the code was', () => {
+  const secrets = { ridePin: RIDE_PIN, pickupCode: PICKUP_CODE };
+  it('a literal code inside a longer digit stream hides the whole message', () => {
+    const stream = `1234567${RIDE_PIN}8901234`;
+    const out = redactOrderSecrets(`try these ${stream} thanks`, secrets);
+    expect(out.redacted).toBe(true);
+    expect(out.wholeMessage).toBe(true);
+    expect(out.text).toBe(SECRET_REDACTION);
+  });
+  it('a bare pickup code hides the whole message too', () => {
+    const out = redactOrderSecrets(`collection code ${PICKUP_CODE} at the gate`, secrets);
+    expect(out.text).toBe(SECRET_REDACTION);
+  });
+});

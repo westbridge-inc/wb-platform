@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import Redis from 'ioredis';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { nanoid } from 'nanoid';
@@ -129,6 +129,92 @@ describe('OTP SMS daily budget (cost guardrails)', () => {
     // The known send neither consulted nor advanced the exhausted per-IP counter.
     expect(Number(await redis.get(`otp_ip_day:${day}:${IP_A}`))).toBe(2);
     expect(Number(await redis.get(`sms_known_day:${day}`))).toBe(1);
+  });
+
+  // [AUDIT-20261113 FABLE-03 S3-5] One source could spend the whole known-number budget (store and rider numbers
+  // are public) and lock every existing account out of sign-in, the admins included.
+  it('[S3-5] one address spends at most its own share of the known budget; another address is untouched', async () => {
+    process.env['OTP_PHONE_DAILY_CAP'] = '1000000';
+    process.env['OTP_KNOWN_DAILY_CAP'] = '1000000';
+    process.env['OTP_KNOWN_IP_DAILY_CAP'] = '2';
+    const ip = '203.0.113.210'; const other = '203.0.113.211';
+    await redis.del(`otp_known_ip_day:${day}:${ip}`, `otp_known_ip_day:${day}:${other}`);
+    try {
+      expect((await checkOtpDailyBudget(redis, `+592ka${Date.now()}`, { ip, knownPhone: true })).allowed).toBe(true);
+      expect((await checkOtpDailyBudget(redis, `+592kb${Date.now()}`, { ip, knownPhone: true })).allowed).toBe(true);
+      expect(await checkOtpDailyBudget(redis, `+592kc${Date.now()}`, { ip, knownPhone: true })).toMatchObject({ allowed: false, reason: 'known_ip_daily' });
+      expect((await checkOtpDailyBudget(redis, `+592kd${Date.now()}`, { ip: other, knownPhone: true })).allowed).toBe(true);
+    } finally {
+      delete process.env['OTP_KNOWN_IP_DAILY_CAP'];
+      await redis.del(`otp_known_ip_day:${day}:${ip}`, `otp_known_ip_day:${day}:${other}`);
+    }
+  });
+
+  // [REVIEW-2499-B S3-2] The per-address known share and the admin reserve refused in silence: no log line, no metric,
+  // no early warning. Each now warns at 80%, logs its first refusal of the day (lane and cap only: no number, no
+  // address) and counts every refusal on swift_otp_budget_refusals_total{lane}.
+  it('[S3-2] a per-address or admin-reserve refusal is logged once and counted; 80% warns first; no number or address in the log', async () => {
+    const { otpBudgetRefusalCounter } = await import('../plugins/observability');
+    const { log } = await import('../utils/logger');
+    const counted = async (lane: string) => ((await otpBudgetRefusalCounter.get()).values.find((v) => v.labels.lane === lane)?.value ?? 0);
+    process.env['OTP_PHONE_DAILY_CAP'] = '1000000';
+    process.env['OTP_KNOWN_DAILY_CAP'] = '1000000';
+    process.env['OTP_KNOWN_IP_DAILY_CAP'] = '5';
+    process.env['OTP_ADMIN_DAILY_CAP'] = '5';
+    const ip = '203.0.113.220';
+    await redis.del(`otp_known_ip_day:${day}:${ip}`, `sms_admin_day:${day}`);
+    const errors = vi.spyOn(log(), 'error');
+    try {
+      const knownBefore = await counted('known_ip_daily');
+      for (let i = 0; i < 4; i += 1) expect((await checkOtpDailyBudget(redis, `+592kip${i}${Date.now()}`, { ip, knownPhone: true })).allowed).toBe(true);
+      expect(errors.mock.calls.filter(([o]) => (o as { lane?: string })?.lane === 'known_ip')).toHaveLength(1); // 80% of 5 = 4
+      expect((await checkOtpDailyBudget(redis, `+592kip5${Date.now()}`, { ip, knownPhone: true })).allowed).toBe(true);
+      for (let i = 0; i < 3; i += 1) expect(await checkOtpDailyBudget(redis, `+592kipx${i}${Date.now()}`, { ip, knownPhone: true })).toMatchObject({ allowed: false, reason: 'known_ip_daily' });
+      expect(await counted('known_ip_daily')).toBe(knownBefore + 3);
+      expect(errors.mock.calls.filter(([o]) => (o as { lane?: string })?.lane === 'known_ip_daily')).toHaveLength(1);
+
+      const adminBefore = await counted('admin_daily');
+      for (let i = 0; i < 5; i += 1) expect((await checkOtpDailyBudget(redis, `+592adm${i}${Date.now()}`, { knownPhone: true, adminPhone: true })).allowed).toBe(true);
+      for (let i = 0; i < 2; i += 1) expect(await checkOtpDailyBudget(redis, `+592admx${i}${Date.now()}`, { knownPhone: true, adminPhone: true })).toMatchObject({ allowed: false, reason: 'admin_daily' });
+      expect(await counted('admin_daily')).toBe(adminBefore + 2);
+      expect(errors.mock.calls.filter(([o]) => (o as { lane?: string })?.lane === 'admin_daily')).toHaveLength(1);
+      const logged = JSON.stringify(errors.mock.calls);
+      expect(logged).not.toContain(ip);
+      expect(logged).not.toMatch(/\+592/);
+    } finally {
+      errors.mockRestore();
+      delete process.env['OTP_KNOWN_IP_DAILY_CAP'];
+      delete process.env['OTP_ADMIN_DAILY_CAP'];
+      await redis.del(`otp_known_ip_day:${day}:${ip}`, `sms_admin_day:${day}`);
+    }
+  });
+
+  it('[S3-5] an admin number has a reserve of its own: an exhausted known budget never locks the console out', async () => {
+    process.env['OTP_PHONE_DAILY_CAP'] = '1000000';
+    process.env['OTP_KNOWN_DAILY_CAP'] = '1';
+    await redis.del(`sms_known_day:${day}`, `sms_admin_day:${day}`);
+    try {
+      expect((await checkOtpDailyBudget(redis, `+592ke${Date.now()}`, { knownPhone: true })).allowed).toBe(true);
+      expect(await checkOtpDailyBudget(redis, `+592kf${Date.now()}`, { knownPhone: true })).toMatchObject({ allowed: false, reason: 'known_daily' });
+      expect((await checkOtpDailyBudget(redis, `+592ad${Date.now()}`, { knownPhone: true, adminPhone: true, ip: '203.0.113.212' })).allowed).toBe(true);
+      expect(Number(await redis.get(`sms_admin_day:${day}`))).toBe(1);
+    } finally {
+      await redis.del(`sms_known_day:${day}`, `sms_admin_day:${day}`);
+    }
+  });
+
+  it('[S4 IPv6] every address in one /64 is one address for the daily counters', async () => {
+    process.env['OTP_PHONE_DAILY_CAP'] = '1000000';
+    process.env['OTP_IP_DAILY_CAP'] = '1';
+    process.env['OTP_GLOBAL_DAILY_CAP'] = '1000000';
+    const bucket = `otp_ip_day:${day}:2001:db8:aa:bb::/64`;
+    await redis.del(bucket);
+    try {
+      expect((await checkOtpDailyBudget(redis, `+592v1${Date.now()}`, { ip: '2001:db8:aa:bb::1' })).allowed).toBe(true);
+      expect(await checkOtpDailyBudget(redis, `+592v2${Date.now()}`, { ip: '2001:db8:aa:bb:ffff:1:2:3' })).toMatchObject({ allowed: false, reason: 'ip_daily' });
+    } finally {
+      await redis.del(bucket);
+    }
   });
 
   it('refund undoes the counters a provider failure just spent', async () => {
@@ -474,5 +560,25 @@ describe('safety texts: a budget of their own, launch-market numbers only (AUD-L
     expect(await count(`sms_safety_sender_day:${day}:${UNIT_SENDER}`)).toBe(0);
     expect(await shared()).toEqual(before);
     expect(smsDestinationAllowed(home)).toBe(true);
+  });
+  // [REVIEW-2499-A S3-4(c)] An admin's step-up code draws from the admins' own reserve, as their sign-in code does.
+  it('an admin step-up code is counted in the admin reserve, never the known budget', async () => {
+    const admin = await mkUser(gy(), 'Reserve');
+    await fixture(() => app.prisma.user.update({ where: { id: admin.id }, data: { roles: ['ADMIN', 'CUSTOMER'] } }));
+    const before = { admin: await count(`sms_admin_day:${day}`), known: await count(`sms_known_day:${day}`) };
+    await asRequest(() => sendStepUpOtp(app, admin.id));
+    expect(await count(`sms_admin_day:${day}`)).toBe(before.admin + 1);
+    expect(await count(`sms_known_day:${day}`)).toBe(before.known);
+  });
+});
+
+describe('[AUDIT-20261113 S4] addressBucket', () => {
+  it('folds an IPv6 address to its /64 and leaves IPv4 alone', async () => {
+    const { addressBucket } = await import('../utils/sms-budget');
+    expect(addressBucket('203.0.113.9')).toBe('203.0.113.9');
+    expect(addressBucket('::ffff:203.0.113.9')).toBe('203.0.113.9');
+    expect(addressBucket('2001:db8:aa:bb::1')).toBe('2001:db8:aa:bb::/64');
+    expect(addressBucket('2001:0db8:00aa:00bb:1:2:3:4')).toBe('2001:db8:aa:bb::/64');
+    expect(addressBucket('2001:db8::5')).toBe('2001:db8:0:0::/64');
   });
 });

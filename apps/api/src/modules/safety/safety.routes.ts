@@ -1,11 +1,11 @@
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { scanUpload } from '../../lib/malware-scan';
 import { recordUnscannedUpload } from '../../lib/upload-scan-debt';
 import { z } from '../../lib/zod';
 import { SosService, LIVE_SOS_STATUSES } from './sos.service';
 import { GuardianService } from './guardian.service';
 import { LivenessService } from './liveness.service';
-import { IncidentService, DECISION_CODES, intakeFingerprint } from './incident.service';
+import { IncidentService, DECISION_CODES, intakeFingerprint, type CaseActAudit } from './incident.service';
 import { EvidenceService } from './evidence.service';
 import { EmergencyContactService } from './emergency-contact.service';
 import { getChannels } from '../../providers/notifications/channels';
@@ -18,6 +18,11 @@ import { NotificationService } from '../notification/notification.service';
 import { pageOps } from '../ops/ops-page';
 import { runWithoutTenant, runWithTenant } from '../../plugins/tenant-context';
 import { consoleRoleOf } from '../auth/console-role';
+import { decideOpsCapability, requireOpsCapability } from './safety-authority';
+import { assertClearOfParties } from '../integrity/party-authority';
+import { identityAuthority, IdentityReviewRequiredError } from '../integrity/identity-review';
+import { isSoleEligibleResponder, SELF_RESOLVED_FLAG } from '../integrity/sole-responder';
+import type { Prisma } from '@prisma/client';
 import { recordAckWithoutConsolePosture, staffPostureCheck, staffPostureRefusal, staffRefusalOf } from '../auth/admin-mfa';
 
 // SOS endpoints (safety spec §4.5). The engine (state machine, grace, fan-out)
@@ -40,13 +45,24 @@ const createSchema = z.object({
 const resolveSchema = z.object({
   resolutionCode: z.enum(['SAFE_CONFIRMED', 'POLICE_INVOLVED', 'MEDICAL', 'FALSE_ALARM', 'ABUSE', 'UNREACHABLE_CLOSED']),
   notes: z.string().max(2000).optional(),
+  // [REVIEW-2499-A S3-1] Required only when the only eligible responder resolves an SOS that names them.
+  selfResolveReason: z.string().trim().min(12).max(500).optional(),
 });
 
 // War-room feed (§4.4). `open` = the alerts ops must act on right now.
 const listAlertsQuery = z.object({
   status: z.enum(['open', 'active', 'all']).default('open'),
   limit: z.coerce.number().int().min(1).max(200).default(50),
+  // [REVIEW-2499-A D-1] The web console asks for the SOS alerts that name the caller as resolve-only rows. A console
+  // that does not ask (the desktop console, which has no self-resolve dialog) gets the board as before.
+  named: z.enum(['resolve']).optional(),
 });
+/** [REVIEW-2499-A D-1] The only words a resolve-only row carries. */
+const NAMED_SOS_LABEL = 'This alert names you: resolve only';
+/** [REVIEW-2499-B S2-2] The only words a named-case row carries. */
+const NAMED_CASE_LABEL = 'This case names you: act on it only with a reason';
+/** [REVIEW-2499-B S2-2] The typed reason the only eligible responder gives to act on a case that names them (as SOS self-resolve). */
+const selfActBody = z.object({ selfResolveReason: z.string().trim().min(12).max(500).optional() });
 /** [AG-XF-013] Imported, not restated — see LIVE_SOS_STATUSES for why. */
 const OPEN_STATUSES = LIVE_SOS_STATUSES;
 
@@ -252,7 +268,12 @@ export async function safetyRoutes(app: FastifyInstance) {
 
   app.get<{ Params: { id: string } }>('/sos/:id', auth, async (request) => {
     // [REVIEW-2501-A S2-1] Without the staff posture an admin reads only their own alert, as anyone does.
-    if (!isOps(opsRoleIfPostured(request))) {
+    // [AUDIT-20261113 F5] So does an admin whose grant leaves out SOS reads.
+    const ops = opsRoleIfPostured(request) ? await decideOpsCapability(app.prisma, request, { prefix: app.prefix }) : { role: '', allowed: false };
+    // [AUDIT-20261113 F7] ...and so does the person an alert names: the full alert (live location, notes) is
+    // never read by its actor or the person it was raised against through the ops door.
+    const named = ops.role && ops.allowed ? await alertNames(request.params.id, request.user.userId, ops.role) : false;
+    if (!ops.role || !ops.allowed || named) {
       const a = await ownedAlert(request.params.id, request.user.userId, request.tenantId);
       return { success: true, data: a };
     }
@@ -279,9 +300,9 @@ export async function safetyRoutes(app: FastifyInstance) {
   app.get('/ops-alerts', auth, async (request) => {
     // [REVIEW-2501-A S2-1 · COORD ruling 13 Nov 2026] A responder's phone signed in by text alone may still SEE THAT
     // a page waits, and acknowledge it (below): the rows carry the kind and the times, never the page's words, the
-    // SOS it is about or who was paged. Everything else needs the console posture.
+    // SOS it is about or who was paged. Everything else needs the console posture. The grant still applies (F5).
     const unpostured = staffRefusalOf(request);
-    const role = unpostured ? consoleRoleOf(request.heldRoles) ?? '' : opsRoleOf(request);
+    const role = await requireOpsCapability(app.prisma, request, 'Only ops can list alerts.', { prefix: app.prefix, allowUnpostured: true });
     const shown = (rows: Array<{ id: string; kind: string; createdAt: Date; ackDeadlineAt: Date; escalationLevel: number }>) =>
       (unpostured ? rows.map(pageWithoutDetails) : rows);
     if (isPlatformResponder(role)) {
@@ -298,7 +319,7 @@ export async function safetyRoutes(app: FastifyInstance) {
   // visible here — it is evidence the paging path or the on-call rota failed. Platform operators
   // only: the role the account HOLDS decides, never the app's mode [ADMIN-ROLE · REVIEW-G #2096].
   app.get('/ops-alerts/failed-drills', auth, async (request) => {
-    if (!isPlatformResponder(opsRoleOf(request))) throw new ForbiddenError('Failed drills are for platform operators.');
+    if (!isPlatformResponder(await requireOpsCapability(app.prisma, request, 'Failed drills are for platform operators.', { prefix: app.prefix }))) throw new ForbiddenError('Failed drills are for platform operators.');
     const rows = await runWithoutTenant(() => app.prisma.opsAlert.findMany({
       where: { kind: 'DRILL', closeReason: DRILL_FAILED_REASON },
       orderBy: { createdAt: 'desc' }, take: 50,
@@ -309,15 +330,18 @@ export async function safetyRoutes(app: FastifyInstance) {
   app.post<{ Params: { id: string } }>('/ops-alerts/:id/ack', auth, async (request) => {
     // [REVIEW-2501-A S2-1 · COORD ruling 13 Nov 2026] The one ops door a texted-code session may use: acknowledging
     // stops the re-pages for this page only and returns no case data. Audited, and the owner is emailed each time.
+    // The grant still applies (F5).
     const unpostured = staffRefusalOf(request);
-    const role = unpostured ? consoleRoleOf(request.heldRoles) ?? '' : opsRoleOf(request);
-    if (!isOps(role)) throw new ForbiddenError('Only ops can acknowledge an alert.');
-    const alert = await runWithoutTenant(() => app.prisma.opsAlert.findUnique({ where: { id: request.params.id }, select: { id: true, tenantId: true } }));
+    const role = await requireOpsCapability(app.prisma, request, 'Only ops can acknowledge an alert.', { prefix: app.prefix, allowUnpostured: true });
+    const alert = await runWithoutTenant(() => app.prisma.opsAlert.findUnique({ where: { id: request.params.id }, select: { id: true, tenantId: true, sosAlertId: true } }));
     if (!alert) throw new NotFoundError('OpsAlert', request.params.id);
     if (!isPlatformResponder(role)) {
       if (alert.tenantId === null) throw new ForbiddenError('Platform alerts are acknowledged by platform operators.');
       if (alert.tenantId !== request.tenantId) throw new NotFoundError('OpsAlert', request.params.id);
     }
+    // [REVIEW-2499-A S2-1] An SOS's page is the second door to "acknowledged" (it stops the re-pages and the
+    // escalation): never for the person, or an account linked to them, the SOS names — as /sos/:id/ack.
+    if (alert.sosAlertId && await alertNames(alert.sosAlertId, request.user.userId, role)) throw partyRefusals.own;
     const res = await asResponder(role, () => acknowledgeOpsAlert(app.prisma, { opsAlertId: alert.id, userId: request.user.userId }));
     if (res.refused.length > 0) throw new ForbiddenError('You are not a responder for this alert.');
     if (unpostured && res.acknowledged.length > 0) await recordAckWithoutConsolePosture(app, request, alert.id, unpostured);
@@ -325,7 +349,7 @@ export async function safetyRoutes(app: FastifyInstance) {
   });
   app.post('/ops-alerts/drill', auth, async (request) => {
     // A drill is a PLATFORM page (no tenant): platform operators only [M009].
-    if (!isPlatformResponder(opsRoleOf(request))) throw new ForbiddenError('Only platform operators can run a drill.');
+    if (!isPlatformResponder(await requireOpsCapability(app.prisma, request, 'Only platform operators can run a drill.', { prefix: app.prefix }))) throw new ForbiddenError('Only platform operators can run a drill.');
     process.env['OPS_ALERT_DRILL_INTERVAL_DAYS'] ??= '7';
     const { openOpsAlert } = await import('./ops-alert');
     const res = await openOpsAlert(app.prisma, new NotificationService(app.prisma, app.io), { kind: 'DRILL', tenantId: null, title: 'Ops alert drill — acknowledge now', body: drillBody(true), data: { kind: 'ops_alert_drill', manual: true, by: request.user.userId } });
@@ -334,16 +358,47 @@ export async function safetyRoutes(app: FastifyInstance) {
   });
 
   app.post<{ Params: { id: string } }>('/sos/:id/ack', auth, async (request) => {
-    if (!isOps(opsRoleOf(request))) throw new ForbiddenError('Only ops can acknowledge an alert.');
+    await requireOpsCapability(app.prisma, request, 'Only ops can acknowledge an alert.', { prefix: app.prefix });
+    // [AUDIT-20261113 F7] Never the person the alert names. Acknowledging is not refused for a staff alert:
+    // every responder must be able to say "on it" when a colleague is in danger.
+    if (await alertNames(request.params.id, request.user.userId, opsRoleOf(request))) throw partyRefusals.own;
     const a = await asResponder(opsRoleOf(request), () => sos.ack(request.params.id, request.user.userId));
     return { success: true, data: { id: a.id, status: a.status, acknowledgedAt: a.acknowledgedAt } };
   });
 
   app.post<{ Params: { id: string } }>('/sos/:id/resolve', auth, async (request) => {
-    if (!isOps(opsRoleOf(request))) throw new ForbiddenError('Only ops can resolve an alert.');
+    await requireOpsCapability(app.prisma, request, 'Only ops can resolve an alert.', { prefix: app.prefix });
     const body = resolveSchema.parse(request.body ?? {});
-    const a = await asResponder(opsRoleOf(request), () => sos.resolve(request.params.id, request.user.userId, body.resolutionCode, body.notes));
-    return { success: true, data: { id: a.id, status: a.status, resolutionCode: a.resolutionCode } };
+    // [AUDIT-20261113 F7] Closing an alert is a decision: the full party rule (never a party; a staff alert
+    // goes to a super admin who is not part of it).
+    const parties = await alertParties(request.params.id, opsRoleOf(request));
+    // [REVIEW-2499-A S3-1 · coordinator ruling] ...unless the actor is the ONLY eligible responder (no other active
+    // admin holds safety.sos.respond): then they may resolve, with a typed reason, audited and flagged for a
+    // second person's review once a second admin exists. Otherwise the alert could never be closed.
+    let selfResolved = false;
+    try {
+      await asResponder(opsRoleOf(request), () => assertClearOf(request.user.userId, parties));
+    } catch (err) {
+      const partyRefusal = err === partyRefusals.own || err === partyRefusals.staff || err instanceof IdentityReviewRequiredError;
+      if (!partyRefusal || !(await isSoleEligibleResponder(app.prisma, request.user.userId, 'safety.sos.respond', await alertTenantOf(request.params.id, opsRoleOf(request))))) throw err;
+      if (!body.selfResolveReason) {
+        throw new AppError(409, 'SELF_RESOLVE_REASON_REQUIRED', 'This SOS names you, and no other admin can resolve it. Say why you are resolving it yourself (at least 12 characters); it is recorded for a second person to review.');
+      }
+      selfResolved = true;
+    }
+    // [REVIEW-2499-A D-2] The audit row and its review flag commit WITH the resolve (as END_STUCK_RIDE): an SOS is never
+    // self-resolved without the row a second person reviews.
+    const selfResolvedAudit = selfResolved
+      ? async (tx: Prisma.TransactionClient) => {
+        await tx.auditLog.create({ data: {
+          userId: request.user.userId, action: 'SOS_SELF_RESOLVED', entity: 'SosAlert', entityId: request.params.id,
+          changes: { reason: body.selfResolveReason ?? null, resolutionCode: body.resolutionCode, review: SELF_RESOLVED_FLAG },
+          ipAddress: request.ip, userAgent: typeof request.headers['user-agent'] === 'string' ? request.headers['user-agent'] : null,
+        } });
+      }
+      : undefined;
+    const a = await asResponder(opsRoleOf(request), () => sos.resolve(request.params.id, request.user.userId, body.resolutionCode, body.notes, selfResolvedAudit));
+    return { success: true, data: { id: a.id, status: a.status, resolutionCode: a.resolutionCode, ...(selfResolved ? { selfResolved: true } : {}) } };
   });
 
   /** GET /sos — the ops war-room feed (§4.4). Ops-only. Fan-out pages + a socket
@@ -351,14 +406,35 @@ export async function safetyRoutes(app: FastifyInstance) {
    *  never shows a blank board after a refresh or reconnect. `open` (default) is
    *  the un-closed set ops must act on; most-recent first. */
   app.get('/sos', auth, async (request) => {
-    if (!isOps(opsRoleOf(request))) throw new ForbiddenError('Only ops can list alerts.');
+    await requireOpsCapability(app.prisma, request, 'Only ops can list alerts.', { prefix: app.prefix });
     const q = listAlertsQuery.parse(request.query ?? {});
     const where =
       q.status === 'active' ? { status: 'ACTIVE' as const }
       : q.status === 'all' ? {}
       : { status: { in: [...OPEN_STATUSES] } };
-    const alerts = await asResponder(opsRoleOf(request), () => app.prisma.sosAlert.findMany({ where, orderBy: { triggeredAt: 'desc' }, take: q.limit }));
-    return { success: true, data: alerts };
+    // [AUDIT-20261113 F7] An alert that names the caller (actor or the person it was raised against) is not on their board.
+    const mine = await linkedAccountsOf(request.user.userId);
+    const notMine = { actorUserId: { notIn: mine }, OR: [{ counterpartyUserId: null }, { counterpartyUserId: { notIn: mine } }] };
+    const alerts = await asResponder(opsRoleOf(request), () => app.prisma.sosAlert.findMany({ where: { ...where, ...notMine }, orderBy: { triggeredAt: 'desc' }, take: q.limit }));
+    // [REVIEW-2499-A D-1] ...except that the only eligible responder must still be able to close it (the S3-1 exit),
+    // and the console resolves only from board rows. While the caller is the ONLY eligible responder for the alert's
+    // market (the same rule the resolve door applies), an SOS naming them is listed as a minimal row: its id, status
+    // and when it was raised, with a fixed label. Never its location, notes, who raised it or who it names, so the
+    // F7 read rule stands. Only a SUPER_ADMIN can be the only eligible responder.
+    if (q.named !== 'resolve' || opsRoleOf(request) !== 'SUPER_ADMIN') return { success: true, data: alerts };
+    const namingMe = await asResponder(opsRoleOf(request), () => app.prisma.sosAlert.findMany({
+      where: { ...where, OR: [{ actorUserId: { in: mine } }, { counterpartyUserId: { in: mine } }] },
+      select: { id: true, status: true, triggeredAt: true, tenantId: true }, orderBy: { triggeredAt: 'desc' }, take: q.limit,
+    }));
+    const soleIn = new Map<string | null, boolean>();
+    const resolveOnly: Array<{ id: string; status: string; triggeredAt: Date; namesYou: true; label: string }> = [];
+    for (const n of namingMe) {
+      if (!soleIn.has(n.tenantId)) soleIn.set(n.tenantId, await isSoleEligibleResponder(app.prisma, request.user.userId, 'safety.sos.respond', n.tenantId));
+      if (soleIn.get(n.tenantId)) resolveOnly.push({ id: n.id, status: n.status, triggeredAt: n.triggeredAt, namesYou: true, label: NAMED_SOS_LABEL });
+    }
+    if (resolveOnly.length === 0) return { success: true, data: alerts };
+    const board = [...alerts, ...resolveOnly].sort((x, y) => y.triggeredAt.getTime() - x.triggeredAt.getTime()).slice(0, q.limit);
+    return { success: true, data: board };
   });
 
   // ── Emergency contacts (safety §5) ───────────────────────────────────────
@@ -662,9 +738,65 @@ export async function safetyRoutes(app: FastifyInstance) {
     return { tenantId: subject.tenantId };
   }
 
+  // [AUDIT-20261113 F7] Nobody works a safety matter that names them, and a matter naming a Swift staff
+  // account goes to a SUPER_ADMIN who is not part of it — the one rule refunds and handovers already follow
+  // (integrity/party-authority). A staff member who also drives could otherwise dismiss their own S0 case,
+  // lift their own interim suspension, or read the reporter's identity and evidence.
+  const partyRefusals = {
+    own: new ForbiddenError('This safety matter names you or an account linked to you. Another admin must handle it.'),
+    staff: new ForbiddenError('This safety matter names a Swift staff account. A super admin who is not part of it must handle it.'),
+  };
+  async function assertClearOf(actorId: string, people: Array<string | null | undefined>) {
+    const parties = [...new Set(people.filter((p): p is string => !!p))];
+    if (parties.length === 0) return;
+    await assertClearOfParties(app.prisma as unknown as Prisma.TransactionClient, actorId, parties, partyRefusals, { superAdminThroughReview: true });
+  }
+  async function casePartiesOf(caseId: string): Promise<string[]> {
+    const kase = await app.prisma.incidentCase.findUnique({ where: { id: caseId }, select: { subjectUserId: true, reporterUserId: true } });
+    return kase ? [kase.subjectUserId, kase.reporterUserId].filter((p): p is string => !!p) : [];
+  }
+  async function assertClearOfCase(caseId: string, actorId: string) {
+    await assertClearOf(actorId, await casePartiesOf(caseId));
+  }
+  async function assertClearOfBundle(bundleId: string, actorId: string) {
+    const bundle = await app.prisma.evidenceBundle.findUnique({ where: { id: bundleId }, select: { subjectUserId: true, caseId: true, sosAlertId: true } });
+    if (!bundle) return; // the service answers not-found
+    const sos = bundle.sosAlertId
+      ? await app.prisma.sosAlert.findUnique({ where: { id: bundle.sosAlertId }, select: { actorUserId: true, counterpartyUserId: true } })
+      : null;
+    // [REVIEW-2499-A S4-4] the SOS counterparty too (a case bundle linked to an SOS names both)
+    await assertClearOf(actorId, [bundle.subjectUserId, sos?.actorUserId, sos?.counterpartyUserId, ...(bundle.caseId ? await casePartiesOf(bundle.caseId) : [])]);
+  }
+
+  /** The people an SOS names: who raised it and the person it was raised against. */
+  async function alertParties(alertId: string, role: string): Promise<string[]> {
+    const a = await asResponder(role, () => app.prisma.sosAlert.findUnique({ where: { id: alertId }, select: { actorUserId: true, counterpartyUserId: true } }));
+    return a ? [a.actorUserId, a.counterpartyUserId].filter((p): p is string => !!p) : [];
+  }
+  /** The market an SOS belongs to (null: a platform alert). */
+  async function alertTenantOf(alertId: string, role: string): Promise<string | null> {
+    const a = await asResponder(role, () => app.prisma.sosAlert.findUnique({ where: { id: alertId }, select: { tenantId: true } }));
+    return a?.tenantId ?? null;
+  }
+  /** [AUDIT-20261113 F7] The caller and every account linked to them (one identity cluster), as the party rule reads it. */
+  async function linkedAccountsOf(userId: string): Promise<string[]> {
+    const identity = await runWithoutTenant(() => identityAuthority(app.prisma as unknown as Prisma.TransactionClient, userId), 'safety-linked-accounts');
+    return [...new Set([userId, ...identity.memberIds])];
+  }
+  async function alertNames(alertId: string, userId: string, role: string): Promise<boolean> {
+    const parties = await alertParties(alertId, role);
+    if (parties.length === 0) return false;
+    const mine = new Set(await linkedAccountsOf(userId));
+    if (parties.some((p) => mine.has(p))) return true;
+    // [REVIEW-2499-A S4-3] Read from the parties' side too: a caller whose own cluster record is damaged (its
+    // members resolve to just itself) is still found among a party's linked accounts.
+    for (const party of parties) if ((await linkedAccountsOf(party)).includes(userId)) return true;
+    return false;
+  }
+
   /** Ops intake — phone call / email / social report, logged by a human. */
   app.post('/incidents/ops', auth, async (request) => {
-    if (!isOps(opsRoleOf(request))) throw new ForbiddenError('Only ops can log a case directly.');
+    await requireOpsCapability(app.prisma, request, 'Only ops can log a case directly.', { prefix: app.prefix });
     const body = z.object({
       // [S-08] An ops-logged report retried with the same key is one case.
       idempotencyKey: z.string().trim().min(1).max(80).optional(),
@@ -678,6 +810,8 @@ export async function safetyRoutes(app: FastifyInstance) {
     }).parse(request.body ?? {});
     const { idempotencyKey, ...intakeBody } = body;
     const { tenantId } = await opsIntakeTuple(opsRoleOf(request), request.tenantId, intakeBody);
+    // [AUDIT-20261113 F7] An S0/S1 intake suspends its subject: never on yourself, never a colleague unless a super admin.
+    await runWithTenant(tenantId, () => assertClearOf(request.user.userId, [intakeBody.subjectUserId]));
     const source = idempotencyKey ? { type: 'OPS', id: `${request.user.userId}:${idempotencyKey}` } : null;
     if (source) {
       // [M069] A replayed key must carry the tuple it was first used with: never another case's.
@@ -704,14 +838,15 @@ export async function safetyRoutes(app: FastifyInstance) {
    *  of a case could lift their own interim suspension — and the
    *  interim-suspension notification hands them the caseId they need. */
   app.post('/incidents/:id/merge', auth, async (request) => {
-    if (!isOps(opsRoleOf(request))) throw new ForbiddenError('Only ops can work a case.');
+    await requireOpsCapability(app.prisma, request, 'Only ops can work a case.', { prefix: app.prefix });
     const { id } = request.params as { id: string };
     const { intoCaseId } = z.object({ intoCaseId: z.string().min(1) }).parse(request.body ?? {});
+    await assertClearOf(request.user.userId, [...await casePartiesOf(id), ...await casePartiesOf(intoCaseId)]);
     return { success: true, data: await incidents.mergeDuplicate(id, intoCaseId, request.user.userId) };
   });
 
   app.get('/incidents', auth, async (request) => {
-    if (!isOps(opsRoleOf(request))) throw new ForbiddenError('Only ops can list cases.');
+    await requireOpsCapability(app.prisma, request, 'Only ops can list cases.', { prefix: app.prefix });
     const q = z.object({
       status: z.enum(['open', 'breached', 'all']).default('open'),
       // [REPORT-007 / SPS-F-0025] The queue was a single bounded page: with
@@ -723,6 +858,8 @@ export async function safetyRoutes(app: FastifyInstance) {
       // when the queue contract is formalized.
       page: z.coerce.number().int().min(1).default(1),
       limit: z.coerce.number().int().min(1).max(200).default(50),
+      // [REVIEW-2499-B S2-2] opt-in, as GET /sos: the web console asks for the named-case rows
+      named: z.enum(['resolve']).optional(),
     }).parse(request.query ?? {});
     const now = new Date();
     const where =
@@ -730,35 +867,105 @@ export async function safetyRoutes(app: FastifyInstance) {
       : q.status === 'breached'
         ? { status: { not: 'CLOSED' as const }, OR: [{ ackedAt: null, slaAckBy: { lt: now } }, { decidedAt: null, slaDecideBy: { lt: now } }] }
         : { status: { not: 'CLOSED' as const } };
+    // [AUDIT-20261113 F7] The queue leaves out a case naming the caller, and (for anyone but a super admin) a
+    // case naming a staff account: the doors that act on a case refuse them, so the queue does not offer them.
+    const mine = await linkedAccountsOf(request.user.userId);
+    const role = opsRoleOf(request);
+    const staff = role === 'SUPER_ADMIN' ? [] : (await runWithoutTenant(() => app.prisma.user.findMany({
+      where: { OR: [{ roles: { hasSome: ['ADMIN', 'SUPER_ADMIN'] } }, { activeRole: { in: ['ADMIN', 'SUPER_ADMIN'] } }] }, select: { id: true },
+    }), 'safety-case-queue-staff')).map((u) => u.id);
+    const hidden = [...new Set([...mine, ...staff])];
     const cases = await app.prisma.incidentCase.findMany({
-      where,
+      where: { AND: [where, { subjectUserId: { notIn: hidden } }, { OR: [{ reporterUserId: null }, { reporterUserId: { notIn: hidden } }] }] },
       orderBy: [{ severity: 'asc' }, { createdAt: 'desc' }, { id: 'asc' }],
       skip: (q.page - 1) * q.limit,
       take: q.limit,
     });
-    return { success: true, data: cases };
+    // [REVIEW-2499-B S2-2] ...except that the only eligible responder must still be able to work it (the SOS exit),
+    // and the console works cases from queue rows. While the caller is the ONLY eligible responder for the case's
+    // market, a case naming them is listed (first page) as a minimal row: its number, status, severity, interim action
+    // and when it was opened, with a fixed label. Never its summary, category, people, notes or evidence.
+    if (q.named !== 'resolve' || role !== 'SUPER_ADMIN' || q.page !== 1) return { success: true, data: cases };
+    const namingMe = await app.prisma.incidentCase.findMany({
+      where: { AND: [where, { OR: [{ subjectUserId: { in: mine } }, { reporterUserId: { in: mine } }] }] },
+      select: { id: true, caseNumber: true, status: true, severity: true, interimAction: true, createdAt: true, tenantId: true },
+      orderBy: [{ severity: 'asc' }, { createdAt: 'desc' }, { id: 'asc' }],
+      take: q.limit,
+    });
+    const soleIn = new Map<string | null, boolean>();
+    const actOnly: Array<{ id: string; caseNumber: string; status: string; severity: string; interimAction: string; createdAt: Date; namesYou: true; label: string }> = [];
+    for (const { tenantId, ...n } of namingMe) {
+      if (!soleIn.has(tenantId)) {
+        soleIn.set(tenantId, await isSoleEligibleResponder(app.prisma, request.user.userId, 'safety.case.work', tenantId)
+          || await isSoleEligibleResponder(app.prisma, request.user.userId, 'safety.case.decide', tenantId));
+      }
+      if (soleIn.get(tenantId)) actOnly.push({ ...n, namesYou: true, label: NAMED_CASE_LABEL });
+    }
+    return { success: true, data: [...cases, ...actOnly] };
   });
 
   const opsCaseAction = (fn: (id: string, opsUserId: string) => Promise<unknown>) =>
-    async (request: { user: { userId: string; role: string }; heldRoles?: readonly string[] | null; params: { id: string } }) => {
-      if (!isOps(opsRoleOf(request))) throw new ForbiddenError('Only ops can work a case.');
+    async (request: FastifyRequest<{ Params: { id: string } }>) => {
+      await requireOpsCapability(app.prisma, request, 'Only ops can work a case.', { prefix: app.prefix });
+      await assertClearOfCase(request.params.id, request.user.userId);
       return { success: true, data: await fn(request.params.id, request.user.userId) };
     };
 
-  app.post<{ Params: { id: string } }>('/incidents/:id/ack', auth, opsCaseAction((id, ops) => incidents.ack(id, ops)));
+  /**
+   * [REVIEW-2499-B S2-2 · the REVIEW-2499-A S3-1 ruling, applied to cases] The party rule refuses a case that names the
+   * caller. When the caller is the ONLY eligible responder (a SUPER_ADMIN, and no other admin who could do this act on
+   * this case's market; isSoleEligibleResponder), they may still acknowledge it, lift its interim action, decide it and
+   * close it, with a typed reason: the act and its SAFETY_CASE_SELF_ACTED audit row (flagged for a second person's
+   * review) commit together. Otherwise a case naming the owner could never be worked, the person it suspends stayed
+   * suspended, and the SLA watch re-paged it for ever. Investigate, escalate, shadow-restrict and merge get no exit.
+   * Returns the audit writer for a self-act; undefined when the ordinary rule clears the caller.
+   */
+  async function clearOfCaseOrSoleExit(
+    request: FastifyRequest<{ Params: { id: string } }>, capability: 'safety.case.work' | 'safety.case.decide', act: string, extra: Record<string, unknown> = {},
+  ): Promise<CaseActAudit | undefined> {
+    const { selfResolveReason } = selfActBody.parse(request.body ?? {});
+    try {
+      await assertClearOfCase(request.params.id, request.user.userId);
+      return undefined;
+    } catch (err) {
+      const partyRefusal = err === partyRefusals.own || err === partyRefusals.staff || err instanceof IdentityReviewRequiredError;
+      if (!partyRefusal) throw err;
+      const kase = await app.prisma.incidentCase.findUnique({ where: { id: request.params.id }, select: { tenantId: true } });
+      if (!kase || !(await isSoleEligibleResponder(app.prisma, request.user.userId, capability, kase.tenantId))) throw err;
+      if (!selfResolveReason) {
+        throw new AppError(409, 'SELF_RESOLVE_REASON_REQUIRED', 'This case names you, and no other admin can work it. Say why you are acting on it yourself (at least 12 characters); it is recorded for a second person to review.');
+      }
+      return async (tx) => {
+        await tx.auditLog.create({ data: {
+          userId: request.user.userId, action: 'SAFETY_CASE_SELF_ACTED', entity: 'IncidentCase', entityId: request.params.id,
+          changes: { act, reason: selfResolveReason, ...extra, review: SELF_RESOLVED_FLAG },
+          ipAddress: request.ip, userAgent: typeof request.headers['user-agent'] === 'string' ? request.headers['user-agent'] : null,
+        } });
+      };
+    }
+  }
+  const caseActWithSoleExit = (capability: 'safety.case.work' | 'safety.case.decide', act: string, fn: (id: string, opsUserId: string, audit?: CaseActAudit) => Promise<unknown>) =>
+    async (request: FastifyRequest<{ Params: { id: string } }>) => {
+      await requireOpsCapability(app.prisma, request, 'Only ops can work a case.', { prefix: app.prefix });
+      const audit = await clearOfCaseOrSoleExit(request, capability, act);
+      return { success: true, data: await fn(request.params.id, request.user.userId, audit), ...(audit ? { selfActed: true } : {}) };
+    };
+
+  app.post<{ Params: { id: string } }>('/incidents/:id/ack', auth, caseActWithSoleExit('safety.case.work', 'ack', (id, ops, audit) => incidents.ack(id, ops, audit)));
   app.post<{ Params: { id: string } }>('/incidents/:id/investigate', auth, opsCaseAction((id, ops) => incidents.investigate(id, ops)));
-  app.post<{ Params: { id: string } }>('/incidents/:id/close', auth, opsCaseAction((id, ops) => incidents.close(id, ops)));
+  app.post<{ Params: { id: string } }>('/incidents/:id/close', auth, caseActWithSoleExit('safety.case.decide', 'close', (id, ops, audit) => incidents.close(id, ops, audit)));
   app.post<{ Params: { id: string } }>('/incidents/:id/escalate-police', auth, opsCaseAction((id, ops) => incidents.escalatePolice(id, ops)));
-  app.post<{ Params: { id: string } }>('/incidents/:id/lift-interim', auth, opsCaseAction((id, ops) => incidents.liftInterim(id, ops)));
+  app.post<{ Params: { id: string } }>('/incidents/:id/lift-interim', auth, caseActWithSoleExit('safety.case.decide', 'lift-interim', (id, ops, audit) => incidents.liftInterim(id, ops, audit)));
   app.post<{ Params: { id: string } }>('/incidents/:id/shadow-restrict', auth, opsCaseAction((id, ops) => incidents.shadowRestrict(id, ops)));
 
   app.post<{ Params: { id: string } }>('/incidents/:id/decide', auth, async (request) => {
-    if (!isOps(opsRoleOf(request))) throw new ForbiddenError('Only ops can work a case.');
+    await requireOpsCapability(app.prisma, request, 'Only ops can work a case.', { prefix: app.prefix });
     const body = z.object({
       decisionCode: z.enum(DECISION_CODES),
       notes: z.string().max(4000).optional(),
     }).parse(request.body ?? {});
-    return { success: true, data: await incidents.decide(request.params.id, request.user.userId, body.decisionCode, body.notes) };
+    const audit = await clearOfCaseOrSoleExit(request, 'safety.case.decide', 'decide', { decisionCode: body.decisionCode });
+    return { success: true, data: await incidents.decide(request.params.id, request.user.userId, body.decisionCode, body.notes, audit), ...(audit ? { selfActed: true } : {}) };
   });
 
   // ── Evidence Vault (§9) — ops-only; content never moves without a logged
@@ -768,7 +975,7 @@ export async function safetyRoutes(app: FastifyInstance) {
 
   /** Meta lookup (no content, no log): find the bundle behind a case/alert. */
   app.get('/evidence', auth, async (request) => {
-    if (!isOps(opsRoleOf(request))) throw new ForbiddenError('Only ops can access evidence.');
+    await requireOpsCapability(app.prisma, request, 'Only ops can access evidence.', { prefix: app.prefix });
     const q = z.object({ caseId: z.string().optional(), sosAlertId: z.string().optional() }).parse(request.query ?? {});
     if (!q.caseId && !q.sosAlertId) throw new AppError(400, 'LINK_REQUIRED', 'Pass caseId or sosAlertId.');
     const bundle = await app.prisma.evidenceBundle.findFirst({
@@ -776,32 +983,37 @@ export async function safetyRoutes(app: FastifyInstance) {
       select: { id: true, bundleNumber: true, sosAlertId: true, caseId: true, subjectUserId: true, openedAt: true, sealedAt: true, sealHash: true, legalHold: true, _count: { select: { items: true } } },
     });
     if (!bundle) throw new NotFoundError('EvidenceBundle', q.caseId ?? q.sosAlertId ?? '');
+    await assertClearOfBundle(bundle.id, request.user.userId);
     return { success: true, data: bundle };
   });
 
   app.post<{ Params: { id: string } }>('/evidence/:id/view', auth, async (request) => {
-    if (!isOps(opsRoleOf(request))) throw new ForbiddenError('Only ops can access evidence.');
+    await requireOpsCapability(app.prisma, request, 'Only ops can access evidence.', { prefix: app.prefix });
     const { reason } = reasonBody.parse(request.body ?? {});
+    await assertClearOfBundle(request.params.id, request.user.userId);
     return { success: true, data: await evidence.view(request.params.id, request.user.userId, reason) };
   });
 
   app.post<{ Params: { id: string } }>('/evidence/:id/seal', auth, async (request) => {
-    if (!isOps(opsRoleOf(request))) throw new ForbiddenError('Only ops can seal evidence.');
+    await requireOpsCapability(app.prisma, request, 'Only ops can seal evidence.', { prefix: app.prefix });
     const { reason } = reasonBody.parse(request.body ?? {});
+    await assertClearOfBundle(request.params.id, request.user.userId);
     return { success: true, data: await evidence.seal(request.params.id, request.user.userId, reason) };
   });
 
   app.post<{ Params: { id: string } }>('/evidence/:id/legal-hold', auth, async (request) => {
-    if (!isOps(opsRoleOf(request))) throw new ForbiddenError('Only ops can set a legal hold.');
+    await requireOpsCapability(app.prisma, request, 'Only ops can set a legal hold.', { prefix: app.prefix });
     const { reason } = reasonBody.parse(request.body ?? {});
+    await assertClearOfBundle(request.params.id, request.user.userId);
     return { success: true, data: await evidence.setLegalHold(request.params.id, request.user.userId, reason) };
   });
 
   /** §9.2 export — encrypted + watermarked, passphrase returned exactly once
    *  (hand it over on a separate channel; Swift keeps no copy). */
   app.post<{ Params: { id: string } }>('/evidence/:id/export', auth, async (request) => {
-    if (!isOps(opsRoleOf(request))) throw new ForbiddenError('Only ops can export evidence.');
+    await requireOpsCapability(app.prisma, request, 'Only ops can export evidence.', { prefix: app.prefix });
     const { reason } = reasonBody.parse(request.body ?? {});
+    await assertClearOfBundle(request.params.id, request.user.userId);
     return { success: true, data: await evidence.export(request.params.id, request.user.userId, reason) };
   });
 
@@ -832,7 +1044,7 @@ export async function safetyRoutes(app: FastifyInstance) {
     limit: z.coerce.number().int().min(1).max(200).default(50),
   });
   app.get('/guardian', auth, async (request) => {
-    if (!isOps(opsRoleOf(request))) throw new ForbiddenError('Only ops can list guardian sessions.');
+    await requireOpsCapability(app.prisma, request, 'Only ops can list guardian sessions.', { prefix: app.prefix });
     const q = listSessionsQuery.parse(request.query ?? {});
     const where =
       q.status === 'all' ? {}

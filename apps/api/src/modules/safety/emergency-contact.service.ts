@@ -177,7 +177,7 @@ export class EmergencyContactService {
     const code = generateOtp();
     await storeOtp(this.redis, this.codeKey(contactId), code);
     try {
-      await this.channels.sms.sendSms(phoneE164, emergencyContactCodeText(owner?.firstName, code));
+      await this.channels.sms.sendSms(phoneE164, emergencyContactCodeText(owner?.firstName, code), { budgeted: true });
     } catch (err) {
       // A code that never left gives back the budget it counted.
       await budget.refund?.().catch(() => {});

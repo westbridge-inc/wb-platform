@@ -1,6 +1,6 @@
 import type { MmgCheckoutSupportDetail, MmgCheckoutSupportPage, MmgCheckoutSupportStatus } from '@swift/types';
 import type { RejectionReasonCode } from './rejection-reasons';
-import type { CaseScope, DecisionCode, IncidentRow, SosResolutionCode, SosRow } from './safetyView';
+import type { CaseQueueRow, CaseScope, DecisionCode, IncidentRow, SosBoardRow, SosResolutionCode } from './safetyView';
 import { headerSafe, normaliseReason } from './reason-rules';
 
 export const API_URL = process.env['NEXT_PUBLIC_API_URL'] || 'http://localhost:3000';
@@ -968,18 +968,22 @@ function readWithin<T>(outer: AbortSignal | undefined, read: (_signal: AbortSign
     });
   });
 }
-export const fetchSafetySos = (signal?: AbortSignal): Promise<Envelope<SosRow[]>> =>
-  readWithin(signal, (s) => apiFetch(`/api/v1/safety/sos?status=open&limit=${SAFETY_LIST_LIMIT}`, { signal: s }));
+// [REVIEW-2499-A D-1] named=resolve: an SOS that names you comes back as a resolve-only row while you are the only admin who could resolve it.
+export const fetchSafetySos = (signal?: AbortSignal): Promise<Envelope<SosBoardRow[]>> =>
+  readWithin(signal, (s) => apiFetch(`/api/v1/safety/sos?status=open&limit=${SAFETY_LIST_LIMIT}&named=resolve`, { signal: s }));
 export const acknowledgeSos = (id: string): Promise<Envelope<{ id: string; status: string }>> =>
   apiFetch(`/api/v1/safety/sos/${encodeURIComponent(id)}/ack`, { method: 'POST', body: '{}' });
-export const resolveSos = (id: string, resolutionCode: SosResolutionCode, notes?: string): Promise<Envelope<{ id: string; status: string }>> =>
-  apiFetch(`/api/v1/safety/sos/${encodeURIComponent(id)}/resolve`, { method: 'POST', body: JSON.stringify({ resolutionCode, ...(notes ? { notes } : {}) }) });
-export const fetchSafetyCases = (scope: CaseScope, signal?: AbortSignal): Promise<Envelope<IncidentRow[]>> =>
-  readWithin(signal, (s) => apiFetch(`/api/v1/safety/incidents?status=${scope}&limit=${SAFETY_LIST_LIMIT}`, { signal: s }));
-export const workSafetyCase = (id: string, action: 'ack' | 'close' | 'lift-interim'): Promise<Envelope<IncidentRow>> =>
-  apiFetch(`/api/v1/safety/incidents/${encodeURIComponent(id)}/${action}`, { method: 'POST', body: '{}' });
-export const decideSafetyCase = (id: string, decisionCode: DecisionCode, notes?: string): Promise<Envelope<IncidentRow>> =>
-  apiFetch(`/api/v1/safety/incidents/${encodeURIComponent(id)}/decide`, { method: 'POST', body: JSON.stringify({ decisionCode, ...(notes ? { notes } : {}) }) });
+// [REVIEW-2499-A S3-1 · D-1] selfResolveReason: only from a resolve-only row (this SOS names you and no other admin can resolve it).
+export const resolveSos = (id: string, resolutionCode: SosResolutionCode, notes?: string, selfResolveReason?: string): Promise<Envelope<{ id: string; status: string }>> =>
+  apiFetch(`/api/v1/safety/sos/${encodeURIComponent(id)}/resolve`, { method: 'POST', body: JSON.stringify({ resolutionCode, ...(notes ? { notes } : {}), ...(selfResolveReason ? { selfResolveReason } : {}) }) });
+// [REVIEW-2499-B S2-2] named=resolve: a case that names you comes back as a minimal row while you are the only admin who could work it.
+export const fetchSafetyCases = (scope: CaseScope, signal?: AbortSignal): Promise<Envelope<CaseQueueRow[]>> =>
+  readWithin(signal, (s) => apiFetch(`/api/v1/safety/incidents?status=${scope}&limit=${SAFETY_LIST_LIMIT}&named=resolve`, { signal: s }));
+// [REVIEW-2499-B S2-2] selfResolveReason: only from a named-case row (this case names you and no other admin can work it).
+export const workSafetyCase = (id: string, action: 'ack' | 'close' | 'lift-interim', selfResolveReason?: string): Promise<Envelope<IncidentRow>> =>
+  apiFetch(`/api/v1/safety/incidents/${encodeURIComponent(id)}/${action}`, { method: 'POST', body: selfResolveReason ? JSON.stringify({ selfResolveReason }) : '{}' });
+export const decideSafetyCase = (id: string, decisionCode: DecisionCode, notes?: string, selfResolveReason?: string): Promise<Envelope<IncidentRow>> =>
+  apiFetch(`/api/v1/safety/incidents/${encodeURIComponent(id)}/decide`, { method: 'POST', body: JSON.stringify({ decisionCode, ...(notes ? { notes } : {}), ...(selfResolveReason ? { selfResolveReason } : {}) }) });
 
 export const fetchAuditLogs = (params?: string) => apiFetch(`/api/v1/admin/audit-logs?${params || 'limit=50'}`);
 
