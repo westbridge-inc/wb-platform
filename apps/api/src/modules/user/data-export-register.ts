@@ -100,6 +100,12 @@ export interface ExportEntry {
   readonly month?: readonly string[];
   /** Only rows whose column is before the person's last daily rating fold (the boundary the app honours). */
   readonly foldedBefore?: string;
+  /**
+   * [FABLE-02 F1 · 13 Nov 2026] A row read as the person's own app reads it: 'applicantDocument' gives a document's
+   * `reviewNote` as applicantReason (verification.service.ts) — a fraud-class rejection as the generic line, a
+   * withdrawal as "Withdrawn by our team", a coded note without its code — never the reviewer's raw internal note.
+   */
+  readonly shape?: 'applicantDocument';
   /** The file's row order (after `month`): never creation order, which would pair the k-th row with the k-th trip. */
   readonly sortBy?: readonly string[];
   /**
@@ -235,7 +241,7 @@ export const EXPORT_REGISTER: readonly ExportEntry[] = [
     fields: ['id', 'userId', 'platform', 'isActive', 'createdAt', 'alertsVersion'],
   },
   {
-    category: 'verificationDocuments', model: 'VerificationDocument', by: ['userId'], key: 'id', omit: { approvalHeldAt: 'SYSTEM', accountChangeId: 'SYSTEM' },
+    category: 'verificationDocuments', model: 'VerificationDocument', by: ['userId'], key: 'id', omit: { approvalHeldAt: 'SYSTEM', accountChangeId: 'SYSTEM' }, shape: 'applicantDocument',
     fields: ['id', 'userId', 'role', 'docType', 'status', 'state', 'expiresAt', 'reviewNote', 'reviewedAt', 'insurerName', 'policyNumber', 'coverageClass', 'hireClassConfirmed', 'plateCrossChecked', 'consentAt', 'privacyNoticeVersion', 'retentionExpiresAt', 'purgedAt', 'createdAt', 'updatedAt', 'subjectId', 'imagePurgedAt', 'assistedConsentId'],
   },
   {
