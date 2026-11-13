@@ -134,10 +134,37 @@ async function apiFetch(path: string, options?: RequestInit & { reason?: string 
     // which row they are looking for.
     if (json?.error?.details && typeof json.error.details === 'object') error.details = json.error.details;
     error.status = res.status;
+    // [AUDIT-20261113 FABLE-03 #2] The admin API wants the authenticator step for this session: go and do it.
+    if (res.status === 403 && (error.code === 'ADMIN_MFA_REQUIRED' || error.code === 'ADMIN_MFA_ENROLMENT_REQUIRED')
+      && typeof window !== 'undefined' && window.location.pathname !== '/login') {
+      window.location.href = '/login?step=mfa';
+    }
     throw error;
   }
   return json;
 }
+
+// ── [AUDIT-20261113 FABLE-03 #2] The admin second factor (authenticator app) ──
+export interface AdminMfaStatus {
+  required: boolean;
+  enrolled: boolean;
+  enrolledAt: string | null;
+  sessionVerified: boolean;
+  recoveryCodesLeft: number;
+}
+export async function fetchAdminMfaStatus(): Promise<AdminMfaStatus> {
+  return (await apiFetch('/api/v1/auth/admin-mfa')).data as AdminMfaStatus;
+}
+export async function startAdminMfaEnrolment(): Promise<{ secret: string; otpauthUrl: string; expiresInSeconds: number }> {
+  return (await apiFetch('/api/v1/auth/admin-mfa/enrol', { method: 'POST', body: '{}' })).data;
+}
+export async function confirmAdminMfaEnrolment(code: string): Promise<{ enrolled: true; recoveryCodes: string[] }> {
+  return (await apiFetch('/api/v1/auth/admin-mfa/enrol/confirm', { method: 'POST', body: JSON.stringify({ code }) })).data;
+}
+export async function verifyAdminMfa(input: { code: string } | { recoveryCode: string }): Promise<{ verified: true; recoveryCodesLeft?: number }> {
+  return (await apiFetch('/api/v1/auth/admin-mfa/verify', { method: 'POST', body: JSON.stringify(input) })).data;
+}
+
 
 /** The HTTP status of a thrown apiFetch error. 202 is not a failure — see
  *  lib/cashRail `outcomeOfThrown`. */

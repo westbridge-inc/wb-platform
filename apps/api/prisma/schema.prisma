@@ -216,6 +216,8 @@ model Session {
   userAgent            String?
   expiresAt            DateTime
   createdAt            DateTime  @default(now())
+  /// [AUDIT-20261113 FABLE-03 #2] When this session proved an authenticator code (admin second factor).
+  mfaVerifiedAt        DateTime?
 
   @@map("sessions")
   @@index([expiresAt]) // retention sweep cutoff [F-021-20]
@@ -5996,6 +5998,17 @@ model Admin {
   user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   permissions String[]
   createdAt   DateTime @default(now())
+  /// [AUDIT-20261113 FABLE-03 #2] The authenticator-app (TOTP) secret, only ever encrypted (MASTER_KEK
+  /// envelope, admin-totp.ts). Null until enrolment is confirmed.
+  totpSecretEnc        String?
+  /// An enrolment started but not yet confirmed with a code (encrypted), and when it started (10 minutes).
+  totpPendingSecretEnc String?
+  totpPendingAt        DateTime?
+  totpEnabledAt        DateTime?
+  /// The last 30-second step accepted: a code is accepted once.
+  totpLastStep         Int?
+  /// SHA-256 digests of the unused recovery codes (shown once at enrolment; each works once).
+  totpRecoveryHashes   String[] @default([])
 
   @@map("admins")
 }
