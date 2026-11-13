@@ -4,17 +4,18 @@ import Link from 'next/link';
 import { useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { DataUnavailable } from '@/components/dashboard/DataUnavailable';
+import { QueryFailed } from '@/components/mc/QueryFailed';
 import { MutationError } from '@/components/MutationError';
 import { Modal } from '@/components/Modal';
 import { DocumentViewer } from '@/components/verification/DocumentViewer';
 import { ReviewerAccess } from '@/components/verification/ReviewerAccess';
 import { CatalogueApproverAccess } from '@/components/verification/CatalogueApproverAccess';
 import { CustomerIdRetired } from '@/components/verification/CustomerIdRetired';
-import { approveDoc, rejectDoc, errorCode, fetchUserDetail, fetchVerificationCounts, fetchDocumentCustody, type InsuranceCheck } from '@/lib/api';
+import { approveDoc, rejectDoc, errorCode, fetchUserDetail, fetchVerificationCounts, fetchDocumentCustody, sessionProbe, type InsuranceCheck } from '@/lib/api';
 import { reasonTooShort } from '@/lib/ask-reason';
 import { REJECTION_REASONS, SECOND_REVIEW_CODES, isRejectionReasonCode, type RejectionReasonCode } from '@/lib/rejection-reasons';
 import { AuthorityConfirmationFields, EMPTY_AUTHORITY, authorityConfirmationReady, type AuthorityConfirmationValue } from './authority-confirmation-fields';
-import { HELD_FOR_ORDERING_DAY, heldForOrderingDayLine, REVIEW_COUNTS_POLL_MS, REVIEW_STATUSES, accountPathLine, applicantId, isSystemActor, newSinceLoaded, docLabel, reviewerHint, reviewNote, roleLabel, vehicleLabel, reviewTimeline, groupApplicants, loadReviewQueue, maskedPhone, waitingSince, resubmissionLabel, previousDecisionLine, type Applicant, type ReviewDocument, type ReviewLane, type ReviewStatus } from '@/lib/review-center';
+import { ASSISTED_OWN_UPLOAD_WORDS, ASSISTED_UPLOAD_TITLE, ASSISTED_UPLOAD_WORDS, SOLE_ADMIN_CHECK, HELD_FOR_ORDERING_DAY, heldForOrderingDayLine, REVIEW_COUNTS_POLL_MS, REVIEW_STATUSES, accountPathLine, applicantId, isSystemActor, newSinceLoaded, docLabel, reviewerHint, reviewNote, roleLabel, vehicleLabel, reviewTimeline, groupApplicants, loadReviewQueue, maskedPhone, waitingSince, resubmissionLabel, previousDecisionLine, type Applicant, type ReviewDocument, type ReviewLane, type ReviewStatus } from '@/lib/review-center';
 import { label } from '@/lib/labels';
 import { gyDate, gyDateTime, gyTodayYmd } from '@/lib/dates';
 
@@ -69,6 +70,11 @@ export default function VerificationPage() {
   const [certificateYear, setCertificateYear] = useState('');
   const [registrationKind, setRegistrationKind] = useState<'' | 'BUSINESS_NAME' | 'COMPANY'>('');
   const [ownNameConfirmed, setOwnNameConfirmed] = useState(false);
+  // [ASSISTED SETUP] The uploader approving their own upload while they are the only admin: "I checked it myself".
+  const [soleAdminChecked, setSoleAdminChecked] = useState(false);
+  // [#2495 review B S4-1] The tick is offered only once the server says this admin is the only one (409
+  // ASSISTED_UPLOADER_ACK_REQUIRED): with a second admin it refuses outright, and nobody is asked to tick an untrue line.
+  const [soleAdminAsked, setSoleAdminAsked] = useState<string | null>(null);
   // [R3 · review F1] the legal name printed on a registration paper: the storefront names the seller by it
   const [legalName, setLegalName] = useState('');
   // [COMPANY-DOCS · review F3] a company's paper that is a business-NAME registration: its proprietor is a company
@@ -109,6 +115,8 @@ export default function VerificationPage() {
   const counts = useQuery({ queryKey: ['verification-counts'], queryFn: fetchVerificationCounts, refetchInterval: REVIEW_COUNTS_POLL_MS, refetchOnWindowFocus: true });
   const newDocuments = queue.data ? newSinceLoaded(counts.data?.data, status, lane, queue.data.length) : 0;
   const profile = useQuery({ queryKey: ['review-profile', applicant?.id], queryFn: () => fetchUserDetail(applicant!.id), enabled: !!applicant });
+  // [ASSISTED SETUP] Who is reviewing: a paper this admin uploaded for a store says so before they approve it.
+  const me = useQuery({ queryKey: ['session-me'], queryFn: sessionProbe, staleTime: 5 * 60_000 });
   const history = useQuery({
     queryKey: ['verification-history', status, lane], enabled: !!applicant,
     queryFn: async () => (await Promise.all(REVIEW_STATUSES.filter((s) => s !== status).map((s) => loadReviewQueue(s, lane)))).flat(),
@@ -151,7 +159,7 @@ export default function VerificationPage() {
     documentList.current?.querySelector<HTMLButtonElement>('[aria-pressed="true"]')?.focus({ preventScroll: true });
   };
   const selectDocument = (doc: ReviewDocument) => {
-    setSelected(doc); setViewed(false); setExpiresAt(''); setDocumentNumber(''); setIssuedOn(''); setCertificateYear(''); setRegistrationKind(''); setOwnNameConfirmed(false); setProprietorIsCompany(false); setLegalName(''); setInsurance(EMPTY_INSURANCE);
+    setSelected(doc); setViewed(false); setExpiresAt(''); setDocumentNumber(''); setIssuedOn(''); setCertificateYear(''); setRegistrationKind(''); setOwnNameConfirmed(false); setSoleAdminChecked(false); setSoleAdminAsked(null); setProprietorIsCompany(false); setLegalName(''); setInsurance(EMPTY_INSURANCE);
     setMutationError(null); setDecision(null); setReason(''); setReasonCode('');
   };
   const openApplicant = (next: Applicant | null) => {
@@ -217,7 +225,11 @@ export default function VerificationPage() {
     && (!needsOwnName || ownNameConfirmed)
     && (!needsLegalName || legalName.trim().length >= 2)
     && (!needsCompanyProprietor || proprietorIsCompany);
-  const approveBlocked = !viewed || !expiryOk || !typedReady || (isInsurance && !insuranceReady);
+  // [ASSISTED SETUP · owner 12 Nov 2026] A paper Swift uploaded for the store; and whether THIS admin uploaded it.
+  const uploadedBySwift = !!selected?.assistedById;
+  const ownUpload = uploadedBySwift && !!me.data?.user?.id && selected?.assistedById === me.data.user.id;
+  const askedSoleAdmin = ownUpload && soleAdminAsked === selected?.id;
+  const approveBlocked = !viewed || !expiryOk || !typedReady || (isInsurance && !insuranceReady) || (askedSoleAdmin && !soleAdminChecked);
   // [review F2] ...and a letter of authority only once its signer is confirmed (how, and what was checked).
   const approveLocked = approveBlocked || (needsAuthority && !authorityConfirmationReady(authority));
   const currentIndex = filtered.findIndex((a) => a.id === applicant?.id);
@@ -239,10 +251,12 @@ export default function VerificationPage() {
         ...(needsOwnName ? { ownNameConfirmed } : {}),
         ...(needsLegalName ? { legalName: legalName.trim() } : {}),
         ...(needsCompanyProprietor ? { proprietorIsCompany } : {}),
+        ...(askedSoleAdmin && soleAdminChecked ? { soleAdminChecked: true } : {}),
       }, note) : rejectDoc(doc.id, note, code as RejectionReasonCode);
     },
-    onError: (error) => {
+    onError: (error, variables) => {
       setMutationError(error);
+      if (errorCode(error) === 'ASSISTED_UPLOADER_ACK_REQUIRED') setSoleAdminAsked(variables.doc.id);
       // [BUG-HUNT F23] A held paper now carries its marker: the queue shows it without a reload.
       if (errorCode(error) === 'PARTNER_APPROVAL_HELD') void client.invalidateQueries({ queryKey: ['verification'] });
     },
@@ -365,6 +379,9 @@ export default function VerificationPage() {
           </nav>
           <div className="rc-review-body">
             <div className="rc-document-heading"><h3>{docLabel(selected.docType)}</h3><Chip status={selected.status} /></div>
+            {uploadedBySwift && <aside role="note" aria-label={ASSISTED_UPLOAD_TITLE} className="rc-previous"><strong>{ASSISTED_UPLOAD_TITLE}</strong><span>{ownUpload ? ASSISTED_OWN_UPLOAD_WORDS : ASSISTED_UPLOAD_WORDS}</span>
+              {me.isError && <QueryFailed what="who you are (to tell whether you uploaded it)" error={me.error} onRetry={() => void me.refetch()} />}
+              {askedSoleAdmin && <label className="rc-check"><input type="checkbox" aria-label={SOLE_ADMIN_CHECK} checked={soleAdminChecked} onChange={(e) => setSoleAdminChecked(e.target.checked)} disabled={busy} />{SOLE_ADMIN_CHECK}</label>}</aside>}
             {heldForOrderingDayLine(selected) && <aside role="note" aria-label={HELD_FOR_ORDERING_DAY} className="rc-previous"><strong>{HELD_FOR_ORDERING_DAY}</strong><span>{heldForOrderingDayLine(selected)}</span></aside>}
             {selected.previousDecision && <aside role="note" aria-label="Earlier decision" className="rc-previous">
               <strong>{resubmissionLabel(selected)}</strong>
@@ -416,6 +433,7 @@ export default function VerificationPage() {
       }}>
         {decision === 'reject' && <label>Reason code<select aria-label="Reason code" value={reasonCode} disabled={busy} onChange={(e) => setReasonCode(isRejectionReasonCode(e.target.value) ? e.target.value : '')}><option value="">Choose why it is rejected…</option>{REJECTION_REASONS.map((r) => <option key={r.code} value={r.code}>{r.label} ({r.code})</option>)}</select></label>}
         {decision === 'reject' && reasonCode && SECOND_REVIEW_CODES.has(reasonCode) && <p className="rc-notice">This does not reject it yet: a different reviewer must confirm it on the second-review queue. The applicant is only told the document could not be verified.</p>}
+        {decision === 'approve' && askedSoleAdmin && <label className="rc-check"><input type="checkbox" aria-label={`${SOLE_ADMIN_CHECK} (approval)`} checked={soleAdminChecked} onChange={(e) => setSoleAdminChecked(e.target.checked)} disabled={busy} />{SOLE_ADMIN_CHECK}</label>}
         <label>Decision note<textarea aria-label="Decision note" placeholder={decision === 'reject' ? 'Rejection reason' : 'Why this document is valid'} rows={4} maxLength={500} value={reason} disabled={busy} onChange={(e) => setReason(e.target.value)} /></label>
         <p className="rc-muted">At least 12 characters. Your note is kept in the review record.</p>
         <MutationError error={mutationError} label="Verification action failed" />

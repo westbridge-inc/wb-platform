@@ -693,6 +693,9 @@ export class AccountService {
     // [COMPANY-DOCS PART 2] The letters of authority the person asked someone to sign: the signer's name and number go
     // with the account (a signed letter is a verification document, purged with the others).
     await prisma.authorityLetterRequest.deleteMany({ where: { userId } });
+    // [ASSISTED SETUP] The OKs recorded for Swift to set up the person's stores (a store person's name): they go with the
+    // account; their action rows cascade; the consent ledger and the audit trail keep ids only.
+    await prisma.assistedSetupConsent.deleteMany({ where: { holderId: userId } });
 
     // 3c. [COORD 18 Oct 23:28Z · owner 19 Oct A/A/A] Rows that stay lose what identifies the person: profiles
     //     (vehicle, plate, location, pay link, bio), the checkout replay copy, fraud marks (phone, address key,

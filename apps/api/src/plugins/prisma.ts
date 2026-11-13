@@ -107,6 +107,8 @@ const TENANT_QUERY_EXTENSIONS = {
   cardCreditRefund: scoped,
   // [COMPANY-DOCS Part 3] A store account's change of business type or of account holder, walled like the account.
   accountChangeRequest: scoped,
+  // [ASSISTED SETUP] A store's consent for Swift to set it up, and what was done under it, walled like the store.
+  assistedSetupConsent: scoped, assistedSetupAction: scoped,
   billingDunningClock: scoped, billingObligationTransition: scoped, paymentConfirmationHold: scoped, billingFeeNotice: scoped, billingNoticeHandoff: scoped,
   tenantBillingCurrency: scoped, trialGrant: scoped,
   moverFeeAuthority: scoped, moverFeeSubscription: scoped,
