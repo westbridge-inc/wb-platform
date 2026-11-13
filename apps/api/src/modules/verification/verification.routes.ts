@@ -4,6 +4,7 @@ import { documentScanState, uploadScanRefusal } from '../../lib/upload-scan-debt
 import { z } from '../../lib/zod';
 import { VehicleType } from '@prisma/client';
 import { VerificationService, applicantDocumentView } from './verification.service';
+import { assertUnclaimedUploadRoom } from './upload-window';
 import { NotificationService, notifyAdmins, tenantOfUser } from '../notification/notification.service';
 import { getKycProvider } from '../../providers/kyc/kyc-provider';
 import { getStorageProvider } from '../../providers/storage/storage-provider';
@@ -242,6 +243,8 @@ export async function verificationRoutes(app: FastifyInstance) {
     if (!DOCUMENT_UPLOAD_TYPES.has(file.mimetype)) {
       throw new AppError(400, 'BAD_TYPE', 'Only JPEG, PNG, WebP or PDF files are accepted');
     }
+    // [FABLE-02 F12] No more unclaimed uploads than a day's cap: refused before anything is read or stored.
+    await assertUnclaimedUploadRoom(app.prisma, request.user.userId);
     const buffer = await file.toBuffer();
     // [ASSISTED SETUP] Kept by the one sealer (upload-seal.ts): checked, cleaned, scanned, sealed, owned by the caller.
     const url = await sealVerificationUpload(app.prisma, notifications, { ownerUserId: request.user.userId, buffer, mimetype: file.mimetype, log: request.log });
