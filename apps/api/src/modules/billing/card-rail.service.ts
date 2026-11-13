@@ -23,6 +23,7 @@ import { POWERTRANZ_PROVIDER, VOID_DATE_SKEW_MS, readCompletion } from '../../pr
 import { SIMULATOR_PAGE, SIMULATOR_PROVIDER } from '../../providers/card/simulator-provider';
 import { PAYER_INCLUDE, payerAudienceOf, payerUserIdOf } from '../subscription/subscription-owner';
 import { checkCardCreditRefund, heldRefundCheckable, providerCheckOf, type CreditRefundCheckAnswer, type ProviderCheck } from './card-credit-refund';
+import { reversalKindByAge, type CardReversalKind } from './card-settlement';
 
 // ---------------------------------------------------------------------------
 // [PT-1 · AH.10.9.2] The card rail v2 service: hosted sessions and enrolled
@@ -73,6 +74,10 @@ export const VOID_ANSWER_WAIT_MS = 2 * 60 * 1000;
  *  long while its own money call may still be running (billing's booking, or
  *  the provider's refund answer, well inside it). */
 export const FINANCE_CLAIM_WAIT_MS = 2 * 60 * 1000;
+/** [VOID-REFUND-CHECK F2] A lost completion whose page the provider's record shows never completed (SP4 / 3D0, nothing
+ *  captured) is closed unpaid only this long after the completion was claimed: well past its 30 s request, so a slow
+ *  completion has had every chance to land on the record. Until then it is asked again — never voided. */
+export const NOT_TAKEN_FINAL_MS = 10 * 60 * 1000;
 /** What finance may decide on a HELD Pay now (admin route, C4). */
 // [REVIEW-2 F1] No "refunded in the provider's portal" decision: the provider's guide documents only the API refund
 // (sec. 5.2 / 7.5), never a refund made by hand in its Merchant Portal, so Swift records none.
@@ -153,6 +158,24 @@ export function unsaidCompletion(reason: string): boolean {
     || /^(COMPLETION_HTTP_|NOT_THE_BANKS_ANSWER_|POSSIBLE_DUPLICATE_)/.test(reason);
 }
 
+/** [REVIEW-2496-A S3-1] Swift's own void whose answer was lost is checked (and may be followed by a refund) only this
+ *  long after it was sent: a void still in flight at PowerTranz could otherwise read as "the sale stands", and a refund
+ *  beside a void that lands late would return the money twice. Well past the void's own 15 s request. */
+export const VOID_CHECK_WAIT_MS = 10 * 60 * 1000;
+
+/** [VOID-REFUND-CHECK F6 · REVIEW-2496-A S3-1] Swift's own void got no answer, and it was sent long enough ago. */
+export function voidUnknownSettledForCheck(s: Pick<CardSession, 'providerVoidState' | 'providerVoidAt'>, now: Date): boolean {
+  return s.providerVoidState === 'UNKNOWN' && !!s.providerVoidAt && now.getTime() - s.providerVoidAt.getTime() >= VOID_CHECK_WAIT_MS;
+}
+
+/** [VOID-REFUND-CHECK F3b/F6] A HELD Pay now, still undecided, whose reversal the provider REFUSED — or whose own void
+ *  Swift sent with no answer at least VOID_CHECK_WAIT_MS ago (and no reversal since): checkable against the sale's record. */
+export function heldReversalRefused(s: Pick<CardSession, 'purpose' | 'status' | 'resolution' | 'providerRefundState' | 'providerVoidState' | 'providerVoidAt' | 'providerTransactionRef' | 'amount' | 'currencyCode'>, now: Date): boolean {
+  return s.purpose === 'PAY_NOW' && s.status === 'HELD' && !s.resolution
+    && (s.providerRefundState === 'FAILED' || (s.providerRefundState === null && voidUnknownSettledForCheck(s, now)))
+    && !!s.providerTransactionRef && s.amount !== null && !!s.currencyCode;
+}
+
 /** [Review S2-2] Did this session's payment book the week (captured, or banked
  *  to the balance)? Read under the session lock. */
 async function bookedInTx(tx: Prisma.TransactionClient, s: Pick<CardSession, 'paymentId'>): Promise<boolean> {
@@ -160,6 +183,44 @@ async function bookedInTx(tx: Prisma.TransactionClient, s: Pick<CardSession, 'pa
   const payment = await tx.subscriptionPayment.findUnique({ where: { id: s.paymentId }, select: { status: true } });
   if (payment?.status === 'CAPTURED') return true;
   return (await tx.billingEvent.findUnique({ where: { idempotencyKey: `bank:${s.paymentId}` }, select: { id: true } })) !== null;
+}
+
+/**
+ * [VOID-REFUND-CHECK F1/F3 · PowerTranz 12 Nov 2026] Which reversal finance's REFUND decision sends for a HELD Pay now,
+ * read under the session lock:
+ *   - none sent yet: a VOID while the bank may not have settled the sale, a REFUND once it certainly has
+ *     (card-settlement.ts) — but never a second void when Swift's own void of it was already refused (a refund then);
+ *   - one the provider REFUSED: nothing, until "Check with the card provider" reads the record and finds the sale still
+ *     standing (approved, captured, unreversed: SALE_STANDS). Then ONE further reversal, of the kind not yet refused,
+ *     under its own key. Never a third: after that it is the owner's.
+ *   - any other answer (sending, pending, unknown, done): nothing.
+ * A provider with no void (the simulator) is only ever refunded.
+ */
+export function reversalPlanOf(
+  s: Pick<CardSession, 'createdAt' | 'providerVoidState' | 'providerRefundState' | 'providerReversalKind' | 'reversalCheck' | 'reversalRetryAt'>,
+  now: Date,
+  canVoid: boolean,
+): { kind: CardReversalKind; retry: boolean } | { refusal: { code: string; message: string } } {
+  // A void of it already refused — or sent with no answer (F6: never a second void beside one that may have worked).
+  const voidRefused = s.providerVoidState === 'FAILED' || s.providerVoidState === 'UNKNOWN' || (s.providerRefundState === 'FAILED' && s.providerReversalKind === 'VOID');
+  const refundRefused = s.providerRefundState === 'FAILED' && (s.providerReversalKind ?? 'REFUND') === 'REFUND';
+  const usable = (kind: CardReversalKind): CardReversalKind => (kind === 'VOID' && !canVoid ? 'REFUND' : kind);
+  if (s.providerRefundState === null) {
+    return { kind: usable(voidRefused ? 'REFUND' : reversalKindByAge(s, now)), retry: false };
+  }
+  if (s.providerRefundState !== 'FAILED') {
+    return { refusal: { code: 'REFUND_ALREADY_SENT', message: 'A reversal of this payment was already sent; its answer is recorded on the session. Check it in the provider\'s portal, then escalate it to the owner.' } };
+  }
+  if (s.reversalRetryAt) {
+    return { refusal: { code: 'REVERSAL_ALREADY_RETRIED', message: 'The card provider refused both reversals Swift sent for this payment. Nothing more is sent: escalate it to the owner.' } };
+  }
+  if (s.reversalCheck !== 'SALE_STANDS') {
+    return { refusal: { code: 'REVERSAL_CHECK_REQUIRED', message: 'The card provider refused the reversal Swift sent. Nothing is sent again until "Check with the card provider" shows the sale approved and not reversed. Nothing was sent.' } };
+  }
+  if ((voidRefused && refundRefused) || (refundRefused && !canVoid)) {
+    return { refusal: { code: 'REVERSAL_ALREADY_RETRIED', message: 'The card provider refused every reversal Swift can send for this payment. Nothing more is sent: escalate it to the owner.' } };
+  }
+  return { kind: voidRefused ? 'REFUND' : 'VOID', retry: true };
 }
 
 function stateMatches(state: string, stateHash: string): boolean {
@@ -631,8 +692,11 @@ export class CardRailService {
    *   - Voided (a real VoidDateTime on or after the session began) or refunded IN FULL on the record: HELD for a
    *     person (LOOKUP_SHOWS_REVERSED); no void is sent; finance may only record "nothing taken".
    *   - Refunded IN PART: HELD (LOOKUP_PARTIAL_CREDIT), no void, no decision here: escalated to the owner.
-   *   - Anything else — a confirmed sale without the stored approval, another amount or currency, a decline, an
-   *     unreadable or missing answer — goes on to the path it always took (one void, then HELD when the void is
+   *   - [VOID-REFUND-CHECK F2] Proven NOT taken (a decline, or a page that never completed: not approved, nothing
+   *     captured, credited or voided): closed FAILED as unpaid, with NO void (PowerTranz refuses to void it, and a
+   *     declined transaction can never be refunded, 12 Nov 2026). A never-completed page waits NOT_TAKEN_FINAL_MS first.
+   *   - Anything else — a confirmed sale without the stored approval, another amount or currency, an ambiguous code,
+   *     an unreadable or missing answer — goes on to the path it always took (one void, then HELD when the void is
    *     not confirmed). The completion is never sent again.
    *   - The read was made moments ago (its backoff window): nothing is done now; the session is asked again later.
    */
@@ -679,6 +743,20 @@ export class CardRailService {
         // [REVIEW-2460 S3-1 · B3] Part refunded, the rest still taken: no decision here (resolveHeld refuses all three).
         return { result: await this.hold(session, { status: 'unknown', reason: looked.reason, rawSha256: looked.rawSha256 }, 'LOOKUP_PARTIAL_CREDIT', now,
           `Swift could not tell what happened to this payment (${outcome.reason}), and PowerTranz's transaction record shows part of it refunded: the rest is still taken. Nothing was booked and no void was sent. Provider transaction ${ref}. Check it in PowerTranz's portal and escalate it to the owner.`, ref) };
+      case 'not_taken': {
+        // [VOID-REFUND-CHECK F2 · LEGAL-CARDS 12 Nov 2026] The record proves nothing was taken (a decline, or a page that
+        // never completed: no capture, no credit, no void). It is never voided — PowerTranz refuses to void it (staging,
+        // WRITES.md:63) and a declined transaction can never be refunded — and never held for a refund: it closes as
+        // unpaid. A page that never completed is first given NOT_TAKEN_FINAL_MS after the completion's claim (a slow
+        // completion could still be on its way): until then it stays live and is asked again (no void either).
+        if (looked.stage === 'never_completed' && now.getTime() <= session.completionClaimedAt.getTime() + NOT_TAKEN_FINAL_MS) {
+          const unsaid = { status: 'unknown' as const, reason: `${outcome.reason}+${looked.reason}`, rawSha256: looked.rawSha256 };
+          return { result: now.getTime() > session.expiresAt.getTime() ? await this.markUnknown(session, unsaid, now) : await this.observeOnly(session, unsaid) };
+        }
+        log().warn({ sessionId: session.id, lookup: looked.reason }, '[VOID-REFUND-CHECK F2] the provider record proves nothing was taken — closed unpaid, no void');
+        return { result: await this.close(session, 'FAILED', looked.stage === 'declined' ? 'DECLINED' : 'NOT_COMPLETED_ON_RECORD',
+          { status: 'failed', reason: `${outcome.reason}+${looked.reason}`, rawSha256: looked.rawSha256 }, now) };
+      }
       case 'not_bookable':
       case 'unknown':
         return { outcome: { status: 'unknown', reason: `${outcome.reason}+${looked.reason}`, voidable, rawSha256: looked.rawSha256 } };
@@ -1045,7 +1123,7 @@ export class CardRailService {
         if (now.getTime() - since < VOID_ANSWER_WAIT_MS) return this.resultOf(current);
         await this.prisma.cardSession.updateMany({ where: { id: current.id, providerVoidState: 'SENDING' }, data: { providerVoidState: 'UNKNOWN' } });
         return this.hold(current, null, 'APPROVED_UNPROVEN', now,
-          `The void was sent and its answer was never recorded. Provider transaction ${current.providerTransactionRef ?? ref}. Check it in the provider's portal, then book it, refund it, or record that nothing was taken (two people).`);
+          `The void was sent and its answer was never recorded. Provider transaction ${current.providerTransactionRef ?? ref}. Ten minutes after it was sent, check it with the card provider (Card payments, two people): if voided, record that nothing was taken; if the sale stands, refund it (once).`);
       }
       return this.hold(current, null, 'APPROVED_UNPROVEN', now, current.providerVoidState
         ? `The void ended ${current.providerVoidState}.`
@@ -1067,8 +1145,11 @@ export class CardRailService {
     if (state === 'VOIDED') return this.closeVoided(after, voided.rawSha256, now);
     await recordCardObservation(this.prisma, this.observation(after, 'CONFIRM', voided.rawSha256, observedStatus(voided.status), 'REJECTED_MISMATCH'));
     log().error({ sessionId: session.id, reason, voidState: state }, '[PT-4] card payment may have been taken and could not be voided — held for a person');
-    return this.hold(after, null, 'APPROVED_UNPROVEN', now,
-      `The card provider's answer could not be booked (${reason}) and the void ${state === 'FAILED' ? 'was refused' : 'is unconfirmed'}. Provider transaction ${ref}. Check it in the provider's portal, then book it, refund it, or record that nothing was taken (two people).`);
+    // [VOID-REFUND-CHECK F3c] A refused void is never an invitation to refund a sale that was never approved: PowerTranz
+    // refuses a void once the bank settled the sale, and can never refund a declined one (12 Nov 2026).
+    return this.hold(after, null, 'APPROVED_UNPROVEN', now, state === 'FAILED'
+      ? `The card provider's answer could not be booked (${reason}) and the void was refused. Provider transaction ${ref}. Check it in the provider's portal: if it shows the sale approved and settled, refund it (Swift sends a refund, once); if it shows it declined or never approved, record that nothing was taken. Never refund a declined payment (two people).`
+      : `The card provider's answer could not be booked (${reason}) and the void got no answer. Provider transaction ${ref}. Ten minutes after it was sent, check it with the card provider (Card payments, two people): if voided, record that nothing was taken; if the sale stands, refund it (once).`);
   }
 
   /**
@@ -1230,7 +1311,7 @@ export class CardRailService {
      *  (the claim or the closure commits with its record, or not at all). */
     onAudit?: OnAudit;
     now?: Date;
-  }): Promise<{ status: CardSessionStatus; resolution: string | null; refund?: CardRefundOutcome['status'] }> {
+  }): Promise<{ status: CardSessionStatus; resolution: string | null; refund?: CardRefundOutcome['status']; reversal?: CardReversalKind; next?: 'CHECK_WITH_CARD_PROVIDER' }> {
     const now = input.now ?? new Date();
     const session = await this.prisma.cardSession.findUnique({ where: { id: input.sessionId } });
     if (!session || session.tenantId !== input.tenantId || session.purpose !== 'PAY_NOW') throw new NotFoundError('Card session', input.sessionId);
@@ -1267,7 +1348,7 @@ export class CardRailService {
       throw new AppError(409, 'CARD_PROVIDER_SETUP_CHANGED', 'This payment belongs to another card provider setup. Swift can refund a card payment only through the setup that took it: escalate it to the owner.');
     }
 
-    const audited = (tx: Prisma.TransactionClient) => input.onAudit?.(tx, { resolveAction: input.action, providerTransactionRef: ref, ...(amount === null ? {} : { amount }) });
+    const audited = (tx: Prisma.TransactionClient, extra: Record<string, unknown> = {}) => input.onAudit?.(tx, { resolveAction: input.action, providerTransactionRef: ref, ...(amount === null ? {} : { amount }), ...extra });
     // The decision, under the lock: what has happened, and the durable claim.
     const decided = await this.prisma.$transaction(async (tx) => {
       const fresh = await this.lockSession(tx, session.id);
@@ -1306,6 +1387,15 @@ export class CardRailService {
         if (fresh.providerRefundState !== null && fresh.providerRefundState !== 'FAILED') {
           throw new AppError(409, 'REFUND_SENT', 'A refund was sent for this payment: it is never booked.');
         }
+        // [VOID-REFUND-CHECK F3] The provider's own record shows nothing was taken: there is no money to book.
+        if (fresh.reversalCheck === 'NOT_TAKEN') {
+          throw new AppError(409, 'PROVIDER_SAYS_NOT_TAKEN', 'The card provider\'s record shows nothing taken for this payment (declined, never completed, or already voided): it is never booked. Record that nothing was taken.');
+        }
+        // [REVIEW-2496-A S4-2] A refused reversal can mean it was already reversed (e.g. in the portal): it is booked only
+        // after "Check with the card provider" shows the sale still standing.
+        if (fresh.providerRefundState === 'FAILED' && fresh.reversalCheck !== 'SALE_STANDS') {
+          throw new AppError(409, 'REVERSAL_CHECK_REQUIRED', 'The card provider refused the reversal Swift sent for this payment. Check it with the card provider first: it is booked only when its record shows the sale still standing.');
+        }
         const proof = fresh.provider === POWERTRANZ_PROVIDER && fresh.providerTransactionRef
           ? readCompletion(fresh.completionEvidence, { txnId: fresh.providerTransactionRef, orderId: `SWIFT-${fresh.id}`,
             amountMinor: toProviderMinor(Number(fresh.amount), fresh.currencyCode!, 'card.finance.book'), currencyCode: fresh.currencyCode! }) : null;
@@ -1333,22 +1423,40 @@ export class CardRailService {
       if (booking) throw new AppError(409, 'BOOKING_IN_PROGRESS', 'This payment is being booked. Wait two minutes, then check it.');
 
       if (input.action === 'REFUND') {
-        if (fresh.providerRefundState !== null) {
-          throw new AppError(409, 'REFUND_ALREADY_SENT', 'A refund for this payment was already sent; its answer is recorded on the session. Check it in the provider\'s portal, then escalate it to the owner.');
+        // [VOID-REFUND-CHECK F6] Swift's own void of this payment may have taken effect (sent, answer not known, or
+        // confirmed): its money may already be on its way back, so nothing else is sent until a person checks it.
+        // Once "Check with the card provider" shows the sale still standing (approved, captured, not voided), one refund may go.
+        if ((fresh.providerVoidState !== null && fresh.providerVoidState !== 'FAILED')
+          && !(voidUnknownSettledForCheck(fresh, now) && fresh.reversalCheck === 'SALE_STANDS')) {
+          throw new AppError(409, 'VOID_MAY_HAVE_TAKEN_EFFECT', 'A void was sent for this payment and may have gone through: nothing more is sent. Check it with the card provider: if its record shows the sale not voided, it can then be refunded; if voided, record that nothing was taken.');
         }
-        await tx.cardSession.update({ where: { id: fresh.id }, data: { ...recordRef, providerRefundState: 'SENDING', providerRefundAt: now } });
-        await audited(tx);
-        return { next: 'refund' as const };
+        const plan = reversalPlanOf(fresh, now, !!provider!.voidPayment);
+        if ('refusal' in plan) throw new AppError(409, plan.refusal.code, plan.refusal.message);
+        await tx.cardSession.update({
+          where: { id: fresh.id },
+          // [REVIEW-2496-B S3-1] Every claim spends the check that allowed it: a later refusal is checked afresh (the DB refuses a claim that keeps one).
+          data: { ...recordRef, providerRefundState: 'SENDING', providerRefundAt: now, providerReversalKind: plan.kind, reversalCheck: null, ...(plan.retry ? { reversalRetryAt: now } : {}) },
+        });
+        await audited(tx, { reversal: plan.kind, ...(plan.retry ? { further: true } : {}) });
+        return { next: 'refund' as const, kind: plan.kind, retry: plan.retry };
       }
 
       // NOTHING_TAKEN: a person's record of what the portal shows.
+      // [REVIEW-2496-A S4-1] ... never against the provider's own record, checked moments ago, that the sale stands.
+      if (fresh.reversalCheck === 'SALE_STANDS') {
+        throw new AppError(409, 'PROVIDER_SAYS_TAKEN', 'A check of the card provider\'s record showed this sale approved and not reversed: money was taken, so it is never closed as "nothing taken". Send the reversal, or escalate it to the owner.');
+      }
       if (fresh.providerRefundState === 'PENDING') {
         throw new AppError(409, 'REFUND_PENDING', 'A refund of this payment is pending: money was taken. Check it in the provider\'s portal, then escalate it to the owner.');
       }
       // [REVIEW-1 R2-3] A refund was sent for it (its answer lost, refused, or never recorded): a person saw money taken.
       // It is never closed as "nothing taken"; it stays HELD for the owner.
-      if (fresh.providerRefundState !== null) {
-        throw new AppError(409, 'REFUND_SENT', 'A refund was sent for this payment, so money was taken: it is never closed as "nothing taken". It stays here: escalate it to the owner.');
+      // [VOID-REFUND-CHECK F3] ... unless the provider REFUSED it and a check of its own record then showed the sale
+      // declined or never completed (NOT_TAKEN): a refusal moved nothing, and the record proves nothing was taken.
+      if (fresh.providerRefundState !== null && !(fresh.providerRefundState === 'FAILED' && fresh.reversalCheck === 'NOT_TAKEN')) {
+        throw new AppError(409, 'REFUND_SENT', fresh.providerRefundState === 'FAILED'
+          ? 'The card provider refused the reversal Swift sent for this payment. Check it with the card provider first: "nothing taken" is recorded only when its record shows the sale declined or never completed.'
+          : 'A refund was sent for this payment, so money was taken: it is never closed as "nothing taken". It stays here: escalate it to the owner.');
       }
       if (Object.keys(recordRef).length) await tx.cardSession.update({ where: { id: fresh.id }, data: recordRef });
       await this.closeResolvedInTx(tx, fresh, 'NOTHING_TAKEN', input.adminUserId, now);
@@ -1380,14 +1488,20 @@ export class CardRailService {
       return this.resolvedView(session.id);
     }
 
-    // REFUND: the one call this claim allows; its answer is recorded, never resent blindly.
+    // REFUND decision: the one call this claim allows — [VOID-REFUND-CHECK F1] a VOID while the bank may not have settled
+    // the sale, a REFUND once it certainly has (PowerTranz 12 Nov 2026) — its answer recorded, never resent blindly. A
+    // further reversal (after a refused one and a check) has its own key: the first key is never sent again.
     const currencyCode = session.currencyCode!;
-    const refunded = await provider!.refund({
-      binding: provider!.binding, providerRef: ref,
-      // The whole payment, at Swift's own price (checked above), never the typed figure.
-      amountMinor: toProviderMinor(Number(session.amount), currencyCode, 'card.v2.refund'), currencyCode,
-      idempotencyKey: `refund:${session.id}`,
-    }).catch((): CardRefundOutcome => ({ status: 'unknown', reason: 'REFUND_CALL_FAILED', rawSha256: rawDigest({ refund: 'threw' }) }));
+    const kind = decided.kind;
+    const keyed = `${decided.retry ? 'retry-' : ''}${kind === 'VOID' ? 'finance-void' : 'refund'}:${session.id}`;
+    const refunded = await (kind === 'VOID'
+      ? provider!.voidPayment!({ binding: provider!.binding, providerRef: ref, idempotencyKey: keyed })
+      : provider!.refund({
+        binding: provider!.binding, providerRef: ref,
+        // The whole payment, at Swift's own price (checked above), never the typed figure.
+        amountMinor: toProviderMinor(Number(session.amount), currencyCode, 'card.v2.refund'), currencyCode,
+        idempotencyKey: keyed,
+      })).catch((): CardRefundOutcome => ({ status: 'unknown', reason: `${kind}_CALL_FAILED`, rawSha256: rawDigest({ [kind.toLowerCase()]: 'threw' }) }));
     const state = refunded.status === 'succeeded' ? 'REFUNDED' : refunded.status === 'pending' ? 'PENDING' : refunded.status === 'failed' ? 'FAILED' : 'UNKNOWN';
     // [R1 · CARD-STAGING-TEST R2] A refund is PowerTranz's OWN transaction (TransactionType 5), and the sale's record does
     // not name it: when the approved answer names an id of its own (not the sale's), it is kept beside the sale's, with the
@@ -1407,8 +1521,23 @@ export class CardRailService {
         const fresh = await this.lockSession(tx, session.id);
         if (fresh && fresh.status === 'HELD' && !fresh.resolution) await this.closeResolvedInTx(tx, fresh, 'REFUNDED', input.adminUserId, now);
       });
+    } else {
+      // [VOID-REFUND-CHECK F3a] A reversal that did not go back is never left with the admin who clicked: the admins
+      // (and the owner) are paged once per reversal. A refusal moved nothing and is never followed automatically by
+      // another send: a person checks it with the card provider. An unconfirmed one may be money on its way back.
+      const what = `The ${kind === 'VOID' ? 'void' : 'refund'} Swift sent for held card payment ${session.id} (order SWIFT-${session.id}, transaction ${ref}, ${Number(session.amount)} ${currencyCode})`;
+      const why = 'reason' in refunded ? refunded.reason.replace(/[^A-Z0-9_]/g, '_').slice(0, 80) : 'PENDING';
+      await notifyAdmins(this.prisma, this.notifications, {
+        tenantId: session.tenantId,
+        title: state === 'FAILED' ? 'Card reversal refused: check it with the card provider' : 'Card reversal not confirmed',
+        body: state === 'FAILED'
+          ? `${what} was refused by the card provider (${why}). Nothing moved, and nothing is sent again by itself. Press "Check with the card provider" on Card payments (two people): if PowerTranz's record shows the sale declined or never completed, record that nothing was taken; if it shows the sale approved and not reversed, one more reversal may be sent; otherwise escalate it to the owner.`
+          : `${what} is not confirmed (${state.toLowerCase()}: ${why}). It is never sent again, and the money may be on its way back: do not pay it another way. Check it with the card provider (Card payments) and escalate to the owner.`,
+        data: { kind: 'billing_invariants', alert: 'card-held-reversal-not-done', subscriptionId: session.subscriptionId, sessionId: session.id, reversal: kind, state },
+        dedupeKey: `card-held-reversal-not-done:${session.id}:${decided.retry ? 2 : 1}`,
+      }).catch((err: unknown) => log().error({ err, sessionId: session.id }, '[VOID-REFUND-CHECK F3a] could not page the admins about a held card reversal that did not go back'));
     }
-    return { ...(await this.resolvedView(session.id)), refund: refunded.status };
+    return { ...(await this.resolvedView(session.id)), refund: refunded.status, reversal: kind, ...(state === 'FAILED' ? { next: 'CHECK_WITH_CARD_PROVIDER' as const } : {}) };
   }
 
   // -------------------------------------------------------------------------
@@ -1441,6 +1570,11 @@ export class CardRailService {
         }).then(() => undefined),
       });
       return { kind: 'CARD_CREDIT_REFUND', ...answer };
+    }
+    if (heldReversalRefused(session, now)) return this.checkRefusedReversal(session, input, now);
+    // [REVIEW-2496-A S3-1] Swift's own void got no answer moments ago: it may still land. Nothing is read yet.
+    if (session.status === 'HELD' && !session.resolution && session.providerRefundState === null && session.providerVoidState === 'UNKNOWN') {
+      throw new AppError(409, 'NOTHING_TO_CHECK', 'Swift\'s void of this payment got no answer only moments ago and may still go through: wait ten minutes after it was sent, then check it. Nothing was read or recorded.');
     }
     if (!heldRefundCheckable(session, now)) {
       throw new AppError(409, 'NOTHING_TO_CHECK', 'This payment has no refund whose answer is unknown (or it was sent moments ago: wait ten minutes). Nothing was read or recorded.');
@@ -1518,6 +1652,84 @@ export class CardRailService {
     return { kind: 'HELD_PAYMENT', check, reason: looked.reason, status: after.status, resolution: after.resolution, failureCode: after.failureCode };
   }
 
+  /**
+   * [VOID-REFUND-CHECK F3b] "Check with the card provider" on a HELD Pay now whose reversal (finance's void or refund)
+   * the provider REFUSED. A refusal moved nothing, but Swift no longer knows what became of the sale: PowerTranz's
+   * record of it (GET /api/Transactions/{id}, its answer to Swift of 4 Nov 2026: for an outcome that is unknown) is read
+   * once, and decides the next step — nothing is ever sent here:
+   *   - voided, or credited back in full: closed REFUNDED (the money is back; it is never paid back twice);
+   *   - credited in part: held for the owner (LOOKUP_REFUND_NOT_WHOLE);
+   *   - proven not taken (declined, or never completed): NOT_TAKEN — finance may then record "nothing taken";
+   *   - an approved, captured, unreversed sale at Swift's price: SALE_STANDS — finance may then send ONE further
+   *     reversal (reversalPlanOf: the kind not yet refused, its own key, two people);
+   *   - anything else (another amount or state, unreadable, asked moments ago): nothing recorded; the owner is told
+   *     when the record was readable but fits none of these.
+   */
+  private async checkRefusedReversal(
+    session: CardSession, input: { adminUserId: string; onAudit?: OnAudit }, now: Date,
+  ): Promise<{ kind: 'HELD_PAYMENT'; check: ProviderCheck; reason: string; status: CardSessionStatus; resolution: string | null; failureCode: string | null }> {
+    const provider = this.rail();
+    if (!sameBinding(bindingOf(session), provider.binding)) {
+      throw new AppError(409, 'CARD_PROVIDER_SETUP_CHANGED', 'This payment belongs to another card provider setup. Nothing was read or recorded: escalate it to the owner.');
+    }
+    if (!provider.lookupTransaction) {
+      throw new AppError(409, 'PROVIDER_CANNOT_LOOK_UP', 'This card provider gives Swift no way to look a payment up. Check its portal and escalate to the owner. Nothing was recorded.');
+    }
+    const ref = session.providerTransactionRef!;
+    const orderRef = `SWIFT-${session.id}`;
+    const looked: CardLookupOutcome = await provider.lookupTransaction({
+      binding: provider.binding, providerRef: ref, orderRef,
+      amountMinor: toProviderMinor(Number(session.amount), session.currencyCode!, 'card.v2.reversal-check'), currencyCode: session.currencyCode!,
+      notBefore: new Date(session.createdAt.getTime() - VOID_DATE_SKEW_MS),
+    }).catch((): CardLookupOutcome => ({ status: 'unknown', reason: 'LOOKUP_CALL_FAILED', rawSha256: rawDigest({ lookup: 'threw', ref }) }));
+    const voidOnly = session.providerRefundState === null;
+    const check: ProviderCheck = looked.status === 'reversed' ? (voidOnly ? 'REVERSED_ON_RECORD' : 'REFUNDED')
+      : looked.status === 'part_credited' ? 'OWNER_HOLD'
+        : looked.status === 'confirmed' ? 'SALE_STANDS'
+          : looked.status === 'not_taken' ? 'NOT_TAKEN_ON_RECORD'
+            : looked.status === 'not_bookable' ? 'ESCALATE'
+              : looked.backoff ? 'ASKED_RECENTLY' : 'NOT_KNOWN';
+    const reason = 'reason' in looked ? looked.reason : 'LOOKUP_CONFIRMED';
+    log().warn({ sessionId: session.id, reversal: session.providerReversalKind ?? 'REFUND', lookup: looked.status, why: reason }, '[VOID-REFUND-CHECK F3] a held card payment\'s refused reversal was checked with the provider');
+    const audited = (tx: Prisma.TransactionClient, extra: Record<string, unknown> = {}) => input.onAudit?.(tx, {
+      check, lookup: looked.status, lookupReason: reason, lookupSha256: looked.rawSha256, providerTransactionRef: ref,
+      refundWas: session.providerRefundState, reversalWas: session.providerReversalKind ?? 'REFUND', ...extra,
+    });
+    const page = (body: string) => notifyAdmins(this.prisma, this.notifications, {
+      tenantId: session.tenantId, title: 'Card reversal needs the owner', body,
+      data: { kind: 'billing_invariants', alert: 'card-reversal-check', subscriptionId: session.subscriptionId, sessionId: session.id },
+      dedupeKey: `card-reversal-check:${session.id}:${check}`,
+    }).catch(() => {});
+    const recorded = await this.prisma.$transaction(async (tx) => {
+      const fresh = await this.lockSession(tx, session.id);
+      if (!fresh || !heldReversalRefused(fresh, now)) return false;
+      if (looked.status === 'reversed' && fresh.providerRefundState === 'FAILED') {
+        await tx.cardSession.update({ where: { id: fresh.id }, data: { providerRefundState: 'REFUNDED' } });
+        await this.closeResolvedInTx(tx, fresh, 'REFUNDED', input.adminUserId, now);
+      } else if (looked.status === 'reversed') {
+        // [F6] Swift's own unanswered void took effect (or it was credited back): nothing is owed — "nothing taken" may close it.
+        await tx.cardSession.update({ where: { id: fresh.id }, data: { reversalCheck: 'NOT_TAKEN' } });
+      } else if (looked.status === 'part_credited') {
+        if (fresh.failureCode !== 'LATE_PROVIDER_APPROVAL') await tx.cardSession.update({ where: { id: fresh.id }, data: { failureCode: 'LOOKUP_REFUND_NOT_WHOLE' } });
+      } else if (looked.status === 'confirmed' || looked.status === 'not_taken') {
+        await tx.cardSession.update({ where: { id: fresh.id }, data: { reversalCheck: looked.status === 'confirmed' ? 'SALE_STANDS' : 'NOT_TAKEN' } });
+      }
+      await audited(tx);
+      return true;
+    });
+    if (!recorded) {
+      await this.prisma.$transaction(async (tx) => { await audited(tx, { notRecorded: 'SESSION_CHANGED' }); });
+      throw new AppError(409, 'NOTHING_TO_CHECK', 'This payment changed while it was being checked. Nothing was recorded: look at it again.');
+    }
+    if (looked.status === 'reversed' && !voidOnly) {
+      await page(`Card payment ${session.id} (order ${orderRef}, transaction ${ref}): the card provider refused the reversal Swift sent, but its record now shows the payment ${looked.reason === 'LOOKUP_VOIDED' ? 'voided' : 'refunded in full'}. Recorded as refunded; nothing was sent. Check how it went back (the portal), and never pay it back another way.`);
+    } else if (looked.status === 'part_credited' || looked.status === 'not_bookable') {
+      await page(`Card payment ${session.id} (order ${orderRef}, transaction ${ref}): the card provider refused the reversal Swift sent, and its record (${looked.reason}) fits no decision Swift can take. Nothing was recorded or sent. The owner settles it with PowerTranz.`);
+    }
+    const after = await this.prisma.cardSession.findUniqueOrThrow({ where: { id: session.id }, select: { status: true, resolution: true, failureCode: true } });
+    return { kind: 'HELD_PAYMENT', check, reason, status: after.status, resolution: after.resolution, failureCode: after.failureCode };
+  }
+
   /** Closed by finance, under the caller's lock: FAILED (the partner was not
    *  credited), its confirmation resolved as unpaid, its unbooked payment row
    *  closed, the decision written once. */
@@ -1529,7 +1741,7 @@ export class CardRailService {
     now: Date,
   ): Promise<void> {
     const resolution = how === 'NOTHING_TAKEN' ? 'NOTHING_TAKEN' : 'REFUNDED';
-    const failureCode = how === 'REFUNDED' ? 'REFUNDED_BY_FINANCE' : 'NOTHING_TAKEN';
+    const failureCode = how === 'NOTHING_TAKEN' ? 'NOTHING_TAKEN' : fresh.providerReversalKind === 'VOID' ? 'VOIDED_BY_FINANCE' : 'REFUNDED_BY_FINANCE';
     await tx.cardSession.update({
       where: { id: fresh.id },
       data: { status: 'FAILED', failureCode, ...(fresh.confirmedAt ? {} : { confirmedAt: now }), resolution, resolvedBy: adminUserId, resolvedAt: now },

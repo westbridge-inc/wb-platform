@@ -217,7 +217,7 @@ const E = {
   adRefundIntent: { model: 'adRefundIntent', fields: ['status', 'payoutRail', 'manualPayoutRef', 'providerRefundRef', 'completedAt'] },
   paymentConfirmation: { model: 'paymentConfirmationHold', fields: ['status', 'resolvedAt', 'resolvedBy', 'resolutionEvidence'] },
   // [PT-4] A held card payment's resolution: what finance decided and the provider actions it took.
-  cardSession: { model: 'cardSession', fields: ['status', 'failureCode', 'providerTransactionRef', 'providerVoidState', 'providerVoidRef', 'providerRefundState', 'providerRefundRef', 'bookClaimedAt', 'resolution', 'resolvedBy', 'resolvedAt'] },
+  cardSession: { model: 'cardSession', fields: ['status', 'failureCode', 'providerTransactionRef', 'providerVoidState', 'providerVoidRef', 'providerRefundState', 'providerRefundRef', 'providerReversalKind', 'reversalCheck', 'reversalRetryAt', 'bookClaimedAt', 'resolution', 'resolvedBy', 'resolvedAt'] },
   agentPayment: { model: 'mmgAgentPayment', fields: ['status', 'amount', 'subscriptionId'] },
   // [MMG REVERSAL] A return of a weekly-fee payment: where it stands and how a person resolved it.
   feeReversal: { model: 'mmgFeeReversal', fields: ['state', 'heldReason', 'resolution', 'resolvedBy', 'failedAt', 'reversedAt', 'walletDebitedAt'] },
@@ -582,6 +582,9 @@ export const ADMIN_ROUTE_AUTHORITY: Readonly<Record<AdminRouteKey, AdminRouteAut
   // [CARD-REFUND-LOOKUP] A refund whose answer is not known, checked with the card provider: it may record the
   // money as refunded (a HELD payment closed, or a refund of set-aside credit paid out) — money, two people.
   'POST /billing/card-sessions/:id/check-provider': c('C4', 'billing.card.resolve', E.cardSession),
+  // [REVIEW-2496-B S3-2 · OWNER RULING 12 Nov 2026] The owner and a second person confirm the PowerTranz portal shows
+  // nothing went back for a refused refund to the card: it frees held money — money, two people (owner one of them).
+  'POST /billing/card-sessions/:id/portal-checked': c('C4', 'billing.card.resolve', E.cardSession),
 
   // ── Algorithms ──────────────────────────────────────────────────────────
   'GET /algo/eta/report': c('C0', 'algo.read'),

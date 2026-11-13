@@ -319,7 +319,9 @@ describe('fee credit refund: set aside, pay, record, and every answer is shown',
     const { user } = renderWithQuery(<SubscriptionsPage />);
     expect(await screen.findByText('Shanta Kitchen')).toBeTruthy();
     const panel = await answerPanel(user, 'Refund to card', { choose: /Order SWIFT-cs_9 · GY\$5,000/ as unknown as string, reason: REASON });
-    expect(panel.textContent).toContain('Swift asks the card provider once to refund the card payment you choose to the card it came from: the whole payment, or only its weeks that have not started.');
+    expect(panel.textContent).toContain('Swift asks the card provider once to give the card payment you choose back to the card it came from: the whole payment, or only its weeks that have not started.');
+    // [REVIEW-2496-B S4-7] A young payment goes back as a void.
+    expect(panel.textContent).toContain('goes back as a void, whole; after that as a refund');
     expect(panel.textContent).not.toContain('refund the whole card payment');
     await confirmPanel(user, panel, 'Refund to card');
     await waitFor(() => expect(requestsByMethod(fetchMock, 'POST')).toHaveLength(1));
@@ -376,6 +378,9 @@ describe('fee credit refund: set aside, pay, record, and every answer is shown',
       cardPayments: [
         { cardSessionId: 'cs_6', orderReference: 'SWIFT-cs_6', providerTransactionRef: 'T-6', amount: 12000, currencyCode: 'GYD', inSetAside: 4000, paidAt: null, refund: { state: 'FAILED', providerRefundRef: null }, refundable: false, refundAmount: 4000, partial: true },
         { cardSessionId: 'cs_5', orderReference: 'SWIFT-cs_5', providerTransactionRef: 'T-5', amount: 12000, currencyCode: 'GYD', inSetAside: 0, paidAt: null, refund: null, refundable: false, refundAmount: 0, partial: false },
+        // [VOID-REFUND-CHECK F5] A refused void that a check found nothing back for; and part of a payment not yet settled.
+        { cardSessionId: 'cs_4', orderReference: 'SWIFT-cs_4', providerTransactionRef: 'T-4', amount: 12000, currencyCode: 'GYD', inSetAside: 12000, paidAt: null, refund: { state: 'FAILED', providerRefundRef: null, kind: 'VOID', checked: true }, refundable: false, refundAmount: 12000, partial: false },
+        { cardSessionId: 'cs_3', orderReference: 'SWIFT-cs_3', providerTransactionRef: 'T-3', amount: 12000, currencyCode: 'GYD', inSetAside: 4000, paidAt: null, refund: null, notBefore: '18 Nov 2026, 00:00 Guyana time', refundable: false, refundAmount: 4000, partial: true },
       ],
     };
     const fetchMock = refundServer(setAsideRow, () => queued, view);
@@ -383,7 +388,11 @@ describe('fee credit refund: set aside, pay, record, and every answer is shown',
     expect(await screen.findByText('Shanta Kitchen')).toBeTruthy();
     await user.click(screen.getByRole('button', { name: 'Refund to card' }));
     const said = (await screen.findByRole('alert')).textContent;
-    expect(said).toContain('Order SWIFT-cs_6: refund refused by the card provider: nothing went back; pay it back with Record payout.');
+    // [VOID-REFUND-CHECK F5] A refusal can mean the payment was already reversed: never "pay it back" before a check.
+    expect(said).toContain('Order SWIFT-cs_6: refund refused by the card provider: check it with the card provider first (Card payments), then pay it back.');
+    expect(said).not.toContain('nothing went back; pay it back with Record payout');
+    expect(said).toContain('Order SWIFT-cs_4: void refused by the card provider, and its check found nothing went back: pay it back with Record payout.');
+    expect(said).toContain('Order SWIFT-cs_3: part of a payment the bank may not have settled yet: it can go back to its card from 18 Nov 2026, 00:00 Guyana time.');
     expect(said).toContain('Order SWIFT-cs_5: all of it paid weeks that started: nothing goes back to its card.');
     expect(requestsByMethod(fetchMock, 'POST')).toHaveLength(0);
   });

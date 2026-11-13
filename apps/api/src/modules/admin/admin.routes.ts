@@ -2,7 +2,7 @@ import { emitToOrderRoom, emitToStoreRoom } from '../order/order-room-emission.s
 import { scanUpload } from '../../lib/malware-scan';
 import { documentScanState, uploadScanRefusal, retryHeldEvidenceScan } from '../../lib/upload-scan-debt';
 import { vatTracker } from '../billing/vat-tracker';
-import { CARD_PROVIDER_CHECK_ACTION, adminCardSession, adminCardSessions, adminCheckCardProvider, adminResolveCardSession, adminSubscriptionCards, cardRailRuntimeOf } from '../billing/card-rail.routes';
+import { CARD_PROVIDER_CHECK_ACTION, adminCardSession, adminCardSessions, adminCheckCardProvider, adminPortalCheckedCardRefund, adminResolveCardSession, adminSubscriptionCards, cardRailRuntimeOf } from '../billing/card-rail.routes';
 import { cardRailV2DrainEnabled, cardRailV2Enabled } from '../../utils/card-rail';
 import { listCases, caseDetail, claimCase, directCase, assignRelay, confirmReturn } from '../custody/custody-recovery';
 import { CUSTODY_CASE_DIRECTABLE, CUSTODY_CASE_OPEN_STATES } from '../order/order-status';
@@ -9381,6 +9381,13 @@ export async function adminRoutes(app: FastifyInstance) {
   app.post<{ Params: { id: string } }>('/billing/card-sessions/:id/check-provider', { preHandler: [adminGuard] }, async (request) => ({
     success: true,
     data: await adminCheckCardProvider(app, request.params.id, request.body, request.user.userId,
+      (tx, facts) => auditWithin(tx, request as unknown as AuditRequestLike, app.prefix, { extra: facts })),
+  }));
+  // [REVIEW-2496-B S3-2 · OWNER RULING 12 Nov 2026] The owner + a second person: the portal shows nothing went back.
+  app.post<{ Params: { id: string } }>('/billing/card-sessions/:id/portal-checked', { preHandler: [adminGuard] }, async (request) => ({
+    success: true,
+    data: await adminPortalCheckedCardRefund(app, request.params.id, request.body, request.user.userId,
+      (request as unknown as { privilegedApprovalId?: string }).privilegedApprovalId ?? '',
       (tx, facts) => auditWithin(tx, request as unknown as AuditRequestLike, app.prefix, { extra: facts })),
   }));
 }

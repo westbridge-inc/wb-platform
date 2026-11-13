@@ -542,7 +542,11 @@ export interface RefundSources {
   byRail: Array<{ rail: 'CARD' | 'MMG' | 'IN_PERSON' | 'OTHER' | 'NOT_RECORDED'; amount: number }>;
   cardPayments: Array<{
     cardSessionId: string; orderReference: string; providerTransactionRef: string | null; amount: number; currencyCode: string;
-    inSetAside: number; paidAt: string | null; refund: { state: string; providerRefundRef: string | null } | null; refundable: boolean;
+    inSetAside: number; paidAt: string | null; refundable: boolean;
+    /** [VOID-REFUND-CHECK F4/F5] The latest reversal of it (a VOID or a REFUND), and whether a refused one was checked. */
+    refund: { state: string; providerRefundRef: string | null; kind?: 'VOID' | 'REFUND'; checked?: boolean } | null;
+    /** [VOID-REFUND-CHECK F4] Part of a payment the bank may not have settled: when it can go back (Guyana time). */
+    notBefore?: string | null;
     /** [OWNER 10 Nov 2026] What Refund to card sends: the whole payment, or (`partial`) its weeks that have not started. */
     refundAmount: number; partial: boolean;
   }>;
@@ -652,9 +656,15 @@ export const resolveCardPayment = (id: string, action: CardDecision, providerRef
   });
 /** [CARD-REFUND-LOOKUP] "Check with the card provider": a refund Swift sent whose answer is not known, read against the
  *  provider's own record. Two people (C4); it never sends a refund. The answer's `check` says what was found. */
-export type ProviderCheck = 'REFUNDED' | 'OWNER_HOLD' | 'NO_REFUND_ON_RECORD' | 'NOT_KNOWN' | 'ASKED_RECENTLY';
+export type ProviderCheck = 'REFUNDED' | 'OWNER_HOLD' | 'NO_REFUND_ON_RECORD' | 'NOT_KNOWN' | 'ASKED_RECENTLY'
+  /** [VOID-REFUND-CHECK F3] A held payment whose reversal the card provider refused. */
+  | 'SALE_STANDS' | 'NOT_TAKEN_ON_RECORD' | 'ESCALATE' | 'REVERSED_ON_RECORD' | 'CHECKED_NOTHING_BACK';
 export const checkCardProvider = (id: string, reason: string) =>
   apiFetch(`/api/v1/admin/billing/card-sessions/${encodeURIComponent(id)}/check-provider`, { method: 'POST', body: JSON.stringify({}), reason });
+/** [REVIEW-2496-B S3-2 · OWNER RULING 12 Nov 2026] The owner and a second person confirm PowerTranz's portal shows nothing
+ *  went back for a refused refund to the card (with the portal's reference). Frees the held money; sends nothing. */
+export const confirmPortalNothingBack = (id: string, portalReference: string, reason: string) =>
+  apiFetch(`/api/v1/admin/billing/card-sessions/${encodeURIComponent(id)}/portal-checked`, { method: 'POST', body: JSON.stringify({ portalReference }), reason });
 /** [BUG-HUNT-2 G08] What stores owe customers back by MMG. Swift holds none of it: these are records. */
 export const fetchMmgRefunds = (filter: 'open' | 'overdue' | 'disputed') =>
   apiFetch(`/api/v1/admin/mmg-refunds?limit=50&filter=${filter}`);

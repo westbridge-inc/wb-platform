@@ -7,8 +7,9 @@ import { toProviderMinor } from '../../utils/currency-amount';
 import { cardTestSubscriptions } from '../../utils/card-rail';
 import { bindingOf, rawDigest, sameBinding, type CardRailSource, type CardRefundLookupOutcome, type CardRefundOutcome } from '../../providers/card/card-provider';
 import { VOID_DATE_SKEW_MS } from '../../providers/card/powertranz-provider';
+import { reversalKindByAge, settledCertainWords, type CardReversalKind } from './card-settlement';
 import {
-  CARD_REFUND_ACTION, LOOKUP_CREDIT_PREFIX, PAID_KEY, REFUND_AMOUNT, REFUND_SET_ASIDE_ID, assertPayoutPairRule, audit, cents, creditRefundState,
+  CARD_REFUND_ACTION, CARD_REFUND_HELD_WHERE, LOOKUP_CREDIT_PREFIX, PAID_KEY, VOID_CREDIT_PREFIX, REFUND_AMOUNT, REFUND_SET_ASIDE_ID, assertPayoutPairRule, audit, cents, creditRefundState,
   lockCreditRefundAsks, lockPayer, namedOpenSetAside, openCreditRefunds, openSetAsideIds, recordPayoutPartInTx, refuseInboundReference,
   stillToPayCents, type CreditRefundState,
 } from './credit-refund';
@@ -45,6 +46,20 @@ import {
 //     each refund with its own TransactionIdentifier (asked). A refund whose answer is lost is never sent again: a
 //     person asks Swift to check it with the card provider (checkCardCreditRefund below, two people), and only
 //     EXACTLY what Swift asked back (the whole payment, or the part) credited on the provider's own record closes it.
+//
+// [LEGAL-CARDS 12 Nov 2026 · VOID-REFUND-CHECK F4/F5] PowerTranz's written answer: VOID a sale the bank has not yet
+// settled, REFUND it once settled (settled by the acquiring bank, typically 2-3 business days); a declined transaction
+// can never be refunded (Response Code 12). Swift has no settlement signal, so (card-settlement.ts):
+//   - the WHOLE payment, younger than SETTLED_CERTAIN: one VOID (kind VOID), recorded as the payout part under the
+//     void's own transaction, or VOID-<original> when the void's answer names only the original (guide sec. 7.6 sample);
+//   - PART of a payment younger than SETTLED_CERTAIN: refused when it is ASKED (CARD_REFUND_NOT_SETTLED_YET, with the
+//     date it can be sent from): partial voids do not exist (sec. 5.2) and a refund waits for settlement. Nothing is
+//     sent, nothing is claimed; the money stays set aside, owed;
+//   - older: a REFUND, as before.
+// A reversal the provider REFUSES moved nothing, yet its money is never paid back another way until a person checks
+// the payment with the card provider (a refusal could mean it was already reversed, e.g. by hand in the portal): a
+// FAILED row holds its amount like one still in flight until a check reads "nothing back" (checkedAt). After a refused
+// VOID so checked, ONE refund to the card may still be asked (a new row, two people), never a second void.
 //
 // The law, in order:
 //   1. A person asks, with a reason; a second admin approves (C4); the asker of the set-aside never approves it.
@@ -135,14 +150,22 @@ export function cardRefundPart(paymentCents: number, inSetAsideCents: number): C
 }
 
 /** Everything that must hold for this card payment (or its unused part) to go back to its card now, read under the payer lock. */
-async function eligibleInTx(tx: Tx, subscriptionId: string, setAsideId: string, cardSessionId: string, amount: number) {
+async function eligibleInTx(tx: Tx, subscriptionId: string, setAsideId: string, cardSessionId: string, amount: number, now: Date) {
   const open = await namedOpenSetAside(tx, subscriptionId, setAsideId, NOTHING_SET_ASIDE, CYCLE_CHANGED);
   const { session, original, inSetAside } = await cardPaymentInSetAside(tx, subscriptionId, open.opened.id, cardSessionId);
   const whole = cents(session.amount);
   const currency = session.currencyCode;
   if (currency !== open.currencyCode) refuse('CARD_REFUND_CURRENCY', 'This card payment is in another currency than the refund set aside.');
-  const prior = await tx.cardCreditRefund.findUnique({ where: { cardSessionId }, select: { state: true } });
-  if (prior) refuse('CARD_REFUND_EXISTS', `A refund of this card payment was already asked (${prior.state === 'REFUNDED' ? 'refunded' : prior.state === 'FAILED' ? 'the card provider refused it' : 'its answer is not confirmed'}). It is never sent twice.`);
+  // [VOID-REFUND-CHECK F4] One reversal of each kind per payment, ever: a refund may follow only a VOID the provider
+  // refused AND a person's check then found nothing back on the provider's record.
+  const priors = await tx.cardCreditRefund.findMany({ where: { cardSessionId }, select: { state: true, kind: true, checkedAt: true }, orderBy: { createdAt: 'asc' } });
+  const prior = priors.find((r) => !(r.kind === 'VOID' && r.state === 'FAILED' && r.checkedAt));
+  if (prior) {
+    refuse('CARD_REFUND_EXISTS', prior.state === 'FAILED' && !prior.checkedAt
+      ? `The card provider refused the ${prior.kind === 'VOID' ? 'void' : 'refund'} Swift sent for this card payment. Nothing is sent again: check it with the card provider first (Card payments, two people).`
+      : `A ${prior.kind === 'VOID' ? 'void' : 'refund'} of this card payment was already asked (${prior.state === 'REFUNDED' ? 'done' : prior.state === 'FAILED' ? 'the card provider refused it' : 'its answer is not confirmed'}). It is never sent twice.`);
+  }
+  const afterRefusedVoid = priors.length > 0;
   const part = cardRefundPart(whole, inSetAside);
   if ('refused' in part) {
     if (part.refused === 'ALL_USED') {
@@ -158,19 +181,28 @@ async function eligibleInTx(tx: Tx, subscriptionId: string, setAsideId: string, 
     refuse('CARD_REFUND_UNUSED_PART', `Part of this ${whole / 100} ${currency} card payment already paid a week that started. Only its weeks that have not started go back to its card: exactly ${part.cents / 100} ${currency}, a partial refund of the same payment. Nothing was sent.`);
   }
   if (part.cents > await stillToPayCents(tx, open)) refuse('REFUND_AMOUNT_MISMATCH', 'This is more than is still to pay back on this refund. Nothing was sent.');
-  return { open, session, original, part };
+  // [VOID-REFUND-CHECK F4 · PowerTranz 12 Nov 2026] A sale the bank may not have settled is voided, never refunded — and
+  // a void is whole only ("partial voids are not supported", sec. 5.2): a PART of such a payment waits, refused here,
+  // before any claim. After a refused void (checked), the refund is what remains, whatever its age.
+  const byAge: CardReversalKind = afterRefusedVoid ? 'REFUND' : reversalKindByAge(session, now);
+  if (byAge === 'VOID' && part.partial) {
+    refuse('CARD_REFUND_NOT_SETTLED_YET', `Part of a card payment goes back only by a refund, and the card provider refunds a payment only once the bank has settled it. This one can be sent from ${settledCertainWords(session)}. Nothing was sent: the money stays set aside, owed.`);
+  }
+  return { open, session, original, part, byAge };
 }
 
 /** [Review S2-1 pattern] Checked when it is ASKED, before the approval gate writes the request, under the refund's
  *  ask lock: an ask that could never be sent never becomes a "refund asked" marker. */
-export async function validateCardRefundAsk(tx: Tx, subscriptionId: string, body: unknown): Promise<void> {
+export async function validateCardRefundAsk(tx: Tx, subscriptionId: string, body: unknown, now: Date = new Date()): Promise<void> {
   const parsed = CARD_REFUND_BODY.safeParse(body);
   if (!parsed.success) throw new AppError(400, 'VALIDATION_ERROR', parsed.error.issues[0]?.message ?? 'The refund to the card is not complete.');
-  await eligibleInTx(tx, subscriptionId, parsed.data.setAsideId, parsed.data.cardSessionId, parsed.data.amount);
+  await eligibleInTx(tx, subscriptionId, parsed.data.setAsideId, parsed.data.cardSessionId, parsed.data.amount, now);
 }
 
 export interface CardRefundAnswer extends CreditRefundState {
   state: CardRefundState;
+  /** [VOID-REFUND-CHECK F4] What was sent: a VOID (whole, not yet certainly settled) or a REFUND. */
+  kind: CardReversalKind;
   amount: number;
   /** The refund's own transaction reference, once the provider approved it. */
   providerRefundRef: string | null;
@@ -190,13 +222,14 @@ export async function refundCardCreditToCard(prisma: PrismaClient, rail: CardRai
   alertAdmins?: (message: string, dedupeKey: string, tenantId: string) => Promise<unknown>;
 }): Promise<CardRefundAnswer> {
   if (!input.approvalId) throw new AppError(403, 'APPROVAL_REQUIRED', 'A refund to the card needs a second admin.');
-  const answer = async (row: { state: string; amount: unknown; providerRefundRef: string | null }, replayed: boolean): Promise<CardRefundAnswer> => ({
-    state: row.state as CardRefundState, amount: Number(row.amount), providerRefundRef: row.providerRefundRef, replayed,
+  const answer = async (row: { state: string; kind: string; amount: unknown; providerRefundRef: string | null }, replayed: boolean): Promise<CardRefundAnswer> => ({
+    state: row.state as CardRefundState, kind: row.kind as CardReversalKind, amount: Number(row.amount), providerRefundRef: row.providerRefundRef, replayed,
     ...(await creditRefundState(prisma, input.subscriptionId)),
   });
   const replay = await prisma.cardCreditRefund.findUnique({ where: { approvalId: input.approvalId } });
   if (replay) return answer(replay, true);
   const provider = rail();
+  const now = input.now ?? new Date();
 
   // 1-2. The claim, under the payer lock, written before the call.
   const claimed = await prisma.$transaction(async (tx) => {
@@ -204,55 +237,64 @@ export async function refundCardCreditToCard(prisma: PrismaClient, rail: CardRai
     await lockCreditRefundAsks(tx, input.subscriptionId);
     const again = await tx.cardCreditRefund.findUnique({ where: { approvalId: input.approvalId } });
     if (again) return { replay: again };
-    const { open, session, original, part } = await eligibleInTx(tx, input.subscriptionId, input.setAsideId, input.cardSessionId, input.amount);
+    const { open, session, original, part, byAge } = await eligibleInTx(tx, input.subscriptionId, input.setAsideId, input.cardSessionId, input.amount, now);
     // Swift refunds only through the provider setup that took the money (guide sec. 4: the merchant's own credentials).
     if (!sameBinding(bindingOf(session), provider.binding)) {
       refuse('CARD_PROVIDER_SETUP_CHANGED', 'This card payment was taken through another card provider setup, and Swift refunds only through the setup that took it. Nothing was sent: escalate to the owner.');
     }
     await assertPayoutPairRule(tx, open.opened, input.approvalId);
+    // [VOID-REFUND-CHECK F4] A whole payment the bank may not have settled is voided (a provider with no void, the
+    // simulator, is refunded); the part of one was refused above.
+    const kind: CardReversalKind = byAge === 'VOID' && !part.partial && provider.voidPayment ? 'VOID' : 'REFUND';
     // The amount refunded is the part asked (whole cents, divisible by 100: an exact decimal), frozen in the claim.
     const row = await tx.cardCreditRefund.create({ data: {
       tenantId: session.tenantId, subscriptionId: input.subscriptionId, cardSessionId: session.id, setAsideId: open.opened.id,
-      amount: part.cents / 100, currencyCode: session.currencyCode, requestedByUserId: input.adminId, approvalId: input.approvalId,
+      amount: part.cents / 100, currencyCode: session.currencyCode, requestedByUserId: input.adminId, approvalId: input.approvalId, kind,
     } });
-    await audit(tx, input, { step: 'CARD_REFUND_SENDING', amount: Number(row.amount), paymentAmount: Number(session.amount), partial: part.partial, currencyCode: row.currencyCode, cardSessionId: session.id, orderReference: orderReferenceOf(session.id), providerTransactionRef: original, cardRefundId: row.id });
-    return { row, session, original, partial: part.partial };
+    await audit(tx, input, { step: 'CARD_REFUND_SENDING', kind, amount: Number(row.amount), paymentAmount: Number(session.amount), partial: part.partial, currencyCode: row.currencyCode, cardSessionId: session.id, orderReference: orderReferenceOf(session.id), providerTransactionRef: original, cardRefundId: row.id });
+    return { row, session, original, partial: part.partial, kind };
   });
   if ('replay' in claimed) return answer(claimed.replay!, true);
-  const { row, session, original, partial } = claimed;
+  const { row, session, original, partial, kind } = claimed;
   const ofPayment = partial ? ` (part of the ${Number(session.amount)} ${row.currencyCode} payment: its weeks that had not started)` : '';
 
-  // 3. ONE call. Its key is the claim: the driver never sends a second refund for it.
-  const outcome: CardRefundOutcome = await provider.refund({
-    binding: provider.binding,
-    providerRef: original,
-    amountMinor: toProviderMinor(Number(row.amount), row.currencyCode, 'card.v2.credit-refund'),
-    currencyCode: row.currencyCode,
-    idempotencyKey: `card-credit-refund:${row.id}`,
-  }).catch((): CardRefundOutcome => ({ status: 'unknown', reason: 'REFUND_CALL_FAILED', rawSha256: rawDigest({ refund: 'threw' }) }));
+  // 3. ONE call. Its key is the claim: the driver never sends a second refund (or void) for it.
+  const outcome: CardRefundOutcome = await (kind === 'VOID'
+    ? provider.voidPayment!({ binding: provider.binding, providerRef: original, idempotencyKey: `card-credit-void:${row.id}` })
+    : provider.refund({
+      binding: provider.binding,
+      providerRef: original,
+      amountMinor: toProviderMinor(Number(row.amount), row.currencyCode, 'card.v2.credit-refund'),
+      currencyCode: row.currencyCode,
+      idempotencyKey: `card-credit-refund:${row.id}`,
+    })).catch((): CardRefundOutcome => ({ status: 'unknown', reason: `${kind}_CALL_FAILED`, rawSha256: rawDigest({ [kind.toLowerCase()]: 'threw' }) }));
 
-  const now = input.now ?? new Date();
   const done = await prisma.$transaction(async (tx) => {
     await lockPayer(tx, input.subscriptionId);
     await tx.$queryRaw`SELECT "id" FROM "card_credit_refunds" WHERE "id" = ${row.id} FOR UPDATE`;
     const fresh = await tx.cardCreditRefund.findUniqueOrThrow({ where: { id: row.id } });
     if (fresh.state !== 'SENDING') return fresh;
-    const own = outcome.status === 'succeeded' ? outcome.providerRef.trim().toUpperCase() : '';
+    const named = outcome.status === 'succeeded' ? outcome.providerRef.trim().toUpperCase() : '';
+    // [VOID-REFUND-CHECK F4] A void's answer may name only the original as its own TransactionIdentifier (guide sec. 7.6
+    // sample): the void is then recorded under Swift's own reference made from the original (one void per payment, ever).
+    const own = kind === 'VOID' && outcome.status === 'succeeded' && (!named || named === original.toUpperCase()) ? voidCreditReference(original) : named;
     if (outcome.status === 'succeeded' && own && own !== original.toUpperCase() && !await refusedReference(tx, own)) {
       const event = await recordPayoutPartInTx(tx, {
         subscriptionId: input.subscriptionId, amount: Number(row.amount), currencyCode: row.currencyCode, method: 'CARD', reference: own,
         eventKey: `${PAID_KEY}${own}`,
-        note: `Set-aside fee credit refunded to the card that paid it${ofPayment}: the card provider approved refund ${own} of order ${orderReferenceOf(session.id)} (asked by ${input.adminId})`,
+        note: kind === 'VOID'
+          ? `Set-aside fee credit returned to the card that paid it: the card provider approved the void${named && named !== original.toUpperCase() ? ` ${named}` : ''} of order ${orderReferenceOf(session.id)}, not yet settled by the bank (asked by ${input.adminId})`
+          : `Set-aside fee credit refunded to the card that paid it${ofPayment}: the card provider approved refund ${own} of order ${orderReferenceOf(session.id)} (asked by ${input.adminId})`,
       });
       const refunded = await tx.cardCreditRefund.update({ where: { id: row.id }, data: { state: 'REFUNDED', providerRefundRef: own, billingEventId: event.id, answeredAt: now, answerSha256: outcome.rawSha256 } });
-      await audit(tx, input, { step: 'CARD_REFUNDED', amount: Number(row.amount), paymentAmount: Number(session.amount), partial, currencyCode: row.currencyCode, cardSessionId: session.id, reference: own, billingEventId: event.id, cardRefundId: row.id });
+      await audit(tx, input, { step: 'CARD_REFUNDED', kind, amount: Number(row.amount), paymentAmount: Number(session.amount), partial, currencyCode: row.currencyCode, cardSessionId: session.id, reference: own, billingEventId: event.id, cardRefundId: row.id });
       return refunded;
     }
     const state: CardRefundState = outcome.status === 'failed' ? 'FAILED' : outcome.status === 'pending' ? 'PENDING' : 'UNKNOWN';
     const reason = outcome.status === 'failed' || outcome.status === 'unknown' ? outcome.reason
       : outcome.status === 'pending' ? 'REFUND_PENDING' : 'REFUND_ANSWER_WITHOUT_ITS_OWN_REFERENCE';
     const closed = await tx.cardCreditRefund.update({ where: { id: row.id }, data: { state, outcomeReason: reason.slice(0, 200), answeredAt: now, answerSha256: outcome.rawSha256 } });
-    await audit(tx, input, { step: `CARD_REFUND_${state}`, amount: Number(row.amount), paymentAmount: Number(session.amount), partial, currencyCode: row.currencyCode, cardSessionId: session.id, outcomeReason: reason, cardRefundId: row.id });
+    await audit(tx, input, { step: `CARD_REFUND_${state}`, kind, amount: Number(row.amount), paymentAmount: Number(session.amount), partial, currencyCode: row.currencyCode, cardSessionId: session.id, outcomeReason: reason, cardRefundId: row.id });
     return closed;
   });
   if (done.state !== 'REFUNDED' && done.state !== 'FAILED') {
@@ -262,11 +304,13 @@ export async function refundCardCreditToCard(prisma: PrismaClient, rail: CardRai
   // what to do next. A refusal moved nothing (the money stays in the refund, owed); an unconfirmed answer may still be
   // money on its way, so nothing else may pay it until it is checked with the card provider.
   if (done.state !== 'REFUNDED' && input.alertAdmins) {
-    const what = `The refund of ${Number(row.amount)} ${row.currencyCode} to the card for order ${orderReferenceOf(session.id)}${ofPayment}`;
+    const what = `The ${kind === 'VOID' ? 'void' : 'refund'} of ${Number(row.amount)} ${row.currencyCode} to the card for order ${orderReferenceOf(session.id)}${ofPayment}`;
     // [REVIEW-2484-B S4-2] The reason is built from the provider's own codes: only [A-Z0-9_] reaches a push.
     const why = pushSafeCode(done.outcomeReason);
+    // [VOID-REFUND-CHECK F5] A refusal may mean the payment was ALREADY reversed (e.g. refunded by hand in PowerTranz's
+    // portal): it is never paid back another way before the card provider's own record is checked.
     const message = done.state === 'FAILED'
-      ? `${what} was refused by the card provider (${why ?? 'no reason given'}). Nothing went back: the money stays in the refund, still owed, and this card payment is never sent to the card again. Pay it back with Record payout (two people), or ask the owner.`
+      ? `${what} was refused by the card provider (${why ?? 'no reason given'}). Nothing was sent again. Before paying it back any other way, check it with the card provider (Card payments, two people): a refusal can mean the payment was already reversed. Only if the check finds nothing went back, pay it back with Record payout (two people)${kind === 'VOID' ? ', or refund it to the card once' : ''}, or ask the owner.`
       : `${what} is not confirmed (${done.state.toLowerCase()}: ${why ?? 'no answer'}). It is never sent again, and the money may be on its way back: do not pay it another way or release the refund. Check it with the card provider (Card payments) and escalate to the owner.`;
     // [REVIEW-2484-A S4-5] Paged in the card payment's own tenant, as every other card alert.
     await input.alertAdmins(message, `card-refund-not-done:${row.id}`, session.tenantId).catch((err: unknown) => {
@@ -275,6 +319,11 @@ export async function refundCardCreditToCard(prisma: PrismaClient, rail: CardRai
   }
   return answer(done, false);
 }
+
+/** [VOID-REFUND-CHECK F4] Swift's own reference for a void of a card payment whose approved answer names only the
+ *  original transaction (guide sec. 7.6 sample): one void per payment, ever, so it is unique. Reserved like
+ *  LOOKUP-CREDIT- (credit-refund.ts refundReferenceOf): a typed payout never carries it. */
+export const voidCreditReference = (original: string) => `${VOID_CREDIT_PREFIX}${original.trim().toUpperCase()}`;
 
 /** [REVIEW-2484-B S4-2] A reason code fit for a push: [A-Z0-9_] only (anything else becomes _), at most 80. */
 export function pushSafeCode(reason: string | null | undefined): string | null {
@@ -305,19 +354,21 @@ export interface CreditSourceView {
     refundAmount: number;
     /** True when that is part of the payment (the rest paid a week that started): a partial refund of the same payment. */
     partial: boolean;
-    refund: { state: CardRefundState; providerRefundRef: string | null } | null;
+    refund: { state: CardRefundState; providerRefundRef: string | null; kind: CardReversalKind; checked: boolean } | null;
+    /** [VOID-REFUND-CHECK F4] Part of a payment the bank may not have settled: when it can be sent (Guyana time), else null. */
+    notBefore: string | null;
     refundable: boolean;
   }>;
 }
 
 /** What the console shows beside a refund: how the money was paid, and the card payments that can go back to a card. */
-export async function creditRefundSources(db: PrismaClient | Tx, subscriptionId: string): Promise<CreditSourceView> {
+export async function creditRefundSources(db: PrismaClient | Tx, subscriptionId: string, now: Date = new Date()): Promise<CreditSourceView> {
   const [openMap, idMap] = await Promise.all([openCreditRefunds(db, [subscriptionId]), openSetAsideIds(db, [subscriptionId])]);
   const setAsideId = idMap.get(subscriptionId) ?? null;
   const openAmount = openMap.get(subscriptionId) ?? 0;
   if (!setAsideId) return { setAside: null, byRail: [], cardPayments: [] };
   const opened = await db.billingEvent.findUniqueOrThrow({ where: { id: setAsideId }, select: { currencyCode: true } });
-  const inFlight = await db.cardCreditRefund.findMany({ where: { setAsideId, state: { in: ['SENDING', 'PENDING', 'UNKNOWN'] } }, select: { amount: true } });
+  const inFlight = await db.cardCreditRefund.findMany({ where: { setAsideId, ...CARD_REFUND_HELD_WHERE }, select: { amount: true } });
   const stillToPay = (cents(openAmount) - inFlight.reduce((sum, r) => sum + cents(r.amount), 0)) / 100;
   const allocations = await db.feeReceiptAllocation.findMany({
     where: { billingEventId: setAsideId, kind: 'REFUND_SET_ASIDE' },
@@ -344,7 +395,7 @@ export async function creditRefundSources(db: PrismaClient | Tx, subscriptionId:
     ? new Map<string, string | null>((await db.subscriptionPayment.findMany({ where: { id: { in: sessions.map((s) => s.paymentId!).filter(Boolean) } }, select: { id: true, externalRef: true } })).map((r) => [r.id, r.externalRef]))
     : new Map<string, string | null>();
   const refunds = sessions.length
-    ? await db.cardCreditRefund.findMany({ where: { cardSessionId: { in: sessions.map((s) => s.id) } }, select: { cardSessionId: true, state: true, providerRefundRef: true } })
+    ? await db.cardCreditRefund.findMany({ where: { cardSessionId: { in: sessions.map((s) => s.id) } }, select: { cardSessionId: true, state: true, kind: true, checkedAt: true, providerRefundRef: true }, orderBy: { createdAt: 'desc' } })
     : [];
   const inSetAsideOf = new Map<string, number>();
   for (const a of allocations) {
@@ -355,17 +406,23 @@ export async function creditRefundSources(db: PrismaClient | Tx, subscriptionId:
     setAside: { id: setAsideId, amount: openAmount, stillToPay, currencyCode: opened.currencyCode },
     byRail: [...byRailCents.entries()].map(([rail, c]) => ({ rail, amount: c / 100 })),
     cardPayments: sessions.map((s) => {
-      const refund = refunds.find((r) => r.cardSessionId === s.id);
+      // The latest reversal of it; a refund may follow only a refused void that a check found nothing back for.
+      const rows = refunds.filter((r) => r.cardSessionId === s.id);
+      const refund = rows[0];
+      const blocked = rows.some((r) => !(r.kind === 'VOID' && r.state === 'FAILED' && r.checkedAt));
       const inSetAside = inSetAsideOf.get(s.paymentId ?? '') ?? 0;
       // [OWNER 10 Nov 2026] The whole payment, or its unused part (a partial refund): the same rule the refund applies.
       const part = cardRefundPart(cents(s.amount ?? 0), inSetAside);
+      // [VOID-REFUND-CHECK F4] Part of a payment the bank may not have settled waits (no partial void exists).
+      const waits = !!part && !('refused' in part) && part.partial && rows.length === 0 && reversalKindByAge(s, now) === 'VOID';
       const goes = 'refused' in part ? null : part;
       return {
         cardSessionId: s.id, orderReference: orderReferenceOf(s.id), providerTransactionRef: originals.get(s.paymentId ?? '') ?? s.providerTransactionRef,
         amount: Number(s.amount ?? 0), currencyCode: s.currencyCode ?? opened.currencyCode, inSetAside: inSetAside / 100, paidAt: s.confirmedAt,
         refundAmount: goes ? goes.cents / 100 : 0, partial: goes?.partial ?? false,
-        refund: refund ? { state: refund.state as CardRefundState, providerRefundRef: refund.providerRefundRef } : null,
-        refundable: !refund && s.status === 'SUCCEEDED' && !!originals.get(s.paymentId ?? '') && goes !== null && goes.cents <= cents(stillToPay),
+        refund: refund ? { state: refund.state as CardRefundState, providerRefundRef: refund.providerRefundRef, kind: refund.kind as CardReversalKind, checked: !!refund.checkedAt } : null,
+        notBefore: waits ? settledCertainWords(s) : null,
+        refundable: !blocked && !waits && s.status === 'SUCCEEDED' && !!originals.get(s.paymentId ?? '') && goes !== null && goes.cents <= cents(stillToPay),
       };
     }),
   };
@@ -389,7 +446,14 @@ export async function creditRefundSources(db: PrismaClient | Tx, subscriptionId:
 // ---------------------------------------------------------------------------
 
 /** What a check found, in the console's words. */
-export type ProviderCheck = 'REFUNDED' | 'OWNER_HOLD' | 'NO_REFUND_ON_RECORD' | 'NOT_KNOWN' | 'ASKED_RECENTLY';
+export type ProviderCheck = 'REFUNDED' | 'OWNER_HOLD' | 'NO_REFUND_ON_RECORD' | 'NOT_KNOWN' | 'ASKED_RECENTLY'
+  /** [VOID-REFUND-CHECK F3] A held payment's refused reversal: the sale approved and unreversed (one more reversal may be
+   *  sent); proven not taken ("nothing taken" may be recorded); or a record that fits no decision (the owner). */
+  | 'SALE_STANDS' | 'NOT_TAKEN_ON_RECORD' | 'ESCALATE'
+  /** [REVIEW-2496-B S4-1] Swift's own unanswered void went through (or the payment was credited back): nothing is owed. */
+  | 'REVERSED_ON_RECORD'
+  /** [REVIEW-2496-B S4-2] A REFUSED reversal to the card whose record shows nothing back: checked, its money now free. */
+  | 'CHECKED_NOTHING_BACK';
 export function providerCheckOf(outcome: CardRefundLookupOutcome): ProviderCheck {
   switch (outcome.status) {
     case 'refunded': return 'REFUNDED';
@@ -412,9 +476,10 @@ export function heldRefundCheckable(s: Pick<CardSession, 'purpose' | 'status' | 
   return UNANSWERED.includes(s.providerRefundState ?? '') || stuck(s.providerRefundState, s.providerRefundAt, now);
 }
 
-/** A refund of set-aside credit to its card whose answer is not known. */
-export function creditRefundCheckable(r: { state: string; createdAt: Date }, now: Date): boolean {
-  return UNANSWERED.includes(r.state) || stuck(r.state, r.createdAt, now);
+/** A refund of set-aside credit to its card whose answer is not known — or [VOID-REFUND-CHECK F5] one the provider
+ *  REFUSED that no check has yet read (its money is held until one does). */
+export function creditRefundCheckable(r: { state: string; createdAt: Date; checkedAt?: Date | null }, now: Date): boolean {
+  return UNANSWERED.includes(r.state) || stuck(r.state, r.createdAt, now) || (r.state === 'FAILED' && !r.checkedAt);
 }
 
 /** [ASSUMED until PowerTranz says the record lists refunds with their own ids] The reference a lookup-confirmed refund
@@ -439,8 +504,9 @@ export async function checkCardCreditRefund(prisma: PrismaClient, rail: CardRail
   alertOwner?: (message: string) => Promise<void>;
 }): Promise<CreditRefundCheckAnswer> {
   const now = input.now ?? new Date();
-  const row = await prisma.cardCreditRefund.findUnique({ where: { cardSessionId: input.cardSessionId } });
-  if (!row || row.tenantId !== input.tenantId || !creditRefundCheckable(row, now)) {
+  const rows = await prisma.cardCreditRefund.findMany({ where: { cardSessionId: input.cardSessionId }, orderBy: { createdAt: 'desc' } });
+  const row = rows.find((r) => creditRefundCheckable(r, now));
+  if (!row || row.tenantId !== input.tenantId) {
     refuse('NOTHING_TO_CHECK', 'There is no refund of this card payment whose answer is unknown. Nothing was read or recorded.');
   }
   const session = await prisma.cardSession.findUnique({ where: { id: row.cardSessionId } });
@@ -481,7 +547,22 @@ export async function checkCardCreditRefund(prisma: PrismaClient, rail: CardRail
   const answer = (state: CardRefundState, providerRefundRef: string | null, c: ProviderCheck = check): CreditRefundCheckAnswer => ({ check: c, reason: looked.reason, refund: { state, providerRefundRef } });
 
   if (looked.status !== 'refunded') {
-    await prisma.$transaction(async (tx) => { await audit(tx, who, facts); });
+    // [VOID-REFUND-CHECK F5] A REFUSED reversal whose original shows nothing back: checked — its money is free to be
+    // paid back another way (Record payout), or, after a refused void, refunded to the card once.
+    const freed = row.state === 'FAILED' && looked.status === 'not_refunded'
+      ? await prisma.$transaction(async (tx) => {
+        await lockPayer(tx, row.subscriptionId);
+        await tx.$queryRaw`SELECT "id" FROM "card_credit_refunds" WHERE "id" = ${row.id} FOR UPDATE`;
+        const fresh = await tx.cardCreditRefund.findUniqueOrThrow({ where: { id: row.id } });
+        if (fresh.state !== 'FAILED' || fresh.checkedAt) return false;
+        await tx.cardCreditRefund.update({ where: { id: row.id }, data: { checkedAt: now, checkedBy: input.adminId, checkedRef: `LOOKUP:${looked.rawSha256.slice(0, 64)}` } });
+        await audit(tx, who, { ...facts, checkedAt: now.toISOString() });
+        return true;
+      })
+      : false;
+    if (!freed) await prisma.$transaction(async (tx) => { await audit(tx, who, facts); });
+    // [REVIEW-2496-B S4-2] Checked and freed: say so, and what comes next.
+    if (freed) return answer(row.state as CardRefundState, row.providerRefundRef, 'CHECKED_NOTHING_BACK');
     if (looked.status === 'part_credited') {
       log().error({ cardRefundId: row.id, reason: looked.reason, partial }, '[CARD-REFUND-LOOKUP] the provider record shows a credit that is not what Swift asked back — held for the owner');
       await input.alertOwner?.(`The card provider's record of order ${orderRef} (transaction ${original}) shows a refund that is not the ${asked} (${looked.reason}). Nothing was recorded or sent. The owner settles it with PowerTranz.`).catch(() => {});
@@ -511,7 +592,7 @@ export async function checkCardCreditRefund(prisma: PrismaClient, rail: CardRail
     const event = await recordPayoutPartInTx(tx, {
       subscriptionId: row.subscriptionId, amount: Number(fresh.amount), currencyCode: fresh.currencyCode, method: 'CARD', reference,
       eventKey: `${PAID_KEY}${reference}`,
-      note: `Set-aside fee credit refunded to the card that paid it: the card provider's own record of transaction ${original} (order ${orderRef}) shows ${partial ? `exactly the ${asked} credited back` : `the whole payment ${looked.how === 'void' ? 'voided' : 'credited back'}`} (checked by ${input.adminId}; the refund's own answer had been ${fresh.state})`,
+      note: `Set-aside fee credit refunded to the card that paid it: the card provider's own record of transaction ${original} (order ${orderRef}) shows ${partial ? `exactly the ${asked} credited back` : `the whole payment ${looked.how === 'void' ? 'voided' : 'credited back'}`} (checked by ${input.adminId}; Swift's own ${fresh.kind === 'VOID' ? 'void' : 'refund'} had been ${fresh.state})`,
     });
     // [REVIEW-2461-B S3-1] The refund's own answer (its time and hash) stays on the row as it was; the record that
     // confirmed it is in the audit trail. A claim that never got an answer (stuck SENDING) is answered now.
@@ -531,7 +612,67 @@ export async function checkCardCreditRefund(prisma: PrismaClient, rail: CardRail
     await input.alertOwner?.(`The card provider's record of order ${orderRef} (transaction ${original}) shows the ${asked} back, but Swift could not record it (${done.refusal.code}). Nothing was recorded or sent. The owner settles it.`).catch(() => {});
     refuse(done.refusal.code, done.refusal.message);
   }
+  // [VOID-REFUND-CHECK F5] Recorded back although Swift's own reversal was REFUSED: someone else reversed it (the portal?):
+  // the owner is told, and the amount can never be paid back another way.
+  if (row.state === 'FAILED') {
+    await input.alertOwner?.(`The card provider refused the ${row.kind === 'VOID' ? 'void' : 'refund'} Swift sent for order ${orderRef} (transaction ${original}), but its record now shows the ${asked} back (${looked.reason}). Recorded as refunded; nothing was sent. Check in the portal how it went back.`).catch(() => {});
+  }
   return answer('REFUNDED', done.refunded.providerRefundRef);
 }
 
 export { CARD_REFUND_ACTION };
+
+// ---------------------------------------------------------------------------
+// [REVIEW-2496-B S3-2 · OWNER RULING 12 Nov 2026] "Checked the PowerTranz portal: nothing went back"
+//
+// Money held after a REFUSED refund (or void) to the card that the PowerTranz lookup cannot settle is released ONLY by
+// the OWNER and one second person in the console, confirming that the portal shows nothing went back, with the typed
+// portal reference; fully audited. Then it may be paid back another way (Record payout) or released. Two different
+// people, the owner (SUPER_ADMIN) one of them, never the solo ceremony; refused while a "Check with the card provider"
+// of the same payment is still asked (pending or approved, not yet applied). It sends nothing and records no money:
+// it only marks the refused row checked (checkedAt / checkedBy / checkedRef PORTAL:<reference>, written once).
+// ---------------------------------------------------------------------------
+
+export const PORTAL_REFERENCE = /^[A-Za-z0-9_-]{4,64}$/;
+/** The approval action of a check with the card provider (card-rail.routes.ts CARD_PROVIDER_CHECK_ACTION). */
+const CHECK_ACTION = 'POST /billing/card-sessions/:id/check-provider';
+
+export async function confirmPortalNothingBack(prisma: PrismaClient, input: {
+  adminId: string; approvalId: string; tenantId: string; cardSessionId: string; portalReference: string; onAudit?: OnAudit; now?: Date;
+}): Promise<CreditRefundCheckAnswer> {
+  const now = input.now ?? new Date();
+  const portalReference = input.portalReference.trim().toUpperCase();
+  if (!PORTAL_REFERENCE.test(portalReference)) throw new AppError(400, 'PORTAL_REFERENCE_INVALID', 'Type the reference PowerTranz\'s portal shows for this payment: letters, digits, - and _ only.');
+  const approval = input.approvalId ? await prisma.privilegedApproval.findUnique({ where: { id: input.approvalId }, select: { requestedBy: true, approvedBy: true, decidedSolo: true } }) : null;
+  if (!approval?.approvedBy || approval.approvedBy === approval.requestedBy || approval.decidedSolo) {
+    refuse('PORTAL_CHECK_TWO_PEOPLE', 'Only the owner and a second person can confirm this: two different people, never alone. Nothing was recorded.');
+  }
+  const people = await prisma.user.findMany({ where: { id: { in: [approval.requestedBy, approval.approvedBy] } }, select: { roles: true } });
+  if (!people.some((u) => u.roles.includes('SUPER_ADMIN'))) {
+    refuse('PORTAL_CHECK_OWNER_ONLY', 'Only the owner (with a second person) can confirm that the portal shows nothing went back. Nothing was recorded.');
+  }
+  const pending = await prisma.privilegedApproval.findFirst({
+    where: { action: CHECK_ACTION, entityId: input.cardSessionId, status: { in: ['PENDING', 'APPROVED'] }, expiresAt: { gt: now } }, select: { id: true },
+  });
+  if (pending) refuse('PROVIDER_CHECK_PENDING', 'A "Check with the card provider" of this payment is still asked: finish it first. Nothing was recorded.');
+  const rows = await prisma.cardCreditRefund.findMany({ where: { cardSessionId: input.cardSessionId }, orderBy: { createdAt: 'desc' } });
+  const row = rows.find((r) => r.state === 'FAILED' && !r.checkedAt);
+  if (!row || row.tenantId !== input.tenantId) refuse('NOTHING_TO_CHECK', 'This card payment has no refused refund to the card waiting for a check. Nothing was recorded.');
+  const who = { adminId: input.adminId, subscriptionId: row.subscriptionId, ...(input.onAudit ? { onAudit: input.onAudit } : {}) };
+  const done = await prisma.$transaction(async (tx) => {
+    await lockPayer(tx, row.subscriptionId);
+    await lockCreditRefundAsks(tx, row.subscriptionId);
+    await tx.$queryRaw`SELECT "id" FROM "card_credit_refunds" WHERE "id" = ${row.id} FOR UPDATE`;
+    const fresh = await tx.cardCreditRefund.findUniqueOrThrow({ where: { id: row.id } });
+    if (fresh.state !== 'FAILED' || fresh.checkedAt) return null;
+    const checked = await tx.cardCreditRefund.update({ where: { id: row.id }, data: { checkedAt: now, checkedBy: input.adminId, checkedRef: `PORTAL:${portalReference}` } });
+    await audit(tx, who, {
+      step: 'CARD_REFUND_PORTAL_CHECKED_NOTHING_BACK', cardSessionId: row.cardSessionId, cardRefundId: row.id, kind: row.kind, amount: Number(row.amount),
+      currencyCode: row.currencyCode, orderReference: orderReferenceOf(row.cardSessionId), portalReference, requestedBy: approval.requestedBy, approvedBy: approval.approvedBy,
+    });
+    return checked;
+  });
+  if (!done) refuse('NOTHING_TO_CHECK', 'This refused refund was checked or changed meanwhile. Nothing more was recorded.');
+  log().warn({ cardRefundId: row.id }, '[REVIEW-2496-B S3-2] the owner and a second person confirmed in the console that PowerTranz\'s portal shows nothing went back');
+  return { check: 'CHECKED_NOTHING_BACK', reason: 'PORTAL_CHECKED', refund: { state: 'FAILED', providerRefundRef: null } };
+}
