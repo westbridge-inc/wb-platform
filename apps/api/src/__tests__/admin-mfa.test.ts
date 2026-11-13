@@ -371,6 +371,45 @@ describe('[REVIEW-2501-A S2-1] with ADMIN_TOTP_REQUIRED=1 every staff surface ne
     const verified = await connect(admin.token);
     expect(await inRoom(verified)).toBe(true);
   });
+
+  // [REVIEW-2501-A S2-1 follow-up] The posture is judged at join; the session's 12 hours and its revocation still
+  // end a war-room socket that is already in.
+  const connectWarRoom = (token: string) => new Promise<Socket>((resolve, reject) => {
+    const socket = ioClient(url, { auth: { token }, transports: ['websocket'], reconnection: false, timeout: 3000 });
+    sockets.push(socket);
+    const timer = setTimeout(() => reject(new Error('socket did not become ready')), 7_500);
+    socket.on('auth:ready', () => { clearTimeout(timer); resolve(socket); });
+    socket.on('connect_error', (e) => { clearTimeout(timer); reject(e); });
+  });
+  const closed = (socket: Socket, ms: number) => new Promise<boolean>((resolve) => {
+    if (!socket.connected) { resolve(true); return; }
+    const timer = setTimeout(() => resolve(false), ms);
+    socket.once('disconnect', () => { clearTimeout(timer); resolve(true); });
+  });
+  const roomHas = async (socket: Socket) => (await app.io.in(OPS_WAR_ROOM).fetchSockets()).some((s) => s.id === socket.id);
+
+  it('a war-room socket is closed when its session\'s 12 hours end', async () => {
+    process.env['ADMIN_TOTP_REQUIRED'] = '1';
+    const admin = await enrolledAdmin();
+    const ending = await newSession(admin.userId, new Date(Date.now() - 12 * 3_600_000 + 1_500), { mfaVerifiedAt: new Date() });
+    const socket = await connectWarRoom(ending.token);
+    expect(await roomHas(socket)).toBe(true);
+    expect(await closed(socket, 4_000)).toBe(true);
+    expect(await roomHas(socket)).toBe(false);
+  });
+
+  it('the ADMIN_SESSION_EXPIRED revocation closes the war-room socket at once', async () => {
+    process.env['ADMIN_TOTP_REQUIRED'] = '1';
+    const admin = await enrolledAdmin();
+    const live = await newSession(admin.userId, new Date(Date.now() - 3_600_000), { mfaVerifiedAt: new Date() });
+    const socket = await connectWarRoom(live.token);
+    expect(await roomHas(socket)).toBe(true);
+    await runWithoutTenant(() => app.prisma.session.update({ where: { id: live.sessionId }, data: { createdAt: new Date(Date.now() - 13 * 3_600_000) } }), 'test-fixture:admin-mfa');
+    const gone = closed(socket, 3_000);
+    expect((await get(live, '/api/v1/safety/sos')).json().error.code).toBe('ADMIN_SESSION_EXPIRED');
+    expect(await gone).toBe(true);
+    expect(await roomHas(socket)).toBe(false);
+  });
 });
 
 describe('[REVIEW-2501-A S3-1] console-only is bound to the console\'s own sign-in, not to headers', () => {
