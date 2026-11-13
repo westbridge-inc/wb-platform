@@ -3170,6 +3170,9 @@ export async function createWorkers(ctx: JobContext, queues: SwiftQueues) {
   }
 }
 
+/** [RATINGS-RELEASE] The one-off post-deploy stats re-level (see scheduleRecurringJobs). */
+export const RATINGS_RELEASE_RELEVEL_JOB_ID = 'rating-stats-recompute-ratings-release-20261113';
+
 export async function scheduleRecurringJobs(queues: ReturnType<typeof createQueues>) {
   // Subscription billing: check every hour
   await queues.subscriptionQueue.add('process-billing', {}, {
@@ -3461,6 +3464,20 @@ export async function scheduleRecurringJobs(queues: ReturnType<typeof createQueu
     repeat: { pattern: '30 4 * * *' },
     removeOnComplete: 7,
     removeOnFail: 7,
+  });
+
+  // [RATINGS-RELEASE · REVIEW-2506-A S3-1] One catch-up re-level, once, on the
+  // first worker boot after the deploy that moved the stars to release time.
+  // Until it runs, every figure still holds the old write-time count, and the
+  // first rating written to a store would re-level it at that very moment —
+  // the signal the owner ruled out. This levels every store and person
+  // together and re-syncs the stores it moves. The fixed jobId makes later
+  // boots a no-op while the completed job is kept; if Redis is ever emptied it
+  // runs once more, which is harmless (the nightly job runs the same code).
+  await queues.dispatchQueue.add('rating-stats-recompute', { reason: RATINGS_RELEASE_RELEVEL_JOB_ID }, {
+    jobId: RATINGS_RELEASE_RELEVEL_JOB_ID,
+    removeOnComplete: false,
+    removeOnFail: true,
   });
 
   // Movement R: daily actor-facing fold (RAT-G anonymity) — after the 04:30

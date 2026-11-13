@@ -449,8 +449,10 @@ export class RatingService {
    *  Each released row's subject is re-levelled right after its batch is
    *  released, so the stars and count move (and a store's search document
    *  re-syncs) at release; a re-level that fails here is healed by the nightly
-   *  recompute, which runs after this sweep. */
-  async releaseDoubleBlind(windowHours = 72): Promise<number> {
+   *  recompute, which runs after this sweep. Every row past the window is
+   *  released in one sweep, however many batches that takes (`batchSize` is
+   *  injectable so a test can prove the loop goes past the first batch). */
+  async releaseDoubleBlind(windowHours = 72, batchSize = RELEASE_BATCH): Promise<number> {
     const cutoff = new Date(Date.now() - windowHours * 3600_000);
     let released = 0;
     for (;;) {
@@ -458,7 +460,7 @@ export class RatingService {
         where: { visibleAt: null, createdAt: { lt: cutoff } },
         select: { id: true, type: true, vendorId: true, rateeId: true },
         orderBy: { createdAt: 'asc' },
-        take: RELEASE_BATCH,
+        take: batchSize,
       });
       if (batch.length === 0) break;
       const res = await this.prisma.rating.updateMany({
@@ -467,7 +469,7 @@ export class RatingService {
       });
       released += res.count;
       await this.stats.relevel(batch);
-      if (batch.length < RELEASE_BATCH) break;
+      if (batch.length < batchSize) break;
     }
     return released;
   }

@@ -276,3 +276,21 @@ describe('a store’s stars move at RELEASE, never at write [RATINGS-RELEASE]', 
     expect([after.lifetimeCount, after.lifetimeSum, String(after.displayRating)]).toEqual([before.lifetimeCount, before.lifetimeSum, String(before.displayRating)]);
   });
 });
+
+describe('the release sweep releases every row past the window, however many batches [REVIEW-2506-A S3-2]', () => {
+  it('a sweep with batch size 2 releases all 5 of a store’s ratings and counts them', async () => {
+    const vendor = await makeVendor();
+    const orders: string[] = [];
+    for (let i = 0; i < 5; i += 1) orders.push((await customerRatesStore(vendor.id, 4)).id);
+    await passWindow(orders);
+    synced.length = 0;
+
+    // Three batches (2 + 2 + 1) for this store alone: a sweep that stopped
+    // after its first batch would leave rows hidden and the stars short.
+    expect(await ratings.releaseDoubleBlind(72, 2)).toBeGreaterThanOrEqual(5);
+    expect(await prisma.rating.count({ where: { orderId: { in: orders }, visibleAt: null } })).toBe(0);
+    const face = await storeFace(vendor.id);
+    expect(face).toMatchObject({ totalRatings: 5, lifetimeCount: 5, ratingCount: 5, averageRating: 4, displayRating: displayRating(5, 20) });
+    expect(synced).toContain(vendor.id);
+  });
+});
