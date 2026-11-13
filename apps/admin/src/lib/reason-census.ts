@@ -146,6 +146,9 @@ export const REASONED_CALLERS: readonly ReasonCaller[] = [
   // [MMG REVERSAL · owner #11] Return a whole MMG weekly-fee payment: the whole amount, typed.
   { route: 'POST /billing/mmg-checkouts/:id/refund-case', helper: 'openFeeRefundCase', args: ['mco_1', 'DUPLICATE'], requiredBodyKeys: ['kind', 'reason'] },
   { route: 'POST /billing/mmg-checkouts/:id/reverse', helper: 'reverseMmgFeePayment', args: ['mco_1', 2100], requiredBodyKeys: ['amountGyd'] },
+  // [Owner ruling 13 Nov 2026] A late MMG payment: the owner credits it with MMG's reference; a second person reviews it.
+  { route: 'POST /billing/mmg-checkouts/:id/credit-late', helper: 'creditLateMmgPayment', args: ['mco_1', 'MMG-REF-123'], requiredBodyKeys: ['mmgReference'] },
+  { route: 'POST /billing/mmg-checkouts/:id/late-credit-review', helper: 'reviewLateMmgCredit', args: ['mco_1', 'AGREED'], requiredBodyKeys: ['outcome'] },
   { route: 'POST /billing/mmg-fee-reversals/:id/resolve', helper: 'resolveMmgFeeReversal', args: ['rev_1', 'NOT_RETURNED', 'MMG-STMT-123'], requiredBodyKeys: ['outcome', 'mmgReference'] },
   // [continues #1592] Weekly-fee payment confirmations: the reason travels in the body (and the header).
   { route: 'POST /billing/confirmations/:id/resolve', helper: 'requestConfirmationResolution', args: ['hold_1', { sourceId: 'chk_1', epoch: 1, clockVersion: 3, decision: 'UNPAID', evidenceReference: 'MMG-STATEMENT-1', reason: 'Checked the MMG statement for this payment' }], requiredBodyKeys: ['sourceId', 'epoch', 'clockVersion', 'decision', 'evidenceReference', 'reason'] },
