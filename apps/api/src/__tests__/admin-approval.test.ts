@@ -37,16 +37,16 @@ const RUN = nanoid(6).toLowerCase();
 const userIds: string[] = [];
 const REASON = 'Bank confirmed the transfer cleared on the 3rd, reference GY-88213';
 
-async function makeAdmin(permissions: string[]): Promise<{ token: string; userId: string }> {
+async function makeAdmin(permissions: string[], role: 'SUPER_ADMIN' | 'ADMIN' = 'SUPER_ADMIN'): Promise<{ token: string; userId: string }> {
   const phone = testPhone();
   const user = await app.prisma.user.create({
     data: {
-      phone, firstName: 'Approver', lastName: `A${RUN}${userIds.length}`, roles: ['SUPER_ADMIN', 'CUSTOMER'],
-      activeRole: 'SUPER_ADMIN', status: 'ACTIVE', isPhoneVerified: true, admin: { create: { permissions } },
+      phone, firstName: 'Approver', lastName: `A${RUN}${userIds.length}`, roles: [role, 'CUSTOMER'],
+      activeRole: role, status: 'ACTIVE', isPhoneVerified: true, admin: { create: { permissions } },
     },
   });
   userIds.push(user.id);
-  const token = app.jwt.sign({ userId: user.id, role: 'SUPER_ADMIN', jti: nanoid(8) });
+  const token = app.jwt.sign({ userId: user.id, role, jti: nanoid(8) });
   await app.prisma.session.create({
     data: {
       userId: user.id, token, refreshToken: nanoid(48), authMethod: 'OTP',
@@ -612,3 +612,17 @@ describe('[DS110] the stored body is what executes — and only that', () => {
     expect(fingerprintOf(rebuilt!)).toBe(fingerprintOf({ ...base, query: { mode: 'dry' } }));
   });
 });
+
+// [AUDIT-20261113 F11] A founder-only route refuses a plain ADMIN BEFORE the two-person gate: otherwise the
+// gate stored their ask first, and the one-open-ask-per-act rule then blocked the founder's own change.
+describe('[AUDIT-20261113 F11] a plain admin cannot squat a founder-only ask', () => {
+  it('a non-founder admin is refused and no ask is written', async () => {
+    const plain = await makeAdmin(['*'], 'ADMIN');
+    const res = await writeConfig(plain.token, { rate: 77 });
+    expect(res.statusCode, res.body).toBe(403);
+    expect(await runWithoutTenant(() => app.prisma.privilegedApproval.count({ where: { requestedBy: plain.userId } }), 'test-read:f11')).toBe(0);
+    // the founder can still ask
+    expect((await writeConfig(requester.token, { rate: 77 })).statusCode).toBe(202);
+  });
+});
+

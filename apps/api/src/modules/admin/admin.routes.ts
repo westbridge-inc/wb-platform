@@ -835,6 +835,20 @@ export async function adminRoutes(app: FastifyInstance) {
     }
   };
 
+  // [AUDIT-20261113 F11] A founder-only (or canonical-tenant) route refuses the wrong admin BEFORE the
+  // two-person gate. Its guard ran as a preHandler, after the preValidation gate had already stored a PENDING
+  // ask, so a plain ADMIN could hold the one-open-ask slot and block the founder's own change. Every route
+  // whose preHandler names one of these guards also runs it at onRequest (after the plugin's admin and
+  // capability hooks); the preHandler stays, and re-running a guard is idempotent.
+  const EARLY_GUARDS = new Set<unknown>([founderGuard, platformControlGuard, canonicalTenantGuard]);
+  app.addHook('onRoute', (route: any) => {
+    const pre = ([] as unknown[]).concat(route.preHandler ?? []);
+    const early = pre.filter((h) => EARLY_GUARDS.has(h));
+    if (early.length === 0) return;
+    const onRequest = ([] as unknown[]).concat(route.onRequest ?? []);
+    route.onRequest = [...onRequest, ...early.filter((h) => !onRequest.includes(h))];
+  });
+
   // Belt-and-suspenders (pre-launch audit): the guard is applied per-route on
   // all 42 routes today, but a future admin route that forgets its preHandler
   // would be unauthenticated. This plugin-scoped onRequest hook enforces admin
