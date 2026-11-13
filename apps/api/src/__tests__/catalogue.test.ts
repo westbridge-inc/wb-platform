@@ -242,6 +242,48 @@ describe('CSV import', () => {
   });
 });
 
+describe('[AUDIT A-4] a menu price the store types is whole Guyana dollars, and bounded', () => {
+  it('an item, an option, an edit and a CSV row with cents are refused; whole dollars are kept', async () => {
+    const category = await app.prisma.category.create({ data: { vendorId, name: `Whole ${nanoid(4)}`, sortOrder: 9 } });
+    const cents = await inject('POST', '/api/v1/vendor/items', { categoryId: category.id, name: 'Cents Plate', basePrice: 1499.99 }, vendorToken);
+    expect(cents.statusCode).toBe(400);
+    const vatCents = await inject('POST', '/api/v1/vendor/items', { categoryId: category.id, name: 'Cents Plate', basePrice: 1500, vatListedPrice: 1315.5 }, vendorToken);
+    expect(vatCents.statusCode).toBe(400);
+    const optionCents = await inject('POST', '/api/v1/vendor/items', {
+      categoryId: category.id, name: 'Cents Combo', basePrice: 1500,
+      optionGroups: [{ name: 'Extras', options: [{ name: 'Cheese', additionalPrice: 99.5 }] }],
+    }, vendorToken);
+    expect(optionCents.statusCode).toBe(400);
+    const optionHuge = await inject('POST', '/api/v1/vendor/items', {
+      categoryId: category.id, name: 'Huge Combo', basePrice: 1500,
+      optionGroups: [{ name: 'Extras', options: [{ name: 'Gold', additionalPrice: 10_000_001 }] }],
+    }, vendorToken);
+    expect(optionHuge.statusCode).toBe(400);
+    expect(await app.prisma.item.count({ where: { vendorId, categoryId: category.id } })).toBe(0);
+
+    const whole = await inject('POST', '/api/v1/vendor/items', {
+      categoryId: category.id, name: 'Whole Combo', basePrice: 1500,
+      optionGroups: [{ name: 'Extras', options: [{ name: 'Cheese', additionalPrice: 100 }] }],
+    }, vendorToken);
+    expect(whole.statusCode, whole.body).toBe(200);
+    const itemId = whole.json().data.id as string;
+    const edit = await inject('PUT', `/api/v1/vendor/items/${itemId}`, { basePrice: 1500.5 }, vendorToken);
+    expect(edit.statusCode).toBe(400);
+    expect(Number((await app.prisma.item.findUniqueOrThrow({ where: { id: itemId } })).basePrice)).toBe(1500);
+
+    const csv = [
+      'category,name,description,basePrice,sku,unit,stockQuantity,isAvailable,fulfillment,imageUrl',
+      `${category.name},CSV Cents Pie,,1499.99,,,,true,,`,
+      `${category.name},CSV Whole Pie,,1500,,,,true,,`,
+    ].join('\n');
+    const imported = await inject('POST', '/api/v1/vendor/items/import', { csv }, vendorToken);
+    expect(imported.statusCode).toBe(200);
+    expect(imported.json().data.imported).toBe(1);
+    expect(imported.json().data.failures.map((f: { row: number }) => f.row)).toEqual([2]);
+    expect(await app.prisma.item.count({ where: { vendorId, name: 'CSV Cents Pie' } })).toBe(0);
+  });
+});
+
 describe('Availability toggle — instant customer-facing effect', () => {
   let itemId: string;
 
