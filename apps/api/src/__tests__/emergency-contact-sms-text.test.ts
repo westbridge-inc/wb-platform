@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { emergencyContactCodeText, EMERGENCY_CONTACT_NAME_MAX } from '../modules/safety/emergency-contact.service';
+import { sosContactText } from '../modules/safety/sos-escalation';
 import { gsm7Name, gsm7Parts, isGsm7, GSM7_PART } from '../utils/sms-text';
 
 // [R20 · research B10 · DPA s.21(3)(b)] The emergency contact never gave Swift
@@ -64,7 +65,8 @@ describe('[R20] emergency-contact confirmation text', () => {
     expect(gsm7Name('李.', EMERGENCY_CONTACT_NAME_MAX)).toBe('');
     expect(gsm7Name('😀!', EMERGENCY_CONTACT_NAME_MAX)).toBe('');
     expect(gsm7Name('- -', EMERGENCY_CONTACT_NAME_MAX)).toBe('');
-    expect(gsm7Name('Ravi 2', EMERGENCY_CONTACT_NAME_MAX)).toBe('Ravi 2');
+    // [AUDIT-20261113 F19] a digit is not part of a name: it is how a number or a price rides a lure (was 'Ravi 2')
+    expect(gsm7Name('Ravi 2', EMERGENCY_CONTACT_NAME_MAX)).toBe('');
   });
 });
 
@@ -84,3 +86,21 @@ describe('sms-text helpers', () => {
     expect(gsm7Parts('Swift — hello')).toBe(Number.POSITIVE_INFINITY);
   });
 });
+
+// [AUDIT-20261113 F19] A first name is free text the account holder types, and these texts go from Swift's own
+// sender to a number they choose. Only a name made of letters, spaces, apostrophes and hyphens is carried;
+// anything else (digits, a link, a price, punctuation) falls back to Swift's own words.
+describe('[AUDIT-20261113 F19] a name that is not a name never rides a Swift text', () => {
+  it('a lure in the first name is replaced by Swift\'s words, in the contact code and the SOS texts', () => {
+    for (const lure of ['Pay GY$500 at swft-pay.co now', 'Visit swft.co', 'Call 6001234', 'win: free']) {
+      expect(gsm7Name(lure, EMERGENCY_CONTACT_NAME_MAX), lure).toBe('');
+      expect(emergencyContactCodeText(lure, '111111'), lure).toBe(RESEARCH_TEXT('A Swift user', '111111'));
+      expect(sosContactText(lure, ''), lure).toMatch(/^URGENT: Someone you know triggered/);
+    }
+  });
+  it('real names still travel', () => {
+    expect(gsm7Name("Zoë-Marie O’Neil", EMERGENCY_CONTACT_NAME_MAX)).toBe("Zoe-Marie O'Neil");
+    expect(gsm7Name('Ravi 😀', EMERGENCY_CONTACT_NAME_MAX)).toBe('Ravi');
+  });
+});
+
