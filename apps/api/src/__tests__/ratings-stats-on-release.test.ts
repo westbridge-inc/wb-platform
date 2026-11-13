@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { RatingService } from '../modules/rating/rating.service';
 import { RatingStatsService } from '../modules/rating/rating-stats.service';
 import { ratingSurfaces } from '../modules/rating/rating-surface';
@@ -113,6 +113,20 @@ async function customerRatesStore(vendorId: string, score: number) {
 /** Let the 72 h double-blind window pass for these orders' ratings. */
 async function passWindow(orderIds: string[]) {
   await prisma.$executeRaw`UPDATE ratings SET "createdAt" = NOW() - INTERVAL '73 hours' WHERE "orderId" = ANY(${orderIds}::text[]) AND "visibleAt" IS NULL`;
+}
+
+/** The stats service a RatingService releases through (to spy on, or to make fail once). */
+const statsOf = (svc: RatingService) => (svc as unknown as { stats: RatingStatsService }).stats;
+
+/** Make the next `times` recomputes of `svc` throw (a transient DB error), then behave. */
+function failRecomputes(svc: RatingService, times = 1) {
+  const stats = statsOf(svc);
+  const real = stats.recompute.bind(stats);
+  let left = times;
+  return vi.spyOn(stats, 'recompute').mockImplementation(async (...a: Parameters<RatingStatsService['recompute']>) => {
+    if (left > 0) { left -= 1; throw new Error('transient recompute failure'); }
+    return real(...a);
+  });
 }
 
 const statKey = (role: 'VENDOR' | 'RIDER' | 'CUSTOMER', id: string) => ({
@@ -287,10 +301,75 @@ describe('the release sweep releases every row past the window, however many bat
 
     // Three batches (2 + 2 + 1) for this store alone: a sweep that stopped
     // after its first batch would leave rows hidden and the stars short.
-    expect(await ratings.releaseDoubleBlind(72, 2)).toBeGreaterThanOrEqual(5);
+    // [REVIEW-2506-B S4-1] …and the batching itself is pinned: every batch the
+    // sweep re-levels holds at most 2 rows, and this store's 5 rows took at
+    // least 3 of them (a sweep ignoring batchSize does it in one).
+    const relevel = vi.spyOn(statsOf(ratings), 'relevel');
+    try {
+      expect(await ratings.releaseDoubleBlind(72, 2)).toBeGreaterThanOrEqual(5);
+      const batches = relevel.mock.calls.map((c) => c[0]);
+      expect(batches.every((b) => b.length <= 2)).toBe(true);
+      expect(batches.filter((b) => b.some((r) => r.vendorId === vendor.id)).length).toBeGreaterThanOrEqual(3);
+    } finally {
+      relevel.mockRestore();
+    }
     expect(await prisma.rating.count({ where: { orderId: { in: orders }, visibleAt: null } })).toBe(0);
     const face = await storeFace(vendor.id);
     expect(face).toMatchObject({ totalRatings: 5, lifetimeCount: 5, ratingCount: 5, averageRating: 4, displayRating: displayRating(5, 20) });
+    expect(synced).toContain(vendor.id);
+  });
+});
+
+describe('a re-level failure never stops a release [REVIEW-2506-B S3-1, S4-2]', () => {
+  it('the 72 h sweep: a recompute that throws in one batch does not stop the later batches; the nightly heals the stars', async () => {
+    const vendors = [await makeVendor(), await makeVendor()];
+    const orders: string[] = [];
+    for (const v of vendors) for (let i = 0; i < 2; i += 1) orders.push((await customerRatesStore(v.id, 4)).id);
+    await ratings.releaseDoubleBlind(72); // only this test's rows are past the window below
+    await passWindow(orders);
+
+    const failing = failRecomputes(ratings, 1);
+    try {
+      // Batches of 2: the first batch's re-level throws once. The sweep logs it
+      // and goes on — every overdue row is released, nothing is thrown.
+      await expect(ratings.releaseDoubleBlind(72, 2)).resolves.toBeGreaterThanOrEqual(4);
+    } finally {
+      failing.mockRestore();
+    }
+    expect(await prisma.rating.count({ where: { orderId: { in: orders }, visibleAt: null } })).toBe(0);
+
+    // The 04:30 nightly re-levels whatever the failed batch left behind.
+    await new RatingStatsService(prisma).recomputeAll();
+    for (const v of vendors) expect((await storeFace(v.id)).totalRatings).toBe(2);
+  });
+
+  it('the both-sides release: a retry after a failed re-level still lands the stars', async () => {
+    const svc = new RatingService(prisma, undefined, (vendorId) => { synced.push(vendorId); });
+    const vendor = await makeVendor();
+    const { user: riderUser, rider } = await makeRider();
+    const customer = await makeUser(['CUSTOMER']);
+    const order = await makeDeliveredOrder(customer.id, vendor.id, rider.id);
+    await svc.rate({ orderId: order.id, raterId: customer.id, vendorId: vendor.id, type: 'CUSTOMER_TO_VENDOR', score: 2 });
+
+    // The rider rates back: the release commits, but its re-level fails once.
+    const failing = failRecomputes(svc, 1);
+    let back;
+    try {
+      back = await svc.rate({ orderId: order.id, raterId: riderUser.id, rateeId: customer.id, type: 'RIDER_TO_CUSTOMER', score: 5 });
+    } finally {
+      failing.mockRestore();
+    }
+    expect(await prisma.rating.count({ where: { orderId: order.id, visibleAt: null } })).toBe(0); // released…
+    expect((await prisma.vendor.findUniqueOrThrow({ where: { id: vendor.id } })).totalRatings).toBe(0); // …stars not landed
+    const release = await prisma.ratingOutbox.findFirstOrThrow({ where: { ratingId: back.id, command: 'RELEASE' } });
+    expect(release.processedAt).toBeNull(); // the RELEASE command is left for a retry
+
+    // The retry finds nothing left to flip, and must still land the stars.
+    synced.length = 0;
+    const retry = await svc.processRatingOutbox({ ratingId: back.id, now: new Date(Date.now() + 61_000) });
+    expect(retry.failed).toBe(0);
+    const v = await prisma.vendor.findUniqueOrThrow({ where: { id: vendor.id } });
+    expect([v.totalRatings, v.averageRating]).toEqual([1, 2]);
     expect(synced).toContain(vendor.id);
   });
 });

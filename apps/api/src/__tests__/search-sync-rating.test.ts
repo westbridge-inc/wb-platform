@@ -371,16 +371,19 @@ describe('[E26] queue.ts wires the search callback into both rating sweeps', () 
   const src = readFileSync(join(__dirname, '../jobs/queue.ts'), 'utf8');
   const CALLBACK = /\(vendorId\) => scheduleVendorSearchSync\(\{ queues, log: ctx\.log \}, vendorId\)/;
 
-  it('the flag-ratings outbox replay constructs RatingService with the search callback', () => {
-    const replay = src.slice(src.indexOf('const outbox = await new RatingService('), src.indexOf('const outbox = await new RatingService(') + 300);
-    expect(replay).toMatch(CALLBACK);
+  // [REVIEW-2506-B S3-1] The flag-ratings handler now delegates to the exported
+  // runFlagRatingsSweep (release + outbox passes on ONE RatingService), so the
+  // callback is pinned at the handler's call and at the service construction.
+  it('the flag-ratings handler passes the search callback to runFlagRatingsSweep', () => {
+    const handler = src.slice(src.indexOf("job.name === 'flag-ratings'"), src.indexOf("job.name === 'flag-ratings'") + 400);
+    expect(handler).toMatch(/await runFlagRatingsSweep\(ctx, \(vendorId\) => scheduleVendorSearchSync\(\{ queues, log: ctx\.log \}, vendorId\)\)/);
   });
 
-  it('[RATINGS-RELEASE] the double-blind release sweep constructs RatingService with the search callback', () => {
-    const at = src.indexOf('.releaseDoubleBlind()');
-    expect(at).toBeGreaterThan(0);
-    const sweep = src.slice(src.lastIndexOf('new RatingService(', at), at);
-    expect(sweep).toMatch(CALLBACK);
+  it('[RATINGS-RELEASE] runFlagRatingsSweep builds the release + outbox RatingService with that callback', () => {
+    const fn = src.slice(src.indexOf('export async function runFlagRatingsSweep('), src.indexOf('export async function runCollusionAffinityScan('));
+    expect(fn).toMatch(/new RatingService\(ctx\.prisma, ctx\.io, onVendorAggregateChanged\)/);
+    expect(fn).toMatch(/svc\.releaseDoubleBlind\(\)/);
+    expect(fn).toMatch(/svc\.processRatingOutbox\(\)/);
   });
 
   it('the nightly rating-stats-recompute constructs RatingStatsService with the search callback', () => {

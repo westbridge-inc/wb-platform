@@ -448,8 +448,10 @@ export class RatingService {
    *  a no-show counterpart must not hide feedback forever. [RATINGS-RELEASE]
    *  Each released row's subject is re-levelled right after its batch is
    *  released, so the stars and count move (and a store's search document
-   *  re-syncs) at release; a re-level that fails here is healed by the nightly
-   *  recompute, which runs after this sweep. Every row past the window is
+   *  re-syncs) at release. A re-level that fails is logged and the sweep goes
+   *  on [REVIEW-2506-B S3-1]: the release is what must not wait (a no-show
+   *  must not hide feedback), and the 04:30 nightly recompute, which runs after
+   *  this sweep, heals the stars it missed. Every row past the window is
    *  released in one sweep, however many batches that takes (`batchSize` is
    *  injectable so a test can prove the loop goes past the first batch). */
   async releaseDoubleBlind(windowHours = 72, batchSize = RELEASE_BATCH): Promise<number> {
@@ -468,7 +470,12 @@ export class RatingService {
         data: { visibleAt: new Date() },
       });
       released += res.count;
-      await this.stats.relevel(batch);
+      try {
+        await this.stats.relevel(batch);
+      } catch (err) {
+        ratingPipelineCounter.labels('release_relevel_failed').inc();
+        log().warn({ err, rows: batch.length }, '[RATINGS-RELEASE] re-level after the double-blind release failed — the nightly recompute heals the stars');
+      }
       if (batch.length < batchSize) break;
     }
     return released;
