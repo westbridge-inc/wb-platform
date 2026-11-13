@@ -23,12 +23,14 @@ import {
 } from '../utils/socket-revocation';
 import { guardRedisCommandPromises } from '../utils/redis-command-guard';
 import { holdsWarRoomGrant, warRoomsForSocket } from '../modules/safety/war-room';
+import { ADMIN_SESSION_MAX_HOURS, adminApiConsoleOnly, staffSessionVerdict } from '../modules/auth/admin-mfa';
+import { adminTotpRequired } from '../modules/auth/admin-totp';
 import { isProduction, usesSocketRedisAdapter } from '../utils/runtime-mode';
 import { assertRoomAccess } from '../modules/chat/chat-authority';
 import { vendorVisibleFilter } from '../modules/order/hold-visibility';
 import { STORE_TEAM_SELECT, teamOf } from '../modules/notification/store-team';
 import { resolveIdentityById } from '../modules/auth/preauth-identity';
-import { bindTenantTransaction, runWithTenant } from './prisma';
+import { bindTenantTransaction, runWithTenant, runWithoutTenant } from './prisma';
 import { sessionCredentialDigest } from '../lib/session-credential';
 import { BROWSER_SOCKET_PATH, browserSocketCredentialOf } from '../modules/auth/browser-session';
 
@@ -623,6 +625,18 @@ export const socketPlugin = fp(async (app: FastifyInstance) => {
     return user ? { id: session.id, expiresAt: session.expiresAt, authMethod: session.authMethod, user } : null;
   }
 
+  /** [REVIEW-2501-A S2-1] The staff posture of a socket's session (auth/admin-mfa.ts). A socket is never the
+   *  console's cookie, so with ADMIN_API_CONSOLE_ONLY=1 no socket joins the war room. `closeAtMs`: when the 12-hour
+   *  rule applies, the moment the session's 12 hours end — a war-room socket is closed then (see the join). */
+  async function socketStaffPosture(sessionId: string): Promise<{ ok: boolean; closeAtMs: number | null }> {
+    if (!adminTotpRequired() && !adminApiConsoleOnly()) return { ok: true, closeAtMs: null };
+    const facts = await runWithoutTenant(() => app.prisma.session.findUnique({
+      where: { id: sessionId }, select: { createdAt: true, mfaVerifiedAt: true, consoleBoundAt: true },
+    }), 'socket-staff-posture');
+    if (!facts || staffSessionVerdict(facts, { surface: 'staff', viaConsole: false }) !== 'OK') return { ok: false, closeAtMs: null };
+    return { ok: true, closeAtMs: adminTotpRequired() ? facts.createdAt.getTime() + ADMIN_SESSION_MAX_HOURS * 3_600_000 : null };
+  }
+
   // Require valid JWT on every connection — no unauthenticated sockets
   io.use(async (socket, next) => {
     const token = handshakeCredentialOf(socket.handshake);
@@ -836,9 +850,27 @@ export const socketPlugin = fp(async (app: FastifyInstance) => {
         // Role-gated and tenant-scoped: a tenant's ADMIN joins only their own
         // room, because these payloads carry another person's role, order id
         // and coordinates (the leak F-026-15 closed on the push channel).
+        let warRooms = warRoomsForSocket(authority.role, tenantId);
         // [REVIEW-2499-A S3-3] ...and only while the admin's live grant holds safety.sos.read (as the HTTP console).
-        const warRooms = warRoomsForSocket(authority.role, tenantId);
-        if (warRooms.length > 0 && await holdsWarRoomGrant(app.prisma, userId, authority.role)) {
+        if (warRooms.length > 0 && !(await holdsWarRoomGrant(app.prisma, userId, authority.role))) warRooms = [];
+        // [REVIEW-2501-A S2-1] The war room carries live SOS coordinates: an admin power, so it needs the staff
+        // posture (authenticator code, session under 12 hours) while ADMIN_TOTP_REQUIRED=1. A socket without it
+        // stays connected for the person's own rooms; the next reconnect after the code is proved joins.
+        if (warRooms.length > 0) {
+          const posture = await socketStaffPosture(authSessionId);
+          if (!posture.ok) {
+            app.log.info({ socketId: socket.id, userId }, 'ops socket kept out of the war room: no staff posture');
+            warRooms = [];
+          } else if (posture.closeAtMs !== null && posture.closeAtMs < authority.authorizationExpiresAtMs) {
+            // [REVIEW-2501-A S2-1 follow-up] The posture is judged at join, so a war-room socket's authorization ends
+            // with the session's 12 hours: the expiry timer below closes it then (reconnectably), and the reconnect
+            // is judged again (ADMIN_SESSION_EXPIRED keeps it out). A revocation (logout, or the ADMIN_SESSION_EXPIRED
+            // refusal's revoke) closes it at once through the session's revocation room, as for any socket.
+            authority.authorizationExpiresAtMs = posture.closeAtMs;
+            socket.data.authorizationExpiresAtMs = posture.closeAtMs;
+          }
+        }
+        if (warRooms.length > 0) {
           await socket.join(warRooms);
           app.log.info({ socketId: socket.id, userId, role: authority.role, warRooms }, 'ops socket joined the war room');
         }

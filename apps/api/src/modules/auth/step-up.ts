@@ -1,4 +1,4 @@
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyRequest } from 'fastify';
 import type { Redis } from 'ioredis';
 import { randomBytes } from 'node:crypto';
 import { AppError } from '../../utils/errors';
@@ -7,6 +7,7 @@ import { checkOtpDailyBudget, smsDestinationAllowed } from '../../utils/sms-budg
 import { getChannels } from '../../providers/notifications/channels';
 import { log } from '../../utils/logger';
 import { reviewCredentialFor, reviewCodeMatches, reserveReviewAttempt, REVIEW_CODE_TTL } from '../review/credentials';
+import { stepUpUsesAuthenticator, authenticatorStepUpAnswer, verifyStepUpWithAuthenticator } from './admin-mfa';
 
 /**
  * [ALG-34] Step-up: "confirm it's you" for an EXISTING session, before a
@@ -79,6 +80,9 @@ async function reviewStepUpCredential(app: FastifyInstance, user: { phone: strin
 export async function sendStepUpOtp(app: FastifyInstance, userId: string): Promise<{ sentTo: string; validForSeconds: number }> {
   const user = await app.prisma.user.findUnique({ where: { id: userId }, select: { phone: true, tenantId: true, roles: true, status: true } });
   if (!user) throw new AppError(401, 'UNAUTHORIZED', 'This account is no longer active');
+  // [REVIEW-2501-A S3-3] An admin who set up an authenticator app confirms with it, never with a text to the SIM
+  // the second factor exists to back up. Nothing is texted; the answer says which code to enter.
+  if (await stepUpUsesAuthenticator(app, userId)) throw authenticatorStepUpAnswer();
 
   // [REVIEW-PARTNER · DL-6] A store-review login: NO SMS, no budget spent. The
   // window opens exactly as a real send's would (same rate limit, same five
@@ -153,7 +157,17 @@ async function verifyReviewStepUp(app: FastifyInstance, userId: string, code: st
 }
 
 /** Check the code; on success the SESSION is stepped up for STEP_UP_TTL_S. */
-export async function verifyStepUp(app: FastifyInstance, who: { userId: string; sessionId: string }, code: string): Promise<{ validForSeconds: number }> {
+export async function verifyStepUp(
+  app: FastifyInstance, who: { userId: string; sessionId: string }, code: string,
+  request?: Pick<FastifyRequest, 'ip' | 'headers'>,
+): Promise<{ validForSeconds: number }> {
+  // [REVIEW-2501-A S3-3] An enrolled admin's step-up is the authenticator code: the same matcher, the same
+  // once-only step and the same attempt budget as the console's second step.
+  if (await stepUpUsesAuthenticator(app, who.userId)) {
+    await verifyStepUpWithAuthenticator(app, { ip: request?.ip ?? '', headers: request?.headers ?? {}, authSessionId: who.sessionId, user: { userId: who.userId } }, code);
+    await app.redis.set(stepUpKey(who.sessionId), '1', 'EX', STEP_UP_TTL_S);
+    return { validForSeconds: STEP_UP_TTL_S };
+  }
   await assertNotLocked(app.redis, who.userId);
   const result = (await verifyReviewStepUp(app, who.userId, code)) ?? await verifyOtp(app.redis, stepUpCodeKey(who.userId), code);
   if (!result.valid) {

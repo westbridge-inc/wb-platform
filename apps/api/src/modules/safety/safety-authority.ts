@@ -4,6 +4,7 @@ import { ForbiddenError } from '../../utils/errors';
 import { consoleRoleOf } from '../auth/console-role';
 import { capabilitiesOf, capabilityMode, holdsCapability, routeTemplateOf } from '../admin/admin-authority';
 import { log } from '../../utils/logger';
+import { staffRefusalOf } from '../auth/admin-mfa';
 
 // ---------------------------------------------------------------------------
 // [AUDIT-20261113 F5 · FABLE-03 S3-3] THE ADMIN GRANT REACHES THE SAFETY CONSOLE.
@@ -70,14 +71,27 @@ export interface OpsDecision {
   capability: string | null;
 }
 
-/** Decide one request: the role the account HOLDS, then its live grant over the route's capability. */
+/**
+ * Options for one decision. `allowUnpostured`: the two ops-page doors a texted-code session may use (the page list and
+ * its acknowledgement, REVIEW-2501-A S2-1 coordinator ruling) decide the role and the grant without the staff posture.
+ */
+type DecideOptions = { prefix?: string; capability?: string; allowUnpostured?: boolean };
+
+/**
+ * Decide one request: the role the account HOLDS, then its live grant over the route's capability.
+ * [REVIEW-2501-A S2-1 · merged with #2499] An account holding an admin role whose session lacks the staff posture
+ * (authenticator code, 12-hour session, console-only) is refused with that posture's own refusal, exactly where the
+ * ops role is decided (as opsRoleOf), unless the door is one of the two `allowUnpostured` ones.
+ */
 export async function decideOpsCapability(
   prisma: Pick<PrismaClient, 'admin'>,
   request: OpsRequest,
-  options: { prefix?: string; capability?: string } = {},
+  options: DecideOptions = {},
 ): Promise<OpsDecision> {
   const role = consoleRoleOf(request.heldRoles) ?? '';
   if (!role) return { role, allowed: false, capability: null };
+  const refusal = options.allowUnpostured ? null : staffRefusalOf(request);
+  if (refusal) throw refusal;
   const key = `${request.method.toUpperCase()} ${routeTemplateOf(request, options.prefix ?? '')}`;
   const capability = options.capability ?? SAFETY_OPS_CAPABILITY[key] ?? null;
   // An unclassified ops route is refused, never allowed (the census test keeps this unreachable).
@@ -99,7 +113,7 @@ export async function requireOpsCapability(
   prisma: Pick<PrismaClient, 'admin'>,
   request: OpsRequest,
   notOps: string,
-  options: { prefix?: string; capability?: string } = {},
+  options: DecideOptions = {},
 ): Promise<string> {
   const decision = await decideOpsCapability(prisma, request, options);
   if (!decision.role) throw new ForbiddenError(notOps);
