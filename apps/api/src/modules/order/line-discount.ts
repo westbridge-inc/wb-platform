@@ -1,11 +1,12 @@
-import { allocateAcrossLines, promoDiscount } from '../../utils/order-total';
+import { allocateAcrossLines, percentageOf, promoDiscount } from '../../utils/order-total';
 
 /**
  * [Audit FABLE-01 A-1 · Review A S3-1 on #2500] What a promo's discount becomes when one line of a discounted order
  * changes at picking: it comes off (out of stock, "continue without", a declined swap, no answer) or it is swapped for
  * a substitute at another price. ONE rule for both, read by the change itself (picking.service.ts, inside the order
  * lock) and by the customer's order screen (substitution-view.ts), so what is shown is what is charged.
- *  - A percentage code is re-priced on the goods after the change, under its own cap, never above what was given.
+ *  - A percentage code is re-priced on the goods after the change, under its own cap, never above what was given,
+ *    and gives back at most its rate on the change itself [Review B S3-2].
  *  - A fixed-amount code stays applied but shrinks in proportion to the goods after the change, never above what was
  *    given [owner ruling 13 Nov 2026, superseding R2's "kept whole"].
  *  - With no redemption record (an order placed before M-32) the discount is read as billing reads it
@@ -42,7 +43,11 @@ export function lineChangeDiscount(input: {
     ? promoDiscount({ discountType: 'PERCENTAGE', discountValue: r.discountValue, maxDiscount: r.maxDiscount }, { subtotal: goodsAfter, deliveryFee: 0 })
     : shrink(goods);
   const newGoods = Math.max(0, Math.min(goods, goodsAfter, repriced));
-  const amount = Math.min(left, goods - newGoods);
+  // [Review B S3-2] A percentage code gives back at most its rate on the change itself: an order carrying more than
+  // its own rate (a multi-store basket's discount is spread greedily, cart-plans) never hands its surplus to one line,
+  // and a same-price or dearer swap gives nothing back.
+  const rateCap = r.discountType === 'PERCENTAGE' ? percentageOf(Math.max(0, goodsBefore - goodsAfter), r.discountValue) : Number.POSITIVE_INFINITY;
+  const amount = Math.min(left, goods - newGoods, rateCap);
   const shares = new Map(allocateAcrossLines(goods - amount, after).map((a) => [a.id, a.share] as const));
   const allocations = Array.isArray(r.lineAllocations) ? (r.lineAllocations as Array<Record<string, unknown>>) : null;
   return {

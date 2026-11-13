@@ -137,3 +137,14 @@ describe('[review S3-1] a swap or removal on a discounted order shows the net ch
     expect(substitutionView({ ...a, substitutePrice: 100 }, { ...cash, discount: 0, promoRedemption: null })).toMatchObject({ priceDelta: -900 });
   });
 });
+
+// [Review B S3-2 on #2500] The MMG money guard reads the change to the TOTAL: a swap that leaves the total where it
+// was (the code takes the whole difference) is the same-price case, whatever the line's own change.
+describe('[review B S3-2] the MMG guard keys on the change to the total', () => {
+  it('a paid MMG order under a 100% code: a cheaper swap leaves the total where it was, so it may be approved', () => {
+    const free = { goodsDiscount: 1000, discountType: 'PERCENTAGE', discountValue: 100, maxDiscount: null, lineAllocations: null };
+    const paid = { ...order, totalAmount: 300, discount: 1000, promoRedemption: free,
+      items: [{ id: 'a', subStatus: 'PENDING', totalCustomer: 500 }, { id: 'b', subStatus: 'NONE', totalCustomer: 500 }] };
+    expect(substitutionView({ ...line, id: 'a', totalCustomer: 500, substitutePrice: 400 }, paid)).toMatchObject({ priceDelta: 0, decisions: { approve: true } });
+  });
+});

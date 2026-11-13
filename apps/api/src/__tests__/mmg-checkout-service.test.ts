@@ -2748,10 +2748,24 @@ describe('[DS632 · 7 Oct] MMG’s time for the payment (its history record) is 
     const txn = tx('RECHECK');
     approved(row, txn, 2100);
     await codeReply(row, '0', txn, 'NOTIFY');
-    expect(await intentOf(row.id)).toMatchObject({ status: 'HELD', reason: 'CREATION_ZONE_UNVERIFIED' });
+    const heldBefore = await intentOf(row.id);
+    expect(heldBefore).toMatchObject({ status: 'HELD', reason: 'CREATION_ZONE_UNVERIFIED' });
     const recheck = () => service.recheckHeld({ tenantId: row.tenantId, checkoutId: row.id, actorId: 'admin-recheck' });
     // Nothing changed at MMG or here: checked again, still held, nothing credited.
     expect(await recheck()).toMatchObject({ status: 'HELD', reason: 'CREATION_ZONE_UNVERIFIED' });
+    // [Review B S4-2 on #2500] A re-check that does not credit changes nothing on the row: no reason, attempt or schedule moves.
+    const heldAfter = await intentOf(row.id);
+    expect([heldAfter.reason, heldAfter.checkAttempts, heldAfter.nextCheckAt]).toEqual([heldBefore.reason, heldBefore.checkAttempts, heldBefore.nextCheckAt]);
+    // Nor when MMG's lookup answers nothing decisive (it no longer finds the transaction): the late path would
+    // reschedule a HELD row; a re-check never does.
+    checkoutProvider = () => sandbox;
+    const saved = lookups.get(txn);
+    lookups.delete(txn);
+    expect(await recheck()).toMatchObject({ status: 'HELD', reason: 'CREATION_ZONE_UNVERIFIED' });
+    const unmoved = await intentOf(row.id);
+    expect([unmoved.reason, unmoved.checkAttempts, unmoved.nextCheckAt]).toEqual([heldBefore.reason, heldBefore.checkAttempts, heldBefore.nextCheckAt]);
+    lookups.set(txn, saved!);
+    checkoutProvider = () => sandboxIn(null);
     expect(await topups(s.subId)).toHaveLength(0);
     expect(await identityOf(txn)).toBeNull();
     // The zone is set, as the page asked: checked again, MMG's own lookup and history credit it, once.
