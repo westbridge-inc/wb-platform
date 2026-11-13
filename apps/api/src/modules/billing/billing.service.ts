@@ -4148,18 +4148,27 @@ export class BillingService {
    * has run out are suspended, the same suspension a failed retry gives. One row never stops the pass.
    */
   async suspendStoppedPastDue(now = new Date()): Promise<number> {
-    const stopped = await this.prisma.subscription.findMany({
-      where: { status: 'PAST_DUE', autoRenew: false, autoSuspendEnabled: true },
-      include: PAYER_INCLUDE,
-      take: 500,
-    });
+    // [Review A N-1] Every such row, page by page in id order: a row that stays pending (a paused clock, collection
+    // under review) never hides the rows after it.
+    const PAGE = 500;
     let suspended = 0;
-    for (const sub of stopped) {
-      try {
-        if (await this.finishExhaustedGrace(sub as SubWithRelations, now, { stopped: true }) === 'suspended') suspended += 1;
-      } catch (err) {
-        log().error({ subscriptionId: sub.id, code: billingErrorCode(err) }, '[billing] suspending a stopped, overdue subscription failed; the next run retries it');
+    let after: string | undefined;
+    for (;;) {
+      const stopped = await this.prisma.subscription.findMany({
+        where: { status: 'PAST_DUE', autoRenew: false, autoSuspendEnabled: true, ...(after ? { id: { gt: after } } : {}) },
+        include: PAYER_INCLUDE,
+        orderBy: { id: 'asc' },
+        take: PAGE,
+      });
+      for (const sub of stopped) {
+        try {
+          if (await this.finishExhaustedGrace(sub as SubWithRelations, now, { stopped: true }) === 'suspended') suspended += 1;
+        } catch (err) {
+          log().error({ subscriptionId: sub.id, code: billingErrorCode(err) }, '[billing] suspending a stopped, overdue subscription failed; the next run retries it');
+        }
       }
+      if (stopped.length < PAGE) break;
+      after = stopped[stopped.length - 1]!.id;
     }
     return suspended;
   }

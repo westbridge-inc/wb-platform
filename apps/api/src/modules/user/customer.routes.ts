@@ -2910,6 +2910,9 @@ export async function customerRoutes(app: FastifyInstance) {
             selectedOptions: true,
           },
         },
+        // [Review A S3-1] The promo record: a swap or removal question shows what it does to the TOTAL, the
+        // discount that goes with the line included (substitution-view.ts). Read here, never returned as is.
+        promoRedemption: { select: { goodsDiscount: true, lineAllocations: true, discountType: true, discountValue: true, maxDiscount: true } },
         statusHistory: { orderBy: [{ createdAt: 'asc' }, { id: 'asc' }] },
         // [F-027-07 / F-028-11] Was a whole-relation `include`, which pulls
         // every Rider column — KYC document URLs, enforcement state, float —

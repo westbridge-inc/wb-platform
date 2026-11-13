@@ -575,6 +575,9 @@ function RecheckHeldPanel({ checkoutId }: { checkoutId: string }) {
         Swift asks MMG about this payment again and applies the same checks as always. It is credited only if MMG&apos;s own
         records now meet every one; otherwise it stays held. A second admin must approve it first.
       </p>
+      <p className="text-xs mc-text-warn">
+        If you already returned this payment in MMG&apos;s portal, do not check it again: close it as not paid instead.
+      </p>
       <form
         className="space-y-2"
         onSubmit={(e) => {

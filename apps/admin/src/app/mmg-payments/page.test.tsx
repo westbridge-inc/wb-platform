@@ -204,6 +204,8 @@ describe('MMG payments: one payment, its timeline and what it paid', () => {
     const post = fetchMock.mock.calls.find(([input, init]) => String(input).endsWith('/recheck') && init?.method === 'POST');
     expect(new Headers(post![1]!.headers).get('x-swift-reason')).toBe('The creation zone is set now');
     expect(screen.queryByRole('region', { name: 'Return this payment' })).toBeNull();
+    // [Review A N-2] A payment already returned in MMG's portal is closed as not paid, never checked again.
+    expect(within(panel).getByText(/already returned this payment in MMG.s portal, do not check it again: close it as not paid instead/)).toBeTruthy();
   });
 
   it("[Sol, DS663 · 7 Oct] MMG's history record dated after MMG's first reply says so, never 'Inside the checkout window'", async () => {
