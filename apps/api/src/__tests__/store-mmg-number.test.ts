@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import Fastify, { type FastifyInstance, type InjectOptions } from 'fastify';
 import { nanoid } from 'nanoid';
+import { createHash } from 'node:crypto';
 import type { UserRole } from '@prisma/client';
 import { beginRequestTenantContext, prismaPlugin, runWithoutTenant } from '../plugins/prisma';
 import { redisPlugin } from '../plugins/redis';
@@ -315,6 +316,16 @@ describe('[PAYMENT-SIMPLIFY] the customer pays the store\'s number, after the st
     expect(caps.mmg.unavailableReason).toBe('PAY_LINKS_OFF');
     expect(caps.mmgStoreNumber).toMatchObject({ available: true, payTo: 'STORE_NUMBER', shownWhen: 'STORE_ACCEPTS', unavailableReason: null });
     expect(JSON.stringify(cart.json())).not.toContain('6001234');
+    // [SEC-AUDIT F1] The scope is a change marker, never a bare hash of the number: re-hashing the
+    // exact material with a guessed number (what an offline brute force does) must NOT match it.
+    const data = cart.json().data;
+    const material = (n: string) => JSON.stringify({ cartId: data.id, vendors: [[vendorId, 'PAY_LINKS_OFF', n]], expectedVendorIds: [vendorId] });
+    const bare = (n: string) => createHash('sha256').update(material(n)).digest('hex').slice(0, 24);
+    expect(caps.scope).toMatch(/^[0-9a-f]{24}$/);
+    expect(caps.scope).not.toBe(bare(NUMBER));
+    expect(caps.scope).not.toBe(bare('NO_NUMBER'));
+    const again = await call('GET', '/api/v1/customer/cart', customer.token);
+    expect(again.json().data.paymentCapabilities.scope).toBe(caps.scope); // still a stable marker for the app
   });
 
   it('an app that asks for MMG the old (link) way is refused with an MMG_* code, and nothing is written', async () => {

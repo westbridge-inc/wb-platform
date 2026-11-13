@@ -1,0 +1,8 @@
+{
+  "name": "swift-vercel-cli",
+  "private": true,
+  "description": "The Vercel CLI the deploy workflows run, pinned with every transitive dependency (npm ci, scripts off).",
+  "dependencies": {
+    "vercel": "63.1.2"
+  }
+}

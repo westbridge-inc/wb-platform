@@ -24,13 +24,12 @@ jobs:
           # Nothing after checkout needs the repository token; keep it out of .git/config.
           persist-credentials: false
 
-      - uses: pnpm/action-setup@v6
+      # [SEC-AUDIT 13 Nov 2026 · F18] No repository install in this job: `vercel --prod` (no --prebuilt) builds on
+      # Vercel, so nothing here needs the monorepo's node_modules, and no dependency's install script (nor a
+      # restored pnpm cache) ever runs on the runner that later receives the deploy token.
       - uses: actions/setup-node@v7
         with:
           node-version: 20
-          cache: pnpm
-
-      - run: pnpm install --frozen-lockfile
 
       # The site must never ship with a company detail unfilled — the build
       # already refuses, but failing here names the reason before Vercel spends
@@ -47,8 +46,13 @@ jobs:
       # the registry at deploy time), installed in its own step with install
       # scripts off: no third-party install code ever runs while the deploy
       # token is in the environment. Bump the version deliberately, in a PR.
+      # [SEC-AUDIT 13 Nov 2026 · F18] ...and so is every one of its dependencies: `npm ci` installs exactly the
+      # reviewed .github/vercel-cli lockfile (integrity-checked), from the public registry named on the line.
       - name: Install the Vercel CLI (exact version)
-        run: npm install --prefix "$RUNNER_TEMP/vercel-cli" --no-save --ignore-scripts vercel@63.1.2
+        run: |
+          mkdir -p "$RUNNER_TEMP/vercel-cli"
+          cp .github/vercel-cli/package.json .github/vercel-cli/package-lock.json .github/vercel-cli/.npmrc "$RUNNER_TEMP/vercel-cli/"
+          npm ci --prefix "$RUNNER_TEMP/vercel-cli" --ignore-scripts --no-audit --no-fund --registry=https://registry.npmjs.org/
 
       - name: Deploy to Vercel
         # The CLI reads VERCEL_TOKEN from the environment when no token flag
