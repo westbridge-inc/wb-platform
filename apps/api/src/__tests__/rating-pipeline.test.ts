@@ -231,14 +231,20 @@ describe('[R048-008] the pipeline is atomic and its replay finishes exactly once
     const first = await svc().processRatingOutbox({ ratingId: rating.id });
     expect(first).toEqual({ processed: 3, failed: 0 });
     expect(await caseFor(order.id)).toHaveLength(1);
+    // The STATS command ran (the stat row exists) — and, the rating being still
+    // inside the double-blind, counted nothing yet [RATINGS-RELEASE, owner 13 Nov 2026].
     const stat = await app.prisma.actorRatingStat.findFirstOrThrow({ where: { subjectRole: 'DRIVER', subjectId: driverUser.id } });
-    expect(stat.lifetimeCount).toBe(1);
+    expect(stat.lifetimeCount).toBe(0);
     box = await outboxFor(rating.id);
     expect(box.every((b) => b.processedAt !== null)).toBe(true);
     expect(await count('outbox_processed')).toBe(before + 3);
     const second = await svc().processRatingOutbox({ ratingId: rating.id });
     expect(second).toEqual({ processed: 0, failed: 0 });
     expect(await caseFor(order.id)).toHaveLength(1);
+    expect((await app.prisma.actorRatingStat.findFirstOrThrow({ where: { subjectRole: 'DRIVER', subjectId: driverUser.id } })).lifetimeCount).toBe(0);
+    // Released (the 72 h window passes): now it counts, once.
+    await app.prisma.$executeRaw`UPDATE ratings SET "createdAt" = NOW() - INTERVAL '73 hours' WHERE id = ${rating.id}`;
+    await svc().releaseDoubleBlind(72);
     expect((await app.prisma.actorRatingStat.findFirstOrThrow({ where: { subjectRole: 'DRIVER', subjectId: driverUser.id } })).lifetimeCount).toBe(1);
   });
 
@@ -266,11 +272,17 @@ describe('[R048-008] the pipeline is atomic and its replay finishes exactly once
     const { customer, order, driverUser } = await mkCompletedTrip();
     await svc().rate({ orderId: order.id, raterId: customer.id, rateeId: driverUser.id, type: 'CUSTOMER_TO_DRIVER', score: 5, tags: ['on-time'] });
     expect((await app.prisma.rating.findFirstOrThrow({ where: { orderId: order.id } })).visibleAt).toBeNull();
+    // [RATINGS-RELEASE] written, not released: the driver's figure has not moved
+    const driverCount = async () => (await app.prisma.actorRatingStat.findFirst({ where: { subjectRole: 'DRIVER', subjectId: driverUser.id } }))?.lifetimeCount ?? 0;
+    expect(await driverCount()).toBe(0);
     const back = await svc().rate({ orderId: order.id, raterId: driverUser.id, rateeId: customer.id, type: 'DRIVER_TO_CUSTOMER', score: 4, tags: [] });
     expect((await outboxFor(back.id)).map((b) => b.command)).toEqual(['RELEASE', 'STATS']);
     const both = await app.prisma.rating.findMany({ where: { orderId: order.id } });
     expect(both).toHaveLength(2);
     expect(both.every((r) => r.visibleAt !== null)).toBe(true);
+    // …and the release is the moment both figures move
+    expect(await driverCount()).toBe(1);
+    expect((await app.prisma.actorRatingStat.findFirstOrThrow({ where: { subjectRole: 'CUSTOMER', subjectId: customer.id } })).lifetimeCount).toBe(1);
   });
 });
 

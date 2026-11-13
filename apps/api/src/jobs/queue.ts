@@ -882,6 +882,46 @@ export async function autoCompleteDeliveredOrder(ctx: JobContext, orderId: strin
  *  with an unusual concentration of guarantee claims to admins for review (via
  *  opsPageOnce so a standing pattern pages once, not every run). Detection only;
  *  never an automatic money action. Exported so tests can drive it directly. */
+/**
+ * The 04:00 rating sweep (job 'flag-ratings'). Three passes:
+ *  1. flag rating-bombing for human review;
+ *  2. the double-blind window: a no-show counterpart must not hide feedback
+ *     forever. [RATINGS-RELEASE] The stars count released rows only, so this
+ *     release is when a store's average and count move: the sweep re-levels
+ *     each released subject and re-syncs that store's search document;
+ *  3. [R048-008] every command a persisted rating still owes — safety intake,
+ *     release, stats — is finished here when the process that wrote the rating
+ *     did not get to it (one row per rating and command: exactly once). [E26] a
+ *     vendor rating finished here still re-syncs the vendor's search document.
+ * [REVIEW-2506-B S3-1] The job is not retry-certified, so its first error is
+ * final until tomorrow's 04:00: a throw in pass 1 or 2 must never skip pass 3
+ * (the only sweep for an orphaned safety intake). Every pass runs; the first
+ * error is raised after the outbox pass, so the failure stays visible.
+ */
+export async function runFlagRatingsSweep(
+  ctx: Pick<JobContext, 'prisma' | 'io' | 'log'>,
+  onVendorAggregateChanged: (vendorId: string) => void,
+): Promise<{ flagged: number; released: number; outbox: { processed: number; failed: number } }> {
+  const { RatingService } = await import('../modules/rating/rating.service');
+  const svc = new RatingService(ctx.prisma, ctx.io, onVendorAggregateChanged);
+  const errors: unknown[] = [];
+  const pass = async <T>(name: string, fallback: T, run: () => Promise<T>): Promise<T> => {
+    try {
+      return await run();
+    } catch (err) {
+      errors.push(err);
+      ctx.log.error({ err, pass: name }, `Rating sweep: the ${name} pass failed — the later passes still run`);
+      return fallback;
+    }
+  };
+  const flagged = await pass('flag', 0, () => svc.flagSuspiciousRatings());
+  const released = await pass('release', 0, () => svc.releaseDoubleBlind());
+  const outbox = await pass('outbox', { processed: 0, failed: 0 }, () => svc.processRatingOutbox());
+  ctx.log.info(`Rating sweep: ${flagged} flagged, ${released} double-blind released, outbox ${outbox.processed} processed / ${outbox.failed} retried`);
+  if (errors.length > 0) throw errors[0];
+  return { flagged, released, outbox };
+}
+
 export async function runCollusionAffinityScan(ctx: JobContext): Promise<{ flaggedPairs: number }> {
   const { scanVendorRiderClaimAffinity } = await import('../modules/cash/cash-rules.service');
   const pairs = await scanVendorRiderClaimAffinity(ctx.prisma);
@@ -1982,20 +2022,8 @@ export async function createWorkers(ctx: JobContext, queues: SwiftQueues) {
       }
 
       if (job.name === 'flag-ratings') {
-        const { RatingService } = await import('../modules/rating/rating.service');
-        const svc = new RatingService(ctx.prisma);
-        const flagged = await svc.flagSuspiciousRatings();
-        // Double-blind window: a no-show counterpart must not hide feedback forever.
-        const released = await svc.releaseDoubleBlind();
-        // [R048-008] every command a persisted rating still owes — safety intake, release, stats — is finished here
-        // when the process that wrote the rating did not get to it (one row per rating and command: exactly once).
-        // [E26] a vendor rating finished here still re-syncs the vendor's search document.
-        const outbox = await new RatingService(
-          ctx.prisma,
-          ctx.io,
-          (vendorId) => scheduleVendorSearchSync({ queues, log: ctx.log }, vendorId),
-        ).processRatingOutbox();
-        ctx.log.info(`Rating sweep: ${flagged} flagged, ${released} double-blind released, outbox ${outbox.processed} processed / ${outbox.failed} retried`);
+        // [E26 · RATINGS-RELEASE] the release and the outbox pass re-sync each store whose stars they move
+        await runFlagRatingsSweep(ctx, (vendorId) => scheduleVendorSearchSync({ queues, log: ctx.log }, vendorId));
       }
 
       if (job.name === 'collusion-affinity-scan') {
@@ -3180,6 +3208,9 @@ export async function createWorkers(ctx: JobContext, queues: SwiftQueues) {
   }
 }
 
+/** [RATINGS-RELEASE] The one-off post-deploy stats re-level (see scheduleRecurringJobs). */
+export const RATINGS_RELEASE_RELEVEL_JOB_ID = 'rating-stats-recompute-ratings-release-20261113';
+
 export async function scheduleRecurringJobs(queues: ReturnType<typeof createQueues>) {
   // Subscription billing: check every hour
   await queues.subscriptionQueue.add('process-billing', {}, {
@@ -3471,6 +3502,20 @@ export async function scheduleRecurringJobs(queues: ReturnType<typeof createQueu
     repeat: { pattern: '30 4 * * *' },
     removeOnComplete: 7,
     removeOnFail: 7,
+  });
+
+  // [RATINGS-RELEASE · REVIEW-2506-A S3-1] One catch-up re-level, once, on the
+  // first worker boot after the deploy that moved the stars to release time.
+  // Until it runs, every figure still holds the old write-time count, and the
+  // first rating written to a store would re-level it at that very moment —
+  // the signal the owner ruled out. This levels every store and person
+  // together and re-syncs the stores it moves. The fixed jobId makes later
+  // boots a no-op while the completed job is kept; if Redis is ever emptied it
+  // runs once more, which is harmless (the nightly job runs the same code).
+  await queues.dispatchQueue.add('rating-stats-recompute', { reason: RATINGS_RELEASE_RELEVEL_JOB_ID }, {
+    jobId: RATINGS_RELEASE_RELEVEL_JOB_ID,
+    removeOnComplete: false,
+    removeOnFail: true,
   });
 
   // Movement R: daily actor-facing fold (RAT-G anonymity) — after the 04:30

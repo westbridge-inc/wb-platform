@@ -21,6 +21,9 @@ import {
 // itself NEVER fails on intake trouble (fire-and-forget).
 // [R048-008] the safety vocabulary lives in tag-registry.ts (canonical, typed); nothing here compares a string literal
 
+/** How many rows the double-blind sweep releases (and re-levels) per pass. */
+const RELEASE_BATCH = 500;
+
 type RatingType =
   | 'CUSTOMER_TO_VENDOR'
   | 'CUSTOMER_TO_RIDER'
@@ -423,7 +426,7 @@ export class RatingService {
   async releaseIfBothSidesRated(orderId: string) {
     const sides = await this.prisma.rating.findMany({
       where: { orderId },
-      select: { type: true },
+      select: { type: true, vendorId: true, rateeId: true },
     });
     const customerSide = sides.some((r) => r.type.startsWith('CUSTOMER_TO'));
     const counterpartSide = sides.some((r) => !r.type.startsWith('CUSTOMER_TO'));
@@ -432,17 +435,50 @@ export class RatingService {
         where: { orderId, visibleAt: null },
         data: { visibleAt: new Date() },
       });
+      // [RATINGS-RELEASE] The aggregates count released rows only, so the
+      // release is the moment they move: re-level every subject on the order
+      // (a store's search document re-syncs with it). Every subject, not only
+      // the ones this call flipped — a retry after a failed re-level finds
+      // nothing left to flip and must still land the stars.
+      await this.stats.relevel(sides);
     }
   }
 
   /** Sweep half of double-blind: release anything older than the window —
-   *  a no-show counterpart must not hide feedback forever. */
-  async releaseDoubleBlind(windowHours = 72): Promise<number> {
-    const res = await this.prisma.rating.updateMany({
-      where: { visibleAt: null, createdAt: { lt: new Date(Date.now() - windowHours * 3600_000) } },
-      data: { visibleAt: new Date() },
-    });
-    return res.count;
+   *  a no-show counterpart must not hide feedback forever. [RATINGS-RELEASE]
+   *  Each released row's subject is re-levelled right after its batch is
+   *  released, so the stars and count move (and a store's search document
+   *  re-syncs) at release. A re-level that fails is logged and the sweep goes
+   *  on [REVIEW-2506-B S3-1]: the release is what must not wait (a no-show
+   *  must not hide feedback), and the 04:30 nightly recompute, which runs after
+   *  this sweep, heals the stars it missed. Every row past the window is
+   *  released in one sweep, however many batches that takes (`batchSize` is
+   *  injectable so a test can prove the loop goes past the first batch). */
+  async releaseDoubleBlind(windowHours = 72, batchSize = RELEASE_BATCH): Promise<number> {
+    const cutoff = new Date(Date.now() - windowHours * 3600_000);
+    let released = 0;
+    for (;;) {
+      const batch = await this.prisma.rating.findMany({
+        where: { visibleAt: null, createdAt: { lt: cutoff } },
+        select: { id: true, type: true, vendorId: true, rateeId: true },
+        orderBy: { createdAt: 'asc' },
+        take: batchSize,
+      });
+      if (batch.length === 0) break;
+      const res = await this.prisma.rating.updateMany({
+        where: { id: { in: batch.map((r) => r.id) }, visibleAt: null },
+        data: { visibleAt: new Date() },
+      });
+      released += res.count;
+      try {
+        await this.stats.relevel(batch);
+      } catch (err) {
+        ratingPipelineCounter.labels('release_relevel_failed').inc();
+        log().warn({ err, rows: batch.length }, '[RATINGS-RELEASE] re-level after the double-blind release failed — the nightly recompute heals the stars');
+      }
+      if (batch.length < batchSize) break;
+    }
+    return released;
   }
 
   // (The per-role legacy-mean updaters are GONE [REPORT-034 S1]: they

@@ -188,10 +188,11 @@ export const adminCapabilityCounter = new client.Counter({
 });
 
 /** [R048-008] The one rating pipeline: persisted, alias_tag (an underscore alias canonicalised), unknown_tag,
- *  outbox_processed, outbox_retry, outbox_sweep, safety_incident. */
+ *  outbox_processed, outbox_retry, outbox_sweep, safety_incident, release_relevel_failed (a re-level after the
+ *  double-blind release failed; the nightly recompute heals it). */
 export const ratingPipelineCounter = new client.Counter({
   name: 'swift_rating_pipeline_total',
-  help: 'Rating pipeline events (persisted/alias_tag/unknown_tag/outbox_processed/outbox_retry/outbox_sweep/safety_incident)',
+  help: 'Rating pipeline events (persisted/alias_tag/unknown_tag/outbox_processed/outbox_retry/outbox_sweep/safety_incident/release_relevel_failed)',
   labelNames: ['event'] as const,
   registers: [registry],
 });

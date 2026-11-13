@@ -3721,7 +3721,9 @@ model Rating {
   flagReason  String?
   /// Double-blind release (marketplace §1): the WRITTEN rating stays hidden
   /// from the ratee until both sides have rated this order, or the daily
-  /// sweep releases it after the blind window. Aggregates update immediately.
+  /// sweep releases it after the blind window. Aggregates (stars, counts,
+  /// search documents) count a rating only from this release, never from the
+  /// write (owner 13 Nov 2026; RatingStatsService COUNTED_RATING_WHERE).
   visibleAt   DateTime?
   createdAt   DateTime   @default(now())
 
