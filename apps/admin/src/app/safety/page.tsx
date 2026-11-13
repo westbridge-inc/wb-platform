@@ -103,8 +103,10 @@ function SosCard({ alert: a, now, run, reveal }: { alert: SosRow; now: number; r
     fields: [
       { kind: 'choice', name: 'code', label: 'What happened', options: SOS_RESOLUTION_CODES.map((value) => ({ value, label: ENUM_LABELS.SosResolutionCode[value] })) },
       { kind: 'text', name: 'notes', label: 'Notes', maxLength: 2000 },
+      // [REVIEW-2499-A S3-1] Asked for by the server only when this SOS names you and you are the only admin who can resolve it.
+      { kind: 'text', name: 'selfReason', label: 'Only if this SOS names you and you are the only admin: why you are resolving it yourself', maxLength: 500 },
     ],
-    submit: ({ values }) => resolveSos(a.id, values['code'] as SosResolutionCode, String(values['notes'] ?? '')),
+    submit: ({ values }) => resolveSos(a.id, values['code'] as SosResolutionCode, String(values['notes'] ?? ''), String(values['selfReason'] ?? '').trim() || undefined),
     success: (_result, { values }) => `Resolved as ${ENUM_LABELS.SosResolutionCode[values['code'] as SosResolutionCode]}.`,
   });
 

@@ -1,4 +1,11 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
+
+// [REVIEW-2499-A S3-1] "The only eligible responder" is decided platform-wide (every active SUPER_ADMIN), which a
+// shared test database never satisfies: the route tests pin the decision, sole-responder.test.ts tests it.
+vi.mock('../modules/integrity/sole-responder', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../modules/integrity/sole-responder')>();
+  return { ...real, isSoleEligibleResponder: vi.fn(real.isSoleEligibleResponder) };
+});
 import Fastify, { type FastifyInstance } from 'fastify';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -15,8 +22,7 @@ import { registerErrorHandler } from '../middleware/error-handler';
 import { beginRequestTenantContext, runWithoutTenant } from '../plugins/tenant-context';
 import { EvidenceService } from '../modules/safety/evidence.service';
 import { grantSuiteCapability } from '../lib/test-target-lock';
-import { runWithTenant } from '../plugins/tenant-context';
-import { SELF_RESOLVED_FLAG } from '../modules/integrity/sole-responder';
+import { SELF_RESOLVED_FLAG, isSoleEligibleResponder } from '../modules/integrity/sole-responder';
 
 grantSuiteCapability('ddl');
 
@@ -118,7 +124,6 @@ afterAll(async () => {
     await app.prisma.customer.deleteMany({ where: { userId: { in: userIds } } }).catch(() => {});
     await app.prisma.admin.deleteMany({ where: { userId: { in: userIds } } }).catch(() => {});
     await app.prisma.user.deleteMany({ where: { id: { in: userIds } } }).catch(() => {});
-    await app.prisma.tenant.deleteMany({ where: { id: `solo-sos-${RUN}` } }).catch(() => {});
   });
   await app.close();
 });
@@ -283,30 +288,25 @@ describe('[REVIEW-2499-A S2-1] the SOS ops page cannot be acknowledged by the pe
 // [REVIEW-2499-A S3-1 · coordinator ruling] An SOS naming the ONLY eligible responder: they resolve it with a typed
 // reason, audited and flagged for review. While another eligible admin exists, the refusal holds.
 describe('[REVIEW-2499-A S3-1] the only eligible responder may resolve an SOS that names them', () => {
-  it('a market with one admin: a reason is required, then the resolve is recorded and flagged', async () => {
-    const T = `solo-sos-${RUN}`;
-    await sys(() => app.prisma.tenant.create({ data: { id: T, name: `Solo SOS ${T}`, slug: T, isActive: true } }));
-    const ownerId = await runWithTenant(T, async () => {
-      seq += 1;
-      const u = await app.prisma.user.create({ data: { phone: `+${phoneBase + seq}`, firstName: 'Solo', lastName: `S${RUN}`, roles: ['SUPER_ADMIN', 'CUSTOMER'], activeRole: 'SUPER_ADMIN', status: 'ACTIVE', isPhoneVerified: true, tenantId: T, admin: { create: { permissions: ['*'] } } } });
-      userIds.push(u.id);
-      return u.id;
-    });
-    const token = app.jwt.sign({ userId: ownerId, role: 'SUPER_ADMIN', jti: nanoid(8) });
-    await sys(() => app.prisma.session.create({ data: { userId: ownerId, token, refreshToken: nanoid(48), deviceId: 'ops-cap', deviceType: 'test', authMethod: 'OTP', expiresAt: new Date(Date.now() + 86_400_000) } }));
-    const owner = { userId: ownerId, token };
-    const alert = await sys(() => app.prisma.sosAlert.create({ data: { actorUserId: ownerId, actorRole: 'CUSTOMER', status: 'ACTIVE', triggerSource: 'BUTTON', triggeredAt: new Date(), tenantId: T } }));
-    alertIds.push(alert.id);
+  it('the only eligible responder: a reason is required, then the resolve is recorded and flagged', async () => {
+    vi.mocked(isSoleEligibleResponder).mockResolvedValue(true);
     try {
-      const bare = await fire('POST', `${S}/sos/${alert.id}/resolve`, owner, { resolutionCode: 'FALSE_ALARM' });
+      const named = await makeUser(['SUPER_ADMIN']);
+      const alert = await sys(() => app.prisma.sosAlert.create({ data: { actorUserId: named.userId, actorRole: 'CUSTOMER', status: 'ACTIVE', triggerSource: 'BUTTON', triggeredAt: new Date(), tenantId: 'swift-default' } }));
+      alertIds.push(alert.id);
+      const bare = await fire('POST', `${S}/sos/${alert.id}/resolve`, named, { resolutionCode: 'FALSE_ALARM' });
       expect(bare.statusCode, bare.body).toBe(409);
       expect(bare.json().error.code).toBe('SELF_RESOLVE_REASON_REQUIRED');
-      const res = await fire('POST', `${S}/sos/${alert.id}/resolve`, owner, { resolutionCode: 'FALSE_ALARM', selfResolveReason: 'Pressed by mistake while testing the app at home' });
+      const res = await fire('POST', `${S}/sos/${alert.id}/resolve`, named, { resolutionCode: 'FALSE_ALARM', selfResolveReason: 'Pressed by mistake while testing the app at home' });
       expect(res.statusCode, res.body).toBe(200);
       const row = await sys(() => app.prisma.auditLog.findFirstOrThrow({ where: { action: 'SOS_SELF_RESOLVED', entityId: alert.id } }));
       expect(row.changes).toMatchObject({ review: SELF_RESOLVED_FLAG, reason: 'Pressed by mistake while testing the app at home' });
+      // decided from the alert's own market
+      expect(vi.mocked(isSoleEligibleResponder)).toHaveBeenCalledWith(expect.anything(), named.userId, 'safety.sos.respond', 'swift-default');
     } finally {
-      await sys(() => app.prisma.tenant.update({ where: { id: T }, data: { isActive: false } })).catch(() => undefined);
+      vi.mocked(isSoleEligibleResponder).mockReset();
+      const real = await vi.importActual<typeof import('../modules/integrity/sole-responder')>('../modules/integrity/sole-responder');
+      vi.mocked(isSoleEligibleResponder).mockImplementation(real.isSoleEligibleResponder);
     }
   });
 

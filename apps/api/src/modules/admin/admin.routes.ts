@@ -3985,7 +3985,7 @@ export async function adminRoutes(app: FastifyInstance) {
       let selfEnded = false;
       const { identityReviewReasons } = await assertMayEndRide(tx, request.user.userId, parties.map((party) => party.userId)).catch(async (err: unknown) => {
         const partyRefusal = err instanceof AppError && (err.code === 'OWN_RIDE' || err.code === 'STAFF_ON_RIDE');
-        if (!partyRefusal || !(await isSoleEligibleResponder(tx, request.user.userId, 'order.ride.end'))) throw err;
+        if (!partyRefusal || !(await isSoleEligibleResponder(tx, request.user.userId, 'order.ride.end', locked.tenantId))) throw err;
         selfEnded = true;
         return { identityReviewReasons: [] as string[] };
       });

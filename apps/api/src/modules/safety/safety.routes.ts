@@ -335,7 +335,7 @@ export async function safetyRoutes(app: FastifyInstance) {
       await asResponder(opsRoleOf(request), () => assertClearOf(request.user.userId, parties));
     } catch (err) {
       const partyRefusal = err === partyRefusals.own || err === partyRefusals.staff || err instanceof IdentityReviewRequiredError;
-      if (!partyRefusal || !(await isSoleEligibleResponder(app.prisma, request.user.userId, 'safety.sos.respond'))) throw err;
+      if (!partyRefusal || !(await isSoleEligibleResponder(app.prisma, request.user.userId, 'safety.sos.respond', await alertTenantOf(request.params.id, opsRoleOf(request))))) throw err;
       if (!body.selfResolveReason) {
         throw new AppError(409, 'SELF_RESOLVE_REASON_REQUIRED', 'This SOS names you, and no other admin can resolve it. Say why you are resolving it yourself (at least 12 characters); it is recorded for a second person to review.');
       }
@@ -704,6 +704,11 @@ export async function safetyRoutes(app: FastifyInstance) {
   async function alertParties(alertId: string, role: string): Promise<string[]> {
     const a = await asResponder(role, () => app.prisma.sosAlert.findUnique({ where: { id: alertId }, select: { actorUserId: true, counterpartyUserId: true } }));
     return a ? [a.actorUserId, a.counterpartyUserId].filter((p): p is string => !!p) : [];
+  }
+  /** The market an SOS belongs to (null: a platform alert). */
+  async function alertTenantOf(alertId: string, role: string): Promise<string | null> {
+    const a = await asResponder(role, () => app.prisma.sosAlert.findUnique({ where: { id: alertId }, select: { tenantId: true } }));
+    return a?.tenantId ?? null;
   }
   /** [AUDIT-20261113 F7] The caller and every account linked to them (one identity cluster), as the party rule reads it. */
   async function linkedAccountsOf(userId: string): Promise<string[]> {

@@ -934,8 +934,9 @@ export const fetchSafetySos = (signal?: AbortSignal): Promise<Envelope<SosRow[]>
   readWithin(signal, (s) => apiFetch(`/api/v1/safety/sos?status=open&limit=${SAFETY_LIST_LIMIT}`, { signal: s }));
 export const acknowledgeSos = (id: string): Promise<Envelope<{ id: string; status: string }>> =>
   apiFetch(`/api/v1/safety/sos/${encodeURIComponent(id)}/ack`, { method: 'POST', body: '{}' });
-export const resolveSos = (id: string, resolutionCode: SosResolutionCode, notes?: string): Promise<Envelope<{ id: string; status: string }>> =>
-  apiFetch(`/api/v1/safety/sos/${encodeURIComponent(id)}/resolve`, { method: 'POST', body: JSON.stringify({ resolutionCode, ...(notes ? { notes } : {}) }) });
+// [REVIEW-2499-A S3-1] selfResolveReason: only when this SOS names you and no other admin can resolve it.
+export const resolveSos = (id: string, resolutionCode: SosResolutionCode, notes?: string, selfResolveReason?: string): Promise<Envelope<{ id: string; status: string }>> =>
+  apiFetch(`/api/v1/safety/sos/${encodeURIComponent(id)}/resolve`, { method: 'POST', body: JSON.stringify({ resolutionCode, ...(notes ? { notes } : {}), ...(selfResolveReason ? { selfResolveReason } : {}) }) });
 export const fetchSafetyCases = (scope: CaseScope, signal?: AbortSignal): Promise<Envelope<IncidentRow[]>> =>
   readWithin(signal, (s) => apiFetch(`/api/v1/safety/incidents?status=${scope}&limit=${SAFETY_LIST_LIMIT}`, { signal: s }));
 export const workSafetyCase = (id: string, action: 'ack' | 'close' | 'lift-interim'): Promise<Envelope<IncidentRow>> =>

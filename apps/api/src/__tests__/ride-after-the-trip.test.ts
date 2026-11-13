@@ -115,6 +115,8 @@ describe('[G05] five wrong codes', () => {
     expect(res.body).not.toContain('"ridePin"');
     const after = await row(order.id);
     expect(after.ridePinAttempts).toBe(0);
+    // [REVIEW-2499-A S3-2] the new code is dated: chat written before it is never judged against it
+    expect((await sys(() => app.prisma.order.findUniqueOrThrow({ where: { id: order.id }, select: { ridePinIssuedAt: true } }))).ridePinIssuedAt).toBeInstanceOf(Date);
     expect(handoverCodeMatches(after.ridePin, '123456')).toBe(false);
     expect((await call('PUT', `/api/v1/driver/rides/${order.id}/verify-pin`, driverUser, { pin: after.ridePin })).statusCode).toBe(200);
     const told = await sys(() => app.prisma.notification.findMany({ where: { userId: customer.id, data: { path: ['orderId'], equals: order.id } } }));

@@ -136,8 +136,10 @@ describe('POST /orders/:id/convert-to-pickup', () => {
     expect(d.fulfillment).toBe('PICKUP');
     // [PICKUP · owner 30 Oct 2026] A code is minted for the takeaway; the answer carries it only when the store
     // asks for it (store code off — the default — means the counter checks the first name and order number).
-    const row = await app.prisma.order.findUniqueOrThrow({ where: { id: order.id }, select: { pickupCode: true, vendor: { select: { requirePickupCode: true } } } });
+    const row = await app.prisma.order.findUniqueOrThrow({ where: { id: order.id }, select: { pickupCode: true, pickupCodeIssuedAt: true, vendor: { select: { requirePickupCode: true } } } });
     expect(String(row.pickupCode)).toMatch(/^\d{6}$/);
+    // [REVIEW-2499-A S3-2] the code is dated when issued: older chat history is never judged against it
+    expect(row.pickupCodeIssuedAt).toBeInstanceOf(Date);
     expect(d.pickupCode).toBe(row.vendor?.requirePickupCode === true ? row.pickupCode : null);
     expect(Object.keys(d)).not.toContain('vendor');
     expect(Number(d.deliveryFee)).toBe(0);

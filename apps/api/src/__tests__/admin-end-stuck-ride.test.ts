@@ -1,4 +1,10 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+
+// [REVIEW-2499-A S3-1] "The only eligible responder" is decided platform-wide: the route test pins the decision.
+vi.mock('../modules/integrity/sole-responder', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../modules/integrity/sole-responder')>();
+  return { ...real, isSoleEligibleResponder: vi.fn(real.isSoleEligibleResponder) };
+});
 import Fastify, { type FastifyInstance } from 'fastify';
 import { nanoid } from 'nanoid';
 import { prismaPlugin } from '../plugins/prisma';
@@ -17,8 +23,7 @@ import { OrderService } from '../modules/order/order.service';
 import { NotificationService } from '../modules/notification/notification.service';
 import { ACTIVE_TAXI_STATUSES } from '../modules/rides/rides.service';
 import { walkOrderStatus } from './helpers/order-status-walk';
-import { runWithTenant, runWithoutTenant } from '../plugins/tenant-context';
-import { SELF_RESOLVED_FLAG } from '../modules/integrity/sole-responder';
+import { SELF_RESOLVED_FLAG, isSoleEligibleResponder } from '../modules/integrity/sole-responder';
 import { testPhone } from './helpers/fixture-ids';
 import { TEST_ADMIN_REASON } from './helpers/admin-reason';
 
@@ -562,46 +567,20 @@ describe('support ends a ride whose driver is gone', () => {
 // responder could otherwise never be ended: they end it, with the reason the door already demands, and the audit
 // row is flagged for a second person's review. Where another eligible admin exists, the refusal above holds.
 describe('[REVIEW-2499-A S3-1] the only eligible responder may end a ride that names them, flagged for review', () => {
-  it('a market with one admin: the owner on the ride ends it; the row is flagged', async () => {
-    const T = `solo-ride-${RUN}`.toLowerCase();
-    await runWithoutTenant(() => app.prisma.tenant.create({ data: { id: T, name: `Solo ride ${T}`, slug: T, isActive: true } }), 'test-fixture:solo-ride');
+  it('the owner on the ride, with nobody else who could end it, ends it; the row is flagged', async () => {
+    const owner = await staff(['*'], 'SUPER_ADMIN');
+    const r = await ride('RIDE_IN_PROGRESS', {}, { passenger: owner.id });
+    vi.mocked(isSoleEligibleResponder).mockResolvedValue(true);
     try {
-      const made = await runWithTenant(T, async () => {
-        const mk = async (roles: string[], extra: Record<string, unknown> = {}) => {
-          const row = await app.prisma.user.create({ data: { phone: testPhone(), firstName: 'Solo', lastName: `R${RUN}`, roles: roles as never, activeRole: roles[0] as never, isPhoneVerified: true, status: 'ACTIVE', tenantId: T, ...extra } as never });
-          userIds.push(row.id);
-          return row.id;
-        };
-        const ownerId = await mk(['SUPER_ADMIN', 'CUSTOMER'], { admin: { create: { permissions: ['*'] } } });
-        const token = app.jwt.sign({ userId: ownerId, role: 'SUPER_ADMIN', jti: nanoid(8) });
-        await app.prisma.session.create({ data: { userId: ownerId, token, refreshToken: nanoid(48), authMethod: 'OTP', deviceId: `ride-${nanoid(4)}`, deviceType: 'test', expiresAt: new Date(Date.now() + DAY) } });
-        const driverUser = await mk(['MOVER', 'CUSTOMER']);
-        const driver = await app.prisma.driver.create({ data: { userId: driverUser, vehicleMake: 'Toyota', vehicleModel: 'Axio', vehicleColor: 'White', vehicleYear: 2015, licensePlate: `SOL ${nanoid(4)}`, driverLicenseUrl: 'x', vehicleInsuranceUrl: 'x' } as never });
-        driverIds.push(driver.id);
-        const order = await app.prisma.order.create({ data: {
-          orderNumber: `ES-${nanoid(10).toUpperCase()}`, customerId: ownerId, orderType: 'TAXI', status: 'PENDING', tenantId: T, deliveryAddress: '1 Test St', deliveryLat: 6.8055, deliveryLng: -58.1553,
-          subtotalBase: 1500, subtotalMarkup: 0, subtotalCustomer: 1500, deliveryFee: 0, totalAmount: 1500, paymentMethod: 'CASH',
-        } as never });
-        orderIds.push(order.id);
-        await walkOrderStatus(app.prisma, order.id, 'RIDE_IN_PROGRESS', { driverId: driver.id });
-        await app.prisma.driver.update({ where: { id: driver.id }, data: { currentRideId: order.id } });
-        return { orderId: order.id, token };
-      });
-      const res = await end(made.orderId, made.token);
+      const res = await end(r.orderId, owner.token);
       expect(res.statusCode, res.payload).toBe(200);
-      const row = await runWithoutTenant(() => app.prisma.auditLog.findFirstOrThrow({ where: { action: 'END_STUCK_RIDE', entityId: made.orderId } }), 'test-read');
+      const row = await app.prisma.auditLog.findFirstOrThrow({ where: { action: 'END_STUCK_RIDE', entityId: r.orderId } });
       expect(row.changes).toMatchObject({ selfResolved: true, review: SELF_RESOLVED_FLAG });
+      expect(vi.mocked(isSoleEligibleResponder)).toHaveBeenCalledWith(expect.anything(), owner.id, 'order.ride.end', 'swift-default');
     } finally {
-      await runWithoutTenant(async () => {
-        await app.prisma.notification.deleteMany({ where: { userId: { in: userIds } } });
-        await app.prisma.order.deleteMany({ where: { id: { in: orderIds }, tenantId: T } });
-        await app.prisma.driver.deleteMany({ where: { id: { in: driverIds }, user: { tenantId: T } } });
-        await app.prisma.session.deleteMany({ where: { user: { tenantId: T } } });
-        await app.prisma.admin.deleteMany({ where: { user: { tenantId: T } } });
-        await app.prisma.user.deleteMany({ where: { tenantId: T } }).catch(() => undefined);
-        await app.prisma.tenant.delete({ where: { id: T } }).catch(() => undefined);
-      }, 'test-cleanup:solo-ride');
+      vi.mocked(isSoleEligibleResponder).mockReset();
+      const real = await vi.importActual<typeof import('../modules/integrity/sole-responder')>('../modules/integrity/sole-responder');
+      vi.mocked(isSoleEligibleResponder).mockImplementation(real.isSoleEligibleResponder);
     }
   });
 });
-

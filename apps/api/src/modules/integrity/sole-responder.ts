@@ -23,15 +23,23 @@ export const SELF_RESOLVED_FLAG = 'self-resolved — second-person review when a
 
 type Db = PrismaClient | Prisma.TransactionClient;
 
-/** Is `actorId` a SUPER_ADMIN with no other ACTIVE admin in their market holding `capability`? */
-export async function isSoleEligibleResponder(db: Db, actorId: string, capability: string): Promise<boolean> {
+/**
+ * Is `actorId` a SUPER_ADMIN with no other ACTIVE admin who could do this act on THIS resource? Decided from the
+ * resource, never the actor: every active SUPER_ADMIN on the platform (a platform responder acts in any market)
+ * and every active ADMIN in the resource's own market (`resourceTenantId`; null = a platform resource, which
+ * only SUPER_ADMINs work), each counted only if their live grant holds `capability`.
+ */
+export async function isSoleEligibleResponder(db: Db, actorId: string, capability: string, resourceTenantId: string | null): Promise<boolean> {
   return runWithoutTenant(async () => {
-    const actor = await db.user.findUnique({ where: { id: actorId }, select: { tenantId: true, roles: true, status: true } });
+    const actor = await db.user.findUnique({ where: { id: actorId }, select: { roles: true, status: true } });
     if (!actor || actor.status !== 'ACTIVE' || consoleRoleOf(actor.roles) !== 'SUPER_ADMIN') return false;
     const others = await db.user.findMany({
       where: {
-        id: { not: actorId }, tenantId: actor.tenantId, status: 'ACTIVE',
-        OR: [{ roles: { hasSome: ['ADMIN', 'SUPER_ADMIN'] } }, { activeRole: { in: ['ADMIN', 'SUPER_ADMIN'] } }],
+        id: { not: actorId }, status: 'ACTIVE',
+        OR: [
+          { roles: { has: 'SUPER_ADMIN' } }, { activeRole: 'SUPER_ADMIN' },
+          ...(resourceTenantId ? [{ tenantId: resourceTenantId, OR: [{ roles: { has: 'ADMIN' as const } }, { activeRole: 'ADMIN' as const }] }] : []),
+        ],
       },
       select: { roles: true, activeRole: true, admin: { select: { permissions: true } } },
     });

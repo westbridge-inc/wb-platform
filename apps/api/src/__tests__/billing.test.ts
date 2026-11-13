@@ -1418,6 +1418,14 @@ describe('fee credit refund — set aside, then paid, recorded once, two people,
       select: { id: true, status: true },
     });
     await app.prisma.user.updateMany({ where: { id: { in: others.map((o) => o.id) } }, data: { status: 'SUSPENDED' } });
+    // [AUDIT-20261113 S3-4] An admin locked out in the last 14 days still counts as an approver (suspending the
+    // only other admin must not switch solo back on), so "the only admin" here also means every other admin's
+    // lock-out is older than that: their rows are dated back past the window for the duration.
+    const lockedOut = await app.prisma.user.findMany({
+      where: { id: { not: ownerId }, status: { in: ['SUSPENDED', 'BANNED', 'DEACTIVATED'] }, OR: [{ activeRole: { in: ['ADMIN', 'SUPER_ADMIN'] } }, { roles: { hasSome: ['ADMIN', 'SUPER_ADMIN'] } }] },
+      select: { id: true },
+    });
+    for (const { id } of lockedOut) await app.prisma.$executeRaw`UPDATE "users" SET "updatedAt" = now() - interval '15 days' WHERE id = ${id}`;
     try {
       return await work();
     } finally {
