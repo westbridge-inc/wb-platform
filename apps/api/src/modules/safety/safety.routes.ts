@@ -694,10 +694,11 @@ export async function safetyRoutes(app: FastifyInstance) {
   async function assertClearOfBundle(bundleId: string, actorId: string) {
     const bundle = await app.prisma.evidenceBundle.findUnique({ where: { id: bundleId }, select: { subjectUserId: true, caseId: true, sosAlertId: true } });
     if (!bundle) return; // the service answers not-found
-    const sosActor = bundle.sosAlertId
-      ? (await app.prisma.sosAlert.findUnique({ where: { id: bundle.sosAlertId }, select: { actorUserId: true } }))?.actorUserId
+    const sos = bundle.sosAlertId
+      ? await app.prisma.sosAlert.findUnique({ where: { id: bundle.sosAlertId }, select: { actorUserId: true, counterpartyUserId: true } })
       : null;
-    await assertClearOf(actorId, [bundle.subjectUserId, sosActor, ...(bundle.caseId ? await casePartiesOf(bundle.caseId) : [])]);
+    // [REVIEW-2499-A S4-4] the SOS counterparty too (a case bundle linked to an SOS names both)
+    await assertClearOf(actorId, [bundle.subjectUserId, sos?.actorUserId, sos?.counterpartyUserId, ...(bundle.caseId ? await casePartiesOf(bundle.caseId) : [])]);
   }
 
   /** The people an SOS names: who raised it and the person it was raised against. */
@@ -719,7 +720,11 @@ export async function safetyRoutes(app: FastifyInstance) {
     const parties = await alertParties(alertId, role);
     if (parties.length === 0) return false;
     const mine = new Set(await linkedAccountsOf(userId));
-    return parties.some((p) => mine.has(p));
+    if (parties.some((p) => mine.has(p))) return true;
+    // [REVIEW-2499-A S4-3] Read from the parties' side too: a caller whose own cluster record is damaged (its
+    // members resolve to just itself) is still found among a party's linked accounts.
+    for (const party of parties) if ((await linkedAccountsOf(party)).includes(userId)) return true;
+    return false;
   }
 
   /** Ops intake — phone call / email / social report, logged by a human. */

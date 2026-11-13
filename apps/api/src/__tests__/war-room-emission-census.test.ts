@@ -12,7 +12,8 @@ import { authPlugin } from '../plugins/auth';
 import { socketPlugin } from '../plugins/socket';
 import { runWithoutTenant } from '../plugins/tenant-context';
 import { registerErrorHandler } from '../middleware/error-handler';
-import { OPS_WAR_ROOM, warRoomsFor } from '../modules/safety/war-room';
+import { OPS_WAR_ROOM, namedUserRooms, warRoomsFor } from '../modules/safety/war-room';
+import { SUPPORT_OPERATOR_CAPABILITIES } from '../modules/admin/admin-authority';
 
 // ---------------------------------------------------------------------------
 // [M077] Every war-room emission is tenant-aware: it either goes to the
@@ -50,6 +51,8 @@ function emissionsIn(file: string): Array<[string, Audience]> {
   for (const m of src.matchAll(/\.to\(warRoomsFor\([^)]*\)\)\s*\.emit\(\s*'([^']+)'/g)) found.push({ at: m.index!, event: m[1]!, audience: 'tenant+platform' });
   // a rooms variable is tenant-aware only when it was built by warRoomsFor in the same file
   if (/const rooms = warRoomsFor\(/.test(src)) for (const m of src.matchAll(/\.to\(rooms\)\s*\.emit\(\s*'([^']+)'/g)) found.push({ at: m.index!, event: m[1]!, audience: 'tenant+platform' });
+  // [REVIEW-2499-A S3-3] the same audience, minus the people the SOS names (their user rooms excepted)
+  if (/const rooms = warRoomsFor\(/.test(src)) for (const m of src.matchAll(/\.to\(rooms\)\s*\.except\(namedRooms\)\s*\.emit\(\s*'([^']+)'/g)) found.push({ at: m.index!, event: m[1]!, audience: 'tenant+platform' });
   // the guardian's private helper emits to the platform room only
   if (/private warRoom\(event: string, payload: Record<string, unknown>\) \{\s*try \{\s*this\.io\.to\('ops:war-room'\)\.emit\(event, payload\);/.test(src)) {
     for (const m of src.matchAll(/this\.warRoom\(\s*'([^']+)'/g)) found.push({ at: m.index!, event: m[1]!, audience: 'platform-only' });
@@ -75,7 +78,7 @@ describe('[M077] census: every war-room emission has a declared audience', () =>
   it('no emission reaches the war room any other way (a bare template, a hand-built array)', () => {
     for (const file of Object.keys(CENSUS)) {
       const src = strip(readFileSync(join(SRC, file), 'utf8'));
-      const targets = [...src.matchAll(/\.to\(((?:[^()]|\([^()]*\))*)\)\s*\.emit/g)].map((m) => m[1]!.trim())
+      const targets = [...src.matchAll(/\.to\(((?:[^()]|\([^()]*\))*)\)\s*(?:\.except\(namedRooms\)\s*)?\.emit/g)].map((m) => m[1]!.trim())
         .filter((t) => /war-room|WAR_ROOM|warRoomsFor|^rooms$/.test(t));
       for (const t of targets) expect(t, `${file}: ${t}`).toMatch(/^(?:'ops:war-room'|OPS_WAR_ROOM|rooms|warRoomsFor\([^()]*\))$/);
       expect(src).not.toMatch(/`ops:war-room/);
@@ -92,13 +95,13 @@ describe('[M077] at runtime a tenant ADMIN socket hears its own tenant and nothi
   const phoneBase = 592_750_000_000 + Math.floor(Math.random() * 100_000_000);
   let seq = 0;
 
-  async function token(roles: UserRole[]) {
+  async function token(roles: UserRole[], permissions?: string[]) {
     seq += 1;
-    const user = await runWithoutTenant(() => app.prisma.user.create({ data: { phone: `+${phoneBase + seq}`, firstName: 'War', lastName: `Room${RUN}${seq}`, roles, activeRole: roles[0]!, status: 'ACTIVE', isPhoneVerified: true } }), 'test-fixture:l10-war-room');
+    const user = await runWithoutTenant(() => app.prisma.user.create({ data: { phone: `+${phoneBase + seq}`, firstName: 'War', lastName: `Room${RUN}${seq}`, roles, activeRole: roles[0]!, status: 'ACTIVE', isPhoneVerified: true, ...(permissions ? { admin: { create: { permissions } } } : {}) } }), 'test-fixture:l10-war-room');
     userIds.push(user.id);
     const t = app.jwt.sign({ userId: user.id, role: roles[0]!, jti: nanoid(8) });
     await runWithoutTenant(() => app.prisma.session.create({ data: { userId: user.id, token: t, refreshToken: nanoid(48), deviceId: 'war', deviceType: 'test', authMethod: 'OTP', expiresAt: new Date(Date.now() + 86_400_000) } }), 'test-fixture:l10-war-room');
-    return { t, tenantId: user.tenantId };
+    return { t, tenantId: user.tenantId, id: user.id };
   }
 
   function connect(t: string): Promise<{ socket: Socket; heard: string[] }> {
@@ -129,6 +132,7 @@ describe('[M077] at runtime a tenant ADMIN socket hears its own tenant and nothi
     for (const s of sockets) s.disconnect();
     await runWithoutTenant(async () => {
       await app.prisma.session.deleteMany({ where: { userId: { in: userIds } } });
+      await app.prisma.admin.deleteMany({ where: { userId: { in: userIds } } });
       await app.prisma.user.deleteMany({ where: { id: { in: userIds } } });
     }, 'test-cleanup:l10-war-room');
     await app.close();
@@ -148,5 +152,21 @@ describe('[M077] at runtime a tenant ADMIN socket hears its own tenant and nothi
     const heardBy = (x: { heard: string[] }) => x.heard.filter((e) => warRoomEvents.has(e));
     expect(heardBy(a)).toEqual(['sos:retrigger']);
     expect(new Set(heardBy(s))).toEqual(warRoomEvents);
+  });
+
+  // [REVIEW-2499-A S3-3] The socket follows the HTTP console's rules: a narrowed admin (no safety.sos.read) does not
+  // join the war room, and an SOS event never reaches the people it names.
+  it('a narrowed admin hears no war-room event; the admin an SOS names does not hear it, another admin does', async () => {
+    const narrowed = await token(['ADMIN'], [...SUPPORT_OPERATOR_CAPABILITIES]);
+    const named = await token(['ADMIN']);
+    const other = await token(['ADMIN']);
+    const n = await connect(narrowed.t);
+    const m = await connect(named.t);
+    const o = await connect(other.t);
+    app.io.to(warRoomsFor(named.tenantId)).except(await namedUserRooms(app.prisma, [named.id])).emit('sos:active', { probe: `${RUN}-named` });
+    await new Promise((r) => setTimeout(r, 300));
+    expect(n.heard).not.toContain('sos:active');
+    expect(m.heard).not.toContain('sos:active');
+    expect(o.heard).toContain('sos:active');
   });
 });

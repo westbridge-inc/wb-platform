@@ -103,7 +103,9 @@ afterAll(async () => {
 // escalation and never downgrades the record; drills run the same path.
 // ---------------------------------------------------------------------------
 
-const io = { to: () => ({ emit: () => {} }), in: () => ({ fetchSockets: async () => [{ id: 'connected-but-silent' }] }) } as unknown as Server;
+// [REVIEW-2499-A S3-3] an SOS war-room emission excepts the people it names: .to(rooms).except(named).emit
+const room = { emit: () => true, except: () => room, fetchSockets: async () => [{ id: 'connected-but-silent' }] };
+const io = { to: () => room, in: () => room, emit: () => true } as unknown as Server;
 const sos = () => new SosService(app.prisma, io);
 const notifications = () => new NotificationService(app.prisma, io);
 const alertIds: string[] = []; const opsAlertIds: string[] = [];

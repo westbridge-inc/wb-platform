@@ -22,7 +22,7 @@ import {
   socketAuthUserRoom,
 } from '../utils/socket-revocation';
 import { guardRedisCommandPromises } from '../utils/redis-command-guard';
-import { warRoomsForSocket } from '../modules/safety/war-room';
+import { holdsWarRoomGrant, warRoomsForSocket } from '../modules/safety/war-room';
 import { isProduction, usesSocketRedisAdapter } from '../utils/runtime-mode';
 import { assertRoomAccess } from '../modules/chat/chat-authority';
 import { vendorVisibleFilter } from '../modules/order/hold-visibility';
@@ -836,8 +836,9 @@ export const socketPlugin = fp(async (app: FastifyInstance) => {
         // Role-gated and tenant-scoped: a tenant's ADMIN joins only their own
         // room, because these payloads carry another person's role, order id
         // and coordinates (the leak F-026-15 closed on the push channel).
+        // [REVIEW-2499-A S3-3] ...and only while the admin's live grant holds safety.sos.read (as the HTTP console).
         const warRooms = warRoomsForSocket(authority.role, tenantId);
-        if (warRooms.length > 0) {
+        if (warRooms.length > 0 && await holdsWarRoomGrant(app.prisma, userId, authority.role)) {
           await socket.join(warRooms);
           app.log.info({ socketId: socket.id, userId, role: authority.role, warRooms }, 'ops socket joined the war room');
         }

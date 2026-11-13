@@ -977,3 +977,34 @@ describe('[AUDIT-20261113 F14] in-app calls honour user blocks', () => {
   });
 });
 
+// [REVIEW-2499-A S4-1] The two later re-judges: a block placed after the start drops the blocked person from the
+// ring set when the caller's app connects, and stops the phone fallback.
+describe('[REVIEW-2499-A S4-1] a block placed during an in-app call', () => {
+  const block = (blockerId: string, blockedId: string) => system(() => app.prisma.userBlock.create({ data: { tenantId: 'swift-default', blockerId, blockedId } }));
+  const unblock = (row: { id: string }) => system(() => app.prisma.userBlock.delete({ where: { id: row.id } }));
+
+  it('blocked after the start: when the caller connects, the blocked person\'s app is not rung', async () => {
+    const o = await liveFood();
+    const { callId } = (await start(diner.token, o.id, 'rider')).json().data;
+    const row = await block(riderP.id, diner.id);
+    try {
+      const { r } = await connect(callId, diner);
+      expect(r.body).not.toContain(`<Identity>${id(riderP)}</Identity>`);
+      expect(r.body).not.toContain('<Client');
+    } finally { await unblock(row); }
+  });
+
+  it('blocked while the app rang: no phone fallback after it', async () => {
+    setEnv({ ...INAPP_ON, ...RELAY_ON });
+    const o = await liveFood();
+    const { callId } = (await start(diner.token, o.id, 'rider')).json().data;
+    await connect(callId, diner);
+    const row = await block(riderP.id, diner.id);
+    try {
+      const done = await hook('app-dial-done', { DialCallStatus: 'no-answer' }, { s: callId });
+      expect(done.body).not.toContain('<Dial');
+      expect((await session(callId)).status).toBe('NOT_CONNECTED');
+    } finally { await unblock(row); }
+  });
+});
+

@@ -1,4 +1,5 @@
 import { emitToOrderRoom, emitToStoreRoom } from '../order/order-room-emission.service';
+import { assertNotSecurityControlConfigKey } from './security-config';
 import { scanUpload } from '../../lib/malware-scan';
 import { documentScanState, uploadScanRefusal, retryHeldEvidenceScan } from '../../lib/upload-scan-debt';
 import { vatTracker } from '../billing/vat-tracker';
@@ -934,6 +935,14 @@ export async function adminRoutes(app: FastifyInstance) {
     }
     adminReasonCounter.labels(problem, authority.cls).inc();
     throw new ValidationError(reasonRefusal(problem, authority.cls));
+  });
+
+  // [money review on #2499] A security-control config key is refused before the two-person gate can store an ask,
+  // and on every request that would write it (the apply replay passes this hook too). See security-config.ts.
+  app.addHook('preValidation', async (request: any) => {
+    if (request.method === 'PUT' && routeTemplateOf(request, app.prefix) === '/config/:key') {
+      assertNotSecurityControlConfigKey((request.params as { key?: unknown } | undefined)?.key);
+    }
   });
 
   // [ADM-005] A MONEY OR PLATFORM ACTION TAKES TWO PEOPLE.

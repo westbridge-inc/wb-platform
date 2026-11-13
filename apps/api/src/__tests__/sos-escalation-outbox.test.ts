@@ -19,7 +19,9 @@ import { devChannelLog, resetDevChannelLog } from '../providers/notifications/ch
 // ---------------------------------------------------------------------------
 
 const prisma = new PrismaClient({ datasources: { db: { url: process.env['DATABASE_URL'] || 'postgresql://swift:swift@localhost:5434/swift_test' } } });
-const io = { to: () => ({ emit: () => {} }), in: () => ({ fetchSockets: async () => [] }) } as unknown as Server;
+// [REVIEW-2499-A S3-3] an SOS war-room emission excepts the people it names: .to(rooms).except(named).emit
+const room = { emit: () => true, except: () => room, fetchSockets: async () => [] };
+const io = { to: () => room, in: () => room, emit: () => true } as unknown as Server;
 let sos: SosService;
 const userIds: string[] = []; const alertIds: string[] = [];
 let seq = 0;

@@ -1,3 +1,7 @@
+import type { PrismaClient } from '@prisma/client';
+import { capabilitiesOf, holdsCapability } from '../admin/admin-authority';
+import { identityAuthority } from '../integrity/identity-review';
+import { runWithoutTenant } from '../../plugins/tenant-context';
 /**
  * [F-027-16 / F-027-18] The ops war room — who is in it, and whose alerts
  * reach them.
@@ -44,4 +48,35 @@ export function warRoomsForSocket(role: string | undefined, tenantId: string | n
   if (role === 'SUPER_ADMIN') return tenantId ? [OPS_WAR_ROOM, tenantWarRoom(tenantId)] : [OPS_WAR_ROOM];
   if (role === 'ADMIN') return tenantId ? [tenantWarRoom(tenantId)] : [];
   return [];
+}
+
+// ---------------------------------------------------------------------------
+// [REVIEW-2499-A S3-3 · AUDIT-20261113 F5/F7] The same two rules as the HTTP safety console.
+//   - JOIN: an admin joins the war room only while their live grant holds `safety.sos.read` (a narrowed operator,
+//     e.g. the SUPPORT preset, hears no live location).
+//   - PER ALERT: an SOS event is never sent to the people it names (who raised it, the person it was raised
+//     against) or an account linked to them: their `user:<id>` rooms are excepted from the emission.
+// ---------------------------------------------------------------------------
+
+export const WAR_ROOM_CAPABILITY = 'safety.sos.read';
+
+/** Does this admin's live grant let them hear the war room? */
+export async function holdsWarRoomGrant(prisma: Pick<PrismaClient, 'admin'>, userId: string, role: string | undefined): Promise<boolean> {
+  if (role !== 'ADMIN' && role !== 'SUPER_ADMIN') return false;
+  const grant = await prisma.admin.findUnique({ where: { userId }, select: { permissions: true } });
+  return holdsCapability(capabilitiesOf({ role, permissions: grant?.permissions ?? null }), WAR_ROOM_CAPABILITY);
+}
+
+/** The personal rooms of everyone an SOS names, linked accounts included: excepted from its war-room emission. */
+export async function namedUserRooms(prisma: PrismaClient, people: ReadonlyArray<string | null | undefined>): Promise<string[]> {
+  const ids = new Set<string>();
+  for (const person of people) {
+    if (!person) continue;
+    ids.add(person);
+    try {
+      const identity = await runWithoutTenant(() => identityAuthority(prisma, person), 'war-room-named');
+      for (const member of identity.memberIds) ids.add(member);
+    } catch { /* the person themself is still excepted */ }
+  }
+  return [...ids].map((id) => `user:${id}`);
 }

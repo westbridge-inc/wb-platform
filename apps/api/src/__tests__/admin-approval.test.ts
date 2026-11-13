@@ -626,3 +626,17 @@ describe('[AUDIT-20261113 F11] a plain admin cannot squat a founder-only ask', (
   });
 });
 
+// [money review on #2499 · coordinator] The generic config route must not move a security control: the solo-approval
+// cool-off (approvals.*), backup evidence or scanner state. Refused before anyone is asked, and never written.
+describe('[REVIEW #2499] the generic config route refuses a security-control key', () => {
+  it('approvals.solo.cooloff_hours (any case) and the other security keys: 409, no ask, nothing written', async () => {
+    for (const key of ['approvals.solo.cooloff_hours', 'APPROVALS.SOLO.COOLOFF_HOURS', 'last_backup_at', 'malware_scanner:consecutive_failures', 'security.anything']) {
+      const res = await call(requester.token, 'PUT', `/api/v1/admin/config/${encodeURIComponent(key)}`, { value: 0.01, reason: REASON });
+      expect(res.statusCode, `${key}: ${res.body}`).toBe(409);
+      expect(res.json().error.code).toBe('CONFIG_KEY_SECURITY_CONTROL');
+      expect(await app.prisma.privilegedApproval.count({ where: { action: 'PUT /config/:key', entityId: key } })).toBe(0);
+      expect(await app.prisma.platformConfig.count({ where: { key } })).toBe(0);
+    }
+  });
+});
+
