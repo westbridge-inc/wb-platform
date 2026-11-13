@@ -69,6 +69,18 @@ export function subtotalOf(lines: readonly TotalLine[]): number {
 }
 
 /**
+ * [AUDIT A-3] `pct`% of `amount`, rounded UP to the whole dollar, in exact integer maths. Both are read to the cent
+ * (the money columns hold two decimals, a percentage two too), so the product is an integer and the ceiling exact:
+ * float maths made 7% of 100 come out 8. Never negative.
+ */
+export function percentageOf(amount: number, pct: unknown): number {
+  const amountCents = BigInt(Math.round(Math.max(0, Number(amount)) * 100));
+  const pctHundredths = BigInt(Math.round(Math.max(0, Number(pct) || 0) * 100));
+  const scale = 1_000_000n; // cents x hundredths of a percent -> whole dollars
+  return Number((amountCents * pctHundredths + scale - 1n) / scale);
+}
+
+/**
  * The promo switch — the one place the three discount shapes are defined.
  * PERCENTAGE rounds UP at the discount (a customer never loses a cent to
  * truncation); FIXED_AMOUNT is the stated value; FREE_DELIVERY is exactly the
@@ -79,7 +91,7 @@ export function promoDiscount(promo: PromoTerms, basis: { subtotal: number; deli
   let discount = 0;
   switch (promo.discountType) {
     case 'PERCENTAGE':
-      discount = Math.ceil(basis.subtotal * (Number(promo.discountValue) / 100));
+      discount = percentageOf(basis.subtotal, promo.discountValue);
       break;
     case 'FIXED_AMOUNT':
       discount = Number(promo.discountValue);

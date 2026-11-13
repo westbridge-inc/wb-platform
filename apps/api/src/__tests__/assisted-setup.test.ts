@@ -380,6 +380,30 @@ describe('papers filed for the store', () => {
   });
 });
 
+describe('[FABLE-02 F4] the account holder is told what Swift recorded and filed for them', () => {
+  const notices = (userId: string) => system(() => app.prisma.notification.findMany({ where: { userId }, orderBy: { createdAt: 'asc' } }));
+  it('an OK recorded, and each paper filed under it, sends the holder a notice: how it was given, what was added, how to object; never who at Swift', async () => {
+    const o = await store();
+    const before = (await notices(o.userId)).length;
+    const consentId = await consentFor(o, adminA, { channel: 'PHONE', agreedAs: 'MANAGER', agreedByName: 'Desk Manager' });
+    const afterOk = (await notices(o.userId)).slice(before);
+    expect(afterOk).toHaveLength(1);
+    expect(afterOk[0]).toMatchObject({ type: 'SYSTEM_ANNOUNCEMENT', title: 'Swift recorded your OK to help set up your store' });
+    expect(afterOk[0]!.body).toContain('by phone');
+    expect(afterOk[0]!.body).toContain('a manager at your store');
+    expect(afterOk[0]!.body).toContain('contact Swift support');
+    const filed = await adminUpload(adminA, `/vendors/${o.vendorId}/assisted-setup/documents?docType=storefront_photo&consentId=${consentId}`, uniquePng(`as-told-${RUN}`));
+    expect(filed.statusCode, filed.body).toBe(201);
+    const afterPaper = (await notices(o.userId)).slice(before + 1);
+    expect(afterPaper).toHaveLength(1);
+    expect(afterPaper[0]).toMatchObject({ type: 'SYSTEM_ANNOUNCEMENT', title: 'Swift added a paper to your store' });
+    expect(afterPaper[0]!.body).toMatch(/storefront photo/i);
+    expect(afterPaper[0]!.body).toContain('contact Swift support');
+    const all = JSON.stringify(await notices(o.userId));
+    for (const leak of [adminA.id, 'Desk Manager', REASON]) expect(all).not.toContain(leak);
+  });
+});
+
 describe('the same admin approving their own upload', () => {
   async function filedBy(who: { id: string; token: string }) {
     const o = await store();

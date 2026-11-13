@@ -184,6 +184,30 @@ describe('MMG payments: one payment, its timeline and what it paid', () => {
     expect(within(panel).queryByText('Credited period')).toBeNull();
   });
 
+  it('[audit C1-1] a held payment offers "Check with MMG again": a reason, then a second admin\'s approval; a confirmed one does not', async () => {
+    const fetchMock = mockApi(({ url, method }: ApiRequest) => {
+      if (url.pathname === `${PATH}/${held.id}`) return { body: { success: true, data: detailOf(held) } };
+      if (method === 'POST' && url.pathname === `${PATH}/${held.id}/recheck`) {
+        return { status: 202, body: { success: false, error: { code: 'APPROVAL_REQUIRED', message: 'A second admin must approve this', details: { approvalId: 'ap_7' } } } };
+      }
+      return page([held]);
+    });
+    const { user } = renderWithQuery(<MmgPaymentsPage />);
+    await screen.findByRole('table');
+    await user.click(screen.getByRole('button', { name: `Open payment ${held.swiftReference}` }));
+    const panel = await screen.findByRole('region', { name: 'Check with MMG again' });
+    const submit = within(panel).getByRole('button', { name: 'Check with MMG again' }) as HTMLButtonElement;
+    expect(submit.disabled, 'a reason first').toBe(true);
+    await user.type(within(panel).getByLabelText('Why it is being checked again'), 'The creation zone is set now');
+    await user.click(submit);
+    expect(await within(panel).findByText(/Sent for a second admin's approval/)).toBeTruthy();
+    const post = fetchMock.mock.calls.find(([input, init]) => String(input).endsWith('/recheck') && init?.method === 'POST');
+    expect(new Headers(post![1]!.headers).get('x-swift-reason')).toBe('The creation zone is set now');
+    expect(screen.queryByRole('region', { name: 'Return this payment' })).toBeNull();
+    // [Review A N-2] A payment already returned in MMG's portal is closed as not paid, never checked again.
+    expect(within(panel).getByText(/already returned this payment in MMG.s portal, do not check it again: close it as not paid instead/)).toBeTruthy();
+  });
+
   it('[owner ruling 13 Nov] a payment held as late offers the owner\'s credit with the MMG reference and a reason; no other hold does', async () => {
     const late = { ...held, reason: 'PAYMENT_TIME_OUTSIDE_WINDOW' };
     const fetchMock = mockApi(({ url, method }: ApiRequest) => {

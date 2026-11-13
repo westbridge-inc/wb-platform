@@ -119,3 +119,21 @@ describe('[REVIEW-M S4-1] every rail but cash: the total changes only before acc
     }
   });
 });
+
+// [Review A S3-1 · N-3 on #2500] On a discounted order the customer is shown what the change does to the TOTAL: the
+// line's price change less the part of the discount that goes with it (line-discount.ts, the rule the change applies).
+describe('[review S3-1] a swap or removal on a discounted order shows the net change in the total', () => {
+  const half = { goodsDiscount: 1000, discountType: 'PERCENTAGE', discountValue: 50, maxDiscount: null, lineAllocations: [{ orderItemId: 'a', goods: 500 }, { orderItemId: 'b', goods: 500 }] };
+  const cash = { ...order, paymentMethod: 'CASH', totalAmount: 1300, discount: 1000, promoRedemption: half,
+    items: [{ id: 'a', subStatus: 'PENDING', totalCustomer: 1000 }, { id: 'b', subStatus: 'NONE', totalCustomer: 1000 }] };
+  const a = { ...line, id: 'a', totalCustomer: 1000 };
+  it('a 1,000 line swapped for 100 under a 50% code: the total goes down by 450, not 900', () => {
+    expect(substitutionView({ ...a, substitutePrice: 100 }, cash)).toMatchObject({ kind: 'SWAP', priceDelta: -450 });
+  });
+  it('the same line removed: the total goes down by 500, not 1,000', () => {
+    expect(substitutionView({ ...a, substituteItemId: null, substituteName: null, substitutePrice: null }, cash)).toMatchObject({ kind: 'REMOVAL', priceDelta: -500 });
+  });
+  it('no discount: the line\'s own change, as before', () => {
+    expect(substitutionView({ ...a, substitutePrice: 100 }, { ...cash, discount: 0, promoRedemption: null })).toMatchObject({ priceDelta: -900 });
+  });
+});

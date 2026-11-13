@@ -636,6 +636,8 @@ export { CARD_REFUND_ACTION };
 export const PORTAL_REFERENCE = /^[A-Za-z0-9_-]{4,64}$/;
 /** The approval action of a check with the card provider (card-rail.routes.ts CARD_PROVIDER_CHECK_ACTION). */
 const CHECK_ACTION = 'POST /billing/card-sessions/:id/check-provider';
+/** The approval action of this confirmation (card-rail.routes.ts, admin-authority.ts). */
+const PORTAL_CHECK_ACTION = 'POST /billing/card-sessions/:id/portal-checked';
 
 export async function confirmPortalNothingBack(prisma: PrismaClient, input: {
   adminId: string; approvalId: string; tenantId: string; cardSessionId: string; portalReference: string; onAudit?: OnAudit; now?: Date;
@@ -643,9 +645,14 @@ export async function confirmPortalNothingBack(prisma: PrismaClient, input: {
   const now = input.now ?? new Date();
   const portalReference = input.portalReference.trim().toUpperCase();
   if (!PORTAL_REFERENCE.test(portalReference)) throw new AppError(400, 'PORTAL_REFERENCE_INVALID', 'Type the reference PowerTranz\'s portal shows for this payment: letters, digits, - and _ only.');
-  const approval = input.approvalId ? await prisma.privilegedApproval.findUnique({ where: { id: input.approvalId }, select: { requestedBy: true, approvedBy: true, decidedSolo: true } }) : null;
+  const approval = input.approvalId ? await prisma.privilegedApproval.findUnique({ where: { id: input.approvalId }, select: { requestedBy: true, approvedBy: true, decidedSolo: true, action: true, entityId: true } }) : null;
   if (!approval?.approvedBy || approval.approvedBy === approval.requestedBy || approval.decidedSolo) {
     refuse('PORTAL_CHECK_TWO_PEOPLE', 'Only the owner and a second person can confirm this: two different people, never alone. Nothing was recorded.');
+  }
+  // [Audit FABLE-01 M-4] The approval must be for this very act on this very payment: never another action's, never
+  // another card payment's (the route gate checks it too; this function does not rely on that).
+  if (approval.action !== PORTAL_CHECK_ACTION || approval.entityId !== input.cardSessionId) {
+    refuse('PORTAL_CHECK_APPROVAL_MISMATCH', 'That approval is not for confirming this payment\'s portal check. Ask again. Nothing was recorded.');
   }
   const people = await prisma.user.findMany({ where: { id: { in: [approval.requestedBy, approval.approvedBy] } }, select: { roles: true } });
   if (!people.some((u) => u.roles.includes('SUPER_ADMIN'))) {

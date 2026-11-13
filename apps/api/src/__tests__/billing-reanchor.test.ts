@@ -237,6 +237,29 @@ describe('BILLING-REANCHOR — a returning partner pays from the week they retur
     expect((await sub(v.subId)).status).toBe('ACTIVE');
   });
 
+  it('[audit FABLE-01 C2-1] stopping weekly billing while PAST_DUE: the grace still ends in a suspension, so the return pays from the week they return (no arrears)', async () => {
+    const due = new Date(Date.now() - 15 * DAY);
+    const v = await brokeVendorSub(due);
+    await billing.runBillingCycle(due);
+    expect((await sub(v.subId)).status).toBe('PAST_DUE');
+    await billing.stopBilling(v.subId, v.userId);
+    // Stopped: nothing is charged or retried, but the grace still runs out (the operate gate refuses work from then).
+    await billing.runBillingCycle(new Date(due.getTime() + 25 * HOUR));
+    await billing.runBillingCycle(new Date(due.getTime() + 50 * HOUR));
+    expect(await attempts(v.subId)).toBe(1);
+    const suspended = await sub(v.subId);
+    expect(suspended.status).toBe('SUSPENDED');
+    expect(suspended.autoRenew).toBe(false);
+    suspendedAtOf.set(v.subId, suspended.suspendedAt!);
+    // Two weeks later they come back: resume, then two weeks of money.
+    const before = Date.now();
+    await billing.setBillingRail(v.subId, 'CASH');
+    await topUp(v.subId, 2 * RATE, 'back after a stop');
+    for (const h of [0, 1]) await billing.runBillingCycle(new Date(Date.now() + h * 1000));
+    await expectReturnedAt(v.subId, due, before - 1000, Date.now() + 1000);
+    expect(await balance(v.subId)).toBe(RATE); // the second week's money is still theirs: no stopped week was billed
+  });
+
   it('[REVIEW-G S2-1 · COORD 17 Oct] no fee cut by gaming the grace: let a charge fail, operate through the 48-hour grace, get suspended, pay at once: the grace days are still paid', async () => {
     const due = new Date(Date.now() - 50 * HOUR - 60_000);
     const v = await brokeVendorSub(due);

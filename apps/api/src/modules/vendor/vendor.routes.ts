@@ -259,11 +259,15 @@ const reorderCategoriesSchema = z.object({
     .max(200),
 });
 
+// [AUDIT A-4] A price a store types is whole Guyana dollars (MONEY_COLUMNS: MAJOR_WHOLE), never cents, and bounded.
+const WHOLE_GYD_PRICE = 'Prices are whole Guyana dollars, from 0 to 10,000,000.';
+const wholePrice = () => z.number().int(WHOLE_GYD_PRICE).min(0, WHOLE_GYD_PRICE).max(10_000_000, WHOLE_GYD_PRICE);
+
 const optionInputSchema = z.object({
   name: z.string().trim().min(1).max(100),
-  additionalPrice: z.number().min(0).optional(),
+  additionalPrice: wholePrice().optional(),
   // [VAT-DOCS] The extra price BEFORE VAT, from the apps that know a store may add VAT at checkout (vat-pricing.ts).
-  vatListedAdditionalPrice: z.number().min(0).max(10_000_000).optional(),
+  vatListedAdditionalPrice: wholePrice().optional(),
   isDefault: z.boolean().optional(),
   sortOrder: z.number().int().min(0).optional(),
 });
@@ -325,11 +329,11 @@ const createItemSchema = z.object({
   name: z.string().trim().min(1).max(150),
   description: z.string().max(2000).optional(),
   imageUrl: z.string().max(2048).optional(),
-  basePrice: z.number().min(0).max(10_000_000),
+  basePrice: wholePrice(),
   // [VAT-DOCS · owner 30 Oct 2026] The price BEFORE VAT, sent by the apps that know a store may add VAT at checkout.
   // When present it is the price the store typed (it wins over basePrice); while the store's approved VAT is added to
   // its prices, the server stores basePrice = this + 14% (modules/store-vat/vat-pricing.ts).
-  vatListedPrice: z.number().min(0).max(10_000_000).optional(),
+  vatListedPrice: wholePrice().optional(),
   sku: z.string().max(64).optional(),
   unit: z.string().max(30).optional(),
   // [G2] How much room one unit takes, as the WORD the shopkeeper chose. The

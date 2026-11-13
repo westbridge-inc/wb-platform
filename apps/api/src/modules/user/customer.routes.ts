@@ -70,7 +70,8 @@ import { ratingSurfaces, NEW_ACTOR_SURFACE } from '../rating/rating-surface';
 import { notProhibitedStore, visibleVendorRelForCaller, visibleVendorForCaller, vendorTenantForCaller } from '../vendor/vendor-visibility';
 import { compilePublicStorefrontDisclosure } from '../verification/storefront-disclosure';
 import { publicStorefrontSeller } from '../verification/storefront-seller';
-import { createHash, randomInt } from 'node:crypto';
+import { randomInt } from 'node:crypto';
+import { cartPaymentScope } from './cart-payment-scope';
 import { OrderService, TERMINAL_ORDER_STATUSES, MMG_MONEY_MOVED, type CheckoutCommit } from '../order/order.service';
 import { PickingService } from '../order/picking.service';
 import { isRemovalQuestion, legacySwapItemFields, lineOptionsAsMade, onlyItemLeft, substitutionView } from '../order/substitution-view';
@@ -496,18 +497,17 @@ async function buildCartResponse(
   // Opaque, non-secret scope: a method selection is valid only for this exact
   // vendor set + destination state. A previous cart's MMG choice cannot revive
   // when another MMG-capable vendor appears.
-  const paymentScope = createHash('sha256')
-    .update(JSON.stringify({
-      cartId: cart.id,
-      vendors: paymentVendors.map((vendor) => {
-        const checked = validateOfferedStoreMmgPayUrl(vendor.mmgPayUrl);
-        // The number is part of the scope too: a choice made for one number never survives a change.
-        return [vendor.id, checked.valid ? checked.url : checked.reason, safeMmgNumber(vendor.mmgNumber) ?? 'NO_NUMBER'];
-      }),
-      expectedVendorIds: paymentVendorIds,
-    }))
-    .digest('hex')
-    .slice(0, 24);
+  // [SEC-AUDIT F1] KEYED (cart-payment-scope.ts): the number is in the material, so a bare hash would
+  // let any cart holder brute-force the store's MMG number offline.
+  const paymentScope = cartPaymentScope({
+    cartId: cart.id,
+    vendors: paymentVendors.map((vendor) => {
+      const checked = validateOfferedStoreMmgPayUrl(vendor.mmgPayUrl);
+      // The number is part of the scope too: a choice made for one number never survives a change.
+      return [vendor.id, checked.valid ? checked.url : checked.reason, safeMmgNumber(vendor.mmgNumber) ?? 'NO_NUMBER'];
+    }),
+    expectedVendorIds: paymentVendorIds,
+  });
 
   // Fetch related address and promo code separately (no direct relations on
   // Cart). Same resolution as checkout: the cart's chosen address, else the
@@ -2275,7 +2275,8 @@ export async function customerRoutes(app: FastifyInstance) {
       await app.prisma.cartItem.update({
         where: { id: existing.id },
         // [BOOK-FU3] Re-adding the same booking never grows it past one appointment.
-        data: { quantity: item.fulfillment === 'APPOINTMENT' ? 1 : existing.quantity + quantity },
+        // [AUDIT A-2] A merge never grows a line past the 99 the quantity edit allows.
+        data: { quantity: item.fulfillment === 'APPOINTMENT' ? 1 : Math.min(99, existing.quantity + quantity) },
       });
     } else {
       await app.prisma.cartItem.create({
@@ -2909,6 +2910,9 @@ export async function customerRoutes(app: FastifyInstance) {
             selectedOptions: true,
           },
         },
+        // [Review A S3-1] The promo record: a swap or removal question shows what it does to the TOTAL, the
+        // discount that goes with the line included (substitution-view.ts). Read here, never returned as is.
+        promoRedemption: { select: { goodsDiscount: true, lineAllocations: true, discountType: true, discountValue: true, maxDiscount: true } },
         statusHistory: { orderBy: [{ createdAt: 'asc' }, { id: 'asc' }] },
         // [F-027-07 / F-028-11] Was a whole-relation `include`, which pulls
         // every Rider column — KYC document URLs, enforcement state, float —

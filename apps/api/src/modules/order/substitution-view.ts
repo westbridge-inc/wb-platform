@@ -1,4 +1,5 @@
 import { AppError } from '../../utils/errors';
+import { lineChangeDiscount, type LineDiscountRedemption } from './line-discount';
 import { assertMmgFulfilmentAllowed } from './order.service';
 
 /**
@@ -94,6 +95,8 @@ export function totalFixedCopy(order: { paymentMethod: string | null }): string 
  * the state remains.
  */
 type ViewLine = {
+  /** The line's id: with the order's lines and promo record it names the discount that goes with it. */
+  id?: string;
   subStatus: string;
   name: string;
   quantity: number;
@@ -104,7 +107,21 @@ type ViewLine = {
   substituteDecideBy?: Date | null;
   selectedOptions: readonly OptionSnapshot[];
 };
-type ViewOrder = Parameters<typeof assertMmgFulfilmentAllowed>[0] & AdjustableOrder & { totalAmount: unknown };
+type ViewOrder = Parameters<typeof assertMmgFulfilmentAllowed>[0] & AdjustableOrder & {
+  totalAmount: unknown;
+  /** [Review A S3-1] The order's discount, its lines and its promo record: the discount that goes with a change
+   *  (line-discount.ts). Absent on an older projection: no discount moves. */
+  discount?: unknown;
+  items?: ReadonlyArray<{ id: string; subStatus: string; totalCustomer: unknown }>;
+  promoRedemption?: LineDiscountRedemption | null;
+};
+
+/** [Review A S3-1] How much of the order's discount goes with this change, by the rule the change itself applies. */
+function discountBackOf(line: ViewLine, order: ViewOrder, newLineTotal: number): number {
+  if (!line.id || !order.items || !(Number(order.discount) > 0)) return 0;
+  const live = order.items.filter((i) => i.subStatus !== 'REFUNDED' && i.subStatus !== 'REJECTED').map((i) => ({ id: i.id, amount: Number(i.totalCustomer) }));
+  return lineChangeDiscount({ orderDiscount: order.discount, live, change: { lineId: line.id, newLineTotal }, redemption: order.promoRedemption ?? null }).amount;
+}
 
 /** The order facts that decide whether its total may change in-app. Each one
  *  is optional so an older projection still type-checks — and an MMG order
@@ -278,14 +295,17 @@ export function substitutionView(line: ViewLine, order: ViewOrder, ctx: { onlyIt
       kind: 'REMOVAL' as const,
       original,
       proposed: null,
-      priceDelta: -Math.min(Number(line.totalCustomer), Number(order.totalAmount)),
+      // The line's price less the discount that goes with it, never below zero (picking.service closeLine).
+      priceDelta: -Math.min(Math.max(0, Number(line.totalCustomer) - discountBackOf(line, order, 0)), Number(order.totalAmount)),
       decisions: { approve: !approvalHold && adjustable, reject: false },
       settlementGuidance: approvalHold ?? (adjustable ? null : totalFixedCopy(order)),
       decideBy,
       ifNoAnswer: substitutionNoAnswer(order),
     };
   }
-  const negativeTotal = Number(order.totalAmount) + delta < 0;
+  // [Review A S3-1] The total moves by the line's change less the discount that goes with it: what approving charges.
+  const totalChange = cents(delta + discountBackOf(line, order, substitutionLineChange(line).newLineTotal));
+  const negativeTotal = Number(order.totalAmount) + totalChange < 0;
   const settlementGuidance = approvalHold
     ?? (!adjustable ? totalFixedCopy(order) : negativeTotal
       ? 'That substitute would drop the order total below zero — refund the line instead.'
@@ -295,7 +315,7 @@ export function substitutionView(line: ViewLine, order: ViewOrder, ctx: { onlyIt
     kind: 'SWAP' as const,
     original,
     proposed: { itemId: line.substituteItemId, name: line.substituteName, unitPrice: Number(line.substitutePrice ?? 0) },
-    priceDelta: delta,
+    priceDelta: totalChange,
     // [O-4 · REVIEW-F S3-1] Declining the only item left would empty the order: not offered.
     // [OOS-FLOW · REVIEW-1 S3-1] On an accepted order's only item a decline cancels the order: offered only to a
     // client that labels it so (lastItemDecline); older cards read "Rejecting removes the item".

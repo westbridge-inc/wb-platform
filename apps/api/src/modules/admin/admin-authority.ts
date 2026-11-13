@@ -548,6 +548,8 @@ export const ADMIN_ROUTE_AUTHORITY: Readonly<Record<AdminRouteKey, AdminRouteAut
   'POST /billing/mmg-checkouts/:id/credit-late': c('C3', 'billing.mmg.credit.late', E.mmgCheckout),
   'POST /billing/mmg-checkouts/:id/late-credit-review': c('C3', 'billing.mmg.late.review', E.mmgCheckout),
   'GET /billing/mmg-checkouts/late-credit-reviews': c('C1', 'billing.mmg.read'),
+  // [Audit FABLE-01 C1-1] A held weekly-fee payment checked with MMG again: it may credit (only on MMG's own records), so C4.
+  'POST /billing/mmg-checkouts/:id/recheck': c('C4', 'billing.mmg.recheck', E.mmgCheckout),
   // [Row 156] A partner asked for a weekly-fee payment back: a clock and a record, no money. A reason, one person; the
   // return itself stays the C4 above. A case closes only on a REVERSED reversal, never from here.
   'GET /billing/fee-refund-cases': c('C1', 'billing.mmg.read'),

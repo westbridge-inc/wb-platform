@@ -264,3 +264,31 @@ export async function consentsOf(db: PrismaClient, store: AssistStore, now = new
   });
   return rows.map(({ holderId, ...row }) => ({ ...row, live: holderId === store.holderId && consentStillLive(row, now) }));
 }
+
+/**
+ * [FABLE-02 F4 · 13 Nov 2026] The account holder is TOLD. The store's OK is whatever the admin typed, so the one
+ * person who can contradict it hears of it: when an OK is recorded, and when a paper is filed under one. How the OK
+ * was given and what was added, and how to object; never who at Swift (owner 12 Nov 2026: "Added by Swift", never
+ * the admin), never the agreeing person's name or the staff reason.
+ */
+const CHANNEL_WORDS: Record<(typeof ASSISTED_CONSENT_CHANNELS)[number], string> = {
+  IN_PERSON: 'in person', PHONE: 'by phone', WHATSAPP: 'on WhatsApp', EMAIL: 'by email',
+};
+const AGREED_AS_WORDS: Record<(typeof ASSISTED_AGREED_AS)[number], string> = {
+  ACCOUNT_HOLDER: 'you, the account holder', MANAGER: 'a manager at your store',
+};
+const OBJECT_LINE = 'If you did not agree to this, contact Swift support and we will remove it.';
+
+export function assistedConsentNotice(storeName: string, input: { channel: (typeof ASSISTED_CONSENT_CHANNELS)[number]; agreedAs: (typeof ASSISTED_AGREED_AS)[number] }): { title: string; body: string } {
+  return {
+    title: 'Swift recorded your OK to help set up your store',
+    body: `Swift recorded that ${AGREED_AS_WORDS[input.agreedAs]} agreed ${CHANNEL_WORDS[input.channel]} to let Swift add papers, items and photos to ${storeName} for you. ${OBJECT_LINE}`,
+  };
+}
+
+export function assistedPaperNotice(storeName: string, paperName: string): { title: string; body: string } {
+  return {
+    title: 'Swift added a paper to your store',
+    body: `Swift added your ${paperName} to ${storeName} with your OK. A person will review it. ${OBJECT_LINE}`,
+  };
+}

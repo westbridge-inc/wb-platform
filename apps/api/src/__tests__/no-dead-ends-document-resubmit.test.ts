@@ -196,6 +196,10 @@ describe('a store owner re-submits one rejected document without restarting the 
     const res = await submit(rejectedDocType, `${rejectedDocType}-retake`);
     expect(res.statusCode, res.body).toBe(201);
     expect(res.json().data.status).toBe('PENDING');
+    // [FABLE-02 F10 · 13 Nov 2026] The answer is the applicant's own allow-listed view (as GET /status gives it), never
+    // the stored row: no storage key, provider reference or reviewer columns. Build 9 reads only id and status here.
+    expect(Object.keys(res.json().data).sort()).toEqual(['createdAt', 'docType', 'expiresAt', 'id', 'reviewNote', 'role', 'state', 'status'].filter((k) => k in res.json().data).sort());
+    for (const key of ['fileUrl', 'userId', 'kycRef', 'reviewedBy', 'legalHoldId', 'subjectId', 'policyNumber', 'insurerName']) expect(res.json().data, key).not.toHaveProperty(key);
     resubmittedDocId = res.json().data.id;
     expect(resubmittedDocId).not.toBe(rejectedDocId);
 
