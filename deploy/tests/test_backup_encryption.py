@@ -467,6 +467,54 @@ esac
                            env={**os.environ, "PATH": f"{self.bin}:{os.environ['PATH']}", **({"SWIFT_RESTORE_PROJECT": project} if project else {})})
         return r, received, ssh_log
 
+    def recovery_drill(self, mode, exit_code, ledger=""):
+        """[FABLE-05 3.1] The drill's recovery modes: the same fetch and decryption; the host's restore keeps its copy."""
+        received = self.tmp / "received-recovery.dump"
+        ssh_log = self.tmp / "ssh-recovery.log"
+        shim(self.bin, "ssh", f'''printf '%s\\n' "$*" >> "{ssh_log}"
+for last; do :; done
+case "$last" in
+  *--fetch-signature*) key="${{last##*--fetch-signature \\'}}"; key="${{key%\\'}}"; sig="{self.bucket}/${{key#s3://swift-backups/}}.sig"; if [ -f "$sig" ]; then cat "$sig"; else echo "swift-backup-signature none"; fi;;
+  *--fetch-encrypted*) key="${{last##*--fetch-encrypted \\'}}"; key="${{key%\\'}}"; cat "{self.bucket}/${{key#s3://swift-backups/}}";;
+  *"--keep-for-inspection - "*|*"--keep-for-inspection --ledger-from"*) cat > "{received}"; echo "restore kept"; exit {exit_code};;
+  *) exit 9;;
+esac
+''')
+        objects = sorted(self.bucket.rglob("*.dump.gpg"))
+        if not objects:
+            ok = self.signed_backup()
+            self.assertEqual(ok.returncode, 0, ok.stderr)
+            objects = sorted(self.bucket.rglob("*.dump.gpg"))
+        obj = objects[0]
+        key = f"s3://swift-backups/{obj.relative_to(self.bucket)}"
+        env = {**os.environ, "PATH": f"{self.bin}:{os.environ['PATH']}", "SWIFT_RESTORE_PROJECT": "swift"}
+        if ledger:
+            env["SWIFT_LEDGER_FROM"] = ledger
+        r = subprocess.run(["bash", str(DEPLOY / "backup-drill.sh"), mode, "swift-deploy@prod.example.invalid", str(self.private), key, "swift_recover_t"],
+                           input=self.private.read_text() + PASSPHRASE + "\n", text=True, capture_output=True, timeout=120, env=env)
+        return r, received, ssh_log.read_text() if ssh_log.exists() else ""
+
+    def test_the_recovery_mode_keeps_the_copy_instead_of_comparing_it(self):
+        r, received, host_saw = self.recovery_drill("--recover", 0)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("RECOVERY COPY KEPT", r.stdout)
+        self.assertIn("deploy/recover.sh --project swift --from-copy swift_recover_t --erasures-checked --replace-database", r.stdout)
+        self.assertEqual(received.read_bytes(), self.fixture.read_bytes())
+        self.assertIn("--keep-for-inspection - 'swift_recover_t'", host_saw)
+        self.assertNotIn("--compare-source", host_saw)
+        self.assertNotIn("--no-live-ledger", host_saw)
+
+    def test_the_recovery_mode_without_a_live_database_reads_exit_3_as_the_copy_kept(self):
+        r, received, host_saw = self.recovery_drill("--recover-live-gone", 3, ledger="/home/swift-deploy/ledger")
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("RECOVERY COPY KEPT", r.stdout)
+        self.assertIn("--no-live-ledger --i-know-live-is-gone --keep-for-inspection --ledger-from '/home/swift-deploy/ledger' - 'swift_recover_t'", host_saw)
+        self.assertEqual(received.read_bytes(), self.fixture.read_bytes())
+        # any other failure of the host's restore is still a failure
+        r, _, _ = self.recovery_drill("--recover-live-gone", 1)
+        self.assertNotEqual(r.returncode, 0)
+        self.assertNotIn("RECOVERY COPY KEPT", r.stdout)
+
     def test_the_drill_names_the_compose_project_or_refuses_before_reaching_the_host(self):
         # [#1977 · copy run #5c] restore.sh never guesses the stack; neither does the drill.
         r, _, ssh_log = self.drill("", PASSPHRASE, "s3://swift-backups/db/swift-20261013T010000Z.dump.gpg", project="")

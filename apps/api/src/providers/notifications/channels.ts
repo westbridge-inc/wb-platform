@@ -5,6 +5,7 @@
 // inspectable buffer so tests can assert exactly what would have been sent.
 // ---------------------------------------------------------------------------
 
+import { ProviderCallError } from '../../lib/provider-failure';
 import { isProduction } from '../../utils/runtime-mode';
 import { firstInvalidTwilioConfig, isTwilioMessageSid } from '../../utils/twilio-identity';
 import { SmtpEmailProvider } from './smtp-email';
@@ -240,7 +241,7 @@ class TwilioSmsProvider implements SmsProvider {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const deadline = new Promise<never>((_resolve, reject) => {
       timer = setTimeout(() => {
-        reject(new Error('Twilio SMS timed out'));
+        reject(new ProviderCallError('twilio', 'timeout', undefined, 'Twilio SMS timed out'));
         controller.abort();
       }, SMS_TIMEOUT_MS);
       timer.unref?.();
@@ -268,18 +269,23 @@ class TwilioSmsProvider implements SmsProvider {
       });
       res = await effect();
     } catch {
-      throw new Error(signal.aborted ? 'Twilio SMS timed out' : 'Twilio SMS request failed');
+      throw signal.aborted
+        ? new ProviderCallError('twilio', 'timeout', undefined, 'Twilio SMS timed out')
+        : new ProviderCallError('twilio', 'network', undefined, 'Twilio SMS request failed');
     }
     // Provider bodies can echo request metadata. Keep all response and fetch
     // exception text outside application errors and their downstream logs.
-    if (!res.ok) throw new Error(`Twilio SMS failed (${res.status})`);
+    // [FABLE-05 3.7] The status rides on the error as a number of its own (providerStatusOf).
+    if (!res.ok) throw new ProviderCallError('twilio', 'http', res.status, `Twilio SMS failed (${res.status})`);
     let data: { sid?: unknown };
     try {
       data = (await res.json()) as { sid?: unknown };
     } catch {
-      throw new Error(signal.aborted ? 'Twilio SMS timed out' : 'Twilio SMS response invalid');
+      throw signal.aborted
+        ? new ProviderCallError('twilio', 'timeout', undefined, 'Twilio SMS timed out')
+        : new ProviderCallError('twilio', 'invalid', res.status, 'Twilio SMS response invalid');
     }
-    if (!data || !isTwilioMessageSid(data.sid)) throw new Error('Twilio SMS response invalid');
+    if (!data || !isTwilioMessageSid(data.sid)) throw new ProviderCallError('twilio', 'invalid', res.status, 'Twilio SMS response invalid');
     return { ref: data.sid };
   }
 }

@@ -678,6 +678,21 @@ backups. Before the first production backup:
    (BACKUP_RETAIN_DAYS); the off-site bucket is the history. The droplet's
    daily snapshots stay on as well.
 
+   **The backup key stays least-privilege (FABLE-05 3.6).** The key on this
+   host writes dumps; it should not be able to destroy the history. Keep it
+   as narrow as DigitalOcean allows: Limited access on the backup bucket
+   only (never "All buckets", never the uploads bucket: `swift-secrets backup
+   set-keys` proves the uploads bucket refuses it). DigitalOcean's limited
+   keys do not separate "write" from "delete", so a root on this host could
+   still delete dumps and their old versions. Two copies that key cannot
+   reach close that: (a) once a week the owner pulls the newest encrypted dump
+   to his own computer (`restore.sh --fetch-encrypted s3://… > file`, run as
+   section 5 shows; it stays encrypted to his key) and keeps four weekly and
+   the first of each month; (b) the droplet's own DigitalOcean backups stay on
+   (confirm in the console how old the newest one is). A second bucket at
+   another provider with a retention lock, written by a key that cannot
+   delete, is the stronger form when one is wanted.
+
    **Off-site retention (owner ruling, 29 Oct): hourly dumps are kept 30
    days.** `deploy/backup-versioning.sh` (step 3 of
    `deploy/owner/swift-backup-key.command`) sets a lifecycle rule,
@@ -907,6 +922,158 @@ scratch copy itself is removed with its throwaway instance when the run ends
 (add `--keep-for-inspection` to restore.sh only to look inside it, and remove
 it the same day).
 
+## 5b. From a backup to a serving database (recover.sh)
+
+[FABLE-05 3.1] Section 5 proves a backup restores; this is how a backup
+becomes the database Swift serves again. Two cases, one tool:
+
+- **The database is damaged** (a bad migration, a bad change, an intruder),
+  the server is fine.
+- **The server is gone**: a new host is built and the newest backup becomes
+  its database.
+
+Nothing here runs without the owner's "go" on production, and every command
+is read first by a second person.
+
+**The tool.** `deploy/recover.sh` promotes a copy that `restore.sh` made and
+KEPT (signature verified, restored by a login that is not a superuser into a
+throwaway instance with no network, erasure ledger replayed, quarantined)
+into the stack's own Postgres. It never reads a backup itself. It refuses
+before anything changes unless every interlock holds:
+
+- `--erasures-checked`: someone read the restore's erasure lines for THIS
+  copy (every `NOT erasure-complete` line) and dealt with each;
+- `--project` names the stack (live is `swift`; production refuses any
+  other), and that project's api, worker and migrate are stopped and nothing
+  else is connected to the database;
+- the copy's deployment identity is this host's `PILOT_ENV`, and the same
+  deployment as the database it replaces;
+- a target that holds any table is LIVE: it is replaced only with
+  `--replace-database` AND the confirmation typed at a terminal (never an
+  argument, never a pipe): `REPLACE swift IN swift`;
+- before a live database is replaced it is backed up (production: the backup
+  unit, encrypted to the owner's key and off-site; elsewhere a private local
+  dump), then RENAMED `swift_replaced_<utc>` and closed to every connection.
+  It is never dropped by the tool;
+- the roles a database dump never carries are made the way the migrations
+  make them (`swift_app`, `swift_bypass_rls`, `swift_owner_wall`: NOLOGIN
+  NOBYPASSRLS); the two runtime logins are never made here (section 13);
+- the copy goes into a new database in one transaction, then its privileges;
+  every table's exact row count must equal the copy's. Any failure puts the
+  old database back under its own name.
+
+- the hourly backup and erasure-ledger timers are paused from the
+  confirmation to the end of the run, and started again whatever the outcome
+  (a dump taken mid-restore would upload an empty database as the newest
+  backup).
+
+`--check` runs every check and says what it would do, changing nothing.
+`deploy/tests/test_recover_rehearsal.py` is the rehearsal on real Postgres
+containers (the stack's own image): a signed backup, the host destroyed, a
+new cluster with no role, the disaster restore, the promotion, a login that
+reads through its policy, then damage and a second promotion over the live
+database. It runs in CI (69 seconds locally).
+
+### A. The database is damaged (same host)
+
+    cd /opt/swift
+    docker compose -f deploy/docker-compose.yml stop api worker      # Swift is offline from here
+    sudo systemctl start swift-backup.service                         # keep the damaged state too
+    sudo systemctl stop swift-backup-hourly.timer swift-erasure-ledger.timer   # nothing writes while the copy is made
+
+On the owner's computer (the backup is encrypted to the owner's key; pick
+the newest object from before the damage):
+
+    SWIFT_RESTORE_PROJECT=swift ./deploy/backup-drill.sh --recover swift-deploy@<host> <ssh-key-file> 's3://<backup-bucket>/<prefix>/swift-<stamp>.dump.gpg' swift_recover_<utc>
+
+It ends with `RECOVERY COPY KEPT` and the copy's name. Read the host's
+erasure lines. Then on the host, from a terminal:
+
+    ./deploy/recover.sh --project swift --from-copy swift_recover_<utc> --erasures-checked --check
+    ./deploy/recover.sh --project swift --from-copy swift_recover_<utc> --erasures-checked --replace-database
+
+Then, in this order (each step is required):
+
+1. **Start the two timers again** (they were stopped by hand above;
+   recover.sh restarts only timers it paused itself, and production's
+   pilot-up refuses to start the API while they are off):
+   `sudo systemctl start swift-backup-hourly.timer swift-erasure-ledger.timer`,
+   then `systemctl list-timers 'swift-*'` shows both.
+2. Start the API with the reviewed deploy of the SAME revision that was
+   serving (`./deploy/pilot-up.sh <sha>`), compare a few counts in the
+   console and place one test order. Payments made after the backup are not in Swift:
+reconcile MMG's statement for that window (INCIDENT-RUNBOOK section 4).
+Within 24 hours, once the recovery is accepted: remove the copy
+(`docker rm -f swift-restore-<copy> && docker volume rm swift-restore-<copy>`),
+drop the replaced database (`DROP DATABASE "swift_replaced_<utc>";` in
+psql) and, off production, the local safety dump the tool printed. All
+three hold people erased since.
+
+### B. The server is gone (a new host)
+
+1. New Ubuntu 24.04 droplet, `deploy/provision-ubuntu.sh`, the secret store
+   (sections 1 and 2). Restore the items below from the owner's offline copy
+   BEFORE generating anything.
+2. `sudo swift-secrets set MASTER_KEK` from the owner's escrow (hidden
+   prompt), and the four salts from the same escrow if they were escrowed
+   (below), then `./deploy/gen-secrets.sh --missing` (never `--force`).
+   Provider secrets at the owner's hidden prompts; a NEW backup bucket key.
+3. `deploy/.env` from the offline copy (or rebuilt from the template and the
+   coordinator's notes); `/etc/swift/backup-allowed-signers` and the stamp
+   `/var/backups/swift/.first-signed-backup` (or `BACKUP_SIGNED_SINCE` in
+   deploy/.env) from the offline copy.
+4. The database only, with no migration (the backup brings its own schema):
+
+       sudo systemctl restart swift-secrets.service
+       docker network create swift-pilot-private
+       docker compose -f deploy/docker-compose.yml up -d --wait postgres
+
+5. On the owner's computer: `backup-drill.sh --recover-live-gone` (with
+   `SWIFT_LEDGER_FROM=<host directory>` when the owner decrypted the off-site
+   erasure ledger there). Then on the host:
+   `./deploy/recover.sh --project swift --from-copy <copy> --erasures-checked`.
+6. The runtime logins (section 13: fingerprint, plan, apply, verify), the
+   backup units and timers (section 4: installed only now, after the
+   promotion, so no hourly dump can catch the database half-restored), then `./deploy/pilot-up.sh
+   --no-public <sha>`: the API and worker ready with nothing public. Compare
+   counts, one test order through the private network.
+7. Only then DNS in Cloudflare, and the whole stack (`./deploy/pilot-up.sh
+   <sha>`). Never let two hosts back up to the same prefix.
+
+### What exists only on the server (keep an offline copy)
+
+A rebuild needs these, and none is in a database backup. Names only here,
+never values:
+
+| Item | Where on the host | Why |
+|---|---|---|
+| `deploy/.env` | `/opt/swift/deploy/.env` | every switch, price, hold, budget and host name; holds the on-call phone numbers |
+| allowed signers | `/etc/swift/backup-allowed-signers` | restore.sh refuses every signed dump without it |
+| signing stamp | `/var/backups/swift/.first-signed-backup` | bounds what `--allow-unsigned-legacy` accepts |
+| `MASTER_KEK` | encrypted store | every stored ID document; already escrowed on paper |
+| `IDENTITY_SALT`, `CONSENT_IP_PEPPER`, `ATTRIB_SALT`, `SCAN_IP_SALT` | encrypted store | keys of the integrity, consent, attribution and scan hashes; a new value means no old hash matches again, silently |
+| `JWT_SECRET`, `OTP_HASH_SECRET`, `STORAGE_SIGNING_SECRET`, `ADS_EVENT_SECRET` | encrypted store | regenerated on a new host (everyone signs in again; signed links in flight stop) |
+| `EMERGENCY_POLICY_SIGNING_KEY` | encrypted store | regenerated on the host by design; phones fall back to their built-in numbers |
+| the runtime logins' passwords | encrypted store | re-created by section 13 |
+| provider secrets (Twilio, MMG, storage, email, maps) | encrypted store | re-entered at the owner's hidden prompts |
+
+**The offline copy (owner, after every change to one of them).** The settings
+file, the signers file and the stamp hold no secret, but the settings name
+on-call phones: they leave the host only encrypted to the owner's backup key,
+exactly as the backups do. On the host:
+
+    cd /opt/swift && umask 077
+    sudo tar -C / -cf - opt/swift/deploy/.env etc/swift/backup-allowed-signers var/backups/swift/.first-signed-backup |
+      gpg --homedir "$(mktemp -d)" --batch --trust-model always --encrypt --recipient-file "$(grep -E '^BACKUP_GPG_RECIPIENT_FILE=' deploy/.env | cut -d= -f2-)" \
+      > ~/swift-rebuild-kit-$(date -u +%Y%m%d).tar.gpg
+
+Then copy that file to the owner's computer (`scp`), keep it beside the
+paper escrow and in the password manager, and delete it from the host. The
+four salts are escrowed like `MASTER_KEK`: by the owner, at a hidden prompt,
+never on a screen (an escrow helper for them is not built yet; until it is,
+a lost server means the integrity checks start again from zero, which
+INCIDENT-RUNBOOK section 9 says).
+
 ## 6. Seed the platform spine (first SUPER_ADMIN)
 
 The runtime image carries dist/ but no src/ or tsx, so the production spine
@@ -1031,6 +1198,31 @@ that names a person:
 
     gunzip -c ~/kept-logs/<time>-api.log.gz | grep 'Unhandled error'
 
+[FABLE-05 3.8] pilot-up.sh takes a backup through swift-backup.service
+after every check and before it stops the running API, and refuses to stop
+anything if that backup fails (production always has the unit; a host
+without it warns). It then prints a `ROLLBACK:` block naming that backup and
+the revision the API served before, and prints it again with any failure
+after that point. Read it before deciding. Until a deploy reaches READY,
+that FIRST rollback point is kept (in the checkout's git directory): a re-run
+after a failure past the migration prints the first attempt's backup and
+revision, never its own (its own backup is of the migrated database). Before
+anything changes, pilot-up also prints read-only pre-checks (disk, memory,
+each container's memory, Redis's own use) and refuses when Redis already
+uses more than 600 MB of its 768 MB limit. The routing check after OSRM
+starts is retried for up to 3 minutes and ends in a named FATAL if OSRM never
+answers (nothing stopped or migrated).
+
+[REVIEW-2503-A D-1] The kept rollback point lives in
+`/opt/swift/.git/swift-pilot-up-rollback` and is honoured only by a re-run of
+the same SHA, or a deploy fixing forward while that failed deploy is what the
+API runs; any other deploy discards it with a WARNING and uses its own
+backup. Still, after a rollback with an older pilot-up (which knows nothing of
+the file), or a failed deploy that is abandoned or fixed by hand, remove it:
+`rm -f /opt/swift/.git/swift-pilot-up-rollback`. And when a re-run prints
+"the FIRST attempt's rollback point", check its `recorded` time is from this
+deploy session before trusting it.
+
 After confirming the new schema remains backward-compatible with the
 previous binary, redeploy the previous approved main SHA:
 
@@ -1039,9 +1231,34 @@ previous binary, redeploy the previous approved main SHA:
 
 Prisma migrate deploy does not roll back schema changes. If compatibility is
 unknown or a destructive migration occurred, keep serving stopped, preserve
-the failed state and off-site backup, and use a reviewed migration/restore
-procedure. Never point restore.sh at the live database. No command in this
-runbook authorizes a production cutover.
+the failed state and off-site backup, and restore the backup the deploy took
+to a serving database with deploy/recover.sh (section 5b). Never point
+restore.sh at the live database. No command in this runbook authorizes a
+production cutover.
+
+### What pages without an outside monitor (FABLE-05 3.2, 3.7, 3.11)
+
+- **A stalled worker.** The API checks the scheduler heartbeat itself every
+  minute (`SCHEDULER_SELF_WATCH_SECONDS`, default 60) and pages "Job
+  scheduler stalled" without anyone polling /health. The worker's container
+  probe also restarts it: three stale probes in a row, past its boot grace,
+  and it sends the worker SIGTERM, then SIGKILL 30 seconds later; its
+  restart policy starts it again (`docker inspect swift-worker-1` shows why
+  in the health log). An unreachable Redis never counts toward a restart.
+- **The worker's five-minute watch** also pages: the disk 85% full
+  (`HOST_DISK_ALERT_PERCENT`), memory 90% used (`HOST_MEMORY_ALERT_PERCENT`),
+  five provider-side failures of sign-in texts at Twilio in ten minutes
+  (no answer, 401/403/429 or 5xx; a number Twilio refuses never counts, so
+  nobody can page the on-call phones by asking for codes to bad numbers; the API log line
+  carries `providerStatus`, Twilio's HTTP status, never its message), two
+  failed routing-engine checks in a row, and a payment partners came back
+  from still waiting for MMG's answer after 30 minutes.
+- **Still outside Swift (owner).** The server, Postgres or Redis down, and
+  certificate expiry: nothing inside can page about those. Better Stack
+  monitors on `https://api.swiftgy.com/health` and `/ready` and on the
+  website, with a phone call and one test alert that reached the phone, and
+  DigitalOcean alerts for disk, memory and CPU (the DigitalOcean agent on the
+  droplet).
 
 ## 8. Pilot journeys on staging (private instance)
 
@@ -1763,3 +1980,41 @@ The copy holds production's personal data on the same host. Remove it with
 `./deploy/wall/rehearsal.sh down` as soon as the rehearsal's checks finish,
 and do not keep it across days: a deletion request honoured in production in
 the meantime does not reach the copy.
+
+## 13b. The segmented stack and the Redis password (STACK_HARDENING)
+
+[FABLE-05 3.4] One setting, off by default: with `STACK_HARDENING=1` in
+deploy/.env, pilot-up.sh (and journeys-run.sh) add
+`docker-compose.hardening.yml`, `docker-compose.routing.hardening.yml` and,
+for the staging journeys, `docker-compose.journeys.hardening.yml`:
+
+- Caddy, the website and the console sit on `swift-pilot-edge` only, with
+  the API. A flaw in the website's or console's server no longer reaches
+  Postgres, Redis or search.
+- OSRM and Photon sit on `swift-pilot-routing` with the API and the worker
+  (and the private journeys instance on staging).
+- Postgres, Redis, search, the migration, the API and the worker keep
+  `swift-pilot-private`.
+- Redis requires a password: `REDIS_PASSWORD` for Redis and `REDIS_URL`
+  (`redis://:<password>@redis:6379`) for the API and worker, both in the
+  encrypted store, generated together by `gen-secrets.sh --missing`.
+
+pilot-up refuses the setting unless both are in the store, creates the two
+networks, and refuses (before anything changes) an edge network whose range
+TRUST_PROXY does not cover: the API would see every visitor as Caddy and one
+rate limit would hold everyone.
+
+Turning it on, staging first (after announcing a hold), then production on
+the owner's go:
+
+    ./deploy/gen-secrets.sh --missing                 # adds REDIS_PASSWORD + REDIS_URL, keeps everything else
+    echo 'STACK_HARDENING=1' >> deploy/.env           # a setting, not a secret
+    ./deploy/pilot-up.sh <sha>                        # recreates Redis, the API, worker, Caddy, site, console, OSRM
+    ./deploy/journeys-run.sh                          # staging: the journeys must stay green
+
+During that deploy Redis restarts with its password before the old API is
+stopped, so sign-ins and queues pause for the minutes the migration takes
+anyway, and quotes pause while OSRM moves networks. With it on, a Redis
+command by hand needs the password from the store, never on a command line:
+`docker exec swift-redis-1 sh -c 'REDISCLI_AUTH="$(cat /run/secrets/REDIS_PASSWORD)" redis-cli ping'`.
+Turning it off: remove the line and deploy again (the store keeps the pair).

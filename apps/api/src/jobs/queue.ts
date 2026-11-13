@@ -1658,6 +1658,23 @@ export async function createWorkers(ctx: JobContext, queues: SwiftQueues) {
         const { NotificationService } = await import('../modules/notification/notification.service');
         const result = await watchErrorRate({ prisma: ctx.prisma, redis: ctx.redis, notifications: new NotificationService(ctx.prisma, ctx.io) });
         if (result.outcome === 'delivered' || result.outcome === 'pending') ctx.log.warn({ ...result }, 'server errors keep happening');
+        // [FABLE-05 3.7 · 3.11] The same tick reads what paged nobody: the server's disk and memory,
+        // Twilio's sign-in texts, the routing engine and MMG's answers. Each on its own: one that
+        // cannot run never stops the error page above or the others.
+        const { watchHostResources, watchProviderOutages } = await import('../modules/ops/infra-watch');
+        const infraDeps = { prisma: ctx.prisma, redis: ctx.redis, notifications: new NotificationService(ctx.prisma, ctx.io) };
+        try {
+          const host = await watchHostResources(infraDeps);
+          ctx.log.info(host, 'host resources read');
+        } catch (err) {
+          ctx.log.error({ err }, '[FABLE-05] the host disk/memory watch could not run this tick');
+        }
+        try {
+          const providers = await watchProviderOutages(infraDeps);
+          if (providers.routing === 'down' || (providers.twilio ?? 0) > 0 || (providers.mmgWaiting ?? 0) > 0) ctx.log.warn(providers, 'provider outage watch');
+        } catch (err) {
+          ctx.log.error({ err }, '[FABLE-05] the provider outage watch could not run this tick');
+        }
         return;
       }
       if (job.name === 'upload-rescan') {
