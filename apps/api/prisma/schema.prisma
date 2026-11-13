@@ -6005,7 +6005,8 @@ model Admin {
   /// [AUDIT-20261113 FABLE-03 #2] The authenticator-app (TOTP) secret, only ever encrypted (MASTER_KEK
   /// envelope, admin-totp.ts). Null until enrolment is confirmed.
   totpSecretEnc        String?
-  /// An enrolment started but not yet confirmed with a code (encrypted), and when it started (10 minutes).
+  /// An enrolment started but not yet confirmed with a code (encrypted), and when it started (10 minutes). Stored as
+  /// "s1:<sessionId>:<sealed>": only the session that started it can confirm it (admin-mfa.ts bindPending).
   totpPendingSecretEnc String?
   totpPendingAt        DateTime?
   totpEnabledAt        DateTime?

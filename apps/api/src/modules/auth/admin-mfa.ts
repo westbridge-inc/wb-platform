@@ -240,25 +240,39 @@ export async function startAdminMfaEnrolment(app: FastifyInstance, request: MfaR
   const admin = await adminRow(app, request.user.userId);
   if (admin.totpEnabledAt) throw new AppError(409, 'ADMIN_MFA_ALREADY_ENROLLED', 'An authenticator app is already set up on this account.');
   await assertFreshProof();
-  const started = await writePendingSecret(app, admin.id, now);
+  const started = await writePendingSecret(app, admin.id, sessionId, now);
   await audit(app, request, 'ADMIN_MFA_ENROLMENT_STARTED');
   return started;
 }
 
-async function writePendingSecret(app: FastifyInstance, adminId: string, now: Date) {
+// [#2507 review 3] A pending secret belongs to the session that proved the right to start it (a fresh sign-in or
+// step-up for enrolment; the current factor for a move). It is stored WITH the session: "s1:<sessionId>:<sealed>",
+// and only that session can confirm it. A value without the binding is never confirmed (start again).
+const PENDING_BINDING = 's1';
+const bindPending = (sessionId: string, sealed: string) => `${PENDING_BINDING}:${sessionId}:${sealed}`;
+function parsePending(stored: string): { sessionId: string; sealed: string } | null {
+  const [tag, sessionId, ...rest] = stored.split(':');
+  return tag === PENDING_BINDING && sessionId && rest.length === 1 && rest[0] ? { sessionId, sealed: rest[0] } : null;
+}
+
+async function writePendingSecret(app: FastifyInstance, adminId: string, sessionId: string, now: Date) {
   const secret = newTotpSecret();
   const sealed = await sealTotpSecret(secret);
-  await runWithoutTenant(() => app.prisma.admin.update({ where: { id: adminId }, data: { totpPendingSecretEnc: sealed, totpPendingAt: now } }), 'admin-mfa');
+  await runWithoutTenant(() => app.prisma.admin.update({ where: { id: adminId }, data: { totpPendingSecretEnc: bindPending(sessionId, sealed), totpPendingAt: now } }), 'admin-mfa');
   const secretB32 = base32Encode(secret);
   return { secret: secretB32, otpauthUrl: otpauthUrl(secretB32), expiresInSeconds: ADMIN_MFA_PENDING_MINUTES * 60 };
 }
 
-/** The pending secret, opened, if it is still inside its 10 minutes. */
-async function openPending(admin: AdminFactorRow, now: Date): Promise<Buffer> {
+/** The pending secret, opened, if it is still inside its 10 minutes AND this session started it. */
+async function openPending(admin: AdminFactorRow, sessionId: string, now: Date): Promise<{ secret: Buffer; sealed: string }> {
   if (!admin.totpPendingSecretEnc || !admin.totpPendingAt || now.getTime() - admin.totpPendingAt.getTime() > ADMIN_MFA_PENDING_MINUTES * 60_000) {
     throw new AppError(409, 'ADMIN_MFA_ENROLMENT_EXPIRED', 'Start the authenticator set-up again: it waits 10 minutes for a code.');
   }
-  return openTotpSecret(admin.totpPendingSecretEnc);
+  const pending = parsePending(admin.totpPendingSecretEnc);
+  if (!pending || pending.sessionId !== sessionId) {
+    throw new AppError(409, 'ADMIN_MFA_ENROLMENT_OTHER_SESSION', 'This set-up was started on another device. Start it again here.');
+  }
+  return { secret: await openTotpSecret(pending.sealed), sealed: pending.sealed };
 }
 
 /** Confirm enrolment with a code from the new secret: the factor is on, this session is verified, and the
@@ -268,9 +282,8 @@ export async function confirmAdminMfaEnrolment(app: FastifyInstance, request: Mf
   await assertSessionYoungEnough(app, request, sessionId, now);
   const admin = await adminRow(app, request.user.userId);
   if (admin.totpEnabledAt) throw new AppError(409, 'ADMIN_MFA_ALREADY_ENROLLED', 'An authenticator app is already set up on this account.');
-  const secret = await openPending(admin, now);
-  // A code from the NEW secret, behind a fresh proof: not a guess at the current factor, so not under the ceiling.
-  const n = await reserveAttempt(app, request, 'code', { accountCeiling: false });
+  const { secret, sealed } = await openPending(admin, sessionId, now);
+  const n = await reserveAttempt(app, request, 'code');
   const step = matchTotp(secret, code.trim(), now.getTime(), null);
   if (step === null) {
     await recordFailure(app, request, 'code', n);
@@ -280,7 +293,7 @@ export async function confirmAdminMfaEnrolment(app: FastifyInstance, request: Mf
   const done = await runWithoutTenant(() => app.prisma.admin.updateMany({
     where: { id: admin.id, totpEnabledAt: null, totpPendingSecretEnc: admin.totpPendingSecretEnc },
     data: {
-      totpSecretEnc: admin.totpPendingSecretEnc, totpPendingSecretEnc: null, totpPendingAt: null, totpEnabledAt: now,
+      totpSecretEnc: sealed, totpPendingSecretEnc: null, totpPendingAt: null, totpEnabledAt: now,
       totpLastStep: step, totpRecoveryHashes: recoveryCodes.map((c) => recoveryDigest(secret, c)),
     },
   }), 'admin-mfa');
@@ -315,9 +328,6 @@ async function proveCurrentFactor(app: FastifyInstance, request: MfaRequest, adm
     }), 'admin-mfa');
     if (spent.count !== 1) throw new AppError(400, 'ADMIN_MFA_CODE_INVALID', 'That recovery code is not valid, or was already used.');
     await clearAttempts(app, request);
-    // [#2507 review] A recovery code proved the account holder: the account ceiling starts again (the ceiling's
-    // refusal tells the owner to use one, and that must actually reopen app codes).
-    await app.redis.del(adminMfaAccountCeilingKey(request.user.userId));
     const left = admin.totpRecoveryHashes.length - 1;
     await audit(app, request, 'ADMIN_MFA_RECOVERY_CODE_USED', { left });
     await notifyAdmin(app, request.user.userId, 'Swift: a recovery code was used on your admin account',
@@ -375,7 +385,7 @@ export async function startAdminMfaReplacement(app: FastifyInstance, request: Mf
   const admin = await adminRow(app, request.user.userId);
   await proveCurrentFactor(app, request, admin, input, now);
   await markSessionVerified(app, sessionId, now);
-  const started = await writePendingSecret(app, admin.id, now);
+  const started = await writePendingSecret(app, admin.id, sessionId, now);
   await audit(app, request, 'ADMIN_MFA_REPLACEMENT_STARTED');
   return started;
 }
@@ -385,9 +395,8 @@ export async function confirmAdminMfaReplacement(app: FastifyInstance, request: 
   await assertSessionYoungEnough(app, request, sessionId, now);
   const admin = await adminRow(app, request.user.userId);
   if (!admin.totpEnabledAt) throw new AppError(409, 'ADMIN_MFA_NOT_ENROLLED', 'Set up your authenticator app first.');
-  const secret = await openPending(admin, now);
-  // A code from the NEW secret, behind a fresh proof: not a guess at the current factor, so not under the ceiling.
-  const n = await reserveAttempt(app, request, 'code', { accountCeiling: false });
+  const { secret, sealed } = await openPending(admin, sessionId, now);
+  const n = await reserveAttempt(app, request, 'code');
   const step = matchTotp(secret, code.trim(), now.getTime(), null);
   if (step === null) {
     await recordFailure(app, request, 'code', n);
@@ -397,7 +406,7 @@ export async function confirmAdminMfaReplacement(app: FastifyInstance, request: 
   const done = await runWithoutTenant(() => app.prisma.admin.updateMany({
     where: { id: admin.id, totpPendingSecretEnc: admin.totpPendingSecretEnc },
     data: {
-      totpSecretEnc: admin.totpPendingSecretEnc, totpPendingSecretEnc: null, totpPendingAt: null, totpEnabledAt: now,
+      totpSecretEnc: sealed, totpPendingSecretEnc: null, totpPendingAt: null, totpEnabledAt: now,
       totpLastStep: step, totpRecoveryHashes: recoveryCodes.map((c) => recoveryDigest(secret, c)),
     },
   }), 'admin-mfa');
@@ -449,8 +458,10 @@ export async function verifyStepUpWithAuthenticator(app: FastifyInstance, reques
 //   - [#2507 review] and one per-ACCOUNT ceiling on judged authenticator codes from sessions that have NOT passed
 //     the step (200 a day): past it every such session is revoked and only a recovery code opens a new sign-in.
 //     A session that passed the step (the owner's console) is never counted, refused or revoked by it.
-//     A right recovery code or the operator's break-glass starts it again. A code that confirms a NEW secret
-//     (enrolment, moving to a new app) is not a guess at the current factor and is never under it.
+//     A right recovery code opens THAT session (it then passed the step) but does not reset the count: only the
+//     operator's break-glass does, so no one can refill it. A pending secret is bound to the session that started
+//     it, so a confirm is exempt only as any code is: when the calling session passed the step (a move to a new
+//     app always has; a first enrolment has not, and is counted).
 // A session reaches these doors for 12 hours at most (assertSessionYoungEnough, step-up included), so one texted
 // sign-in buys at most 20 authenticator guesses, and each new sign-in costs a text and emails the owner.
 
@@ -497,7 +508,7 @@ function attemptSessionOf(request: MfaRequest): string {
  * the window's limit are ever judged. The day's limit is checked first. Both are THIS session's, for THIS kind of
  * code. Returns the place taken in the window.
  */
-async function reserveAttempt(app: FastifyInstance, request: MfaRequest, factor: MfaFactor, opts: { accountCeiling?: boolean } = {}): Promise<number> {
+async function reserveAttempt(app: FastifyInstance, request: MfaRequest, factor: MfaFactor): Promise<number> {
   const keys = adminMfaAttemptKeys(attemptSessionOf(request), factor);
   const limits = FACTOR_LIMITS[factor];
   if (Number((await app.redis.get(keys.day)) ?? 0) >= limits.day) {
@@ -511,7 +522,7 @@ async function reserveAttempt(app: FastifyInstance, request: MfaRequest, factor:
       ? 'Too many wrong codes. Wait 15 minutes, then try again.'
       : 'Too many wrong recovery codes. Wait 15 minutes, or use your authenticator app.');
   }
-  if (factor === 'code' && opts.accountCeiling !== false && !(await sessionPassedStep(app, attemptSessionOf(request)))) {
+  if (factor === 'code' && !(await sessionPassedStep(app, attemptSessionOf(request)))) {
     // [#2507 review] Many sessions together: one ceiling per account per day, on judged guesses only.
     const judged = await incrWithin(app, adminMfaAccountCeilingKey(request.user.userId), ADMIN_MFA_DAY_WINDOW_S);
     if (judged > ADMIN_MFA_ACCOUNT_DAY_CEILING) {

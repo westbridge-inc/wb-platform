@@ -897,10 +897,9 @@ describe('[#2507 review] the account ceiling across sessions, and alerts at ever
     const owner = await enrolledAdmin();
     expect((await post(owner, '/api/v1/auth/admin-mfa/verify', { code: totpAt(owner.key, Date.now()) })).statusCode).toBe(200); // the owner's own session passed the step
     const attackers: Array<{ token: string; sessionId: string }> = [];
-    // the owner's own code was judged on a session that had not yet passed the step: it counts (the enrolment's
-    // code checked a NEW secret behind a fresh proof, so it does not)
+    // the enrolment's code and the owner's own code were judged on sessions that had not yet passed the step
     let judged = Number(await app.redis.get(adminMfaAccountCeilingKey(owner.userId)));
-    expect(judged).toBe(1);
+    expect(judged).toBe(2);
     while (judged < ADMIN_MFA_ACCOUNT_DAY_CEILING) {
       const a = await newSession(owner.userId); // each a texted sign-in
       attackers.push(a);
@@ -925,11 +924,12 @@ describe('[#2507 review] the account ceiling across sessions, and alerts at ever
     expect((await post(fresh, '/api/v1/auth/admin-mfa/verify', { code: '000000' })).statusCode).toBe(429);
     expect((await post(fresh, '/api/v1/auth/admin-mfa/verify', { recoveryCode: owner.recoveryCodes[0] })).statusCode).toBe(200);
     expect((await get(fresh, ADMIN_PROBE)).statusCode).toBe(200);
-    // the recovery code proved the owner: the account ceiling starts again, so the next sign-in's app code is judged
-    expect(await app.redis.get(adminMfaAccountCeilingKey(owner.userId))).toBeNull();
+    // the recovery code opened THAT session only: the ceiling is not reset (no refill loop), the next sign-in's app
+    // code is still refused; only the operator's break-glass resets it (below)
+    expect(Number(await app.redis.get(adminMfaAccountCeilingKey(owner.userId)))).toBeGreaterThan(ADMIN_MFA_ACCOUNT_DAY_CEILING);
     const next = await newSession(owner.userId);
-    await rewind(owner.userId); // the codes of this minute were already used above
-    expect((await post(next, '/api/v1/auth/admin-mfa/verify', { code: totpAt(owner.key, Date.now()) })).statusCode).toBe(200);
+    await rewind(owner.userId);
+    expect((await post(next, '/api/v1/auth/admin-mfa/verify', { code: totpAt(owner.key, Date.now()) })).statusCode).toBe(429);
   }, 180_000);
 
   it('(a) the break-glass starts the account ceiling again', async () => {
@@ -941,19 +941,17 @@ describe('[#2507 review] the account ceiling across sessions, and alerts at ever
     expect(await app.redis.get(adminMfaAccountCeilingKey(owner.userId))).toBeNull();
   });
 
-  it('(a) setting up an app is not a guess at the current factor: enrolment confirm is never refused by the ceiling', async () => {
+  it('(a) a confirm is exempt only as any code is: a first enrolment on a session that has not passed the step is counted', async () => {
     process.env['ADMIN_TOTP_REQUIRED'] = '1';
     const admin = await makeAdmin();
     await app.redis.set(adminMfaAccountCeilingKey(admin.userId), String(ADMIN_MFA_ACCOUNT_DAY_CEILING + 5), 'EX', 3600);
     const started = await post(admin, '/api/v1/auth/admin-mfa/enrol');
     expect(started.statusCode, started.body).toBe(200);
     const key = base32Decode(started.json().data.secret);
-    const confirmed = await post(admin, '/api/v1/auth/admin-mfa/enrol/confirm', { code: totpAt(key, Date.now()) });
-    expect(confirmed.statusCode, confirmed.body).toBe(200);
-    expect(Number(await app.redis.get(adminMfaAccountCeilingKey(admin.userId)))).toBe(ADMIN_MFA_ACCOUNT_DAY_CEILING + 5);
+    expect((await post(admin, '/api/v1/auth/admin-mfa/enrol/confirm', { code: totpAt(key, Date.now()) })).statusCode).toBe(429);
   });
 
-  it('(a) moving to a new app is not refused by the ceiling either', async () => {
+  it('(a) moving to a new app (the session proved the current factor, so it passed the step) is not refused by the ceiling', async () => {
     process.env['ADMIN_TOTP_REQUIRED'] = '1';
     const owner = await enrolledAdmin();
     await app.redis.set(adminMfaAccountCeilingKey(owner.userId), String(ADMIN_MFA_ACCOUNT_DAY_CEILING + 5), 'EX', 3600);
@@ -989,3 +987,30 @@ describe('[#2507 review] the account ceiling across sessions, and alerts at ever
   });
 });
 
+// [#2507 review 3] A pending secret is bound to the session that started it (the one that proved the right to).
+describe('[#2507 review 3] only the session that started a set-up can confirm it', () => {
+  it('enrolment: another session holding the right code is refused; the starting session confirms', async () => {
+    const owner = await makeAdmin();
+    const other = await newSession(owner.userId);
+    const started = await post(owner, '/api/v1/auth/admin-mfa/enrol');
+    expect(started.statusCode, started.body).toBe(200);
+    const key = base32Decode(started.json().data.secret);
+    const stolen = await post(other, '/api/v1/auth/admin-mfa/enrol/confirm', { code: totpAt(key, Date.now()) });
+    expect(stolen.statusCode, stolen.body).toBe(409);
+    expect(stolen.json().error.code).toBe('ADMIN_MFA_ENROLMENT_OTHER_SESSION');
+    expect((await runWithoutTenant(() => app.prisma.admin.findUniqueOrThrow({ where: { userId: owner.userId } }), 'test-read')).totpEnabledAt).toBeNull();
+    expect((await post(owner, '/api/v1/auth/admin-mfa/enrol/confirm', { code: totpAt(key, Date.now()) })).statusCode).toBe(200);
+  });
+
+  it('moving to a new app: another session cannot confirm the move the owner started', async () => {
+    const owner = await enrolledAdmin();
+    const other = await newSession(owner.userId);
+    const started = await post(owner, '/api/v1/auth/admin-mfa/replace', { recoveryCode: owner.recoveryCodes[5] });
+    expect(started.statusCode, started.body).toBe(200);
+    const newKey = base32Decode(started.json().data.secret);
+    const stolen = await post(other, '/api/v1/auth/admin-mfa/replace/confirm', { code: totpAt(newKey, Date.now()) });
+    expect(stolen.statusCode, stolen.body).toBe(409);
+    expect(stolen.json().error.code).toBe('ADMIN_MFA_ENROLMENT_OTHER_SESSION');
+    expect((await post(owner, '/api/v1/auth/admin-mfa/replace/confirm', { code: totpAt(newKey, Date.now()) })).statusCode).toBe(200);
+  });
+});

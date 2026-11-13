@@ -545,9 +545,10 @@ another session's door, so someone else's sign-in cannot keep the admin out.
 Across all sessions that have not passed the authenticator step, the account
 allows 200 judged app codes a day. Past that, every such session is signed
 out, and for the rest of the day a new sign-in opens only with a recovery
-code (or the break-glass below); either one starts the count again. Codes
-that confirm a NEW app (setting one up, moving to a new one) are not counted.
-A session that already passed the step (the admin's own console) is never
+code (or the break-glass below). A recovery code opens that one session; only
+the break-glass starts the count again. A set-up of a new app can be confirmed
+only from the device session that started it. A session that already passed
+the step (the admin's own console, or one moving to a new app) is never
 counted, refused or signed out by this. The
 admin's own address is emailed when a session's door rests, at every 20th
 wrong code of the day across all sessions, and when the 200 are used up.
