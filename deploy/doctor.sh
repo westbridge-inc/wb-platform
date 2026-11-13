@@ -240,6 +240,19 @@ if command -v docker >/dev/null 2>&1 && [ -n "$(bounded "${COMPOSE[@]}" ps -q po
       ok "every erasure older than 10 minutes has reached the off-site ledger"
     fi
   fi
+  # [FABLE-02 F5 · 13 Nov 2026] Selfies stored before sealing shipped stay PLAIN images (served unsigned on local
+  # disk, plain in the bucket) until photos:seal-existing runs, and that run is held by the owner until its fix lands
+  # (OWNER-DECISIONS 1 Nov). Count them, read-only: the shapes the seal pass treats as stored selfies (the person's
+  # own avatars / liveness folder), never a sealed (.enc) key or a seed URL.
+  UNSEALED_PHOTOS_SQL="SELECT (SELECT count(*) FROM users u WHERE u.avatar NOT LIKE '%.enc' AND (u.avatar LIKE 'avatars/' || u.id || '/%' OR u.avatar LIKE '/uploads/avatars/' || u.id || '/%')) + (SELECT count(DISTINCT l.\"selfieUrl\") FROM \"LivenessCheck\" l WHERE l.\"selfieUrl\" NOT LIKE '%.enc' AND (l.\"selfieUrl\" LIKE 'liveness/' || l.\"userId\" || '/%' OR l.\"selfieUrl\" LIKE '/uploads/liveness/' || l.\"userId\" || '/%')) AS count;"
+  PLAIN=$(db_query "$UNSEALED_PHOTOS_SQL" 2>/dev/null | tr -d '[:space:]' || true)
+  if [ -z "$PLAIN" ]; then
+    warn "could not count unsealed stored selfies"
+  elif [ "$PLAIN" != 0 ]; then
+    warn "$PLAIN stored selfie(s) are not sealed (stored before sealing shipped): they stay plain images until photos:seal-existing runs (held by the owner until its fix lands; dry run first)"
+  else
+    ok "every stored selfie is sealed"
+  fi
 fi
 
 # [SEC-BACKUP] The backup units need the store command that knows the backup store; a scratch

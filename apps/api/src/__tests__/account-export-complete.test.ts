@@ -12,6 +12,7 @@ import { prismaPlugin } from '../plugins/prisma';
 import { AccountService } from '../modules/user/account.service';
 import { EXPORT_NOTICE, EXPORT_PARTIAL_NOTICE, exportPersonalData } from '../modules/user/data-export';
 import { wordFreeTag } from './helpers/fixture-ids';
+import { FRAUD_GENERIC_TEXT, WITHDRAWN_BY_TEAM_TEXT } from '../modules/verification/verification.service';
 
 let app: FastifyInstance;
 const userIds: string[] = [];
@@ -34,6 +35,7 @@ afterAll(async () => {
   await app.prisma.rating.deleteMany({ where: { raterId: { in: userIds } } });
   await app.prisma.actorRatingStat.deleteMany({ where: { subjectId: { in: userIds } } });
   await app.prisma.livenessCheck.deleteMany({ where });
+  await app.prisma.verificationDocument.deleteMany({ where });
   await app.prisma.order.deleteMany({ where: { OR: [{ customerId: { in: userIds } }, { rider: where }] } });
   await app.prisma.vendor.deleteMany({ where: { owner: where } });
   await app.prisma.vendorOwner.deleteMany({ where });
@@ -267,6 +269,24 @@ describe('the account export', () => {
     for (const key of ['enhancedSafetyMonitoring', 'reviewRequired', 'riskFlagged', 'ridePinAttempts', 'deviceId', 'state', 'stateReason']) expect(text).not.toContain(`"${key}"`);
     expect((data['ratingsGiven'] as unknown[])).toHaveLength(1);
     expect(text).not.toContain(`ring ${MARK}`);
+  });
+
+  it('[FABLE-02 F1] gives each document the reason the person\'s app shows, never the reviewer\'s raw note or a fraud code', async () => {
+    const userId = await person();
+    const doc = (state: string | null, status: 'REJECTED' | 'APPROVED', reviewNote: string) => app.prisma.verificationDocument.create({ data: {
+      userId, role: 'MOVER', docType: 'drivers_license', fileUrl: `/uploads/verification/${MARK}/${nanoid(6)}.enc`, status, reviewNote, ...(state ? { state: state as never } : {}),
+    } });
+    const fraud = await doc(null, 'REJECTED', `[SUSPECTED_TAMPERING] We could not verify this. Edge mismatch vs account ${MARK}-other`);
+    const revoked = await doc('REVOKED', 'APPROVED', `REVOKED: staff saw a duplicate of ${MARK}-twin`);
+    const blurry = await doc(null, 'REJECTED', `[BLURRY] The photo is too blurry. Retake ${MARK}-blur`);
+    const data = await service().exportData(userId) as unknown as Record<string, unknown>;
+    const rows = data['verificationDocuments'] as Array<{ id: string; reviewNote?: string }>;
+    const noteOf = (id: string) => rows.find((r) => r.id === id)?.reviewNote;
+    expect(noteOf(fraud.id)).toBe(FRAUD_GENERIC_TEXT);
+    expect(noteOf(revoked.id)).toBe(WITHDRAWN_BY_TEAM_TEXT);
+    expect(noteOf(blurry.id)).toBe(`The photo is too blurry. Retake ${MARK}-blur`);
+    const text = JSON.stringify(data);
+    for (const leak of ['SUSPECTED_TAMPERING', `${MARK}-other`, `${MARK}-twin`, 'REVOKED:', '[BLURRY]']) expect(text).not.toContain(leak);
   });
 
   it('reads every category only by the person: the register columns, equal to the person ids', async () => {

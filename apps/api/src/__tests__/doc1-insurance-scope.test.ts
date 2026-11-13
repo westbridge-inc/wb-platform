@@ -137,6 +137,24 @@ describe('[DOC-1 P2-2] covers_hire_and_reward is blocking at approval', () => {
     const ok = await approve(d1.id, HIRE);
     expect(ok.statusCode).toBe(200);
     expect(ok.json().data).toMatchObject({ status: 'APPROVED', coverageClass: 'HIRE', hireClassConfirmed: true });
+    // [SEC-AUDIT 13 Nov 2026 · F9] The audit trail is read with audit.read alone (no documents.review grant)
+    // and is append-only, so it outlives the paper's purge: it records the reviewer's CHECKS, never the
+    // insurer or the policy number the reviewer typed (those live on the document row, behind the grant).
+    const trail = await system(() => app.prisma.auditLog.findMany({ where: { entityId: d1.id, action: 'APPROVE_VERIFICATION_DOC' } }));
+    expect(trail).toHaveLength(1);
+    expect(trail[0]!.changes).toMatchObject({ docType: 'vehicle_insurance', insurance: { coverageClass: 'HIRE', hireClassConfirmed: true, plateCrossChecked: true } });
+    expect(JSON.stringify(trail[0]!.changes)).not.toContain(HIRE.policyNumber);
+    expect(JSON.stringify(trail[0]!.changes)).not.toMatch(/policyNumber|insurerName|GTM/);
+    // A row written before the fix (the table is append-only) is read back without the policy too.
+    const legacyPolicy = `LEGACY-${RUN}`;
+    await system(() => app.prisma.auditLog.create({ data: { userId: adminId, action: 'APPROVE_VERIFICATION_DOC', entity: 'VerificationDocument', entityId: `legacy-${RUN}`,
+      changes: { docType: 'vehicle_insurance', insurance: { insurerName: `Insurer ${RUN}`, policyNumber: legacyPolicy, coverageClass: 'HIRE', hireClassConfirmed: true, plateCrossChecked: true } } } }));
+    const read = await adminApp.inject({ method: 'GET', url: `/api/v1/admin/audit-logs?action=APPROVE_VERIFICATION_DOC&userId=${adminId}&limit=100`, headers: { authorization: `Bearer ${adminToken}` } });
+    expect(read.statusCode).toBe(200);
+    const legacy = (read.json().data as Array<{ entityId: string; changes: unknown }>).find((r) => r.entityId === `legacy-${RUN}`);
+    expect(legacy?.changes).toEqual({ docType: 'vehicle_insurance', insurance: { coverageClass: 'HIRE', hireClassConfirmed: true, plateCrossChecked: true } });
+    expect(read.body).not.toContain(legacyPolicy);
+    expect(read.body).not.toContain(`Insurer ${RUN}`);
   });
   it('[R13] a delivery motorbike is gated too: no check, PRIVATE, or unconfirmed is refused; confirmed hire-or-reward cover approves', async () => {
     const bike = await mover(2, 'MOTORCYCLE');
