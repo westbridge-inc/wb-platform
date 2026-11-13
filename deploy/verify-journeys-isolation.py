@@ -75,6 +75,10 @@ def network_names(model, service):
 # only with the API and the worker. The private journeys instance is the API, so it may join that one
 # network too (no route out, no other member but the scanner); the runner never may.
 SCANNER_KEY = "scanner"
+# [FABLE-05 3.4] With STACK_HARDENING=1 routing (OSRM, Photon) sits on its own external network, shared
+# with the API and the worker. The private journeys instance is the API and its taxi and courier
+# journeys need it, so it may join that one network too; the runner never may.
+ROUTING_NETWORK = "swift-pilot-routing"
 
 
 def check_private_attachment(model, name, service, allow_scanner=False):
@@ -88,12 +92,13 @@ def check_private_attachment(model, name, service, allow_scanner=False):
     declared_all = model.get("networks") or {}
     extra = [k for k, v in nets.items() if v != PRIVATE_NETWORK]
     scanner_ok = all(
-        allow_scanner and k == SCANNER_KEY
-        and (declared_all.get(k) or {}).get("internal") is True
-        and not (declared_all.get(k) or {}).get("external")
+        (allow_scanner and k == SCANNER_KEY
+         and (declared_all.get(k) or {}).get("internal") is True
+         and not (declared_all.get(k) or {}).get("external"))
+        or (allow_scanner and nets[k] == ROUTING_NETWORK and (declared_all.get(k) or {}).get("external") is True)
         for k in extra)
     if list(nets.values()).count(PRIVATE_NETWORK) != 1 or not scanner_ok:
-        allowed = f"{PRIVATE_NETWORK} only" + (" (and the internal scanner network)" if allow_scanner else "")
+        allowed = f"{PRIVATE_NETWORK} only" + (f" (and the internal scanner network, and {ROUTING_NETWORK})" if allow_scanner else "")
         raise Refused(f"{name} must be attached to {allowed} (found: {sorted(nets.values())})")
     private_key = next(k for k, v in nets.items() if v == PRIVATE_NETWORK)
     declared = declared_all.get(private_key, {})

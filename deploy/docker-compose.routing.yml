@@ -5,13 +5,23 @@
 # Build the Guyana OSRM data with setup-routing.sh before starting this file.
 # Geocoding is opt-in and needs substantial disk; VROOM is opt-in (planner).
 
+# [FABLE-05 3.11] The same ceiling on the live logs as the main stack (250 MB a service).
+x-bounded-logs: &bounded-logs
+  driver: json-file
+  options:
+    max-size: "50m"
+    max-file: "5"
+
 services:
   # ── Routing and ETA ────────────────────────────────────────────────────
   # MAPS_PROVIDER=osrm  OSRM_URL=http://osrm:5000
   osrm:
+    logging: *bounded-logs
     image: osrm/osrm-backend:v5.25.0
     container_name: swift-osrm
     command: osrm-routed --algorithm mld --max-table-size 10000 /data/guyana-latest.osrm
+    # [FABLE-05 3.11] Guyana's extract is small; a ceiling keeps a runaway away from the database.
+    mem_limit: 1g
     volumes:
       - ./routing-data/osrm:/data
     networks: [private]
@@ -21,6 +31,7 @@ services:
   # BATCH_PLANNER=vroom  VROOM_URL=http://vroom:3000
   # Sits on OSRM for travel times; stateless, so it needs no data build.
   vroom:
+    logging: *bounded-logs
     image: vroomvrp/vroom-docker:v1.13.0
     container_name: swift-vroom
     profiles: ["planner"]
@@ -54,6 +65,7 @@ services:
   #
   # Set it explicitly. The dangerous value is the one that is missing.
   photon:
+    logging: *bounded-logs
     # Pinned (it was :latest): production starts it when PLACES_PROVIDER=osm,
     # and pilot-up deploys an exact revision. 2.4.0 is what :latest named on
     # 12 Oct 2026; the digest holds it to that exact image.
@@ -71,6 +83,7 @@ services:
   # The heavy one: it imports the extract into its own PostgreSQL. One-time,
   # disk- and RAM-hungry, and the only member of this stack that is.
   nominatim:
+    logging: *bounded-logs
     image: mediagis/nominatim:4.4
     container_name: swift-nominatim
     profiles: ["geocoding"]

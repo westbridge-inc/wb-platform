@@ -1,3 +1,4 @@
+import { countsAsProviderOutage, providerStatusOf, recordProviderFailure } from '../../lib/provider-failure';
 import type { FastifyInstance } from 'fastify';
 import { shownRatingTotals } from '../rating/rating-groups';
 import { revokeUserDevice, revokeUserDevices } from '../../lib/owner-rls';
@@ -228,7 +229,11 @@ export class AuthService {
       // The provider failed: give back the budget this attempt just spent so
       // undeliverable sends don't permanently burn the day's ceiling.
       await budget.refund?.().catch(() => {});
-      this.app.log.error({ err, phone: phone.slice(0, 5) + '***' }, '[otp] SMS send failed');
+      // [FABLE-05 3.7] The provider's status as a field (a number, never its message), and one more
+      // failure for the worker's watch: five in ten minutes page "sign-in texts are failing". Only a
+      // provider-side failure counts: a number Twilio refuses is the caller's choice, never a page.
+      this.app.log.error({ err, phone: phone.slice(0, 5) + '***', provider: 'twilio', providerStatus: providerStatusOf(err) }, '[otp] SMS send failed');
+      if (countsAsProviderOutage(err)) await recordProviderFailure(this.app.redis, 'twilio').catch(() => {});
       throw new AppError(502, 'SMS_SEND_FAILED', "We couldn't send your code right now. Please try again in a moment.");
     }
 

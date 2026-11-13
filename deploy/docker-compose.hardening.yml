@@ -1,0 +1,69 @@
+# ===========================================================================
+# [FABLE-05 3.4] The stack, segmented, with a password on Redis. Added by
+# deploy/pilot-up.sh (and deploy/journeys-run.sh) to every Compose command when
+# deploy/.env sets STACK_HARDENING=1; without that line the stack is exactly
+# docker-compose.yml. Staging first, journeys green, then production (the
+# steps are in PILOT-RUNBOOK section 13b).
+#
+#   edge     swift-pilot-edge: Caddy, the API, the website and the console.
+#            The two internet-facing Node servers (website, console) and Caddy
+#            leave the data network: a flaw in one of them no longer reaches
+#            Postgres, Redis or the search engine at all.
+#   routing  swift-pilot-routing: OSRM and Photon (docker-compose.routing.
+#            hardening.yml) with the API and the worker only.
+#   private  swift-pilot-private, the data network: Postgres, Redis, search, the
+#            migration job, the API and the worker. Unchanged.
+#   scanner  unchanged (clamd, the API and the worker).
+#
+# Redis requires a password. Its value is in the encrypted store twice, as
+# REDIS_PASSWORD (read by Redis) and as REDIS_URL (redis://:<password>@redis:6379,
+# read by the API and the worker as REDIS_URL_FILE); deploy/gen-secrets.sh
+# --missing generates both together. The password reaches Redis through a
+# config file on a tmpfs inside its container (never argv, never a disk), and
+# its healthcheck authenticates through REDISCLI_AUTH (the environment of that
+# one probe, never argv). The edge network is created by pilot-up, which refuses
+# one whose range TRUST_PROXY does not cover (every visitor would share one
+# rate limit).
+# ===========================================================================
+services:
+  redis:
+    # Adds the password only: its log limit, memory ceiling and the flags below are the base file's.
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >-
+        umask 077 &&
+        printf 'requirepass %s\n' "$$(cat /run/secrets/REDIS_PASSWORD)" > /run/redis-auth/auth.conf &&
+        chown redis /run/redis-auth/auth.conf &&
+        exec docker-entrypoint.sh redis-server /run/redis-auth/auth.conf
+        --appendonly yes --maxmemory-policy noeviction --maxmemory 768mb
+    tmpfs:
+      - /run/redis-auth:mode=0700,uid=999
+    volumes:
+      - /run/swift-secrets/REDIS_PASSWORD:/run/secrets/REDIS_PASSWORD:ro
+    healthcheck:
+      test: ["CMD-SHELL", "[ \"$$(REDISCLI_AUTH=\"$$(cat /run/secrets/REDIS_PASSWORD)\" redis-cli ping)\" = PONG ]"]
+  api:
+    environment:
+      # Empty, not removed: an empty value also wins over the env_file.
+      REDIS_URL: ""
+      REDIS_URL_FILE: /run/secrets/REDIS_URL
+    networks: [private, scanner, edge, routing]
+  worker:
+    environment:
+      REDIS_URL: ""
+      REDIS_URL_FILE: /run/secrets/REDIS_URL
+    networks: [private, scanner, routing]
+  caddy:
+    networks: !override [edge]
+  web:
+    networks: !override [edge]
+  admin:
+    networks: !override [edge]
+
+networks:
+  edge:
+    name: swift-pilot-edge
+    external: true
+  routing:
+    name: swift-pilot-routing
+    external: true

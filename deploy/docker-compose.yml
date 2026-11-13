@@ -26,6 +26,18 @@ name: swift
 # [FIXES-4] A ceiling on the live logs: 250 MB a service. Without it the default
 # log driver grows without limit until the container dies. keep-logs.py copies
 # what is here, scrubbed, before a recreate throws it away.
+# [FABLE-05 3.11] Every service carries it now (the database, Redis, search,
+# the scanner and the migration job too), and the routing file its own copy.
+#
+# [FABLE-05 3.11] MEMORY CEILINGS (the host: 4 vCPU, 8 GB and 4 GB swap). A
+# ceiling is a limit, not a reservation: it stops one runaway (a leak in the
+# API, a Redis that keeps growing) from taking the memory the database needs.
+# Postgres itself has NO ceiling on purpose (an out-of-memory kill of the
+# database is the outcome this protects against); the kernel is told to pick
+# anything else first (oom_score_adj). Hitting a ceiling restarts that one
+# service (restart: unless-stopped), and the worker's watch pages when the
+# host's memory passes 90%. Numbers: generous over normal use; re-measure with
+# `docker stats --no-stream` after launch and lower them on evidence.
 x-bounded-logs: &bounded-logs
   driver: json-file
   options:
@@ -34,8 +46,11 @@ x-bounded-logs: &bounded-logs
 
 services:
   postgres:
+    logging: *bounded-logs
     image: postgis/postgis:16-3.4
     restart: unless-stopped
+    # [FABLE-05 3.11] No ceiling (see the top of this file); last in the kernel's line for a kill.
+    oom_score_adj: -500
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-swift}
       # Read by the image's entrypoint as root, before it drops to postgres;
@@ -44,7 +59,9 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-swift}
     volumes:
       - swift-pgdata:/var/lib/postgresql/data
-      - /run/swift-secrets:/run/secrets:ro
+      # [FABLE-05 3.5] Its own secret only, never the whole directory: the image reads it at its first
+      # start, and the scripts' psql helpers read it in `exec`. One file, read-only.
+      - /run/swift-secrets/POSTGRES_PASSWORD:/run/secrets/POSTGRES_PASSWORD:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-swift} -d ${POSTGRES_DB:-swift}"]
       interval: 5s
@@ -54,9 +71,14 @@ services:
     networks: [private]
 
   redis:
+    logging: *bounded-logs
     image: redis:7-alpine
     restart: unless-stopped
-    command: ["redis-server", "--appendonly", "yes", "--maxmemory-policy", "noeviction"]
+    # [FABLE-05 3.11] Bounded: past 768 MB Redis refuses new writes loudly (noeviction: no queue entry,
+    # counter or code is ever dropped silently) instead of growing until the kernel kills it. Its
+    # password is in docker-compose.hardening.yml (STACK_HARDENING=1), which keeps these flags.
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory-policy", "noeviction", "--maxmemory", "768mb"]
+    mem_limit: 1g
     volumes:
       - swift-redisdata:/data
     healthcheck:
@@ -67,8 +89,14 @@ services:
     networks: [private]
 
   meilisearch:
+    logging: *bounded-logs
     image: getmeili/meilisearch:v1.9
     restart: unless-stopped
+    # [FABLE-05 3.5] Not root: the image has no USER line, and root in a container reads files of any
+    # owner. It runs as the secret files' owner (uid 1000), reads only its own key (mounted alone,
+    # below) and writes only its data volume, handed to that uid by meilisearch-data-owner first.
+    user: "1000:1000"
+    mem_limit: 1536m
     # The image has no *_FILE support and its only alternatives are an
     # environment value or a --master-key argument (argv, visible in ps). So
     # tini stays PID 1 (the image entrypoint) and a shell reads the key from
@@ -80,13 +108,29 @@ services:
       MEILI_NO_ANALYTICS: "true"
     volumes:
       - swift-meilidata:/meili_data
-      - /run/swift-secrets:/run/secrets:ro
+      - /run/swift-secrets/MEILISEARCH_KEY:/run/secrets/MEILISEARCH_KEY:ro
     healthcheck:
       test: ["CMD", "curl", "-sf", "http://localhost:7700/health"]
       interval: 10s
       timeout: 5s
       retries: 12
+    depends_on:
+      meilisearch-data-owner:
+        condition: service_completed_successfully
     networks: [private]
+
+  # [FABLE-05 3.5] One-shot, before every search start: the data volume belongs to the uid search runs
+  # as. A volume first written by the image's root keeps root's files; this hands them over (and is a
+  # no-op afterwards). The same image, as root, with no network and no secret.
+  meilisearch-data-owner:
+    logging: *bounded-logs
+    image: getmeili/meilisearch:v1.9
+    user: "0:0"
+    entrypoint: ["/bin/sh", "-c", "chown -R 1000:1000 /meili_data"]
+    volumes:
+      - swift-meilidata:/meili_data
+    network_mode: none
+    restart: "no"
 
   # [Row 312] The upload malware scanner (ClamAV clamd), reached by the API and
   # the worker as clamd:3310 (INSTREAM over TCP, apps/api/src/lib/malware-scan.ts).
@@ -137,6 +181,7 @@ services:
       start_period: 300s
       start_interval: 5s
     mem_limit: 2560m
+    logging: *bounded-logs
     security_opt:
       - no-new-privileges:true
     # [COORD 21 Oct] Its own networks, NOT the private one: `scanner` is
@@ -159,6 +204,7 @@ services:
     # re-triggers corepack and pulls a newer pnpm needing Node 22). The runtime
     # image already carries the CLI and the generated engine.
     command: ["node", "dist/boot/migrate-deploy.js"]
+    logging: *bounded-logs
     environment:
       POSTGRES_HOST: postgres
       POSTGRES_PORT: "5432"
@@ -177,6 +223,8 @@ services:
     logging: *bounded-logs
     # Above the process's own 15 s shutdown cap (PROCESS_SHUTDOWN_TIMEOUT_MS), or Docker kills it mid-close.
     stop_grace_period: 20s
+    # [FABLE-05 3.11] A leak restarts the API instead of pressing on the database's memory.
+    mem_limit: 2g
     build:
       context: ..
       dockerfile: apps/api/Dockerfile
@@ -265,6 +313,12 @@ services:
     stop_grace_period: 20s
     image: swift-api:${SWIFT_TAG:-local}
     restart: unless-stopped
+    # [FABLE-05 3.2] Under an init, so the worker is not PID 1: when its scheduler stalls, the
+    # healthcheck below stops it (SIGTERM, then SIGKILL 30 s later) and this restart policy starts it
+    # again. Docker itself never restarts an unhealthy container.
+    init: true
+    # [FABLE-05 3.11] As the api.
+    mem_limit: 2g
     env_file: .env
     command: ["node", "dist/worker.js"]
     environment:
@@ -323,6 +377,12 @@ services:
     # (dist/boot/worker-probe.js).
     # This service is the only RUN_WORKERS=1 process, so a fresh key IS this
     # worker alive and consuming. start_period covers boot before the first beat.
+    # [FABLE-05 3.2] The probe also RESTARTS a stalled worker: three stale
+    # probes in a row, past the worker's boot grace, and it sends the worker
+    # SIGTERM (its own graceful shutdown), then SIGKILL if it is still there 30
+    # seconds later; `restart: unless-stopped` starts it again. A Redis the
+    # probe cannot reach never counts (a restart cannot fix it). Why it acted is
+    # in `docker inspect` (the health log).
     healthcheck:
       # `node -e` invokes the probe's exported main() explicitly, so importing
       # the module (in tests) never exits a process and the probe's exit code
@@ -345,6 +405,7 @@ services:
     logging: *bounded-logs
     image: caddy:2.10
     restart: unless-stopped
+    mem_limit: 512m
     environment:
       API_HOST: ${API_HOST:-localhost}
       API_ALIAS_HOST: ${API_ALIAS_HOST:-}

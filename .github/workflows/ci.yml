@@ -958,7 +958,14 @@ jobs:
       # (deploy/tests/test_clamd_scanner.py) runs against the real clamd.
       - name: The stack's pinned clamd image (the scanner test refuses EICAR with it)
         run: docker pull clamav/clamav:1.4.6@sha256:3bba6dd5ac6663d55b80f86a3126e146612d93b593cc2617188d13f637d91260
+      # [FABLE-05 3.1] The recovery rehearsal (deploy/tests/test_recover_rehearsal.py) restores a signed
+      # backup into the stack's own Postgres image and promotes it to a serving database. With the image
+      # pulled it never skips here.
+      - name: The stack's Postgres image (the recovery rehearsal runs on it)
+        run: docker pull postgis/postgis:16-3.4
       - name: Run every deploy contract test
+        env:
+          SWIFT_REQUIRE_REHEARSAL: "1"
         run: python3 -m unittest discover -s deploy/tests -v
 
   secret-scan:

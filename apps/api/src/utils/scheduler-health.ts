@@ -85,3 +85,26 @@ export function workerCheckStatus(health: SchedulerHealth, beat: string | null):
   if (health.page) return 'error';
   return beat ? 'ok' : 'starting';
 }
+
+/**
+ * [FABLE-05 3.2] How often the API process runs the scheduler check itself.
+ *
+ * The stall page used to ride the load balancer's /health polls, and there is
+ * no load balancer: unless something outside polled /health, a stalled worker
+ * paged nobody. The API now evaluates the same heartbeat on its own timer
+ * (60 s), through the same verdict and the same paging path as /health.
+ *
+ * SCHEDULER_SELF_WATCH_SECONDS sets the interval; like the stall window it is
+ * total-parsed, so a junk or non-positive value keeps the default rather than
+ * switching the watch off. Under NODE_ENV=test it is off unless set, so the
+ * suites that build the app never page from a timer.
+ */
+export const DEFAULT_SCHEDULER_SELF_WATCH_SECONDS = 60;
+
+export function schedulerSelfWatchMs(env: Record<string, string | undefined> = process.env): number {
+  const raw = env['SCHEDULER_SELF_WATCH_SECONDS']?.trim();
+  if ((raw === undefined || raw === '') && env['NODE_ENV'] === 'test') return 0;
+  const parsed = raw === undefined || raw === '' ? NaN : Number(raw);
+  const seconds = Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_SCHEDULER_SELF_WATCH_SECONDS;
+  return seconds * 1000;
+}

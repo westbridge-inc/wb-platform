@@ -27,7 +27,7 @@ import { providerFeeRoutes } from './modules/services/provider-fee.routes';
 import { partnerRoutes } from './modules/partner/partner.routes';
 import { authorityLetterPublicRoutes, authorityLetterVendorRoutes } from './modules/vendor/authority-letter/authority-letter.routes';
 import { setAppLogger } from './utils/logger';
-import { evaluateSchedulerHealth, schedulerStallMs, workerCheckStatus } from './utils/scheduler-health';
+import { evaluateSchedulerHealth, schedulerSelfWatchMs, schedulerStallMs, workerCheckStatus, type SchedulerHealth } from './utils/scheduler-health';
 import { prismaPlugin, beginRequestTenantContext } from './plugins/prisma';
 import { authPlugin } from './plugins/auth';
 import { socketPlugin } from './plugins/socket';
@@ -201,38 +201,11 @@ export async function buildApp(options: BuildAppOptions = {}) {
   // degraded API was the lie the container probe believed.
   registerLivenessRoute(app);
   registerRoutedWhileDegradedCounter(app);
-  app.get('/health', async (request, reply) => {
-    const checks: Record<string, string> = { api: 'ok' };
-    const routing = await checkRouting();
-
-    try {
-      await app.prisma.$queryRaw`SELECT 1`;
-      checks['database'] = 'ok';
-    } catch {
-      checks['database'] = 'error';
-    }
-
-    try {
-      await app.redis.ping();
-      checks['redis'] = 'ok';
-    } catch {
-      checks['redis'] = 'error';
-    }
-
-    // [BUILD_NOW Band A] The worker fleet, reported as its own check. A green
-    // /health that does not look at the workers is exactly the lie that
-    // matters: RUN_WORKERS unset means holds, expiry sweeps, billing and
-    // settlements are silently not running while every probe says healthy.
-    // ONE read of ONE heartbeat key, evaluated ONCE — the paging block below
-    // reuses this verdict rather than forming a second opinion.
-    const beat = await app.redis.get('scheduler:heartbeat').catch(() => null);
-    const workerHealth = evaluateSchedulerHealth({ beat, nowMs: Date.now(), bootAtMs: SERVER_BOOTED_AT, stallMs: schedulerStallMs() });
-    checks['worker'] = workerCheckStatus(workerHealth, beat);
-
-    // SWIFT-AUD-D7-02: scheduler-stall paging. A stalled worker can't page
-    // about itself, so the check rides the load balancer's /health polls —
-    // the one thing still running when the job scheduler is dead. Dedup'd
-    // (30 min) and fire-and-caught: paging never slows a probe.
+  // SWIFT-AUD-D7-02: scheduler-stall paging, from ONE verdict. Called by every /health probe and, since
+  // [FABLE-05 3.2], by this process's own timer below: a stalled worker cannot page about itself, and
+  // there is no load balancer polling /health. Dedup'd (30 min) and fire-and-caught: paging never slows
+  // a probe.
+  const pageSchedulerVerdict = (workerHealth: SchedulerHealth, beat: string | null): void => {
     void (async () => {
       // `!beat` is NOT benign: the heartbeat key has no TTL, so its absence means
       // the worker fleet never booted (crash / RUN_WORKERS misconfigured). Page it
@@ -263,6 +236,36 @@ export async function buildApp(options: BuildAppOptions = {}) {
         await resolveOpsPage(app.prisma, 'Job scheduler stalled').catch(() => {});
       })();
     }
+  };
+  app.get('/health', async (request, reply) => {
+    const checks: Record<string, string> = { api: 'ok' };
+    const routing = await checkRouting();
+
+    try {
+      await app.prisma.$queryRaw`SELECT 1`;
+      checks['database'] = 'ok';
+    } catch {
+      checks['database'] = 'error';
+    }
+
+    try {
+      await app.redis.ping();
+      checks['redis'] = 'ok';
+    } catch {
+      checks['redis'] = 'error';
+    }
+
+    // [BUILD_NOW Band A] The worker fleet, reported as its own check. A green
+    // /health that does not look at the workers is exactly the lie that
+    // matters: RUN_WORKERS unset means holds, expiry sweeps, billing and
+    // settlements are silently not running while every probe says healthy.
+    // ONE read of ONE heartbeat key, evaluated ONCE — the paging block below
+    // reuses this verdict rather than forming a second opinion.
+    const beat = await app.redis.get('scheduler:heartbeat').catch(() => null);
+    const workerHealth = evaluateSchedulerHealth({ beat, nowMs: Date.now(), bootAtMs: SERVER_BOOTED_AT, stallMs: schedulerStallMs() });
+    checks['worker'] = workerCheckStatus(workerHealth, beat);
+
+    pageSchedulerVerdict(workerHealth, beat);
 
     // `starting` is the worker inside its boot grace: not a failure, and not a
     // reason to call a freshly deployed API degraded. Everything else must be ok.
@@ -305,6 +308,25 @@ export async function buildApp(options: BuildAppOptions = {}) {
       dispatch: { exhaustCap: EXHAUST_CAP, redispatchDelayMs: REDISPATCH_DELAY_MS },
     };
   });
+
+  // [FABLE-05 3.2] The same check on this process's own timer: the stall page no longer waits for
+  // someone outside to poll /health. Off under test unless SCHEDULER_SELF_WATCH_SECONDS is set.
+  const selfWatchMs = schedulerSelfWatchMs();
+  if (selfWatchMs > 0) {
+    let selfWatch: ReturnType<typeof setInterval> | undefined;
+    app.addHook('onReady', async () => {
+      selfWatch = setInterval(() => {
+        void (async () => {
+          const beat = await app.redis.get('scheduler:heartbeat').catch(() => null);
+          pageSchedulerVerdict(evaluateSchedulerHealth({ beat, nowMs: Date.now(), bootAtMs: SERVER_BOOTED_AT, stallMs: schedulerStallMs() }), beat);
+        })().catch(() => {});
+      }, selfWatchMs);
+      selfWatch.unref();
+    });
+    app.addHook('onClose', async () => {
+      if (selfWatch) clearInterval(selfWatch);
+    });
+  }
 
   // Readiness is stricter than liveness: schema, Redis, BullMQ producer
   // connections, and host/DB/Redis clock agreement must all be healthy.
