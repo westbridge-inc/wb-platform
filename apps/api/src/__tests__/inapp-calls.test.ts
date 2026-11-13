@@ -959,3 +959,21 @@ describe('[CALLS-REACH follow-up 4] a register refused for no live order also cl
     expect(await app.redis.get(`${INAPP_REGISTRY_PREFIX}${id(stranger)}`)).toBeNull();
   });
 });
+
+// [AUDIT-20261113 F14] In-app calls honour blocks: a blocked party can never make the blocker's app ring.
+describe('[AUDIT-20261113 F14] in-app calls honour user blocks', () => {
+  it('the rider the customer blocked is refused before any row, in both directions', async () => {
+    const o = await liveFood();
+    const row = await system(() => app.prisma.userBlock.create({ data: { tenantId: 'swift-default', blockerId: diner.id, blockedId: riderP.id } }));
+    try {
+      const res = await start(riderP.token, o.id, 'customer');
+      expect(res.statusCode, res.body).toBe(403);
+      expect(res.json().error.code).toBe('USER_BLOCKED');
+      expect((await start(diner.token, o.id, 'rider')).statusCode).toBe(403);
+      expect(await rowsFor(o.id)).toHaveLength(0);
+    } finally {
+      await system(() => app.prisma.userBlock.delete({ where: { id: row.id } }));
+    }
+  });
+});
+

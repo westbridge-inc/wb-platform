@@ -984,3 +984,41 @@ describe('[O-1] the webhooks only answer Twilio', () => {
     expect((await app.inject({ method: 'POST', url: '/api/v1/calls/voice/inbound', headers: { 'content-type': 'application/x-www-form-urlencoded' }, payload: 'From=x' })).statusCode).toBe(403);
   });
 });
+
+// [AUDIT-20261113 F13] A block is a safety control: Swift never rings someone for a person they blocked, or who
+// blocked them — not at the start, and not at the moment leg 2 would dial.
+describe('[AUDIT-20261113 F13] Call via Swift honours user blocks', () => {
+  const blocks: string[] = [];
+  afterAll(async () => { await system(() => app.prisma.userBlock.deleteMany({ where: { id: { in: blocks } } })); });
+  const block = async (blockerId: string, blockedId: string) => {
+    const standing = await system(() => app.prisma.userBlock.findFirst({ where: { tenantId: 'swift-default', blockerId, blockedId } }));
+    if (standing) return system(() => app.prisma.userBlock.update({ where: { id: standing.id }, data: { unblockedAt: null, blockedAt: new Date() } }));
+    const row = await system(() => app.prisma.userBlock.create({ data: { tenantId: 'swift-default', blockerId, blockedId } }));
+    blocks.push(row.id);
+    return row;
+  };
+
+  it('a rider the customer blocked cannot have Swift ring the customer, and the customer cannot ring them either', async () => {
+    const o = await liveFood();
+    const b = await block(diner.id, riderP.id);
+    const res = await bridge(riderP.token, o.id, 'customer');
+    expect(res.statusCode, res.body).toBe(403);
+    expect(res.json().error.code).toBe('USER_BLOCKED');
+    expect((await bridge(diner.token, o.id, 'rider')).statusCode).toBe(403);
+    expect(placed).toHaveLength(0);
+    expect(await system(() => app.prisma.callSession.count({ where: { orderId: o.id } }))).toBe(0);
+    await system(() => app.prisma.userBlock.update({ where: { id: b.id }, data: { unblockedAt: new Date() } }));
+  });
+
+  it('a block placed while the caller\'s own phone rings: leg 2 never dials', async () => {
+    const o = await liveFood();
+    const res = await bridge(riderP.token, o.id, 'customer');
+    expect(res.statusCode, res.body).toBe(200);
+    const b = await block(diner.id, riderP.id);
+    const out = await hook('leg1-gather', res.json().data.callId, { Digits: '1' });
+    expect(out.body).not.toContain('<Dial');
+    expect((await session(res.json().data.callId)).status).toBe('NOT_CONNECTED');
+    await system(() => app.prisma.userBlock.update({ where: { id: b.id }, data: { unblockedAt: new Date() } }));
+  });
+});
+
