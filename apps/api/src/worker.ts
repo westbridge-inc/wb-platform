@@ -18,6 +18,8 @@
 // FIRST: secrets delivered as files (NAME_FILE) become NAME in this process
 // before any module below can read process.env. Keep this import on top.
 import './boot/secret-files';
+// [REVIEW-2503-A D-3] Second: the previous worker's boot record is forgotten before anything else loads.
+import './boot/worker-boot-reset';
 import Redis from 'ioredis';
 import { Server } from 'socket.io';
 import { pino } from 'pino';

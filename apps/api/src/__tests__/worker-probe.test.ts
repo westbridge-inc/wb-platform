@@ -63,7 +63,7 @@ describe('workerProbeOk — the container probe agrees with /health', () => {
 // again. A Redis that cannot be reached is not the worker's fault: a restart
 // cannot fix it, so it never counts.
 // ---------------------------------------------------------------------------
-import { freshProbeState, probeRestartDecision, PROBE_MAX_RESTARTS_PER_HOUR, PROBE_RESTART_AFTER, type ProbeState } from '../boot/worker-probe';
+import { freshProbeState, probeRestartDecision, PROBE_MAX_RESTARTS_PER_HOUR, PROBE_RESTART_AFTER, WORKER_BOOT_FILE, type ProbeState } from '../boot/worker-probe';
 
 describe('probeRestartDecision — a stalled worker is restarted, never a booting one', () => {
   const stall = schedulerStallMs({});
@@ -162,6 +162,7 @@ describe('probeRestartDecision — a stalled worker is restarted, never a bootin
   });
 
   it('the worker records its own pid and boot time for the probe, and the compose worker runs under an init', () => {
+    expect(WORKER_BOOT_FILE_PATH).toBe(WORKER_BOOT_FILE);
     const worker = readFileSync(join(process.cwd(), 'src/worker.ts'), 'utf8');
     expect(worker).toContain('recordWorkerBoot(');
     const compose = readFileSync(join(process.cwd(), '..', '..', 'deploy', 'docker-compose.yml'), 'utf8');
@@ -169,5 +170,37 @@ describe('probeRestartDecision — a stalled worker is restarted, never a bootin
     // under an init the worker is not PID 1, so the probe's SIGKILL reaches it
     expect(block).toMatch(/\n {4}init: true\n/);
     expect(block).toContain('restart: unless-stopped');
+  });
+});
+
+// [REVIEW-2503-A D-3] After a restart the container's /tmp still holds the PREVIOUS worker's boot record
+// until the new worker writes its own (after its imports load). A probe in that window could read the
+// old record (same pid, same boot time), find its 30-second-old SIGTERM and SIGKILL the starting worker.
+// The new process forgets the old record before anything else loads: in that window there is no
+// record, and the probe never acts without one.
+import { mkdtempSync, writeFileSync as writeFileSyncForTest, existsSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { forgetWorkerBoot, WORKER_BOOT_FILE_PATH } from '../boot/worker-boot-reset';
+
+describe('a starting worker is never killed on its predecessor\'s boot record', () => {
+  it('the new process removes the old record first (a missing one is fine)', () => {
+    const file = join(mkdtempSync(join(tmpdir(), 'swift-boot-')), 'swift-worker-boot');
+    writeFileSyncForTest(file, '7 1000\n');
+    forgetWorkerBoot(file);
+    expect(existsSync(file)).toBe(false);
+    expect(() => forgetWorkerBoot(file)).not.toThrow();
+  });
+
+  it('the worker forgets it right after the secret files, before any other module loads', () => {
+    const worker = readFileSync(join(process.cwd(), 'src/worker.ts'), 'utf8');
+    const imports = worker.split('\n').filter((l) => l.startsWith('import '));
+    expect(imports[0]).toBe("import './boot/secret-files';");
+    expect(imports[1]).toBe("import './boot/worker-boot-reset';");
+  });
+
+  it('without a boot record the probe never signals, whatever the old state says', () => {
+    const old: ProbeState = { failures: 9, termSentAt: Date.now() - 60_000, bootAtMs: 1, restarts: [] };
+    const d = probeRestartDecision({ state: old, verdict: 'stale', nowMs: Date.now(), worker: null, stallMs: schedulerStallMs({}) });
+    expect(d.action).toBe('none');
   });
 });

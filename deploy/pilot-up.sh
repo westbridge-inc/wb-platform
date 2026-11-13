@@ -887,6 +887,15 @@ fi
 if [ "$ROLLBACK_POINT" = none ]; then ROLLBACK_BACKUP="NO backup was taken (no swift-backup.service on this host)"
 else ROLLBACK_BACKUP="the database was backed up just before the migration as ${ROLLBACK_POINT}"; fi
 ROLLBACK_FIRST=""
+ROLLBACK_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+# [REVIEW-2503-A D-1] The kept point is honoured only for ITS deploy: a re-run of the same SHA, or a
+# deploy that fixes forward over that deploy while it is what the API runs.
+kept_target=""
+rollback_kept_for_this_deploy() {
+  kept_target="$(sed -n 's/^target=//p' "$ROLLBACK_STATE" | head -1)"
+  [[ "$kept_target" =~ ^[0-9a-f]{40}$ ]] || return 1
+  [ "$kept_target" = "$SHA" ] || [ "$PREVIOUS_IMAGE" = "swift-api:$kept_target" ]
+}
 # Kept inside the checkout's own git directory (never a tracked or untracked file of the checkout).
 if [ -z "$ROLLBACK_STATE" ]; then
   git_dir="$(git -C "$ROOT" rev-parse --absolute-git-dir 2>/dev/null || true)"
@@ -894,20 +903,26 @@ if [ -z "$ROLLBACK_STATE" ]; then
 fi
 if [ -z "$ROLLBACK_STATE" ]; then
   echo "WARNING: no place to keep the rollback point; copy the FIRST ROLLBACK block of this deploy into the deploy notes" >&2
-elif [ -s "$ROLLBACK_STATE" ]; then
+elif [ -s "$ROLLBACK_STATE" ] && rollback_kept_for_this_deploy; then
   # A re-run of an unfinished deploy: the FIRST run's point stands (this run's backup may already be migrated).
   first_backup="$(sed -n 's/^backup=//p' "$ROLLBACK_STATE" | head -1)"
   first_previous="$(sed -n 's/^previous=//p' "$ROLLBACK_STATE" | head -1)"
   first_at="$(sed -n 's/^at=//p' "$ROLLBACK_STATE" | head -1)"
   [ -z "$first_backup" ] || ROLLBACK_BACKUP="$first_backup"
   [[ "$first_previous" =~ ^[0-9a-f]{40}$ ]] && PREVIOUS_SHA="$first_previous" || PREVIOUS_SHA=""
-  ROLLBACK_FIRST=" (the FIRST attempt's rollback point, ${first_at:-earlier}: a deploy since then did not reach READY; this run's own backup is not the way back)"
+  ROLLBACK_AT="${first_at:-unknown}"
+  ROLLBACK_FIRST=" (the FIRST attempt's rollback point: a deploy of ${kept_target} since then did not reach READY; this run's own backup is not the way back)"
 else
-  (umask 077; printf 'backup=%s\nprevious=%s\ntarget=%s\nat=%s\n' "$ROLLBACK_BACKUP" "${PREVIOUS_SHA:-none}" "$SHA" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$ROLLBACK_STATE") ||
+  if [ -s "$ROLLBACK_STATE" ]; then
+    # [REVIEW-2503-A D-1] A point kept for ANOTHER deploy (one that failed and was then rolled back by an
+    # older script, or abandoned) is never this deploy's way back: discarded, and this run's own taken.
+    echo "WARNING: a rollback point kept since $(sed -n 's/^at=//p' "$ROLLBACK_STATE" | head -1) for another deploy (${kept_target:-unknown}) was discarded: the API now runs ${PREVIOUS_IMAGE:-nothing}, not that deploy. This run's own backup is the rollback point" >&2
+  fi
+  (umask 077; printf 'backup=%s\nprevious=%s\ntarget=%s\nat=%s\n' "$ROLLBACK_BACKUP" "${PREVIOUS_SHA:-none}" "$SHA" "$ROLLBACK_AT" > "$ROLLBACK_STATE") ||
     echo "WARNING: could not keep the rollback point in $ROLLBACK_STATE; copy the ROLLBACK block below into the deploy notes" >&2
 fi
 [ -z "$ROLLBACK_STATE" ] || ROLLBACK_WRITTEN=1
-ROLLBACK_NOTE="ROLLBACK${ROLLBACK_FIRST}: ${ROLLBACK_BACKUP}; the API served ${PREVIOUS_SHA:-no recorded revision} before this deploy.
+ROLLBACK_NOTE="ROLLBACK${ROLLBACK_FIRST}: recorded ${ROLLBACK_AT}; ${ROLLBACK_BACKUP}; previous good revision ${PREVIOUS_SHA:-not recorded} (the API served it before this deploy).
   - Code only, and the new migrations are additive (the previous revision can live with them): ./deploy/pilot-up.sh ${PREVIOUS_SHA:-<previous full SHA>}
   - Otherwise (a destructive migration, or not sure): keep the API stopped and restore that backup to a serving database with deploy/recover.sh (PILOT-RUNBOOK section 5b). Never point restore.sh at the live database."
 printf '%s\n' "$ROLLBACK_NOTE"

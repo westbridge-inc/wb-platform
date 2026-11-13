@@ -992,12 +992,16 @@ erasure lines. Then on the host, from a terminal:
     ./deploy/recover.sh --project swift --from-copy swift_recover_<utc> --erasures-checked --check
     ./deploy/recover.sh --project swift --from-copy swift_recover_<utc> --erasures-checked --replace-database
 
-recover.sh pauses the two timers itself too and starts them again when it
-ends; if you stopped them above and stop here instead, start them yourself:
-`sudo systemctl start swift-backup-hourly.timer swift-erasure-ledger.timer`.
-Then start the API with the reviewed deploy of the SAME revision that was
-serving (`./deploy/pilot-up.sh <sha>`), compare a few counts in the console
-and place one test order. Payments made after the backup are not in Swift:
+Then, in this order (each step is required):
+
+1. **Start the two timers again** (they were stopped by hand above;
+   recover.sh restarts only timers it paused itself, and production's
+   pilot-up refuses to start the API while they are off):
+   `sudo systemctl start swift-backup-hourly.timer swift-erasure-ledger.timer`,
+   then `systemctl list-timers 'swift-*'` shows both.
+2. Start the API with the reviewed deploy of the SAME revision that was
+   serving (`./deploy/pilot-up.sh <sha>`), compare a few counts in the
+   console and place one test order. Payments made after the backup are not in Swift:
 reconcile MMG's statement for that window (INCIDENT-RUNBOOK section 4).
 Within 24 hours, once the recovery is accepted: remove the copy
 (`docker rm -f swift-restore-<copy> && docker volume rm swift-restore-<copy>`),
@@ -1208,6 +1212,16 @@ each container's memory, Redis's own use) and refuses when Redis already
 uses more than 600 MB of its 768 MB limit. The routing check after OSRM
 starts is retried for up to 3 minutes and ends in a named FATAL if OSRM never
 answers (nothing stopped or migrated).
+
+[REVIEW-2503-A D-1] The kept rollback point lives in
+`/opt/swift/.git/swift-pilot-up-rollback` and is honoured only by a re-run of
+the same SHA, or a deploy fixing forward while that failed deploy is what the
+API runs; any other deploy discards it with a WARNING and uses its own
+backup. Still, after a rollback with an older pilot-up (which knows nothing of
+the file), or a failed deploy that is abandoned or fixed by hand, remove it:
+`rm -f /opt/swift/.git/swift-pilot-up-rollback`. And when a re-run prints
+"the FIRST attempt's rollback point", check its `recorded` time is from this
+deploy session before trusting it.
 
 After confirming the new schema remains backward-compatible with the
 previous binary, redeploy the previous approved main SHA:

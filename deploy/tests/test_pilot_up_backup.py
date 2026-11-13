@@ -84,16 +84,17 @@ class PilotUpBacksUpBeforeMigrating(unittest.TestCase):
         self.store = " ".join(sorted(set(re.findall(r"_FILE: /run/secrets/([A-Z][A-Z0-9_]*)", compose))
                                      | {"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"}))
 
-    def run_pilot(self, *args, **extra):
+    def run_pilot(self, *args, sha=None, **extra):
+        sha = sha or self.SHA
         (self.here / ".env").write_text(
             f"PILOT_ENV=staging\nAPI_HOST={API_HOST}\nMAPS_PROVIDER=osrm\nOSRM_URL=http://osrm:5000\n"
             "BACKUP_BUCKET=test-backups\nNODE_ENV=development\nCORS_ORIGIN=https://staging.example.com\n")
         env = os.environ.copy()
-        env.update({"PATH": f"{self.bin}:{env['PATH']}", "CALL_LOG": str(self.log), "GIT_HEAD": self.SHA,
+        env.update({"PATH": f"{self.bin}:{env['PATH']}", "CALL_LOG": str(self.log), "GIT_HEAD": sha,
                     "STORE_NAMES": self.store, "API_IMAGE": f"swift-api:{PREVIOUS}",
                     "PILOT_UP_ROLLBACK_FILE": str(self.tmp / "rollback-state"), "PILOT_UP_BACKUP_DIR": str(self.backups)})
         env.update(extra)
-        result = subprocess.run(["bash", str(self.here / "pilot-up.sh"), *args, self.SHA],
+        result = subprocess.run(["bash", str(self.here / "pilot-up.sh"), *args, sha],
                                 env=env, text=True, capture_output=True, timeout=120, stdin=subprocess.DEVNULL)
         return result, self.log.read_text().splitlines()
 
@@ -159,6 +160,45 @@ class PilotUpBacksUpBeforeMigrating(unittest.TestCase):
         r3, _ = self.run_pilot(API_IMAGE=f"swift-api:{self.SHA}")
         self.assertEqual(r3.returncode, 0, r3.stderr[-800:])
         self.assertFalse((self.tmp / "rollback-state").exists(), "a deploy that reached READY clears the rollback point")
+
+    # [REVIEW-2503-A D-1] The kept point belongs to ONE target. Deploy X fails after its migration; the
+    # owner rolls back with the OLD script (which knows nothing of the file); days later deploy Y must
+    # name ITS OWN fresh backup, never X's old one.
+    def test_a_point_kept_for_another_target_is_discarded_with_a_warning(self):
+        import time
+        x, y = "c" * 40, "d" * 40
+        (self.backups / "swift-20261110T080000Z.dump.gpg").write_text("x's backup")
+        r1, _ = self.run_pilot(FAIL_ON="up -d --force-recreate migrate", sha=x)
+        self.assertNotEqual(r1.returncode, 0)
+        self.assertIn("target=" + x, (self.tmp / "rollback-state").read_text())
+        time.sleep(1.1)
+        (self.backups / "swift-20261113T090000Z.dump.gpg").write_text("y's own backup")
+        # rolled back to the previous good revision by the old script: the API serves PREVIOUS again
+        r2, _ = self.run_pilot(FAIL_ON="up -d --force-recreate migrate", sha=y, API_IMAGE=f"swift-api:{PREVIOUS}")
+        block = r2.stdout[r2.stdout.index("ROLLBACK"):]
+        self.assertIn("swift-20261113T090000Z.dump.gpg", block)
+        self.assertNotIn("swift-20261110T080000Z", block)
+        self.assertNotIn("FIRST attempt", block)
+        self.assertIn("WARNING", r2.stderr)
+        self.assertIn(x, r2.stderr, "the warning names the deploy the stale point belonged to")
+        self.assertIn("target=" + y, (self.tmp / "rollback-state").read_text())
+        # the printout carries the time and the previous good revision
+        self.assertRegex(block, r"recorded \d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z")
+        self.assertIn(f"previous good revision {PREVIOUS}", block)
+
+    def test_fixing_forward_over_a_broken_target_keeps_its_point(self):
+        import time
+        x, y = "c" * 40, "d" * 40
+        (self.backups / "swift-20261110T080000Z.dump.gpg").write_text("x's backup")
+        self.run_pilot(FAIL_ON="up -d --force-recreate migrate", sha=x)
+        time.sleep(1.1)
+        (self.backups / "swift-20261113T090000Z.dump.gpg").write_text("taken over the migrated database")
+        # the broken X is what the API runs: Y fixes forward, and X's point is still the way back
+        r2, _ = self.run_pilot(FAIL_ON="up -d --force-recreate migrate", sha=y, API_IMAGE=f"swift-api:{x}")
+        block = r2.stdout[r2.stdout.index("ROLLBACK"):]
+        self.assertIn("swift-20261110T080000Z.dump.gpg", block)
+        self.assertIn("FIRST attempt", block)
+        self.assertIn(f"./deploy/pilot-up.sh {PREVIOUS}", block)
 
     def test_without_a_backup_the_block_says_no_backup_was_taken(self):
         result, _ = self.run_pilot(NO_BACKUP_UNIT="1")
