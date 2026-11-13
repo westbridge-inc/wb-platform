@@ -216,6 +216,12 @@ model Session {
   userAgent            String?
   expiresAt            DateTime
   createdAt            DateTime  @default(now())
+  /// [AUDIT-20261113 FABLE-03 #2] When this session proved an authenticator code (admin second factor).
+  mfaVerifiedAt        DateTime?
+  /// [REVIEW-2501-A S3-1] Set when the admin web console's own sign-in issued this session (its credentials went
+  /// out only as HttpOnly cookies to the console origin). ADMIN_API_CONSOLE_ONLY=1 accepts only such a session, so a
+  /// token from the desktop or the phone, re-sent as a cookie with copied headers, is refused.
+  consoleBoundAt       DateTime?
 
   @@map("sessions")
   @@index([expiresAt]) // retention sweep cutoff [F-021-20]
@@ -5996,6 +6002,17 @@ model Admin {
   user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   permissions String[]
   createdAt   DateTime @default(now())
+  /// [AUDIT-20261113 FABLE-03 #2] The authenticator-app (TOTP) secret, only ever encrypted (MASTER_KEK
+  /// envelope, admin-totp.ts). Null until enrolment is confirmed.
+  totpSecretEnc        String?
+  /// An enrolment started but not yet confirmed with a code (encrypted), and when it started (10 minutes).
+  totpPendingSecretEnc String?
+  totpPendingAt        DateTime?
+  totpEnabledAt        DateTime?
+  /// The last 30-second step accepted: a code is accepted once.
+  totpLastStep         Int?
+  /// SHA-256 digests of the unused recovery codes (shown once at enrolment; each works once).
+  totpRecoveryHashes   String[] @default([])
 
   @@map("admins")
 }

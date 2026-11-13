@@ -1,4 +1,5 @@
 import { emitToOrderRoom, emitToStoreRoom } from '../order/order-room-emission.service';
+import { assertAdminSessionPosture } from '../auth/admin-mfa';
 import { assertConfigKeyWritable } from './machine-owned-config';
 import { scanUpload } from '../../lib/malware-scan';
 import { documentScanState, uploadScanRefusal, retryHeldEvidenceScan } from '../../lib/upload-scan-debt';
@@ -800,6 +801,9 @@ export async function adminRoutes(app: FastifyInstance) {
       throw new ForbiddenError('Admin access required');
     }
     requireTenantId();
+    // [AUDIT-20261113 FABLE-03 #2] The admin session's posture: a fixed 12-hour life, the authenticator code
+    // (ADMIN_TOTP_REQUIRED=1), and the console only (ADMIN_API_CONSOLE_ONLY=1). See auth/admin-mfa.ts.
+    await assertAdminSessionPosture(app, request);
   };
 
   // Trial-integrity Part 0.2: the platform-wide identity graph is the one

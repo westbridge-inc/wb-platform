@@ -18,6 +18,7 @@ import { NotificationService } from '../notification/notification.service';
 import { pageOps } from '../ops/ops-page';
 import { runWithoutTenant, runWithTenant } from '../../plugins/tenant-context';
 import { consoleRoleOf } from '../auth/console-role';
+import { recordAckWithoutConsolePosture, staffPostureCheck, staffPostureRefusal, staffRefusalOf } from '../auth/admin-mfa';
 
 // SOS endpoints (safety spec §4.5). The engine (state machine, grace, fan-out)
 // lives in SosService; these are thin, authed wrappers. Owner actions require
@@ -50,7 +51,10 @@ const listAlertsQuery = z.object({
 const OPEN_STATUSES = LIVE_SOS_STATUSES;
 
 export async function safetyRoutes(app: FastifyInstance) {
-  const auth = { preHandler: [app.authenticate] };
+  // [REVIEW-2501-A S2-1] After authentication, the staff posture is decided once for an account holding an admin
+  // role (auth/admin-mfa.ts): with ADMIN_TOTP_REQUIRED=1 every ops door below needs the authenticator code and a
+  // session under 12 hours, as the admin API does. A person's own safety features are never touched by it.
+  const auth = { preHandler: [app.authenticate, staffPostureCheck(app)] };
   const sos = new SosService(app.prisma, app.io);
   const isOps = (role: string) => role === 'ADMIN' || role === 'SUPER_ADMIN';
   // [ADMIN-ROLE] Who is ops is decided by the admin role the account HOLDS
@@ -59,7 +63,16 @@ export async function safetyRoutes(app: FastifyInstance) {
   // already reaches by their roles: a responder paged while their phone is in
   // rider mode can still read, acknowledge and resolve from Mission Control.
   // A person's own SOS (POST /sos) keeps the mode they act in.
-  const opsRoleOf = (request: { heldRoles?: readonly string[] | null }): string => consoleRoleOf(request.heldRoles) ?? '';
+  // [REVIEW-2501-A S2-1] ...and the ops power answers only a session with the staff posture: the refusal
+  // (ADMIN_MFA_REQUIRED, ADMIN_SESSION_EXPIRED, ADMIN_CONSOLE_ONLY) is thrown here, on every ops door at once.
+  const opsRoleOf = (request: { heldRoles?: readonly string[] | null }): string => {
+    const role = consoleRoleOf(request.heldRoles) ?? '';
+    const refusal = role ? staffRefusalOf(request) : null;
+    if (refusal) throw refusal;
+    return role;
+  };
+  /** The ops role when this session may use it, else '' (the caller is treated as the person they are). */
+  const opsRoleIfPostured = (request: { heldRoles?: readonly string[] | null }): string => (staffRefusalOf(request) ? '' : consoleRoleOf(request.heldRoles) ?? '');
   // [TA-S0-004] A platform responder (SUPER_ADMIN) is paged for EVERY tenant's
   // alert and for the null-tenant ones — the page deliberately escapes tenant
   // scope. Until now the read, the acknowledgement and the resolution did not:
@@ -175,7 +188,10 @@ export async function safetyRoutes(app: FastifyInstance) {
     // able to assert it: doing so both bypasses the reconsider window and
     // writes a false origin onto the highest-stakes record the system keeps.
     // Only a real ops caller may claim it; everyone else is a BUTTON press.
-    const claimedSource = body.source === 'OPS_MANUAL' && isOps(request.user.role) ? 'OPS_MANUAL' : 'BUTTON';
+    // [REVIEW-2501-A S2-1] ...and only from a session with the staff posture; anything else is a BUTTON press
+    // (the SOS itself is never refused).
+    const claimedSource = body.source === 'OPS_MANUAL' && isOps(request.user.role)
+      && (!consoleRoleOf(request.heldRoles) || !(await staffPostureRefusal(app, request, 'staff'))) ? 'OPS_MANUAL' : 'BUTTON';
 
     const alert = await sos.create({
       actorUserId: request.user.userId,
@@ -235,7 +251,8 @@ export async function safetyRoutes(app: FastifyInstance) {
   });
 
   app.get<{ Params: { id: string } }>('/sos/:id', auth, async (request) => {
-    if (!isOps(opsRoleOf(request))) {
+    // [REVIEW-2501-A S2-1] Without the staff posture an admin reads only their own alert, as anyone does.
+    if (!isOps(opsRoleIfPostured(request))) {
       const a = await ownedAlert(request.params.id, request.user.userId, request.tenantId);
       return { success: true, data: a };
     }
@@ -251,17 +268,31 @@ export async function safetyRoutes(app: FastifyInstance) {
   // explicitly by tenant, never by whatever scope the request happens to carry.
   const { acknowledgeOpsAlert, runOpsAlertDrillIfDue, drillBody, DRILL_FAILED_REASON } = await import('./ops-alert');
   const opsAlertInclude = { recipients: { select: { userId: true, deliveredAt: true, seenAt: true, ackedAt: true } } } as const;
+  // [REVIEW-2501-A S2-1] A page as a session without the console posture sees it: that it waits, its kind and its
+  // times. Fixed words; never the page's own title or body, the SOS it is about, or who else was paged.
+  const PAGE_WORDS: Record<string, string> = { SOS: 'SOS page', DRILL: 'Paging drill', PLATFORM: 'Operations page' };
+  const pageWithoutDetails = (row: { id: string; kind: string; createdAt: Date; ackDeadlineAt: Date; escalationLevel: number }) => ({
+    id: row.id, kind: row.kind, title: PAGE_WORDS[row.kind] ?? PAGE_WORDS['PLATFORM']!,
+    body: 'Open Mission Control and enter your authenticator code to see the details. You can acknowledge it here.',
+    createdAt: row.createdAt, ackDeadlineAt: row.ackDeadlineAt, escalationLevel: row.escalationLevel,
+  });
   app.get('/ops-alerts', auth, async (request) => {
-    const role = opsRoleOf(request);
+    // [REVIEW-2501-A S2-1 · COORD ruling 13 Nov 2026] A responder's phone signed in by text alone may still SEE THAT
+    // a page waits, and acknowledge it (below): the rows carry the kind and the times, never the page's words, the
+    // SOS it is about or who was paged. Everything else needs the console posture.
+    const unpostured = staffRefusalOf(request);
+    const role = unpostured ? consoleRoleOf(request.heldRoles) ?? '' : opsRoleOf(request);
+    const shown = (rows: Array<{ id: string; kind: string; createdAt: Date; ackDeadlineAt: Date; escalationLevel: number }>) =>
+      (unpostured ? rows.map(pageWithoutDetails) : rows);
     if (isPlatformResponder(role)) {
       const rows = await runWithoutTenant(() => app.prisma.opsAlert.findMany({ where: { acknowledgedAt: null, closedAt: null }, orderBy: { createdAt: 'desc' }, take: 100, include: opsAlertInclude }));
-      return { success: true, data: rows };
+      return { success: true, data: shown(rows) };
     }
     if (role !== 'ADMIN') throw new ForbiddenError('Only ops can list alerts.');
     const tenantId = request.tenantId;
     if (!tenantId) throw new ForbiddenError('Platform alerts are for platform operators.');
     const rows = await app.prisma.opsAlert.findMany({ where: { tenantId, acknowledgedAt: null, closedAt: null }, orderBy: { createdAt: 'desc' }, take: 100, include: opsAlertInclude });
-    return { success: true, data: rows };
+    return { success: true, data: shown(rows) };
   });
   // [DRILL-STORM] A drill nobody acknowledged is closed as FAILED and stops paging; it stays
   // visible here — it is evidence the paging path or the on-call rota failed. Platform operators
@@ -276,7 +307,10 @@ export async function safetyRoutes(app: FastifyInstance) {
     return { success: true, data: rows };
   });
   app.post<{ Params: { id: string } }>('/ops-alerts/:id/ack', auth, async (request) => {
-    const role = opsRoleOf(request);
+    // [REVIEW-2501-A S2-1 · COORD ruling 13 Nov 2026] The one ops door a texted-code session may use: acknowledging
+    // stops the re-pages for this page only and returns no case data. Audited, and the owner is emailed each time.
+    const unpostured = staffRefusalOf(request);
+    const role = unpostured ? consoleRoleOf(request.heldRoles) ?? '' : opsRoleOf(request);
     if (!isOps(role)) throw new ForbiddenError('Only ops can acknowledge an alert.');
     const alert = await runWithoutTenant(() => app.prisma.opsAlert.findUnique({ where: { id: request.params.id }, select: { id: true, tenantId: true } }));
     if (!alert) throw new NotFoundError('OpsAlert', request.params.id);
@@ -286,6 +320,7 @@ export async function safetyRoutes(app: FastifyInstance) {
     }
     const res = await asResponder(role, () => acknowledgeOpsAlert(app.prisma, { opsAlertId: alert.id, userId: request.user.userId }));
     if (res.refused.length > 0) throw new ForbiddenError('You are not a responder for this alert.');
+    if (unpostured && res.acknowledged.length > 0) await recordAckWithoutConsolePosture(app, request, alert.id, unpostured);
     return { success: true, data: { acknowledged: res.acknowledged.length > 0 } };
   });
   app.post('/ops-alerts/drill', auth, async (request) => {
