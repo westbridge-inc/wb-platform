@@ -148,6 +148,26 @@ export interface IncidentRow {
   createdAt: string;
 }
 
+/**
+ * [REVIEW-2499-B S2-2] A case that names you, while you are the only admin who could work it: the server lists its
+ * number, status, severity, interim action and when it was opened, with a fixed label. Never its summary, category,
+ * people, notes or evidence. Acknowledge, decide, close and lift go with a typed reason recorded for review.
+ */
+export interface NamedCaseRow {
+  id: string;
+  caseNumber: string;
+  status: IncidentStatus;
+  severity: IncidentSeverity;
+  interimAction: string;
+  createdAt: string;
+  namesYou: true;
+  label: string;
+}
+
+export type CaseQueueRow = IncidentRow | NamedCaseRow;
+
+export const isNamedCase = (c: CaseQueueRow): c is NamedCaseRow => (c as NamedCaseRow).namesYou === true;
+
 export type SosAction = 'ack' | 'resolve';
 export type CaseAction = 'ack' | 'decide' | 'close' | 'lift-interim';
 
@@ -159,7 +179,7 @@ export function sosActions(a: SosRow): SosAction[] {
   return out;
 }
 
-export function caseActions(c: IncidentRow): CaseAction[] {
+export function caseActions(c: Pick<IncidentRow, 'status' | 'interimAction'>): CaseAction[] {
   const next = INCIDENT_TRANSITIONS[c.status] ?? [];
   const out: CaseAction[] = [];
   if (next.includes('TRIAGED')) out.push('ack');
@@ -267,7 +287,7 @@ export function worstSla(c: IncidentRow, now = new Date()): SlaState {
 }
 
 /** Severity first, then newest, then id: the order the server pages in. */
-export function queueOrder(rows: IncidentRow[]): IncidentRow[] {
+export function queueOrder<R extends Pick<IncidentRow, 'severity' | 'createdAt' | 'id'>>(rows: R[]): R[] {
   return [...rows].sort((a, b) =>
     a.severity.localeCompare(b.severity)
     || new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()

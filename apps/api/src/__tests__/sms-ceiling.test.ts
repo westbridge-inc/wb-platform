@@ -55,6 +55,11 @@ describe('[AUDIT-20261113 S3-6] the daily paid-SMS ceiling', () => {
     expect(src('modules/safety/ops-alert.ts')).toContain('sms.sendSms(phone, text.slice(0, 480), { lifeSafety: true })');
     expect(src('modules/safety/sos-escalation.ts')).toContain('sosContactText(authority.who, where), { lifeSafety: true })');
     expect(src('modules/safety/sos.service.ts')).toContain('sms.sendSms(c.phoneE164, body, { lifeSafety: true })');
+    // [REVIEW-2499-B S3-1] Texts with a daily budget of their own carry the mark too, so one bulk lane (marketing, the
+    // inactivity sweep) spending the ceiling can never starve a trip share, a contact's code or a letter code.
+    expect(src('modules/safety/trip-share.service.ts')).toMatch(/`A Swift trip is being shared with you\. Follow it live: \$\{url\}\.\$\{plate\}`,\n\s*\{ budgeted: true \},\n/);
+    expect(src('modules/safety/emergency-contact.service.ts')).toContain('sendSms(phoneE164, emergencyContactCodeText(owner?.firstName, code), { budgeted: true })');
+    expect(src('modules/vendor/authority-letter/authority-letter.service.ts')).toContain('sendSms(phone, letterCodeSms(code), { budgeted: true })');
   });
 
   it('counts parts, and a send the provider fails gives its parts back', async () => {

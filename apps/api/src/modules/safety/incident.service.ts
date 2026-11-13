@@ -68,6 +68,9 @@ const autoSuspendEnabled = () => process.env['INCIDENT_AUTO_SUSPEND'] !== '0';
 
 export const DECISION_CODES = ['DISMISSED', 'WARNING_ISSUED', 'SUSPENSION_PERMANENT', 'RESOLVED_OTHER'] as const;
 
+/** [REVIEW-2499-B S2-2] Written inside the act's own transaction (the self-acted audit row): the act and its row commit together. */
+export type CaseActAudit = (tx: Prisma.TransactionClient) => Promise<void>;
+
 /** Go-online gate for §8.3 interim suspension — unconditional (a safety
  *  suspension is an explicit action, exactly like a liveness lock). */
 export function assertNotSafetySuspended(row: { safetySuspendedAt: Date | null }): void {
@@ -510,7 +513,7 @@ export class IncidentService {
    *  Clears the liveness lock too: when ops decide the person is fine, every
    *  block that existed because of this dispute is served — leaving a
    *  self-serve-impossible lock behind would strand a cleared driver. */
-  async liftInterim(id: string, opsUserId: string): Promise<IncidentCase> {
+  async liftInterim(id: string, opsUserId: string, withinTransaction?: CaseActAudit): Promise<IncidentCase> {
     const preview = await this.prisma.incidentCase.findUnique({ where: { id }, select: { subjectUserId: true } });
     if (!preview) throw new NotFoundError('IncidentCase', id);
     const now = new Date();
@@ -562,6 +565,8 @@ export class IncidentService {
         await tx.driver.updateMany({ where: { userId: kase.subjectUserId }, data: clear });
         await tx.rider.updateMany({ where: { userId: kase.subjectUserId }, data: clear });
       }
+      // [REVIEW-2499-B S2-2] a self-acted lift commits with its audit row, or not at all
+      if (withinTransaction) await withinTransaction(tx);
       return { updated, restrictionRemains: suspensionRemains || shadowRestrictionRemains };
     });
     await this.notifications.send({
@@ -638,21 +643,21 @@ export class IncidentService {
     return updated;
   }
 
-  async ack(id: string, opsUserId: string) {
-    return this.transition(id, 'TRIAGED', { ackedAt: new Date(), ackedBy: opsUserId });
+  async ack(id: string, opsUserId: string, withinTransaction?: CaseActAudit) {
+    return this.transition(id, 'TRIAGED', { ackedAt: new Date(), ackedBy: opsUserId }, withinTransaction);
   }
 
   async investigate(id: string, _opsUserId: string) {
     return this.transition(id, 'INVESTIGATING', {});
   }
 
-  async decide(id: string, opsUserId: string, decisionCode: (typeof DECISION_CODES)[number], notes?: string) {
+  async decide(id: string, opsUserId: string, decisionCode: (typeof DECISION_CODES)[number], notes?: string, withinTransaction?: CaseActAudit) {
     const decided = await this.transition(id, 'DECIDED', {
       decidedAt: new Date(),
       decidedBy: opsUserId,
       decisionCode,
       decisionNotes: notes ?? null,
-    });
+    }, withinTransaction);
     // AUDIT-FIX (F2, 2026-08-01): a DISMISSED decision lifts ANY interim
     // action, not only SUSPENDED_PENDING_REVIEW. A shadow-restricted subject
     // (the §8.3 S2 softer option) who is cleared was left restricted — quietly
@@ -663,8 +668,8 @@ export class IncidentService {
     return decided;
   }
 
-  async close(id: string, opsUserId: string) {
-    const closed = await this.transition(id, 'CLOSED', { closedAt: new Date(), closedBy: opsUserId });
+  async close(id: string, opsUserId: string, withinTransaction?: CaseActAudit) {
+    const closed = await this.transition(id, 'CLOSED', { closedAt: new Date(), closedBy: opsUserId }, withinTransaction);
     // [AG-XF-013] Closing a case may complete an erasure that was waiting on
     // it. Both the subject and the reporter can be under a hold. Release
     // re-enumerates every obligation, so a case closed while a legal hold or
@@ -822,7 +827,7 @@ export class IncidentService {
   }
 
   /** The single CAS transition point — rejects and logs any illegal move. */
-  private async transition(id: string, to: IncidentStatus, extra: Record<string, unknown>) {
+  private async transition(id: string, to: IncidentStatus, extra: Record<string, unknown>, withinTransaction?: CaseActAudit) {
     const kase = await this.prisma.incidentCase.findUnique({ where: { id }, select: { status: true } });
     if (!kase) throw new NotFoundError('IncidentCase', id);
     if (!INCIDENT_TRANSITIONS[kase.status].includes(to)) {
@@ -830,8 +835,13 @@ export class IncidentService {
       throw new AppError(409, 'INVALID_CASE_TRANSITION', `Cannot move a case from ${kase.status} to ${to}.`);
     }
     const clean = Object.fromEntries(Object.entries(extra).filter(([, v]) => v !== undefined));
-    const moved = await this.prisma.incidentCase.updateMany({ where: { id, status: kase.status }, data: { status: to, ...clean } });
-    if (moved.count === 0) throw new AppError(409, 'CASE_TRANSITION_RACE', 'The case changed underneath this action — retry.');
+    const move = async (db: Pick<PrismaClient, 'incidentCase'> | Prisma.TransactionClient) => {
+      const moved = await db.incidentCase.updateMany({ where: { id, status: kase.status }, data: { status: to, ...clean } });
+      if (moved.count === 0) throw new AppError(409, 'CASE_TRANSITION_RACE', 'The case changed underneath this action — retry.');
+    };
+    // [REVIEW-2499-B S2-2] A self-acted move (the only eligible responder, named by the case) commits with its audit row.
+    if (withinTransaction) await this.prisma.$transaction(async (tx) => { await move(tx); await withinTransaction(tx); });
+    else await move(this.prisma);
     return this.prisma.incidentCase.findUniqueOrThrow({ where: { id } });
   }
 }

@@ -163,6 +163,7 @@ export class TripShareService {
       await this.channels.sms.sendSms(
         opts.sendToPhone,
         `A Swift trip is being shared with you. Follow it live: ${url}.${plate}`,
+        { budgeted: true },
       ).catch(async (err: unknown) => {
         // The share still works via the link the app shows — log, don't fail.
         // A text that never left gives back the budget it counted.

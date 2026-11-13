@@ -126,7 +126,7 @@ export const STORE_RATING_TYPES: readonly string[] = [...TYPES_FOR_ROLE.VENDOR];
 export const ACCOUNT_FIELDS = [
   'moverPlanMoveUntil',
   'id', 'phone', 'email', 'emailChangedAt', 'firstName', 'lastName', 'selfieCapturedAt', 'roles', 'activeRole', 'lastMoverRole',
-  'status', 'isPhoneVerified', 'isEmailVerified', 'acceptedTermsAt', 'tosVersion', 'trustLevel', 'lossProtectionSuspendedAt',
+  'status', 'statusChangedAt', 'isPhoneVerified', 'isEmailVerified', 'acceptedTermsAt', 'tosVersion', 'trustLevel', 'lossProtectionSuspendedAt',
   'countryCode', 'notificationPrefs', 'lastKnownLat', 'lastKnownLng',
   'createdAt', 'updatedAt', 'lastActiveAt', 'inactivityNoticeAt',
 ] as const;

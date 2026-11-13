@@ -104,9 +104,10 @@ export async function approverRoster(db: RosterReader, now = new Date()): Promis
       // [AUDIT-20261113 FABLE-03 S3-4] An admin suspended, banned or closed in the last
       // LOCKED_OUT_STILL_COUNTS_DAYS still counts. Suspending is a one-person act (C3); without this, suspending
       // the only other approver turned solo mode back on and removed the two-person rule with one person.
-      // The row's last change dates the lock-out (over-counting is the safe direction: solo stays off).
+      // [REVIEW-2499-B S2-1] The STATUS change dates the lock-out (users.statusChangedAt, stamped by a database
+      // trigger), never updatedAt: that moves on any write, so an admin suspended long ago kept switching solo off.
       AND: [
-        { OR: [{ status: { notIn: [...LOCKED_OUT] } }, { updatedAt: { gte: new Date(now.getTime() - LOCKED_OUT_STILL_COUNTS_DAYS * 86_400_000) } }] },
+        { OR: [{ status: { notIn: [...LOCKED_OUT] } }, { statusChangedAt: { gte: new Date(now.getTime() - LOCKED_OUT_STILL_COUNTS_DAYS * 86_400_000) } }] },
         { OR: [{ activeRole: { in: [...ADMIN_ROLES] } }, { roles: { hasSome: [...ADMIN_ROLES] } }] },
       ],
     },

@@ -717,7 +717,10 @@ describe('[AUDIT-20261113 S3-4] a recently suspended second admin still counts',
     expect(await sole()).toBe(false);
     await runWithoutTenant(() => app.prisma.user.update({ where: { id: second.userId }, data: { status: 'SUSPENDED' } }), 'test-fixture:solo');
     expect(await sole()).toBe(false);
-    await runWithoutTenant(() => app.prisma.$executeRaw`UPDATE "users" SET "updatedAt" = now() - interval '15 days' WHERE id = ${second.userId}`, 'test-fixture:solo');
+    await runWithoutTenant(() => app.prisma.$executeRaw`UPDATE "users" SET "statusChangedAt" = now() - interval '15 days' WHERE id = ${second.userId}`, 'test-fixture:solo');
+    expect(await sole()).toBe(true);
+    // [REVIEW-2499-B S2-1] a later unrelated write to the old suspended row does not switch solo off again
+    await runWithoutTenant(() => app.prisma.user.update({ where: { id: second.userId }, data: { lastName: 'Touched' } }), 'test-fixture:solo');
     expect(await sole()).toBe(true);
   });
 });

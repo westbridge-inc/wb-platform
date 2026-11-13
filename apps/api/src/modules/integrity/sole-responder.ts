@@ -31,7 +31,7 @@ type Db = PrismaClient | Prisma.TransactionClient;
  * only SUPER_ADMINs work), each counted only if their grant holds `capability`.
  *
  * [REVIEW-2499-A D-3] "Other admin" is read as solo approval reads it (approverRoster): an admin suspended, banned
- * or closed in the last LOCKED_OUT_STILL_COUNTS_DAYS still counts. Suspending is a one-person act; without this,
+ * or closed in the last LOCKED_OUT_STILL_COUNTS_DAYS (dated by users.statusChangedAt) still counts. Suspending is a one-person act; without this,
  * suspending the only other admin made the actor the only responder at once. Over-counting is the safe direction.
  */
 export async function isSoleEligibleResponder(db: Db, actorId: string, capability: string, resourceTenantId: string | null, now = new Date()): Promise<boolean> {
@@ -43,7 +43,8 @@ export async function isSoleEligibleResponder(db: Db, actorId: string, capabilit
       where: {
         id: { not: actorId },
         AND: [
-          { OR: [{ status: { notIn: [...LOCKED_OUT] } }, { updatedAt: { gte: lockedOutSince } }] },
+          // [REVIEW-2499-B S2-1] dated by the status change (database-stamped), never by the row's last write
+          { OR: [{ status: { notIn: [...LOCKED_OUT] } }, { statusChangedAt: { gte: lockedOutSince } }] },
           { OR: [
             { roles: { has: 'SUPER_ADMIN' } }, { activeRole: 'SUPER_ADMIN' },
             ...(resourceTenantId ? [{ tenantId: resourceTenantId, OR: [{ roles: { has: 'ADMIN' as const } }, { activeRole: 'ADMIN' as const }] }] : []),

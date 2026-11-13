@@ -2,6 +2,7 @@ import type Redis from 'ioredis';
 import { guyanaDayKey } from './guyana-day';
 import { publicLaunchCountryFromPhone } from '../modules/auth/launch-market';
 import { log } from './logger';
+import { otpBudgetRefusalCounter } from '../plugins/observability';
 
 // Cost guardrails for outbound OTP SMS — the dominant, unauthenticated, abusable
 // SMS-cost vector. The per-minute limit (utils/otp.ts) stops bursts; these are
@@ -137,6 +138,20 @@ export interface SmsBudgetResult {
   refund?: () => Promise<void>;
 }
 
+/**
+ * [REVIEW-2499-B S3-2] An OTP budget refusal is never silent: every one is counted on
+ * swift_otp_budget_refusals_total{lane}, and the per-address known share and the admin reserve (the lanes that can
+ * refuse an existing account, the owner included) log their first refusal of the day as an error. The log carries the
+ * lane and its cap only: never the number or the address.
+ */
+function denyOtp(reason: SmsBudgetReason, count: number, cap: number): SmsBudgetResult {
+  try { otpBudgetRefusalCounter.labels(reason).inc(); } catch { /* a metric never blocks the answer */ }
+  if ((reason === 'known_ip_daily' || reason === 'admin_daily') && count === cap + 1) {
+    log().error({ lane: reason, cap }, `[sms-budget] ${reason} refused a code: this lane is spent for today`);
+  }
+  return deny(reason);
+}
+
 function deny(reason: SmsBudgetReason): SmsBudgetResult {
   // No refund on a refusal: nothing was sent, and the spent increments are
   // the per-attempt guardrails doing their job (an abuser must not get them
@@ -175,7 +190,7 @@ export async function checkOtpDailyBudget(
   const phoneCount = await redis.incr(phoneKey);
   if (phoneCount === 1) await redis.expire(phoneKey, DAY_TTL);
   spent.push(phoneKey);
-  if (phoneCount > phoneCap) return deny('phone_daily');
+  if (phoneCount > phoneCap) return denyOtp('phone_daily', phoneCount, phoneCap);
 
   // Unknown numbers only: a known account must keep working from a carrier
   // NAT IP that junk (or a busy day) has already exhausted.
@@ -184,7 +199,7 @@ export async function checkOtpDailyBudget(
     const ipCount = await redis.incr(ipKey);
     if (ipCount === 1) await redis.expire(ipKey, DAY_TTL);
     spent.push(ipKey);
-    if (ipCount > ipCap) return deny('ip_daily');
+    if (ipCount > ipCap) return denyOtp('ip_daily', ipCount, ipCap);
   }
 
   // [AUDIT-20261113 S3-5] An admin number draws from the admins' own reserve (and skips the per-address share:
@@ -193,7 +208,7 @@ export async function checkOtpDailyBudget(
     const adminCap = intEnv('OTP_ADMIN_DAILY_CAP', DEFAULT_ADMIN_DAILY_CAP);
     const adminCount = await spend(redis, `${ADMIN_DAILY_PREFIX}${day}`, spent);
     warnNearCap(adminCount, adminCap, 'admin');
-    if (adminCount > adminCap) return deny('admin_daily');
+    if (adminCount > adminCap) return denyOtp('admin_daily', adminCount, adminCap);
     return { allowed: true, refund: () => refundSpend(redis, spent) };
   }
 
@@ -202,7 +217,9 @@ export async function checkOtpDailyBudget(
   if (opts.ip && opts.knownPhone) {
     const knownIpCap = intEnv('OTP_KNOWN_IP_DAILY_CAP', DEFAULT_KNOWN_IP_DAILY_CAP);
     const knownIpCount = await spend(redis, `${KNOWN_IP_DAILY_PREFIX}${day}:${addressBucket(opts.ip)}`, spent);
-    if (knownIpCount > knownIpCap) return deny('known_ip_daily');
+    // [REVIEW-2499-B S3-2] one address (a carrier NAT can carry many real customers) warns at 80% of its share
+    warnNearCap(knownIpCount, knownIpCap, 'known_ip');
+    if (knownIpCount > knownIpCap) return denyOtp('known_ip_daily', knownIpCount, knownIpCap);
   }
 
   const budgetKey = opts.knownPhone ? `${KNOWN_DAILY_PREFIX}${day}` : `${GLOBAL_DAILY_PREFIX}${day}`;
@@ -212,7 +229,7 @@ export async function checkOtpDailyBudget(
   const budgetCap = opts.knownPhone ? knownCap : globalCap;
   warnNearCap(budgetCount, budgetCap, opts.knownPhone ? 'known' : 'global');
   if (budgetCount > budgetCap) {
-    return deny(opts.knownPhone ? 'known_daily' : 'global_daily');
+    return denyOtp(opts.knownPhone ? 'known_daily' : 'global_daily', budgetCount, budgetCap);
   }
 
   const refund = () => refundSpend(redis, spent);

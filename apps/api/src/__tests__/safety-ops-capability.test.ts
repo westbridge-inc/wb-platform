@@ -448,3 +448,120 @@ describe('[REVIEW-2499-A S4] party checks the mutations found untested', () => {
     expect((await fire('GET', `${S}/evidence?sosAlertId=${alert.id}`, superAdmin)).statusCode).toBe(200);
   });
 });
+
+// [REVIEW-2499-B S2-2] A safety CASE that names the only eligible responder (the owner reports a driver from their own
+// customer account, or a user reports the owner) could never be acknowledged, decided or lifted: the person it suspends
+// stayed suspended and the case re-paged for ever. The case doors get the SOS exit: while the caller is the ONLY eligible
+// responder (a SUPER_ADMIN; isSoleEligibleResponder), ack, lift-interim, decide and close go with a typed reason, the
+// audit row commits with the act and is flagged for a second person. The queue lists such a case as a minimal row.
+describe('[REVIEW-2499-B S2-2] the only eligible responder may work a case that names them', () => {
+  const restore = async () => {
+    vi.mocked(isSoleEligibleResponder).mockReset();
+    const real = await vi.importActual<typeof import('../modules/integrity/sole-responder')>('../modules/integrity/sole-responder');
+    vi.mocked(isSoleEligibleResponder).mockImplementation(real.isSoleEligibleResponder);
+  };
+  async function ownersReport(owner: Actor) {
+    const subject = await makeUser(['CUSTOMER']);
+    return sys(() => app.prisma.incidentCase.create({ data: {
+      tenantId: 'swift-default', status: 'OPEN', caseNumber: `INC-${nanoid(8).toUpperCase()}`, severity: 'S1', category: 'SAFETY_THREAT', intake: 'POST_TRIP_REPORT',
+      subjectUserId: subject.userId, reporterUserId: owner.userId, summary: `owner report ${RUN} with private words`, interimAction: 'SUSPENDED_PENDING_REVIEW',
+      slaAckBy: new Date(Date.now() - 3_600_000), slaDecideBy: new Date(Date.now() + 86_400_000),
+    } }));
+  }
+  const REASON = 'I reported this myself and I am the only admin';
+
+  it('ack, lift, decide and close go with a typed reason, each audited and flagged; investigate stays refused', async () => {
+    const owner = await makeUser(['SUPER_ADMIN', 'CUSTOMER']);
+    const kase = await ownersReport(owner);
+    vi.mocked(isSoleEligibleResponder).mockResolvedValue(true);
+    try {
+      const bare = await fire('POST', `${S}/incidents/${kase.id}/ack`, owner, {});
+      expect(bare.statusCode, bare.body).toBe(409);
+      expect(bare.json().error.code).toBe('SELF_RESOLVE_REASON_REQUIRED');
+      const short = await fire('POST', `${S}/incidents/${kase.id}/ack`, owner, { selfResolveReason: '   too short   ' });
+      expect(short.statusCode, short.body).toBe(400);
+      const acked = await fire('POST', `${S}/incidents/${kase.id}/ack`, owner, { selfResolveReason: REASON });
+      expect(acked.statusCode, acked.body).toBe(200);
+      expect(vi.mocked(isSoleEligibleResponder)).toHaveBeenCalledWith(expect.anything(), owner.userId, 'safety.case.work', 'swift-default');
+      expect((await fire('POST', `${S}/incidents/${kase.id}/investigate`, owner, { selfResolveReason: REASON })).statusCode).toBe(403);
+      const lifted = await fire('POST', `${S}/incidents/${kase.id}/lift-interim`, owner, { selfResolveReason: REASON });
+      expect(lifted.statusCode, lifted.body).toBe(200);
+      expect(vi.mocked(isSoleEligibleResponder)).toHaveBeenCalledWith(expect.anything(), owner.userId, 'safety.case.decide', 'swift-default');
+      const decided = await fire('POST', `${S}/incidents/${kase.id}/decide`, owner, { decisionCode: 'RESOLVED_OTHER', selfResolveReason: REASON });
+      expect(decided.statusCode, decided.body).toBe(200);
+      const closed = await fire('POST', `${S}/incidents/${kase.id}/close`, owner, { selfResolveReason: REASON });
+      expect(closed.statusCode, closed.body).toBe(200);
+      const after = await sys(() => app.prisma.incidentCase.findUniqueOrThrow({ where: { id: kase.id } }));
+      expect(after.status).toBe('CLOSED');
+      expect(after.interimAction).toBe('NONE');
+      expect(after.ackedBy).toBe(owner.userId);
+      const rows = await sys(() => app.prisma.auditLog.findMany({ where: { action: 'SAFETY_CASE_SELF_ACTED', entityId: kase.id }, orderBy: { createdAt: 'asc' } }));
+      expect(rows.map((r) => (r.changes as { act: string }).act)).toEqual(['ack', 'lift-interim', 'decide', 'close']);
+      for (const r of rows) {
+        expect(r.userId).toBe(owner.userId);
+        expect(r.entity).toBe('IncidentCase');
+        expect(r.changes).toMatchObject({ reason: REASON, review: SELF_RESOLVED_FLAG });
+      }
+      expect(rows[2]!.changes).toMatchObject({ decisionCode: 'RESOLVED_OTHER' });
+    } finally { await restore(); }
+  });
+
+  it('while another eligible admin exists, the named super admin is refused on every door, even with a reason', async () => {
+    const owner = await makeUser(['SUPER_ADMIN', 'CUSTOMER']);
+    const kase = await ownersReport(owner);
+    vi.mocked(isSoleEligibleResponder).mockResolvedValue(false);
+    try {
+      for (const door of ['ack', 'lift-interim', 'close']) {
+        expect((await fire('POST', `${S}/incidents/${kase.id}/${door}`, owner, { selfResolveReason: REASON })).statusCode, door).toBe(403);
+      }
+      expect((await fire('POST', `${S}/incidents/${kase.id}/decide`, owner, { decisionCode: 'RESOLVED_OTHER', selfResolveReason: REASON })).statusCode).toBe(403);
+      const listed = await fire('GET', `${S}/incidents?status=all&limit=200&named=resolve`, owner);
+      expect((listed.json().data as Array<{ id: string }>).some((c) => c.id === kase.id)).toBe(false);
+      expect((await sys(() => app.prisma.incidentCase.findUniqueOrThrow({ where: { id: kase.id } }))).status).toBe('OPEN');
+    } finally { await restore(); }
+  });
+
+  it('the queue lists it as a minimal row (no summary, people, notes or evidence) only to the only responder who asks', async () => {
+    const owner = await makeUser(['SUPER_ADMIN', 'CUSTOMER']);
+    const kase = await ownersReport(owner);
+    vi.mocked(isSoleEligibleResponder).mockResolvedValue(true);
+    try {
+      const find = (res: Awaited<ReturnType<typeof fire>>) => (res.json().data as Array<Record<string, unknown>>).find((c) => c.id === kase.id);
+      expect(find(await fire('GET', `${S}/incidents?status=all&limit=200`, owner))).toBeUndefined();
+      const res = await fire('GET', `${S}/incidents?status=all&limit=200&named=resolve`, owner);
+      expect(res.statusCode, res.body).toBe(200);
+      const row = find(res)!;
+      expect(Object.keys(row).sort()).toEqual(['caseNumber', 'createdAt', 'id', 'interimAction', 'label', 'namesYou', 'severity', 'status']);
+      expect(row).toMatchObject({ id: kase.id, status: 'OPEN', severity: 'S1', interimAction: 'SUSPENDED_PENDING_REVIEW', namesYou: true });
+      expect(JSON.stringify(row)).not.toContain('private words');
+      expect((res.json().data as Array<{ id: string }>).filter((c) => c.id === kase.id)).toHaveLength(1);
+      // a plain ADMIN is never the only responder: a case naming them stays out of their queue
+      const adminCase = await sys(() => app.prisma.incidentCase.create({ data: {
+        tenantId: 'swift-default', status: 'OPEN', caseNumber: `INC-${nanoid(8).toUpperCase()}`, severity: 'S2', category: 'SAFETY_THREAT', intake: 'POST_TRIP_REPORT',
+        subjectUserId: staffDriver.userId, summary: 'fixture', slaAckBy: new Date(Date.now() + 3_600_000), slaDecideBy: new Date(Date.now() + 86_400_000),
+      } }));
+      expect((await fire('GET', `${S}/incidents?status=all&limit=200&named=resolve`, staffDriver)).json().data.some((c: { id: string }) => c.id === adminCase.id)).toBe(false);
+    } finally { await restore(); }
+  });
+
+  it('an audit row that cannot be written leaves the case where it was', async () => {
+    const tag = `s22${RUN.replace(/[^a-z0-9]/g, 'x')}`;
+    const owner = await makeUser(['SUPER_ADMIN', 'CUSTOMER']);
+    const kase = await ownersReport(owner);
+    vi.mocked(isSoleEligibleResponder).mockResolvedValue(true);
+    await sys(() => app.prisma.$executeRawUnsafe(`CREATE OR REPLACE FUNCTION ${tag}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW."action" = 'SAFETY_CASE_SELF_ACTED' AND NEW."entityId" = '${kase.id}' THEN RAISE EXCEPTION 'test: the audit row is refused'; END IF; RETURN NEW; END $$`));
+    await sys(() => app.prisma.$executeRawUnsafe(`CREATE TRIGGER ${tag} BEFORE INSERT ON audit_logs FOR EACH ROW EXECUTE FUNCTION ${tag}()`));
+    try {
+      expect((await fire('POST', `${S}/incidents/${kase.id}/ack`, owner, { selfResolveReason: REASON })).statusCode).toBeGreaterThanOrEqual(500);
+      expect((await fire('POST', `${S}/incidents/${kase.id}/lift-interim`, owner, { selfResolveReason: REASON })).statusCode).toBeGreaterThanOrEqual(500);
+      const still = await sys(() => app.prisma.incidentCase.findUniqueOrThrow({ where: { id: kase.id } }));
+      expect(still.status).toBe('OPEN');
+      expect(still.ackedBy).toBeNull();
+      expect(still.interimAction).toBe('SUSPENDED_PENDING_REVIEW');
+    } finally {
+      await sys(() => app.prisma.$executeRawUnsafe(`DROP TRIGGER IF EXISTS ${tag} ON audit_logs`));
+      await sys(() => app.prisma.$executeRawUnsafe(`DROP FUNCTION IF EXISTS ${tag}()`));
+      await restore();
+    }
+  });
+});

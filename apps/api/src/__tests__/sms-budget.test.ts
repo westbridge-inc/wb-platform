@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, beforeEach, vi } from 'vitest';
 import Redis from 'ioredis';
 import Fastify, { type FastifyInstance } from 'fastify';
 import { nanoid } from 'nanoid';
@@ -147,6 +147,45 @@ describe('OTP SMS daily budget (cost guardrails)', () => {
     } finally {
       delete process.env['OTP_KNOWN_IP_DAILY_CAP'];
       await redis.del(`otp_known_ip_day:${day}:${ip}`, `otp_known_ip_day:${day}:${other}`);
+    }
+  });
+
+  // [REVIEW-2499-B S3-2] The per-address known share and the admin reserve refused in silence: no log line, no metric,
+  // no early warning. Each now warns at 80%, logs its first refusal of the day (lane and cap only: no number, no
+  // address) and counts every refusal on swift_otp_budget_refusals_total{lane}.
+  it('[S3-2] a per-address or admin-reserve refusal is logged once and counted; 80% warns first; no number or address in the log', async () => {
+    const { otpBudgetRefusalCounter } = await import('../plugins/observability');
+    const { log } = await import('../utils/logger');
+    const counted = async (lane: string) => ((await otpBudgetRefusalCounter.get()).values.find((v) => v.labels.lane === lane)?.value ?? 0);
+    process.env['OTP_PHONE_DAILY_CAP'] = '1000000';
+    process.env['OTP_KNOWN_DAILY_CAP'] = '1000000';
+    process.env['OTP_KNOWN_IP_DAILY_CAP'] = '5';
+    process.env['OTP_ADMIN_DAILY_CAP'] = '5';
+    const ip = '203.0.113.220';
+    await redis.del(`otp_known_ip_day:${day}:${ip}`, `sms_admin_day:${day}`);
+    const errors = vi.spyOn(log(), 'error');
+    try {
+      const knownBefore = await counted('known_ip_daily');
+      for (let i = 0; i < 4; i += 1) expect((await checkOtpDailyBudget(redis, `+592kip${i}${Date.now()}`, { ip, knownPhone: true })).allowed).toBe(true);
+      expect(errors.mock.calls.filter(([o]) => (o as { lane?: string })?.lane === 'known_ip')).toHaveLength(1); // 80% of 5 = 4
+      expect((await checkOtpDailyBudget(redis, `+592kip5${Date.now()}`, { ip, knownPhone: true })).allowed).toBe(true);
+      for (let i = 0; i < 3; i += 1) expect(await checkOtpDailyBudget(redis, `+592kipx${i}${Date.now()}`, { ip, knownPhone: true })).toMatchObject({ allowed: false, reason: 'known_ip_daily' });
+      expect(await counted('known_ip_daily')).toBe(knownBefore + 3);
+      expect(errors.mock.calls.filter(([o]) => (o as { lane?: string })?.lane === 'known_ip_daily')).toHaveLength(1);
+
+      const adminBefore = await counted('admin_daily');
+      for (let i = 0; i < 5; i += 1) expect((await checkOtpDailyBudget(redis, `+592adm${i}${Date.now()}`, { knownPhone: true, adminPhone: true })).allowed).toBe(true);
+      for (let i = 0; i < 2; i += 1) expect(await checkOtpDailyBudget(redis, `+592admx${i}${Date.now()}`, { knownPhone: true, adminPhone: true })).toMatchObject({ allowed: false, reason: 'admin_daily' });
+      expect(await counted('admin_daily')).toBe(adminBefore + 2);
+      expect(errors.mock.calls.filter(([o]) => (o as { lane?: string })?.lane === 'admin_daily')).toHaveLength(1);
+      const logged = JSON.stringify(errors.mock.calls);
+      expect(logged).not.toContain(ip);
+      expect(logged).not.toMatch(/\+592/);
+    } finally {
+      errors.mockRestore();
+      delete process.env['OTP_KNOWN_IP_DAILY_CAP'];
+      delete process.env['OTP_ADMIN_DAILY_CAP'];
+      await redis.del(`otp_known_ip_day:${day}:${ip}`, `sms_admin_day:${day}`);
     }
   });
 

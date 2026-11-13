@@ -5,7 +5,7 @@ import { z } from '../../lib/zod';
 import { SosService, LIVE_SOS_STATUSES } from './sos.service';
 import { GuardianService } from './guardian.service';
 import { LivenessService } from './liveness.service';
-import { IncidentService, DECISION_CODES, intakeFingerprint } from './incident.service';
+import { IncidentService, DECISION_CODES, intakeFingerprint, type CaseActAudit } from './incident.service';
 import { EvidenceService } from './evidence.service';
 import { EmergencyContactService } from './emergency-contact.service';
 import { getChannels } from '../../providers/notifications/channels';
@@ -59,6 +59,10 @@ const listAlertsQuery = z.object({
 });
 /** [REVIEW-2499-A D-1] The only words a resolve-only row carries. */
 const NAMED_SOS_LABEL = 'This alert names you: resolve only';
+/** [REVIEW-2499-B S2-2] The only words a named-case row carries. */
+const NAMED_CASE_LABEL = 'This case names you: act on it only with a reason';
+/** [REVIEW-2499-B S2-2] The typed reason the only eligible responder gives to act on a case that names them (as SOS self-resolve). */
+const selfActBody = z.object({ selfResolveReason: z.string().trim().min(12).max(500).optional() });
 /** [AG-XF-013] Imported, not restated — see LIVE_SOS_STATUSES for why. */
 const OPEN_STATUSES = LIVE_SOS_STATUSES;
 
@@ -854,6 +858,8 @@ export async function safetyRoutes(app: FastifyInstance) {
       // when the queue contract is formalized.
       page: z.coerce.number().int().min(1).default(1),
       limit: z.coerce.number().int().min(1).max(200).default(50),
+      // [REVIEW-2499-B S2-2] opt-in, as GET /sos: the web console asks for the named-case rows
+      named: z.enum(['resolve']).optional(),
     }).parse(request.query ?? {});
     const now = new Date();
     const where =
@@ -875,7 +881,27 @@ export async function safetyRoutes(app: FastifyInstance) {
       skip: (q.page - 1) * q.limit,
       take: q.limit,
     });
-    return { success: true, data: cases };
+    // [REVIEW-2499-B S2-2] ...except that the only eligible responder must still be able to work it (the SOS exit),
+    // and the console works cases from queue rows. While the caller is the ONLY eligible responder for the case's
+    // market, a case naming them is listed (first page) as a minimal row: its number, status, severity, interim action
+    // and when it was opened, with a fixed label. Never its summary, category, people, notes or evidence.
+    if (q.named !== 'resolve' || role !== 'SUPER_ADMIN' || q.page !== 1) return { success: true, data: cases };
+    const namingMe = await app.prisma.incidentCase.findMany({
+      where: { AND: [where, { OR: [{ subjectUserId: { in: mine } }, { reporterUserId: { in: mine } }] }] },
+      select: { id: true, caseNumber: true, status: true, severity: true, interimAction: true, createdAt: true, tenantId: true },
+      orderBy: [{ severity: 'asc' }, { createdAt: 'desc' }, { id: 'asc' }],
+      take: q.limit,
+    });
+    const soleIn = new Map<string | null, boolean>();
+    const actOnly: Array<{ id: string; caseNumber: string; status: string; severity: string; interimAction: string; createdAt: Date; namesYou: true; label: string }> = [];
+    for (const { tenantId, ...n } of namingMe) {
+      if (!soleIn.has(tenantId)) {
+        soleIn.set(tenantId, await isSoleEligibleResponder(app.prisma, request.user.userId, 'safety.case.work', tenantId)
+          || await isSoleEligibleResponder(app.prisma, request.user.userId, 'safety.case.decide', tenantId));
+      }
+      if (soleIn.get(tenantId)) actOnly.push({ ...n, namesYou: true, label: NAMED_CASE_LABEL });
+    }
+    return { success: true, data: [...cases, ...actOnly] };
   });
 
   const opsCaseAction = (fn: (id: string, opsUserId: string) => Promise<unknown>) =>
@@ -885,11 +911,51 @@ export async function safetyRoutes(app: FastifyInstance) {
       return { success: true, data: await fn(request.params.id, request.user.userId) };
     };
 
-  app.post<{ Params: { id: string } }>('/incidents/:id/ack', auth, opsCaseAction((id, ops) => incidents.ack(id, ops)));
+  /**
+   * [REVIEW-2499-B S2-2 · the REVIEW-2499-A S3-1 ruling, applied to cases] The party rule refuses a case that names the
+   * caller. When the caller is the ONLY eligible responder (a SUPER_ADMIN, and no other admin who could do this act on
+   * this case's market; isSoleEligibleResponder), they may still acknowledge it, lift its interim action, decide it and
+   * close it, with a typed reason: the act and its SAFETY_CASE_SELF_ACTED audit row (flagged for a second person's
+   * review) commit together. Otherwise a case naming the owner could never be worked, the person it suspends stayed
+   * suspended, and the SLA watch re-paged it for ever. Investigate, escalate, shadow-restrict and merge get no exit.
+   * Returns the audit writer for a self-act; undefined when the ordinary rule clears the caller.
+   */
+  async function clearOfCaseOrSoleExit(
+    request: FastifyRequest<{ Params: { id: string } }>, capability: 'safety.case.work' | 'safety.case.decide', act: string, extra: Record<string, unknown> = {},
+  ): Promise<CaseActAudit | undefined> {
+    const { selfResolveReason } = selfActBody.parse(request.body ?? {});
+    try {
+      await assertClearOfCase(request.params.id, request.user.userId);
+      return undefined;
+    } catch (err) {
+      const partyRefusal = err === partyRefusals.own || err === partyRefusals.staff || err instanceof IdentityReviewRequiredError;
+      if (!partyRefusal) throw err;
+      const kase = await app.prisma.incidentCase.findUnique({ where: { id: request.params.id }, select: { tenantId: true } });
+      if (!kase || !(await isSoleEligibleResponder(app.prisma, request.user.userId, capability, kase.tenantId))) throw err;
+      if (!selfResolveReason) {
+        throw new AppError(409, 'SELF_RESOLVE_REASON_REQUIRED', 'This case names you, and no other admin can work it. Say why you are acting on it yourself (at least 12 characters); it is recorded for a second person to review.');
+      }
+      return async (tx) => {
+        await tx.auditLog.create({ data: {
+          userId: request.user.userId, action: 'SAFETY_CASE_SELF_ACTED', entity: 'IncidentCase', entityId: request.params.id,
+          changes: { act, reason: selfResolveReason, ...extra, review: SELF_RESOLVED_FLAG },
+          ipAddress: request.ip, userAgent: typeof request.headers['user-agent'] === 'string' ? request.headers['user-agent'] : null,
+        } });
+      };
+    }
+  }
+  const caseActWithSoleExit = (capability: 'safety.case.work' | 'safety.case.decide', act: string, fn: (id: string, opsUserId: string, audit?: CaseActAudit) => Promise<unknown>) =>
+    async (request: FastifyRequest<{ Params: { id: string } }>) => {
+      await requireOpsCapability(app.prisma, request, 'Only ops can work a case.', { prefix: app.prefix });
+      const audit = await clearOfCaseOrSoleExit(request, capability, act);
+      return { success: true, data: await fn(request.params.id, request.user.userId, audit), ...(audit ? { selfActed: true } : {}) };
+    };
+
+  app.post<{ Params: { id: string } }>('/incidents/:id/ack', auth, caseActWithSoleExit('safety.case.work', 'ack', (id, ops, audit) => incidents.ack(id, ops, audit)));
   app.post<{ Params: { id: string } }>('/incidents/:id/investigate', auth, opsCaseAction((id, ops) => incidents.investigate(id, ops)));
-  app.post<{ Params: { id: string } }>('/incidents/:id/close', auth, opsCaseAction((id, ops) => incidents.close(id, ops)));
+  app.post<{ Params: { id: string } }>('/incidents/:id/close', auth, caseActWithSoleExit('safety.case.decide', 'close', (id, ops, audit) => incidents.close(id, ops, audit)));
   app.post<{ Params: { id: string } }>('/incidents/:id/escalate-police', auth, opsCaseAction((id, ops) => incidents.escalatePolice(id, ops)));
-  app.post<{ Params: { id: string } }>('/incidents/:id/lift-interim', auth, opsCaseAction((id, ops) => incidents.liftInterim(id, ops)));
+  app.post<{ Params: { id: string } }>('/incidents/:id/lift-interim', auth, caseActWithSoleExit('safety.case.decide', 'lift-interim', (id, ops, audit) => incidents.liftInterim(id, ops, audit)));
   app.post<{ Params: { id: string } }>('/incidents/:id/shadow-restrict', auth, opsCaseAction((id, ops) => incidents.shadowRestrict(id, ops)));
 
   app.post<{ Params: { id: string } }>('/incidents/:id/decide', auth, async (request) => {
@@ -898,8 +964,8 @@ export async function safetyRoutes(app: FastifyInstance) {
       decisionCode: z.enum(DECISION_CODES),
       notes: z.string().max(4000).optional(),
     }).parse(request.body ?? {});
-    await assertClearOfCase(request.params.id, request.user.userId);
-    return { success: true, data: await incidents.decide(request.params.id, request.user.userId, body.decisionCode, body.notes) };
+    const audit = await clearOfCaseOrSoleExit(request, 'safety.case.decide', 'decide', { decisionCode: body.decisionCode });
+    return { success: true, data: await incidents.decide(request.params.id, request.user.userId, body.decisionCode, body.notes, audit), ...(audit ? { selfActed: true } : {}) };
   });
 
   // ── Evidence Vault (§9) — ops-only; content never moves without a logged

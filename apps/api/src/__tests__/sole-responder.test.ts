@@ -87,10 +87,52 @@ describe('[REVIEW-2499-A D-3] an admin locked out in the last 14 days still coun
     const other = await admin(T, 'ADMIN', ['*'], 'SUSPENDED');
     const db = confinedTo([actor, other]) as never;
     expect(await isSoleEligibleResponder(db, actor, 'safety.sos.respond', T)).toBe(false);
-    await sys(() => app.prisma.$executeRaw`UPDATE "users" SET "updatedAt" = now() - interval '15 days' WHERE id = ${other}`);
+    await sys(() => app.prisma.$executeRaw`UPDATE "users" SET "statusChangedAt" = now() - interval '15 days' WHERE id = ${other}`);
     expect(await isSoleEligibleResponder(db, actor, 'safety.sos.respond', T)).toBe(true);
     // with nobody else at all, the actor is the only one
     expect(await isSoleEligibleResponder(confinedTo([actor]) as never, actor, 'safety.sos.respond', T)).toBe(true);
+  });
+
+  // [REVIEW-2499-B S2-1] The lock-out is dated by the STATUS change, never by the row's last write: updatedAt moves on
+  // any write (a sweep, a profile field), so an admin suspended long ago could switch the owner's exits off for ever.
+  it('an old suspension does not count again because the row was written today', async () => {
+    const actor = await admin(T, 'SUPER_ADMIN');
+    const other = await admin(T, 'ADMIN', ['*']);
+    const db = confinedTo([actor, other]) as never;
+    await sys(() => app.prisma.user.update({ where: { id: other }, data: { status: 'SUSPENDED' } }));
+    expect(await isSoleEligibleResponder(db, actor, 'safety.sos.respond', T)).toBe(false);
+    await sys(() => app.prisma.$executeRaw`UPDATE "users" SET "statusChangedAt" = now() - interval '20 days', "updatedAt" = now() - interval '20 days' WHERE id = ${other}`);
+    expect(await isSoleEligibleResponder(db, actor, 'safety.sos.respond', T)).toBe(true);
+    // an unrelated write today (a name fix, a sweep) moves updatedAt, not the lock-out
+    await sys(() => app.prisma.user.update({ where: { id: other }, data: { lastName: `Renamed${RUN}` } }));
+    expect(await isSoleEligibleResponder(db, actor, 'safety.sos.respond', T)).toBe(true);
+    // a fresh status change does count again: lifted, then suspended again today
+    await sys(() => app.prisma.user.update({ where: { id: other }, data: { status: 'ACTIVE' } }));
+    await sys(() => app.prisma.user.update({ where: { id: other }, data: { status: 'BANNED' } }));
+    expect(await isSoleEligibleResponder(db, actor, 'safety.sos.respond', T)).toBe(false);
+  });
+
+  it('the database stamps statusChangedAt on every status change, whatever path wrote it, and on nothing else', async () => {
+    const other = await admin(T, 'ADMIN', ['*']);
+    const read = () => sys(() => app.prisma.user.findUniqueOrThrow({ where: { id: other }, select: { statusChangedAt: true } }));
+    await sys(() => app.prisma.$executeRaw`UPDATE "users" SET "statusChangedAt" = NULL WHERE id = ${other}`);
+    await sys(() => app.prisma.user.update({ where: { id: other }, data: { firstName: 'Still' } }));
+    expect((await read()).statusChangedAt).toBeNull();
+    await sys(() => app.prisma.$executeRaw`UPDATE "users" SET status = 'DEACTIVATED' WHERE id = ${other}`);
+    const stamped = (await read()).statusChangedAt;
+    expect(stamped).not.toBeNull();
+    expect(Math.abs(stamped!.getTime() - Date.now())).toBeLessThan(60_000);
+    await sys(() => app.prisma.$executeRaw`UPDATE "users" SET "statusChangedAt" = now() - interval '30 days' WHERE id = ${other}`);
+    await sys(() => app.prisma.$executeRaw`UPDATE "users" SET status = 'DEACTIVATED', "firstName" = 'Same' WHERE id = ${other}`);
+    expect(Date.now() - (await read()).statusChangedAt!.getTime()).toBeGreaterThan(29 * 86_400_000);
+  });
+
+  it('no application code writes statusChangedAt: only the database trigger does', async () => {
+    const { execFileSync } = await import('node:child_process');
+    const { join } = await import('node:path');
+    const out = execFileSync('grep', ['-rln', 'statusChangedAt', join(__dirname, '..', 'modules'), join(__dirname, '..', 'jobs'), join(__dirname, '..', 'plugins')], { encoding: 'utf8' }).trim().split('\n').filter(Boolean);
+    // the two lock-out readers, and the export register (the person's own copy of their account row): reads only
+    expect(out.map((f) => f.replace(/^.*\/src\//, '')).sort()).toEqual(['modules/admin/solo-approval.ts', 'modules/integrity/sole-responder.ts', 'modules/user/data-export-register.ts']);
   });
 
   it('a super admin locked out today counts in any market', async () => {
