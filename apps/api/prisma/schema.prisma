@@ -6005,13 +6005,15 @@ model Admin {
   /// [AUDIT-20261113 FABLE-03 #2] The authenticator-app (TOTP) secret, only ever encrypted (MASTER_KEK
   /// envelope, admin-totp.ts). Null until enrolment is confirmed.
   totpSecretEnc        String?
-  /// An enrolment started but not yet confirmed with a code (encrypted), and when it started (10 minutes).
+  /// An enrolment started but not yet confirmed with a code (encrypted), and when it started (10 minutes). Stored as
+  /// "s1:<sessionId>:<sealed>": only the session that started it can confirm it (admin-mfa.ts bindPending).
   totpPendingSecretEnc String?
   totpPendingAt        DateTime?
   totpEnabledAt        DateTime?
   /// The last 30-second step accepted: a code is accepted once.
   totpLastStep         Int?
-  /// SHA-256 digests of the unused recovery codes (shown once at enrolment; each works once).
+  /// Keyed digests of the unused recovery codes (shown once at enrolment; each works once): "h1:" + HMAC-SHA256 under
+  /// HKDF-SHA256 of this account's authenticator secret (admin-totp.ts recoveryDigest). Never a bare hash.
   totpRecoveryHashes   String[] @default([])
 
   @@map("admins")

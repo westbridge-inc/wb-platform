@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest
 import Fastify, { type FastifyInstance } from 'fastify';
 import rateLimit from '@fastify/rate-limit';
 import { nanoid } from 'nanoid';
-import { createHash } from 'node:crypto';
+import { createHash, createHmac, hkdfSync } from 'node:crypto';
 import type { AddressInfo } from 'node:net';
 import { io as ioClient, type Socket } from 'socket.io-client';
 import { prismaPlugin } from '../plugins/prisma';
@@ -18,7 +18,11 @@ import { searchRoutes } from '../modules/search/search.routes';
 import { runWithoutTenant } from '../plugins/tenant-context';
 import { resetKeyProviderForTests } from '../providers/storage/envelope';
 import { base32Decode, base32Encode, hotp, matchTotp, normaliseRecoveryCode, totpAt, stepAt } from '../modules/auth/admin-totp';
-import { notifyAdminSignIn, signInPlaceWords, ADMIN_MFA_MAX_FAILURES, ADMIN_MFA_DAY_MAX_FAILURES } from '../modules/auth/admin-mfa';
+import {
+  notifyAdminSignIn, signInPlaceWords, adminMfaAccountDayKey, adminMfaAttemptKeys, ADMIN_MFA_ACCOUNT_ALERT_FAILURES, ADMIN_MFA_MAX_FAILURES,
+  ADMIN_MFA_DAY_MAX_FAILURES, ADMIN_MFA_RECOVERY_MAX_FAILURES, ADMIN_MFA_ACCOUNT_DAY_CEILING, adminMfaAccountCeilingKey,
+} from '../modules/auth/admin-mfa';
+import { adminMfaResetMain, ADMIN_MFA_RESET_AUDIT_ACTION } from '../modules/auth/admin-mfa-reset';
 import { resetBrowserOriginsForTests } from '../modules/auth/browser-session';
 import { stepUpKey } from '../modules/auth/step-up';
 import { OPS_WAR_ROOM } from '../modules/safety/war-room';
@@ -147,7 +151,7 @@ afterAll(async () => {
       await app.prisma.user.deleteMany({ where: { id: { in: userIds } } });
     }
   }, 'test-cleanup:admin-mfa');
-  for (const id of userIds) await app.redis.del(`admin_mfa_fail:${id}`, `admin_mfa_fail_day:${id}`);
+  for (const id of userIds) await app.redis.del(adminMfaAccountDayKey(id), adminMfaAccountCeilingKey(id));
   await app.close();
 });
 
@@ -485,15 +489,16 @@ describe('[REVIEW-2501-A S3-2 · S4-2] attempts are reserved before they are jud
 
   it('a failure counter always has its expiry, even one found without it (S4-2)', async () => {
     const admin = await enrolledAdmin();
-    await app.redis.set(`admin_mfa_fail:${admin.userId}`, '1');
-    expect(await app.redis.ttl(`admin_mfa_fail:${admin.userId}`)).toBe(-1);
+    const windowKey = adminMfaAttemptKeys(admin.sessionId, 'code').window;
+    await app.redis.set(windowKey, '1');
+    expect(await app.redis.ttl(windowKey)).toBe(-1);
     await post(admin, '/api/v1/auth/admin-mfa/verify', { code: wrongCode(admin.key) });
-    expect(await app.redis.ttl(`admin_mfa_fail:${admin.userId}`)).toBeGreaterThan(0);
+    expect(await app.redis.ttl(windowKey)).toBeGreaterThan(0);
   });
 
   it('a day of wrong codes rests the authenticator door; a recovery code still opens (no permanent lockout)', async () => {
     const admin = await enrolledAdmin();
-    await app.redis.set(`admin_mfa_fail_day:${admin.userId}`, String(ADMIN_MFA_DAY_MAX_FAILURES), 'EX', 3600);
+    await app.redis.set(adminMfaAttemptKeys(admin.sessionId, 'code').day, String(ADMIN_MFA_DAY_MAX_FAILURES), 'EX', 3600);
     const rested = await post(admin, '/api/v1/auth/admin-mfa/verify', { code: totpAt(admin.key, Date.now()) });
     expect(rested.statusCode).toBe(429);
     expect((await post(admin, '/api/v1/auth/admin-mfa/verify', { recoveryCode: admin.recoveryCodes[0] })).statusCode).toBe(200);
@@ -635,5 +640,377 @@ describe('[FABLE-03 #2] the admin session posture', () => {
     expect(signInPlaceWords({ browserClient: null, deviceType: 'iOS' })).toBe('the iPhone app');
     expect(signInPlaceWords({ browserClient: null, deviceType: 'android' })).toBe('the Android app');
     expect(signInPlaceWords({ browserClient: null, deviceType: 'call +592 now' })).toBe('a device Swift could not name');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// [REVIEW-2501-B · REVIEW-2501-A delta] Before the owner enrols or ADMIN_TOTP_REQUIRED=1. Review B's attack probes
+// (REVIEW-2501-B-probes, head 1ba6d64c), each turned to assert the fixed behaviour:
+//  - B-S3-1 / D-S3-1: every count that can refuse a code is per SESSION; recovery codes have their own counts; the
+//    authenticator step-up has the 12-hour door. Another session (an old phone session, or someone who reads the
+//    owner's texts) cannot keep the only admin out.
+//  - B-S4-3: the "door rests" email is sent exactly once per resting period.
+//  - B-S4-4: the console-only war room, and the keyed recovery digest, are graded.
+//  - B-S4-7: the audited break-glass clears one admin's factor and revokes every session.
+// ---------------------------------------------------------------------------
+const REST_TITLE = 'Swift: wrong authenticator codes on an admin account';
+/** A recovery code in the right shape that was never issued. */
+const NEVER_ISSUED = 'AAAAA-AAAAA';
+
+describe('[REVIEW-2501-B B-S3-1 · D-S3-1] another session can never lock the owner\'s own session out', () => {
+  it('B1: a 3-day-old texted session is refused and revoked at the step-up door; a second session\'s burst leaves the owner\'s code and recovery code working', async () => {
+    process.env['ADMIN_TOTP_REQUIRED'] = '1';
+    const owner = await enrolledAdmin();
+    const old = await newSession(owner.userId, new Date(Date.now() - 3 * 86_400_000)); // a refresh-extended phone session
+    const refused = await post(old, '/api/v1/auth/step-up/verify', { code: wrongCode(owner.key) });
+    expect(refused.statusCode, refused.body).toBe(401);
+    expect(refused.json().error.code).toBe('ADMIN_SESSION_EXPIRED');
+    expect(await sessionRow(old.sessionId)).toBeNull();
+
+    const attacker = await newSession(owner.userId);
+    const codes: number[] = [];
+    for (let i = 0; i < 6; i++) codes.push((await post(attacker, '/api/v1/auth/step-up/verify', { code: wrongCode(owner.key) })).statusCode);
+    expect(codes).toEqual([400, 400, 400, 400, 400, 429]);
+
+    const right = await post(owner, '/api/v1/auth/admin-mfa/verify', { code: totpAt(owner.key, Date.now()) });
+    expect(right.statusCode, right.body).toBe(200);
+    expect((await get(owner, ADMIN_PROBE)).statusCode).toBe(200);
+    const another = await newSession(owner.userId);
+    expect((await post(another, '/api/v1/auth/admin-mfa/verify', { recoveryCode: owner.recoveryCodes[0] })).statusCode).toBe(200);
+  });
+
+  it('D-S3-1: wrong recovery codes have their own cap; they close neither the authenticator door nor another session\'s recovery door', async () => {
+    process.env['ADMIN_TOTP_REQUIRED'] = '1';
+    const owner = await enrolledAdmin();
+    const attacker = await newSession(owner.userId);
+    for (let i = 0; i < ADMIN_MFA_RECOVERY_MAX_FAILURES; i++) {
+      expect((await post(attacker, '/api/v1/auth/admin-mfa/verify', { recoveryCode: NEVER_ISSUED })).statusCode).toBe(400);
+    }
+    const rested = await post(attacker, '/api/v1/auth/admin-mfa/verify', { recoveryCode: NEVER_ISSUED });
+    expect(rested.statusCode).toBe(429);
+    expect(rested.json().error.code).toBe('ADMIN_MFA_RESTING');
+    // the same session's authenticator door is still open
+    expect((await post(attacker, '/api/v1/auth/admin-mfa/verify', { code: totpAt(owner.key, Date.now()) })).statusCode).toBe(200);
+    // and the owner's own session's recovery door
+    await rewind(owner.userId);
+    expect((await post(owner, '/api/v1/auth/admin-mfa/verify', { recoveryCode: owner.recoveryCodes[1] })).statusCode).toBe(200);
+  });
+
+  it('a right code starts this session\'s windows again, the recovery window included', async () => {
+    process.env['ADMIN_TOTP_REQUIRED'] = '1';
+    const owner = await enrolledAdmin();
+    for (let i = 0; i < ADMIN_MFA_RECOVERY_MAX_FAILURES - 1; i++) await post(owner, '/api/v1/auth/admin-mfa/verify', { recoveryCode: NEVER_ISSUED });
+    expect((await post(owner, '/api/v1/auth/admin-mfa/verify', { code: totpAt(owner.key, Date.now()) })).statusCode).toBe(200);
+    const after: number[] = [];
+    for (let i = 0; i < ADMIN_MFA_RECOVERY_MAX_FAILURES; i++) after.push((await post(owner, '/api/v1/auth/admin-mfa/verify', { recoveryCode: NEVER_ISSUED })).statusCode);
+    expect(after).toEqual(Array(ADMIN_MFA_RECOVERY_MAX_FAILURES).fill(400));
+  });
+
+  it('B4: twenty wrong codes in a day from another session rest only that session; the owner\'s right code works and the owner is told', async () => {
+    process.env['ADMIN_TOTP_REQUIRED'] = '1';
+    const email = `day-${RUN}@example.test`;
+    const owner = await enrolledAdmin({ email });
+    const attacker = await newSession(owner.userId);
+    const keys = adminMfaAttemptKeys(attacker.sessionId, 'code');
+    const before = devChannelLog.length;
+    for (let w = 0; w < ADMIN_MFA_DAY_MAX_FAILURES / ADMIN_MFA_MAX_FAILURES; w++) {
+      for (let i = 0; i < ADMIN_MFA_MAX_FAILURES; i++) {
+        expect((await post(attacker, '/api/v1/auth/step-up/verify', { code: wrongCode(owner.key) })).statusCode).toBe(400);
+      }
+      await app.redis.del(keys.window, keys.windowNotice); // 15 minutes pass
+    }
+    const rested = await post(attacker, '/api/v1/auth/admin-mfa/verify', { code: totpAt(owner.key, Date.now()) });
+    expect(rested.statusCode).toBe(429);
+    expect(rested.json().error.message).toMatch(/today/);
+
+    const right = await post(owner, '/api/v1/auth/admin-mfa/verify', { code: totpAt(owner.key, Date.now()) });
+    expect(right.statusCode, right.body).toBe(200);
+    expect(Number(await app.redis.get(adminMfaAccountDayKey(owner.userId)))).toBe(ADMIN_MFA_ACCOUNT_ALERT_FAILURES);
+    const told = emailsTo(email, before).filter((m) => m.title === REST_TITLE);
+    expect(told).toHaveLength(ADMIN_MFA_DAY_MAX_FAILURES / ADMIN_MFA_MAX_FAILURES); // one per resting period
+    expect(told.at(-1)!.body).toContain(`${ADMIN_MFA_ACCOUNT_ALERT_FAILURES} wrong`);
+  });
+
+  it('B3 (switch OFF): a 13-hour session keeps the staff surfaces; the admin API answers 401 and revokes the whole session', async () => {
+    const old = await makeAdmin({ createdAt: new Date(Date.now() - 13 * 3_600_000) });
+    expect((await get(old, '/api/v1/safety/sos')).statusCode).toBe(200);
+    expect((await get(old, '/api/v1/safety/ops-alerts')).statusCode).toBe(200);
+    const r = await get(old, ADMIN_PROBE);
+    expect(r.statusCode).toBe(401);
+    expect(r.json().error.code).toBe('ADMIN_SESSION_EXPIRED');
+    expect(await sessionRow(old.sessionId)).toBeNull();
+    expect((await get(old, '/api/v1/safety/sos')).statusCode).toBe(401);
+  });
+
+  it('the /admin-mfa/* route ceiling counts per session: one session\'s burst does not refuse another', async () => {
+    const limited = Fastify({ logger: false });
+    registerErrorHandler(limited);
+    registerEmptyJsonBodyParser(limited);
+    await limited.register(prismaPlugin);
+    await limited.register(redisPlugin);
+    await limited.register(authPlugin);
+    await limited.register(rateLimit, { global: false }); // no allow-list: the real ceilings
+    await limited.register(authRoutes, { prefix: '/api/v1/auth' });
+    await limited.ready();
+    try {
+      const owner = await enrolledAdmin();
+      const attacker = await newSession(owner.userId);
+      const hit = (a: { token: string }) => limited.inject({ method: 'GET', url: '/api/v1/auth/admin-mfa', headers: { authorization: `Bearer ${a.token}` } });
+      const send = (a: { token: string }) => limited.inject({ method: 'POST', url: '/api/v1/auth/admin-mfa/verify', headers: { authorization: `Bearer ${a.token}`, 'content-type': 'application/json' }, payload: {} });
+      expect((await hit(owner)).statusCode).toBe(200);
+      const burst: number[] = [];
+      for (let i = 0; i < 11; i++) burst.push((await send(attacker)).statusCode);
+      expect(burst.slice(0, 10).every((c) => c === 400)).toBe(true); // judged (an empty body), not limited
+      expect(burst[10]).toBe(429);
+      expect((await send(owner)).statusCode).toBe(400); // the owner's own session is not limited
+    } finally {
+      await limited.close();
+    }
+  });
+});
+
+describe('[REVIEW-2501-B B-S4-3] the "door rests" email is sent exactly once per resting period', () => {
+  it('B5: eight concurrent wrong codes: five judged, one email (three runs)', async () => {
+    process.env['ADMIN_TOTP_REQUIRED'] = '1';
+    for (let run = 0; run < 3; run++) {
+      const email = `burst-${run}-${RUN}@example.test`;
+      const owner = await enrolledAdmin({ email });
+      const attacker = await newSession(owner.userId);
+      const before = devChannelLog.length;
+      const res = await Promise.all(Array.from({ length: 8 }, () => post(attacker, '/api/v1/auth/step-up/verify', { code: wrongCode(owner.key) })));
+      const codes = res.map((r) => r.statusCode);
+      expect(codes.filter((c) => c === 400)).toHaveLength(ADMIN_MFA_MAX_FAILURES);
+      expect(codes.filter((c) => c === 429)).toHaveLength(8 - ADMIN_MFA_MAX_FAILURES);
+      expect(emailsTo(email, before).filter((m) => m.title === REST_TITLE), `run ${run}`).toHaveLength(1);
+    }
+  });
+
+  it('no email while the door is still open (four wrong codes)', async () => {
+    process.env['ADMIN_TOTP_REQUIRED'] = '1';
+    const email = `open-${RUN}@example.test`;
+    const owner = await enrolledAdmin({ email });
+    const before = devChannelLog.length;
+    for (let i = 0; i < ADMIN_MFA_MAX_FAILURES - 1; i++) await post(owner, '/api/v1/auth/step-up/verify', { code: wrongCode(owner.key) });
+    expect(emailsTo(email, before).filter((m) => m.title === REST_TITLE)).toHaveLength(0);
+  });
+});
+
+describe('[REVIEW-2501-B B-S4-4 · REVIEW-2501-A D-S4-2] graded by test', () => {
+  const connectSocket = (token: string) => new Promise<Socket>((resolve, reject) => {
+    const socket = ioClient(url, { auth: { token }, transports: ['websocket'], reconnection: false, timeout: 3000 });
+    sockets.push(socket);
+    const timer = setTimeout(() => reject(new Error('socket did not become ready')), 7_500);
+    socket.on('auth:ready', () => { clearTimeout(timer); resolve(socket); });
+    socket.on('connect_error', (e) => { clearTimeout(timer); reject(e); });
+  });
+  const inWarRoom = async (socket: Socket) => (await app.io.in(OPS_WAR_ROOM).fetchSockets()).some((s) => s.id === socket.id);
+
+  it('(a) with ADMIN_API_CONSOLE_ONLY=1 no socket joins the war room, even a console-bound, code-proved session\'s', async () => {
+    const admin = await makeAdmin();
+    await runWithoutTenant(() => app.prisma.session.update({ where: { id: admin.sessionId }, data: { mfaVerifiedAt: new Date(), consoleBoundAt: new Date() } }), 'test-fixture:admin-mfa');
+    const open = await connectSocket(admin.token); // switches off: it joins (the control)
+    expect(await inWarRoom(open)).toBe(true);
+    process.env['ADMIN_API_CONSOLE_ONLY'] = '1';
+    const consoleOnly = await connectSocket(admin.token);
+    expect(await inWarRoom(consoleOnly)).toBe(false);
+  });
+
+  it('(b) each stored recovery digest is the HMAC under the key derived from THIS account\'s authenticator secret, never a constant key', async () => {
+    const admin = await enrolledAdmin();
+    const row = await runWithoutTenant(() => app.prisma.admin.findUniqueOrThrow({ where: { userId: admin.userId } }), 'test-read');
+    const keyed = (k: Buffer, code: string) => `h1:${createHmac('sha256', k).update(normaliseRecoveryCode(code)).digest('hex')}`;
+    const derived = Buffer.from(hkdfSync('sha256', admin.key, Buffer.alloc(0), 'swift-admin-recovery-v1', 32));
+    for (const code of admin.recoveryCodes) {
+      expect(row.totpRecoveryHashes).toContain(keyed(derived, code));
+      expect(row.totpRecoveryHashes).not.toContain(keyed(Buffer.alloc(32), code));
+    }
+  });
+});
+
+describe('[REVIEW-2501-B B-S4-7] break-glass: the audited operator reset', () => {
+  const script = (answers: string[]) => {
+    const printed: string[] = [];
+    const queue = [...answers];
+    return { printed, io: { ask: async () => queue.shift() ?? '', print: (line: string) => { printed.push(line); } } };
+  };
+
+  it('B2: a hijacked first enrolment (switch off) is undone by the break-glass: factor cleared, every session revoked, audited, the admin emailed and texted; the owner then enrols', async () => {
+    const email = `glass-${RUN}@example.test`;
+    const owner = await makeAdmin({ email });
+    const attacker = await newSession(owner.userId); // a fresh texted sign-in from someone else
+    const started = await post(attacker, '/api/v1/auth/admin-mfa/enrol');
+    expect(started.statusCode, started.body).toBe(200);
+    const key = base32Decode(started.json().data.secret);
+    expect((await post(attacker, '/api/v1/auth/admin-mfa/enrol/confirm', { code: totpAt(key, Date.now()) })).statusCode).toBe(200);
+    expect((await post(owner, '/api/v1/auth/admin-mfa/enrol')).statusCode).toBe(409);
+    expect((await post(owner, '/api/v1/auth/step-up')).json().error.code).toBe('STEP_UP_USE_AUTHENTICATOR');
+
+    const lastFour = owner.phone.replace(/\D/g, '').slice(-4);
+    // Not confirmed: nothing changes.
+    const wrong = script([owner.phone, 'Ops Person', 'the owner lost the factor', 'RESET ADMIN']);
+    expect(await adminMfaResetMain(app, wrong.io)).toBe(3);
+    expect((await runWithoutTenant(() => app.prisma.admin.findUniqueOrThrow({ where: { userId: owner.userId } }), 'test-read')).totpEnabledAt).not.toBeNull();
+    expect(await sessionRow(owner.sessionId)).not.toBeNull();
+
+    const before = devChannelLog.length;
+    const ok = script([owner.phone, 'Ops Person', 'the owner lost the factor', `RESET ADMIN ${lastFour}`]);
+    expect(await adminMfaResetMain(app, ok.io), ok.printed.join('\n')).toBe(0);
+    expect(ok.printed.join('\n')).not.toContain(owner.phone); // masked only
+    const row = await runWithoutTenant(() => app.prisma.admin.findUniqueOrThrow({ where: { userId: owner.userId } }), 'test-read');
+    expect(row).toMatchObject({ totpSecretEnc: null, totpPendingSecretEnc: null, totpPendingAt: null, totpEnabledAt: null, totpLastStep: null, totpRecoveryHashes: [] });
+    expect(await sessionRow(owner.sessionId)).toBeNull();
+    expect(await sessionRow(attacker.sessionId)).toBeNull();
+    const audit = await runWithoutTenant(() => app.prisma.auditLog.findFirst({ where: { userId: owner.userId, action: ADMIN_MFA_RESET_AUDIT_ACTION } }), 'test-read');
+    expect(audit?.changes).toMatchObject({ operator: 'Ops Person', reason: 'the owner lost the factor', recoveryCodesCleared: 10 });
+    expect(emailsTo(email, before).map((m) => m.title)).toContain('Swift: your admin authenticator was reset by an operator');
+    expect(devChannelLog.slice(before).filter((n) => n.channel === 'sms' && n.to === owner.phone)).toHaveLength(1);
+
+    // The owner signs in again and enrols their own app.
+    const fresh = await newSession(owner.userId);
+    const mine = await post(fresh, '/api/v1/auth/admin-mfa/enrol');
+    expect(mine.statusCode, mine.body).toBe(200);
+    const myKey = base32Decode(mine.json().data.secret);
+    expect((await post(fresh, '/api/v1/auth/admin-mfa/enrol/confirm', { code: totpAt(myKey, Date.now()) })).statusCode).toBe(200);
+  });
+
+  it('refuses an account that is not an admin, or no account, and changes nothing', async () => {
+    const none = script(['no-such-account-id']);
+    expect(await adminMfaResetMain(app, none.io)).toBe(2);
+    const customer = await runWithoutTenant(() => app.prisma.user.create({ data: {
+      phone: testPhone(), firstName: 'Not', lastName: `Admin${RUN}`, roles: ['CUSTOMER'], activeRole: 'CUSTOMER', status: 'ACTIVE', isPhoneVerified: true,
+    } }), 'test-fixture:admin-mfa');
+    userIds.push(customer.id);
+    const plain = script([customer.id, 'Ops Person', 'a reason here', 'RESET ADMIN 0000']);
+    expect(await adminMfaResetMain(app, plain.io)).toBe(2);
+    expect(plain.printed.join('\n')).toMatch(/not an admin/);
+  });
+});
+
+// [coordinator review of #2507] Per-session counts stop another session locking the owner out, but on their own
+// they let many sessions together guess without a ceiling. (a) a per-ACCOUNT daily ceiling on judged authenticator
+// guesses from sessions that have not passed the authenticator step: at the ceiling every such session is revoked,
+// and a new sign-in needs a recovery code (or the operator's break-glass). A session that already passed the step
+// is never counted, refused or revoked. (b) the owner is emailed at every multiple of the alert count.
+describe('[#2507 review] the account ceiling across sessions, and alerts at every multiple', () => {
+  it('(a) many sessions together cannot pass the account ceiling; then every unverified session is revoked, the owner\'s verified session keeps working, and a recovery code still opens', async () => {
+    process.env['ADMIN_TOTP_REQUIRED'] = '1';
+    const owner = await enrolledAdmin();
+    expect((await post(owner, '/api/v1/auth/admin-mfa/verify', { code: totpAt(owner.key, Date.now()) })).statusCode).toBe(200); // the owner's own session passed the step
+    const attackers: Array<{ token: string; sessionId: string }> = [];
+    // the enrolment's code and the owner's own code were judged on sessions that had not yet passed the step
+    let judged = Number(await app.redis.get(adminMfaAccountCeilingKey(owner.userId)));
+    expect(judged).toBe(2);
+    while (judged < ADMIN_MFA_ACCOUNT_DAY_CEILING) {
+      const a = await newSession(owner.userId); // each a texted sign-in
+      attackers.push(a);
+      for (let i = 0; i < ADMIN_MFA_MAX_FAILURES && judged < ADMIN_MFA_ACCOUNT_DAY_CEILING; i++, judged++) {
+        expect((await post(a, '/api/v1/auth/step-up/verify', { code: wrongCode(owner.key) })).statusCode).toBe(400);
+      }
+    }
+    expect(Number(await app.redis.get(adminMfaAccountCeilingKey(owner.userId)))).toBe(ADMIN_MFA_ACCOUNT_DAY_CEILING);
+    // one more sign-in: even the RIGHT app code is refused, unjudged
+    const late = await newSession(owner.userId);
+    const refused = await post(late, '/api/v1/auth/admin-mfa/verify', { code: totpAt(owner.key, Date.now() + 30_000) });
+    expect(refused.statusCode, refused.body).toBe(429);
+    expect(refused.json().error.code).toBe('ADMIN_MFA_RESTING');
+    expect(refused.json().error.message).toMatch(/recovery code/);
+    for (const a of [...attackers, late]) expect(await sessionRow(a.sessionId), a.sessionId).toBeNull();
+    // the owner's verified session: untouched, the admin API and an app-code step-up still work
+    expect(await sessionRow(owner.sessionId)).not.toBeNull();
+    expect((await get(owner, ADMIN_PROBE)).statusCode).toBe(200);
+    expect((await post(owner, '/api/v1/auth/step-up/verify', { code: totpAt(owner.key, Date.now() + 30_000) })).statusCode).toBe(200);
+    // a new sign-in: app codes stay refused for the day; a recovery code opens
+    const fresh = await newSession(owner.userId);
+    expect((await post(fresh, '/api/v1/auth/admin-mfa/verify', { code: '000000' })).statusCode).toBe(429);
+    expect((await post(fresh, '/api/v1/auth/admin-mfa/verify', { recoveryCode: owner.recoveryCodes[0] })).statusCode).toBe(200);
+    expect((await get(fresh, ADMIN_PROBE)).statusCode).toBe(200);
+    // the recovery code opened THAT session only: the ceiling is not reset (no refill loop), the next sign-in's app
+    // code is still refused; only the operator's break-glass resets it (below)
+    expect(Number(await app.redis.get(adminMfaAccountCeilingKey(owner.userId)))).toBeGreaterThan(ADMIN_MFA_ACCOUNT_DAY_CEILING);
+    const next = await newSession(owner.userId);
+    await rewind(owner.userId);
+    expect((await post(next, '/api/v1/auth/admin-mfa/verify', { code: totpAt(owner.key, Date.now()) })).statusCode).toBe(429);
+  }, 180_000);
+
+  it('(a) the break-glass starts the account ceiling again', async () => {
+    const owner = await enrolledAdmin();
+    await app.redis.set(adminMfaAccountCeilingKey(owner.userId), String(ADMIN_MFA_ACCOUNT_DAY_CEILING + 5), 'EX', 3600);
+    const lastFour = owner.phone.replace(/\D/g, '').slice(-4);
+    const answers = [owner.phone, 'Ops Person', 'the owner lost the factor', `RESET ADMIN ${lastFour}`];
+    expect(await adminMfaResetMain(app, { ask: async () => answers.shift() ?? '', print: () => {} })).toBe(0);
+    expect(await app.redis.get(adminMfaAccountCeilingKey(owner.userId))).toBeNull();
+  });
+
+  it('(a) a confirm is exempt only as any code is: a first enrolment on a session that has not passed the step is counted', async () => {
+    process.env['ADMIN_TOTP_REQUIRED'] = '1';
+    const admin = await makeAdmin();
+    await app.redis.set(adminMfaAccountCeilingKey(admin.userId), String(ADMIN_MFA_ACCOUNT_DAY_CEILING + 5), 'EX', 3600);
+    const started = await post(admin, '/api/v1/auth/admin-mfa/enrol');
+    expect(started.statusCode, started.body).toBe(200);
+    const key = base32Decode(started.json().data.secret);
+    expect((await post(admin, '/api/v1/auth/admin-mfa/enrol/confirm', { code: totpAt(key, Date.now()) })).statusCode).toBe(429);
+  });
+
+  it('(a) moving to a new app (the session proved the current factor, so it passed the step) is not refused by the ceiling', async () => {
+    process.env['ADMIN_TOTP_REQUIRED'] = '1';
+    const owner = await enrolledAdmin();
+    await app.redis.set(adminMfaAccountCeilingKey(owner.userId), String(ADMIN_MFA_ACCOUNT_DAY_CEILING + 5), 'EX', 3600);
+    const started = await post(owner, '/api/v1/auth/admin-mfa/replace', { recoveryCode: owner.recoveryCodes[4] });
+    expect(started.statusCode, started.body).toBe(200);
+    const newKey = base32Decode(started.json().data.secret);
+    expect((await post(owner, '/api/v1/auth/admin-mfa/replace/confirm', { code: totpAt(newKey, Date.now()) })).statusCode).toBe(200);
+  });
+
+  it('(a) a session that passed the authenticator step is never counted toward the ceiling', async () => {
+    process.env['ADMIN_TOTP_REQUIRED'] = '1';
+    const owner = await enrolledAdmin();
+    expect((await post(owner, '/api/v1/auth/admin-mfa/verify', { code: totpAt(owner.key, Date.now()) })).statusCode).toBe(200);
+    const counted = await app.redis.get(adminMfaAccountCeilingKey(owner.userId));
+    expect((await post(owner, '/api/v1/auth/step-up/verify', { code: wrongCode(owner.key) })).statusCode).toBe(400);
+    expect((await post(owner, '/api/v1/auth/step-up/verify', { code: wrongCode(owner.key) })).statusCode).toBe(400);
+    expect(await app.redis.get(adminMfaAccountCeilingKey(owner.userId))).toBe(counted);
+  });
+
+  it('(b) the owner is emailed at every multiple of the alert count, not only the first', async () => {
+    process.env['ADMIN_TOTP_REQUIRED'] = '1';
+    const email = `multiple-${RUN}@example.test`;
+    const owner = await enrolledAdmin({ email });
+    const other = await newSession(owner.userId);
+    await app.redis.set(adminMfaAccountDayKey(owner.userId), String(2 * ADMIN_MFA_ACCOUNT_ALERT_FAILURES - 1), 'EX', 3600);
+    const before = devChannelLog.length;
+    expect((await post(other, '/api/v1/auth/step-up/verify', { code: wrongCode(owner.key) })).statusCode).toBe(400);
+    const told = emailsTo(email, before).filter((m) => m.title === REST_TITLE);
+    expect(told).toHaveLength(1);
+    expect(told[0]!.body).toContain(`${2 * ADMIN_MFA_ACCOUNT_ALERT_FAILURES} wrong`);
+    await post(other, '/api/v1/auth/step-up/verify', { code: wrongCode(owner.key) }); // 41: no new email
+    expect(emailsTo(email, before).filter((m) => m.title === REST_TITLE)).toHaveLength(1);
+  });
+});
+
+// [#2507 review 3] A pending secret is bound to the session that started it (the one that proved the right to).
+describe('[#2507 review 3] only the session that started a set-up can confirm it', () => {
+  it('enrolment: another session holding the right code is refused; the starting session confirms', async () => {
+    const owner = await makeAdmin();
+    const other = await newSession(owner.userId);
+    const started = await post(owner, '/api/v1/auth/admin-mfa/enrol');
+    expect(started.statusCode, started.body).toBe(200);
+    const key = base32Decode(started.json().data.secret);
+    const stolen = await post(other, '/api/v1/auth/admin-mfa/enrol/confirm', { code: totpAt(key, Date.now()) });
+    expect(stolen.statusCode, stolen.body).toBe(409);
+    expect(stolen.json().error.code).toBe('ADMIN_MFA_ENROLMENT_OTHER_SESSION');
+    expect((await runWithoutTenant(() => app.prisma.admin.findUniqueOrThrow({ where: { userId: owner.userId } }), 'test-read')).totpEnabledAt).toBeNull();
+    expect((await post(owner, '/api/v1/auth/admin-mfa/enrol/confirm', { code: totpAt(key, Date.now()) })).statusCode).toBe(200);
+  });
+
+  it('moving to a new app: another session cannot confirm the move the owner started', async () => {
+    const owner = await enrolledAdmin();
+    const other = await newSession(owner.userId);
+    const started = await post(owner, '/api/v1/auth/admin-mfa/replace', { recoveryCode: owner.recoveryCodes[5] });
+    expect(started.statusCode, started.body).toBe(200);
+    const newKey = base32Decode(started.json().data.secret);
+    const stolen = await post(other, '/api/v1/auth/admin-mfa/replace/confirm', { code: totpAt(newKey, Date.now()) });
+    expect(stolen.statusCode, stolen.body).toBe(409);
+    expect(stolen.json().error.code).toBe('ADMIN_MFA_ENROLMENT_OTHER_SESSION');
+    expect((await post(owner, '/api/v1/auth/admin-mfa/replace/confirm', { code: totpAt(newKey, Date.now()) })).statusCode).toBe(200);
   });
 });

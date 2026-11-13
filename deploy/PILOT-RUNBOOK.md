@@ -511,6 +511,75 @@ pilot-up.sh (Caddy stops serving the name), then remove the idle container:
 
     docker compose -f deploy/docker-compose.yml --profile admin rm --stop --force admin
 
+### The admin authenticator (ADMIN_TOTP_REQUIRED) and its break-glass
+
+An admin account can add a second sign-in step: a 6-digit code from an
+authenticator app (TOTP), plus ten one-time recovery codes. The switch
+ADMIN_TOTP_REQUIRED (deploy/.env, read by the api through its env_file) is
+off unless it is exactly `1`. With it on, the admin API and every staff
+surface (the safety console, the war room, search sync) need a session that
+proved a code, and no admin session lasts more than 12 hours. The admin API's
+12-hour limit applies with the switch off too.
+
+Order, never different:
+
+1. The admin enrols first (Mission Control web > System > Security), the same
+   hour the release that carries the authenticator is deployed: the first
+   person to set up an app on an admin account owns it.
+2. Check the host clock is synchronised (`timedatectl` says "System clock
+   synchronized: yes"): a code allows only about 30 to 60 seconds of drift.
+3. Then set `ADMIN_TOTP_REQUIRED=1` and re-create the api and worker.
+
+**Never rotate or replace MASTER_KEK while ADMIN_TOTP_REQUIRED=1.** The
+authenticator secret is sealed under MASTER_KEK, and the recovery codes are
+keyed from that secret, so with a different or lost MASTER_KEK both the app
+codes and the recovery codes fail (503 ADMIN_MFA_UNAVAILABLE). If MASTER_KEK
+must change: set `ADMIN_TOTP_REQUIRED=0` first, change it, run the
+break-glass below for every enrolled admin, have each admin enrol again, and
+only then set the switch back to `1`.
+
+Wrong codes: each signed-in device session gets five wrong app codes per 15
+minutes and twenty per day, and five wrong recovery codes per 15 minutes and
+ten per day, counted separately. One session's wrong codes never close
+another session's door, so someone else's sign-in cannot keep the admin out.
+Across all sessions that have not passed the authenticator step, the account
+allows 200 judged app codes a day. Past that, every such session is signed
+out, and for the rest of the day a new sign-in opens only with a recovery
+code (or the break-glass below). A recovery code opens that one session; only
+the break-glass starts the count again. A set-up of a new app can be confirmed
+only from the device session that started it. A session that already passed
+the step (the admin's own console, or one moving to a new app) is never
+counted, refused or signed out by this. The
+admin's own address is emailed when a session's door rests, at every 20th
+wrong code of the day across all sessions, and when the 200 are used up.
+
+**Break-glass** (the admin lost the app AND the recovery codes, MASTER_KEK was
+lost or changed, or someone else enrolled first). No route in the API can
+clear an enrolment; this command, run on the server by the person who holds
+it, is the one audited way back. It asks its questions on the terminal (so
+`exec` without `-T`, and no phone number on the command line or in the shell
+history):
+
+    docker compose -f deploy/docker-compose.yml exec api node dist/scripts/admin-mfa-reset.js
+
+It asks for the admin's phone number (+592 form) or account id and shows a
+masked summary (account id, masked phone, when the app was set up, recovery
+codes left, active sessions). Then it asks for your name and the reason (both
+go in the audit record) and for a typed confirmation, `RESET ADMIN` followed
+by the last four digits of the admin's phone. In one database transaction it
+clears the authenticator secret, any pending set-up and every recovery code,
+revokes every session of that account (its sockets drop) and writes the
+audit row `ADMIN_MFA_BREAK_GLASS_RESET`. Then it emails and texts the admin
+and prints whether each notice went. It never decrypts or prints a secret.
+Exit codes: 0 done, 1 failed (nothing changed), 2 refused (no such admin), 3
+not confirmed.
+
+With the switch still on, the admin then signs in with a texted code; the
+console sends them straight to "Set up an authenticator app". Enrol at once:
+until they do, the first person who sets one up owns it again. If someone
+else had enrolled, treat the admin's phone number as compromised first (call
+the carrier, then follow the incident runbook).
+
 ## 3e. A password on the staging website
 
 The staging website (3b) can be limited to the people who have a password:

@@ -14,9 +14,10 @@ let verified: boolean;
 let rejectRetry: boolean;
 let finishVerify: (() => void) | undefined;
 let holdVerify: boolean;
+let authenticatorAdmin: boolean;
 
 beforeEach(() => {
-  adoptSession(profile.id); calls = []; verified = false; rejectRetry = false; holdVerify = false; finishVerify = undefined;
+  adoptSession(profile.id); calls = []; verified = false; rejectRetry = false; holdVerify = false; finishVerify = undefined; authenticatorAdmin = false;
   mockApi(async (request) => {
     calls.push(request);
     const path = request.url.pathname;
@@ -24,7 +25,10 @@ beforeEach(() => {
     if (path.endsWith('/profile') && request.method === 'GET') return ok(profile);
     if (path.endsWith('/profile') && request.method === 'PUT') return verified && !rejectRetry ? ok({ ...profile, ...body }) : required;
     if (path.endsWith('/consent')) return ok({ consents: [] });
-    if (path.endsWith('/auth/step-up')) return ok({ sentTo: '+592•••0000', validForSeconds: 300 });
+    if (path.endsWith('/auth/step-up')) {
+      if (authenticatorAdmin) return { status: 409, body: { error: { code: 'STEP_UP_USE_AUTHENTICATOR', message: 'Enter the code from your authenticator app. No text is sent.' } } };
+      return ok({ sentTo: '+592•••0000', validForSeconds: 300 });
+    }
     if (path.endsWith('/auth/step-up/verify')) {
       if (body.code !== '123456') return { status: 400, body: { error: { code: 'INVALID_CODE', message: 'That code is not right' } } };
       if (holdVerify) await new Promise<void>((resolve) => { finishVerify = resolve; });
@@ -96,5 +100,37 @@ describe('email confirmation on the web', () => {
     const { user } = await begin(); rejectRetry = true; await enterCode(user);
     await screen.findByRole('alert'); expect(writes()).toHaveLength(2);
     expect(screen.queryByText('Your details are saved.')).toBeNull();
+  });
+  it('[REVIEW-2501-B B-S4-1] an admin with an authenticator app gets the code box at once, enters the app code, and the change is saved', async () => {
+    authenticatorAdmin = true;
+    const { user } = await begin();
+    await user.click(screen.getByRole('button', { name: 'Send confirmation code' }));
+    const box = await screen.findByLabelText('Authenticator code');
+    expect(screen.getByText(/authenticator app before changing your email address/)).toBeTruthy();
+    expect(screen.queryByRole('alert')).toBeNull();
+    expect(screen.queryByRole('button', { name: /Send/ })).toBeNull(); // no text to send
+    await user.type(box, '123456');
+    await user.click(screen.getByRole('button', { name: 'Confirm and save' }));
+    await screen.findByText('Your details are saved.');
+    expect(writes()).toHaveLength(2);
+  });
+  it('[REVIEW-2501-B B-S4-1] a wrong authenticator code shows the server\'s words, not a dead end', async () => {
+    authenticatorAdmin = true;
+    mockApi(async (request) => {
+      calls.push(request);
+      const path = request.url.pathname;
+      if (path.endsWith('/profile') && request.method === 'GET') return ok(profile);
+      if (path.endsWith('/profile') && request.method === 'PUT') return required;
+      if (path.endsWith('/consent')) return ok({ consents: [] });
+      if (path.endsWith('/auth/step-up')) return { status: 409, body: { error: { code: 'STEP_UP_USE_AUTHENTICATOR', message: 'Use the app.' } } };
+      if (path.endsWith('/auth/step-up/verify')) return { status: 400, body: { error: { code: 'ADMIN_MFA_CODE_INVALID', message: 'That code does not match, or was already used.' } } };
+      throw new Error(`Unexpected ${request.method} ${path}`);
+    });
+    const { user } = await begin();
+    await user.click(screen.getByRole('button', { name: 'Send confirmation code' }));
+    await user.type(await screen.findByLabelText('Authenticator code'), '000000');
+    await user.click(screen.getByRole('button', { name: 'Confirm and save' }));
+    expect((await screen.findByRole('alert')).textContent).toMatch(/does not match/);
+    expect(writes()).toHaveLength(1);
   });
 });

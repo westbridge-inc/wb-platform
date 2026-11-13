@@ -7,7 +7,7 @@ import { CodeInput, IconChip, PillButton, PopupCard, PopupTitle, T } from '../ki
 import { requireAuthSessionForPrincipal } from '../stores/authStore';
 import type { AuthSessionSnapshot } from '../lib/authSession';
 import { authApi } from '../services/api';
-import { serverMessage } from '../lib/stepUp';
+import { serverMessage, usesAuthenticator } from '../lib/stepUp';
 
 const RESEND_COOLDOWN_S = 60;
 const CODE_LEN = 6;
@@ -66,7 +66,9 @@ export function StepUpSheet({ visible, session, onVerified, onClose }: { visible
     verify.mutate(c);
   };
 
-  const sendError = send.isError ? serverMessage(send.error, "We couldn't send the code. Try again in a moment.") : null;
+  // [REVIEW-2501-B B-S4-1] An admin with an authenticator app: nothing is texted; the app's code goes in the same box.
+  const authenticator = send.isError && usesAuthenticator(send.error);
+  const sendError = send.isError && !authenticator ? serverMessage(send.error, "We couldn't send the code. Try again in a moment.") : null;
   const verifyError = verify.isError ? serverMessage(verify.error, 'That code is not right.') : null;
   const message = verifyError ?? sendError;
 
@@ -77,9 +79,11 @@ export function StepUpSheet({ visible, session, onVerified, onClose }: { visible
         Confirm it’s you
       </PopupTitle>
       <T variant="body" tone="muted" center style={{ marginTop: space.sm }}>
-        {sentTo
-          ? `To confirm this account change, we texted a code to ${sentTo}.`
-          : 'To confirm this account change, we’re texting a code to the phone on this account.'}
+        {authenticator
+          ? 'To confirm this account change, enter the 6-digit code from your authenticator app. No text is sent.'
+          : sentTo
+            ? `To confirm this account change, we texted a code to ${sentTo}.`
+            : 'To confirm this account change, we’re texting a code to the phone on this account.'}
       </T>
       <View style={{ marginTop: space.lg, alignSelf: 'stretch' }} testID="step-up-code-entry">
         <CodeInput
@@ -108,14 +112,16 @@ export function StepUpSheet({ visible, session, onVerified, onClose }: { visible
         style={{ alignSelf: 'stretch', marginTop: space.lg }}
         onPress={() => submit(code)}
       />
-      <PillButton
-        label={cooldown > 0 ? `Resend in ${cooldown}s` : send.isPending ? 'Sending…' : 'Resend code'}
-        variant="soft"
-        size="md"
-        disabled={cooldown > 0 || send.isPending}
-        style={{ alignSelf: 'stretch', marginTop: space.sm }}
-        onPress={() => send.mutate()}
-      />
+      {authenticator ? null : (
+        <PillButton
+          label={cooldown > 0 ? `Resend in ${cooldown}s` : send.isPending ? 'Sending…' : 'Resend code'}
+          variant="soft"
+          size="md"
+          disabled={cooldown > 0 || send.isPending}
+          style={{ alignSelf: 'stretch', marginTop: space.sm }}
+          onPress={() => send.mutate()}
+        />
+      )}
       <T variant="caption" tone="muted" center style={{ marginTop: space.md }}>
         Swift will never ask you for this code.
       </T>

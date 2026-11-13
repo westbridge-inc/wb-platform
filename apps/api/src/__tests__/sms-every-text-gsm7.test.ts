@@ -123,6 +123,7 @@ const SMS_TEXT_FILES: Record<string, { min: number; why: string }> = {
   'modules/ops/seed-plan.ts': { min: 4, why: 'solo re-seed code and notices' },
   'modules/auth/auth.service.ts': { min: 3, why: 'sign-in and reset codes, password-changed notice' },
   'modules/auth/step-up.ts': { min: 1, why: 'confirmation code' },
+  'modules/auth/admin-mfa-reset.ts': { min: 2, why: 'the break-glass notice to the admin (authenticator cleared, every device signed out)' },
   'modules/integrity/money-surface.ts': { min: 3, why: 'MMG number / pay link change notices' },
   'modules/notification/notification.service.ts': { min: 0, why: 'vendor alert fallback (vendor-alert-sms.ts), fee texts (billing), direct texts' },
   'modules/notification/marketing-message.ts': { min: 0, why: 'the marketing door (marketingSmsText)' },

@@ -45,7 +45,11 @@ export function useStepUp() {
   return { withStepUp, dialog: pending ? <Confirmation request={pending} /> : null };
 }
 
-const allowedErrors = new Set(['INVALID_CODE', 'STEP_UP_LOCKED', 'RATE_LIMITED', 'SMS_SEND_FAILED', 'COUNTRY_NOT_ACTIVE']);
+// [REVIEW-2501-B B-S4-1] An admin who set up an authenticator app confirms with its code: the send answers 409
+// STEP_UP_USE_AUTHENTICATOR and no text is sent, so the dialog shows the code box at once. Its refusals are shown too.
+const USE_AUTHENTICATOR = 'STEP_UP_USE_AUTHENTICATOR';
+const usesAuthenticator = (error: unknown) => error instanceof ApiRequestError && error.status === 409 && error.code === USE_AUTHENTICATOR;
+const allowedErrors = new Set(['INVALID_CODE', 'STEP_UP_LOCKED', 'RATE_LIMITED', 'SMS_SEND_FAILED', 'COUNTRY_NOT_ACTIVE', 'ADMIN_MFA_CODE_INVALID', 'ADMIN_MFA_RESTING', 'ADMIN_SESSION_EXPIRED']);
 function messageFor(error: unknown) {
   return error instanceof ApiRequestError && error.status >= 400 && error.status < 500 && allowedErrors.has(error.code ?? '')
     ? error.message : 'Could not confirm right now. Please try again.';
@@ -54,9 +58,11 @@ function Confirmation({ request }: { request: Pending }) {
   const id = useId(); const control = useRef<HTMLButtonElement>(null); const input = useRef<HTMLInputElement>(null);
   const live = useRef(true); const sending = useRef(false);
   const [busy, setBusy] = useState(false); const [sentTo, setSentTo] = useState<string | null>(null);
+  const [authenticator, setAuthenticator] = useState(false);
   const [code, setCode] = useState(''); const [error, setError] = useState<string | null>(null);
   useEffect(() => { live.current = true; control.current?.focus(); return () => { live.current = false; }; }, []);
-  useEffect(() => { if (sentTo) input.current?.focus(); }, [sentTo]);
+  const codeOpen = authenticator || sentTo !== null;
+  useEffect(() => { if (codeOpen) input.current?.focus(); }, [codeOpen]);
   async function run(verify: boolean) {
     if (sending.current || !live.current) return;
     sending.current = true; setBusy(true); setError(null);
@@ -69,22 +75,28 @@ function Confirmation({ request }: { request: Pending }) {
       request.check();
       if (verify) request.retry();
       else { setSentTo(response.data.sentTo); setCode(''); }
-    } catch (failure) { if (live.current) setError(messageFor(failure)); }
+    } catch (failure) {
+      if (!live.current) return;
+      if (!verify && usesAuthenticator(failure)) { setAuthenticator(true); setCode(''); return; }
+      setError(messageFor(failure));
+    }
     finally { sending.current = false; if (live.current) setBusy(false); }
   }
   return <div role="dialog" aria-labelledby={`${id}-title`} aria-describedby={`${id}-body`} className="sw-card space-y-3 p-5"
     onKeyDown={(event) => { if (event.key === 'Escape') request.dismiss(); }}>
     <h2 id={`${id}-title`} className="font-bold">Confirm it’s you</h2>
-    <p id={`${id}-body`}>Confirm the code sent to your account’s phone before changing your email address.</p>
-    {sentTo && <>
-      <p role="status">Code sent to {sentTo}.</p>
-      <label className="block space-y-1"><span>Confirmation code</span><input ref={input} className={fieldClass} inputMode="numeric" autoComplete="one-time-code" maxLength={6} value={code} disabled={busy}
+    <p id={`${id}-body`}>{authenticator
+      ? 'Enter the 6-digit code from your authenticator app before changing your email address. No text is sent.'
+      : 'Confirm the code sent to your account’s phone before changing your email address.'}</p>
+    {codeOpen && <>
+      {sentTo && !authenticator && <p role="status">Code sent to {sentTo}.</p>}
+      <label className="block space-y-1"><span>{authenticator ? 'Authenticator code' : 'Confirmation code'}</span><input ref={input} className={fieldClass} inputMode="numeric" autoComplete="one-time-code" maxLength={6} value={code} disabled={busy}
         onChange={(event) => setCode(event.target.value.replace(/\D/g, '').slice(0, 6))}
         onKeyDown={(event) => { if (event.key === 'Enter' && /^\d{6}$/.test(code)) { event.preventDefault(); void run(true); } }} /></label>
       <button type="button" className={buttonClass} disabled={busy || !/^\d{6}$/.test(code)} onClick={() => void run(true)}>{busy ? 'Confirming…' : 'Confirm and save'}</button>
     </>}
     {error && <p role="alert">{error}</p>}
-    <button ref={control} type="button" className={secondaryClass} disabled={busy} onClick={() => void run(false)}>{sentTo ? 'Send another code' : 'Send confirmation code'}</button>
+    {!authenticator && <button ref={control} type="button" className={secondaryClass} disabled={busy} onClick={() => void run(false)}>{sentTo ? 'Send another code' : 'Send confirmation code'}</button>}
     <button type="button" className={secondaryClass} onClick={request.dismiss}>Cancel confirmation</button>
   </div>;
 }

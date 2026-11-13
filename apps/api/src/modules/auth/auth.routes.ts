@@ -19,7 +19,7 @@ import { ensureProFeeBorn } from '../services/pro-fee';
 import { LEGAL_VERSION } from '../legal/legal.routes';
 import { sendStepUpOtp, verifyStepUp, requireStepUp, requireRecentOtpOrStepUp, STEP_UP_TTL_S } from './step-up';
 import {
-  adminMfaStatus, confirmAdminMfaEnrolment, confirmAdminMfaReplacement, notifyAdminSignIn, regenerateAdminRecoveryCodes,
+  adminMfaRouteLimitKey, adminMfaStatus, confirmAdminMfaEnrolment, confirmAdminMfaReplacement, notifyAdminSignIn, regenerateAdminRecoveryCodes,
   startAdminMfaEnrolment, startAdminMfaReplacement, verifyAdminMfa,
 } from './admin-mfa';
 import { zPhone } from '../../utils/phone';
@@ -307,7 +307,9 @@ export async function authRoutes(app: FastifyInstance) {
   // Outside the admin plugin on purpose: a session that has not yet proved its code must reach these doors.
   const mfaCode = z.object({ code: z.string().trim().regex(/^\d{6}$/, 'Enter the 6-digit code').optional(), recoveryCode: z.string().trim().min(10).max(16).optional() })
     .refine((b) => !!b.code !== !!b.recoveryCode, 'Enter the 6-digit code or one recovery code');
-  const mfaLimits = { preHandler: [app.authenticate], config: { rateLimit: { max: 10, timeWindow: '1 minute' } } };
+  // [REVIEW-2501-A D-S3-1 · B-S3-1] The route ceiling counts per SESSION, after sign-in is checked: keyed per account,
+  // a second session's burst refused the owner's own requests on these doors.
+  const mfaLimits = { preHandler: [app.authenticate], config: { rateLimit: { max: 10, timeWindow: '1 minute', hook: 'preHandler' as const, keyGenerator: adminMfaRouteLimitKey } } };
   app.get('/admin-mfa', { preHandler: [app.authenticate] }, async (request, reply) => {
     reply.header('Cache-Control', 'no-store, max-age=0');
     return { success: true, data: await adminMfaStatus(app, request) };
