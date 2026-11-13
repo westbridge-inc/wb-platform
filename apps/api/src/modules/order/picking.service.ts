@@ -12,6 +12,7 @@ import { storeTeam, ringRecipients } from '../notification/store-team';
 import { hiddenAmong, unhideRestocked } from '../compliance/prohibited-gate';
 import { recomputeOrderVat } from '../store-vat/order-vat';
 import { allocateAcrossLines, promoDiscount } from '../../utils/order-total';
+import { itemNeedsChoices } from './options';
 import { orderStageRefusal } from './order-status-words';
 import { persistRiderCancellationNotice, drainRiderCancellationNotices } from './rider-cancel-notice';
 import { ORDER_TRANSITIONS, STORE_REJECTABLE_STATUSES } from './order-status';
@@ -303,7 +304,7 @@ export class PickingService {
 
     const [original, substitute] = await Promise.all([
       line.itemId ? this.prisma.item.findUnique({ where: { id: line.itemId } }) : null,
-      this.prisma.item.findUnique({ where: { id: substituteItemId } }),
+      this.prisma.item.findUnique({ where: { id: substituteItemId }, include: { optionGroups: { include: { options: true } } } }),
     ]);
     if (!substitute || substitute.vendorId !== line.order.vendorId) {
       throw new NotFoundError('Substitute item', substituteItemId);
@@ -311,6 +312,7 @@ export class PickingService {
     if (!substitute.isAvailable) {
       throw new AppError(409, 'SUBSTITUTE_UNAVAILABLE', 'That substitute is itself unavailable');
     }
+    if (itemNeedsChoices(substitute)) throw substituteNeedsChoices();
     // [GUARDRAILS §8] A substitution never puts a prohibited item on an order.
     if ((await hiddenAmong(this.prisma, [substitute.id])).size > 0) {
       throw new AppError(409, 'SUBSTITUTE_UNAVAILABLE', 'That substitute isn\'t available on Swift');
@@ -610,6 +612,11 @@ export class PickingService {
       // order lock: a person may have removed it, or its words changed, since the store proposed it.
       if (fresh.substituteItemId && (await hiddenAmong(tx, [fresh.substituteItemId])).size > 0) {
         throw new AppError(409, 'SUBSTITUTE_UNAVAILABLE', 'That substitute isn\'t available on Swift');
+      }
+      // [Audit M-1] Judged again at the yes: the store may have given the item sizes or a required choice since.
+      if (fresh.substituteItemId) {
+        const sub = await tx.item.findUnique({ where: { id: fresh.substituteItemId }, select: { optionGroups: { include: { options: true } } } });
+        if (sub && itemNeedsChoices(sub)) throw substituteNeedsChoices();
       }
 
       const substitutePrice = Number(fresh.substitutePrice ?? 0);
@@ -1342,4 +1349,9 @@ async function removedLineDiscountShare(
       ...(before ? { lineAllocations: before.map((a) => ({ ...a, goods: typeof a?.orderItemId === 'string' ? shares.get(a.orderItemId) ?? 0 : 0 })) as Prisma.InputJsonValue } : {}),
     },
   };
+}
+
+/** [Audit FABLE-01 M-1] A swap carries no selection, so an item that needs one is never a substitute. */
+function substituteNeedsChoices(): AppError {
+  return new AppError(409, 'SUBSTITUTE_NEEDS_CHOICES', 'That item needs a choice (a size or another required option), and a swap cannot carry one. Offer a plain item, or settle it with the customer.');
 }

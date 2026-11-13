@@ -187,6 +187,22 @@ export function itemNeedsMenuOptionsV2(item: { optionGroups?: ReadonlyArray<{ se
   return (item.optionGroups ?? []).some((g) => g.setsPrice === true || g.allowHalves === true || g.options.some((o) => !!o.followUpGroupId));
 }
 
+/**
+ * [Audit FABLE-01 M-1] True when the item cannot be ordered with no choices: a size sets its price (its basePrice is
+ * only the "from" price) or a group needs an answer. A swap carries no selection, so such an item is never a
+ * substitute: it would be charged its "from" price, and the kitchen would not know what to make. Decided by the one
+ * validator, on an empty selection.
+ */
+export function itemNeedsChoices(item: { optionGroups?: ValidatableGroup[] | null }): boolean {
+  try {
+    validateSelectedOptions(item, {});
+    return false;
+  } catch (error) {
+    if (error instanceof OptionSelectionError) return true;
+    throw error;
+  }
+}
+
 /** Whether a request body declares the capability. */
 export function declaresMenuOptionsV2(capabilities: unknown): boolean {
   return Array.isArray(capabilities) && capabilities.includes(MENU_OPTIONS_CAPABILITY);

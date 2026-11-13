@@ -274,6 +274,33 @@ describe('substitution round-trip', () => {
     expect(subAfter.stockQuantity).toBe(5);
   });
 
+  it('[audit M-1] a substitute that needs a choice (a size, a required group) is refused at the proposal and again at the customer\'s yes', async () => {
+    const original = await makeItem({ name: itemName('Large pie'), price: 4500 });
+    const order = await makeOrderWithLines([{ itemId: original.id, name: original.name, qty: 1, price: 4500 }, await keeperLine()]);
+    const line = order.items.find((l) => l.itemId === original.id)!;
+    const propose = (substituteItemId: string) => inject('POST', `/api/v1/vendor/orders/${order.id}/items/${line.id}/substitute`, owner.token, { substituteItemId });
+    // Sizes set the price: the item's basePrice is only its "from" price.
+    const sized = await makeItem({ name: itemName('Sized pie'), price: 2000 });
+    await app.prisma.optionGroup.create({ data: { itemId: sized.id, name: 'Size', setsPrice: true, isRequired: true, minSelect: 1, maxSelect: 1, options: { create: [{ name: 'Small', additionalPrice: 2000 }, { name: 'Large', additionalPrice: 4500 }] } } });
+    const refusedSized = await propose(sized.id);
+    expect(refusedSized.statusCode, refusedSized.body).toBe(409);
+    expect(refusedSized.json().error.code).toBe('SUBSTITUTE_NEEDS_CHOICES');
+    const required = await makeItem({ name: itemName('Combo'), price: 3000 });
+    await app.prisma.optionGroup.create({ data: { itemId: required.id, name: 'Side', isRequired: true, minSelect: 1, maxSelect: 1, options: { create: [{ name: 'Fries', additionalPrice: 0 }] } } });
+    expect((await propose(required.id)).json().error.code).toBe('SUBSTITUTE_NEEDS_CHOICES');
+    expect((await app.prisma.orderItem.findUniqueOrThrow({ where: { id: line.id } })).subStatus).toBe('NONE');
+    // Optional extras only: the plain item is a whole order, so it may be offered.
+    const plainWithExtras = await makeItem({ name: itemName('Plain pie'), price: 4000 });
+    await app.prisma.optionGroup.create({ data: { itemId: plainWithExtras.id, name: 'Extras', maxSelect: 3, options: { create: [{ name: 'Cheese', additionalPrice: 300 }] } } });
+    expect((await propose(plainWithExtras.id)).statusCode).toBe(200);
+    // The store gives it sizes while the customer decides: the yes is refused and the question stays open.
+    await app.prisma.optionGroup.create({ data: { itemId: plainWithExtras.id, name: 'Size', setsPrice: true, isRequired: true, minSelect: 1, maxSelect: 1, options: { create: [{ name: 'Large', additionalPrice: 5000 }] } } });
+    const yes = await inject('POST', `/api/v1/customer/orders/${order.id}/items/${line.id}/substitution`, customer.token, { approve: true });
+    expect(yes.statusCode, yes.body).toBe(409);
+    expect(yes.json().error.code).toBe('SUBSTITUTE_NEEDS_CHOICES');
+    expect((await app.prisma.orderItem.findUniqueOrThrow({ where: { id: line.id } })).subStatus).toBe('PENDING');
+  });
+
   it('customer rejects: line refunded, totals shrink, original restocked', async () => {
     const original = await makeItem({ name: `Juice ${seq}`, price: 600, stock: 4, group: `juice-${seq}` });
     const substitute = await makeItem({ name: `Other Juice ${seq}`, price: 700, stock: 4, group: `juice-${seq}` });
