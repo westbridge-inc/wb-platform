@@ -341,6 +341,78 @@ describe('substitution round-trip', () => {
     expect(Number(after.subtotalBase)).toBe(0);
   });
 
+  it('[audit A-1] a line removed from a discounted order comes off net of its own discount share, and the discount shrinks with it', async () => {
+    // A store's own 50% code on two 1,000 lines: discount 1,000, total 1,000 + the 300 fee.
+    const a = await makeItem({ name: itemName('Half A'), price: 1000, stock: 3 });
+    const b = await makeItem({ name: itemName('Half B'), price: 1000, stock: 3 });
+    const order = await makeOrderWithLines([{ itemId: a.id, name: a.name, qty: 1, price: 1000 }, { itemId: b.id, name: b.name, qty: 1, price: 1000 }]);
+    const lineA = order.items.find((l) => l.itemId === a.id)!;
+    const lineB = order.items.find((l) => l.itemId === b.id)!;
+    const promo = await app.prisma.promoCode.create({ data: {
+      code: `HALF${nanoid(6).replace(/[^A-Za-z0-9]/g, '0').toUpperCase()}`, description: 'half off', vendorId, discountType: 'PERCENTAGE', discountValue: 50,
+      applicableTo: [], validFrom: new Date(Date.now() - DAY), validUntil: new Date(Date.now() + DAY), funder: 'VENDOR',
+    } });
+    await app.prisma.order.update({ where: { id: order.id }, data: { discount: 1000, totalAmount: 1300, promoCodeId: promo.id } });
+    await app.prisma.promoRedemption.create({ data: {
+      orderId: order.id, promoCodeId: promo.id, termsVersion: 1, discountType: 'PERCENTAGE', discountValue: 50, funder: 'VENDOR',
+      goodsDiscount: 1000, deliveryDiscount: 0, lineAllocations: [{ orderItemId: lineA.id, goods: 500 }, { orderItemId: lineB.id, goods: 500 }],
+    } });
+
+    const refund = await inject('POST', `/api/v1/vendor/orders/${order.id}/items/${lineA.id}/refund-line`, owner.token, {});
+    expect(refund.statusCode).toBe(200);
+    const after = await app.prisma.order.findUniqueOrThrow({ where: { id: order.id }, include: { promoRedemption: true } });
+    // B at half price plus the fee: 500 + 300. Before the fix the whole 1,000 came off and B was free.
+    expect(Number(after.totalAmount)).toBe(800);
+    expect(Number(after.discount)).toBe(500);
+    expect(Number(after.subtotalCustomer)).toBe(1000);
+    expect(Number(after.promoRedemption!.goodsDiscount)).toBe(500);
+    expect(after.promoRedemption!.lineAllocations).toEqual([{ orderItemId: lineA.id, goods: 0 }, { orderItemId: lineB.id, goods: 500 }]);
+  });
+
+  it('[audit A-1] a capped percentage code is re-priced under its cap; a fixed code is kept but never more than the goods still coming', async () => {
+    const promoFor = (discountType: 'PERCENTAGE' | 'FIXED_AMOUNT', discountValue: number, maxDiscount: number | null) => app.prisma.promoCode.create({ data: {
+      code: `CAP${nanoid(6).replace(/[^A-Za-z0-9]/g, '0').toUpperCase()}`, description: 'capped', vendorId, discountType, discountValue, maxDiscount,
+      applicableTo: [], validFrom: new Date(Date.now() - DAY), validUntil: new Date(Date.now() + DAY), funder: 'VENDOR',
+    } });
+    const discounted = async (discountType: 'PERCENTAGE' | 'FIXED_AMOUNT', discountValue: number, maxDiscount: number | null, discount: number) => {
+      const a = await makeItem({ name: itemName('Cap A'), price: 1000, stock: 3 });
+      const b = await makeItem({ name: itemName('Cap B'), price: 1000, stock: 3 });
+      const order = await makeOrderWithLines([{ itemId: a.id, name: a.name, qty: 1, price: 1000 }, { itemId: b.id, name: b.name, qty: 1, price: 1000 }]);
+      const promo = await promoFor(discountType, discountValue, maxDiscount);
+      await app.prisma.order.update({ where: { id: order.id }, data: { discount, totalAmount: 2300 - discount, promoCodeId: promo.id } });
+      await app.prisma.promoRedemption.create({ data: {
+        orderId: order.id, promoCodeId: promo.id, termsVersion: 1, discountType, discountValue, maxDiscount, funder: 'VENDOR', goodsDiscount: discount, deliveryDiscount: 0,
+        lineAllocations: order.items.map((l) => ({ orderItemId: l.id, goods: discount / 2 })),
+      } });
+      const lineA = order.items.find((l) => l.itemId === a.id)!;
+      expect((await inject('POST', `/api/v1/vendor/orders/${order.id}/items/${lineA.id}/refund-line`, owner.token, {})).statusCode).toBe(200);
+      return app.prisma.order.findUniqueOrThrow({ where: { id: order.id }, include: { promoRedemption: true } });
+    };
+    // 50% capped at 300: B alone still earns the full 300, so B costs 700 plus the fee.
+    const capped = await discounted('PERCENTAGE', 50, 300, 300);
+    expect(Number(capped.totalAmount)).toBe(1000);
+    expect(Number(capped.discount)).toBe(300);
+    // 1,500 off: kept, but B is all that is left, so at most 1,000 of it; the fee is still owed.
+    const fixed = await discounted('FIXED_AMOUNT', 1500, null, 1500);
+    expect(Number(fixed.totalAmount)).toBe(300);
+    expect(Number(fixed.discount)).toBe(1000);
+    expect(Number(fixed.promoRedemption!.goodsDiscount)).toBe(1000);
+  });
+
+  it('[audit A-1] with no redemption record the line carries its proportional share of the order discount', async () => {
+    const a = await makeItem({ name: itemName('Legacy A'), price: 1500, stock: 3 });
+    const b = await makeItem({ name: itemName('Legacy B'), price: 500, stock: 3 });
+    const order = await makeOrderWithLines([{ itemId: a.id, name: a.name, qty: 1, price: 1500 }, { itemId: b.id, name: b.name, qty: 1, price: 500 }]);
+    // 20% off 2,000: discount 400, total 1,600 + the 300 fee.
+    await app.prisma.order.update({ where: { id: order.id }, data: { discount: 400, totalAmount: 1900 } });
+    const lineA = order.items.find((l) => l.itemId === a.id)!;
+    expect((await inject('POST', `/api/v1/vendor/orders/${order.id}/items/${lineA.id}/refund-line`, owner.token, {})).statusCode).toBe(200);
+    const after = await app.prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+    // A carried 300 of the 400: B at 400 plus the fee.
+    expect(Number(after.totalAmount)).toBe(700);
+    expect(Number(after.discount)).toBe(100);
+  });
+
   it('a picking refund releases the CASH rider’s committed-float delta (no perma-leak)', async () => {
     const item = await makeItem({ name: `Float ${seq}`, price: 2000, stock: 5 });
     const order = await makeOrderWithLines([{ itemId: item.id, name: item.name, qty: 1, price: 2000 }, await keeperLine()]);

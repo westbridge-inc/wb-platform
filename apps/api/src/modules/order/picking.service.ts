@@ -11,6 +11,7 @@ import { substitutionLineChange, substitutionDecideMinutes, substitutionNoAnswer
 import { storeTeam, ringRecipients } from '../notification/store-team';
 import { hiddenAmong, unhideRestocked } from '../compliance/prohibited-gate';
 import { recomputeOrderVat } from '../store-vat/order-vat';
+import { allocateAcrossLines, promoDiscount } from '../../utils/order-total';
 import { orderStageRefusal } from './order-status-words';
 import { persistRiderCancellationNotice, drainRiderCancellationNotices } from './rider-cancel-notice';
 import { ORDER_TRANSITIONS, STORE_REJECTABLE_STATUSES } from './order-status';
@@ -754,7 +755,7 @@ export class PickingService {
         select: {
           ...ADJUSTABLE_SELECT,
           riderId: true,
-          subtotalBase: true, subtotalCustomer: true, totalAmount: true,
+          subtotalBase: true, subtotalCustomer: true, totalAmount: true, discount: true,
         },
       });
       if (!PICKABLE_STATES.includes(ord.status)) {
@@ -785,7 +786,11 @@ export class PickingService {
       const lineTotal = Number(line.totalCustomer);
       const decBase = Math.min(lineTotal, Number(ord.subtotalBase));
       const decCustomer = Math.min(lineTotal, Number(ord.subtotalCustomer));
-      const decTotal = Math.min(lineTotal, Number(ord.totalAmount));
+      // [Audit FABLE-01 A-1] The line leaves with the discount it carried: the customer stops paying its price
+      // less its own share, and the order's discount (and the promo's goods discount) shrink by that share. Taking
+      // the full price off left the other lines discounted twice (a 50% code on two equal lines made the second free).
+      const share = await removedLineDiscountShare(tx, line.order.id, line.id, lineTotal, Number(ord.discount));
+      const decTotal = Math.min(Math.max(0, lineTotal - share.amount), Number(ord.totalAmount));
 
       // [REPORT-005 F-005-02] Exactly-one close: the line update is a CAS on
       // the caller's observed subStatus. A lost race exits before any money,
@@ -806,8 +811,12 @@ export class PickingService {
           subtotalBase: { decrement: decBase },
           subtotalCustomer: { decrement: decCustomer },
           totalAmount: { decrement: decTotal },
+          ...(share.amount > 0 ? { discount: { decrement: share.amount } } : {}),
         },
       });
+      if (share.redemption) {
+        await tx.promoRedemption.update({ where: { orderId: line.order.id }, data: share.redemption });
+      }
       // [STORE-VAT] A removed line carries no VAT any more (a no-op on an order without VAT).
       await recomputeOrderVat(tx, line.order.id);
       await tx.orderStatusLog.create({
@@ -1282,4 +1291,55 @@ export async function sweepSubstitutionDeadlines(
     }
   }
   return result;
+}
+
+/**
+ * [Audit FABLE-01 A-1] The discount that comes off with a line removed at picking, and what that does to the order's
+ * promo redemption. Taking the line's full price off and keeping the whole discount priced the other lines twice: a
+ * 50% code on two equal lines made the second one free, at the store's cost.
+ *  - A percentage code is re-priced on the goods still coming, under its own cap, never above what was given.
+ *  - A fixed-amount code is kept [COORD ruling R2 on REVIEW-M #2043 S4-3: a promo stays applied when an out-of-stock
+ *    item takes the basket under its minimum; the customer never pays more because the store could not supply], but
+ *    never more than the goods still coming.
+ *  - An order with no redemption record gives up the line's proportional part of its discount.
+ * The redemption's goods discount and line shares follow, so billing and VAT read the same figure. Read and written
+ * inside the order-locked transaction that closes the line, before its sub-status changes.
+ */
+async function removedLineDiscountShare(
+  tx: Prisma.TransactionClient,
+  orderId: string,
+  lineId: string,
+  lineTotal: number,
+  orderDiscount: number,
+): Promise<{ amount: number; redemption: Prisma.PromoRedemptionUpdateInput | null }> {
+  const left = Math.max(0, orderDiscount);
+  if (left <= 0) return { amount: 0, redemption: null };
+  const live = await tx.orderItem.findMany({ where: { orderId, subStatus: { notIn: ['REFUNDED', 'REJECTED'] } }, select: { id: true, totalCustomer: true }, orderBy: { id: 'asc' } });
+  const staying = live.filter((l) => l.id !== lineId).map((l) => ({ id: l.id, amount: Math.max(0, Number(l.totalCustomer)) }));
+  const goodsLeft = staying.reduce((sum, l) => sum + l.amount, 0);
+  const redemption = await tx.promoRedemption.findUnique({
+    where: { orderId },
+    select: { goodsDiscount: true, lineAllocations: true, discountType: true, discountValue: true, maxDiscount: true },
+  });
+  if (!redemption) {
+    const weight = goodsLeft + Math.max(0, lineTotal);
+    const share = weight > 0 ? Math.round((left * Math.max(0, lineTotal)) / weight) : 0;
+    return { amount: Math.min(Math.max(0, lineTotal), left, share), redemption: null };
+  }
+  const goods = Math.max(0, Number(redemption.goodsDiscount) || 0);
+  const repriced = redemption.discountType === 'PERCENTAGE'
+    ? promoDiscount({ discountType: 'PERCENTAGE', discountValue: redemption.discountValue, maxDiscount: redemption.maxDiscount }, { subtotal: goodsLeft, deliveryFee: 0 })
+    : goods;
+  const newGoods = Math.max(0, Math.min(goods, goodsLeft, repriced));
+  const amount = Math.min(left, goods - newGoods);
+  const shares = new Map(allocateAcrossLines(newGoods, staying).map((a) => [a.id, a.share] as const));
+  const before = Array.isArray(redemption.lineAllocations) ? (redemption.lineAllocations as Array<{ orderItemId?: unknown; goods?: unknown }>) : null;
+  return {
+    amount,
+    redemption: {
+      goodsDiscount: goods - amount,
+      // The lines still coming own the goods discount left, summing to it exactly; a line that is off owns none.
+      ...(before ? { lineAllocations: before.map((a) => ({ ...a, goods: typeof a?.orderItemId === 'string' ? shares.get(a.orderItemId) ?? 0 : 0 })) as Prisma.InputJsonValue } : {}),
+    },
+  };
 }
