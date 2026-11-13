@@ -244,7 +244,7 @@ describe('CSV import', () => {
 
 describe('[AUDIT A-4] a menu price the store types is whole Guyana dollars, and bounded', () => {
   it('an item, an option, an edit and a CSV row with cents are refused; whole dollars are kept', async () => {
-    const category = await app.prisma.category.create({ data: { vendorId, name: `Whole ${nanoid(4)}`, sortOrder: 9 } });
+    const category = await app.prisma.category.create({ data: { vendorId, name: `Whole ${wordFreeTag(8)}`, sortOrder: 9 } });
     const cents = await inject('POST', '/api/v1/vendor/items', { categoryId: category.id, name: 'Cents Plate', basePrice: 1499.99 }, vendorToken);
     expect(cents.statusCode).toBe(400);
     const vatCents = await inject('POST', '/api/v1/vendor/items', { categoryId: category.id, name: 'Cents Plate', basePrice: 1500, vatListedPrice: 1315.5 }, vendorToken);

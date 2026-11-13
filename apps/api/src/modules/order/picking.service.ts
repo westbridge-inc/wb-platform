@@ -12,7 +12,7 @@ import { storeTeam, ringRecipients } from '../notification/store-team';
 import { hiddenAmong, unhideRestocked } from '../compliance/prohibited-gate';
 import { recomputeOrderVat } from '../store-vat/order-vat';
 import { allocateAcrossLines, promoDiscount } from '../../utils/order-total';
-import { itemNeedsChoices } from './options';
+import { OptionSelectionError, validateSelectedOptions, type ValidatableGroup } from './options';
 import { orderStageRefusal } from './order-status-words';
 import { persistRiderCancellationNotice, drainRiderCancellationNotices } from './rider-cancel-notice';
 import { ORDER_TRANSITIONS, STORE_REJECTABLE_STATUSES } from './order-status';
@@ -1354,4 +1354,20 @@ async function removedLineDiscountShare(
 /** [Audit FABLE-01 M-1] A swap carries no selection, so an item that needs one is never a substitute. */
 function substituteNeedsChoices(): AppError {
   return new AppError(409, 'SUBSTITUTE_NEEDS_CHOICES', 'That item needs a choice (a size or another required option), and a swap cannot carry one. Offer a plain item, or settle it with the customer.');
+}
+
+/**
+ * [Audit FABLE-01 M-1] True when the item cannot be ordered with no choices: a size sets its price (its basePrice is
+ * only the "from" price) or a group needs an answer. A swap carries no selection, so such an item is never a
+ * substitute: it would be charged its "from" price, and the kitchen would not know what to make. Decided by the one
+ * validator, on an empty selection.
+ */
+function itemNeedsChoices(item: { optionGroups?: ValidatableGroup[] | null }): boolean {
+  try {
+    validateSelectedOptions(item, {});
+    return false;
+  } catch (error) {
+    if (error instanceof OptionSelectionError) return true;
+    throw error;
+  }
 }

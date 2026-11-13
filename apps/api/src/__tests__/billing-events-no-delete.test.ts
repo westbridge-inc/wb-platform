@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { PrismaClient } from '@prisma/client';
+import { testPrismaClient } from './helpers/test-prisma-client';
 import { nanoid } from 'nanoid';
 
 // ---------------------------------------------------------------------------
@@ -10,7 +10,7 @@ import { nanoid } from 'nanoid';
 // file turns it off inside each transaction to see the guard as production has it.
 // ---------------------------------------------------------------------------
 
-const prisma = new PrismaClient({ datasourceUrl: process.env['DATABASE_URL'] });
+const prisma = testPrismaClient();
 const STAMP = String(Date.now()).slice(-7);
 const userIds: string[] = [];
 const vendorIds: string[] = [];
