@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { auditChangesForReaders } from './audit-redaction';
+import { auditChangesForReaders } from '../modules/admin/audit-redaction';
 
 // [SEC-AUDIT 13 Nov 2026 · F9] Legacy approve rows keep the typed policy in the append-only table; every reader drops it.
 describe('auditChangesForReaders', () => {
@@ -20,7 +20,7 @@ describe('auditChangesForReaders', () => {
   });
 
   it('is applied by both readers that show `changes`: GET /audit-logs and the custody narrative', () => {
-    const src = (p: string) => readFileSync(join(__dirname, '..', p), 'utf8');
+    const src = (p: string) => readFileSync(join(__dirname, '..', 'modules', p), 'utf8');
     expect(src('admin/admin.routes.ts')).toContain('changes: auditChangesForReaders(log.action, log.changes)');
     expect(src('verification/custody.ts')).toContain('auditChangesForReaders(a.action, a.changes)');
   });
