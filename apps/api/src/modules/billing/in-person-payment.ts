@@ -125,6 +125,26 @@ export function inPersonReferenceOf(raw: unknown): string {
   return reference;
 }
 
+/**
+ * [AUDIT C2-3] The reference's identity: the normalised reference with its separators (dots, dashes, slashes) taken
+ * out, so CHQ-000123, CHQ/000123, CHQ.000123 and CHQ000123 are ONE cheque and can credit once. Every record takes a
+ * lock on it first, so two spellings racing are serialised and the second sees the first; the record keeps the
+ * reference as typed.
+ */
+export function inPersonReferenceKey(reference: string): string {
+  return reference.toUpperCase().replace(/[._/-]/g, '');
+}
+
+/** [AUDIT C2-3] A fee already recorded (in person, or any top-up command) under the same reference, whatever its separators. */
+async function sameReferenceRecorded(tx: Prisma.TransactionClient, reference: string): Promise<boolean> {
+  const key = inPersonReferenceKey(reference);
+  const [hit] = await tx.$queryRaw<Array<{ n: bigint }>>`
+    SELECT (
+        (SELECT count(*) FROM "topup_commands" WHERE regexp_replace(upper(btrim("reference")), '[._/-]', '', 'g') = ${key})
+    )::bigint AS n`;
+  return Number(hit?.n ?? 0) > 0;
+}
+
 const ALREADY_RECORDED = 'That reference is already on record. One reference credits once, so nothing was recorded. Check it, or check the billing trail of the account it belongs to.';
 const HAND_BACK = 'If you already took it, hand it back.';
 
@@ -189,7 +209,9 @@ async function assertRecordable(tx: Prisma.TransactionClient, subscriptionId: st
   if (amount < dueGyd) {
     throw new AppError(409, 'IN_PERSON_LESS_THAN_DUE', `${formatMoney(dueGyd, 'GYD', { whole: true })} is due on this account, and this door takes at least that. Nothing was recorded. ${HAND_BACK}`);
   }
-  if (await referenceOnRecord(tx, reference)) throw new AppError(409, 'IN_PERSON_REFERENCE_USED', `${ALREADY_RECORDED} ${HAND_BACK}`);
+  if (await referenceOnRecord(tx, reference) || await sameReferenceRecorded(tx, reference)) {
+    throw new AppError(409, 'IN_PERSON_REFERENCE_USED', `${ALREADY_RECORDED} ${HAND_BACK}`);
+  }
 }
 
 export interface InPersonDoor {
@@ -295,6 +317,9 @@ export async function recordInPersonPayment(prisma: PrismaClient, billing: Billi
   let done;
   try {
     done = await prisma.$transaction(async (tx) => {
+      // [AUDIT C2-3] One reference identity at a time, whatever its separators: a sibling spelling racing this one
+      // either committed before (and the check below sees it) or waits for this commit.
+      await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtextextended(${`in-person-reference:${inPersonReferenceKey(reference)}`}, 0))`;
       const blocked = await lockedRefusal(tx, subscriptionId, body.amount, reference, now);
       if (blocked) return blocked;
       const balance = await billing.recordTopUpInTransaction(tx, {

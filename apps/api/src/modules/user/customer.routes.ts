@@ -2275,7 +2275,8 @@ export async function customerRoutes(app: FastifyInstance) {
       await app.prisma.cartItem.update({
         where: { id: existing.id },
         // [BOOK-FU3] Re-adding the same booking never grows it past one appointment.
-        data: { quantity: item.fulfillment === 'APPOINTMENT' ? 1 : existing.quantity + quantity },
+        // [AUDIT A-2] A merge never grows a line past the 99 the quantity edit allows.
+        data: { quantity: item.fulfillment === 'APPOINTMENT' ? 1 : Math.min(99, existing.quantity + quantity) },
       });
     } else {
       await app.prisma.cartItem.create({
@@ -2909,6 +2910,9 @@ export async function customerRoutes(app: FastifyInstance) {
             selectedOptions: true,
           },
         },
+        // [Review A S3-1] The promo record: a swap or removal question shows what it does to the TOTAL, the
+        // discount that goes with the line included (substitution-view.ts). Read here, never returned as is.
+        promoRedemption: { select: { goodsDiscount: true, lineAllocations: true, discountType: true, discountValue: true, maxDiscount: true } },
         statusHistory: { orderBy: [{ createdAt: 'asc' }, { id: 'asc' }] },
         // [F-027-07 / F-028-11] Was a whole-relation `include`, which pulls
         // every Rider column — KYC document URLs, enforcement state, float —

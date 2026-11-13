@@ -29,6 +29,8 @@ describe('a failed subscription in the billing run is logged, never swallowed', 
     spy(billing, 'recoverConfirmationSettlements').mockResolvedValue(0 as never);
     spy(billing, 'sweepFeeRises').mockResolvedValue({ told: 0, applied: 0, deferred: 0, dropped: 0 } as never);
     spy(billing, 'loadUsdPricing').mockResolvedValue(null as never);
+    // [audit C2-1] The stopped-and-overdue suspension pass reads its own rows; this case is about the billing loop.
+    spy(billing, 'suspendStoppedPastDue').mockResolvedValue(0 as never);
     spy(billing, 'billSubscription').mockImplementation((async (sub: { id: string }) => {
       if (sub.id === 'sub-app') throw new AppError(409, 'FEE_PAUSED', `paused for ${PERSONAL}`);
       if (sub.id === 'sub-db') throw Object.assign(new Error(`Unique constraint failed for ${PERSONAL}`), { code: 'P2002', name: 'PrismaClientKnownRequestError' });

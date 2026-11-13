@@ -559,6 +559,9 @@ export class BillingService {
         log().error({ subscriptionId: sub.id, code }, '[billing] one subscription failed in the billing run; the run goes on and retries it next hour');
       }
     }
+    // [Audit FABLE-01 C2-1] A partner who stopped billing while behind is never retried above, yet their grace runs
+    // out like anyone's: suspended at its end, so their return is re-anchored instead of billed as arrears.
+    result.suspended += await this.suspendStoppedPastDue(now).catch((err) => { log().error({ code: billingErrorCode(err) }, '[billing] the stopped-overdue suspension pass failed; the next run retries it'); return 0; });
 
     return result;
   }
@@ -819,15 +822,18 @@ export class BillingService {
     if (sub.feeWaived || amount === 0) {
       // [REVIEW-G #1769 S2-2] Booked with the price this week kept (as the checkout
       // path books a waived week), so the next week measures a rise from it.
-      const applied = await this.applySuccessfulCharge(sub, 0, 'fee-waived', now, periodKey, undefined, priced.usdTrio);
-      if (!applied) return 'skipped';
       // A waive covers ONE period — the admin notice promises "for this period".
       // Clear it so normal billing resumes next cycle instead of a permanent free
       // ride (silent, recurring revenue loss). A genuinely $0 tier (amount===0,
       // feeWaived false) is NOT a waive and stays free.
-      if (sub.feeWaived) {
-        await this.prisma.subscription.update({ where: { id: sub.id }, data: { feeWaived: false } });
-      }
+      // [AUDIT C2-4] Cleared in the SAME transaction that books the free week, under its locks: a crash between two
+      // commits can no longer leave the waiver standing for a second free week, and a waiver given after this commit
+      // is never erased by a late clear.
+      const consumeWaiver = sub.feeWaived
+        ? async (tx: Prisma.TransactionClient) => { await tx.subscription.updateMany({ where: { id: sub.id, feeWaived: true }, data: { feeWaived: false } }); }
+        : undefined;
+      const applied = await this.applySuccessfulCharge(sub, 0, 'fee-waived', now, periodKey, undefined, priced.usdTrio, undefined, consumeWaiver);
+      if (!applied) return 'skipped';
       return 'succeeded';
     }
 
@@ -4137,17 +4143,57 @@ export class BillingService {
    * snapshot: every value written is absolute (`failedAttempts + 1` from the
    * snapshot), so a repeat with the same snapshot lands the same row.
    */
-  private async finishExhaustedGrace(sub: SubWithRelations, now: Date): Promise<'pending' | 'suspended' | null> {
+  /**
+   * [Audit FABLE-01 C2-1] The rows billing was stopped on while PAST_DUE (no retry is armed for them) whose grace
+   * has run out are suspended, the same suspension a failed retry gives. One row never stops the pass.
+   */
+  async suspendStoppedPastDue(now = new Date()): Promise<number> {
+    // [Review A N-1] Every such row, page by page in id order: a row that stays pending (a paused clock, collection
+    // under review) never hides the rows after it.
+    const PAGE = 500;
+    let suspended = 0;
+    let after: string | undefined;
+    for (;;) {
+      const stopped = await this.prisma.subscription.findMany({
+        where: { status: 'PAST_DUE', autoRenew: false, autoSuspendEnabled: true, ...(after ? { id: { gt: after } } : {}) },
+        include: PAYER_INCLUDE,
+        orderBy: { id: 'asc' },
+        take: PAGE,
+      });
+      for (const sub of stopped) {
+        try {
+          if (await this.finishExhaustedGrace(sub as SubWithRelations, now, { stopped: true }) === 'suspended') suspended += 1;
+        } catch (err) {
+          log().error({ subscriptionId: sub.id, code: billingErrorCode(err) }, '[billing] suspending a stopped, overdue subscription failed; the next run retries it');
+        }
+      }
+      if (stopped.length < PAGE) break;
+      after = stopped[stopped.length - 1]!.id;
+    }
+    return suspended;
+  }
+
+  private async finishExhaustedGrace(sub: SubWithRelations, now: Date, opts: { stopped?: boolean } = {}): Promise<'pending' | 'suspended' | null> {
     // [PROD-PATH] Nothing suspends anyone while no partner can pay.
     if (await noLivePayPath(this.prisma)) return 'pending';
     const result = await this.prisma.$transaction(async (tx) => {
       const authority = await this.lockPaymentOutcomeAuthority(tx, sub);
       const clock = await currentDunningClock(tx, sub.id, now);
       const fresh = await tx.subscription.findUniqueOrThrow({ where: { id: sub.id } });
-      if (fresh.status !== 'PAST_DUE' || fresh.failedAttempts < MAX_FAILED_ATTEMPTS || !fresh.autoSuspendEnabled) return null;
-      if (clock.pausedAt || authority.bankInsteadOfAdvance || !fresh.autoRenew) return 'pending' as const;
-      await tx.billingDunningClock.update({ where: { subscriptionId: sub.id }, data: { retryAtMs: BigInt(FULL_FEE_GRACE_MS) } });
-      await tx.subscription.update({ where: { id: sub.id }, data: { nextRetryAt: activeDeadline(clock, FULL_FEE_GRACE_MS, now) } });
+      if (opts.stopped) {
+        // [Audit FABLE-01 C2-1] Billing stopped while behind: nothing is retried, so no failure count ever reaches
+        // the limit, but the grace still runs out (the operate gate refuses work from then). Enforcement only: the
+        // row is suspended exactly as one whose retries failed, so a return pays from the week they come back.
+        if (fresh.status !== 'PAST_DUE' || fresh.autoRenew || !fresh.autoSuspendEnabled) return null;
+        // The stop itself is what makes bankInsteadOfAdvance true here; the rest of that rule (a payer who is not
+        // active, a fee whose collection is under review) still holds the suspension, as it does for a retry.
+        if (clock.pausedAt || authority.suppressNotice) return 'pending' as const;
+      } else {
+        if (fresh.status !== 'PAST_DUE' || fresh.failedAttempts < MAX_FAILED_ATTEMPTS || !fresh.autoSuspendEnabled) return null;
+        if (clock.pausedAt || authority.bankInsteadOfAdvance || !fresh.autoRenew) return 'pending' as const;
+        await tx.billingDunningClock.update({ where: { subscriptionId: sub.id }, data: { retryAtMs: BigInt(FULL_FEE_GRACE_MS) } });
+        await tx.subscription.update({ where: { id: sub.id }, data: { nextRetryAt: activeDeadline(clock, FULL_FEE_GRACE_MS, now) } });
+      }
       if (activeOverdueMs(clock, now) < FULL_FEE_GRACE_MS || resumedNoEarlierThan(clock, now)) return 'pending' as const;
       await tx.subscription.update({ where: { id: sub.id }, data: { status: 'SUSPENDED', suspendedAt: now, isInGracePeriod: false } });
       await this.suspendAccessRows(tx, { ...sub, ...fresh }, fresh.nextBillingDate.toISOString().slice(0, 10), now);

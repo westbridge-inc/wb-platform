@@ -140,6 +140,25 @@ describe('the declared arithmetic', () => {
     expect(subtotalOf([])).toBe(0);
   });
 
+  it('[AUDIT A-3] a percentage is exact integer maths: never a dollar over from floating point', () => {
+    // 7% of 100 is exactly 7 and 7% of 200 exactly 14; float maths made them 8 and 15.
+    expect(promoDiscount({ discountType: 'PERCENTAGE', discountValue: 7 }, { subtotal: 100, deliveryFee: 0 })).toBe(7);
+    expect(promoDiscount({ discountType: 'PERCENTAGE', discountValue: '7' }, { subtotal: 200, deliveryFee: 0 })).toBe(14);
+    expect(promoDiscount({ discountType: 'PERCENTAGE', discountValue: 7 }, { subtotal: 1100, deliveryFee: 0 })).toBe(77);
+    expect(promoDiscount({ discountType: 'PERCENTAGE', discountValue: '14.00' }, { subtotal: 1_000_050, deliveryFee: 0 })).toBe(140_007);
+    // A real fraction still rounds UP, for the customer: 12.5% of 4,301 is 537.625 -> 538.
+    expect(promoDiscount({ discountType: 'PERCENTAGE', discountValue: 12.5 }, { subtotal: 4301, deliveryFee: 0 })).toBe(538);
+    // Every whole percentage of every whole subtotal up to 2,000 is the exact ceiling.
+    for (let pct = 1; pct <= 100; pct += 1) {
+      for (let subtotal = 0; subtotal <= 2000; subtotal += 1) {
+        const exact = Math.floor((subtotal * pct + 99) / 100);
+        if (promoDiscount({ discountType: 'PERCENTAGE', discountValue: pct }, { subtotal, deliveryFee: 0 }) !== exact) {
+          throw new Error(`${pct}% of ${subtotal} should be ${exact}`);
+        }
+      }
+    }
+  });
+
   it('the promo switch: percentage rounds UP, fixed is stated, free delivery is the fee, every shape is capped', () => {
     const basis = { subtotal: 4300, deliveryFee: 500 };
     expect(promoDiscount({ discountType: 'PERCENTAGE', discountValue: '15' }, basis)).toBe(645);

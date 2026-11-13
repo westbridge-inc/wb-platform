@@ -281,7 +281,8 @@ describe('[O-4] "Out of stock" before accepting asks the customer', () => {
 
   // [COORD ruling R2 on REVIEW-M #2043 S4-3] A promo that needed a minimum basket STAYS applied when the store's
   // "Out of stock" takes the basket under that minimum: the customer never pays more because the store could not
-  // supply an item. The whole line comes off the total and the discount is kept.
+  // supply an item. [Owner ruling 13 Nov 2026, supersedes "the discount is kept"] The code stays applied, and its
+  // discount shrinks with the goods still coming: the line leaves with its proportional share.
   it('a minimum-basket promo stays applied when an out-of-stock item takes the basket under the minimum', async () => {
     const code = `SWO${nanoid(6).toUpperCase().replace(/[^A-Z0-9]/g, '0')}`;
     await sys(() => app.prisma.promoCode.create({ data: {
@@ -299,10 +300,15 @@ describe('[O-4] "Out of stock" before accepting asks the customer', () => {
     expect((await outOfStock(orderId, rice.id)).statusCode).toBe(200);
     expect((await answer(orderId, rice.id, true)).statusCode).toBe(200);
     const after = await sys(() => app.prisma.order.findUniqueOrThrow({ where: { id: orderId }, include: { promoRedemption: true } }));
-    expect(Number(after.discount)).toBe(500);
+    const goodsBefore = Number(before.subtotalCustomer);
+    const goodsLeft = goodsBefore - Number(rice.totalCustomer);
+    const kept = Math.round((500 * goodsLeft) / goodsBefore);
+    expect(Number(after.discount)).toBe(kept);
+    expect(kept).toBeGreaterThan(0);
     expect(after.promoCodeId).toBe(before.promoCodeId);
     expect(after.promoRedemption).not.toBeNull();
-    expect(Number(after.totalAmount)).toBe(Number(before.totalAmount) - Number(rice.totalCustomer));
+    expect(Number(after.promoRedemption!.goodsDiscount)).toBe(kept);
+    expect(Number(after.totalAmount)).toBe(Number(before.totalAmount) - (Number(rice.totalCustomer) - (500 - kept)));
     const accepted = await accept(orderId);
     expect(accepted.statusCode, accepted.body).toBe(200);
     expect(Number(accepted.json().data.totalAmount)).toBe(Number(after.totalAmount));

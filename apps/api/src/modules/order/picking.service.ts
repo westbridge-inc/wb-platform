@@ -11,6 +11,8 @@ import { substitutionLineChange, substitutionDecideMinutes, substitutionNoAnswer
 import { storeTeam, ringRecipients } from '../notification/store-team';
 import { hiddenAmong, unhideRestocked } from '../compliance/prohibited-gate';
 import { recomputeOrderVat } from '../store-vat/order-vat';
+import { lineChangeDiscount, type LineDiscountChange } from './line-discount';
+import { OptionSelectionError, validateSelectedOptions, type ValidatableGroup } from './options';
 import { orderStageRefusal } from './order-status-words';
 import { persistRiderCancellationNotice, drainRiderCancellationNotices } from './rider-cancel-notice';
 import { ORDER_TRANSITIONS, STORE_REJECTABLE_STATUSES } from './order-status';
@@ -302,7 +304,7 @@ export class PickingService {
 
     const [original, substitute] = await Promise.all([
       line.itemId ? this.prisma.item.findUnique({ where: { id: line.itemId } }) : null,
-      this.prisma.item.findUnique({ where: { id: substituteItemId } }),
+      this.prisma.item.findUnique({ where: { id: substituteItemId }, include: { optionGroups: { include: { options: true } } } }),
     ]);
     if (!substitute || substitute.vendorId !== line.order.vendorId) {
       throw new NotFoundError('Substitute item', substituteItemId);
@@ -310,6 +312,7 @@ export class PickingService {
     if (!substitute.isAvailable) {
       throw new AppError(409, 'SUBSTITUTE_UNAVAILABLE', 'That substitute is itself unavailable');
     }
+    if (itemNeedsChoices(substitute)) throw substituteNeedsChoices();
     // [GUARDRAILS §8] A substitution never puts a prohibited item on an order.
     if ((await hiddenAmong(this.prisma, [substitute.id])).size > 0) {
       throw new AppError(409, 'SUBSTITUTE_UNAVAILABLE', 'That substitute isn\'t available on Swift');
@@ -592,7 +595,7 @@ export class PickingService {
         where: { id: orderId, customerId },
         select: {
           ...ADJUSTABLE_SELECT,
-          id: true, riderId: true, totalAmount: true, vendorId: true,
+          id: true, riderId: true, totalAmount: true, vendorId: true, discount: true,
         },
       });
       if (!order) throw new NotFoundError('Order', orderId);
@@ -610,6 +613,11 @@ export class PickingService {
       if (fresh.substituteItemId && (await hiddenAmong(tx, [fresh.substituteItemId])).size > 0) {
         throw new AppError(409, 'SUBSTITUTE_UNAVAILABLE', 'That substitute isn\'t available on Swift');
       }
+      // [Audit M-1] Judged again at the yes: the store may have given the item sizes or a required choice since.
+      if (fresh.substituteItemId) {
+        const sub = await tx.item.findUnique({ where: { id: fresh.substituteItemId }, select: { optionGroups: { include: { options: true } } } });
+        if (sub && itemNeedsChoices(sub)) throw substituteNeedsChoices();
+      }
 
       const substitutePrice = Number(fresh.substitutePrice ?? 0);
       // [L09 · M028] The one formula, also what the customer was shown before
@@ -621,11 +629,16 @@ export class PickingService {
       // and a cheaper one an unrecorded refund — any payment status. Only a
       // same-price swap may proceed until the adjustment/refund ledger exists.
       if (delta !== 0) assertMmgMoneyAdjustable(order);
+      // [Review A S3-1 on #2500] The discount follows the goods (line-discount.ts): a cheaper substitute on a
+      // discounted order gives back the part of the discount that went with the difference, so the other lines are
+      // never discounted twice. The total moves by the line's change less that part: what the customer was shown.
+      const discountBack = await lineChangeDiscountInTx(tx, orderId, { lineId, newLineTotal }, order.discount);
+      const totalChange = delta + discountBack.amount;
 
       // A substitute may reduce a line's price but must NEVER drive the ORDER
       // total below zero. On a discounted order a free/cheap substitute could
       // otherwise invert the total into "the platform owes the customer".
-      if (Number(order.totalAmount) + delta < 0) {
+      if (Number(order.totalAmount) + totalChange < 0) {
         throw new AppError(400, 'SUBSTITUTE_NEGATIVE_TOTAL', 'That substitute would drop the order total below zero — refund the line instead.');
       }
 
@@ -690,9 +703,11 @@ export class PickingService {
         data: {
           subtotalBase: { increment: delta },
           subtotalCustomer: { increment: delta },
-          totalAmount: { increment: delta },
+          totalAmount: { increment: totalChange },
+          ...(discountBack.amount > 0 ? { discount: { decrement: discountBack.amount } } : {}),
         },
       });
+      if (discountBack.redemption) await tx.promoRedemption.update({ where: { orderId }, data: discountBack.redemption });
       // [STORE-VAT] The VAT inside the goods follows the goods (a no-op on an order without VAT).
       await recomputeOrderVat(tx, orderId);
 
@@ -754,7 +769,7 @@ export class PickingService {
         select: {
           ...ADJUSTABLE_SELECT,
           riderId: true,
-          subtotalBase: true, subtotalCustomer: true, totalAmount: true,
+          subtotalBase: true, subtotalCustomer: true, totalAmount: true, discount: true,
         },
       });
       if (!PICKABLE_STATES.includes(ord.status)) {
@@ -785,7 +800,11 @@ export class PickingService {
       const lineTotal = Number(line.totalCustomer);
       const decBase = Math.min(lineTotal, Number(ord.subtotalBase));
       const decCustomer = Math.min(lineTotal, Number(ord.subtotalCustomer));
-      const decTotal = Math.min(lineTotal, Number(ord.totalAmount));
+      // [Audit FABLE-01 A-1] The line leaves with the discount it carried: the customer stops paying its price
+      // less its own share, and the order's discount (and the promo's goods discount) shrink by that share. Taking
+      // the full price off left the other lines discounted twice (a 50% code on two equal lines made the second free).
+      const share = await lineChangeDiscountInTx(tx, line.order.id, { lineId: line.id, newLineTotal: 0 }, ord.discount);
+      const decTotal = Math.min(Math.max(0, lineTotal - share.amount), Number(ord.totalAmount));
 
       // [REPORT-005 F-005-02] Exactly-one close: the line update is a CAS on
       // the caller's observed subStatus. A lost race exits before any money,
@@ -806,8 +825,12 @@ export class PickingService {
           subtotalBase: { decrement: decBase },
           subtotalCustomer: { decrement: decCustomer },
           totalAmount: { decrement: decTotal },
+          ...(share.amount > 0 ? { discount: { decrement: share.amount } } : {}),
         },
       });
+      if (share.redemption) {
+        await tx.promoRedemption.update({ where: { orderId: line.order.id }, data: share.redemption });
+      }
       // [STORE-VAT] A removed line carries no VAT any more (a no-op on an order without VAT).
       await recomputeOrderVat(tx, line.order.id);
       await tx.orderStatusLog.create({
@@ -1282,4 +1305,51 @@ export async function sweepSubstitutionDeadlines(
     }
   }
   return result;
+}
+
+/**
+ * [Audit FABLE-01 A-1 · Review A S3-1] The discount that goes with a line changed at picking (removed, or swapped for
+ * a substitute at another price), by the one rule in line-discount.ts, and what that does to the promo redemption.
+ * Read inside the order-locked transaction, BEFORE the line's own row changes.
+ */
+async function lineChangeDiscountInTx(
+  tx: Prisma.TransactionClient,
+  orderId: string,
+  change: LineDiscountChange,
+  orderDiscount: unknown,
+): Promise<{ amount: number; redemption: Prisma.PromoRedemptionUpdateInput | null }> {
+  if (!(Number(orderDiscount) > 0)) return { amount: 0, redemption: null };
+  const live = await tx.orderItem.findMany({ where: { orderId, subStatus: { notIn: ['REFUNDED', 'REJECTED'] } }, select: { id: true, totalCustomer: true }, orderBy: { id: 'asc' } });
+  const redemption = await tx.promoRedemption.findUnique({
+    where: { orderId },
+    select: { goodsDiscount: true, lineAllocations: true, discountType: true, discountValue: true, maxDiscount: true },
+  });
+  const result = lineChangeDiscount({ orderDiscount, live: live.map((l) => ({ id: l.id, amount: Number(l.totalCustomer) })), change, redemption });
+  return {
+    amount: result.amount,
+    redemption: result.redemption
+      ? { goodsDiscount: result.redemption.goodsDiscount, ...(result.redemption.lineAllocations ? { lineAllocations: result.redemption.lineAllocations as Prisma.InputJsonValue } : {}) }
+      : null,
+  };
+}
+
+/** [Audit FABLE-01 M-1] A swap carries no selection, so an item that needs one is never a substitute. */
+function substituteNeedsChoices(): AppError {
+  return new AppError(409, 'SUBSTITUTE_NEEDS_CHOICES', 'That item needs a choice (a size or another required option), and a swap cannot carry one. Offer a plain item, or settle it with the customer.');
+}
+
+/**
+ * [Audit FABLE-01 M-1] True when the item cannot be ordered with no choices: a size sets its price (its basePrice is
+ * only the "from" price) or a group needs an answer. A swap carries no selection, so such an item is never a
+ * substitute: it would be charged its "from" price, and the kitchen would not know what to make. Decided by the one
+ * validator, on an empty selection.
+ */
+function itemNeedsChoices(item: { optionGroups?: ValidatableGroup[] | null }): boolean {
+  try {
+    validateSelectedOptions(item, {});
+    return false;
+  } catch (error) {
+    if (error instanceof OptionSelectionError) return true;
+    throw error;
+  }
 }
