@@ -1305,9 +1305,8 @@ export async function sweepSubstitutionDeadlines(
  * promo redemption. Taking the line's full price off and keeping the whole discount priced the other lines twice: a
  * 50% code on two equal lines made the second one free, at the store's cost.
  *  - A percentage code is re-priced on the goods still coming, under its own cap, never above what was given.
- *  - A fixed-amount code is kept [COORD ruling R2 on REVIEW-M #2043 S4-3: a promo stays applied when an out-of-stock
- *    item takes the basket under its minimum; the customer never pays more because the store could not supply], but
- *    never more than the goods still coming.
+ *  - A fixed-amount code stays applied (an out-of-stock item taking the basket under its minimum never removes it,
+ *    COORD R2), but shrinks with the goods still coming [owner ruling 13 Nov 2026, superseding R2's "kept whole"].
  *  - An order with no redemption record gives up the line's proportional part of its discount.
  * The redemption's goods discount and line shares follow, so billing and VAT read the same figure. Read and written
  * inside the order-locked transaction that closes the line, before its sub-status changes.
@@ -1334,9 +1333,11 @@ async function removedLineDiscountShare(
     return { amount: Math.min(Math.max(0, lineTotal), left, share), redemption: null };
   }
   const goods = Math.max(0, Number(redemption.goodsDiscount) || 0);
+  // [Owner ruling 13 Nov 2026, supersedes R2 for this] Any other code shrinks with the goods still coming.
+  const goodsBefore = goodsLeft + Math.max(0, lineTotal);
   const repriced = redemption.discountType === 'PERCENTAGE'
     ? promoDiscount({ discountType: 'PERCENTAGE', discountValue: redemption.discountValue, maxDiscount: redemption.maxDiscount }, { subtotal: goodsLeft, deliveryFee: 0 })
-    : goods;
+    : goodsBefore > 0 ? Math.round((goods * goodsLeft) / goodsBefore) : 0;
   const newGoods = Math.max(0, Math.min(goods, goodsLeft, repriced));
   const amount = Math.min(left, goods - newGoods);
   const shares = new Map(allocateAcrossLines(newGoods, staying).map((a) => [a.id, a.share] as const));

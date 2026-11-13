@@ -396,7 +396,7 @@ describe('substitution round-trip', () => {
     expect(after.promoRedemption!.lineAllocations).toEqual([{ orderItemId: lineA.id, goods: 0 }, { orderItemId: lineB.id, goods: 500 }]);
   });
 
-  it('[audit A-1] a capped percentage code is re-priced under its cap; a fixed code is kept but never more than the goods still coming', async () => {
+  it('[audit A-1] a capped percentage code is re-priced under its cap; a fixed code shrinks with the goods still coming', async () => {
     const promoFor = (discountType: 'PERCENTAGE' | 'FIXED_AMOUNT', discountValue: number, maxDiscount: number | null) => app.prisma.promoCode.create({ data: {
       code: `CAP${nanoid(6).replace(/[^A-Za-z0-9]/g, '0').toUpperCase()}`, description: 'capped', vendorId, discountType, discountValue, maxDiscount,
       applicableTo: [], validFrom: new Date(Date.now() - DAY), validUntil: new Date(Date.now() + DAY), funder: 'VENDOR',
@@ -419,11 +419,12 @@ describe('substitution round-trip', () => {
     const capped = await discounted('PERCENTAGE', 50, 300, 300);
     expect(Number(capped.totalAmount)).toBe(1000);
     expect(Number(capped.discount)).toBe(300);
-    // 1,500 off: kept, but B is all that is left, so at most 1,000 of it; the fee is still owed.
+    // [Owner ruling 13 Nov 2026, supersedes R2] 1,500 off shrinks with the goods still coming: half the goods are
+    // left, so 750 of it stays. B costs 250 plus the fee.
     const fixed = await discounted('FIXED_AMOUNT', 1500, null, 1500);
-    expect(Number(fixed.totalAmount)).toBe(300);
-    expect(Number(fixed.discount)).toBe(1000);
-    expect(Number(fixed.promoRedemption!.goodsDiscount)).toBe(1000);
+    expect(Number(fixed.totalAmount)).toBe(550);
+    expect(Number(fixed.discount)).toBe(750);
+    expect(Number(fixed.promoRedemption!.goodsDiscount)).toBe(750);
   });
 
   it('[audit A-1] with no redemption record the line carries its proportional share of the order discount', async () => {
