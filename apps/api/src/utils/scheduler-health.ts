@@ -1,3 +1,4 @@
+import { runtimeMode } from './runtime-mode';
 // Scheduler-liveness decision, factored out of the /health handler so it can be
 // unit-tested without spinning the server [SWIFT-122].
 //
@@ -101,9 +102,18 @@ export function workerCheckStatus(health: SchedulerHealth, beat: string | null):
  */
 export const DEFAULT_SCHEDULER_SELF_WATCH_SECONDS = 60;
 
+/** The posture through the one parser; an unreadable one is not "test" (the watch stays on). */
+const modeOf = (env: Record<string, string | undefined>): string | undefined => {
+  try {
+    return runtimeMode(env);
+  } catch {
+    return undefined;
+  }
+};
+
 export function schedulerSelfWatchMs(env: Record<string, string | undefined> = process.env): number {
   const raw = env['SCHEDULER_SELF_WATCH_SECONDS']?.trim();
-  if ((raw === undefined || raw === '') && env['NODE_ENV'] === 'test') return 0;
+  if ((raw === undefined || raw === '') && modeOf(env) === 'test') return 0;
   const parsed = raw === undefined || raw === '' ? NaN : Number(raw);
   const seconds = Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_SCHEDULER_SELF_WATCH_SECONDS;
   return seconds * 1000;

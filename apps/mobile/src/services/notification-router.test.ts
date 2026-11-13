@@ -555,6 +555,13 @@ const CENSUS: Case[] = [
   { k: 'ops_backup_stale', to: null, why: 'admins' },
   // The upload malware scanner (clamd) stopped answering: uploads are refused until it is back.
   { k: 'ops_malware_scanner_down', d: { failures: 2, reason: 'x' }, to: null, why: 'admins — ops page, acted on from the server (row 312)' },
+  // [FABLE-05] The worker's infrastructure watch: disk or memory nearly full, sign-in texts failing at
+  // Twilio, the routing engine down, payments waiting for MMG. Admin-only, acted on from the server.
+  { k: 'ops_host_disk', d: { usedPercent: 86 }, to: null, why: 'admins — ops page (FABLE-05)' },
+  { k: 'ops_host_memory', d: { usedPercent: 93 }, to: null, why: 'admins — ops page (FABLE-05)' },
+  { k: 'ops_twilio_failing', d: { failures: 5 }, to: null, why: 'admins — ops page (FABLE-05)' },
+  { k: 'ops_routing_down', d: { failures: 2, status: 502 }, to: null, why: 'admins — ops page (FABLE-05)' },
+  { k: 'ops_mmg_waiting', d: { waiting: 1 }, to: null, why: 'admins — ops page (FABLE-05)' },
   // Uploads stored before a clean scan (row 312 follow-up): the emergency bypass is on, evidence is
   // held for its scan, or a stored upload was quarantined. Admin-only, acted on from the server.
   { k: 'ops_malware_scan_bypass', d: { unscannedOpen: 1 }, to: null, why: 'admins — ops page (row 312)' },

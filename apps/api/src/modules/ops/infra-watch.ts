@@ -144,7 +144,7 @@ export async function watchProviderOutages(
         key: 'ops_page:twilio-failing',
         windowSeconds: 1800,
         title: TWILIO_PAGE_TITLE,
-        body: `${failures} sign-in texts failed at Twilio in the last 5 to 10 minutes: nobody can sign in by text (the console included). Check the Twilio balance and the account's status first, then the API log's providerStatus (401/403: the key; 429: rate; 5xx: Twilio).`,
+        body: `${failures} sign-in texts failed at Twilio in the last 5 to 10 minutes: nobody can sign in by text (the console included). Check the Twilio account and its status first, then the API log's providerStatus (401/403: the key; 429: rate; 5xx: Twilio).`,
         data: { kind: 'ops_twilio_failing', failures },
       });
     } else if (failures === 0) {

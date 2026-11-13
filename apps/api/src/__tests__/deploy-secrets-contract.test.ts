@@ -130,14 +130,27 @@ describe('docker-compose.yml — secrets are files on tmpfs, never container env
   });
 
   it('every service that reads a secret file mounts the tmpfs store read-only at /run/secrets', () => {
+    // [FABLE-05 3.5] Either the whole store (the app processes, which read many), or exactly the one
+    // file each secret it reads is, read-only from the same tmpfs. Never anything else.
+    const singleFile = (secret: string) => `/run/swift-secrets/${secret}:/run/secrets/${secret}:ro`;
     for (const [name, service] of Object.entries(compose)) {
-      const readsFiles = Object.keys(service.environment).some((k) => k.endsWith('_FILE')) || /\/run\/secrets\//.test(service.command ?? '');
-      if (!readsFiles) continue;
-      expect(service.volumes, `${name} must mount ${SECRET_MOUNT}`).toContain(SECRET_MOUNT);
+      const fromEnv = Object.entries(service.environment).filter(([k]) => k.endsWith('_FILE')).map(([, v]) => v.replace('/run/secrets/', ''));
+      const fromCommand = [...(service.command ?? '').matchAll(/\/run\/secrets\/([A-Z][A-Z0-9_]*)/g)].map((m) => m[1] as string);
+      const reads = [...new Set([...fromEnv, ...fromCommand])];
+      if (!reads.length) continue;
+      const mounts = (service.volumes ?? []).filter((v) => v.startsWith('/run/swift-secrets'));
+      const whole = mounts.includes(SECRET_MOUNT);
+      expect(whole || reads.every((r) => mounts.includes(singleFile(r))), `${name} must mount ${SECRET_MOUNT} or each file it reads`).toBe(true);
+      for (const m of mounts) expect(m === SECRET_MOUNT || reads.some((r) => m === singleFile(r)), `${name}: ${m}`).toBe(true);
     }
-    for (const name of ['postgres', 'meilisearch', 'migrate', 'api', 'worker']) {
+    for (const name of ['migrate', 'api', 'worker']) {
       expect(compose[name]?.volumes, name).toContain(SECRET_MOUNT);
     }
+    // [FABLE-05 3.5] The database and search hold one secret each, and see only that one.
+    expect(compose['postgres']?.volumes).toEqual(expect.arrayContaining([singleFile('POSTGRES_PASSWORD')]));
+    expect(compose['postgres']?.volumes).not.toContain(SECRET_MOUNT);
+    expect(compose['meilisearch']?.volumes).toEqual(expect.arrayContaining([singleFile('MEILISEARCH_KEY')]));
+    expect(compose['meilisearch']?.volumes).not.toContain(SECRET_MOUNT);
   });
 
   it('the app processes get the database credential as parts plus a password file — never a URL with the password inside', () => {

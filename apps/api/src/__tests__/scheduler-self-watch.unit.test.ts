@@ -23,7 +23,7 @@ describe('the API watches the scheduler itself', () => {
 
   it('the server starts the watch when ready and stops it on close, through the same paging as /health', () => {
     const app = readFileSync(join(process.cwd(), 'src/app.ts'), 'utf8');
-    expect(app).toContain('const pageSchedulerVerdict = ');
+    expect(app).toContain('function pageSchedulerVerdict(workerHealth: SchedulerHealth, beat: string | null): void {');
     const health = app.slice(app.indexOf("app.get('/health'"), app.indexOf('registerReadinessRoute(app'));
     expect(health).toContain('pageSchedulerVerdict(workerHealth, beat);');
     const watch = app.slice(app.indexOf('schedulerSelfWatchMs()'));

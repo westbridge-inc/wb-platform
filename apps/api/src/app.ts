@@ -201,42 +201,6 @@ export async function buildApp(options: BuildAppOptions = {}) {
   // degraded API was the lie the container probe believed.
   registerLivenessRoute(app);
   registerRoutedWhileDegradedCounter(app);
-  // SWIFT-AUD-D7-02: scheduler-stall paging, from ONE verdict. Called by every /health probe and, since
-  // [FABLE-05 3.2], by this process's own timer below: a stalled worker cannot page about itself, and
-  // there is no load balancer polling /health. Dedup'd (30 min) and fire-and-caught: paging never slows
-  // a probe.
-  const pageSchedulerVerdict = (workerHealth: SchedulerHealth, beat: string | null): void => {
-    void (async () => {
-      // `!beat` is NOT benign: the heartbeat key has no TTL, so its absence means
-      // the worker fleet never booted (crash / RUN_WORKERS misconfigured). Page it
-      // once we're past the grace window — the case this check used to swallow.
-      const health = workerHealth;
-      if (!health.page) return;
-      const neverBooted = health.kind === 'never-booted';
-      // Separate dedup keys so a "never booted" alert and a later "stall" don't mask each other.
-      const pageKey = neverBooted ? 'ops_page:scheduler-never-booted' : 'ops_page:scheduler-stall';
-      const mins = Math.round(health.ageMs / 60_000);
-      const { NotificationService } = await import('./modules/notification/notification.service');
-      // [R048-006] A page is an OpsAlert row before it is a notification: the dedupe key is claimed
-      // only for a page that reached someone; nobody staffed leaves it PENDING and retryable.
-      await pageOps({ prisma: app.prisma, redis: app.redis, notifications: new NotificationService(app.prisma, app.io) }, {
-        key: pageKey,
-        title: neverBooted ? 'Job scheduler never started' : 'Job scheduler stalled',
-        body: neverBooted
-          ? `No scheduler heartbeat since boot (${mins} min) — the worker fleet never started (crash or RUN_WORKERS misconfigured). Holds, expiry sweeps, billing and settlements have NEVER run. Start the worker.`
-          : `No scheduler heartbeat for ${mins} min — holds, expiry sweeps, billing and settlements are NOT running. Restart the worker.`,
-        data: { kind: neverBooted ? 'ops_scheduler_never_booted' : 'ops_scheduler_stall', ageMs: health.ageMs },
-      });
-    })().catch(() => {});
-    // the condition cleared: close the open page so the outbox stays truthful
-    if (!workerHealth.page && beat) {
-      // In order, never-started first: once the stall page reads closed, this probe has finished with both.
-      void (async () => {
-        await resolveOpsPage(app.prisma, 'Job scheduler never started').catch(() => {});
-        await resolveOpsPage(app.prisma, 'Job scheduler stalled').catch(() => {});
-      })();
-    }
-  };
   app.get('/health', async (request, reply) => {
     const checks: Record<string, string> = { api: 'ok' };
     const routing = await checkRouting();
@@ -309,6 +273,47 @@ export async function buildApp(options: BuildAppOptions = {}) {
     };
   });
 
+  // SWIFT-AUD-D7-02: scheduler-stall paging, from ONE verdict. Called by every /health probe and, since
+  // [FABLE-05 3.2], by this process's own timer below: a stalled worker cannot page about itself, and
+  // there is no load balancer polling /health. Dedup'd (30 min) and fire-and-caught: paging never slows
+  // a probe.
+  function pageSchedulerVerdict(workerHealth: SchedulerHealth, beat: string | null): void {
+    void (async () => {
+      // `!beat` is NOT benign: the heartbeat key has no TTL, so its absence means
+      // the worker fleet never booted (crash / RUN_WORKERS misconfigured). Page it
+      // once we're past the grace window — the case this check used to swallow.
+      const health = workerHealth;
+      if (!health.page) return;
+      const neverBooted = health.kind === 'never-booted';
+      // Separate dedup keys so a "never booted" alert and a later "stall" don't mask each other.
+      const pageKey = neverBooted ? 'ops_page:scheduler-never-booted' : 'ops_page:scheduler-stall';
+      const mins = Math.round(health.ageMs / 60_000);
+      const { NotificationService } = await import('./modules/notification/notification.service');
+      // [R048-006] A page is an OpsAlert row before it is a notification: the dedupe key is claimed
+      // only for a page that reached someone; nobody staffed leaves it PENDING and retryable.
+      await pageOps({ prisma: app.prisma, redis: app.redis, notifications: new NotificationService(app.prisma, app.io) }, {
+        key: pageKey,
+        title: neverBooted ? 'Job scheduler never started' : 'Job scheduler stalled',
+        body: neverBooted
+          ? `No scheduler heartbeat since boot (${mins} min) — the worker fleet never started (crash or RUN_WORKERS misconfigured). Holds, expiry sweeps, billing and settlements have NEVER run. Start the worker.`
+          : `No scheduler heartbeat for ${mins} min — holds, expiry sweeps, billing and settlements are NOT running. Restart the worker.`,
+        data: { kind: neverBooted ? 'ops_scheduler_never_booted' : 'ops_scheduler_stall', ageMs: health.ageMs },
+      });
+    })().catch(() => {});
+    // the condition cleared: close the open page so the outbox stays truthful
+    if (!workerHealth.page && beat) {
+      // In order, never-started first: once the stall page reads closed, this probe has finished with both.
+      void (async () => {
+        await resolveOpsPage(app.prisma, 'Job scheduler never started').catch(() => {});
+        await resolveOpsPage(app.prisma, 'Job scheduler stalled').catch(() => {});
+      })();
+    }
+  }
+
+  // Readiness is stricter than liveness: schema, Redis, BullMQ producer
+  // connections, and host/DB/Redis clock agreement must all be healthy.
+  registerReadinessRoute(app, runtimeReadiness);
+
   // [FABLE-05 3.2] The same check on this process's own timer: the stall page no longer waits for
   // someone outside to poll /health. Off under test unless SCHEDULER_SELF_WATCH_SECONDS is set.
   const selfWatchMs = schedulerSelfWatchMs();
@@ -327,10 +332,6 @@ export async function buildApp(options: BuildAppOptions = {}) {
       if (selfWatch) clearInterval(selfWatch);
     });
   }
-
-  // Readiness is stricter than liveness: schema, Redis, BullMQ producer
-  // connections, and host/DB/Redis clock agreement must all be healthy.
-  registerReadinessRoute(app, runtimeReadiness);
 
   // Public upload trees only (items/, avatars/). Path-traversal-guarded;
   // KYC docs in other /uploads folders are never exposed here.
