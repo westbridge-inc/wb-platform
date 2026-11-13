@@ -50,6 +50,7 @@ import { CATALOGUE_APPROVER_CAPABILITY, catalogueApproverRequired, holdsCatalogu
 import { isOwnSelfiePointer, signupSelfieFor, signupSelfieRequired } from '../verification/signup-selfie';
 import { isDocumentValidAt } from '../verification/document-validity';
 import { assertNotRecused } from '../verification/recusal';
+import { DOCUMENT_VIEW_LINKS_PER_HOUR } from '../verification/document-view-limit';
 import { disconnectUserSockets } from '../../utils/socket-revocation';
 import { completeMoverSessionRevocation } from '../mover-authority';
 import { ADMIN_ACTION_CLASSES, ADMIN_REASON_HEADER, ADMIN_ROUTE_AUTHORITY, capabilitiesOf, capabilityMode, decideCapability, holdsCapability, reasonOf, reasonProblem, reasonRefusal, routeTemplateOf } from './admin-authority';
@@ -7878,7 +7879,8 @@ export async function adminRoutes(app: FastifyInstance) {
     return { success: true, data: narrative };
   });
 
-  app.get('/verification/:id/document-url', { preHandler: [adminGuard] }, async (request) => {
+  // [FABLE-02 F3 · 13 Nov 2026] Capped per reviewer per hour (document-view-limit.ts): no bulk walk of the store.
+  app.get('/verification/:id/document-url', { preHandler: [adminGuard], config: { rateLimit: { max: DOCUMENT_VIEW_LINKS_PER_HOUR, timeWindow: '1 hour' } } }, async (request) => {
     const { id } = request.params as { id: string };
     const doc = await tenantPrisma.verificationDocument.findUnique({
       where: { id },
