@@ -450,7 +450,9 @@ class GenSecrets(StoreHarness):
                  "CONSENT_IP_PEPPER", "POSTGRES_PASSWORD", "MEILISEARCH_KEY",
                  # [R2 C1] the other random-value secrets production requires
                  "TEST_CONTROL_SECRET", "METRICS_TOKEN", "HEALTH_DETAIL_TOKEN",
-                 "ATTRIB_SALT", "IDENTITY_SALT", "SCAN_IP_SALT", "ADS_EVENT_SECRET")
+                 "ATTRIB_SALT", "IDENTITY_SALT", "SCAN_IP_SALT", "ADS_EVENT_SECRET",
+                 # [FABLE-05 3.4] the Redis password pair (STACK_HARDENING=1)
+                 "REDIS_PASSWORD", "REDIS_URL")
 
     def setUp(self):
         super().setUp()
@@ -512,9 +514,58 @@ class GenSecrets(StoreHarness):
         self.assertIn("MASTER_KEK", result.stderr)
         self.assertEqual((self.shim_store / "MASTER_KEK").read_bytes(), b"existing")
         self.assertFalse((self.work / ".env").exists())
-        forced = self.run_gen("--force")
+        # [FABLE-05 3.9] --force alone never replaces the document key: it needs its own flag.
+        forced = self.run_gen("--force", "--replace-master-kek")
         self.assertEqual(forced.returncode, 0, forced.stderr)
         self.assertNotEqual((self.shim_store / "MASTER_KEK").read_bytes(), b"existing")
+
+    def test_force_keeps_the_document_key_and_the_database_password_unless_each_is_named(self):
+        # [FABLE-05 3.9] The documented rotation replaced all fourteen names at once: a new MASTER_KEK
+        # makes every stored ID document unreadable, a new POSTGRES_PASSWORD no longer opens the
+        # database. --force rotates the others and keeps these two, by name, unless each has its flag.
+        for name in self.GENERATED:
+            (self.shim_store / name).write_bytes(b"old-" + name.encode())
+        result = self.run_gen("--force")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((self.shim_store / "MASTER_KEK").read_bytes(), b"old-MASTER_KEK")
+        self.assertEqual((self.shim_store / "POSTGRES_PASSWORD").read_bytes(), b"old-POSTGRES_PASSWORD")
+        for name in self.GENERATED:
+            if name not in ("MASTER_KEK", "POSTGRES_PASSWORD"):
+                self.assertNotEqual((self.shim_store / name).read_bytes(), b"old-" + name.encode(), name)
+        self.assertNotIn("swift-secrets set MASTER_KEK", self.calls())
+        self.assertNotIn("swift-secrets set POSTGRES_PASSWORD", self.calls())
+        self.assertIn("--replace-master-kek", result.stdout)
+        self.assertIn("--replace-postgres-password", result.stdout)
+        # each flag replaces its own name only
+        result = self.run_gen("--force", "--replace-postgres-password")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotEqual((self.shim_store / "POSTGRES_PASSWORD").read_bytes(), b"old-POSTGRES_PASSWORD")
+        self.assertEqual((self.shim_store / "MASTER_KEK").read_bytes(), b"old-MASTER_KEK")
+
+    def test_the_redis_pair_is_generated_together_and_the_url_carries_the_password(self):
+        result = self.run_gen()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        password = (self.shim_store / "REDIS_PASSWORD").read_text()
+        self.assertRegex(password, r"^[0-9a-f]{64}$")
+        self.assertEqual((self.shim_store / "REDIS_URL").read_text(), f"redis://:{password}@redis:6379")
+        self.assertNotIn(password, result.stdout + result.stderr)
+
+    def test_missing_refuses_half_a_redis_pair(self):
+        (self.shim_store / "MASTER_KEK").write_bytes(b"existing-kek")
+        (self.shim_store / "REDIS_PASSWORD").write_bytes(b"existing")
+        result = self.run_gen("--missing")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("one pair", result.stderr)
+        self.assertFalse((self.shim_store / "REDIS_URL").exists())
+
+    def test_the_replace_flags_go_with_force_only(self):
+        for flag in ("--replace-master-kek", "--replace-postgres-password"):
+            for other in ((), ("--missing",)):
+                with self.subTest(flag=flag, other=other):
+                    result = self.run_gen(*other, flag)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("--force", result.stderr)
+                    self.assertFalse(any(self.shim_store.iterdir()))
 
     def test_an_existing_env_file_keeps_its_settings_and_gets_the_new_fingerprint(self):
         env_file = self.work / ".env"

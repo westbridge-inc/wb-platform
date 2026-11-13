@@ -36,6 +36,8 @@ function parseCompose(text: string): Record<string, Service> {
   let inServices = false;
   let service: Service | null = null;
   let section: string | null = null;
+  let long: { source: string; target: string; ro: boolean } | null = null;
+  const longOf = new Map<Service, { source: string; target: string; ro: boolean }[]>();
   for (const raw of text.split('\n')) {
     const line = raw.replace(/\s+$/, '');
     if (!line.trim() || line.trim().startsWith('#')) continue;
@@ -57,6 +59,7 @@ function parseCompose(text: string): Record<string, Service> {
     const key = line.match(/^ {4}([\w-]+):(.*)$/);
     if (key) {
       section = key[1] as string;
+      long = null;
       const inline = (key[2] ?? '').trim();
       if (section === 'command') service.command = inline;
       if (section === 'entrypoint') service.entrypoint = inline;
@@ -71,12 +74,23 @@ function parseCompose(text: string): Record<string, Service> {
       const list = body.match(/^- ([A-Za-z_][A-Za-z0-9_]*)=(.*)$/);
       if (map) service.environment[map[1] as string] = (map[2] ?? '').replace(/^"(.*)"$/, '$1');
       else if (list) service.environment[list[1] as string] = list[2] ?? '';
+    } else if (section === 'volumes' && body.startsWith('- type:')) {
+      // [REVIEW-2503-A S3-2] The long form (type/source/target/read_only), read as the short one.
+      long = { source: '', target: '', ro: false };
+      longOf.set(service, [...(longOf.get(service) ?? []), long]);
+    } else if (section === 'volumes' && long && /^(source|target|read_only):/.test(body)) {
+      const [k, v] = [body.slice(0, body.indexOf(':')), body.slice(body.indexOf(':') + 1).trim()];
+      if (k === 'source') long.source = v;
+      if (k === 'target') long.target = v;
+      if (k === 'read_only') long.ro = v === 'true';
     } else if (section === 'volumes' && body.startsWith('- ')) {
+      long = null;
       service.volumes.push(body.slice(2).replace(/^"(.*)"$/, '$1'));
     } else if (section === 'env_file' && body.startsWith('- ')) {
       service.envFile.push(body.slice(2));
     }
   }
+  for (const [svc, entries] of longOf) for (const e of entries) svc.volumes.push(`${e.source}:${e.target}${e.ro ? ':ro' : ''}`);
   return services;
 }
 
@@ -130,14 +144,27 @@ describe('docker-compose.yml — secrets are files on tmpfs, never container env
   });
 
   it('every service that reads a secret file mounts the tmpfs store read-only at /run/secrets', () => {
+    // [FABLE-05 3.5] Either the whole store (the app processes, which read many), or exactly the one
+    // file each secret it reads is, read-only from the same tmpfs. Never anything else.
+    const singleFile = (secret: string) => `/run/swift-secrets/${secret}:/run/secrets/${secret}:ro`;
     for (const [name, service] of Object.entries(compose)) {
-      const readsFiles = Object.keys(service.environment).some((k) => k.endsWith('_FILE')) || /\/run\/secrets\//.test(service.command ?? '');
-      if (!readsFiles) continue;
-      expect(service.volumes, `${name} must mount ${SECRET_MOUNT}`).toContain(SECRET_MOUNT);
+      const fromEnv = Object.entries(service.environment).filter(([k]) => k.endsWith('_FILE')).map(([, v]) => v.replace('/run/secrets/', ''));
+      const fromCommand = [...(service.command ?? '').matchAll(/\/run\/secrets\/([A-Z][A-Z0-9_]*)/g)].map((m) => m[1] as string);
+      const reads = [...new Set([...fromEnv, ...fromCommand])];
+      if (!reads.length) continue;
+      const mounts = (service.volumes ?? []).filter((v) => v.startsWith('/run/swift-secrets'));
+      const whole = mounts.includes(SECRET_MOUNT);
+      expect(whole || reads.every((r) => mounts.includes(singleFile(r))), `${name} must mount ${SECRET_MOUNT} or each file it reads`).toBe(true);
+      for (const m of mounts) expect(m === SECRET_MOUNT || reads.some((r) => m === singleFile(r)), `${name}: ${m}`).toBe(true);
     }
-    for (const name of ['postgres', 'meilisearch', 'migrate', 'api', 'worker']) {
+    for (const name of ['migrate', 'api', 'worker']) {
       expect(compose[name]?.volumes, name).toContain(SECRET_MOUNT);
     }
+    // [FABLE-05 3.5] The database and search hold one secret each, and see only that one.
+    expect(compose['postgres']?.volumes).toEqual(expect.arrayContaining([singleFile('POSTGRES_PASSWORD')]));
+    expect(compose['postgres']?.volumes).not.toContain(SECRET_MOUNT);
+    expect(compose['meilisearch']?.volumes).toEqual(expect.arrayContaining([singleFile('MEILISEARCH_KEY')]));
+    expect(compose['meilisearch']?.volumes).not.toContain(SECRET_MOUNT);
   });
 
   it('the app processes get the database credential as parts plus a password file — never a URL with the password inside', () => {

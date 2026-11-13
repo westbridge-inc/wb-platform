@@ -1,0 +1,10 @@
+# [FABLE-05 3.4] With STACK_HARDENING=1, the private journeys instance (staging)
+# reads Redis with the password, like the api it extends, and reaches routing on
+# its own network (taxi and courier journeys need OSRM). Added after
+# docker-compose.journeys.yml by deploy/pilot-up.sh and deploy/journeys-run.sh.
+services:
+  api-journeys:
+    environment:
+      REDIS_URL: ""
+      REDIS_URL_FILE: /run/secrets/REDIS_URL
+    networks: [private, scanner, routing]

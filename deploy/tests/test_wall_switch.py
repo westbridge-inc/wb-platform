@@ -106,7 +106,12 @@ class RehearsalComposeRendered(unittest.TestCase):
         for volume in model['volumes'].values():
             self.assertTrue(volume['name'].startswith('swift-rehearsal_'), volume)
         # [Row 312] The copy's own upload malware scanner (no secret: it reads none).
-        self.assertEqual(sorted(model['services']), ['api', 'clamd', 'meilisearch', 'migrate', 'postgres', 'redis', 'worker'])
+        # [FABLE-05 3.5] Plus the one-shot that hands the copy's own search volume to the uid search runs
+        # as: no network at all, no secret, only that volume.
+        self.assertEqual(sorted(model['services']), ['api', 'clamd', 'meilisearch', 'meilisearch-data-owner', 'migrate', 'postgres', 'redis', 'worker'])
+        owner = model['services'].pop('meilisearch-data-owner')
+        self.assertEqual(owner.get('network_mode'), 'none')
+        self.assertEqual([(v['type'], v['source']) for v in owner['volumes']], [('volume', 'swift-meilidata')])
         for name, service in model['services'].items():
             with self.subTest(service=name):
                 self.assertNotIn('ports', service)

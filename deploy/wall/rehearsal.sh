@@ -129,6 +129,9 @@ gen_value() {
     POSTGRES_PASSWORD | TEST_CONTROL_SECRET | METRICS_TOKEN | HEALTH_DETAIL_TOKEN) openssl rand -hex 32 ;;
     JWT_SECRET | OTP_HASH_SECRET | STORAGE_SIGNING_SECRET | CONSENT_IP_PEPPER | MEILISEARCH_KEY | ATTRIB_SALT | IDENTITY_SALT | SCAN_IP_SALT | ADS_EVENT_SECRET)
       openssl rand -base64 48 | tr -d '\n=' ;;
+    # [FABLE-05 3.4] One pair: the URL carries the password (unused by the copy, which runs without STACK_HARDENING).
+    REDIS_PASSWORD) printf '%s' "$REHEARSAL_REDIS_PASSWORD" ;;
+    REDIS_URL) printf 'redis://:%s@redis:6379' "$REHEARSAL_REDIS_PASSWORD" ;;
     *) return 1 ;;
   esac
 }
@@ -148,6 +151,7 @@ cmd_up() {
 
   # 1. Secrets: fresh, the rehearsal's own. Values go through a pipe only.
   STEP=secrets
+  REHEARSAL_REDIS_PASSWORD="$(openssl rand -hex 32)"
   generated="$(sed -n 's/^GENERATED="\(.*\)"$/\1/p' "$DEPLOY/gen-secrets.sh")"
   [ -n "$generated" ] || die "could not read the generated secret names from gen-secrets.sh"
   for name in $generated; do

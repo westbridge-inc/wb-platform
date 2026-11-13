@@ -5,6 +5,21 @@
 # restored:
 #
 #   ./deploy/backup-drill.sh [--allow-unsigned-legacy [--legacy-without-signing-record]] <user@host> <ssh-key-file> s3://<bucket>/<prefix>/swift-<stamp>.dump.gpg [scratch-db]
+#   ./deploy/backup-drill.sh --recover [...same...]            [FABLE-05 3.1] RECOVERY: keep the copy
+#   ./deploy/backup-drill.sh --recover-live-gone [...same...]  [FABLE-05 3.1] RECOVERY, no live database
+#
+# [FABLE-05 3.1] The two recovery modes run the same fetch, signature check and
+# decryption, but the host's restore KEEPS its quarantined copy for
+# deploy/recover.sh to promote (PILOT-RUNBOOK section 5b) instead of comparing
+# it with the live database and removing it:
+#   --recover            the live database is there (damaged): restore.sh
+#                        --keep-for-inspection, the live erasure ledger replayed;
+#   --recover-live-gone  no live database (a new host): restore.sh --no-live-ledger
+#                        --i-know-live-is-gone --keep-for-inspection, plus the
+#                        off-site ledger when SWIFT_LEDGER_FROM names the host
+#                        directory the owner's decrypted batches are in. Its
+#                        restore ends with exit 3 by design (the copy is kept,
+#                        quarantined); here that is RECOVERY COPY KEPT.
 #
 #   0. [SEC-BACKUP F2] the host fetches the object's signature (<object>.sig)
 #      and verifies it against its own trusted backup signing keys; the drill
@@ -41,6 +56,11 @@ umask 077
 export HISTFILE=/dev/null
 
 die() { echo "backup-drill: $*" >&2; exit 1; }
+MODE=drill
+case "${1:-}" in
+  --recover) MODE=recover; shift ;;
+  --recover-live-gone) MODE=recover-live-gone; shift ;;
+esac
 ALLOW_UNSIGNED=0
 if [ "${1:-}" = --allow-unsigned-legacy ]; then ALLOW_UNSIGNED=1; shift; fi
 # [COORD 12:20Z] Only for a host that never signed a backup (no record of when signing began).
@@ -63,6 +83,15 @@ PROJECT="${SWIFT_RESTORE_PROJECT:-}"
 [[ "$REMOTE_DIR" =~ ^/[A-Za-z0-9._/-]+$ ]] || die "SWIFT_REMOTE_DIR must be an absolute path"
 [[ "$PROJECT" =~ ^[a-z0-9][a-z0-9_-]{0,62}$ ]] ||
   die "set SWIFT_RESTORE_PROJECT to the Compose project that holds the host's Postgres (live is 'swift')"
+# [FABLE-05 3.1] What the host's restore does with its copy: compare and remove (the drill), or keep it.
+LEDGER_FROM="${SWIFT_LEDGER_FROM:-}"
+[ -z "$LEDGER_FROM" ] || [ "$MODE" = recover-live-gone ] || die "SWIFT_LEDGER_FROM is for --recover-live-gone only (with a live database its ledger is read directly)"
+[ -z "$LEDGER_FROM" ] || [[ "$LEDGER_FROM" =~ ^/[A-Za-z0-9._/-]+$ ]] || die "SWIFT_LEDGER_FROM must be an absolute path on the host"
+case "$MODE" in
+  drill) RESTORE_MODE="--compare-source" ;;
+  recover) RESTORE_MODE="--keep-for-inspection" ;;
+  recover-live-gone) RESTORE_MODE="--no-live-ledger --i-know-live-is-gone --keep-for-inspection${LEDGER_FROM:+ --ledger-from '$LEDGER_FROM'}" ;;
+esac
 for tool in ssh gpg; do command -v "$tool" >/dev/null 2>&1 || die "$tool is required on this computer"; done
 
 GNUPGHOME="$(mktemp -d)"
@@ -145,12 +174,20 @@ if [ "$SIGNATURE_BUNDLE" = "swift-backup-signature none" ]; then
   [ "$ALLOW_UNSIGNED" = 1 ] ||
     die "the object has NO signature: Swift backups are signed, and an unsigned one could have been planted by anyone who can write to the backup bucket. For a dump made before signing existed, rerun with --allow-unsigned-legacy (first argument)"
   echo "WARNING: DRILLING AN UNSIGNED BACKUP (--allow-unsigned-legacy): its origin is NOT proven." >&2
-  REMOTE_RESTORE="cd $REMOTE_DIR && ./deploy/restore.sh --project '$PROJECT' --allow-unsigned-legacy --compare-source - '$SCRATCH'"
+  if [ "$MODE" = drill ]; then
+    REMOTE_RESTORE="cd $REMOTE_DIR && ./deploy/restore.sh --project '$PROJECT' --allow-unsigned-legacy --compare-source - '$SCRATCH'"
+  else
+    REMOTE_RESTORE="cd $REMOTE_DIR && ./deploy/restore.sh --project '$PROJECT' --allow-unsigned-legacy $RESTORE_MODE - '$SCRATCH'"
+  fi
 else
   [[ "$SIGNATURE_BUNDLE" == "swift-backup-signature 1"* ]] || die "the host sent something that is not a backup signature; nothing was restored"
   SIGNATURE_B64="$(printf '%s\n' "$SIGNATURE_BUNDLE" | base64 | tr -d '\n')"
   [[ "$SIGNATURE_B64" =~ ^[A-Za-z0-9+/=]+$ ]] && [ "${#SIGNATURE_B64}" -le 24000 ] || die "the signature could not be carried to the restore"
-  REMOTE_RESTORE="cd $REMOTE_DIR && ./deploy/restore.sh --project '$PROJECT' --signature-b64 '$SIGNATURE_B64' --signed-object '${OBJECT##*/}' --compare-source - '$SCRATCH'"
+  if [ "$MODE" = drill ]; then
+    REMOTE_RESTORE="cd $REMOTE_DIR && ./deploy/restore.sh --project '$PROJECT' --signature-b64 '$SIGNATURE_B64' --signed-object '${OBJECT##*/}' --compare-source - '$SCRATCH'"
+  else
+    REMOTE_RESTORE="cd $REMOTE_DIR && ./deploy/restore.sh --project '$PROJECT' --signature-b64 '$SIGNATURE_B64' --signed-object '${OBJECT##*/}' $RESTORE_MODE - '$SCRATCH'"
+  fi
   echo "signature: verified by the host (signed by its trusted backup signing key)" >&2
 fi
 echo "drill: $OBJECT → scratch database $SCRATCH on $TARGET (decrypted here, on the way through)" >&2
@@ -166,5 +203,13 @@ PASSPHRASE=""
 [ "${STAGES[0]}" = 0 ] || die "the host could not stream the encrypted backup (exit ${STAGES[0]}); nothing was restored from it"
 [ "${STAGES[1]}" = 0 ] || die "nothing arrived from the host; nothing was restored"
 [ "${STAGES[2]}" = 0 ] || die "this computer could not decrypt the backup (wrong key or passphrase, or it is not encrypted to this key); the host received nothing usable"
+if [ "$MODE" = recover-live-gone ] && [ "${STAGES[3]}" = 3 ]; then
+  echo "RECOVERY COPY KEPT: $OBJECT decrypted on this computer and restored on the host into $SCRATCH (quarantined in swift-restore-$SCRATCH). Read the host's erasure lines above, then promote it: ./deploy/recover.sh --project $PROJECT --from-copy $SCRATCH --erasures-checked (PILOT-RUNBOOK section 5b)"
+  exit 0
+fi
 [ "${STAGES[3]}" = 0 ] || die "the host's restore or comparison failed (exit ${STAGES[3]}); see its lines above. The scratch copy, if one was made, was removed with its throwaway instance"
+if [ "$MODE" = recover ]; then
+  echo "RECOVERY COPY KEPT: $OBJECT decrypted on this computer and restored on the host into $SCRATCH (quarantined in swift-restore-$SCRATCH). Read the host's erasure lines above, then promote it: ./deploy/recover.sh --project $PROJECT --from-copy $SCRATCH --erasures-checked --replace-database (PILOT-RUNBOOK section 5b)"
+  exit 0
+fi
 echo "DRILL OK: $OBJECT decrypted on this computer and restored on the host into $SCRATCH"
