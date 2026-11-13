@@ -542,8 +542,13 @@ Wrong codes: each signed-in device session gets five wrong app codes per 15
 minutes and twenty per day, and five wrong recovery codes per 15 minutes and
 ten per day, counted separately. One session's wrong codes never close
 another session's door, so someone else's sign-in cannot keep the admin out.
-The admin's own address is emailed when a session's door rests, and when the
-account reaches twenty wrong codes in a day across all sessions.
+Across all sessions that have not passed the authenticator step, the account
+allows 200 judged app codes a day. Past that, every such session is signed
+out, and for the rest of the day a new sign-in opens only with a recovery
+code (or the break-glass below). A session that already passed the step (the
+admin's own console) is never counted, refused or signed out by this. The
+admin's own address is emailed when a session's door rests, at every 20th
+wrong code of the day across all sessions, and when the 200 are used up.
 
 **Break-glass** (the admin lost the app AND the recovery codes, MASTER_KEK was
 lost or changed, or someone else enrolled first). No route in the API can

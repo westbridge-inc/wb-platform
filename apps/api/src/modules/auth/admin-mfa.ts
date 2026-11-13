@@ -2,7 +2,8 @@ import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { AppError } from '../../utils/errors';
 import { log } from '../../utils/logger';
 import { getChannels } from '../../providers/notifications/channels';
-import { runWithoutTenant } from '../../plugins/tenant-context';
+import { runWithTenant, runWithoutTenant } from '../../plugins/tenant-context';
+import { resolveIdentityById } from './preauth-identity';
 import { consoleRoleOf } from './console-role';
 import { browserClientOf, ADMIN_BROWSER_CLIENT } from './browser-session';
 import {
@@ -66,8 +67,13 @@ export const ADMIN_MFA_DAY_WINDOW_S = 24 * 3600;
 /** Recovery codes have their own counts per SESSION; they never close the authenticator door. */
 export const ADMIN_MFA_RECOVERY_MAX_FAILURES = 5;
 export const ADMIN_MFA_RECOVERY_DAY_MAX_FAILURES = 10;
-/** Wrong codes per ACCOUNT per day (all sessions) at which the owner is emailed. An alert only: never a refusal. */
+/** Wrong codes per ACCOUNT per day (all sessions): the owner is emailed at every multiple of this. */
 export const ADMIN_MFA_ACCOUNT_ALERT_FAILURES = 20;
+/** [#2507 review] Authenticator codes JUDGED per ACCOUNT per day from sessions that have not passed the authenticator
+ *  step, across all of them. Past it, every such session is revoked and app codes are refused for the rest of the
+ *  day to any session that has not passed the step: a recovery code (or the operator's break-glass) opens. A session
+ *  that already passed the step is never counted, refused or revoked. */
+export const ADMIN_MFA_ACCOUNT_DAY_CEILING = 200;
 
 export function adminApiConsoleOnly(env: Record<string, string | undefined> = process.env): boolean {
   return env['ADMIN_API_CONSOLE_ONLY'] === '1';
@@ -434,7 +440,10 @@ export async function verifyStepUpWithAuthenticator(app: FastifyInstance, reques
 //   - authenticator codes: 5 judged per session per 15 minutes, 20 per session per day;
 //   - recovery codes: their OWN counts (5 per 15 minutes, 10 per day, per session). A wrong recovery code never
 //     closes the authenticator-code door, and another session's failures never close this session's doors;
-//   - the account's wrong codes across all sessions are counted for the day only to TELL the owner (never refuses).
+//   - the account's wrong codes across all sessions are counted for the day to TELL the owner (at every 20th);
+//   - [#2507 review] and one per-ACCOUNT ceiling on judged authenticator codes from sessions that have NOT passed
+//     the step (200 a day): past it every such session is revoked and only a recovery code opens a new sign-in.
+//     A session that passed the step (the owner's console) is never counted, refused or revoked by it.
 // A session reaches these doors for 12 hours at most (assertSessionYoungEnough, step-up included), so one texted
 // sign-in buys at most 20 authenticator guesses, and each new sign-in costs a text and emails the owner.
 
@@ -453,6 +462,8 @@ export function adminMfaAttemptKeys(sessionId: string, factor: MfaFactor) {
 }
 /** The account's wrong codes today, across every session: an alert count, never a refusal. */
 export const adminMfaAccountDayKey = (userId: string) => `admin_mfa_acct_fail_day:${userId}`;
+/** The account's judged authenticator codes today from sessions that had not passed the step (the ceiling's count). */
+export const adminMfaAccountCeilingKey = (userId: string) => `admin_mfa_acct_judged_day:${userId}`;
 
 /** The /admin-mfa/* route ceiling's bucket: the session that sign-in checked (it runs after app.authenticate). */
 export function adminMfaRouteLimitKey(request: Pick<FastifyRequest, 'ip'> & { authSessionId?: string | null }): string {
@@ -493,7 +504,44 @@ async function reserveAttempt(app: FastifyInstance, request: MfaRequest, factor:
       ? 'Too many wrong codes. Wait 15 minutes, then try again.'
       : 'Too many wrong recovery codes. Wait 15 minutes, or use your authenticator app.');
   }
+  if (factor === 'code' && !(await sessionPassedStep(app, attemptSessionOf(request)))) {
+    // [#2507 review] Many sessions together: one ceiling per account per day, on judged guesses only.
+    const judged = await incrWithin(app, adminMfaAccountCeilingKey(request.user.userId), ADMIN_MFA_DAY_WINDOW_S);
+    if (judged > ADMIN_MFA_ACCOUNT_DAY_CEILING) {
+      if (judged === ADMIN_MFA_ACCOUNT_DAY_CEILING + 1) await closeAccountCodeDoor(app, request, judged - 1);
+      throw new AppError(429, 'ADMIN_MFA_RESTING', 'Too many authenticator codes were tried on this account today. Sign in again and use one of your recovery codes, or ask the operator to reset your authenticator.');
+    }
+  }
   return n;
+}
+
+async function sessionPassedStep(app: FastifyInstance, sessionId: string): Promise<boolean> {
+  const row = await runWithoutTenant(() => app.prisma.session.findUnique({ where: { id: sessionId }, select: { mfaVerifiedAt: true } }), 'admin-mfa');
+  return !!row?.mfaVerifiedAt;
+}
+
+/**
+ * [#2507 review] The account ceiling is reached: revoke EVERY session of the account that has not passed the
+ * authenticator step (a session that passed it, the owner's own console, is kept), audit it, tell the owner. Once.
+ */
+async function closeAccountCodeDoor(app: FastifyInstance, request: MfaRequest, judged: number): Promise<void> {
+  const userId = request.user.userId;
+  let revoked = 0;
+  try {
+    // Imported here, not at the top: auth.service -> step-up -> admin-mfa would otherwise be a cycle.
+    const { AuthService } = await import('./auth.service');
+    const identity = await resolveIdentityById(app.prisma, userId);
+    const sessions = await runWithoutTenant(() => app.prisma.session.findMany({ where: { userId, mfaVerifiedAt: null }, select: { id: true } }), 'admin-mfa');
+    if (identity) {
+      const auth = new AuthService(app);
+      for (const s of sessions) { await runWithTenant(identity.tenantId, () => auth.logout(s.id, userId)); revoked += 1; }
+    }
+  } catch (err) {
+    log().error({ err }, '[admin-mfa] the account ceiling could not revoke every unverified session');
+  }
+  await audit(app, request, 'ADMIN_MFA_ACCOUNT_CEILING', { judged, sessionsRevoked: revoked });
+  await notifyOwners(app, userId, 'Swift: authenticator code entry closed on an admin account',
+    `${judged} authenticator codes were tried today on a Swift admin account from devices that had not passed the authenticator step. Every such device was signed out, and authenticator codes are refused on new sign-ins until tomorrow: sign in again and use one of your recovery codes. Devices that had already passed the step are not affected.`);
 }
 
 /**
@@ -510,7 +558,7 @@ async function recordFailure(app: FastifyInstance, request: MfaRequest, factor: 
   const reasons: string[] = [];
   if (n >= limits.window && Number(await app.redis.eval(MARK_RESTING_PERIOD, 2, keys.windowNotice, keys.window, String(ADMIN_MFA_FAILURE_WINDOW_S * 1000))) === 1) reasons.push('window');
   if (day === limits.day) reasons.push('day');
-  if (today === ADMIN_MFA_ACCOUNT_ALERT_FAILURES) reasons.push('account');
+  if (today % ADMIN_MFA_ACCOUNT_ALERT_FAILURES === 0) reasons.push('account'); // every multiple (20, 40, 60 ...)
   if (reasons.length === 0) return;
   await audit(app, request, 'ADMIN_MFA_RESTING', { today, factor, reasons, sessionId });
   await notifyOwners(app, request.user.userId, 'Swift: wrong authenticator codes on an admin account',

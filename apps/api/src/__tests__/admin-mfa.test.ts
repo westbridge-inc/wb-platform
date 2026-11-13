@@ -20,7 +20,7 @@ import { resetKeyProviderForTests } from '../providers/storage/envelope';
 import { base32Decode, base32Encode, hotp, matchTotp, normaliseRecoveryCode, totpAt, stepAt } from '../modules/auth/admin-totp';
 import {
   notifyAdminSignIn, signInPlaceWords, adminMfaAccountDayKey, adminMfaAttemptKeys, ADMIN_MFA_ACCOUNT_ALERT_FAILURES, ADMIN_MFA_MAX_FAILURES,
-  ADMIN_MFA_DAY_MAX_FAILURES, ADMIN_MFA_RECOVERY_MAX_FAILURES,
+  ADMIN_MFA_DAY_MAX_FAILURES, ADMIN_MFA_RECOVERY_MAX_FAILURES, ADMIN_MFA_ACCOUNT_DAY_CEILING, adminMfaAccountCeilingKey,
 } from '../modules/auth/admin-mfa';
 import { adminMfaResetMain, ADMIN_MFA_RESET_AUDIT_ACTION } from '../modules/auth/admin-mfa-reset';
 import { resetBrowserOriginsForTests } from '../modules/auth/browser-session';
@@ -151,7 +151,7 @@ afterAll(async () => {
       await app.prisma.user.deleteMany({ where: { id: { in: userIds } } });
     }
   }, 'test-cleanup:admin-mfa');
-  for (const id of userIds) await app.redis.del(adminMfaAccountDayKey(id));
+  for (const id of userIds) await app.redis.del(adminMfaAccountDayKey(id), adminMfaAccountCeilingKey(id));
   await app.close();
 });
 
@@ -885,3 +885,70 @@ describe('[REVIEW-2501-B B-S4-7] break-glass: the audited operator reset', () =>
     expect(plain.printed.join('\n')).toMatch(/not an admin/);
   });
 });
+
+// [coordinator review of #2507] Per-session counts stop another session locking the owner out, but on their own
+// they let many sessions together guess without a ceiling. (a) a per-ACCOUNT daily ceiling on judged authenticator
+// guesses from sessions that have not passed the authenticator step: at the ceiling every such session is revoked,
+// and a new sign-in needs a recovery code (or the operator's break-glass). A session that already passed the step
+// is never counted, refused or revoked. (b) the owner is emailed at every multiple of the alert count.
+describe('[#2507 review] the account ceiling across sessions, and alerts at every multiple', () => {
+  it('(a) many sessions together cannot pass the account ceiling; then every unverified session is revoked, the owner\'s verified session keeps working, and a recovery code still opens', async () => {
+    process.env['ADMIN_TOTP_REQUIRED'] = '1';
+    const owner = await enrolledAdmin();
+    expect((await post(owner, '/api/v1/auth/admin-mfa/verify', { code: totpAt(owner.key, Date.now()) })).statusCode).toBe(200); // the owner's own session passed the step
+    const attackers: Array<{ token: string; sessionId: string }> = [];
+    // the enrolment and the owner's own code were judged on sessions that had not yet passed the step: they count
+    let judged = Number(await app.redis.get(adminMfaAccountCeilingKey(owner.userId)));
+    expect(judged).toBe(2);
+    while (judged < ADMIN_MFA_ACCOUNT_DAY_CEILING) {
+      const a = await newSession(owner.userId); // each a texted sign-in
+      attackers.push(a);
+      for (let i = 0; i < ADMIN_MFA_MAX_FAILURES && judged < ADMIN_MFA_ACCOUNT_DAY_CEILING; i++, judged++) {
+        expect((await post(a, '/api/v1/auth/step-up/verify', { code: wrongCode(owner.key) })).statusCode).toBe(400);
+      }
+    }
+    expect(Number(await app.redis.get(adminMfaAccountCeilingKey(owner.userId)))).toBe(ADMIN_MFA_ACCOUNT_DAY_CEILING);
+    // one more sign-in: even the RIGHT app code is refused, unjudged
+    const late = await newSession(owner.userId);
+    const refused = await post(late, '/api/v1/auth/admin-mfa/verify', { code: totpAt(owner.key, Date.now() + 30_000) });
+    expect(refused.statusCode, refused.body).toBe(429);
+    expect(refused.json().error.code).toBe('ADMIN_MFA_RESTING');
+    expect(refused.json().error.message).toMatch(/recovery code/);
+    for (const a of [...attackers, late]) expect(await sessionRow(a.sessionId), a.sessionId).toBeNull();
+    // the owner's verified session: untouched, the admin API and an app-code step-up still work
+    expect(await sessionRow(owner.sessionId)).not.toBeNull();
+    expect((await get(owner, ADMIN_PROBE)).statusCode).toBe(200);
+    expect((await post(owner, '/api/v1/auth/step-up/verify', { code: totpAt(owner.key, Date.now() + 30_000) })).statusCode).toBe(200);
+    // a new sign-in: app codes stay refused for the day; a recovery code opens
+    const fresh = await newSession(owner.userId);
+    expect((await post(fresh, '/api/v1/auth/admin-mfa/verify', { code: '000000' })).statusCode).toBe(429);
+    expect((await post(fresh, '/api/v1/auth/admin-mfa/verify', { recoveryCode: owner.recoveryCodes[0] })).statusCode).toBe(200);
+    expect((await get(fresh, ADMIN_PROBE)).statusCode).toBe(200);
+  }, 180_000);
+
+  it('(a) a session that passed the authenticator step is never counted toward the ceiling', async () => {
+    process.env['ADMIN_TOTP_REQUIRED'] = '1';
+    const owner = await enrolledAdmin();
+    expect((await post(owner, '/api/v1/auth/admin-mfa/verify', { code: totpAt(owner.key, Date.now()) })).statusCode).toBe(200);
+    const counted = await app.redis.get(adminMfaAccountCeilingKey(owner.userId));
+    expect((await post(owner, '/api/v1/auth/step-up/verify', { code: wrongCode(owner.key) })).statusCode).toBe(400);
+    expect((await post(owner, '/api/v1/auth/step-up/verify', { code: wrongCode(owner.key) })).statusCode).toBe(400);
+    expect(await app.redis.get(adminMfaAccountCeilingKey(owner.userId))).toBe(counted);
+  });
+
+  it('(b) the owner is emailed at every multiple of the alert count, not only the first', async () => {
+    process.env['ADMIN_TOTP_REQUIRED'] = '1';
+    const email = `multiple-${RUN}@example.test`;
+    const owner = await enrolledAdmin({ email });
+    const other = await newSession(owner.userId);
+    await app.redis.set(adminMfaAccountDayKey(owner.userId), String(2 * ADMIN_MFA_ACCOUNT_ALERT_FAILURES - 1), 'EX', 3600);
+    const before = devChannelLog.length;
+    expect((await post(other, '/api/v1/auth/step-up/verify', { code: wrongCode(owner.key) })).statusCode).toBe(400);
+    const told = emailsTo(email, before).filter((m) => m.title === REST_TITLE);
+    expect(told).toHaveLength(1);
+    expect(told[0]!.body).toContain(`${2 * ADMIN_MFA_ACCOUNT_ALERT_FAILURES} wrong`);
+    await post(other, '/api/v1/auth/step-up/verify', { code: wrongCode(owner.key) }); // 41: no new email
+    expect(emailsTo(email, before).filter((m) => m.title === REST_TITLE)).toHaveLength(1);
+  });
+});
+
