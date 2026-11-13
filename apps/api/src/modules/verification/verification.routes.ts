@@ -3,7 +3,7 @@ import type { FastifyInstance } from 'fastify';
 import { documentScanState, uploadScanRefusal } from '../../lib/upload-scan-debt';
 import { z } from '../../lib/zod';
 import { VehicleType } from '@prisma/client';
-import { VerificationService } from './verification.service';
+import { VerificationService, applicantDocumentView } from './verification.service';
 import { NotificationService, notifyAdmins, tenantOfUser } from '../notification/notification.service';
 import { getKycProvider } from '../../providers/kyc/kyc-provider';
 import { getStorageProvider } from '../../providers/storage/storage-provider';
@@ -227,7 +227,9 @@ export async function verificationRoutes(app: FastifyInstance) {
       await recordUploadConsent(app.prisma, { userId: request.user.userId, tick: body.consentTick, subjectType: consentSubjectForRole(body.role), surface: consentSurfaceOf(request), ip: request.ip, docType: body.docType, via: body.consentVia });
     }
     reply.code(201);
-    return { success: true, data: doc };
+    // [FABLE-02 F10 · 13 Nov 2026] The applicant's own allow-listed view (as GET /status), never the stored row
+    // (storage key, provider reference, reviewer columns). The phone and the web read nothing else from it.
+    return { success: true, data: applicantDocumentView(doc) };
   });
 
   /** POST /upload — store one document file behind the StorageProvider; returns the fileUrl.

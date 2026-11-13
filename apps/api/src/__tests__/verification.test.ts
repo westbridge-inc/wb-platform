@@ -390,7 +390,9 @@ describe('Provider auto-decisions (swappable interface)', () => {
     }, vendorToken);
     expect(res.statusCode).toBe(201);
     expect(res.json().data.status).toBe('APPROVED');
-    expect(res.json().data.kycRef).toMatch(/^sbx_/);
+    // The sandbox provider decided it (its reference is on the stored row); [FABLE-02 F10] the answer never carries it.
+    expect((await app.prisma.verificationDocument.findUniqueOrThrow({ where: { id: res.json().data.id } })).kycRef).toMatch(/^sbx_/);
+    expect(res.json().data).not.toHaveProperty('kycRef');
 
     // [VERIFY-DOCS · owner ruling 6 Oct 2026 ~21:25 GYT — a DELIBERATE change] The owner's ID IS
     // the service business's bar now. A police clearance is needed only for HOME-VISIT bookings
