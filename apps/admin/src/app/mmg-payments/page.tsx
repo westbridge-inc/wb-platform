@@ -14,7 +14,7 @@ import type {
 } from '@swift/types';
 import {
   checkMmgFeeReversal, fetchFeeRefundCase, fetchFeeRefundCases, fetchMmgCheckout, fetchMmgCheckouts, fetchMmgFeeReversal, openFeeRefundCase,
-  resolveMmgFeeReversal, reverseMmgFeePayment, creditLateMmgPayment, reviewLateMmgCredit,
+  resolveMmgFeeReversal, reverseMmgFeePayment, creditLateMmgPayment, reviewLateMmgCredit, fetchLateCreditReviews, type LateCreditReviewRow, sendStepUpCode, verifyStepUpCode,
   type FeeRefundKind, type MmgFeeReversalRow, type MmgFeeReversalView,
 } from '@/lib/api';
 import { MutationError } from '@/components/MutationError';
@@ -170,6 +170,8 @@ export default function MmgPaymentsPage() {
         </select>
         <button type="submit" className="mc-btn mc-btn-primary">Search</button>
       </form>
+
+      <LateCreditReviews onOpen={setOpenId} />
 
       <section aria-label="Payments" className="bg-[var(--mc-card)] rounded-[var(--mc-radius)] border border-[var(--mc-line)] overflow-hidden mb-6">
         {list.isPending ? (
@@ -563,11 +565,17 @@ function LateCreditPanel({ checkoutId }: { checkoutId: string }) {
   const [reference, setReference] = useState('');
   const [reason, setReason] = useState('');
   const sending = useRef(false);
+  const [code, setCode] = useState('');
+  // [Review S3-1] Like every solo money decision: a fresh sign-in code texted to the owner's phone, spent by this credit.
+  const sendCode = useMutation({ mutationFn: () => sendStepUpCode() });
   const ask = useMutation({
-    mutationFn: () => creditLateMmgPayment(checkoutId, reference.trim(), reason.trim()),
+    mutationFn: async () => {
+      await verifyStepUpCode(code.trim());
+      return creditLateMmgPayment(checkoutId, reference.trim(), reason.trim());
+    },
     onSettled: () => qc.invalidateQueries({ queryKey: ['mmg-checkout', checkoutId] }),
   });
-  const ok = reference.trim().length >= 3 && reason.trim().length >= REASON_MIN;
+  const ok = reference.trim().length >= 3 && reason.trim().length >= REASON_MIN && /^\d{4,8}$/.test(code.trim());
   const done = (ask.data as { data?: { status?: string } } | undefined)?.data?.status === 'CONFIRMED';
   return (
     <section aria-label="Credit this late payment" className="rounded-lg border border-[var(--mc-line)] p-4 space-y-3 text-sm">
@@ -588,12 +596,40 @@ function LateCreditPanel({ checkoutId }: { checkoutId: string }) {
       >
         <input value={reference} onChange={(e) => setReference(e.target.value)} aria-label="MMG reference from the statement" maxLength={128} className="mc-input" placeholder="MMG reference from the statement" />
         <textarea value={reason} onChange={(e) => setReason(e.target.value)} rows={2} maxLength={500} aria-label="Why it is being credited" placeholder="Why it is being credited. Required." className="mc-input" />
+        <div className="flex gap-2 items-center">
+          <button type="button" className="mc-btn" disabled={sendCode.isPending} onClick={() => sendCode.mutate()}>
+            {sendCode.isSuccess ? 'Code sent' : 'Text me a sign-in code'}
+          </button>
+          <input value={code} onChange={(e) => setCode(e.target.value.replace(/[^0-9]/g, ''))} inputMode="numeric" maxLength={8} aria-label="Sign-in code" placeholder="Code" className="mc-input w-32" />
+        </div>
+        {sendCode.error ? <MutationError error={sendCode.error} label="The code was not sent" /> : null}
         <button type="submit" disabled={ask.isPending || !ok || done} className="mc-btn mc-btn-primary">
           {ask.isPending ? 'Checking with MMG…' : 'Credit this late payment'}
         </button>
         {done ? <p className="text-xs">Credited on MMG&apos;s records. A second person reviews it.</p> : null}
         {ask.error ? <MutationError error={ask.error} label="Nothing was credited" /> : null}
       </form>
+    </section>
+  );
+}
+
+/** [Review A S4-2 on #2502] The owner's late credits waiting for a second person: shown only when there are some. */
+function LateCreditReviews({ onOpen }: { onOpen: (id: string) => void }) {
+  const pending = useQuery({ queryKey: ['mmg-late-credit-reviews'], queryFn: fetchLateCreditReviews, refetchOnWindowFocus: false, retry: false });
+  const rows = (pending.data as { data?: unknown } | undefined)?.data;
+  if (!Array.isArray(rows) || rows.length === 0) return null;
+  return (
+    <section aria-label="Late credits waiting for a second review" className="rounded-lg border border-[var(--mc-line)] p-4 space-y-2 text-sm mb-6">
+      <h2 className="font-semibold">Late MMG credits waiting for a second review</h2>
+      <p className="mc-muted text-xs">The owner credited these late payments on MMG&apos;s records. Someone else checks each one against the MMG statement.</p>
+      <ul className="space-y-1">
+        {(rows as LateCreditReviewRow[]).map((r) => (
+          <li key={r.checkoutId}>
+            <button type="button" className="underline" onClick={() => onOpen(r.checkoutId)}>{r.mmgTransactionId ?? r.checkoutId}</button>
+            {' '}· {gyd(r.amount)} {r.currencyCode} · credited {when(r.confirmedAt)}
+          </li>
+        ))}
+      </ul>
     </section>
   );
 }

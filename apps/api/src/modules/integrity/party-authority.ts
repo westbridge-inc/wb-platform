@@ -22,7 +22,9 @@ export async function assertClearOfParties(
   actorId: string,
   parties: readonly string[],
   refusals: { own: AppError; staff: AppError },
-  options: { superAdminThroughReview?: boolean } = {},
+  /** `staffMayDecide`: the matter is a staff member's own act by nature (a second person reviewing the owner's
+   *  decision), so a staff party does not send it to a SUPER_ADMIN; the own-account rule still holds in full. */
+  options: { superAdminThroughReview?: boolean; staffMayDecide?: boolean } = {},
 ): Promise<{ identityReviewReasons: string[] }> {
   const people = new Set(parties);
   const reasons = new Set<string>();
@@ -38,7 +40,7 @@ export async function assertClearOfParties(
     if (!(options.superAdminThroughReview && consoleRole(actorId) === 'SUPER_ADMIN')) throw new IdentityReviewRequiredError();
     await assertActorClearOfLineage(tx, actorId, parties, refusals.own);
   }
-  if ([...people].some((person) => consoleRole(person) !== null) && consoleRole(actorId) !== 'SUPER_ADMIN') throw refusals.staff;
+  if (!options.staffMayDecide && [...people].some((person) => consoleRole(person) !== null) && consoleRole(actorId) !== 'SUPER_ADMIN') throw refusals.staff;
   return { identityReviewReasons: [...reasons] };
 }
 

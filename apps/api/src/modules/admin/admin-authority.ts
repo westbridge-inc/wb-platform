@@ -547,6 +547,7 @@ export const ADMIN_ROUTE_AUTHORITY: Readonly<Record<AdminRouteKey, AdminRouteAut
   // records, with a reason (C3; the service refuses anyone but a SUPER_ADMIN). A second person then reviews it (C3).
   'POST /billing/mmg-checkouts/:id/credit-late': c('C3', 'billing.mmg.credit.late', E.mmgCheckout),
   'POST /billing/mmg-checkouts/:id/late-credit-review': c('C3', 'billing.mmg.late.review', E.mmgCheckout),
+  'GET /billing/mmg-checkouts/late-credit-reviews': c('C1', 'billing.mmg.read'),
   // [Row 156] A partner asked for a weekly-fee payment back: a clock and a record, no money. A reason, one person; the
   // return itself stays the C4 above. A case closes only on a REVERSED reversal, never from here.
   'GET /billing/fee-refund-cases': c('C1', 'billing.mmg.read'),

@@ -30,6 +30,8 @@ import { openCheckoutUrl, sealCheckoutUrl } from './checkout-url-seal';
 import { checkoutAmountForWeeks, isCheckoutWeeks, mmgCheckoutLive, type ClientPlatform } from './fee-pay-actions';
 import { claimProviderPaymentInTx, ProviderIdentityError, type ProviderIdentityCode } from './provider-identity';
 import { MMG_HISTORY_CLOCK_TOLERANCE_MS, mmgHistoryQueryFor, mmgHistoryTruncated } from '../../providers/mmg/mmg-history';
+import { approverRoster } from '../admin/solo-approval';
+import { assertClearOfParties } from '../integrity/party-authority';
 import { liveServicesStoreFeeWhere, PAYER_INCLUDE, payerAudienceOf, payerUserIdOf } from '../subscription/subscription-owner';
 export { MMG_HISTORY_ROWS, MMG_HISTORY_MARGIN_MS, mmgStampOf } from '../../providers/mmg/mmg-history';
 import { instantOfGuyanaWallClock } from '../../utils/guyana-day';
@@ -607,6 +609,9 @@ const HOLD_GUIDANCE: Readonly<Record<string, string>> = {
 export const OWNER_LATE_CREDIT_REASON = 'OWNER_LATE_CREDIT';
 /** The audit action of that credit. */
 export const OWNER_LATE_CREDIT_AUDIT = 'MMG_LATE_PAYMENT_CREDITED_BY_OWNER';
+/** The holds the owner's door may credit: MMG dates the payment after the checkout closed (inside the automatic
+ *  history read, or after its margin, where that read cannot see it). */
+const LATE_CREDIT_HOLDS = ['PAYMENT_TIME_OUTSIDE_WINDOW', 'PAYMENT_TIME_NOT_IN_HISTORY'];
 
 const HOLD_REASON: Record<ProviderIdentityCode, string> = {
   PROVIDER_TXN_ALREADY_CREDITED: 'ALREADY_CREDITED',
@@ -1571,19 +1576,25 @@ export class MmgCheckoutService {
 
   /**
    * [OWNER RULING 13 Nov 2026 · audit FABLE-01 C1-1] A weekly-fee payment made on MMG's page AFTER the checkout's
-   * window closed is held (PAYMENT_TIME_OUTSIDE_WINDOW): no automatic rule may credit it. The OWNER alone may, and
-   * only on MMG's own records: Swift asks MMG's lookup and MMG's transaction history again, here and now, and credits
-   * only the one candidate MMG shows as this checkout's own payment (MMG's history names this checkout's reference, the
-   * same transaction, exactly the amount, in GYD, to our merchant, with its ledger number), paid AFTER the checkout
-   * closed, with no MMG "not paid" answer for it, and whose MMG transaction or ledger number is the reference the owner
-   * typed from MMG's statement. The typed reference only picks; MMG's answer is the evidence. Credited exactly as any
-   * confirmation, at most once (the provider identity). The audit row says who, which reference and why, and the
-   * checkout is flagged for a second person to review once a second admin exists.
+   * window closed is held (PAYMENT_TIME_OUTSIDE_WINDOW, or PAYMENT_TIME_NOT_IN_HISTORY when it came after the automatic
+   * history read's margin): no automatic rule may credit it. The OWNER alone may, and only on MMG's own records: Swift
+   * asks MMG's lookup and MMG's transaction history again, here and now (history read over the whole late window, from
+   * the checkout's opening to MMG's first reply naming the payment), and credits only the one candidate MMG shows as
+   * this checkout's own payment (MMG's history names this checkout's reference, the same transaction, exactly the
+   * amount, in GYD, to our merchant, with its ledger number), paid AFTER the checkout closed, when MMG has never
+   * answered "not paid" for the checkout or that transaction, and whose MMG transaction or ledger number is the
+   * reference the owner typed. The typed reference only picks among this checkout's own candidates; MMG's answer is
+   * the evidence (the console shows the same numbers, so typing it proves nothing by itself).
+   * Credited exactly as any confirmation, at most once (the provider identity). The audit row (same commit) says who,
+   * which reference and why; `ownerNotice` (the owner's email and text, as every solo money decision sends) runs in
+   * that commit too, so an unannounced credit never stands. Flagged for a second person's review.
+   * Anything that does not end in THIS door's credit is a 409 naming why; an exact repeat of its own credit is not.
    */
   async creditLateByOwner(
     input: { tenantId: string; checkoutId: string; actorId: string; mmgReference: string; reason: string },
     now = new Date(),
-  ): Promise<{ status: CheckoutStatus; mmgTransactionId: string | null; secondReviewNeeded: boolean }> {
+    deps: { ownerNotice?: (facts: { checkoutId: string; mmgTransactionId: string; amount: string; currencyCode: string }) => Promise<void> } = {},
+  ): Promise<{ status: 'CONFIRMED'; mmgTransactionId: string; secondReviewNeeded: boolean; repeat: boolean }> {
     const reference = input.mmgReference.trim();
     if (!MMG_TXN_ID.test(reference)) throw new AppError(400, 'MMG_REFERENCE_INVALID', 'Type the reference exactly as MMG\'s statement shows it.');
     const actor = await this.prisma.user.findUnique({ where: { id: input.actorId }, select: { roles: true } });
@@ -1592,12 +1603,17 @@ export class MmgCheckoutService {
     if (!intent) throw new NotFoundError('MMG checkout', input.checkoutId);
     if (intent.adInvoiceId) throw new AppError(409, 'AD_CHECKOUT_NOT_CREDITED_HERE', 'An ad payment is reconciled with MMG directly.');
     if (intent.status === 'CONFIRMED') {
-      // Idempotent: the same payment is never credited twice; a repeat says what already happened.
-      return { status: 'CONFIRMED', mmgTransactionId: intent.mmgTransactionId, secondReviewNeeded: intent.reason === OWNER_LATE_CREDIT_REASON };
+      // [Review S4-3] Only the exact repeat of this door's own credit answers success; anything else credited nothing.
+      if (intent.reason?.startsWith(OWNER_LATE_CREDIT_REASON) && intent.mmgTransactionId && await this.namesCreditOf(intent, reference)) {
+        return { status: 'CONFIRMED', mmgTransactionId: intent.mmgTransactionId, secondReviewNeeded: intent.reason === OWNER_LATE_CREDIT_REASON, repeat: true };
+      }
+      throw new AppError(409, 'ALREADY_CONFIRMED', 'This payment is already confirmed. Nothing was credited.');
     }
-    if (intent.status !== 'HELD' || intent.reason !== 'PAYMENT_TIME_OUTSIDE_WINDOW') {
-      throw new AppError(409, 'NOT_A_LATE_PAYMENT', 'Only a payment held because MMG dates it outside the checkout can be credited this way.');
+    if (intent.status !== 'HELD' || !LATE_CREDIT_HOLDS.includes(intent.reason ?? '')) {
+      throw new AppError(409, 'NOT_A_LATE_PAYMENT', 'Only a payment held because MMG dates it after the checkout closed can be credited this way.');
     }
+    // [Review S4-4] The same gate every automatic confirmation waits for.
+    if (!(await providerIdentityBackfillDone(this.prisma))) throw new AppError(409, 'IDENTITY_BACKFILL_PENDING', 'Payment identities are still being checked. Try again shortly. Nothing was credited.');
     let provider: MmgCheckoutProvider | null = null;
     try {
       provider = this.checkout();
@@ -1612,10 +1628,12 @@ export class MmgCheckoutService {
       where: { intentId: intent.id, source: { in: ['RETURN', 'NOTIFY'] } },
       select: { detail: true, body: true, createdAt: true },
     });
-    const success = successAnswerOf({ ...intent, status: 'EXPIRED' }, answers);
-    if (success.txnId === null && success.reason === 'MMG_ANSWERS_DISAGREE') {
-      throw new AppError(409, 'MMG_ANSWERS_DISAGREE', 'MMG answered both paid and not paid for this checkout. Nothing was credited.');
+    // [Review S2-1] Any "not paid" answer MMG gave for this checkout stops this door: the contradiction is a
+    // person's to resolve with MMG, never the owner's to override here.
+    if (answers.some((a) => NEGATIVE_ANSWERS.includes(a.detail ?? ''))) {
+      throw new AppError(409, 'MMG_ANSWERS_DISAGREE', 'MMG answered "not paid" for this checkout. Resolve it with MMG first. Nothing was credited.');
     }
+    const success = successAnswerOf({ ...intent, status: 'EXPIRED' }, answers);
     const same = (a: string | null | undefined) => !!a && a.trim().toUpperCase() === reference.toUpperCase();
     const qualifying: Array<{ txnId: string; ledgerReference: string }> = [];
     for (const txnId of intent.candidates.slice(0, MAX_CANDIDATES)) {
@@ -1630,18 +1648,18 @@ export class MmgCheckoutService {
       if (detail.outcome !== 'found') continue;
       const others = await this.otherCheckoutRefsIn(detail.raw, intent);
       const firstReplyAt = firstReplyNaming(answers, txnId);
+      // [Review S3-2 · COORD ruling] The late window: from the checkout's opening to MMG's first reply naming the
+      // payment (a payment cannot postdate it), whatever the gap. The automatic read stays as it is.
       const history = detail.statusText === 'successful' && firstReplyAt !== null
-        ? await this.paymentHistory(intent, txnId, historyQueryFor(intent, firstReplyAt, zone, now), lookup)
+        ? await this.paymentHistory(intent, txnId, mmgHistoryQueryFor(intent.createdAt, firstReplyAt, zone, now), lookup)
         : null;
-      const creation = { zone, firstReplyAt, history };
-      const verdict = judge(intent, txnId, detail, merchantIds, others, success, creation);
+      const verdict = judge(intent, txnId, detail, merchantIds, others, success, { zone, firstReplyAt, history });
       // Every condition but the window holds: MMG's history ties this payment to this checkout (its reference, the
-      // transaction, the amount) and dates it OUTSIDE; anything else (another checkout's reference, a mismatch) is not
-      // this door's to override.
+      // transaction, the amount) and dates it OUTSIDE; anything else (another checkout's reference, a mismatch, a
+      // reversal, another amount, merchant or currency) is not this door's to override.
       if (verdict.verdict !== 'HOLD' || verdict.reason !== 'PAYMENT_TIME_OUTSIDE_WINDOW') continue;
       if (!detail.ledgerReference || !MMG_TXN_ID.test(detail.ledgerReference)) continue;
-      // Late, never early: MMG's time for the payment is after the checkout closed (a payment before it opened is
-      // not this checkout's).
+      // Late, never early: MMG's time for the payment is after the checkout closed.
       const row = history?.outcome === 'rows' && history.naming.length === 1 ? historyRowFrom(history.naming[0]!) : null;
       const paid = row ? mmgCreationInstant(row.modificationDate, zone) : null;
       if (paid === null || paid <= intent.expiresAt.getTime()) continue;
@@ -1652,30 +1670,76 @@ export class MmgCheckoutService {
       throw new AppError(409, 'MMG_DOES_NOT_SHOW_IT', 'MMG\'s own records do not show exactly one late payment of this checkout with that reference. Nothing was credited.');
     }
     const [chosen] = qualifying;
-    const admins = await this.prisma.user.count({ where: { id: { not: input.actorId }, status: 'ACTIVE', roles: { hasSome: ['ADMIN', 'SUPER_ADMIN'] } } });
-    const status = await this.confirm(intent, chosen!.txnId, chosen!.ledgerReference, now, {
+    // [Review S2-1] Nor any "not paid" answer naming that transaction, on any checkout.
+    const refusedElsewhere = await this.prisma.mmgCheckoutObservation.count({
+      where: { source: { in: ['RETURN', 'NOTIFY'] }, detail: { in: NEGATIVE_ANSWERS }, body: { path: ['transactionId'], equals: chosen!.txnId } },
+    });
+    if (refusedElsewhere > 0) throw new AppError(409, 'MMG_ANSWERS_DISAGREE', 'MMG answered "not paid" for this transaction. Resolve it with MMG first. Nothing was credited.');
+    await this.confirm(intent, chosen!.txnId, chosen!.ledgerReference, now, {
       fromHeld: true,
-      ownerLate: { actorId: input.actorId, reference, reason: input.reason },
+      ownerLate: { actorId: input.actorId, reference, reason: input.reason, ...(deps.ownerNotice ? { notice: deps.ownerNotice } : {}) },
     });
     const after = await this.prisma.mmgCheckoutIntent.findUniqueOrThrow({ where: { id: intent.id }, select: { status: true, mmgTransactionId: true, reason: true } });
-    if (after.status === 'CONFIRMED' && after.reason === OWNER_LATE_CREDIT_REASON && admins > 0) {
-      await notifyAdmins(this.prisma, this.notifications, {
-        tenantId: intent.tenantId,
-        title: 'Late MMG payment credited by the owner: second review',
-        body: `Checkout ${intent.id} was paid on MMG after it closed and the owner credited it on MMG's records. A second person checks it against the MMG statement.`,
-        data: { kind: 'billing_invariants', alert: 'mmg-owner-late-credit', checkoutId: intent.id },
-      }).catch(() => {});
+    if (after.status === 'CONFIRMED' && after.reason === OWNER_LATE_CREDIT_REASON && after.mmgTransactionId === chosen!.txnId) {
+      await this.pageReviewers(intent, input.actorId, 'Late MMG payment credited by the owner: second review',
+        `Checkout ${intent.id} was paid on MMG after it closed and the owner credited it on MMG's records. A second person checks it against the MMG statement.`, 'mmg-owner-late-credit');
+      return { status: 'CONFIRMED', mmgTransactionId: after.mmgTransactionId, secondReviewNeeded: true, repeat: false };
     }
-    return { status: (after.status ?? status) as CheckoutStatus, mmgTransactionId: after.mmgTransactionId, secondReviewNeeded: after.reason === OWNER_LATE_CREDIT_REASON };
+    if (after.status === 'HELD') {
+      // [Review S3-3] The credit was refused because MMG's transaction is already credited (another channel, another
+      // checkout): a possible double payment. Said, held as such and paged; never a quiet success.
+      const numbers = [chosen!.txnId, chosen!.ledgerReference];
+      const elsewhere = await this.prisma.providerPayment.findFirst({
+        where: { provider: 'MMG', OR: numbers.map((n) => ({ providerTxnId: { equals: n, mode: 'insensitive' as const } })), NOT: { creditedPaymentId: `mco:${intent.id}` } },
+        select: { id: true },
+      });
+      if (elsewhere) {
+        await this.prisma.mmgCheckoutIntent.updateMany({ where: { id: intent.id, status: 'HELD' }, data: { reason: 'ALREADY_CREDITED' } });
+        await this.pageReviewers(intent, null, 'MMG checkout held: transaction already credited',
+          `Checkout ${intent.id}: the owner tried to credit a late MMG payment that is already credited elsewhere. Nothing was credited. Check for a double payment.`, 'mmg-checkout-held');
+        throw new AppError(409, 'ALREADY_CREDITED', 'That MMG transaction is already credited elsewhere. Nothing was credited; it is held for a person.');
+      }
+    }
+    throw new AppError(409, 'NOT_CREDITED', `This payment changed while it was being credited (now ${after.status}). Nothing was credited by this request.`);
+  }
+
+  /** Does the reference name the MMG payment this checkout was credited with (its transaction or its ledger number)? */
+  private async namesCreditOf(intent: MmgCheckoutIntent, reference: string): Promise<boolean> {
+    if (!intent.providerPaymentId) return false;
+    const claimed = await this.prisma.providerPayment.findFirst({
+      where: { provider: 'MMG', creditedPaymentId: `mco:${intent.id}`, providerTxnId: { equals: reference, mode: 'insensitive' } },
+      select: { id: true },
+    });
+    return !!claimed;
+  }
+
+  /** [Review S4-2] Every admin who could review (the solo roster), but the one named, told once. */
+  private async pageReviewers(intent: MmgCheckoutIntent, except: string | null, title: string, body: string, alert: string): Promise<void> {
+    const roster = (await approverRoster(this.prisma)).filter((entry) => entry.userId !== except);
+    if (roster.length === 0) return;
+    await notifyAdmins(this.prisma, this.notifications, {
+      tenantId: intent.tenantId, title, body, data: { kind: 'billing_invariants', alert, checkoutId: intent.id },
+    }).catch(() => {});
+  }
+
+  /** [Review S4-2] The owner's late credits still waiting for a second person: what a newly added admin finds. */
+  async pendingLateCreditReviews(tenantId: string): Promise<Array<{ checkoutId: string; mmgTransactionId: string | null; amount: number; currencyCode: string; confirmedAt: Date | null }>> {
+    const rows = await this.prisma.mmgCheckoutIntent.findMany({
+      where: { tenantId, status: 'CONFIRMED', reason: OWNER_LATE_CREDIT_REASON },
+      select: { id: true, mmgTransactionId: true, amount: true, currencyCode: true, confirmedAt: true },
+      orderBy: { confirmedAt: 'asc' }, take: 200,
+    });
+    return rows.map((r) => ({ checkoutId: r.id, mmgTransactionId: r.mmgTransactionId, amount: Number(r.amount), currencyCode: r.currencyCode, confirmedAt: r.confirmedAt }));
   }
 
   /**
-   * [OWNER RULING 13 Nov 2026] The second person's review of an owner's late credit: a different admin checks it
-   * against the MMG statement and records what they found. It moves no money (a credit that should not stand is
-   * returned through MMG's reversal, a separate C4); it closes the flag and says so in the audit.
+   * [OWNER RULING 13 Nov 2026] The second person's review of an owner's late credit: someone who is not the owner,
+   * through no account linked to them (the house rule, party-authority.ts), checks it against the MMG statement and
+   * records what they found. It moves no money (a credit that should not stand is returned through MMG's reversal, a
+   * separate C4). A dispute reaches every admin who could act.
    */
   async reviewOwnerLateCredit(input: { tenantId: string; checkoutId: string; actorId: string; outcome: 'AGREED' | 'DISPUTED'; note: string }): Promise<{ reason: string }> {
-    return this.prisma.$transaction(async (tx) => {
+    const result = await this.prisma.$transaction(async (tx) => {
       await tx.$queryRaw`SELECT "id" FROM "mmg_checkout_intents" WHERE "id" = ${input.checkoutId} FOR UPDATE`;
       const intent = await tx.mmgCheckoutIntent.findFirst({ where: { id: input.checkoutId, tenantId: input.tenantId } });
       if (!intent) throw new NotFoundError('MMG checkout', input.checkoutId);
@@ -1683,17 +1747,24 @@ export class MmgCheckoutService {
         throw new AppError(409, 'NO_LATE_CREDIT_TO_REVIEW', 'This payment has no owner\'s late credit waiting for a second review.');
       }
       const credited = await tx.auditLog.findFirst({ where: { action: OWNER_LATE_CREDIT_AUDIT, entityId: intent.id }, select: { userId: true } });
-      if (!credited || credited.userId === input.actorId) {
-        throw new AppError(403, 'SECOND_PERSON_ONLY', 'The review is a second person\'s: someone other than who credited it.');
-      }
+      if (!credited?.userId) throw new AppError(409, 'NO_LATE_CREDIT_TO_REVIEW', 'The owner\'s credit record could not be read.');
+      await assertClearOfParties(tx, input.actorId, [credited.userId], {
+        own: new AppError(403, 'SECOND_PERSON_ONLY', 'The review is a second person\'s: someone other than who credited it, on no account of theirs.'),
+        staff: new AppError(403, 'SECOND_PERSON_ONLY', 'The review is a second person\'s.'),
+      }, { staffMayDecide: true });
       const reason = input.outcome === 'AGREED' ? 'OWNER_LATE_CREDIT_REVIEWED' : 'OWNER_LATE_CREDIT_DISPUTED';
       await tx.mmgCheckoutIntent.update({ where: { id: intent.id }, data: { reason } });
       await tx.auditLog.create({ data: {
         userId: input.actorId, action: 'MMG_OWNER_LATE_CREDIT_REVIEWED', entity: 'MmgCheckoutIntent', entityId: intent.id,
         changes: { outcome: input.outcome, note: input.note, mmgTransactionId: intent.mmgTransactionId, creditedBy: credited.userId },
       } });
-      return { reason };
+      return { reason, intent };
     });
+    if (input.outcome === 'DISPUTED') {
+      await this.pageReviewers(result.intent, input.actorId, 'Late MMG credit disputed by the second review',
+        `Checkout ${result.intent.id}: the second person says the owner's late credit does not match the MMG statement. Check it; a return goes through MMG's reversal.`, 'mmg-owner-late-credit-disputed');
+    }
+    return { reason: result.reason };
   }
 
   /** Look up every candidate and decide. Only CONFIRM moves money. */
@@ -1846,7 +1917,7 @@ export class MmgCheckoutService {
    *  channel credited by either number is never credited again. */
   private async confirm(
     intent: MmgCheckoutIntent, txnId: string, ledgerReference: string, now: Date,
-    opts: { fromHeld?: boolean; ownerLate?: { actorId: string; reference: string; reason: string } } = {},
+    opts: { fromHeld?: boolean; ownerLate?: { actorId: string; reference: string; reason: string; notice?: (facts: { checkoutId: string; mmgTransactionId: string; amount: string; currencyCode: string }) => Promise<void> } } = {},
   ): Promise<CheckoutStatus> {
     const key = txnId; // Preserve provider spelling; SQL owns identity equivalence.
     const numbers = [...new Set([key, ledgerReference])];
@@ -1923,10 +1994,13 @@ export class MmgCheckoutService {
             changes: { typedReference: opts.ownerLate.reference, mmgTransactionId: key, ledgerReference, amount: String(current.amount),
               currencyCode: current.currencyCode, heldReason: current.reason, reason: opts.ownerLate.reason, providerPaymentId: identity.id, secondReview: 'PENDING' },
           } });
+          // [Review S3-1] The owner's email and text, last in the commit: a notice that cannot go undoes the credit.
+          await opts.ownerLate.notice?.({ checkoutId: current.id, mmgTransactionId: key, amount: String(current.amount), currencyCode: current.currencyCode });
         }
         for (const fee of covered) await markSettlementApplying(tx, fee.subscriptionId, fee.source, now);
         return 'credited' as const;
-      });
+      // The owner's notice is sent inside this commit: room for the email and text to go (solo approval's budget).
+      }, opts.ownerLate?.notice ? { timeout: 30_000, maxWait: 10_000 } : undefined);
     } catch (err) {
       if (err instanceof ProviderIdentityError) return this.hold(intent, HOLD_REASON[err.identityCode]);
       if (isDuplicateOn(err, 'mmgTransactionId')) return this.hold(intent, 'ALREADY_CREDITED');

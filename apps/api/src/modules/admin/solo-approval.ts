@@ -248,17 +248,17 @@ async function loadRow(db: SoloDb, id: string): Promise<SoloRow> {
   return row;
 }
 
-interface OwnerContact { email: string | null; phone: string | null; emailChangedAt: Date | null }
+export interface OwnerContact { email: string | null; phone: string | null; emailChangedAt: Date | null }
 
 /** Where the owner's notices go, and when the email last changed. */
-async function ownerContact(db: Pick<PrismaClient, 'user'> | Prisma.TransactionClient, userId: string): Promise<OwnerContact> {
+export async function ownerContact(db: Pick<PrismaClient, 'user'> | Prisma.TransactionClient, userId: string): Promise<OwnerContact> {
   const user = await db.user.findUnique({ where: { id: userId }, select: { email: true, phone: true, emailChangedAt: true } });
   const email = user?.email?.trim();
   return { email: email ? email : null, phone: user?.phone ?? null, emailChangedAt: user?.emailChangedAt ?? null };
 }
 
 /** The notices can go: an address, no recent change to it, a phone a text can reach. */
-function assertNoticeable(contact: OwnerContact, now: Date): asserts contact is OwnerContact & { email: string; phone: string } {
+export function assertNoticeable(contact: OwnerContact, now: Date): asserts contact is OwnerContact & { email: string; phone: string } {
   if (!contact.email) throw soloRefusal('no-email');
   const quietUntil = soloQuietUntil(contact.emailChangedAt, now);
   if (quietUntil) throw soloRefusal('email-recent', { availableAt: quietUntil.toISOString(), availableAtText: guyanaTime(quietUntil) });

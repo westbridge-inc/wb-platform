@@ -1554,6 +1554,10 @@ export const creditLateMmgPayment = (checkoutId: string, mmgReference: string, r
     body: JSON.stringify({ mmgReference, reason }),
     reason,
   });
+// [Review A S4-2 on #2502] The owner's late credits still waiting for a second person.
+export interface LateCreditReviewRow { checkoutId: string; mmgTransactionId: string | null; amount: number; currencyCode: string; confirmedAt: string | null }
+export const fetchLateCreditReviews = (): Promise<Envelope<LateCreditReviewRow[]>> =>
+  apiFetch('/api/v1/admin/billing/mmg-checkouts/late-credit-reviews');
 export const reviewLateMmgCredit = (checkoutId: string, outcome: 'AGREED' | 'DISPUTED', note: string) =>
   apiFetch(`/api/v1/admin/billing/mmg-checkouts/${encodeURIComponent(checkoutId)}/late-credit-review`, {
     method: 'POST',

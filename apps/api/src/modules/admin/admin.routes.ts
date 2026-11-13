@@ -98,8 +98,8 @@ import { MmgCheckoutService } from '../billing/mmg-checkout.service';
 import { feeRefundCaseOf, listFeeRefundCases, openFeeRefundCase } from '../billing/fee-refund-case';
 import { MAJOR_AMOUNT_CEILING } from '../../utils/currency-amount';
 import {
-  approverRoster, cancelOwnApproval, decideSoloApproval, emailChannelConfigured, soloCoolOffHours, soloRowState,
-  startSoloApproval,
+  approverRoster, assertNoticeable, cancelOwnApproval, decideSoloApproval, emailChannelConfigured, guyanaTime, ownerContact,
+  sendSoloEmail, sendSoloText, soloCoolOffHours, soloRowState, startSoloApproval,
 } from './solo-approval';
 import { AuthService, sanitizeUser } from '../auth/auth.service';
 import { blankApprovedNumber, confirmPhoneChange, lastFour, startPhoneChange } from './phone-change';
@@ -6922,11 +6922,35 @@ export async function adminRoutes(app: FastifyInstance) {
     const body = z.object({ mmgReference: mmgReferenceShape, reason: z.string().trim().max(500).optional() }).strict().parse(request.body ?? {});
     const reason = reasonOf(request.body, request.headers as never) ?? body.reason ?? '';
     if (reason.length < 8) throw new AppError(400, 'REASON_REQUIRED', 'Say why this late payment is being credited.');
-    const result = await lateCredits.creditLateByOwner({ tenantId, checkoutId: id, actorId: request.user.userId, mmgReference: body.mmgReference, reason });
+    // The owner alone (the service checks it again, inside): refused before any code is spent or notice prepared.
+    const roles = (await app.prisma.user.findUnique({ where: { id: request.user.userId }, select: { roles: true } }))?.roles ?? [];
+    if (!roles.includes('SUPER_ADMIN')) throw new AppError(403, 'OWNER_ONLY', 'Only the owner can credit a payment made after the checkout closed.');
+    // [Review S3-1] As every solo money decision: the owner's email and text can go, and a fresh sign-in code is spent.
+    const contact = await ownerContact(app.prisma, request.user.userId);
+    assertNoticeable(contact, new Date());
+    if (!emailChannelConfigured()) throw new AppError(503, 'SOLO_EMAIL_UNAVAILABLE', 'The owner is emailed when a late payment is credited, and Swift\'s email is not set up. Nothing was credited.');
+    await requireStepUp(app, request as never, { consume: true });
+    const result = await lateCredits.creditLateByOwner({ tenantId, checkoutId: id, actorId: request.user.userId, mmgReference: body.mmgReference, reason }, new Date(), {
+      ownerNotice: async (facts) => {
+        const at = guyanaTime(new Date());
+        await sendSoloEmail(contact.email, 'Swift: you credited a late MMG payment (owner alone)', [
+          'Someone signed in as you, with a sign-in code sent to your phone, credited a weekly-fee payment made on MMG after its checkout closed:',
+          '', `  Checkout: ${facts.checkoutId}`, `  MMG transaction: ${facts.mmgTransactionId}`, `  Amount: ${facts.amount} ${facts.currencyCode}`,
+          `  Reason given: ${reason}`, `  Credited: ${at}`, '',
+          'A second person reviews it. If this was not you: sign out of every device, change your sign-in, and have the payment checked against the MMG statement.',
+        ].join('\n'));
+        await sendSoloText(contact.phone, `Swift admin: a late MMG payment was credited by you alone (checkout ${facts.checkoutId}) at ${at}. If this was not you, sign out of every device.`);
+      },
+    });
     await auditWithin(app.prisma, request as unknown as AuditRequestLike, app.prefix, {
       extra: { checkoutId: id, checkoutStatus: result.status, mmgTransactionId: result.mmgTransactionId, secondReviewNeeded: result.secondReviewNeeded },
     });
     return { success: true, data: result };
+  });
+  // [Review S4-2] The owner's late credits still waiting for a second person (a newly added admin finds them here).
+  app.get('/billing/mmg-checkouts/late-credit-reviews', { preHandler: [adminGuard] }, async () => {
+    const tenantId = requireTenantId();
+    return { success: true, data: await lateCredits.pendingLateCreditReviews(tenantId) };
   });
   app.post('/billing/mmg-checkouts/:id/late-credit-review', { preHandler: [adminGuard] }, async (request) => {
     const tenantId = requireTenantId();
