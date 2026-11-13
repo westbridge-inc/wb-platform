@@ -115,6 +115,7 @@ import { AccountService, ACCOUNT_CLOSURE_CONFIRMED, ACCOUNT_CLOSURE_SUBJECT } fr
 import { LIVE_SOS_STATUSES } from '../safety/sos.service';
 import { hasTaxiPassengerCustody } from '../rides/passenger-custody';
 import { assertMayEndRide } from '../rides/end-ride-authority';
+import { isSoleEligibleResponder, SELF_RESOLVED_FLAG } from '../integrity/sole-responder';
 import { assertPromoTerms, recordPromoTermsVersion, rollbackPromoTerms, updatePromoTerms } from '../promo/promo-terms';
 import { assertSwiftPaidPromoWritable } from '../promo/swift-paid';
 import {
@@ -3978,13 +3979,22 @@ export async function adminRoutes(app: FastifyInstance) {
         { userId: locked.customerId, body: `${closed} If you paid the driver or have a question, open Get Help.`, audience: 'customer' as const },
         ...(driver ? [{ userId: driver.userId, body: `${closed} You are offline until you go online again. If you have a question, open Get Help.`, audience: 'earner' as const }] : []),
       ];
-      const { identityReviewReasons } = await assertMayEndRide(tx, request.user.userId, parties.map((party) => party.userId));
+      // [REVIEW-2499-A S3-1 · coordinator ruling] The only eligible responder (no other active admin holds
+      // order.ride.end) may end a ride that names them: the reason is required anyway (C3), and the audit row is
+      // flagged for a second person's review once a second admin exists. Otherwise the ride could never close.
+      let selfEnded = false;
+      const { identityReviewReasons } = await assertMayEndRide(tx, request.user.userId, parties.map((party) => party.userId)).catch(async (err: unknown) => {
+        const partyRefusal = err instanceof AppError && (err.code === 'OWN_RIDE' || err.code === 'STAFF_ON_RIDE');
+        if (!partyRefusal || !(await isSoleEligibleResponder(tx, request.user.userId, 'order.ride.end'))) throw err;
+        selfEnded = true;
+        return { identityReviewReasons: [] as string[] };
+      });
       if (await tx.sosAlert.count({ where: { orderId: id, status: { in: LIVE_SOS_STATUSES } } }) > 0) {
         throw new AppError(409, 'SOS_LIVE', 'An SOS is open on this ride. Resolve it first.');
       }
       await tx.auditLog.create({ data: {
         userId: request.user.userId, action: 'END_STUCK_RIDE', entity: 'Order', entityId: id,
-        changes: { reason, previousStatus: neverStarted ? 'DRIVER_ARRIVED' : 'RIDE_IN_PROGRESS', ...(identityReviewReasons.length > 0 ? { identityUnderReview: true, identityReviewReasons } : {}) },
+        changes: { reason, previousStatus: neverStarted ? 'DRIVER_ARRIVED' : 'RIDE_IN_PROGRESS', ...(identityReviewReasons.length > 0 ? { identityUnderReview: true, identityReviewReasons } : {}), ...(selfEnded ? { selfResolved: true, review: SELF_RESOLVED_FLAG } : {}) },
         ipAddress: request.ip, userAgent: request.headers['user-agent'],
       } });
       for (const party of parties) {

@@ -20,7 +20,8 @@ import { runWithoutTenant, runWithTenant } from '../../plugins/tenant-context';
 import { consoleRoleOf } from '../auth/console-role';
 import { decideOpsCapability, requireOpsCapability } from './safety-authority';
 import { assertClearOfParties } from '../integrity/party-authority';
-import { identityAuthority } from '../integrity/identity-review';
+import { identityAuthority, IdentityReviewRequiredError } from '../integrity/identity-review';
+import { isSoleEligibleResponder, SELF_RESOLVED_FLAG } from '../integrity/sole-responder';
 import type { Prisma } from '@prisma/client';
 
 // SOS endpoints (safety spec §4.5). The engine (state machine, grace, fan-out)
@@ -43,6 +44,8 @@ const createSchema = z.object({
 const resolveSchema = z.object({
   resolutionCode: z.enum(['SAFE_CONFIRMED', 'POLICE_INVOLVED', 'MEDICAL', 'FALSE_ALARM', 'ABUSE', 'UNREACHABLE_CLOSED']),
   notes: z.string().max(2000).optional(),
+  // [REVIEW-2499-A S3-1] Required only when the only eligible responder resolves an SOS that names them.
+  selfResolveReason: z.string().trim().min(12).max(500).optional(),
 });
 
 // War-room feed (§4.4). `open` = the alerts ops must act on right now.
@@ -324,9 +327,29 @@ export async function safetyRoutes(app: FastifyInstance) {
     // [AUDIT-20261113 F7] Closing an alert is a decision: the full party rule (never a party; a staff alert
     // goes to a super admin who is not part of it).
     const parties = await alertParties(request.params.id, opsRoleOf(request));
-    await asResponder(opsRoleOf(request), () => assertClearOf(request.user.userId, parties));
+    // [REVIEW-2499-A S3-1 · coordinator ruling] ...unless the actor is the ONLY eligible responder (no other active
+    // admin holds safety.sos.respond): then they may resolve, with a typed reason, audited and flagged for a
+    // second person's review once a second admin exists. Otherwise the alert could never be closed.
+    let selfResolved = false;
+    try {
+      await asResponder(opsRoleOf(request), () => assertClearOf(request.user.userId, parties));
+    } catch (err) {
+      const partyRefusal = err === partyRefusals.own || err === partyRefusals.staff || err instanceof IdentityReviewRequiredError;
+      if (!partyRefusal || !(await isSoleEligibleResponder(app.prisma, request.user.userId, 'safety.sos.respond'))) throw err;
+      if (!body.selfResolveReason) {
+        throw new AppError(409, 'SELF_RESOLVE_REASON_REQUIRED', 'This SOS names you, and no other admin can resolve it. Say why you are resolving it yourself (at least 12 characters); it is recorded for a second person to review.');
+      }
+      selfResolved = true;
+    }
     const a = await asResponder(opsRoleOf(request), () => sos.resolve(request.params.id, request.user.userId, body.resolutionCode, body.notes));
-    return { success: true, data: { id: a.id, status: a.status, resolutionCode: a.resolutionCode } };
+    if (selfResolved) {
+      await runWithoutTenant(() => app.prisma.auditLog.create({ data: {
+        userId: request.user.userId, action: 'SOS_SELF_RESOLVED', entity: 'SosAlert', entityId: a.id,
+        changes: { reason: body.selfResolveReason ?? null, resolutionCode: body.resolutionCode, review: SELF_RESOLVED_FLAG },
+        ipAddress: request.ip, userAgent: typeof request.headers['user-agent'] === 'string' ? request.headers['user-agent'] : null,
+      } }), 'sos-self-resolved-audit');
+    }
+    return { success: true, data: { id: a.id, status: a.status, resolutionCode: a.resolutionCode, ...(selfResolved ? { selfResolved: true } : {}) } };
   });
 
   /** GET /sos — the ops war-room feed (§4.4). Ops-only. Fan-out pages + a socket
