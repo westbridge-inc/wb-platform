@@ -28,6 +28,7 @@ import { getStorageProvider } from '../providers/storage/storage-provider';
 import { REAL_JPEG, REAL_PNG, REAL_WEBP } from './helpers/real-image';
 import { PROGRESSIVE_JPEG, PROGRESSIVE_SCAN_OFFSETS, progressiveWithMetadata } from './helpers/progressive-jpeg';
 import { testPhone, wordFreeTag } from './helpers/fixture-ids';
+import { MAX_UNCLAIMED_UPLOADS_PER_DAY } from '../modules/verification/upload-window';
 
 let app: FastifyInstance;
 const marker = wordFreeTag(6);
@@ -118,6 +119,7 @@ beforeAll(async () => {
 afterAll(async () => {
   delete process.env['MASTER_KEK'];
   resetKeyProviderForTests();
+  await app.prisma.verificationDocument.deleteMany({ where: { userId: { in: people } } });
   await app.prisma.encryptedObject.deleteMany({ where: { createdBy: { in: people } } });
   await app.prisma.session.deleteMany({ where: { userId: { in: people } } });
   await app.prisma.user.deleteMany({ where: { id: { in: people } } });
@@ -157,6 +159,28 @@ async function sealed(bytes: Buffer, mimeType: string) {
   const plaintext = decryptBuffer(ciphertext, dek, Buffer.from(row.iv), Buffer.from(row.authTag));
   return { row, plaintext, ciphertext, person: p, fileKey };
 }
+
+describe('[FABLE-02 F12 · 13 Nov 2026] unclaimed uploads are capped per account', () => {
+  it(`at most ${MAX_UNCLAIMED_UPLOADS_PER_DAY} uploads no document names in a day; an older one or a claimed one frees a place`, async () => {
+    const p = await person();
+    const keys = Array.from({ length: MAX_UNCLAIMED_UPLOADS_PER_DAY }, (_, i) => `verification/${p.id}/unclaimed-${marker}-${i}.png`);
+    await app.prisma.encryptedObject.createMany({ data: keys.map((fileKey) => ({
+      fileKey, iv: Buffer.alloc(12), authTag: Buffer.alloc(16), mimeType: 'image/png', sizeBytes: 1, sha256: sha(Buffer.from(fileKey)), createdBy: p.id,
+    })) });
+    const objects = () => app.prisma.encryptedObject.count({ where: { createdBy: p.id } });
+    const refused = await upload(p.token, REAL_PNG, 'image/png');
+    expect(refused.statusCode, refused.body).toBe(429);
+    expect(refused.json().error.code).toBe('TOO_MANY_UNCLAIMED_UPLOADS');
+    expect(await objects()).toBe(MAX_UNCLAIMED_UPLOADS_PER_DAY); // nothing stored
+    // One of them is from the day before: it no longer counts (the 30-day sweep owns it).
+    await app.prisma.encryptedObject.update({ where: { fileKey: keys[0]! }, data: { createdAt: new Date(Date.now() - 25 * 3_600_000) } });
+    expect((await upload(p.token, REAL_PNG, 'image/png')).statusCode).toBe(200);
+    expect((await upload(p.token, REAL_PNG, 'image/png')).statusCode).toBe(429);
+    // A document names one: it is claimed, a place is free again.
+    await app.prisma.verificationDocument.create({ data: { userId: p.id, role: 'MOVER', docType: 'drivers_license', fileUrl: keys[1]!, status: 'PENDING' } });
+    expect((await upload(p.token, REAL_PNG, 'image/png')).statusCode).toBe(200);
+  });
+});
 
 describe('POST /verification/upload seals the photo without its metadata', () => {
   it('JPEG: EXIF (GPS), XMP, MPF and the comment are gone; the image inside is the original, byte for byte', async () => {

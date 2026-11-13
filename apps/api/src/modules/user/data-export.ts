@@ -5,6 +5,7 @@ import {
   type ExportEntry, type OmitReason, type WithheldReason,
 } from './data-export-register';
 import { PERSON_RATING_ROLES, RATING_GROUP_SIZE, ratingGroupsFor } from '../rating/rating-groups';
+import { applicantReason } from '../verification/verification.service';
 
 /**
  * [Row 331 · DSAR-ERASURE (b) · DPA right of access + portability] The person's
@@ -63,6 +64,7 @@ async function readCategory(db: PrismaClient, entry: ExportEntry, ids: string[],
   const kept = rows.slice(0, ceiling).map((r) => {
     if (!entry.fields.includes(entry.key)) delete r[entry.key];
     for (const column of entry.month ?? []) if (r[column] instanceof Date) r[column] = (r[column] as Date).toISOString().slice(0, 7);
+    if (entry.shape === 'applicantDocument') r['reviewNote'] = applicantReason(r as { state?: string | null; reviewNote?: string | null });
     return portable(r);
   });
   if (entry.sortBy) kept.sort((a, b) => compareBy(a, b, entry.sortBy!));
