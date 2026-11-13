@@ -286,12 +286,15 @@ export async function safetyRoutes(app: FastifyInstance) {
   });
   app.post<{ Params: { id: string } }>('/ops-alerts/:id/ack', auth, async (request) => {
     const role = await requireOpsCapability(app.prisma, request, 'Only ops can acknowledge an alert.', { prefix: app.prefix });
-    const alert = await runWithoutTenant(() => app.prisma.opsAlert.findUnique({ where: { id: request.params.id }, select: { id: true, tenantId: true } }));
+    const alert = await runWithoutTenant(() => app.prisma.opsAlert.findUnique({ where: { id: request.params.id }, select: { id: true, tenantId: true, sosAlertId: true } }));
     if (!alert) throw new NotFoundError('OpsAlert', request.params.id);
     if (!isPlatformResponder(role)) {
       if (alert.tenantId === null) throw new ForbiddenError('Platform alerts are acknowledged by platform operators.');
       if (alert.tenantId !== request.tenantId) throw new NotFoundError('OpsAlert', request.params.id);
     }
+    // [REVIEW-2499-A S2-1] An SOS's page is the second door to "acknowledged" (it stops the re-pages and the
+    // escalation): never for the person, or an account linked to them, the SOS names — as /sos/:id/ack.
+    if (alert.sosAlertId && await alertNames(alert.sosAlertId, request.user.userId, role)) throw partyRefusals.own;
     const res = await asResponder(role, () => acknowledgeOpsAlert(app.prisma, { opsAlertId: alert.id, userId: request.user.userId }));
     if (res.refused.length > 0) throw new ForbiddenError('You are not a responder for this alert.');
     return { success: true, data: { acknowledged: res.acknowledged.length > 0 } };

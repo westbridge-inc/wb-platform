@@ -259,3 +259,21 @@ describe('[AUDIT-20261113 F7] a linked second account is the same person on ever
   });
 });
 
+// [REVIEW-2499-A S2-1] The SOS's ops page is a second door to "acknowledged": acknowledging it stops the re-pages
+// and the escalation. The admin the SOS names cannot acknowledge it there either.
+describe('[REVIEW-2499-A S2-1] the SOS ops page cannot be acknowledged by the person the SOS names', () => {
+  it('the named admin is refused; another responder acknowledges it', async () => {
+    const sosAlert = await sys(() => app.prisma.sosAlert.create({ data: { actorUserId: customer.userId, counterpartyUserId: staffDriver.userId, actorRole: 'CUSTOMER', status: 'ACTIVE', triggerSource: 'BUTTON', triggeredAt: new Date(), tenantId: 'swift-default' } }));
+    alertIds.push(sosAlert.id);
+    const page = await sys(() => app.prisma.opsAlert.create({ data: {
+      tenantId: 'swift-default', kind: 'SOS', sosAlertId: sosAlert.id, title: 'SOS fixture page', body: 'fixture', ackDeadlineAt: new Date(Date.now() + 600_000),
+      recipients: { create: [{ tenantId: 'swift-default', userId: staffDriver.userId }, { tenantId: 'swift-default', userId: admin.userId }] },
+    } }));
+    const named = await fire('POST', `${S}/ops-alerts/${page.id}/ack`, staffDriver);
+    expect(named.statusCode, named.body).toBe(403);
+    expect((await sys(() => app.prisma.opsAlert.findUniqueOrThrow({ where: { id: page.id } }))).acknowledgedAt).toBeNull();
+    const other = await fire('POST', `${S}/ops-alerts/${page.id}/ack`, admin);
+    expect(other.statusCode, other.body).toBe(200);
+  });
+});
+
