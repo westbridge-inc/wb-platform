@@ -482,6 +482,37 @@ describe('Waivers, reminders, tier recalculation', () => {
     expect(Number(charges[1]!.amount)).toBeGreaterThan(0); // billed normally after
   });
 
+  it('[AUDIT C2-4] the waiver clears in the transaction that books the free week: a crash after it never gives a second', async () => {
+    const now = new Date();
+    const { subId } = await makeMoverWithCardSub({ token: 'tok_good_waive_crash', due: new Date(now.getTime() - HOUR) });
+    await app.prisma.subscription.update({ where: { id: subId }, data: { feeWaived: true } });
+    // The process dies right after the free week commits: any separate write that clears the waiver never lands.
+    const crashing = new Proxy(app.prisma, {
+      get(target, prop) {
+        const value = Reflect.get(target, prop);
+        if (prop === 'subscription') {
+          return new Proxy(value as object, {
+            get(model, method) {
+              const fn = Reflect.get(model, method);
+              if (method !== 'update' || typeof fn !== 'function') return typeof fn === 'function' ? fn.bind(model) : fn;
+              return (args: { data?: { feeWaived?: unknown } }) => {
+                if (args?.data?.feeWaived === false) throw new Error('crash after the free week committed');
+                return fn.call(model, args);
+              };
+            },
+          });
+        }
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+    const dying = new BillingService(crashing as typeof app.prisma, new NotificationService(app.prisma, app.io), getPaymentProvider());
+    await dying.runBillingCycle(now).catch(() => undefined);
+    const after = await app.prisma.subscription.findUniqueOrThrow({ where: { id: subId } });
+    const free = await app.prisma.billingEvent.count({ where: { subscriptionId: subId, type: 'CHARGE_SUCCESS', amount: 0 } });
+    expect(free).toBe(1);
+    expect(after.feeWaived).toBe(false);
+  });
+
   it('sends exactly one due-tomorrow reminder per period', async () => {
     // A corrupt legacy subscription cannot be notified, but it also must not
     // poison the batch or consume a REMINDER idempotency key.

@@ -819,15 +819,18 @@ export class BillingService {
     if (sub.feeWaived || amount === 0) {
       // [REVIEW-G #1769 S2-2] Booked with the price this week kept (as the checkout
       // path books a waived week), so the next week measures a rise from it.
-      const applied = await this.applySuccessfulCharge(sub, 0, 'fee-waived', now, periodKey, undefined, priced.usdTrio);
-      if (!applied) return 'skipped';
       // A waive covers ONE period — the admin notice promises "for this period".
       // Clear it so normal billing resumes next cycle instead of a permanent free
       // ride (silent, recurring revenue loss). A genuinely $0 tier (amount===0,
       // feeWaived false) is NOT a waive and stays free.
-      if (sub.feeWaived) {
-        await this.prisma.subscription.update({ where: { id: sub.id }, data: { feeWaived: false } });
-      }
+      // [AUDIT C2-4] Cleared in the SAME transaction that books the free week, under its locks: a crash between two
+      // commits can no longer leave the waiver standing for a second free week, and a waiver given after this commit
+      // is never erased by a late clear.
+      const consumeWaiver = sub.feeWaived
+        ? async (tx: Prisma.TransactionClient) => { await tx.subscription.updateMany({ where: { id: sub.id, feeWaived: true }, data: { feeWaived: false } }); }
+        : undefined;
+      const applied = await this.applySuccessfulCharge(sub, 0, 'fee-waived', now, periodKey, undefined, priced.usdTrio, undefined, consumeWaiver);
+      if (!applied) return 'skipped';
       return 'succeeded';
     }
 
