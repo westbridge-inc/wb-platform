@@ -240,7 +240,10 @@ export async function safetyRoutes(app: FastifyInstance) {
   app.get<{ Params: { id: string } }>('/sos/:id', auth, async (request) => {
     // [AUDIT-20261113 F5] An admin whose grant leaves out SOS reads sees only their own alert, as anyone does.
     const ops = await decideOpsCapability(app.prisma, request, { prefix: app.prefix });
-    if (!ops.role || !ops.allowed) {
+    // [AUDIT-20261113 F7] ...and so does the person an alert names: the full alert (live location, notes) is
+    // never read by its actor or the person it was raised against through the ops door.
+    const named = ops.role && ops.allowed ? await alertNames(request.params.id, request.user.userId, ops.role) : false;
+    if (!ops.role || !ops.allowed || named) {
       const a = await ownedAlert(request.params.id, request.user.userId, request.tenantId);
       return { success: true, data: a };
     }
@@ -304,6 +307,9 @@ export async function safetyRoutes(app: FastifyInstance) {
 
   app.post<{ Params: { id: string } }>('/sos/:id/ack', auth, async (request) => {
     await requireOpsCapability(app.prisma, request, 'Only ops can acknowledge an alert.', { prefix: app.prefix });
+    // [AUDIT-20261113 F7] Never the person the alert names. Acknowledging is not refused for a staff alert:
+    // every responder must be able to say "on it" when a colleague is in danger.
+    if (await alertNames(request.params.id, request.user.userId, opsRoleOf(request))) throw partyRefusals.own;
     const a = await asResponder(opsRoleOf(request), () => sos.ack(request.params.id, request.user.userId));
     return { success: true, data: { id: a.id, status: a.status, acknowledgedAt: a.acknowledgedAt } };
   });
@@ -311,6 +317,10 @@ export async function safetyRoutes(app: FastifyInstance) {
   app.post<{ Params: { id: string } }>('/sos/:id/resolve', auth, async (request) => {
     await requireOpsCapability(app.prisma, request, 'Only ops can resolve an alert.', { prefix: app.prefix });
     const body = resolveSchema.parse(request.body ?? {});
+    // [AUDIT-20261113 F7] Closing an alert is a decision: the full party rule (never a party; a staff alert
+    // goes to a super admin who is not part of it).
+    const parties = await alertParties(request.params.id, opsRoleOf(request));
+    await asResponder(opsRoleOf(request), () => assertClearOf(request.user.userId, parties));
     const a = await asResponder(opsRoleOf(request), () => sos.resolve(request.params.id, request.user.userId, body.resolutionCode, body.notes));
     return { success: true, data: { id: a.id, status: a.status, resolutionCode: a.resolutionCode } };
   });
@@ -326,7 +336,10 @@ export async function safetyRoutes(app: FastifyInstance) {
       q.status === 'active' ? { status: 'ACTIVE' as const }
       : q.status === 'all' ? {}
       : { status: { in: [...OPEN_STATUSES] } };
-    const alerts = await asResponder(opsRoleOf(request), () => app.prisma.sosAlert.findMany({ where, orderBy: { triggeredAt: 'desc' }, take: q.limit }));
+    // [AUDIT-20261113 F7] An alert that names the caller (actor or the person it was raised against) is not on their board.
+    const me = request.user.userId;
+    const notMine = { actorUserId: { not: me }, OR: [{ counterpartyUserId: null }, { counterpartyUserId: { not: me } }] };
+    const alerts = await asResponder(opsRoleOf(request), () => app.prisma.sosAlert.findMany({ where: { ...where, ...notMine }, orderBy: { triggeredAt: 'desc' }, take: q.limit }));
     return { success: true, data: alerts };
   });
 
@@ -660,6 +673,15 @@ export async function safetyRoutes(app: FastifyInstance) {
     await assertClearOf(actorId, [bundle.subjectUserId, sosActor, ...(bundle.caseId ? await casePartiesOf(bundle.caseId) : [])]);
   }
 
+  /** The people an SOS names: who raised it and the person it was raised against. */
+  async function alertParties(alertId: string, role: string): Promise<string[]> {
+    const a = await asResponder(role, () => app.prisma.sosAlert.findUnique({ where: { id: alertId }, select: { actorUserId: true, counterpartyUserId: true } }));
+    return a ? [a.actorUserId, a.counterpartyUserId].filter((p): p is string => !!p) : [];
+  }
+  async function alertNames(alertId: string, userId: string, role: string): Promise<boolean> {
+    return (await alertParties(alertId, role)).includes(userId);
+  }
+
   /** Ops intake — phone call / email / social report, logged by a human. */
   app.post('/incidents/ops', auth, async (request) => {
     await requireOpsCapability(app.prisma, request, 'Only ops can log a case directly.', { prefix: app.prefix });
@@ -731,8 +753,16 @@ export async function safetyRoutes(app: FastifyInstance) {
       : q.status === 'breached'
         ? { status: { not: 'CLOSED' as const }, OR: [{ ackedAt: null, slaAckBy: { lt: now } }, { decidedAt: null, slaDecideBy: { lt: now } }] }
         : { status: { not: 'CLOSED' as const } };
+    // [AUDIT-20261113 F7] The queue leaves out a case naming the caller, and (for anyone but a super admin) a
+    // case naming a staff account: the doors that act on a case refuse them, so the queue does not offer them.
+    const me = request.user.userId;
+    const role = opsRoleOf(request);
+    const staff = role === 'SUPER_ADMIN' ? [] : (await runWithoutTenant(() => app.prisma.user.findMany({
+      where: { OR: [{ roles: { hasSome: ['ADMIN', 'SUPER_ADMIN'] } }, { activeRole: { in: ['ADMIN', 'SUPER_ADMIN'] } }] }, select: { id: true },
+    }), 'safety-case-queue-staff')).map((u) => u.id);
+    const hidden = [...new Set([me, ...staff])];
     const cases = await app.prisma.incidentCase.findMany({
-      where,
+      where: { AND: [where, { subjectUserId: { notIn: hidden } }, { OR: [{ reporterUserId: null }, { reporterUserId: { notIn: hidden } }] }] },
       orderBy: [{ severity: 'asc' }, { createdAt: 'desc' }, { id: 'asc' }],
       skip: (q.page - 1) * q.limit,
       take: q.limit,
@@ -779,6 +809,7 @@ export async function safetyRoutes(app: FastifyInstance) {
       select: { id: true, bundleNumber: true, sosAlertId: true, caseId: true, subjectUserId: true, openedAt: true, sealedAt: true, sealHash: true, legalHold: true, _count: { select: { items: true } } },
     });
     if (!bundle) throw new NotFoundError('EvidenceBundle', q.caseId ?? q.sosAlertId ?? '');
+    await assertClearOfBundle(bundle.id, request.user.userId);
     return { success: true, data: bundle };
   });
 

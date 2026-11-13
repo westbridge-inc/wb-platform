@@ -191,3 +191,43 @@ describe('[AUDIT-20261113 F7] nobody works a safety matter that names them', () 
     expect((await fire('POST', `${S}/incidents/${kase.id}/ack`, admin)).statusCode).toBe(200);
   });
 });
+
+// [AUDIT-20261113 F7 · review parity] The same rule on the sibling doors: the SOS an admin is part of, the case
+// queue and the evidence lookup.
+describe('[AUDIT-20261113 F7] parity: SOS, the case queue and the evidence lookup', () => {
+  async function alertAgainst(counterpartyUserId: string) {
+    const alert = await sys(() => app.prisma.sosAlert.create({ data: { actorUserId: customer.userId, counterpartyUserId, actorRole: 'CUSTOMER', status: 'ACTIVE', triggerSource: 'BUTTON', triggeredAt: new Date(), tenantId: 'swift-default' } }));
+    alertIds.push(alert.id);
+    return alert;
+  }
+
+  it('the admin an SOS was raised against cannot resolve or acknowledge it, read it in full, or see it on the board', async () => {
+    const alert = await alertAgainst(staffDriver.userId);
+    expect((await fire('POST', `${S}/sos/${alert.id}/resolve`, staffDriver, { resolutionCode: 'FALSE_ALARM' })).statusCode).toBe(403);
+    expect((await fire('POST', `${S}/sos/${alert.id}/ack`, staffDriver)).statusCode).toBe(403);
+    expect((await sys(() => app.prisma.sosAlert.findUniqueOrThrow({ where: { id: alert.id } }))).status).toBe('ACTIVE');
+    // the one-alert read falls back to the owner path: not theirs
+    expect((await fire('GET', `${S}/sos/${alert.id}`, staffDriver)).statusCode).toBe(403);
+    const board = await fire('GET', `${S}/sos?status=all&limit=200`, staffDriver);
+    expect(board.statusCode).toBe(200);
+    expect((board.json().data as Array<{ id: string }>).some((a) => a.id === alert.id)).toBe(false);
+    // another admin, not part of it, works it as before
+    expect((await fire('GET', `${S}/sos/${alert.id}`, admin)).json().data.id).toBe(alert.id);
+    expect((await fire('POST', `${S}/sos/${alert.id}/ack`, admin)).statusCode).toBe(200);
+  });
+
+  it('the case queue leaves out a case naming the caller, and a staff case for anyone but a super admin', async () => {
+    const kase = await makeCase(staffDriver.userId);
+    const listed = async (actor: Actor) => ((await fire('GET', `${S}/incidents?status=all&limit=200`, actor)).json().data as Array<{ id: string }>).some((c) => c.id === kase.id);
+    expect(await listed(staffDriver)).toBe(false);
+    expect(await listed(admin)).toBe(false);
+    expect(await listed(superAdmin)).toBe(true);
+  });
+
+  it('the evidence lookup refuses a party', async () => {
+    const { alert } = await makeBundleFor(staffDriver.userId);
+    expect((await fire('GET', `${S}/evidence?sosAlertId=${alert.id}`, staffDriver)).statusCode).toBe(403);
+    expect((await fire('GET', `${S}/evidence?sosAlertId=${alert.id}`, superAdmin)).statusCode).toBe(200);
+  });
+});
+
