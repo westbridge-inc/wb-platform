@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { cartVatAddedRows, itemVatAddedHint, orderVatAddedRow, ratePercentWords, storefrontVatAddedNote } from './store-vat-display';
-import { orderMoneyRows } from './vendor-order-view';
+import { orderMoneyNotes, orderMoneyRows } from './vendor-order-view';
 import { vatModeChoices, vatModeHelp, vatModeLabel } from './store-vat-words';
 import { beforeVatAtCheckoutHint } from './vat-price-edit';
 import type { VendorOrder } from './vendor-api';
@@ -37,16 +37,16 @@ describe('checkout and the order: "VAT 14%" above the Total', () => {
     expect(orderVatAddedRow({ vatOnTop: false, vatRateBps: 1400, vatAmount: 123 })).toBeNull();
     expect(ratePercentWords(12.5)).toBe('12.5');
   });
-  it('the store\'s money card names the VAT it collects, before "Customer pays"', () => {
+  it('the store\'s money card names the VAT it collects through the server\'s own line (this page is at its size ceiling)', () => {
+    const line = 'Includes VAT 14% added at checkout: $42 (yours, for the GRA)';
     const o = {
       id: 'o', orderNumber: 'SW-1', status: 'ACCEPTED', orderType: 'FOOD_DELIVERY', placedAt: '2026-11-13T12:00:00.000Z',
       totalAmount: 1942, subtotalCustomer: 900, subtotalBase: 900, deliveryFee: 800, tipAmount: 200, discount: 0,
       taxAmount: 42, vatOnTop: true, vatRateBps: 1400, paymentMethod: 'CASH',
-      storeMoney: { food: 942, foodWord: 'Food', foodLabel: 'Food — you receive', swiftPaysYou: 0, delivery: 'SWIFT_RIDER', payment: 'CASH', riderFeeAndTip: 1000, yoursFeeAndTip: 0, customerPaysYou: null, lines: [] },
+      storeMoney: { food: 942, foodWord: 'Food', foodLabel: 'Food — you receive', swiftPaysYou: 0, delivery: 'SWIFT_RIDER', payment: 'CASH', riderFeeAndTip: 1000, yoursFeeAndTip: 0, customerPaysYou: null, lines: [line] },
     } as unknown as VendorOrder;
-    const rows = orderMoneyRows(o).map((r) => r.label);
-    expect(rows.indexOf('VAT 14% (yours, for the GRA)')).toBeGreaterThan(-1);
-    expect(rows.indexOf('VAT 14% (yours, for the GRA)')).toBeLessThan(rows.indexOf('Customer pays'));
+    expect(orderMoneyNotes(o)).toContain(line);
+    expect(orderMoneyRows(o).find((r) => r.strong)?.value).toBe(942);
   });
 });
 

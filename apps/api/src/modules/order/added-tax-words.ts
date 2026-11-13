@@ -1,7 +1,7 @@
 /**
  * [STORE-VAT-EXCLUSIVE · owner 13 Nov 2026] The store screens' words for the VAT a store pricing BEFORE VAT added at
  * checkout (billing/store-money.ts puts this line under the store's food money). Kept out of the billing folder, whose
- * partner FEE surfaces must never print VAT while Westbridge Inc. is not VAT-registered (fee-receipt.test R11): this is
+ * partner FEE surfaces must never print VAT while Swift's own company is not VAT-registered (fee-receipt.test R11): this is
  * the store's own VAT on its own sales, never Swift's fee.
  */
 /** [STORE-VAT-EXCLUSIVE] The store's own line for the VAT its order added at checkout (billing/store-money.ts shows it under
