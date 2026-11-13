@@ -1,5 +1,10 @@
 version: '3.8'
 
+# Local development stack only (production is deploy/docker-compose.yml).
+# [SEC-AUDIT 13 Nov 2026 · F8/F16/F17] Postgres here has a well-known password, Redis none and Meilisearch no
+# master key, and Docker-published ports bypass host firewalls: every port is bound to 127.0.0.1 so only this
+# machine can connect (apps/api/src/__tests__/dev-stack-loopback.test.ts holds it there).
+
 services:
   postgres:
     image: postgis/postgis:16-3.4
@@ -9,7 +14,7 @@ services:
       POSTGRES_PASSWORD: swift
       POSTGRES_DB: swift
     ports:
-      - '5434:5432'
+      - '127.0.0.1:5434:5432'
     volumes:
       - pgdata:/var/lib/postgresql/data
 
@@ -21,7 +26,7 @@ services:
     # every second bounds worst-case loss to ~1s of writes.
     command: ['redis-server', '--appendonly', 'yes', '--appendfsync', 'everysec']
     ports:
-      - '6382:6379'
+      - '127.0.0.1:6382:6379'
     volumes:
       - redisdata:/data
 
@@ -31,7 +36,7 @@ services:
     environment:
       MEILI_NO_ANALYTICS: true
     ports:
-      - '7700:7700'
+      - '127.0.0.1:7700:7700'
     volumes:
       - searchdata:/meili_data
 
