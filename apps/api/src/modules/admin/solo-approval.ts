@@ -60,7 +60,7 @@ export const APPROVER_CAPABILITY = 'approvals.decide';
 
 const ADMIN_ROLES = ['ADMIN', 'SUPER_ADMIN'] as const;
 /** Account states that can still sign in (auth refuses exactly these three). */
-const LOCKED_OUT = ['SUSPENDED', 'BANNED', 'DEACTIVATED'] as const;
+export const LOCKED_OUT = ['SUSPENDED', 'BANNED', 'DEACTIVATED'] as const;
 /** [AUDIT-20261113 S3-4] How long a locked-out admin still counts as an approver (solo mode stays off). */
 export const LOCKED_OUT_STILL_COUNTS_DAYS = 14;
 

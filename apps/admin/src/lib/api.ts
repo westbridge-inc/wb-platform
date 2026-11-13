@@ -1,6 +1,6 @@
 import type { MmgCheckoutSupportDetail, MmgCheckoutSupportPage, MmgCheckoutSupportStatus } from '@swift/types';
 import type { RejectionReasonCode } from './rejection-reasons';
-import type { CaseScope, DecisionCode, IncidentRow, SosResolutionCode, SosRow } from './safetyView';
+import type { CaseScope, DecisionCode, IncidentRow, SosBoardRow, SosResolutionCode } from './safetyView';
 import { headerSafe, normaliseReason } from './reason-rules';
 
 export const API_URL = process.env['NEXT_PUBLIC_API_URL'] || 'http://localhost:3000';
@@ -930,11 +930,12 @@ function readWithin<T>(outer: AbortSignal | undefined, read: (_signal: AbortSign
     });
   });
 }
-export const fetchSafetySos = (signal?: AbortSignal): Promise<Envelope<SosRow[]>> =>
-  readWithin(signal, (s) => apiFetch(`/api/v1/safety/sos?status=open&limit=${SAFETY_LIST_LIMIT}`, { signal: s }));
+// [REVIEW-2499-A D-1] named=resolve: an SOS that names you comes back as a resolve-only row while you are the only admin who could resolve it.
+export const fetchSafetySos = (signal?: AbortSignal): Promise<Envelope<SosBoardRow[]>> =>
+  readWithin(signal, (s) => apiFetch(`/api/v1/safety/sos?status=open&limit=${SAFETY_LIST_LIMIT}&named=resolve`, { signal: s }));
 export const acknowledgeSos = (id: string): Promise<Envelope<{ id: string; status: string }>> =>
   apiFetch(`/api/v1/safety/sos/${encodeURIComponent(id)}/ack`, { method: 'POST', body: '{}' });
-// [REVIEW-2499-A S3-1] selfResolveReason: only when this SOS names you and no other admin can resolve it.
+// [REVIEW-2499-A S3-1 · D-1] selfResolveReason: only from a resolve-only row (this SOS names you and no other admin can resolve it).
 export const resolveSos = (id: string, resolutionCode: SosResolutionCode, notes?: string, selfResolveReason?: string): Promise<Envelope<{ id: string; status: string }>> =>
   apiFetch(`/api/v1/safety/sos/${encodeURIComponent(id)}/resolve`, { method: 'POST', body: JSON.stringify({ resolutionCode, ...(notes ? { notes } : {}), ...(selfResolveReason ? { selfResolveReason } : {}) }) });
 export const fetchSafetyCases = (scope: CaseScope, signal?: AbortSignal): Promise<Envelope<IncidentRow[]>> =>

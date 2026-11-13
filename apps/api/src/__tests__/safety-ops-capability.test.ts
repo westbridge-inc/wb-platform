@@ -319,3 +319,132 @@ describe('[REVIEW-2499-A S3-1] the only eligible responder may resolve an SOS th
   });
 });
 
+
+// [REVIEW-2499-A D-1] The board hides every SOS naming the caller, and the console resolves only from board rows, so the
+// owner (the only admin) could never reach the self-resolve dialog. While the caller is the only eligible responder, the
+// board lists such an SOS as a minimal row: id, status, when, and a fixed label. Never location, notes or who the other
+// person is. Only when the console asks for it (named=resolve): an older console that cannot show the row never gets it.
+describe('[REVIEW-2499-A D-1] the only eligible responder sees an SOS naming them on the board, resolve only', () => {
+  const NAMED_LABEL = 'This alert names you: resolve only';
+  const onBoard = (res: { json: () => { data: Array<{ id: string }> } }, id: string) => res.json().data.find((a) => a.id === id);
+
+  it('a minimal row while they are the only responder, with no location, notes or counterparty; the row resolves with a reason', async () => {
+    const named = await makeUser(['SUPER_ADMIN']);
+    const triggeredAt = new Date(Date.now() - 60_000);
+    const alert = await sys(() => app.prisma.sosAlert.create({ data: {
+      actorUserId: customer.userId, counterpartyUserId: named.userId, actorRole: 'CUSTOMER', status: 'ACTIVE', triggerSource: 'BUTTON', triggeredAt, tenantId: 'swift-default',
+      triggerLat: 6.80123, triggerLng: -58.15567, triggerAddressText: 'D1 PLACE PROBE', triggerNote: 'D1 NOTE PROBE',
+    } }));
+    alertIds.push(alert.id);
+    // another eligible responder exists (the shared database always has another super admin): no row
+    const shared = await fire('GET', `${S}/sos?status=open&limit=200&named=resolve`, named);
+    expect(shared.statusCode, shared.body).toBe(200);
+    expect(onBoard(shared, alert.id)).toBeUndefined();
+
+    vi.mocked(isSoleEligibleResponder).mockResolvedValue(true);
+    try {
+      const board = await fire('GET', `${S}/sos?status=open&limit=200&named=resolve`, named);
+      expect(board.statusCode, board.body).toBe(200);
+      expect(onBoard(board, alert.id)).toEqual({ id: alert.id, status: 'ACTIVE', triggeredAt: triggeredAt.toISOString(), namesYou: true, label: NAMED_LABEL });
+      expect(board.body).not.toContain('D1 PLACE PROBE');
+      expect(board.body).not.toContain('D1 NOTE PROBE');
+      expect(board.body).not.toContain('6.80123');
+      // decided from the alert's own market
+      expect(vi.mocked(isSoleEligibleResponder)).toHaveBeenCalledWith(expect.anything(), named.userId, 'safety.sos.respond', 'swift-default');
+      // a console that did not ask for the row (the desktop console) never gets it
+      expect(onBoard(await fire('GET', `${S}/sos?status=open&limit=200`, named), alert.id)).toBeUndefined();
+      // a plain ADMIN is never the only responder: an SOS naming them stays off their board
+      const againstAdmin = await sys(() => app.prisma.sosAlert.create({ data: { actorUserId: customer.userId, counterpartyUserId: staffDriver.userId, actorRole: 'CUSTOMER', status: 'ACTIVE', triggerSource: 'BUTTON', triggeredAt: new Date(), tenantId: 'swift-default' } }));
+      alertIds.push(againstAdmin.id);
+      expect(onBoard(await fire('GET', `${S}/sos?status=open&limit=200&named=resolve`, staffDriver), againstAdmin.id)).toBeUndefined();
+      // the row's door: Resolve with the typed reason
+      const bare = await fire('POST', `${S}/sos/${alert.id}/resolve`, named, { resolutionCode: 'FALSE_ALARM' });
+      expect(bare.json().error.code).toBe('SELF_RESOLVE_REASON_REQUIRED');
+      const res = await fire('POST', `${S}/sos/${alert.id}/resolve`, named, { resolutionCode: 'FALSE_ALARM', selfResolveReason: 'Raised by mistake, I am the only admin' });
+      expect(res.statusCode, res.body).toBe(200);
+      // a resolved SOS leaves the open board
+      expect(onBoard(await fire('GET', `${S}/sos?status=open&limit=200&named=resolve`, named), alert.id)).toBeUndefined();
+    } finally {
+      vi.mocked(isSoleEligibleResponder).mockReset();
+      const real = await vi.importActual<typeof import('../modules/integrity/sole-responder')>('../modules/integrity/sole-responder');
+      vi.mocked(isSoleEligibleResponder).mockImplementation(real.isSoleEligibleResponder);
+    }
+  });
+});
+
+// [REVIEW-2499-A D-2] The self-resolve audit row and its review flag commit WITH the resolve: if the row cannot be
+// written, the SOS is not resolved (as END_STUCK_RIDE). Before, the SOS stayed resolved with no review flag.
+describe('[REVIEW-2499-A D-2] the self-resolve audit row commits with the resolve', () => {
+  it('an audit row that cannot be written leaves the SOS open; written, the SOS is resolved', async () => {
+    const tag = RUN.replace(/[^a-z0-9]/g, 'x');
+    const named = await makeUser(['SUPER_ADMIN']);
+    const alert = await sys(() => app.prisma.sosAlert.create({ data: { actorUserId: named.userId, actorRole: 'CUSTOMER', status: 'ACTIVE', triggerSource: 'BUTTON', triggeredAt: new Date(), tenantId: 'swift-default' } }));
+    alertIds.push(alert.id);
+    vi.mocked(isSoleEligibleResponder).mockResolvedValue(true);
+    await sys(() => app.prisma.$executeRawUnsafe(`CREATE OR REPLACE FUNCTION d2_refuse_${tag}() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW."action" = 'SOS_SELF_RESOLVED' AND NEW."entityId" = '${alert.id}' THEN RAISE EXCEPTION 'test: the audit row is refused'; END IF; RETURN NEW; END $$`));
+    await sys(() => app.prisma.$executeRawUnsafe(`CREATE TRIGGER d2_refuse_${tag} BEFORE INSERT ON audit_logs FOR EACH ROW EXECUTE FUNCTION d2_refuse_${tag}()`));
+    try {
+      const failed = await fire('POST', `${S}/sos/${alert.id}/resolve`, named, { resolutionCode: 'FALSE_ALARM', selfResolveReason: 'Raised by mistake, I am the only admin' });
+      expect(failed.statusCode, failed.body).toBeGreaterThanOrEqual(500);
+      const still = await sys(() => app.prisma.sosAlert.findUniqueOrThrow({ where: { id: alert.id } }));
+      expect(still.status).toBe('ACTIVE');
+      expect(still.resolvedBy).toBeNull();
+    } finally {
+      await sys(() => app.prisma.$executeRawUnsafe(`DROP TRIGGER IF EXISTS d2_refuse_${tag} ON audit_logs`));
+      await sys(() => app.prisma.$executeRawUnsafe(`DROP FUNCTION IF EXISTS d2_refuse_${tag}()`));
+    }
+    try {
+      const res = await fire('POST', `${S}/sos/${alert.id}/resolve`, named, { resolutionCode: 'FALSE_ALARM', selfResolveReason: 'Raised by mistake, I am the only admin' });
+      expect(res.statusCode, res.body).toBe(200);
+      expect((await sys(() => app.prisma.sosAlert.findUniqueOrThrow({ where: { id: alert.id } }))).status).toBe('RESOLVED');
+      const row = await sys(() => app.prisma.auditLog.findFirstOrThrow({ where: { action: 'SOS_SELF_RESOLVED', entityId: alert.id } }));
+      expect(row.changes).toMatchObject({ review: SELF_RESOLVED_FLAG });
+    } finally {
+      vi.mocked(isSoleEligibleResponder).mockReset();
+      const real = await vi.importActual<typeof import('../modules/integrity/sole-responder')>('../modules/integrity/sole-responder');
+      vi.mocked(isSoleEligibleResponder).mockImplementation(real.isSoleEligibleResponder);
+    }
+  });
+});
+
+// [REVIEW-2499-A S4-3 · S4-4] Pins for the two checks the review's mutations found untested.
+describe('[REVIEW-2499-A S4] party checks the mutations found untested', () => {
+  const clusters: string[] = [];
+  afterAll(async () => {
+    await sys(async () => {
+      await app.prisma.identityClusterMember.deleteMany({ where: { clusterId: { in: clusters } } });
+      await app.prisma.identityCluster.updateMany({ where: { id: { in: clusters } }, data: { mergedIntoId: null } });
+      await app.prisma.identityCluster.deleteMany({ where: { id: { in: clusters } } });
+    });
+  });
+
+  it('S4-3: an account merged into the admin\'s cluster but not yet moved is found from the party\'s side', async () => {
+    // The admin's own cluster lists only the admin; the other account's cluster was merged INTO the admin's and its
+    // member row was not moved. Read from the admin's side they look unrelated; read from the party's side they are one.
+    const staff = await makeUser(['ADMIN', 'CUSTOMER']);
+    const linked = await makeUser(['CUSTOMER']);
+    const root = await sys(() => app.prisma.identityCluster.create({ data: {} }));
+    const merged = await sys(() => app.prisma.identityCluster.create({ data: { mergedIntoId: root.id } }));
+    clusters.push(merged.id, root.id);
+    await sys(() => app.prisma.identityClusterMember.create({ data: { accountId: staff.userId, clusterId: root.id, linkedVia: [] } }));
+    await sys(() => app.prisma.identityClusterMember.create({ data: { accountId: linked.userId, clusterId: merged.id, linkedVia: [] } }));
+    const alert = await sys(() => app.prisma.sosAlert.create({ data: { actorUserId: customer.userId, counterpartyUserId: linked.userId, actorRole: 'CUSTOMER', status: 'ACTIVE', triggerSource: 'BUTTON', triggeredAt: new Date(), tenantId: 'swift-default' } }));
+    alertIds.push(alert.id);
+    expect((await fire('GET', `${S}/sos/${alert.id}`, staff)).statusCode).toBe(403);
+    expect((await fire('POST', `${S}/sos/${alert.id}/ack`, staff)).statusCode).toBe(403);
+    expect((await sys(() => app.prisma.sosAlert.findUniqueOrThrow({ where: { id: alert.id } }))).status).toBe('ACTIVE');
+    // an admin who is not part of it acknowledges it
+    expect((await fire('POST', `${S}/sos/${alert.id}/ack`, admin)).statusCode).toBe(200);
+  });
+
+  it('S4-4: an evidence bundle whose SOS was raised against the admin is refused to them, whoever the bundle\'s subject is', async () => {
+    const alert = await sys(() => app.prisma.sosAlert.create({ data: { actorUserId: customer.userId, counterpartyUserId: staffDriver.userId, actorRole: 'CUSTOMER', status: 'ACTIVE', triggerSource: 'BUTTON', triggeredAt: new Date(), tenantId: 'swift-default' } }));
+    alertIds.push(alert.id);
+    // a case bundle linked to the SOS names the case's subject, not the SOS counterparty
+    const bundle = await sys(() => app.prisma.evidenceBundle.create({ data: { bundleNumber: `EV-${nanoid(8).toUpperCase()}`, sosAlertId: alert.id, subjectUserId: customer.userId, tenantId: 'swift-default' } }));
+    bundleIds.push(bundle.id);
+    expect((await fire('GET', `${S}/evidence?sosAlertId=${alert.id}`, staffDriver)).statusCode).toBe(403);
+    expect((await fire('POST', `${S}/evidence/${bundle.id}/view`, staffDriver, { reason: 'reading the evidence on me' })).statusCode).toBe(403);
+    expect((await fire('GET', `${S}/evidence?sosAlertId=${alert.id}`, superAdmin)).statusCode).toBe(200);
+  });
+});

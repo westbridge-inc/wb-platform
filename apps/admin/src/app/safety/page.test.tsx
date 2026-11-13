@@ -243,6 +243,60 @@ describe('[SAFETY BOARD] an open SOS', () => {
   });
 });
 
+// [REVIEW-2499-A D-1] The board leaves out an SOS that names you. When you are the only admin who could resolve it, the
+// server lists it as a minimal row (id, status, when, a fixed label) so you can still close it: Resolve only, with the
+// typed reason the server requires. Nothing about the person, the place or the other party is read or shown.
+describe('[REVIEW-2499-A D-1] an SOS that names you, when you are the only admin', () => {
+  const namedRow = (over: Record<string, unknown> = {}) => ({ id: 'sos-named', status: 'ACTIVE', triggeredAt: TRIGGERED, namesYou: true, label: 'This alert names you: resolve only', ...over });
+  const namedCard = () => screen.findByRole('listitem', { name: /^SOS naming you/ });
+
+  it('the board asks for these rows; the row says so, reads no person or order, and offers Resolve only', async () => {
+    const { fetchMock } = serve({ alerts: [namedRow()] });
+    renderWithQuery(<SafetyPage />);
+    const card = await namedCard();
+    expect(card.textContent).toContain('This alert names you: resolve only');
+    expect(card.textContent).toContain('5 Nov 2026, 10:04');
+    expect(within(card).queryByRole('button', { name: /Acknowledge/ })).toBeNull();
+    expect(within(card).getByRole('button', { name: 'Resolve…' })).toBeTruthy();
+    const listCall = fetchMock.mock.calls.map(([url]) => new URL(String(url))).find((u) => u.pathname === '/api/v1/safety/sos')!;
+    expect(listCall.searchParams.get('named')).toBe('resolve');
+    const reads = fetchMock.mock.calls.map(([url]) => new URL(String(url)).pathname);
+    expect(reads.filter((p) => p.startsWith('/api/v1/admin/'))).toEqual([]);
+  });
+
+  it('Resolve will not go without a code and a typed reason of at least 12 characters, then sends both', async () => {
+    const { fetchMock } = serve({ alerts: [namedRow()], onWrite: () => ok({ id: 'sos-named', status: 'RESOLVED', resolutionCode: 'FALSE_ALARM', selfResolved: true }) });
+    const { user } = renderWithQuery(<SafetyPage />);
+    await user.click(within(await namedCard()).getByRole('button', { name: 'Resolve…' }));
+    const dialog = screen.getByRole('dialog', { name: 'Resolve this SOS that names you?' });
+    expect(dialog.textContent).toMatch(/second person/);
+    await user.click(within(dialog).getByRole('radio', { name: 'False alarm' }));
+    await user.click(within(dialog).getByRole('button', { name: 'Resolve' }));
+    expect(posts(fetchMock)).toEqual([]);
+    const reason = within(dialog).getByRole('textbox', { name: /Why you are resolving it yourself/ });
+    await user.type(reason, 'too short');
+    await user.click(within(dialog).getByRole('button', { name: 'Resolve' }));
+    expect(posts(fetchMock)).toEqual([]);
+    await user.type(reason, ' — pressed by mistake');
+    await user.click(within(dialog).getByRole('button', { name: 'Resolve' }));
+    await waitFor(() => expect(posts(fetchMock)).toEqual([{ path: '/api/v1/safety/sos/sos-named/resolve', body: { resolutionCode: 'FALSE_ALARM', selfResolveReason: 'too short — pressed by mistake' } }]));
+  });
+
+  it('a row that can no longer be resolved offers nothing', async () => {
+    serve({ alerts: [namedRow({ status: 'TRIGGER_PENDING' })] });
+    renderWithQuery(<SafetyPage />);
+    expect(within(await namedCard()).queryByRole('button', { name: /Resolve/ })).toBeNull();
+  });
+
+  it('an ordinary SOS card no longer asks for the self-resolve reason', async () => {
+    serve({ alerts: [sos()] });
+    const { user } = renderWithQuery(<SafetyPage />);
+    await user.click(within(await alertCard()).getByRole('button', { name: 'Resolve…' }));
+    const dialog = screen.getByRole('dialog', { name: 'Resolve this SOS?' });
+    expect(within(dialog).queryByRole('textbox', { name: /yourself/ })).toBeNull();
+  });
+});
+
 describe('[SAFETY BOARD] the person behind an SOS', () => {
   it('the number is the audited read: a reason, sent as the reason header, the full number for this view only', async () => {
     const seen: ApiRequest[] = [];

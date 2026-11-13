@@ -70,3 +70,32 @@ describe('[REVIEW-2499-A S3-1] the only eligible responder is decided from the r
     expect(await isSoleEligibleResponder(withSecond as never, 'actor', 'safety.sos.respond', T)).toBe(false);
   });
 });
+
+// [REVIEW-2499-A D-3] Suspending is a one-person act: suspending the only other admin must not make the actor the
+// only responder at once. An admin suspended, banned or closed in the last 14 days still counts, as for solo approval
+// (approverRoster). The database is shared, so the reader is confined to this test's own accounts.
+describe('[REVIEW-2499-A D-3] an admin locked out in the last 14 days still counts', () => {
+  const confinedTo = (ids: string[]) => ({
+    user: {
+      findUnique: (args: Parameters<typeof app.prisma.user.findUnique>[0]) => app.prisma.user.findUnique(args),
+      findMany: (args: { where?: object; select?: object }) => app.prisma.user.findMany({ ...args, where: { AND: [args.where ?? {}, { id: { in: ids } }] } } as never),
+    },
+  });
+
+  it('the only other admin, suspended today, keeps the actor from being the only responder; 15 days on, it does not', async () => {
+    const actor = await admin(T, 'SUPER_ADMIN');
+    const other = await admin(T, 'ADMIN', ['*'], 'SUSPENDED');
+    const db = confinedTo([actor, other]) as never;
+    expect(await isSoleEligibleResponder(db, actor, 'safety.sos.respond', T)).toBe(false);
+    await sys(() => app.prisma.$executeRaw`UPDATE "users" SET "updatedAt" = now() - interval '15 days' WHERE id = ${other}`);
+    expect(await isSoleEligibleResponder(db, actor, 'safety.sos.respond', T)).toBe(true);
+    // with nobody else at all, the actor is the only one
+    expect(await isSoleEligibleResponder(confinedTo([actor]) as never, actor, 'safety.sos.respond', T)).toBe(true);
+  });
+
+  it('a super admin locked out today counts in any market', async () => {
+    const actor = await admin(T, 'SUPER_ADMIN');
+    const other = await admin('swift-default', 'SUPER_ADMIN', ['*'], 'SUSPENDED');
+    expect(await isSoleEligibleResponder(confinedTo([actor, other]) as never, actor, 'safety.sos.respond', T)).toBe(false);
+  });
+});

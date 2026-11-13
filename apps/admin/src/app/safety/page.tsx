@@ -10,8 +10,8 @@ import { ENUM_LABELS, label } from '@/lib/labels';
 import { gyClock, gyDateTime, gyTime } from '@/lib/dates';
 import { succeeded } from '@/lib/outcome';
 import {
-  CASE_READ_FRESH_MS, DECISION_WORDS, SOS_RESOLUTION_CODES, caseActions, categoryWords, clocksFor, interimWords, queueOrder, sosActions, sosGraceOver, sosNeedsYou, sosNotes, sosPosition, sosPressesNotShown, sosReadFresh, worstSla,
-  type CaseScope, type DecisionCode, type IncidentRow, type SlaClock, type SosResolutionCode, type SosRow,
+  CASE_READ_FRESH_MS, DECISION_WORDS, SELF_RESOLVE_REASON_MIN, SOS_RESOLUTION_CODES, caseActions, categoryWords, clocksFor, interimWords, isNamedSos, namedSosCanResolve, queueOrder, sosActions, sosGraceOver, sosNeedsYou, sosNotes, sosPosition, sosPressesNotShown, sosReadFresh, worstSla,
+  type CaseScope, type DecisionCode, type IncidentRow, type NamedSosRow, type SlaClock, type SosResolutionCode, type SosRow,
 } from '@/lib/safetyView';
 import { BOARD_READ, ListState, refusedRead, useNow } from '@/components/mc/LiveRead';
 import { PhoneReveal, usePhoneReveal } from '@/components/mc/PhoneReveal';
@@ -103,10 +103,8 @@ function SosCard({ alert: a, now, run, reveal }: { alert: SosRow; now: number; r
     fields: [
       { kind: 'choice', name: 'code', label: 'What happened', options: SOS_RESOLUTION_CODES.map((value) => ({ value, label: ENUM_LABELS.SosResolutionCode[value] })) },
       { kind: 'text', name: 'notes', label: 'Notes', maxLength: 2000 },
-      // [REVIEW-2499-A S3-1] Asked for by the server only when this SOS names you and you are the only admin who can resolve it.
-      { kind: 'text', name: 'selfReason', label: 'Only if this SOS names you and you are the only admin: why you are resolving it yourself', maxLength: 500 },
     ],
-    submit: ({ values }) => resolveSos(a.id, values['code'] as SosResolutionCode, String(values['notes'] ?? ''), String(values['selfReason'] ?? '').trim() || undefined),
+    submit: ({ values }) => resolveSos(a.id, values['code'] as SosResolutionCode, String(values['notes'] ?? '')),
     success: (_result, { values }) => `Resolved as ${ENUM_LABELS.SosResolutionCode[values['code'] as SosResolutionCode]}.`,
   });
 
@@ -164,6 +162,47 @@ function SosCard({ alert: a, now, run, reveal }: { alert: SosRow; now: number; r
         <div className="flex flex-wrap items-center gap-2 mt-3">
           {can.includes('ack') ? <button type="button" className="mc-btn mc-btn-primary" onClick={acknowledge}>Acknowledge…</button> : null}
           {can.includes('resolve') ? <button type="button" className="mc-btn" onClick={resolve}>Resolve…</button> : null}
+        </div>
+      ) : null}
+    </li>
+  );
+}
+
+/**
+ * [REVIEW-2499-A D-1] An SOS that names you. The board leaves it out, unless you are the only admin who could resolve it:
+ * then the server lists it with its status, when it was raised and a fixed label, and nothing else (no person, place,
+ * notes or other party, the same rule as every SOS door). The one move is Resolve, with a typed reason the server
+ * records for a second person's review.
+ */
+function NamedSosCard({ alert: a, run }: { alert: NamedSosRow; run: Run }) {
+  const raised = gyDateTime(a.triggeredAt);
+  const resolve = () => void run({
+    title: 'Resolve this SOS that names you?',
+    body: (
+      <p>
+        You are the only admin who can resolve it, so you may resolve it yourself. Say why. Your reason is recorded and flagged for a second person to
+        review once Swift has a second admin. A closed SOS cannot be reopened.
+      </p>
+    ),
+    confirmLabel: 'Resolve',
+    reason: false,
+    fields: [
+      { kind: 'choice', name: 'code', label: 'What happened', options: SOS_RESOLUTION_CODES.map((value) => ({ value, label: ENUM_LABELS.SosResolutionCode[value] })) },
+      { kind: 'text', name: 'selfReason', label: 'Why you are resolving it yourself', required: true, minLength: SELF_RESOLVE_REASON_MIN, maxLength: 500 },
+    ],
+    submit: ({ values }) => resolveSos(a.id, values['code'] as SosResolutionCode, undefined, String(values['selfReason'] ?? '').trim()),
+    success: (_result, { values }) => `Resolved as ${ENUM_LABELS.SosResolutionCode[values['code'] as SosResolutionCode]}. Your reason is recorded for review.`,
+  });
+  return (
+    <li className="mc-card" aria-label={`SOS naming you, raised ${raised}`}>
+      <p className="mc-label">SOS · raised {raised}</p>
+      <div className="flex flex-wrap items-center gap-2 mb-2">
+        <StatusBadge group="SosStatus" value={a.status} />
+      </div>
+      <p className="mc-note mc-note-warn">{a.label}</p>
+      {namedSosCanResolve(a) ? (
+        <div className="flex flex-wrap items-center gap-2 mt-3">
+          <button type="button" className="mc-btn" onClick={resolve}>Resolve…</button>
         </div>
       ) : null}
     </li>
@@ -296,7 +335,7 @@ export default function SafetyPage() {
             {alerts.isFetchedAfterMount ? <><p>No open SOS.</p><p className="mc-muted text-xs">Read at {gyClock(alerts.dataUpdatedAt)}</p></> : <p>Reading the open SOS alerts…</p>}
           </div>
         ) : null}
-        {openAlerts.length > 0 ? <ul className="space-y-3">{openAlerts.map((a) => <SosCard key={a.id} alert={a} now={now} run={actions.run} reveal={reveal} />)}</ul> : null}
+        {openAlerts.length > 0 ? <ul className="space-y-3">{openAlerts.map((a) => (isNamedSos(a) ? <NamedSosCard key={a.id} alert={a} run={actions.run} /> : <SosCard key={a.id} alert={a} now={now} run={actions.run} reveal={reveal} />))}</ul> : null}
         {alerts.isSuccess && readRecently && openAlerts.length > 0 ? <p className="mc-muted text-xs mt-2">Read at {gyClock(alerts.dataUpdatedAt)}</p> : null}
       </section>
       <section aria-label="Cases">

@@ -12,6 +12,9 @@ import { appendRetrigger } from './sos-retrigger';
 import { acknowledgeOpsAlert } from './ops-alert';
 import { gsm7Name } from '../../utils/sms-text';
 
+/** Work that commits in the same transaction as an SOS move (REVIEW-2499-A D-2). */
+export type WithinTransition = (tx: Prisma.TransactionClient) => Promise<void>;
+
 // SOS engine — the life-safety state machine (safety spec §4). Server-owned,
 // exactly like the order machine: an explicit transition table, compare-and-set
 // updates, illegal transitions rejected and logged. A closed app must not stop
@@ -495,8 +498,8 @@ export class SosService {
    *  Closes the loop: the emergency contacts who were alarmed get an all-clear.
    *  ONLY ops resolution does this — "I'm safe" must NOT (a coerced victim could
    *  be forced to tap it; §4.1). Best-effort, never fails the resolve. */
-  async resolve(id: string, opsUserId: string, resolutionCode: SosResolutionCode, notes?: string) {
-    const resolved = await this.transition(id, 'RESOLVED', { resolvedAt: new Date(), resolvedBy: opsUserId, resolutionCode, resolutionNotes: notes ?? null });
+  async resolve(id: string, opsUserId: string, resolutionCode: SosResolutionCode, notes?: string, withinTransaction?: WithinTransition) {
+    const resolved = await this.transition(id, 'RESOLVED', { resolvedAt: new Date(), resolvedBy: opsUserId, resolutionCode, resolutionNotes: notes ?? null }, withinTransaction);
     await this.fanOutResolved(id).catch(() => {});
     // [AG-XF-013] Resolving may have been the LAST obligation holding someone's
     // erasure open. Release re-enumerates rather than trusting this one closure
@@ -527,16 +530,28 @@ export class SosService {
     return resolved;
   }
 
-  /** The single CAS transition point — rejects and logs any illegal move. */
-  private async transition(id: string, to: SosStatus, extra: Record<string, unknown>) {
+  /** The single CAS transition point — rejects and logs any illegal move.
+   *  [REVIEW-2499-A D-2] `withinTransaction` runs in the same commit as the move (an audit row that must exist
+   *  whenever the move does): if it throws, the move is rolled back. */
+  private async transition(id: string, to: SosStatus, extra: Record<string, unknown>, withinTransaction?: WithinTransition) {
     const alert = await this.prisma.sosAlert.findUnique({ where: { id }, select: { status: true } });
     if (!alert) throw new NotFoundError('SosAlert', id);
     if (!SOS_TRANSITIONS[alert.status].includes(to)) {
       log().warn({ sosAlertId: id, from: alert.status, to }, 'illegal SOS transition rejected');
       throw new AppError(409, 'INVALID_SOS_TRANSITION', `Cannot move an SOS from ${alert.status} to ${to}.`);
     }
-    const moved = await this.prisma.sosAlert.updateMany({ where: { id, status: alert.status }, data: { status: to, ...extra } });
-    if (moved.count === 0) throw new AppError(409, 'SOS_TRANSITION_RACE', 'The alert changed underneath this action — retry.');
+    const move = async (db: Prisma.TransactionClient | PrismaClient) => {
+      const moved = await db.sosAlert.updateMany({ where: { id, status: alert.status }, data: { status: to, ...extra } });
+      if (moved.count === 0) throw new AppError(409, 'SOS_TRANSITION_RACE', 'The alert changed underneath this action — retry.');
+    };
+    if (withinTransaction) {
+      await this.prisma.$transaction(async (tx) => {
+        await move(tx);
+        await withinTransaction(tx);
+      });
+    } else {
+      await move(this.prisma);
+    }
     return this.prisma.sosAlert.findUniqueOrThrow({ where: { id } });
   }
 

@@ -104,6 +104,28 @@ export interface SosRow {
   retriggerCount: number;
 }
 
+/**
+ * [REVIEW-2499-A D-1] An SOS that names you, listed only while you are the only admin who could resolve it. The server
+ * sends its id, status, when it was raised and a fixed label, nothing else: no person, place, notes or other party.
+ */
+export interface NamedSosRow {
+  id: string;
+  status: SosStatus;
+  triggeredAt: string;
+  namesYou: true;
+  label: string;
+}
+
+export type SosBoardRow = SosRow | NamedSosRow;
+
+export const isNamedSos = (a: SosBoardRow): a is NamedSosRow => (a as NamedSosRow).namesYou === true;
+
+/** The one move on a resolve-only row: Resolve, when the server's state machine allows it. Never Acknowledge (refused to the person it names). */
+export const namedSosCanResolve = (a: NamedSosRow): boolean => (SOS_TRANSITIONS[a.status] ?? []).includes('RESOLVED');
+
+/** [REVIEW-2499-A S3-1] The server's minimum for the typed self-resolve reason (selfResolveReason). */
+export const SELF_RESOLVE_REASON_MIN = 12;
+
 export interface IncidentRow {
   id: string;
   caseNumber: string;

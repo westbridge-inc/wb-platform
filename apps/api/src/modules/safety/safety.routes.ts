@@ -52,7 +52,12 @@ const resolveSchema = z.object({
 const listAlertsQuery = z.object({
   status: z.enum(['open', 'active', 'all']).default('open'),
   limit: z.coerce.number().int().min(1).max(200).default(50),
+  // [REVIEW-2499-A D-1] The web console asks for the SOS alerts that name the caller as resolve-only rows. A console
+  // that does not ask (the desktop console, which has no self-resolve dialog) gets the board as before.
+  named: z.enum(['resolve']).optional(),
 });
+/** [REVIEW-2499-A D-1] The only words a resolve-only row carries. */
+const NAMED_SOS_LABEL = 'This alert names you: resolve only';
 /** [AG-XF-013] Imported, not restated — see LIVE_SOS_STATUSES for why. */
 const OPEN_STATUSES = LIVE_SOS_STATUSES;
 
@@ -341,14 +346,18 @@ export async function safetyRoutes(app: FastifyInstance) {
       }
       selfResolved = true;
     }
-    const a = await asResponder(opsRoleOf(request), () => sos.resolve(request.params.id, request.user.userId, body.resolutionCode, body.notes));
-    if (selfResolved) {
-      await runWithoutTenant(() => app.prisma.auditLog.create({ data: {
-        userId: request.user.userId, action: 'SOS_SELF_RESOLVED', entity: 'SosAlert', entityId: a.id,
-        changes: { reason: body.selfResolveReason ?? null, resolutionCode: body.resolutionCode, review: SELF_RESOLVED_FLAG },
-        ipAddress: request.ip, userAgent: typeof request.headers['user-agent'] === 'string' ? request.headers['user-agent'] : null,
-      } }), 'sos-self-resolved-audit');
-    }
+    // [REVIEW-2499-A D-2] The audit row and its review flag commit WITH the resolve (as END_STUCK_RIDE): an SOS is never
+    // self-resolved without the row a second person reviews.
+    const selfResolvedAudit = selfResolved
+      ? async (tx: Prisma.TransactionClient) => {
+        await tx.auditLog.create({ data: {
+          userId: request.user.userId, action: 'SOS_SELF_RESOLVED', entity: 'SosAlert', entityId: request.params.id,
+          changes: { reason: body.selfResolveReason ?? null, resolutionCode: body.resolutionCode, review: SELF_RESOLVED_FLAG },
+          ipAddress: request.ip, userAgent: typeof request.headers['user-agent'] === 'string' ? request.headers['user-agent'] : null,
+        } });
+      }
+      : undefined;
+    const a = await asResponder(opsRoleOf(request), () => sos.resolve(request.params.id, request.user.userId, body.resolutionCode, body.notes, selfResolvedAudit));
     return { success: true, data: { id: a.id, status: a.status, resolutionCode: a.resolutionCode, ...(selfResolved ? { selfResolved: true } : {}) } };
   });
 
@@ -367,7 +376,25 @@ export async function safetyRoutes(app: FastifyInstance) {
     const mine = await linkedAccountsOf(request.user.userId);
     const notMine = { actorUserId: { notIn: mine }, OR: [{ counterpartyUserId: null }, { counterpartyUserId: { notIn: mine } }] };
     const alerts = await asResponder(opsRoleOf(request), () => app.prisma.sosAlert.findMany({ where: { ...where, ...notMine }, orderBy: { triggeredAt: 'desc' }, take: q.limit }));
-    return { success: true, data: alerts };
+    // [REVIEW-2499-A D-1] ...except that the only eligible responder must still be able to close it (the S3-1 exit),
+    // and the console resolves only from board rows. While the caller is the ONLY eligible responder for the alert's
+    // market (the same rule the resolve door applies), an SOS naming them is listed as a minimal row: its id, status
+    // and when it was raised, with a fixed label. Never its location, notes, who raised it or who it names, so the
+    // F7 read rule stands. Only a SUPER_ADMIN can be the only eligible responder.
+    if (q.named !== 'resolve' || opsRoleOf(request) !== 'SUPER_ADMIN') return { success: true, data: alerts };
+    const namingMe = await asResponder(opsRoleOf(request), () => app.prisma.sosAlert.findMany({
+      where: { ...where, OR: [{ actorUserId: { in: mine } }, { counterpartyUserId: { in: mine } }] },
+      select: { id: true, status: true, triggeredAt: true, tenantId: true }, orderBy: { triggeredAt: 'desc' }, take: q.limit,
+    }));
+    const soleIn = new Map<string | null, boolean>();
+    const resolveOnly: Array<{ id: string; status: string; triggeredAt: Date; namesYou: true; label: string }> = [];
+    for (const n of namingMe) {
+      if (!soleIn.has(n.tenantId)) soleIn.set(n.tenantId, await isSoleEligibleResponder(app.prisma, request.user.userId, 'safety.sos.respond', n.tenantId));
+      if (soleIn.get(n.tenantId)) resolveOnly.push({ id: n.id, status: n.status, triggeredAt: n.triggeredAt, namesYou: true, label: NAMED_SOS_LABEL });
+    }
+    if (resolveOnly.length === 0) return { success: true, data: alerts };
+    const board = [...alerts, ...resolveOnly].sort((x, y) => y.triggeredAt.getTime() - x.triggeredAt.getTime()).slice(0, q.limit);
+    return { success: true, data: board };
   });
 
   // ── Emergency contacts (safety §5) ───────────────────────────────────────
