@@ -1,4 +1,4 @@
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { scanUpload } from '../../lib/malware-scan';
 import { recordUnscannedUpload } from '../../lib/upload-scan-debt';
 import { z } from '../../lib/zod';
@@ -18,6 +18,9 @@ import { NotificationService } from '../notification/notification.service';
 import { pageOps } from '../ops/ops-page';
 import { runWithoutTenant, runWithTenant } from '../../plugins/tenant-context';
 import { consoleRoleOf } from '../auth/console-role';
+import { decideOpsCapability, requireOpsCapability } from './safety-authority';
+import { assertClearOfParties } from '../integrity/party-authority';
+import type { Prisma } from '@prisma/client';
 
 // SOS endpoints (safety spec §4.5). The engine (state machine, grace, fan-out)
 // lives in SosService; these are thin, authed wrappers. Owner actions require
@@ -235,7 +238,9 @@ export async function safetyRoutes(app: FastifyInstance) {
   });
 
   app.get<{ Params: { id: string } }>('/sos/:id', auth, async (request) => {
-    if (!isOps(opsRoleOf(request))) {
+    // [AUDIT-20261113 F5] An admin whose grant leaves out SOS reads sees only their own alert, as anyone does.
+    const ops = await decideOpsCapability(app.prisma, request, { prefix: app.prefix });
+    if (!ops.role || !ops.allowed) {
       const a = await ownedAlert(request.params.id, request.user.userId, request.tenantId);
       return { success: true, data: a };
     }
@@ -252,7 +257,7 @@ export async function safetyRoutes(app: FastifyInstance) {
   const { acknowledgeOpsAlert, runOpsAlertDrillIfDue, drillBody, DRILL_FAILED_REASON } = await import('./ops-alert');
   const opsAlertInclude = { recipients: { select: { userId: true, deliveredAt: true, seenAt: true, ackedAt: true } } } as const;
   app.get('/ops-alerts', auth, async (request) => {
-    const role = opsRoleOf(request);
+    const role = await requireOpsCapability(app.prisma, request, 'Only ops can list alerts.', { prefix: app.prefix });
     if (isPlatformResponder(role)) {
       const rows = await runWithoutTenant(() => app.prisma.opsAlert.findMany({ where: { acknowledgedAt: null, closedAt: null }, orderBy: { createdAt: 'desc' }, take: 100, include: opsAlertInclude }));
       return { success: true, data: rows };
@@ -267,7 +272,7 @@ export async function safetyRoutes(app: FastifyInstance) {
   // visible here — it is evidence the paging path or the on-call rota failed. Platform operators
   // only: the role the account HOLDS decides, never the app's mode [ADMIN-ROLE · REVIEW-G #2096].
   app.get('/ops-alerts/failed-drills', auth, async (request) => {
-    if (!isPlatformResponder(opsRoleOf(request))) throw new ForbiddenError('Failed drills are for platform operators.');
+    if (!isPlatformResponder(await requireOpsCapability(app.prisma, request, 'Failed drills are for platform operators.', { prefix: app.prefix }))) throw new ForbiddenError('Failed drills are for platform operators.');
     const rows = await runWithoutTenant(() => app.prisma.opsAlert.findMany({
       where: { kind: 'DRILL', closeReason: DRILL_FAILED_REASON },
       orderBy: { createdAt: 'desc' }, take: 50,
@@ -276,8 +281,7 @@ export async function safetyRoutes(app: FastifyInstance) {
     return { success: true, data: rows };
   });
   app.post<{ Params: { id: string } }>('/ops-alerts/:id/ack', auth, async (request) => {
-    const role = opsRoleOf(request);
-    if (!isOps(role)) throw new ForbiddenError('Only ops can acknowledge an alert.');
+    const role = await requireOpsCapability(app.prisma, request, 'Only ops can acknowledge an alert.', { prefix: app.prefix });
     const alert = await runWithoutTenant(() => app.prisma.opsAlert.findUnique({ where: { id: request.params.id }, select: { id: true, tenantId: true } }));
     if (!alert) throw new NotFoundError('OpsAlert', request.params.id);
     if (!isPlatformResponder(role)) {
@@ -290,7 +294,7 @@ export async function safetyRoutes(app: FastifyInstance) {
   });
   app.post('/ops-alerts/drill', auth, async (request) => {
     // A drill is a PLATFORM page (no tenant): platform operators only [M009].
-    if (!isPlatformResponder(opsRoleOf(request))) throw new ForbiddenError('Only platform operators can run a drill.');
+    if (!isPlatformResponder(await requireOpsCapability(app.prisma, request, 'Only platform operators can run a drill.', { prefix: app.prefix }))) throw new ForbiddenError('Only platform operators can run a drill.');
     process.env['OPS_ALERT_DRILL_INTERVAL_DAYS'] ??= '7';
     const { openOpsAlert } = await import('./ops-alert');
     const res = await openOpsAlert(app.prisma, new NotificationService(app.prisma, app.io), { kind: 'DRILL', tenantId: null, title: 'Ops alert drill — acknowledge now', body: drillBody(true), data: { kind: 'ops_alert_drill', manual: true, by: request.user.userId } });
@@ -299,13 +303,13 @@ export async function safetyRoutes(app: FastifyInstance) {
   });
 
   app.post<{ Params: { id: string } }>('/sos/:id/ack', auth, async (request) => {
-    if (!isOps(opsRoleOf(request))) throw new ForbiddenError('Only ops can acknowledge an alert.');
+    await requireOpsCapability(app.prisma, request, 'Only ops can acknowledge an alert.', { prefix: app.prefix });
     const a = await asResponder(opsRoleOf(request), () => sos.ack(request.params.id, request.user.userId));
     return { success: true, data: { id: a.id, status: a.status, acknowledgedAt: a.acknowledgedAt } };
   });
 
   app.post<{ Params: { id: string } }>('/sos/:id/resolve', auth, async (request) => {
-    if (!isOps(opsRoleOf(request))) throw new ForbiddenError('Only ops can resolve an alert.');
+    await requireOpsCapability(app.prisma, request, 'Only ops can resolve an alert.', { prefix: app.prefix });
     const body = resolveSchema.parse(request.body ?? {});
     const a = await asResponder(opsRoleOf(request), () => sos.resolve(request.params.id, request.user.userId, body.resolutionCode, body.notes));
     return { success: true, data: { id: a.id, status: a.status, resolutionCode: a.resolutionCode } };
@@ -316,7 +320,7 @@ export async function safetyRoutes(app: FastifyInstance) {
    *  never shows a blank board after a refresh or reconnect. `open` (default) is
    *  the un-closed set ops must act on; most-recent first. */
   app.get('/sos', auth, async (request) => {
-    if (!isOps(opsRoleOf(request))) throw new ForbiddenError('Only ops can list alerts.');
+    await requireOpsCapability(app.prisma, request, 'Only ops can list alerts.', { prefix: app.prefix });
     const q = listAlertsQuery.parse(request.query ?? {});
     const where =
       q.status === 'active' ? { status: 'ACTIVE' as const }
@@ -627,9 +631,38 @@ export async function safetyRoutes(app: FastifyInstance) {
     return { tenantId: subject.tenantId };
   }
 
+  // [AUDIT-20261113 F7] Nobody works a safety matter that names them, and a matter naming a Swift staff
+  // account goes to a SUPER_ADMIN who is not part of it — the one rule refunds and handovers already follow
+  // (integrity/party-authority). A staff member who also drives could otherwise dismiss their own S0 case,
+  // lift their own interim suspension, or read the reporter's identity and evidence.
+  const partyRefusals = {
+    own: new ForbiddenError('This safety matter names you or an account linked to you. Another admin must handle it.'),
+    staff: new ForbiddenError('This safety matter names a Swift staff account. A super admin who is not part of it must handle it.'),
+  };
+  async function assertClearOf(actorId: string, people: Array<string | null | undefined>) {
+    const parties = [...new Set(people.filter((p): p is string => !!p))];
+    if (parties.length === 0) return;
+    await assertClearOfParties(app.prisma as unknown as Prisma.TransactionClient, actorId, parties, partyRefusals, { superAdminThroughReview: true });
+  }
+  async function casePartiesOf(caseId: string): Promise<string[]> {
+    const kase = await app.prisma.incidentCase.findUnique({ where: { id: caseId }, select: { subjectUserId: true, reporterUserId: true } });
+    return kase ? [kase.subjectUserId, kase.reporterUserId].filter((p): p is string => !!p) : [];
+  }
+  async function assertClearOfCase(caseId: string, actorId: string) {
+    await assertClearOf(actorId, await casePartiesOf(caseId));
+  }
+  async function assertClearOfBundle(bundleId: string, actorId: string) {
+    const bundle = await app.prisma.evidenceBundle.findUnique({ where: { id: bundleId }, select: { subjectUserId: true, caseId: true, sosAlertId: true } });
+    if (!bundle) return; // the service answers not-found
+    const sosActor = bundle.sosAlertId
+      ? (await app.prisma.sosAlert.findUnique({ where: { id: bundle.sosAlertId }, select: { actorUserId: true } }))?.actorUserId
+      : null;
+    await assertClearOf(actorId, [bundle.subjectUserId, sosActor, ...(bundle.caseId ? await casePartiesOf(bundle.caseId) : [])]);
+  }
+
   /** Ops intake — phone call / email / social report, logged by a human. */
   app.post('/incidents/ops', auth, async (request) => {
-    if (!isOps(opsRoleOf(request))) throw new ForbiddenError('Only ops can log a case directly.');
+    await requireOpsCapability(app.prisma, request, 'Only ops can log a case directly.', { prefix: app.prefix });
     const body = z.object({
       // [S-08] An ops-logged report retried with the same key is one case.
       idempotencyKey: z.string().trim().min(1).max(80).optional(),
@@ -643,6 +676,8 @@ export async function safetyRoutes(app: FastifyInstance) {
     }).parse(request.body ?? {});
     const { idempotencyKey, ...intakeBody } = body;
     const { tenantId } = await opsIntakeTuple(opsRoleOf(request), request.tenantId, intakeBody);
+    // [AUDIT-20261113 F7] An S0/S1 intake suspends its subject: never on yourself, never a colleague unless a super admin.
+    await runWithTenant(tenantId, () => assertClearOf(request.user.userId, [intakeBody.subjectUserId]));
     const source = idempotencyKey ? { type: 'OPS', id: `${request.user.userId}:${idempotencyKey}` } : null;
     if (source) {
       // [M069] A replayed key must carry the tuple it was first used with: never another case's.
@@ -669,14 +704,15 @@ export async function safetyRoutes(app: FastifyInstance) {
    *  of a case could lift their own interim suspension — and the
    *  interim-suspension notification hands them the caseId they need. */
   app.post('/incidents/:id/merge', auth, async (request) => {
-    if (!isOps(opsRoleOf(request))) throw new ForbiddenError('Only ops can work a case.');
+    await requireOpsCapability(app.prisma, request, 'Only ops can work a case.', { prefix: app.prefix });
     const { id } = request.params as { id: string };
     const { intoCaseId } = z.object({ intoCaseId: z.string().min(1) }).parse(request.body ?? {});
+    await assertClearOf(request.user.userId, [...await casePartiesOf(id), ...await casePartiesOf(intoCaseId)]);
     return { success: true, data: await incidents.mergeDuplicate(id, intoCaseId, request.user.userId) };
   });
 
   app.get('/incidents', auth, async (request) => {
-    if (!isOps(opsRoleOf(request))) throw new ForbiddenError('Only ops can list cases.');
+    await requireOpsCapability(app.prisma, request, 'Only ops can list cases.', { prefix: app.prefix });
     const q = z.object({
       status: z.enum(['open', 'breached', 'all']).default('open'),
       // [REPORT-007 / SPS-F-0025] The queue was a single bounded page: with
@@ -705,8 +741,9 @@ export async function safetyRoutes(app: FastifyInstance) {
   });
 
   const opsCaseAction = (fn: (id: string, opsUserId: string) => Promise<unknown>) =>
-    async (request: { user: { userId: string; role: string }; heldRoles?: readonly string[] | null; params: { id: string } }) => {
-      if (!isOps(opsRoleOf(request))) throw new ForbiddenError('Only ops can work a case.');
+    async (request: FastifyRequest<{ Params: { id: string } }>) => {
+      await requireOpsCapability(app.prisma, request, 'Only ops can work a case.', { prefix: app.prefix });
+      await assertClearOfCase(request.params.id, request.user.userId);
       return { success: true, data: await fn(request.params.id, request.user.userId) };
     };
 
@@ -718,11 +755,12 @@ export async function safetyRoutes(app: FastifyInstance) {
   app.post<{ Params: { id: string } }>('/incidents/:id/shadow-restrict', auth, opsCaseAction((id, ops) => incidents.shadowRestrict(id, ops)));
 
   app.post<{ Params: { id: string } }>('/incidents/:id/decide', auth, async (request) => {
-    if (!isOps(opsRoleOf(request))) throw new ForbiddenError('Only ops can work a case.');
+    await requireOpsCapability(app.prisma, request, 'Only ops can work a case.', { prefix: app.prefix });
     const body = z.object({
       decisionCode: z.enum(DECISION_CODES),
       notes: z.string().max(4000).optional(),
     }).parse(request.body ?? {});
+    await assertClearOfCase(request.params.id, request.user.userId);
     return { success: true, data: await incidents.decide(request.params.id, request.user.userId, body.decisionCode, body.notes) };
   });
 
@@ -733,7 +771,7 @@ export async function safetyRoutes(app: FastifyInstance) {
 
   /** Meta lookup (no content, no log): find the bundle behind a case/alert. */
   app.get('/evidence', auth, async (request) => {
-    if (!isOps(opsRoleOf(request))) throw new ForbiddenError('Only ops can access evidence.');
+    await requireOpsCapability(app.prisma, request, 'Only ops can access evidence.', { prefix: app.prefix });
     const q = z.object({ caseId: z.string().optional(), sosAlertId: z.string().optional() }).parse(request.query ?? {});
     if (!q.caseId && !q.sosAlertId) throw new AppError(400, 'LINK_REQUIRED', 'Pass caseId or sosAlertId.');
     const bundle = await app.prisma.evidenceBundle.findFirst({
@@ -745,28 +783,32 @@ export async function safetyRoutes(app: FastifyInstance) {
   });
 
   app.post<{ Params: { id: string } }>('/evidence/:id/view', auth, async (request) => {
-    if (!isOps(opsRoleOf(request))) throw new ForbiddenError('Only ops can access evidence.');
+    await requireOpsCapability(app.prisma, request, 'Only ops can access evidence.', { prefix: app.prefix });
     const { reason } = reasonBody.parse(request.body ?? {});
+    await assertClearOfBundle(request.params.id, request.user.userId);
     return { success: true, data: await evidence.view(request.params.id, request.user.userId, reason) };
   });
 
   app.post<{ Params: { id: string } }>('/evidence/:id/seal', auth, async (request) => {
-    if (!isOps(opsRoleOf(request))) throw new ForbiddenError('Only ops can seal evidence.');
+    await requireOpsCapability(app.prisma, request, 'Only ops can seal evidence.', { prefix: app.prefix });
     const { reason } = reasonBody.parse(request.body ?? {});
+    await assertClearOfBundle(request.params.id, request.user.userId);
     return { success: true, data: await evidence.seal(request.params.id, request.user.userId, reason) };
   });
 
   app.post<{ Params: { id: string } }>('/evidence/:id/legal-hold', auth, async (request) => {
-    if (!isOps(opsRoleOf(request))) throw new ForbiddenError('Only ops can set a legal hold.');
+    await requireOpsCapability(app.prisma, request, 'Only ops can set a legal hold.', { prefix: app.prefix });
     const { reason } = reasonBody.parse(request.body ?? {});
+    await assertClearOfBundle(request.params.id, request.user.userId);
     return { success: true, data: await evidence.setLegalHold(request.params.id, request.user.userId, reason) };
   });
 
   /** §9.2 export — encrypted + watermarked, passphrase returned exactly once
    *  (hand it over on a separate channel; Swift keeps no copy). */
   app.post<{ Params: { id: string } }>('/evidence/:id/export', auth, async (request) => {
-    if (!isOps(opsRoleOf(request))) throw new ForbiddenError('Only ops can export evidence.');
+    await requireOpsCapability(app.prisma, request, 'Only ops can export evidence.', { prefix: app.prefix });
     const { reason } = reasonBody.parse(request.body ?? {});
+    await assertClearOfBundle(request.params.id, request.user.userId);
     return { success: true, data: await evidence.export(request.params.id, request.user.userId, reason) };
   });
 
@@ -797,7 +839,7 @@ export async function safetyRoutes(app: FastifyInstance) {
     limit: z.coerce.number().int().min(1).max(200).default(50),
   });
   app.get('/guardian', auth, async (request) => {
-    if (!isOps(opsRoleOf(request))) throw new ForbiddenError('Only ops can list guardian sessions.');
+    await requireOpsCapability(app.prisma, request, 'Only ops can list guardian sessions.', { prefix: app.prefix });
     const q = listSessionsQuery.parse(request.query ?? {});
     const where =
       q.status === 'all' ? {}

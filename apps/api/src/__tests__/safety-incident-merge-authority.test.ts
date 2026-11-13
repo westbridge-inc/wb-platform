@@ -140,7 +140,8 @@ describe('[AUD-MAIN-004] census: every incident case action carries an ops check
       if (!/^\/incidents\/:id\//.test(path)) return;
       const end = n + 1 < starts.length ? starts[n + 1]!.i : lines.length;
       const block = lines.slice(i, end).join('\n');
-      if (!/opsCaseAction|isOps\(/.test(block)) unguarded.push(`${path} (line ${i + 1})`);
+      // [AUDIT-20261113 F5] requireOpsCapability is the ops check (the admin role held, then the live grant).
+      if (!/opsCaseAction|isOps\(|requireOpsCapability\(/.test(block)) unguarded.push(`${path} (line ${i + 1})`);
     });
 
     expect(unguarded, `incident case actions with no ops check: ${unguarded.join(', ')}`).toEqual([]);

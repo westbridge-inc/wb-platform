@@ -3,7 +3,7 @@ import { launchMarketAt } from '../auth/launch-market';
 import type { FastifyInstance } from 'fastify';
 import { z } from '../../lib/zod';
 import { SearchService } from './search.service';
-import { AppError, ForbiddenError } from '../../utils/errors';
+import { AppError } from '../../utils/errors';
 import { EARTH_RADIUS_KM, sortByDistance } from '../../utils/distance';
 import { bindBrowseTenant, requireRequestTenant } from './search-scope';
 import { runAsSystem } from '../../plugins/tenant-context';
@@ -16,7 +16,7 @@ import { ratingSurfaces } from '../rating/rating-surface';
 import { ITEM_HIT_SELECT, itemHitFromSearchDoc, toItemHit, type ItemHit } from './item-hit';
 import { fillFromTiers, nameMatcher, searchTiers, type Tier } from './forgiving-text';
 import { SEARCH_DB_BUDGET_MS, boundedRead, isOutOfTime } from './search-budget';
-import { consoleRoleOf } from '../auth/console-role';
+import { requireOpsCapability, SEARCH_SYNC_CAPABILITY } from '../safety/safety-authority';
 import { brandFactsFor, collapseBrands } from '../vendor/brand';
 import { applyItemStoreOpenNow, applyOpenNow, hoursOpenByVendor } from '../vendor/store-hours';
 
@@ -686,10 +686,9 @@ export async function searchRoutes(app: FastifyInstance) {
   // Re-sync search index (admin). Thrown errors get the standard envelope +
   // real status codes from the global handler (a 200-with-error body doesn't).
   app.post('/search/sync', { preHandler: [app.authenticate] }, async (request) => {
-    // [ADMIN-ROLE] the admin role the account holds, never the app's active mode
-    if (!consoleRoleOf(request.heldRoles)) {
-      throw new ForbiddenError('Admin only');
-    }
+    // [ADMIN-ROLE] the admin role the account holds, never the app's active mode;
+    // [AUDIT-20261113 F5] and the admin's live grant (search.sync), as on /admin.
+    await requireOpsCapability(app.prisma, request, 'Admin only', { capability: SEARCH_SYNC_CAPABILITY });
 
     if (!searchService) {
       throw new AppError(503, 'UNAVAILABLE', 'Search service not available');
