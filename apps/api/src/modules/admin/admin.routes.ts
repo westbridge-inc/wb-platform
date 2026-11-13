@@ -64,8 +64,9 @@ import { adminAuditRow, auditWithin, markReplayAudited, verifyInlineRow, wroteAu
 import {
   ASSISTED_CONSENT_VALID_DAYS, ASSISTED_DOCUMENT_CONSENT, ASSISTED_PRIVACY_NOTICE_VERSION, ASSISTED_SETUP_QUESTION, assertAssistableDocType,
   NEVER_ASSISTED_DOC_TYPES, assertHolderTakesPapers, assistedItemMarks, consentInputSchema, consentsOf, isPersonalPaper, liveConsent,
-  recordAction, recordAssistedConsent, recordAssistedFiling, storeForAssist,
+  recordAction, recordAssistedConsent, recordAssistedFiling, storeForAssist, assistedConsentNotice, assistedPaperNotice,
 } from './assisted-setup';
+import { docTypeName } from '../verification/doc-names';
 import { sealVerificationUpload } from '../verification/upload-seal';
 import { listingAllowed } from '../vendor/listing-gate';
 import { setItemPhoto } from '../vendor/item-photo';
@@ -2050,6 +2051,14 @@ export async function adminRoutes(app: FastifyInstance) {
     await assertNotRecused(app.prisma, adminId, store.holderId);
     return store;
   };
+  /** [FABLE-02 F4] One in-app notice to the store's account holder; logged (never thrown) when it cannot be sent. */
+  const tellHolder = async (holderId: string, notice: { title: string; body: string }, dedupeKey: string, log: { warn: (o: object, m: string) => void }) => {
+    try {
+      await notifications.send({ userId: holderId, type: 'SYSTEM_ANNOUNCEMENT', audience: 'business', ...notice, dedupeKey });
+    } catch (err) {
+      log.warn({ errName: err instanceof Error ? err.name : typeof err }, 'assisted setup: the account holder notice was not sent');
+    }
+  };
   const assistedConsentIdOf = (request: { query: unknown }) =>
     z.object({ consentId: z.string().min(1).max(64).optional() }).passthrough().parse(request.query ?? {}).consentId;
 
@@ -2103,6 +2112,8 @@ export async function adminRoutes(app: FastifyInstance) {
         agreedAt: body.agreedAt.toISOString(), consentVersion: ASSISTED_DOCUMENT_CONSENT.version,
       }),
     });
+    // [FABLE-02 F4] The account holder hears of it (after the commit; a failed notice never undoes the OK).
+    await tellHolder(store.holderId, assistedConsentNotice(store.name, body), `assisted-consent:${consent.id}`, request.log);
     reply.code(201);
     return { success: true, data: { id: consent.id, agreedAt: consent.agreedAt, channel: consent.channel, validDays: ASSISTED_CONSENT_VALID_DAYS } };
   });
@@ -2134,6 +2145,8 @@ export async function adminRoutes(app: FastifyInstance) {
         },
       },
     });
+    // [FABLE-02 F4] ...and of every paper filed under it.
+    await tellHolder(store.holderId, assistedPaperNotice(store.name, docTypeName(docType)), `assisted-paper:${doc.id}`, request.log);
     reply.code(201);
     return { success: true, data: { id: doc.id, docType: doc.docType, status: doc.status, createdAt: doc.createdAt, addedBySwift: true } };
   });
