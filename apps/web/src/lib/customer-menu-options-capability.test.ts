@@ -3,7 +3,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const apiFetch = vi.hoisted(() => vi.fn(async (_path: string, _init?: RequestInit) => ({ data: {} })));
 vi.mock('./auth', () => ({ apiFetch, getSessionPrincipal: vi.fn() }));
 
-import { addToCart, updateCartLine } from './customer';
+import { CART_WRITE_CAPABILITIES, addToCart, updateCartLine } from './customer';
+import { MENU_OPTIONS_CAPABILITY } from '../../../mobile/src/lib/menuOptionsCapability';
 import { reorder } from './customer-orders';
 
 // ---------------------------------------------------------------------------
@@ -16,6 +17,10 @@ import { reorder } from './customer-orders';
 beforeEach(() => apiFetch.mockClear());
 
 describe('[MENU-OPTIONS] the website’s cart writes declare MENU_OPTIONS_V2', () => {
+  it('the word the client sends is the app\'s own capability (one word on every surface)', () => {
+    expect(CART_WRITE_CAPABILITIES).toEqual([MENU_OPTIONS_CAPABILITY]);
+  });
+
   it('an add sends the choices as the API reads them, and the capability', async () => {
     await addToCart({ vendorId: 'store-1', itemId: 'pizza-1', quantity: 1, selectedOptions: { size: 'large', toppings: ['pep:left'] } });
     const [path, init] = apiFetch.mock.calls[0]!;

@@ -7,7 +7,6 @@ import { apiFetch, getSessionPrincipal } from './auth';
 import { formatAmount, parseAmount } from './money';
 import type { StorefrontDetail } from './api';
 import { BROWSER_API_ORIGIN as API_URL } from '@/lib/browser-api-origin';
-import { cartWriteCapabilities } from '../../../mobile/src/lib/menuOptionsCapability';
 
 
 // ── Auth (customer) ────────────────────────────────────────────────────────
@@ -187,8 +186,12 @@ export async function getCart(options?: { redirectOnExpired?: boolean }): Promis
 }
 // [MENU-OPTIONS] Every cart write says this site shows sizes that set the price, halves and follow-up choices
 // (MENU_OPTIONS_V2): the server refuses such an item from a client that does not (409 APP_UPDATE_REQUIRED).
+// The word itself, not an import of the app's capability file: this client is in every ordering page's first load
+// (the market page sits at its size ceiling). Pinned equal to MENU_OPTIONS_CAPABILITY in
+// customer-menu-options-capability.test.ts.
+export const CART_WRITE_CAPABILITIES: readonly string[] = ['MENU_OPTIONS_V2'];
 export async function addToCart(body: { vendorId: string; itemId: string; quantity: number; selectedOptions?: Record<string, string | string[]> }) {
-  return (await apiFetch('/api/v1/customer/cart/items', { method: 'POST', body: JSON.stringify({ ...body, capabilities: cartWriteCapabilities() }) })).data;
+  return (await apiFetch('/api/v1/customer/cart/items', { method: 'POST', body: JSON.stringify({ ...body, capabilities: CART_WRITE_CAPABILITIES }) })).data;
 }
 
 /** [MENU-OPTIONS] setsPrice: a size, its choice's price IS the item price. allowHalves: whole / left / right, a half at
@@ -199,7 +202,7 @@ export interface OptionGroup {
   options: Array<{ id: string; name: string; additionalPrice: string; isDefault: boolean; isAvailable: boolean; sortOrder?: number; followUpGroupId?: string | null }>;
 }
 export async function updateCartLine(lineId: string, quantity: number) {
-  return apiFetch(`/api/v1/customer/cart/items/${lineId}`, { method: 'PUT', body: JSON.stringify({ quantity, capabilities: cartWriteCapabilities() }) });
+  return apiFetch(`/api/v1/customer/cart/items/${lineId}`, { method: 'PUT', body: JSON.stringify({ quantity, capabilities: CART_WRITE_CAPABILITIES }) });
 }
 export async function removeCartLine(lineId: string) {
   return apiFetch(`/api/v1/customer/cart/items/${lineId}`, { method: 'DELETE' });
