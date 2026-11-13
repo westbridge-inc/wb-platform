@@ -4,7 +4,7 @@ import { nanoid } from 'nanoid';
 import { prismaPlugin } from '../plugins/prisma';
 import { registerErrorHandler } from '../middleware/error-handler';
 import {
-  runScan, notifyPending, classify, parseEntries, looksLikePublication, MAX_LISTING_CHARS,
+  runScan, notifyPending, classify, parseEntries, looksLikePublication, MAX_LISTING_CHARS, citationTailMatches,
   type WatchSource, type FetchLike, type NotifyChannels,
 } from '../modules/compliance/commencement-watch';
 
@@ -258,10 +258,32 @@ describe('commencement watch [DCR-1 CW]', () => {
         expect(looksLikePublication(title)).toBe(false);
         expect(performance.now() - started, `${title.length} chars`).toBeLessThan(250);
       }
+      // [REVIEW-2498-A S2-1] The other overlap: a year range ("2020-2021") against year, dash, year; and a date with its
+      // year against a date then a year. Each grew x2 per group (26 dash-joined years / 24 dates: about a second).
+      for (const title of [`The Data Act ${Array(26).fill('2020').join('-')}!`, `The Data Act ${'12 may 2020 '.repeat(24)}!`, `The Data Act ${'no 1a '.repeat(45)}!`]) {
+        const started = performance.now();
+        expect(looksLikePublication(title)).toBe(false);
+        expect(performance.now() - started, `${title.length} chars`).toBeLessThan(100);
+      }
       // A title longer than any real citation is not one (and is never handed to the tail at all).
       expect(looksLikePublication(`The Data Act${' 2026'.repeat(80)}`)).toBe(false);
       // Real parenthesised citations still read as publications.
       expect(looksLikePublication('The Fisheries (Amendment) (No. 2) Act 2026')).toBe(true);
+    });
+
+    it('[REVIEW-2498-A S2-1] the citation tail itself is linear: thousands of ambiguous groups, well past any title cap', () => {
+      // Each token is taken whole once (an atomic step); a failing end never re-splits what came before.
+      const shapes = (n: number) => [` ${Array(n).fill('2020').join('-')}!`, ` ${'12 may 2020 '.repeat(n)}!`, ` ${'(a)'.repeat(n)}!`, ` ${'no 1a '.repeat(n)}!`, ` ${'2020, '.repeat(n)}!`];
+      for (const tail of shapes(4_000)) {
+        const started = performance.now();
+        expect(citationTailMatches(tail)).toBe(false);
+        expect(performance.now() - started, `${tail.slice(0, 12)}… ${tail.length} chars`).toBeLessThan(100);
+      }
+      // ...and it still reads every qualifier a real citation ends in.
+      for (const ok of [' 2026', ' (no. 2) 2026', ' no. 12 of 2026', ' 2020-2021', ' 2026, 1 may 2026.', ' 1 may 2026', ' (amendment) (no. 2)', ' no 1a', '']) {
+        expect(citationTailMatches(ok), JSON.stringify(ok)).toBe(true);
+      }
+      expect(citationTailMatches(' issued by the ministry 2026')).toBe(false);
     });
 
     it('[F-028-09] the CLASS: instrument-mid-sentence titles reject, whatever their vocabulary', () => {

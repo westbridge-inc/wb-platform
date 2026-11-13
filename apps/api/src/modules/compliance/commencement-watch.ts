@@ -128,13 +128,22 @@ const NAMES_AN_INSTRUMENT = /\b(act|order|bill|notice|regulation|regulations|gaz
  *  numbers, dates, years, parentheticals, punctuation — QUALIFIERS, never
  *  prose. "The Fisheries (Amendment) Act 2026" ends in qualifiers; "Bill
  *  Status in the National Assembly 2026" continues in prose.
- *  [SEC-AUDIT 13 Nov 2026 · F12] A parenthetical is `\([^()]*\)`, never `\(.*?\)`: the lazy form inside the
- *  repeated group could split "(a)(a)…" 2^n ways before a failing tail, on text scraped from a remote page. */
-const CITATION_TAIL = new RegExp(
-  '^(?:\\s*(?:\\([^()]*\\)|no\\.?\\s*\\d+[a-z]?|[a-z]\\b|of\\s+(?:19|20)\\d\\d|(?:19|20)\\d\\d(?:[\u2013-](?:19|20)?\\d{1,4})?|' +
+ *  [SEC-AUDIT 13 Nov 2026 · F12 · REVIEW-2498-A S2-1] Text scraped from a remote page, so it must run in linear
+ *  time. The qualifiers overlap ("2020-2021" is a range OR year, dash, year; "12 may 2020" is a date with its year OR a
+ *  date then a year; "(a)(a)" was one parenthetical or two), and a plain repeated group re-splits every earlier choice
+ *  2^n ways before a failing end. So each qualifier is taken ATOMICALLY: a lookahead captures one whole token and the
+ *  backreference consumes exactly it, and JavaScript never backtracks into a lookahead. A parenthetical is
+ *  `\([^()]*\)` (no nesting, never `\(.*?\)`). */
+const CITATION_TOKEN =
+  '\\s*(?:\\([^()]*\\)|no\\.?\\s*\\d+[a-z]?|[a-z]\\b|of\\s+(?:19|20)\\d\\d|(?:19|20)\\d\\d(?:[\u2013-](?:19|20)?\\d{1,4})?|' +
   '\\d{1,2}\\s+(?:january|february|march|april|may|june|july|august|september|october|november|december)(?:\\s+(?:19|20)\\d\\d)?|' +
-  '[,;:.\u2014\u2013-]))*\\s*$',
-);
+  '[,;:.\u2014\u2013-])';
+const CITATION_TAIL = new RegExp(`^(?:(?=(${CITATION_TOKEN}))\\1)*\\s*$`);
+
+/** Whether `tail` (what follows the last instrument token) is nothing but citation qualifiers. */
+export function citationTailMatches(tail: string): boolean {
+  return CITATION_TAIL.test(tail);
+}
 
 const INSTRUMENT_TOKEN = /\b(act|order|bill|notice|regulation|regulations|gazette|supplement|extraordinary|proclamation|resolution)\b/g;
 
@@ -176,7 +185,7 @@ export function looksLikePublication(title: string): boolean {
     let lastEnd = -1;
     for (let m = INSTRUMENT_TOKEN.exec(seg); m; m = INSTRUMENT_TOKEN.exec(seg)) lastEnd = m.index + m[0].length;
     if (lastEnd < 0) return false;
-    return CITATION_TAIL.test(seg.slice(lastEnd));
+    return citationTailMatches(seg.slice(lastEnd));
   };
   if (!segments.some(isCitationSegment)) return false;
 
