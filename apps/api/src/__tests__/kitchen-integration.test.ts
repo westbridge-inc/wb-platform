@@ -759,14 +759,21 @@ describe('[KITCHEN · reviews A and B] failure isolation, the tablet backstop, t
     const order = await makeOrder();
     await releaseOnly();
     await drainKitchenSyncs(deps(), { orderIds: [order.id] });
-    const body = mock.inserted.at(-1) as { orders: Array<Record<string, unknown>> };
+    // Each order's own insert, found by its kitchen order id (exactly one each), never "the last one".
+    const insertFor = async (orderId: string) => {
+      const externalOrderId = (await syncOf(orderId))!.externalOrderId;
+      const mine = mock.inserted.filter((b) => (b as { orders: Array<{ orderId: number }> }).orders[0]!.orderId === externalOrderId);
+      expect(mine, 'one insert per order').toHaveLength(1);
+      return mine[0] as { orders: Array<Record<string, unknown>> };
+    };
+    const body = await insertFor(order.id);
     expect(body.orders[0]!['phone'], 'the store own driver must reach the customer').toMatch(/^\+592/);
     expect(body.orders[0]).not.toHaveProperty('lastName');
     expect(body.orders[0]).toMatchObject({ firstName: 'Kit', street: '9 Test Street', lat: 6.81, lng: -58.16 });
     const pickup = await makeOrder({ fulfillment: 'PICKUP' });
     await releaseOnly();
     await drainKitchenSyncs(deps(), { orderIds: [pickup.id] });
-    const pickupRow = (mock.inserted.at(-1) as { orders: Array<Record<string, unknown>> }).orders[0]!;
+    const pickupRow = (await insertFor(pickup.id)).orders[0]!;
     expect(pickupRow['firstName']).toBe('Kit');
     for (const field of ['lastName', 'phone', 'street', 'lat', 'lng', 'carrierInstructions']) expect(pickupRow, field).not.toHaveProperty(field);
   });
