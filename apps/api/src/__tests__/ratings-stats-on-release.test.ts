@@ -7,7 +7,7 @@ import { seedRatingTags } from '../modules/rating/tag-taxonomy.seed';
 import { RATING_MIN_DISPLAY, displayRating } from '../modules/rating/rating-math';
 import { SearchService, type SearchClientLike } from '../modules/search/search.service';
 import { testPrismaClient } from './helpers/test-prisma-client';
-import { testPhone, fixtureTag } from './helpers/fixture-ids';
+import { testPhone, fixtureTag, wordFreeTag } from './helpers/fixture-ids';
 
 // ---------------------------------------------------------------------------
 // [RATINGS-RELEASE · owner ruling 13 Nov 2026] A store's public star average
@@ -69,7 +69,7 @@ async function makeVendor() {
   const vo = await prisma.vendorOwner.upsert({ where: { userId: owner.id }, create: { userId: owner.id }, update: {} });
   const vendor = await prisma.vendor.create({
     data: {
-      ownerId: vo.id, name: `Release Diner ${fixtureTag(4)}`, slug: `release-diner-${fixtureTag(8)}`,
+      ownerId: vo.id, name: `Release Diner ${wordFreeTag(4)}`, slug: `release-diner-${fixtureTag(8)}`,
       vendorType: 'RESTAURANT', phone: testPhone(),
       addressLine1: '1 Release Street', city: 'Georgetown', region: 'Demerara-Mahaica',
       latitude: 6.8, longitude: -58.15, status: 'ACTIVE', isVerified: true, acceptingOrders: true,
