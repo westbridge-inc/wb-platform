@@ -212,6 +212,21 @@ export function redactOrderSecrets(
 }
 
 /**
+ * [AUDIT-20261113 F2] The text with each literal live code cut out in place — for the content filter's judgement
+ * ONLY, never stored or shown. A message is redacted whole now, so the filter would otherwise judge only the
+ * placeholder and let a link or a phone number the sender typed beside a code pass unremarked: the sender is
+ * refused for what they tried to send, exactly as before.
+ */
+export function withoutLiveCodes(text: string, secrets: OrderSecrets): string {
+  let out = text;
+  for (const code of liveCodes(secrets)) {
+    const re = matcherFor(code);
+    if (re) out = out.replace(re, SECRET_REDACTION);
+  }
+  return out;
+}
+
+/**
  * Does an attachment URL carry a live code?
  *
  * `mediaUrl` is an arbitrary sender-supplied string that is stored and emitted

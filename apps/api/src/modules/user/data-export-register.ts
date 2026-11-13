@@ -34,6 +34,8 @@ export const OMIT_RULES: ReadonlyArray<readonly [OmitReason, RegExp]> = [
   // never be read (no-customer-funds-ingress.test.ts). Written as patterns so the source censuses that
   // guard those names (mover-pointer-census, no-customer-funds-ingress) correctly see no reader here.
   ['SYSTEM', /^current(Order|Ride)Id$|^wallet[A-Z]/],
+  // [AUDIT-20261113 F2] When the order's live ride PIN / pickup code was last issued: bookkeeping for the chat guard.
+  ['SYSTEM', /^(ridePinIssuedAt|pickupCodeIssuedAt)$/],
   // Live rating totals move with each single rating, so two files a day apart would give one rating back.
   ['RATING_TOTAL', /^(averageRating|totalRatings)$/],
 ];
