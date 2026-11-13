@@ -6,6 +6,7 @@ import { validateCardRefundAsk } from '../billing/card-credit-refund';
 import { IN_PERSON_ACTION, validateInPersonAsk } from '../billing/in-person-payment';
 import { lockClaimPaymentAsks, validateClaimPayAsk } from '../cash/claim-payout';
 import { SOLO_ROLE, isSoleApprover } from './solo-approval';
+import { assertConfigKeyWritable } from './machine-owned-config';
 
 /**
  * [ADM-005] A MONEY ACTION TAKES TWO PEOPLE.
@@ -354,6 +355,8 @@ export async function resolveApproval(
     const claimEntity = data.action === PAY_ASK_ACTION ? data.entityId : null;
     // [OWNER 5 Nov 2026] A fee paid in person that could never be recorded is refused now, not after the wait.
     if (data.action === IN_PERSON_ACTION && data.entityId) await validateInPersonAsk(prisma, data.entityId, subject.body);
+    // [AUDIT C2-2] A setting the server owns is refused before anyone is asked to approve it.
+    if (data.action === 'PUT /config/:key') assertConfigKeyWritable(subject.params?.['key']);
     const asked: AskResult = await prisma.$transaction(async (tx): Promise<AskResult> => {
       if (refundEntity) await lockCreditRefundAsks(tx, refundEntity);
       if (claimEntity) await lockClaimPaymentAsks(tx, claimEntity);

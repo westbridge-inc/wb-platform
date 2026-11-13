@@ -1,4 +1,5 @@
 import { emitToOrderRoom, emitToStoreRoom } from '../order/order-room-emission.service';
+import { assertConfigKeyWritable } from './machine-owned-config';
 import { scanUpload } from '../../lib/malware-scan';
 import { documentScanState, uploadScanRefusal, retryHeldEvidenceScan } from '../../lib/upload-scan-debt';
 import { vatTracker } from '../billing/vat-tracker';
@@ -4744,6 +4745,8 @@ export async function adminRoutes(app: FastifyInstance) {
 
   app.put('/config/:key', { preHandler: [platformControlGuard] }, async (request) => {
     const key = configKeySchema.parse((request.params as { key: string }).key);
+    // [AUDIT C2-2] Refused at the ask too (admin-approval.ts); checked again where it is written.
+    assertConfigKeyWritable(key);
     const { value } = configValueSchema.parse(request.body);
 
     // [ADM-002] The config row and its audit row commit together. This used
