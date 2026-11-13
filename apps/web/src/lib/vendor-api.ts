@@ -2,6 +2,7 @@
 
 // Typed client over the EXISTING vendor endpoints — the web dashboard is
 // another client on the same backend; it never invents its own order logic.
+import type { OrderLineOption } from '../../../mobile/src/modules/vendor/orderLineOptions';
 import type { ServerStoreMoney } from '../../../mobile/src/modules/vendor/ringMoney';
 import type { SubstitutionStatus } from '@swift/types';
 import { apiFetch } from './auth';
@@ -75,6 +76,9 @@ export interface OrderLine {
   subStatus?: SubstitutionStatus | null;
   substituteItemId?: string | null;
   substituteName?: string | null;
+  /** [L09 · M026 · MENU-OPTIONS] The choices the line is made with (none once a substitute replaced it): the display
+   *  words (group, name) and, from a server with pizza options, their parts (size, half, follow-up's opener). */
+  options?: OrderLineOption[];
 
   // ── Never sent — kept as tombstones so the lie cannot come back ──────────
   /** PHANTOM. There is no `totalPrice` column; the line total is `totalCustomer`. */

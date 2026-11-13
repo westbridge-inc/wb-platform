@@ -187,6 +187,7 @@ vi.mock('./screens/BusinessSetup', () => ({ BusinessSetup: () => null, VendorOnb
 vi.mock('./screens/VendorOps', () => ({ VendorOps: () => null }));
 vi.mock('./screens/VendorBillingSuspended', () => ({ VendorBillingSuspended: () => null }));
 vi.mock('./screens/VendorBulkImportScreen', () => ({ VendorBulkImportScreen: () => null }));
+vi.mock('./screens/VendorOptionLibraryScreen', () => ({ VendorOptionLibraryScreen: () => null }));
 vi.mock('./screens/VendorCategoryReviewScreen', () => ({ VendorCategoryReviewScreen: () => null }));
 vi.mock('./screens/VendorInsightsScreen', () => ({ VendorInsightsScreen: () => null }));
 vi.mock('./screens/VendorItemEditorScreen', () => ({ VendorItemEditorScreen: () => null }));

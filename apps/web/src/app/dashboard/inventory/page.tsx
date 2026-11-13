@@ -310,6 +310,13 @@ export default function InventoryPage() {
               {exportState.busy ? 'Exporting…' : `Export ${catalogue.toLowerCase()} (CSV)`}
             </button>
           )}
+          {/* [MENU-OPTIONS · owner 11 Nov 2026] Shared option groups (sizes, crusts, toppings): built once, on many items. */}
+          {manager && vendorType !== 'SERVICE' && (
+            <button type="button" onClick={() => setDialog({ kind: 'library', items: (items.data ?? []).map((i) => ({ id: i.id, name: i.name, basePrice: i.basePrice, vatListedPrice: i.vatListedPrice })) })}
+              className="rounded-lg border border-[var(--swift-border)] px-4 py-2 text-sm font-semibold hover:bg-[var(--swift-subtle)]">
+              Option library
+            </button>
+          )}
           {manager && (
             <button type="button" disabled={!sections.length} onClick={() => setDialog({ kind: 'item', item: null })}
               className="rounded-lg bg-[var(--swift-red)] px-4 py-2 text-sm font-semibold text-white hover:bg-[var(--swift-red-600)] disabled:opacity-50">

@@ -30,6 +30,7 @@ import { useLocationStore } from '../../../stores/locationStore';
 import { afterDismiss } from '../../../kit/after-dismiss';
 import { grantedLocationFix } from '../../../lib/deviceLocation';
 import { branchAddress, branchFactsLine, currentBranchLabel, showsBranchSwitcher, type BrandBranch } from '../../../lib/brandCard';
+import { hasSizes } from '../../../lib/menuSheet';
 import { firstLineByItem, storeMenuRows, type StoreMenuRow } from '../storeMenuRows';
 import {
   AddMorph,
@@ -157,6 +158,8 @@ function ProductTile({
         </T>
       ) : null}
       <View style={{ marginTop: 2, gap: 4 }}>
+        {/* [MENU-OPTIONS] A sized item's listed price is its smallest size: "From". */}
+        {hasSizes(item) ? <T variant="micro" tone="faint">From</T> : null}
         <Money amount={item.customerPrice ?? item.basePrice} tone={out ? 'muted' : 'brand'} numberOfLines={1} />
         {itemVatNote(vat, item) ? <T variant="micro" tone="faint">{itemVatNote(vat, item)}</T> : null}
         {out ? (
@@ -263,6 +266,7 @@ const MenuItemRow = React.memo(function MenuItemRow({
       name={item.name}
       description={item.description}
       price={item.customerPrice ?? item.basePrice}
+      fromPrice={hasSizes(item)}
       priceNote={itemVatNote(vat, item)}
       image={itemPhoto(item)}
       soldOut={item.stockQuantity === 0}
@@ -474,7 +478,7 @@ function RestaurantStore() {
       width={width}
       image={itemPhoto(item)}
       name={item.name}
-      priceLabel={money(item.customerPrice ?? item.basePrice)}
+      priceLabel={`${hasSizes(item) ? 'From ' : ''}${money(item.customerPrice ?? item.basePrice)}`}
       priceNote={itemVatNote(storeVat, item)}
       onPress={() => openItem(item)}
     />

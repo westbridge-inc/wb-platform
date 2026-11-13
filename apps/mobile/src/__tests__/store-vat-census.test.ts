@@ -112,7 +112,10 @@ describe('[O-5] the phone’s VAT words', () => {
 
   it('[REVIEW-M #2255 S4-2 · REVIEW-F #2256 S4-3] new options carry the typed price; an option’s price says when VAT is in it', () => {
     const editor = read('modules/vendor/screens/VendorItemEditorScreen.tsx');
-    expect(editor).toContain('data: { name, ...newOptionPrice(Number(d.price) || 0, vatAdded) },');
+    // [REVIEW-MENU-B S3-3] The typed price, read by choicePriceInput (a mistype is refused, never a guessed 0), still goes
+    // through newOptionPrice (before VAT where VAT is added).
+    expect(editor).toContain('data: { name, ...newOptionPrice(read.price, vatAdded) },');
+    expect(editor).toContain("const read = choicePriceInput(d.price, { size: group?.setsPrice === true });");
     expect(editor).toContain('{optionPriceLabel(o)}');
     // [security review #2256] One word, from the profile every role reads, for the wording AND the payload.
     expect(editor).toContain('const vatPricing = vatPricingOf(store);');

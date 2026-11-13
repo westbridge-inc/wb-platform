@@ -24,6 +24,7 @@ export const MenuRow = React.memo(function MenuRow({
   description,
   price,
   priceNote,
+  fromPrice = false,
   image,
   qty,
   soldOut = false,
@@ -39,6 +40,8 @@ export const MenuRow = React.memo(function MenuRow({
   price: number;
   /** [STORE-VAT · owner O-5] A short note under the price ("incl. VAT"), from lib/storeVat. */
   priceNote?: string | null;
+  /** [MENU-OPTIONS] The item's size sets its price: `price` is its smallest size, shown as "From $X". */
+  fromPrice?: boolean;
   image?: string | null;
   qty: number;
   soldOut?: boolean;
@@ -88,6 +91,7 @@ export const MenuRow = React.memo(function MenuRow({
           </View>
           <View style={{ alignItems: 'flex-end', justifyContent: 'space-between', gap: space.sm }}>
             <View style={{ alignItems: 'flex-end' }}>
+              {fromPrice ? <T variant="micro" tone="faint">From</T> : null}
               <Money amount={price} tone={soldOut ? 'muted' : 'brand'} />
               {priceNote ? <T variant="micro" tone="faint">{priceNote}</T> : null}
             </View>

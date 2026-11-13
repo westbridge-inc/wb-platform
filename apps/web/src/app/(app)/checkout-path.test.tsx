@@ -147,7 +147,7 @@ describe('[Q7b] store → cart', () => {
     fireEvent.click(within(sheet).getByRole('button', { name: 'Add to order · $2,200' }));
     await screen.findByText('Pepperpot bowl added to your order.');
     const [[, init]] = calls('POST', '/api/v1/customer/cart/items') as [[unknown, RequestInit]];
-    expect(JSON.parse(String(init.body))).toEqual({ vendorId: 'v1', itemId: 'i1', quantity: 1, selectedOptions: { g1: 'large' } });
+    expect(JSON.parse(String(init.body))).toEqual({ vendorId: 'v1', itemId: 'i1', quantity: 1, selectedOptions: { g1: 'large' }, capabilities: ['MENU_OPTIONS_V2'] });
     // [W4] The order is placed on the one checkout page, one tap from the floating button
     // (#1590: shown once the order panel has scrolled off a phone's screen).
     report(screen.getByRole('complementary', { name: 'Your order and checkout' }), false);
@@ -182,7 +182,7 @@ describe('[F4] a sold-out choice is never pre-selected or sent', () => {
     fireEvent.click(within(sheet).getByRole('button', { name: 'Add to order · $2,200' }));
     await screen.findByText('Pepperpot bowl added to your order.');
     const [[, init]] = calls('POST', '/api/v1/customer/cart/items') as [[unknown, RequestInit]];
-    expect(JSON.parse(String(init.body))).toEqual({ vendorId: 'v1', itemId: 'i1', quantity: 1, selectedOptions: { g1: 'large' } });
+    expect(JSON.parse(String(init.body))).toEqual({ vendorId: 'v1', itemId: 'i1', quantity: 1, selectedOptions: { g1: 'large' }, capabilities: ['MENU_OPTIONS_V2'] });
   });
 
   it('a required group with every choice sold out says so and sends nothing', async () => {

@@ -303,7 +303,7 @@ describe('[BOOK-S6b] Book on the store page', () => {
     fireEvent.click(await within(sheet).findByRole('button', { name: /10:00\sAM/ }));
     fireEvent.click(within(sheet).getByRole('button', { name: /^Book 10:00\sAM · \$2,500$/ }));
     await waitFor(() => expect(state.push).toHaveBeenCalledWith('/checkout'));
-    expect(bodyOf(calls('POST', '/api/v1/customer/cart/items')[0])).toEqual({ vendorId: 'v1', itemId: 'i9', quantity: 1 });
+    expect(bodyOf(calls('POST', '/api/v1/customer/cart/items')[0])).toEqual({ vendorId: 'v1', itemId: 'i9', quantity: 1, capabilities: ['MENU_OPTIONS_V2'] });
     expect(JSON.parse(sessionStorage.getItem('swift_web_held_time:c1')!)).toEqual({ itemId: 'i9', slotStart: SLOT, mode: 'AT_BUSINESS', serviceMode: 'AT_BUSINESS' });
   });
 

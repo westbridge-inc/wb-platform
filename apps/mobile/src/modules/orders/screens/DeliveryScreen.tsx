@@ -55,6 +55,7 @@ import { rideIsOver } from '../../../lib/rideAfterTrip';
 import { pickupShowsCode, pickupWords } from '../pickup-words';
 import { BookingRescheduleCard } from '../BookingRescheduleCard';
 import { appointmentBookingView } from '../../../lib/appointmentBooking';
+import { orderLineChoices } from '../../../lib/menuSheet';
 import { customerCancellationWords } from '@swift/types/src/customer-cancellation-words';
 
 /** The store kinds Search can filter by (its own chips): a declined order opens Search on the same kind. */
@@ -1659,11 +1660,19 @@ export function DeliveryScreen() {
           </T>
           <View style={{ marginTop: space.sm }}>
             {items.map((it: any, i: number) => (
-              <InfoRow
-                key={it.id ?? i}
-                label={`${it.quantity} ${it.item?.name ?? it.name}${lineRemoved(it) ? ' (out of stock, removed)' : ''}`}
-                value={money(lineRemoved(it) ? 0 : it.totalPrice ?? it.lineTotal ?? Number(it.unitPrice ?? 0) * (it.quantity ?? 1))}
-              />
+              <View key={it.id ?? i}>
+                <InfoRow
+                  label={`${it.quantity} ${it.item?.name ?? it.name}${lineRemoved(it) ? ' (out of stock, removed)' : ''}`}
+                  value={money(lineRemoved(it) ? 0 : it.totalPrice ?? it.lineTotal ?? Number(it.unitPrice ?? 0) * (it.quantity ?? 1))}
+                />
+                {/* [MENU-OPTIONS] The line's choices as the store makes it: "Size: Large", a follow-up under its opener,
+                    a half-and-half pizza as "Toppings — Left: Pepperoni / Right: Mushroom". */}
+                {orderLineChoices(it.options).map((choice, at) => (
+                  <T key={at} variant="caption" tone="muted" style={{ marginLeft: choice.followUp ? space.lg : 0, marginTop: at === 0 ? -space.xs : 0 }}>
+                    {choice.text}
+                  </T>
+                ))}
+              </View>
             ))}
             {Number(o.deliveryFee ?? 0) > 0 ? <InfoRow label="Delivery" value={money(o.deliveryFee)} /> : null}
             {Number(o.tipAmount ?? 0) > 0 ? <InfoRow label="Tip" value={money(o.tipAmount)} /> : null}

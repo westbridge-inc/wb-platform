@@ -489,7 +489,7 @@ export function SearchScreen() {
                             glyph="food"
                             name={it.name}
                             sub={it.vendorName}
-                            trailing={<Money amount={it.basePrice} />}
+                            trailing={<Money amount={it.basePrice} from={it.pricedFrom === true} />}
                             {...prefetchStore(it.vendorId)}
                             onPress={() => navigation.navigate('MenuItem', { itemId: it.id, vendorId: it.vendorId, preview: itemPreviewOf(it) })}
                           />
@@ -556,7 +556,7 @@ export function SearchScreen() {
                         name={it.name}
                         sub={it.categoryName ? `${it.vendorName} · ${it.categoryName}` : it.vendorName}
                         closed={it.vendorIsCurrentlyOpen === false}
-                        trailing={<Money amount={it.basePrice} />}
+                        trailing={<Money amount={it.basePrice} from={it.pricedFrom === true} />}
                         {...prefetchStore(it.vendorId)}
                         onPress={() => navigation.navigate('MenuItem', { itemId: it.id, vendorId: it.vendorId, preview: itemPreviewOf(it) })}
                       />

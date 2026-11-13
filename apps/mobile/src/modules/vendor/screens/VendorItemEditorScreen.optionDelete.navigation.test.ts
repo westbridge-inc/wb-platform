@@ -109,6 +109,11 @@ vi.mock('../shared', async () => {
 vi.mock('../../../services/api', () => ({ vendorApi: {} }));
 vi.mock('../../../hooks/storeVat', () => ({ useStoreVat: () => ({ data: undefined }) })); // [STORE-VAT] owner-only read, no VAT here
 vi.mock('../../../hooks/useVendorMutation', () => ({ useVendorMutation: () => ({ mutate: vi.fn(), isPending: false }) }));
+// [MENU-OPTIONS] The option library and the option writes (sizes, halves, follow-ups): nothing shared here.
+vi.mock('../../../hooks/menuOptions', () => ({
+  useOptionLibrary: () => ({ data: [], isLoading: false }),
+  useMenuOptionsWrite: () => ({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false }),
+}));
 vi.mock('../../../hooks/vendorops', () => {
   const idle = () => ({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false });
   return {

@@ -166,9 +166,11 @@ export function VendorSquareCard({ v }: { v: BrandedVendor }) {
 
 /** An item card (Popular, Market): the dish's photo, its name, its price. */
 export function ItemCard({
-  href, name, price, imageUrl, vendorType, meta, isNew = false, action,
+  href, name, price, imageUrl, vendorType, meta, isNew = false, action, priceFrom = false,
 }: {
   href: string; name: string; price: unknown; imageUrl: string | null; vendorType?: string | null; meta?: string; isNew?: boolean; action?: React.ReactNode;
+  /** [MENU-OPTIONS] A size sets the item's price: `price` is its smallest size, read "From $X". */
+  priceFrom?: boolean;
 }) {
   return (
     <Link href={href} className="group flex min-w-0 flex-col text-left text-[var(--swift-ink)] active:opacity-85">
@@ -178,7 +180,7 @@ export function ItemCard({
       </span>
       <span data-store-part="copy" className={SQUARE_COPY}>
         <span className="truncate text-[13px] font-semibold leading-[18px]">{name}</span>
-        <span className="flex items-center justify-between gap-2"><span className="sw-money">{money(price)}</span>{action}</span>
+        <span className="flex items-center justify-between gap-2"><span className="sw-money">{priceFrom ? 'From ' : ''}{money(price)}</span>{action}</span>
         {meta ? <span className="truncate text-[13px] leading-[18px] text-[var(--swift-muted)]">{meta}</span> : null}
       </span>
     </Link>

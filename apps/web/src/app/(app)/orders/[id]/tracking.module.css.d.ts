@@ -18,6 +18,8 @@ declare const styles: {
   readonly holdCard: string;
   readonly iconTitle: string;
   readonly line: string;
+  readonly lineChoice: string;
+  readonly lineChoiceFollowUp: string;
   readonly loading: string;
   readonly mainColumn: string;
   readonly moneyNotice: string;
