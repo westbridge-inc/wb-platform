@@ -14,7 +14,7 @@ import type {
 } from '@swift/types';
 import {
   checkMmgFeeReversal, fetchFeeRefundCase, fetchFeeRefundCases, fetchMmgCheckout, fetchMmgCheckouts, fetchMmgFeeReversal, openFeeRefundCase,
-  resolveMmgFeeReversal, reverseMmgFeePayment,
+  resolveMmgFeeReversal, reverseMmgFeePayment, recheckHeldMmgCheckout,
   type FeeRefundKind, type MmgFeeReversalRow, type MmgFeeReversalView,
 } from '@/lib/api';
 import { MutationError } from '@/components/MutationError';
@@ -274,6 +274,7 @@ function Detail({ id }: { id: string }) {
             {d.reason ? <Field label="Reason (operators only)"><span className="font-mono text-xs">{d.reason}</span></Field> : null}
           </dl>
           {d.creditedPeriod ? <Credited period={d.creditedPeriod} /> : null}
+          {d.status === 'HELD' ? <RecheckHeldPanel checkoutId={d.id} /> : null}
           {d.status === 'CONFIRMED' ? <RefundCasePanel checkoutId={d.id} /> : null}
           {d.status === 'CONFIRMED' ? <ReturnPanel checkoutId={d.id} amount={d.amount} currencyCode={d.currencyCode} /> : null}
         </div>
@@ -547,6 +548,59 @@ function ReturnPanel({ checkoutId, amount, currencyCode }: { checkoutId: string;
             : ask.error ? <MutationError error={ask.error} label="The return did not start" /> : null}
         </form>
       )}
+    </section>
+  );
+}
+
+/**
+ * [Audit FABLE-01 C1-1] A payment held for review, checked with MMG again: the same lookups and conditions as every
+ * automatic check. If MMG's own records now meet them all (for example once MMG's history shows the payment, or the
+ * creation zone was set), it is credited once; otherwise it stays held. A reason and a second admin first.
+ */
+function RecheckHeldPanel({ checkoutId }: { checkoutId: string }) {
+  const qc = useQueryClient();
+  const [reason, setReason] = useState('');
+  const sending = useRef(false);
+  const ask = useMutation({
+    mutationFn: () => recheckHeldMmgCheckout(checkoutId, reason.trim()),
+    onSettled: () => qc.invalidateQueries({ queryKey: ['mmg-checkout', checkoutId] }),
+  });
+  const queued = isQueuedAnswer(ask.error);
+  const reasonOk = reason.trim().length >= REASON_MIN;
+  const answer = (ask.data as { data?: { status?: string } } | undefined)?.data?.status;
+  return (
+    <section aria-label="Check with MMG again" className="rounded-lg border border-[var(--mc-line)] p-4 space-y-3 text-sm">
+      <h3 className="font-semibold">Check this payment with MMG again</h3>
+      <p className="mc-muted text-xs">
+        Swift asks MMG about this payment again and applies the same checks as always. It is credited only if MMG&apos;s own
+        records now meet every one; otherwise it stays held. A second admin must approve it first.
+      </p>
+      <form
+        className="space-y-2"
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (!reasonOk || queued || sending.current) return;
+          sending.current = true;
+          ask.mutate(undefined, { onSettled: () => { sending.current = false; } });
+        }}
+      >
+        <textarea
+          value={reason}
+          onChange={(e) => setReason(e.target.value)}
+          rows={2}
+          maxLength={500}
+          disabled={queued}
+          aria-label="Why it is being checked again"
+          placeholder="Why it is being checked again (for example: the creation zone is now set). Required."
+          className="mc-input"
+        />
+        <button type="submit" disabled={ask.isPending || queued || !reasonOk} className="mc-btn mc-btn-primary">
+          {ask.isPending ? 'Checking…' : queued ? 'Waiting for approval' : 'Check with MMG again'}
+        </button>
+        {answer ? <p className="text-xs">{answer === 'CONFIRMED' ? 'MMG confirmed it: the payment was credited.' : 'Still held: MMG\'s records do not yet meet every check.'}</p> : null}
+        {queued ? <WaitingForApproval />
+          : ask.error ? <MutationError error={ask.error} label="MMG could not be checked" /> : null}
+      </form>
     </section>
   );
 }

@@ -95,6 +95,7 @@ import { maskPhone } from '../auth/step-up';
 import { maskOwnPhone } from './person-contact';
 import { consoleRoleOf } from '../auth/console-role';
 import { MmgFeeReversalService } from '../billing/mmg-fee-reversal';
+import { MmgCheckoutService } from '../billing/mmg-checkout.service';
 import { feeRefundCaseOf, listFeeRefundCases, openFeeRefundCase } from '../billing/fee-refund-case';
 import { MAJOR_AMOUNT_CEILING } from '../../utils/currency-amount';
 import {
@@ -6911,6 +6912,20 @@ export async function adminRoutes(app: FastifyInstance) {
       (tx, facts) => auditWithin(tx, request as unknown as AuditRequestLike, app.prefix, { extra: facts }),
     );
     return { success: true, data: reversalOut(row as never) };
+  });
+
+  // [Audit FABLE-01 C1-1] A weekly-fee payment held for review, checked with MMG again (C4: a reason and a second
+  // person, or solo). The same lookups and conditions as every automatic check: credited once if MMG's records now
+  // meet them all, otherwise it stays held and nothing changes. Nothing typed here is evidence.
+  const heldCheckouts = new MmgCheckoutService(app.prisma, billing, notifications);
+  app.post('/billing/mmg-checkouts/:id/recheck', { preHandler: [adminGuard] }, async (request) => {
+    const tenantId = requireTenantId();
+    const { id } = z.object({ id: z.string().min(1).max(64) }).parse(request.params);
+    const result = await heldCheckouts.recheckHeld({ tenantId, checkoutId: id, actorId: request.user.userId });
+    await auditWithin(app.prisma, request as unknown as AuditRequestLike, app.prefix, {
+      extra: { checkoutId: id, checkoutStatus: result.status, checkoutReason: result.reason },
+    });
+    return { success: true, data: result };
   });
 
   // [DS1112] A person resolves a HELD return (C4: a reason and a second
