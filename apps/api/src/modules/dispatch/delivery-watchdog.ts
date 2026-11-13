@@ -55,7 +55,7 @@ export async function reopenPreCustodyLeg(
   order: {
     id: string; status: OrderStatus; orderType: string | null;
     riderId: string | null; paymentMethod: string;
-    subtotalBase: Prisma.Decimal | number; readyAt: Date | null; preparingAt: Date | null;
+    subtotalBase: Prisma.Decimal | number; taxAmount: Prisma.Decimal | number; readyAt: Date | null; preparingAt: Date | null;
   },
   changedBy: string,
   note: string,
@@ -142,7 +142,7 @@ export async function recoverStrandedDeliveries(
         select: {
           tenantId: true, // the ops page follows the order's tenant [NOC-A F45]
           id: true, status: true, orderType: true, customerId: true, orderNumber: true,
-          riderId: true, paymentMethod: true, subtotalBase: true, fulfillmentModeVersion: true,
+          riderId: true, paymentMethod: true, subtotalBase: true, taxAmount: true, fulfillmentModeVersion: true,
           preparingAt: true, readyAt: true, vendorId: true,
         },
       });

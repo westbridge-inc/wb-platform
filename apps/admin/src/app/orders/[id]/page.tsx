@@ -443,6 +443,13 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
                   </div>
                 </>
               )}
+              {/* [STORE-VAT-EXCLUSIVE · owner 13 Nov 2026] A store pricing before VAT: its "VAT 14%" line, inside the Total. */}
+              {o.vatOnTop === true && o.vatRateBps != null && (
+                <div className="flex justify-between">
+                  <span className="mc-muted">VAT {Number(o.vatRateBps) / 100}% (the store&apos;s)</span>
+                  <span>{gyd(o.taxAmount)}</span>
+                </div>
+              )}
               <div className="flex justify-between pt-2 mt-1 border-t border-[var(--mc-line)] font-semibold">
                 <span>Total</span>
                 <span>{gyd(waiting ? waiting.total : isRide ? (o.taxiFareTotal ?? o.totalAmount) : o.totalAmount)}</span>

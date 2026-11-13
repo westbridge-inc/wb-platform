@@ -176,7 +176,7 @@ describe('a Swift-paid free-delivery code covers the normal fee, never the expre
     expect(fast).toMatchObject({ standardDeliveryFee: 800, deliveryFee: 1800 });
     const priced = priceBasket({ plans: [fast], promo: FREE, tip: 0 });
     expect(priced.discount).toBe(800);
-    expect(priced.perPlan[0]).toEqual({ discount: 800, tip: 0, total: 1800 + 1000, allocation: { goods: 0, delivery: 800, tip: 0, total: 800 } });
+    expect(priced.perPlan[0]).toEqual({ discount: 800, tip: 0, total: 1800 + 1000, allocation: { goods: 0, delivery: 800, tip: 0, total: 800 }, tax: 0, vat: null });
     expect(priced.grandTotal).toBe(2800);
   });
 

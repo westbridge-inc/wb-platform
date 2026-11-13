@@ -59,6 +59,7 @@ import { checkoutTipAmount } from '../checkout-tip';
 import {
   cartLineMeta,
   cartStaleCheckoutCode,
+  cartVatAddedRows,
   cartVatRows,
   cartPricingChoices,
   checkoutErrorMessage,
@@ -1079,6 +1080,11 @@ export function CartScreen() {
               {!pickup && c.express && c.expressSurcharge > 0 ? <InfoRow label="Express" value={money(c.expressSurcharge)} /> : null}
               {c.discount > 0 ? <InfoRow label="Discount" value={`-${money(c.discount)}`} /> : null}
               {!apptOnly && !pickup && riderTip > 0 ? <InfoRow label="Rider tip" value={money(riderTip)} /> : null}
+              {/* [STORE-VAT-EXCLUSIVE · owner 13 Nov 2026] A store pricing before VAT: "VAT 14%" right above the Total
+                  (the server's amount, already inside the server's total). */}
+              {cartVatAddedRows(c).map((row) => (
+                <InfoRow key={`vat-${row.vendorId}`} label={row.label} value={money(row.amount)} />
+              ))}
               <View style={[RULE, { marginVertical: space.sm }]} />
               {/* [E01] The server's total for exactly the choices above. While
                   a changed choice is being re-priced the previous quote is

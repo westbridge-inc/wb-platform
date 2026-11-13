@@ -83,6 +83,8 @@ export default defineConfig({
       STORE_MMG_PAY_LINK: '',
       // [STORE-VAT] A store's VAT is off unless a test switches it on.
       STORE_VAT: '',
+      // [STORE-VAT-EXCLUSIVE] Prices before VAT are off unless a test switches them on.
+      STORE_VAT_EXCLUSIVE: '',
       // [TAXI waiting charge] Off unless a test switches it on per case.
       TAXI_WAITING_CHARGE: '',
       // [PAYMENT-SIMPLIFY] The driver's MMG pay link is off unless a test switches it on.

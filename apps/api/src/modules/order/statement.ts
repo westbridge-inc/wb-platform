@@ -1,7 +1,7 @@
 import { color } from '@swift/ui';
 import { formatMoney } from '../../utils/currency-amount';
 import { endOfGuyanaDay, guyanaDayKey, isDateOnly, startOfGuyanaDay } from '../../utils/guyana-day';
-import { aggregateSalesComponents, orderComponents } from '../billing/sales-components';
+import { aggregateSalesComponents, orderComponents, vatAddedOnTopSum } from '../billing/sales-components';
 /**
  * Earnings / sales statements (marketplace-mechanics spec §12, the receipt's
  * sibling) — the artifact an earner shows a bank and a store shows their
@@ -207,7 +207,7 @@ export async function buildVendorStatement(prisma: unknown, vendorId: string, pe
   // platform-funded discount is money Swift owes the vendor; fees and tips
   // are the rider's. In SQL over the whole period, so the total never
   // understates past the line cap.
-  const [components, orders] = await Promise.all([
+  const [components, orders, vatAddedOnTop] = await Promise.all([
     aggregateSalesComponents(p as unknown as Parameters<typeof aggregateSalesComponents>[0], { vendorId, from: period.from, to: period.to }),
     p.order.findMany({
       where: periodWhere,
@@ -215,6 +215,8 @@ export async function buildVendorStatement(prisma: unknown, vendorId: string, pe
       orderBy: { placedAt: 'asc' },
       take: LINE_CAP,
     }) as Promise<Array<{ orderNumber: string; placedAt: Date; fulfillment: string | null; subtotalCustomer: unknown; discount: unknown; deliveryFee: unknown; tipAmount: unknown; currencyCode: string; promoRedemption: { goodsDiscount: unknown; deliveryDiscount: unknown; funder: string } | null }>>,
+    // [STORE-VAT-EXCLUSIVE] The VAT its customers paid on top (a store pricing before VAT): named, never counted as sales.
+    vatAddedOnTopSum(p as unknown as Parameters<typeof vatAddedOnTopSum>[0], { vendorId, from: period.from, to: period.to }),
   ]);
   // A line is what the vendor KEEPS from that order's goods: sales less its own promotion.
   const takeOf = (o: Parameters<typeof orderComponents>[0]) => {
@@ -229,6 +231,8 @@ export async function buildVendorStatement(prisma: unknown, vendorId: string, pe
     ...(components.sponsorReceivable > 0 ? [{ label: 'Platform promotions — owed to you by Swift', amount: components.sponsorReceivable }] : []),
     { label: 'Collected from customers for goods', amount: components.customerCollection },
     { label: 'Delivery fees and tips (the rider’s, not part of your sales)', amount: components.moverPayable },
+    // [STORE-VAT-EXCLUSIVE] A store pricing before VAT: the VAT its customers paid on top, collected for the GRA.
+    ...(vatAddedOnTop > 0 ? [{ label: 'VAT added at checkout (yours to pay to the GRA, not part of your sales)', amount: vatAddedOnTop }] : []),
     ...(components.feeFunding > 0 ? [{ label: 'Delivery-fee promotions funded by Swift (the rider’s)', amount: components.feeFunding }] : []),
   ];
   const estimatedNote = components.estimatedOrders > 0

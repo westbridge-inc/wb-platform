@@ -732,6 +732,7 @@ export class CashRulesService {
       id: string;
       orderType: string;
       subtotalBase: unknown;
+      taxAmount: unknown;
       totalAmount: unknown;
       deliveryLat: number | null;
       deliveryLng: number | null;

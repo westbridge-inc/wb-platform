@@ -149,7 +149,18 @@ export const DARK_FEATURES: DarkFeature[] = [
     enabledWhen: '1',
     title: "A VAT-registered store's VAT (14%, inside its prices, shown on its receipts)",
     whileOff:
-      "No store can say it is VAT-registered, send its GRA VAT certificate, or be approved for VAT; every store's prices, carts, checkouts and receipts show no VAT, exactly as before. Orders already placed with VAT keep the VAT they froze on their receipts. Swift's own fees stay \"Not a VAT invoice\" either way.",
+      "No store can say it is VAT-registered, send its GRA VAT certificate, or be approved for VAT; every store's prices, carts, checkouts and receipts show no VAT, exactly as before. Orders already placed with VAT keep the VAT they froze on their receipts. Swift's own fees stay \"Not a VAT invoice\" either way. A store a person already approved on prices BEFORE VAT keeps its \"VAT 14%\" line at checkout (its prices exclude VAT: dropping the line would undercharge it) until a person moves it off.",
+    impact: 'money',
+  },
+  {
+    // [STORE-VAT-EXCLUSIVE · owner 13 Nov 2026] Built now, deployed dark: prices before VAT, then "VAT 14%", then the Total.
+    key: 'store_vat_exclusive',
+    setting: 'STORE_VAT_EXCLUSIVE',
+    source: 'env',
+    enabledWhen: '1',
+    title: 'Prices before VAT for VAT-registered stores ("VAT 14%" added at checkout, then the Total)',
+    whileOff:
+      "A VAT-registered store can choose only \"My prices already include VAT\" or \"My prices do not include VAT\" (14% added into each price), as before: it cannot ask for its prices to be shown before VAT with a separate VAT 14% line at checkout, and no person can approve that. A store already approved that way keeps its VAT line at checkout until a person moves it off.",
     impact: 'money',
   },
   {

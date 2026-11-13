@@ -18,7 +18,8 @@ import { AppError, NotFoundError } from '../../utils/errors';
 import { vatNumberForWrite } from '../../utils/vendor-vat-number';
 import { assertNotRecused } from '../verification/recusal';
 import {
-  STORE_VAT_MODES_OFFERED, STORE_VAT_SELECT, STORE_VAT_WAITING_WHERE, VAT_CERTIFICATE_DOC_TYPE, inEffectOn, storeVatEffective, storeVatEnabled,
+  STORE_VAT_SELECT, STORE_VAT_WAITING_WHERE, VAT_CERTIFICATE_DOC_TYPE, inEffectOn, storeVatEffective, storeVatEnabled,
+  storeVatModeOffered, storeVatModesOffered, storeVatOnTop,
 } from './store-vat';
 import { STORE_VAT_RATE_PERCENT, STORE_VAT_SOURCES } from './vat-rate';
 import { insertNoticeFor } from '../../lib/owner-wall-notices';
@@ -91,13 +92,16 @@ export async function storeVatView(db: Db, vendorId: string, env: Record<string,
     effective: storeVatEffective(vendor, env),
     /** [VAT-DOCS] True while Swift adds VAT to the prices this store types (ADD_VAT_AT_CHECKOUT, approved). */
     addsVatToPrices: storeAddsVatToPrices(vendor),
+    /** [STORE-VAT-EXCLUSIVE] True while this store's orders add its VAT as a "VAT 14%" line at checkout (prices before VAT). */
+    vatOnTop: storeVatOnTop(vendor, env),
     approved: vendor.vatStatus === 'APPROVED'
       ? { number: vendor.vatApprovedNumber, registeredName: vendor.vatApprovedName, effectiveFrom: vendor.vatEffectiveFrom, reviewedAt: vendor.vatReviewedAt }
       : null,
     reviewNote: vendor.vatStatus === 'REJECTED' || vendor.vatStatus === 'REVOKED' ? vendor.vatReviewNote : null,
     certificate,
     ratePercent: STORE_VAT_RATE_PERCENT,
-    modesOffered: [...STORE_VAT_MODES_OFFERED],
+    // [STORE-VAT-EXCLUSIVE] What the store may choose now, in the order the screens offer it.
+    modesOffered: [...storeVatModesOffered(env)],
     sources: STORE_VAT_SOURCES,
   };
 }
@@ -136,11 +140,13 @@ export async function updateStoreVatSettings(
   }
   refuseWhileOff(env);
   const number = input.vatRegistrationNumber === undefined ? undefined : vatNumberForWrite(input.vatRegistrationNumber);
-  if (input.mode !== undefined && !STORE_VAT_MODES_OFFERED.has(input.mode)) {
-    throw new AppError(409, 'VAT_MODE_NOT_AVAILABLE', 'Choose how your prices relate to VAT.');
-  }
   await db.$transaction(async (tx) => {
     const vendor = await lockVendor(tx, vendorId);
+    // [STORE-VAT-EXCLUSIVE] A choice the server offers now, or the one already in force on an approved store (an app
+    // re-saving it changes nothing): a store keeps its basis until a person approves a change.
+    if (input.mode !== undefined && !storeVatModeOffered(input.mode, env) && !(vendor.vatStatus === 'APPROVED' && input.mode === vendor.vatMode)) {
+      throw new AppError(409, 'VAT_MODE_NOT_AVAILABLE', 'Choose how your prices relate to VAT.');
+    }
     const nextNumber = number === undefined ? vendor.vatRegistrationNumber : number;
     // The store's latest word: what it sent now, else a change it is still waiting on, else its mode.
     const nextMode = input.mode ?? vendor.vatModeRequested ?? vendor.vatMode;
@@ -191,7 +197,7 @@ export async function storeVatNumberChanged(tx: Tx, vendorId: string, number: st
   await reconcileVatPricing(tx, vendorId);
 }
 
-export type StoreVatModeName = 'PRICES_INCLUDE_VAT' | 'ADD_VAT_AT_CHECKOUT';
+export type StoreVatModeName = 'PRICES_INCLUDE_VAT' | 'ADD_VAT_AT_CHECKOUT' | 'PRICES_EXCLUDE_VAT';
 
 /** [VAT-DOCS · owner 30 Oct 2026] What the store sends WITH its certificate: its VAT number (as on the certificate)
  *  and how its prices relate to VAT, so one submission carries everything a person needs to approve. */
@@ -209,12 +215,16 @@ export interface StoreVatClaim {
 export function vatClaimForCertificate(
   current: { vatRegistrationNumber: string | null; vatMode: string | null },
   claim: StoreVatClaim,
+  env: Record<string, string | undefined> = process.env,
 ): { vatRegistrationNumber: string; vatMode: StoreVatModeName } {
   const number = claim.vatRegistrationNumber === undefined ? current.vatRegistrationNumber : vatNumberForWrite(claim.vatRegistrationNumber);
   const mode = claim.mode ?? current.vatMode;
-  if (claim.mode !== undefined && !STORE_VAT_MODES_OFFERED.has(claim.mode)) throw new AppError(409, 'VAT_MODE_NOT_AVAILABLE', 'Choose how your prices relate to VAT.');
+  if (claim.mode !== undefined && !storeVatModeOffered(claim.mode, env)) throw new AppError(409, 'VAT_MODE_NOT_AVAILABLE', 'Choose how your prices relate to VAT.');
   if (!number) throw new AppError(400, 'VAT_NUMBER_REQUIRED', 'Type your VAT registration number exactly as it is on your GRA certificate.');
   if (!mode) throw new AppError(400, 'VAT_MODE_REQUIRED', 'Choose how your prices relate to VAT.');
+  // [STORE-VAT-EXCLUSIVE] A new certificate is a new claim a person approves, so it must carry a choice offered now (a
+  // store on a basis no longer offered chooses again; nothing is filed until it does).
+  if (!storeVatModeOffered(mode, env)) throw new AppError(409, 'VAT_MODE_NOT_AVAILABLE', 'Choose how your prices relate to VAT.');
   return { vatRegistrationNumber: number, vatMode: mode as StoreVatModeName };
 }
 
@@ -231,7 +241,7 @@ export async function linkVatCertificate(
     const vendor = await lockVendor(tx, vendorId);
     if (vendor.owner.userId !== doc.userId) throw new AppError(403, 'FORBIDDEN', 'Only the store owner can send its VAT certificate.');
     // A change of price choice still waiting goes into the new claim: a person looks at everything again.
-    const claimed = vatClaimForCertificate({ vatRegistrationNumber: vendor.vatRegistrationNumber, vatMode: vendor.vatModeRequested ?? vendor.vatMode }, claim);
+    const claimed = vatClaimForCertificate({ vatRegistrationNumber: vendor.vatRegistrationNumber, vatMode: vendor.vatModeRequested ?? vendor.vatMode }, claim, env);
     await tx.vendor.update({ where: { id: vendorId }, data: { ...claimed, vatCertificateDocId: doc.id, vatStatus: 'PENDING', ...CLEARED_APPROVAL } });
     await reconcileVatPricing(tx, vendorId);
   });
@@ -300,8 +310,13 @@ export async function approveStoreVat(
       throw new AppError(409, 'VAT_NUMBER_MISMATCH', 'The number on the certificate is not the number the store gave. Reject it and tell the store, or ask the store to correct its number.');
     }
     // [VAT-DOCS · owner 30 Oct 2026] Never an approved store without a pricing mode: its VAT could not be applied.
-    if (!vendor.vatMode || !STORE_VAT_MODES_OFFERED.has(vendor.vatMode)) {
+    if (!vendor.vatMode) {
       throw new AppError(409, 'VAT_MODE_REQUIRED', 'The store has not said whether its prices include VAT. Ask the store to choose, then approve.');
+    }
+    // [STORE-VAT-EXCLUSIVE] Only a choice offered now is approved (prices before VAT only while STORE_VAT_EXCLUSIVE is on;
+    // "add VAT into the price" no longer once it is): a claim filed on another one waits for the store to choose again.
+    if (!storeVatModeOffered(vendor.vatMode, env)) {
+      throw new AppError(409, 'VAT_MODE_NOT_AVAILABLE', 'The store’s price choice is not offered on Swift now. Ask the store to choose again, then approve.');
     }
     // [REVIEW-G #2255 S4-1] The same stale-request check as the price-choice door (decideStoreVatModeChange): a store
     // that switched "prices include VAT" -> "add VAT" while the reviewer looked would otherwise get 14% added to every
@@ -454,8 +469,12 @@ export async function decideStoreVatModeChange(
     if (vendor.vatStatus !== 'APPROVED' || !vendor.vatModeRequested) {
       throw new AppError(409, 'VAT_NO_MODE_CHANGE', 'This store is not waiting for a decision on its price choice. Reload and look again.');
     }
-    if (vendor.vatModeRequested !== input.mode || !STORE_VAT_MODES_OFFERED.has(vendor.vatModeRequested)) {
+    if (vendor.vatModeRequested !== input.mode) {
       throw new AppError(409, 'VAT_MODE_CHANGE_MOVED', 'The store changed its request since you opened it. Reload and look again.');
+    }
+    // [STORE-VAT-EXCLUSIVE] A change to a choice no longer offered can only be refused (the store asks again).
+    if (input.approve && !storeVatModeOffered(vendor.vatModeRequested, env)) {
+      throw new AppError(409, 'VAT_MODE_NOT_AVAILABLE', 'That price choice is not offered on Swift now. Refuse it with a reason, and the store can choose again.');
     }
     const facts = { vendorId, from: vendor.vatMode, to: vendor.vatModeRequested };
     if (input.approve) {

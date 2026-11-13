@@ -95,6 +95,24 @@ describe('[W4] one checkout', () => {
     expect((checkouts[0]![1].headers as Record<string, string>)['Idempotency-Key']).toMatch(/.{8,}/);
   });
 
+  it('[STORE-VAT-EXCLUSIVE] a store pricing before VAT: "VAT 14%" sits right above the Total, and the order is placed against the total WITH it', async () => {
+    const vatCart = {
+      ...CART, taxAmount: 252, totalAmount: 2352,
+      vendors: [{ vendorId: 'v1', name: 'Fixture Bakery', fulfillment: 'DELIVERY', subtotal: 1800, deliveryFee: 300, totalAmount: 2352, taxAmount: 252, vat: { added: 252, ratePercent: 14, standardGoods: 1800, zeroRatedGoods: 0, exemptGoods: 0 } }],
+    };
+    api = ({ url, method }) => (url.pathname === '/api/v1/customer/cart' && method === 'GET' ? ok(vatCart) : url.pathname === '/api/v1/customer/cart/address' ? ok({ cart: vatCart }) : null);
+    at('/checkout', <CheckoutPage />);
+    const place = await screen.findByRole('button', { name: 'Place cash order · $2,352' });
+    const summary = screen.getByRole('region', { name: 'Order total' });
+    const text = summary.textContent ?? '';
+    expect(text).toContain('VAT 14%$252');
+    expect(text.indexOf('VAT 14%')).toBeLessThan(text.indexOf('Total$2,352'));
+    fireEvent.click(place);
+    await waitFor(() => expect(state.push).toHaveBeenCalledWith('/orders/o1'));
+    const checkouts = calls('POST', '/api/v1/customer/checkout') as Array<[unknown, RequestInit]>;
+    expect(JSON.parse(String(checkouts[0]![1].body))).toMatchObject({ expectedTotal: 2352 });
+  });
+
   it('both addresses render the one checkout module — there is no second place an order can be placed', () => {
     const read = (path: string) => readFileSync(join(process.cwd(), path), 'utf8');
     for (const page of ['src/app/(app)/cart/page.tsx', 'src/app/(app)/checkout/page.tsx']) {

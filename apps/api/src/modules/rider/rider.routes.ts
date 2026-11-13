@@ -2102,7 +2102,7 @@ export async function riderRoutes(app: FastifyInstance) {
         where: { id },
         select: {
           id: true, status: true, orderType: true, customerId: true, orderNumber: true,
-          riderId: true, paymentMethod: true, subtotalBase: true, fulfillmentModeVersion: true,
+          riderId: true, paymentMethod: true, subtotalBase: true, taxAmount: true, fulfillmentModeVersion: true,
           preparingAt: true, readyAt: true,
           acceptedAt: true, pickupLat: true, pickupLng: true, deliveryLat: true, deliveryLng: true,
         },
@@ -2137,7 +2137,7 @@ export async function riderRoutes(app: FastifyInstance) {
     // below is exactly what it was.
     await assessHandback({ prisma: app.prisma, redis: app.redis }, {
       riderId: rider.id, riderUserId: request.user.userId, orderId: id, reason,
-      acceptedAt: outcome.order.acceptedAt, handedBackAt: new Date(), basket: Number(outcome.order.subtotalBase),
+      acceptedAt: outcome.order.acceptedAt, handedBackAt: new Date(), basket: Number(outcome.order.subtotalBase) + Number(outcome.order.taxAmount),
       pickup: outcome.order.pickupLat != null && outcome.order.pickupLng != null ? { lat: outcome.order.pickupLat, lng: outcome.order.pickupLng } : null,
       drop: { lat: outcome.order.deliveryLat, lng: outcome.order.deliveryLng },
     });

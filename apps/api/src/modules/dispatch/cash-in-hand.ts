@@ -10,7 +10,7 @@ import { startOfDayGY, startOfMonthGY, startOfWeekGY } from '../../utils/time-gy
  *   collected   doorCashCollectedAmount — the cash the mover STATED taking at the door (L02 · row 34). Null means
  *               not stated (an older app, or a handover with no statement): the full totalAmount was assumed, as
  *               everywhere else on the platform.
- *   paid store  riderFloatForOrder(order) = subtotalBase on a CASH store order — the goods at the store's price,
+ *   paid store  riderFloatForOrder(order) = subtotalBase (+ taxAmount, a store pricing before VAT) on a CASH store order — the goods at the store's price,
  *               the share the mover fronts at pickup (the same column cashMathForOffer names payToVendor). A taxi
  *               ride has no store: nothing is paid out of it.
  *
@@ -56,11 +56,12 @@ async function cashSince(
     NOT: { orderType: { in: ['TAXI', 'COURIER'] }, paymentStatus: { not: 'CAPTURED' } },
   };
   const [assumed, stated] = await Promise.all([
-    prisma.order.aggregate({ where: { ...base, doorCashCollectedAmount: null }, _sum: { totalAmount: true, subtotalBase: true } }),
-    prisma.order.aggregate({ where: { ...base, doorCashCollectedAmount: { not: null } }, _sum: { doorCashCollectedAmount: true, subtotalBase: true } }),
+    prisma.order.aggregate({ where: { ...base, doorCashCollectedAmount: null }, _sum: { totalAmount: true, subtotalBase: true, taxAmount: true } }),
+    prisma.order.aggregate({ where: { ...base, doorCashCollectedAmount: { not: null } }, _sum: { doorCashCollectedAmount: true, subtotalBase: true, taxAmount: true } }),
   ]);
   const collected = cents(assumed._sum.totalAmount) + cents(stated._sum.doorCashCollectedAmount);
-  const paidStore = ride ? 0 : cents(assumed._sum.subtotalBase) + cents(stated._sum.subtotalBase);
+  // [STORE-VAT-EXCLUSIVE] The store was paid its goods AND the VAT a store pricing before VAT adds (riderFloatForOrder).
+  const paidStore = ride ? 0 : cents(assumed._sum.subtotalBase) + cents(assumed._sum.taxAmount) + cents(stated._sum.subtotalBase) + cents(stated._sum.taxAmount);
   return (collected - paidStore) / 100;
 }
 

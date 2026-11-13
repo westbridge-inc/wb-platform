@@ -272,8 +272,9 @@ describe('one home for the formula (source pins)', () => {
     // Neither caller sums its own basket total: the formula now lives once, in
     // the shared per-vendor planner, and both callers consume priceBasket.
     expect(src('modules/user/customer.routes.ts')).not.toContain('orderTotal({ subtotal: subtotalCustomer, deliveryFee, tip, discount })');
-    expect(src('modules/order/order.service.ts')).not.toContain('orderTotal({ subtotal: plan.subtotal, deliveryFee: plan.deliveryFee, tip: planTip, discount: planDiscount })');
-    expect(src('modules/order/cart-plans.ts')).toContain('orderTotal({ subtotal: plan.subtotal, deliveryFee: plan.deliveryFee, tip: planTip, discount: planDiscount })');
+    // [STORE-VAT-EXCLUSIVE] The one formula carries the plan's "VAT 14%" line (tax: 0 unless the store prices before VAT).
+    expect(src('modules/order/order.service.ts')).not.toContain('orderTotal({ subtotal: plan.subtotal, deliveryFee: plan.deliveryFee, tip: planTip, discount: planDiscount');
+    expect(src('modules/order/cart-plans.ts')).toContain('orderTotal({ subtotal: plan.subtotal, deliveryFee: plan.deliveryFee, tip: planTip, discount: planDiscount, tax })');
     expect(src('modules/user/customer.routes.ts')).toContain('priceBasket({');
     expect(src('modules/order/order.service.ts')).toContain('priceBasket({');
   });

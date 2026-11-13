@@ -53,7 +53,7 @@ import {
 import { useStoreSwitcher } from '../../../stores/storeSwitcher';
 import { useVendorPreview } from '../../../stores/vendorPreview';
 import {
-  beforeVatNote, editablePrice, itemPricePayload, newItemBeforeVatHint, newOptionPrice, optionPriceLabel, vatClassChoices, vatPricingOf, type VatClass,
+  beforeVatAtCheckoutHint, beforeVatNote, editablePrice, itemPricePayload, newItemBeforeVatHint, newOptionPrice, optionPriceLabel, vatClassChoices, vatPricingOf, type VatClass,
 } from '../../../lib/storeVat';
 import { useStoreVat } from '../../../hooks/storeVat';
 import { isKeptPhoto, storePhotoUrl, HERO_PHOTO_WIDTH } from '../../../lib/images';
@@ -799,6 +799,9 @@ export function VendorItemEditorScreen({ navigation, route }: any) {
   // that edits the menu reads (the VAT read above is the owner's). The ONE word for the before-VAT wording and the payload.
   const vatPricing = vatPricingOf(store);
   const vatAdded = vatPricing?.adds === true;
+  // [STORE-VAT-EXCLUSIVE] A store pricing before VAT: the price is labelled "before VAT" and sent as typed (nothing is added
+  // into it; VAT is its own line at checkout).
+  const pricesBeforeVat = vatPricing?.beforeVat === true;
   const vatRate = storeVat.data && storeVat.data.status !== 'NONE' ? storeVat.data.ratePercent : null;
   const vatEffective = storeVat.data?.effective === true;
   const [vatClass, setVatClass] = useState<VatClass>((existing?.vatClass as VatClass | undefined) ?? 'STANDARD');
@@ -1026,12 +1029,15 @@ export function VendorItemEditorScreen({ navigation, route }: any) {
                 <T variant="caption" tone="muted" style={{ marginTop: 2 }}>Set by the choices of the group that sets the price.</T>
               </View>
             ) : (
-              <LabeledInput value={price} onChangeText={setPrice} placeholder={beforeVatNote(existing) || (!existing && vatAdded) ? 'Price before VAT (GYD)' : 'Price (GYD)'} keyboardType="decimal-pad" />
+              <LabeledInput value={price} onChangeText={setPrice} placeholder={beforeVatNote(existing) || (!existing && vatAdded) || pricesBeforeVat ? 'Price before VAT (GYD)' : 'Price (GYD)'} keyboardType="decimal-pad" />
             )}
             {/* [VAT-DOCS] What customers pay for an item Swift adds VAT to (the saved price, from the server). */}
             {beforeVatNote(existing) ? <T variant="caption" tone="muted" testID="item-before-vat-note">{beforeVatNote(existing)}</T> : null}
             {!existing && vatPricing?.adds ? (
               <T variant="caption" tone="muted" testID="item-new-before-vat-hint">{newItemBeforeVatHint(vatPricing.ratePercent)}</T>
+            ) : null}
+            {pricesBeforeVat && vatPricing ? (
+              <T variant="caption" tone="muted" testID="item-before-vat-at-checkout-hint">{beforeVatAtCheckoutHint(vatPricing.ratePercent)}</T>
             ) : null}
             <InlineInput value={description} onChangeText={setDescription} placeholder="Description (optional)" multiline />
           </View>
@@ -1200,12 +1206,12 @@ export function VendorItemEditorScreen({ navigation, route }: any) {
                       VAT on this item
                     </T>
                     <Segmented
-                      options={vatClassChoices(vatRate, vatEffective).map((c) => ({ key: c.value, label: c.value === 'STANDARD' ? 'Standard' : c.value === 'ZERO_RATED' ? 'Zero-rated' : 'Exempt' }))}
+                      options={vatClassChoices(vatRate, vatEffective, pricesBeforeVat).map((c) => ({ key: c.value, label: c.value === 'STANDARD' ? 'Standard' : c.value === 'ZERO_RATED' ? 'Zero-rated' : 'Exempt' }))}
                       value={vatClass}
                       onChange={(k) => setVatClass(k as VatClass)}
                     />
                     <T variant="caption" tone="muted" style={{ marginTop: space.xs }}>
-                      {vatClassChoices(vatRate, vatEffective).find((c) => c.value === vatClass)?.label}. You choose each item’s VAT class and
+                      {vatClassChoices(vatRate, vatEffective, pricesBeforeVat).find((c) => c.value === vatClass)?.label}. You choose each item’s VAT class and
                       are responsible for it; check with the GRA.
                     </T>
                   </View>

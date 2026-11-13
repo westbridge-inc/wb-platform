@@ -5,7 +5,7 @@ import { BrandCheckbox, Card, ChoiceChip, ErrorState, LabeledInput, PillButton, 
 import { space } from '@swift/ui';
 import { DOCUMENT_CONSENT_TEXT } from '../../lib/uploadConsentCopy';
 import {
-  MODE_CHANGE_REVIEW_NOTE, VAT_MODE_CHOICES, modeRequestedLine, storeVatStatusLine, turnOffAddedPricesLine, vatModeHelp, type StoreVatMode,
+  MODE_CHANGE_REVIEW_NOTE, modeRequestedLine, storeVatStatusLine, turnOffAddedPricesLine, turnOffVatLineLine, vatModeChoices, vatModeHelp, vatModeLabel, type StoreVatMode,
 } from '../../lib/storeVat';
 import { errorMessage } from '../../lib/apiError';
 import { useStoreVat, useUpdateStoreVat } from '../../hooks/storeVat';
@@ -68,6 +68,11 @@ export function StoreVatSection({ style }: { style?: StyleProp<ViewStyle> } = {}
   const needsCertificate = firstClaim || (v.available && (v.status === 'PENDING' || v.status === 'REJECTED' || v.status === 'REVOKED')
     && (!v.certificate || v.certificate.status !== 'PENDING'));
   const claimReady = !firstClaim || (number.trim().length > 0 && mode !== null);
+  // [STORE-VAT-EXCLUSIVE] The choices this server offers now (prices before VAT first while it is on), plus the store's own
+  // approved choice when it is no longer offered: it keeps it until a person approves a change.
+  const offered = vatModeChoices(v.modesOffered);
+  const ownLabel = v.status === 'APPROVED' && v.mode && !offered.some((c) => c.value === v.mode) ? vatModeLabel(v.mode) : null;
+  const choices = ownLabel && v.mode ? [...offered, { value: v.mode, label: ownLabel }] : offered;
 
   const sendAsset = (a: ImagePicker.ImagePickerAsset) => {
     if (send.isPending) return;
@@ -99,8 +104,10 @@ export function StoreVatSection({ style }: { style?: StyleProp<ViewStyle> } = {}
     if (update.isPending) return;
     if (v.status !== 'APPROVED') { update.mutate({ registered: false }); return; }
     // [VAT-DOCS] A store whose VAT is added to its prices gets the prices it typed back.
-    const prices = v.addsVatToPrices ? turnOffAddedPricesLine : '';
-    Alert.alert('Turn VAT off?', `Your prices stop saying “incl. VAT” at once, and a person at Swift must check your certificate again before VAT can come back.${prices}`, [
+    // [STORE-VAT-EXCLUSIVE] A store pricing before VAT stops adding its VAT line at checkout.
+    const prices = v.addsVatToPrices ? turnOffAddedPricesLine : v.vatOnTop ? turnOffVatLineLine : '';
+    const words = v.vatOnTop ? 'Your prices stop saying “+ VAT” at once' : 'Your prices stop saying “incl. VAT” at once';
+    Alert.alert('Turn VAT off?', `${words}, and a person at Swift must check your certificate again before VAT can come back.${prices}`, [
       { text: 'Keep VAT', style: 'cancel' },
       { text: 'Turn VAT off', style: 'destructive', onPress: () => update.mutate({ registered: false }) },
     ]);
@@ -145,7 +152,7 @@ export function StoreVatSection({ style }: { style?: StyleProp<ViewStyle> } = {}
               />
               <T variant="label" weight="semibold">Your prices</T>
               <View style={{ gap: space.sm }} accessibilityRole="radiogroup">
-                {VAT_MODE_CHOICES.map((c) => (
+                {choices.map((c) => (
                   <ChoiceChip key={c.value} label={c.label} active={mode === c.value} onPress={() => setMode(c.value)} full />
                 ))}
               </View>

@@ -39,6 +39,7 @@ import {
   lineTotal, orderTotal, promoCapacity, promoDiscount, allocatePromo,
   type PromoAllocation, type PromoTerms,
 } from '../../utils/order-total';
+import { orderVat, type OrderVatResult, type VatClassName } from '../store-vat/vat-math';
 
 export type PlanFulfillment = 'DELIVERY' | 'PICKUP' | 'APPOINTMENT';
 /** What the customer may choose for a vendor's goods (checkout's
@@ -115,9 +116,23 @@ type PriceableCartLine = Pick<PricedCartLineInput, 'quantity' | 'selectedOptions
 
 /** [RIDE-03 · REVIEW-2469 S3-2 · REVIEW-2472 A-4] The store cash a rider fronts for one store's CASH basket: the
  *  sum of priceCartLine's line totals (base + options) × quantity — the plan subtotal, the order's subtotalBase,
- *  which dispatch's float gate reads. Checkout's rider probe and the cart banner both read it from here. */
-export function riderCashForLines(lines: ReadonlyArray<PriceableCartLine>): number {
-  return lines.reduce((sum, l) => sum + priceCartLine(l).lineTotal, 0);
+ *  which dispatch's float gate reads. Checkout's rider probe and the cart banner both read it from here.
+ *  [STORE-VAT-EXCLUSIVE] Plus the VAT a store pricing BEFORE VAT adds (`vatOnTop`, its rate): the rider pays the store
+ *  its goods AND its VAT (subtotalBase + taxAmount, float.service riderFloatForOrder). A cash delivery carries no promo
+ *  (checkout refuses one), so the VAT is on the whole standard-rated basket. */
+export function riderCashForLines(
+  lines: ReadonlyArray<PriceableCartLine & { item: { vatClass?: string | null } }>,
+  vatOnTop: { rateBps: number } | null = null,
+): number {
+  const amounts = lines.map((l) => priceCartLine(l).lineTotal);
+  const goods = amounts.reduce((sum, a) => sum + a, 0);
+  if (!vatOnTop) return goods;
+  const vat = orderVat({
+    lines: lines.map((l, i) => ({ id: String(i), amount: amounts[i]!, vatClass: (l.item.vatClass === 'ZERO_RATED' || l.item.vatClass === 'EXEMPT' ? l.item.vatClass : 'STANDARD') as VatClassName })),
+    rateBps: vatOnTop.rateBps,
+    basis: 'ON_TOP',
+  });
+  return goods + vat.vatAmount;
 }
 
 /** One line's price: unit = base + selected options (only options that belong
@@ -239,6 +254,10 @@ export interface BasketPlan {
    *  still gets all of it. Required, so a caller cannot forget it and let a code
    *  pay the premium. */
   standardDeliveryFee: number;
+  /** [STORE-VAT-EXCLUSIVE · owner 13 Nov 2026] A store pricing BEFORE VAT (order-vat.ts vatOnTopPlan): the plan's lines
+   *  with their VAT classes, in the order checkout writes them, and the rate. The plan's VAT is added on top as its own
+   *  line (PricedPlan.tax), once, after the store's own goods discount. Absent / null = no VAT is added (every other store). */
+  vatOnTop?: { rateBps: number; lines: ReadonlyArray<{ id: string; amount: number; vatClass: VatClassName }> } | null;
 }
 
 /** The promo terms plus the vendor a store's own code belongs to (null or
@@ -254,6 +273,10 @@ export interface PricedPlan {
   total: number;
   /** [M-32] The component split snapshotted on the order's redemption. */
   allocation: PromoAllocation | null;
+  /** [STORE-VAT-EXCLUSIVE] The VAT added on top of this plan's goods ("VAT 14%"), inside `total`; 0 for every other store. */
+  tax: number;
+  /** [STORE-VAT-EXCLUSIVE] The full VAT computation behind `tax` (null when no VAT is added on top). */
+  vat: OrderVatResult | null;
 }
 
 export interface PricedBasket {
@@ -315,7 +338,6 @@ export function priceBasket(input: {
 
   const tipPlanIndex = plans.findIndex((p) => p.fulfillment === 'DELIVERY');
   const effectiveTip = tipPlanIndex >= 0 ? input.tip : 0;
-  const grandTotal = plans.reduce((s, p) => s + p.subtotal + p.deliveryFee, 0) + effectiveTip - discount;
 
   let remaining = discount;
   const perPlan = plans.map((plan, i): PricedPlan => {
@@ -326,13 +348,30 @@ export function priceBasket(input: {
     }
     const planDiscount = allocation?.total ?? 0;
     const planTip = i === tipPlanIndex ? effectiveTip : 0;
+    // [STORE-VAT-EXCLUSIVE] The store's VAT on its standard-rated goods, once per order, after the goods discount THE
+    // STORE gives (a code it funds; a Swift-funded one is paid to the store, so it never lowers the store's VAT: the rule
+    // order-vat.ts vatDiscountFor applies to every placed order). Split across the lines exactly as the redemption stores
+    // it (allocateAcrossLines inside orderVat), so checkout's recompute finds the same amount.
+    const vat = plan.vatOnTop
+      ? orderVat({
+        lines: plan.vatOnTop.lines,
+        goodsDiscount: promo?.funder === 'VENDOR' ? (allocation?.goods ?? 0) : 0,
+        rateBps: plan.vatOnTop.rateBps,
+        basis: 'ON_TOP',
+      })
+      : null;
+    const tax = vat?.vatAmount ?? 0;
     return {
       discount: planDiscount,
       tip: planTip,
-      total: orderTotal({ subtotal: plan.subtotal, deliveryFee: plan.deliveryFee, tip: planTip, discount: planDiscount }),
+      total: orderTotal({ subtotal: plan.subtotal, deliveryFee: plan.deliveryFee, tip: planTip, discount: planDiscount, tax }),
       allocation,
+      tax,
+      vat,
     };
   });
+  // The orders' totals, VAT lines included: equal to the sum of `perPlan[].total`.
+  const grandTotal = plans.reduce((s, p) => s + p.subtotal + p.deliveryFee, 0) + effectiveTip - discount + perPlan.reduce((s, p) => s + p.tax, 0);
 
   return { discount, effectiveTip, grandTotal, perPlan };
 }

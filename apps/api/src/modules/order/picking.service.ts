@@ -10,7 +10,7 @@ import { mmgClaimLockObserver } from './mmg-claim.service';
 import { substitutionLineChange, substitutionDecideMinutes, substitutionNoAnswer, orderTotalAdjustable, isRemovalQuestion, totalFixedCopy, ONLY_ITEM_LEFT_COPY, PICK_ALIVE_WHERE, type AdjustableOrder } from './substitution-view';
 import { storeTeam, ringRecipients } from '../notification/store-team';
 import { hiddenAmong, unhideRestocked } from '../compliance/prohibited-gate';
-import { recomputeOrderVat } from '../store-vat/order-vat';
+import { recomputeOrderVat, vatOnTopChange } from '../store-vat/order-vat';
 import { lineChangeDiscount, type LineDiscountChange } from './line-discount';
 import { OptionSelectionError, validateSelectedOptions, type ValidatableGroup } from './options';
 import { orderStageRefusal } from './order-status-words';
@@ -326,9 +326,12 @@ export class PickingService {
     // the order would wait forever. Only a same-price swap may be proposed
     // there; the store settles anything else with the customer directly.
     // (Early answer; the authority is the same check on the locked row below.)
-    const priceChange = substitutionLineChange({
+    const swapLine = substitutionLineChange({
       substitutePrice: substitute.basePrice, quantity: line.quantity, totalCustomer: line.totalCustomer,
-    }).delta;
+    });
+    // [STORE-VAT-EXCLUSIVE] On an order whose VAT is added on top, a same-price swap to an item of another VAT class still
+    // moves the total (its VAT line), so it counts as a change here too: never a question nobody can answer.
+    const priceChange = swapLine.delta + await this.vatOnTopChangeOf(orderId, line.vatClass, { lineId, newLineTotal: swapLine.newLineTotal, vatClass: substitute.vatClass });
     if (priceChange !== 0) assertMmgMoneyAdjustable(line.order);
     // [SUBSTITUTION] The wait is bounded: past decideBy the sweep removes the
     // line (never a silent swap) or, on MMG, withdraws the question.
@@ -429,7 +432,8 @@ export class PickingService {
         userId: line.order.customerId,
         type: 'ORDER_UPDATE',
         title: `${line.name} removed from your order`,
-        body: `It's out of stock at the store. Order #${line.order.orderNumber}'s total went down by $${Number(line.totalCustomer).toLocaleString()}.`,
+        // [STORE-VAT-EXCLUSIVE] On an order whose VAT is added on top, the VAT that went with the line comes off too.
+        body: `It's out of stock at the store. Order #${line.order.orderNumber}'s total went down by $${(Number(line.totalCustomer) + closed.vatDrop).toLocaleString()}.`,
         data: { orderId, kind: 'line_refunded', lineId },
       });
       return this.prisma.orderItem.findUnique({ where: { id: lineId } });
@@ -495,7 +499,9 @@ export class PickingService {
       orderId, lineId: line.id, originalName: line.name, substituteName: null, substitutePrice: null,
       quantity: line.quantity, status: 'PENDING', kind: 'REMOVAL', decideBy: decideBy.toISOString(),
     });
-    const lower = Math.min(Number(line.totalCustomer), Number(line.order.totalAmount));
+    // [STORE-VAT-EXCLUSIVE] On an order whose VAT is added on top, the line's VAT comes off with it (the same rule the
+    // removal itself applies, vatOnTopChange).
+    const lower = Math.min(Number(line.totalCustomer) - (await this.vatOnTopChangeOf(orderId, line.vatClass, { lineId: line.id, newLineTotal: 0 })), Number(line.order.totalAmount));
     await this.notifications.send({
       userId: line.order.customerId,
       type: 'ORDER_UPDATE',
@@ -504,6 +510,22 @@ export class PickingService {
       data: { orderId, kind: 'substitution_pending', lineId: line.id },
     });
     return this.prisma.orderItem.findUnique({ where: { id: line.id } });
+  }
+
+  /** [STORE-VAT-EXCLUSIVE] The change a picking change makes to an order's added VAT, read before it happens (0 unless the
+   *  order's VAT is added on top). `lineVatClass` is the line's frozen class: null on every order that froze no VAT, which
+   *  needs no read at all. */
+  private async vatOnTopChangeOf(orderId: string, lineVatClass: string | null | undefined, change: { lineId: string; newLineTotal: number; vatClass?: string | null }): Promise<number> {
+    if (lineVatClass == null) return 0;
+    const order = await this.prisma.order.findUnique({
+      where: { id: orderId },
+      select: {
+        vatRateBps: true, vatOnTop: true, vatAmount: true, discount: true,
+        items: { select: { id: true, subStatus: true, totalCustomer: true, vatClass: true }, orderBy: { id: 'asc' } },
+        promoRedemption: { select: { funder: true, goodsDiscount: true, lineAllocations: true, discountType: true, discountValue: true, maxDiscount: true } },
+      },
+    });
+    return order ? vatOnTopChange(order, change) : 0;
   }
 
   /** The customer's verdict on a pending substitution. */
@@ -709,7 +731,12 @@ export class PickingService {
       });
       if (discountBack.redemption) await tx.promoRedemption.update({ where: { orderId }, data: discountBack.redemption });
       // [STORE-VAT] The VAT inside the goods follows the goods (a no-op on an order without VAT).
-      await recomputeOrderVat(tx, orderId);
+      // [STORE-VAT-EXCLUSIVE] On an order whose VAT is added on top, its "VAT 14%" line and the total move with it
+      // (taxDelta, written by recompute): a swap to a standard-rated item at the same price still changes the total.
+      const taxDelta = (await recomputeOrderVat(tx, orderId))?.taxDelta ?? 0;
+      if (taxDelta !== 0) assertMmgMoneyAdjustable(order);
+      // What the rider fronts the store moves by the goods AND their added VAT (riderFloatForOrder).
+      const cashDelta = delta + taxDelta;
 
       // [REPORT-006 F-006-05] Committed float tracks the LIVE cash subtotal a
       // rider fronts: a cheaper substitute releases the difference now, or the
@@ -718,15 +745,15 @@ export class PickingService {
       // agreed to pay the store the amount they were shown, and a swap must never add cash to their job without their
       // say (before a rider holds it, the claim checks the shown amount instead: cash-limit assertCashShown). The
       // whole approval rolls back; the customer is told why here, the store by the notice after the transaction.
-      if (order.paymentMethod === 'CASH' && order.riderId && delta > 0) {
+      if (order.paymentMethod === 'CASH' && order.riderId && cashDelta > 0) {
         // [OOS-FLOW · REVIEW-1 S4-1] Declining the only item left cancels the order: the words say so.
         const others = await tx.orderItem.count({ where: { orderId, id: { not: lineId }, ...PICK_ALIVE_WHERE } });
         throw new AppError(409, 'SUBSTITUTE_RAISES_RIDER_CASH', others === 0
           ? 'A rider has already taken this order and agreed to pay the store the amount they were shown, so a dearer swap cannot be added. It is the only item left: say no thanks to cancel the order (nothing has been charged), or ask the store for a same-price option.'
           : 'A rider has already taken this order and agreed to pay the store the amount they were shown, so a dearer swap cannot be added. Decline this swap (the item comes off your order), or ask the store for a same-price option.');
       }
-      if (order.paymentMethod === 'CASH' && order.riderId && delta < 0) {
-        await new FloatService(tx).release(tx, order.riderId, -delta);
+      if (order.paymentMethod === 'CASH' && order.riderId && cashDelta < 0) {
+        await new FloatService(tx).release(tx, order.riderId, -cashDelta);
       }
 
       await tx.orderStatusLog.create({
@@ -754,7 +781,7 @@ export class PickingService {
     subStatus: 'REFUNDED' | 'REJECTED',
     changedBy: string,
     opts: { note?: string; decidedBefore?: Date; requireOthersLeft?: boolean } = {},
-  ): Promise<false | { decTotal: number }> {
+  ): Promise<false | { decTotal: number; vatDrop: number }> {
     // [REPORT-006 F-006-02/05] One Order-locked transaction: live lifecycle +
     // payment-rail authority come from the LOCKED row (never the caller's
     // preview — a capture or cancellation committing after the preview is
@@ -832,7 +859,8 @@ export class PickingService {
         await tx.promoRedemption.update({ where: { orderId: line.order.id }, data: share.redemption });
       }
       // [STORE-VAT] A removed line carries no VAT any more (a no-op on an order without VAT).
-      await recomputeOrderVat(tx, line.order.id);
+      // [STORE-VAT-EXCLUSIVE] On an order whose VAT is added on top, its "VAT 14%" line and the total drop with it.
+      const vatDrop = -((await recomputeOrderVat(tx, line.order.id))?.taxDelta ?? 0);
       await tx.orderStatusLog.create({
         data: { orderId: line.order.id, status: ord.status as PickableStatus, changedBy, note: opts.note ?? `Line ${subStatus.toLowerCase()}: ${line.name}` },
       });
@@ -840,8 +868,9 @@ export class PickingService {
       // fronts: this close shrinks subtotalBase by decBase, and the terminal
       // release later unwinds only the REDUCED subtotal — without releasing
       // the delta now, committedFloat stays perma-leaked.
-      if (ord.paymentMethod === 'CASH' && ord.riderId && decBase > 0) {
-        await new FloatService(tx).release(tx, ord.riderId, decBase);
+      // [STORE-VAT-EXCLUSIVE] The rider fronts the goods AND their added VAT: both come back.
+      if (ord.paymentMethod === 'CASH' && ord.riderId && decBase + vatDrop > 0) {
+        await new FloatService(tx).release(tx, ord.riderId, decBase + vatDrop);
       }
       // [REPORT-007-v4 F-04] The goods reserved by an APPROVED substitution
       // are the SUBSTITUTE units (the original went back on the shelf at
@@ -850,7 +879,7 @@ export class PickingService {
       // (possibly auto-hidden at zero) with the wrong RETURN audit row.
       const restockItemId = line.subStatus === 'APPROVED' ? line.substituteItemId : line.itemId;
       await this.restockLine({ itemId: restockItemId, quantity: line.quantity, orderId: line.order.id }, subStatus.toLowerCase(), tx);
-      return { decTotal };
+      return { decTotal, vatDrop };
     });
     if (!closed) return false;
     this.emitPickState(line.order.vendorId, line.order.id, line.id, { subStatus });
@@ -944,8 +973,8 @@ export class PickingService {
       type: 'ORDER_UPDATE',
       title: `${line.name} removed from your order`,
       body: removal
-        ? `You didn't answer in time, so ${line.name} (out of stock) came off order #${line.order.orderNumber}. Your total went down by $${closed.decTotal.toLocaleString()}.`
-        : `The store's swap question got no answer in time, so ${line.name} came off order #${line.order.orderNumber}. Your total went down by $${closed.decTotal.toLocaleString()}.`,
+        ? `You didn't answer in time, so ${line.name} (out of stock) came off order #${line.order.orderNumber}. Your total went down by $${(closed.decTotal + closed.vatDrop).toLocaleString()}.`
+        : `The store's swap question got no answer in time, so ${line.name} came off order #${line.order.orderNumber}. Your total went down by $${(closed.decTotal + closed.vatDrop).toLocaleString()}.`,
       data: { orderId: line.orderId, kind: 'line_refunded', lineId: line.id },
     });
     return 'removed';

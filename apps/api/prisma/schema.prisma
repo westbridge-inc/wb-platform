@@ -2680,8 +2680,9 @@ model Order {
   taxAmount        Decimal @default(0) @db.Decimal(12, 2)
   /// [STORE-VAT · owner O-5] The VAT INCLUDED in this order's goods, frozen at checkout and recomputed by
   /// store-vat/order-vat.ts whenever the goods change (substitution, a removed line). Null = the store was not
-  /// an approved VAT store when the order was placed (every order before this column). Never added to
-  /// totalAmount: VAT-registered stores' prices include VAT (VAT Act s.90), so taxAmount stays 0.
+  /// an approved VAT store when the order was placed (every order before this column). On an order whose store's
+  /// prices include VAT (vatOnTop false) it is never added to totalAmount and taxAmount stays 0; on an order whose
+  /// store prices before VAT (vatOnTop true) it is the "VAT 14%" line and taxAmount carries the same amount.
   vatAmount        Decimal? @db.Decimal(12, 2)
   /// The rate the VAT was computed at, in basis points (1400 = 14%), frozen with it.
   vatRateBps       Int?
@@ -2694,6 +2695,11 @@ model Order {
   /// The seller's approved VAT number and registered name, frozen at checkout (what the receipt shows).
   vatSellerNumber  String?
   vatSellerName    String?
+  /// [STORE-VAT-EXCLUSIVE · owner 13 Nov 2026] The basis the VAT was frozen on. false (every order before this column,
+  /// and every order of a store whose prices include VAT): vatAmount is INSIDE the goods and taxAmount stays 0. true (a
+  /// store pricing BEFORE VAT): vatAmount is ADDED on top of the goods and taxAmount = vatAmount, inside totalAmount
+  /// (the "VAT 14%" line above the Total). Frozen at checkout with the rate; never flips on a placed order.
+  vatOnTop         Boolean @default(false)
   tipAmount        Decimal @default(0) @db.Decimal(12, 2)
   discount         Decimal @default(0) @db.Decimal(12, 2)
   totalAmount      Decimal @db.Decimal(12, 2)
@@ -3484,9 +3490,15 @@ enum StoreVatStatus {
 /// them unchanged; VAT shown = price x 14/114). ADD_VAT_AT_CHECKOUT: the store types prices before VAT and the
 /// server adds 14% INTO the price customers see (never a surprise at checkout; VAT Act s.90(2)): Item.vatListedPrice
 /// keeps the typed price while a person's approval stands (modules/store-vat/vat-pricing.ts).
+/// [STORE-VAT-EXCLUSIVE · owner 13 Nov 2026] PRICES_EXCLUDE_VAT: the store's typed prices are BEFORE VAT and are shown
+/// exactly as typed; the cart, checkout and receipt add one "VAT 14%" line (the store's VAT on its standard-rated goods,
+/// once per order) and then the Total (Order.vatOnTop; modules/store-vat/vat-math.ts). The basis for VAT-registered
+/// stores going forward (offered while STORE_VAT_EXCLUSIVE is on); a store already approved on another basis keeps it
+/// until a person approves a change.
 enum StoreVatMode {
   PRICES_INCLUDE_VAT
   ADD_VAT_AT_CHECKOUT
+  PRICES_EXCLUDE_VAT
 }
 
 enum SubstitutionStatus {

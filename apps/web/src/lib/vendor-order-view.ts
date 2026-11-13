@@ -8,6 +8,7 @@ import { formatAppointmentSlot } from './appointmentTime';
 import { storeOrderStatusWords } from '@swift/types/src/order-words';
 import type { VendorOrder } from './vendor-api';
 import { promisedTimeName } from './store-kind-words';
+import { orderVatAddedRow } from './store-vat-display';
 // [STORE-MONEY] The app's own reader of the store's money (plain file, imported as is).
 import { ringMoney, storeKeepsDelivery } from '../../../mobile/src/modules/vendor/ringMoney';
 
@@ -27,6 +28,9 @@ export function orderMoneyRows(o: VendorOrder): Array<{ label: string; value: nu
   if ((o.deliveryFee ?? 0) > 0) rows.push({ label: yours ? 'Delivery fee (yours)' : 'Delivery fee (rider’s)', value: o.deliveryFee ?? null });
   if ((o.tipAmount ?? 0) > 0) rows.push({ label: yours ? 'Tip (yours)' : 'Tip (rider’s)', value: o.tipAmount ?? null });
   if ((o.discount ?? 0) > 0) rows.push({ label: 'Promo discount', value: o.discount ?? null, minus: true });
+  // [STORE-VAT-EXCLUSIVE · owner 13 Nov 2026] A store pricing before VAT: the VAT added at checkout (the store's).
+  const vat = orderVatAddedRow(o);
+  if (vat) rows.push({ label: `${vat.label} (yours, for the GRA)`, value: vat.amount });
   rows.push({ label: 'Customer pays', value: o.totalAmount });
   rows.push({ label: sm.longLabel, value: sm.food, strong: true });
   return rows;

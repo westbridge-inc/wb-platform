@@ -560,18 +560,18 @@ describe('[AF-MOB-006] timeouts page humans', () => {
 describe('[AF-MOB-006] a return tells each party the truth about the money', () => {
   const kase = { id: 'c1', state: 'RETURN_REQUIRED' as const, updatedAt: new Date(), ownerUserId: 'ops' };
   it('MMG: the store refunds the customer directly, and the copy says Swift never holds order money', () => {
-    const mmg = { orderType: 'FOOD_DELIVERY', paymentMethod: 'MOBILE_MONEY', subtotalBase: 3000 };
+    const mmg = { orderType: 'FOOD_DELIVERY', paymentMethod: 'MOBILE_MONEY', subtotalBase: 3000, taxAmount: 0 };
     expect(partyCaseView(kase, 'CUSTOMER', mmg)!.body).toContain('the store refunds you directly — Swift never holds order money');
     expect(partyCaseView(kase, 'VENDOR', mmg)!.body).toContain('refund them directly — Swift never holds order money');
     expect(partyCaseView({ ...kase, state: 'RETURNED' }, 'CUSTOMER', mmg)!.body).toContain('Swift never holds order money');
   });
   it('cash: the customer is promised nothing they did not pay; the store owes the rider the fronted cash', () => {
-    const cash = { orderType: 'FOOD_DELIVERY', paymentMethod: 'CASH', subtotalBase: 2500 };
+    const cash = { orderType: 'FOOD_DELIVERY', paymentMethod: 'CASH', subtotalBase: 2500, taxAmount: 0 };
     expect(partyCaseView(kase, 'CUSTOMER', cash)!.body).not.toMatch(/refund/i);
     expect(partyCaseView(kase, 'VENDOR', cash)!.body).toContain('Give the rider back the GY$2,500 cash');
   });
   it('a courier parcel goes back to its sender with no store money in the sentence', () => {
-    const parcel = { orderType: 'COURIER', paymentMethod: 'CASH', subtotalBase: 0 };
+    const parcel = { orderType: 'COURIER', paymentMethod: 'CASH', subtotalBase: 0, taxAmount: 0 };
     expect(partyCaseView(kase, 'CUSTOMER', parcel)!.body).toBe('Your order could not be delivered and is on its way back to you.');
   });
 });

@@ -44,3 +44,9 @@ export function beforeVatNote(item: Priced, money: (_n: number) => string): stri
   if (item?.vatListedPrice == null || item.basePrice == null) return null;
   return `Before VAT. Customers pay ${money(Number(item.basePrice))} incl. VAT.`;
 }
+
+/** [STORE-VAT-EXCLUSIVE · owner 13 Nov 2026] The hint under a price a store pricing before VAT types (the same words as the
+ *  phone): nothing is added into the price; VAT is its own line at checkout. */
+export function beforeVatAtCheckoutHint(ratePercent: number): string {
+  return `Before VAT. ${ratePercent}% VAT is added at checkout for standard-rated items.`;
+}

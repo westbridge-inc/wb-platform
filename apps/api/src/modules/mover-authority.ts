@@ -345,7 +345,7 @@ export async function retireMoverSessionAuthorityInTransaction(
             where: { id: { in: legPreview.map((l) => l.id) }, riderId: rider.id, status: { notIn: TERMINAL_ORDER_STATUSES } },
             select: {
               id: true, orderNumber: true, orderType: true, customerId: true, riderId: true, status: true,
-              acceptedAt: true, preparingAt: true, readyAt: true, paymentMethod: true, subtotalBase: true,
+              acceptedAt: true, preparingAt: true, readyAt: true, paymentMethod: true, subtotalBase: true, taxAmount: true,
             },
             orderBy: { acceptedAt: 'asc' },
           });

@@ -27,6 +27,11 @@ import { formatMoney } from '../../utils/currency-amount';
  *
  * `lines` are the plain words under the big number, written here once so the phone app and the website say the same.
  * Swift moves none of this money; this only says whose it is.
+ *
+ * [STORE-VAT-EXCLUSIVE · owner 13 Nov 2026] A store pricing BEFORE VAT also receives the VAT its order added on top
+ * (`taxAmount`, the "VAT 14%" line): it is the store's (it pays it to the GRA), the rider hands it over with the food money
+ * on a cash order, and it is inside the MMG total. So `food` includes it and a line names it; `vat` carries the amount.
+ * taxAmount is 0 on every other order: nothing changes for them.
  */
 export type StoreMoneyDelivery = 'SWIFT_RIDER' | 'STORE_RIDER' | 'PICKUP' | 'APPOINTMENT';
 
@@ -39,6 +44,8 @@ export interface StoreMoney {
   foodLabel: string;
   /** Part of `food` Swift pays (a Swift-funded discount); 0 when none. */
   swiftPaysYou: number;
+  /** [STORE-VAT-EXCLUSIVE] The VAT added on top that is part of `food` (the store's, for the GRA); 0 when none. */
+  vat: number;
   delivery: StoreMoneyDelivery;
   payment: 'CASH' | 'MMG' | 'OTHER';
   /** The Swift rider's delivery fee + tip (never the store's). 0 unless a Swift rider delivers. */
@@ -57,6 +64,10 @@ export interface StoreMoneyOrder extends OrderMoneyRow {
   fulfillmentMode?: string | null;
   paymentMethod?: string | null;
   totalAmount: unknown;
+  /** [STORE-VAT-EXCLUSIVE] The VAT added on top (0 unless the store priced before VAT) and its frozen rate. Required, so a
+   *  reader that forgot to select it does not compile (the store would be shown less than it receives). */
+  taxAmount: unknown;
+  vatRateBps?: number | null;
   currencyCode?: string | null;
   vendor?: { vendorType?: string | null; selfDeliveryEnabled?: boolean | null } | null;
 }
@@ -64,7 +75,7 @@ export interface StoreMoneyOrder extends OrderMoneyRow {
 /** The columns `storeMoney` reads (a Prisma select). The vendor's two columns ride the order's own vendor select. */
 export const STORE_MONEY_SELECT = {
   orderType: true, fulfillment: true, fulfillmentMode: true, paymentMethod: true, currencyCode: true,
-  subtotalCustomer: true, discount: true, deliveryFee: true, tipAmount: true, totalAmount: true,
+  subtotalCustomer: true, discount: true, deliveryFee: true, tipAmount: true, totalAmount: true, taxAmount: true, vatRateBps: true,
   promoRedemption: { select: { goodsDiscount: true, deliveryDiscount: true, funder: true } },
   vendor: { select: { vendorType: true, selfDeliveryEnabled: true } },
 } as const;
@@ -116,12 +127,18 @@ export function storeMoney(order: StoreMoneyOrder): StoreMoney | null {
   const payment: StoreMoney['payment'] = order.paymentMethod === 'CASH' ? 'CASH' : order.paymentMethod === 'MOBILE_MONEY' ? 'MMG' : 'OTHER';
   const word = goodsWord(order);
 
-  const food = round2(c.goodsSales - c.vendorPromoDiscount);
+  // [STORE-VAT-EXCLUSIVE] The VAT a store pricing before VAT added on top is the store's money too.
+  const vat = round2(num(order.taxAmount));
+  const food = round2(c.goodsSales - c.vendorPromoDiscount + vat);
   let swiftPaysYou = c.sponsorReceivable;
   let riderFeeAndTip = 0;
   let yoursFeeAndTip = 0;
   let customerPaysYou: number | null = null;
   const lines: string[] = [];
+  if (vat > 0) {
+    const rate = order.vatRateBps != null ? `${(order.vatRateBps / 100).toFixed(2).replace(/\.?0+$/, '')}% ` : '';
+    lines.push(`Includes VAT ${rate}added at checkout: ${amt(vat)} (yours, for the GRA)`);
+  }
 
   if (delivery === 'SWIFT_RIDER') {
     riderFeeAndTip = round2(fee + tip); // exactly what createEarnings books the rider, and an MMG settlement's amount
@@ -157,7 +174,7 @@ export function storeMoney(order: StoreMoneyOrder): StoreMoney | null {
   if (swiftPaysYou > 0) lines.push(`Swift pays you ${amt(swiftPaysYou)} (a Swift discount the customer got)`);
 
   return {
-    food, foodWord: word, foodLabel: `${word} — you receive`, swiftPaysYou: round2(swiftPaysYou), delivery, payment,
+    food, foodWord: word, foodLabel: `${word} — you receive`, swiftPaysYou: round2(swiftPaysYou), vat, delivery, payment,
     riderFeeAndTip, yoursFeeAndTip, customerPaysYou, lines,
   };
 }

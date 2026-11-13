@@ -126,3 +126,15 @@ export async function aggregateSalesComponents(
     netSales: round2(goodsSales - vendorPromoDiscount),
   };
 }
+
+/** [STORE-VAT-EXCLUSIVE · owner 13 Nov 2026] The VAT a store pricing before VAT added on top at checkout over the same
+ *  completed orders as aggregateSalesComponents (the store's, for the GRA; never part of its sales). 0 for every other
+ *  store. Its own read, so the sales components (and the weekly digest built from them) are unchanged. */
+export async function vatAddedOnTopSum(prisma: PrismaClient, scope: { vendorId: string; from: Date; to: Date }): Promise<number> {
+  const [row] = await prisma.$queryRaw<Array<{ vat: unknown }>>(Prisma.sql`
+    SELECT coalesce(sum(o."taxAmount"), 0) AS vat
+    FROM "orders" o
+    WHERE o."vendorId" = ${scope.vendorId} AND o."status" IN ('DELIVERED', 'COMPLETED')
+      AND o."placedAt" >= ${scope.from} AND o."placedAt" <= ${scope.to}`);
+  return round2(Number(row?.vat ?? 0));
+}

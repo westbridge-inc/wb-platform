@@ -44,6 +44,18 @@ describe('[O-5] the phone’s VAT words', () => {
     expect(read('modules/orders/screens/DeliveryScreen.tsx')).toContain('orderVatLine(o)');
   });
 
+  it('[STORE-VAT-EXCLUSIVE] a store pricing before VAT: the "VAT 14%" row is the server\'s, right above the Total, on every screen', () => {
+    const cart = read('modules/cart/screens/CartScreen.tsx');
+    expect(cart).toContain('cartVatAddedRows(c).map');
+    // The row sits before the rule that leads into the Total.
+    expect(cart.indexOf('cartVatAddedRows(c).map')).toBeLessThan(cart.indexOf("label={pickup ? 'Total at the counter' : 'Total'}"));
+    expect(read('modules/cart/cartQuote.ts')).toContain('cartVatAdded(s.vat)');
+    const order = read('modules/orders/screens/DeliveryScreen.tsx');
+    expect(order).toContain('orderVatRow(o)');
+    expect(order.indexOf('orderVatRow(o)')).toBeLessThan(order.indexOf("'Order total (cancelled)' : 'Total'"));
+    expect(read('modules/vendor/screens/VendorOrderDetailScreen.tsx')).toContain('orderVatRow(order)');
+  });
+
   it('no phone file computes VAT or carries a VAT rate', () => {
     const offenders: string[] = [];
     for (const path of files(SRC)) {
@@ -86,7 +98,9 @@ describe('[O-5] the phone’s VAT words', () => {
   it('a first VAT claim sends the number and the price choice WITH the certificate (one submission)', () => {
     const section = read('modules/vendor/StoreVatSection.tsx');
     expect(section).toContain('...(firstClaim && mode ? { claim: { vatRegistrationNumber: number.trim(), mode } } : {})');
-    expect(section).toContain('VAT_MODE_CHOICES.map');
+    // [STORE-VAT-EXCLUSIVE] The choices are the server's offer (vatModeChoices(v.modesOffered)), an older server's two otherwise.
+    expect(section).toContain('vatModeChoices(v.modesOffered)');
+    expect(section).toContain('choices.map');
     expect(section).not.toContain('not available yet');
     expect(read('hooks/storeVatCertificate.ts')).toContain('...(claim ?? {})');
   });
@@ -121,7 +135,8 @@ describe('[O-5] the phone’s VAT words', () => {
     expect(editor).toContain('const vatPricing = vatPricingOf(store);');
     expect(editor).toContain('...itemPricePayload(existing, priceNum, vatAdded),');
     expect(editor).toContain('{ optionGroups: draftOptionGroupsPayload(draftGroups, vatAdded) }');
-    expect(editor).toContain("placeholder={beforeVatNote(existing) || (!existing && vatAdded) ? 'Price before VAT (GYD)' : 'Price (GYD)'}");
+    // [STORE-VAT-EXCLUSIVE] A store pricing before VAT labels its price "before VAT" too (and sends it as typed).
+    expect(editor).toContain("placeholder={beforeVatNote(existing) || (!existing && vatAdded) || pricesBeforeVat ? 'Price before VAT (GYD)' : 'Price (GYD)'}");
     expect(editor).toContain('{newItemBeforeVatHint(vatPricing.ratePercent)}');
     expect(editor).toContain("placeholder={vatAdded ? '+GYD before VAT' : '+GYD'}");
     expect(editor).toContain('&& (existing != null || vatPricing != null);');

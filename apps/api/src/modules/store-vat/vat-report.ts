@@ -17,6 +17,11 @@
  * next month. Swift NEVER files: the report says so, and covers only the store's sales through Swift.
  *
  * Money: whole GYD columns summed as integer cents, never as floats.
+ *
+ * [STORE-VAT-EXCLUSIVE · owner 13 Nov 2026] An order whose store priced BEFORE VAT froze vatOnTop: its vatBase already
+ * excludes the VAT (line 17 is the base itself; the VAT-inclusive figure is base + VAT). Every other order's vatBase
+ * includes it (line 17 = base - VAT). Each order is read on its own basis, so a store that changed basis mid-period
+ * still reports both kinds correctly.
  */
 import type { Prisma, PrismaClient } from '@prisma/client';
 import { AppError } from '../../utils/errors';
@@ -84,6 +89,8 @@ export interface VatReportRow {
   vatExemptGoods: unknown;
   vatSellerName: string | null;
   vatSellerNumber: string | null;
+  /** [STORE-VAT-EXCLUSIVE] The VAT was added on top: vatBase excludes it. Absent/false: vatBase includes it. */
+  vatOnTop?: boolean;
   /** The Guyana day of supply (supplyInstant). */
   supplyDay: string;
 }
@@ -103,7 +110,9 @@ class Sum {
   incl = 0; vat = 0; zero = 0; exempt = 0;
   add(r: VatReportRow): void {
     this.orders += 1;
-    this.incl += cents(r.vatBase); this.vat += cents(r.vatAmount); this.zero += cents(r.vatZeroRatedGoods); this.exempt += cents(r.vatExemptGoods);
+    // The VAT-inclusive standard-rated figure: the base itself, or base + VAT where the VAT was added on top.
+    this.incl += cents(r.vatBase) + (r.vatOnTop ? cents(r.vatAmount) : 0);
+    this.vat += cents(r.vatAmount); this.zero += cents(r.vatZeroRatedGoods); this.exempt += cents(r.vatExemptGoods);
   }
   figures(): Figures {
     return {
@@ -178,7 +187,7 @@ export async function storeVatReport(db: PrismaClient | Prisma.TransactionClient
     },
     select: {
       id: true, orderNumber: true, vatRateBps: true, vatBase: true, vatStandardGoods: true, vatAmount: true,
-      vatZeroRatedGoods: true, vatExemptGoods: true, vatSellerName: true, vatSellerNumber: true, deliveredAt: true, placedAt: true,
+      vatZeroRatedGoods: true, vatExemptGoods: true, vatSellerName: true, vatSellerNumber: true, vatOnTop: true, deliveredAt: true, placedAt: true,
       statusHistory: { where: { status: 'COMPLETED' }, select: { createdAt: true }, orderBy: { createdAt: 'asc' }, take: 1 },
     },
     orderBy: { placedAt: 'asc' },
@@ -196,6 +205,7 @@ export async function storeVatReport(db: PrismaClient | Prisma.TransactionClient
     vatExemptGoods: o.vatExemptGoods,
     vatSellerName: o.vatSellerName,
     vatSellerNumber: o.vatSellerNumber,
+    vatOnTop: o.vatOnTop,
     supplyDay: guyanaDayKey(supplyInstant({ deliveredAt: o.deliveredAt, completedAt: o.statusHistory[0]?.createdAt ?? null, placedAt: o.placedAt })),
   }));
   // [REVIEW-M #2109 S4] The query window is a coarse cut (any COMPLETED row inside it); the order's ONE supply day is the

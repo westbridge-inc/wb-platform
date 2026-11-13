@@ -37,6 +37,7 @@ import {
 import { getCartQuote, pickupChoices, quoteStoreIds, removeCartPromotion } from '@/lib/cart-quote';
 import type { NewAddress } from '@/components/checkout/new-address-form';
 import { MONEY_UNKNOWN, parseAmount, sumAmounts } from '@/lib/money';
+import { cartVatAddedRows } from '@/lib/store-vat-display';
 import { photo } from '@/lib/media';
 import { ApiRequestError } from '@/lib/auth';
 import { addressPoint, getDeliveryAvailability, deliveryNoticeShown, riderBasketKey, type DeliveryAvailability } from '@/lib/delivery-availability';
@@ -315,8 +316,11 @@ export function CheckoutPanel() {
   const serverSubtotal = parseAmount(cart?.subtotalCustomer) ?? subtotal;
   const deliveryFee = parseAmount(cart?.deliveryFee) ?? 0;
   const discount = parseAmount(cart?.discount) ?? 0;
+  // [STORE-VAT-EXCLUSIVE · owner 13 Nov 2026] A store pricing before VAT: the server's "VAT 14%" line is part of the
+  // total (and of the total the order is placed against). 0 for every other cart; an older server sends none.
+  const vatRows = cartVatAddedRows(cart?.vendors);
   const totalParts = cart
-    ? sumAmounts(cart.subtotalCustomer ?? subtotal, cart.deliveryFee ?? 0, -(parseAmount(cart.discount) ?? 0), effectiveTip)
+    ? sumAmounts(cart.subtotalCustomer ?? subtotal, cart.deliveryFee ?? 0, -(parseAmount(cart.discount) ?? 0), effectiveTip, cart.taxAmount ?? 0)
     : subtotal + effectiveTip;
   const total = totalParts;
   const moneyUnreadable = cart != null && totalParts === null;
@@ -469,7 +473,9 @@ export function CheckoutPanel() {
       refreshedSubtotal
       + Number(quote.deliveryFee ?? 0)
       - Number(quote.discount ?? 0)
-      + effectiveTip,
+      + effectiveTip
+      // [STORE-VAT-EXCLUSIVE] The VAT line of a store pricing before VAT.
+      + Number(quote.taxAmount ?? 0),
     );
   }
 
@@ -859,6 +865,10 @@ export function CheckoutPanel() {
               : <div className={styles.moneyLine}><span className={styles.moneyLabel}>Delivery fee</span><strong className={styles.moneyValue}>{hasDestinationQuote ? money(deliveryFee) : 'Choose an address for a quote'}</strong></div>}
             {discount > 0 ? <div className={styles.moneyLine}><span className={styles.moneyLabel}>Discount</span><strong className={styles.moneyValue}>−{money(discount)}</strong></div> : null}
             {pickup || booking ? null : <div className={styles.moneyLine}><span className={styles.moneyLabel}>Rider tip</span><strong className={styles.moneyValue}>{money(tip)}</strong></div>}
+            {/* [STORE-VAT-EXCLUSIVE · owner 13 Nov 2026] "VAT 14%" right above the Total, like the store's own bill. */}
+            {vatRows.map((row) => (
+              <div key={`vat-${row.vendorId}`} className={styles.moneyLine}><span className={styles.moneyLabel}>{row.label}</span><strong className={styles.moneyValue}>{money(row.amount)}</strong></div>
+            ))}
             <div className={styles.totalLine}><span>Total</span><strong>{moneyUnreadable ? MONEY_UNKNOWN : hasQuote ? money(total) : 'Quote needed'}</strong></div>
           </div>
           {/* [W-13] A total Swift cannot compute is not shown as a number and

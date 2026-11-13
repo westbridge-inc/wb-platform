@@ -38,7 +38,7 @@ describe('[G15] why a parcel is coming back', () => {
 
 describe('[G19] a rider whose signal died reported nothing', () => {
   const kase = { id: 'c1', state: 'SUPPORT_HOLD' as const, updatedAt: new Date(), ownerUserId: null };
-  const order = { orderType: 'COURIER', paymentMethod: 'CASH', subtotalBase: 0 };
+  const order = { orderType: 'COURIER', paymentMethod: 'CASH', subtotalBase: 0, taxAmount: 0 };
   it('the sender is told what is true', () => {
     expect(partyCaseView({ ...kase, reason: 'MOVER_SIGNAL_LOST' }, 'CUSTOMER', order)).toMatchObject({ headline: 'We lost your rider’s signal' });
     expect(partyCaseView({ ...kase, reason: 'MOVER_SIGNAL_LOST' }, 'CUSTOMER', order)!.body).not.toContain('reported a problem');

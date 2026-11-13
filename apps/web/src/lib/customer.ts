@@ -60,6 +60,8 @@ export interface Cart {
   discount?: number;
   promoCode?: { code: string; discountType?: string; description?: string } | null;
   tipAmount?: number;
+  /** [STORE-VAT-EXCLUSIVE] The "VAT 14%" lines of stores pricing before VAT, inside totalAmount (0 / absent otherwise). */
+  taxAmount?: number | string;
   totalAmount?: number;
   deliveryDistanceKm?: number;
   deliveryAddress?: { id: string; label?: string; addressLine1?: string; city?: string } | null;
@@ -75,7 +77,7 @@ export interface Cart {
   meetsMinimum?: boolean;
   minimumOrderAmount?: number;
   /** [E01] One row per future order: each store's fulfilment, fee and total, as checkout writes it. */
-  vendors?: Array<{ vendorId: string; name: string; fulfillment: string; subtotal?: number; deliveryFee: number; totalAmount?: number; meetsMinimum?: boolean }>;
+  vendors?: Array<{ vendorId: string; name: string; fulfillment: string; subtotal?: number; deliveryFee: number; totalAmount?: number; meetsMinimum?: boolean; taxAmount?: number; vat?: unknown }>;
   paymentCapabilities?: {
     /** Changes when the vendor set or the validated MMG destination changes. */
     scope?: string;

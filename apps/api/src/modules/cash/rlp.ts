@@ -77,8 +77,9 @@ const DAY_MS = 86_400_000;
  * stake. A taxi fare or courier fee was earned by a service already rendered and
  * nothing was fronted, so the guarantee covers the fare/fee as it always has.
  */
-export function coveredAmountFor(order: { orderType: string; subtotalBase: unknown; totalAmount: unknown }): number {
-  return isDeliveryRail(order.orderType) ? Number(order.subtotalBase) : Number(order.totalAmount);
+export function coveredAmountFor(order: { orderType: string; subtotalBase: unknown; taxAmount: unknown; totalAmount: unknown }): number {
+  // [STORE-VAT-EXCLUSIVE] On a store pricing before VAT the rider fronted the goods AND their added VAT (taxAmount, 0 otherwise).
+  return isDeliveryRail(order.orderType) ? Number(order.subtotalBase) + (Number(order.taxAmount ?? 0) || 0) : Number(order.totalAmount);
 }
 
 export function isDeliveryRail(orderType: string): boolean {

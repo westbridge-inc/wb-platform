@@ -25,7 +25,11 @@ export function storeVatApprovedNotice(v: { registeredName: string; number: stri
   // [VAT-DOCS · owner 30 Oct 2026] A store whose typed prices exclude VAT has the VAT added into each price customers see.
   // [REVIEW-F #2255 S4-1] The VAT is the store's ("VAT charged by <store>"): never worded as Swift adding it.
   const adds = v.mode === 'ADD_VAT_AT_CHECKOUT';
-  const prices = adds
+  // [STORE-VAT-EXCLUSIVE · owner 13 Nov 2026] Prices before VAT: shown as typed, VAT its own line at checkout.
+  const onTop = v.mode === 'PRICES_EXCLUDE_VAT';
+  const prices = onTop
+    ? `From now on, ${onTopWords(rate)}, `
+    : adds
     ? `From now on, ${addedWords(rate)}, so customers see and pay prices that include VAT, `
     : `From now on, your prices include VAT at ${rate}% `;
   return {
@@ -35,8 +39,13 @@ export function storeVatApprovedNotice(v: { registeredName: string; number: stri
     body: `A person at Swift checked your GRA VAT certificate. Your certificate is in effect from ${calendarDay(v.effectiveFrom)}. `
       + prices
       + `and your receipts say “VAT charged by ${v.registeredName} · VAT reg. no. ${v.number}”. `
-      + (adds ? UNMARKED_ITEMS : 'Check each item’s VAT class now: zero-rated and exempt goods carry no VAT.'),
+      + (adds || onTop ? UNMARKED_ITEMS : 'Check each item’s VAT class now: zero-rated and exempt goods carry no VAT.'),
   };
+}
+
+/** [STORE-VAT-EXCLUSIVE] The prices-before-VAT basis, in the store's words. */
+function onTopWords(rate: number): string {
+  return `customers see the prices you type (before VAT), and VAT at ${rate}% on your standard-rated items is added at checkout as its own line before the total`;
 }
 
 function addedWords(rate: number): string {
@@ -53,7 +62,9 @@ export function storeVatModeChangeApprovedNotice(mode: string, ratePercent: numb
   return {
     title: 'Your price change is approved',
     body: 'A person at Swift approved your change. '
-      + (mode === 'ADD_VAT_AT_CHECKOUT'
+      + (mode === 'PRICES_EXCLUDE_VAT'
+        ? `From now on, ${onTopWords(ratePercent)}. ${UNMARKED_ITEMS}`
+        : mode === 'ADD_VAT_AT_CHECKOUT'
         ? `From now on, ${addedWords(ratePercent)}, so customers see and pay prices that include VAT. ${UNMARKED_ITEMS}`
         : `From now on, your prices include VAT at ${ratePercent}%: customers pay the prices you type.`)
       + ' Orders already placed keep their prices.',
@@ -78,9 +89,12 @@ export function storeVatRejectedNotice(reason: string): { title: string; body: s
 export function storeVatWithdrawnNotice(reason: string, mode?: string | null): { title: string; body: string } {
   return {
     title: 'Your VAT was withdrawn',
-    body: `${sentence(reason)} New orders carry no VAT and your prices no longer say “incl. VAT”.`
-      // [VAT-DOCS] A store whose VAT was added to its prices gets the prices it typed back.
-      + (mode === 'ADD_VAT_AT_CHECKOUT' ? ' VAT is no longer added to your prices: customers pay the prices you typed.' : '')
+    // [STORE-VAT-EXCLUSIVE] A store pricing before VAT: its prices never said "incl. VAT"; its VAT line at checkout stops.
+    body: (mode === 'PRICES_EXCLUDE_VAT'
+      ? `${sentence(reason)} New orders carry no VAT: VAT is no longer added at checkout, so customers pay the prices you typed.`
+      : `${sentence(reason)} New orders carry no VAT and your prices no longer say “incl. VAT”.`
+        // [VAT-DOCS] A store whose VAT was added to its prices gets the prices it typed back.
+        + (mode === 'ADD_VAT_AT_CHECKOUT' ? ' VAT is no longer added to your prices: customers pay the prices you typed.' : ''))
       + ' Orders already placed keep their VAT.',
   };
 }
