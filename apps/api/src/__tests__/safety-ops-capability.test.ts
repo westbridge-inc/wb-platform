@@ -526,7 +526,7 @@ describe('[REVIEW-2499-B S2-2] the only eligible responder may work a case that 
     const kase = await ownersReport(owner);
     vi.mocked(isSoleEligibleResponder).mockResolvedValue(true);
     try {
-      const find = (res: Awaited<ReturnType<typeof fire>>) => (res.json().data as Array<Record<string, unknown>>).find((c) => c.id === kase.id);
+      const find = (res: Awaited<ReturnType<typeof fire>>) => (res.json().data as Array<Record<string, unknown>>).find((c) => c['id'] === kase.id);
       expect(find(await fire('GET', `${S}/incidents?status=all&limit=200`, owner))).toBeUndefined();
       const res = await fire('GET', `${S}/incidents?status=all&limit=200&named=resolve`, owner);
       expect(res.statusCode, res.body).toBe(200);
