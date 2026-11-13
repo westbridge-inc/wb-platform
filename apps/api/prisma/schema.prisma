@@ -1915,6 +1915,8 @@ model Vendor {
   status                  VendorStatus             @default(PENDING_APPROVAL)
   orders                  Order[]
   carts                   Cart[]
+  /// [MENU-OPTIONS · owner 11 Nov 2026] The store's shared option-group library (build once, attach to many items).
+  modifierGroups          ModifierGroup[]
 
   /// DORMANT (never wired to a route): superseded by the QrCode model, which
   /// owns printed-QR deep links via /s/{shortCode}. Kept only because rows
@@ -2302,7 +2304,23 @@ model OptionGroup {
   maxSelect  Int      @default(1)
   options    Option[]
   sortOrder  Int      @default(0)
+  /// [MENU-OPTIONS · owner 11 Nov 2026] SIZE SETS THE PRICE: the chosen option's price (Option.additionalPrice, read
+  /// as the whole price) IS the item's price; other groups' extras add on top. At most one per item, always pick
+  /// exactly one (isRequired, min 1, max 1). The item's basePrice is kept at the lowest size price (the "from" price).
+  setsPrice        Boolean @default(false)
+  /// [MENU-OPTIONS] HALF-AND-HALF: each choice may be placed on the whole item, the left half or the right half.
+  allowHalves      Boolean @default(false)
+  /// [MENU-OPTIONS] The store's price rule for a choice on one half: this percent of the choice's price, rounded
+  /// half-up to the whole dollar (100 = full price). Read only while allowHalves.
+  halfPricePercent Int     @default(100)
+  /// [MENU-OPTIONS] Set when this group is the item's copy of a shared library group: the library is the only editor,
+  /// and every edit there is written to every copy (vendor/modifier-library.ts). Null = the item's own group.
+  libraryGroupId   String?
+  libraryGroup     ModifierGroup? @relation(fields: [libraryGroupId], references: [id], onDelete: SetNull)
+  /// [MENU-OPTIONS] Options (of this item) that open this group as their follow-up (nested, one level deep).
+  parentOptions    Option[] @relation("OptionFollowUp")
 
+  @@index([libraryGroupId])
   @@map("option_groups")
 }
 
@@ -2318,11 +2336,75 @@ model Option {
   isDefault       Boolean     @default(false)
   isAvailable     Boolean     @default(true)
   sortOrder       Int         @default(0)
+  /// [MENU-OPTIONS · owner 11 Nov 2026] NESTED, one level deep: choosing this option opens this follow-up group of the
+  /// same item (e.g. Stuffed crust -> pick the cheese). The follow-up group is offered, required and priced only
+  /// while this option is chosen; a follow-up group's own options never open another.
+  followUpGroupId String?
+  followUpGroup   OptionGroup? @relation("OptionFollowUp", fields: [followUpGroupId], references: [id], onDelete: SetNull)
+  /// [MENU-OPTIONS] The library option this is the copy of (see OptionGroup.libraryGroupId). Kept across library edits,
+  /// so a copy's id (held by carts) never changes while the option exists in the library.
+  libraryOptionId String?
+  libraryOption   ModifierOption? @relation(fields: [libraryOptionId], references: [id], onDelete: SetNull)
   /// [KITCHEN-INTEGRATION] The choice's number in the store's kitchen system's catalogue (Dragontail ItemNo of the
   /// modifier). Null = not mapped (see Item.externalItemNo).
   externalItemNo  String?
 
+  @@index([followUpGroupId])
+  @@index([libraryOptionId])
   @@map("options")
+}
+
+/// [MENU-OPTIONS · owner 11 Nov 2026] A store's SHARED option group (the modifier library): built once, attached to
+/// many items. Attaching writes a copy (OptionGroup.libraryGroupId) onto each item, so every reader of an item's
+/// options (cart, checkout, storefront, kitchen, copy, export) keeps reading the item's own rows; editing the library
+/// group rewrites every copy in the same transaction. Prices here are what the store TYPED (before any VAT); each
+/// copy's price is reconciled with its item's VAT (store-vat/vat-pricing.ts).
+model ModifierGroup {
+  id               String           @id @default(cuid())
+  tenantId         String           @default("swift-default")
+  vendorId         String
+  vendor           Vendor           @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  name             String
+  isRequired       Boolean          @default(false)
+  minSelect        Int              @default(0)
+  maxSelect        Int              @default(1)
+  sortOrder        Int              @default(0)
+  setsPrice        Boolean          @default(false)
+  allowHalves      Boolean          @default(false)
+  halfPricePercent Int              @default(100)
+  options          ModifierOption[] @relation("ModifierGroupOptions")
+  /// Library options that open this group as their follow-up.
+  parentOptions    ModifierOption[] @relation("ModifierFollowUp")
+  copies           OptionGroup[]
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+
+  @@index([tenantId])
+  @@index([vendorId])
+  @@map("modifier_groups")
+}
+
+/// [MENU-OPTIONS] One choice of a shared library group. `price` is what the store typed (before VAT).
+model ModifierOption {
+  id              String         @id @default(cuid())
+  modifierGroupId String
+  modifierGroup   ModifierGroup  @relation("ModifierGroupOptions", fields: [modifierGroupId], references: [id], onDelete: Cascade)
+  name            String
+  price           Decimal        @default(0) @db.Decimal(10, 2)
+  isDefault       Boolean        @default(false)
+  isAvailable     Boolean        @default(true)
+  sortOrder       Int            @default(0)
+  /// The library group this choice opens (nested, one level deep); attached with it to every item.
+  followUpGroupId String?
+  followUpGroup   ModifierGroup? @relation("ModifierFollowUp", fields: [followUpGroupId], references: [id], onDelete: SetNull)
+  /// [MENU-OPTIONS · kitchen-system hook] The choice's code in a store's kitchen system (e.g. a Dragontail item number
+  /// for a modifier). Stored and edited here only; nothing reads it until a kitchen integration maps it.
+  externalCode    String?
+  copies          Option[]
+
+  @@index([modifierGroupId])
+  @@index([followUpGroupId])
+  @@map("modifier_options")
 }
 
 /// [KITCHEN-INTEGRATION · owner 11 Nov 2026] The kitchen systems a store's orders can be sent to. Behind
@@ -3563,6 +3645,23 @@ model OrderItemOption {
   basePrice       Decimal   @db.Decimal(10, 2)
   markedUpPrice   Decimal   @db.Decimal(10, 2)
   markupAmount    Decimal   @db.Decimal(10, 2)
+  /// [MENU-OPTIONS · owner 11 Nov 2026] SNAPSHOTS (ADR SWIFT-AUD-D5-04, like every column above): a later menu edit
+  /// never changes a past order. optionGroupName / optionName above are the DISPLAY words every app already shows
+  /// ("Toppings: Pepperoni (left half)", "Cheese (Stuffed crust): Mozzarella"); these keep the parts. Null on a row
+  /// written before them (the display words are then the plain names).
+  /// The plain group and option names, as the menu had them.
+  plainGroupName   String?
+  plainOptionName  String?
+  /// WHOLE | LEFT | RIGHT for a choice of a half-and-half group; null otherwise.
+  placement        String?
+  /// The option whose follow-up group this choice was made in (nested); null for a top-level choice.
+  parentOptionName String?
+  /// True for the size (price-setting) choice: its price is the line's basePrice, so basePrice here is 0.
+  setsPrice        Boolean   @default(false)
+  /// The choice's own menu price: the size price, or a topping's full price before the half rule.
+  listedPrice      Decimal?  @db.Decimal(10, 2)
+  /// Loose pointer to the menu option (no FK, like OrderItem.itemId) for a kitchen system's mapping.
+  optionId         String?
 
   @@map("order_item_options")
 }

@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import * as server from '../../../api/src/modules/order/options';
-import { fromPrice, needsChoices, requiredChoiceSoldOut, selectionComplete, selectionPrice, validateSelectedOptions, OptionSelectionError } from './menu-options';
+import { fromPrice, needsChoices, noteIsEmpty, requiredChoiceSoldOut, selectionComplete, selectionPrice, validateSelectedOptions, OptionSelectionError } from './menu-options';
 
 // [W6] The website judges and prices an item's choices with the API's own
 // module — the same functions, not a copy — so the store page can never accept
@@ -17,8 +17,27 @@ describe('[W6] the store page uses the server’s option rules', () => {
   it('is the API’s validator and resolver themselves, never a second copy', () => {
     expect(validateSelectedOptions).toBe(server.validateSelectedOptions);
     expect(OptionSelectionError).toBe(server.OptionSelectionError);
+    // [W6 · size] The store page reaches the engine through the item sheet's module (which re-exports these very
+    // functions from here), so the engine rides in the sheet's chunk, not the page's first load.
     const storePage = readFileSync(join(process.cwd(), 'src/components/storefront/storefront-experience.tsx'), 'utf8');
-    expect(storePage).toMatch(/validateSelectedOptions,\n\} from '@\/lib\/menu-options'/);
+    expect(storePage).toMatch(/sheet\.validateSelectedOptions\(liveItem, selectedOptions\)/);
+    expect(storePage).toMatch(/instanceof itemSheetModule\.OptionSelectionError/);
+    const sheet = readFileSync(join(process.cwd(), 'src/components/storefront/item-sheet.tsx'), 'utf8');
+    expect(sheet).toMatch(/export \{ OptionSelectionError, selectionPrice, validateSelectedOptions \} from '@\/lib\/menu-options';/);
+  });
+
+  it('[W6 · size] the store page’s first load never imports the engine: its list rules import nothing but money', () => {
+    const storePage = readFileSync(join(process.cwd(), 'src/components/storefront/storefront-experience.tsx'), 'utf8');
+    expect(storePage).not.toMatch(/from '@\/lib\/menu-options'/);
+    expect(storePage).not.toMatch(/modules\/order\/options/);
+    const prices = readFileSync(join(process.cwd(), 'src/lib/menu-prices.ts'), 'utf8');
+    expect(prices.match(/^import .*$/gm)).toEqual(["import { parseAmount } from './money';"]);
+  });
+
+  it('a plain line’s note is judged by the server’s own note rule', () => {
+    for (const note of [null, undefined, '', ' ', '\n\t ', 'x', ' no onions ', '\u00a0']) {
+      expect(noteIsEmpty(note), JSON.stringify(note)).toBe(server.normalizeItemNote(note) === null);
+    }
   });
 
   it('accepts exactly what the server accepts', () => {

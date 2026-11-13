@@ -105,6 +105,8 @@ const TENANT_QUERY_EXTENSIONS = {
   feeRefundCase: scoped,
   // [CARD-READY] A partner's card money paid back to their card.
   cardCreditRefund: scoped,
+  // [MENU-OPTIONS] A store's shared option-group library.
+  modifierGroup: scoped,
   // [COMPANY-DOCS Part 3] A store account's change of business type or of account holder, walled like the account.
   accountChangeRequest: scoped,
   // [ASSISTED SETUP] A store's consent for Swift to set it up, and what was done under it, walled like the store.

@@ -28,11 +28,35 @@ interface OptionSnapshot {
   optionGroupName: string;
   optionName: string;
   markedUpPrice: unknown;
+  /** [MENU-OPTIONS] The parts, when the reader selected them (absent on a row written before them: null). */
+  plainGroupName?: string | null;
+  plainOptionName?: string | null;
+  placement?: string | null;
+  parentOptionName?: string | null;
+  setsPrice?: boolean;
 }
 
+/** One chosen option as every order screen gets it. `group` / `name` are the display words every app already shows
+ *  ("Toppings: Pepperoni (left half)"); the [MENU-OPTIONS] parts let an updated kitchen view lay a pizza out as
+ *  "Left: Pepperoni / Right: Mushroom" and show a follow-up under its opener. */
+export type ChosenOption = {
+  group: string; name: string; price: number;
+  plainGroup: string; plainName: string;
+  placement: 'WHOLE' | 'LEFT' | 'RIGHT' | null;
+  parentOptionName: string | null;
+  setsPrice: boolean;
+};
+
 /** The options the customer chose for a line, as snapshotted at checkout. */
-export function chosenOptions(rows: readonly OptionSnapshot[]): Array<{ group: string; name: string; price: number }> {
-  return rows.map((o) => ({ group: o.optionGroupName, name: o.optionName, price: Number(o.markedUpPrice) }));
+export function chosenOptions(rows: readonly OptionSnapshot[]): ChosenOption[] {
+  return rows.map((o) => ({
+    group: o.optionGroupName, name: o.optionName, price: Number(o.markedUpPrice),
+    plainGroup: o.plainGroupName ?? o.optionGroupName,
+    plainName: o.plainOptionName ?? o.optionName,
+    placement: o.placement === 'WHOLE' || o.placement === 'LEFT' || o.placement === 'RIGHT' ? o.placement : null,
+    parentOptionName: o.parentOptionName ?? null,
+    setsPrice: o.setsPrice === true,
+  }));
 }
 
 /** The options a line is made and charged with: none once it is a substitute,

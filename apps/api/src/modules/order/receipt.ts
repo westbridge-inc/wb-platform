@@ -39,7 +39,11 @@ type ReceiptOrder = {
    *  receipt names the store by its trading name and address only (never a guess). */
   seller?: { legalName: string | null; address: string | null; phone: string | null } | null;
   customer: { firstName: string | null; lastName: string | null } | null;
-  items: Array<{ name: string; quantity: number; totalCustomer: unknown; subStatus?: string | null; vatClass?: string | null }>;
+  items: Array<{
+    name: string; quantity: number; totalCustomer: unknown; subStatus?: string | null; vatClass?: string | null;
+    /** [MENU-OPTIONS] The choices the line was made with (display words, as snapshotted at checkout). */
+    selectedOptions?: Array<{ optionGroupName: string; optionName: string; markedUpPrice: unknown }>;
+  }>;
   /** [STORE-VAT · owner O-5] The VAT frozen at checkout (store-vat/order-vat.ts). vatRateBps null = no VAT on this order,
    *  and the receipt is exactly what it was before VAT existed. */
   vatRateBps?: number | null;
@@ -168,10 +172,19 @@ export function renderReceiptHtml(order: ReceiptOrder): string {
   // was never charged: the receipt says so and prices it at nothing, so the
   // rows add up to the Items total the order actually carries.
   const removed = (i: { subStatus?: string | null }) => i.subStatus === 'REFUNDED' || i.subStatus === 'REJECTED';
+  // [MENU-OPTIONS] Each line lists what it was made with ("Size: Large", "Toppings: Pepperoni (left half) +$88"),
+  // except a swapped or closed line, which is charged without them (substitution-view.ts lineOptionsAsMade).
+  const optionLines = (i: ReceiptOrder['items'][number]) => {
+    if (['APPROVED', 'REFUNDED', 'REJECTED'].includes(i.subStatus ?? 'NONE')) return '';
+    return (i.selectedOptions ?? []).map((o) => {
+      const price = Number(o.markedUpPrice);
+      return `<div class="opt">${esc(o.optionGroupName)}: ${esc(o.optionName)}${price > 0 ? ` +${money(price)}` : ''}</div>`;
+    }).join('');
+  };
   const rows = order.items
     .map(
       (i) => `<tr>
-        <td>${i.quantity}× ${esc(i.name)}${order.vatRateBps != null ? VAT_CLASS_TAG[i.vatClass ?? ''] ?? '' : ''}${removed(i) ? ' (removed, not charged)' : ''}</td>
+        <td>${i.quantity}× ${esc(i.name)}${order.vatRateBps != null ? VAT_CLASS_TAG[i.vatClass ?? ''] ?? '' : ''}${removed(i) ? ' (removed, not charged)' : ''}${optionLines(i)}</td>
         <td class="num">${money(removed(i) ? 0 : i.totalCustomer)}</td>
       </tr>`,
     )
@@ -198,6 +211,7 @@ export function renderReceiptHtml(order: ReceiptOrder): string {
   .meta { margin: 16px 0; font-size: 14px; color: #555; line-height: 1.6; }
   table { width: 100%; border-collapse: collapse; font-size: 14px; }
   td { padding: 6px 0; border-bottom: 1px solid #eee; }
+  .opt { font-size: 12px; color: #666; padding-left: 14px; }
   .num { text-align: right; white-space: nowrap; }
   .totals td { border: none; padding: 3px 0; }
   .grand td { font-weight: 800; font-size: 16px; border-top: 2px solid #111; padding-top: 8px; }

@@ -263,6 +263,10 @@ const OUT: Record<string, string> = {
   'modules/vendor/vendor.routes.ts|POST|/items/:id/adjust': 'A stock count adjustment on the store\'s item (inventory), not an order or money.',
   'modules/vendor/vendor.routes.ts|POST|/items/import/sync/confirm': 'Applies a till export to the store\'s own items (stock counts and prices), not an order or money. A replay is still a no-op: the upload id is the pos_imports row id, so a retried confirm returns the stored result, and (store, file hash) is unique.',
   'modules/vendor/vendor.routes.ts|POST|/store-categories/request': 'Asks Swift to add a store category; no order or money.',
+  // [MENU-OPTIONS] The store's shared option library: menu set-up, not one of the eight.
+  'modules/vendor/vendor.routes.ts|PUT|/modifier-groups/order': 'Sets the display ORDER of the store option library (a sort number per group); no order, parcel, ride or money, and a replay writes the same numbers.',
+  'modules/vendor/vendor.routes.ts|PUT|/modifier-groups/:id/options/order': 'Sets the display ORDER of one shared option group choices (a sort number per choice); no order or money, and a replay writes the same numbers.',
+  'modules/vendor/vendor.routes.ts|POST|/modifier-groups/:id/attach': 'Attaches a shared option group to the store items (menu set-up); no order or money. A replay finds the group already on each item and changes nothing (answered as already).',
   [`${ADMIN}|POST|/orders/:id/food-age-hold/release`]: 'Releases an age hold on an existing order (C2 workflow state), not a new order or money.',
   [`${ADMIN}|POST|/integrity/appeals/:id/resolve`]: 'Decides an integrity appeal (C3); it creates no order or money.',
   [`${ADMIN}|PUT|/verification/legal-holds/:id/release`]: 'Releases a legal hold on a verification record; no order or money.',

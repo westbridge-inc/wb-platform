@@ -85,6 +85,9 @@ COPY apps/mobile/src/lib/reorderNotice.ts apps/mobile/src/lib/reorderNotice.ts
 # (src/lib/menu-options.ts imports it by path, never a second copy). It is a
 # pure module with no imports of its own, so exactly this file.
 COPY apps/api/src/modules/order/options.ts apps/api/src/modules/order/options.ts
+# [MENU-OPTIONS] What every menu-options write declares (MENU_OPTIONS_V2): the
+# store tools and the customer's cart writes import it by path; imports nothing.
+COPY apps/mobile/src/lib/menuOptionsCapability.ts apps/mobile/src/lib/menuOptionsCapability.ts
 # The business console reuses the app's plain board files by path (PR A): the
 # role matrix, the accept clock, the MMG-dispute pause, the store-delivery rule
 # and the market-calendar helpers. None imports anything but @swift/types.

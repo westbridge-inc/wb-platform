@@ -57,6 +57,8 @@ export const TENANT_TABLES = [
   'categories',
   // [BOOK-S1] A booking takes its business time: walled on the row like the listing it was made on.
   'bookings',
+  // [MENU-OPTIONS] A store shared option-group library, walled on the row like the items it is attached to.
+  'modifier_groups',
   // [BOOK-P1] The bookable services and time off of a pro: walled on the row like the jobs they book.
   'service_offerings',
   'service_provider_time_off',
@@ -280,6 +282,8 @@ export const TENANT_LINEAGE_TABLES: readonly TenantLineageRule[] = [
   { table: 'categories', trigger: 'categories_tenant_matches_vendor', parent: 'vendors', fk: 'vendorId' },
   // [BOOK-S1] one hop: a booking inherits the tenant of the business whose time it takes
   { table: 'bookings', trigger: 'bookings_tenant_matches_vendor', parent: 'vendors', fk: 'vendorId' },
+  // [MENU-OPTIONS] one hop: a shared option group inherits the tenant of its store
+  { table: 'modifier_groups', trigger: 'modifier_groups_tenant_matches_vendor', parent: 'vendors', fk: 'vendorId' },
   // [BOOK-P1] two hops: a pro's service and time off inherit the tenant of the person the provider profile belongs to
   { table: 'service_offerings', trigger: 'service_offerings_tenant_matches_provider', parent: 'service_providers', fk: 'providerId',
     parentTenantSql: `SELECT u."tenantId" FROM users u JOIN service_providers p ON p."userId" = u.id WHERE p.id = NEW."providerId"` },

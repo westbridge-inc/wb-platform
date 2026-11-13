@@ -66,7 +66,7 @@ import { canonicalSlotStart } from '../booking/availability';
 import { assertOneAppointment, isAppointmentOnlyGroup, storeFlagsAllowCheckout } from '../booking/appointment-checkout';
 import { storeHoursRefusal } from '../vendor/store-hours';
 import { orderingRestriction, CashRulesService, TAXI_FARE_OUTCOME_ENFORCED_AT, COURIER_CASH_OUTCOME_ENFORCED_AT } from '../cash/cash-rules.service';
-import { OptionSelectionError, normalizeItemNote, rebuildSelectionFromSnapshot, selectionKey, validateSelectedOptions, type OptionSelection, type ResolvedOption } from './options';
+import { MENU_OPTIONS_APP_UPDATE_MESSAGE, OptionSelectionError, itemNeedsMenuOptionsV2, normalizeItemNote, rebuildSelectionFromSnapshot, selectionKey, validateSelectedOptions, type OptionSelection, type ResolvedOption } from './options';
 import { isKitchenAtCapacity, KITCHEN_ACTIVE_STATUSES } from '../fulfillment/kitchen-capacity';
 import { log } from '../../utils/logger';
 import { dispatchHoldExpired, dispatchHoldExpiredFilter, riderDispatchableStatusesFor, withheldAwaitingReadiness } from '../dispatch/dispatch-trigger';
@@ -1981,6 +1981,15 @@ export class OrderService {
                       basePrice: o.additionalPrice,
                       markedUpPrice: o.additionalPrice,
                       markupAmount: 0,
+                      // [MENU-OPTIONS] SNAPSHOT of the parts (placement, opener, size): a later menu edit never
+                      // changes what this order was made with or charged.
+                      plainGroupName: o.plainGroupName,
+                      plainOptionName: o.plainOptionName,
+                      placement: o.placement,
+                      parentOptionName: o.parentOptionName,
+                      setsPrice: o.setsPrice,
+                      listedPrice: o.listedPrice,
+                      optionId: o.optionId,
                     })),
                   },
                 }),
@@ -3698,7 +3707,7 @@ export class OrderService {
     );
   }
 
-  async reorder(userId: string, orderId: string) {
+  async reorder(userId: string, orderId: string, opts: { rendersMenuOptions?: boolean } = {}) {
     const original = await this.prisma.order.findFirst({
       where: { id: orderId, customerId: userId },
       include: { items: { include: { selectedOptions: true } } },
@@ -3721,6 +3730,11 @@ export class OrderService {
     // [GUARDRAILS §8] A prohibited line does not come back: counted as unavailable.
     const hidden = await hiddenAmong(this.prisma, availableItems.map((i) => i.id));
     const availableById = new Map(availableItems.filter((i) => !hidden.has(i.id)).map((i) => [i.id, i]));
+    // [MENU-OPTIONS · REVIEW S4] An app that cannot show sizes, halves or follow-up choices is told to update, before
+    // the cart it has is touched (the same answer as its cart add).
+    if (opts.rendersMenuOptions !== true && [...availableById.values()].some((item) => itemNeedsMenuOptionsV2(item))) {
+      throw new AppError(409, 'APP_UPDATE_REQUIRED', MENU_OPTIONS_APP_UPDATE_MESSAGE);
+    }
 
     // [L09 · reorder] Each line comes back WITH its choices, rebuilt from the
     // names the order kept against today's menu by the one validator. A line

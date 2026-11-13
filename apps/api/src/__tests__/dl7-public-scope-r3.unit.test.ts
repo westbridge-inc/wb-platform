@@ -41,7 +41,9 @@ async function fixture() {
   const tenant: Row = { id: 'scope-fixture', kind: 'PRODUCTION', isActive: true };
   const vendors = [store('seller-fixture', tenant)];
   const items: Row[] = [{ id: 'item-fixture', name: 'SENTINEL_ITEM', description: 'SENTINEL_DESCRIPTION', vendorId: vendors[0]!['id'],
-    vendor: vendors[0], isAvailable: true, basePrice: 100, imageUrl: null, createdAt: new Date(), category: { name: 'Fixture category' }, totalOrdered: 1 }];
+    vendor: vendors[0], isAvailable: true, basePrice: 100, imageUrl: null, createdAt: new Date(), category: { name: 'Fixture category' }, totalOrdered: 1,
+    // [MENU-OPTIONS] Search reads an item's size group (its card's "From" price): this item has none.
+    optionGroups: [] }];
   let afterRank: (() => void) | undefined;
   const readVendors = vi.fn(async (q: Query) => {
     const rows = vendors.map(v => queryRow(v, q)).filter(v => v !== null);

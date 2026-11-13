@@ -224,7 +224,8 @@ describe('the per-vendor planner', () => {
     selectedOptions: extra.selectedOptions ?? {},
     item: {
       vendorId: 'v1', fulfillment: 'DELIVERY', basePrice: String(basePrice),
-      optionGroups: (extra.optionGroups ?? []) as Array<{ name: string; options: Array<{ id: string; name: string; additionalPrice: unknown }> }>,
+      // Legacy-shaped groups (no pizza flags): the lenient reader prices them exactly as before [MENU-OPTIONS].
+      optionGroups: (extra.optionGroups ?? []) as NonNullable<Parameters<typeof priceCartLine>[0]['item']['optionGroups']>,
     },
   });
   const routeKm = async () => ({ km: 3.456789, source: 'haversine' as const });
