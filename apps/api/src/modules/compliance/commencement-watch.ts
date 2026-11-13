@@ -127,17 +127,23 @@ const NAMES_AN_INSTRUMENT = /\b(act|order|bill|notice|regulation|regulations|gaz
 /** [F-028-09] What may follow the LAST instrument token in a real citation:
  *  numbers, dates, years, parentheticals, punctuation — QUALIFIERS, never
  *  prose. "The Fisheries (Amendment) Act 2026" ends in qualifiers; "Bill
- *  Status in the National Assembly 2026" continues in prose. */
+ *  Status in the National Assembly 2026" continues in prose.
+ *  [SEC-AUDIT 13 Nov 2026 · F12] A parenthetical is `\([^()]*\)`, never `\(.*?\)`: the lazy form inside the
+ *  repeated group could split "(a)(a)…" 2^n ways before a failing tail, on text scraped from a remote page. */
 const CITATION_TAIL = new RegExp(
-  '^(?:\\s*(?:\\(.*?\\)|no\\.?\\s*\\d+[a-z]?|[a-z]\\b|of\\s+(?:19|20)\\d\\d|(?:19|20)\\d\\d(?:[\u2013-](?:19|20)?\\d{1,4})?|' +
+  '^(?:\\s*(?:\\([^()]*\\)|no\\.?\\s*\\d+[a-z]?|[a-z]\\b|of\\s+(?:19|20)\\d\\d|(?:19|20)\\d\\d(?:[\u2013-](?:19|20)?\\d{1,4})?|' +
   '\\d{1,2}\\s+(?:january|february|march|april|may|june|july|august|september|october|november|december)(?:\\s+(?:19|20)\\d\\d)?|' +
   '[,;:.\u2014\u2013-]))*\\s*$',
 );
 
 const INSTRUMENT_TOKEN = /\b(act|order|bill|notice|regulation|regulations|gazette|supplement|extraordinary|proclamation|resolution)\b/g;
 
+/** [SEC-AUDIT 13 Nov 2026 · F12] Longer than any real instrument's title: never a publication, never regex-tested. */
+export const MAX_PUBLICATION_TITLE = 300;
+
 export function looksLikePublication(title: string): boolean {
   const t = normalizeTitle(title);
+  if (t.length > MAX_PUBLICATION_TITLE) return false;
 
   // A category label is navigation no matter how legal its other words are.
   if (NAVIGATION_WORDS.test(t)) return false;
@@ -218,6 +224,10 @@ export interface ScanSummary {
   error: string | null;
 }
 
+/** [SEC-AUDIT 13 Nov 2026 · F12] Far above any real gazette or parliament listing page. */
+export const MAX_LISTING_CHARS = 5_000_000;
+class ListingTooLarge extends Error {}
+
 /** One full scan of every source: fetch → parse → classify → dedup-insert,
  *  one cw_runs receipt per source. Degradation: 3 consecutive failing runs of
  *  a source raise ONE WATCH_DEGRADED (SYSTEM) per 24h until healthy. */
@@ -245,6 +255,8 @@ export async function runScan(
           error = `HTTP_${res.status}`;
         } else {
           const html = await res.text();
+          // [SEC-AUDIT 13 Nov 2026 · F12] A remote page is untrusted input to regexes on the server's event loop.
+          if (html.length > MAX_LISTING_CHARS) throw new ListingTooLarge();
           listingHash = createHash('sha256').update(html).digest('hex');
           entries = parseEntries(html);
           const floor = source.minEntries ?? 5;
@@ -258,7 +270,7 @@ export async function runScan(
         clearTimeout(timer);
       }
     } catch (err) {
-      error = err instanceof Error && err.name === 'AbortError' ? 'TIMEOUT' : `FETCH_FAILED:${(err as Error)?.message ?? 'unknown'}`;
+      error = err instanceof ListingTooLarge ? 'BODY_TOO_LARGE' : err instanceof Error && err.name === 'AbortError' ? 'TIMEOUT' : `FETCH_FAILED:${(err as Error)?.message ?? 'unknown'}`;
     }
 
     let newAlerts = 0;

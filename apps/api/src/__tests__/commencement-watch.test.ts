@@ -4,7 +4,7 @@ import { nanoid } from 'nanoid';
 import { prismaPlugin } from '../plugins/prisma';
 import { registerErrorHandler } from '../middleware/error-handler';
 import {
-  runScan, notifyPending, classify, parseEntries, looksLikePublication,
+  runScan, notifyPending, classify, parseEntries, looksLikePublication, MAX_LISTING_CHARS,
   type WatchSource, type FetchLike, type NotifyChannels,
 } from '../modules/compliance/commencement-watch';
 
@@ -60,6 +60,13 @@ describe('commencement watch [DCR-1 CW]', () => {
     expect(alerts).toHaveLength(1);
     expect(alerts[0]!.eventType).toBe('COMMENCEMENT');
     expect(alerts[0]!.confidence).toBe('CONFIRMED-CANDIDATE');
+  });
+
+  it('[SEC-AUDIT 13 Nov 2026 · F12] a listing larger than any real one is refused unparsed (BODY_TOO_LARGE), never scanned', async () => {
+    const big: WatchSource = { id: `big-${runId}`, url: 'https://gazette.test/huge', trust: 'S1' };
+    const body = page([DPA_POSITIVE]) + ' '.repeat(MAX_LISTING_CHARS);
+    const [summary] = await runScan(app.prisma, fetchReturning({ [big.url]: { status: 200, body } }), [big]);
+    expect(summary).toMatchObject({ error: 'BODY_TOO_LARGE', entries: 0, newAlerts: 0 });
   });
 
   it('regulations fixture → REGULATIONS; the same entries re-scanned → ZERO new alerts (dedupe)', async () => {
@@ -241,6 +248,20 @@ describe('commencement watch [DCR-1 CW]', () => {
       ]) {
         expect(looksLikePublication(real), real).toBe(true);
       }
+    });
+
+    it('[SEC-AUDIT 13 Nov 2026 · F12] a scraped title built to backtrack (many "(a)" groups) is judged in linear time', () => {
+      // The old tail `\(.*?\)` inside a repeated group matched "(a)(a)" as one group or two: 2^n splits before a
+      // failing "!" (26 groups took about a second; 40, hours). The API server (SOS escalation, paging) shares that loop.
+      for (const title of [`The Data Act${' (a)'.repeat(26)} !`, `The Data Act ${'(a)'.repeat(26)}!`, `Order${' (x)'.repeat(26)} !`]) {
+        const started = performance.now();
+        expect(looksLikePublication(title)).toBe(false);
+        expect(performance.now() - started, `${title.length} chars`).toBeLessThan(250);
+      }
+      // A title longer than any real citation is not one (and is never handed to the tail at all).
+      expect(looksLikePublication(`The Data Act${' 2026'.repeat(80)}`)).toBe(false);
+      // Real parenthesised citations still read as publications.
+      expect(looksLikePublication('The Fisheries (Amendment) (No. 2) Act 2026')).toBe(true);
     });
 
     it('[F-028-09] the CLASS: instrument-mid-sentence titles reject, whatever their vocabulary', () => {
