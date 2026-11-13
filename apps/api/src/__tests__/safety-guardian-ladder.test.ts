@@ -34,7 +34,11 @@ const joinRoom = (room: string, id: string, userId: string, tenantId: string) =>
   roomSockets.set(room, [...(roomSockets.get(room) ?? []), socket]);
 };
 const io = {
-  to: (room: string | string[]) => ({ emit: (event: string, payload: Record<string, unknown>) => { emits.push({ room, event, payload }) } }),
+  // [REVIEW-2499-A S3-3] an SOS war-room emission is .to(rooms).except(excluded).emit
+  to: (room: string | string[]) => {
+    const target = { emit: (event: string, payload: Record<string, unknown>) => { emits.push({ room, event, payload }); }, except: () => target };
+    return target;
+  },
   in: (room: string) => ({ fetchSockets: async () => [...(roomSockets.get(room) ?? [])] }),
 } as unknown as Server;
 const sweep = (now: Date) => new GuardianService(app.prisma, io).sweep(now);
