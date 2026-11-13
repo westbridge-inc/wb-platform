@@ -131,6 +131,53 @@ describe('OTP SMS daily budget (cost guardrails)', () => {
     expect(Number(await redis.get(`sms_known_day:${day}`))).toBe(1);
   });
 
+  // [AUDIT-20261113 FABLE-03 S3-5] One source could spend the whole known-number budget (store and rider numbers
+  // are public) and lock every existing account out of sign-in, the admins included.
+  it('[S3-5] one address spends at most its own share of the known budget; another address is untouched', async () => {
+    process.env['OTP_PHONE_DAILY_CAP'] = '1000000';
+    process.env['OTP_KNOWN_DAILY_CAP'] = '1000000';
+    process.env['OTP_KNOWN_IP_DAILY_CAP'] = '2';
+    const ip = '203.0.113.210'; const other = '203.0.113.211';
+    await redis.del(`otp_known_ip_day:${day}:${ip}`, `otp_known_ip_day:${day}:${other}`);
+    try {
+      expect((await checkOtpDailyBudget(redis, `+592ka${Date.now()}`, { ip, knownPhone: true })).allowed).toBe(true);
+      expect((await checkOtpDailyBudget(redis, `+592kb${Date.now()}`, { ip, knownPhone: true })).allowed).toBe(true);
+      expect(await checkOtpDailyBudget(redis, `+592kc${Date.now()}`, { ip, knownPhone: true })).toMatchObject({ allowed: false, reason: 'known_ip_daily' });
+      expect((await checkOtpDailyBudget(redis, `+592kd${Date.now()}`, { ip: other, knownPhone: true })).allowed).toBe(true);
+    } finally {
+      delete process.env['OTP_KNOWN_IP_DAILY_CAP'];
+      await redis.del(`otp_known_ip_day:${day}:${ip}`, `otp_known_ip_day:${day}:${other}`);
+    }
+  });
+
+  it('[S3-5] an admin number has a reserve of its own: an exhausted known budget never locks the console out', async () => {
+    process.env['OTP_PHONE_DAILY_CAP'] = '1000000';
+    process.env['OTP_KNOWN_DAILY_CAP'] = '1';
+    await redis.del(`sms_known_day:${day}`, `sms_admin_day:${day}`);
+    try {
+      expect((await checkOtpDailyBudget(redis, `+592ke${Date.now()}`, { knownPhone: true })).allowed).toBe(true);
+      expect(await checkOtpDailyBudget(redis, `+592kf${Date.now()}`, { knownPhone: true })).toMatchObject({ allowed: false, reason: 'known_daily' });
+      expect((await checkOtpDailyBudget(redis, `+592ad${Date.now()}`, { knownPhone: true, adminPhone: true, ip: '203.0.113.212' })).allowed).toBe(true);
+      expect(Number(await redis.get(`sms_admin_day:${day}`))).toBe(1);
+    } finally {
+      await redis.del(`sms_known_day:${day}`, `sms_admin_day:${day}`);
+    }
+  });
+
+  it('[S4 IPv6] every address in one /64 is one address for the daily counters', async () => {
+    process.env['OTP_PHONE_DAILY_CAP'] = '1000000';
+    process.env['OTP_IP_DAILY_CAP'] = '1';
+    process.env['OTP_GLOBAL_DAILY_CAP'] = '1000000';
+    const bucket = `otp_ip_day:${day}:2001:db8:aa:bb::/64`;
+    await redis.del(bucket);
+    try {
+      expect((await checkOtpDailyBudget(redis, `+592v1${Date.now()}`, { ip: '2001:db8:aa:bb::1' })).allowed).toBe(true);
+      expect(await checkOtpDailyBudget(redis, `+592v2${Date.now()}`, { ip: '2001:db8:aa:bb:ffff:1:2:3' })).toMatchObject({ allowed: false, reason: 'ip_daily' });
+    } finally {
+      await redis.del(bucket);
+    }
+  });
+
   it('refund undoes the counters a provider failure just spent', async () => {
     process.env['OTP_PHONE_DAILY_CAP'] = '1000000';
     process.env['OTP_IP_DAILY_CAP'] = '1000000';
@@ -474,5 +521,16 @@ describe('safety texts: a budget of their own, launch-market numbers only (AUD-L
     expect(await count(`sms_safety_sender_day:${day}:${UNIT_SENDER}`)).toBe(0);
     expect(await shared()).toEqual(before);
     expect(smsDestinationAllowed(home)).toBe(true);
+  });
+});
+
+describe('[AUDIT-20261113 S4] addressBucket', () => {
+  it('folds an IPv6 address to its /64 and leaves IPv4 alone', async () => {
+    const { addressBucket } = await import('../utils/sms-budget');
+    expect(addressBucket('203.0.113.9')).toBe('203.0.113.9');
+    expect(addressBucket('::ffff:203.0.113.9')).toBe('203.0.113.9');
+    expect(addressBucket('2001:db8:aa:bb::1')).toBe('2001:db8:aa:bb::/64');
+    expect(addressBucket('2001:0db8:00aa:00bb:1:2:3:4')).toBe('2001:db8:aa:bb::/64');
+    expect(addressBucket('2001:db8::5')).toBe('2001:db8:0:0::/64');
   });
 });

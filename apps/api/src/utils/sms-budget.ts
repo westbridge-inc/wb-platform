@@ -1,6 +1,7 @@
 import type Redis from 'ioredis';
 import { guyanaDayKey } from './guyana-day';
 import { publicLaunchCountryFromPhone } from '../modules/auth/launch-market';
+import { log } from './logger';
 
 // Cost guardrails for outbound OTP SMS — the dominant, unauthenticated, abusable
 // SMS-cost vector. The per-minute limit (utils/otp.ts) stops bursts; these are
@@ -47,6 +48,9 @@ const PHONE_DAILY_PREFIX = 'otp_phone_day:';
 const IP_DAILY_PREFIX = 'otp_ip_day:';
 const GLOBAL_DAILY_PREFIX = 'sms_global_day:';
 const KNOWN_DAILY_PREFIX = 'sms_known_day:';
+// [AUDIT-20261113 FABLE-03 S3-5] Known numbers per address, and the admins' own reserve.
+const KNOWN_IP_DAILY_PREFIX = 'otp_known_ip_day:';
+const ADMIN_DAILY_PREFIX = 'sms_admin_day:';
 // Safety texts count only against these. None of them is a login counter.
 const SAFETY_SENDER_DAILY_PREFIX = 'sms_safety_sender_day:';
 const SAFETY_RECIPIENT_DAILY_PREFIX = 'sms_safety_recipient_day:';
@@ -57,6 +61,11 @@ const DEFAULT_PHONE_DAILY_CAP = 8;
 const DEFAULT_IP_DAILY_CAP = 100;
 const DEFAULT_GLOBAL_DAILY_CAP = 5000;
 const DEFAULT_KNOWN_DAILY_CAP = 5000;
+/** Generous on purpose: many real customers share one carrier-NAT address. One source can no longer spend the
+ *  whole known budget; it can spend this much of it. Tunable (OTP_KNOWN_IP_DAILY_CAP). */
+const DEFAULT_KNOWN_IP_DAILY_CAP = 200;
+/** Admin numbers draw from this reserve, never the known budget a flood can exhaust (OTP_ADMIN_DAILY_CAP). */
+const DEFAULT_ADMIN_DAILY_CAP = 100;
 const DEFAULT_SAFETY_SENDER_DAILY_CAP = 30;
 const DEFAULT_SAFETY_RECIPIENT_DAILY_CAP = 10;
 const DEFAULT_SAFETY_DAILY_CAP = 2000;
@@ -74,7 +83,7 @@ function intEnv(name: string, fallback: number): number {
 
 export type SmsBudgetReason =
   | 'destination_country'
-  | 'phone_daily' | 'ip_daily' | 'global_daily' | 'known_daily'
+  | 'phone_daily' | 'ip_daily' | 'global_daily' | 'known_daily' | 'known_ip_daily' | 'admin_daily'
   | 'sender_daily' | 'recipient_daily' | 'safety_daily';
 
 /**
@@ -95,6 +104,29 @@ export interface SmsBudgetOptions {
   /** True when the number belongs to an existing verified account/admin.
    *  Such numbers draw from the separate known-phone budget. */
   knownPhone?: boolean;
+  /** [AUDIT-20261113 S3-5] The number belongs to an account holding an admin role: it draws from the admins'
+   *  own reserve, so a flood that spends the known budget never locks the console out. */
+  adminPhone?: boolean;
+}
+
+/**
+ * [AUDIT-20261113 FABLE-03 S4] The address a per-address counter is keyed on. An IPv6 client controls a whole
+ * /64 (2^64 addresses), so every address in one /64 is one address here; IPv4 is used as is.
+ */
+export function addressBucket(ip: string): string {
+  const addr = ip.startsWith('::ffff:') && ip.includes('.') ? ip.slice(7) : ip;
+  if (!addr.includes(':')) return addr;
+  const [head = '', tail = ''] = addr.split('::');
+  const left = head ? head.split(':') : [];
+  const right = tail ? tail.split(':') : [];
+  const groups = addr.includes('::') ? [...left, ...Array(Math.max(0, 8 - left.length - right.length)).fill('0'), ...right] : left;
+  const prefix = groups.slice(0, 4).map((g) => (g || '0').toLowerCase().replace(/^0+(?=.)/, ''));
+  return `${prefix.join(':')}::/64`;
+}
+
+/** Log once when a shared daily counter crosses 80% of its cap, so operations hear before it trips. */
+function warnNearCap(count: number, cap: number, lane: string): void {
+  if (count === Math.ceil(cap * 0.8)) log().error({ lane, cap }, `[sms-budget] ${lane} daily SMS budget is 80% spent`);
 }
 
 export interface SmsBudgetResult {
@@ -148,18 +180,38 @@ export async function checkOtpDailyBudget(
   // Unknown numbers only: a known account must keep working from a carrier
   // NAT IP that junk (or a busy day) has already exhausted.
   if (opts.ip && !opts.knownPhone) {
-    const ipKey = `${IP_DAILY_PREFIX}${day}:${opts.ip}`;
+    const ipKey = `${IP_DAILY_PREFIX}${day}:${addressBucket(opts.ip)}`;
     const ipCount = await redis.incr(ipKey);
     if (ipCount === 1) await redis.expire(ipKey, DAY_TTL);
     spent.push(ipKey);
     if (ipCount > ipCap) return deny('ip_daily');
   }
 
+  // [AUDIT-20261113 S3-5] An admin number draws from the admins' own reserve (and skips the per-address share:
+  // the per-phone caps above bound it), so the console can always get a code while an attack is under way.
+  if (opts.adminPhone) {
+    const adminCap = intEnv('OTP_ADMIN_DAILY_CAP', DEFAULT_ADMIN_DAILY_CAP);
+    const adminCount = await spend(redis, `${ADMIN_DAILY_PREFIX}${day}`, spent);
+    warnNearCap(adminCount, adminCap, 'admin');
+    if (adminCount > adminCap) return deny('admin_daily');
+    return { allowed: true, refund: () => refundSpend(redis, spent) };
+  }
+
+  // [AUDIT-20261113 S3-5] Known numbers: one address spends at most its own share of the known budget. Public
+  // store and rider numbers otherwise let one source use up the day for every existing account.
+  if (opts.ip && opts.knownPhone) {
+    const knownIpCap = intEnv('OTP_KNOWN_IP_DAILY_CAP', DEFAULT_KNOWN_IP_DAILY_CAP);
+    const knownIpCount = await spend(redis, `${KNOWN_IP_DAILY_PREFIX}${day}:${addressBucket(opts.ip)}`, spent);
+    if (knownIpCount > knownIpCap) return deny('known_ip_daily');
+  }
+
   const budgetKey = opts.knownPhone ? `${KNOWN_DAILY_PREFIX}${day}` : `${GLOBAL_DAILY_PREFIX}${day}`;
   const budgetCount = await redis.incr(budgetKey);
   if (budgetCount === 1) await redis.expire(budgetKey, DAY_TTL);
   spent.push(budgetKey);
-  if (budgetCount > (opts.knownPhone ? knownCap : globalCap)) {
+  const budgetCap = opts.knownPhone ? knownCap : globalCap;
+  warnNearCap(budgetCount, budgetCap, opts.knownPhone ? 'known' : 'global');
+  if (budgetCount > budgetCap) {
     return deny(opts.knownPhone ? 'known_daily' : 'global_daily');
   }
 

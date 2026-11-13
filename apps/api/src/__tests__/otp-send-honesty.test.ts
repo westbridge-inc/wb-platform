@@ -135,7 +135,7 @@ describe('OTP budget under a junk flood (audit High #2)', () => {
     `signup_otp:{${p}}:record`, `signup_continuation:{${p}}:otp_generation`, `signup_continuation:{${p}}:current`,
   ];
   const allPhones = () => [KNOWN_PHONE, ADMIN_PHONE, ...Array.from({ length: 10 }, (_, i) => junk(i))];
-  const sharedKeys = () => [`sms_global_day:${day}`, `sms_known_day:${day}`, `otp_ip_day:${day}:${FLOOD_IP}`, `otp_ip_day:${day}:${OTHER_IP}`];
+  const sharedKeys = () => [`sms_global_day:${day}`, `sms_known_day:${day}`, `sms_admin_day:${day}`, `otp_known_ip_day:${day}:${FLOOD_IP}`, `otp_known_ip_day:${day}:${OTHER_IP}`, `otp_ip_day:${day}:${FLOOD_IP}`, `otp_ip_day:${day}:${OTHER_IP}`];
   const resetCounters = () => app.redis.del(...sharedKeys(), ...allPhones().flatMap(phoneKeys));
   const send = (svc: AuthService, phone: string, ip: string) =>
     svc.sendOtp(phone, ip).then(() => 'sent' as const, (e: unknown) => (e as { code?: string }).code ?? 'error');
@@ -208,7 +208,9 @@ describe('OTP budget under a junk flood (audit High #2)', () => {
     // draw from the known budget the flood cannot reach.
     expect(await send(svc, KNOWN_PHONE, OTHER_IP)).toBe('sent');
     expect(await send(svc, ADMIN_PHONE, OTHER_IP)).toBe('sent');
-    expect(await count(`sms_known_day:${day}`)).toBe(2);
+    // [AUDIT-20261113 S3-5] the admin draws from the admins' own reserve, the customer from the known budget
+    expect(await count(`sms_known_day:${day}`)).toBe(1);
+    expect(await count(`sms_admin_day:${day}`)).toBeGreaterThanOrEqual(1);
     // A brand-new number is still refused: the junk cap protects the SMS spend.
     expect(await send(svc, junk(8), FLOOD_IP)).toBe('RATE_LIMITED');
   });
