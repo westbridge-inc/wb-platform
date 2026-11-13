@@ -14,6 +14,7 @@ import { haversineDistance } from '../../utils/distance';
 import { identityAuthority } from '../integrity/identity-review';
 import { OPEN_APPROVAL_STATUSES, PAY_ASK_ACTION } from '../admin/admin-approval';
 import { lockClaimPaymentAsks } from './claim-payout';
+import { assertMayDecideClaim } from './claim-authority';
 import { CUSTOMER_ID_DOC_TYPE } from '../verification/retention-rules';
 import { noShowDecision, type ArrivalFix } from '../order/cancel-policy';
 import { assertTripMayEndUnpaidOn } from '../rides/taxi-stop-rules';
@@ -911,7 +912,7 @@ export class CashRulesService {
   // Claim review (admin) — beyond-cap/flagged claims are reviewed, not auto-paid
   // -------------------------------------------------------------------------
 
-  async approveClaim(claimId: string, adminId: string, note?: string, onAudit?: OnAudit) {
+  async approveClaim(claimId: string, adminId: string, note?: string, onAudit?: OnAudit, opts: { approvalId?: string } = {}) {
     const row = await this.prisma.reimbursementClaim.findUnique({ where: { id: claimId } });
     if (!row) throw new NotFoundError('Claim', claimId);
     // The stored copy can be stale in both directions (a scan cleared, a rule changed), so the record and the words
@@ -923,7 +924,7 @@ export class CashRulesService {
     const updated = await this.transitionClaim(claimId, ['PENDING_REVIEW', 'AUTO_APPROVED'], {
       status: 'APPROVED', reviewedBy: adminId, reviewNote: note, reviewedAt: new Date(),
       evidence: bundle as unknown as Prisma.InputJsonValue, evidenceComplete: bundle.complete, flags,
-    }, onAudit);
+    }, onAudit, undefined, (tx) => assertMayDecideClaim(tx, adminId, claimId, opts.approvalId));
     // One decision about one order, told as that. With evidence missing nothing leaves without a written reason, so
     // no amount is named: that is one more decision, and the mover hears either way.
     if (bundle.complete) {
@@ -956,6 +957,8 @@ export class CashRulesService {
     const updated = await this.transitionClaim(claimId, ['PENDING_REVIEW', 'AUTO_APPROVED', 'APPROVED'], {
       status: 'REJECTED', reviewedBy: adminId, reviewNote: note, reviewedAt: new Date(),
     }, onAudit, async () => (wasApproved ? { nothingSent: true } : {}), async (tx) => {
+      // [Audit B-1] Closing moves no money, and no case may be stuck: a SUPER_ADMIN clear of it may close it under review.
+      await assertMayDecideClaim(tx, adminId, claimId, opts.approvalId, { closing: true });
       // On this rail the money leaves before the record. The lock is the one the approval gate writes a payment ask
       // under, so this check and that ask cannot pass each other. Withdrawn or lapsed, an ask holds nothing open.
       await lockClaimPaymentAsks(tx, claimId);
@@ -980,7 +983,7 @@ export class CashRulesService {
     return updated;
   }
 
-  async markClaimPaid(claimId: string, adminId: string, paymentRef: string, paidAmount: unknown, onAudit?: OnAudit, opts: { evidenceReason?: string } = {}) {
+  async markClaimPaid(claimId: string, adminId: string, paymentRef: string, paidAmount: unknown, onAudit?: OnAudit, opts: { evidenceReason?: string; approvalId?: string } = {}) {
     // [WR-004] PAID is a money fact on a manual rail — the reference (bank/MMG
     // ref, receipt number) IS the evidence. Without it the record attests a
     // payout nobody can trace, so it is required, not optional.
@@ -1031,6 +1034,8 @@ export class CashRulesService {
     }, async (tx) => {
       await tx.$queryRaw`SELECT id FROM orders WHERE id = ${existing.orderId} FOR UPDATE`;
       await tx.$queryRaw`SELECT id FROM reimbursement_claims WHERE id = ${claimId} FOR UPDATE`;
+      // [Audit B-1] Neither the payer nor the admin who approved the payment may be on the claim.
+      await assertMayDecideClaim(tx, adminId, claimId, opts.approvalId);
       const fresh = await tx.reimbursementClaim.findUniqueOrThrow({ where: { id: claimId } });
       assertClaimAmountAttested(fresh.amount, paidAmount);
       if (fresh.orderId !== existing.orderId || Number(fresh.amount) !== Number(existing.amount)) {

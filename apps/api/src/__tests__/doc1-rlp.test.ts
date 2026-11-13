@@ -759,7 +759,7 @@ describe('[case by case] every unpaid door goes to a person, and nothing promise
     it('a statement made before a payment was tried does not stand: the reject is refused, and an older spent ask does not stop it', async () => {
       const claim = await approved(82);
       const row = (status: string, createdAt: Date, action: string, appliedAt?: Date) => system(() => app.prisma.privilegedApproval.create({ data: {
-        action, cls: 'C4', capability: 'cashrules.claim.pay', entityId: claim.id, fingerprint: `fixture-${RUN}-${action}-${createdAt.getTime()}`, status, requestedBy: 'admin-pay', reason: 'fixture', expiresAt: new Date(Date.now() + HOUR), createdAt, ...(appliedAt ? { appliedAt } : {}),
+        action, cls: 'C4', capability: 'cashrules.claim.pay', entityId: claim.id, fingerprint: `fixture-${RUN}-${action}-${createdAt.getTime()}`, status, requestedBy: 'admin-pay', approvedBy: 'admin-second', reason: 'fixture', expiresAt: new Date(Date.now() + HOUR), createdAt, ...(appliedAt ? { appliedAt } : {}),
       } }));
       const ago = (hours: number) => new Date(Date.now() - hours * HOUR);
       const REJECT = 'PUT /cash-rules/claims/:id/reject';
@@ -800,5 +800,58 @@ describe('[case by case] every unpaid door goes to a person, and nothing promise
     const mine = view.claims.find((c) => c.id === claim!.id)!;
     expect(mine).not.toHaveProperty('payoutDueBy');
     expect(mine.underReview).toBe(true);
+  });
+});
+
+describe('[audit FABLE-01 B-1] nobody decides a loss-protection claim they are on', () => {
+  const APPROVE_ACTION = 'PUT /cash-rules/claims/:id/approve';
+  const decidedBy = (claimId: string, approvedBy: string, action: string) => system(() => app.prisma.privilegedApproval.create({ data: {
+    action, cls: 'C4', capability: action === PAY_ASK_ACTION ? 'cashrules.claim.pay' : 'cashrules.claim.decide', entityId: claimId, fingerprint: `fixture-${RUN}-b1-${nanoid(8)}`,
+    status: 'APPLIED', requestedBy: 'admin-review', approvedBy, reason: 'fixture', expiresAt: new Date(Date.now() + HOUR),
+  } }));
+
+  it('the mover or the customer on a claim cannot approve, reject or record it paid, and neither can the second admin who approved the ask; clear people can', async () => {
+    await fund(5_000);
+    const door = await ownDoor();
+    const pair = await freshPair(90, door);
+    const order = await atDoorOrder({ food: 900, pair, door });
+    const claim = await plantClaim(order.id, 900, { riderId: pair.riderId, customerId: pair.customerId, status: 'PENDING_REVIEW' });
+    expect(await code(system(() => cash.approveClaim(claim.id, pair.riderUserId, 'my own claim')))).toBe('OWN_CLAIM');
+    expect(await code(system(() => cash.approveClaim(claim.id, pair.customerId, 'the claim against me')))).toBe('OWN_CLAIM');
+    expect(await code(system(() => cash.rejectClaim(claim.id, pair.customerId, 'I will not have it paid')))).toBe('OWN_CLAIM');
+    expect((await claimRow(claim.id)).status).toBe('PENDING_REVIEW');
+    // The second person of the two-person decision is held to the same rule.
+    const moverApproved = await decidedBy(claim.id, pair.riderUserId, APPROVE_ACTION);
+    expect(await code(system(() => cash.approveClaim(claim.id, 'admin-review', 'read the bundle', undefined, { approvalId: moverApproved.id })))).toBe('APPROVER_ON_CLAIM');
+    expect((await claimRow(claim.id)).status).toBe('PENDING_REVIEW');
+    // An approval for another case is not this one's.
+    const elsewhere = await decidedBy(order.id, 'admin-second', APPROVE_ACTION);
+    expect(await code(system(() => cash.approveClaim(claim.id, 'admin-review', 'read the bundle', undefined, { approvalId: elsewhere.id })))).toBe('APPROVAL_NOT_FOUND');
+    const clear = await decidedBy(claim.id, 'admin-second', APPROVE_ACTION);
+    expect((await system(() => cash.approveClaim(claim.id, 'admin-review', 'read the bundle', undefined, { approvalId: clear.id }))).status).toBe('APPROVED');
+    // Recording it paid draws on the reserve: refused for a party on either side, and nothing is drawn.
+    const before = await balance();
+    expect(await code(system(() => cash.markClaimPaid(claim.id, pair.riderUserId, ref('B1A'), 900)))).toBe('OWN_CLAIM');
+    const customerApproved = await decidedBy(claim.id, pair.customerId, PAY_ASK_ACTION);
+    expect(await code(system(() => cash.markClaimPaid(claim.id, 'admin-pay', ref('B1B'), 900, undefined, { approvalId: customerApproved.id })))).toBe('APPROVER_ON_CLAIM');
+    expect((await claimRow(claim.id)).status).toBe('APPROVED');
+    expect(await balance()).toBe(before);
+  });
+
+  it('a staff account on the claim sends it to a SUPER_ADMIN who is not on it', async () => {
+    const door = await ownDoor();
+    const pair = await freshPair(92, door);
+    const staffCustomer = await mkUser(94, ['CUSTOMER', 'ADMIN'], 'CUSTOMER', { customer: { create: {} } });
+    const superAdmin = await mkUser(95, ['SUPER_ADMIN'], 'SUPER_ADMIN');
+    try {
+      const order = await atDoorOrder({ food: 800, pair: { ...pair, customerId: staffCustomer.id }, door });
+      const claim = await plantClaim(order.id, 800, { riderId: pair.riderId, customerId: staffCustomer.id, status: 'PENDING_REVIEW' });
+      expect(await code(system(() => cash.approveClaim(claim.id, 'admin-review', 'a colleague\'s claim')))).toBe('STAFF_ON_CLAIM');
+      expect((await claimRow(claim.id)).status).toBe('PENDING_REVIEW');
+      expect((await system(() => cash.approveClaim(claim.id, superAdmin.id, 'read the bundle'))).status).toBe('APPROVED');
+    } finally {
+      // Retained rows must not leave extra admins behind for another suite's solo-mode count.
+      await system(() => app.prisma.user.updateMany({ where: { id: { in: [staffCustomer.id, superAdmin.id] } }, data: { roles: ['CUSTOMER'] as never, activeRole: 'CUSTOMER' as never } }));
+    }
   });
 });

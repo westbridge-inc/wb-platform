@@ -8279,7 +8279,7 @@ export async function adminRoutes(app: FastifyInstance) {
     // [ADM-002] The claim transition and its audit row commit together;
     // `E.claim` declares the diff (status, amount, paidAt, paymentRef, paidAmount).
     const claim = await cashRules.approveClaim(id, request.user.userId, body.reason,
-      (tx, facts) => auditWithin(tx, request as unknown as AuditRequestLike, app.prefix, { extra: facts }));
+      (tx, facts) => auditWithin(tx, request as unknown as AuditRequestLike, app.prefix, { extra: facts }), { approvalId: typeof request.headers[APPROVAL_HEADER] === 'string' ? request.headers[APPROVAL_HEADER] : undefined });
     return { success: true, data: claim };
   });
 
@@ -8309,7 +8309,7 @@ export async function adminRoutes(app: FastifyInstance) {
     // evidence and the audit row commit together. `E.claim` declares paymentRef
     // and paidAmount, so the diff IS the evidence — the legacy row is retired.
     const claim = await cashRules.markClaimPaid(id, request.user.userId, body.reference, body.amount,
-      (tx, facts) => auditWithin(tx, request as unknown as AuditRequestLike, app.prefix, { extra: facts }), { evidenceReason: body.evidenceReason });
+      (tx, facts) => auditWithin(tx, request as unknown as AuditRequestLike, app.prefix, { extra: facts }), { evidenceReason: body.evidenceReason, approvalId: typeof request.headers[APPROVAL_HEADER] === 'string' ? request.headers[APPROVAL_HEADER] : undefined });
     return { success: true, data: claim };
   });
 
