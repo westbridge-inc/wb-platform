@@ -756,6 +756,18 @@ export function VendorMenuScreen({ navigation }: any) {
                   Add a section first, then add individual items.
                 </T>
               ) : null}
+              {/* [MENU-OPTIONS · owner 11 Nov 2026] Shared option groups (sizes, crusts, toppings): built once, on many items. */}
+              {store?.vendorType !== 'SERVICE' ? (
+                <PillButton
+                  label="Option library"
+                  icon="layers"
+                  variant="outline"
+                  size="md"
+                  style={{ marginBottom: space.md }}
+                  disabled={readOnly}
+                  onPress={() => navigation.navigate('VendorOptionLibrary')}
+                />
+              ) : null}
             </>
           ) : (
             <T variant="caption" tone="muted" style={{ marginBottom: space.lg }}>

@@ -1366,6 +1366,17 @@ export interface VendorItemInput {
   vatClass?: 'STANDARD' | 'ZERO_RATED' | 'EXEMPT';
 }
 
+/** [MENU-OPTIONS] A shared library group's fields (all optional on an edit). */
+export type LibraryGroupBody = {
+  name?: string; isRequired?: boolean; minSelect?: number; maxSelect?: number; sortOrder?: number;
+  setsPrice?: boolean; allowHalves?: boolean; halfPricePercent?: number;
+};
+/** [MENU-OPTIONS] A shared library choice's fields; followUpGroupId is another LIBRARY group (or null), externalCode the kitchen code. */
+export type LibraryOptionBody = {
+  name?: string; price?: number; isDefault?: boolean; isAvailable?: boolean; sortOrder?: number;
+  followUpGroupId?: string | null; externalCode?: string | null;
+};
+
 export const vendorApi = {
   profile: (session?: AuthSessionSnapshot, storeId?: string | null) => api.get('/vendor/profile', capturedVendorAuthConfig(session, storeId)),
   /** [DOC-1 §3.6] The store's tier: caps, usage, what lifts the limits. */
@@ -1508,13 +1519,28 @@ export const vendorApi = {
       headers: { 'Content-Type': 'multipart/form-data' },
     })),
   // Modifiers (option groups + options on an item)
+  // [MENU-OPTIONS] setsPrice (size sets the price), allowHalves + halfPricePercent (half-and-half and its price rule).
+  // [REVIEW-MENU-B S3-5] Every option write says this app edits sizes, halves and follow-ups (MENU_OPTIONS_V2): the
+  // server refuses an older store app's edit of such a group (it would read a size's price as an add-on).
   addOptionGroup: (
     itemId: string,
-    data: { name: string; isRequired?: boolean; minSelect?: number; maxSelect?: number },
+    data: {
+      name: string; isRequired?: boolean; minSelect?: number; maxSelect?: number; setsPrice?: boolean; allowHalves?: boolean; halfPricePercent?: number;
+      // [REVIEW-MENU-B S2-1] A new size group comes with its sizes (the server refuses a size group with none).
+      options?: Array<{ name: string; additionalPrice?: number; vatListedAdditionalPrice?: number }>;
+    },
     session?: AuthSessionSnapshot,
-  ) => api.post(`/vendor/items/${itemId}/option-groups`, data, capturedAuthConfig(session)),
-  updateOptionGroup: (id: string, data: { name?: string; isRequired?: boolean; minSelect?: number; maxSelect?: number }) =>
-    api.put(`/vendor/option-groups/${id}`, data),
+  ) => api.post(`/vendor/items/${itemId}/option-groups`, { ...data, capabilities: cartWriteCapabilities() }, capturedAuthConfig(session)),
+  // [REVIEW-MENU-B S2-1] `prices`: switching "Sets the price" on or off converts every choice's price in the same
+  // request (the store confirmed them; the server refuses the switch without them).
+  updateOptionGroup: (
+    id: string,
+    data: {
+      name?: string; isRequired?: boolean; minSelect?: number; maxSelect?: number; setsPrice?: boolean; allowHalves?: boolean; halfPricePercent?: number;
+      prices?: Array<{ id: string; price: number }>;
+    },
+    session?: AuthSessionSnapshot,
+  ) => api.put(`/vendor/option-groups/${id}`, { ...data, capabilities: cartWriteCapabilities() }, capturedAuthConfig(session)),
   deleteOptionGroup: (id: string, session?: AuthSessionSnapshot) =>
     api.delete(`/vendor/option-groups/${id}`, capturedAuthConfig(session)),
   addOption: (
@@ -1522,11 +1548,39 @@ export const vendorApi = {
     // [VAT-DOCS] vatListedAdditionalPrice: the extra price as the store typed it (before VAT where VAT is added).
     data: { name: string; additionalPrice?: number; vatListedAdditionalPrice?: number; isDefault?: boolean },
     session?: AuthSessionSnapshot,
-  ) => api.post(`/vendor/option-groups/${groupId}/options`, data, capturedAuthConfig(session)),
-  updateOption: (id: string, data: { name?: string; additionalPrice?: number; isDefault?: boolean }) =>
-    api.put(`/vendor/options/${id}`, data),
+  ) => api.post(`/vendor/option-groups/${groupId}/options`, { ...data, capabilities: cartWriteCapabilities() }, capturedAuthConfig(session)),
+  // [MENU-OPTIONS] followUpGroupId: the group of the SAME item this choice opens (null = none); isAvailable alone is
+  // also taken on a shared group's choice (it marks the library choice sold out everywhere).
+  updateOption: (id: string, data: { name?: string; additionalPrice?: number; isDefault?: boolean; isAvailable?: boolean; followUpGroupId?: string | null }, session?: AuthSessionSnapshot) =>
+    api.put(`/vendor/options/${id}`, { ...data, capabilities: cartWriteCapabilities() }, capturedAuthConfig(session)),
   deleteOption: (id: string, session?: AuthSessionSnapshot) =>
     api.delete(`/vendor/options/${id}`, capturedAuthConfig(session)),
+  // [MENU-OPTIONS · owner 11 Nov 2026] The shared option library: a group built once, attached to many items; an edit
+  // changes every item that uses it. Prices are what the store types (before VAT where VAT is added).
+  // [REVIEW-MENU-A S4-11] Each call is pinned to the account that made it AND the store whose library the screen shows
+  // (capturedVendorAuthConfig: x-vendor-id), never whichever store is selected when the request leaves.
+  // [REVIEW-MENU-B S3-5] Every library write also says this app edits sizes, halves and follow-ups (MENU_OPTIONS_V2).
+  modifierGroups: (session?: AuthSessionSnapshot, storeId?: string | null) => api.get('/vendor/modifier-groups', capturedVendorAuthConfig(session, storeId)),
+  createModifierGroup: (data: LibraryGroupBody & { name: string; options?: LibraryOptionBody[] }, session?: AuthSessionSnapshot, storeId?: string | null) =>
+    api.post('/vendor/modifier-groups', { ...data, capabilities: cartWriteCapabilities() }, capturedVendorAuthConfig(session, storeId)),
+  updateModifierGroup: (id: string, data: LibraryGroupBody & { prices?: Array<{ id: string; price: number }> }, session?: AuthSessionSnapshot, storeId?: string | null) =>
+    api.put(`/vendor/modifier-groups/${id}`, { ...data, capabilities: cartWriteCapabilities() }, capturedVendorAuthConfig(session, storeId)),
+  deleteModifierGroup: (id: string, session?: AuthSessionSnapshot, storeId?: string | null) =>
+    api.delete(`/vendor/modifier-groups/${id}`, capturedVendorAuthConfig(session, storeId)),
+  orderModifierGroups: (ids: string[], session?: AuthSessionSnapshot, storeId?: string | null) =>
+    api.put('/vendor/modifier-groups/order', { ids, capabilities: cartWriteCapabilities() }, capturedVendorAuthConfig(session, storeId)),
+  addModifierOption: (groupId: string, data: LibraryOptionBody & { name: string }, session?: AuthSessionSnapshot, storeId?: string | null) =>
+    api.post(`/vendor/modifier-groups/${groupId}/options`, { ...data, capabilities: cartWriteCapabilities() }, capturedVendorAuthConfig(session, storeId)),
+  orderModifierOptions: (groupId: string, ids: string[], session?: AuthSessionSnapshot, storeId?: string | null) =>
+    api.put(`/vendor/modifier-groups/${groupId}/options/order`, { ids, capabilities: cartWriteCapabilities() }, capturedVendorAuthConfig(session, storeId)),
+  updateModifierOption: (id: string, data: LibraryOptionBody, session?: AuthSessionSnapshot, storeId?: string | null) =>
+    api.put(`/vendor/modifier-options/${id}`, { ...data, capabilities: cartWriteCapabilities() }, capturedVendorAuthConfig(session, storeId)),
+  deleteModifierOption: (id: string, session?: AuthSessionSnapshot, storeId?: string | null) =>
+    api.delete(`/vendor/modifier-options/${id}`, capturedVendorAuthConfig(session, storeId)),
+  attachModifierGroup: (id: string, itemIds: string[], session?: AuthSessionSnapshot, storeId?: string | null) =>
+    api.post(`/vendor/modifier-groups/${id}/attach`, { itemIds, capabilities: cartWriteCapabilities() }, capturedVendorAuthConfig(session, storeId)),
+  detachModifierGroup: (id: string, itemIds: string[], session?: AuthSessionSnapshot, storeId?: string | null) =>
+    api.post(`/vendor/modifier-groups/${id}/detach`, { itemIds, capabilities: cartWriteCapabilities() }, capturedVendorAuthConfig(session, storeId)),
   // Insights / settings
   analytics: () => api.get('/vendor/analytics/overview'),
   analyticsRevenue: (days = 14) => api.get('/vendor/analytics/revenue', { params: { days } }),
