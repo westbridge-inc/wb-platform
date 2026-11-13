@@ -671,7 +671,7 @@ function LateCreditPanel({ checkoutId }: { checkoutId: string }) {
 }
 
 /** [Review A S4-2 on #2502] The owner's late credits waiting for a second person: shown only when there are some. */
-function LateCreditReviews({ onOpen }: { onOpen: (id: string) => void }) {
+function LateCreditReviews({ onOpen }: { onOpen: (_checkoutId: string) => void }) {
   const pending = useQuery({ queryKey: ['mmg-late-credit-reviews'], queryFn: fetchLateCreditReviews, refetchOnWindowFocus: false, retry: false });
   const rows = (pending.data as { data?: unknown } | undefined)?.data;
   if (!Array.isArray(rows) || rows.length === 0) return null;

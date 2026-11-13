@@ -2997,6 +2997,32 @@ describe('[DS632 · 7 Oct] MMG’s time for the payment (its history record) is 
       expect(await topups(s.subId)).toHaveLength(1);
     });
 
+    it('[merge with #2500] a re-check of a late hold changes nothing; a re-check racing the owner’s credit gives one credit; a re-check that credits is never the owner’s', async () => {
+      const o = await owner();
+      const { s, row, txn } = await latePaid('MRGRECHECK');
+      const before = await intentOf(row.id);
+      expect(before).toMatchObject({ status: 'HELD', reason: 'PAYMENT_TIME_OUTSIDE_WINDOW' });
+      expect(await service.recheckHeld({ tenantId: row.tenantId, checkoutId: row.id, actorId: 'admin-recheck' })).toMatchObject({ status: 'HELD', reason: 'PAYMENT_TIME_OUTSIDE_WINDOW' });
+      const still = await intentOf(row.id);
+      expect([still.reason, still.checkAttempts, still.nextCheckAt]).toEqual([before.reason, before.checkAttempts, before.nextCheckAt]);
+      expect(await topups(s.subId)).toHaveLength(0);
+      await Promise.allSettled([service.recheckHeld({ tenantId: row.tenantId, checkoutId: row.id, actorId: 'admin-recheck' }), credit(row, o, txn)]);
+      expect(await topups(s.subId)).toHaveLength(1);
+      expect(await intentOf(row.id)).toMatchObject({ status: 'CONFIRMED', reason: 'OWNER_LATE_CREDIT' });
+
+      checkoutProvider = () => sandboxIn(null);
+      const z = await makeSub({ due: new Date(Date.now() - 60_000) });
+      const zrow = await intentOf((await start(z)).checkout.ref);
+      const ztxn = tx('MRGZONE');
+      approved(zrow, ztxn, 2100);
+      await codeReply(zrow, '0', ztxn, 'NOTIFY');
+      expect(await intentOf(zrow.id)).toMatchObject({ status: 'HELD', reason: 'CREATION_ZONE_UNVERIFIED' });
+      checkoutProvider = () => sandbox;
+      expect(await service.recheckHeld({ tenantId: zrow.tenantId, checkoutId: zrow.id, actorId: 'admin-recheck' })).toMatchObject({ status: 'CONFIRMED' });
+      expect(await intentOf(zrow.id)).toMatchObject({ status: 'CONFIRMED', reason: null });
+      expect(await app.prisma.auditLog.count({ where: { action: 'MMG_LATE_PAYMENT_CREDITED_BY_OWNER', entityId: zrow.id } })).toBe(0);
+    });
+
     it('[S4-2] the review: never through an account linked to the owner; a dispute is paged; pending reviews are listed', async () => {
       const o = await owner();
       const { row, txn } = await latePaid('RVREVIEW');
