@@ -21,6 +21,9 @@ import {
 // itself NEVER fails on intake trouble (fire-and-forget).
 // [R048-008] the safety vocabulary lives in tag-registry.ts (canonical, typed); nothing here compares a string literal
 
+/** How many rows the double-blind sweep releases (and re-levels) per pass. */
+const RELEASE_BATCH = 500;
+
 type RatingType =
   | 'CUSTOMER_TO_VENDOR'
   | 'CUSTOMER_TO_RIDER'
@@ -423,7 +426,7 @@ export class RatingService {
   async releaseIfBothSidesRated(orderId: string) {
     const sides = await this.prisma.rating.findMany({
       where: { orderId },
-      select: { type: true },
+      select: { type: true, vendorId: true, rateeId: true },
     });
     const customerSide = sides.some((r) => r.type.startsWith('CUSTOMER_TO'));
     const counterpartSide = sides.some((r) => !r.type.startsWith('CUSTOMER_TO'));
@@ -432,17 +435,41 @@ export class RatingService {
         where: { orderId, visibleAt: null },
         data: { visibleAt: new Date() },
       });
+      // [RATINGS-RELEASE] The aggregates count released rows only, so the
+      // release is the moment they move: re-level every subject on the order
+      // (a store's search document re-syncs with it). Every subject, not only
+      // the ones this call flipped — a retry after a failed re-level finds
+      // nothing left to flip and must still land the stars.
+      await this.stats.relevel(sides);
     }
   }
 
   /** Sweep half of double-blind: release anything older than the window —
-   *  a no-show counterpart must not hide feedback forever. */
+   *  a no-show counterpart must not hide feedback forever. [RATINGS-RELEASE]
+   *  Each released row's subject is re-levelled right after its batch is
+   *  released, so the stars and count move (and a store's search document
+   *  re-syncs) at release; a re-level that fails here is healed by the nightly
+   *  recompute, which runs after this sweep. */
   async releaseDoubleBlind(windowHours = 72): Promise<number> {
-    const res = await this.prisma.rating.updateMany({
-      where: { visibleAt: null, createdAt: { lt: new Date(Date.now() - windowHours * 3600_000) } },
-      data: { visibleAt: new Date() },
-    });
-    return res.count;
+    const cutoff = new Date(Date.now() - windowHours * 3600_000);
+    let released = 0;
+    for (;;) {
+      const batch = await this.prisma.rating.findMany({
+        where: { visibleAt: null, createdAt: { lt: cutoff } },
+        select: { id: true, type: true, vendorId: true, rateeId: true },
+        orderBy: { createdAt: 'asc' },
+        take: RELEASE_BATCH,
+      });
+      if (batch.length === 0) break;
+      const res = await this.prisma.rating.updateMany({
+        where: { id: { in: batch.map((r) => r.id) }, visibleAt: null },
+        data: { visibleAt: new Date() },
+      });
+      released += res.count;
+      await this.stats.relevel(batch);
+      if (batch.length < RELEASE_BATCH) break;
+    }
+    return released;
   }
 
   // (The per-role legacy-mean updaters are GONE [REPORT-034 S1]: they

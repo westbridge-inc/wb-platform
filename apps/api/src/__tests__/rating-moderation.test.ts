@@ -138,6 +138,10 @@ describe('RAT-F: hold, report, uphold, at-risk', () => {
     expect(stored.comment).toContain('[number removed]');
     expect(stored.isPublic).toBe(false);
     expect(stored.flagReason).toBe('PROFANITY_HOLD');
+    // [RATINGS-RELEASE] Stars count from the double-blind RELEASE (owner 13 Nov
+    // 2026), not from the write — let the 72 h window pass and run the sweep.
+    await app.prisma.$executeRaw`UPDATE ratings SET "createdAt" = NOW() - INTERVAL '73 hours' WHERE id = ${rating.id}`;
+    await ratings.releaseDoubleBlind(72);
     // Stars counted despite the hold:
     const stat = await app.prisma.actorRatingStat.findUniqueOrThrow({
       where: { tenantId_subjectRole_subjectId: { tenantId: 'swift-default', subjectRole: 'VENDOR', subjectId: vendor.id } },

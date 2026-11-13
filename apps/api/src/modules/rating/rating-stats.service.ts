@@ -10,7 +10,9 @@ import {
 // one truth: the incremental path (on every rating insert/edit/state-change)
 // and the nightly full recompute MUST land identical values — RAT-H gates it.
 // The subject mapping rides the EXISTING RatingType directions; ACTIVE rows
-// count, EXCLUDED/REMOVED never do. Standing can warn, coach, or enqueue for
+// count, EXCLUDED/REMOVED never do — and only once RELEASED (owner 13 Nov
+// 2026): a row counts from the moment the double-blind sets its visibleAt,
+// never from the moment it is written (COUNTED_RATING_WHERE). Standing can warn, coach, or enqueue for
 // the FOUNDER — nothing else (R-Law 3); dispatch never reads any of this
 // (R-Law 4).
 // ---------------------------------------------------------------------------
@@ -44,6 +46,31 @@ export const TYPES_FOR_ROLE: Record<SubjectRef['role'], string[]> = {
   SERVICE_PROVIDER: ['CUSTOMER_TO_PROVIDER'],
   CUSTOMER: ['RIDER_TO_CUSTOMER', 'DRIVER_TO_CUSTOMER', 'PROVIDER_TO_CUSTOMER'],
 };
+
+/**
+ * [RATINGS-RELEASE · owner 13 Nov 2026] The rows every aggregate counts: ACTIVE
+ * and RELEASED. A rating is written hidden (visibleAt null) and released by the
+ * double-blind — both sides rated (RatingService.releaseIfBothSidesRated) or the
+ * 72 h window passed (RatingService.releaseDoubleBlind). Counting it at write
+ * time let a store watch its star average and rating count move the moment a
+ * customer who had just collected rated it, tying the rating to that customer.
+ * So the materialized stat AND the legacy averageRating/totalRatings move only
+ * at release, and the release paths re-level the subjects they release. The
+ * rule holds for every subject, not only stores: every rating type is
+ * double-blind released, so no rated party's figure moves before its rating is
+ * released. The 5-rating display floor (RATING_MIN_DISPLAY) and the 72 h window
+ * are unchanged.
+ */
+export const COUNTED_RATING_WHERE = { state: 'ACTIVE', visibleAt: { not: null } } as const;
+
+/** The rows a subject's aggregates are built from (incremental, nightly and SQL legs alike). */
+export function countedRatingsWhere(subject: SubjectRef) {
+  return {
+    type: { in: TYPES_FOR_ROLE[subject.role] as never },
+    ...COUNTED_RATING_WHERE,
+    ...(subject.role === 'VENDOR' ? { vendorId: subject.id } : { rateeId: subject.id }),
+  };
+}
 
 export class RatingStatsService {
   constructor(
@@ -80,13 +107,8 @@ export class RatingStatsService {
    * RAT-H's three answers stay one value by construction).
    */
   async recompute(subject: SubjectRef, tenantId = 'swift-default'): Promise<boolean> {
-    const where = {
-      type: { in: TYPES_FOR_ROLE[subject.role] as never },
-      state: 'ACTIVE' as const,
-      ...(subject.role === 'VENDOR' ? { vendorId: subject.id } : { rateeId: subject.id }),
-    };
     const rows = await this.prisma.rating.findMany({
-      where,
+      where: countedRatingsWhere(subject),
       orderBy: { createdAt: 'desc' },
       select: { score: true, tags: true, createdAt: true },
     });
@@ -147,8 +169,8 @@ export class RatingStatsService {
     // but its old writers aggregated every row REGARDLESS OF STATE — so a
     // shielded or moderator-excluded rating still moved a mover's dispatch
     // rank, straight through the isolation R-Law 4 claims. One truth now:
-    // the SAME ACTIVE-only rows that feed the materialized stat sync the
-    // legacy columns, on every transition (create, shield, exclude, remove,
+    // the SAME ACTIVE, released rows that feed the materialized stat sync the
+    // legacy columns, on every transition (release, shield, exclude, remove,
     // nightly). Rounding and the unrated 5.0 prior are preserved exactly —
     // changing the prior is a registered founder call, never a side effect.
     const legacy = {
@@ -174,13 +196,32 @@ export class RatingStatsService {
     return false;
   }
 
-  /** Incremental hook: recompute the subject a rating row touches. */
+  /** Incremental hook: recompute the subject a rating row touches. A row
+   *  still inside the double-blind does not count yet, so at write time this
+   *  lands the same released-only values (the stars do not move); the release
+   *  paths call relevel once it counts. */
   async applyRating(rating: Pick<Rating, 'type' | 'vendorId' | 'rateeId'>): Promise<void> {
     const subject = subjectOf(rating);
     if (subject) {
       await this.recompute(subject);
       this.notifyVendorAggregateChanged(subject);
     }
+  }
+
+  /** [RATINGS-RELEASE] Re-level every distinct subject of the given rows — the
+   *  release paths call this right after they set visibleAt, so the stars and
+   *  count move (and a store's search document re-syncs) at release time.
+   *  Idempotent: recompute is a pure function of the rows. */
+  async relevel(rows: ReadonlyArray<Pick<Rating, 'type' | 'vendorId' | 'rateeId'>>): Promise<number> {
+    const seen = new Set<string>();
+    for (const r of rows) {
+      const s = subjectOf(r);
+      if (!s || seen.has(`${s.role}:${s.id}`)) continue;
+      seen.add(`${s.role}:${s.id}`);
+      await this.recompute(s);
+      this.notifyVendorAggregateChanged(s);
+    }
+    return seen.size;
   }
 
   /** Nightly sweep across every subject with any rating (RAT-H's third leg
@@ -218,15 +259,7 @@ export class RatingStatsService {
       where: { id: { in: targets.map((t) => t.id) } },
       data: { state: 'EXCLUDED', stateReason },
     });
-    const seen = new Set<string>();
-    for (const t of targets) {
-      const s = subjectOf(t);
-      if (s && !seen.has(`${s.role}:${s.id}`)) {
-        seen.add(`${s.role}:${s.id}`);
-        await this.recompute(s);
-        this.notifyVendorAggregateChanged(s);
-      }
-    }
+    await this.relevel(targets);
     return targets.length;
   }
 }

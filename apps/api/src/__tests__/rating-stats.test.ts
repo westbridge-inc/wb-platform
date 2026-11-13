@@ -73,6 +73,14 @@ async function makeDeliveredOrder(customerId: string, vendorId: string, over: { 
   return order;
 }
 
+/** [RATINGS-RELEASE · owner 13 Nov 2026] The aggregates count RELEASED rows
+ *  only: let the 72 h double-blind window pass for this suite's ratings and run
+ *  the real release sweep, which re-levels every subject it releases. */
+async function release() {
+  await prisma.$executeRaw`UPDATE ratings SET "createdAt" = NOW() - INTERVAL '73 hours' WHERE "orderId" = ANY(${createdOrderIds}::text[]) AND "visibleAt" IS NULL`;
+  await ratings.releaseDoubleBlind(72);
+}
+
 beforeAll(async () => {
   await prisma.$connect();
   await prisma.$executeRawUnsafe(
@@ -102,7 +110,19 @@ describe('RAT-H: incremental === recompute === direct SQL', () => {
       await ratings.rate({ orderId: order.id, raterId: customer.id, vendorId: vendor.id, type: 'CUSTOMER_TO_VENDOR', score });
     }
 
-    // Leg 1: the incremental path already wrote the stat.
+    // [RATINGS-RELEASE] Written, not released: the incremental path counted
+    // nothing yet, and the nightly recompute agrees.
+    const unreleased = await prisma.actorRatingStat.findUniqueOrThrow({
+      where: { tenantId_subjectRole_subjectId: { tenantId: 'swift-default', subjectRole: 'VENDOR', subjectId: vendor.id } },
+    });
+    expect([unreleased.lifetimeCount, unreleased.lifetimeSum]).toEqual([0, 0]);
+    await stats.recompute({ role: 'VENDOR', id: vendor.id });
+    expect((await prisma.actorRatingStat.findUniqueOrThrow({
+      where: { tenantId_subjectRole_subjectId: { tenantId: 'swift-default', subjectRole: 'VENDOR', subjectId: vendor.id } },
+    })).lifetimeCount).toBe(0);
+    await release();
+
+    // Leg 1: the incremental path (the release's re-level) already wrote the stat.
     const incremental = await prisma.actorRatingStat.findUniqueOrThrow({
       where: { tenantId_subjectRole_subjectId: { tenantId: 'swift-default', subjectRole: 'VENDOR', subjectId: vendor.id } },
     });
@@ -120,7 +140,7 @@ describe('RAT-H: incremental === recompute === direct SQL', () => {
 
     // Leg 3: direct SQL says the same, and the display math matches RAT-C.
     const sql = await prisma.rating.aggregate({
-      where: { vendorId: vendor.id, type: 'CUSTOMER_TO_VENDOR', state: 'ACTIVE' },
+      where: { vendorId: vendor.id, type: 'CUSTOMER_TO_VENDOR', state: 'ACTIVE', visibleAt: { not: null } },
       _count: true, _sum: { score: true },
     });
     expect(sql._count).toBe(10);
@@ -156,6 +176,7 @@ describe('RAT-E: shields', () => {
 
     // The customer's VENDOR rating on the same order stands untouched.
     await ratings.rate({ orderId: order.id, raterId: customer.id, vendorId: vendor.id, type: 'CUSTOMER_TO_VENDOR', score: 4 });
+    await release();
     const vstat = await prisma.actorRatingStat.findUniqueOrThrow({
       where: { tenantId_subjectRole_subjectId: { tenantId: 'swift-default', subjectRole: 'VENDOR', subjectId: vendor.id } },
     });
@@ -169,6 +190,7 @@ describe('RAT-E: shields', () => {
       const order = await makeDeliveredOrder(fraudster.id, vendor.id);
       await ratings.rate({ orderId: order.id, raterId: fraudster.id, vendorId: vendor.id, type: 'CUSTOMER_TO_VENDOR', score: 5 });
     }
+    await release();
     let stat = await prisma.actorRatingStat.findUniqueOrThrow({
       where: { tenantId_subjectRole_subjectId: { tenantId: 'swift-default', subjectRole: 'VENDOR', subjectId: vendor.id } },
     });
@@ -204,8 +226,9 @@ describe('REPORT-034 S1: the legacy mean is state-aware and single-writer', () =
     const honest = await makeUser(['CUSTOMER']);
     const honestOrder = await makeDeliveredOrder(honest.id, vendor.id);
     await ratings.rate({ orderId: honestOrder.id, raterId: honest.id, vendorId: vendor.id, type: 'CUSTOMER_TO_VENDOR', score: 2 });
+    await release();
 
-    // Before the ban: all four ACTIVE rows count — (5+5+5+2)/4 = 4.25 → 4.3.
+    // Before the ban: all four ACTIVE, released rows count — (5+5+5+2)/4 = 4.25 → 4.3.
     let v = await prisma.vendor.findUniqueOrThrow({ where: { id: vendor.id }, select: { averageRating: true, totalRatings: true } });
     expect(v.totalRatings).toBe(4);
     expect(v.averageRating).toBe(4.3);
@@ -251,6 +274,7 @@ describe('REPORT-034 S1: the legacy mean is state-aware and single-writer', () =
     const customer = await makeUser(['CUSTOMER']);
     const order = await makeDeliveredOrder(customer.id, vendor.id);
     await ratings.rate({ orderId: order.id, raterId: customer.id, vendorId: vendor.id, type: 'CUSTOMER_TO_VENDOR', score: 1 });
+    await release();
 
     let v = await prisma.vendor.findUniqueOrThrow({ where: { id: vendor.id }, select: { averageRating: true, totalRatings: true } });
     expect(v.averageRating).toBe(1);

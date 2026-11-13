@@ -109,37 +109,46 @@ afterAll(async () => {
 });
 
 describe('RAT-G — the daily fold', () => {
-  it('a rating written today is public immediately but actor-invisible until the fold', async () => {
+  // [RATINGS-RELEASE · owner 13 Nov 2026] was "public immediately": the public
+  // stars now move only when a rating is RELEASED (double-blind), never when it
+  // is written; the actor view still waits for the next fold after that.
+  it('a rating written today is public only once released, and actor-invisible until the fold', async () => {
     const { owner, vendor } = await makeVendorWithOwner();
     const customer = await makeUser(['CUSTOMER'], 'CUSTOMER');
 
-    // Yesterday's history: two 5★ with a positive tag (inserted with explicit
-    // createdAt, then recomputed into the stat like the engine would).
+    // Yesterday's history: two 5★ with a positive tag, released yesterday
+    // (inserted with explicit createdAt/visibleAt, then recomputed into the
+    // stat like the engine would).
     for (let i = 0; i < 2; i++) {
       const o = await makeOrder(customer.userId, vendor.id);
       await app.prisma.rating.create({
         data: {
           orderId: o.id, raterId: customer.userId, vendorId: vendor.id,
           type: 'CUSTOMER_TO_VENDOR', score: 5, tags: ['tasty-food'],
-          createdAt: new Date(Date.now() - DAY),
+          createdAt: new Date(Date.now() - DAY), visibleAt: new Date(Date.now() - DAY),
         },
       });
     }
     await stats.recompute({ role: 'VENDOR', id: vendor.id });
 
-    // Today's fresh rating goes through the live path (stats update instantly).
+    // Today's fresh rating goes through the live path: written, NOT released.
     const o3 = await makeOrder(customer.userId, vendor.id);
     await ratings.rate({
       orderId: o3.id, raterId: customer.userId, vendorId: vendor.id,
       type: 'CUSTOMER_TO_VENDOR', score: 1, tags: ['long-wait'],
     });
-
-    // PUBLIC surface counts all three at once…
-    const pub = await app.inject({
+    const publicCount = async () => (await app.inject({
       method: 'GET', url: `/api/v1/customer/vendors/${vendor.id}`,
       headers: { authorization: `Bearer ${customer.token}` },
-    });
-    expect(pub.json().data.ratingCount).toBe(3);
+    })).json().data.ratingCount;
+
+    // The PUBLIC surface does not count it while it is unreleased…
+    expect(await publicCount()).toBe(2);
+
+    // …and counts all three once the double-blind window releases it.
+    await app.prisma.$executeRaw`UPDATE ratings SET "createdAt" = NOW() - INTERVAL '73 hours' WHERE "orderId" = ${o3.id}`;
+    expect(await ratings.releaseDoubleBlind(72)).toBeGreaterThanOrEqual(1);
+    expect(await publicCount()).toBe(3);
 
     // …but the ACTOR view is folded: 2 rows, average 5, and NO trace of the
     // 1★ or its tag — this morning's customer cannot be identified.

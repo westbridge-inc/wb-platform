@@ -148,6 +148,12 @@ export async function actorStandingView(prisma: PrismaClient, role: Role, subjec
       type: { in: TYPES_FOR_ROLE[role] as never },
       state: 'ACTIVE',
       createdAt: { lt: boundary },
+      // [RATINGS-RELEASE · owner 13 Nov 2026] The store's own folded count,
+      // average, trend and tags move only with RELEASED ratings, the same rows
+      // as its public stars (COUNTED_RATING_WHERE) — and only those released
+      // before the fold, so a rating released this morning waits for the next
+      // daily fold like any other.
+      visibleAt: { not: null, lt: boundary },
       ...(role === 'VENDOR' ? { vendorId: subjectId } : { rateeId: subjectId }),
     },
     orderBy: { createdAt: 'desc' },

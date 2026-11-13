@@ -121,6 +121,19 @@ async function waitForJob(id: string, timeoutMs = 5_000) {
   return null;
 }
 
+/** [RATINGS-RELEASE · owner 13 Nov 2026] A store's stars move only when a
+ *  rating is RELEASED. Let the 72 h double-blind window pass for this order's
+ *  ratings and run the release sweep exactly as queue.ts's flag-ratings job
+ *  constructs it (RatingService with the per-vendor search callback). */
+async function releaseOrder(orderId: string) {
+  await app.prisma.$executeRaw`UPDATE ratings SET "createdAt" = NOW() - INTERVAL '73 hours' WHERE "orderId" = ${orderId} AND "visibleAt" IS NULL`;
+  return new RatingService(
+    app.prisma,
+    app.io,
+    (movedVendorId) => scheduleVendorSearchSync({ queues, log: app.log }, movedVendorId),
+  ).releaseDoubleBlind(72);
+}
+
 beforeAll(async () => {
   app = Fastify({ logger: false });
   registerErrorHandler(app);
@@ -197,12 +210,18 @@ afterAll(async () => {
 });
 
 describe('a rating that moves a vendor aggregate re-syncs the vendor [E26]', () => {
-  it('a customer-to-vendor rating updates the store stars AND schedules the vendor sync', async () => {
+  it('a customer-to-vendor rating moves the store stars at RELEASE AND schedules the vendor sync then', async () => {
     const order = await mkOrder(customerId, vendorId, undefined);
     const res = await rate(order.id, { vendorScore: 4 });
     expect(res.statusCode).toBe(200);
 
-    // Durable state first: the write really moved the vendor aggregate.
+    // [RATINGS-RELEASE] Written, not released: the store's stars have not moved.
+    const written = await app.prisma.vendor.findUniqueOrThrow({ where: { id: vendorId } });
+    expect(written.totalRatings).toBe(0);
+    await queues.searchQueue.remove(jobId()).catch(() => {});
+
+    // Durable state first: the release really moved the vendor aggregate.
+    expect(await releaseOrder(order.id)).toBeGreaterThanOrEqual(1);
     const vendor = await app.prisma.vendor.findUniqueOrThrow({ where: { id: vendorId } });
     expect(vendor.totalRatings).toBe(1);
     expect(vendor.averageRating).toBe(4);
@@ -222,8 +241,9 @@ describe('a rating that moves a vendor aggregate re-syncs the vendor [E26]', () 
     const order = await mkOrder(customerId, vendorId, riderId);
     const res = await rate(order.id, { riderScore: 3 });
     expect(res.statusCode).toBe(200);
+    await releaseOrder(order.id);
 
-    // The rider aggregate moved — the write really happened…
+    // The rider aggregate moved — the write (and its release) really happened…
     const rider = await app.prisma.rider.findUniqueOrThrow({ where: { id: riderId } });
     expect(rider.totalRatings).toBe(1);
     expect(rider.averageRating).toBe(3);
@@ -243,6 +263,7 @@ describe('a rating that moves a vendor aggregate re-syncs the vendor [E26]', () 
     const order = await mkOrder(customerId, vendor.id, undefined);
     const res = await rate(order.id, { vendorScore: 2 });
     expect(res.statusCode).toBe(200);
+    await releaseOrder(order.id);
     const rating = await app.prisma.rating.findFirstOrThrow({ where: { orderId: order.id, type: 'CUSTOMER_TO_VENDOR' } });
 
     // The HTTP path scheduled its own debounced job; clear it so the admin
@@ -279,9 +300,10 @@ describe('a rating that moves a vendor aggregate re-syncs the vendor [E26]', () 
     const order = await mkOrder(customerId, vendor.id, undefined);
     // Write the rating row and its still-owed STATS command directly — the
     // outbox exists for exactly this process-died-first case, which is what
-    // the flag-ratings sweep in queue.ts replays.
+    // the flag-ratings sweep in queue.ts replays. The row is already released
+    // (visibleAt set) so it counts [RATINGS-RELEASE].
     const rating = await app.prisma.rating.create({
-      data: { orderId: order.id, raterId: customerId, vendorId: vendor.id, type: 'CUSTOMER_TO_VENDOR', score: 3 },
+      data: { orderId: order.id, raterId: customerId, vendorId: vendor.id, type: 'CUSTOMER_TO_VENDOR', score: 3, visibleAt: new Date() },
     });
     await app.prisma.ratingOutbox.create({ data: { ratingId: rating.id, command: 'STATS' } });
 
@@ -311,6 +333,7 @@ describe('a rating that moves a vendor aggregate re-syncs the vendor [E26]', () 
     const vendor = await mkVendor('E26 Nightly Diner');
     const order = await mkOrder(customerId, vendor.id, undefined);
     expect((await rate(order.id, { vendorScore: 4 })).statusCode).toBe(200);
+    await releaseOrder(order.id);
     // Drift: the stored stars no longer match the ACTIVE rows, the exact case
     // the nightly healer exists for.
     await app.prisma.vendor.update({ where: { id: vendor.id }, data: { averageRating: 1, totalRatings: 9 } });
@@ -351,6 +374,13 @@ describe('[E26] queue.ts wires the search callback into both rating sweeps', () 
   it('the flag-ratings outbox replay constructs RatingService with the search callback', () => {
     const replay = src.slice(src.indexOf('const outbox = await new RatingService('), src.indexOf('const outbox = await new RatingService(') + 300);
     expect(replay).toMatch(CALLBACK);
+  });
+
+  it('[RATINGS-RELEASE] the double-blind release sweep constructs RatingService with the search callback', () => {
+    const at = src.indexOf('.releaseDoubleBlind()');
+    expect(at).toBeGreaterThan(0);
+    const sweep = src.slice(src.lastIndexOf('new RatingService(', at), at);
+    expect(sweep).toMatch(CALLBACK);
   });
 
   it('the nightly rating-stats-recompute constructs RatingStatsService with the search callback', () => {

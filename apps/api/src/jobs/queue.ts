@@ -1969,7 +1969,14 @@ export async function createWorkers(ctx: JobContext, queues: SwiftQueues) {
         const svc = new RatingService(ctx.prisma);
         const flagged = await svc.flagSuspiciousRatings();
         // Double-blind window: a no-show counterpart must not hide feedback forever.
-        const released = await svc.releaseDoubleBlind();
+        // [RATINGS-RELEASE] The stars count released rows only, so this release is
+        // when a store's average and count move: the sweep re-levels each released
+        // subject and re-syncs that store's search document through the same seam.
+        const released = await new RatingService(
+          ctx.prisma,
+          ctx.io,
+          (vendorId) => scheduleVendorSearchSync({ queues, log: ctx.log }, vendorId),
+        ).releaseDoubleBlind();
         // [R048-008] every command a persisted rating still owes — safety intake, release, stats — is finished here
         // when the process that wrote the rating did not get to it (one row per rating and command: exactly once).
         // [E26] a vendor rating finished here still re-syncs the vendor's search document.
