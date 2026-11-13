@@ -9,11 +9,11 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { nanoid } from 'nanoid';
-import { PrismaClient } from '@prisma/client';
+import { testPrismaClient } from './helpers/test-prisma-client';
 
 const REPO = join(__dirname, '..', '..', '..', '..');
 const doctor = readFileSync(join(REPO, 'deploy', 'doctor.sh'), 'utf8');
-const prisma = new PrismaClient();
+const prisma = testPrismaClient();
 const RUN = nanoid(6).replace(/[^a-zA-Z0-9]/g, '0');
 const NUM = String(Date.now()).slice(-5);
 const users: string[] = [];
