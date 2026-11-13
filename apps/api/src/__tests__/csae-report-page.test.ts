@@ -156,3 +156,22 @@ describe('[REVIEW-F S3-1] the 10-minute window never silences a page that did no
     expect(await csaePages()).toHaveLength(before + 1);
   });
 });
+
+// [AUDIT-20261113 FABLE-03 S3-6] An ordinary account could open a new on-call page every 10 minutes all day
+// (each page then owed up to six texts). After its third page in a Guyana day, one person's CSAE reports are
+// still recorded and float to the top of the queue, but page nobody.
+describe('[AUDIT-20261113 S3-6] one person pages on-call at most three times a day', () => {
+  it('the fourth CSAE report in a day, past the 10-minute window, is recorded and pages nobody', async () => {
+    const day = (await import('../utils/guyana-day')).guyanaDayKey(new Date());
+    await app.redis.del(`csae:page:${reporter.id}`, `csae:page:day:${day}:${reporter.id}`);
+    const before = (await csaePages()).length;
+    for (let i = 0; i < 4; i++) {
+      await app.redis.del(`csae:page:${reporter.id}`); // the 10-minute window has passed
+      const res = await report({ targetType: 'USER', targetId: `user_${RUN}_day_${i}`, reason: 'CSAE' });
+      await closeOurPages();
+      expect(res.statusCode, res.body).toBe(201);
+    }
+    expect((await csaePages()).length).toBe(before + 3);
+    await app.redis.del(`csae:page:${reporter.id}`, `csae:page:day:${day}:${reporter.id}`);
+  });
+});

@@ -11,6 +11,8 @@ import { openOpsAlert, type OpsAlertOpened } from '../safety/ops-alert';
  */
 /** One page per reporter per window: every report is recorded, but one person cannot page on-call at will. */
 export const CSAE_PAGE_WINDOW_SECONDS = 600;
+/** [AUDIT-20261113 FABLE-03 S3-6] Pages one reporter may open in a Guyana day; later reports are recorded, never paged. */
+export const CSAE_PAGES_PER_REPORTER_PER_DAY = 3;
 export const CSAE_PAGE_TITLE = 'Child-safety (CSAE) report: review now';
 export const CSAE_PAGE_BODY = 'Someone reported content as child sexual abuse or exploitation. Open the moderation queue (reason: Child safety) and act on it before anything else.';
 

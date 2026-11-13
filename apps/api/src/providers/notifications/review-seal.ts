@@ -29,7 +29,7 @@
  */
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { ownerWallSystem } from '../../lib/owner-rls';
-import type { NotificationChannels, PushOptions, SmsProvider, PushProvider, EmailProvider } from './channels';
+import type { NotificationChannels, PushOptions, SmsOptions, SmsProvider, PushProvider, EmailProvider } from './channels';
 import { SMS_REF_REVIEW_SUPPRESSED } from './sms-outcome';
 import { getTenantContext, runAsSystem } from '../../plugins/tenant-context';
 import { reviewSendSuppressedCounter } from '../../plugins/observability';
@@ -119,10 +119,11 @@ function suppressed(channel: Channel, reason: SuppressReason): void {
 /** One SMS provider, sealed. */
 export function sealSms(inner: SmsProvider): SmsProvider {
   return {
-    sendSms: async (to: string, body: string) => {
+    sendSms: async (to: string, body: string, options?: SmsOptions) => {
       const why = await reviewSendSuppression('sms', [to]);
       if (why) { suppressed('sms', why); return { ref: SMS_REF_REVIEW_SUPPRESSED }; }
-      return inner.sendSms(to, body);
+      // [AUDIT-20261113 S3-6] Only the life-safety mark crosses the seal (it never carried a handoff).
+      return inner.sendSms(to, body, options?.lifeSafety ? { lifeSafety: true } : undefined);
     },
   };
 }

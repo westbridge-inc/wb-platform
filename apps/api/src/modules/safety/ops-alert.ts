@@ -205,7 +205,7 @@ async function defaultOpsSms(): Promise<OpsSms | null> {
  *  a hand-off) is not a phone that was texted (sms-outcome.ts). */
 async function textOnCall(sms: OpsSms | null, phones: string[], opsAlertId: string, text: string): Promise<number> {
   if (!sms || phones.length === 0) return 0;
-  const results = await Promise.allSettled(phones.map((phone) => sms.sendSms(phone, text.slice(0, 480))));
+  const results = await Promise.allSettled(phones.map((phone) => sms.sendSms(phone, text.slice(0, 480), { lifeSafety: true })));
   let sent = 0;
   for (const r of results) {
     if (r.status === 'fulfilled' && smsAccepted(r.value)) { sent += 1; opsAlertCounter.labels('oncall_sms').inc(); }

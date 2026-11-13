@@ -587,7 +587,7 @@ export class SosService {
     const notice: Array<{ id: string; ok: boolean }> = [];
     for (const c of contacts) {
       // [REVIEW-PARTNER] Declared on behalf of the alert's tenant: the outbound seal stops a fiction's text.
-      try { await sendOnBehalfOf(alert.tenantId, () => sms.sendSms(c.phoneE164, body)); notice.push({ id: c.id, ok: true }); }
+      try { await sendOnBehalfOf(alert.tenantId, () => sms.sendSms(c.phoneE164, body, { lifeSafety: true })); notice.push({ id: c.id, ok: true }); }
       catch { notice.push({ id: c.id, ok: false }); }
     }
     const existing = (alert.deliveryReceipts as Record<string, unknown> | null) ?? {};

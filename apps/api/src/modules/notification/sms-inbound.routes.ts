@@ -4,6 +4,8 @@ import { resolveIdentityByPhone } from '../auth/preauth-identity';
 import { setMarketingConsent } from '../legal/marketing-consent';
 import { runWithTenant } from '../../plugins/tenant-context';
 import { log } from '../../utils/logger';
+import { smsDestinationAllowed } from '../../utils/sms-budget';
+import { guyanaDayKey } from '../../utils/guyana-day';
 import { inboundStopConfigured, isStopKeyword } from './marketing-message';
 
 /**
@@ -104,6 +106,29 @@ export async function smsInboundRoutes(app: FastifyInstance): Promise<void> {
       log().info({ changed: outcome.changed }, '[R22] texted STOP: marketing consent withdrawn');
     }
     // The same answer whether or not the number has an account: no oracle.
+    // [AUDIT-20261113 FABLE-03 S4 3.10] The confirmation is a paid text: only to a launch-market number, once per
+    // number per Guyana day, under a daily ceiling. Beyond that the opt-out above still stands; no text answers it.
+    if (!(await mayConfirmStop(app, from))) return twiml(reply);
     return twiml(reply, STOP_CONFIRMATION);
   });
 }
+
+/** [AUDIT-20261113 S4] STOP confirmations a Guyana day may cost, across all numbers (SMS_STOP_REPLY_DAILY_CAP). */
+export const DEFAULT_STOP_REPLY_DAILY_CAP = 200;
+
+async function mayConfirmStop(app: FastifyInstance, from: string): Promise<boolean> {
+  if (!smsDestinationAllowed(from)) return false;
+  try {
+    const day = guyanaDayKey(new Date());
+    if ((await app.redis.set(`sms_stop_reply:${day}:${from}`, '1', 'EX', 86_400, 'NX')) !== 'OK') return false;
+    const n = await app.redis.incr(`sms_stop_reply_day:${day}`);
+    if (n === 1) await app.redis.expire(`sms_stop_reply_day:${day}`, 86_400);
+    const cap = Number(process.env['SMS_STOP_REPLY_DAILY_CAP']);
+    return n <= (Number.isFinite(cap) && cap > 0 ? Math.floor(cap) : DEFAULT_STOP_REPLY_DAILY_CAP);
+  } catch (err) {
+    // No counter, no paid reply: the opt-out is already recorded.
+    log().warn({ err }, '[S4] STOP reply budget unavailable; confirmation text skipped');
+    return false;
+  }
+}
+

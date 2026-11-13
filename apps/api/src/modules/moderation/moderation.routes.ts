@@ -6,7 +6,8 @@ import { activateUserBlock, deactivateUserBlock } from './user-block.service';
 import { assertRoomAccess } from '../chat/chat-authority';
 import { ForbiddenError, NotFoundError } from '../../utils/errors';
 import { NotificationService } from '../notification/notification.service';
-import { CSAE_PAGE_WINDOW_SECONDS, pageCsaeReport } from './csae-page';
+import { CSAE_PAGE_WINDOW_SECONDS, CSAE_PAGES_PER_REPORTER_PER_DAY, pageCsaeReport } from './csae-page';
+import { guyanaDayKey } from '../../utils/guyana-day';
 
 type AuthRequest = FastifyRequest & { user: { userId: string; role: string } };
 
@@ -101,11 +102,29 @@ export async function moderationRoutes(app: FastifyInstance) {
         } catch (err) {
           app.log.warn({ err, contentReportId: report.id }, '[R19] CSAE page window unavailable; paging anyway');
         }
+        // [AUDIT-20261113 FABLE-03 S3-6] ...and at most CSAE_PAGES_PER_REPORTER_PER_DAY pages per person per Guyana
+        // day: past that their reports are recorded and lead the queue, but no new on-call page (and no texts).
+        // A Redis error pages anyway, as the window does.
+        const dayKey = `csae:page:day:${guyanaDayKey(new Date())}:${reporterId}`;
+        let pagesToday = 0;
+        if (firstInWindow === 'OK') {
+          try {
+            pagesToday = await app.redis.incr(dayKey);
+            if (pagesToday === 1) await app.redis.expire(dayKey, 86_400);
+          } catch (err) {
+            app.log.warn({ err, contentReportId: report.id }, '[S3-6] CSAE daily page count unavailable; paging anyway');
+          }
+          if (pagesToday > CSAE_PAGES_PER_REPORTER_PER_DAY) {
+            app.log.warn({ contentReportId: report.id }, '[S3-6] CSAE page skipped: this reporter already paged on-call today; report recorded');
+            firstInWindow = null;
+          }
+        }
         if (firstInWindow === 'OK') {
           try {
             await pageCsaeReport(app.prisma, new NotificationService(app.prisma, app.io), { tenantId: request.tenantId ?? getTenantId() ?? null, contentReportId: report.id, targetType: body.targetType });
           } catch (err) {
             await app.redis.del(windowKey).catch(() => undefined);
+            if (pagesToday > 0) await app.redis.decr(dayKey).catch(() => undefined);
             throw err;
           }
         }

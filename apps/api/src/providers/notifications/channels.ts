@@ -17,9 +17,14 @@ import { expoErrorClass, httpFailureReason, recordPushFailure, recordPushFailure
 import { DEFAULT_EXPO_PUSH_URL, assertExpoPushUrlCarriesToken, expoAccessToken, withoutToken } from './expo-access-token';
 import { gsm7Sms } from '../../utils/sms-text';
 import { log } from '../../utils/logger';
+import { withSmsCeiling } from './sms-ceiling';
 
 export type NotificationHandoff = <T>(part: string, effect: () => Promise<T>) => Promise<T | undefined>;
-export interface SmsOptions { handoff?: NotificationHandoff }
+export interface SmsOptions {
+  handoff?: NotificationHandoff;
+  /** [AUDIT-20261113 S3-6] An SOS text to a contact or an on-call page: counted against the daily ceiling, never refused by it. */
+  lifeSafety?: boolean;
+}
 export interface SmsProvider {
   supportsHandoff?: true;
   sendSms(to: string, body: string, options?: SmsOptions): Promise<{ ref: string }>;
@@ -615,7 +620,8 @@ export function getChannels(): NotificationChannels {
     case 'twilio':
       // [L04 · SMS allowlist] Outside production a real provider texts only allowlisted numbers.
       // The review seal stays the outermost layer every send passes.
-      return sealReviewChannels({ sms: guardNonProductionSms(new TwilioSmsProvider()), push: withPushRetry(getPushProvider()), email: getEmailProvider() });
+      // [AUDIT-20261113 S3-6] Every paid text is counted against the last-resort daily ceiling.
+      return sealReviewChannels({ sms: withSmsCeiling(guardNonProductionSms(new TwilioSmsProvider())), push: withPushRetry(getPushProvider()), email: getEmailProvider() });
     default:
       throw new Error('Unknown NOTIFICATION_PROVIDER');
   }
