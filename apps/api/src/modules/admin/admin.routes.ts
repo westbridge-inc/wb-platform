@@ -7888,6 +7888,9 @@ export async function adminRoutes(app: FastifyInstance) {
     if (doc.purgedAt || !doc.fileUrl) {
       throw new AppError(410, 'DOCUMENT_PURGED', 'This document has been deleted under the retention policy');
     }
+    // [FABLE-02 F9 · 13 Nov 2026] Recusal covers OPENING a paper, not only deciding it: a reviewer who shares an
+    // identity signal with its owner (or is its owner) gets no link and leaves no view.
+    await assertNotRecused(app.prisma, request.user.userId, doc.userId);
 
     const ttlSeconds = 300;
 
