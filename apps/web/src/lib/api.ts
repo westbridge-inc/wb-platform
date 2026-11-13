@@ -58,8 +58,12 @@ export interface CountryPricing {
 
 /** Public weekly price list — the same numbers the app's signup shows. */
 export async function fetchPricing(country?: string): Promise<CountryPricing | null> {
+  // [SEC-AUDIT 13 Nov 2026 · F15] ?country= comes straight from the public page's URL. Only a two-letter code
+  // reaches the API, as one encoded query value: anything else would mint a new, never-evicted fetch-cache entry.
+  const code = typeof country === 'string' && /^[A-Za-z]{2}$/.test(country) ? country.toUpperCase() : null;
+  const query = code ? `?${new URLSearchParams({ country: code }).toString()}` : '';
   try {
-    const res = await fetch(`${API_URL}/api/v1/auth/pricing${country ? `?country=${country}` : ''}`, {
+    const res = await fetch(`${API_URL}/api/v1/auth/pricing${query}`, {
       // Marketing page: revalidate hourly — prices change by config, not by the minute.
       next: { revalidate: 3600 },
     });

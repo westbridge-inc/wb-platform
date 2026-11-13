@@ -51,6 +51,7 @@ import { CATALOGUE_APPROVER_CAPABILITY, catalogueApproverRequired, holdsCatalogu
 import { isOwnSelfiePointer, signupSelfieFor, signupSelfieRequired } from '../verification/signup-selfie';
 import { isDocumentValidAt } from '../verification/document-validity';
 import { assertNotRecused } from '../verification/recusal';
+import { DOCUMENT_VIEW_LINKS_PER_HOUR } from '../verification/document-view-limit';
 import { disconnectUserSockets } from '../../utils/socket-revocation';
 import { completeMoverSessionRevocation } from '../mover-authority';
 import { ADMIN_ACTION_CLASSES, ADMIN_REASON_HEADER, ADMIN_ROUTE_AUTHORITY, capabilitiesOf, capabilityMode, decideCapability, holdsCapability, reasonOf, reasonProblem, reasonRefusal, routeTemplateOf } from './admin-authority';
@@ -64,8 +65,9 @@ import { adminAuditRow, auditWithin, markReplayAudited, verifyInlineRow, wroteAu
 import {
   ASSISTED_CONSENT_VALID_DAYS, ASSISTED_DOCUMENT_CONSENT, ASSISTED_PRIVACY_NOTICE_VERSION, ASSISTED_SETUP_QUESTION, assertAssistableDocType,
   NEVER_ASSISTED_DOC_TYPES, assertHolderTakesPapers, assistedItemMarks, consentInputSchema, consentsOf, isPersonalPaper, liveConsent,
-  recordAction, recordAssistedConsent, recordAssistedFiling, storeForAssist,
+  recordAction, recordAssistedConsent, recordAssistedFiling, storeForAssist, assistedConsentNotice, assistedPaperNotice,
 } from './assisted-setup';
+import { docTypeName } from '../verification/doc-names';
 import { sealVerificationUpload } from '../verification/upload-seal';
 import { listingAllowed } from '../vendor/listing-gate';
 import { setItemPhoto } from '../vendor/item-photo';
@@ -126,6 +128,7 @@ import { PRICING_KINDS, PRICING_SCHEMA_VERSION, PRICING_UNITS, readPricingConfig
 import { readFareBreakdown } from '../rides/taxi-waiting';
 import { readAdminItinerary } from '../rides/taxi-stops-read';
 import { createHash } from 'node:crypto';
+import { auditChangesForReaders } from './audit-redaction';
 import { adminAuditCounter, adminApprovalCounter, adminCapabilityCounter, adminReasonCounter, sensitiveReadCounter, billingTopupMissingKeyCounter, ratingReportTenancyCounter, returnRefundCounter, orderRefundCounter } from '../../plugins/observability';
 import { isUsableTopUpKey, TOPUP_KEY_MAX, TOPUP_KEY_MIN } from '../billing/billing.service';
 import { recoveryFor, requeueRefusal } from '../../jobs/recovery-policy';
@@ -2050,6 +2053,14 @@ export async function adminRoutes(app: FastifyInstance) {
     await assertNotRecused(app.prisma, adminId, store.holderId);
     return store;
   };
+  /** [FABLE-02 F4] One in-app notice to the store's account holder; logged (never thrown) when it cannot be sent. */
+  const tellHolder = async (holderId: string, notice: { title: string; body: string }, dedupeKey: string, log: { warn: (o: object, m: string) => void }) => {
+    try {
+      await notifications.send({ userId: holderId, type: 'SYSTEM_ANNOUNCEMENT', audience: 'business', ...notice, dedupeKey });
+    } catch (err) {
+      log.warn({ errName: err instanceof Error ? err.name : typeof err }, 'assisted setup: the account holder notice was not sent');
+    }
+  };
   const assistedConsentIdOf = (request: { query: unknown }) =>
     z.object({ consentId: z.string().min(1).max(64).optional() }).passthrough().parse(request.query ?? {}).consentId;
 
@@ -2103,6 +2114,8 @@ export async function adminRoutes(app: FastifyInstance) {
         agreedAt: body.agreedAt.toISOString(), consentVersion: ASSISTED_DOCUMENT_CONSENT.version,
       }),
     });
+    // [FABLE-02 F4] The account holder hears of it (after the commit; a failed notice never undoes the OK).
+    await tellHolder(store.holderId, assistedConsentNotice(store.name, body), `assisted-consent:${consent.id}`, request.log);
     reply.code(201);
     return { success: true, data: { id: consent.id, agreedAt: consent.agreedAt, channel: consent.channel, validDays: ASSISTED_CONSENT_VALID_DAYS } };
   });
@@ -2134,6 +2147,8 @@ export async function adminRoutes(app: FastifyInstance) {
         },
       },
     });
+    // [FABLE-02 F4] ...and of every paper filed under it.
+    await tellHolder(store.holderId, assistedPaperNotice(store.name, docTypeName(docType)), `assisted-paper:${doc.id}`, request.log);
     reply.code(201);
     return { success: true, data: { id: doc.id, docType: doc.docType, status: doc.status, createdAt: doc.createdAt, addedBySwift: true } };
   });
@@ -7501,7 +7516,9 @@ export async function adminRoutes(app: FastifyInstance) {
         // [ASSISTED SETUP] The uploader approving their own upload alone (the service refused it otherwise) says so on the record.
         const ownUpload = decided.assistedById === request.user.userId;
         await auditIn(tx, request.user.userId, 'APPROVE_VERIFICATION_DOC', 'VerificationDocument', id,
-          { docType: decided.docType, ...(body.insurance ? { insurance: body.insurance } : {}), ...(body.authorityConfirmed ? { signerConfirmedBy: body.authorityConfirmed.method } : {}),
+          // [SEC-AUDIT 13 Nov 2026 · F9] The reviewer's CHECKS only: the insurer and the policy number stay on the
+          // document row (behind documents.review, purged with it), never in the append-only trail any audit.read admin reads.
+          { docType: decided.docType, ...(body.insurance ? { insurance: { coverageClass: body.insurance.coverageClass, hireClassConfirmed: body.insurance.hireClassConfirmed, plateCrossChecked: body.insurance.plateCrossChecked } } : {}), ...(body.authorityConfirmed ? { signerConfirmedBy: body.authorityConfirmed.method } : {}),
             ...(ownUpload ? { assistedUploadedBySameAdmin: true, soleAdminChecked: true, assistedConsentId: decided.assistedConsentId } : {}) }, request);
         if (ownUpload) {
           await auditIn(tx, request.user.userId, 'ASSISTED_SAME_ADMIN_APPROVAL', 'VerificationDocument', id,
@@ -7893,7 +7910,8 @@ export async function adminRoutes(app: FastifyInstance) {
     return { success: true, data: narrative };
   });
 
-  app.get('/verification/:id/document-url', { preHandler: [adminGuard] }, async (request) => {
+  // [FABLE-02 F3 · 13 Nov 2026] Capped per reviewer per hour (document-view-limit.ts): no bulk walk of the store.
+  app.get('/verification/:id/document-url', { preHandler: [adminGuard], config: { rateLimit: { max: DOCUMENT_VIEW_LINKS_PER_HOUR, timeWindow: '1 hour' } } }, async (request) => {
     const { id } = request.params as { id: string };
     const doc = await tenantPrisma.verificationDocument.findUnique({
       where: { id },
@@ -7903,6 +7921,9 @@ export async function adminRoutes(app: FastifyInstance) {
     if (doc.purgedAt || !doc.fileUrl) {
       throw new AppError(410, 'DOCUMENT_PURGED', 'This document has been deleted under the retention policy');
     }
+    // [FABLE-02 F9 · 13 Nov 2026] Recusal covers OPENING a paper, not only deciding it: a reviewer who shares an
+    // identity signal with its owner (or is its owner) gets no link and leaves no view.
+    await assertNotRecused(app.prisma, request.user.userId, doc.userId);
 
     const ttlSeconds = 300;
 
@@ -8645,7 +8666,7 @@ export async function adminRoutes(app: FastifyInstance) {
     ]);
 
     const names = await accountNames(logs.map((log) => log.userId));
-    const rows = logs.map((log) => ({ ...log, actorName: (log.userId && names.get(log.userId)) ?? null, reason: statedReason(log.changes) }));
+    const rows = logs.map((log) => ({ ...log, changes: auditChangesForReaders(log.action, log.changes), actorName: (log.userId && names.get(log.userId)) ?? null, reason: statedReason(log.changes) }));
     return { success: true, ...paginatedResponse(rows, total, { page, limit, skip }) };
   });
 

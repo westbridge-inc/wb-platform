@@ -14,6 +14,7 @@ import PDFDocument from 'pdfkit';
 import type { Prisma, PrismaClient } from '@prisma/client';
 import { NotFoundError } from '../../utils/errors';
 import { isRetiredPlaceholder } from './doc-registry';
+import { auditChangesForReaders } from '../admin/audit-redaction';
 
 type Db = PrismaClient | Prisma.TransactionClient;
 
@@ -81,7 +82,7 @@ export async function custodyNarrative(db: Db, submissionId: string): Promise<Cu
     legalHolds: (c.holds ?? []).map((h) => ({ id: h.id, placedBy: h.placedBy, reason: h.reason, placedAt: h.placedAt.toISOString(), vaultStatus: h.vaultStatus })),
   }));
   const destruction = receipts.map((r) => ({ at: r.deletedAt.toISOString(), by: r.deletedBy, stores: r.storeLocations, bytesDeleted: Number(r.bytesDeleted), probe: r.verificationProbeResult, contentSha256: r.contentSha256 ? Buffer.from(r.contentSha256).toString('hex') : null }));
-  const audit = auditRows.map((a) => ({ at: a.createdAt.toISOString(), actor: a.userId ?? null, what: a.action, detail: (a.changes as Record<string, unknown> | null) ?? undefined }));
+  const audit = auditRows.map((a) => ({ at: a.createdAt.toISOString(), actor: a.userId ?? null, what: a.action, detail: (auditChangesForReaders(a.action, a.changes) as Record<string, unknown> | null) ?? undefined }));
 
   const timeline: CustodyEvent[] = [
     // Captured = the upload when the object is known (it precedes extraction, which precedes the row); else the row.
