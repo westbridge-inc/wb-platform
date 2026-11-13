@@ -37,9 +37,17 @@ async function reviewer(n: number) {
   return u.id;
 }
 const view = (adminId: string) => app.inject({ method: 'GET', url: `/api/v1/admin/verification/missing-${nanoid(10)}/document-url`, headers: { authorization: `Bearer ${tokens.get(adminId)}` } });
+/** [REVIEW-2498-A S3-1] The admin console's way: the HttpOnly session cookie, no Authorization header, one office IP. */
+const CONSOLE = { 'x-swift-client': 'admin-web', origin: 'http://localhost:3001' } as const;
+const viewFromConsole = (adminId: string) => app.inject({
+  method: 'GET', url: `/api/v1/admin/verification/missing-${nanoid(10)}/document-url`, remoteAddress: '203.0.113.50',
+  headers: { ...CONSOLE, cookie: `swift_at=${tokens.get(adminId)}` },
+});
 
+const priorCors = process.env['CORS_ORIGIN'];
 beforeAll(async () => {
   process.env['NODE_ENV'] = 'test';
+  process.env['CORS_ORIGIN'] = 'http://localhost:3001';
   app = Fastify({ logger: false });
   registerErrorHandler(app); registerEmptyJsonBodyParser(app);
   // The production composition (app.ts): keyed by the verified caller, a high global ceiling so only the route's own cap bites.
@@ -57,6 +65,7 @@ afterAll(async () => {
       await app.prisma.user.deleteMany({ where: { id: { in: users } } });
     }
   }, 'document-view-rate-test');
+  if (priorCors === undefined) delete process.env['CORS_ORIGIN']; else process.env['CORS_ORIGIN'] = priorCors;
   await app.close();
 });
 
@@ -73,5 +82,19 @@ describe('[FABLE-02 F3] view links are capped per reviewer per hour', () => {
     const over = await view(bulk);
     expect(over.statusCode).toBe(429);
     expect((await view(other)).statusCode).toBe(404);
+  });
+
+  it('[REVIEW-2498-A S3-1] console reviewers (cookie sessions) behind ONE office IP each get their own cap', async () => {
+    const first = await reviewer(3);
+    const colleague = await reviewer(4);
+    const signedIn = await viewFromConsole(first);
+    expect(signedIn.statusCode, signedIn.body).toBe(404); // authenticated by the cookie: the handler ran
+    for (let i = 1; i < DOCUMENT_VIEW_LINKS_PER_HOUR; i++) expect((await viewFromConsole(first)).statusCode, `request ${i + 1}`).toBe(404);
+    expect((await viewFromConsole(first)).statusCode).toBe(429);
+    // Same IP, another reviewer: untouched.
+    expect((await viewFromConsole(colleague)).statusCode).toBe(404);
+    // And the cap follows the reviewer, not the network: the same reviewer from another IP is still capped.
+    const elsewhere = await app.inject({ method: 'GET', url: `/api/v1/admin/verification/missing-${nanoid(10)}/document-url`, remoteAddress: '198.51.100.7', headers: { ...CONSOLE, cookie: `swift_at=${tokens.get(first)}` } });
+    expect(elsewhere.statusCode).toBe(429);
   });
 });
