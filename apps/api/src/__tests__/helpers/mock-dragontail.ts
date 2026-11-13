@@ -71,7 +71,11 @@ export class MockDragontail {
     this.tokens.clear();
   }
 
+  /** [flake 12 Nov] Bumped by every reset: a request that began before it belongs to an earlier test. */
+  private generation = 0;
+
   reset(): void {
+    this.generation += 1;
     this.requests.length = 0;
     this.inserted.length = 0;
     this.pending = [];
@@ -94,6 +98,7 @@ export class MockDragontail {
   }
 
   private async handle(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+    const generation = this.generation;
     const chunks: Buffer[] = [];
     for await (const chunk of req) chunks.push(chunk as Buffer);
     const raw = Buffer.concat(chunks).toString('utf8');
@@ -106,6 +111,14 @@ export class MockDragontail {
     if (this.onRequest) await this.onRequest(logged);
     const delay = this.pathDelays.get(path) ?? this.delayMs;
     if (delay > 0) await new Promise((r) => setTimeout(r, delay));
+    // [flake 12 Nov] A request an earlier test left in flight (a write whose client timed out while the mock held it)
+    // ends here: it is recorded in no later test's log and consumes none of that test's injected failures. Without
+    // this, a timed-out delivery insert landed ~1 s later inside whichever test was then running (seen on CI as an
+    // extra "delivery insert with a phone" after the privacy test's pickup).
+    if (generation !== this.generation) {
+      res.destroy();
+      return;
+    }
     const redirect = this.redirects.get(path);
     if (redirect) {
       res.writeHead(307, { Location: redirect });
