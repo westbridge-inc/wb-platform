@@ -61,6 +61,8 @@ export const APPROVER_CAPABILITY = 'approvals.decide';
 const ADMIN_ROLES = ['ADMIN', 'SUPER_ADMIN'] as const;
 /** Account states that can still sign in (auth refuses exactly these three). */
 const LOCKED_OUT = ['SUSPENDED', 'BANNED', 'DEACTIVATED'] as const;
+/** [AUDIT-20261113 S3-4] How long a locked-out admin still counts as an approver (solo mode stays off). */
+export const LOCKED_OUT_STILL_COUNTS_DAYS = 14;
 
 /** Hours, from a stored setting: default when unreadable, never under the floor, never over the cap. */
 export function clampCoolOffHours(value: unknown): number {
@@ -96,11 +98,17 @@ type RosterReader = Pick<PrismaClient, 'user'>;
  * the HIGHEST admin role it holds, whichever role is active right now — a
  * second admin who is momentarily "being a customer" is still a second admin.
  */
-export async function approverRoster(db: RosterReader): Promise<ApproverRosterEntry[]> {
+export async function approverRoster(db: RosterReader, now = new Date()): Promise<ApproverRosterEntry[]> {
   const users = await db.user.findMany({
     where: {
-      status: { notIn: [...LOCKED_OUT] },
-      OR: [{ activeRole: { in: [...ADMIN_ROLES] } }, { roles: { hasSome: [...ADMIN_ROLES] } }],
+      // [AUDIT-20261113 FABLE-03 S3-4] An admin suspended, banned or closed in the last
+      // LOCKED_OUT_STILL_COUNTS_DAYS still counts. Suspending is a one-person act (C3); without this, suspending
+      // the only other approver turned solo mode back on and removed the two-person rule with one person.
+      // The row's last change dates the lock-out (over-counting is the safe direction: solo stays off).
+      AND: [
+        { OR: [{ status: { notIn: [...LOCKED_OUT] } }, { updatedAt: { gte: new Date(now.getTime() - LOCKED_OUT_STILL_COUNTS_DAYS * 86_400_000) } }] },
+        { OR: [{ activeRole: { in: [...ADMIN_ROLES] } }, { roles: { hasSome: [...ADMIN_ROLES] } }] },
+      ],
     },
     select: { id: true, activeRole: true, roles: true, admin: { select: { permissions: true } } },
   });
