@@ -1063,7 +1063,8 @@ export class AuthService {
       const previous = !sessionCredentialMatches(session.refreshToken, refreshToken);
       if (previous) {
         if (!sessionCredentialMatches(session.previousRefreshToken, refreshToken)) return { kind: 'invalid' as const };
-        const graceMs = Number(process.env['REFRESH_REUSE_GRACE_MS'] ?? 10_000);
+        // [AUDIT-20261113 S4] Clamped: a large value would switch reuse detection off. At most 60 s.
+        const graceMs = Math.min(60_000, Math.max(0, Number(process.env['REFRESH_REUSE_GRACE_MS'] ?? 10_000) || 0));
         const age = session.rotatedAt ? Date.now() - session.rotatedAt.getTime() : Infinity;
         if (!(age <= graceMs)) {
           const cleanup = await this.revokeLockedSession(tx, session.id, session.userId);

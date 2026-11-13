@@ -1,4 +1,5 @@
 import type { FastifyInstance } from 'fastify';
+import { secretEquals } from '../utils/secret-equals';
 import fp from 'fastify-plugin';
 import client from 'prom-client';
 import * as Sentry from '@sentry/node';
@@ -1279,7 +1280,8 @@ async function observability(app: FastifyInstance) {
   app.get('/metrics', async (request, reply) => {
     const token = process.env['METRICS_TOKEN'];
     if (!token) throw new AppError(404, 'NOT_FOUND', 'Not found'); // off by default
-    if (request.headers.authorization !== `Bearer ${token}`) {
+    // [AUDIT-20261113 S4] constant-time compare
+    if (!secretEquals(request.headers.authorization, `Bearer ${token}`)) {
       throw new AppError(401, 'UNAUTHORIZED', 'Metrics token required');
     }
     reply.header('content-type', registry.contentType);
