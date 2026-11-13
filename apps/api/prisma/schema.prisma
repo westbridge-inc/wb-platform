@@ -6011,7 +6011,8 @@ model Admin {
   totpEnabledAt        DateTime?
   /// The last 30-second step accepted: a code is accepted once.
   totpLastStep         Int?
-  /// SHA-256 digests of the unused recovery codes (shown once at enrolment; each works once).
+  /// Keyed digests of the unused recovery codes (shown once at enrolment; each works once): "h1:" + HMAC-SHA256 under
+  /// HKDF-SHA256 of this account's authenticator secret (admin-totp.ts recoveryDigest). Never a bare hash.
   totpRecoveryHashes   String[] @default([])
 
   @@map("admins")

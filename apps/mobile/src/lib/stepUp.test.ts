@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { fmtWhen, isStepUpDismissed, isStepUpRequired, serverMessage, StepUpDismissed } from './stepUp';
+import { fmtWhen, isStepUpDismissed, isStepUpRequired, serverMessage, StepUpDismissed, usesAuthenticator } from './stepUp';
 
 // ---------------------------------------------------------------------------
 // [ALG-34] The client half of step-up: recognise the server's answer exactly,
@@ -74,5 +74,25 @@ describe('the code sheet', () => {
     const onSuccess = src.slice(src.indexOf('mutationFn: (c: string) => authApi.verifyStepUp(c, pinned())'));
     expect(onSuccess.slice(0, 400)).toContain('onVerified();');
     expect(src).toContain('accessibilityRole="alert"');
+  });
+});
+
+describe('[REVIEW-2501-B B-S4-1] an admin who set up an authenticator app', () => {
+  const src = readFileSync(join(process.cwd(), 'src/components/StepUpSheet.tsx'), 'utf8');
+
+  it('is recognised by the 409 STEP_UP_USE_AUTHENTICATOR and nothing else', () => {
+    expect(usesAuthenticator(err(409, 'STEP_UP_USE_AUTHENTICATOR'))).toBe(true);
+    expect(usesAuthenticator(err(403, 'STEP_UP_USE_AUTHENTICATOR'))).toBe(false);
+    expect(usesAuthenticator(err(409, 'CONFLICT'))).toBe(false);
+    expect(usesAuthenticator(null)).toBe(false);
+  });
+
+  it('the sheet asks for the authenticator code, never says it is texting one, and offers no resend', () => {
+    expect(src).toContain('usesAuthenticator(send.error)');
+    expect(src).toContain('enter the 6-digit code from your authenticator app. No text is sent.');
+    const heading = src.slice(src.indexOf('{authenticator'), src.indexOf('</T>', src.indexOf('{authenticator')));
+    expect(heading.indexOf('authenticator app')).toBeLessThan(heading.indexOf('texting a code'));
+    expect(src).toContain('{authenticator ? null : (');
+    expect(src).toContain('send.isError && !authenticator ? serverMessage(send.error,');
   });
 });

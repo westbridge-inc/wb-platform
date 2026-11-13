@@ -282,11 +282,15 @@ export async function sendOtp(phone: string) {
   if (!res.ok || !json.success) throw new Error(json?.error?.message || 'Could not send the code.');
 }
 
+/** [REVIEW-2501-B B-S4-2] Which app this is, from the server's fixed list: the admin sign-in email then says
+ *  "Mission Control (desktop)", not the words a script that names nothing gets ("a device Swift could not name"). */
+export const DESKTOP_DEVICE_TYPE = 'desktop';
+
 /** OTP login gated to admin accounts — same realm the admin console uses. */
 export async function verifyAdminLogin(phone: string, code: string) {
   const res = await fetch(`${API_URL}/api/v1/auth/verify-otp`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', 'x-device-type': DESKTOP_DEVICE_TYPE },
     body: JSON.stringify({ phone, code }),
   });
   const json = await res.json().catch(() => ({}));

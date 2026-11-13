@@ -56,13 +56,18 @@ import {
 
 export const ADMIN_SESSION_MAX_HOURS = 12;
 export const ADMIN_MFA_PENDING_MINUTES = 10;
-/** Codes judged per account in one window before the door rests (both kinds of code). */
+/** Authenticator codes judged per SESSION in one window before that session's door rests (B-S3-1). */
 export const ADMIN_MFA_MAX_FAILURES = 5;
 export const ADMIN_MFA_FAILURE_WINDOW_S = 15 * 60;
-/** Wrong codes per account per day before the authenticator-code door rests until the day is over. Recovery codes
- *  still work (inside the 15-minute window), so the only admin is never locked out for good. */
+/** Wrong authenticator codes per SESSION per day before that session's authenticator door rests. Recovery codes
+ *  still work, and every other session is untouched, so the only admin is never locked out by someone else. */
 export const ADMIN_MFA_DAY_MAX_FAILURES = 20;
 export const ADMIN_MFA_DAY_WINDOW_S = 24 * 3600;
+/** Recovery codes have their own counts per SESSION; they never close the authenticator door. */
+export const ADMIN_MFA_RECOVERY_MAX_FAILURES = 5;
+export const ADMIN_MFA_RECOVERY_DAY_MAX_FAILURES = 10;
+/** Wrong codes per ACCOUNT per day (all sessions) at which the owner is emailed. An alert only: never a refusal. */
+export const ADMIN_MFA_ACCOUNT_ALERT_FAILURES = 20;
 
 export function adminApiConsoleOnly(env: Record<string, string | undefined> = process.env): boolean {
   return env['ADMIN_API_CONSOLE_ONLY'] === '1';
@@ -258,10 +263,10 @@ export async function confirmAdminMfaEnrolment(app: FastifyInstance, request: Mf
   const admin = await adminRow(app, request.user.userId);
   if (admin.totpEnabledAt) throw new AppError(409, 'ADMIN_MFA_ALREADY_ENROLLED', 'An authenticator app is already set up on this account.');
   const secret = await openPending(admin, now);
-  await reserveAttempt(app, request, 'code');
+  const n = await reserveAttempt(app, request, 'code');
   const step = matchTotp(secret, code.trim(), now.getTime(), null);
   if (step === null) {
-    await recordFailure(app, request);
+    await recordFailure(app, request, 'code', n);
     throw new AppError(400, 'ADMIN_MFA_CODE_INVALID', 'That code does not match. Check the time on your phone and try the newest code.');
   }
   const recoveryCodes = newRecoveryCodes();
@@ -273,7 +278,7 @@ export async function confirmAdminMfaEnrolment(app: FastifyInstance, request: Mf
     },
   }), 'admin-mfa');
   if (done.count !== 1) throw new AppError(409, 'ADMIN_MFA_ENROLMENT_RACED', 'The set-up changed meanwhile. Reload and start again.');
-  await clearAttempts(app, request.user.userId);
+  await clearAttempts(app, request);
   await markSessionVerified(app, sessionId, now);
   await audit(app, request, 'ADMIN_MFA_ENROLLED');
   await notifyAdmin(app, request.user.userId, 'Swift: an authenticator app was set up on your admin account',
@@ -291,10 +296,10 @@ async function proveCurrentFactor(app: FastifyInstance, request: MfaRequest, adm
   if (!admin.totpEnabledAt || !admin.totpSecretEnc) throw new AppError(409, 'ADMIN_MFA_NOT_ENROLLED', 'Set up your authenticator app first.');
   const secret = await openTotpSecret(admin.totpSecretEnc);
   if (input.recoveryCode) {
-    await reserveAttempt(app, request, 'recovery');
+    const n = await reserveAttempt(app, request, 'recovery');
     const digest = recoveryDigest(secret, input.recoveryCode);
     if (normaliseRecoveryCode(input.recoveryCode).length !== 10 || !admin.totpRecoveryHashes.includes(digest)) {
-      await recordFailure(app, request);
+      await recordFailure(app, request, 'recovery', n);
       throw new AppError(400, 'ADMIN_MFA_CODE_INVALID', 'That recovery code is not valid, or was already used.');
     }
     const spent = await runWithoutTenant(() => app.prisma.admin.updateMany({
@@ -302,17 +307,17 @@ async function proveCurrentFactor(app: FastifyInstance, request: MfaRequest, adm
       data: { totpRecoveryHashes: admin.totpRecoveryHashes.filter((h) => h !== digest) },
     }), 'admin-mfa');
     if (spent.count !== 1) throw new AppError(400, 'ADMIN_MFA_CODE_INVALID', 'That recovery code is not valid, or was already used.');
-    await clearAttempts(app, request.user.userId);
+    await clearAttempts(app, request);
     const left = admin.totpRecoveryHashes.length - 1;
     await audit(app, request, 'ADMIN_MFA_RECOVERY_CODE_USED', { left });
     await notifyAdmin(app, request.user.userId, 'Swift: a recovery code was used on your admin account',
       `A recovery code was just used instead of your authenticator app on your Swift admin account. ${left} recovery codes are left.`);
     return { via: 'recovery', left };
   }
-  await reserveAttempt(app, request, 'code');
+  const n = await reserveAttempt(app, request, 'code');
   const step = matchTotp(secret, (input.code ?? '').trim(), now.getTime(), admin.totpLastStep);
   if (step === null) {
-    await recordFailure(app, request);
+    await recordFailure(app, request, 'code', n);
     throw new AppError(400, 'ADMIN_MFA_CODE_INVALID', 'That code does not match, or was already used. Try the newest code.');
   }
   // A code is accepted once: the step only moves forward (compare-and-set).
@@ -321,7 +326,7 @@ async function proveCurrentFactor(app: FastifyInstance, request: MfaRequest, adm
     data: { totpLastStep: step },
   }), 'admin-mfa');
   if (moved.count !== 1) throw new AppError(400, 'ADMIN_MFA_CODE_INVALID', 'That code was already used. Wait for the next one.');
-  await clearAttempts(app, request.user.userId);
+  await clearAttempts(app, request);
   return { via: 'code', left: admin.totpRecoveryHashes.length };
 }
 
@@ -371,10 +376,10 @@ export async function confirmAdminMfaReplacement(app: FastifyInstance, request: 
   const admin = await adminRow(app, request.user.userId);
   if (!admin.totpEnabledAt) throw new AppError(409, 'ADMIN_MFA_NOT_ENROLLED', 'Set up your authenticator app first.');
   const secret = await openPending(admin, now);
-  await reserveAttempt(app, request, 'code');
+  const n = await reserveAttempt(app, request, 'code');
   const step = matchTotp(secret, code.trim(), now.getTime(), null);
   if (step === null) {
-    await recordFailure(app, request);
+    await recordFailure(app, request, 'code', n);
     throw new AppError(400, 'ADMIN_MFA_CODE_INVALID', 'That code does not match. Check the time on your phone and try the newest code.');
   }
   const recoveryCodes = newRecoveryCodes();
@@ -386,7 +391,7 @@ export async function confirmAdminMfaReplacement(app: FastifyInstance, request: 
     },
   }), 'admin-mfa');
   if (done.count !== 1) throw new AppError(409, 'ADMIN_MFA_ENROLMENT_RACED', 'The set-up changed meanwhile. Reload and start again.');
-  await clearAttempts(app, request.user.userId);
+  await clearAttempts(app, request);
   await markSessionVerified(app, sessionId, now);
   await audit(app, request, 'ADMIN_MFA_REPLACED');
   await notifyAdmin(app, request.user.userId, 'Swift: your admin account moved to a new authenticator app',
@@ -410,54 +415,114 @@ export function authenticatorStepUpAnswer(): AppError {
   return new AppError(409, 'STEP_UP_USE_AUTHENTICATOR', 'Your admin account confirms it is you with your authenticator app: enter its 6-digit code. No text is sent.', { stepUp: { method: 'authenticator', verify: 'POST /auth/step-up/verify' } });
 }
 
-/** A step-up proved by the authenticator code: the same matcher, the same once-only step, the same attempt budget. */
+/** A step-up proved by the authenticator code: the same matcher, the same once-only step, the same per-session attempt counts. */
 export async function verifyStepUpWithAuthenticator(app: FastifyInstance, request: MfaRequest, code: string, now = new Date()): Promise<void> {
+  // [REVIEW-2501-B B-S3-1] An enrolled admin's step-up is an admin factor: the same 12-hour door as /admin-mfa/*.
+  // A week-old (refresh-extended) phone session is refused here and revoked, never left to burn attempts.
+  await assertSessionYoungEnough(app, request, attemptSessionOf(request), now);
   const admin = await adminRow(app, request.user.userId);
   await proveCurrentFactor(app, request, admin, { code }, now);
   await audit(app, request, 'ADMIN_STEP_UP_AUTHENTICATOR');
 }
 
-// ── attempts (S3-2, S4-2) ────────────────────────────────────────────────────
+// ── attempts (S3-2, S4-2, REVIEW-2501-B B-S3-1 / REVIEW-2501-A D-S3-1, B-S4-3) ─
+//
+// Every count that can REFUSE a code is kept per SESSION, never per account. With per-account counts, anyone
+// holding a texted-code session (an old phone session, or a second sign-in from someone who reads the owner's
+// texts) could burn the window and the day and so keep the only admin out of the console and every step-up gate,
+// recovery codes included. Now:
+//   - authenticator codes: 5 judged per session per 15 minutes, 20 per session per day;
+//   - recovery codes: their OWN counts (5 per 15 minutes, 10 per day, per session). A wrong recovery code never
+//     closes the authenticator-code door, and another session's failures never close this session's doors;
+//   - the account's wrong codes across all sessions are counted for the day only to TELL the owner (never refuses).
+// A session reaches these doors for 12 hours at most (assertSessionYoungEnough, step-up included), so one texted
+// sign-in buys at most 20 authenticator guesses, and each new sign-in costs a text and emails the owner.
 
-const failureKey = (userId: string) => `admin_mfa_fail:${userId}`;
-const dayKey = (userId: string) => `admin_mfa_fail_day:${userId}`;
+export type MfaFactor = 'code' | 'recovery';
+const FACTOR_LIMITS: Record<MfaFactor, { window: number; day: number }> = {
+  code: { window: ADMIN_MFA_MAX_FAILURES, day: ADMIN_MFA_DAY_MAX_FAILURES },
+  recovery: { window: ADMIN_MFA_RECOVERY_MAX_FAILURES, day: ADMIN_MFA_RECOVERY_DAY_MAX_FAILURES },
+};
+/** The Redis keys of one session's attempt counts for one kind of code (exported for the tests). */
+export function adminMfaAttemptKeys(sessionId: string, factor: MfaFactor) {
+  return {
+    window: `admin_mfa_sess_fail:${sessionId}:${factor}`,
+    day: `admin_mfa_sess_fail_day:${sessionId}:${factor}`,
+    windowNotice: `admin_mfa_rest_notice:${sessionId}:${factor}`,
+  };
+}
+/** The account's wrong codes today, across every session: an alert count, never a refusal. */
+export const adminMfaAccountDayKey = (userId: string) => `admin_mfa_acct_fail_day:${userId}`;
+
+/** The /admin-mfa/* route ceiling's bucket: the session that sign-in checked (it runs after app.authenticate). */
+export function adminMfaRouteLimitKey(request: Pick<FastifyRequest, 'ip'> & { authSessionId?: string | null }): string {
+  return request.authSessionId ? `admin-mfa-route:${request.authSessionId}` : `admin-mfa-route-ip:${request.ip}`;
+}
+
 /** INCR and the window's expiry in ONE step: a key never lives without its expiry (S4-2), and a key found without
  *  one is given it. Returns the count after the increment. */
 const INCR_WITH_WINDOW = "local n = redis.call('INCR', KEYS[1]) if redis.call('TTL', KEYS[1]) < 0 then redis.call('EXPIRE', KEYS[1], ARGV[1]) end return n";
+/** [B-S4-3] Set-if-absent, living exactly as long as the window it marks: 1 for the one caller that set it. */
+const MARK_RESTING_PERIOD = "local ttl = redis.call('PTTL', KEYS[2]) if ttl <= 0 then ttl = tonumber(ARGV[1]) end if redis.call('SET', KEYS[1], '1', 'NX', 'PX', ttl) then return 1 end return 0";
 
 async function incrWithin(app: FastifyInstance, key: string, windowS: number): Promise<number> {
   return Number(await app.redis.eval(INCR_WITH_WINDOW, 1, key, String(windowS)));
 }
 
+function attemptSessionOf(request: MfaRequest): string {
+  if (!request.authSessionId) throw new AppError(401, 'UNAUTHORIZED', 'This device session is no longer active');
+  return request.authSessionId;
+}
+
 /**
  * Reserve one judged attempt BEFORE the code is compared: concurrent guesses each take a place, so no more than
- * ADMIN_MFA_MAX_FAILURES are ever judged in one window. An authenticator code also needs the day under its limit.
+ * the window's limit are ever judged. The day's limit is checked first. Both are THIS session's, for THIS kind of
+ * code. Returns the place taken in the window.
  */
-async function reserveAttempt(app: FastifyInstance, request: MfaRequest, factor: 'code' | 'recovery'): Promise<void> {
-  const userId = request.user.userId;
-  if (factor === 'code' && Number((await app.redis.get(dayKey(userId))) ?? 0) >= ADMIN_MFA_DAY_MAX_FAILURES) {
-    throw new AppError(429, 'ADMIN_MFA_RESTING', 'Too many wrong codes today. Use one of your recovery codes, or try again tomorrow.');
+async function reserveAttempt(app: FastifyInstance, request: MfaRequest, factor: MfaFactor): Promise<number> {
+  const keys = adminMfaAttemptKeys(attemptSessionOf(request), factor);
+  const limits = FACTOR_LIMITS[factor];
+  if (Number((await app.redis.get(keys.day)) ?? 0) >= limits.day) {
+    throw new AppError(429, 'ADMIN_MFA_RESTING', factor === 'code'
+      ? 'Too many wrong codes on this device today. Use one of your recovery codes, or sign in again.'
+      : 'Too many wrong recovery codes on this device today. Use your authenticator app, or sign in again.');
   }
-  const n = await incrWithin(app, failureKey(userId), ADMIN_MFA_FAILURE_WINDOW_S);
-  if (n > ADMIN_MFA_MAX_FAILURES) {
-    throw new AppError(429, 'ADMIN_MFA_RESTING', 'Too many wrong codes. Wait 15 minutes, then try again.');
+  const n = await incrWithin(app, keys.window, ADMIN_MFA_FAILURE_WINDOW_S);
+  if (n > limits.window) {
+    throw new AppError(429, 'ADMIN_MFA_RESTING', factor === 'code'
+      ? 'Too many wrong codes. Wait 15 minutes, then try again.'
+      : 'Too many wrong recovery codes. Wait 15 minutes, or use your authenticator app.');
   }
+  return n;
 }
 
-/** A wrong code: count it for the day, and tell the owner when a limit is reached. */
-async function recordFailure(app: FastifyInstance, request: MfaRequest): Promise<void> {
-  const userId = request.user.userId;
-  const day = await incrWithin(app, dayKey(userId), ADMIN_MFA_DAY_WINDOW_S);
-  const window = Number((await app.redis.get(failureKey(userId))) ?? 0);
-  if (window === ADMIN_MFA_MAX_FAILURES || day === ADMIN_MFA_DAY_MAX_FAILURES) {
-    await audit(app, request, 'ADMIN_MFA_RESTING', { today: day });
-    await notifyOwners(app, userId, 'Swift: wrong authenticator codes on an admin account',
-      `${day} wrong authenticator or recovery codes were entered today on a Swift admin account, after a successful texted sign-in code. Code entry is paused for a while.`);
-  }
+/**
+ * A wrong code: count it for this session's day and for the account's alert count, and tell the owner ONCE when a
+ * door rests (B-S4-3: the window's place `n` is the atomic INCR's own answer, and the notice is a set-if-absent for
+ * the resting period, so a burst neither loses nor repeats it) or when the account's day count reaches its alert.
+ */
+async function recordFailure(app: FastifyInstance, request: MfaRequest, factor: MfaFactor, n: number): Promise<void> {
+  const sessionId = attemptSessionOf(request);
+  const keys = adminMfaAttemptKeys(sessionId, factor);
+  const limits = FACTOR_LIMITS[factor];
+  const day = await incrWithin(app, keys.day, ADMIN_MFA_DAY_WINDOW_S);
+  const today = await incrWithin(app, adminMfaAccountDayKey(request.user.userId), ADMIN_MFA_DAY_WINDOW_S);
+  const reasons: string[] = [];
+  if (n >= limits.window && Number(await app.redis.eval(MARK_RESTING_PERIOD, 2, keys.windowNotice, keys.window, String(ADMIN_MFA_FAILURE_WINDOW_S * 1000))) === 1) reasons.push('window');
+  if (day === limits.day) reasons.push('day');
+  if (today === ADMIN_MFA_ACCOUNT_ALERT_FAILURES) reasons.push('account');
+  if (reasons.length === 0) return;
+  await audit(app, request, 'ADMIN_MFA_RESTING', { today, factor, reasons, sessionId });
+  await notifyOwners(app, request.user.userId, 'Swift: wrong authenticator codes on an admin account',
+    `${today} wrong authenticator or recovery codes were entered today on a Swift admin account, after a successful texted sign-in code. Code entry on that device session is paused for a while; other sessions are not affected. If it was not you, sign out of every device.`);
 }
 
-async function clearAttempts(app: FastifyInstance, userId: string): Promise<void> {
-  await app.redis.del(failureKey(userId));
+/** A right code: this session's windows start again (the day counts stay). */
+async function clearAttempts(app: FastifyInstance, request: MfaRequest): Promise<void> {
+  const sessionId = attemptSessionOf(request);
+  const code = adminMfaAttemptKeys(sessionId, 'code');
+  const recovery = adminMfaAttemptKeys(sessionId, 'recovery');
+  await app.redis.del(code.window, code.windowNotice, recovery.window, recovery.windowNotice);
 }
 
 // ── notices ──────────────────────────────────────────────────────────────────

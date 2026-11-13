@@ -17,6 +17,7 @@ const SERVICE_SENDERS: Record<string, string> = {
   'modules/vendor/authority-letter/authority-letter.service.ts': 'the letter-of-authority link and code a store account holder asked Swift to text the signer (no marketing)',
   'modules/admin/admin-email-change.ts': 'security notice to an admin e-mail address being replaced',
   'modules/auth/admin-mfa.ts': 'security notices to an admin\'s own address: a new sign-in, an authenticator set up, a recovery code used',
+  'modules/auth/admin-mfa-reset.ts': 'the break-glass notice to an admin (e-mail and text) that an operator cleared their authenticator and signed out every device',
   'modules/admin/phone-change.ts': 'the code to a new number and the notice to the old one when support moves an account',
   'modules/admin/solo-approval.ts': 'the owner approval code for a privileged action',
   'modules/ops/seed-plan.ts': 'the owner sign-in code and notices for a solo production re-seed',

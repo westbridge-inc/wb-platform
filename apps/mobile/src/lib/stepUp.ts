@@ -17,6 +17,14 @@ export function isStepUpRequired(e: unknown): boolean {
   return err?.response?.status === 403 && err?.response?.data?.error?.code === STEP_UP_CODE;
 }
 
+/** [REVIEW-2501-B B-S4-1] An admin who set up an authenticator app: the send answers 409 STEP_UP_USE_AUTHENTICATOR
+ *  (no text is sent) and the code to enter is the app's. */
+export const STEP_UP_USE_AUTHENTICATOR = 'STEP_UP_USE_AUTHENTICATOR';
+export function usesAuthenticator(e: unknown): boolean {
+  const err = e as ApiLikeError;
+  return err?.response?.status === 409 && err?.response?.data?.error?.code === STEP_UP_USE_AUTHENTICATOR;
+}
+
 /** The server's sentence when it gave one; the caller's fallback otherwise. */
 export function serverMessage(e: unknown, fallback: string): string {
   const err = e as ApiLikeError;

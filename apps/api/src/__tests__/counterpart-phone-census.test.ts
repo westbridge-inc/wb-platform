@@ -61,6 +61,8 @@ const LEDGER: Record<string, { count: number; why: string }> = {
   'modules/ads/advertiser.service.ts': { count: 1, why: `${OWN} (advertiser team: accepted members only)` },
   'modules/auth/auth.routes.ts': { count: 2, why: OWN },
   'modules/auth/step-up.ts': { count: 2, why: INTERNAL },
+  // [REVIEW-2501-B B-S4-7] the break-glass: the admin's own number, masked in the operator's summary (last four for the typed confirmation) and texted the reset notice. Never in a response.
+  'modules/auth/admin-mfa-reset.ts': { count: 2, why: `${INTERNAL} (the admin authenticator break-glass: masked summary, the typed confirmation's last four, the notice text)` },
   'modules/billing/billing.service.ts': { count: 1, why: INTERNAL },
   'modules/billing/mmg-checkout-support.ts': { count: 4, why: OPS },
   // [ENTERPRISE E3] The owner's own phone on their own fee statement.
