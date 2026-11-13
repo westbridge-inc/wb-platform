@@ -65,15 +65,54 @@ export function normalizeTitle(raw: string): string {
  *  plus bare list-item text. No DOM dependency — parse failures surface as
  *  PARSE_EMPTY, which is a FAILURE, never a quiet zero. */
 export function parseEntries(html: string): GazetteEntry[] {
+  // [REVIEW-2498-A S3-2] A linear scan, not one regex: `<a\b[^>]*href=…[^>]*>([\s\S]*?)<\/a>` re-scanned to the end
+  // of the page from every `<a` that never closed (400k characters of "<a " took 23 s). Here each `<a`, `>` and
+  // `</a>` is found once: the next `>` and the next `</a>` are remembered, so a run of unclosed or unended tags costs
+  // one pass. Same reading as before: the tag's last href="…"/'…' value, the text between it and the first `</a>`,
+  // inner tags removed, whitespace folded, titles of 8 characters or more.
   const out: GazetteEntry[] = [];
-  const anchorRe = /<a\b[^>]*href=["']([^"']+)["'][^>]*>([\s\S]*?)<\/a>/gi;
+  const open = /<a(?![\w])/gi;
+  const close = /<\/a>/gi;
+  let nextGt = -1;
+  let nextClose = -1;
+  let triedGt = -1;
   let m: RegExpExecArray | null;
-  while ((m = anchorRe.exec(html)) !== null) {
-    const title = m[2]!.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim();
-    if (title.length >= 8) out.push({ title, url: m[1]! });
+  while ((m = open.exec(html)) !== null) {
+    const start = m.index;
+    if (nextGt <= start) nextGt = html.indexOf('>', start);
+    if (nextGt === -1) break; // no tag after this point can end
+    if (nextClose <= nextGt) {
+      close.lastIndex = nextGt + 1;
+      nextClose = close.exec(html)?.index ?? -1;
+    }
+    if (nextClose === -1) break; // no anchor after this point can close
+    // A later `<a` inside a tag already tried is a suffix of it: no href there either. Each tag is read once.
+    if (nextGt === triedGt) continue;
+    triedGt = nextGt;
+    const tag = html.slice(start + 2, nextGt);
+    let href: string | undefined;
+    if (tag.length <= MAX_ANCHOR_TAG) {
+      // The LAST `href=` whose quoted value completes, as the old greedy `[^>]*href=` chose it.
+      const starts = [...tag.matchAll(/href=/gi)].map((h) => h.index);
+      const value = /href=["']([^"']+)["']/iy;
+      for (let k = starts.length - 1; k >= 0 && href === undefined; k--) {
+        value.lastIndex = starts[k]!;
+        href = value.exec(tag)?.[1];
+      }
+    }
+    if (href === undefined) continue; // not an anchor with a link: look for the next `<a`
+    const inner = html.slice(nextGt + 1, nextClose);
+    open.lastIndex = nextClose + 4;
+    if (inner.length > MAX_ANCHOR_INNER) continue;
+    // `<[^<>]*>`, not `<[^>]+>`: a run of `<` with no `>` is passed once, never re-scanned from each `<`.
+    const title = inner.replace(/<[^<>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+    if (title.length >= 8) out.push({ title, url: href });
   }
   return out;
 }
+/** [REVIEW-2498-A S3-2] An anchor's own tag, and the markup inside it, past which it is not a listing entry. */
+const MAX_ANCHOR_TAG = 4_096;
+const MAX_ANCHOR_INNER = 20_000;
 
 /** [F-024-07 → F-026-03] Does an anchor title look like a gazette PUBLICATION
  *  rather than site chrome?
@@ -221,7 +260,41 @@ export function contentHash(sourceId: string, hit: WatchHit): string {
     .digest('hex');
 }
 
-export type FetchLike = (url: string, init: { signal: AbortSignal; headers: Record<string, string> }) => Promise<{ status: number; text(): Promise<string> }>;
+export type FetchLike = (url: string, init: { signal: AbortSignal; headers: Record<string, string> }) => Promise<{
+  status: number;
+  text(): Promise<string>;
+  /** The real fetch's; read before the body so a declared oversize is refused unread. */
+  headers?: { get(name: string): string | null };
+  /** The real fetch's stream; read up to MAX_LISTING_CHARS, never buffered whole. */
+  body?: ReadableStream<Uint8Array> | null;
+}>;
+
+/** [SEC-AUDIT F12 · REVIEW-2498-A S4-1] The listing as text, never more than MAX_LISTING_CHARS of it in memory: a
+ *  declared Content-Length past the cap is refused unread, and a stream is cancelled as soon as it passes the cap. */
+async function readListing(res: Awaited<ReturnType<FetchLike>>): Promise<string> {
+  const declared = Number(res.headers?.get('content-length') ?? NaN);
+  if (Number.isFinite(declared) && declared > MAX_LISTING_CHARS * 4) throw new ListingTooLarge(); // 4 bytes per character at most
+  if (!res.body) {
+    const text = await res.text();
+    if (text.length > MAX_LISTING_CHARS) throw new ListingTooLarge();
+    return text;
+  }
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let text = '';
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    text += decoder.decode(value, { stream: true });
+    if (text.length > MAX_LISTING_CHARS) {
+      await reader.cancel().catch(() => undefined);
+      throw new ListingTooLarge();
+    }
+  }
+  text += decoder.decode();
+  if (text.length > MAX_LISTING_CHARS) throw new ListingTooLarge();
+  return text;
+}
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -263,9 +336,8 @@ export async function runScan(
         if (res.status !== 200) {
           error = `HTTP_${res.status}`;
         } else {
-          const html = await res.text();
-          // [SEC-AUDIT 13 Nov 2026 · F12] A remote page is untrusted input to regexes on the server's event loop.
-          if (html.length > MAX_LISTING_CHARS) throw new ListingTooLarge();
+          // [SEC-AUDIT 13 Nov 2026 · F12] A remote page is untrusted input to the server's event loop and memory.
+          const html = await readListing(res);
           listingHash = createHash('sha256').update(html).digest('hex');
           entries = parseEntries(html);
           const floor = source.minEntries ?? 5;

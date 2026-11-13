@@ -334,4 +334,40 @@ describe('commencement watch [DCR-1 CW]', () => {
     const entries = parseEntries('<a href="/x"><b>The Data</b> Protection Act 2023 (Commencement) Order</a>');
     expect(entries[0]!.title).toContain('Protection Act');
   });
+
+  it('[REVIEW-2498-A S3-2] parseEntries reads anchors exactly as before', () => {
+    const html = `<ul><li><A class="x" HREF='/a1' data-y="1">The Fisheries (Amendment) Act 2026</A></li>
+      <li><a href="/a2"><span>Order No. 12 of 2026</span> — Municipal Fees</a></li><li><a name="n">no href here at all</a></li>
+      <li><a href="/a3">short</a></li><li><abbr>x</abbr><a href="/a4" href2='z'>Notice No. 88 of 2026</a></li></ul>`;
+    expect(parseEntries(html)).toEqual([
+      { title: 'The Fisheries (Amendment) Act 2026', url: '/a1' },
+      { title: 'Order No. 12 of 2026 — Municipal Fees', url: '/a2' },
+      { title: 'Notice No. 88 of 2026', url: '/a4' },
+    ]);
+  });
+
+  it('[REVIEW-2498-A S3-2] parseEntries is linear on hostile markup (unclosed anchors, tags with no ">")', () => {
+    for (const unit of ["<a href='x'>", '<a ', '<a x=1 ', '<a href="/y">The Data Act 2026 ', '<a href="/z">' + '<'.repeat(19_000) + '</a>', '<a ' + 'href="'.repeat(600) + '>']) {
+      const html = unit.repeat(Math.ceil(400_000 / unit.length));
+      const started = performance.now();
+      const entries = parseEntries(html);
+      expect(performance.now() - started, unit.slice(0, 20)).toBeLessThan(250);
+      if (!unit.includes('</a>')) expect(entries).toEqual([]); // nothing ever closes: nothing is an entry
+    }
+  });
+
+  it('[REVIEW-2498-A S4-1] an oversized listing is refused without being read whole: by its declared length, or as it streams', async () => {
+    const big: WatchSource = { id: `stream-${runId}`, url: 'https://gazette.test/stream', trust: 'S1' };
+    const neverText = async (): Promise<string> => { throw new Error('the whole body must not be read'); };
+    const declared: FetchLike = async () => ({ status: 200, text: neverText, headers: { get: (n: string) => (n.toLowerCase() === 'content-length' ? String(MAX_LISTING_CHARS * 4 + 1) : null) } });
+    expect((await runScan(app.prisma, declared, [big]))[0]).toMatchObject({ error: 'BODY_TOO_LARGE', entries: 0 });
+    // A body with no length that never ends: read only up to the cap.
+    const chunk = new TextEncoder().encode('<li>'.repeat(16_384));
+    const endless: FetchLike = async () => ({ status: 200, text: neverText, headers: { get: () => null }, body: new ReadableStream<Uint8Array>({ pull(c) { c.enqueue(chunk); } }) });
+    expect((await runScan(app.prisma, endless, [big]))[0]).toMatchObject({ error: 'BODY_TOO_LARGE', entries: 0 });
+    // A normal streamed page still parses.
+    const okBody = new TextEncoder().encode(page([DPA_POSITIVE]));
+    const streamed: FetchLike = async () => ({ status: 200, text: neverText, headers: { get: () => String(okBody.length) }, body: new ReadableStream<Uint8Array>({ start(c) { c.enqueue(okBody); c.close(); } }) });
+    expect((await runScan(app.prisma, streamed, [big]))[0]).toMatchObject({ error: expect.stringMatching(/^PARSE_THIN/), entries: 1 });
+  });
 });
