@@ -50,6 +50,8 @@ export interface OrderSecrets {
   pickupCode?: string | null;
   /** [AUDIT-20261113 F2] When the current ride PIN was issued (null/absent: at order creation). */
   ridePinIssuedAt?: Date | null;
+  /** [AUDIT-20261113 F2] When the current pickup code was issued (null/absent: at order creation). */
+  pickupCodeIssuedAt?: Date | null;
 }
 
 export const SECRET_REDACTION = '[code removed]';

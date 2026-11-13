@@ -167,7 +167,7 @@ export async function rotatePickupCode(deps: HandoverRevealDeps, input: RevealIn
     // silently overwritten, or two operators hand two different codes out
     const updated = await tx.order.updateMany({
       where: { id: order.id, pickupCode: order.pickupCode },
-      data: { pickupCode: next, pickupCodeAttempts: 0 },
+      data: { pickupCode: next, pickupCodeAttempts: 0, pickupCodeIssuedAt: new Date() },
     });
     if (updated.count !== 1) {
       throw new AppError(409, 'ROTATION_RACED', 'This pickup code was rotated by someone else — reload the order.');

@@ -2877,6 +2877,8 @@ model Order {
   /// [AUDIT-20261113 F2] When the CURRENT ride PIN was issued (null: at order creation). A chat row written
   /// before it cannot carry knowledge of it, so history is never re-judged against a later PIN (no read oracle).
   ridePinIssuedAt    DateTime?
+  /// [AUDIT-20261113 F2] When the CURRENT pickup code was issued (null: at order creation); same rule as ridePinIssuedAt.
+  pickupCodeIssuedAt DateTime?
   /// HND-001: failed pickup-code attempts, for the same brute-force lockout the
   /// taxi ride PIN already has (a 6-digit handover code is guessable without it).
   pickupCodeAttempts Int       @default(0)

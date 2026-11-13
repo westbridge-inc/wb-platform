@@ -70,7 +70,7 @@ export async function resolveRoomAuthority(prisma: ChatAuthorityDb, roomId: stri
   if (room.orderId) {
     const order = await prisma.order.findUnique({
       where: { id: room.orderId },
-      select: { tenantId: true, customerId: true, status: true, ridePin: true, ridePinIssuedAt: true, pickupCode: true, rider: { select: { userId: true } }, driver: { select: { userId: true } } },
+      select: { tenantId: true, customerId: true, status: true, ridePin: true, ridePinIssuedAt: true, pickupCode: true, pickupCodeIssuedAt: true, rider: { select: { userId: true } }, driver: { select: { userId: true } } },
     });
     if (!order) return null;
     participants.set(order.customerId, 'customer');
@@ -79,7 +79,7 @@ export async function resolveRoomAuthority(prisma: ChatAuthorityDb, roomId: stri
     return {
       roomId: room.id, tenantId: order.tenantId, orderId: room.orderId, serviceJobId: null, participants,
       isActive: room.isActive, writable: room.isActive && !TERMINAL_ORDERS.has(order.status),
-      secrets: { ridePin: order.ridePin, pickupCode: order.pickupCode, ridePinIssuedAt: order.ridePinIssuedAt },
+      secrets: { ridePin: order.ridePin, pickupCode: order.pickupCode, ridePinIssuedAt: order.ridePinIssuedAt, pickupCodeIssuedAt: order.pickupCodeIssuedAt },
     };
   }
   if (room.serviceJobId) {
@@ -229,10 +229,13 @@ export async function serializeChatMessage(row: StoredChatMessage, authority: Pi
  */
 export const RIDE_PIN_ISSUE_SKEW_MS = 5_000;
 export function secretsKnowableBy(row: Pick<StoredChatMessage, 'createdAt'>, secrets: OrderSecrets): OrderSecrets {
-  const issuedAt = secrets.ridePinIssuedAt;
-  if (!issuedAt || !secrets.ridePin) return secrets;
-  if (row.createdAt.getTime() >= issuedAt.getTime() + RIDE_PIN_ISSUE_SKEW_MS) return secrets;
-  return { ...secrets, ridePin: null };
+  // Every re-issuable code follows the one rule: the ride PIN and the pickup code (support's rotation).
+  const predates = (issuedAt: Date | null | undefined) => !!issuedAt && row.createdAt.getTime() < issuedAt.getTime() + RIDE_PIN_ISSUE_SKEW_MS;
+  return {
+    ...secrets,
+    ...(secrets.ridePin && predates(secrets.ridePinIssuedAt) ? { ridePin: null } : {}),
+    ...(secrets.pickupCode && predates(secrets.pickupCodeIssuedAt) ? { pickupCode: null } : {}),
+  };
 }
 
 export async function serializeChatMessages(rows: StoredChatMessage[], authority: Pick<RoomAuthority, 'roomId' | 'secrets'>, surface: ChatSurface): Promise<ChatMessageView[]> {

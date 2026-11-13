@@ -417,3 +417,20 @@ describe('[AUDIT-20261113 F2] history is not an oracle for the current ride PIN'
   });
 });
 
+// [AUDIT-20261113 F2 · review parity] The pickup code can be re-issued too (support's rotate): a row written
+// before that is not judged against the new code on read either.
+describe('[AUDIT-20261113 F2] history is not an oracle for a re-issued pickup code', () => {
+  it('a row written before the pickup code was issued is shown as written; a later row holding it is hidden', async () => {
+    const NEW_CODE = '864213';
+    await app.prisma.chatRoom.update({ where: { id: roomId }, data: { isActive: true } });
+    const crafted = (await app.prisma.chatMessage.create({ data: { chatRoomId: roomId, senderId: customerId, message: `list 77${NEW_CODE}55`, messageType: 'text', createdAt: new Date(Date.now() - 60_000) } })).id;
+    await app.prisma.order.update({ where: { id: orderId }, data: { pickupCode: NEW_CODE, pickupCodeIssuedAt: new Date() } as never });
+    const later = (await app.prisma.chatMessage.create({ data: { chatRoomId: roomId, senderId: customerId, message: `code ${NEW_CODE}`, messageType: 'text', createdAt: new Date(Date.now() + 10_000) } })).id;
+    const res = await inject('GET', `/rooms/${roomId}/messages`, customerToken);
+    expect(res.statusCode).toBe(200);
+    const rows = res.json().data as Array<{ id: string; message: string }>;
+    expect(rows.find((r) => r.id === crafted)!.message).toBe(`list 77${NEW_CODE}55`);
+    expect(rows.find((r) => r.id === later)!.message).toBe(SECRET_REDACTION);
+  });
+});
+
