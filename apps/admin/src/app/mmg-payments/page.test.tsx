@@ -184,6 +184,36 @@ describe('MMG payments: one payment, its timeline and what it paid', () => {
     expect(within(panel).queryByText('Credited period')).toBeNull();
   });
 
+  it('[owner ruling 13 Nov] a payment held as late offers the owner\'s credit with the MMG reference and a reason; no other hold does', async () => {
+    const late = { ...held, reason: 'PAYMENT_TIME_OUTSIDE_WINDOW' };
+    const fetchMock = mockApi(({ url, method }: ApiRequest) => {
+      if (url.pathname === `${PATH}/${held.id}`) return { body: { success: true, data: detailOf(late) } };
+      if (method === 'POST' && url.pathname === `${PATH}/${held.id}/credit-late`) return { body: { success: true, data: { status: 'CONFIRMED', mmgTransactionId: '20402048609999', secondReviewNeeded: true } } };
+      return page([late]);
+    });
+    const { user } = renderWithQuery(<MmgPaymentsPage />);
+    await screen.findByRole('table');
+    await user.click(screen.getByRole('button', { name: `Open payment ${held.swiftReference}` }));
+    const panel = await screen.findByRole('region', { name: 'Credit this late payment' });
+    const submit = within(panel).getByRole('button', { name: 'Credit this late payment' }) as HTMLButtonElement;
+    expect(submit.disabled).toBe(true);
+    await user.type(within(panel).getByLabelText('MMG reference from the statement'), '20402048609999');
+    await user.type(within(panel).getByLabelText('Why it is being credited'), 'Paid three minutes late; on the statement');
+    await user.click(submit);
+    expect(await within(panel).findByText(/A second person reviews it\./)).toBeTruthy();
+    const post = fetchMock.mock.calls.find(([input, init]) => String(input).endsWith('/credit-late') && init?.method === 'POST');
+    expect(JSON.parse(String(post![1]!.body))).toEqual({ mmgReference: '20402048609999', reason: 'Paid three minutes late; on the statement' });
+  });
+
+  it('[owner ruling 13 Nov] an ordinary hold offers no late credit', async () => {
+    mockApi(({ url }: ApiRequest) => (url.pathname === `${PATH}/${held.id}` ? { body: { success: true, data: detailOf(held) } } : page([held])));
+    const { user } = renderWithQuery(<MmgPaymentsPage />);
+    await screen.findByRole('table');
+    await user.click(screen.getByRole('button', { name: `Open payment ${held.swiftReference}` }));
+    await screen.findByRole('region', { name: 'Payment detail' });
+    expect(screen.queryByRole('region', { name: 'Credit this late payment' })).toBeNull();
+  });
+
   it("[Sol, DS663 · 7 Oct] MMG's history record dated after MMG's first reply says so, never 'Inside the checkout window'", async () => {
     mockApi(({ url }: ApiRequest) => (url.pathname === `${PATH}/${held.id}`
       ? { body: { success: true, data: detailOf(held, { timeline: [{ at: held.replyAt!, source: 'HISTORY', resultCode: null, transactionStatus: 'completed', mmgTransactionId: '20402048536280', mmgTransactionReference: null, amount: '6001', currency: 'GYD', windowCheck: 'AFTER_REPLY', failure: null }] }) } }

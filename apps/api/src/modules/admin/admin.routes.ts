@@ -94,6 +94,7 @@ import { maskPhone } from '../auth/step-up';
 import { maskOwnPhone } from './person-contact';
 import { consoleRoleOf } from '../auth/console-role';
 import { MmgFeeReversalService } from '../billing/mmg-fee-reversal';
+import { MmgCheckoutService } from '../billing/mmg-checkout.service';
 import { feeRefundCaseOf, listFeeRefundCases, openFeeRefundCase } from '../billing/fee-refund-case';
 import { MAJOR_AMOUNT_CEILING } from '../../utils/currency-amount';
 import {
@@ -6908,6 +6909,32 @@ export async function adminRoutes(app: FastifyInstance) {
       (tx, facts) => auditWithin(tx, request as unknown as AuditRequestLike, app.prefix, { extra: facts }),
     );
     return { success: true, data: reversalOut(row as never) };
+  });
+
+  // [OWNER RULING 13 Nov 2026] A weekly-fee payment made on MMG's page after the checkout closed. The owner alone
+  // credits it, only on MMG's own records (a fresh lookup and history), with the MMG reference typed from MMG's
+  // statement and a reason; at most once; audited; then a second person reviews it once a second admin exists.
+  const lateCredits = new MmgCheckoutService(app.prisma, billing, notifications);
+  const mmgReferenceShape = z.string().trim().min(3).max(128).regex(/^[A-Za-z0-9][A-Za-z0-9._:-]*$/, 'Use the reference exactly as MMG shows it');
+  app.post('/billing/mmg-checkouts/:id/credit-late', { preHandler: [adminGuard] }, async (request) => {
+    const tenantId = requireTenantId();
+    const { id } = z.object({ id: z.string().min(1).max(64) }).parse(request.params);
+    const body = z.object({ mmgReference: mmgReferenceShape, reason: z.string().trim().max(500).optional() }).strict().parse(request.body ?? {});
+    const reason = reasonOf(request.body, request.headers as never) ?? body.reason ?? '';
+    if (reason.length < 8) throw new AppError(400, 'REASON_REQUIRED', 'Say why this late payment is being credited.');
+    const result = await lateCredits.creditLateByOwner({ tenantId, checkoutId: id, actorId: request.user.userId, mmgReference: body.mmgReference, reason });
+    await auditWithin(app.prisma, request as unknown as AuditRequestLike, app.prefix, {
+      extra: { checkoutId: id, checkoutStatus: result.status, mmgTransactionId: result.mmgTransactionId, secondReviewNeeded: result.secondReviewNeeded },
+    });
+    return { success: true, data: result };
+  });
+  app.post('/billing/mmg-checkouts/:id/late-credit-review', { preHandler: [adminGuard] }, async (request) => {
+    const tenantId = requireTenantId();
+    const { id } = z.object({ id: z.string().min(1).max(64) }).parse(request.params);
+    const body = z.object({ outcome: z.enum(['AGREED', 'DISPUTED']), note: z.string().trim().min(8).max(500) }).strict().parse(request.body ?? {});
+    const result = await lateCredits.reviewOwnerLateCredit({ tenantId, checkoutId: id, actorId: request.user.userId, outcome: body.outcome, note: body.note });
+    await auditWithin(app.prisma, request as unknown as AuditRequestLike, app.prefix, { extra: { checkoutId: id, outcome: body.outcome } });
+    return { success: true, data: result };
   });
 
   // [DS1112] A person resolves a HELD return (C4: a reason and a second

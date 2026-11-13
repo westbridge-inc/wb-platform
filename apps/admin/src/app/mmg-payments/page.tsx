@@ -14,7 +14,7 @@ import type {
 } from '@swift/types';
 import {
   checkMmgFeeReversal, fetchFeeRefundCase, fetchFeeRefundCases, fetchMmgCheckout, fetchMmgCheckouts, fetchMmgFeeReversal, openFeeRefundCase,
-  resolveMmgFeeReversal, reverseMmgFeePayment,
+  resolveMmgFeeReversal, reverseMmgFeePayment, creditLateMmgPayment, reviewLateMmgCredit,
   type FeeRefundKind, type MmgFeeReversalRow, type MmgFeeReversalView,
 } from '@/lib/api';
 import { MutationError } from '@/components/MutationError';
@@ -274,6 +274,8 @@ function Detail({ id }: { id: string }) {
             {d.reason ? <Field label="Reason (operators only)"><span className="font-mono text-xs">{d.reason}</span></Field> : null}
           </dl>
           {d.creditedPeriod ? <Credited period={d.creditedPeriod} /> : null}
+          {d.status === 'HELD' && d.reason === 'PAYMENT_TIME_OUTSIDE_WINDOW' ? <LateCreditPanel checkoutId={d.id} /> : null}
+          {d.status === 'CONFIRMED' && d.reason === 'OWNER_LATE_CREDIT' ? <LateCreditReviewPanel checkoutId={d.id} /> : null}
           {d.status === 'CONFIRMED' ? <RefundCasePanel checkoutId={d.id} /> : null}
           {d.status === 'CONFIRMED' ? <ReturnPanel checkoutId={d.id} amount={d.amount} currencyCode={d.currencyCode} /> : null}
         </div>
@@ -547,6 +549,80 @@ function ReturnPanel({ checkoutId, amount, currencyCode }: { checkoutId: string;
             : ask.error ? <MutationError error={ask.error} label="The return did not start" /> : null}
         </form>
       )}
+    </section>
+  );
+}
+
+/**
+ * [Owner ruling 13 Nov 2026] A payment MMG dates after the checkout closed. Only the owner may credit it, and only on
+ * MMG's own records: Swift asks MMG again and credits only if MMG shows this checkout's late payment under the
+ * reference typed from MMG's statement (never a screenshot or what the payer says). Once, audited, then reviewed.
+ */
+function LateCreditPanel({ checkoutId }: { checkoutId: string }) {
+  const qc = useQueryClient();
+  const [reference, setReference] = useState('');
+  const [reason, setReason] = useState('');
+  const sending = useRef(false);
+  const ask = useMutation({
+    mutationFn: () => creditLateMmgPayment(checkoutId, reference.trim(), reason.trim()),
+    onSettled: () => qc.invalidateQueries({ queryKey: ['mmg-checkout', checkoutId] }),
+  });
+  const ok = reference.trim().length >= 3 && reason.trim().length >= REASON_MIN;
+  const done = (ask.data as { data?: { status?: string } } | undefined)?.data?.status === 'CONFIRMED';
+  return (
+    <section aria-label="Credit this late payment" className="rounded-lg border border-[var(--mc-line)] p-4 space-y-3 text-sm">
+      <h3 className="font-semibold">Credit this late payment (owner only)</h3>
+      <p className="mc-muted text-xs">
+        MMG dates this payment after the checkout closed. Type the MMG reference exactly as MMG&apos;s statement shows it. Swift
+        asks MMG again and credits it only if MMG&apos;s own records show this checkout&apos;s payment under that reference.
+        A second person reviews it afterwards.
+      </p>
+      <form
+        className="space-y-2"
+        onSubmit={(e) => {
+          e.preventDefault();
+          if (!ok || sending.current || done) return;
+          sending.current = true;
+          ask.mutate(undefined, { onSettled: () => { sending.current = false; } });
+        }}
+      >
+        <input value={reference} onChange={(e) => setReference(e.target.value)} aria-label="MMG reference from the statement" maxLength={128} className="mc-input" placeholder="MMG reference from the statement" />
+        <textarea value={reason} onChange={(e) => setReason(e.target.value)} rows={2} maxLength={500} aria-label="Why it is being credited" placeholder="Why it is being credited. Required." className="mc-input" />
+        <button type="submit" disabled={ask.isPending || !ok || done} className="mc-btn mc-btn-primary">
+          {ask.isPending ? 'Checking with MMG…' : 'Credit this late payment'}
+        </button>
+        {done ? <p className="text-xs">Credited on MMG&apos;s records. A second person reviews it.</p> : null}
+        {ask.error ? <MutationError error={ask.error} label="Nothing was credited" /> : null}
+      </form>
+    </section>
+  );
+}
+
+/** [Owner ruling 13 Nov 2026] A second person checks the owner's late credit against the MMG statement. */
+function LateCreditReviewPanel({ checkoutId }: { checkoutId: string }) {
+  const qc = useQueryClient();
+  const [note, setNote] = useState('');
+  const sending = useRef(false);
+  const ask = useMutation({
+    mutationFn: (outcome: 'AGREED' | 'DISPUTED') => reviewLateMmgCredit(checkoutId, outcome, note.trim()),
+    onSettled: () => qc.invalidateQueries({ queryKey: ['mmg-checkout', checkoutId] }),
+  });
+  const ok = note.trim().length >= REASON_MIN;
+  const send = (outcome: 'AGREED' | 'DISPUTED') => {
+    if (!ok || sending.current) return;
+    sending.current = true;
+    ask.mutate(outcome, { onSettled: () => { sending.current = false; } });
+  };
+  return (
+    <section aria-label="Second review of the late credit" className="rounded-lg border border-[var(--mc-line)] p-4 space-y-3 text-sm">
+      <h3 className="font-semibold">Second review: the owner credited this late payment</h3>
+      <p className="mc-muted text-xs">Check it against the MMG statement. Someone other than who credited it records what they found.</p>
+      <textarea value={note} onChange={(e) => setNote(e.target.value)} rows={2} maxLength={500} aria-label="What the MMG statement shows" placeholder="What the MMG statement shows. Required." className="mc-input" />
+      <div className="flex gap-2">
+        <button type="button" disabled={ask.isPending || !ok} onClick={() => send('AGREED')} className="mc-btn mc-btn-primary">Matches the statement</button>
+        <button type="button" disabled={ask.isPending || !ok} onClick={() => send('DISPUTED')} className="mc-btn">Does not match</button>
+      </div>
+      {ask.error ? <MutationError error={ask.error} label="The review was not recorded" /> : null}
     </section>
   );
 }

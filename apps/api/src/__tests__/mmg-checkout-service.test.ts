@@ -2741,6 +2741,78 @@ describe('[DS632 · 7 Oct] MMG’s time for the payment (its history record) is 
     expect(pages[0]!.body).toMatch(/MMG_CHECKOUT_CREATION_ZONE/);
   });
 
+  describe('[OWNER RULING 13 Nov] a payment made after the checkout closed: the owner alone credits it, on MMG’s own records', () => {
+    const person = async (roles: Array<'SUPER_ADMIN' | 'ADMIN'>) => {
+      const u = await app.prisma.user.create({ data: { phone: `+${phoneBase + 31000 + (seq += 1)}`, firstName: 'Late', lastName: 'Credit', roles, activeRole: roles[0]!, isPhoneVerified: true } });
+      userIds.push(u.id);
+      return u.id;
+    };
+    /** A checkout opened 40 minutes ago that closed 10 minutes ago, paid on MMG's page 5 minutes ago (after it closed). */
+    const latePaid = async (label: string) => {
+      const s = await makeSub({ due: new Date(Date.now() - 60_000) });
+      const opened = await intentOf((await start(s)).checkout.ref);
+      await app.prisma.mmgCheckoutIntent.update({ where: { id: opened.id }, data: { createdAt: new Date(Date.now() - 40 * 60_000), expiresAt: new Date(Date.now() - 10 * 60_000) } });
+      const row = await intentOf(opened.id);
+      const txn = tx(label);
+      approved(row, txn, 2100, echoOf(row), { creationDate: mmgTimeOf(new Date()) }, { modificationDate: mmgTimeOf(new Date(Date.now() - 5 * 60_000)) });
+      await codeReply(row, '0', txn, 'NOTIFY');
+      expect(await intentOf(row.id)).toMatchObject({ status: 'HELD', reason: 'PAYMENT_TIME_OUTSIDE_WINDOW' });
+      return { s, row, txn };
+    };
+
+    it('credits once, on MMG’s lookup and history and the reference typed from MMG’s statement; audited; flagged for a second person', async () => {
+      const owner = await person(['SUPER_ADMIN']);
+      const second = await person(['ADMIN']);
+      const { s, row, txn } = await latePaid('LATEOWNER');
+      const credit = (actorId: string, mmgReference: string) => service.creditLateByOwner({ tenantId: row.tenantId, checkoutId: row.id, actorId, mmgReference, reason: 'Paid on MMG three minutes late; seen on the statement' });
+      // Not the owner: refused. A reference MMG does not show for it: refused. Nothing credited either way.
+      await expect(credit(second, txn)).rejects.toMatchObject({ code: 'OWNER_ONLY' });
+      await expect(credit(owner, 'SOMEOTHERREF123')).rejects.toMatchObject({ code: 'MMG_DOES_NOT_SHOW_IT' });
+      expect(await topups(s.subId)).toHaveLength(0);
+      // The owner, with MMG's own transaction number: credited exactly as any confirmation.
+      expect(await credit(owner, txn.toLowerCase())).toMatchObject({ status: 'CONFIRMED', secondReviewNeeded: true });
+      expect(await topups(s.subId)).toHaveLength(1);
+      expect(await identityOf(txn)).toMatchObject({ status: 'CREDITED', creditedPaymentId: `mco:${row.id}` });
+      expect(await intentOf(row.id)).toMatchObject({ status: 'CONFIRMED', reason: 'OWNER_LATE_CREDIT' });
+      const trail = await app.prisma.auditLog.findFirst({ where: { action: 'MMG_LATE_PAYMENT_CREDITED_BY_OWNER', entityId: row.id } });
+      expect(trail).toMatchObject({ userId: owner });
+      expect(trail!.changes).toMatchObject({ typedReference: txn.toLowerCase(), mmgTransactionId: txn, heldReason: 'PAYMENT_TIME_OUTSIDE_WINDOW', secondReview: 'PENDING' });
+      // At most once: asking again changes nothing.
+      expect(await credit(owner, txn)).toMatchObject({ status: 'CONFIRMED' });
+      expect(await topups(s.subId)).toHaveLength(1);
+      expect(await app.prisma.auditLog.count({ where: { action: 'MMG_LATE_PAYMENT_CREDITED_BY_OWNER', entityId: row.id } })).toBe(1);
+      // The second person's review: never the owner who credited it; once.
+      const review = (actorId: string) => service.reviewOwnerLateCredit({ tenantId: row.tenantId, checkoutId: row.id, actorId, outcome: 'AGREED', note: 'Matches the MMG statement line' });
+      await expect(review(owner)).rejects.toMatchObject({ code: 'SECOND_PERSON_ONLY' });
+      expect(await review(second)).toEqual({ reason: 'OWNER_LATE_CREDIT_REVIEWED' });
+      await expect(review(second)).rejects.toMatchObject({ code: 'NO_LATE_CREDIT_TO_REVIEW' });
+    });
+
+    it('never credits a payment MMG dates before the checkout opened, nor a hold for any other reason', async () => {
+      const owner = await person(['SUPER_ADMIN']);
+      const s = await makeSub();
+      const row = await intentOf((await start(s)).checkout.ref);
+      const early = tx('LATEEARLY');
+      approved(row, early, 2100, {}, { creationDate: mmgTimeOf(new Date()) }, { modificationDate: mmgTimeOf(new Date(row.createdAt.getTime() - 5 * 60_000)) });
+      await codeReply(row, '0', early);
+      expect(await intentOf(row.id)).toMatchObject({ status: 'HELD', reason: 'PAYMENT_TIME_OUTSIDE_WINDOW' });
+      await expect(service.creditLateByOwner({ tenantId: row.tenantId, checkoutId: row.id, actorId: owner, mmgReference: early, reason: 'trying an early payment' }))
+        .rejects.toMatchObject({ code: 'MMG_DOES_NOT_SHOW_IT' });
+      expect(await topups(s.subId)).toHaveLength(0);
+
+      checkoutProvider = () => sandboxIn(null);
+      const z = await makeSub({ due: new Date(Date.now() - 60_000) });
+      const zrow = await intentOf((await start(z)).checkout.ref);
+      const ztxn = tx('LATEZONE');
+      approved(zrow, ztxn, 2100);
+      await codeReply(zrow, '0', ztxn, 'NOTIFY');
+      expect(await intentOf(zrow.id)).toMatchObject({ status: 'HELD', reason: 'CREATION_ZONE_UNVERIFIED' });
+      await expect(service.creditLateByOwner({ tenantId: zrow.tenantId, checkoutId: zrow.id, actorId: owner, mmgReference: ztxn, reason: 'not a late payment' }))
+        .rejects.toMatchObject({ code: 'NOT_A_LATE_PAYMENT' });
+      expect(await topups(z.subId)).toHaveLength(0);
+    });
+  });
+
   it.each([
     ['MMG writes true UTC and Swift is configured UTC', 'UTC'],
     ['MMG writes Guyana time, as in UAT, and Swift is configured GUYANA_WALL_CLOCK', 'GUYANA_WALL_CLOCK'],

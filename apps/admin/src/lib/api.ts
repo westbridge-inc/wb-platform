@@ -1546,6 +1546,20 @@ export const resolveMmgFeeReversal = (reversalId: string, outcome: 'NOT_RETURNED
     body: JSON.stringify({ outcome, mmgReference, reason }),
     reason,
   });
+// [Owner ruling 13 Nov 2026] A payment made on MMG after the checkout closed: the owner alone credits it, on MMG's own
+// records, with the MMG reference from the statement and a reason. A second person then reviews it.
+export const creditLateMmgPayment = (checkoutId: string, mmgReference: string, reason: string) =>
+  apiFetch(`/api/v1/admin/billing/mmg-checkouts/${encodeURIComponent(checkoutId)}/credit-late`, {
+    method: 'POST',
+    body: JSON.stringify({ mmgReference, reason }),
+    reason,
+  });
+export const reviewLateMmgCredit = (checkoutId: string, outcome: 'AGREED' | 'DISPUTED', note: string) =>
+  apiFetch(`/api/v1/admin/billing/mmg-checkouts/${encodeURIComponent(checkoutId)}/late-credit-review`, {
+    method: 'POST',
+    body: JSON.stringify({ outcome, note }),
+    reason: note,
+  });
 export const checkMmgFeeReversal = (reversalId: string) =>
   apiFetch(`/api/v1/admin/billing/mmg-fee-reversals/${encodeURIComponent(reversalId)}/check`, { method: 'POST', body: '{}' });
 // [Row 156] A partner asked for a weekly-fee payment back: 3 business days. A case is that ask and its clock. It moves no
