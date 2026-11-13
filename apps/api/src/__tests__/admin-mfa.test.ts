@@ -897,9 +897,10 @@ describe('[#2507 review] the account ceiling across sessions, and alerts at ever
     const owner = await enrolledAdmin();
     expect((await post(owner, '/api/v1/auth/admin-mfa/verify', { code: totpAt(owner.key, Date.now()) })).statusCode).toBe(200); // the owner's own session passed the step
     const attackers: Array<{ token: string; sessionId: string }> = [];
-    // the enrolment and the owner's own code were judged on sessions that had not yet passed the step: they count
+    // the owner's own code was judged on a session that had not yet passed the step: it counts (the enrolment's
+    // code checked a NEW secret behind a fresh proof, so it does not)
     let judged = Number(await app.redis.get(adminMfaAccountCeilingKey(owner.userId)));
-    expect(judged).toBe(2);
+    expect(judged).toBe(1);
     while (judged < ADMIN_MFA_ACCOUNT_DAY_CEILING) {
       const a = await newSession(owner.userId); // each a texted sign-in
       attackers.push(a);
@@ -924,7 +925,43 @@ describe('[#2507 review] the account ceiling across sessions, and alerts at ever
     expect((await post(fresh, '/api/v1/auth/admin-mfa/verify', { code: '000000' })).statusCode).toBe(429);
     expect((await post(fresh, '/api/v1/auth/admin-mfa/verify', { recoveryCode: owner.recoveryCodes[0] })).statusCode).toBe(200);
     expect((await get(fresh, ADMIN_PROBE)).statusCode).toBe(200);
+    // the recovery code proved the owner: the account ceiling starts again, so the next sign-in's app code is judged
+    expect(await app.redis.get(adminMfaAccountCeilingKey(owner.userId))).toBeNull();
+    const next = await newSession(owner.userId);
+    await rewind(owner.userId); // the codes of this minute were already used above
+    expect((await post(next, '/api/v1/auth/admin-mfa/verify', { code: totpAt(owner.key, Date.now()) })).statusCode).toBe(200);
   }, 180_000);
+
+  it('(a) the break-glass starts the account ceiling again', async () => {
+    const owner = await enrolledAdmin();
+    await app.redis.set(adminMfaAccountCeilingKey(owner.userId), String(ADMIN_MFA_ACCOUNT_DAY_CEILING + 5), 'EX', 3600);
+    const lastFour = owner.phone.replace(/\D/g, '').slice(-4);
+    const answers = [owner.phone, 'Ops Person', 'the owner lost the factor', `RESET ADMIN ${lastFour}`];
+    expect(await adminMfaResetMain(app, { ask: async () => answers.shift() ?? '', print: () => {} })).toBe(0);
+    expect(await app.redis.get(adminMfaAccountCeilingKey(owner.userId))).toBeNull();
+  });
+
+  it('(a) setting up an app is not a guess at the current factor: enrolment confirm is never refused by the ceiling', async () => {
+    process.env['ADMIN_TOTP_REQUIRED'] = '1';
+    const admin = await makeAdmin();
+    await app.redis.set(adminMfaAccountCeilingKey(admin.userId), String(ADMIN_MFA_ACCOUNT_DAY_CEILING + 5), 'EX', 3600);
+    const started = await post(admin, '/api/v1/auth/admin-mfa/enrol');
+    expect(started.statusCode, started.body).toBe(200);
+    const key = base32Decode(started.json().data.secret);
+    const confirmed = await post(admin, '/api/v1/auth/admin-mfa/enrol/confirm', { code: totpAt(key, Date.now()) });
+    expect(confirmed.statusCode, confirmed.body).toBe(200);
+    expect(Number(await app.redis.get(adminMfaAccountCeilingKey(admin.userId)))).toBe(ADMIN_MFA_ACCOUNT_DAY_CEILING + 5);
+  });
+
+  it('(a) moving to a new app is not refused by the ceiling either', async () => {
+    process.env['ADMIN_TOTP_REQUIRED'] = '1';
+    const owner = await enrolledAdmin();
+    await app.redis.set(adminMfaAccountCeilingKey(owner.userId), String(ADMIN_MFA_ACCOUNT_DAY_CEILING + 5), 'EX', 3600);
+    const started = await post(owner, '/api/v1/auth/admin-mfa/replace', { recoveryCode: owner.recoveryCodes[4] });
+    expect(started.statusCode, started.body).toBe(200);
+    const newKey = base32Decode(started.json().data.secret);
+    expect((await post(owner, '/api/v1/auth/admin-mfa/replace/confirm', { code: totpAt(newKey, Date.now()) })).statusCode).toBe(200);
+  });
 
   it('(a) a session that passed the authenticator step is never counted toward the ceiling', async () => {
     process.env['ADMIN_TOTP_REQUIRED'] = '1';

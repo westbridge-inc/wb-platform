@@ -5,6 +5,7 @@ import { maskPhone } from './step-up';
 import { resolveIdentityById, resolveIdentityByPhone } from './preauth-identity';
 import { runWithTenant, runWithoutTenant } from '../../plugins/tenant-context';
 import { getChannels } from '../../providers/notifications/channels';
+import { adminMfaAccountCeilingKey } from './admin-mfa';
 
 // ---------------------------------------------------------------------------
 // [REVIEW-2501-B B-S4-7] BREAK-GLASS for the admin authenticator (TOTP).
@@ -22,7 +23,8 @@ import { getChannels } from '../../providers/notifications/channels';
 // confirmation naming the account. Then, in ONE database transaction under the
 // account's lock: the authenticator secret, any pending set-up, the last step and
 // every recovery code are cleared, EVERY session of the account is revoked
-// (sockets are dropped), and an audit row is written. Then the admin is emailed
+// (sockets are dropped), and an audit row is written; the account's daily
+// ceiling on authenticator guesses starts again. Then the admin is emailed
 // and texted. Nothing secret is read or printed: the script never decrypts.
 //
 // The admin then signs in again with a texted code and sets up a new
@@ -94,6 +96,8 @@ export async function resetAdminAuthenticator(app: FastifyInstance, target: Admi
       ipAddress: null, userAgent: 'ops-script:admin-mfa-reset',
     } });
   }));
+  // The account ceiling on authenticator guesses starts again with the new enrolment.
+  await app.redis.del(adminMfaAccountCeilingKey(target.userId));
   const notified = await notifyReset(app, target.userId);
   return { cleared: true as const, sessionsRevoked: sessionsBefore, ...notified };
 }

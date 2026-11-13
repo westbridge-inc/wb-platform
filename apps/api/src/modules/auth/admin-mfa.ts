@@ -269,7 +269,8 @@ export async function confirmAdminMfaEnrolment(app: FastifyInstance, request: Mf
   const admin = await adminRow(app, request.user.userId);
   if (admin.totpEnabledAt) throw new AppError(409, 'ADMIN_MFA_ALREADY_ENROLLED', 'An authenticator app is already set up on this account.');
   const secret = await openPending(admin, now);
-  const n = await reserveAttempt(app, request, 'code');
+  // A code from the NEW secret, behind a fresh proof: not a guess at the current factor, so not under the ceiling.
+  const n = await reserveAttempt(app, request, 'code', { accountCeiling: false });
   const step = matchTotp(secret, code.trim(), now.getTime(), null);
   if (step === null) {
     await recordFailure(app, request, 'code', n);
@@ -314,6 +315,9 @@ async function proveCurrentFactor(app: FastifyInstance, request: MfaRequest, adm
     }), 'admin-mfa');
     if (spent.count !== 1) throw new AppError(400, 'ADMIN_MFA_CODE_INVALID', 'That recovery code is not valid, or was already used.');
     await clearAttempts(app, request);
+    // [#2507 review] A recovery code proved the account holder: the account ceiling starts again (the ceiling's
+    // refusal tells the owner to use one, and that must actually reopen app codes).
+    await app.redis.del(adminMfaAccountCeilingKey(request.user.userId));
     const left = admin.totpRecoveryHashes.length - 1;
     await audit(app, request, 'ADMIN_MFA_RECOVERY_CODE_USED', { left });
     await notifyAdmin(app, request.user.userId, 'Swift: a recovery code was used on your admin account',
@@ -382,7 +386,8 @@ export async function confirmAdminMfaReplacement(app: FastifyInstance, request: 
   const admin = await adminRow(app, request.user.userId);
   if (!admin.totpEnabledAt) throw new AppError(409, 'ADMIN_MFA_NOT_ENROLLED', 'Set up your authenticator app first.');
   const secret = await openPending(admin, now);
-  const n = await reserveAttempt(app, request, 'code');
+  // A code from the NEW secret, behind a fresh proof: not a guess at the current factor, so not under the ceiling.
+  const n = await reserveAttempt(app, request, 'code', { accountCeiling: false });
   const step = matchTotp(secret, code.trim(), now.getTime(), null);
   if (step === null) {
     await recordFailure(app, request, 'code', n);
@@ -444,6 +449,8 @@ export async function verifyStepUpWithAuthenticator(app: FastifyInstance, reques
 //   - [#2507 review] and one per-ACCOUNT ceiling on judged authenticator codes from sessions that have NOT passed
 //     the step (200 a day): past it every such session is revoked and only a recovery code opens a new sign-in.
 //     A session that passed the step (the owner's console) is never counted, refused or revoked by it.
+//     A right recovery code or the operator's break-glass starts it again. A code that confirms a NEW secret
+//     (enrolment, moving to a new app) is not a guess at the current factor and is never under it.
 // A session reaches these doors for 12 hours at most (assertSessionYoungEnough, step-up included), so one texted
 // sign-in buys at most 20 authenticator guesses, and each new sign-in costs a text and emails the owner.
 
@@ -490,7 +497,7 @@ function attemptSessionOf(request: MfaRequest): string {
  * the window's limit are ever judged. The day's limit is checked first. Both are THIS session's, for THIS kind of
  * code. Returns the place taken in the window.
  */
-async function reserveAttempt(app: FastifyInstance, request: MfaRequest, factor: MfaFactor): Promise<number> {
+async function reserveAttempt(app: FastifyInstance, request: MfaRequest, factor: MfaFactor, opts: { accountCeiling?: boolean } = {}): Promise<number> {
   const keys = adminMfaAttemptKeys(attemptSessionOf(request), factor);
   const limits = FACTOR_LIMITS[factor];
   if (Number((await app.redis.get(keys.day)) ?? 0) >= limits.day) {
@@ -504,7 +511,7 @@ async function reserveAttempt(app: FastifyInstance, request: MfaRequest, factor:
       ? 'Too many wrong codes. Wait 15 minutes, then try again.'
       : 'Too many wrong recovery codes. Wait 15 minutes, or use your authenticator app.');
   }
-  if (factor === 'code' && !(await sessionPassedStep(app, attemptSessionOf(request)))) {
+  if (factor === 'code' && opts.accountCeiling !== false && !(await sessionPassedStep(app, attemptSessionOf(request)))) {
     // [#2507 review] Many sessions together: one ceiling per account per day, on judged guesses only.
     const judged = await incrWithin(app, adminMfaAccountCeilingKey(request.user.userId), ADMIN_MFA_DAY_WINDOW_S);
     if (judged > ADMIN_MFA_ACCOUNT_DAY_CEILING) {
