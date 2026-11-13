@@ -134,10 +134,48 @@ async function apiFetch(path: string, options?: RequestInit & { reason?: string 
     // which row they are looking for.
     if (json?.error?.details && typeof json.error.details === 'object') error.details = json.error.details;
     error.status = res.status;
+    // [AUDIT-20261113 FABLE-03 #2] The admin API wants the authenticator step for this session: go and do it.
+    if (res.status === 403 && (error.code === 'ADMIN_MFA_REQUIRED' || error.code === 'ADMIN_MFA_ENROLMENT_REQUIRED')
+      && typeof window !== 'undefined' && window.location.pathname !== '/login') {
+      window.location.href = '/login?step=mfa';
+    }
     throw error;
   }
   return json;
 }
+
+// ── [AUDIT-20261113 FABLE-03 #2] The admin second factor (authenticator app) ──
+export interface AdminMfaStatus {
+  required: boolean;
+  enrolled: boolean;
+  enrolledAt: string | null;
+  sessionVerified: boolean;
+  recoveryCodesLeft: number;
+}
+export async function fetchAdminMfaStatus(): Promise<AdminMfaStatus> {
+  return (await apiFetch('/api/v1/auth/admin-mfa')).data as AdminMfaStatus;
+}
+export async function startAdminMfaEnrolment(): Promise<{ secret: string; otpauthUrl: string; expiresInSeconds: number }> {
+  return (await apiFetch('/api/v1/auth/admin-mfa/enrol', { method: 'POST', body: '{}' })).data;
+}
+export async function confirmAdminMfaEnrolment(code: string): Promise<{ enrolled: true; recoveryCodes: string[] }> {
+  return (await apiFetch('/api/v1/auth/admin-mfa/enrol/confirm', { method: 'POST', body: JSON.stringify({ code }) })).data;
+}
+export async function verifyAdminMfa(input: { code: string } | { recoveryCode: string }): Promise<{ verified: true; recoveryCodesLeft?: number }> {
+  return (await apiFetch('/api/v1/auth/admin-mfa/verify', { method: 'POST', body: JSON.stringify(input) })).data;
+}
+// [REVIEW-2501-A S4-6] Self-service, each proved by the current app code or one recovery code.
+export type AdminFactorProof = { code: string } | { recoveryCode: string };
+export async function regenerateAdminRecoveryCodes(proof: AdminFactorProof): Promise<{ recoveryCodes: string[] }> {
+  return (await apiFetch('/api/v1/auth/admin-mfa/recovery-codes', { method: 'POST', body: JSON.stringify(proof) })).data;
+}
+export async function startAdminMfaReplacement(proof: AdminFactorProof): Promise<{ secret: string; otpauthUrl: string; expiresInSeconds: number }> {
+  return (await apiFetch('/api/v1/auth/admin-mfa/replace', { method: 'POST', body: JSON.stringify(proof) })).data;
+}
+export async function confirmAdminMfaReplacement(code: string): Promise<{ replaced: true; recoveryCodes: string[] }> {
+  return (await apiFetch('/api/v1/auth/admin-mfa/replace/confirm', { method: 'POST', body: JSON.stringify({ code }) })).data;
+}
+
 
 /** The HTTP status of a thrown apiFetch error. 202 is not a failure — see
  *  lib/cashRail `outcomeOfThrown`. */
@@ -1414,8 +1452,18 @@ export const cancelApproval = (id: string) =>
   apiFetch(`/api/v1/admin/approvals/${id}/cancel`, { method: 'POST', body: '{}' });
 // [ALG-34] The account's existing step-up: a code texted to the phone on the
 // admin account, good for one protected decision on THIS session.
-export const sendStepUpCode = () =>
-  apiFetch('/api/v1/auth/step-up', { method: 'POST', body: '{}' });
+// [REVIEW-2501-A S3-3] An admin who set up an authenticator app confirms with its code instead: the API texts
+// nothing and says so (409 STEP_UP_USE_AUTHENTICATOR), which is an answer here, not a failure.
+export type StepUpSent = { method: 'text' | 'authenticator' };
+export async function sendStepUpCode(): Promise<StepUpSent> {
+  try {
+    await apiFetch('/api/v1/auth/step-up', { method: 'POST', body: '{}' });
+    return { method: 'text' };
+  } catch (e) {
+    if (errorCode(e) === 'STEP_UP_USE_AUTHENTICATOR') return { method: 'authenticator' };
+    throw e;
+  }
+}
 export const verifyStepUpCode = (code: string) =>
   apiFetch('/api/v1/auth/step-up/verify', { method: 'POST', body: JSON.stringify({ code }) });
 

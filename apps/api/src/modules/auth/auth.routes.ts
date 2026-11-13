@@ -17,7 +17,11 @@ import { consentSurfaceOf } from '../legal/consent-surface';
 import { acceptanceStatus, proAgreementState, recordReacceptance } from '../legal/reaccept';
 import { ensureProFeeBorn } from '../services/pro-fee';
 import { LEGAL_VERSION } from '../legal/legal.routes';
-import { sendStepUpOtp, verifyStepUp, requireStepUp, STEP_UP_TTL_S } from './step-up';
+import { sendStepUpOtp, verifyStepUp, requireStepUp, requireRecentOtpOrStepUp, STEP_UP_TTL_S } from './step-up';
+import {
+  adminMfaStatus, confirmAdminMfaEnrolment, confirmAdminMfaReplacement, notifyAdminSignIn, regenerateAdminRecoveryCodes,
+  startAdminMfaEnrolment, startAdminMfaReplacement, verifyAdminMfa,
+} from './admin-mfa';
 import { zPhone } from '../../utils/phone';
 import { AUTH_LIMITS, bodyPhone, loginCredential, perAddress, perCredential, sessionCookie } from './auth-rate-limits';
 import { assertNameNotReserved } from '../../lib/fixture-filter';
@@ -27,6 +31,7 @@ import { openSealedPhoto, photoSealingAvailable, sealedPhotoParts, sealPhoto, SE
 import { isProduction } from '../../utils/runtime-mode';
 import { runAsSystem } from '../../plugins/tenant-context';
 import {
+  ADMIN_BROWSER_CLIENT,
   browserClientOf,
   clearSessionCookies,
   clearSignupContinuationCookie,
@@ -136,8 +141,16 @@ export async function authRoutes(app: FastifyInstance) {
       deviceType: (request.headers['x-device-type'] as string) || 'unknown',
       ipAddress: request.ip,
       userAgent: request.headers['user-agent'] || '',
+      // [REVIEW-2501-A S3-1] The console's own sign-in: its credentials leave below only as HttpOnly cookies to the
+      // console origin, and the session remembers it (ADMIN_API_CONSOLE_ONLY accepts only such a session).
+      consoleBound: browserClientOf(request) === ADMIN_BROWSER_CLIENT,
     });
     reply.header('Cache-Control', 'no-store, max-age=0');
+    // [AUDIT-20261113 FABLE-03 #2] An admin account's sign-in is emailed to its address (best effort, never blocks).
+    if ('user' in result && result.user && 'tokens' in result && result.tokens) {
+      const signedIn = result.user as { id: string; roles?: string[] };
+      void notifyAdminSignIn(app, signedIn, { browserClient: browserClientOf(request), deviceType: (request.headers['x-device-type'] as string) || null });
+    }
     if (browserClientOf(request) && 'registrationProof' in result && typeof result.registrationProof === 'string') {
       setSignupContinuationCookie(reply, result.registrationProof);
       const { registrationProof: _proof, ...safeResult } = result;
@@ -286,8 +299,48 @@ export async function authRoutes(app: FastifyInstance) {
     const { code } = z.object({ code: z.string().regex(/^\d{6}$/, 'Enter the 6-digit code') }).parse(request.body ?? {});
     const sessionId = request.authSessionId;
     if (!sessionId) throw new AppError(401, 'UNAUTHORIZED', 'This device session is no longer active');
-    const data = await verifyStepUp(app, { userId: request.user.userId, sessionId }, code);
+    const data = await verifyStepUp(app, { userId: request.user.userId, sessionId }, code, request);
     return { success: true, data: { ...data, validForSeconds: STEP_UP_TTL_S } };
+  });
+
+  // ── [AUDIT-20261113 FABLE-03 #2] The admin second factor (authenticator app) ──────────────────────────────
+  // Outside the admin plugin on purpose: a session that has not yet proved its code must reach these doors.
+  const mfaCode = z.object({ code: z.string().trim().regex(/^\d{6}$/, 'Enter the 6-digit code').optional(), recoveryCode: z.string().trim().min(10).max(16).optional() })
+    .refine((b) => !!b.code !== !!b.recoveryCode, 'Enter the 6-digit code or one recovery code');
+  const mfaLimits = { preHandler: [app.authenticate], config: { rateLimit: { max: 10, timeWindow: '1 minute' } } };
+  app.get('/admin-mfa', { preHandler: [app.authenticate] }, async (request, reply) => {
+    reply.header('Cache-Control', 'no-store, max-age=0');
+    return { success: true, data: await adminMfaStatus(app, request) };
+  });
+  app.post('/admin-mfa/enrol', mfaLimits, async (request, reply) => {
+    reply.header('Cache-Control', 'no-store, max-age=0');
+    return { success: true, data: await startAdminMfaEnrolment(app, request, () => requireRecentOtpOrStepUp(app, request)) };
+  });
+  app.post('/admin-mfa/enrol/confirm', mfaLimits, async (request, reply) => {
+    const { code } = z.object({ code: z.string().trim().regex(/^\d{6}$/, 'Enter the 6-digit code') }).parse(request.body ?? {});
+    reply.header('Cache-Control', 'no-store, max-age=0');
+    return { success: true, data: await confirmAdminMfaEnrolment(app, request, code) };
+  });
+  app.post('/admin-mfa/verify', mfaLimits, async (request) => {
+    const body = mfaCode.parse(request.body ?? {});
+    return { success: true, data: await verifyAdminMfa(app, request, body) };
+  });
+  // [REVIEW-2501-A S4-6] Self-service, each proved by the CURRENT authenticator code or one recovery code:
+  // new recovery codes (the old ones stop working), and moving to a new authenticator app.
+  app.post('/admin-mfa/recovery-codes', mfaLimits, async (request, reply) => {
+    const body = mfaCode.parse(request.body ?? {});
+    reply.header('Cache-Control', 'no-store, max-age=0');
+    return { success: true, data: await regenerateAdminRecoveryCodes(app, request, body) };
+  });
+  app.post('/admin-mfa/replace', mfaLimits, async (request, reply) => {
+    const body = mfaCode.parse(request.body ?? {});
+    reply.header('Cache-Control', 'no-store, max-age=0');
+    return { success: true, data: await startAdminMfaReplacement(app, request, body) };
+  });
+  app.post('/admin-mfa/replace/confirm', mfaLimits, async (request, reply) => {
+    const { code } = z.object({ code: z.string().trim().regex(/^\d{6}$/, 'Enter the 6-digit code') }).parse(request.body ?? {});
+    reply.header('Cache-Control', 'no-store, max-age=0');
+    return { success: true, data: await confirmAdminMfaReplacement(app, request, code) };
   });
 
   /** Logout credential for a locally-cleared client. This intentionally does

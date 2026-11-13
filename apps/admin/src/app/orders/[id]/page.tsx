@@ -510,7 +510,7 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
                               body: <p>The customer reads the new PIN on their order screen and gives it to the rider. Swift does not message them, so tell them or have the rider ask, and give it a few seconds to reach their screen. The old PIN stops working. Nobody here sees the new one.</p>,
                               confirmLabel: 'Give a new PIN',
                               dismissLabel: 'Keep it',
-                              fields: [{ kind: 'text', name: 'code', label: 'Code sent to your phone', required: true }],
+                              fields: [{ kind: 'text', name: 'code', label: 'Code from your text or authenticator app', required: true }],
                               submit: async ({ reason, values }) => {
                                 await verifyStepUpCode(String(values['code']).trim());
                                 return resetDeliveryPin(id, reason);
@@ -555,7 +555,7 @@ export default function OrderDetailPage({ params }: { params: Promise<{ id: stri
                           body: <p>The passenger reads the new code in their app and is told to. The old code stops working. Nobody here sees it.</p>,
                           confirmLabel: 'Give a new code',
                           dismissLabel: 'Keep it',
-                          fields: [{ kind: 'text', name: 'code', label: 'Code sent to your phone', required: true }],
+                          fields: [{ kind: 'text', name: 'code', label: 'Code from your text or authenticator app', required: true }],
                           submit: async ({ reason, values }) => {
                             await verifyStepUpCode(String(values['code']).trim());
                             return resetRideCode(id, reason);
