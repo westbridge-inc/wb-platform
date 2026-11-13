@@ -36,6 +36,8 @@ import { testPhone } from './helpers/fixture-ids';
 // capability comes from, so a route inherits the law by being classified.
 // ---------------------------------------------------------------------------
 
+/** [#2499] the generic config route writes only Config-page keys, and test.* keys in tests. */
+const PROBE_KEY = ['test', 'ADM006_PROBE'].join('.');
 let app: FastifyInstance;
 const RUN = nanoid(6).toLowerCase();
 const userIds: string[] = [];
@@ -141,10 +143,10 @@ describe('[ADM-006] a consequential action is refused until it says why', () => 
   });
 
   it('the refusal happens BEFORE the handler — an unexplained action changes nothing', async () => {
-    const before = await app.prisma.platformConfig.findUnique({ where: { key: 'test.ADM006_PROBE' } });
-    const res = await call('PUT', '/api/v1/admin/config/test.ADM006_PROBE', { value: { probe: true } });
+    const before = await app.prisma.platformConfig.findUnique({ where: { key: PROBE_KEY } });
+    const res = await call('PUT', `/api/v1/admin/config/${PROBE_KEY}`, { value: { probe: true } });
     expect(res.statusCode).toBe(400);
-    const after = await app.prisma.platformConfig.findUnique({ where: { key: 'test.ADM006_PROBE' } });
+    const after = await app.prisma.platformConfig.findUnique({ where: { key: PROBE_KEY } });
     expect(after).toEqual(before);
   });
 });
