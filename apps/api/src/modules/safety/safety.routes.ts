@@ -20,6 +20,7 @@ import { runWithoutTenant, runWithTenant } from '../../plugins/tenant-context';
 import { consoleRoleOf } from '../auth/console-role';
 import { decideOpsCapability, requireOpsCapability } from './safety-authority';
 import { assertClearOfParties } from '../integrity/party-authority';
+import { identityAuthority } from '../integrity/identity-review';
 import type { Prisma } from '@prisma/client';
 
 // SOS endpoints (safety spec §4.5). The engine (state machine, grace, fan-out)
@@ -337,8 +338,8 @@ export async function safetyRoutes(app: FastifyInstance) {
       : q.status === 'all' ? {}
       : { status: { in: [...OPEN_STATUSES] } };
     // [AUDIT-20261113 F7] An alert that names the caller (actor or the person it was raised against) is not on their board.
-    const me = request.user.userId;
-    const notMine = { actorUserId: { not: me }, OR: [{ counterpartyUserId: null }, { counterpartyUserId: { not: me } }] };
+    const mine = await linkedAccountsOf(request.user.userId);
+    const notMine = { actorUserId: { notIn: mine }, OR: [{ counterpartyUserId: null }, { counterpartyUserId: { notIn: mine } }] };
     const alerts = await asResponder(opsRoleOf(request), () => app.prisma.sosAlert.findMany({ where: { ...where, ...notMine }, orderBy: { triggeredAt: 'desc' }, take: q.limit }));
     return { success: true, data: alerts };
   });
@@ -678,8 +679,16 @@ export async function safetyRoutes(app: FastifyInstance) {
     const a = await asResponder(role, () => app.prisma.sosAlert.findUnique({ where: { id: alertId }, select: { actorUserId: true, counterpartyUserId: true } }));
     return a ? [a.actorUserId, a.counterpartyUserId].filter((p): p is string => !!p) : [];
   }
+  /** [AUDIT-20261113 F7] The caller and every account linked to them (one identity cluster), as the party rule reads it. */
+  async function linkedAccountsOf(userId: string): Promise<string[]> {
+    const identity = await runWithoutTenant(() => identityAuthority(app.prisma as unknown as Prisma.TransactionClient, userId), 'safety-linked-accounts');
+    return [...new Set([userId, ...identity.memberIds])];
+  }
   async function alertNames(alertId: string, userId: string, role: string): Promise<boolean> {
-    return (await alertParties(alertId, role)).includes(userId);
+    const parties = await alertParties(alertId, role);
+    if (parties.length === 0) return false;
+    const mine = new Set(await linkedAccountsOf(userId));
+    return parties.some((p) => mine.has(p));
   }
 
   /** Ops intake — phone call / email / social report, logged by a human. */
@@ -755,12 +764,12 @@ export async function safetyRoutes(app: FastifyInstance) {
         : { status: { not: 'CLOSED' as const } };
     // [AUDIT-20261113 F7] The queue leaves out a case naming the caller, and (for anyone but a super admin) a
     // case naming a staff account: the doors that act on a case refuse them, so the queue does not offer them.
-    const me = request.user.userId;
+    const mine = await linkedAccountsOf(request.user.userId);
     const role = opsRoleOf(request);
     const staff = role === 'SUPER_ADMIN' ? [] : (await runWithoutTenant(() => app.prisma.user.findMany({
       where: { OR: [{ roles: { hasSome: ['ADMIN', 'SUPER_ADMIN'] } }, { activeRole: { in: ['ADMIN', 'SUPER_ADMIN'] } }] }, select: { id: true },
     }), 'safety-case-queue-staff')).map((u) => u.id);
-    const hidden = [...new Set([me, ...staff])];
+    const hidden = [...new Set([...mine, ...staff])];
     const cases = await app.prisma.incidentCase.findMany({
       where: { AND: [where, { subjectUserId: { notIn: hidden } }, { OR: [{ reporterUserId: null }, { reporterUserId: { notIn: hidden } }] }] },
       orderBy: [{ severity: 'asc' }, { createdAt: 'desc' }, { id: 'asc' }],

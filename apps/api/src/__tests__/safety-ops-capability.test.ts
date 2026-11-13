@@ -231,3 +231,31 @@ describe('[AUDIT-20261113 F7] parity: SOS, the case queue and the evidence looku
   });
 });
 
+// [AUDIT-20261113 F7 · review parity 2] "Names the caller" means any account linked to them (one identity
+// cluster), as assertClearOfParties reads it — not only the same user id.
+describe('[AUDIT-20261113 F7] a linked second account is the same person on every SOS door and the case queue', () => {
+  const clusters: string[] = [];
+  afterAll(async () => {
+    await sys(async () => {
+      await app.prisma.identityClusterMember.deleteMany({ where: { clusterId: { in: clusters } } });
+      await app.prisma.identityCluster.deleteMany({ where: { id: { in: clusters } } });
+    });
+  });
+
+  it('an SOS raised against the admin\'s linked account: no full read, no ack, not on the board; a case on it is not in their queue', async () => {
+    const linked = await makeUser(['CUSTOMER']);
+    const cluster = await sys(() => app.prisma.identityCluster.create({ data: {} }));
+    clusters.push(cluster.id);
+    await sys(() => app.prisma.identityClusterMember.createMany({ data: [staffDriver.userId, linked.userId].map((accountId) => ({ accountId, clusterId: cluster.id, linkedVia: [] })) }));
+    const alert = await sys(() => app.prisma.sosAlert.create({ data: { actorUserId: customer.userId, counterpartyUserId: linked.userId, actorRole: 'CUSTOMER', status: 'ACTIVE', triggerSource: 'BUTTON', triggeredAt: new Date(), tenantId: 'swift-default' } }));
+    alertIds.push(alert.id);
+    expect((await fire('GET', `${S}/sos/${alert.id}`, staffDriver)).statusCode).toBe(403);
+    expect((await fire('POST', `${S}/sos/${alert.id}/ack`, staffDriver)).statusCode).toBe(403);
+    const board = await fire('GET', `${S}/sos?status=all&limit=200`, staffDriver);
+    expect((board.json().data as Array<{ id: string }>).some((a) => a.id === alert.id)).toBe(false);
+    const kase = await makeCase(linked.userId);
+    const queue = await fire('GET', `${S}/incidents?status=all&limit=200`, staffDriver);
+    expect((queue.json().data as Array<{ id: string }>).some((c) => c.id === kase.id)).toBe(false);
+  });
+});
+
