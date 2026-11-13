@@ -31,3 +31,31 @@ describe('the API watches the scheduler itself', () => {
     expect(watch).toMatch(/addHook\('onClose'[\s\S]*clearInterval/);
   });
 });
+
+// [REVIEW-2503-A S4-3] Right after a deploy the old worker's last beat is as old as the stop, the
+// migration and the boot together: a long migration paged "Job scheduler stalled" once, falsely. A
+// stall page waits until this API process has itself been up a whole stall window.
+import { schedulerPageAllowed } from '../utils/scheduler-health';
+
+describe('the stall page has a post-deploy grace', () => {
+  const stall = 5 * 60_000;
+  const boot = 1_000_000_000;
+  it('a stale beat inside the first stall window of this process pages nothing; after it, it pages', () => {
+    expect(schedulerPageAllowed({ page: true, kind: 'stall', ageMs: 9 * 60_000 }, boot + 4 * 60_000, boot, stall)).toBe(false);
+    expect(schedulerPageAllowed({ page: true, kind: 'stall', ageMs: 9 * 60_000 }, boot + 5 * 60_000 + 1, boot, stall)).toBe(true);
+  });
+  it('the grace is a setting: 0 pages at once, junk keeps the stall window', () => {
+    const h = { page: true as const, kind: 'stall' as const, ageMs: 9 * 60_000 };
+    expect(schedulerPageAllowed(h, boot + 1_000, boot, stall, { SCHEDULER_STALL_PAGE_GRACE_SECONDS: '0' })).toBe(true);
+    expect(schedulerPageAllowed(h, boot + 1_000, boot, stall, { SCHEDULER_STALL_PAGE_GRACE_SECONDS: 'Infinity' })).toBe(false);
+    expect(schedulerPageAllowed(h, boot + 1_000, boot, stall, { SCHEDULER_STALL_PAGE_GRACE_SECONDS: '-1' })).toBe(false);
+  });
+  it('never-started keeps its own grace and a healthy verdict never pages', () => {
+    expect(schedulerPageAllowed({ page: true, kind: 'never-booted', ageMs: 6 * 60_000 }, boot + 6 * 60_000, boot, stall)).toBe(true);
+    expect(schedulerPageAllowed({ page: false }, boot + 60 * 60_000, boot, stall)).toBe(false);
+  });
+  it('the paging path asks it', () => {
+    const app = readFileSync(join(process.cwd(), 'src/app.ts'), 'utf8');
+    expect(app).toContain('if (!schedulerPageAllowed(health, Date.now(), SERVER_BOOTED_AT, schedulerStallMs())) return;');
+  });
+});

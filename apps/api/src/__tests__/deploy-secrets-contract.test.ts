@@ -36,6 +36,8 @@ function parseCompose(text: string): Record<string, Service> {
   let inServices = false;
   let service: Service | null = null;
   let section: string | null = null;
+  let long: { source: string; target: string; ro: boolean } | null = null;
+  const longOf = new Map<Service, { source: string; target: string; ro: boolean }[]>();
   for (const raw of text.split('\n')) {
     const line = raw.replace(/\s+$/, '');
     if (!line.trim() || line.trim().startsWith('#')) continue;
@@ -57,6 +59,7 @@ function parseCompose(text: string): Record<string, Service> {
     const key = line.match(/^ {4}([\w-]+):(.*)$/);
     if (key) {
       section = key[1] as string;
+      long = null;
       const inline = (key[2] ?? '').trim();
       if (section === 'command') service.command = inline;
       if (section === 'entrypoint') service.entrypoint = inline;
@@ -71,12 +74,23 @@ function parseCompose(text: string): Record<string, Service> {
       const list = body.match(/^- ([A-Za-z_][A-Za-z0-9_]*)=(.*)$/);
       if (map) service.environment[map[1] as string] = (map[2] ?? '').replace(/^"(.*)"$/, '$1');
       else if (list) service.environment[list[1] as string] = list[2] ?? '';
+    } else if (section === 'volumes' && body.startsWith('- type:')) {
+      // [REVIEW-2503-A S3-2] The long form (type/source/target/read_only), read as the short one.
+      long = { source: '', target: '', ro: false };
+      longOf.set(service, [...(longOf.get(service) ?? []), long]);
+    } else if (section === 'volumes' && long && /^(source|target|read_only):/.test(body)) {
+      const [k, v] = [body.slice(0, body.indexOf(':')), body.slice(body.indexOf(':') + 1).trim()];
+      if (k === 'source') long.source = v;
+      if (k === 'target') long.target = v;
+      if (k === 'read_only') long.ro = v === 'true';
     } else if (section === 'volumes' && body.startsWith('- ')) {
+      long = null;
       service.volumes.push(body.slice(2).replace(/^"(.*)"$/, '$1'));
     } else if (section === 'env_file' && body.startsWith('- ')) {
       service.envFile.push(body.slice(2));
     }
   }
+  for (const [svc, entries] of longOf) for (const e of entries) svc.volumes.push(`${e.source}:${e.target}${e.ro ? ':ro' : ''}`);
   return services;
 }
 

@@ -43,6 +43,8 @@
 #      Any failure puts the old database back under its own name.
 #   8. Every table's exact row count in the promoted database equals the copy's,
 #      or the promotion is undone the same way.
+#   The hourly backup and erasure-ledger timers are paused from the confirmation
+#   to the end of the run (started again whatever the outcome).
 #
 # --check runs every check and says what it would do; it changes nothing (no
 # backup, no rename, no role).
@@ -110,7 +112,15 @@ TMP_DIR="$(mktemp -d)"
 chmod 700 "$TMP_DIR"
 PROMOTE_DUMP="$TMP_DIR/promote.dump"
 IN_CONTAINER=0
+# [REVIEW-2503-A S4-4] The hourly backup and the erasure-ledger shipper are paused for the swap: a dump
+# taken mid-restore would upload an EMPTY database as the newest backup, and a heartbeat written into
+# the new database would fail the row-count proof. They start again when this run ends, whatever the outcome.
+STOPPED_TIMERS=""
 cleanup() {
+  for timer in $STOPPED_TIMERS; do
+    sudo -n systemctl start "$timer" ||
+      echo "WARNING: $timer could not be started again: sudo systemctl start $timer (backups stop until it is)" >&2
+  done
   rm -rf -- "$TMP_DIR"
   [ "$IN_CONTAINER" = 0 ] || "${COMPOSE[@]}" exec -T postgres rm -f /tmp/swift-promote.dump /tmp/swift-promote-acl.toc >/dev/null 2>&1 ||
     echo "WARNING: remove the promotion dump from the postgres container: docker compose -p $PROJECT exec postgres rm -f /tmp/swift-promote.dump" >&2
@@ -249,6 +259,17 @@ if [ "$LIVE" = 1 ]; then
   printf 'This replaces the LIVE database %s (project %s) with the copy %s.\nIt is backed up and kept as %s first.\nType exactly: %s\n> ' "$DB" "$PROJECT" "$COPY" "$REPLACED" "$WANT" >&2
   IFS= read -r -u 3 TYPED || TYPED=""
   [ "$TYPED" = "$WANT" ] || die "the confirmation did not match; nothing was changed"
+fi
+
+# ── the timers that write to the database, paused ──────────────────────────
+if command -v systemctl >/dev/null 2>&1; then
+  for timer in swift-backup-hourly.timer swift-erasure-ledger.timer; do
+    if systemctl is-active --quiet "$timer" 2>/dev/null; then
+      sudo -n systemctl stop "$timer" || die "could not pause $timer (sudo -n systemctl stop $timer); nothing was replaced"
+      STOPPED_TIMERS="$STOPPED_TIMERS $timer"
+    fi
+  done
+  [ -z "$STOPPED_TIMERS" ] || echo "paused  :$STOPPED_TIMERS (started again when this run ends, whatever the outcome)"
 fi
 
 # ── a fresh backup of what is replaced ─────────────────────────────────────

@@ -36,6 +36,7 @@ import { pageOps, resolveOpsPage } from './ops-page';
 
 export const DISK_PAGE_TITLE = 'Server disk almost full';
 export const MEMORY_PAGE_TITLE = 'Server memory almost exhausted';
+export const REDIS_MEMORY_PAGE_TITLE = 'Redis memory near its limit';
 export const TWILIO_PAGE_TITLE = 'Sign-in texts are failing (Twilio)';
 export const ROUTING_PAGE_TITLE = 'Road routing is down (OSRM)';
 export const MMG_WAITING_PAGE_TITLE = 'MMG is not answering payment checks';
@@ -65,8 +66,13 @@ export async function hostMemory(): Promise<{ total: number; available: number }
 
 export async function watchHostResources(
   deps: Deps,
-  options: { disk?: () => Promise<{ total: number; free: number }>; memory?: () => Promise<{ total: number; available: number }>; env?: Env } = {},
-): Promise<{ diskUsedPct: number | null; memoryUsedPct: number | null }> {
+  options: {
+    disk?: () => Promise<{ total: number; free: number }>;
+    memory?: () => Promise<{ total: number; available: number }>;
+    redisInfo?: () => Promise<string>;
+    env?: Env;
+  } = {},
+): Promise<{ diskUsedPct: number | null; memoryUsedPct: number | null; redisUsedPct: number | null }> {
   const env = options.env ?? process.env;
   let diskUsedPct: number | null = null;
   let memoryUsedPct: number | null = null;
@@ -108,7 +114,32 @@ export async function watchHostResources(
       await resolveOpsPage(deps.prisma, MEMORY_PAGE_TITLE, 'memory-below-threshold');
     }
   }
-  return { diskUsedPct, memoryUsedPct };
+  // [REVIEW-2503-A S3-4] Redis runs at maxmemory 768 MB with noeviction: past it every write is
+  // refused (sign-in codes, rate limits, queues). Page at 80% of it, well before the wall.
+  let redisUsedPct: number | null = null;
+  try {
+    const text = await (options.redisInfo ?? (() => deps.redis.info('memory')))();
+    const num = (name: string) => Number(new RegExp(`^${name}:(\\d+)`, 'm').exec(text)?.[1] ?? NaN);
+    const used = num('used_memory');
+    const max = num('maxmemory');
+    if (Number.isFinite(used) && Number.isFinite(max) && max > 0) redisUsedPct = Math.round((used / max) * 100);
+  } catch {
+    redisUsedPct = null;
+  }
+  if (redisUsedPct !== null) {
+    if (redisUsedPct >= percentSetting(env, 'REDIS_MEMORY_ALERT_PERCENT', 80)) {
+      await pageOps(deps, {
+        key: 'ops_page:redis-memory',
+        windowSeconds: 3600,
+        title: REDIS_MEMORY_PAGE_TITLE,
+        body: `Redis is at ${redisUsedPct}% of its memory limit. At 100% it refuses every write (sign-in codes, rate limits, job queues). On the host: docker exec swift-redis-1 redis-cli info memory, then find what grew (queue sizes: redis-cli --scan --pattern 'bull:*' | head).`,
+        data: { kind: 'ops_redis_memory', usedPercent: redisUsedPct },
+      });
+    } else {
+      await resolveOpsPage(deps.prisma, REDIS_MEMORY_PAGE_TITLE, 'redis-memory-below-threshold');
+    }
+  }
+  return { diskUsedPct, memoryUsedPct, redisUsedPct };
 }
 
 /** Asks the routing engine one nearest-road question, bounded at five seconds. */
@@ -127,6 +158,8 @@ export async function probeOsrm(env: Env = process.env): Promise<{ ok: true } | 
 export const TWILIO_FAILURES_TO_PAGE = 5;
 export const ROUTING_FAILURES_TO_PAGE = 2;
 export const MMG_WAIT_MINUTES = 30;
+/** The checkouts already paged about (ids only), kept three days: longer than a checkout can confirm. */
+const MMG_PAGED_KEY = 'ops_page:mmg-waiting:paged';
 
 export async function watchProviderOutages(
   deps: Deps,
@@ -183,18 +216,29 @@ export async function watchProviderOutages(
   }
 
   try {
-    const waiting = await deps.prisma.mmgCheckoutIntent.count({
+    const rows = await deps.prisma.mmgCheckoutIntent.findMany({
       where: { status: 'CONFIRMING', replyAt: { lt: new Date(nowMs - MMG_WAIT_MINUTES * 60_000) } },
+      select: { id: true },
+      take: 200,
     });
+    const waiting = rows.length;
     out.mmgWaiting = waiting;
     if (waiting > 0) {
-      await pageOps(deps, {
-        key: 'ops_page:mmg-waiting',
-        windowSeconds: 3600,
-        title: MMG_WAITING_PAGE_TITLE,
-        body: `${waiting} weekly-fee payment(s) partners came back from have waited more than ${MMG_WAIT_MINUTES} minutes for MMG's answer: MMG is not answering its lookups, or keeps saying pending. Partners see "We are checking your payment". Nothing is credited without MMG's answer; check MMG's status, then Console, MMG payments.`,
-        data: { kind: 'ops_mmg_waiting', waiting },
-      });
+      // [REVIEW-2503-A S4-1] Each checkout pages once: one that legitimately stays CONFIRMING (up to a
+      // day) never re-pages after the page was acknowledged; a NEW waiting checkout pages again.
+      const already = new Set(await deps.redis.smembers(MMG_PAGED_KEY));
+      const fresh = rows.map((r) => r.id).filter((id) => !already.has(id));
+      if (fresh.length > 0) {
+        await pageOps(deps, {
+          key: 'ops_page:mmg-waiting',
+          windowSeconds: 3600,
+          title: MMG_WAITING_PAGE_TITLE,
+          body: `${waiting} weekly-fee payment(s) partners came back from have waited more than ${MMG_WAIT_MINUTES} minutes for MMG's answer (${fresh.length} new since the last page): MMG is not answering its lookups, or keeps saying pending. Partners see "We are checking your payment". Nothing is credited without MMG's answer; check MMG's status, then Console, MMG payments.`,
+          data: { kind: 'ops_mmg_waiting', waiting, fresh: fresh.length },
+        });
+        await deps.redis.sadd(MMG_PAGED_KEY, ...fresh);
+        await deps.redis.expire(MMG_PAGED_KEY, 3 * 24 * 3600);
+      }
     } else {
       await resolveOpsPage(deps.prisma, MMG_WAITING_PAGE_TITLE, 'mmg-answering');
     }

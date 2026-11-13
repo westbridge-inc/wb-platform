@@ -118,3 +118,23 @@ export function schedulerSelfWatchMs(env: Record<string, string | undefined> = p
   const seconds = Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_SCHEDULER_SELF_WATCH_SECONDS;
   return seconds * 1000;
 }
+
+/**
+ * [REVIEW-2503-A S4-3] May this verdict page now? A STALL waits until this API process has itself been
+ * up a whole stall window: right after a deploy the old worker's last beat is as old as the stop, the
+ * migration and the boot, and the new worker beats within a minute of starting. "Never started"
+ * already has that grace built in (evaluateSchedulerHealth). /health still reports the truth; only the
+ * page waits.
+ */
+export function schedulerPageAllowed(health: SchedulerHealth, nowMs: number, bootAtMs: number, stallMs: number, env: Record<string, string | undefined> = process.env): boolean {
+  if (!health.page) return false;
+  if (health.kind === 'stall' && nowMs - bootAtMs <= stallPageGraceMs(stallMs, env)) return false;
+  return true;
+}
+
+/** SCHEDULER_STALL_PAGE_GRACE_SECONDS: the grace, default the stall window; 0 pages at once (total-parsed: junk keeps the default). */
+export function stallPageGraceMs(stallMs: number, env: Record<string, string | undefined> = process.env): number {
+  const raw = env['SCHEDULER_STALL_PAGE_GRACE_SECONDS']?.trim();
+  const n = raw === undefined || raw === '' ? NaN : Number(raw);
+  return Number.isFinite(n) && n >= 0 ? n * 1000 : stallMs;
+}

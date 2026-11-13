@@ -143,6 +143,17 @@ class RecoverRehearsal(unittest.TestCase):
     def recover(self, project, *args, tty_input=None):
         cmd = ['bash', str(self.deploy / 'recover.sh'), '--project', project, '--from-copy', self.copy, *args]
         env = {k: v for k, v in os.environ.items() if not k.startswith(('POSTGRES_', 'COMPOSE_'))}
+        # [REVIEW-2503-A S4-4] a host whose backup and erasure-ledger timers are running: systemctl and
+        # sudo stand-ins that only log (no real unit is touched)
+        shims = self.root / 'shims'
+        if not shims.exists():
+            shims.mkdir()
+            (shims / 'systemctl').write_text('#!/bin/sh\necho "systemctl $*" >> "$TIMER_LOG"\nexit 0\n')
+            (shims / 'sudo').write_text('#!/bin/sh\n[ "$1" = -n ] && shift\nexec "$@"\n')
+            for f in shims.iterdir():
+                f.chmod(0o755)
+        env['PATH'] = f"{shims}:{env['PATH']}"
+        env['TIMER_LOG'] = str(self.root / 'timers.log')
         if tty_input is None:
             return subprocess.run(cmd, capture_output=True, text=True, stdin=subprocess.DEVNULL, env=env, timeout=600)
         master, slave = pty.openpty()
@@ -193,6 +204,7 @@ class RecoverRehearsal(unittest.TestCase):
         self.assertIn('--erasures-checked', r.stderr)
         r = self.recover(new, '--erasures-checked', '--check')
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertNotIn('systemctl stop', (self.root / 'timers.log').read_text() if (self.root / 'timers.log').exists() else '', '--check pauses nothing')
         self.assertIn('CHECK OK', r.stdout)
         self.assertEqual(self.psql(new, "SELECT count(*) FROM pg_roles WHERE rolname LIKE 'swift\\_%';", db='postgres'), '0', '--check changed nothing')
         r = self.recover(new, '--erasures-checked')
@@ -222,8 +234,17 @@ class RecoverRehearsal(unittest.TestCase):
         self.assertIn('did not match', r.stderr)
         self.assertEqual(self.counts(new), '5 0 1', 'a refused run changed nothing')
         safety = self.root / 'safety'
+        (self.root / 'timers.log').write_text('')
         r = self.recover(new, '--erasures-checked', '--replace-database', '--safety-dir', str(safety), tty_input=f'REPLACE swift IN {new}\n')
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        # [REVIEW-2503-A S4-4] the timers that write to the database were paused for the swap, and started again
+        timers = (self.root / 'timers.log').read_text().splitlines()
+        stops = [i for i, l in enumerate(timers) if l.startswith('systemctl stop')]
+        starts = [i for i, l in enumerate(timers) if l.startswith('systemctl start')]
+        self.assertEqual(sorted(l.split()[-1] for l in timers if l.startswith('systemctl stop')), ['swift-backup-hourly.timer', 'swift-erasure-ledger.timer'])
+        self.assertEqual(sorted(l.split()[-1] for l in timers if l.startswith('systemctl start')), ['swift-backup-hourly.timer', 'swift-erasure-ledger.timer'])
+        self.assertLess(max(stops), min(starts))
+        self.assertIn('paused  :', r.stdout)
         self.assertIn('PROMOTED', r.stdout)
         self.assertEqual(self.counts(new), before)
         # the damaged database: backed up first (a readable archive, owner-only), and kept renamed and closed

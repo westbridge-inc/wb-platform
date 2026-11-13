@@ -27,7 +27,7 @@ import { providerFeeRoutes } from './modules/services/provider-fee.routes';
 import { partnerRoutes } from './modules/partner/partner.routes';
 import { authorityLetterPublicRoutes, authorityLetterVendorRoutes } from './modules/vendor/authority-letter/authority-letter.routes';
 import { setAppLogger } from './utils/logger';
-import { evaluateSchedulerHealth, schedulerSelfWatchMs, schedulerStallMs, workerCheckStatus, type SchedulerHealth } from './utils/scheduler-health';
+import { evaluateSchedulerHealth, schedulerPageAllowed, schedulerSelfWatchMs, schedulerStallMs, workerCheckStatus, type SchedulerHealth } from './utils/scheduler-health';
 import { prismaPlugin, beginRequestTenantContext } from './plugins/prisma';
 import { authPlugin } from './plugins/auth';
 import { socketPlugin } from './plugins/socket';
@@ -284,6 +284,7 @@ export async function buildApp(options: BuildAppOptions = {}) {
       // once we're past the grace window — the case this check used to swallow.
       const health = workerHealth;
       if (!health.page) return;
+      if (!schedulerPageAllowed(health, Date.now(), SERVER_BOOTED_AT, schedulerStallMs())) return;
       const neverBooted = health.kind === 'never-booted';
       // Separate dedup keys so a "never booted" alert and a later "stall" don't mask each other.
       const pageKey = neverBooted ? 'ops_page:scheduler-never-booted' : 'ops_page:scheduler-stall';

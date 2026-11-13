@@ -19,7 +19,7 @@ vi.mock('../modules/ops/ops-page', () => ({
 
 import { pageOps, resolveOpsPage } from '../modules/ops/ops-page';
 import {
-  DISK_PAGE_TITLE, MEMORY_PAGE_TITLE, MMG_WAITING_PAGE_TITLE, ROUTING_PAGE_TITLE, TWILIO_PAGE_TITLE,
+  DISK_PAGE_TITLE, MEMORY_PAGE_TITLE, MMG_WAITING_PAGE_TITLE, REDIS_MEMORY_PAGE_TITLE, ROUTING_PAGE_TITLE, TWILIO_PAGE_TITLE,
   watchHostResources, watchProviderOutages,
 } from '../modules/ops/infra-watch';
 import { ProviderCallError, providerStatusOf, recordProviderFailure } from '../lib/provider-failure';
@@ -37,9 +37,18 @@ function fakeRedis() {
     expire: vi.fn(async () => 1),
     del: vi.fn(async (...keys: string[]) => { keys.forEach((k) => store.delete(k)); return keys.length; }),
     mget: vi.fn(async (...keys: string[]) => keys.map((k) => (store.has(k) ? String(store.get(k)) : null))),
+    sets,
+    smembers: vi.fn(async (k: string) => [...(sets.get(k) ?? [])]),
+    sadd: vi.fn(async (k: string, ...m: string[]) => { const set = sets.get(k) ?? new Set<string>(); m.forEach((x) => set.add(x)); sets.set(k, set); return m.length; }),
   };
 }
-const fakePrisma = (waiting = 0) => ({ mmgCheckoutIntent: { count: vi.fn(async () => waiting) } });
+const sets = new Map<string, Set<string>>();
+afterEach(() => sets.clear());
+/** The checkouts waiting for MMG's answer: `waiting` ids, or the given ids. */
+const fakePrisma = (waiting: number | string[] = 0) => {
+  const ids = typeof waiting === 'number' ? Array.from({ length: waiting }, (_, i) => `co${i}`) : waiting;
+  return { mmgCheckoutIntent: { findMany: vi.fn(async () => ids.map((id) => ({ id }))) } };
+};
 const deps = (redis = fakeRedis(), prisma = fakePrisma()) => ({ prisma: prisma as never, redis: redis as never, notifications: {} as never });
 const titles = (fn: typeof pageOps | typeof resolveOpsPage) =>
   vi.mocked(fn).mock.calls.map((c) => (fn === pageOps ? (c[1] as { title: string }).title : (c[1] as unknown as string)));
@@ -83,6 +92,28 @@ describe('the server disk and memory', () => {
   });
 });
 
+// [REVIEW-2503-A S3-4] Redis runs with a 768 MB maxmemory and noeviction: past it every write is
+// refused (sign-in codes, rate limits, queues). The watch pages at 80% of it, before the wall.
+describe('Redis memory before its wall', () => {
+  const MB = 1024 * 1024;
+  const info = (used: number, max: number) => async () => `# Memory\r\nused_memory:${used}\r\nused_memory_human:x\r\nmaxmemory:${max}\r\n`;
+  it('pages at 80% of maxmemory and closes below it', async () => {
+    await watchHostResources(deps(), { disk: disk(10), memory: memory(10), redisInfo: info(620 * MB, 768 * MB) });
+    expect(titles(pageOps)).toEqual([REDIS_MEMORY_PAGE_TITLE]);
+    vi.mocked(resolveOpsPage).mockClear();
+    vi.mocked(pageOps).mockClear();
+    await watchHostResources(deps(), { disk: disk(10), memory: memory(10), redisInfo: info(100 * MB, 768 * MB) });
+    expect(titles(pageOps)).toEqual([]);
+    expect(titles(resolveOpsPage)).toContain(REDIS_MEMORY_PAGE_TITLE);
+  });
+  it('no maxmemory, or an unreadable INFO, pages nothing and closes nothing', async () => {
+    await watchHostResources(deps(), { disk: disk(10), memory: memory(10), redisInfo: info(900 * MB, 0) });
+    await watchHostResources(deps(), { disk: disk(10), memory: memory(10), redisInfo: async () => { throw new Error('down'); } });
+    expect(titles(pageOps)).toEqual([]);
+    expect(titles(resolveOpsPage)).not.toContain(REDIS_MEMORY_PAGE_TITLE);
+  });
+});
+
 describe('providers that stop answering', () => {
   const now = Date.UTC(2026, 10, 13, 6, 0, 0);
   const routingOk = vi.fn(async () => ({ ok: true as const }));
@@ -122,7 +153,7 @@ describe('providers that stop answering', () => {
     const prisma = fakePrisma(2);
     await watchProviderOutages(deps(fakeRedis(), prisma), { nowMs: now, probeRouting: routingOk, env: {} });
     expect(titles(pageOps)).toContain(MMG_WAITING_PAGE_TITLE);
-    const where = (prisma.mmgCheckoutIntent.count.mock.calls[0] as unknown as [{ where: Record<string, unknown> }])[0].where;
+    const where = (prisma.mmgCheckoutIntent.findMany.mock.calls[0] as unknown as [{ where: Record<string, unknown> }])[0].where;
     expect(where['status']).toBe('CONFIRMING');
     expect(where['replyAt']).toEqual({ lt: new Date(now - 30 * 60_000) });
     vi.mocked(pageOps).mockClear();
@@ -131,8 +162,23 @@ describe('providers that stop answering', () => {
     expect(titles(resolveOpsPage)).toContain(MMG_WAITING_PAGE_TITLE);
   });
 
+  // [REVIEW-2503-A S4-1] A checkout may legitimately stay CONFIRMING for a day: the page is about each
+  // checkout once. After it was paged (and acknowledged), the same checkout never pages again; a new one does.
+  it('the same waiting checkout pages once; only a new one pages again', async () => {
+    const redis = fakeRedis();
+    await watchProviderOutages(deps(redis, fakePrisma(['a'])), { nowMs: now, probeRouting: routingOk, env: {} });
+    expect(titles(pageOps).filter((t) => t === MMG_WAITING_PAGE_TITLE).length).toBe(1);
+    vi.mocked(pageOps).mockClear();
+    for (let i = 1; i <= 12; i++) {
+      await watchProviderOutages(deps(redis, fakePrisma(['a'])), { nowMs: now + i * 5 * 60_000, probeRouting: routingOk, env: {} });
+    }
+    expect(titles(pageOps)).not.toContain(MMG_WAITING_PAGE_TITLE);
+    await watchProviderOutages(deps(redis, fakePrisma(['a', 'b'])), { nowMs: now + 70 * 60_000, probeRouting: routingOk, env: {} });
+    expect(titles(pageOps)).toContain(MMG_WAITING_PAGE_TITLE);
+  });
+
   it('one provider failing to read never stops the others', async () => {
-    const prisma = { mmgCheckoutIntent: { count: vi.fn(async () => { throw new Error('db'); }) } };
+    const prisma = { mmgCheckoutIntent: { findMany: vi.fn(async () => { throw new Error('db'); }) } };
     const redis = fakeRedis();
     for (let i = 0; i < 5; i++) await recordProviderFailure(redis as never, 'twilio', now);
     await watchProviderOutages(deps(redis, prisma as never), { nowMs: now, probeRouting: routingOk, env: {} });

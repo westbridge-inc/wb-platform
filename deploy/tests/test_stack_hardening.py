@@ -84,6 +84,8 @@ class TheStackItsLimits(unittest.TestCase):
                 binds = [v for v in s[name].get("volumes", []) if v.get("type") == "bind"]
                 self.assertEqual([(v["source"], v["target"], v.get("read_only")) for v in binds],
                                  [(f"/run/swift-secrets/{secret}", f"/run/secrets/{secret}", True)])
+                # [REVIEW-2503-A S3-2] never a planted directory when the file is missing at start
+                self.assertFalse(binds[0].get("bind", {}).get("create_host_path"), "the short form plants a directory at a missing source")
         self.assertEqual(s["meilisearch"].get("user"), "1000:1000")
         owner = s["meilisearch-data-owner"]
         self.assertEqual(owner.get("network_mode"), "none")
@@ -126,6 +128,8 @@ class TheStackItsLimits(unittest.TestCase):
         self.assertIn("requirepass", script)
         self.assertIn("/run/redis-auth/auth.conf", script)
         self.assertNotIn("--requirepass", script)
+        [secret] = [v for v in redis["volumes"] if v.get("target") == "/run/secrets/REDIS_PASSWORD"]
+        self.assertFalse(secret.get("bind", {}).get("create_host_path"))
         self.assertEqual([t.split(":")[0] for t in redis.get("tmpfs", [])], ["/run/redis-auth"])
         self.assertIn("REDISCLI_AUTH=", " ".join(redis["healthcheck"]["test"]))
         for name in ("api", "worker"):

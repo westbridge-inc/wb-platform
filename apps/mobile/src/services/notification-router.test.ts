@@ -559,6 +559,7 @@ const CENSUS: Case[] = [
   // Twilio, the routing engine down, payments waiting for MMG. Admin-only, acted on from the server.
   { k: 'ops_host_disk', d: { usedPercent: 86 }, to: null, why: 'admins — ops page (FABLE-05)' },
   { k: 'ops_host_memory', d: { usedPercent: 93 }, to: null, why: 'admins — ops page (FABLE-05)' },
+  { k: 'ops_redis_memory', d: { usedPercent: 81 }, to: null, why: 'admins — ops page (REVIEW-2503-A S3-4)' },
   { k: 'ops_twilio_failing', d: { failures: 5 }, to: null, why: 'admins — ops page (FABLE-05)' },
   { k: 'ops_routing_down', d: { failures: 2, status: 502 }, to: null, why: 'admins — ops page (FABLE-05)' },
   { k: 'ops_mmg_waiting', d: { waiting: 1 }, to: null, why: 'admins — ops page (FABLE-05)' },

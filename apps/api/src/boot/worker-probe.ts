@@ -49,31 +49,55 @@ export function workerProbeOk(beat: string | null, nowMs: number, stallMs: numbe
 // ---------------------------------------------------------------------------
 export const PROBE_RESTART_AFTER = 3;
 export const PROBE_KILL_AFTER_MS = 30_000;
+/** [REVIEW-2503-A S3-1] Restarts in any hour before the probe stops restarting and leaves the worker up. */
+export const PROBE_MAX_RESTARTS_PER_HOUR = 2;
 export const WORKER_BOOT_FILE = '/tmp/swift-worker-boot';
 const PROBE_STATE_FILE = '/tmp/swift-worker-probe.json';
+const HOUR_MS = 60 * 60_000;
 
 export type ProbeVerdict = 'ok' | 'stale' | 'redis-unreachable';
-export interface ProbeState { failures: number; termSentAt: number | null }
+/**
+ * What the probe remembers between runs (a file in the container's /tmp, which a restart keeps).
+ * `bootAtMs` is the worker incarnation the counts belong to: a new boot record starts them again, so
+ * a restarted worker is never killed on its predecessor's stop request. `restarts` are the stop
+ * requests of the last hour, across incarnations: the cap.
+ */
+export interface ProbeState { failures: number; termSentAt: number | null; bootAtMs: number | null; restarts: number[] }
 export interface WorkerBoot { pid: number; bootAtMs: number }
+export const freshProbeState = (): ProbeState => ({ failures: 0, termSentAt: null, bootAtMs: null, restarts: [] });
 
-/** The pure decision, unit-tested: what this probe does about the worker. */
+/**
+ * The pure decision, unit-tested: what this probe does about the worker.
+ *  - none     nothing (healthy, booting, unknown, Redis unreachable, or waiting out a SIGTERM);
+ *  - term     ask THIS worker to stop (its graceful shutdown); always first for an incarnation;
+ *  - kill     it is still there 30 s after its own SIGTERM;
+ *  - capped   it should be restarted, but PROBE_MAX_RESTARTS_PER_HOUR were spent this hour: a restart
+ *             is not fixing this stall, so the worker is left up and the API's "Job scheduler
+ *             stalled" page (which never depended on this probe) carries it to a person.
+ */
 export function probeRestartDecision(input: {
   state: ProbeState;
   verdict: ProbeVerdict;
   nowMs: number;
   worker: WorkerBoot | null;
   stallMs: number;
-}): { state: ProbeState; action: 'none' | 'term' | 'kill' } {
-  const { state, verdict, nowMs, worker, stallMs } = input;
-  if (verdict === 'ok') return { state: { failures: 0, termSentAt: null }, action: 'none' };
+}): { state: ProbeState; action: 'none' | 'term' | 'kill' | 'capped' } {
+  const { verdict, nowMs, worker, stallMs } = input;
+  const restarts = (input.state.restarts ?? []).filter((t) => nowMs - t < HOUR_MS);
+  let state: ProbeState = { ...input.state, restarts };
+  if (worker && state.bootAtMs !== worker.bootAtMs) {
+    state = { failures: 0, termSentAt: null, bootAtMs: worker.bootAtMs, restarts };
+  }
+  if (verdict === 'ok') return { state: { ...state, failures: 0, termSentAt: null }, action: 'none' };
   if (verdict === 'redis-unreachable') return { state, action: 'none' };
-  const next: ProbeState = { failures: state.failures + 1, termSentAt: state.termSentAt };
+  const next: ProbeState = { ...state, failures: state.failures + 1 };
   if (!worker || nowMs - worker.bootAtMs <= stallMs + 60_000) return { state: next, action: 'none' };
   if (next.termSentAt !== null) {
     return { state: next, action: nowMs - next.termSentAt >= PROBE_KILL_AFTER_MS ? 'kill' : 'none' };
   }
   if (next.failures < PROBE_RESTART_AFTER) return { state: next, action: 'none' };
-  return { state: { ...next, termSentAt: nowMs }, action: 'term' };
+  if (restarts.length >= PROBE_MAX_RESTARTS_PER_HOUR) return { state: next, action: 'capped' };
+  return { state: { ...next, termSentAt: nowMs, restarts: [...restarts, nowMs] }, action: 'term' };
 }
 
 /** Called once by dist/worker.js at boot: which process the probe may restart, and since when. */
@@ -96,10 +120,15 @@ function readWorkerBoot(): WorkerBoot | null {
 
 function readProbeState(): ProbeState {
   try {
-    const s = JSON.parse(readFileSync(PROBE_STATE_FILE, 'utf8')) as ProbeState;
-    return { failures: Number.isInteger(s.failures) ? s.failures : 0, termSentAt: typeof s.termSentAt === 'number' ? s.termSentAt : null };
+    const s = JSON.parse(readFileSync(PROBE_STATE_FILE, 'utf8')) as Partial<ProbeState>;
+    return {
+      failures: Number.isInteger(s.failures) ? (s.failures as number) : 0,
+      termSentAt: typeof s.termSentAt === 'number' ? s.termSentAt : null,
+      bootAtMs: typeof s.bootAtMs === 'number' ? s.bootAtMs : null,
+      restarts: Array.isArray(s.restarts) ? s.restarts.filter((t): t is number => typeof t === 'number') : [],
+    };
   } catch {
-    return { failures: 0, termSentAt: null };
+    return freshProbeState();
   }
 }
 
@@ -139,7 +168,10 @@ export async function main(): Promise<void> {
   } catch {
     // a probe that cannot remember never escalates; its verdict still stands
   }
-  if (worker && decision.action !== 'none') {
+  if (decision.action === 'capped') {
+    // eslint-disable-next-line no-console -- the probe's stdout is Docker's health log, the only place this reason is kept
+    console.log(`worker-probe: scheduler heartbeat stale, but ${PROBE_MAX_RESTARTS_PER_HOUR} restarts this hour did not fix it; leaving the worker up (the API pages "Job scheduler stalled")`);
+  } else if (worker && decision.action !== 'none') {
     // Docker keeps the probe's last lines with the health status (docker inspect): the reason is there.
     const signal = decision.action === 'term' ? 'SIGTERM' : 'SIGKILL';
     try {

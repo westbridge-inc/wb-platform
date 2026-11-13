@@ -39,7 +39,12 @@ services:
     tmpfs:
       - /run/redis-auth:mode=0700,uid=999
     volumes:
-      - /run/swift-secrets/REDIS_PASSWORD:/run/secrets/REDIS_PASSWORD:ro
+      - type: bind
+        source: /run/swift-secrets/REDIS_PASSWORD
+        target: /run/secrets/REDIS_PASSWORD
+        read_only: true
+        bind:
+          create_host_path: false
     healthcheck:
       test: ["CMD-SHELL", "[ \"$$(REDISCLI_AUTH=\"$$(cat /run/secrets/REDIS_PASSWORD)\" redis-cli ping)\" = PONG ]"]
   api:

@@ -962,6 +962,11 @@ before anything changes unless every interlock holds:
   every table's exact row count must equal the copy's. Any failure puts the
   old database back under its own name.
 
+- the hourly backup and erasure-ledger timers are paused from the
+  confirmation to the end of the run, and started again whatever the outcome
+  (a dump taken mid-restore would upload an empty database as the newest
+  backup).
+
 `--check` runs every check and says what it would do, changing nothing.
 `deploy/tests/test_recover_rehearsal.py` is the rehearsal on real Postgres
 containers (the stack's own image): a signed backup, the host destroyed, a
@@ -974,6 +979,7 @@ database. It runs in CI (69 seconds locally).
     cd /opt/swift
     docker compose -f deploy/docker-compose.yml stop api worker      # Swift is offline from here
     sudo systemctl start swift-backup.service                         # keep the damaged state too
+    sudo systemctl stop swift-backup-hourly.timer swift-erasure-ledger.timer   # nothing writes while the copy is made
 
 On the owner's computer (the backup is encrypted to the owner's key; pick
 the newest object from before the damage):
@@ -986,6 +992,9 @@ erasure lines. Then on the host, from a terminal:
     ./deploy/recover.sh --project swift --from-copy swift_recover_<utc> --erasures-checked --check
     ./deploy/recover.sh --project swift --from-copy swift_recover_<utc> --erasures-checked --replace-database
 
+recover.sh pauses the two timers itself too and starts them again when it
+ends; if you stopped them above and stop here instead, start them yourself:
+`sudo systemctl start swift-backup-hourly.timer swift-erasure-ledger.timer`.
 Then start the API with the reviewed deploy of the SAME revision that was
 serving (`./deploy/pilot-up.sh <sha>`), compare a few counts in the console
 and place one test order. Payments made after the backup are not in Swift:
@@ -1020,7 +1029,8 @@ three hold people erased since.
    erasure ledger there). Then on the host:
    `./deploy/recover.sh --project swift --from-copy <copy> --erasures-checked`.
 6. The runtime logins (section 13: fingerprint, plan, apply, verify), the
-   backup units and timers (section 4), then `./deploy/pilot-up.sh
+   backup units and timers (section 4: installed only now, after the
+   promotion, so no hourly dump can catch the database half-restored), then `./deploy/pilot-up.sh
    --no-public <sha>`: the API and worker ready with nothing public. Compare
    counts, one test order through the private network.
 7. Only then DNS in Cloudflare, and the whole stack (`./deploy/pilot-up.sh
@@ -1189,7 +1199,15 @@ after every check and before it stops the running API, and refuses to stop
 anything if that backup fails (production always has the unit; a host
 without it warns). It then prints a `ROLLBACK:` block naming that backup and
 the revision the API served before, and prints it again with any failure
-after that point. Read it before deciding.
+after that point. Read it before deciding. Until a deploy reaches READY,
+that FIRST rollback point is kept (in the checkout's git directory): a re-run
+after a failure past the migration prints the first attempt's backup and
+revision, never its own (its own backup is of the migrated database). Before
+anything changes, pilot-up also prints read-only pre-checks (disk, memory,
+each container's memory, Redis's own use) and refuses when Redis already
+uses more than 600 MB of its 768 MB limit. The routing check after OSRM
+starts is retried for up to 3 minutes and ends in a named FATAL if OSRM never
+answers (nothing stopped or migrated).
 
 After confirming the new schema remains backward-compatible with the
 previous binary, redeploy the previous approved main SHA:

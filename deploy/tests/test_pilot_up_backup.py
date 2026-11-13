@@ -27,6 +27,18 @@ PREVIOUS = "b" * 40
 FAKE_DOCKER = FAKE_PILOT_DOCKER.replace(
     '    else:\n        print("running")\n',
     '    elif "Config.Image" in fmt:\n        print(os.environ.get("API_IMAGE", ""))\n    else:\n        print("running")\n',
+).replace(
+    'if argv[:1] == ["compose"] and "ps" in argv and "-q" in argv:',
+    # [REVIEW-2503-A S3-4] the read-only Redis pre-check; [S3-5] an OSRM that answers only after N asks
+    'if argv[:1] == ["compose"] and "exec" in argv and "redis" in argv and "info memory" in line:\n'
+    '    if os.environ.get("REDIS_USED"): print("used_memory:" + os.environ["REDIS_USED"])\n'
+    '    sys.exit(0)\n'
+    'if argv[:1] == ["run"] and "osrm:5000" in line and os.environ.get("OSRM_SLOW"):\n'
+    '    n = os.environ["CALL_LOG"] + ".osrm"\n'
+    '    k = int(open(n).read()) + 1 if os.path.exists(n) else 1\n'
+    '    open(n, "w").write(str(k))\n'
+    '    sys.exit(0 if k >= int(os.environ["OSRM_SLOW"]) else 1)\n'
+    'if argv[:1] == ["compose"] and "ps" in argv and "-q" in argv:',
 )
 assert FAKE_DOCKER != FAKE_PILOT_DOCKER
 
@@ -67,6 +79,8 @@ class PilotUpBacksUpBeforeMigrating(unittest.TestCase):
         sh_shim(self.bin, "systemctl", SYSTEMCTL)
         sh_shim(self.bin, "sleep", "exit 0")
         compose = (DEPLOY / "docker-compose.yml").read_text()
+        self.backups = self.tmp / "backups"
+        self.backups.mkdir()
         self.store = " ".join(sorted(set(re.findall(r"_FILE: /run/secrets/([A-Z][A-Z0-9_]*)", compose))
                                      | {"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY"}))
 
@@ -76,7 +90,8 @@ class PilotUpBacksUpBeforeMigrating(unittest.TestCase):
             "BACKUP_BUCKET=test-backups\nNODE_ENV=development\nCORS_ORIGIN=https://staging.example.com\n")
         env = os.environ.copy()
         env.update({"PATH": f"{self.bin}:{env['PATH']}", "CALL_LOG": str(self.log), "GIT_HEAD": self.SHA,
-                    "STORE_NAMES": self.store, "API_IMAGE": f"swift-api:{PREVIOUS}"})
+                    "STORE_NAMES": self.store, "API_IMAGE": f"swift-api:{PREVIOUS}",
+                    "PILOT_UP_ROLLBACK_FILE": str(self.tmp / "rollback-state"), "PILOT_UP_BACKUP_DIR": str(self.backups)})
         env.update(extra)
         result = subprocess.run(["bash", str(self.here / "pilot-up.sh"), *args, self.SHA],
                                 env=env, text=True, capture_output=True, timeout=120, stdin=subprocess.DEVNULL)
@@ -123,11 +138,64 @@ class PilotUpBacksUpBeforeMigrating(unittest.TestCase):
         self.assertIn("no backup is taken before the migration", result.stderr)
         self.assertFalse([c for c in calls if "systemctl start swift-backup.service" in c])
 
+    # [REVIEW-2503-A S3-3] A re-run after a failure past the migration must keep pointing at the FIRST
+    # pre-migration backup and the revision that served before, never the re-run's own.
+    def test_a_rerun_keeps_the_first_rollback_point_and_a_success_clears_it(self):
+        import time
+        (self.backups / "swift-20261113T080000Z.dump.gpg").write_text("first")
+        r1, _ = self.run_pilot(FAIL_ON="up -d --force-recreate migrate")
+        self.assertNotEqual(r1.returncode, 0)
+        self.assertIn("swift-20261113T080000Z.dump.gpg", r1.stderr)
+        time.sleep(1.1)
+        (self.backups / "swift-20261113T081500Z.dump.gpg").write_text("after the migration")
+        # the failed new API is the one running now
+        r2, _ = self.run_pilot(FAIL_ON="up -d --force-recreate migrate", API_IMAGE=f"swift-api:{self.SHA}")
+        block = r2.stdout[r2.stdout.index("ROLLBACK"):]
+        self.assertIn("swift-20261113T080000Z.dump.gpg", block)
+        self.assertNotIn("swift-20261113T081500Z", block)
+        self.assertIn(f"./deploy/pilot-up.sh {PREVIOUS}", block)
+        self.assertNotIn(f"./deploy/pilot-up.sh {self.SHA}", block)
+        self.assertIn("first", block.lower())
+        r3, _ = self.run_pilot(API_IMAGE=f"swift-api:{self.SHA}")
+        self.assertEqual(r3.returncode, 0, r3.stderr[-800:])
+        self.assertFalse((self.tmp / "rollback-state").exists(), "a deploy that reached READY clears the rollback point")
+
+    def test_without_a_backup_the_block_says_no_backup_was_taken(self):
+        result, _ = self.run_pilot(NO_BACKUP_UNIT="1")
+        self.assertIn("NO backup was taken", result.stdout)
+        self.assertNotIn("as none", result.stdout)
+
+    # [REVIEW-2503-A S3-5] OSRM is recreated before the API stops and has no healthcheck: its check retries.
+    def test_a_slow_routing_engine_is_waited_for(self):
+        result, calls = self.run_pilot(OSRM_SLOW="4")
+        self.assertEqual(result.returncode, 0, result.stderr[-800:])
+        self.assertGreaterEqual(len([c for c in calls if "osrm:5000" in c and c.startswith("docker run")]), 4)
+
+    def test_a_routing_engine_that_never_answers_is_a_named_fatal_before_anything_stops(self):
+        result, calls = self.run_pilot(FAIL_ON="osrm:5000/nearest")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("FATAL:", result.stderr)
+        self.assertIn("routing engine (OSRM)", result.stderr)
+        self.assertFalse([c for c in calls if " stop api worker" in c])
+
+    # [REVIEW-2503-A S3-4] Read-only pre-checks, printed; a Redis already near its new wall refuses.
+    def test_the_pre_checks_print_and_a_full_redis_refuses_before_anything_changes(self):
+        ok, calls = self.run_pilot(REDIS_USED=str(100 * 1024 * 1024))
+        self.assertEqual(ok.returncode, 0, ok.stderr[-800:])
+        self.assertIn("pre-check: redis used_memory 100 MB", ok.stdout)
+        self.assertIn("pre-check: disk:", ok.stdout)
+        self.log.write_text("")
+        full, calls = self.run_pilot(REDIS_USED=str(650 * 1024 * 1024))
+        self.assertNotEqual(full.returncode, 0)
+        self.assertIn("Redis", full.stderr)
+        self.assertIn("650 MB", full.stderr)
+        self.assertFalse([c for c in calls if " pull " in c or "up -d" in c or " build " in c], calls)
+
     def test_production_without_the_unit_refuses_in_the_script(self):
         # The production refusal itself, read from the script (a production run needs DNS, keys and
         # timers this harness does not stand up): only the database-only stage may go on without it.
         text = (DEPLOY / "pilot-up.sh").read_text()
-        block = text[text.index("if systemctl cat swift-backup.service"):text.index('ROLLBACK_NOTE="ROLLBACK:')]
+        block = text[text.index("if systemctl cat swift-backup.service"):text.index('ROLLBACK_NOTE="ROLLBACK')]
         self.assertIn('[ "$PILOT_ENV" != production ] || [ "$DATA_ONLY" -eq 1 ] ||', block)
         self.assertIn("swift-backup.service is not installed, so no backup can be taken before the migration", block)
 
