@@ -2741,6 +2741,43 @@ describe('[DS632 · 7 Oct] MMG’s time for the payment (its history record) is 
     expect(pages[0]!.body).toMatch(/MMG_CHECKOUT_CREATION_ZONE/);
   });
 
+  it('[audit FABLE-01 C1-1] a HELD checkout is checked with MMG again on request: credited once when MMG’s records now meet every condition; otherwise it stays HELD and nothing moves', async () => {
+    checkoutProvider = () => sandboxIn(null);
+    const s = await makeSub({ due: new Date(Date.now() - 60_000) });
+    const row = await intentOf((await start(s)).checkout.ref);
+    const txn = tx('RECHECK');
+    approved(row, txn, 2100);
+    await codeReply(row, '0', txn, 'NOTIFY');
+    expect(await intentOf(row.id)).toMatchObject({ status: 'HELD', reason: 'CREATION_ZONE_UNVERIFIED' });
+    const recheck = () => service.recheckHeld({ tenantId: row.tenantId, checkoutId: row.id, actorId: 'admin-recheck' });
+    // Nothing changed at MMG or here: checked again, still held, nothing credited.
+    expect(await recheck()).toMatchObject({ status: 'HELD', reason: 'CREATION_ZONE_UNVERIFIED' });
+    expect(await topups(s.subId)).toHaveLength(0);
+    expect(await identityOf(txn)).toBeNull();
+    // The zone is set, as the page asked: checked again, MMG's own lookup and history credit it, once.
+    checkoutProvider = () => sandbox;
+    expect(await recheck()).toMatchObject({ status: 'CONFIRMED' });
+    expect(await topups(s.subId)).toHaveLength(1);
+    expect(await identityOf(txn)).toMatchObject({ status: 'CREDITED', creditedPaymentId: `mco:${row.id}` });
+    expect((await holdOf(row.id)).status).not.toBe('ACTIVE');
+    // Not held any more: another ask is refused and nothing is credited twice.
+    await expect(recheck()).rejects.toMatchObject({ code: 'CHECKOUT_NOT_HELD' });
+    expect(await topups(s.subId)).toHaveLength(1);
+  });
+
+  it('[audit FABLE-01 C1-1] a re-check never credits what MMG’s records still contradict: a payment dated outside the checkout stays HELD', async () => {
+    const s = await makeSub();
+    const row = await intentOf((await start(s)).checkout.ref);
+    const near = tx('RECHECKOUT');
+    approved(row, near, 2100, {}, { creationDate: mmgTimeOf(new Date()) }, { modificationDate: mmgTimeOf(new Date(row.createdAt.getTime() - 5 * 60_000)) });
+    await codeReply(row, '0', near);
+    expect(await intentOf(row.id)).toMatchObject({ status: 'HELD', reason: 'PAYMENT_TIME_OUTSIDE_WINDOW' });
+    expect(await service.recheckHeld({ tenantId: row.tenantId, checkoutId: row.id, actorId: 'admin-recheck' })).toMatchObject({ status: 'HELD' });
+    expect(await topups(s.subId)).toHaveLength(0);
+    expect(await identityOf(near)).toBeNull();
+    await expect(service.recheckHeld({ tenantId: 'another-tenant', checkoutId: row.id, actorId: 'admin-recheck' })).rejects.toMatchObject({ statusCode: 404 });
+  });
+
   it.each([
     ['MMG writes true UTC and Swift is configured UTC', 'UTC'],
     ['MMG writes Guyana time, as in UAT, and Swift is configured GUYANA_WALL_CLOCK', 'GUYANA_WALL_CLOCK'],

@@ -19,6 +19,10 @@ export default async function setup(): Promise<void> {
   await lockTestTarget(env);
   const db = new PrismaClient({ datasourceUrl: env['DATABASE_URL'] });
   try {
+    // [AUDIT C2-5] billing_events refuses a DELETE (migration 20261113100000) unless the session's purge is on. The
+    // disposable test database turns it on for every session it serves, so suites can clean up their own fixtures; it
+    // reaches only this locked target, and production never sets it. A test of the guard turns it off for itself.
+    await db.$executeRawUnsafe(`DO $$ BEGIN EXECUTE format('ALTER DATABASE %I SET swift.billing_events_purge = %L', current_database(), 'on'); END $$`);
     const result = await backfillBillingConfirmation(db);
     // eslint-disable-next-line no-console
     if (!result.alreadyComplete) console.log(`[billing cutover] test database: ${result.mapped} subscriptions mapped, confirmation clock READY`);

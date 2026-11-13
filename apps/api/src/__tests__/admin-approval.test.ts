@@ -634,7 +634,8 @@ describe('[REVIEW #2499] the generic config route is an allowlist', () => {
     for (const key of ['approvals.solo.cooloff_hours', 'APPROVALS.SOLO.COOLOFF_HOURS', 'last_reaper_run_at', 'ops_page:anything', 'documents.personal_image_days', 'billing.mmg_pause.open', 'DELIVERY_FEE', 'last_backup_at', `unknown_${RUN}`]) {
       const res = await call(requester.token, 'PUT', `/api/v1/admin/config/${encodeURIComponent(key)}`, { value: 0.01, reason: REASON });
       expect(res.statusCode, `${key}: ${res.body}`).toBe(409);
-      expect(res.json().error.code).toBe('CONFIG_KEY_NOT_WRITABLE');
+      // a machine-owned key answers in #2500's own words; every other key off the allowlist in this PR's
+      expect(['CONFIG_KEY_NOT_WRITABLE', 'CONFIG_KEY_MACHINE_OWNED']).toContain(res.json().error.code);
       expect(await app.prisma.privilegedApproval.count({ where: { action: 'PUT /config/:key', entityId: key } })).toBe(0);
     }
   });

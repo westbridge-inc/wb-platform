@@ -584,6 +584,28 @@ describe('one reference credits once', () => {
     expect(await asks(second.id)).toBe(0);
   });
 
+  it('[AUDIT C2-3] one cheque typed with other separators (CHQ-000123, CHQ/000123, CHQ.000123) is the same reference', async () => {
+    const first = await makeSub();
+    const second = await makeSub();
+    const digits = String(Date.now()).slice(-9);
+    expect((await pay(first.id, cheque({ reference: `CHQ-${digits}` }))).statusCode).toBe(200);
+    for (const reference of [`CHQ/${digits}`, `chq.${digits}`, `CHQ${digits}`]) {
+      const res = await ask(second.id, cheque({ reference }));
+      expect(res.statusCode).toBe(409);
+      expect(code(res)).toBe('IN_PERSON_REFERENCE_USED');
+    }
+    expect(await asks(second.id)).toBe(0);
+    expect(await credits(second.id)).toBe(0);
+  });
+
+  it('[AUDIT C2-3] two approved asks racing on one cheque spelled two ways: exactly one credits', async () => {
+    const [a, b] = [await makeSub(), await makeSub()];
+    const digits = String(Date.now() + 7).slice(-9);
+    const [x, y] = await Promise.all([pay(a.id, cheque({ reference: `CHQ-${digits}` })), pay(b.id, cheque({ reference: `CHQ/${digits}` }))]);
+    expect([x.statusCode, y.statusCode].sort()).toEqual([200, 409]);
+    expect((await credits(a.id)) + (await credits(b.id))).toBe(1);
+  });
+
   it('two approved asks racing on one reference: exactly one credits', async () => {
     const [a, b] = [await makeSub(), await makeSub()];
     const reference = ref('RACE');

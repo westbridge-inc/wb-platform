@@ -275,3 +275,35 @@ describe('[U06] once the first ask no longer stands, a new ask is accepted', () 
     expect((await writeConfig(requester.token, key, { rate: 1 })).statusCode).toBe(202);
   });
 });
+
+describe('[AUDIT C2-2] the generic config route refuses a key the billing machinery owns', () => {
+  it('a fee-pause key is refused at the ask, nothing is asked, and nothing is written even with an approval', async () => {
+    for (const key of ['billing.mmg_pause.open', 'billing.mmg_pause.clocks', 'BILLING.MMG_PAUSE.OPEN', 'billing.mmg_agent.ingestion_mode', 'documents.hire_car_split_started_at', 'last_reaper_run_at']) {
+      const before = await app.prisma.platformConfig.findUnique({ where: { key } });
+      const res = await writeConfig(requester.token, key, { since: '2026-01-01T00:00:00.000Z' });
+      expect(res.statusCode, `${key}: ${res.body}`).toBe(409);
+      expect(res.json().error.code).toBe('CONFIG_KEY_MACHINE_OWNED');
+      expect(await openRows('PUT /config/:key', key)).toBe(0);
+      expect(await app.prisma.platformConfig.findUnique({ where: { key } })).toEqual(before);
+    }
+  });
+
+  it('an ordinary key still goes through the two-person gate', async () => {
+    const res = await writeConfig(requester.token, freshKey(), { rate: 2 });
+    expect(res.statusCode, res.body).toBe(202);
+  });
+});
+
+describe('[AUDIT C2-2] the machine-owned list stays in step with the owners', () => {
+  it('every key the billing engine writes itself is on it', async () => {
+    const { isMachineOwnedConfigKey } = await import('../modules/admin/machine-owned-config');
+    const { RETIER_LOWER_PREFIX } = await import('../modules/billing/billing.service');
+    const { FEE_RISE_PREFIX } = await import('../modules/billing/fee-rise-notice');
+    const pause = await import('../modules/billing/mmg-pause');
+    for (const key of [`${RETIER_LOWER_PREFIX}sub1`, `${FEE_RISE_PREFIX}sub1`, pause.FEE_PAUSE_OPEN_KEY, pause.MMG_PAUSE_CLOCKS_KEY, `${pause.MMG_REACTIVATED_PREFIX}sub1`, `${pause.FEE_PAUSE_REPAIR_PREFIX}x`]) {
+      expect(isMachineOwnedConfigKey(key), key).toBe(true);
+    }
+    expect(isMachineOwnedConfigKey('order_auto_reject_minutes')).toBe(false);
+    expect(isMachineOwnedConfigKey('billing.mmg_agent.settlement_cadence_days')).toBe(false);
+  });
+});
