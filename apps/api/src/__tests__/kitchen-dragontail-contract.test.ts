@@ -165,6 +165,17 @@ describe('[KITCHEN] Dragontail HTTP rules (spec: Authentication + Important note
     expect(mock.count('/PosInsertOrders')).toBe(1);
   });
 
+  it('[flake 12 Nov] a write still in flight when the mock is reset (the next test begins) is never recorded in that test', async () => {
+    const c = client({ timeoutMs: 100 });
+    await c.login();
+    mock.pathDelays.set('/PosInsertOrders', 400);
+    await c.call('POST', '/PosInsertOrders', dragontailInsertBody(ORDER, SETTINGS, 'SW-1')).catch(() => undefined);
+    mock.reset(); // what beforeEach does for the next test
+    await new Promise((r) => setTimeout(r, 700)); // the late request finishes its delay meanwhile
+    expect(mock.inserted, "a previous test's late insert lands in no later test's log").toEqual([]);
+    expect(mock.requests).toEqual([]);
+  });
+
   it('a READ that times out is retried (it changes nothing at Dragontail)', async () => {
     const c = client({ timeoutMs: 100 });
     await c.login();
