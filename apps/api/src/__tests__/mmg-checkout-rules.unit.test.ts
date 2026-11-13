@@ -84,13 +84,6 @@ describe('the official MMG response fields', () => {
     expect(checkoutReplyFrom({ merchantTransactionId: REF, ResultCode: '0' })).toBeNull();
   });
 
-  it('[audit FABLE-01 C1-4] a ResultCode sent as a JSON number reads as the same code the route already reads it as; anything else stays malformed', () => {
-    expect(checkoutReplyFrom({ merchantTransactionId: REF, transactionId: 'MMG-TX-777', ResultCode: 0 }))
-      .toEqual({ merchantTransactionId: REF, transactionId: 'MMG-TX-777', resultCode: '0' });
-    expect(checkoutReplyFrom({ merchantTransactionId: REF, ResultCode: 6 })).toEqual({ merchantTransactionId: REF, transactionId: null, resultCode: '6' });
-    for (const ResultCode of [8, -1, 0.5, Number.NaN, 10]) expect(checkoutReplyFrom({ merchantTransactionId: REF, ResultCode })).toBeNull();
-  });
-
   it.each([123, [], {}, ' TX1', 'TX1 ', 'TX1\n', 'TX/1', 'X'.repeat(129)])('rejects malformed transactionId %s', (transactionId) => {
     expect(checkoutReplyFrom({ merchantTransactionId: REF, ResultCode: '0', transactionId })).toBeNull();
   });

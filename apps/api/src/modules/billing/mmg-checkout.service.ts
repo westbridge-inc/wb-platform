@@ -228,10 +228,7 @@ export function checkoutReplyFrom(reply: unknown): MmgCheckoutReply | null {
   if (!reply || typeof reply !== 'object' || Array.isArray(reply)) return null;
   const fields = reply as Record<string, unknown>;
   const ref = fields['merchantTransactionId'];
-  // [Audit FABLE-01 C1-4] MMG documents ResultCode as a string; the reply route already tolerates a JSON number
-  // (mmg-checkout-reply.ts resultCodeOf). Read a whole number 0-7 the same way here, or every reply would be malformed.
-  const rawCode = fields['ResultCode'];
-  const code = typeof rawCode === 'number' && Number.isInteger(rawCode) ? String(rawCode) : rawCode;
+  const code = fields['ResultCode'];
   const txn = fields['transactionId'];
   if (typeof ref !== 'string' || ref.length !== 18 || !MERCHANT_TRANSACTION_ID_SHAPE.test(ref)) return null;
   if (typeof code !== 'string' || code.length !== 1 || !/^[0-7]$/.test(code)) return null;
