@@ -1,7 +1,8 @@
 import { color } from '@swift/ui';
 import { formatMoney } from '../../utils/currency-amount';
 import { endOfGuyanaDay, guyanaDayKey, isDateOnly, startOfGuyanaDay } from '../../utils/guyana-day';
-import { aggregateSalesComponents, orderComponents, vatAddedOnTopSum } from '../billing/sales-components';
+import { aggregateSalesComponents, orderComponents } from '../billing/sales-components';
+import { vatAddedOnTopSum } from '../store-vat/vat-report';
 /**
  * Earnings / sales statements (marketplace-mechanics spec §12, the receipt's
  * sibling) — the artifact an earner shows a bank and a store shows their

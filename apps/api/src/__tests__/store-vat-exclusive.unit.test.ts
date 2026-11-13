@@ -173,7 +173,7 @@ describe('5. the store\'s figure: its food money includes the VAT it collects fo
   it('cash + Swift rider: the store receives goods + VAT, and a line names the VAT', () => {
     const m = storeMoney(base)!;
     expect(m.food).toBe(942);
-    expect(m.vat).toBe(42);
+    expect(m.addedTax).toBe(42);
     expect(m.lines[0]).toBe('Includes VAT 14% added at checkout: $42 (yours, for the GRA)');
     expect(m.riderFeeAndTip).toBe(1000);
   });
@@ -185,7 +185,7 @@ describe('5. the store\'s figure: its food money includes the VAT it collects fo
   it('an order without VAT on top is unchanged', () => {
     const m = storeMoney({ ...base, taxAmount: '0.00', vatRateBps: null, totalAmount: '1900.00' })!;
     expect(m.food).toBe(900);
-    expect(m.vat).toBe(0);
+    expect(m.addedTax).toBe(0);
     expect(m.lines.some((l) => l.includes('VAT'))).toBe(false);
   });
 });

@@ -8,7 +8,7 @@ import { formatAppointmentSlot } from './appointmentTime';
 import { storeOrderStatusWords } from '@swift/types/src/order-words';
 import type { VendorOrder } from './vendor-api';
 import { promisedTimeName } from './store-kind-words';
-import { orderVatAddedRow } from './store-vat-display';
+import { orderVatAddedRow } from './order-vat-row';
 // [STORE-MONEY] The app's own reader of the store's money (plain file, imported as is).
 import { ringMoney, storeKeepsDelivery } from '../../../mobile/src/modules/vendor/ringMoney';
 

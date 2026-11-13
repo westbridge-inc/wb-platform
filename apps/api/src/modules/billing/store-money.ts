@@ -2,6 +2,7 @@ import type { PrismaClient } from '@prisma/client';
 import { orderComponents, type OrderMoneyRow } from './sales-components';
 import { resolveDeliveryMode } from '../fulfillment/fulfillment-mode';
 import { formatMoney } from '../../utils/currency-amount';
+import { storeAddedVatLine } from '../order/added-tax-words';
 
 /**
  * [STORE-MONEY · owner bug 11 Nov 2026] What a store sees as ITS money on an order.
@@ -30,7 +31,7 @@ import { formatMoney } from '../../utils/currency-amount';
  *
  * [STORE-VAT-EXCLUSIVE · owner 13 Nov 2026] A store pricing BEFORE VAT also receives the VAT its order added on top
  * (`taxAmount`, the "VAT 14%" line): it is the store's (it pays it to the GRA), the rider hands it over with the food money
- * on a cash order, and it is inside the MMG total. So `food` includes it and a line names it; `vat` carries the amount.
+ * on a cash order, and it is inside the MMG total. So `food` includes it and a line names it; `addedTax` carries the amount.
  * taxAmount is 0 on every other order: nothing changes for them.
  */
 export type StoreMoneyDelivery = 'SWIFT_RIDER' | 'STORE_RIDER' | 'PICKUP' | 'APPOINTMENT';
@@ -44,8 +45,8 @@ export interface StoreMoney {
   foodLabel: string;
   /** Part of `food` Swift pays (a Swift-funded discount); 0 when none. */
   swiftPaysYou: number;
-  /** [STORE-VAT-EXCLUSIVE] The VAT added on top that is part of `food` (the store's, for the GRA); 0 when none. */
-  vat: number;
+  /** [STORE-VAT-EXCLUSIVE] The VAT added on top at checkout that is part of `food` (the store's, for the GRA); 0 when none. */
+  addedTax: number;
   delivery: StoreMoneyDelivery;
   payment: 'CASH' | 'MMG' | 'OTHER';
   /** The Swift rider's delivery fee + tip (never the store's). 0 unless a Swift rider delivers. */
@@ -128,17 +129,14 @@ export function storeMoney(order: StoreMoneyOrder): StoreMoney | null {
   const word = goodsWord(order);
 
   // [STORE-VAT-EXCLUSIVE] The VAT a store pricing before VAT added on top is the store's money too.
-  const vat = round2(num(order.taxAmount));
-  const food = round2(c.goodsSales - c.vendorPromoDiscount + vat);
+  const addedTax = round2(num(order.taxAmount));
+  const food = round2(c.goodsSales - c.vendorPromoDiscount + addedTax);
   let swiftPaysYou = c.sponsorReceivable;
   let riderFeeAndTip = 0;
   let yoursFeeAndTip = 0;
   let customerPaysYou: number | null = null;
   const lines: string[] = [];
-  if (vat > 0) {
-    const rate = order.vatRateBps != null ? `${(order.vatRateBps / 100).toFixed(2).replace(/\.?0+$/, '')}% ` : '';
-    lines.push(`Includes VAT ${rate}added at checkout: ${amt(vat)} (yours, for the GRA)`);
-  }
+  if (addedTax > 0) lines.push(storeAddedVatLine(amt(addedTax), order.vatRateBps));
 
   if (delivery === 'SWIFT_RIDER') {
     riderFeeAndTip = round2(fee + tip); // exactly what createEarnings books the rider, and an MMG settlement's amount
@@ -174,7 +172,7 @@ export function storeMoney(order: StoreMoneyOrder): StoreMoney | null {
   if (swiftPaysYou > 0) lines.push(`Swift pays you ${amt(swiftPaysYou)} (a Swift discount the customer got)`);
 
   return {
-    food, foodWord: word, foodLabel: `${word} — you receive`, swiftPaysYou: round2(swiftPaysYou), vat, delivery, payment,
+    food, foodWord: word, foodLabel: `${word} — you receive`, swiftPaysYou: round2(swiftPaysYou), addedTax, delivery, payment,
     riderFeeAndTip, yoursFeeAndTip, customerPaysYou, lines,
   };
 }

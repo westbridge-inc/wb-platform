@@ -23,7 +23,7 @@
  * includes it (line 17 = base - VAT). Each order is read on its own basis, so a store that changed basis mid-period
  * still reports both kinds correctly.
  */
-import type { Prisma, PrismaClient } from '@prisma/client';
+import { Prisma, type PrismaClient } from '@prisma/client';
 import { AppError } from '../../utils/errors';
 import { guyanaDayKey } from '../../utils/guyana-day';
 
@@ -211,4 +211,16 @@ export async function storeVatReport(db: PrismaClient | Prisma.TransactionClient
   // [REVIEW-M #2109 S4] The query window is a coarse cut (any COMPLETED row inside it); the order's ONE supply day is the
   // first completion. Keep exactly the orders whose supply day falls in the period, so an order counts once, on that day.
   return buildVatReport(rows.filter((r) => r.supplyDay >= range.from && r.supplyDay <= range.to), range.from, range.to);
+}
+
+/** [STORE-VAT-EXCLUSIVE · owner 13 Nov 2026] The VAT a store pricing before VAT added on top at checkout over the same
+ *  completed orders as aggregateSalesComponents (the store's, for the GRA; never part of its sales). 0 for every other
+ *  store. Its own read, so the sales components (and the weekly digest built from them) are unchanged. */
+export async function vatAddedOnTopSum(prisma: PrismaClient, scope: { vendorId: string; from: Date; to: Date }): Promise<number> {
+  const [row] = await prisma.$queryRaw<Array<{ vat: unknown }>>(Prisma.sql`
+    SELECT coalesce(sum(o."taxAmount"), 0) AS vat
+    FROM "orders" o
+    WHERE o."vendorId" = ${scope.vendorId} AND o."status" IN ('DELIVERED', 'COMPLETED')
+      AND o."placedAt" >= ${scope.from} AND o."placedAt" <= ${scope.to}`);
+  return Math.round(Number(row?.vat ?? 0) * 100) / 100;
 }

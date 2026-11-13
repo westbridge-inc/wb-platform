@@ -408,6 +408,8 @@ export function serviceBooking(id: string, extra: Row = {}): Row {
     mmgClaimMismatchAt: null,
     subtotalBase: 2000, subtotalMarkup: 0, subtotalCustomer: 2000,
     deliveryFee: 0, serviceFee: 0, taxAmount: 0, tipAmount: 0, discount: 0, totalAmount: 2000,
+    // [STORE-VAT-EXCLUSIVE] No VAT on this order (store-money reads the added VAT and its frozen rate).
+    vatRateBps: null,
     // [STORE-MONEY] the store's money is read from these (billing/store-money.ts): no promo on this order.
     currencyCode: 'GYD', promoRedemption: null,
     isExpress: false,

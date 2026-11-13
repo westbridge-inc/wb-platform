@@ -38,7 +38,7 @@ import { orderLineChoices, type OrderLineChoice } from '../../../../../../mobile
 import { pickupCodeWords } from './pickup-words';
 import { lazyRetry } from '@/lib/chunk-retry';
 import { orderReadyEstimate } from '@/lib/store-kind-words';
-import { orderVatAddedRow } from '@/lib/store-vat-display';
+import { orderVatAddedRow } from '@/lib/order-vat-row';
 
 /** The store kinds the web search filters by (its own chips): a declined order opens search on the same kind. */
 const SEARCH_TYPES: ReadonlySet<string> = new Set(['RESTAURANT', 'SUPERMARKET', 'STORE', 'SERVICE']);

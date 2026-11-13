@@ -337,7 +337,7 @@ describe('3. the cart, checkout, order, rider cash, store figure, receipt and VA
   it('the store sees the VAT as its own money (for the GRA), never the rider\'s fee', async () => {
     const res = await call('GET', `/api/v1/vendor/orders/${deliveredOrderId}`, ownerToken, undefined, { 'x-vendor-id': vendorId });
     expect(res.statusCode, res.body).toBe(200);
-    expect(res.json().data.storeMoney).toMatchObject({ food: 942, vat: 42 });
+    expect(res.json().data.storeMoney).toMatchObject({ food: 942, addedTax: 42 });
     expect(res.json().data.storeMoney.lines[0]).toBe('Includes VAT 14% added at checkout: $42 (yours, for the GRA)');
   });
 
