@@ -201,6 +201,31 @@ describe('checkout money math', () => {
     expect(await app.prisma.order.count({ where: { customerId: c.userId } })).toBe(0);
   });
 
+  it('[audit FABLE-01 A-6] a promo switched off, out of its window or re-termed between pricing and commit is refused at the commit', async () => {
+    const own = await app.prisma.promoCode.create({ data: { code: `A6${nanoid(6).toUpperCase().replace(/[^A-Z0-9]/g, '0')}`, description: '10% off', discountType: 'PERCENTAGE', discountValue: 10, validFrom: new Date(Date.now() - 3600000), validUntil: new Date(Date.now() + 3600000), maxUses: 100, maxUsesPerUser: 5, isActive: true } });
+    try {
+      const attempt = async (change: Record<string, unknown>) => {
+        const c = await makeCustomer();
+        await inject('POST', '/api/v1/customer/cart/items', { vendorId, itemId, quantity: 1 }, c.token);
+        await inject('PUT', '/api/v1/customer/cart/address', { addressId: c.addressId }, c.token);
+        const svc = new OrderService(app.prisma, app.io);
+        const outcome = await svc.checkout({
+          userId: c.userId, paymentMethod: 'CASH', promoCode: own.code, fulfillmentSelections: { [vendorId]: 'PICKUP' },
+          beforeTransaction: async () => { await app.prisma.promoCode.update({ where: { id: own.id }, data: change }); },
+        } as never).then(() => 'PLACED', (e: { code?: string }) => e.code ?? 'THREW');
+        await app.prisma.promoCode.update({ where: { id: own.id }, data: { isActive: true, validUntil: new Date(Date.now() + 3600000), termsVersion: 1 } });
+        return { outcome, orders: await app.prisma.order.count({ where: { customerId: c.userId } }) };
+      };
+      expect(await attempt({ isActive: false })).toEqual({ outcome: 'INVALID_PROMO', orders: 0 });
+      expect(await attempt({ validUntil: new Date(Date.now() - 1000) })).toEqual({ outcome: 'EXPIRED_PROMO', orders: 0 });
+      expect(await attempt({ termsVersion: 2 })).toEqual({ outcome: 'PROMO_CHANGED', orders: 0 });
+      expect(await attempt({})).toEqual({ outcome: 'PLACED', orders: 1 });
+    } finally {
+      await app.prisma.order.updateMany({ where: { promoCodeId: own.id }, data: { promoCodeId: null } });
+      await app.prisma.promoCode.deleteMany({ where: { id: own.id } });
+    }
+  });
+
   it('an item REMOVED between pricing and commit is refused — the parent timestamp did not move [REPORT-016 F-016-01]', async () => {
     const c = await makeCustomer();
     // Two lines: removing one leaves the other, so CartItem.delete never bumps

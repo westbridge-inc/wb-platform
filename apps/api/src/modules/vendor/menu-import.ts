@@ -53,7 +53,8 @@ export const csvRowSchema = z.object({
   description: z.string().max(2000).optional().default(''),
   // [POS-SYNC] A blank price used to coerce to 0 and import a free item. A
   // price is required; it is never invented.
-  basePrice: z.string().trim().min(1, 'A price is required').pipe(z.coerce.number<string>().min(0).max(10_000_000)),
+  // [AUDIT A-4] Whole Guyana dollars, as every other price a store types.
+  basePrice: z.string().trim().min(1, 'A price is required').pipe(z.coerce.number<string>().int('Prices are whole Guyana dollars').min(0).max(10_000_000)),
   sku: z.string().max(64).optional().default(''),
   unit: z.string().max(30).optional().default(''),
   stockQuantity: z

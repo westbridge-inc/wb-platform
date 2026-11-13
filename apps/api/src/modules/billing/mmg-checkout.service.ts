@@ -1564,12 +1564,31 @@ export class MmgCheckoutService {
     }
   }
 
+  /**
+   * [Audit FABLE-01 C1-1] A HELD checkout, checked with MMG again because a person asked (two people: the route is
+   * C4). The same lookups and the same six conditions as every automatic check, read as a late check: when MMG's
+   * records now meet every one (MMG's history caught up, the creation zone was set), it is credited exactly as any
+   * confirmation, once. Otherwise nothing changes: it stays HELD for the person, nobody is told anything new, and no
+   * reason or schedule moves. Nothing a person types is evidence here. An ad checkout is not re-checked here.
+   */
+  async recheckHeld(input: { tenantId: string; checkoutId: string; actorId: string }, now = new Date()): Promise<{ status: CheckoutStatus; reason: string | null }> {
+    const intent = await this.prisma.mmgCheckoutIntent.findFirst({ where: { id: input.checkoutId, tenantId: input.tenantId } });
+    if (!intent) throw new NotFoundError('MMG checkout', input.checkoutId);
+    if (intent.status !== 'HELD') throw new AppError(409, 'CHECKOUT_NOT_HELD', 'Only a payment held for review is checked with MMG again.');
+    if (intent.adInvoiceId) throw new AppError(409, 'AD_CHECKOUT_NOT_RECHECKED', 'An ad payment held for review is reconciled with MMG directly.');
+    const status = await this.verify(intent.id, now, { recheckHeld: true });
+    const after = await this.prisma.mmgCheckoutIntent.findUniqueOrThrow({ where: { id: intent.id }, select: { status: true, reason: true } });
+    log().info({ checkoutId: intent.id, actorId: input.actorId, status }, '[MMG checkout] a held checkout was checked with MMG again');
+    return { status: (after.status ?? status) as CheckoutStatus, reason: after.reason };
+  }
+
   /** Look up every candidate and decide. Only CONFIRM moves money. */
-  private async verify(intentId: string, now: Date): Promise<CheckoutStatus> {
+  private async verify(intentId: string, now: Date, opts: { recheckHeld?: boolean } = {}): Promise<CheckoutStatus> {
     const intent = await this.prisma.mmgCheckoutIntent.findUnique({ where: { id: intentId } });
     if (!intent) throw new NotFoundError('MmgCheckoutIntent', intentId);
     const status = intent.status as CheckoutStatus;
-    if (status === 'CONFIRMED' || status === 'HELD' || status === 'OPEN') return status;
+    if (status === 'CONFIRMED' || status === 'OPEN' || (status === 'HELD' && !opts.recheckHeld)) return status;
+    if (opts.recheckHeld && status !== 'HELD') return status;
 
     let provider: MmgCheckoutProvider | null = null;
     try {
@@ -1587,7 +1606,8 @@ export class MmgCheckoutService {
       where: { intentId: intent.id, source: { in: ['RETURN', 'NOTIFY'] } },
       select: { detail: true, body: true, createdAt: true },
     });
-    const success = successAnswerOf(intent, answers);
+    // [Audit C1-1] A held checkout is read as a late check (its answers were given while it was open or not at all).
+    const success = successAnswerOf(opts.recheckHeld ? { ...intent, status: 'EXPIRED' } : intent, answers);
     const verdicts: Verdict[] = [];
     for (const txnId of intent.candidates.slice(0, MAX_CANDIDATES)) {
       const detail = await lookup.transactionLookupDetail(txnId);
@@ -1615,11 +1635,13 @@ export class MmgCheckoutService {
     if (confirmed) {
       // [F2] Checkout crediting stays off until every earlier credit carries
       // its provider identity; the confirmation waits, nothing is lost.
-      if (!(await providerIdentityBackfillDone(this.prisma))) return this.reschedule(intent, now, 'IDENTITY_BACKFILL_PENDING');
+      if (!(await providerIdentityBackfillDone(this.prisma))) return opts.recheckHeld ? 'HELD' : this.reschedule(intent, now, 'IDENTITY_BACKFILL_PENDING');
       // [ADS-ON] Settlement paused, or nothing here can settle an invoice: MMG's payment waits, nothing is lost.
-      if (intent.adInvoiceId && (!this.adSettlement || adPaymentConfirmManualOnly())) return this.reschedule(intent, now, 'AD_SETTLEMENT_PAUSED');
-      return this.confirm(intent, confirmed.txnId, confirmed.ledgerReference, now);
+      if (intent.adInvoiceId && (!this.adSettlement || adPaymentConfirmManualOnly())) return opts.recheckHeld ? 'HELD' : this.reschedule(intent, now, 'AD_SETTLEMENT_PAUSED');
+      return this.confirm(intent, confirmed.txnId, confirmed.ledgerReference, now, { fromHeld: opts.recheckHeld === true });
     }
+    // [Audit C1-1] Not confirmable yet: the held checkout stays exactly as it was, for the person.
+    if (opts.recheckHeld) return 'HELD';
     const decisive = verdicts.find((v): v is Hold => v.verdict === 'HOLD' && v.decisive);
     // Late checks (EXPIRED / NOT_PAID) look for a confirmation, and put any
     // record MMG shows as paid that cannot be tied to this checkout in front
@@ -1712,7 +1734,7 @@ export class MmgCheckoutService {
    *  [owner, 1 Oct · condition 6] MMG's ledger number for the same payment is
    *  claimed with it, under the same one-credit constraint: a payment another
    *  channel credited by either number is never credited again. */
-  private async confirm(intent: MmgCheckoutIntent, txnId: string, ledgerReference: string, now: Date): Promise<CheckoutStatus> {
+  private async confirm(intent: MmgCheckoutIntent, txnId: string, ledgerReference: string, now: Date, opts: { fromHeld?: boolean } = {}): Promise<CheckoutStatus> {
     const key = txnId; // Preserve provider spelling; SQL owns identity equivalence.
     const numbers = [...new Set([key, ledgerReference])];
     const amount = Number(intent.amount);
@@ -1726,7 +1748,8 @@ export class MmgCheckoutService {
         await tx.$queryRaw`SELECT "id" FROM "mmg_checkout_intents" WHERE "id" = ${intent.id} FOR UPDATE`;
         const current = await tx.mmgCheckoutIntent.findUniqueOrThrow({ where: { id: intent.id } });
         if (current.status === 'CONFIRMED') return 'already' as const;
-        if (current.status === 'HELD') return 'held' as const;
+        // [Audit C1-1] Only a re-check a person asked for credits a HELD checkout, and only while it is still HELD.
+        if (current.status === 'HELD' ? !opts.fromHeld : opts.fromHeld) return 'held' as const;
         // [F2] The provider identity below is THE guard. These reads are a
         // second net for a credit an earlier release wrote without claiming an
         // identity (the push rail's payments, admin top-ups): never relied on,
@@ -1790,7 +1813,11 @@ export class MmgCheckoutService {
       if (intent.adInvoiceId && err instanceof AppError) return this.hold(intent, err.code === 'AD_INVOICE_ALREADY_PAID' ? 'AD_INVOICE_ALREADY_PAID' : 'AD_INVOICE_NOT_PAYABLE');
       throw err;
     }
-    if (outcome === 'held') return 'HELD';
+    if (outcome === 'held') {
+      return opts.fromHeld
+        ? ((await this.prisma.mmgCheckoutIntent.findUnique({ where: { id: intent.id }, select: { status: true } }))?.status ?? 'HELD') as CheckoutStatus
+        : 'HELD';
+    }
     const covered = await coveredFees(this.prisma, intent);
     if (outcome === 'already') {
       for (const fee of covered) await this.billing.recoverConfirmationSettlements(fee.subscriptionId, now);

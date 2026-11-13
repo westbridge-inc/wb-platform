@@ -685,3 +685,19 @@ describe('E09 — each store’s minimum is quoted per store and enforced as quo
     await expectChargeIsQuote('topped up', q, await checkout(customer, { tipAmount: q.tipAmount }), customer);
   });
 });
+
+describe('[AUDIT A-2] a cart line never holds more than 99', () => {
+  it('re-adding the same line merges up to 99 and no further, the same cap the quantity edit has', async () => {
+    const shop = await makeShop('Cap Kitchen', NEAR, 0);
+    const item = await shop.item('Cap roti', 100);
+    const customer = await shopperAt();
+    await add(customer, shop.vendorId, item.id, 60);
+    await add(customer, shop.vendorId, item.id, 60);
+    await add(customer, shop.vendorId, item.id, 99);
+    const lines = await app.prisma.cartItem.findMany({ where: { itemId: item.id, cart: { customerId: customer.userId } } });
+    expect(lines).toHaveLength(1);
+    expect(lines[0]!.quantity).toBe(99);
+    const q = await quote(customer);
+    expect(q.subtotalCustomer).toBe(9900);
+  });
+});
