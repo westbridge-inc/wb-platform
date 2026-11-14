@@ -1,5 +1,5 @@
 /** @jsxImportSource react */
-import { useState, useEffect, useMemo, useCallback } from 'react';
+import { useState, useEffect, useMemo, useCallback, type ReactNode } from 'react';
 import { FlatList, Pressable, RefreshControl, ScrollView, View } from 'react-native';
 import { Image } from 'expo-image';
 import * as ImagePicker from 'expo-image-picker';
@@ -31,6 +31,7 @@ import {
   useUploadCategoryPhoto,
   useRemoveCategoryPhoto,
   useSoldInStoreSender,
+  useBulkAvailability,
 } from '../../../hooks/vendorops';
 import { soldInStore, useSoldInStoreRow } from '../../../hooks/useSoldInStore';
 import { SOLD_IN_STORE } from '../../../lib/inStoreSale';
@@ -55,6 +56,7 @@ import {
 import { useDebouncedValue } from '../../../hooks/useDebouncedValue';
 import { CatalogueSearchBar } from '../CatalogueSearchBar';
 import { RowPriceEdit, RowStockAdjust } from '../MenuRowTools';
+import { bulkConfirmBody, bulkConfirmTitle, bulkResultLine, keepSelectable, selectAll, toggleSelected } from '../../../lib/bulkAvailability';
 import { lowestSizePrice } from '../../../lib/menuOptionsEditor';
 
 /** [IMAGES-E2E PR4 · REVIEW-F S4-2 on #1965] A photo address saved before photos were uploaded: named for what it is. */
@@ -656,6 +658,30 @@ export function CategoryHeader({ cat, canEdit }: { cat: any; canEdit: boolean })
   );
 }
 
+/** [MENU-BULK · parity audit C2] A row with its tick, while the store is choosing several items (the same row inside). */
+export function SelectableRow({ itemId, itemName, selected, onToggle, children }: {
+  itemId: string;
+  itemName: string;
+  selected: boolean;
+  onToggle: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <View style={{ flexDirection: 'row', alignItems: 'flex-start', gap: space.sm }} testID={`select-row-${itemId}`}>
+      <Pressable
+        onPress={onToggle}
+        accessibilityRole="checkbox"
+        accessibilityLabel={`Select ${itemName}`}
+        accessibilityState={{ checked: selected }}
+        style={{ width: space['5xl'], minHeight: space['5xl'], alignItems: 'center', justifyContent: 'center' }}
+      >
+        <Feather name={selected ? 'check-square' : 'square'} size={24} color={selected ? color.brand[500] : color.text.muted} />
+      </Pressable>
+      <View style={{ flex: 1 }}>{children}</View>
+    </View>
+  );
+}
+
 /** [SPEED 22 Oct] A row of the store's Products/Menu list: a section's header, one
  *  of its items, "No items yet." for an empty section, or the gap after a section
  *  (the old per-section wrapper's bottom margin). */
@@ -679,6 +705,9 @@ function menuRows(sections: Array<{ category: any; items: any[] }>): MenuRow[] {
 }
 
 const menuRowKey = (row: MenuRow) => row.key;
+
+/** [MENU-BULK] No item ticked (never changed in place: a tick makes a new set). */
+const NO_TICKS: ReadonlySet<string> = new Set<string>();
 
 export function VendorMenuScreen({ navigation }: any) {
   const readOnly = !!useVendorPreview((state) => state.previewType);
@@ -715,6 +744,37 @@ export function VendorMenuScreen({ navigation }: any) {
   const shown = useMemo(() => filterCatalogue(visibleCategories, { terms, filter }), [visibleCategories, terms, filter]);
   const searching = shown.filtering;
   const showAll = useCallback(() => { setQuery(''); setFilter(null); }, []);
+  // [MENU-BULK · parity audit C2] Several items at once: "Select" ticks rows; the bar under the list sends them sold out
+  // or back on in one request, after asking. Any member of the store (as the one-item switch); never in a preview.
+  const bulk = useBulkAvailability();
+  const [selecting, setSelecting] = useState(false);
+  const [selectedIds, setSelected] = useState<ReadonlySet<string>>(NO_TICKS);
+  const [ask, setAsk] = useState<boolean | null>(null);
+  const [bulkNote, setBulkNote] = useState<string | null>(null);
+  const [bulkError, setBulkError] = useState<string | null>(null);
+  const ticks = keepSelectable(selectedIds, allItems.map((item: any) => item.id));
+  const shownIds = shown.sections.flatMap((section) => section.items.map((item: any) => item.id as string));
+  const canSelect = !readOnly;
+  const sendBulk = () => {
+    if (ask === null || ticks.size === 0 || bulk.isPending) return;
+    const isAvailable = ask;
+    setAsk(null);
+    setBulkError(null);
+    bulk.mutate(
+      { itemIds: [...ticks], isAvailable },
+      {
+        onSuccess: (answer: any) => {
+          setBulkNote(bulkResultLine(answer, isAvailable));
+          setSelected(NO_TICKS);
+          setSelecting(false);
+        },
+        onError: (e: unknown) => {
+          const message = (e as { response?: { data?: { error?: { message?: unknown } } } } | null)?.response?.data?.error?.message;
+          setBulkError(typeof message === 'string' && message.trim() ? message : 'The items didn’t change. Check your connection and try again.');
+        },
+      },
+    );
+  };
   // [SPEED 22 Oct] One flat list of rows (section header, its items, a gap) for a
   // windowed list: the tab draws the first batch, not every item of every section.
   const rows = useMemo(() => menuRows(shown.sections), [shown]);
@@ -728,8 +788,15 @@ export function VendorMenuScreen({ navigation }: any) {
         </T>
       );
     }
-    return <MenuItemRow item={row.item} navigation={navigation} categories={catOptions} canEdit={canEdit} />;
-  }, [canEdit, navigation, catOptions]);
+    const itemRow = <MenuItemRow item={row.item} navigation={navigation} categories={catOptions} canEdit={canEdit} />;
+    if (!selecting) return itemRow;
+    const id = row.item.id as string;
+    return (
+      <SelectableRow itemId={id} itemName={row.item.name} selected={ticks.has(id)} onToggle={() => setSelected((s) => toggleSelected(s, id))}>
+        {itemRow}
+      </SelectableRow>
+    );
+  }, [canEdit, navigation, catOptions, selecting, ticks]);
 
   useEffect(() => {
     if (!selectedCategoryExists) setSelectedCategoryId(null);
@@ -775,7 +842,20 @@ export function VendorMenuScreen({ navigation }: any) {
               <T variant="caption" tone="muted" accessibilityLiveRegion="polite" style={{ flexShrink: 1 }}>
                 {itemCountLine(shown.count)}
               </T>
+              {canSelect ? (
+                <PillButton
+                  label={selecting ? 'Done' : 'Select'}
+                  variant="soft"
+                  size="sm"
+                  onPress={() => { setSelecting(!selecting); setBulkNote(null); setBulkError(null); }}
+                />
+              ) : null}
             </View>
+            {bulkNote ? (
+              <T variant="caption" weight="semibold" accessibilityLiveRegion="polite" style={{ marginTop: space.sm }}>
+                {bulkNote}
+              </T>
+            ) : null}
           </View>
         ) : null}
         <FlatList
@@ -942,6 +1022,43 @@ export function VendorMenuScreen({ navigation }: any) {
           ) : null}
           </>}
         />
+        {/* [MENU-BULK] Under the list, not in it: it stays on screen while the list scrolls. */}
+        {selecting && canSelect ? (
+          <View style={{ paddingHorizontal: GUTTER, paddingVertical: space.md, gap: space.sm, borderTopWidth: 1, borderTopColor: color.border.subtle, backgroundColor: color.surface.base }}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: space.md }}>
+              <T variant="label" weight="semibold" accessibilityLiveRegion="polite" style={{ flexGrow: 1 }}>
+                {`${ticks.size} selected`}
+              </T>
+              <PillButton label="Select all shown" variant="outline" size="sm" disabled={shownIds.length === 0} onPress={() => setSelected((s) => selectAll(s, shownIds))} />
+              <PillButton label="Clear" variant="soft" size="sm" disabled={ticks.size === 0} onPress={() => setSelected(NO_TICKS)} />
+            </View>
+            {bulkError ? (
+              <T variant="caption" tone="error">
+                {bulkError}
+              </T>
+            ) : null}
+            <View style={{ flexDirection: 'row', gap: space.md }}>
+              <PillButton label="Mark sold out" size="md" style={{ flex: 1 }} loading={bulk.isPending} disabled={ticks.size === 0 || bulk.isPending} onPress={() => setAsk(false)} />
+              <PillButton label="Make available" variant="outline" size="md" style={{ flex: 1 }} disabled={ticks.size === 0 || bulk.isPending} onPress={() => setAsk(true)} />
+            </View>
+          </View>
+        ) : null}
+        <PopupCard visible={ask !== null} onClose={() => setAsk(null)}>
+          <IconChip icon={ask ? 'check-circle' : 'slash'} size={56} tone={ask ? 'brand' : 'error'} />
+          <PopupTitle variant="title" center style={{ marginTop: space.lg }}>
+            {bulkConfirmTitle(ticks.size, ask === true)}
+          </PopupTitle>
+          <T variant="body" tone="muted" center style={{ marginTop: space.sm }}>
+            {bulkConfirmBody(ask === true)}
+          </T>
+          <PillButton
+            label={ask ? 'Yes, make available' : 'Yes, mark sold out'}
+            style={{ alignSelf: 'stretch', marginTop: space['2xl'] }}
+            loading={bulk.isPending}
+            onPress={sendBulk}
+          />
+          <PillButton label="Cancel" variant="soft" style={{ alignSelf: 'stretch', marginTop: space.md }} onPress={() => setAsk(null)} />
+        </PopupCard>
         </>
       )}
     </Screen>

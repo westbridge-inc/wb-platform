@@ -395,6 +395,10 @@ export const updateItem = (id: string, body: Record<string, unknown>) =>
   apiFetch(`${V}/items/${id}`, { method: 'PUT', body: JSON.stringify(body) });
 export const setItemAvailability = (id: string, isAvailable: boolean) =>
   apiFetch(`${V}/items/${id}/availability`, { method: 'PUT', body: JSON.stringify({ isAvailable }) });
+/** [MENU-BULK] Several items sold out, or back on, in one go (the one-item switch's rules, item by item). */
+export type BulkAvailabilityAnswer = { isAvailable: boolean; changedIds: string[]; unchangedIds: string[]; refused: Array<{ id: string; name: string; message: string }> };
+export const setItemsAvailability = (itemIds: readonly string[], isAvailable: boolean): Promise<BulkAvailabilityAnswer> =>
+  apiFetch(`${V}/items/availability/bulk`, { method: 'POST', body: JSON.stringify({ itemIds, isAvailable }) }).then((r) => r.data as BulkAvailabilityAnswer);
 
 // ── CSV / Excel import + till export sync: lib/catalogue-import-api.ts (only the import page loads it) ──
 

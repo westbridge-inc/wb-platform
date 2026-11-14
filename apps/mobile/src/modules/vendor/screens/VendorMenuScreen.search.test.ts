@@ -55,6 +55,7 @@ vi.mock('../../../hooks/vendorops', () => {
     useVendorMenu: () => ({ data: h.menu, isLoading: false, isError: false, refetch: h.refetch }),
     useCreateCategory: mutation, useUpdateCategory: mutation, useDeleteCategory: mutation,
     useDeleteItem: mutation, useSetItemAvailability: mutation, useUploadCategoryPhoto: mutation, useRemoveCategoryPhoto: mutation,
+    useBulkAvailability: mutation,
   };
 });
 vi.mock('../../../hooks/usePullToRefresh', () => ({ usePullToRefresh: () => ({ refreshing: false, onRefresh: async () => undefined }) }));

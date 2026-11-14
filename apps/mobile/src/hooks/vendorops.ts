@@ -1022,6 +1022,24 @@ export function useAdjustStock() {
   });
 }
 
+/** [MENU-BULK · parity audit C2] Several items sold out, or back on, in one go (POST /vendor/items/availability/bulk).
+ *  The items that changed are written into the menu on screen at the answer; the menu is read again once, later. */
+export type BulkAvailabilityAnswer = { isAvailable: boolean; changedIds: string[]; unchangedIds: string[]; refused: Array<{ id: string; name: string; message: string }> };
+export function useBulkAvailability() {
+  const qc = useQueryClient();
+  return usePreviewSafeMutation({
+    mutationKey: MENU_WRITE_KEY,
+    mutationFn: ({ itemIds, isAvailable }: { itemIds: string[]; isAvailable: boolean }) =>
+      unwrap<BulkAvailabilityAnswer>(vendorApi.bulkAvailability(itemIds, isAvailable)),
+    onMutate: menuScope,
+    onSuccess: (answer, { isAvailable }, scope) => answerIntoMenu(qc, scope, (menu) => {
+      let next = menu;
+      for (const id of answer?.changedIds ?? []) next = menuWithItemFields(next, id, { isAvailable });
+      return next;
+    }),
+  });
+}
+
 // [IN-STORE-SALE] The sender for the app's "Sold in store −1" taps (hooks/useSoldInStore, lib/inStoreSale): each tap
 // is one request with its own key; the server's count is written into the menu on screen (for the store it was tapped
 // in) and the menu is read again once, later. Its failures show on the row in words (never the app-wide toast).

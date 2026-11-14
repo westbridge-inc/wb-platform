@@ -10,7 +10,9 @@ import { memo, Suspense, useCallback, useDeferredValue, useEffect, useMemo, useS
 import Link from 'next/link';
 import { useMutation, useMutationState, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Search, X } from 'lucide-react';
-import { getCategories, getItems, getProfile, getStores, money, setItemAvailability, toAmount, updateItem, type CatalogItem, type VatClass } from '@/lib/vendor-api';
+import { getCategories, getItems, getProfile, getStores, money, setItemAvailability, setItemsAvailability, toAmount, updateItem, type CatalogItem, type VatClass } from '@/lib/vendor-api';
+// [MENU-BULK] The app's words for several items at once (the same file the app's Menu tab reads).
+import { bulkConfirmBody, bulkConfirmTitle, bulkResultLine, keepSelectable, selectAll, toggleSelected } from '../../../../../mobile/src/lib/bulkAvailability';
 import { getStoreVat } from '@/lib/store-vat-read';
 import { Pictogram } from '@/components/glyphs';
 import { DataUnavailable } from '@/components/data-unavailable';
@@ -103,7 +105,11 @@ function RowStock({ item, onAdjust }: { item: CatalogItem; onAdjust: () => void 
  * items as the same objects), not every row of the catalogue. Off-screen rows also skip
  * layout and paint until scrolled to (content-visibility), which long catalogues need.
  */
-const ItemRow = memo(function ItemRow({ item: i, pending, pricePending, manager, adjusting, editingPrice, onToggle, onAdjust, onEditPrice, onPrice, onEdit, onDelete, onSaved, vatRate, vatEffective, vatPending, onVatClass, vatBeforeVat = false }: {
+const ItemRow = memo(function ItemRow({ item: i, pending, pricePending, manager, adjusting, editingPrice, onToggle, onAdjust, onEditPrice, onPrice, onEdit, onDelete, onSaved, vatRate, vatEffective, vatPending, onVatClass, vatBeforeVat = false, selecting = false, selected = false, onSelect }: {
+  /** [MENU-BULK] While the store is choosing several items: the row's tick. */
+  selecting?: boolean;
+  selected?: boolean;
+  onSelect?: (_id: string) => void;
   item: CatalogItem;
   pending: boolean;
   pricePending: boolean;
@@ -129,6 +135,7 @@ const ItemRow = memo(function ItemRow({ item: i, pending, pricePending, manager,
   // The item's own photo, as the app shows it (a 96 px copy through the store-photo route); none = the placeholder.
   return <article aria-label={i.name} className="border-b border-[var(--swift-border)] py-5" style={{ contentVisibility: 'auto', containIntrinsicSize: 'auto 120px' }}>
     <div className="flex items-center gap-3">
+      {selecting && <input type="checkbox" aria-label={`Select ${i.name}`} checked={selected} onChange={() => onSelect?.(i.id)} className="h-5 w-5 flex-none accent-[var(--swift-red)]" />}
       <span className="grid h-12 w-12 flex-none place-items-center overflow-hidden rounded-xl bg-[var(--swift-sunken)]">
         <RowPhoto url={i.imageUrl} />
       </span>
@@ -287,6 +294,26 @@ export default function InventoryPage() {
     if (rest.length) out.push({ section: null, rows: rest });
     return out;
   }, [sections, list, categoryId, filtered]);
+  // [MENU-BULK · parity audit C2] Several items at once, as the app: "Select" ticks rows; the bar at the bottom sends
+  // them sold out or back on in ONE request, after asking; the answer is counted in the app's words. Any member of the
+  // store (as the one-item switch).
+  const [selecting, setSelecting] = useState(false);
+  const [selectedIds, setSelected] = useState<Set<string>>(() => new Set());
+  const [ask, setAsk] = useState<boolean | null>(null);
+  const [bulkNote, setBulkNote] = useState<string | null>(null);
+  const ticks = useMemo(() => keepSelectable(selectedIds, (items.data ?? []).map((i) => i.id)), [selectedIds, items.data]);
+  const bulkMut = useMutation({
+    mutationFn: (v: { itemIds: string[]; isAvailable: boolean }) => setItemsAvailability(v.itemIds, v.isAvailable),
+    onSuccess: (answer, v) => { setBulkNote(bulkResultLine(answer, v.isAvailable)); setSelected(new Set()); setSelecting(false); },
+    onSettled: () => void refresh(),
+  });
+  const onSelect = useCallback((id: string) => setSelected((s) => toggleSelected(s, id)), []);
+  const sendBulk = () => {
+    if (ask === null || ticks.size === 0 || bulkMut.isPending) return;
+    const isAvailable = ask;
+    setAsk(null);
+    bulkMut.mutate({ itemIds: [...ticks], isAvailable });
+  };
   const toggle = availMut.mutate;
   const onToggle = useCallback((id: string, isAvailable: boolean) => toggle({ id, isAvailable }), [toggle]);
   // [CHAINS PR2] An empty branch menu can start as a copy of another branch's; managers can export the menu as CSV.
@@ -372,7 +399,11 @@ export default function InventoryPage() {
           </button>
         ))}
         <span className="text-sm text-[var(--swift-muted)]" aria-live="polite">{itemCountLine(list.length)}</span>
+        <button type="button" className="sw-chip" aria-pressed={selecting} onClick={() => { setSelecting(!selecting); setBulkNote(null); bulkMut.reset(); setAsk(null); }}>
+          {selecting ? 'Done' : 'Select'}
+        </button>
       </div>
+      {bulkNote && <p role="status" className="text-sm font-semibold">{bulkNote}</p>}
       {/* The app's SECTIONS chips: every section with how many items it holds, then "Add section". */}
       <div className="sw-chip-row" aria-label="Sections">
         <button type="button" className="sw-chip max-w-64 truncate" aria-pressed={!categoryId} onClick={() => setCategoryId('')}>All · {(items.data ?? []).length}</button>
@@ -400,7 +431,8 @@ export default function InventoryPage() {
           <div className="grid gap-x-8 wide:grid-cols-2">
             {rows.map(i => <ItemRow key={i.id} item={i} pending={availPending.has(i.id)} pricePending={pricePending.has(i.id)} manager={manager} adjusting={adjusting === i.id} editingPrice={editingPrice === i.id}
               onToggle={onToggle} onAdjust={setAdjusting} onEditPrice={setEditingPrice} onPrice={onPrice} onEdit={onEdit} onDelete={onDelete} onSaved={refresh}
-              vatRate={vatRate} vatEffective={vatEffective} vatPending={vatMut.isPending && vatMut.variables?.id === i.id} onVatClass={onVatClass} vatBeforeVat={vatPricing?.beforeVat === true} />)}
+              vatRate={vatRate} vatEffective={vatEffective} vatPending={vatMut.isPending && vatMut.variables?.id === i.id} onVatClass={onVatClass} vatBeforeVat={vatPricing?.beforeVat === true}
+              selecting={selecting} selected={ticks.has(i.id)} onSelect={onSelect} />)}
           </div>
         </section>
       ))}
@@ -411,6 +443,31 @@ export default function InventoryPage() {
           you mark sold out, the customer is asked to choose a replacement or the item is marked for a refund. The business
           handles any money directly.
         </p>
+      )}
+      {selecting && (
+        <section aria-label="Selected items" className="sticky bottom-0 z-10 space-y-2 border-t border-[var(--swift-border)] bg-[var(--swift-card)] p-3">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="flex-1 text-sm font-semibold" aria-live="polite">{`${ticks.size} selected`}</span>
+            <button type="button" className="sw-chip" disabled={!list.length} onClick={() => setSelected((s) => selectAll(s, list.map((i) => i.id)))}>Select all shown</button>
+            <button type="button" className="sw-chip" disabled={!ticks.size} onClick={() => setSelected(new Set())}>Clear</button>
+          </div>
+          {bulkMut.error && <p role="alert" className="text-sm font-semibold text-[var(--swift-red)]">{bulkMut.error instanceof Error && bulkMut.error.message ? bulkMut.error.message : 'The items didn\u2019t change. Check your connection and try again.'}</p>}
+          {ask !== null ? (
+            <div role="dialog" aria-label={bulkConfirmTitle(ticks.size, ask)} className="space-y-2 rounded-lg bg-[var(--swift-subtle)] p-3">
+              <p className="sw-label">{bulkConfirmTitle(ticks.size, ask)}</p>
+              <p className="sw-caption">{bulkConfirmBody(ask)}</p>
+              <div className="flex gap-2">
+                <button type="button" onClick={sendBulk} className="min-h-10 flex-1 rounded-full bg-[var(--swift-red)] text-sm font-semibold text-white">{ask ? 'Yes, make available' : 'Yes, mark sold out'}</button>
+                <button type="button" onClick={() => setAsk(null)} className="min-h-10 flex-1 rounded-full border border-[var(--swift-border)] text-sm font-semibold">Cancel</button>
+              </div>
+            </div>
+          ) : (
+            <div className="flex gap-2">
+              <button type="button" disabled={!ticks.size || bulkMut.isPending} onClick={() => setAsk(false)} className="min-h-10 flex-1 rounded-full bg-[var(--swift-red)] text-sm font-semibold text-white disabled:opacity-50">Mark sold out</button>
+              <button type="button" disabled={!ticks.size || bulkMut.isPending} onClick={() => setAsk(true)} className="min-h-10 flex-1 rounded-full border border-[var(--swift-border)] text-sm font-semibold disabled:opacity-50">Make available</button>
+            </div>
+          )}
+        </section>
       )}
       {tools && dialog && <tools.MenuDialog dialog={dialog} storeId={storeId} sections={sections} counts={perSection} vendorType={vendorType}
         instantAvailable={instantAvailable} vatRate={vatRate} vatEffective={vatEffective} vatPricing={vatPricing} onClose={() => setDialog(null)} />}
