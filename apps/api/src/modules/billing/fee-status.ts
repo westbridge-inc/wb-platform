@@ -2,6 +2,7 @@ import type { PrismaClient, Subscription } from '@prisma/client';
 import { formatMoney } from '../../utils/currency-amount';
 import { ACTIVE_CONFIRMATION_STATES, feeReversalOpenInTx, lateCardApprovalHeldInTx } from './dunning-clock';
 import { feePauseHoldsBilling } from './mmg-pause';
+import { feeRiseKey, readHeldFeeRise } from './fee-rise-notice';
 
 // ---------------------------------------------------------------------------
 // [FEE-STATUS · owner 25 Oct 2026] THE words for where a partner's weekly fee
@@ -36,7 +37,7 @@ export interface FeeStatus {
 }
 
 /** Why a fee is being checked: a payment of the partner's, or the fee itself under review. */
-export type FeeCheck = { kind: 'PAYMENT' | 'REVIEW'; amount: number | null; beganAt: Date | null };
+export type FeeCheck = { kind: 'PAYMENT' | 'REVIEW'; amount: number | null; beganAt: Date | null; expiredCheckout?: boolean };
 
 export interface FeeStatusFacts {
   status: string;
@@ -63,6 +64,11 @@ export interface FeeStatusFacts {
   feePaused: boolean;
   /** [WEB-DELETE] A store owner's open closure request holds the fee from this instant (closure-fee-hold.ts). */
   closureHoldAt?: Date | null;
+  /** [TRIAL PAY-AHEAD · REVIEW-A #2513 S4-1] A way to pay is open on this screen right now (a live Pay action or the
+   *  in-person door). Only then does a trial line say what paying now covers. Absent: not known, so it does not. */
+  payOpen?: boolean;
+  /** [REVIEW-A #2513 S4-1] A told fee rise that applies from the trial's end: its fee is the first fee. */
+  firstFeeAtTrialEnd?: number | null;
 }
 
 /** [REVIEW-F #2304 S3-1] The fee screens' words while a closure request holds the fee. */
@@ -87,7 +93,10 @@ export function feeStatusWords(f: FeeStatusFacts, now: Date): FeeStatus {
       ? 'Swift is reviewing your weekly fee'
       : `Checking your payment${c.amount != null && c.amount > 0 ? ` of ${money(c.amount)}` : ''}${c.beganAt ? ` (began ${day(c.beganAt)})` : ''}`;
     const paidUntil = !due && f.paidThroughProven && (status === 'ACTIVE' || status === 'PAST_DUE') && !f.isTrialActive ? `Paid until ${day(f.nextBillingDate)}. ` : '';
-    return { state: 'CHECKING', headline, detail: `${paidUntil}Don't pay again while we check.`, date: c.beganAt?.toISOString() ?? null };
+    // [TRIAL PAY-AHEAD · COORD ruling on REVIEW-A #2513 S3-3] An MMG page that ran out with no answer stays checked
+    // until it is closed (a person, or MMG's own records once the check can run): say so plainly.
+    const what = c.expiredCheckout ? "Your last MMG payment is being checked. You can pay again once it's closed." : "Don't pay again while we check.";
+    return { state: 'CHECKING', headline, detail: `${paidUntil}${what}`, date: c.beganAt?.toISOString() ?? null };
   }
 
   // [WEB-DELETE · owner ruling 2 Nov 2026 · REVIEW-F #2304 S3-1] An open closure request holds the fee: its next week
@@ -114,7 +123,7 @@ export function feeStatusWords(f: FeeStatusFacts, now: Date): FeeStatus {
 
   const trialing = f.isTrialActive || status === 'TRIAL';
   const trialEnd = f.trialEndDate && f.trialEndDate.getTime() > now.getTime() ? f.trialEndDate : !due ? f.nextBillingDate : null;
-  if (trialing && trialEnd) return { state: 'TRIAL', headline: `Free trial until ${day(trialEnd)}`, detail: null, date: trialEnd.toISOString() };
+  if (trialing && trialEnd) return { state: 'TRIAL', headline: `Free trial until ${day(trialEnd)}`, detail: trialPayAheadLine(f, trialEnd, money), date: trialEnd.toISOString() };
 
   const behind = status === 'PAST_DUE' || f.isInGracePeriod;
   if (!due && !behind) {
@@ -171,11 +180,11 @@ async function feeCheck(db: StatusDb, sub: StatusSub): Promise<FeeCheck | null> 
   const hold = await db.paymentConfirmationHold.findFirst({
     where: { status: { in: ACTIVE_CONFIRMATION_STATES }, OR: [{ subscriptionId: sub.id }, { clock: { subscriptionId: sub.id } }] },
     orderBy: { beganAt: 'desc' },
-    select: { beganAt: true, checkout: { select: { amount: true } }, payment: { select: { amount: true } }, cardSession: { select: { amount: true } } },
+    select: { beganAt: true, checkout: { select: { amount: true, status: true } }, payment: { select: { amount: true } }, cardSession: { select: { amount: true } } },
   });
   if (hold) {
     const raw = hold.checkout?.amount ?? hold.payment?.amount ?? hold.cardSession?.amount ?? null;
-    return { kind: 'PAYMENT', amount: raw == null ? null : Number(raw), beganAt: hold.beganAt };
+    return { kind: 'PAYMENT', amount: raw == null ? null : Number(raw), beganAt: hold.beganAt, ...(hold.checkout?.status === 'EXPIRED' ? { expiredCheckout: true } : {}) };
   }
   const clock = await db.billingDunningClock.findUnique({ where: { subscriptionId: sub.id }, select: { authorityHoldReason: true } });
   if (clock?.authorityHoldReason) return { kind: 'REVIEW', amount: null, beganAt: null };
@@ -193,9 +202,9 @@ export async function feeStatusFor(
   sub: StatusSub,
   fee: { amountDueGyd: number; weeklyFeeGyd: number; walletBalanceGyd: number },
   now = new Date(),
-  deps: { feePaused?: (_db: StatusDb, _subscriptionId: string) => Promise<boolean> } = {},
+  deps: { feePaused?: (_db: StatusDb, _subscriptionId: string) => Promise<boolean>; payOpen?: boolean } = {},
 ): Promise<FeeStatus> {
-  const [checking, feePaused, paid] = await Promise.all([
+  const [checking, feePaused, paid, rise] = await Promise.all([
     feeCheck(db, sub),
     (deps.feePaused ?? ((d, id) => feePauseHoldsBilling(d as PrismaClient, id)))(db, sub.id),
     // The week that runs to nextBillingDate was bought by a captured payment (billing.service books
@@ -204,13 +213,45 @@ export async function feeStatusFor(
       where: { subscriptionId: sub.id, status: 'CAPTURED', amount: { gt: 0 }, periodEnd: { gte: sub.nextBillingDate } },
       select: { id: true },
     }),
+    db.platformConfig.findUnique({ where: { key: feeRiseKey(sub.id) }, select: { value: true } }),
   ]);
+  // [REVIEW-A #2513 S4-1] A TOLD rise whose first fee is the one due at the trial's end.
+  const held = rise ? readHeldFeeRise(rise.value) : null;
+  const firstFeeAtTrialEnd = held?.appliesFrom && sub.trialEndDate && Date.parse(held.appliesFrom) <= sub.trialEndDate.getTime() ? held.to : null;
   return feeStatusWords({
     status: sub.status, nextBillingDate: sub.nextBillingDate, isTrialActive: sub.isTrialActive, trialEndDate: sub.trialEndDate,
     isInGracePeriod: sub.isInGracePeriod, gracePeriodEnd: sub.gracePeriodEnd, autoRenew: sub.autoRenew, feeWaived: sub.feeWaived,
     currencyCode: sub.currencyCode, amountDue: fee.amountDueGyd, weeklyFee: fee.weeklyFeeGyd, paidAhead: fee.walletBalanceGyd,
     paidThroughProven: !!paid, checking, feePaused, closureHoldAt: sub.closureHoldAt ?? null,
+    payOpen: deps.payOpen ?? false, firstFeeAtTrialEnd,
   }, now);
+}
+
+const WEEK_MS = 7 * 86_400_000;
+/**
+ * [TRIAL PAY-AHEAD · owner 14 Nov 2026] A partner in a free trial may pay the first week after it ahead: the paid week
+ * starts when the trial ends, so no trial day is lost. The line under "Free trial until <date>" names that week, or
+ * says it is already paid. Nothing when no fee will be charged then (waived, stopped, a fee of 0, or the fee paused),
+ * or when the first fee is not due exactly at the trial's end (a week was booked some other way). Never a promise of
+ * a Pay button: those stay payActions'.
+ */
+function trialPayAheadLine(f: FeeStatusFacts, trialEnd: Date, money: (n: number) => string): string | null {
+  if (f.feeWaived || !f.autoRenew || f.feePaused || !(f.weeklyFee > 0) || f.nextBillingDate.getTime() !== trialEnd.getTime()) return null;
+  const weekEnd = new Date(trialEnd.getTime() + WEEK_MS);
+  const weeks = Math.floor(f.paidAhead / f.weeklyFee + 1e-9);
+  if (weeks >= 2) return `Your first ${weeks} weekly fees after the trial are already paid.`;
+  if (weeks === 1) return `Your first week after the trial, ${day(trialEnd)} to ${day(weekEnd)}, is already paid.`;
+  if (f.paidAhead > 0) return `${money(f.paidAhead)} is already paid toward your first weekly fee, due ${day(trialEnd)}.`;
+  // A told rise that applies from the trial's end prices the first fee, and no payment ahead is taken at the old fee.
+  const first = f.firstFeeAtTrialEnd != null && f.firstFeeAtTrialEnd > f.weeklyFee ? f.firstFeeAtTrialEnd : null;
+  const due = `Your first weekly fee, ${money(first ?? f.weeklyFee)}, is due on ${day(trialEnd)}.`;
+  return f.payOpen && first === null ? `${due} Paying now covers ${day(trialEnd)} to ${day(weekEnd)}: no trial day is lost.` : due;
+}
+
+/** [TRIAL PAY-AHEAD · REVIEW-A #2513 S4-1] Is a way to pay open on this subscription payload: a live Pay action
+ *  (MMG or card) or the in-person door? (The fee screens' own reading: they draw exactly these.) */
+export function payOpenOf(payload: { payActions?: ReadonlyArray<{ state: string }>; inPerson?: { open: boolean } | null }): boolean {
+  return (payload.payActions ?? []).some((action) => action.state === 'live') || !!payload.inPerson?.open;
 }
 
 /** [owner 6 Nov 2026] The whole weekly fees already paid before they start, in words. */

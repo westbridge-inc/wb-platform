@@ -13,6 +13,7 @@ import { formatGuyanaTime } from '../../utils/guyana-day';
 import { recordSetAsideReleasedInTx, recordWalletDebitInTx } from './fee-receipt-allocation';
 import { closureHoldsWeek } from './closure-fee-hold';
 import { feePauseHoldsBilling } from './mmg-pause';
+import { trialEndedUnconverted } from './pay-ahead';
 
 // ---------------------------------------------------------------------------
 // [Owner ruling 2026-10-07] Unused prepaid weekly-fee credit is refunded, then
@@ -244,19 +245,23 @@ export interface CreditRefundStep extends CreditRefundState {
  *   2 Nov 2026: closure-fee-hold.ts);
  * - the fee is not paused for want of a way to pay (mmg-pause.ts).
  * Nothing is owed when the partner stopped the fee (it lapses at the end of the paid week, owing nothing), when the
- * account is suspended (the time suspended is not billed: BILLING-REANCHOR), or during a trial.
+ * account is suspended (the time suspended is not billed: BILLING-REANCHOR), or during a trial. A trial that has
+ * ended owes its first week even before the daily conversion has run.
  * BillingService.settleStartedWeekFromCredit pays such a week from credit only; this is the wall under it.
  */
 export async function startedWeekOwed(
   db: Prisma.TransactionClient | PrismaClient,
-  sub: { id: string; autoRenew: boolean; status: string; nextBillingDate: Date; closureHoldAt: Date | null },
+  sub: { id: string; autoRenew: boolean; status: string; nextBillingDate: Date; closureHoldAt: Date | null; trialEndDate: Date | null },
   now: Date,
 ): Promise<boolean> {
-  if (!sub.autoRenew || (sub.status !== 'ACTIVE' && sub.status !== 'PAST_DUE')) return false;
+  // [TRIAL PAY-AHEAD · REVIEW-A #2513 S3-2] A trial that has ended is owed its first week from that instant, whether
+  // or not the daily conversion has run: the same week the conversion makes due (trialEndedUnconverted).
+  const operating = sub.status === 'ACTIVE' || sub.status === 'PAST_DUE' || trialEndedUnconverted(sub, now);
+  if (!sub.autoRenew || !operating) return false;
   if (sub.nextBillingDate.getTime() > now.getTime() || closureHoldsWeek(sub, sub.nextBillingDate)) return false;
   return !(await feePauseHoldsBilling(db, sub.id));
 }
-export const STARTED_WEEK_SUB_SELECT = { id: true, autoRenew: true, status: true, nextBillingDate: true, closureHoldAt: true } as const;
+export const STARTED_WEEK_SUB_SELECT = { id: true, autoRenew: true, status: true, nextBillingDate: true, closureHoldAt: true, trialEndDate: true } as const;
 
 export async function setAsideCreditRefund(prisma: PrismaClient, input: {
   adminId: string;
@@ -290,6 +295,13 @@ export async function setAsideCreditRefund(prisma: PrismaClient, input: {
     // [REVIEW-2484-A S4-6] Under the payer lock: a started week that is still unpaid comes out of this credit first.
     const running = await tx.subscription.findUniqueOrThrow({ where: { id: input.subscriptionId }, select: STARTED_WEEK_SUB_SELECT });
     if (await startedWeekOwed(tx, running, new Date())) {
+      // [TRIAL PAY-AHEAD · REVIEW-A2 #2513 S4-2 · CONFIRM-R4 S4-1/S4-2] A trial that has ended is converted before this
+      // (settleStartedWeekFromCredit) unless its weekly fee cannot be collected yet (a review, billing not ready, a
+      // source that is not the one that pays): then its started first week cannot be paid from the credit, and asking
+      // again now would not change that. Only these words change: nothing is refused that was not owed.
+      if (trialEndedUnconverted(running, new Date())) {
+        throw new AppError(409, 'TRIAL_CONVERSION_HELD', 'This account\'s free trial has ended, but its weekly fee cannot be collected yet, so the week that has started cannot be paid from the credit, and a week that has started is never refunded. Nothing was set aside: ask again once its weekly fee can be collected.');
+      }
       throw new AppError(409, 'STARTED_WEEK_UNPAID', `The week that started ${formatGuyanaTime(running.nextBillingDate, { day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit', hour12: false })} (Guyana time) is not paid yet, and a week that has started is never refunded: its fee comes out of this credit first. Nothing was set aside. If the credit covers it, asking again pays it first; if not, settle that week before refunding what is left.`);
     }
     if (await openSetAside(tx, input.subscriptionId)) {

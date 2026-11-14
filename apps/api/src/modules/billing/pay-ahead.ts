@@ -45,6 +45,11 @@ import { feeRiseKey, readHeldFeeRise } from './fee-rise-notice';
 // ---------------------------------------------------------------------------
 
 export const PAY_AHEAD_MAX_WEEKS = 4;
+/** [OWNER · 14 Nov 2026, TRIAL PAY-AHEAD] A partner still in its free trial may pay the weekly fee a week ahead (MMG or
+ *  card, and every other door): ONE week, the first after the trial ends, at the current fee. The paid week starts
+ *  when the trial ends, so no trial day is lost and nobody pays twice. From the trial's end the four-week limit above
+ *  applies as for everyone. A fixed rule in code, not a setting. */
+export const TRIAL_PAY_AHEAD_MAX_WEEKS = 1;
 /** The limit in words, from the one constant (every partner, operator and legal line says it this way). */
 export const PAY_AHEAD_MAX_WEEKS_WORD = (['zero', 'one', 'two', 'three', 'four', 'five', 'six'] as const)[PAY_AHEAD_MAX_WEEKS] ?? String(PAY_AHEAD_MAX_WEEKS);
 const WEEK_MS = 7 * 86_400_000;
@@ -67,6 +72,13 @@ export interface PayAheadPosition {
   cap: number;
   /** How many weeks after the running (or due) week a new payment may reach: the limit, or fewer under a told rise. */
   openWeeks: number;
+  /** [TRIAL PAY-AHEAD] The limit before any told rise: TRIAL_PAY_AHEAD_MAX_WEEKS during a free trial, 0 once it has
+   *  ended but is not converted yet (only the week now due may be paid), else PAY_AHEAD_MAX_WEEKS. */
+  maxWeeks: number;
+  /** [TRIAL PAY-AHEAD] Still a TRIAL row: the trial runs, or it ended and the daily conversion has not run yet. */
+  trial: boolean;
+  /** [TRIAL PAY-AHEAD · REVIEW-A #2513 S3-1] The trial has ended and is not converted yet. */
+  trialEnded: boolean;
   /** The told date of a higher weekly fee not yet applied (fee-rise-notice.ts), or null. */
   riseFrom: Date | null;
   /** The most a new payment may add now. */
@@ -79,15 +91,27 @@ export interface PayAheadPosition {
 
 const cents = (n: number) => Math.round(n * 100) / 100;
 
+type TrialFacts = Pick<Subscription, 'status' | 'isTrialActive' | 'trialEndDate'>;
+/** The free trial is still running at `now` (the one reading every pay-ahead rule uses). */
+export function inFreeTrial(sub: TrialFacts, now: Date): boolean {
+  const trialEnd = sub.trialEndDate?.getTime();
+  return (sub.isTrialActive || sub.status === 'TRIAL') && trialEnd !== undefined && trialEnd > now.getTime();
+}
+
+/** [TRIAL PAY-AHEAD · REVIEW-A #2513 S3-1/S3-2] The trial has ended, but the row is still TRIAL: the daily conversion
+ *  (SubscriptionService.convertExpiredTrials) has not made its first fee due yet. Its first week has started. */
+export function trialEndedUnconverted(sub: { status: string; trialEndDate: Date | null }, now: Date): boolean {
+  return sub.status === 'TRIAL' && !!sub.trialEndDate && sub.trialEndDate.getTime() <= now.getTime();
+}
+
 /** Whole weeks already paid beyond the week that is running. During a free
  *  trial, only weeks paid after the trial ends count. */
 export function weeksPaidAheadByDate(sub: Pick<Subscription, 'status' | 'nextBillingDate' | 'isTrialActive' | 'trialEndDate'>, now: Date): number {
   const paidThrough = sub.nextBillingDate.getTime();
   const t = now.getTime();
   if (paidThrough <= t) return 0;
-  const trialEnd = sub.trialEndDate?.getTime();
-  if ((sub.isTrialActive || sub.status === 'TRIAL') && trialEnd !== undefined && trialEnd > t) {
-    return Math.max(0, Math.floor((paidThrough - trialEnd) / WEEK_MS + 1e-9));
+  if (inFreeTrial(sub, now)) {
+    return Math.max(0, Math.floor((paidThrough - sub.trialEndDate!.getTime()) / WEEK_MS + 1e-9));
   }
   return Math.max(0, Math.ceil((paidThrough - t) / WEEK_MS - 1e-9) - 1);
 }
@@ -98,14 +122,21 @@ export function payAheadPosition(sub: PayAheadSub, paidAhead: number, now: Date,
   const weeksAheadByDate = weeksPaidAheadByDate(sub, now);
   const due = sub.nextBillingDate.getTime() <= now.getTime() || DUE_STATUSES.has(sub.status);
   const heldAhead = cents(Math.max(0, paidAhead) + weeksAheadByDate * weeklyFee);
-  const cap = cents(PAY_AHEAD_MAX_WEEKS * weeklyFee);
   // The week that is running (or due) ends here; the weeks ahead start from it, one a week.
   const runningEnd = due ? sub.nextBillingDate.getTime() + WEEK_MS : sub.nextBillingDate.getTime() - weeksAheadByDate * WEEK_MS;
-  const beforeRise = riseFrom === null ? PAY_AHEAD_MAX_WEEKS : Math.max(0, Math.ceil((riseFrom.getTime() - runningEnd) / WEEK_MS));
-  const openWeeks = Math.min(PAY_AHEAD_MAX_WEEKS, beforeRise);
+  // [TRIAL PAY-AHEAD · owner 14 Nov 2026] During a free trial a new payment reaches one week: the first after the trial.
+  // [REVIEW-A #2513 S3-1] Once the trial has ended and until the daily conversion makes its first fee due, nothing
+  // ahead is taken: only that first week, if it is not already paid (no "already paid" beside a live Pay button).
+  const trialEnded = trialEndedUnconverted(sub, now);
+  const trial = trialEnded || inFreeTrial(sub, now);
+  const maxWeeks = trialEnded ? 0 : trial ? TRIAL_PAY_AHEAD_MAX_WEEKS : PAY_AHEAD_MAX_WEEKS;
+  // [REVIEW-A #2513 S4-2] Money held over the limit that applies (one week in a trial) is named for a refund.
+  const cap = cents(maxWeeks * weeklyFee);
+  const beforeRise = riseFrom === null ? maxWeeks : Math.max(0, Math.ceil((riseFrom.getTime() - runningEnd) / WEEK_MS));
+  const openWeeks = Math.min(maxWeeks, beforeRise);
   const dueFee = due ? weeklyFee : 0;
   return {
-    weeklyFee, paidAhead, weeksAheadByDate, heldAhead, due, cap, openWeeks, riseFrom,
+    weeklyFee, paidAhead, weeksAheadByDate, heldAhead, due, cap, openWeeks, maxWeeks, trial, trialEnded, riseFrom,
     room: cents(Math.max(0, openWeeks * weeklyFee + dueFee - heldAhead)),
     excess: cents(Math.max(0, heldAhead - (cap + dueFee))),
     currencyCode: sub.currencyCode,
@@ -133,10 +164,18 @@ export const PAY_AHEAD_LIMIT = 'PAY_AHEAD_LIMIT';
 /** Where an operator reads how the refund is made (PAY-AHEAD-AND-REFUNDS.md). */
 const PROCEDURE = 'finance procedure: weekly fee refunds';
 
-/** True when a told rise, not the four-week limit, is what stops this payment. */
+/** True when a told rise, not the four-week limit (or the free trial's one week), is what stops this payment. */
 export function limitedByRise(position: PayAheadPosition): boolean {
-  return position.riseFrom !== null && position.openWeeks < PAY_AHEAD_MAX_WEEKS;
+  return position.riseFrom !== null && position.openWeeks < position.maxWeeks;
 }
+
+/** [TRIAL PAY-AHEAD] True when the free trial's one week, not a rise, is what stops this payment. */
+export function limitedByTrial(position: PayAheadPosition): boolean {
+  return position.trial && !limitedByRise(position);
+}
+
+/** [TRIAL PAY-AHEAD] The trial's limit in words: "one weekly fee ahead". */
+export const TRIAL_PAY_AHEAD_WORDS = `${(['no', 'one', 'two', 'three', 'four'] as const)[TRIAL_PAY_AHEAD_MAX_WEEKS] ?? String(TRIAL_PAY_AHEAD_MAX_WEEKS)} weekly fee${TRIAL_PAY_AHEAD_MAX_WEEKS === 1 ? '' : 's'} ahead`;
 
 /** The told date, as a partner reads it in the rise notice. */
 export function riseDay(position: PayAheadPosition): string {
@@ -149,16 +188,38 @@ export const PAY_AHEAD_LIMIT_WORDS = `up to ${PAY_AHEAD_MAX_WEEKS_WORD} weeks ah
 /** The refusal, in words for the person in front of it. */
 export function payAheadRefusal(position: PayAheadPosition, audience: 'partner' | 'admin' | 'attach'): AppError {
   const rise = limitedByRise(position);
+  const trial = limitedByTrial(position);
   const day = riseDay(position);
   const details = {
-    maxWeeks: PAY_AHEAD_MAX_WEEKS, roomGyd: position.room, currencyCode: position.currencyCode,
+    maxWeeks: position.maxWeeks, roomGyd: position.room, currencyCode: position.currencyCode,
     ...(rise ? { riseFrom: position.riseFrom!.toISOString() } : {}),
+    ...(position.trial ? { trial: true } : {}),
   };
   const room = formatMoney(position.room, position.currencyCode);
   if (audience === 'attach') {
     // An agent payment is attached whole or not at all: refunding it is the only action.
     return new AppError(409, PAY_AHEAD_LIMIT,
-      `Attaching this agent payment would pay more than this account can take now (${PAY_AHEAD_LIMIT_WORDS}${rise ? `, and only weeks before its higher fee from ${day}` : ''}). It is attached whole or not at all: refund it to the partner instead (${PROCEDURE}).`, details);
+      `Attaching this agent payment would pay more than this account can take now (${position.trialEnded ? 'only its first weekly fee, until that fee is applied after its free trial' : position.trial ? `${TRIAL_PAY_AHEAD_WORDS} during its free trial` : PAY_AHEAD_LIMIT_WORDS}${rise ? `, and only weeks before its higher fee from ${day}` : ''}). It is attached whole or not at all: refund it to the partner instead (${PROCEDURE}).`, details);
+  }
+  if (trial) {
+    // [TRIAL PAY-AHEAD · owner 14 Nov 2026] One week ahead during a free trial: the first week after it ends.
+    if (position.trialEnded) {
+      return new AppError(409, PAY_AHEAD_LIMIT, audience === 'partner'
+        ? (position.room > 0
+          ? `Your free trial has ended and your first weekly fee is due. You can pay at most ${room} now.`
+          : 'Your first weekly fee after your free trial is already paid. You can pay again once Swift has applied it.')
+        : (position.room > 0
+          ? `This account's free trial has ended and its first weekly fee is due; nothing ahead is taken until it is applied. Record at most ${room} now and refund the rest to the partner (${PROCEDURE}).`
+          : `This account's free trial has ended and its first weekly fee is already paid. Record nothing more until it is applied: refund this payment to the partner (${PROCEDURE}).`), details);
+    }
+    if (audience === 'partner') {
+      return new AppError(409, PAY_AHEAD_LIMIT, position.room > 0
+        ? `During your free trial Swift takes ${TRIAL_PAY_AHEAD_WORDS}: the first week after your trial ends.${position.heldAhead > 0 ? ` ${formatMoney(position.heldAhead, position.currencyCode)} is already paid toward it.` : ''} You can pay at most ${room} now.`
+        : `Your first weekly fee after your free trial is already paid. You can pay again once your trial has ended.`, details);
+    }
+    return new AppError(409, PAY_AHEAD_LIMIT, position.room > 0
+      ? `This account is in its free trial, and Swift takes ${TRIAL_PAY_AHEAD_WORDS} during a trial: the first week after it ends. Record at most ${room} now and refund the rest to the partner (${PROCEDURE}).`
+      : `This account is in its free trial and its first weekly fee after the trial is already paid. Record nothing more: refund this payment to the partner (${PROCEDURE}).`, details);
   }
   if (audience === 'partner') {
     // [DS1114 S2] True in every case: part of a week held names what is paid and the most payable now.

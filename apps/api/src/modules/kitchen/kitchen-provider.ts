@@ -92,9 +92,13 @@ export interface KitchenInsertResult {
 
 /** A refusal the provider gave (validation, parse, a 4xx): retrying the same request will not help. */
 export class KitchenPermanentError extends Error {
-  constructor(message: string) {
+  /** [DT-OUTAGE] The LINK failed (a login refused, a session Dragontail would not renew), not this one order: it
+   *  counts toward the branch's outage breaker. An order-specific refusal (validation) does not. */
+  readonly linkFailure: boolean;
+  constructor(message: string, linkFailure = false) {
     super(message);
     this.name = 'KitchenPermanentError';
+    this.linkFailure = linkFailure;
   }
 }
 
@@ -102,10 +106,16 @@ export class KitchenPermanentError extends Error {
 export class KitchenTransientError extends Error {
   /** [review B S3-3] A write that timed out or lost its connection: the kitchen system may HAVE the order. */
   readonly mayHaveLanded: boolean;
-  constructor(message: string, mayHaveLanded = false) {
+  /** [round 2] The LINK failed (no connection, or 5xx answers): counts toward the branch's outage breaker, whether or
+   *  not the write may have arrived. A timeout of the WRITE alone does not (a slow kitchen is not a down one). [review B
+   *  S4-11] A send that never got to write — a login that failed or timed out on every attempt, or no attempt fitting the
+   *  send's deadline — does count: the order certainly was not sent, and the link is not working. */
+  readonly linkFailure: boolean;
+  constructor(message: string, mayHaveLanded = false, linkFailure = !mayHaveLanded) {
     super(message);
     this.name = 'KitchenTransientError';
     this.mayHaveLanded = mayHaveLanded;
+    this.linkFailure = linkFailure;
   }
 }
 
@@ -119,6 +129,8 @@ export interface KitchenIntegrationProvider {
   readonly name: 'DRAGONTAIL';
   /** Log in only: proves the credentials and the address. */
   testConnection(): Promise<void>;
+  /** [round 3] The outage probe: proves the order API answers (not only the login). Optional: absent → testConnection. */
+  probeOrderApi?(storeNo: number, cursor: bigint): Promise<void>;
   /** Every request until the next call must finish by `at` (ms since epoch); null clears it. */
   setDeadline(at: number | null): void;
   insertOrder(order: KitchenOrder): Promise<KitchenInsertResult>;
@@ -128,4 +140,7 @@ export interface KitchenIntegrationProvider {
   pollNotifications(storeNo: number, cursor: bigint): Promise<KitchenPollResult>;
   /** A webhook body, already authenticated by the route. Unknown shapes yield no events, never a throw. */
   parseWebhook(body: unknown): KitchenEvent[];
+  /** [DT-OVERFLOW] Free drivers at the store now, for the delivery overflow (null = an answer that cannot be read).
+   *  Optional: a provider without one never has an order moved by the driver check. */
+  freeDriverCount?(storeNo: number): Promise<number | null>;
 }
