@@ -217,8 +217,8 @@ export function BoardQuiet({ lastOrderAt }: { lastOrderAt?: string }) {
   );
 }
 
-function Tile({ icon: Icon, label, detail, badge, badgeLabel, href, onClick }: {
-  icon: typeof BookOpen; label: string; detail: string; badge?: ReactNode; badgeLabel?: string; href: string; onClick?: () => void;
+function Tile({ icon: Icon, label, detail, badge, badgeLabel, href }: {
+  icon: typeof BookOpen; label: string; detail: string; badge?: ReactNode; badgeLabel?: string; href: string;
 }) {
   const body = (
     <>
@@ -232,11 +232,13 @@ function Tile({ icon: Icon, label, detail, badge, badgeLabel, href, onClick }: {
     </>
   );
   const props = { 'aria-label': [label, detail, badgeLabel].filter(Boolean).join('. '), className: 'sw-card block min-w-0 p-5 hover:outline hover:outline-1 hover:outline-[var(--swift-border-strong)]' };
-  return <Link href={href} onClick={onClick} {...props}>{body}</Link>;
+  return <Link href={href} {...props}>{body}</Link>;
 }
 
-/** VendorManagerManageGrid: "MANAGE — The whole business". Owners and managers. */
-export function ManageGrid({ store, owner, onOrderHistory }: { store: HubStore | undefined; owner: boolean; onOrderHistory: () => void }) {
+/** VendorManagerManageGrid: "MANAGE — The whole business". Owners and managers. [WEB-HISTORY · audit B2] The Order
+ *  history tile opens the real history page, as the app's tile opens VendorOrderHistory; `onOrderHistory` is no longer
+ *  used and stays optional only so the board's existing caller keeps compiling until it stops passing it. */
+export function ManageGrid({ store, owner }: { store: HubStore | undefined; owner: boolean; onOrderHistory?: () => void }) {
   const storeId = useStoreId();
   const itemsQ = useItems();
   const analyticsQ = useOverview(true);
@@ -284,7 +286,7 @@ export function ManageGrid({ store, owner, onOrderHistory }: { store: HubStore |
         <Tile icon={QrCode} label={owner ? 'My QR & number' : 'My QR'} detail={qrDetail} href="/dashboard/qr"
           badge={qrStatus ? <Pill tone={qrStatus === 'ACTIVE' ? 'success' : 'neutral'}>{qrStatusWords(qrStatus)}</Pill> : undefined}
           badgeLabel={qrStatus ? `QR: ${qrStatusWords(qrStatus)}` : undefined} />
-        <Tile icon={History} label="Order history" detail={rollingOrders == null ? 'Past orders' : `${rollingOrders} recent orders`} href="#other-orders" onClick={onOrderHistory} />
+        <Tile icon={History} label="Order history" detail={rollingOrders == null ? 'Past orders' : `${rollingOrders} recent orders`} href="/dashboard/orders/history" />
         {owner ? (
           <Tile icon={Receipt} label="Billing" detail={subQ.isError && !sub ? 'Billing unavailable' : billingHeadline(sub)} href="/dashboard/weekly-fee"
             badge={sub ? <Pill tone={billingPill(sub).tone}>{billingPill(sub).label}</Pill> : undefined}

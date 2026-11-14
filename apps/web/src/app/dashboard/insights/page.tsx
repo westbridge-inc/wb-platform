@@ -1,12 +1,17 @@
 'use client';
 
+import { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { getOverview, money } from '@/lib/vendor-api';
+import { numericFact } from '@/lib/vendor-hub';
 import { storeKey, useStoreId } from '@/lib/store-scope';
 import { useStoreRole } from '@/lib/store-role';
 import { DataUnavailable } from '@/components/data-unavailable';
 import { CheckingLatest, useCheckingLatest } from '@/components/checking-latest';
 import { OrderExportCard } from './order-export';
+import { BusyHoursCard, OpsCard, RatingsCard, RepeatCustomersCard, RevenueSection, StandingSection, TopItemsCard, type Period } from './insights-sections';
+import { ReviewsCard } from './reviews-card';
+import { SalesStatementButton } from './sales-statement';
 
 function Stat({ label, value, sub }: { label: string; value: string; sub?: string }) {
   return (
@@ -19,10 +24,12 @@ function Stat({ label, value, sub }: { label: string; value: string; sub?: strin
 }
 
 /**
- * The app's Insights section (owners and managers only, as in the app). This
- * first version carries the figures the old web Today page showed; the app's
- * full Insights screen (revenue chart, acceptance, most ordered, busy hours,
- * standing, reviews, sales statement) follows in its own change.
+ * The app's Insights section (owners and managers only, as in the app): the four figures the old web Today page
+ * showed, then [WEB-INSIGHTS · audit B3 B4 B5] the app's whole Insights screen (VendorInsightsScreen.tsx) with its
+ * server reads and words: revenue over 7 / 30 / 90 days with its chart, average order, acceptance and cancelled,
+ * the most-ordered items, then "Business health" (operations, busy hours, repeat customers, standing, ratings,
+ * reviews with the store's reply), the sales statement and the order export. What the store owes riders is on the
+ * Account page on the website.
  */
 export default function InsightsPage() {
   const storeId = useStoreId();
@@ -30,6 +37,7 @@ export default function InsightsPage() {
   const overview = useQuery({ queryKey: storeKey(storeId, 'overview'), queryFn: getOverview, enabled: manager, refetchInterval: 30_000 });
   const d = overview.data;
   const checkingLatest = useCheckingLatest(overview);
+  const [period, setPeriod] = useState<Period>(7);
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-end justify-between gap-3">
@@ -49,6 +57,22 @@ export default function InsightsPage() {
           <Stat label="Revenue · 30 days" value={money(d.month.revenue)} sub={`${d.month.orders} orders`} />
           <Stat label="Live items" value={String(d.activeMenuItems)} sub={`${d.vendor.totalOrders} lifetime orders`} />
         </div>
+      )}
+      {manager && storeId && (
+        <>
+          <RevenueSection storeId={storeId} period={period} onPeriod={setPeriod} />
+          <TopItemsCard storeId={storeId} />
+          <h2 className="sw-heading">Business health</h2>
+          <div className="grid grid-cols-1 items-start gap-4 wide:grid-cols-2">
+            <OpsCard storeId={storeId} period={period} />
+            <BusyHoursCard storeId={storeId} />
+            <RepeatCustomersCard storeId={storeId} />
+            <StandingSection storeId={storeId} />
+            <RatingsCard storeId={storeId} lifetimeOrders={numericFact(d?.vendor?.totalOrders)} />
+          </div>
+          <ReviewsCard storeId={storeId} />
+          <SalesStatementButton />
+        </>
       )}
       {manager && storeId && <OrderExportCard key={storeId} storeId={storeId} />}
       <p className="text-center text-xs text-[var(--swift-muted)]">Reconciled numbers only — a beautiful wrong number is still a lie.</p>

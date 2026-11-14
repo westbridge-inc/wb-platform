@@ -107,6 +107,11 @@ COPY apps/mobile/src/modules/vendor/acceptClock.ts apps/mobile/src/modules/vendo
 COPY apps/mobile/src/modules/vendor/order-dispute.ts apps/mobile/src/modules/vendor/order-dispute.ts
 COPY apps/mobile/src/modules/vendor/storeOrderRules.ts apps/mobile/src/modules/vendor/storeOrderRules.ts
 COPY apps/mobile/src/modules/vendor/ringMoney.ts apps/mobile/src/modules/vendor/ringMoney.ts
+# [WEB-HISTORY · REVIEW-2517 S3-1] Order history names how the customer pays in the app's words (storeWords.ts
+# paymentMethodWords), which reads the weekly-fee words file (lib/weeklyFee.ts -> lib/fee-status.ts, imports nothing).
+COPY apps/mobile/src/modules/vendor/storeWords.ts apps/mobile/src/modules/vendor/storeWords.ts
+COPY apps/mobile/src/lib/weeklyFee.ts apps/mobile/src/lib/weeklyFee.ts
+COPY apps/mobile/src/lib/fee-status.ts apps/mobile/src/lib/fee-status.ts
 COPY apps/mobile/src/modules/vendor/acceptedOutOfStock.ts apps/mobile/src/modules/vendor/acceptedOutOfStock.ts
 COPY apps/mobile/src/modules/vendor/storeHandover.ts apps/mobile/src/modules/vendor/storeHandover.ts
 # [MENU-OPTIONS] The kitchen view's formatter (web order window) and the store tools' option rules (web Products page).
@@ -149,6 +154,10 @@ COPY apps/mobile/src/modules/vendor/tier-view.ts apps/mobile/src/modules/vendor/
 COPY apps/mobile/src/lib/documentExpiry.ts apps/mobile/src/lib/documentExpiry.ts
 COPY apps/mobile/src/lib/storeVat.ts apps/mobile/src/lib/storeVat.ts
 COPY apps/mobile/src/lib/money.ts apps/mobile/src/lib/money.ts
+# [WEB-INSIGHTS] Insights holds the last revenue pair that agreed (lib/insightsHeldView.ts) and says how a
+# Standing is grouped (components/standingNote.ts), the app's own plain files.
+COPY apps/mobile/src/lib/insightsHeldView.ts apps/mobile/src/lib/insightsHeldView.ts
+COPY apps/mobile/src/components/standingNote.ts apps/mobile/src/components/standingNote.ts
 WORKDIR /app/apps/web
 RUN pnpm run build
 
