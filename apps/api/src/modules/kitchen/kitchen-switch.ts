@@ -26,6 +26,19 @@ export function dragontailIntegrationEnabled(env: Env = process.env): boolean {
   return (env['DRAGONTAIL_INTEGRATION'] ?? '').trim() === '1';
 }
 
+export const DRAGONTAIL_DRIVER_CHECK_ENV = 'DRAGONTAIL_DRIVER_CHECK';
+
+/**
+ * [DT-OVERFLOW round 2 · review A S2-3] The delivery overflow's DRIVER CHECK ("When all my drivers are busy", and
+ * "Both"), ON only at '1', and only with DRAGONTAIL_INTEGRATION on. Off by default: it stays off until Dragontail
+ * confirms IN WRITING what GET /PosGetVehicles lists ("unassigned vehicles" may not mean "free drivers"). While off,
+ * Swift never calls it, the two choices cannot be set, and a branch already set to them behaves as: "When all my
+ * drivers are busy" = off (every delivery to Dragontail), "Both" = busy hours only. Busy hours need no Dragontail call.
+ */
+export function dragontailDriverCheckEnabled(env: Env = process.env): boolean {
+  return dragontailIntegrationEnabled(env) && (env[DRAGONTAIL_DRIVER_CHECK_ENV] ?? '').trim() === '1';
+}
+
 const int = (raw: string | undefined, fallback: number, min: number, max: number): number => {
   const value = Number((raw ?? '').trim());
   return raw !== undefined && raw.trim() !== '' && Number.isInteger(value) && value >= min && value <= max ? value : fallback;

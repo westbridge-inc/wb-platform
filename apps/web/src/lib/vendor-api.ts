@@ -161,6 +161,9 @@ export interface VendorOrder {
   noRiderFound?: boolean;
   noRiderPrompt?: string | null;
   noRiderDetail?: string | null;
+  /** [DT-OVERFLOW] Detail route only: where a Dragontail branch's order went and why; holdsOrder = Dragontail has it
+   *  (no "Get a Swift rider"). Null/absent for every other order. */
+  kitchen?: { holdsOrder?: boolean; route?: string | null; reason?: string | null; title?: string; detail?: string } | null;
   /**
    * The two routes select DIFFERENT vendor columns: the board sends
    * `{ id, name, selfDeliveryEnabled }`, the detail sends

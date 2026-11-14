@@ -322,6 +322,26 @@ export function useUpdateStaffRole(guard: MutationGuard = passThrough) {
 }
 
 /** [RIDER-SAFE 4/5] Why customers cannot order delivery from this store right now (null data = unknown). */
+/** [DT-OVERFLOW] The branch's "Swift riders when you're busy" setting (only a Dragontail branch has it). */
+export function useKitchenOverflow(enabled: boolean) {
+  const pv = usePreviewDataset();
+  const storeId = useStoreSwitcher((s) => s.selectedStoreId);
+  return useQuery({
+    queryKey: ['vendor', 'kitchen-overflow', storeId ?? null],
+    queryFn: () => unwrap(vendorApi.kitchenOverflow()),
+    enabled: enabled && !pv,
+    retry: false,
+  });
+}
+
+export function useSetKitchenOverflow() {
+  const qc = useQueryClient();
+  return usePreviewSafeMutation({
+    mutationFn: (body: { mode: string; busyHours?: Array<{ day: number; start: string; end: string }> }) => unwrap(vendorApi.setKitchenOverflow(body)),
+    onSettled: () => { void qc.invalidateQueries({ queryKey: ['vendor', 'kitchen-overflow'] }); },
+  });
+}
+
 export function useDeliveryStatus(enabled: boolean) {
   const pv = usePreviewDataset();
   return useQuery({

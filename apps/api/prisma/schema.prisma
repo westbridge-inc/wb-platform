@@ -2446,6 +2446,28 @@ enum KitchenSyncState {
   DONE
 }
 
+/// [DT-OVERFLOW · owner 14 Nov 2026] When a connected own-driver branch's cash DELIVERY goes to Swift riders instead of
+/// its kitchen system, decided order by order before anything is sent (kitchen/kitchen-overflow.ts). Pickups never move.
+enum KitchenOverflowMode {
+  /// Off: every such delivery goes to the kitchen system, as before.
+  NONE
+  /// Ask the kitchen system for a free driver first (Dragontail PosGetVehicles); none free: Swift riders.
+  AUTO_DRIVER_CHECK
+  /// Inside the branch's busy hours (Guyana time): Swift riders.
+  BUSY_HOURS
+  /// Busy hours first, then the driver check.
+  BOTH
+}
+
+/// [DT-OVERFLOW] Where an order of a connected branch went: its kitchen system, or the Swift tablet and Swift riders.
+enum KitchenRoute {
+  KITCHEN
+  SWIFT_RIDERS
+  /// [round 3 · review B S3-2] The branch's kitchen link was offline: on the Swift tablet with the branch's own
+  /// driver, NOT in the kitchen system (a busy-hours overflow still goes to Swift riders).
+  TABLET
+}
+
 /// [KITCHEN-INTEGRATION] One store's connection to a kitchen system. Credentials are NEVER stored here: secretRef and
 /// webhookSecretRef name entries in the DRAGONTAIL_CREDENTIALS secret file (utils/secret-files.ts).
 model VendorIntegration {
@@ -2471,6 +2493,30 @@ model VendorIntegration {
   /// The last failure, in operator words (never a credential, never a customer detail).
   lastError           String?
   lastErrorAt         DateTime?
+  /// [DT-OVERFLOW · owner 14 Nov 2026] Delivery overflow for this branch (off by default). Read only while
+  /// DRAGONTAIL_INTEGRATION is on; set by the branch's owner or manager, or by Swift operations.
+  overflowMode        KitchenOverflowMode    @default(NONE)
+  /// [DT-OVERFLOW] The branch's busy hours, weekly windows in Guyana time: [{ day 0-6 (Sunday 0), start "HH:MM",
+  /// end "HH:MM" }], an end at or before its start running past midnight. Validated by kitchen-overflow.ts.
+  overflowBusyHours   Json                   @default("[]")
+  overflowUpdatedAt   DateTime?
+  /// [DT-OUTAGE · owner 14 Nov 2026] The branch's kitchen-link breaker (kitchen-link.ts), shared by every API and
+  /// worker instance: certain send failures in a row (counted from the first, within the window), when the link was
+  /// marked OFFLINE (null = online: orders are claimed), and when it was last probed while offline.
+  linkFailures        Int                    @default(0)
+  linkFirstFailureAt  DateTime?
+  linkOfflineAt       DateTime?
+  linkProbeAt         DateTime?
+  /// [DT-OUTAGE round 2 · review A S3-2] The outage this link is in, from its first opening until a REAL send goes
+  /// through. A probe's login re-opens the link only on trial: one more certain failure re-opens it with no new alert.
+  linkOutageSince     DateTime?
+  /// [round 3 · review B S2-1] Trials of this outage that failed: each doubles the wait before the next probe.
+  linkTrialFailures   Int                    @default(0)
+  /// [DT-OVERFLOW round 2 · review A S2-2] The branch's latest driver check, made by the kitchen tick (order queue),
+  /// never by the hold-release sweep or checkout: they only read it. Null free count = the check failed (problem).
+  driverCheckAt       DateTime?
+  driverCheckFree     Int?
+  driverCheckProblem  String?
   createdAt           DateTime               @default(now())
   updatedAt           DateTime               @updatedAt
   syncs               OrderIntegrationSync[]
@@ -2532,6 +2578,9 @@ model OrderIntegrationSync {
   lastError           String?
   sentAt              DateTime?
   fallbackAt          DateTime?
+  /// [DT-OVERFLOW round 2 · review A S3-3] Fell back while the kitchen system MAY still have it (the switch went off
+  /// mid-send): "Get a Swift rider" stays refused, as while the kitchen holds it.
+  maybeInKitchen      Boolean           @default(false)
   cancelledAt         DateTime?
   dispatchedAt        DateTime?
   createdAt           DateTime          @default(now())
@@ -2929,6 +2978,13 @@ model Order {
   handoverEvidence    CashHandoverEvidence?
   /// [KITCHEN-INTEGRATION] Where this order stands with its store's kitchen system (none for most stores).
   kitchenSyncs        OrderIntegrationSync[]
+  /// [DT-OVERFLOW · owner 14 Nov 2026] For a cash delivery of a connected own-driver branch: where it went, decided once
+  /// before anything was sent (KITCHEN = the kitchen system with the branch's own drivers; SWIFT_RIDERS = the Swift
+  /// tablet and Swift riders, never sent to the kitchen system). Null for every other order.
+  kitchenRoute        KitchenRoute?
+  /// [DT-OVERFLOW] Why, as a code (kitchen-overflow.ts KITCHEN_ROUTE_REASONS); never a person's detail.
+  kitchenRouteReason  String?
+  kitchenRouteAt      DateTime?
   @@index([customerId])
   @@index([vendorId])
   @@index([riderId])

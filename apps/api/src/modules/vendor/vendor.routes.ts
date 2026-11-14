@@ -33,6 +33,7 @@ import { lineOptionsAsMade } from '../order/substitution-view';
 import { makeDispatchService } from '../dispatch/dispatch.service';
 import { dispatchTrigger, enqueueDeliveryDispatch } from '../dispatch/dispatch-trigger';
 import { resolveDeliveryMode } from '../fulfillment/fulfillment-mode';
+import { assertKitchenDoesNotHold, KITCHEN_OVERFLOW_AUDIT_ACTION, kitchenStoreView, kitchenSyncStateOf, noteOverflowKeptWithStore, readKitchenOverflowSetting, writeKitchenOverflowSetting } from '../kitchen/kitchen-overflow';
 import { HANDOVER_SECRETS_OMIT } from '../handover/handover-security';
 import { pickingReadinessCounter, mmgAttestationCounter } from '../../plugins/observability';
 import { assertMmgAttestable, normaliseMmgReference, recordVendorAttestation } from './mmg-attestation';
@@ -1202,7 +1203,11 @@ export async function vendorRoutes(app: FastifyInstance) {
    * held by the canonical transition lock. An explicit mode that committed
    * after the route's initial read always wins. The vendor preference is a
    * snapshot default for this order: later profile changes do not silently
-   * rewrite accepted work, and PLATFORM_RIDER remains available as recovery. */
+   * rewrite accepted work, and PLATFORM_RIDER remains available as recovery.
+   * [DT-OVERFLOW · owner 14 Nov 2026] A delivery its connected branch's overflow routed to Swift riders
+   * (orders.kitchenRoute SWIFT_RIDERS) binds as if "Deliver my own orders" were off for this one order — unless no
+   * Swift rider may carry its cash (`swiftRidersCannotCarry`, the accept's rider-cash question): then it stays with
+   * the store's own driver, as the store's standing setting says, instead of the accept being refused. */
   async function bindUnresolvedDeliveryMode(
     tx: Prisma.TransactionClient,
     source: {
@@ -1212,12 +1217,18 @@ export async function vendorRoutes(app: FastifyInstance) {
       fulfillment: string;
       fulfillmentMode: FulfillmentMode | null;
     },
+    opts: { swiftRidersCannotCarry?: boolean; onOverflowKeptWithStore?: () => void } = {},
   ): Promise<'PLATFORM_RIDER' | 'VENDOR_DELIVERY' | null> {
     if (source.fulfillment !== 'DELIVERY' || source.riderId || source.fulfillmentMode != null) return null;
     const vendor = source.vendorId
       ? await tx.vendor.findUnique({ where: { id: source.vendorId }, select: { selfDeliveryEnabled: true } })
       : null;
-    const mode = resolveDeliveryMode(null, vendor?.selfDeliveryEnabled ?? false);
+    // Only a store that delivers itself can have an overflow route to read (one read, only then).
+    const routed = vendor?.selfDeliveryEnabled ? await tx.order.findUnique({ where: { id: source.id }, select: { kitchenRoute: true } }) : null;
+    const overflowToSwift = routed?.kitchenRoute === 'SWIFT_RIDERS' && !opts.swiftRidersCannotCarry;
+    // [round 2 · review A S3-4] Kept with the store's driver for its cash: operations are told after the commit.
+    if (routed?.kitchenRoute === 'SWIFT_RIDERS' && opts.swiftRidersCannotCarry) opts.onOverflowKeptWithStore?.();
+    const mode = resolveDeliveryMode(null, (vendor?.selfDeliveryEnabled ?? false) && !overflowToSwift);
     await tx.order.update({
       where: { id: source.id },
       data: { fulfillmentMode: mode, fulfillmentModeVersion: { increment: 1 } },
@@ -2058,6 +2069,27 @@ export async function vendorRoutes(app: FastifyInstance) {
     } };
   });
 
+  /**
+   * [DT-OVERFLOW · owner 14 Nov 2026] GET/PUT /kitchen-overflow — a branch connected to its kitchen system
+   * (Dragontail): when its cash deliveries go to Swift riders instead (busy hours, no free driver, or both). The owner
+   * or a manager. While the kitchen-system switch is off: `available: false`, and a change is refused.
+   */
+  app.get('/kitchen-overflow', auth, async (request) => {
+    const { vendorId } = await requireVendor(app, request, 'MANAGER');
+    return { success: true, data: await readKitchenOverflowSetting(app.prisma, vendorId) };
+  });
+  app.put('/kitchen-overflow', auth, async (request) => {
+    const { vendorId, role } = await requireVendor(app, request, 'MANAGER');
+    // [round 3 · review B S4-3] Who moved this branch's cash deliveries between two dispatch systems: an audit row in
+    // the same transaction (the person's id and store role, the mode and busy-window count before and after).
+    return { success: true, data: await writeKitchenOverflowSetting(app.prisma, vendorId, request.body, process.env, async (tx, entityId, facts) => {
+      await tx.auditLog.create({ data: {
+        userId: request.user.userId, action: KITCHEN_OVERFLOW_AUDIT_ACTION, entity: 'VendorIntegration', entityId,
+        changes: { vendorId, role, ...facts },
+      } });
+    }) };
+  });
+
   app.put('/profile', auth, async (request) => {
     const access = await requireVendor(app, request, 'MANAGER');
     const { vendorId } = access;
@@ -2702,7 +2734,11 @@ export async function vendorRoutes(app: FastifyInstance) {
     // kitchen taps made after a rider took the order read as "Preparing" / "Ready"; "Handed to rider" is said by the
     // "Handed to rider" line (handedToRiderAt), not as a second "Rider at counter"; no other repeat of a rider status.
     const statusHistory = timelineRows([...order.statusHistory].reverse()).reverse();
-    return { success: true, data: { ...redactCustomerContact({ ...order, statusHistory, ...handover, storeMoney: money, items: order.items.map(vendorOrderLine), respondBy, ...storeMmgPayBy(order), canConfirmPayment: canConfirmPayment(role), ...noShow, ...notCollected, mmgRefund, ...noRider }), custodyRecovery, outOfStockEndsOrder: true } };
+    // [DT-OVERFLOW · owner 14 Nov 2026] Where a connected branch's order went (its kitchen system, or this tablet and
+    // Swift riders) and why; `kitchen.holdsOrder` = the kitchen system has it, so the apps offer no "Get a Swift rider".
+    // Null for every order the integration never touched (one unique-key read).
+    const kitchen = kitchenStoreView(order, order.fulfillment === 'DELIVERY' || order.kitchenRoute ? await kitchenSyncStateOf(app.prisma, order.id) : null);
+    return { success: true, data: { ...redactCustomerContact({ ...order, statusHistory, ...handover, storeMoney: money, items: order.items.map(vendorOrderLine), respondBy, ...storeMmgPayBy(order), canConfirmPayment: canConfirmPayment(role), ...noShow, ...notCollected, mmgRefund, ...noRider }), custodyRecovery, outOfStockEndsOrder: true, kitchen } };
   });
 
   /** [AF-MOB-006] POST /orders/:id/recovery/return-received — the store
@@ -2775,6 +2811,7 @@ export async function vendorRoutes(app: FastifyInstance) {
     const cashRefusal = order.fulfillment === 'DELIVERY' && !order.riderId && order.fulfillmentMode == null
       ? await swiftRiderCashRefusal(app.prisma, (probe) => dispatch.getDeliveryCapacity(probe), order.id, 'accept')
       : null;
+    let overflowKeptWithStore = false;
     const updated = await orderService.updateStatus(order.id, acceptedStatus, request.user.userId, 'Accepted by vendor', {
       continueTo: { target: preparingStatus, note: 'Preparing: the store accepted the order', when: preparationMayStart },
       withinTransaction: async (tx, lockedOrder) => {
@@ -2804,9 +2841,14 @@ export async function vendorRoutes(app: FastifyInstance) {
           });
         }
         // [REVIEW-2472 A-1] Refused before the accept commits: the order stays PENDING, nothing is sought.
-        if (await bindUnresolvedDeliveryMode(tx, lockedOrder) === 'PLATFORM_RIDER' && cashRefusal) throw cashRefusal;
+        // [DT-OVERFLOW] An overflow order no Swift rider may carry stays with the store's own driver instead.
+        if (await bindUnresolvedDeliveryMode(tx, lockedOrder, {
+          swiftRidersCannotCarry: cashRefusal != null,
+          onOverflowKeptWithStore: () => { overflowKeptWithStore = true; },
+        }) === 'PLATFORM_RIDER' && cashRefusal) throw cashRefusal;
       },
     });
+    if (overflowKeptWithStore) await noteOverflowKeptWithStore(app.prisma, app.io, order.id);
     if (appointmentItemId) await bookingService.nudgeForItem(appointmentItemId).catch(() => {});
     await ackVendorAlert(app, request.user.userId, order.id); // accepting acknowledges the alert
 
@@ -3044,6 +3086,10 @@ export async function vendorRoutes(app: FastifyInstance) {
     // [REVIEW-2472 A-1] "Get a Swift rider" on a CASH order no Swift rider near may carry: refused in the store's
     // words, before the switch is written — the order stays with the store's own delivery. Asked here, applied on
     // the locked row below (only a switch that would hand it to Swift riders now).
+    // [DT-OVERFLOW · owner 14 Nov 2026] "Get a Swift rider" on an order its kitchen system (Dragontail) has: refused.
+    // Dragontail is not told, so its own driver would still come — two drivers for one order. Read again on the locked
+    // row below.
+    if (mode === 'PLATFORM_RIDER') await assertKitchenDoesNotHold(app.prisma, order.id);
     const cashRefusal = mode === 'PLATFORM_RIDER' && !order.riderId
       ? await swiftRiderCashRefusal(app.prisma, (probe) => dispatch.getDeliveryCapacity(probe), order.id, 'switch')
       : null;
@@ -3097,6 +3143,7 @@ export async function vendorRoutes(app: FastifyInstance) {
       if (mode === 'PLATFORM_RIDER' && live.fulfillmentMode === 'VENDOR_DELIVERY' && live.riderId) {
         throw new AppError(409, 'CUSTODY_CONFLICT', 'This order has conflicting delivery custody and needs operator review');
       }
+      if (mode === 'PLATFORM_RIDER') await assertKitchenDoesNotHold(tx, order.id);
       if (live.fulfillmentMode === mode) return { ...live, afterNoRider: false };
       if (mode === 'PLATFORM_RIDER' && !live.riderId && cashRefusal) throw cashRefusal;
       const switched = await tx.order.update({

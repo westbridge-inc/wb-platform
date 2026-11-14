@@ -15,7 +15,11 @@ import type { KitchenLogin } from '../kitchen-credentials';
  * send would also kill a concurrent holder's token if Dragontail keeps one per user). A 403 re-logs in ONCE and
  * repeats the request. Only a 50x is retried (up to 3 times, backoff 500 ms, 1 s, 2 s): the spec asks no more.
  * A timeout or network failure on a WRITE is never retried — it may have landed — and says so
- * (KitchenTransientError.mayHaveLanded). Every request has a timeout, and a whole call chain has one deadline.
+ * (KitchenTransientError.mayHaveLanded). [DT-OUTAGE · owner 14 Nov 2026] EXCEPT a failure that certainly happened
+ * before the request left Swift (requestNeverSent: connection refused, the name did not resolve, no route, the TLS
+ * handshake failed, undici's own connect timeout): Dragontail cannot have it, so it is not "may have landed". When in
+ * doubt (our own timeout, a reset, a refused redirect, anything unknown) it stays "may have landed": never a double
+ * cook. Every request has a timeout, and a whole call chain has one deadline.
  * Redirects are refused: a 307/308 would re-send the login (or the token) to another address.
  * No credential, token or body is ever logged or put in an error message.
  */
@@ -46,7 +50,43 @@ export interface DragontailClientOptions {
 
 export const DRAGONTAIL_MAX_RETRIES = 3;
 
+/** One answer. `after5xx`: an EARLIER attempt of the same request was answered 5xx (it reached Dragontail). */
+export interface DragontailAnswer { status: number; json: unknown; after5xx: boolean }
+
 const realSleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+/** [DT-OUTAGE] Error codes that can only happen BEFORE a request is on the wire (no connection, no TLS session). */
+const NEVER_SENT_CODES = new Set([
+  'ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN', 'EAI_NONAME', 'EAI_FAIL', 'UND_ERR_CONNECT_TIMEOUT',
+  // TLS: the handshake failed, so no HTTP request was ever sent.
+  'CERT_HAS_EXPIRED', 'DEPTH_ZERO_SELF_SIGNED_CERT', 'SELF_SIGNED_CERT_IN_CHAIN', 'UNABLE_TO_VERIFY_LEAF_SIGNATURE',
+  'UNABLE_TO_GET_ISSUER_CERT_LOCALLY', 'ERR_TLS_CERT_ALTNAME_INVALID', 'CERT_NOT_YET_VALID', 'ERR_SSL_WRONG_VERSION_NUMBER',
+]);
+
+/** [round 3 · review B S3-4] Codes a pooled keep-alive socket can also report AFTER the request was written: they prove
+ *  nothing was sent only when the failing system call was the connect itself. */
+const CONNECT_SYSCALL_ONLY_CODES = new Set(['EHOSTUNREACH', 'ENETUNREACH', 'EHOSTDOWN', 'ENETDOWN', 'EADDRNOTAVAIL']);
+
+/**
+ * [DT-OUTAGE] Did this fetch failure certainly happen before the request was sent? Only for a named connect-phase
+ * code found on the error or its causes (Node's fetch wraps them: TypeError('fetch failed', { cause })). Our own
+ * timeout (an abort), a reset, a socket closed mid-answer, a refused redirect (the server DID answer) and anything
+ * unrecognised are NOT: when in doubt, the request may have arrived.
+ */
+export function requestNeverSent(err: unknown, aborted: boolean): boolean {
+  if (aborted) return false;
+  let at: unknown = err;
+  for (let depth = 0; depth < 4 && at && typeof at === 'object'; depth += 1) {
+    const code = (at as { code?: unknown }).code;
+    if (typeof code === 'string' && NEVER_SENT_CODES.has(code)) return true;
+    if (typeof code === 'string' && CONNECT_SYSCALL_ONLY_CODES.has(code) && (at as { syscall?: unknown }).syscall === 'connect') return true;
+    // An AggregateError (happy eyeballs: every address refused) carries one per address: all must be connect-phase.
+    const errors = (at as { errors?: unknown }).errors;
+    if (Array.isArray(errors) && errors.length > 0 && errors.every((e) => requestNeverSent(e, false))) return true;
+    at = (at as { cause?: unknown }).cause;
+  }
+  return false;
+}
 
 /** The spec's failure words, kept for the operator (never a body, never a person's detail). */
 function failureWords(text: string): string {
@@ -99,12 +139,12 @@ export class DragontailClient {
       userLevel: this.opts.userLevel,
     }, false, true);
     if (answer.status !== 200) {
-      throw new KitchenPermanentError(`Dragontail login refused (HTTP ${answer.status})`);
+      throw new KitchenPermanentError(`Dragontail login refused (HTTP ${answer.status})`, true);
     }
     const body = answer.json as { token?: unknown; status?: unknown } | null;
     // The spec types token as an integer but its example is a string ("AE1234567890"): accept both.
     const token = body && (typeof body.token === 'string' || typeof body.token === 'number') ? String(body.token) : '';
-    if (!token) throw new KitchenPermanentError('Dragontail login answered without a token');
+    if (!token) throw new KitchenPermanentError('Dragontail login answered without a token', true);
     this.setToken(token);
     return token;
   }
@@ -123,24 +163,30 @@ export class DragontailClient {
    * An authenticated call: logs in when there is no token, and once more on a 403. `idempotent` = a timeout may
    * be retried (reads); a write is never re-sent after a timeout.
    */
-  async call(method: 'GET' | 'POST', path: string, body?: unknown, idempotent = method === 'GET'): Promise<{ status: number; json: unknown }> {
+  async call(method: 'GET' | 'POST', path: string, body?: unknown, idempotent = method === 'GET'): Promise<DragontailAnswer> {
     await this.ensureToken();
     let answer = await this.send(method, path, body, true, idempotent);
     if (answer.status === 403) {
+      const earlier5xx = answer.after5xx;
       this.setToken(null);
       await this.login();
       answer = await this.send(method, path, body, true, idempotent);
+      answer = { ...answer, after5xx: answer.after5xx || earlier5xx };
       if (answer.status === 403) {
         this.setToken(null);
-        throw new KitchenPermanentError(`Dragontail refused ${path} after a fresh login (HTTP 403)`);
+        throw new KitchenPermanentError(`Dragontail refused ${path} after a fresh login (HTTP 403)`, true);
       }
     }
     return answer;
   }
 
   /** One request with the retry policy. Never throws for a non-5xx status: the caller decides. */
-  private async send(method: 'GET' | 'POST', path: string, body: unknown, withToken: boolean, idempotent: boolean): Promise<{ status: number; json: unknown }> {
+  private async send(method: 'GET' | 'POST', path: string, body: unknown, withToken: boolean, idempotent: boolean): Promise<DragontailAnswer> {
     let lastProblem = '';
+    // [round 2 · review A S2-1] Did ANY attempt reach Dragontail (an HTTP answer, even a 5xx)? A gateway's 502/504 is the
+    // classic "the backend may have it": a later attempt that cannot even connect does not make the write certainly
+    // unsent. Remembered across the whole retry loop.
+    let reachedServer = false;
     for (let attempt = 0; attempt <= DRAGONTAIL_MAX_RETRIES; attempt += 1) {
       if (attempt > 0) {
         const wait = this.backoffMs * 2 ** (attempt - 1);
@@ -167,6 +213,8 @@ export class DragontailClient {
           redirect: 'error',
         });
         const text = await res.text();
+        const earlierAnswered5xx = reachedServer;
+        reachedServer = true;
         if (res.status >= 500 && res.status <= 599) {
           const words = failureWords(text);
           lastProblem = `HTTP ${res.status}${words ? ` (${words})` : ''}`;
@@ -178,18 +226,33 @@ export class DragontailClient {
         } catch {
           json = null;
         }
-        return { status: res.status, json };
-      } catch {
-        const problem = controller.signal.aborted ? `timed out after ${timeout} ms` : 'network error (or a refused redirect)';
+        // [round 3 · review B S3-5] An earlier attempt of this request got a 5xx (it reached Dragontail): the caller
+        // must not read a refusal now as "certainly not taken".
+        return { status: res.status, json, after5xx: earlierAnswered5xx };
+      } catch (err) {
+        // [DT-OUTAGE] Certainly never sent (no connection, no TLS session): Dragontail cannot have it.
+        const neverSent = requestNeverSent(err, controller.signal.aborted);
+        const problem = controller.signal.aborted ? `timed out after ${timeout} ms`
+          : neverSent && reachedServer ? 'could not connect on a retry'
+            : neverSent ? 'could not connect (nothing was sent)' : 'network error (or a refused redirect)';
+        if (!idempotent && (!neverSent || reachedServer)) {
+          // A write that may have reached Dragontail (this attempt, or an EARLIER one that got an answer) is never
+          // re-sent blind: the caller decides what it means. A link failure too when an earlier attempt got a 5xx.
+          throw new KitchenTransientError(`Dragontail ${path}: ${problem}${reachedServer ? ' after an earlier 5xx' : ''}; it may have arrived`, true, reachedServer || neverSent);
+        }
         if (!idempotent) {
-          // A write that may have reached Dragontail is never re-sent blind: the caller decides what it means.
-          throw new KitchenTransientError(`Dragontail ${path}: ${problem}; it may have arrived`, true);
+          // Never sent, by ANY attempt: not "may have arrived". Not retried either (the spec retries only 50x): the
+          // caller falls back.
+          throw new KitchenTransientError(`Dragontail ${path}: ${problem}`, false, true);
         }
         lastProblem = problem;
       } finally {
         clearTimeout(timer);
       }
     }
-    throw new KitchenTransientError(`Dragontail ${path} failed (${lastProblem || 'no attempt fit the deadline'})`, false);
+    // [round 2 · review A S2-1] Still 5xx after every retry: for a WRITE that is "may have arrived" (the careful path:
+    // verify, cancel there, then ring), never "certainly not". A read, or a login, may simply be asked again.
+    throw new KitchenTransientError(`Dragontail ${path} failed (${lastProblem || 'no attempt fit the deadline'})${!idempotent && reachedServer ? '; it may have arrived' : ''}`,
+      !idempotent && reachedServer, true);
   }
 }

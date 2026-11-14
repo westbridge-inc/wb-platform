@@ -63,6 +63,7 @@ import {
   useDeliveryStatus,
 } from '../../../hooks/vendorops';
 import { DeliveryStatusNote } from '../../../components/DeliveryStatusNote';
+import { DeliveryOverflowCard } from '../DeliveryOverflowCard';
 import { cardTapFor } from '../boardTaps';
 import { useOtaRestartHold } from '../../../hooks/useOtaRestartHold';
 import { OUT_OF_STOCK_WORDS, customerDeciding, nothingToAccept } from '../storeOrderRules';
@@ -1374,6 +1375,9 @@ export function VendorOps({ store, navigation }: any) {
             ) : null}
           </Card>
         ) : null}
+
+        {/* [DT-OVERFLOW] A Dragontail branch's "Swift riders when you're busy" (owner/manager; hidden elsewhere). */}
+        <DeliveryOverflowCard enabled={!inPreview && surface.canSetSelfDelivery && selfDelivery} />
 
         {/* [STORE-DASH · O-2] "Ask for the pickup code" — off by default for every store; owner/manager
             (the self-delivery setting's rights). Shown only once the server serves the setting. */}
