@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { RefreshCw } from 'lucide-react';
 import { useOpenOrderRequests } from '@/lib/open-order-request';
+import { useScreenWakeLock } from '@/lib/wake-lock';
 import { mmgDisputePaused } from '@/lib/mmg-dispute';
 import { storeKey, useStoreId } from '@/lib/store-scope';
 import { useFeedPollInterval } from '@/lib/store-live-feed';
@@ -95,6 +96,8 @@ export default function OrdersPage() {
   });
   // [STORE-BOARD S1] The ring is the dashboard's (every page); its "View order" opens the order here.
   useOpenOrderRequests(setSelected);
+  // [STORE-BOARD C4] A counter tablet's screen stays on while the live board is open (Screen Wake Lock; none: normal sleep).
+  useScreenWakeLock(true);
 
   const all = useMemo(() => orders.data?.orders ?? [], [orders.data]);
   // [W-11] Exhaustive: every order lands in exactly one lane, including an

@@ -240,6 +240,8 @@ vi.mock('@tanstack/react-query', () => ({
   },
 }));
 vi.mock('react-native', () => ({
+  // [STORE-BOARD A2/A3] The board reads the screen width for its tablet lanes: a phone's width keeps the one list.
+  useWindowDimensions: () => ({ width: 390, height: 844 }),
   ActivityIndicator: 'ActivityIndicator',
   Platform: { OS: 'ios', select: (options: Record<string, unknown>) => options['ios'] ?? options['default'] },
   Pressable: 'Pressable',
