@@ -13,11 +13,11 @@ import type { BillingService } from './billing.service';
 import { PAYABLE } from './fee-pay-actions';
 import { feeReceiptDocument } from './fee-receipt';
 import { lockFeePaymentDecision, readFeePaymentDecision, type FeePaymentDecision } from './fee-payment-authority';
-import { inPersonChannel, inPersonRail, IN_PERSON_CHANNELS, inPersonMethodOf } from './in-person-channel';
+import { IN_PERSON_ACTION, inPersonChannel, inPersonRail, IN_PERSON_CHANNELS, inPersonMethodOf } from './in-person-channel';
 import { amountDueNow } from './amount-due';
 import { feePauseHoldsBilling } from './mmg-pause';
 import { referenceOnRecord } from './mmg-fee-reversal';
-import { limitedByRise, PAY_AHEAD_LIMIT, PAY_AHEAD_LIMIT_WORDS, PAY_AHEAD_MAX_WEEKS, PAY_AHEAD_MAX_WEEKS_WORD, readPayAhead, riseDay, type PayAheadPosition } from './pay-ahead';
+import { limitedByRise, limitedByTrial, PAY_AHEAD_LIMIT, PAY_AHEAD_LIMIT_WORDS, PAY_AHEAD_MAX_WEEKS_WORD, readPayAhead, riseDay, TRIAL_PAY_AHEAD_WORDS, type PayAheadPosition } from './pay-ahead';
 import { weeklyFeeAmount } from './subscription-fee';
 
 // ---------------------------------------------------------------------------
@@ -62,8 +62,8 @@ import { weeklyFeeAmount } from './subscription-fee';
 // (PAY-AHEAD-AND-REFUNDS.md section 6), never a made-up payout.
 // ---------------------------------------------------------------------------
 
-/** The route, as the approval gate names it. */
-export const IN_PERSON_ACTION = 'POST /subscriptions/:id/in-person-payment';
+/** The route, as the approval gate names it (in-person-channel.ts). */
+export { IN_PERSON_ACTION };
 const EVENT_KEY = 'in-person:';
 const PROVIDER_REF = 'IN_PERSON:';
 const LIST_LIMIT = 100;
@@ -157,10 +157,23 @@ const HAND_BACK = 'If you already took it, hand it back.';
 function overPayAheadLimit(position: PayAheadPosition): AppError {
   const rise = limitedByRise(position);
   const details = {
-    maxWeeks: PAY_AHEAD_MAX_WEEKS, roomGyd: position.room, currencyCode: position.currencyCode,
+    maxWeeks: position.maxWeeks, roomGyd: position.room, currencyCode: position.currencyCode,
     ...(rise ? { riseFrom: position.riseFrom!.toISOString() } : {}),
+    ...(position.trial ? { trial: true } : {}),
   };
   const most = formatMoney(Math.floor(position.room), 'GYD', { whole: true });
+  if (position.trialEnded) {
+    // [REVIEW-A #2513 S3-1] The trial has ended and its first fee is not applied yet: only that week may be taken.
+    return new AppError(409, PAY_AHEAD_LIMIT, position.room > 0
+      ? `This account's free trial has ended and its first weekly fee is due; nothing ahead is taken until it is applied. Nothing was recorded. Take at most ${most}; if you already took more, hand the rest back.`
+      : `This account's free trial has ended and its first weekly fee is already paid. Nothing was recorded: do not take this money. ${HAND_BACK}`, details);
+  }
+  if (limitedByTrial(position)) {
+    // [TRIAL PAY-AHEAD · owner 14 Nov 2026] One week ahead during a free trial: the first week after it ends.
+    return new AppError(409, PAY_AHEAD_LIMIT, position.room > 0
+      ? `This account is in its free trial, and Swift takes ${TRIAL_PAY_AHEAD_WORDS} during a trial: the first week after it ends. Nothing was recorded. Take at most ${most}; if you already took more, hand the rest back.`
+      : `This account is in its free trial and its first weekly fee after the trial is already paid. Nothing was recorded: do not take this money. ${HAND_BACK}`, details);
+  }
   if (rise) {
     return new AppError(409, PAY_AHEAD_LIMIT, position.room > 0
       ? `This account's weekly fee goes up from the fee due on ${riseDay(position)}, and only weeks before that day can be paid now. Nothing was recorded. Take at most ${most}; if you already took more, hand the rest back.`
