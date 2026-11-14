@@ -71,6 +71,9 @@ import { HANDOVER_WORDS, boardStepLabel, pickupBoardWords, withHandoverSteps } f
 import { mmgDisputePaused } from '../order-dispute';
 import { RiderHandoverLine } from '../RiderHandoverLine';
 import { BoardNames } from '../BoardNames';
+import { PrepTimeChips } from '../PrepTimeChips';
+import { acceptPrepMinutes, asksPrepTime } from '../prepTime';
+import { usePrepChoice } from '../prepTimeMemory';
 import { useAuthStore } from '../../../stores/authStore';
 import { useStoreSwitcher } from '../../../stores/storeSwitcher';
 import { useVendorPreview } from '../../../stores/vendorPreview';
@@ -111,7 +114,7 @@ const VendorOrderCard = React.memo(function VendorOrderCard({
   showStore,
 }: {
   order: any;
-  onAction: (action: VendorOrderActionKind, code?: string) => void;
+  onAction: (action: VendorOrderActionKind, code?: string, prepMinutes?: number) => void;
   onOpen?: () => void;
   busy: boolean;
   showStore?: boolean;
@@ -134,6 +137,11 @@ const VendorOrderCard = React.memo(function VendorOrderCard({
   const [mmgRef, setMmgRef] = useState('');
   // [OTA-CATCH-UP · REVIEW-1 L1 on #2431] A typed MMG reference is never lost to a restart into an update.
   useOtaRestartHold(mmgRef.trim().length > 0);
+  // [APP-PREPTIME · owner 14 Nov 2026] Accept on the board card asks the preparation time too (the website's six
+  // choices; [ROUND 2] the store's own declared time, or the closest choice, pre-selected, or a change staff made for
+  // this store on this device): one tap still accepts.
+  const [prepMinutes, choosePrep] = usePrepChoice(order.id, order.vendorId, order.estimatedPrepTime);
+  const asksPrep = asksPrepTime(order) && actions.some((a) => a.action === 'accept');
   const items = order.itemCount ?? order.items?.length ?? 0;
   const lines: any[] = order.items ?? [];
   const isPickup = order.fulfillment === 'PICKUP';
@@ -333,6 +341,11 @@ const VendorOrderCard = React.memo(function VendorOrderCard({
           {customerDeciding(order) ? OUT_OF_STOCK_WORDS.deciding : OUT_OF_STOCK_WORDS.nothing}
         </T>
       ) : null}
+      {asksPrep ? (
+        <View style={{ marginTop: space.md }}>
+          <PrepTimeChips value={prepMinutes} onChange={choosePrep} vendorType={order.vendor?.vendorType} disabled={busy} />
+        </View>
+      ) : null}
       {actions.length > 0 ? (
         <View style={{ flexDirection: 'row', gap: space.md, marginTop: space.md }}>
           {actions.map((a) => (
@@ -344,7 +357,7 @@ const VendorOrderCard = React.memo(function VendorOrderCard({
               style={{ flex: 1 }}
               disabled={busy}
               loading={busy && a.action !== 'reject'}
-              onPress={() => onAction(a.action)}
+              onPress={() => (a.action === 'accept' ? onAction(a.action, undefined, acceptPrepMinutes(order, prepMinutes)) : onAction(a.action))}
             />
           ))}
         </View>
@@ -976,11 +989,11 @@ export function VendorOps({ store, navigation }: any) {
   const boardShown = useNavigationFocused(navigation);
   useCallsAskMoment(boardShown && reachSignal({ storeOrders: fetched }).state === 'live');
   const openOrder = (o: any) => navigation.navigate('VendorOrderDetail', { orderId: o.id, orderNumber: o.orderNumber });
-  const onCardAction = (o: any, action: VendorOrderActionKind, code?: string) => {
+  const onCardAction = (o: any, action: VendorOrderActionKind, code?: string, prepMinutes?: number) => {
     const tap = cardTapFor(action);
     if (tap === 'reject') setRejecting({ id: o.id, fulfillment: o.fulfillment, vendorType: o.vendor?.vendorType });
     else if (tap === 'open') openOrder(o);
-    else orderAction.mutate({ id: o.id, action, code });
+    else orderAction.mutate({ id: o.id, action, code, ...(prepMinutes ? { prepMinutes } : {}) });
   };
 
   // The live board works the open queue; finished orders live in History.
@@ -1207,7 +1220,7 @@ export function VendorOps({ store, navigation }: any) {
                 key={o.id}
                 order={o}
                 busy={pendingIds.has(o.id)}
-                onAction={(action, code) => onCardAction(o, action, code)}
+                onAction={(action, code, prepMinutes) => onCardAction(o, action, code, prepMinutes)}
                 onOpen={() => openOrder(o)}
               />
             ))}
@@ -1221,7 +1234,7 @@ export function VendorOps({ store, navigation }: any) {
                     key={o.id}
                     order={o}
                     busy={pendingIds.has(o.id)}
-                    onAction={(action, code) => onCardAction(o, action, code)}
+                    onAction={(action, code, prepMinutes) => onCardAction(o, action, code, prepMinutes)}
                     onOpen={() => openOrder(o)}
                   />
                 ))}
@@ -1236,7 +1249,7 @@ export function VendorOps({ store, navigation }: any) {
             <VendorOrderCard
               order={newOrders[0] ?? inProgress[0]}
               busy={pendingIds.has((newOrders[0] ?? inProgress[0]).id)}
-              onAction={(action, code) => onCardAction(newOrders[0] ?? inProgress[0], action, code)}
+              onAction={(action, code, prepMinutes) => onCardAction(newOrders[0] ?? inProgress[0], action, code, prepMinutes)}
               onOpen={() => openOrder(newOrders[0] ?? inProgress[0])}
             />
           </>

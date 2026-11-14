@@ -698,14 +698,17 @@ export function useOrderAction() {
       action,
       code,
       reason,
+      prepMinutes,
     }: {
       id: string;
       action: 'accept' | 'preparing' | 'ready' | 'delivered' | 'reject' | 'complete-pickup' | 'complete-appointment' | 'confirm-payment' | 'handed-to-rider' | 'handed-to-customer';
       code?: string;
       /** reject only — the server records it and tells the customer why. */
       reason?: string;
+      /** [APP-PREPTIME] accept only — the preparation time staff chose (10-60 min); none for a booking. */
+      prepMinutes?: number;
     }) => {
-      if (action === 'accept') return unwrap(vendorApi.acceptOrder(id));
+      if (action === 'accept') return unwrap(vendorApi.acceptOrder(id, prepMinutes));
       if (action === 'confirm-payment') return unwrap(vendorApi.confirmPayment(id, code ?? ''));
       if (action === 'preparing') return unwrap(vendorApi.preparing(id));
       if (action === 'ready') return unwrap(vendorApi.ready(id));

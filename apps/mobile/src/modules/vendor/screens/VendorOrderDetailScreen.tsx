@@ -16,6 +16,9 @@ import { promisedTimeName } from '../../../lib/storeKindWords';
 import { storeKeepsDelivery, ringMoney } from '../ringMoney';
 import { orderPaymentLine } from '../storeWords';
 import { storeTimelineLabel } from '../../../lib/orderStatus';
+import { PrepTimeChips } from '../PrepTimeChips';
+import { acceptPrepMinutes, asksPrepTime } from '../prepTime';
+import { usePrepChoice } from '../prepTimeMemory';
 import { useOrderAction, useRetryDispatch, useSetOrderFulfillmentMode, useVendorOrder, usePickingActions, usePendingPickLines, useVendorMenu, useReturnReceived } from '../../../hooks/vendorops';
 import { CustodyRecoveryNotice } from '../../orders/CustodyRecoveryNotice';
 import { storeSwapWaitText } from '../../orders/substitutionCopy';
@@ -154,6 +157,9 @@ function VendorOrderDetailBody({ navigation, route }: any) {
   const { data: order, isLoading, isError, refetch, isPlaceholderData } = useVendorOrder(orderId);
   const returnReceived = useReturnReceived();
   const orderAction = useOrderAction();
+  // [APP-PREPTIME · owner 14 Nov 2026] Accept here asks the preparation time, like the website's order page;
+  // [ROUND 2] the store's own declared time (the order's, from checkout), or the closest choice, pre-selected.
+  const [prepMinutes, choosePrep] = usePrepChoice(orderId, order?.vendorId, order?.estimatedPrepTime);
   const retryDispatch = useRetryDispatch();
   const fulfillmentMode = useSetOrderFulfillmentMode();
   const [confirmReject, setConfirmReject] = useState(false);
@@ -278,6 +284,8 @@ function VendorOrderDetailBody({ navigation, route }: any) {
   const mmgRefund = parseMmgRefundView(order.mmgRefund);
   const canNotCollected = notCollectedOpen(order);
   const actionBar = actions.length > 0 || canNoShow || canNotCollected;
+  const asksPrep = asksPrepTime(order) && actions.some((a) => a.action === 'accept');
+  const quotedPrep = asksPrep ? prepMinutes : order.estimatedPrepTime;
   // [MOB-050] The one state where a counter hand-over is due.
   const awaitingCollection = !terminal && ['READY', 'READY_FOR_PICKUP'].includes(String(order.status).toUpperCase());
   // [TAP-AUDIT] The step buttons also wait while a pick tick is still on its way (a Ready sent before it lands would be
@@ -308,6 +316,11 @@ function VendorOrderDetailBody({ navigation, route }: any) {
       setConfirmDelivered(true);
       return;
     }
+    if (action === 'accept') {
+      const minutes = acceptPrepMinutes(order, prepMinutes);
+      orderAction.mutate({ id: order.id, action, ...(minutes ? { prepMinutes: minutes } : {}) });
+      return;
+    }
     orderAction.mutate(
       action === 'complete-pickup' ? { id: order.id, action, code: pickupCode } : { id: order.id, action },
     );
@@ -317,7 +330,7 @@ function VendorOrderDetailBody({ navigation, route }: any) {
     <Screen>
       <SubHeader title={order.orderNumber ? `#${order.orderNumber}` : 'Order'} navigation={navigation} />
       <ScrollView
-        contentContainerStyle={{ paddingHorizontal: GUTTER, paddingBottom: actionBar ? 140 : space['3xl'] }}
+        contentContainerStyle={{ paddingHorizontal: GUTTER, paddingBottom: actionBar ? (asksPrep ? 300 : 140) : space['3xl'] }}
         showsVerticalScrollIndicator={false}
       >
         {/* Status line */}
@@ -836,13 +849,14 @@ function VendorOrderDetailBody({ navigation, route }: any) {
           </Card>
         ) : null}
 
-        {/* Prep expectations, when set */}
-        {order.estimatedPrepTime ? (
+        {/* Prep expectations, when set. [ROUND 2 · REVIEW-B F3] While Accept asks the time, the line is the time the
+            choices hold (what Accept will quote), never a second number beside them. */}
+        {quotedPrep ? (
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: space.md }}>
             <Feather name="clock" size={13} color={color.text.muted} />
             <T variant="caption" tone="muted">
               {/* [STORE-WORDS sweep] "prep time" is a kitchen's word: any other store quoted a "ready time". */}
-              Quoted {promisedTimeName(order.vendor?.vendorType)}: {order.estimatedPrepTime} min
+              Quoted {promisedTimeName(order.vendor?.vendorType)}: {quotedPrep} min
               {order.readyAt && order.acceptedAt
                 ? ` · actual ${Math.max(1, Math.round((new Date(order.readyAt).getTime() - new Date(order.acceptedAt).getTime()) / 60000))} min (ready ${fmtClock(order.readyAt)})`
                 : ''}
@@ -859,7 +873,6 @@ function VendorOrderDetailBody({ navigation, route }: any) {
             left: 0,
             right: 0,
             bottom: 0,
-            flexDirection: 'row',
             gap: space.md,
             backgroundColor: color.surface.base,
             borderTopWidth: 1,
@@ -869,6 +882,10 @@ function VendorOrderDetailBody({ navigation, route }: any) {
             paddingBottom: space['2xl'],
           }}
         >
+          {asksPrep ? (
+            <PrepTimeChips value={prepMinutes} onChange={choosePrep} vendorType={order.vendor?.vendorType} disabled={busy} />
+          ) : null}
+          <View style={{ flexDirection: 'row', gap: space.md }}>
           {actions.map((a) => (
             <PillButton
               key={a.action}
@@ -898,6 +915,7 @@ function VendorOrderDetailBody({ navigation, route }: any) {
               onPress={() => setNotCollectedAsk(true)}
             />
           ) : null}
+          </View>
         </View>
       ) : null}
 
