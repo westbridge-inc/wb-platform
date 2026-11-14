@@ -25,6 +25,7 @@ function serve(setting: Record<string, unknown>, writes: ApiRequest[] = []) {
   });
 }
 
+const REASON = 'The manager checked the Dragontail screen';
 const on = { switchOn: true, connected: true, enabled: true, mode: 'AUTO_DRIVER_CHECK', busyHours: [], updatedAt: null, driverCheckAvailable: true };
 
 describe('[DT-OVERFLOW] the console panel', () => {
@@ -79,8 +80,53 @@ describe('[DT-OVERFLOW] the console panel', () => {
     const { user } = renderWithQuery(<KitchenOverflowPanel vendorId="vendor-dt" />);
     expect(await screen.findByText(/SW-2008: tablet, own driver \(kitchen link offline/)).toBeTruthy();
     expect(screen.getByText(/SW-2009/)).toBeTruthy();
+    // [follow-up · N-5] A confirm and a reason first: nothing is sent on the first click.
     await user.click(screen.getByRole('button', { name: 'Dragontail does not have it' }));
+    expect(await screen.findByText(/Dragontail does not have order SW-2009\?/)).toBeTruthy();
+    expect(writes).toHaveLength(0);
+    await user.type(screen.getByRole('textbox'), REASON);
+    const buttons = screen.getAllByRole('button', { name: 'Dragontail does not have it' });
+    await user.click(buttons[buttons.length - 1]!);
     await waitFor(() => expect(writes).toHaveLength(1));
+    expect(new Headers(writes[0]!.init?.headers).get('x-swift-reason')).toBe(REASON);
+  });
+
+  it('[follow-up · N-2] with the switch OFF (the only time such orders are flagged), the list and its clear action still show', async () => {
+    const writes: ApiRequest[] = [];
+    mockApi((r) => {
+      if (r.method === 'GET' && r.url.pathname === `${PATH}/overflow`) {
+        return { body: { success: true, data: { ...on, switchOn: false, maybeInKitchen: [{ orderId: 'o9', orderNumber: 'SW-2009', orderStatus: 'PENDING', fallbackAt: null }] } } };
+      }
+      if (r.method === 'POST' && r.url.pathname === `${PATH}/orders/o9/not-in-kitchen`) { writes.push(r); return { body: { success: true, data: { orderId: 'o9', maybeInKitchen: false } } }; }
+      throw new Error(`Unexpected ${r.method} ${r.url.pathname}`);
+    });
+    const { user } = renderWithQuery(<KitchenOverflowPanel vendorId="vendor-dt" />);
+    expect(await screen.findByText(/SW-2009/)).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Save' }), 'the overflow setting itself stays hidden').toBeNull();
+    await user.click(screen.getByRole('button', { name: 'Dragontail does not have it' }));
+    await user.type(await screen.findByRole('textbox'), REASON);
+    const buttons = screen.getAllByRole('button', { name: 'Dragontail does not have it' });
+    await user.click(buttons[buttons.length - 1]!);
+    await waitFor(() => expect(writes).toHaveLength(1));
+  });
+
+  it('[follow-up · N-1] an offline link offers "Try the link now", with a reason', async () => {
+    const writes: ApiRequest[] = [];
+    mockApi((r) => {
+      if (r.method === 'GET' && r.url.pathname === `${PATH}/overflow`) return { body: { success: true, data: { ...on, linkOfflineAt: '2026-11-14T22:00:00.000Z' } } };
+      if (r.method === 'GET' && r.url.pathname === `${PATH}/routes`) return { body: { success: true, data: [] } };
+      if (r.method === 'POST' && r.url.pathname === `${PATH}/link/try`) { writes.push(r); return { body: { success: true, data: { result: 'login-only', linkOffline: false, problem: null } } }; }
+      throw new Error(`Unexpected ${r.method} ${r.url.pathname}`);
+    });
+    const { user } = renderWithQuery(<KitchenOverflowPanel vendorId="vendor-dt" />);
+    expect(await screen.findByText(/Kitchen link offline, orders on tablet/)).toBeTruthy();
+    expect(screen.queryByText(/every minute/), 'no promise the back-off breaks').toBeNull();
+    await user.click(screen.getByRole('button', { name: 'Try the link now' }));
+    await user.type(await screen.findByRole('textbox'), REASON);
+    const buttons = screen.getAllByRole('button', { name: 'Try the link now' });
+    await user.click(buttons[buttons.length - 1]!);
+    await waitFor(() => expect(writes).toHaveLength(1));
+    expect(new Headers(writes[0]!.init?.headers).get('x-swift-reason')).toBe(REASON);
   });
 });
 

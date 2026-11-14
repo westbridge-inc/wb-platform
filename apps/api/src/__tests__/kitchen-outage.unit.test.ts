@@ -130,4 +130,22 @@ describe('[DT-OUTAGE] the client says which it was', () => {
     const s = { probeMs: 60_000, probeMaxMs: 900_000 };
     expect([0, 1, 2, 3, 4, 5, 40].map((n) => link.probeWaitMs?.(s, n))).toEqual([60_000, 120_000, 240_000, 480_000, 900_000, 900_000, 900_000]);
   });
+
+  it('[follow-up · N-6] a 504, then a 403, then a 403 again after a fresh login, on a WRITE: may have arrived', async () => {
+    let inserts = 0;
+    const c = client(async (url: string) => {
+      if (url.endsWith('/login')) return { status: 200, text: async () => JSON.stringify({ token: 'fresh', status: 'Ok' }) };
+      inserts += 1;
+      return inserts === 1 ? { status: 504, text: async () => 'gateway timeout' } : { status: 403, text: async () => '{}' };
+    });
+    const err = await c.call('POST', '/PosInsertOrders', {}, false).catch((e: unknown) => e);
+    expect(inserts).toBe(3);
+    expect(err).toBeInstanceOf(KitchenTransientError);
+    expect((err as KitchenTransientError).mayHaveLanded).toBe(true);
+    // Without the earlier 5xx a 403 after a fresh login stays a plain refusal (a link failure).
+    const plain = await client(async (url: string) => (url.endsWith('/login') ? { status: 200, text: async () => JSON.stringify({ token: 'x' }) } : { status: 403, text: async () => '{}' }))
+      .call('POST', '/PosInsertOrders', {}, false).catch((e: unknown) => e);
+    expect(plain).toBeInstanceOf(KitchenPermanentError);
+  });
 });
+

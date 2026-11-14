@@ -477,7 +477,11 @@ export async function noteOverflowKeptWithStore(
 // ── What the store sees ─────────────────────────────────────────────────────
 
 /** One order's kitchen-sync facts the store's screens and the rider refusal need. A bare state string is accepted. */
-export type KitchenSyncFacts = { state: string; maybeInKitchen?: boolean } | string;
+export type KitchenSyncFacts = { state: string; maybeInKitchen?: boolean; sentAt?: Date | null } | string;
+
+/** [follow-up · confirm review N-7] DONE is also written for an order that ended before it was ever sent. */
+const endedUnsent = (sync: KitchenSyncFacts | null | undefined) =>
+  typeof sync === 'object' && sync !== null && sync.state === 'DONE' && sync.sentAt === null;
 
 const stateOf = (sync: KitchenSyncFacts | null | undefined) => (sync == null ? null : typeof sync === 'string' ? sync : sync.state);
 
@@ -486,13 +490,14 @@ const stateOf = (sync: KitchenSyncFacts | null | undefined) => (sync == null ? n
 export function kitchenHoldsOrder(sync: KitchenSyncFacts | null | undefined): boolean {
   const state = stateOf(sync);
   if (state == null) return false;
+  if (endedUnsent(sync)) return false;
   if (state !== 'FALLBACK') return true;
   return typeof sync === 'object' && sync !== null && sync.maybeInKitchen === true;
 }
 
 /** The store's kitchen-sync facts for one order (one unique-key read), or null. */
-export async function kitchenSyncStateOf(db: Pick<Prisma.TransactionClient, 'orderIntegrationSync'>, orderId: string): Promise<{ state: string; maybeInKitchen: boolean } | null> {
-  return db.orderIntegrationSync.findUnique({ where: { orderId_provider: { orderId, provider: 'DRAGONTAIL' } }, select: { state: true, maybeInKitchen: true } });
+export async function kitchenSyncStateOf(db: Pick<Prisma.TransactionClient, 'orderIntegrationSync'>, orderId: string): Promise<{ state: string; maybeInKitchen: boolean; sentAt: Date | null } | null> {
+  return db.orderIntegrationSync.findUnique({ where: { orderId_provider: { orderId, provider: 'DRAGONTAIL' } }, select: { state: true, maybeInKitchen: true, sentAt: true } });
 }
 
 /** [DT-OVERFLOW] "Get a Swift rider" is refused while the kitchen system has the order (switch on or off: the row
@@ -557,6 +562,9 @@ export function kitchenStoreView(
       holdsOrder: true, route, reason, title: 'On this tablet, and maybe in Dragontail',
       detail: 'Dragontail may also have this order. Check Dragontail before you make it, so it is made once. Swift can’t send a rider for it: a Dragontail driver may come.',
     };
+  }
+  if (endedUnsent(sync)) {
+    return { holdsOrder: false, route, reason, title: 'Not sent to Dragontail', detail: 'This order ended before Swift sent it to Dragontail.' };
   }
   if (!kitchenHoldsOrder(sync)) {
     return { holdsOrder: false, route, reason, title: 'On this tablet', detail: 'Dragontail could not take this order, so it came to this tablet instead.' };
@@ -626,6 +634,25 @@ export const DRIVER_CHECK_OFF_WORDS = '“When all my drivers are busy” is not
 /** [round 2 · review A S4-1 · round 3 review B S4-3] Who changed it and how: the console's or the store's audit row, in
  *  the same transaction. No person data. */
 export type KitchenOverflowAudit = (tx: Prisma.TransactionClient, entityId: string, facts: Record<string, string | number | boolean | null>) => Promise<void>;
+
+/**
+ * [follow-up · review B S4-9] Is this branch's kitchen link offline, for EVERY store role (the tablet's own screen,
+ * not only the owner's settings card)? Null while the switch is off or the branch has no enabled connection. One
+ * unique-key read.
+ */
+export async function kitchenLinkStatus(
+  prisma: Pick<PrismaClient, 'vendorIntegration'>,
+  vendorId: string,
+  env: Record<string, string | undefined> = process.env,
+): Promise<{ offline: boolean; since: Date | null } | null> {
+  if (!dragontailIntegrationEnabled(env)) return null;
+  const row = await prisma.vendorIntegration.findUnique({
+    where: { vendorId_provider: { vendorId, provider: 'DRAGONTAIL' } },
+    select: { enabled: true, linkOfflineAt: true },
+  });
+  if (!row?.enabled) return null;
+  return { offline: row.linkOfflineAt != null, since: row.linkOfflineAt };
+}
 
 /** Change the branch's overflow setting. Refused while the switch is off (nothing written) or with no connection. */
 export async function writeKitchenOverflowSetting(

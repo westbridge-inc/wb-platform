@@ -90,10 +90,13 @@ export async function claimForKitchenInTransaction(
   if (integration.linkOfflineAt) {
     if (eligible.ok && order.fulfillment === 'DELIVERY') {
       const decision = plan && plan.orderId === orderId && plan.route !== 'KITCHEN' ? plan : decidedOffline(orderId);
-      await tx.order.updateMany({
+      const routed = await tx.order.updateMany({
         where: { id: orderId, kitchenRoute: null },
         data: { kitchenRoute: decision.route, kitchenRouteReason: decision.reason, kitchenRouteAt: new Date() },
       });
+      // [follow-up · confirm review N-8] Lost the route to a concurrent claim (made before the link went offline): answer
+      // from what it recorded, as the online branch does, so the order is never both claimed and rung.
+      if (routed.count !== 1) return answerFromRecordedRoute(tx, orderId);
     }
     return false;
   }
@@ -107,12 +110,7 @@ export async function claimForKitchenInTransaction(
       where: { id: orderId, kitchenRoute: null },
       data: { kitchenRoute: decision.route, kitchenRouteReason: decision.reason, kitchenRouteAt: new Date() },
     });
-    if (routed.count !== 1) {
-      const now = await tx.order.findUnique({ where: { id: orderId }, select: { kitchenRoute: true } });
-      if (now?.kitchenRoute !== 'KITCHEN') return false;
-      const sync = await tx.orderIntegrationSync.findUnique({ where: { orderId_provider: { orderId, provider: 'DRAGONTAIL' } }, select: { state: true } });
-      return sync != null && sync.state !== 'FALLBACK';
-    }
+    if (routed.count !== 1) return answerFromRecordedRoute(tx, orderId);
     // Swift riders: nothing is claimed, numbered or sent. The caller rings the tablet as for any store.
     if (decision.route === 'SWIFT_RIDERS') return false;
   }
@@ -141,6 +139,15 @@ export async function claimForKitchenInTransaction(
     },
   });
   return true;
+}
+
+/** A claim that lost the route's compare-and-set answers from the winner's record: claimed only when the winner routed
+ *  it to the kitchen and its sync row has not fallen back. */
+async function answerFromRecordedRoute(tx: KitchenClaimDb, orderId: string): Promise<boolean> {
+  const now = await tx.order.findUnique({ where: { id: orderId }, select: { kitchenRoute: true } });
+  if (now?.kitchenRoute !== 'KITCHEN') return false;
+  const sync = await tx.orderIntegrationSync.findUnique({ where: { orderId_provider: { orderId, provider: 'DRAGONTAIL' } }, select: { state: true } });
+  return sync != null && sync.state !== 'FALLBACK';
 }
 
 async function skipKitchenNumber(prisma: PrismaClient, orderId: string): Promise<void> {

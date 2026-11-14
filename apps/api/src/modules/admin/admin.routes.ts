@@ -2582,10 +2582,27 @@ export async function adminRoutes(app: FastifyInstance) {
   });
   // [round 3 · review B S4-8] Operations confirmed with the store that Dragontail does not have this order: the
   // "maybe in Dragontail" hold on "Get a Swift rider" is cleared. Audited in the same transaction.
+  const kitchenReasonRefusal = (problem: NonNullable<ReturnType<typeof reasonProblem>>) => (problem === 'missing'
+    ? 'Say why, in a sentence (for example who at the store confirmed it). The record keeps it.'
+    : reasonRefusal(problem, 'C3'));
+  // [follow-up · confirm review N-5] A mistake here means two drivers for one order: a stated reason is required
+  // (x-swift-reason, the same 12-500 character rule as a consequential action) and recorded.
   app.post('/vendors/:id/kitchen-integration/orders/:orderId/not-in-kitchen', { preHandler: [adminGuard] }, async (request) => {
     const { clearMaybeInKitchen } = await import('../kitchen/kitchen-admin');
     const { id, orderId } = request.params as { id: string; orderId: string };
+    const problem = reasonProblem('C3', request.body, request.headers as never);
+    if (problem) throw new ValidationError(kitchenReasonRefusal(problem));
     return { success: true, data: await clearMaybeInKitchen(app.prisma, id, orderId,
+      (tx, entityId, facts) => auditWithin(tx, request as unknown as AuditRequestLike, app.prefix, { entityId, extra: facts }),
+      reasonOf(request.body, request.headers as never)) };
+  });
+  // [follow-up · confirm review N-1] "Try the link now": one probe of an offline branch link, now. A stated reason is
+  // required and the result is audited.
+  app.post('/vendors/:id/kitchen-integration/link/try', { preHandler: [adminGuard] }, async (request) => {
+    const { tryKitchenLinkNow } = await import('../kitchen/kitchen-admin');
+    const problem = reasonProblem('C3', request.body, request.headers as never);
+    if (problem) throw new ValidationError(kitchenReasonRefusal(problem));
+    return { success: true, data: await tryKitchenLinkNow({ prisma: app.prisma, io: app.io, redis: app.redis }, (request.params as { id: string }).id,
       (tx, entityId, facts) => auditWithin(tx, request as unknown as AuditRequestLike, app.prefix, { entityId, extra: facts })) };
   });
   app.get('/vendors/:id/kitchen-integration/routes', { preHandler: [adminGuard] }, async (request) => {

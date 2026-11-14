@@ -10,7 +10,7 @@ import { emitToOrderRoom, emitToStoreRoom } from '../order/order-room-emission.s
 import { vendorOperateRefusal, type StoreRoleVerifier } from '../vendor/vendor-operate';
 import { kitchenLoginFor } from './kitchen-credentials';
 import { KITCHEN_ACCEPT_GRACE_MS, kitchenLadderDecision } from './kitchen-claim';
-import { kitchenBreakerSettings, probeWaitMs, recordLinkFailure, recordLinkProbeSuccess, recordLinkSuccess } from './kitchen-link';
+import { closeQuietTrials, kitchenBreakerSettings, probeWaitMs, recordLinkFailure, recordLinkProbeSuccess, recordLinkSuccess } from './kitchen-link';
 import {
   KitchenPermanentError,
   KitchenTransientError,
@@ -1203,52 +1203,76 @@ export async function pollKitchenIntegrations(deps: KitchenDeps, opts: KitchenWo
   return polled;
 }
 
+/** [follow-up · confirm review N-3] The probe phase's own share of a tick: probes can never use up the drain's window. */
+export const KITCHEN_PROBE_BUDGET_MS = 15_000;
+
+export type KitchenLinkProbeResult = 'order-api' | 'login-only' | 'failed' | 'not-claimed';
+
 /**
- * [DT-OUTAGE] Probe each OFFLINE branch link at most once per cool-down (compare-and-set on its probe time, so one
- * instance probes): a fresh login, the lightest call the spec has (it has no health check). [round 2] Success puts the
- * link back ON TRIAL (kitchen-link.ts): only a real send ends the outage. Failure leaves it offline. Switch off: nothing.
+ * Probe ONE offline link now: a fresh login and an order-API read (a 4xx to the optional read = login only, see the
+ * adapter). Claimed by compare-and-set on its probe time, so only one instance probes it. Success puts the link back ON
+ * TRIAL (kitchen-link.ts): only a real send (or a quiet trial) ends the outage. Failure leaves it offline. Never throws.
  */
-export async function probeOfflineKitchenLinks(deps: KitchenDeps, opts: KitchenWorkWindow = {}): Promise<number> {
+export async function probeKitchenLink(
+  deps: KitchenDeps,
+  integration: { id: string; provider: 'DRAGONTAIL'; linkProbeAt: Date | null; externalStoreNo: number | null; pollUpdateStamp: bigint },
+): Promise<KitchenLinkProbeResult> {
+  const now = nowOf(deps);
+  const claimed = await deps.prisma.vendorIntegration.updateMany({ where: { id: integration.id, linkProbeAt: integration.linkProbeAt }, data: { linkProbeAt: now } });
+  if (claimed.count === 0) return 'not-claimed';
+  const answer = kitchenProvider(deps, integration, () => '', { freshToken: true });
+  if (!answer.ok) {
+    await noteIntegrationError(deps, integration.id, answer.problem);
+    return 'failed';
+  }
+  answer.provider.setDeadline(Date.now() + 10_000);
+  try {
+    // [round 3 · review B S2-1] A login AND an order-API read: a backend down behind a working login stays offline.
+    let how: 'order-api' | 'login-only' = 'login-only';
+    if (answer.provider.probeOrderApi && integration.externalStoreNo != null) {
+      how = await answer.provider.probeOrderApi(integration.externalStoreNo, integration.pollUpdateStamp);
+    } else {
+      await answer.provider.testConnection();
+    }
+    await recordLinkProbeSuccess(deps, integration.id, how);
+    return how;
+  } catch (err) {
+    await noteIntegrationError(deps, integration.id, `link probe: ${problemOf(err)}`);
+    return 'failed';
+  } finally {
+    answer.provider.setDeadline(null);
+  }
+}
+
+/**
+ * [DT-OUTAGE] Probe each OFFLINE branch link when due: the cool-down, doubled after each failed trial of the outage
+ * (at most 15 min). [follow-up · confirm review N-3] Within its own budget (KITCHEN_PROBE_BUDGET_MS), so a
+ * Dragontail-wide blackhole cannot starve the drain. [follow-up · review B S4-2] A trial that has gone 30 minutes with
+ * no failure ends the outage too (with its "back online" note), so the console never says "on trial" for good.
+ * Switch off: nothing.
+ */
+export async function probeOfflineKitchenLinks(deps: KitchenDeps, opts: KitchenWorkWindow & { probeBudgetMs?: number } = {}): Promise<number> {
   const env = envOf(deps);
   if (!dragontailIntegrationEnabled(env)) return 0;
-  const until = untilOf(opts);
+  const until = Math.min(untilOf(opts), Date.now() + (opts.probeBudgetMs ?? KITCHEN_PROBE_BUDGET_MS));
   const now = nowOf(deps);
   const settings = kitchenBreakerSettings(env);
+  await closeQuietTrials(deps, now);
   const candidates = await deps.prisma.vendorIntegration.findMany({
     where: { enabled: true, linkOfflineAt: { not: null }, OR: [{ linkProbeAt: null }, { linkProbeAt: { lte: new Date(now.getTime() - settings.probeMs) } }] },
     orderBy: { linkProbeAt: 'asc' },
     take: 50,
   });
-  // [round 3 · review B S2-1] After a failed trial the next probe waits twice as long (at most 15 min).
   const due = candidates
     .filter((i) => !i.linkProbeAt || now.getTime() - i.linkProbeAt.getTime() >= probeWaitMs(settings, i.linkTrialFailures))
     .slice(0, 20);
-  let closed = 0;
+  let passed = 0;
   for (const integration of due) {
     if (Date.now() >= until) break;
-    const claimed = await deps.prisma.vendorIntegration.updateMany({ where: { id: integration.id, linkProbeAt: integration.linkProbeAt }, data: { linkProbeAt: now } });
-    if (claimed.count === 0) continue;
-    const answer = kitchenProvider(deps, integration, () => '', { freshToken: true });
-    if (!answer.ok) {
-      await noteIntegrationError(deps, integration.id, answer.problem);
-      continue;
-    }
-    answer.provider.setDeadline(Date.now() + 10_000);
-    try {
-      // [round 3 · review B S2-1] A login AND an order-API read: a backend down behind a working login stays offline.
-      if (answer.provider.probeOrderApi && integration.externalStoreNo != null) {
-        await answer.provider.probeOrderApi(integration.externalStoreNo, integration.pollUpdateStamp);
-      } else {
-        await answer.provider.testConnection();
-      }
-      if ((await recordLinkProbeSuccess(deps, integration.id)) === 'trial') closed += 1;
-    } catch (err) {
-      await noteIntegrationError(deps, integration.id, `link probe: ${problemOf(err)}`);
-    } finally {
-      answer.provider.setDeadline(null);
-    }
+    const result = await probeKitchenLink(deps, integration);
+    if (result === 'order-api' || result === 'login-only') passed += 1;
   }
-  return closed;
+  return passed;
 }
 
 /**

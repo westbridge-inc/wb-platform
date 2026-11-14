@@ -2,7 +2,8 @@
 
 import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { clearMaybeInKitchen, fetchKitchenOverflow, fetchKitchenRoutes, setKitchenOverflow, type KitchenBusyWindow, type KitchenOverflowMode } from '@/lib/api';
+import { clearMaybeInKitchen, fetchKitchenOverflow, fetchKitchenRoutes, setKitchenOverflow, tryKitchenLinkNow, type KitchenBusyWindow, type KitchenOverflowMode, type KitchenOverflowView } from '@/lib/api';
+import { useActionDialog } from '@/components/mc/ReasonDialog';
 import { MutationError } from '@/components/MutationError';
 import { QueryFailed } from '@/components/mc/QueryFailed';
 import { gyDate } from '@/lib/dates';
@@ -56,13 +57,11 @@ export function KitchenOverflowPanel({ vendorId }: { vendorId: string }) {
     mutationFn: () => setKitchenOverflow(vendorId, { mode, ...(usesHours(mode) ? { busyHours: windows } : {}) }),
     onSettled: () => qc.invalidateQueries({ queryKey: ['kitchen-overflow', vendorId] }),
   });
-  const clear = useMutation({
-    mutationFn: (orderId: string) => clearMaybeInKitchen(vendorId, orderId),
-    onSettled: () => qc.invalidateQueries({ queryKey: ['kitchen-overflow', vendorId] }),
-  });
 
   if (view.isError) return <QueryFailed error={view.error} what="the kitchen-system connection" onRetry={() => void view.refetch()} retrying={view.isFetching} />;
-  if (!live) return null;
+  // [follow-up · confirm review N-2] Orders Dragontail MAY also have are flagged exactly when the switch goes OFF: their
+  // list (and its clear action, which the server allows with the switch off) shows whatever the switch says.
+  if (!live) return setting && (setting.maybeInKitchen?.length ?? 0) > 0 ? <MaybeInKitchen vendorId={vendorId} setting={setting} /> : null;
   const update = (i: number, patch: Partial<KitchenBusyWindow>) => setWindows((ws) => ws.map((w, j) => (j === i ? { ...w, ...patch } : w)));
   const rows = routes.data?.data ?? [];
 
@@ -70,10 +69,13 @@ export function KitchenOverflowPanel({ vendorId }: { vendorId: string }) {
     <section aria-labelledby="kitchen-overflow" className="mc-card space-y-3">
       <h2 id="kitchen-overflow" className="mc-label">Dragontail: Swift riders when the branch is busy</h2>
       {setting?.linkOfflineAt && (
-        <p role="status" className="text-sm font-semibold">Kitchen link offline, orders on tablet (since {gyDate(setting.linkOfflineAt)}). Swift checks the link every minute.</p>
+        <div role="status" className="space-y-1">
+          <p className="text-sm font-semibold">Kitchen link offline, orders on tablet (since {gyDate(setting.linkOfflineAt)}). Swift checks the link by itself, less often while it keeps failing (at most every 15 minutes).</p>
+          <TryLinkNow vendorId={vendorId} />
+        </div>
       )}
       {setting?.linkOnTrial && (
-        <p role="status" className="text-sm">Kitchen link on trial: a test login worked, so orders go to Dragontail again. The outage ends when an order goes through; one more failure puts orders back on the tablet.</p>
+        <p role="status" className="text-sm">Kitchen link on trial: a check of the link worked, so orders go to Dragontail again. The outage ends when an order goes through; one more failure puts orders back on the tablet.</p>
       )}
       {setting?.driverCheck && (
         <p className="text-sm">Last driver check ({gyDate(setting.driverCheck.at)}): {setting.driverCheck.free == null ? `failed: ${setting.driverCheck.problem ?? 'no answer'}` : `${setting.driverCheck.free} free vehicle(s)`}</p>
@@ -105,21 +107,7 @@ export function KitchenOverflowPanel({ vendorId }: { vendorId: string }) {
       )}
       <button type="button" className="mc-btn" disabled={save.isPending || lockedMode(mode, setting?.driverCheckAvailable)} onClick={() => save.mutate()}>{save.isPending ? 'Saving…' : 'Save'}</button>
       <MutationError error={save.error} label="Saving the overflow setting" />
-      {(setting?.maybeInKitchen?.length ?? 0) > 0 && (
-        <div className="space-y-1">
-          <h3 className="mc-label">On the tablet, and maybe in Dragontail</h3>
-          <p className="text-sm">The switch went off while these were being sent. &ldquo;Get a Swift rider&rdquo; stays refused for them until you confirm with the store that Dragontail does not have the order.</p>
-          <ul className="space-y-1 text-sm">
-            {setting!.maybeInKitchen!.map((m) => (
-              <li key={m.orderId} className="flex items-center gap-2">
-                <span>{m.orderNumber}{m.fallbackAt ? `, on the tablet since ${gyDate(m.fallbackAt)}` : ''}</span>
-                <button type="button" className="mc-btn" disabled={clear.isPending} onClick={() => clear.mutate(m.orderId)}>Dragontail does not have it</button>
-              </li>
-            ))}
-          </ul>
-          <MutationError error={clear.error} label="Clearing the Dragontail check" />
-        </div>
-      )}
+      {setting && (setting.maybeInKitchen?.length ?? 0) > 0 && <MaybeInKitchen vendorId={vendorId} setting={setting} />}
       <h3 className="mc-label">Recent deliveries: where they went</h3>
       {routes.isError ? (
         <QueryFailed error={routes.error} what="the recent routes" onRetry={() => void routes.refetch()} retrying={routes.isFetching} />
@@ -137,3 +125,51 @@ export function KitchenOverflowPanel({ vendorId }: { vendorId: string }) {
     </section>
   );
 }
+
+/**
+ * [round 3 · review B S4-8 · follow-up N-2/N-5] Tablet orders Dragontail MAY also have (the switch went off mid-send):
+ * "Get a Swift rider" stays refused for them until operations confirm with the store. Clearing one asks for a confirm and
+ * a reason (who confirmed it), recorded in the audit log. Shown whether the switch is on or off.
+ */
+function MaybeInKitchen({ vendorId, setting }: { vendorId: string; setting: KitchenOverflowView }) {
+  const qc = useQueryClient();
+  const dialog = useActionDialog();
+  const clear = (orderId: string, orderNumber: string) => dialog.run({
+    title: `Dragontail does not have order ${orderNumber}?`,
+    body: <p>Confirm with the store first. If Dragontail does have it, a Dragontail driver and a Swift rider could both come for it.</p>,
+    confirmLabel: 'Dragontail does not have it',
+    reason: { label: 'Who confirmed it, and how', hint: 'For example: the manager checked the Dragontail screen. No customer details.' },
+    submit: ({ reason }) => clearMaybeInKitchen(vendorId, orderId, reason),
+    success: () => `Order ${orderNumber}: the store can get a Swift rider for it now.`,
+  }).then(() => qc.invalidateQueries({ queryKey: ['kitchen-overflow', vendorId] }));
+  return (
+    <section aria-label="On the tablet, and maybe in Dragontail" className="mc-card space-y-1">
+      <h3 className="mc-label">On the tablet, and maybe in Dragontail</h3>
+      <p className="text-sm">The switch went off while these were being sent. &ldquo;Get a Swift rider&rdquo; stays refused for them until you confirm with the store that Dragontail does not have the order.</p>
+      <ul className="space-y-1 text-sm">
+        {(setting.maybeInKitchen ?? []).map((m) => (
+          <li key={m.orderId} className="flex items-center gap-2">
+            <span>{m.orderNumber}{m.fallbackAt ? `, on the tablet since ${gyDate(m.fallbackAt)}` : ''}</span>
+            <button type="button" className="mc-btn" onClick={() => void clear(m.orderId, m.orderNumber)}>Dragontail does not have it</button>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+/** [follow-up · confirm review N-1] One probe of the offline link now (a login and an order read), with a reason; audited. */
+function TryLinkNow({ vendorId }: { vendorId: string }) {
+  const qc = useQueryClient();
+  const dialog = useActionDialog();
+  const run = () => dialog.run({
+    title: 'Try the kitchen link now?',
+    body: <p>Swift logs in to Dragontail and reads its order list once. If that works, new orders go to Dragontail again; one more failure puts them back on the tablet.</p>,
+    confirmLabel: 'Try the link now',
+    reason: { hint: 'For example: Dragontail says the store is back. Kept on the record.' },
+    submit: ({ reason }) => tryKitchenLinkNow(vendorId, reason),
+    success: (r) => (r.data.linkOffline ? `Still offline: ${r.data.problem ?? 'Dragontail did not answer'}` : 'The link answered: orders go to Dragontail again, on trial.'),
+  }).then(() => qc.invalidateQueries({ queryKey: ['kitchen-overflow', vendorId] }));
+  return <button type="button" className="mc-btn" onClick={() => void run()}>Try the link now</button>;
+}
+

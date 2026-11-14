@@ -33,7 +33,7 @@ import { lineOptionsAsMade } from '../order/substitution-view';
 import { makeDispatchService } from '../dispatch/dispatch.service';
 import { dispatchTrigger, enqueueDeliveryDispatch } from '../dispatch/dispatch-trigger';
 import { resolveDeliveryMode } from '../fulfillment/fulfillment-mode';
-import { assertKitchenDoesNotHold, KITCHEN_OVERFLOW_AUDIT_ACTION, kitchenStoreView, kitchenSyncStateOf, noteOverflowKeptWithStore, readKitchenOverflowSetting, writeKitchenOverflowSetting } from '../kitchen/kitchen-overflow';
+import { assertKitchenDoesNotHold, KITCHEN_OVERFLOW_AUDIT_ACTION, kitchenLinkStatus, kitchenStoreView, kitchenSyncStateOf, noteOverflowKeptWithStore, readKitchenOverflowSetting, writeKitchenOverflowSetting } from '../kitchen/kitchen-overflow';
 import { HANDOVER_SECRETS_OMIT } from '../handover/handover-security';
 import { pickingReadinessCounter, mmgAttestationCounter } from '../../plugins/observability';
 import { assertMmgAttestable, normaliseMmgReference, recordVendorAttestation } from './mmg-attestation';
@@ -2393,9 +2393,11 @@ export async function vendorRoutes(app: FastifyInstance) {
   app.get('/vendor/delivery-status', auth, async (request) => {
     const { vendorId } = await resolveVendor(app, request.user.userId, selectedVendorId(request));
     const vendor = await app.prisma.vendor.findUniqueOrThrow({ where: { id: vendorId }, select: { id: true, tenantId: true, latitude: true, longitude: true } });
-    const [pause, backlog] = await Promise.all([
+    const [pause, backlog, kitchenLink] = await Promise.all([
       deliveryPausedAt(app.prisma, vendor.tenantId, { lat: vendor.latitude, lng: vendor.longitude }),
       storeRiderBacklog(app.prisma, vendor.id, vendor.tenantId),
+      // [follow-up · review B S4-9] Every store role sees "Kitchen link offline, orders on tablet" on its order screen.
+      kitchenLinkStatus(app.prisma, vendor.id),
     ]);
     const reason = pause.paused ? 'SWIFT_PAUSED' as const : backlog.paused ? 'STORE_BUSY' as const : null;
     return {
@@ -2405,6 +2407,7 @@ export async function vendorRoutes(app: FastifyInstance) {
         reason,
         waitingForRider: backlog.waiting,
         backlogCap: backlog.cap,
+        kitchenLink,
         message: reason === 'SWIFT_PAUSED'
           ? 'Swift has paused delivery in your area for now. Customers can still order for pickup.'
           : reason === 'STORE_BUSY'

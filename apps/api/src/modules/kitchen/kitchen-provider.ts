@@ -130,7 +130,7 @@ export interface KitchenIntegrationProvider {
   /** Log in only: proves the credentials and the address. */
   testConnection(): Promise<void>;
   /** [round 3] The outage probe: proves the order API answers (not only the login). Optional: absent → testConnection. */
-  probeOrderApi?(storeNo: number, cursor: bigint): Promise<void>;
+  probeOrderApi?(storeNo: number, cursor: bigint): Promise<'order-api' | 'login-only'>;
   /** Every request until the next call must finish by `at` (ms since epoch); null clears it. */
   setDeadline(at: number | null): void;
   insertOrder(order: KitchenOrder): Promise<KitchenInsertResult>;

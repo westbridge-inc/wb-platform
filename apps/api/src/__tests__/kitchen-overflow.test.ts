@@ -709,3 +709,49 @@ describe('[round 3 · S4] the store’s own change is audited; busy hours need a
   });
 });
 
+// ── FOLLOW-UP (confirm review round 3) ──────────────────────────────────────
+
+describe('[follow-up · N-7] an order that ended before it was ever sent is never "In Dragontail"', () => {
+  it('DONE with no send: "Not sent to Dragontail", and "Get a Swift rider" is not held by Dragontail', async () => {
+    const order = await makeOrder();
+    await releaseOnly();
+    await sys(() => app.prisma.orderIntegrationSync.update({ where: { orderId_provider: { orderId: order.id, provider: 'DRAGONTAIL' } }, data: { state: 'DONE', sentAt: null } }));
+    const detail = await call('GET', `/api/v1/vendor/orders/${order.id}`, owner.token);
+    expect(detail.json().data.kitchen).toMatchObject({ holdsOrder: false, title: 'Not sent to Dragontail' });
+    await sys(() => app.prisma.orderIntegrationSync.update({ where: { orderId_provider: { orderId: order.id, provider: 'DRAGONTAIL' } }, data: { sentAt: new Date() } }));
+    const sent = await call('GET', `/api/v1/vendor/orders/${order.id}`, owner.token);
+    expect(sent.json().data.kitchen).toMatchObject({ holdsOrder: true, title: 'In Dragontail: your own driver delivers it' });
+  });
+});
+
+describe('[follow-up · review B S4-9] every store role sees the offline kitchen link on its order screen', () => {
+  it('delivery-status carries kitchenLink for plain staff; null with the switch off', async () => {
+    await sys(() => app.prisma.vendorIntegration.update({ where: { id: integrationId }, data: { linkOfflineAt: new Date(), linkProbeAt: new Date() } }));
+    try {
+      const res = await call('GET', '/api/v1/vendor/vendor/delivery-status', staff.token);
+      expect(res.statusCode, res.body).toBe(200);
+      expect(res.json().data.kitchenLink).toMatchObject({ offline: true });
+      setEnv(false);
+      const off = await call('GET', '/api/v1/vendor/vendor/delivery-status', staff.token);
+      expect(off.json().data.kitchenLink ?? null).toBeNull();
+    } finally {
+      setEnv(true);
+      await sys(() => app.prisma.vendorIntegration.update({ where: { id: integrationId }, data: { linkOfflineAt: null, linkProbeAt: null } }));
+    }
+  });
+});
+
+describe('[follow-up · N-1/N-5] the console’s link actions need a stated reason', () => {
+  it('"Dragontail does not have it" and "Try the link now" refuse a request with no reason (checked before anything is done)', async () => {
+    const [{ readFileSync }, { resolve }] = await Promise.all([import('node:fs'), import('node:path')]);
+    const routes = readFileSync(resolve(__dirname, '../modules/admin/admin.routes.ts'), 'utf8');
+    for (const route of ["'/vendors/:id/kitchen-integration/orders/:orderId/not-in-kitchen'", "'/vendors/:id/kitchen-integration/link/try'"]) {
+      const at = routes.indexOf(`app.post(${route}`);
+      expect(at, route).toBeGreaterThan(0);
+      const handler = routes.slice(at, routes.indexOf('\n  app.', at + 10));
+      expect(handler, route).toMatch(/reasonProblem\('C3'/);
+      expect(handler, route).toMatch(/auditWithin\(/);
+    }
+  });
+});
+

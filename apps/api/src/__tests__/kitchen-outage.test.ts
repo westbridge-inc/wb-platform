@@ -260,7 +260,7 @@ describe('[DT-OUTAGE] a send that MAY have arrived keeps the careful path', () =
 });
 
 describe('[DT-OUTAGE] the branch breaker', () => {
-  it('3 certain failures in the window: OFFLINE once, ONE alert; then new orders (delivery and pickup) go straight to the tablet', async () => {
+  it('3 certain failures in a row: OFFLINE once, ONE alert; then new orders (delivery and pickup) go straight to the tablet', async () => {
     await warmToken();
     const failed = [await refusedSend(), await refusedSend(), await refusedSend()];
     for (const o of failed) expect((await syncOf(o.id))?.state).toBe('FALLBACK');
@@ -469,6 +469,94 @@ describe('[DT-OUTAGE] the branch breaker', () => {
     await probeOfflineKitchenLinks(deps());
     await refusedSend();
     expect(await linkNotes('Kitchen link offline, orders on tablet'), 'and still one for the outage').toBe(1);
+  });
+
+  // ── follow-up (confirm review) ──
+  const goOffline = () => sys(() => app.prisma.vendorIntegration.update({
+    where: { id: integrationId },
+    data: { linkOfflineAt: new Date(Date.now() - 30 * 60_000), linkOutageSince: new Date(Date.now() - 30 * 60_000), linkProbeAt: new Date(Date.now() - 20 * 60_000), linkFailures: 3 },
+  }));
+
+  it('[follow-up · N-1] the optional order read answers 404 (not offered to Swift): the login alone passes the probe — the link is not offline for good', async () => {
+    await goOffline();
+    mock.downPaths.set('/GetOrderUpdatesForPos', 404);
+    expect(await probeOfflineKitchenLinks(deps())).toBe(1);
+    expect((await link()).linkOfflineAt, 'on trial again').toBeNull();
+    expect(mock.count('/login')).toBe(1);
+    // A 403 that a fresh login does not cure (the read is not allowed for Swift's user): the same.
+    await goOffline();
+    forgetKitchenTokens();
+    mock.downPaths.set('/GetOrderUpdatesForPos', 403);
+    expect(await probeOfflineKitchenLinks(deps())).toBe(1);
+    expect((await link()).linkOfflineAt).toBeNull();
+  });
+
+  it('[follow-up · review B S4-2] a trial 30 minutes old with no failure ends the outage, with its one "back online" note', async () => {
+    const backBefore = await linkNotes('Kitchen link back online');
+    const since = new Date(Date.now() - 60 * 60_000);
+    await sys(() => app.prisma.vendorIntegration.update({ where: { id: integrationId }, data: { linkOfflineAt: null, linkOutageSince: since, linkProbeAt: new Date(Date.now() - 31 * 60_000), linkFailures: 0 } }));
+    await probeOfflineKitchenLinks(deps());
+    expect(await link()).toMatchObject({ linkOutageSince: null, linkOfflineAt: null });
+    expect(await linkNotes('Kitchen link back online') - backBefore).toBe(1);
+    // Younger than 30 minutes: still on trial.
+    await sys(() => app.prisma.vendorIntegration.update({ where: { id: integrationId }, data: { linkOutageSince: since, linkProbeAt: new Date(Date.now() - 10 * 60_000) } }));
+    await probeOfflineKitchenLinks(deps());
+    expect((await link()).linkOutageSince).not.toBeNull();
+  });
+
+  it('[follow-up · N-4] a 200 that carries an error status (dbError) is a FAILED probe', async () => {
+    await goOffline();
+    mock.refuse('/GetOrderUpdatesForPos', 200, { status: 'dbError', time: 'now' });
+    expect(await probeOfflineKitchenLinks(deps())).toBe(0);
+    expect((await link()).linkOfflineAt, 'still offline').not.toBeNull();
+    expect((await link()).lastError).toContain('dbError');
+  });
+
+  it('[follow-up · N-1] "Try the link now": one probe at once, ignoring the back-off; audited; refused when the link is not offline', async () => {
+    const admin = await import('../modules/kitchen/kitchen-admin') as unknown as {
+      tryKitchenLinkNow?: (deps: unknown, vendorId: string, audit?: (tx: unknown, id: string, f: Record<string, unknown>) => Promise<void>) => Promise<{ result: string; linkOffline: boolean }>;
+    };
+    await goOffline();
+    // Probed a moment ago, with failed trials: the tick would wait 15 minutes.
+    await sys(() => app.prisma.vendorIntegration.update({ where: { id: integrationId }, data: { linkProbeAt: new Date(), linkTrialFailures: 6 } }));
+    expect(await probeOfflineKitchenLinks(deps()), 'the tick waits').toBe(0);
+    const facts: Array<Record<string, unknown>> = [];
+    const out = await admin.tryKitchenLinkNow?.(deps(), vendorId, async (_tx, _id, f) => { facts.push(f); });
+    expect(out).toMatchObject({ result: 'order-api', linkOffline: false });
+    expect(facts).toEqual([expect.objectContaining({ result: 'order-api', offlineAfter: false })]);
+    const again = await admin.tryKitchenLinkNow?.(deps(), vendorId).catch((e: unknown) => e);
+    expect((again as { code?: string }).code).toBe('LINK_NOT_OFFLINE');
+  });
+
+  it('[follow-up · N-3] the probe phase has its own budget: slow probes cannot use up the drain’s window', async () => {
+    // A second offline branch.
+    const second = await sys(async () => {
+      const vo = await app.prisma.vendorOwner.findFirstOrThrow({ where: { userId: owner.userId } });
+      const v = await app.prisma.vendor.create({
+        data: {
+          ownerId: vo.id, name: `Outage Diner Two ${wordFreeTag()}`, slug: `kx-${nanoid(8).toLowerCase()}`, vendorType: 'RESTAURANT', phone: '+5926990003',
+          addressLine1: '2 Kitchen St', city: 'Lethem', region: 'Upper Takutu', latitude: AT.lat, longitude: AT.lng,
+          status: 'ACTIVE', acceptingOrders: true, isCurrentlyOpen: true, isVerified: true, selfDeliveryEnabled: true,
+        },
+      });
+      vendorIds.push(v.id);
+      return v;
+    });
+    const secondId = (await putKitchenIntegration(app.prisma, second.id, { enabled: true, externalStoreNo: STORE_NO + 1 })).connection!.id;
+    const creds = JSON.parse(process.env['DRAGONTAIL_CREDENTIALS']!) as Record<string, unknown>;
+    creds[kitchenLoginRef({ id: secondId, provider: 'DRAGONTAIL' })] = { userName: 'pos-outage', password: 'pw-outage' };
+    process.env['DRAGONTAIL_CREDENTIALS'] = JSON.stringify(creds);
+    const old = new Date(Date.now() - 20 * 60_000);
+    for (const id of [integrationId, secondId]) {
+      await sys(() => app.prisma.vendorIntegration.update({ where: { id }, data: { linkOfflineAt: old, linkOutageSince: old, linkProbeAt: old, linkFailures: 3 } }));
+    }
+    try {
+      mock.pathDelays.set('/login', 400);
+      await probeOfflineKitchenLinks(deps(), { probeBudgetMs: 100 });
+      expect(mock.count('/login'), 'one probe started inside the budget; the next waits for the next tick').toBe(1);
+    } finally {
+      await sys(() => app.prisma.vendorIntegration.update({ where: { id: secondId }, data: { enabled: false } }));
+    }
   });
 });
 

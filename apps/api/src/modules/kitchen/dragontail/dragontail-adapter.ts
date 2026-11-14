@@ -52,12 +52,33 @@ export class DragontailAdapter implements KitchenIntegrationProvider {
     await this.client.login();
   }
 
-  /** [round 3 · review B S2-1] The outage probe: a login AND a read through the ORDER API (GetOrderUpdatesForPos at the
-   *  current cursor: idempotent, consumes nothing; the poll reads the same events itself). A login alone proves only
-   *  the login. Anything but a 200 is a failed probe. */
-  async probeOrderApi(storeNo: number, cursor: bigint): Promise<void> {
-    const answer = await this.client.call('POST', '/GetOrderUpdatesForPos', { storeNo, updateStamp: Number(cursor) }, true);
+  /**
+   * [round 3 · review B S2-1] The outage probe: a login AND a read through the ORDER API (GetOrderUpdatesForPos at the
+   * current cursor: idempotent, consumes nothing; the poll reads the same events itself). A login alone proves only
+   * the login.
+   * - 200 with no error status: 'order-api' (the order API answers).
+   * - [follow-up · confirm review N-4] 200 carrying an error status (dbError …): a FAILED probe.
+   * - 5xx after the retries, no connection, a failed login: a FAILED probe (throws).
+   * - [follow-up · confirm review N-1] a 4xx (404/405/400, or 403 after a fresh login): the read is OPTIONAL in the spec
+   *   and this branch does not offer it to Swift. The login just worked, so the probe passes as 'login-only' (the trial
+   *   and its back-off still bound the cost). Without this a branch that does not serve the read stays offline for good.
+   */
+  async probeOrderApi(storeNo: number, cursor: bigint): Promise<'order-api' | 'login-only'> {
+    let answer: Awaited<ReturnType<DragontailClient['call']>>;
+    try {
+      answer = await this.client.call('POST', '/GetOrderUpdatesForPos', { storeNo, updateStamp: Number(cursor) }, true);
+    } catch (err) {
+      // call() throws a 403 that a fresh login did not cure as a link failure; for this optional read it is "not offered".
+      if (err instanceof KitchenPermanentError && /HTTP 403/.test(err.message)) return 'login-only';
+      throw err;
+    }
+    if (answer.status >= 400 && answer.status <= 499) return 'login-only';
     if (answer.status !== 200) throw new KitchenTransientError(`Dragontail GetOrderUpdatesForPos answered HTTP ${answer.status}`, false, true);
+    const status = (answer.json as { status?: unknown } | null)?.status;
+    if (typeof status === 'string' && status.trim() !== '' && status.trim().toLowerCase() !== 'ok') {
+      throw new KitchenTransientError(`Dragontail GetOrderUpdatesForPos answered 200 with "${status.slice(0, 40)}"`, false, true);
+    }
+    return 'order-api';
   }
 
   private async postOrders(body: unknown, what: string): Promise<KitchenInsertResult> {

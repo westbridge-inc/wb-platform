@@ -1828,7 +1828,10 @@ export const fetchKitchenOverflow = (vendorId: string): Promise<Envelope<Kitchen
 export const setKitchenOverflow = (vendorId: string, body: { mode: KitchenOverflowMode; busyHours?: KitchenBusyWindow[] }): Promise<Envelope<KitchenOverflowView>> =>
   apiFetch(kitchenOverflow(vendorId), { method: 'PUT', body: JSON.stringify(body) });
 /** [round 3] Operations confirmed with the store that Dragontail does not have this order. */
-export const clearMaybeInKitchen = (vendorId: string, orderId: string): Promise<Envelope<{ orderId: string; maybeInKitchen: boolean }>> =>
-  apiFetch(`/api/v1/admin/vendors/${encodeURIComponent(vendorId)}/kitchen-integration/orders/${encodeURIComponent(orderId)}/not-in-kitchen`, { method: 'POST', body: JSON.stringify({}) });
+export const clearMaybeInKitchen = (vendorId: string, orderId: string, reason: string): Promise<Envelope<{ orderId: string; maybeInKitchen: boolean }>> =>
+  apiFetch(`/api/v1/admin/vendors/${encodeURIComponent(vendorId)}/kitchen-integration/orders/${encodeURIComponent(orderId)}/not-in-kitchen`, { method: 'POST', body: JSON.stringify({}), reason });
+/** [follow-up] One probe of an offline branch link now (a login and an order read), with a stated reason. */
+export const tryKitchenLinkNow = (vendorId: string, reason: string): Promise<Envelope<{ result: string; linkOffline: boolean; problem: string | null }>> =>
+  apiFetch(`/api/v1/admin/vendors/${encodeURIComponent(vendorId)}/kitchen-integration/link/try`, { method: 'POST', body: JSON.stringify({}), reason });
 export const fetchKitchenRoutes = (vendorId: string): Promise<Envelope<KitchenRouteRow[]>> =>
   apiFetch(`/api/v1/admin/vendors/${encodeURIComponent(vendorId)}/kitchen-integration/routes?limit=20`);

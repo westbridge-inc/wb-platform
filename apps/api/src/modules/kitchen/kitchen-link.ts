@@ -10,8 +10,8 @@ import { log } from '../../utils/logger';
  * far apart [round 3 · review B S3-1: a quiet branch trips it too] (3 by default) — the link is marked OFFLINE (vendor_integrations.linkOfflineAt, in
  * the database so every API and worker instance agrees): new orders are not claimed for the kitchen at all and go
  * straight to the tablet (pickups and deliveries), queued ones fall back without a call, and operations get ONE alert
- * for the outage. While offline the kitchen tick probes the link (a fresh login: the spec has no health call) every
- * cool-down.
+ * for the outage. While offline the kitchen tick probes the link (a fresh login and an order-API read; the spec has
+ * no health call) every cool-down, doubled after each failed trial.
  *
  * [round 3 · review B S3-1] A quiet branch is not left silent: the FIRST certain failure of a streak, at a link with no
  * success for DRAGONTAIL_LINK_QUIET_SECONDS (10 min by default; sends and polls count as successes), sends one
@@ -79,8 +79,8 @@ async function branchName(prisma: PrismaClient, vendorId: string) {
 }
 
 /**
- * A certain failure of the branch's link: count it (restarting the count when the first counted failure is older
- * than the window) and, at the threshold, mark the link OFFLINE once (compare-and-set) with ONE alert. Returns
+ * A certain failure of the branch's link: count it (in a row: only a success restarts the count) and, at the
+ * threshold, mark the link OFFLINE once (compare-and-set) with ONE alert per outage. Returns
  * 'opened' only for the call that opened it. Never throws.
  */
 export async function recordLinkFailure(deps: LinkDeps, integrationId: string, problem: string, env: Env = process.env): Promise<'counted' | 'opened' | 'offline'> {
@@ -148,7 +148,7 @@ export async function recordLinkFailure(deps: LinkDeps, integrationId: string, p
  * A probe (a login and an order-API read) worked while the link is offline: the link goes back ON TRIAL (new orders go to the kitchen again),
  * with no note; the outage stays open until a real send goes through. Never throws.
  */
-export async function recordLinkProbeSuccess(deps: LinkDeps, integrationId: string): Promise<'trial' | 'ok'> {
+export async function recordLinkProbeSuccess(deps: LinkDeps, integrationId: string, how: 'order-api' | 'login-only' = 'order-api'): Promise<'trial' | 'ok'> {
   try {
     const row = await deps.prisma.vendorIntegration.findUnique({ where: { id: integrationId }, select: { linkOfflineAt: true, linkOutageSince: true } });
     if (!row?.linkOfflineAt) return 'ok';
@@ -156,7 +156,7 @@ export async function recordLinkProbeSuccess(deps: LinkDeps, integrationId: stri
       where: { id: integrationId, linkOfflineAt: row.linkOfflineAt },
       data: { linkOfflineAt: null, linkFailures: 0, linkFirstFailureAt: null, linkOutageSince: row.linkOutageSince ?? row.linkOfflineAt },
     });
-    if (moved.count === 1) log().info({ integrationId }, '[KITCHEN-LINK] probe login worked: link ON TRIAL until a send goes through');
+    if (moved.count === 1) log().info({ integrationId, how }, '[KITCHEN-LINK] probe passed: link ON TRIAL until a send goes through');
     return moved.count === 1 ? 'trial' : 'ok';
   } catch (err) {
     log().error({ err, integrationId }, '[KITCHEN-LINK] could not record a probe');
@@ -164,8 +164,9 @@ export async function recordLinkProbeSuccess(deps: LinkDeps, integrationId: stri
   }
 }
 
-/** A REAL send went through: the count restarts, and an outage (offline, or on trial) ends once with a note. Never throws. */
-export async function recordLinkSuccess(deps: LinkDeps, integrationId: string): Promise<'ok' | 'closed'> {
+/** A REAL send went through: the count restarts, and an outage (offline, or on trial) ends once with a note. Never throws.
+ *  `quietTrial`: no send, but the trial has gone QUIET_TRIAL_MS without a failure (closeQuietTrials). */
+export async function recordLinkSuccess(deps: LinkDeps, integrationId: string, how: 'send' | 'quietTrial' = 'send'): Promise<'ok' | 'closed'> {
   try {
     const row = await deps.prisma.vendorIntegration.findUnique({
       where: { id: integrationId },
@@ -183,7 +184,9 @@ export async function recordLinkSuccess(deps: LinkDeps, integrationId: string): 
         const name = await branchName(deps.prisma, row.vendorId);
         await tellOperations(deps, row.tenantId, integrationId, `link-back:${integrationId}:${outage.getTime()}`,
           `Kitchen link back online: ${name}`,
-          `${name}: Dragontail answers again. New orders go to the kitchen system again; orders already on the Swift tablet stay there.`);
+          how === 'send'
+            ? `${name}: Dragontail answers again. New orders go to the kitchen system again; orders already on the Swift tablet stay there.`
+            : `${name}: Dragontail has answered Swift's checks for ${Math.round(QUIET_TRIAL_MS / 60_000)} minutes with no failure (no order has been sent to it yet). New orders go to the kitchen system again; orders already on the Swift tablet stay there.`);
         return 'closed';
       }
       return 'ok';
@@ -195,5 +198,29 @@ export async function recordLinkSuccess(deps: LinkDeps, integrationId: string): 
   } catch (err) {
     log().error({ err, integrationId }, '[KITCHEN-LINK] could not record a success');
     return 'ok';
+  }
+}
+
+/** [follow-up · review B S4-2] A trial this long with no failure (and no send to prove it) ends the outage. */
+export const QUIET_TRIAL_MS = 30 * 60_000;
+
+/**
+ * [follow-up · review B S4-2] Links on trial (a probe passed, no send since) with no failure for QUIET_TRIAL_MS: the
+ * outage ends with its "back online" note, so "on trial" never stands for good. A later failure starts a new outage
+ * (a new alert). Never throws.
+ */
+export async function closeQuietTrials(deps: LinkDeps, now: Date = nowOf(deps)): Promise<number> {
+  try {
+    const quiet = await deps.prisma.vendorIntegration.findMany({
+      where: { enabled: true, linkOfflineAt: null, linkOutageSince: { not: null }, linkFailures: 0, linkProbeAt: { lte: new Date(now.getTime() - QUIET_TRIAL_MS) } },
+      select: { id: true },
+      take: 50,
+    });
+    let closed = 0;
+    for (const row of quiet) if ((await recordLinkSuccess(deps, row.id, 'quietTrial')) === 'closed') closed += 1;
+    return closed;
+  } catch (err) {
+    log().error({ err }, '[KITCHEN-LINK] could not close quiet trials');
+    return 0;
   }
 }

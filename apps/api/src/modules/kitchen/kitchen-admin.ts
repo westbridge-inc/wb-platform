@@ -3,7 +3,7 @@ import { z } from '../../lib/zod';
 import { AppError } from '../../utils/errors';
 import { kitchenLoginRef, kitchenSecretStatus, kitchenWebhookRef, newKitchenIntegrationId } from './kitchen-credentials';
 import { dragontailApiUrl, dragontailDriverCheckEnabled, dragontailIntegrationEnabled, dragontailSettings } from './kitchen-switch';
-import { kitchenProvider } from './kitchen-sync';
+import { kitchenProvider, probeKitchenLink, type KitchenDeps } from './kitchen-sync';
 import { listKitchenRoutes, readBusyHours, writeKitchenOverflowSetting } from './kitchen-overflow';
 
 /**
@@ -257,7 +257,7 @@ export async function putKitchenOverflow(prisma: PrismaClient, vendorId: string,
  * cancelled there): the "maybe in Dragontail" hold is cleared, so the store may get a Swift rider for it again. Only a
  * tablet order still flagged; audited (the order, never a person's detail).
  */
-export async function clearMaybeInKitchen(prisma: PrismaClient, vendorId: string, orderId: string, audit?: KitchenAudit) {
+export async function clearMaybeInKitchen(prisma: PrismaClient, vendorId: string, orderId: string, audit?: KitchenAudit, reason: string | null = null) {
   await vendorOrThrow(prisma, vendorId);
   return prisma.$transaction(async (tx) => {
     const sync = await tx.orderIntegrationSync.findFirst({
@@ -269,9 +269,35 @@ export async function clearMaybeInKitchen(prisma: PrismaClient, vendorId: string
       throw new AppError(409, 'NOT_MAYBE_IN_KITCHEN', 'This order is not waiting on a "maybe in Dragontail" check.');
     }
     await tx.orderIntegrationSync.update({ where: { id: sync.id }, data: { maybeInKitchen: false } });
-    await audit?.(tx, sync.id, { orderId, maybeInKitchenBefore: true, maybeInKitchenAfter: false });
+    // [follow-up · confirm review N-5] The stated reason (who confirmed it, in the operator's words) rides the audit row.
+    await audit?.(tx, sync.id, { orderId, maybeInKitchenBefore: true, maybeInKitchenAfter: false, reason });
     return { orderId, maybeInKitchen: false };
   });
+}
+
+/**
+ * [follow-up · confirm review N-1] "Try the link now": operations force ONE probe of an OFFLINE branch link (a fresh
+ * login and an order-API read; a 4xx to the optional read counts as login only), ignoring the back-off. A pass puts
+ * the link on trial, as the tick's probe would. Refused while the switch is off or the link is not offline. Audited
+ * (the result, never a credential); the route requires a stated reason.
+ */
+export async function tryKitchenLinkNow(deps: Pick<KitchenDeps, 'prisma' | 'io' | 'redis'>, vendorId: string, audit?: KitchenAudit) {
+  assertSwitchOn('trying the kitchen link (one login and one order read)');
+  const { prisma } = deps;
+  await vendorOrThrow(prisma, vendorId);
+  const row = await prisma.vendorIntegration.findUnique({
+    where: { vendorId_provider: { vendorId, provider: 'DRAGONTAIL' } },
+    select: { id: true, provider: true, enabled: true, linkOfflineAt: true, linkProbeAt: true, externalStoreNo: true, pollUpdateStamp: true },
+  });
+  if (!row) throw new AppError(404, 'KITCHEN_NOT_SET_UP', 'This store has no kitchen-system connection yet.');
+  if (!row.enabled) throw new AppError(409, 'KITCHEN_CONNECTION_OFF', 'This connection is switched off.');
+  if (!row.linkOfflineAt) throw new AppError(409, 'LINK_NOT_OFFLINE', 'The kitchen link is not offline: there is nothing to try.');
+  const result = await probeKitchenLink(deps as KitchenDeps, row);
+  const after = await prisma.vendorIntegration.findUnique({ where: { id: row.id }, select: { linkOfflineAt: true, lastError: true } });
+  await prisma.$transaction(async (tx) => {
+    await audit?.(tx, row.id, { result, offlineSince: row.linkOfflineAt?.toISOString() ?? null, offlineAfter: after?.linkOfflineAt != null });
+  });
+  return { result, linkOffline: after?.linkOfflineAt != null, problem: result === 'failed' ? after?.lastError ?? null : null };
 }
 
 /** [DT-OVERFLOW] Where the branch's recent deliveries went (its kitchen system or Swift riders), and why. */
