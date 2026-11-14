@@ -41,6 +41,25 @@ export function mockApi(handler: (_request: ApiRequest) => ApiReply | Promise<Ap
 }
 
 /**
+ * [STORE-BOARD S1] The board reads every open order from GET /vendor/orders/open as well as the newest page from
+ * GET /vendor/orders. A board test that answers only the page wraps its handler: the open read is answered with the
+ * open orders of that same page (any status the board's lanes do not call finished), as the API would.
+ */
+const FINISHED_WIRE = new Set(['DELIVERED', 'COMPLETED', 'CANCELLED', 'RETURNED', 'REFUNDED', 'FAILED']);
+export function withOpenBoard(handler: (_request: ApiRequest) => ApiReply | Promise<ApiReply>) {
+  return async (request: ApiRequest): Promise<ApiReply> => {
+    if (request.method !== 'GET' || !request.url.pathname.endsWith('/vendor/orders/open')) return handler(request);
+    const url = new URL(request.url.toString());
+    url.pathname = url.pathname.replace(/\/open$/, '');
+    const reply = await handler({ ...request, url });
+    const body = reply.body as { data?: unknown } | null;
+    if ((reply.status ?? 200) >= 400 || !Array.isArray(body?.data)) return reply;
+    const open = body.data.filter((o) => !FINISHED_WIRE.has(String((o as { status?: unknown })?.status ?? '').toUpperCase()));
+    return { body: { ...body, data: open, meta: { total: open.length, shown: open.length, notShown: 0, cap: 300 } } };
+  };
+}
+
+/**
  * [#1590] An IntersectionObserver the test drives, standing in for the
  * browser's (happy-dom never reports). `report(target, onScreen)` tells every
  * observer watching `target` that it is on or off screen, the way the store

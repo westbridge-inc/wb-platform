@@ -37,6 +37,8 @@ import { confirmVendorCashSettlement } from './cashSettlement';
 import { usePartnerPricing } from './partnerPricing';
 import { guardVendorOperation, useVendorMutation } from './useVendorMutation';
 import { pendingOrderIds } from '../modules/vendor/boardTaps';
+import { readOpenBoard } from '../modules/vendor/openBoard';
+import { useOpenBoardMeta } from '../stores/openBoardMeta';
 import { answeredSinceAsked } from '../modules/vendor/storeOrderRules';
 import {
   acceptWindowEnd, HANDLED_TAKEOVER_FALLBACK_MS, isStoreAlertPush, markTakeoverHandled, pruneHandledTakeovers, storeAlertFromPush,
@@ -335,7 +337,13 @@ export function useVendorOrders(enabled: boolean) {
   const pv = usePreviewDataset();
   const q = useQuery({
     queryKey: ['vendor', 'orders'],
-    queryFn: () => unwrap(vendorApi.orders()),
+    // [STORE-BOARD S1 · parity audit A1] Every open order, not the newest 20 of any status (an order still cooking
+    // with 20 newer orders behind it used to leave the board). What the server left out is said under the board.
+    queryFn: async () => {
+      const board = await readOpenBoard(vendorApi);
+      useOpenBoardMeta.setState({ meta: board.meta });
+      return board.orders;
+    },
     enabled: enabled && !pv,
     refetchInterval: () => enabled && !pv ? POLL.vendorOrders() : false,
   });

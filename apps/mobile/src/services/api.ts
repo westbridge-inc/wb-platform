@@ -1416,6 +1416,8 @@ export const vendorApi = {
   deliveryStatus: () => api.get('/vendor/vendor/delivery-status'),
   orders: (params?: { status?: string; search?: string; page?: number; limit?: number }) =>
     api.get('/vendor/orders', { params }),
+  // [STORE-BOARD S1] The live board: EVERY open order of the selected store (no page), and how many the server left out.
+  openOrders: () => api.get('/vendor/orders/open'),
   order: (id: string, session?: AuthSessionSnapshot, storeId?: string | null) => api.get(`/vendor/orders/${id}`, capturedVendorAuthConfig(session, storeId)),
   // [APP-PREPTIME · owner 14 Nov 2026] The preparation time staff chose (10-60 min), as the website sends it; none for a booking.
   acceptOrder: (id: string, estimatedPrepTime?: number) =>
@@ -1613,7 +1615,7 @@ export const vendorApi = {
   setHours: (hours: { dayOfWeek: number; openTime: string; closeTime: string; isClosed: boolean }[]) =>
     api.put('/vendor/hours', { hours }),
   // [Q8] latitude/longitude move the store pin: the server takes them together, inside the market, or not at all.
-  updateProfile: (data: { name?: string; phone?: string; description?: string; mmgPayUrl?: string | null; mmgNumber?: string | null; publicPhone?: string | null; refundRule?: string | null; selfDeliveryEnabled?: boolean; requirePickupCode?: boolean; latitude?: number; longitude?: number; bookingCapacity?: number; maxConcurrentOrders?: number | null }) =>
+  updateProfile: (data: { name?: string; phone?: string; description?: string; mmgPayUrl?: string | null; mmgNumber?: string | null; publicPhone?: string | null; refundRule?: string | null; selfDeliveryEnabled?: boolean; requirePickupCode?: boolean; latitude?: number; longitude?: number; bookingCapacity?: number; maxConcurrentOrders?: number | null; estimatedPrepTime?: number }) =>
     api.put('/vendor/profile', data),
   // [IMAGES-E2E] The store's own logo and cover: uploaded as a photo (the server scans it,
   // redraws it without location or camera data, and serves it to customers), or taken down.

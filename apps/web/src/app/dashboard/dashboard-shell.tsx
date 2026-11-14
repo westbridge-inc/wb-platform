@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState, type ComponentType } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { BarChart3, Bell, Calendar, Check, ClipboardList, Boxes, UserRound, Store as StoreIcon, ChevronDown } from 'lucide-react';
 import { Providers } from '@/components/providers';
@@ -8,6 +8,7 @@ import { ConsoleUnreachable, useConsoleSession } from '@/components/console-sess
 import type { ShellPerson } from '@/components/customer-shell';
 import { ConsoleShell } from '@/components/console-shell';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { ApiRequestError, setSelectedStore } from '@/lib/auth';
 import { getStores, type Store } from '@/lib/vendor-api';
 import { switchStore, useStoreId } from '@/lib/store-scope';
@@ -125,6 +126,31 @@ function useTabPrefetch(storeId: string | null, role: VendorMemberRole | undefin
   }, [queryClient, storeId, role, vendorType, roleKnown]);
 }
 
+/**
+ * [STORE-BOARD S1 · parity audit B1] The new-order ring (takeover, chime, flashing title) on every dashboard page,
+ * mounted once here. Its code is its own chunk, fetched right after the page (no page's first load carries it,
+ * scripts/perf-budget.json); a failed fetch is tried again every 15 s, because a store must never be left without
+ * its ring.
+ */
+export const RING_RETRY_MS = 15_000;
+function StoreRingLoader({ storeId }: { storeId: string }) {
+  const router = useRouter();
+  const [Ring, setRing] = useState<ComponentType<{ storeId: string; toOrders?: () => void }> | null>(null);
+  useEffect(() => {
+    let live = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const load = () => {
+      import('@/components/store-ring').then(
+        (m) => { if (live) setRing(() => m.StoreRing); },
+        () => { if (live) timer = setTimeout(load, RING_RETRY_MS); },
+      );
+    };
+    load();
+    return () => { live = false; if (timer) clearTimeout(timer); };
+  }, []);
+  return Ring ? <Ring storeId={storeId} toOrders={() => router.push('/dashboard/orders')} /> : null;
+}
+
 function StoreShell({ children, person }: { children: React.ReactNode; person: ShellPerson | null }) {
   const queryClient = useQueryClient();
   // The store is React state as well as localStorage: the shell must RE-RENDER
@@ -184,6 +210,7 @@ function StoreShell({ children, person }: { children: React.ReactNode; person: S
   useTabPrefetch(feedStore, role, selected?.vendorType, roleKnown);
   return (<>
     {feedStore && <StoreLiveFeed key={feedStore} storeId={feedStore} />}
+    {feedStore && <StoreRingLoader key={feedStore} storeId={feedStore} />}
     <ConsoleShell person={person} home="/dashboard" title="Business" navigation={navigation}
       switcher={<StoreSwitcher storeId={storeId} onSwitch={onSwitch} list={list} isError={stores.isError && !noStoreYet && !noBusiness} />}
       signOutBody="New orders stop showing in this browser until you sign in again. Your store, menu and orders stay with your account."

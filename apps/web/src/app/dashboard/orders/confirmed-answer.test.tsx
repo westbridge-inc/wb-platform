@@ -2,7 +2,7 @@ import { act, screen, waitFor, within } from '@testing-library/react';
 import type { UserEvent } from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import OrdersPage from './page';
-import { mockApi, renderWithQuery, stubAudioContext, type ApiRequest } from '@/test/test-utils';
+import { mockApi, withOpenBoard, renderWithQuery, stubAudioContext, type ApiRequest } from '@/test/test-utils';
 import { wireVendorOrderDetail } from '@/test/vendor-wire-fixtures';
 
 // ---------------------------------------------------------------------------
@@ -51,7 +51,7 @@ function handler(detail: Record<string, unknown>) {
 }
 
 async function openDetail(detail = wireVendorOrderDetail()) {
-  mockApi(handler(detail));
+  mockApi(withOpenBoard(handler(detail)));
   const { user, queryClient } = renderWithQuery(<OrdersPage />);
   const heading = await screen.findByText('#SW-1001');
   const row = heading.closest('button')!;
@@ -119,7 +119,7 @@ describe('a store tap shows the server\'s confirmed answer as soon as it lands',
 // server's confirmed answer shows on the card at once, before any re-read.
 describe('a card on the Orders home shows the server\'s confirmed answer as soon as it lands', () => {
   it('Accept on a card: nothing before the answer, then Start preparing before the board is re-read', async () => {
-    mockApi(handler(wireVendorOrderDetail()));
+    mockApi(withOpenBoard(handler(wireVendorOrderDetail())));
     const { user } = renderWithQuery(<OrdersPage />);
     const later = await screen.findByText(/View later/).catch(() => null);
     if (later) await user.click(later);

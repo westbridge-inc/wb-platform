@@ -32,6 +32,8 @@ import { PublicCallNumberCard } from '../../../components/PublicCallNumberCard';
 import { RefundRuleCard } from '../../../components/RefundRuleCard';
 import { BookingCapacityCard, storedBookingCapacity } from '../../../components/BookingCapacityCard';
 import { KitchenCapacityCard } from '../../../components/KitchenCapacityCard';
+import { PrepTimeCard } from '../../../components/PrepTimeCard';
+import { storedPrepTime } from '../prepTime';
 import { storedKitchenCapacity } from '../../../lib/kitchenCapacity';
 import { WithdrawStaffInvites } from '../../../components/WithdrawStaffInvites';
 import { StoreLocationPicker } from '../../../components/StoreLocationPicker';
@@ -188,6 +190,19 @@ export function VendorAccountScreen() {
     ),
   });
   const bookingCapacity = store?.vendorType === 'SERVICE' ? storedBookingCapacity(store) : null;
+  // [STORE-PREP · owner ruling 14 Nov 2026] The store's usual preparation time: Accept pre-selects it on every new order.
+  const [prepError, setPrepError] = useState<string | null>(null);
+  const savePrep = useVendorMutation({
+    mutationFn: (estimatedPrepTime: number) => vendorApi.updateProfile({ estimatedPrepTime }),
+    onMutate: () => setPrepError(null),
+    onSuccess: () => {
+      setPrepError(null);
+      void qc.invalidateQueries({ queryKey: ['vendor', 'profile'] });
+    },
+    onError: (e: any) => setPrepError(
+      e?.response?.data?.error?.message ?? 'That could not be saved. Check your connection and try again.',
+    ),
+  });
   // [RIDER-SAFE 4] How many orders the kitchen holds at once (stores that cook or pack; no limit by default).
   const [kitchenError, setKitchenError] = useState<string | null>(null);
   const saveKitchen = useVendorMutation({
@@ -341,6 +356,16 @@ export function VendorAccountScreen() {
               saving={saveCapacity.isPending}
               error={capacityError}
               onSave={(n) => saveCapacity.mutate(n)}
+            />
+          ) : null}
+
+          {isManager && store && !samplePreview && store.vendorType !== 'SERVICE' ? (
+            <PrepTimeCard
+              value={storedPrepTime(store)}
+              vendorType={store.vendorType}
+              saving={savePrep.isPending}
+              error={prepError}
+              onSave={(n) => savePrep.mutate(n)}
             />
           ) : null}
 

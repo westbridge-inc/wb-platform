@@ -14,6 +14,7 @@ import { setDraftDirty, storeKey, useStoreId } from '@/lib/store-scope';
 import { RefundRuleCard } from './refund-rule-card';
 import { BookingCapacityCard } from './booking-capacity-card';
 import { KitchenCapacityCard } from './kitchen-capacity-card';
+import { PrepTimeCard } from './prep-time-card';
 import { DeliveryStatusNotice } from '../delivery-status-notice';
 import { FoodHandlersCard } from './food-handlers-card';
 import { StoreFeeCard } from './store-fee-card';
@@ -349,6 +350,8 @@ export default function SettingsPage() {
       <StorePhotosCard storeId={storeId} />
       {/* [BOOK-S5b · owner C1] Services only, and only when the server sends the setting. */}
       <BookingCapacityCard storeId={storeId} />
+      {/* [STORE-PREP · owner ruling 14 Nov 2026] The usual preparation time Accept starts at (stores that cook or pack). */}
+      <PrepTimeCard storeId={storeId} />
       {/* [RIDER-SAFE 4] How many orders the kitchen holds at once (stores that cook or pack). */}
       <KitchenCapacityCard storeId={storeId} />
       <RefundRuleCard storeId={storeId} />

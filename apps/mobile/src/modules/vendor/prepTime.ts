@@ -54,3 +54,27 @@ export function prepChoiceHeading(vendorType: string | null | undefined): string
 
 /** One choice's words on its button. */
 export const prepChipLabel = (minutes: number): string => `${minutes} min`;
+
+// ---------------------------------------------------------------------------
+// [STORE-PREP · parity audit C3, owner ruling 14 Nov 2026] The store's USUAL preparation time (Vendor.estimatedPrepTime),
+// set by the owner or a manager in Account (the website's Settings has the same card). Every new order carries it
+// from checkout, and Accept pre-selects it (storePrepChoice above).
+// ---------------------------------------------------------------------------
+
+/** The store's stored usual time in minutes, or null when it has none (an older server, or nothing set). */
+export function storedPrepTime(store: unknown): number | null {
+  const v = store && typeof store === 'object' ? (store as { estimatedPrepTime?: unknown }).estimatedPrepTime : undefined;
+  return typeof v === 'number' && Number.isInteger(v) && v > 0 ? v : null;
+}
+
+/** The card's heading: a kitchen's "preparation", any other store's "ready" time. */
+export function usualPrepHeading(vendorType: string | null | undefined): string {
+  return vendorType === 'RESTAURANT' ? 'Usual preparation time' : 'Usual ready time';
+}
+
+/** What the usual time does, in the card's words. */
+export function usualPrepLine(minutes: number | null): string {
+  if (minutes == null) return `Not set: Accept starts at ${UNDECLARED_PREP_MINUTES} min. Pick your usual time.`;
+  if (!isPrepChoice(minutes)) return `Now ${minutes} min: Accept starts at the closest choice, ${storePrepChoice(minutes)} min. Pick your usual time.`;
+  return `Accept starts at ${minutes} min on every new order. Staff can still pick another time on each order.`;
+}

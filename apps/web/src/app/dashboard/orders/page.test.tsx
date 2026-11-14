@@ -2,7 +2,7 @@ import { act, screen, waitFor, within } from '@testing-library/react';
 import type { UserEvent } from '@testing-library/user-event';
 import { beforeEach, describe, expect, it } from 'vitest';
 import OrdersPage from './page';
-import { mockApi, renderWithQuery, stubAudioContext, type ApiRequest } from '@/test/test-utils';
+import { mockApi, withOpenBoard, renderWithQuery, stubAudioContext, type ApiRequest } from '@/test/test-utils';
 import { wireVendorOrder, wireVendorOrderDetail, wireOrderLine } from '@/test/vendor-wire-fixtures';
 
 /**
@@ -82,7 +82,7 @@ describe('vendor order board — money is never invented', () => {
     const booking = {
       ...wireVendorOrder(), fulfillment: 'APPOINTMENT', appointmentSlot: '2026-09-24T13:00:00.000Z',
     };
-    mockApi(boardHandler([booking], { ...wireVendorOrderDetail(), ...booking }));
+    mockApi(withOpenBoard(boardHandler([booking], { ...wireVendorOrderDetail(), ...booking })));
     const { user } = renderWithQuery(<OrdersPage />);
     const row = await rowFor('SW-1001');
     await dismissTakeover(user);
@@ -97,7 +97,7 @@ describe('vendor order board — money is never invented', () => {
   });
 
   it('renders the real order total from the wire Decimal STRING, and never "NaN"', async () => {
-    mockApi(boardHandler([wireVendorOrder()], wireVendorOrderDetail()));
+    mockApi(withOpenBoard(boardHandler([wireVendorOrder()], wireVendorOrderDetail())));
     const { user } = renderWithQuery(<OrdersPage />);
 
     const row = await rowFor('SW-1001');
@@ -124,7 +124,7 @@ describe('vendor order board — money is never invented', () => {
     // A response that cannot say what the store gets: the goods amount (and any storeMoney) absent entirely.
     const noTotal = wireVendorOrder() as Record<string, unknown>;
     delete noTotal['subtotalCustomer'];
-    mockApi(boardHandler([noTotal], { ...wireVendorOrderDetail(), totalAmount: undefined }));
+    mockApi(withOpenBoard(boardHandler([noTotal], { ...wireVendorOrderDetail(), totalAmount: undefined })));
     const { user } = renderWithQuery(<OrdersPage />);
 
     const row = await rowFor('SW-1001');
@@ -138,7 +138,7 @@ describe('vendor order board — money is never invented', () => {
 
   it('keeps a long status on one line in the order window; the title side gives way instead', async () => {
     // At 390 px "READY FOR PICKUP" wrapped onto three lines and became a round blob.
-    mockApi(boardHandler([wireVendorOrder({ status: 'READY_FOR_PICKUP' })], wireVendorOrderDetail({ status: 'READY_FOR_PICKUP' })));
+    mockApi(withOpenBoard(boardHandler([wireVendorOrder({ status: 'READY_FOR_PICKUP' })], wireVendorOrderDetail({ status: 'READY_FOR_PICKUP' }))));
     const { user } = renderWithQuery(<OrdersPage />);
     const row = await rowFor('SW-1001');
     // The board card's chip stays on one line too.
@@ -158,7 +158,7 @@ describe('vendor order board — money is never invented', () => {
   it('never leaks the pickup code, and still tells the store a code is collected', async () => {
     const pickupBoard = wireVendorOrder({ fulfillment: 'PICKUP', status: 'READY_FOR_PICKUP' });
     const pickupDetail = wireVendorOrderDetail({ fulfillment: 'PICKUP', status: 'READY_FOR_PICKUP' });
-    mockApi(boardHandler([pickupBoard], pickupDetail));
+    mockApi(withOpenBoard(boardHandler([pickupBoard], pickupDetail)));
     const { user } = renderWithQuery(<OrdersPage />);
 
     await screen.findByRole('region', { name: 'Ready / handoff orders' });
@@ -176,7 +176,7 @@ describe('vendor order board — money is never invented', () => {
   });
 
   it('shows the customer notes the API actually sends', async () => {
-    mockApi(boardHandler([wireVendorOrder()], wireVendorOrderDetail()));
+    mockApi(withOpenBoard(boardHandler([wireVendorOrder()], wireVendorOrderDetail())));
     const { user } = renderWithQuery(<OrdersPage />);
 
     const row = await rowFor('SW-1001');
@@ -191,7 +191,7 @@ describe('vendor order board — money is never invented', () => {
   });
 
   it('renders an empty board without inventing a figure', async () => {
-    mockApi(boardHandler([], wireVendorOrderDetail()));
+    mockApi(withOpenBoard(boardHandler([], wireVendorOrderDetail())));
     renderWithQuery(<OrdersPage />);
     // Nothing open: the app's quiet board (PR A) instead of three empty lanes.
     expect(await screen.findByText('You are all caught up')).toBeTruthy();
@@ -210,7 +210,7 @@ describe('delivery owner controls', () => {
       vendor: { vendorType: 'RESTAURANT', selfDeliveryEnabled: true },
       ...over,
     });
-    const fetchMock = mockApi(deliveryOwnerHandler(detail));
+    const fetchMock = mockApi(withOpenBoard(deliveryOwnerHandler(detail)));
     const { user } = renderWithQuery(<OrdersPage />);
     await screen.findByRole('region', { name: detail.status === 'PENDING' ? 'New orders' : 'Ready / handoff orders' });
     await user.click(await rowFor('SW-1001'));
@@ -311,7 +311,7 @@ describe('delivery owner controls', () => {
 
   it('preserves pickup semantics: a pickup has no delivery-owner controls', async () => {
     const detail = wireVendorOrderDetail({ fulfillment: 'PICKUP', status: 'READY_FOR_PICKUP' });
-    mockApi(deliveryOwnerHandler(detail));
+    mockApi(withOpenBoard(deliveryOwnerHandler(detail)));
     const { user } = renderWithQuery(<OrdersPage />);
     await screen.findByRole('region', { name: 'Ready / handoff orders' });
     await user.click(await rowFor('SW-1001'));
@@ -334,7 +334,7 @@ describe('[W-25] the store attests only where money plausibly landed', () => {
 
   async function openMmgDetail(paymentStatus: string) {
     const over = { paymentMethod: 'MOBILE_MONEY', paymentStatus };
-    const fetchMock = mockApi(boardHandler([wireVendorOrder(over)], wireVendorOrderDetail(over)));
+    const fetchMock = mockApi(withOpenBoard(boardHandler([wireVendorOrder(over)], wireVendorOrderDetail(over))));
     const { user } = renderWithQuery(<OrdersPage />);
     const row = await rowFor('SW-1001');
     await dismissTakeover(user);
@@ -358,7 +358,7 @@ describe('[W-25] the store attests only where money plausibly landed', () => {
 
   it('[row 52] staff at the order\'s store get no attest button, only who can confirm', async () => {
     const over = { paymentMethod: 'MOBILE_MONEY', paymentStatus: 'PENDING', canConfirmPayment: false };
-    const fetchMock = mockApi(boardHandler([wireVendorOrder(over)], wireVendorOrderDetail(over)));
+    const fetchMock = mockApi(withOpenBoard(boardHandler([wireVendorOrder(over)], wireVendorOrderDetail(over))));
     const { user } = renderWithQuery(<OrdersPage />);
     const row = await rowFor('SW-1001');
     await dismissTakeover(user);
@@ -376,7 +376,7 @@ describe('[W-25] the store attests only where money plausibly landed', () => {
   it("shows the server's cancel-at line beside the Paid by MMG button", async () => {
     const line = 'Cancels automatically at 3:45 PM unless you mark it "Paid by MMG".';
     const over = { paymentMethod: 'MOBILE_MONEY', paymentStatus: 'PENDING', mmgPayBy: '2026-10-18T19:45:00.000Z', mmgPayByLine: line };
-    mockApi(boardHandler([wireVendorOrder(over)], wireVendorOrderDetail(over)));
+    mockApi(withOpenBoard(boardHandler([wireVendorOrder(over)], wireVendorOrderDetail(over))));
     const { user } = renderWithQuery(<OrdersPage />);
     const row = await rowFor('SW-1001');
     await dismissTakeover(user);
@@ -431,7 +431,7 @@ describe('[W-27] removing a line is not a refund', () => {
 
   async function openDetail(over: Record<string, unknown>) {
     const o = shelf(over);
-    mockApi(boardHandler([wireVendorOrder(o)], wireVendorOrderDetail(o)));
+    mockApi(withOpenBoard(boardHandler([wireVendorOrder(o)], wireVendorOrderDetail(o))));
     const { user } = renderWithQuery(<OrdersPage />);
     // Preparing is now visible beside New and Ready; no filter click is needed.
     await screen.findByRole('region', { name: 'Preparing orders' });
@@ -495,7 +495,7 @@ describe('[E10] rejecting an order always carries a reason', () => {
 
   async function openPendingDetail() {
     const detail = wireVendorOrderDetail();
-    const fetchMock = mockApi(rejectHandler(detail));
+    const fetchMock = mockApi(withOpenBoard(rejectHandler(detail)));
     const { user } = renderWithQuery(<OrdersPage />);
     const row = await rowFor('SW-1001');
     await dismissTakeover(user);
@@ -522,7 +522,7 @@ describe('[E10] rejecting an order always carries a reason', () => {
 
   it('a booking is declined with its own question, label and booking reasons (DS221 S3)', async () => {
     const detail = wireVendorOrderDetail({ fulfillment: 'APPOINTMENT', appointmentSlot: '2026-09-24T13:00:00.000Z' });
-    const fetchMock = mockApi(rejectHandler(detail));
+    const fetchMock = mockApi(withOpenBoard(rejectHandler(detail)));
     const { user } = renderWithQuery(<OrdersPage />);
     const row = await rowFor('SW-1001');
     await dismissTakeover(user);
@@ -557,11 +557,11 @@ describe('order detail stays dismissible while its request settles', () => {
 
   it('can close a pending detail request on a phone', async () => {
     const order = wireVendorOrder({ status: 'ACCEPTED' });
-    mockApi((request) => {
+    mockApi(withOpenBoard((request) => {
       if (request.url.pathname === '/api/v1/vendor/orders') return { body: { success: true, data: [order] } };
       if (request.url.pathname.endsWith('/order-live')) return new Promise(() => {});
       throw new Error(`Unexpected request: ${request.url}`);
-    });
+    }));
     const { user } = renderWithQuery(<OrdersPage />);
     await screen.findByRole('region', { name: 'Preparing orders' });
     await user.click(await rowFor('SW-1001'));
@@ -576,7 +576,7 @@ describe('order detail stays dismissible while its request settles', () => {
   it('shows a failed detail request and retries it', async () => {
     const order = wireVendorOrder({ status: 'ACCEPTED' });
     let attempts = 0;
-    mockApi((request) => {
+    mockApi(withOpenBoard((request) => {
       if (request.url.pathname === '/api/v1/vendor/orders') return { body: { success: true, data: [order] } };
       if (request.url.pathname.endsWith('/order-live')) {
         attempts++;
@@ -585,7 +585,7 @@ describe('order detail stays dismissible while its request settles', () => {
           : { body: { success: true, data: wireVendorOrderDetail({ status: 'ACCEPTED' }) } };
       }
       throw new Error(`Unexpected request: ${request.url}`);
-    });
+    }));
     const { user } = renderWithQuery(<OrdersPage />);
     await screen.findByRole('region', { name: 'Preparing orders' });
     await user.click(await rowFor('SW-1001'));
@@ -606,7 +606,7 @@ describe('store picking uses the server substitution status', () => {
       status: 'PREPARING',
       items: [wireOrderLine({ subStatus, picked, substituteName: 'Replacement rice' })],
     });
-    mockApi(boardHandler([detail], detail));
+    mockApi(withOpenBoard(boardHandler([detail], detail)));
     const { user, queryClient } = renderWithQuery(<OrdersPage />);
     await user.click(await rowFor('SW-1001'));
     await screen.findByText('Cash on handover — you keep 100% of the goods total.');
@@ -625,7 +625,7 @@ describe('store picking uses the server substitution status', () => {
     await user.click(screen.getByRole('button', { name: 'Out of stock?' }));
     expect(screen.getByRole('button', { name: 'Remove item' })).toBeTruthy();
     const pending = { ...detail, items: [wireOrderLine({ subStatus: 'PENDING', substituteName: 'Replacement rice' })] };
-    mockApi(boardHandler([pending], pending));
+    mockApi(withOpenBoard(boardHandler([pending], pending)));
     await queryClient.invalidateQueries({ predicate: (query) => query.queryKey.includes('order') });
     await screen.findByText('Waiting on customer: Replacement rice');
     expect(screen.queryByRole('button', { name: 'Remove item' })).toBeNull();
@@ -658,12 +658,12 @@ describe('pending and approved line removal remains available', () => {
       items: [wireOrderLine({ subStatus, picked: false, substituteName: 'Replacement rice' })],
     });
     const handler = boardHandler([detail], detail);
-    const fetchMock = mockApi((request) => {
+    const fetchMock = mockApi(withOpenBoard((request) => {
       if (request.method === 'POST' && request.url.pathname.endsWith('/refund-line')) {
         return { body: { success: true, data: {} } };
       }
       return handler(request);
-    });
+    }));
     const { user } = renderWithQuery(<OrdersPage />);
     await user.click(await rowFor('SW-1001'));
     await screen.findByText('Cash on handover — you keep 100% of the goods total.');
@@ -698,12 +698,12 @@ describe('a failed refresh does not empty the board', () => {
   it('keeps the loaded orders on the board, under the error, after one failed poll', async () => {
     let fail = false;
     const order = wireVendorOrder({ status: 'PREPARING' });
-    mockApi((request) => {
+    mockApi(withOpenBoard((request) => {
       if (request.method === 'GET' && request.url.pathname === '/api/v1/vendor/orders') {
         return fail ? { status: 503, body: { success: false, error: { message: 'Service unavailable' } } } : { body: { success: true, data: [order], meta: { total: 1 } } };
       }
       return { status: 404, body: { success: false } };
-    });
+    }));
     const { queryClient } = renderWithQuery(<OrdersPage />);
     await rowFor('SW-1001');
     fail = true;
@@ -722,7 +722,7 @@ describe('the order window keeps focus inside, and returns it to the card', () =
   beforeEach(() => { stubAudioContext(); });
 
   it('cycles Tab and Shift+Tab inside the dialog', async () => {
-    mockApi(boardHandler([wireVendorOrder({ status: 'PREPARING' })], wireVendorOrderDetail({ status: 'PREPARING' })));
+    mockApi(withOpenBoard(boardHandler([wireVendorOrder({ status: 'PREPARING' })], wireVendorOrderDetail({ status: 'PREPARING' }))));
     const { user } = renderWithQuery(<OrdersPage />);
     await user.click(await rowFor('SW-1001'));
     const dialog = await screen.findByRole('dialog', { name: 'Order details' });
@@ -741,14 +741,14 @@ describe('the order window keeps focus inside, and returns it to the card', () =
 
   it('returns focus to the order\'s card after an action moved it to another lane', async () => {
     let status = 'PREPARING';
-    mockApi((request) => {
+    mockApi(withOpenBoard((request) => {
       const { method, url } = request;
       if (method === 'GET' && url.pathname === '/api/v1/vendor/orders') return { body: { success: true, data: [wireVendorOrder({ status })], meta: { total: 1 } } };
       if (method === 'GET' && url.pathname.startsWith('/api/v1/vendor/orders/')) return { body: { success: true, data: wireVendorOrderDetail({ status }) } };
       if (method === 'PUT' && url.pathname.endsWith('/ready')) { status = 'READY_FOR_PICKUP'; return { body: { success: true } }; }
       if (method === 'GET' && url.pathname === '/api/v1/vendor/items') return { body: { success: true, data: [] } };
       return { status: 404, body: { success: false } };
-    });
+    }));
     const { user } = renderWithQuery(<OrdersPage />);
     await user.click(await rowFor('SW-1001'));
     const dialog = await screen.findByRole('dialog', { name: 'Order details' });
@@ -767,7 +767,7 @@ describe('the order window keeps focus inside, and returns it to the card', () =
 describe('the third lane says what it holds', () => {
   beforeEach(() => { stubAudioContext(); });
   it('is called "Ready / handoff" and holds rider-claimed orders', async () => {
-    mockApi(boardHandler([wireVendorOrder({ status: 'RIDER_ASSIGNED' })], wireVendorOrderDetail({ status: 'RIDER_ASSIGNED' })));
+    mockApi(withOpenBoard(boardHandler([wireVendorOrder({ status: 'RIDER_ASSIGNED' })], wireVendorOrderDetail({ status: 'RIDER_ASSIGNED' }))));
     renderWithQuery(<OrdersPage />);
     const lane = await screen.findByRole('region', { name: 'Ready / handoff orders' });
     expect(within(lane).getByRole('heading', { name: 'Ready / handoff' })).toBeTruthy();
@@ -796,7 +796,7 @@ describe('disputed MMG orders pause the web dashboard', () => {
       mmgClaimMismatchAt: '2026-10-07T12:00:00.000Z',
       vendor: { vendorType: 'SUPERMARKET', selfDeliveryEnabled: true },
     };
-    mockApi(boardHandler([wireVendorOrder(over)], wireVendorOrderDetail(over)));
+    mockApi(withOpenBoard(boardHandler([wireVendorOrder(over)], wireVendorOrderDetail(over))));
     const { user } = renderWithQuery(<OrdersPage />);
     // A disputed new order raises no takeover asking to accept it.
     expect(screen.queryByText(/View later/)).toBeNull();
@@ -823,7 +823,7 @@ describe('disputed MMG orders pause the web dashboard', () => {
 
   it('control: the same order without a dispute keeps its forward buttons', async () => {
     const over = { status: 'ACCEPTED', fulfillment: 'DELIVERY', fulfillmentMode: 'PLATFORM_RIDER', paymentMethod: 'MOBILE_MONEY', paymentStatus: 'CLAIMED' };
-    mockApi(boardHandler([wireVendorOrder(over)], wireVendorOrderDetail(over)));
+    mockApi(withOpenBoard(boardHandler([wireVendorOrder(over)], wireVendorOrderDetail(over))));
     const { user } = renderWithQuery(<OrdersPage />);
     const row = await rowFor('SW-1001');
     expect(row.textContent).not.toContain('order paused');
@@ -858,7 +858,7 @@ async function rowAnywhere(user: UserEvent) {
 }
 
 async function openWindow(detail: Record<string, unknown>, onPost?: (_request: ApiRequest) => unknown) {
-  mockApi(detailHandler(detail, onPost));
+  mockApi(withOpenBoard(detailHandler(detail, onPost)));
   const rendered = renderWithQuery(<OrdersPage />);
   const row = await rowAnywhere(rendered.user);
   await rendered.user.click(row);
@@ -1018,7 +1018,7 @@ describe('[U45] statuses read as words, never as codes', () => {
     ['RIDER_ARRIVED_PICKUP', 'Rider at counter'],
     ['EN_ROUTE_DELIVERY', 'Out for delivery'],
   ])('%s reads "%s" on the board and in the window', async (status, words) => {
-    mockApi(boardHandler([wireVendorOrder({ status })], wireVendorOrderDetail({ status })));
+    mockApi(withOpenBoard(boardHandler([wireVendorOrder({ status })], wireVendorOrderDetail({ status }))));
     const { user } = renderWithQuery(<OrdersPage />);
     const row = await rowAnywhere(user);
     expect(within(row).getByText(words)).toBeTruthy();

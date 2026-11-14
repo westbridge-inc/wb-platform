@@ -105,6 +105,10 @@ COPY apps/mobile/src/modules/vendor/acceptClock.ts apps/mobile/src/modules/vendo
 COPY apps/mobile/src/modules/vendor/order-dispute.ts apps/mobile/src/modules/vendor/order-dispute.ts
 COPY apps/mobile/src/modules/vendor/storeOrderRules.ts apps/mobile/src/modules/vendor/storeOrderRules.ts
 COPY apps/mobile/src/modules/vendor/ringMoney.ts apps/mobile/src/modules/vendor/ringMoney.ts
+# [STORE-BOARD S1] The open board's rules and words (the board's "not shown" note), shared with the app.
+COPY apps/mobile/src/modules/vendor/openBoard.ts apps/mobile/src/modules/vendor/openBoard.ts
+# [STORE-PREP] Accept's prep-time choices and the usual-time card's words, shared with the app.
+COPY apps/mobile/src/modules/vendor/prepTime.ts apps/mobile/src/modules/vendor/prepTime.ts
 COPY apps/mobile/src/modules/vendor/acceptedOutOfStock.ts apps/mobile/src/modules/vendor/acceptedOutOfStock.ts
 COPY apps/mobile/src/modules/vendor/storeHandover.ts apps/mobile/src/modules/vendor/storeHandover.ts
 # [MENU-OPTIONS] The kitchen view's formatter (web order window) and the store tools' option rules (web Products page).
