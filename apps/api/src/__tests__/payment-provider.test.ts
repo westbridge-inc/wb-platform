@@ -103,11 +103,46 @@ describe('explicitly disabled card provider', () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
-  it.each([undefined, '', '0', 'true'])('factory refuses disabled cards without the kill switch in production: the launch lock (%s)', (kill) => {
+  it.each([undefined, '', '0', 'true'])('factory refuses disabled cards without the kill switch in production, unless cards are switched on properly (%s)', (kill) => {
     vi.stubEnv('NODE_ENV', 'production');
     vi.stubEnv('PAYMENT_PROVIDER', 'disabled');
     vi.stubEnv('CARD_RAIL_KILL', kill);
-    expect(() => getPaymentProvider()).toThrow(/^FATAL: CARD_RAIL_KILL must be exactly 1 in production/);
+    expect(() => getPaymentProvider()).toThrow(/^FATAL: CARD_RAIL_KILL/);
+  });
+
+  // [CARDS-SWITCH-ON] The legacy factory is built while routes register, so in
+  // production it holds the same card switches as the boot guard
+  // (card-rail.ts assertProductionCardSwitches): the switch-on set and its
+  // rollback build the DISABLED legacy provider (the legacy seam stays off;
+  // cards run on card rail v2); every kept lock still throws.
+  const SWITCH_ON = {
+    NODE_ENV: 'production', PAYMENT_PROVIDER: 'disabled', CARD_RAIL_KILL: '0', CARD_RAIL_V2: '1',
+    CARD_RAIL_PROVIDER: 'powertranz', CARD_RAIL_ENVIRONMENT: 'live',
+    // [Review #2465-B B-2] Cards on names who real cards serve (unset is never everyone in production).
+    CARD_RAIL_LIVE_SUBSCRIPTIONS: 'cmownersub0000000000000001',
+  };
+  it.each([
+    ['cards on', SWITCH_ON],
+    ['the rollback (kill switch back on, v2 left on)', { ...SWITCH_ON, CARD_RAIL_KILL: '1' }],
+  ])('[CARDS-SWITCH-ON] production: %s builds the disabled legacy provider, which still refuses every instruction', async (_label, env) => {
+    for (const [name, value] of Object.entries(env)) vi.stubEnv(name, value);
+    const fetch = vi.fn(() => { throw new Error('Unexpected provider contact'); });
+    vi.stubGlobal('fetch', fetch);
+    const provider = getPaymentProvider();
+    await expect(provider.chargeToken(CHARGE)).resolves.toMatchObject({ status: 'failed', providerRef: '', code: 'CARD_RAIL_DISABLED' });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['saved cards', { CARD_RAIL_ENROLL: '1' }, /^FATAL: CARD_RAIL_ENROLL must be unset or 0 in production/],
+    ['the drain switch', { CARD_RAIL_V2_DRAIN: '1' }, /^FATAL: CARD_RAIL_V2_DRAIN must be unset or 0 in production/],
+    ['v2 off', { CARD_RAIL_V2: '0' }, /^FATAL: CARD_RAIL_KILL=0 \(cards on\) in production needs/],
+    ['the provider\'s sandbox', { CARD_RAIL_ENVIRONMENT: 'sandbox' }, /^FATAL: CARD_RAIL_KILL=0 \(cards on\) in production needs/],
+    ['the simulator', { CARD_RAIL_PROVIDER: 'simulator' }, /^FATAL: CARD_RAIL_KILL=0 \(cards on\) in production needs/],
+    ['a near-miss kill switch', { CARD_RAIL_KILL: '00' }, /^FATAL: CARD_RAIL_KILL must be exactly 1 \(cards off\) or exactly 0 \(cards on\)/],
+  ])('[CARDS-SWITCH-ON] production: the factory refuses %s beside the switch-on set', (_label, patch, refusal) => {
+    for (const [name, value] of Object.entries({ ...SWITCH_ON, ...patch })) vi.stubEnv(name, value);
+    expect(() => getPaymentProvider()).toThrow(refusal);
   });
 
   // [CARD-DECOUPLE] Off production, disabled is the legacy seam's own OFF and

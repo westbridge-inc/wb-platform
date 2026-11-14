@@ -33,6 +33,7 @@ import { MMG_PUSH_RAIL_ENV } from '../providers/mmg/mmg-provider';
 import { CHECKOUT_CONFIG_ENV, noLivePayPath, resetMmgCheckoutConfiguredCache } from '../modules/billing/fee-pause';
 import * as mmgCheckout from '../providers/mmg/mmg-checkout';
 import { FEE_CHECKOUT_PLATFORMS_KEY, resetFeeCheckoutSwitchCache } from '../modules/billing/fee-pay-actions';
+import { CARD_CHECKOUT_PLATFORMS_KEY } from '../modules/billing/card-pay-action';
 import { FEE_PAUSE_REPAIR_PREFIX, MMG_PAUSE_CLOCKS_KEY, feePauseStatus, syncMmgPauseClock } from '../modules/billing/mmg-pause';
 import { retainedCohort, retainedPhonePrefix, retireKeptScaffolding, without } from './helpers/retained-evidence';
 import { cleanupBillingClocks } from './helpers/billing-clock-cleanup';
@@ -62,13 +63,16 @@ function checkoutOn(): Env {
   };
 }
 
-/** A switch-row reader with no database: the row as given, every read counted. */
-function rowReader(value: unknown | null) {
+/** A switch-row reader with no database: the MMG row as given, every read of it counted. [B-3 · CARDS-SWITCH-ON]
+ *  Live cards also read the card's own row (billing.cardCheckout.platforms): on every platform unless a case says
+ *  otherwise (fee-pause-card-platforms.unit.test.ts covers that row). */
+function rowReader(value: unknown | null, card: unknown | null = { ios: true, android: true, web: true }) {
   const reader = {
     reads: 0,
     value,
     platformConfig: {
       findUnique: async ({ where }: { where: { key: string } }) => {
+        if (where.key === CARD_CHECKOUT_PLATFORMS_KEY) return card === null ? null : { value: card };
         reader.reads += 1;
         expect(where.key).toBe(FEE_CHECKOUT_PLATFORMS_KEY);
         return reader.value === null ? null : { value: reader.value };
@@ -191,11 +195,14 @@ describe('the pay-path truth table (no database)', () => {
     expect(CHECKOUT_CONFIG_ENV).toContain('NODE_ENV'); // isProduction(env)
   });
 
-  it('a live card rail is a way to pay whatever MMG is', async () => {
+  it('a live card rail is a way to pay whatever MMG is — when the card is on for every platform [B-3]', async () => {
     const reader = rowReader({ ios: false });
     const cardLive = { CARD_RAIL_V2: '1', CARD_RAIL_KILL: '0', PAYMENT_PROVIDER: 'sandbox', CARD_RAIL_PROVIDER: 'powertranz', CARD_RAIL_ENVIRONMENT: 'live' };
     expect(await paused(reader, test({ ...LIVE, ...cardLive }))).toBe(false);
     expect(await paused(reader, test({ ...LIVE, ...cardLive, CARD_RAIL_KILL: '1' }))).toBe(true);
+    // [B-3] The card off on one platform (no row: iOS off by default) is no way to pay for everyone: paused.
+    expect(await paused(rowReader({ ios: false }, null), test({ ...LIVE, ...cardLive }))).toBe(true);
+    expect(await paused(rowReader({ ios: false }, { ios: true, web: false }), test({ ...LIVE, ...cardLive }))).toBe(true);
   });
 
   // [Review #2453 A-F1 / B-1] The provider's SANDBOX opens pages only for the listed test subscriptions, so

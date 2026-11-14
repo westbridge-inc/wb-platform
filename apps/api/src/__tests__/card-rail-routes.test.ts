@@ -330,6 +330,7 @@ afterEach(async () => {
   delete process.env['CARD_RAIL_V2_DRAIN'];
   delete process.env['CARD_RAIL_KILL'];
   delete process.env['CARD_RAIL_SIMULATOR_LIVE'];
+  delete process.env['CARD_RAIL_LIVE_SUBSCRIPTIONS'];
   railOverride = null;
   await app.prisma.platformConfig.deleteMany({ where: { key: CARD_CHECKOUT_PLATFORMS_KEY } });
   resetCardCheckoutSwitchCache();
@@ -808,6 +809,82 @@ describe('the switches: the flag, the kill switch, the platform, the subscriptio
     await app.prisma.subscription.update({ where: { id: waived.subId }, data: { feeWaived: true } });
     expect((await startSession(waived, 'PAY_NOW')).json().error.code).toBe('PAY_ACTION_OFF');
     expect(await app.prisma.cardSession.count({ where: { subscriptionId: { in: [paused.subId, waived.subId] } } })).toBe(0);
+  });
+});
+
+// [CARDS-GO · owner ruling 14 Nov 2026] "Connect tonight, ONLY the owner's own account sees cards; everyone else after
+// PowerTranz's go-live approval." While CARD_RAIL_LIVE_SUBSCRIPTIONS is set, REAL cards serve only the subscriptions it
+// lists: every other partner sees exactly today's no-card Pay screen, and a card request it sends anyway is refused by
+// the server before any page or row. Emptied, every eligible partner (the later go-live).
+describe('[CARDS-GO] the live list: real cards open only for the listed subscription', () => {
+  it('another partner: no card button in any family, and a forged Pay now is refused (409 PAY_ACTION_OFF), nothing opened', async () => {
+    railOverride = realProvider({ savesCards: false });
+    const owner = await makeStore();
+    process.env['CARD_RAIL_LIVE_SUBSCRIPTIONS'] = owner.subId;
+    for (const other of [await makeStore(), await makeRider(), await makeDriver()]) {
+      for (const platform of ['android', 'web', 'ios']) {
+        expect(await cardActionOf(other, { 'x-client-platform': platform }), `${other.family} ${platform}`).toEqual({ id: 'CARD', state: 'off' });
+      }
+      const refused = await startSession(other, 'PAY_NOW');
+      expect(refused.statusCode, refused.body).toBe(409);
+      expect(refused.json().error.code).toBe('PAY_ACTION_OFF');
+      expect(await app.prisma.cardSession.count({ where: { subscriptionId: other.subId } })).toBe(0);
+    }
+  });
+
+  it('the listed subscription: the card button, at the server\'s price, and its Pay now opens', async () => {
+    railOverride = realProvider({ savesCards: false });
+    const owner = await makeStore();
+    process.env['CARD_RAIL_LIVE_SUBSCRIPTIONS'] = ` ${owner.subId} `;
+    const quote = await runtime.billing.quoteCardPayNow(owner.subId);
+    expect(await cardActionOf(owner)).toEqual({
+      id: 'CARD', state: 'live', payNow: { amount: quote.amount, currencyCode: quote.currencyCode }, addCard: false, cardOnFile: null, testMode: false,
+    });
+    const opened = await startSession(owner, 'PAY_NOW');
+    expect(opened.statusCode, opened.body).toBe(201);
+    expect(await app.prisma.cardSession.count({ where: { subscriptionId: owner.subId } })).toBe(1);
+  });
+
+  it('off production, the list emptied: every eligible partner sees the card again (in production the go-live is `*`)', async () => {
+    railOverride = realProvider({ savesCards: false });
+    const other = await makeRider();
+    process.env['CARD_RAIL_LIVE_SUBSCRIPTIONS'] = 'cmownersub0000000000000001';
+    expect(await cardActionOf(other)).toEqual({ id: 'CARD', state: 'off' });
+    process.env['CARD_RAIL_LIVE_SUBSCRIPTIONS'] = '';
+    expect((await cardActionOf(other))['state']).toBe('live');
+  });
+
+  // [Review #2465-A2 S4-3] The production go-live at the routes: `*` alone opens real cards for every eligible
+  // partner in every family (button and Pay now), while in production an unset or emptied list serves nobody
+  // (B-2), and `*` mixed with an id is malformed: it never widens past the id it names.
+  it('[A2 S4-3] production: `*` opens the card for every family; unset or empty serves nobody; `*` with an id is never everyone', async () => {
+    railOverride = realProvider({ savesCards: false });
+    const parts = [await makeStore(), await makeRider(), await makeDriver()];
+    const nodeEnv = process.env['NODE_ENV'];
+    process.env['NODE_ENV'] = 'production';
+    try {
+      for (const list of [undefined, '']) {
+        if (list === undefined) delete process.env['CARD_RAIL_LIVE_SUBSCRIPTIONS']; else process.env['CARD_RAIL_LIVE_SUBSCRIPTIONS'] = list;
+        for (const p of parts) expect(await cardActionOf(p), `${p.family} ${String(list)}`).toEqual({ id: 'CARD', state: 'off' });
+        const refused = await startSession(parts[1]!, 'PAY_NOW');
+        expect(refused.statusCode, refused.body).toBe(409);
+        expect(refused.json().error.code).toBe('PAY_ACTION_OFF');
+      }
+      process.env['CARD_RAIL_LIVE_SUBSCRIPTIONS'] = `*,${parts[0]!.subId}`;
+      expect(await cardActionOf(parts[1]!)).toEqual({ id: 'CARD', state: 'off' });
+      process.env['CARD_RAIL_LIVE_SUBSCRIPTIONS'] = ' * ';
+      for (const p of parts) {
+        const quote = await runtime.billing.quoteCardPayNow(p.subId);
+        expect(await cardActionOf(p), p.family).toEqual({
+          id: 'CARD', state: 'live', payNow: { amount: quote.amount, currencyCode: quote.currencyCode }, addCard: false, cardOnFile: null, testMode: false,
+        });
+      }
+      const opened = await startSession(parts[1]!, 'PAY_NOW');
+      expect(opened.statusCode, opened.body).toBe(201);
+      expect(await app.prisma.cardSession.count({ where: { subscriptionId: parts[1]!.subId } })).toBe(1);
+    } finally {
+      process.env['NODE_ENV'] = nodeEnv;
+    }
   });
 });
 

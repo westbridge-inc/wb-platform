@@ -219,11 +219,19 @@ describe('[row 331 · CONFIG-GUARDS] every kill switch the API reads is in the r
     expect(kills.map((f) => f.setting).sort()).toEqual(read);
   });
 
+  // [CARDS-SWITCH-ON] ONE exception, pinned: production's boot guard refuses every near miss of the card kill
+  // switch's ON, so it reads "exactly '0'" once (utils/card-rail.ts assertProductionCardSwitches). That read only
+  // refuses to start; the switch is still OFF exactly at '1' (cardRailKilled, the same file), as registered.
+  const isProductionZeroCheck = (r: { file: string; name: string; op?: string; value?: string }) =>
+    r.file === 'utils/card-rail.ts' && r.name === 'CARD_RAIL_KILL' && r.op === '===' && r.value === "'0'";
   it('the register reads each switch exactly as the code does: off at the value 1, and nowhere else', () => {
-    for (const r of reads) {
+    for (const r of reads.filter((x) => !isProductionZeroCheck(x))) {
       expect(r.op, `${r.file} reads ${r.name} without comparing it`).toBeDefined();
       expect(r.value, `${r.file} compares ${r.name} to something other than '1'`).toBe("'1'");
     }
+    // The exception is exactly one read, in that one file, beside the '1' read that decides OFF there.
+    expect(reads.filter(isProductionZeroCheck)).toHaveLength(1);
+    expect(reads.filter((r) => r.file === 'utils/card-rail.ts' && r.name === 'CARD_RAIL_KILL' && r.op === '===' && r.value === "'1'")).toHaveLength(1);
     for (const f of kills) {
       expect(f.source, f.key).toBe('env');
       expect(f.offWhen, f.key).toBe('1');

@@ -308,6 +308,90 @@ describe('configuration (secrets named, never echoed)', () => {
   });
 });
 
+// [CARDS-SWITCH-ON] PowerTranz's written answer to Swift (4 Nov 2026, item 4)
+// gives production as https://gateway.ptranz.com/api/spi/ — its SPI address.
+// Swift's API root is the bare origin of guide sec. 3 (paths carry /api/...),
+// as on staging (https://staging.ptranz.com; the lookup at
+// https://staging.ptranz.com/api/Transactions/{id}, item 2). So the production
+// origin, or that exact SPI address, is accepted as the SAME bare root, and
+// every call is derived from it exactly as on staging. Everything else stays
+// refused: another path, a query, credentials, http, a host outside
+// ptranz.com, a test system for live cards, live cards off production.
+describe('[CARDS-SWITCH-ON] the production root: PowerTranz\'s production address, every path derived exactly as on staging', () => {
+  const live = {
+    NODE_ENV: 'production', CARD_RAIL_ENVIRONMENT: 'live', CARD_RAIL_ACCOUNT: 'swift-gy-live', POWERTRANZ_ID: 'LIVEID01', POWERTRANZ_PASSWORD: 'p@ss-not-real',
+    POWERTRANZ_PAGE_SET: 'PTZ/Swift', POWERTRANZ_PAGE_NAME: 'Weekly', API_PUBLIC_URL: 'https://api.example.test',
+  };
+  const sandbox = { ...live, NODE_ENV: 'development', CARD_RAIL_ENVIRONMENT: 'sandbox', CARD_RAIL_ACCOUNT: 'swift-gy' };
+
+  it('accepts the production origin and the SPI address PowerTranz wrote, as one bare root (staging by the same rule)', () => {
+    for (const url of ['https://gateway.ptranz.com', 'https://gateway.ptranz.com/', 'https://gateway.ptranz.com/api/spi', 'https://gateway.ptranz.com/api/spi/', 'https://GATEWAY.ptranz.com/api/spi/']) {
+      expect(powerTranzConfigFromEnv({ ...live, POWERTRANZ_API_URL: url }), url).toMatchObject({ environment: 'live', apiRoot: 'https://gateway.ptranz.com' });
+    }
+    for (const url of [undefined, '', 'https://staging.ptranz.com', 'https://staging.ptranz.com/api/spi/', 'https://staging.ptranz.com/api/spi']) {
+      expect(powerTranzConfigFromEnv({ ...sandbox, POWERTRANZ_API_URL: url }), String(url)).toMatchObject({ environment: 'sandbox', apiRoot: POWERTRANZ_SANDBOX_ROOT });
+    }
+  });
+
+  it('refuses any other path, a query, a fragment, credentials, http, another host, a test system for live cards, and live cards off production — naming the setting, never a value', () => {
+    const cases: Array<[Record<string, string | undefined>, RegExp]> = [
+      ...['/api', '/api/', '/spi', '/api/spi/sale', '/api/spi/payment', '/api/spix', '/api/spi//', '/api/Transactions/', '/api/refund', '/api/SPI/', '/x/api/spi/']
+        .map((path): [Record<string, string | undefined>, RegExp] => [{ ...live, POWERTRANZ_API_URL: `https://gateway.ptranz.com${path}` }, /POWERTRANZ_API_URL must be/]),
+      [{ ...live, POWERTRANZ_API_URL: 'https://gateway.ptranz.com/api/spi/?x=1' }, /POWERTRANZ_API_URL must be/],
+      [{ ...live, POWERTRANZ_API_URL: 'https://gateway.ptranz.com/api/spi/#x' }, /POWERTRANZ_API_URL must be/],
+      // An empty query or fragment reads as none to URL: still refused, by the text.
+      [{ ...live, POWERTRANZ_API_URL: 'https://gateway.ptranz.com/api/spi/?' }, /POWERTRANZ_API_URL must be/],
+      [{ ...live, POWERTRANZ_API_URL: 'https://gateway.ptranz.com#' }, /POWERTRANZ_API_URL must be/],
+      [{ ...live, POWERTRANZ_API_URL: 'https://user:pw@gateway.ptranz.com/api/spi/' }, /POWERTRANZ_API_URL must be/],
+      [{ ...live, POWERTRANZ_API_URL: 'http://gateway.ptranz.com/api/spi/' }, /POWERTRANZ_API_URL must be/],
+      [{ ...live, POWERTRANZ_API_URL: 'https://gateway.ptranz.com.example.test/api/spi/' }, /ptranz\.com/],
+      [{ ...live, POWERTRANZ_API_URL: 'https://gatewayptranz.com/api/spi/' }, /ptranz\.com/],
+      [{ ...live, POWERTRANZ_API_URL: 'https://staging.ptranz.com/api/spi/' }, /test system/],
+      [{ ...live, POWERTRANZ_API_URL: undefined }, /POWERTRANZ_API_URL is required/],
+      [{ ...live, NODE_ENV: 'development', POWERTRANZ_API_URL: 'https://gateway.ptranz.com/api/spi/' }, /only on the production server/],
+      [{ ...sandbox, POWERTRANZ_API_URL: 'https://gateway.ptranz.com/api/spi/' }, /not a test system/],
+    ];
+    for (const [env, message] of cases) {
+      let thrown: unknown;
+      try { powerTranzConfigFromEnv(env); } catch (err) { thrown = err; }
+      expect(thrown, String(env['POWERTRANZ_API_URL'])).toBeInstanceOf(PowerTranzConfigError);
+      expect((thrown as Error).message, String(env['POWERTRANZ_API_URL'])).toMatch(message);
+      expect((thrown as Error).message).not.toContain('p@ss-not-real');
+      expect((thrown as Error).message).not.toContain('user:pw');
+    }
+  });
+
+  it('every call — page, completion, refund, void, lookup, self-check — goes to <root>/api/... on production exactly as on staging', async () => {
+    const seen: Record<string, string[]> = {};
+    const original = randomUUID(); // one original transaction for both roots (each provider has its own account)
+    for (const [root, env] of [
+      ['https://gateway.ptranz.com', { ...live, POWERTRANZ_API_URL: 'https://gateway.ptranz.com/api/spi/' }],
+      [POWERTRANZ_SANDBOX_ROOT, sandbox],
+    ] as const) {
+      const config = powerTranzConfigFromEnv(env);
+      expect(config.apiRoot).toBe(root);
+      let page!: Awaited<ReturnType<typeof openPage>>;
+      const gw = gateway({ '/api/spi/sale': preprocessed, '/api/spi/payment': () => completion({})(page) });
+      const p = new PowerTranzCardRailProvider(redis, { ...config, account: `root-${nanoid(6).replace(/[^A-Za-z0-9]/g, '0')}` }, { fetch: gw.fetch, keyPrefix: PREFIX });
+      page = await openPage(p);
+      await p.noteReturn({ binding: p.binding, providerSessionRef: page.ref, params: authResult(page, {}) });
+      expect(await p.confirm({ binding: p.binding, providerSessionRef: page.ref, purpose: 'PAY_NOW' })).toMatchObject({ status: 'succeeded' });
+      await p.refund({ binding: p.binding, providerRef: original, amountMinor: 210_000, currencyCode: 'GYD', idempotencyKey: `refund-${nanoid(6)}` });
+      await p.voidPayment({ binding: p.binding, providerRef: original, idempotencyKey: `void-${nanoid(6)}` });
+      await p.lookupTransaction({ binding: p.binding, providerRef: original, orderRef: page.orderId, amountMinor: 210_000, currencyCode: 'GYD' });
+      await p.selfCheck({ preprocess: false, returnUrl: RETURN_URL });
+      expect(gw.calls.every((c) => c.url.startsWith(`${root}/api/`)), JSON.stringify(gw.calls.map((c) => c.url))).toBe(true);
+      expect(gw.calls.map((c) => c.url)).toEqual([
+        `${root}/api/spi/sale`, `${root}/api/spi/payment`, `${root}/api/refund`, `${root}/api/void`,
+        `${root}/api/Transactions/${original}`, `${root}/api/alive`, `${root}/api/spi/riskmgmt`,
+      ]);
+      seen[root] = gw.calls.map((c) => new URL(c.url).pathname);
+    }
+    // The same paths on both: only the origin differs.
+    expect(seen['https://gateway.ptranz.com']).toEqual(seen[POWERTRANZ_SANDBOX_ROOT]);
+  });
+});
+
 describe('amounts and currencies (sec. 5.1 DEC 18,3; ISO 4217 numeric)', () => {
   it('minor units <-> TotalAmount, exactly, and nothing finer than the currency allows', () => {
     expect(totalAmountOf(210_000, 'GYD')).toBe(2100);

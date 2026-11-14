@@ -35,11 +35,8 @@ export const launch = {
     services: 'live' as LaunchState,
   },
 
-  /** [Q36] Visa and Mastercard, through the bank's card gateway, for Swift's
-   *  OWN charges — the weekly partner fee, and advertising a business chooses
-   *  to buy. Orders are never paid by card: the
-   *  API accepts only cash or the store's own MMG for an order. Flip to 'live'
-   *  only when a partner can pay the weekly fee by card end to end; until then
-   *  every card mark on the site says "coming soon". */
-  cardPayments: 'soon' as LaunchState,
+  // [Q36 · CARDS-SWITCH-ON · review #2465-B F4] Visa and Mastercard are no longer a build-time value here: the site
+  // lists them only while the API says a partner can pay the weekly fee by card right now (GET
+  // /api/v1/public/capabilities → cardPayments; lib/card-payments-state.ts, components/cards-live.tsx). Orders are
+  // never paid by card: the API accepts only cash or the store's own MMG for an order.
 } as const;

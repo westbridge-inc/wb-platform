@@ -2,7 +2,7 @@ import { existsSync, readdirSync } from 'node:fs';
 import { join, relative, sep } from 'node:path';
 import { cleanup, render, screen, within } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
-import { launch, site } from '@/site.config';
+import { site } from '@/site.config';
 
 // ---------------------------------------------------------------------------
 // [Q36] The card bank's minimum website information. The bank is sent a
@@ -140,15 +140,15 @@ describe('[Q36] the minimum website information the card bank requires', () => {
     expect(screen.getByRole('region', { name: 'Company facts' }).textContent).toContain(`Registered and located in${site.registeredCity}, ${site.country}`);
   });
 
-  // The card marks join the list only once cards are accepted (the partner
-  // checkout census forbids teasing a method early), and the official artwork
-  // waits on the brands' own terms, which only the company can accept: until
-  // both, the bank's ninth item is shown as the methods that work today.
-  it('9 · Payment methods: cash and MMG today, Visa and Mastercard exactly when cards are live', async () => {
+  // The card marks join the list only once the server says partners can pay by card (the partner checkout census
+  // forbids teasing a method early; payment-methods-flag.test.tsx follows the server's answer), and the official
+  // artwork waits on the brands' own terms, which only the company can accept: until both, the bank's ninth item is
+  // shown as the methods that work today.
+  it('9 · Payment methods: cash and MMG today, Visa and Mastercard only when the server says cards are live', async () => {
     await renderRoute('/about');
     const methods = within(footer()).getByRole('region', { name: 'Payment methods' });
     const listed = within(methods).getAllByRole('listitem').map((item) => item.textContent ?? '');
-    expect(listed).toEqual(['Cash', 'MMG', ...(launch.cardPayments === 'live' ? ['Visa', 'Mastercard'] : [])]);
+    expect(listed).toEqual(['Cash', 'MMG']);
   });
 });
 

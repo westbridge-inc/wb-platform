@@ -12,6 +12,7 @@ import { readPublicHomeNotice } from '../ops/home-notice';
 import { emergencyPolicyCounter } from '../../plugins/observability';
 import { notProhibitedStore, PUBLIC_VENDOR_TENANT } from '../vendor/vendor-visibility';
 import { adsEnabled } from '../ads/ads-enabled';
+import { cardPaymentsOffered } from '../billing/card-checkout-switch';
 import { hiddenAmong, prohibitedStoreIds, storeHiddenFromCustomers } from '../compliance/prohibited-gate';
 import { publicStorefrontSeller } from '../verification/storefront-seller';
 import { brandBranchesFor } from '../vendor/brand';
@@ -121,9 +122,16 @@ const resolvePublicTenantId = resolvePublicMarketTenant;
 export async function publicRoutes(app: FastifyInstance) {
   // Guests need the same server truth as authenticated clients. Never cache
   // an opt-in at the HTTP layer after an operator switches advertising off.
-  app.get('/capabilities', async (_request, reply) => {
+  // [CARDS-SWITCH-ON · review #2465-B F4] cardPayments: 'live' only while a partner can pay the weekly fee by card on
+  // this server (card-checkout-switch.ts cardPaymentsOffered); the public site lists Visa and Mastercard only then.
+  // Any failure to read it answers 'soon': a card is never claimed on a guess.
+  app.get('/capabilities', async (request, reply) => {
     reply.header('Cache-Control', 'no-store');
-    return { success: true, data: { adsEnabled: adsEnabled() } };
+    const cardPayments = await cardPaymentsOffered(app.prisma).then(
+      (on) => (on ? 'live' : 'soon'),
+      (err: unknown) => { request.log.warn({ err }, '[CARDS-SWITCH-ON] the card switches could not be read; capabilities say cards are not live'); return 'soon'; },
+    );
+    return { success: true, data: { adsEnabled: adsEnabled(), cardPayments } };
   });
   /**
    * [Row 3 · force update] The oldest phone build Swift still serves, per platform

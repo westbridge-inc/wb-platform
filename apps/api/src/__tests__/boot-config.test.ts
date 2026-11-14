@@ -6,6 +6,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { assertSafeBootConfig, assertProductionData, assertWallLoginConfig, ORDER_HOLD_FLOOR_MIN } from '../utils/boot-config';
+import { applySecretFiles } from '../utils/secret-files';
 import { PUBLICATION_LEASE_MS, publicationHeartbeatMs, publicationLeaseMs } from '../modules/billing/settlement-publication-lease';
 import { testControlIdentity } from '../modules/ops/test-control';
 import { identitySalt } from '../modules/integrity/normalize';
@@ -55,8 +56,8 @@ const good: Record<string, string | undefined> = {
   PUSH_PROVIDER: 'expo',
   JWT_SECRET: 'test-jwt-secret-at-least-32-characters',
   KYC_PROVIDER: 'manual',
-  // [LAUNCH-LOCK] Production takes no card payment until an attorney signs
-  // off (owner ruling, 13 Oct): the valid production base has cards off. The
+  // [CARDS-SWITCH-ON] Production boots with cards off until the owner's
+  // go-cards ruling (OWNER-DECISIONS, dated at the go): the valid production base has cards off. The
   // live Stripe key stays so a case that switches the provider back on still
   // passes the provider's own checks and reaches the lock.
   PAYMENT_PROVIDER: 'disabled',
@@ -1005,12 +1006,12 @@ describe('[PT-1 · PT-4] card rail v2 in production: only the real provider set 
     POWERTRANZ_API_URL: 'https://gateway.ptranz.com', POWERTRANZ_ID: 'LIVEID01', POWERTRANZ_PASSWORD: 'not-a-real-password',
     POWERTRANZ_PAGE_SET: 'PTZ/Swift', POWERTRANZ_PAGE_NAME: 'Weekly', API_PUBLIC_URL: 'https://api.example.com',
   };
-  // [LAUNCH-LOCK] Until an attorney signs off (owner ruling, 13 Oct) the
-  // launch lock refuses v2 in production AFTER every PT-4 check: its own
-  // message (never PT-4's "CARD_RAIL_V2=1 in production …") proves the live
-  // setup passed them all.
-  it('[PT-4] the real provider fully set up for live cards passes every card check (and drains on the same terms), and only the launch lock refuses it', () => {
-    expect(() => assertSafeBootConfig({ ...good, ...liveCards })).toThrow(/^FATAL: CARD_RAIL_V2 must be unset or 0 in production/);
+  // [CARDS-SWITCH-ON] The real provider fully set up for live cards passes
+  // every PT-4 check: with the kill switch on (the base) it boots, paused; the
+  // drain switch passes PT-4 too and only the kept lock refuses it — its own
+  // message (never PT-4's "CARD_RAIL_V2_DRAIN=1 in production …") proves it.
+  it('[PT-4] the real provider fully set up for live cards passes every card check and boots (kill switch on: paused); its drain passes them and only the kept lock refuses it', () => {
+    expect(() => assertSafeBootConfig({ ...good, ...liveCards })).not.toThrow();
     expect(() => assertSafeBootConfig({ ...good, ...liveCards, CARD_RAIL_V2: '0', CARD_RAIL_V2_DRAIN: '1' })).toThrow(/^FATAL: CARD_RAIL_V2_DRAIN must be unset or 0 in production/);
   });
   it('[PT-4] refuses anything less: sandbox, a test URL, a missing credential or page, http — never echoing a value', () => {
@@ -1125,8 +1126,8 @@ describe('[PT-1 · PT-4] card rail v2 in production: only the real provider set 
         .toThrow(/live \(real cards\) outside production/);
     }
     expect(() => assertSafeBootConfig({ NODE_ENV: 'development', CARD_RAIL_PROVIDER: 'powertranz', CARD_RAIL_ENVIRONMENT: 'sandbox', API_PUBLIC_URL: 'https://api-test.example.test' })).not.toThrow();
-    // Production is the only mode whose card checks accept live cards; the launch lock then refuses them.
-    expect(() => assertSafeBootConfig({ ...good, ...liveCards })).toThrow(/^FATAL: CARD_RAIL_V2 must be unset or 0 in production/);
+    // Production is the only mode whose card checks accept live cards (boot-config's card switches then decide).
+    expect(() => assertSafeBootConfig({ ...good, ...liveCards })).not.toThrow();
   });
 
   // [CARD-STAGING-TEST 10 Nov 2026] Staging ran card rail v2 on the provider's sandbox with the credentials missing from
@@ -1390,93 +1391,267 @@ describe('production address lookup is an explicit deployment choice', () => {
 });
 
 // ---------------------------------------------------------------------------
-// [LAUNCH-LOCK] Owner ruling, 13 Oct 2026 (#34, GUARDRAILS §8): until an
-// attorney signs off, production takes no card payment and runs no ads. Both
-// were already off by default; production now REFUSES TO BOOT with either on,
-// so turning one on is a reviewed code change, never a deploy/.env edit.
-// pilot-up.sh refuses the same settings (deploy-prod-path.test.ts).
+// [LAUNCH-LOCK → CARDS-SWITCH-ON] Production's card and ad switches.
+//   - Owner ruling 13 Oct 2026 (#34): production refused to boot with the card
+//     rail or ads on "until an attorney signs off".
+//   - Owner ruling 15 Oct 2026 (GUARDRAILS §8) replaced the attorney gate:
+//     Swift runs on the owner's documented answers, and what could be
+//     criminal stays off until a lawyer confirms it. For cards that is
+//     recurring card charges (saved cards); for ads, ads (owner 6 Nov: off at
+//     launch).
+//   - Cards ON rests on the owner's go-cards ruling (OWNER-DECISIONS, dated at
+//     the go); owner ruling 7 Oct 2026 (option A) described this change's shape:
+//     CARD_RAIL_KILL=0 with PAYMENT_PROVIDER=disabled ONLY when CARD_RAIL_V2=1 and
+//     the live card setup is complete.
+// So production boots cards OFF exactly as before, Pay now ON only on the real
+// provider with real cards, and the rollback (the kill switch back to 1 with v2
+// left on) — and still refuses saved cards, the drain switch, the legacy seam,
+// every test system and ads. pilot-up.sh holds the same rule
+// (deploy-prod-path.test.ts).
 // ---------------------------------------------------------------------------
-describe('[LAUNCH-LOCK] production refuses to boot with card payments or ads on', () => {
+describe('[CARDS-SWITCH-ON] production card and ad switches: cards off by default, Pay now only with real cards, saved cards and ads never', () => {
   const liveStripe = { PAYMENT_PROVIDER: 'stripe', STRIPE_SECRET_KEY: 'sk_live_boot_config_test' };
   const livePowerTranz = { PAYMENT_PROVIDER: 'powertranz', PAYMENT_GATEWAY_KEY: 'gateway-id', PAYMENT_GATEWAY_SECRET: 'gateway-secret', POWERTRANZ_API_URL: 'https://gateway.ptranz.com' };
+  /** The real provider, completely set up for live cards, with no switch set. */
   const liveCardRail = {
     CARD_RAIL_PROVIDER: 'powertranz', CARD_RAIL_ENVIRONMENT: 'live', CARD_RAIL_ACCOUNT: 'swift-gy',
     POWERTRANZ_API_URL: 'https://gateway.ptranz.com', POWERTRANZ_ID: 'LIVEID01', POWERTRANZ_PASSWORD: 'not-a-real-password',
     POWERTRANZ_PAGE_SET: 'PTZ/Swift', POWERTRANZ_PAGE_NAME: 'Weekly', API_PUBLIC_URL: 'https://api.example.com',
   };
+  /** The switch-on: Pay now by card on the provider's hosted page, real cards. */
+  // [Review #2465-B B-2] Cards on names who real cards serve: Monday's posture, the owner's own subscription only.
+  const cardsOn = { ...liveCardRail, CARD_RAIL_V2: '1', CARD_RAIL_KILL: '0', CARD_RAIL_LIVE_SUBSCRIPTIONS: 'cmownersub0000000000000001' };
+  /** The rollback: the kill switch back on; v2 stays on, so open card payments are still confirmed. */
+  const cardsPaused = { ...liveCardRail, CARD_RAIL_V2: '1', CARD_RAIL_KILL: '1' };
+  const refusal = (env: Record<string, string | undefined>): string => {
+    try { assertSafeBootConfig(env); } catch (error) { return (error as Error).message; }
+    return '';
+  };
 
-  it('boots with cards off and ads off: the locked switches unset, empty or 0', () => {
+  it('UNCHANGED: production boots exactly as today with cards off and ads off (the locked switches unset, empty or 0)', () => {
     expect(() => assertSafeBootConfig(good)).not.toThrow();
+    expect(() => assertSafeBootConfig(cardOff)).not.toThrow();
     for (const off of [undefined, '', '0']) {
       expect(() => assertSafeBootConfig({ ...good, CARD_RAIL_V2: off, CARD_RAIL_V2_DRAIN: off, CARD_RAIL_ENROLL: off, ADS_ENABLED: off }), String(off)).not.toThrow();
     }
   });
 
-  it.each([
-    ['a live Stripe key', liveStripe],
-    ['live PowerTranz', livePowerTranz],
-  ])('refuses the legacy card provider (%s) that production used to accept, by name', (_label, provider) => {
-    expect(() => assertSafeBootConfig({ ...good, ...provider })).toThrow(/^FATAL: PAYMENT_PROVIDER must be exactly disabled in production/);
+  it('LIFTED: Pay now by card boots — CARD_RAIL_KILL=0 with CARD_RAIL_V2=1 on the real provider, live cards, completely set up', () => {
+    expect(refusal({ ...good, ...cardsOn })).toBe('');
+    expect(refusal({ ...cardOff, ...cardsOn })).toBe('');
+    // The kept switches spelled out as off change nothing.
+    for (const off of ['', '0']) {
+      expect(refusal({ ...good, ...cardsOn, CARD_RAIL_V2_DRAIN: off, CARD_RAIL_ENROLL: off, ADS_ENABLED: off, CARD_RAIL_SIMULATOR_LIVE: off }), JSON.stringify(off)).toBe('');
+    }
+    // The address PowerTranz wrote for production (its SPI path) is the same root.
+    expect(refusal({ ...good, ...cardsOn, POWERTRANZ_API_URL: 'https://gateway.ptranz.com/api/spi/' })).toBe('');
   });
 
-  it('refuses a provider without the kill switch: cards off means PAYMENT_PROVIDER=disabled AND CARD_RAIL_KILL=1', () => {
-    for (const kill of [undefined, '', '0', 'true']) {
-      expect(() => assertSafeBootConfig({ ...good, CARD_RAIL_KILL: kill }), String(kill)).toThrow(/CARD_RAIL_KILL/);
+  it('LIFTED: the rollback boots — CARD_RAIL_KILL=1 with CARD_RAIL_V2=1 left on (no new card payment; open ones are still confirmed)', () => {
+    expect(refusal({ ...good, ...cardsPaused })).toBe('');
+  });
+
+  it('KEPT: the kill switch is exactly 1 (cards off) or exactly 0 (cards on); no near miss is read as either', () => {
+    for (const kill of [undefined, '', 'true', ' 1', '01', '00', '0 ', 'off', 'false']) {
+      for (const [label, base] of [['cards off', good], ['the switch-on set', { ...good, ...cardsOn }]] as const) {
+        expect(refusal({ ...base, CARD_RAIL_KILL: kill }), `${label} ${JSON.stringify(kill)}`).toMatch(/^FATAL: CARD_RAIL_KILL must be exactly 1 \(cards off\) or exactly 0 \(cards on\) in production/);
+      }
     }
   });
 
-  // [CARD-DECOUPLE · 9 Nov] Card rail v2 no longer reads PAYMENT_PROVIDER (a
-  // test server runs v2 on the sandbox with the legacy seam disabled), so the
-  // card kill switch is a launch lock of its own, by its own message — never
-  // inferred from PAYMENT_PROVIDER=disabled.
-  it('[CARD-DECOUPLE] refuses the card kill switch off by its own launch-lock message', () => {
-    for (const kill of [undefined, '', '0', 'true', ' 1', '01']) {
-      expect(() => assertSafeBootConfig({ ...good, CARD_RAIL_KILL: kill }), String(kill)).toThrow(/^FATAL: CARD_RAIL_KILL must be exactly 1 in production/);
-    }
-  });
-
-  it('[CARD-DECOUPLE] refuses every card-on combination, including a test server\'s v2 set', () => {
+  it('KEPT: the kill switch off needs card rail v2 on, on the real provider, with real cards', () => {
+    const needs = /^FATAL: CARD_RAIL_KILL=0 \(cards on\) in production needs CARD_RAIL_V2=1, CARD_RAIL_PROVIDER=powertranz and CARD_RAIL_ENVIRONMENT=live/;
     const cases: Array<[string, Record<string, string | undefined>, RegExp]> = [
-      ['kill switch off, v2 off', { CARD_RAIL_KILL: '0' }, /^FATAL: CARD_RAIL_KILL must be exactly 1 in production/],
-      ['v2 on, kill switch on', { ...liveCardRail, CARD_RAIL_V2: '1' }, /^FATAL: CARD_RAIL_V2 must be unset or 0 in production/],
-      ['v2 on, kill switch off', { ...liveCardRail, CARD_RAIL_V2: '1', CARD_RAIL_KILL: '0' }, /^FATAL: CARD_RAIL_KILL must be exactly 1 in production/],
-      ['v2 on, kill switch unset', { ...liveCardRail, CARD_RAIL_V2: '1', CARD_RAIL_KILL: undefined }, /^FATAL: CARD_RAIL_KILL must be exactly 1 in production/],
-      ['drain on, kill switch off', { ...liveCardRail, CARD_RAIL_V2_DRAIN: '1', CARD_RAIL_KILL: '0' }, /^FATAL: CARD_RAIL_KILL must be exactly 1 in production/],
-      ['saving cards on, kill switch off', { CARD_RAIL_ENROLL: '1', CARD_RAIL_KILL: '0' }, /^FATAL: CARD_RAIL_KILL must be exactly 1 in production/],
-      ['legacy PowerTranz, kill switch off', { ...livePowerTranz, CARD_RAIL_KILL: '0' }, /^FATAL: PAYMENT_PROVIDER must be exactly disabled in production/],
-      ['legacy Stripe, kill switch off', { ...liveStripe, CARD_RAIL_KILL: '0' }, /^FATAL: PAYMENT_PROVIDER must be exactly disabled in production/],
-      ['legacy PowerTranz beside v2', { ...livePowerTranz, ...liveCardRail, CARD_RAIL_V2: '1' }, /^FATAL: PAYMENT_PROVIDER must be exactly disabled in production/],
-      ['a test server\'s v2 set (sandbox)', {
-        PAYMENT_PROVIDER: 'disabled', CARD_RAIL_KILL: '0', CARD_RAIL_V2: '1', CARD_RAIL_PROVIDER: 'powertranz', CARD_RAIL_ENVIRONMENT: 'sandbox',
-        CARD_RAIL_ACCOUNT: 'swift-gy', POWERTRANZ_ID: 'TESTID01', POWERTRANZ_PASSWORD: 'not-a-real-password',
-        POWERTRANZ_PAGE_SET: 'PTZ/Swift', POWERTRANZ_PAGE_NAME: 'Weekly', API_PUBLIC_URL: 'https://api.example.com',
-      }, /^FATAL: /],
+      ['kill off, v2 unset, nothing set up', { CARD_RAIL_KILL: '0' }, needs],
+      ['kill off, v2 0, live setup', { ...cardsOn, CARD_RAIL_V2: '0' }, needs],
+      ['kill off, v2 unset, live setup', { ...cardsOn, CARD_RAIL_V2: undefined }, needs],
+      ['kill off, v2 empty, live setup', { ...cardsOn, CARD_RAIL_V2: '' }, needs],
+      // PT-4 refuses these first (v2 on production is the real provider with live cards only).
+      ['kill off, v2 on, the provider\'s sandbox', { ...cardsOn, CARD_RAIL_ENVIRONMENT: 'sandbox', POWERTRANZ_API_URL: 'https://staging.ptranz.com' }, /^FATAL: CARD_RAIL_V2=1 in production, but the card provider is not fully set up for live cards: .*real cards only/],
+      ['kill off, v2 on, no environment', { ...cardsOn, CARD_RAIL_ENVIRONMENT: undefined }, /^FATAL: CARD_RAIL_V2=1 in production, but the card provider is not fully set up/],
+      ['kill off, v2 on, the simulator', { ...cardsOn, CARD_RAIL_PROVIDER: 'simulator' }, /CARD_RAIL_PROVIDER=simulator/],
+      ['kill off, v2 on, no provider', { ...cardsOn, CARD_RAIL_PROVIDER: undefined }, /^FATAL: CARD_RAIL_V2=1 in production needs CARD_RAIL_PROVIDER=powertranz/],
+      ['kill off, v2 on, the simulator\'s test switch', { ...cardsOn, CARD_RAIL_SIMULATOR_LIVE: '1' }, /CARD_RAIL_SIMULATOR_LIVE/],
     ];
-    for (const [label, env, refusal] of cases) {
-      expect(() => assertSafeBootConfig({ ...good, ...env }), label).toThrow(refusal);
+    for (const [label, env, message] of cases) {
+      expect(refusal({ ...good, ...env }), label).toMatch(message);
     }
   });
 
-  it('refuses card rail v2, its drain and saving cards with the real provider fully set up for live cards (each passed every card check before)', () => {
-    expect(() => assertSafeBootConfig({ ...good, ...liveCardRail, CARD_RAIL_V2: '1' })).toThrow(/^FATAL: CARD_RAIL_V2 must be unset or 0 in production/);
-    expect(() => assertSafeBootConfig({ ...good, ...liveCardRail, CARD_RAIL_V2_DRAIN: '1' })).toThrow(/^FATAL: CARD_RAIL_V2_DRAIN must be unset or 0 in production/);
-    expect(() => assertSafeBootConfig({ ...good, CARD_RAIL_ENROLL: '1' })).toThrow(/^FATAL: CARD_RAIL_ENROLL must be unset or 0 in production/);
+  it('KEPT: with cards on, anything less than the complete live setup refuses to start, naming the setting, never a value', () => {
+    const cases: Array<[Record<string, string | undefined>, RegExp]> = [
+      [{ POWERTRANZ_API_URL: undefined }, /POWERTRANZ_API_URL/],
+      [{ POWERTRANZ_API_URL: 'https://staging.ptranz.com' }, /test system/],
+      [{ POWERTRANZ_API_URL: 'https://gateway.example.com' }, /ptranz\.com/],
+      [{ POWERTRANZ_API_URL: 'https://gateway.ptranz.com/api/spi/sale' }, /POWERTRANZ_API_URL/],
+      [{ POWERTRANZ_API_URL: 'http://gateway.ptranz.com' }, /POWERTRANZ_API_URL/],
+      [{ POWERTRANZ_ID: undefined }, /POWERTRANZ_ID/],
+      [{ POWERTRANZ_PASSWORD: undefined }, /POWERTRANZ_PASSWORD/],
+      [{ POWERTRANZ_PAGE_SET: undefined }, /POWERTRANZ_PAGE_SET and POWERTRANZ_PAGE_NAME/],
+      [{ CARD_RAIL_ACCOUNT: undefined }, /CARD_RAIL_ACCOUNT/],
+      [{ API_PUBLIC_URL: 'http://api.example.com' }, /API_PUBLIC_URL/],
+    ];
+    for (const [patch, message] of cases) {
+      const thrown = refusal({ ...good, ...cardsOn, ...patch });
+      expect(thrown, JSON.stringify(patch)).toMatch(/^FATAL: CARD_RAIL_V2=1 in production, but the card provider is not fully set up/);
+      expect(thrown).toMatch(message);
+      expect(thrown).not.toContain('not-a-real-password');
+    }
   });
 
-  it.each(['1', 'true', 'yes', 'on', ' 1', '01'])('refuses ADS_ENABLED=%j: no ads in production, and no near miss either', (value) => {
-    expect(() => assertSafeBootConfig({ ...good, ADS_ENABLED: value })).toThrow(/^FATAL: ADS_ENABLED must be unset or 0 in production/);
+  it('KEPT: saved cards and automatic weekly card charges (CARD_RAIL_ENROLL) stay refused — cards off, on or paused; no near miss either', () => {
+    for (const [label, base] of [['cards off', good], ['cards on', { ...good, ...cardsOn }], ['cards paused', { ...good, ...cardsPaused }]] as const) {
+      for (const value of ['1', 'true', 'yes', 'on', ' 1', '01']) {
+        const thrown = refusal({ ...base, CARD_RAIL_ENROLL: value });
+        expect(thrown, `${label} ${JSON.stringify(value)}`).toMatch(/^FATAL: CARD_RAIL_ENROLL must be unset or 0 in production/);
+        expect(thrown).toMatch(/GUARDRAILS §8/);
+      }
+    }
   });
 
-  it.each(['true', 'yes', 'on', ' 1'])('refuses CARD_RAIL_ENROLL=%j: no near miss is read as off', (value) => {
-    expect(() => assertSafeBootConfig({ ...good, CARD_RAIL_ENROLL: value })).toThrow(/^FATAL: CARD_RAIL_ENROLL must be unset or 0 in production/);
+  it('KEPT: the drain switch stays refused — the rollback is the kill switch with v2 left on', () => {
+    for (const [label, env] of [
+      ['cards on', cardsOn],
+      ['cards paused', cardsPaused],
+      ['v2 off, the live setup present', { ...liveCardRail, CARD_RAIL_V2: '0' }],
+    ] as const) {
+      const thrown = refusal({ ...good, ...env, CARD_RAIL_V2_DRAIN: '1' });
+      expect(thrown, label).toMatch(/^FATAL: CARD_RAIL_V2_DRAIN must be unset or 0 in production/);
+      expect(thrown).toMatch(/CARD_RAIL_KILL=1/);
+    }
   });
 
-  it('names the setting and the ruling, never a credential', () => {
-    let message = '';
-    try { assertSafeBootConfig({ ...good, ...liveCardRail, CARD_RAIL_V2: '1' }); } catch (error) { message = (error as Error).message; }
-    expect(message).toMatch(/attorney signs off/);
-    expect(message).toMatch(/reviewed code change/);
-    expect(message).not.toContain('not-a-real-password');
+  it('KEPT: the legacy card seam (PAYMENT_PROVIDER) stays exactly disabled, cards off or on', () => {
+    for (const [label, provider] of [['a live Stripe key', liveStripe], ['live legacy PowerTranz', livePowerTranz]] as const) {
+      expect(refusal({ ...good, ...provider }), label).toMatch(/^FATAL: PAYMENT_PROVIDER must be exactly disabled in production/);
+      expect(refusal({ ...good, ...cardsOn, ...provider }), `${label}, cards on`).toMatch(/^FATAL: PAYMENT_PROVIDER must be exactly disabled in production/);
+    }
+    for (const provider of [undefined, '', 'sandbox', 'Disabled', 'disabled ']) {
+      expect(refusal({ ...good, ...cardsOn, PAYMENT_PROVIDER: provider }), String(provider)).toMatch(/^FATAL: PAYMENT_PROVIDER must be/);
+    }
+  });
+
+  it('KEPT: ads stay refused, cards off or on; no near miss either', () => {
+    for (const value of ['1', 'true', 'yes', 'on', ' 1', '01']) {
+      for (const base of [good, { ...good, ...cardsOn }]) {
+        expect(refusal({ ...base, ADS_ENABLED: value }), value).toMatch(/^FATAL: ADS_ENABLED must be unset or 0 in production/);
+      }
+    }
+  });
+
+  it('every refusal names the setting and the owner\'s ruling — never an attorney sign-off, never a credential', () => {
+    const ruled = [
+      refusal({ ...good, ...liveStripe }),
+      refusal({ ...good, CARD_RAIL_KILL: '0' }),
+      refusal({ ...good, CARD_RAIL_KILL: 'yes' }),
+      refusal({ ...good, ...cardsOn, CARD_RAIL_ENROLL: '1' }),
+      refusal({ ...good, ...cardsOn, ADS_ENABLED: '1' }),
+    ];
+    for (const message of [...ruled, refusal({ ...good, ...cardsOn, CARD_RAIL_V2_DRAIN: '1' })]) {
+      expect(message).toMatch(/^FATAL: /);
+      expect(message).toMatch(/reviewed code change/);
+      expect(message).not.toMatch(/attorney/i);
+      expect(message).not.toContain('not-a-real-password');
+    }
+    // [Review #2465-B B3] Cards ON cites the owner's go-cards ruling; saved cards and ads keep their own rulings.
+    const GO_CARDS = /owner's go-cards ruling.*OWNER-DECISIONS, dated at the go/;
+    for (const message of ruled.slice(0, 3)) expect(message).toMatch(GO_CARDS);
+    for (const message of ruled) expect(message).not.toMatch(/7 Oct/);
+    expect(refusal({ ...good, ...cardsOn, CARD_RAIL_ENROLL: '1' })).toMatch(/GUARDRAILS §8; owner rulings, 13 and 15 Oct/);
+    expect(refusal({ ...good, ...cardsOn, ADS_ENABLED: '1' })).toMatch(/GUARDRAILS §8; owner rulings, 15 Oct and 6 Nov/);
+  });
+
+  // [Review #2465-A F2] The test-subscription list only ever names what a TEST card system may serve; production runs
+  // none, so a listed id there could only let a test record be booked or refunded as a test.
+  it('KEPT: production refuses a test-subscription list (CARD_RAIL_TEST_SUBSCRIPTIONS), cards off, on or paused', () => {
+    for (const [label, base] of [['cards off', good], ['cards on', { ...good, ...cardsOn }], ['cards paused', { ...good, ...cardsPaused }]] as const) {
+      for (const value of ['sub_1', 'sub_1,sub_2', ' ', ',']) {
+        expect(refusal({ ...base, CARD_RAIL_TEST_SUBSCRIPTIONS: value }), `${label} ${JSON.stringify(value)}`).toMatch(/^FATAL: CARD_RAIL_TEST_SUBSCRIPTIONS must be empty in production/);
+      }
+      for (const empty of [undefined, '']) expect(refusal({ ...base, CARD_RAIL_TEST_SUBSCRIPTIONS: empty }), `${label} ${String(empty)}`).toBe('');
+    }
+    expect(() => assertSafeBootConfig({ NODE_ENV: 'development', CARD_RAIL_V2: '1', CARD_RAIL_PROVIDER: 'simulator', CARD_RAIL_TEST_SUBSCRIPTIONS: 'sub_1' })).not.toThrow();
+  });
+
+  // [CARDS-GO · owner 14 Nov 2026] "Connect tonight, ONLY the owner's own account sees cards": the live list limits real
+  // cards to the subscriptions it names. Production boots with it empty (everyone eligible) or well formed (only them),
+  // cards off, on or paused; a malformed list, which would serve nobody, is refused rather than read as anything.
+  it('[CARDS-GO] production boots cards on with the live list limiting real cards to the owner\'s own subscription, or `*` for everyone', () => {
+    for (const [label, base] of [['cards off', good], ['cards on', { ...good, ...cardsOn }], ['cards paused', { ...good, ...cardsPaused }]] as const) {
+      for (const value of ['cmownersub0000000000000001', ' cmownersub0000000000000001 ', 'sub_1,sub-2', 'sub_1 , sub_2', '*', ' * ']) {
+        expect(refusal({ ...base, CARD_RAIL_LIVE_SUBSCRIPTIONS: value }), `${label} ${JSON.stringify(value)}`).toBe('');
+      }
+    }
+    // Cards off or paused need no list (nobody can start a card payment).
+    for (const base of [good, { ...good, ...cardsPaused }]) {
+      for (const value of [undefined, '']) expect(refusal({ ...base, CARD_RAIL_LIVE_SUBSCRIPTIONS: value }), String(value)).toBe('');
+    }
+  });
+
+  // [Review #2465-B B-2] Fails CLOSED: a forgotten, emptied or late list line never opens live cards to everyone.
+  it('[B-2] production refuses cards on (CARD_RAIL_KILL=0) with the live list unset or empty: everyone is the explicit `*`', () => {
+    for (const value of [undefined, '']) {
+      expect(refusal({ ...good, ...cardsOn, CARD_RAIL_LIVE_SUBSCRIPTIONS: value }), String(value))
+        .toMatch(/^FATAL: CARD_RAIL_KILL=0 \(cards on\) in production needs CARD_RAIL_LIVE_SUBSCRIPTIONS/);
+    }
+    for (const value of ['*,cmownersub0000000000000001', '**', '* *']) {
+      expect(refusal({ ...good, ...cardsOn, CARD_RAIL_LIVE_SUBSCRIPTIONS: value }), value).toMatch(/^FATAL: CARD_RAIL_LIVE_SUBSCRIPTIONS must be/);
+    }
+  });
+
+  it('[CARDS-GO] production refuses a malformed live list (an empty entry or not a subscription id), cards off, on or paused, naming the setting and never the value', () => {
+    for (const [label, base] of [['cards off', good], ['cards on', { ...good, ...cardsOn }], ['cards paused', { ...good, ...cardsPaused }]] as const) {
+      for (const value of [' ', ',', 'sub_1,', ',sub_1', 'sub_1,,sub_2', 'sub 1', 'sub_1;sub_2', 'sub_1/x', 'x'.repeat(65)]) {
+        const message = refusal({ ...base, CARD_RAIL_LIVE_SUBSCRIPTIONS: value });
+        expect(message, `${label} ${JSON.stringify(value)}`).toMatch(/^FATAL: CARD_RAIL_LIVE_SUBSCRIPTIONS must be a comma-separated list of subscription ids \(live cards ONLY for them.*\) or \* alone \(every eligible partner/);
+        if (value.trim().length > 1) expect(message).not.toContain(value.trim());
+      }
+    }
+    // Off production the list is not a boot refusal (live cards run only in production).
+    expect(() => assertSafeBootConfig({ NODE_ENV: 'development', CARD_RAIL_LIVE_SUBSCRIPTIONS: ',' })).not.toThrow();
+  });
+
+  // [Reviews #2465-A F1 / B-B4] pilot-up.sh runs THIS guard in the new image before the swap
+  // (node dist/boot/boot-guard.js, as api and as worker): the entry prints the server's own refusal and exits 1, or
+  // prints one OK line and exits 0. Run here as pilot-up runs it, as its own process with only the given settings.
+  describe('the boot-guard entry (dist/boot/boot-guard.js) pilot-up runs before the swap', () => {
+    const guard = (env: Record<string, string | undefined>) => spawnSync(join(process.cwd(), 'node_modules/.bin/tsx'), [join(process.cwd(), 'src/boot/boot-guard.ts')], {
+      encoding: 'utf8',
+      env: { PATH: process.env['PATH'] ?? '', ...Object.fromEntries(Object.entries(env).filter((entry): entry is [string, string] => entry[1] !== undefined)) },
+    });
+
+    it('passes production as it runs today, and the switch-on set: exit 0, one OK line', () => {
+      for (const env of [good, { ...good, ...cardsOn }, { ...good, ...cardsPaused }]) {
+        const run = guard(env);
+        expect(run.status, run.stdout + run.stderr).toBe(0);
+        expect(run.stdout.trim()).toBe('OK boot guard: this configuration starts');
+      }
+    });
+
+    it('refuses what the API refuses (the settings pilot-up\'s shell checks never read included): exit 1, the server\'s own message, never a value', () => {
+      const cases: Array<[string, Record<string, string | undefined>, RegExp]> = [
+        ['the card simulator', { ...good, CARD_RAIL_PROVIDER: 'simulator' }, /CARD_RAIL_PROVIDER=simulator/],
+        ['the simulator\'s test switch', { ...good, CARD_RAIL_SIMULATOR_LIVE: '1' }, /CARD_RAIL_SIMULATOR_LIVE/],
+        ['PowerTranz not live, v2 off', { ...good, CARD_RAIL_PROVIDER: 'powertranz', CARD_RAIL_ENVIRONMENT: 'sandbox' }, /a TEST card system/],
+        ['no page name', { ...good, ...cardsOn, POWERTRANZ_PAGE_NAME: undefined }, /POWERTRANZ_PAGE_NAME/],
+        ['no account label', { ...good, ...cardsOn, CARD_RAIL_ACCOUNT: undefined }, /CARD_RAIL_ACCOUNT/],
+        ['a malformed provider address', { ...good, ...cardsOn, POWERTRANZ_API_URL: 'gateway.ptranz.com/api/spi' }, /POWERTRANZ_API_URL/],
+        ['a test-subscription list', { ...good, CARD_RAIL_TEST_SUBSCRIPTIONS: 'sub_1' }, /CARD_RAIL_TEST_SUBSCRIPTIONS/],
+        ['[CARDS-GO] a malformed live list', { ...good, ...cardsOn, CARD_RAIL_LIVE_SUBSCRIPTIONS: 'sub_1,,sub_2' }, /CARD_RAIL_LIVE_SUBSCRIPTIONS/],
+        ['[B-2] cards on with no live list', { ...good, ...cardsOn, CARD_RAIL_LIVE_SUBSCRIPTIONS: undefined }, /CARD_RAIL_LIVE_SUBSCRIPTIONS/],
+        ['saved cards', { ...good, ...cardsOn, CARD_RAIL_ENROLL: '1' }, /CARD_RAIL_ENROLL/],
+        ['a non-card refusal (no on-call list)', { ...good, OPS_ONCALL_PHONES: undefined }, /OPS_ONCALL_PHONES/],
+        ['a store secret that cannot be read', { ...good, ...cardsOn, POWERTRANZ_ID: undefined, POWERTRANZ_ID_FILE: '/nonexistent/POWERTRANZ_ID' }, /POWERTRANZ_ID_FILE/],
+      ];
+      for (const [label, env, named] of cases) {
+        const run = guard(env);
+        expect(run.status, `${label}: ${run.stdout}${run.stderr}`).toBe(1);
+        expect(run.stderr, label).toMatch(/^FATAL/m);
+        expect(run.stderr, label).toMatch(named);
+        expect(run.stdout + run.stderr, label).not.toContain('not-a-real-password');
+        expect(run.stdout, label).not.toContain('OK boot guard');
+      }
+    });
   });
 
   it('asks nothing outside production: staging and test servers keep their switches', () => {
@@ -1485,12 +1660,147 @@ describe('[LAUNCH-LOCK] production refuses to boot with card payments or ads on'
     expect(() => assertSafeBootConfig({ NODE_ENV: 'test', ADS_ENABLED: '1' })).not.toThrow();
   });
 
-  it('the value-free preflight names each locked switch and walks past them', () => {
+  it('the value-free preflight passes the switch-on set and names each kept lock', () => {
+    const on = runPreflight({ ...good, ...cardsOn });
+    expect(on.status, on.stdout + on.stderr).toBe(0);
     const result = runPreflight({ ...good, ...liveStripe, ADS_ENABLED: '1', CARD_RAIL_ENROLL: '1' });
     expect(result.status, result.stdout + result.stderr).toBe(1);
     expect(result.stdout).toContain('PAYMENT_PROVIDER must be exactly disabled');
     expect(result.stdout).toContain('CARD_RAIL_ENROLL must be unset or 0');
     expect(result.stdout).toContain('ADS_ENABLED must be unset or 0');
+  });
+
+  it('[CARDS-GO] the preflight says who live cards serve: the setting\'s name and a count, never an id', () => {
+    const owner = 'cmownersub0000000000000001';
+    const only = runPreflight({ ...good, ...cardsOn, CARD_RAIL_LIVE_SUBSCRIPTIONS: owner });
+    expect(only.status, only.stdout + only.stderr).toBe(0);
+    expect(only.stdout).toContain('cards: ON (CARD_RAIL_KILL=0)');
+    expect(only.stdout).toContain('CARD_RAIL_LIVE_SUBSCRIPTIONS names 1 subscription(s): live cards open ONLY for them; every other partner sees no card and keeps today\'s fee');
+    expect(only.stdout + only.stderr).not.toContain(owner);
+    const everyone = runPreflight({ ...good, ...cardsOn, CARD_RAIL_LIVE_SUBSCRIPTIONS: '*' });
+    expect(everyone.status, everyone.stdout + everyone.stderr).toBe(0);
+    expect(everyone.stdout).toContain('CARD_RAIL_LIVE_SUBSCRIPTIONS=*: live cards open for every eligible partner');
+    // [B-2] Cards on with no list: the guard's refusal, and the CARDS section says nobody.
+    const none = runPreflight({ ...good, ...cardsOn, CARD_RAIL_LIVE_SUBSCRIPTIONS: '' });
+    expect(none.status).toBe(1);
+    expect(none.stdout).toContain('CARD_RAIL_KILL=0 (cards on) in production needs CARD_RAIL_LIVE_SUBSCRIPTIONS');
+    expect(none.stdout).toContain('CARD_RAIL_LIVE_SUBSCRIPTIONS is empty: live cards open for NOBODY');
+    const malformed = runPreflight({ ...good, ...cardsOn, CARD_RAIL_LIVE_SUBSCRIPTIONS: `${owner},,` });
+    expect(malformed.status).toBe(1);
+    expect(malformed.stdout).toContain('CARD_RAIL_LIVE_SUBSCRIPTIONS must be a comma-separated list of subscription ids');
+    expect(malformed.stdout).toContain('CARD_RAIL_LIVE_SUBSCRIPTIONS is set but malformed');
+    expect(malformed.stdout + malformed.stderr).not.toContain(owner);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// [CARDS-SWITCH-ON · CARD-STAGING-TEST, 10 Nov 2026] Staging ran card rail v2
+// on PowerTranz, but deploy/.env had no POWERTRANZ_ID_FILE /
+// POWERTRANZ_PASSWORD_FILE lines: the API and the worker could not read the
+// credentials, and cards could not work, while every health check read green.
+// Card rail v2 (or its drain) on PowerTranz now refuses to start, in every mode
+// and WHATEVER THE KILL SWITCH (a killed rail still confirms, sweeps, looks up,
+// voids and refunds through the provider: review #2466-B F2), unless the
+// provider's whole setup reads — the credentials and the PTZ/ page set
+// included — naming the store wiring to add, never a value. Production
+// already refused v2 without the complete live setup (PT-4, any kill switch);
+// its refusal names the same wiring (one helper).
+// ---------------------------------------------------------------------------
+describe('[CARDS-SWITCH-ON] card rail v2 (or its drain) on PowerTranz refuses to start without its credentials, whatever the kill switch, in every mode', () => {
+  const sandboxOn = {
+    // [Review #2465-B B-2] Production with cards on names who real cards serve; a test server ignores the line.
+    CARD_RAIL_LIVE_SUBSCRIPTIONS: 'cmownersub0000000000000001',
+    PAYMENT_PROVIDER: 'disabled', CARD_RAIL_KILL: '0', CARD_RAIL_V2: '1', CARD_RAIL_PROVIDER: 'powertranz', CARD_RAIL_ENVIRONMENT: 'sandbox',
+    CARD_RAIL_ACCOUNT: 'swift-gy-test', POWERTRANZ_PAGE_SET: 'PTZ/SWIFT', POWERTRANZ_PAGE_NAME: 'WeeklyFee', API_PUBLIC_URL: 'https://api-staging.example.test',
+  };
+  const creds = { POWERTRANZ_ID: 'TESTID01', POWERTRANZ_PASSWORD: 'not-a-real-password' };
+  const refusal = (env: Record<string, string | undefined>): string => {
+    try { assertSafeBootConfig(env); } catch (error) { return (error as Error).message; }
+    return '';
+  };
+  const NOT_READ = /^FATAL: CARD_RAIL_V2(_DRAIN)?=1 with CARD_RAIL_PROVIDER=powertranz, but this server cannot read the card provider's settings: /;
+  const WIRING = 'POWERTRANZ_ID_FILE=/run/secrets/POWERTRANZ_ID and POWERTRANZ_PASSWORD_FILE=/run/secrets/POWERTRANZ_PASSWORD';
+  /** Every switch state that still reaches the provider: v2 on (killed or not, any kill value), or draining. */
+  const reaching = [
+    { CARD_RAIL_KILL: '0' }, { CARD_RAIL_KILL: '1' }, { CARD_RAIL_KILL: undefined }, { CARD_RAIL_KILL: 'true' },
+    { CARD_RAIL_V2: '0', CARD_RAIL_V2_DRAIN: '1' }, { CARD_RAIL_V2: '0', CARD_RAIL_V2_DRAIN: '1', CARD_RAIL_KILL: '1' },
+  ];
+
+  it.each(['development', 'loadtest', 'test'])('%s: no credentials (no *_FILE lines) refuses, naming the store wiring — killed or not, v2 or drain', (mode) => {
+    for (const over of reaching) {
+      const thrown = refusal({ NODE_ENV: mode, ...sandboxOn, ...over });
+      expect(thrown, JSON.stringify(over)).toMatch(NOT_READ);
+      expect(thrown).toMatch(/POWERTRANZ_ID/);
+      expect(thrown).toContain(WIRING);
+      const noPassword = refusal({ NODE_ENV: mode, ...sandboxOn, ...over, POWERTRANZ_ID: 'TESTID01' });
+      expect(noPassword, JSON.stringify(over)).toMatch(NOT_READ);
+      expect(noPassword).toMatch(/POWERTRANZ_PASSWORD/);
+      expect(noPassword).toContain(WIRING);
+    }
+  });
+
+  it('any other missing piece of the setup refuses too, the PTZ/ page set included — killed or not — never echoing a value', () => {
+    for (const over of reaching) {
+      for (const [patch, message] of [
+        [{ POWERTRANZ_PAGE_SET: 'SWIFT' }, /POWERTRANZ_PAGE_SET must start with PTZ\//],
+        [{ POWERTRANZ_PAGE_NAME: undefined }, /POWERTRANZ_PAGE_SET and POWERTRANZ_PAGE_NAME|POWERTRANZ_PAGE_NAME/],
+        [{ CARD_RAIL_ACCOUNT: undefined }, /CARD_RAIL_ACCOUNT/],
+        [{ API_PUBLIC_URL: undefined }, /API_PUBLIC_URL/],
+        [{ CARD_RAIL_ENVIRONMENT: undefined }, /CARD_RAIL_ENVIRONMENT/],
+        [{ POWERTRANZ_API_URL: 'https://gateway.ptranz.com' }, /not a test system/],
+      ] as const) {
+        const thrown = refusal({ NODE_ENV: 'loadtest', ...sandboxOn, ...creds, ...over, ...patch });
+        expect(thrown, `${JSON.stringify(over)} ${JSON.stringify(patch)}`).toMatch(NOT_READ);
+        expect(thrown).toMatch(message);
+        expect(thrown).not.toContain('not-a-real-password');
+        expect(thrown).not.toContain(WIRING); // only a credential refusal names the store wiring
+      }
+    }
+  });
+
+  it('the credentials read from the store through the real *_FILE loader: boots (killed too)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'swift-ptz-secrets-'));
+    try {
+      writeFileSync(join(dir, 'POWERTRANZ_ID'), 'TESTID01\n');
+      writeFileSync(join(dir, 'POWERTRANZ_PASSWORD'), 'not-a-real-password\n');
+      for (const kill of ['0', '1']) {
+        const env: Record<string, string | undefined> = {
+          NODE_ENV: 'loadtest', ...sandboxOn, CARD_RAIL_KILL: kill,
+          POWERTRANZ_ID_FILE: join(dir, 'POWERTRANZ_ID'), POWERTRANZ_PASSWORD_FILE: join(dir, 'POWERTRANZ_PASSWORD'),
+        };
+        expect(refusal(env), kill).toMatch(NOT_READ); // the guard reads only what the loader put in the environment
+        applySecretFiles(env);
+        expect(refusal(env), kill).toBe('');
+      }
+    } finally {
+      rmSync(dir, { recursive: true });
+    }
+  });
+
+  it('v2 and its drain both off, or another provider: nothing about PowerTranz is asked', () => {
+    expect(refusal({ NODE_ENV: 'loadtest', ...sandboxOn, CARD_RAIL_V2: '0' })).toBe('');
+    expect(refusal({ NODE_ENV: 'loadtest', ...sandboxOn, CARD_RAIL_V2: undefined, CARD_RAIL_KILL: '1' })).toBe('');
+    expect(refusal({ NODE_ENV: 'loadtest', ...sandboxOn, CARD_RAIL_V2: '0', CARD_RAIL_V2_DRAIN: '0' })).toBe('');
+    expect(refusal({ NODE_ENV: 'development', CARD_RAIL_V2: '1', CARD_RAIL_PROVIDER: 'simulator' })).toBe('');
+    for (const over of reaching) expect(refusal({ NODE_ENV: 'loadtest', ...sandboxOn, ...creds, ...over }), JSON.stringify(over)).toBe('');
+  });
+
+  it('production: v2 without the credentials refuses (any kill switch), naming the same store wiring', () => {
+    const liveOn = {
+      ...sandboxOn, CARD_RAIL_ENVIRONMENT: 'live', CARD_RAIL_ACCOUNT: 'swift-gy-live', POWERTRANZ_API_URL: 'https://gateway.ptranz.com',
+      API_PUBLIC_URL: 'https://api.example.com',
+    };
+    for (const kill of ['0', '1']) {
+      for (const missing of ['POWERTRANZ_ID', 'POWERTRANZ_PASSWORD']) {
+        const thrown = refusal({ ...good, ...liveOn, ...creds, CARD_RAIL_KILL: kill, [missing]: undefined });
+        expect(thrown, `${kill} ${missing}`).toMatch(/^FATAL: CARD_RAIL_V2=1 in production, but the card provider is not fully set up for live cards: /);
+        expect(thrown).toContain(WIRING);
+        expect(thrown).not.toContain('not-a-real-password');
+      }
+      // The PTZ/ prefix too (powerTranzConfigFromEnv, for production as for staging).
+      expect(refusal({ ...good, ...liveOn, ...creds, CARD_RAIL_KILL: kill, POWERTRANZ_PAGE_SET: 'SWIFT' }), kill).toMatch(/^FATAL: CARD_RAIL_V2=1 in production, but the card provider is not fully set up for live cards: .*PTZ\//);
+    }
+    expect(refusal({ ...good, ...liveOn, ...creds })).toBe('');
   });
 });
 

@@ -398,18 +398,90 @@ if [ "$PILOT_ENV" = production ]; then
     [ -z "$(env_setting "$agent_cash_name")" ] ||
       die "PILOT_ENV=production refuses the agent-cash webhook ($agent_cash_name is set): partners pay the weekly fee only on the MMG checkout page"
   done
-  # [LAUNCH-LOCK] Owner ruling, 13 Oct: until an attorney signs off,
-  # production takes no card payment and runs no ads. The API's boot guard
-  # refuses the same settings (boot-config.ts assertProductionLaunchLocks);
-  # turning either on is a reviewed code change in both, never an .env edit.
+  # [LAUNCH-LOCK -> CARDS-SWITCH-ON] Production's card and ad switches, the
+  # same rule as the API's boot guard (boot-config.ts assertProductionLaunchLocks,
+  # card-rail.ts assertProductionCardSwitches); the guard itself also runs in the
+  # new image before the swap (BOOT_GUARD, below). Cards on rests on the owner's
+  # go-cards ruling (OWNER-DECISIONS, dated at the go). History: 13 Oct (cards
+  # and ads refused "until an attorney signs off"), 15 Oct (GUARDRAILS section
+  # 8: what could be criminal - recurring card charges, ads - stays off until a
+  # lawyer confirms). So: cards off (CARD_RAIL_KILL=1), cards on
+  # (CARD_RAIL_KILL=0 beside CARD_RAIL_V2=1, PowerTranz, live), or paused (the
+  # kill switch back to 1 with v2 left on); the legacy seam, saved cards, the
+  # drain switch, a test-subscription list and ads stay refused. Changing this
+  # is a reviewed code change in both places, never an .env edit.
   [ "$(env_setting PAYMENT_PROVIDER)" = disabled ] ||
-    die "PILOT_ENV=production needs PAYMENT_PROVIDER=disabled: no card payment until an attorney signs off (owner ruling, 13 Oct)"
-  [ "$(env_setting CARD_RAIL_KILL)" = 1 ] ||
-    die "PILOT_ENV=production needs CARD_RAIL_KILL=1: no card payment until an attorney signs off (owner ruling, 13 Oct)"
-  for locked_name in CARD_RAIL_V2 CARD_RAIL_V2_DRAIN CARD_RAIL_ENROLL ADS_ENABLED; do
+    die "PILOT_ENV=production needs PAYMENT_PROVIDER=disabled: the legacy card seam stays off; production takes cards only as Pay now on the provider's hosted page (the owner's go-cards ruling, OWNER-DECISIONS, dated at the go)"
+  card_kill="$(env_setting CARD_RAIL_KILL)"
+  card_v2="$(env_setting CARD_RAIL_V2)"
+  case "$card_kill" in
+    1 | 0) ;;
+    *) die "PILOT_ENV=production needs CARD_RAIL_KILL=1 (cards off) or 0 (cards on, only beside the complete live card setup: the owner's go-cards ruling, OWNER-DECISIONS, dated at the go)" ;;
+  esac
+  case "$card_v2" in
+    "" | 0 | 1) ;;
+    *) die "PILOT_ENV=production needs CARD_RAIL_V2 unset, 0 or 1" ;;
+  esac
+  if [ "$card_kill" = 0 ]; then
+    [ "$card_v2" = 1 ] && [ "$(env_setting CARD_RAIL_PROVIDER)" = powertranz ] && [ "$(env_setting CARD_RAIL_ENVIRONMENT)" = live ] ||
+      die "PILOT_ENV=production with CARD_RAIL_KILL=0 (cards on) needs CARD_RAIL_V2=1, CARD_RAIL_PROVIDER=powertranz and CARD_RAIL_ENVIRONMENT=live: production takes cards only as Pay now on the provider's hosted page, with real cards (the owner's go-cards ruling, OWNER-DECISIONS, dated at the go)"
+  fi
+  if [ "$card_v2" = 1 ]; then
+    [ "$(env_setting CARD_RAIL_PROVIDER)" = powertranz ] && [ "$(env_setting CARD_RAIL_ENVIRONMENT)" = live ] ||
+      die "PILOT_ENV=production with CARD_RAIL_V2=1 needs CARD_RAIL_PROVIDER=powertranz and CARD_RAIL_ENVIRONMENT=live: production takes real cards only (the owner's go-cards ruling, OWNER-DECISIONS, dated at the go)"
+    [ -n "$(env_setting POWERTRANZ_API_URL)" ] ||
+      die "PILOT_ENV=production with CARD_RAIL_V2=1 needs POWERTRANZ_API_URL: PowerTranz's production address, https://gateway.ptranz.com"
+    [ "$(env_setting POWERTRANZ_ID_FILE)" = /run/secrets/POWERTRANZ_ID ] && [ "$(env_setting POWERTRANZ_PASSWORD_FILE)" = /run/secrets/POWERTRANZ_PASSWORD ] ||
+      die "PILOT_ENV=production with CARD_RAIL_V2=1 needs POWERTRANZ_ID_FILE=/run/secrets/POWERTRANZ_ID and POWERTRANZ_PASSWORD_FILE=/run/secrets/POWERTRANZ_PASSWORD in deploy/.env: the live PowerTranz credentials, entered by the owner at hidden prompts into the encrypted store"
+    [[ "$(env_setting POWERTRANZ_PAGE_SET)" == PTZ/?* ]] ||
+      die "PILOT_ENV=production with CARD_RAIL_V2=1 needs POWERTRANZ_PAGE_SET=PTZ/<set>: the live page set PowerTranz gives, with its PTZ/ prefix (without it no card page opens)"
+  fi
+  # [Review #2465-A F2] The test-subscription list names what a TEST card system may serve; production runs none.
+  [ -z "$(env_setting CARD_RAIL_TEST_SUBSCRIPTIONS)" ] ||
+    die "PILOT_ENV=production refuses CARD_RAIL_TEST_SUBSCRIPTIONS unless it is empty: it names the only subscriptions a TEST card system may serve, and production runs none"
+  # [CARDS-GO · owner 14 Nov 2026] The live list: real cards open ONLY for the
+  # subscriptions it names (the owner's own account first); `*` alone means
+  # every eligible partner (after PowerTranz's go-live). [Review #2465-B B-2]
+  # Unset or empty is NEVER everyone in production: it serves nobody, and cards
+  # on (CARD_RAIL_KILL=0) without it is refused. The API refuses the same at
+  # boot (card-rail.ts assertProductionCardSwitches); this refuses it before
+  # anything changes. Only the setting's name and how many ids it names are
+  # printed, never an id.
+  card_live_list="$(env_setting CARD_RAIL_LIVE_SUBSCRIPTIONS | sed -E 's/^[[:space:]]+//')"
+  card_live_ids=""
+  if [ -z "$card_live_list" ]; then
+    [ "$card_kill" != 0 ] ||
+      die "PILOT_ENV=production with CARD_RAIL_KILL=0 (cards on) needs CARD_RAIL_LIVE_SUBSCRIPTIONS: the subscription ids live cards serve (the owner's own account first), or * for every eligible partner after PowerTranz's go-live; unset or empty is never read as everyone"
+    card_live_who="CARD_RAIL_LIVE_SUBSCRIPTIONS is empty: live cards open for NOBODY (cards on needs it set)"
+  elif [ "$card_live_list" = '*' ]; then
+    card_live_who="CARD_RAIL_LIVE_SUBSCRIPTIONS=*: live cards open for every eligible partner"
+  else
+    card_live_rest="$card_live_list,"
+    while [ -n "$card_live_rest" ]; do
+      card_live_entry="${card_live_rest%%,*}"
+      card_live_rest="${card_live_rest#*,}"
+      card_live_entry="$(printf '%s' "$card_live_entry" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')"
+      [[ "$card_live_entry" =~ ^[A-Za-z0-9_-]{1,64}$ ]] ||
+        die "PILOT_ENV=production refuses CARD_RAIL_LIVE_SUBSCRIPTIONS: it must be a comma-separated list of subscription ids (live cards ONLY for them) or * alone (every eligible partner), and one of its entries is empty or not a subscription id"
+      card_live_ids="$card_live_ids$card_live_entry"$'\n'
+    done
+    card_live_count="$(printf '%s' "$card_live_ids" | sort -u | grep -c .)"
+    card_live_who="CARD_RAIL_LIVE_SUBSCRIPTIONS names $card_live_count subscription(s): live cards open ONLY for them; every other partner sees no card and keeps today's fee"
+  fi
+  case "$card_kill:$card_v2" in
+    0:*) echo "cards: ON (CARD_RAIL_KILL=0, CARD_RAIL_V2=1). $card_live_who" ;;
+    1:1) echo "cards: PAUSED (CARD_RAIL_KILL=1, CARD_RAIL_V2=1): no new card payment starts. $card_live_who" ;;
+    *) echo "cards: OFF (CARD_RAIL_KILL=1). $card_live_who" ;;
+  esac
+  for locked_name in CARD_RAIL_V2_DRAIN CARD_RAIL_ENROLL ADS_ENABLED; do
+    case "$locked_name" in
+      CARD_RAIL_ENROLL) locked_why="saved cards and automatic weekly card charges stay off until a lawyer confirms them (GUARDRAILS §8; owner rulings, 13 and 15 Oct)" ;;
+      CARD_RAIL_V2_DRAIN) locked_why="to stop card payments set CARD_RAIL_KILL=1 and leave CARD_RAIL_V2=1, which keeps confirming the card payments already open" ;;
+      *) locked_why="ads stay off until a lawyer confirms them (GUARDRAILS §8; owner rulings, 15 Oct and 6 Nov)" ;;
+    esac
     case "$(env_setting "$locked_name")" in
       "" | 0) ;;
-      *) die "PILOT_ENV=production refuses $locked_name unless it is unset or 0: no card payment and no ads until an attorney signs off (owner ruling, 13 Oct)" ;;
+      *) die "PILOT_ENV=production refuses $locked_name unless it is unset or 0: $locked_why" ;;
     esac
   done
   # [Row 312] MALWARE_SCAN: every upload is scanned by the private clamd
@@ -444,6 +516,24 @@ if [ "$PILOT_ENV" = production ]; then
         die "PILOT_ENV=production needs PLACES_PROVIDER=osm or google (the owner's choice): production has no local-only address search" ;;
     esac
   fi
+fi
+# [CARDS-SWITCH-ON · staging card test, 10 Nov 2026 · review #2466-B F2] Any
+# server: card rail v2 (or its drain) on PowerTranz reaches the provider WHATEVER
+# THE KILL SWITCH (a killed rail still confirms, looks up, voids and refunds what
+# is in flight), and the API and the worker read the PowerTranz credentials only
+# from the encrypted store, through these two deploy/.env lines (the MMG secrets
+# are wired the same way). Staging once ran without them: nothing could read the
+# credentials and cards could not work, while every check read green. The page
+# set carries PowerTranz's PTZ/ prefix (without it no card page opens, 757). The
+# API refuses to boot without either (boot-config.ts
+# assertCardRailProviderReadable), so this refuses the deploy here, before
+# anything changes, instead of letting api and worker crash-loop after the swap;
+# the store check below proves both names are stored.
+if { [ "$(env_setting CARD_RAIL_V2)" = 1 ] || [ "$(env_setting CARD_RAIL_V2_DRAIN)" = 1 ]; } && [ "$(env_setting CARD_RAIL_PROVIDER)" = powertranz ]; then
+  [ "$(env_setting POWERTRANZ_ID_FILE)" = /run/secrets/POWERTRANZ_ID ] && [ "$(env_setting POWERTRANZ_PASSWORD_FILE)" = /run/secrets/POWERTRANZ_PASSWORD ] ||
+    die "card rail v2 (CARD_RAIL_V2=1 or CARD_RAIL_V2_DRAIN=1) on CARD_RAIL_PROVIDER=powertranz needs POWERTRANZ_ID_FILE=/run/secrets/POWERTRANZ_ID and POWERTRANZ_PASSWORD_FILE=/run/secrets/POWERTRANZ_PASSWORD in deploy/.env, whatever the kill switch: the API reads the PowerTranz credentials only from the encrypted store, and without these lines it refuses to start"
+  [[ "$(env_setting POWERTRANZ_PAGE_SET)" == PTZ/?* ]] ||
+    die "card rail v2 (CARD_RAIL_V2=1 or CARD_RAIL_V2_DRAIN=1) on CARD_RAIL_PROVIDER=powertranz needs POWERTRANZ_PAGE_SET=PTZ/<set>: PowerTranz's page set is sent with its PTZ/ prefix (the portal's set SWIFT is PTZ/SWIFT; without it no card page opens), and the API refuses to start without it"
 fi
 for tool in git docker curl python3; do command -v "$tool" >/dev/null 2>&1 || die "$tool is required"; done
 # [COORD 21 Oct] MALWARE_SCAN_BYPASS_SHOUT: the emergency bypass is loud on every deploy.
@@ -757,6 +847,24 @@ fi
 # [ADMIN-CONSOLE] The same for the admin console: built before anything stops.
 if [ -n "$ADMIN_HOST" ] && [ "$DATA_ONLY" -eq 0 ] && [ "$NO_PUBLIC" -eq 0 ]; then
   "${COMPOSE[@]}" build admin
+fi
+# [CARDS-SWITCH-ON · reviews #2465-A F1 / B-B4] THE API'S OWN BOOT GUARD, before
+# anything is started, stopped or migrated: the exact image just built runs
+# assertSafeBootConfig (dist/boot/boot-guard.js) once as api and once as worker,
+# each with Compose's own settings for that service (deploy/.env, its *_FILE
+# lines and the store mounted as /run/secrets), exactly as the swapped services
+# will start. The checks above are a quick first pass in shell; this is the
+# rule itself, so a setting the API refuses (a card setting, a provider, any
+# other boot refusal) never reaches the swap and crash-loops a live API. The
+# database-only stage starts no API and is not asked.
+if [ "$DATA_ONLY" -eq 0 ]; then
+  for guard_service in api worker; do
+    if ! guard_out="$("${COMPOSE[@]}" run --rm --no-deps -T "$guard_service" node dist/boot/boot-guard.js 2>&1)"; then
+      guard_reason="$(printf '%s\n' "$guard_out" | grep -m1 '^FATAL' || true)"
+      die "BOOT_GUARD: the new $guard_service image refuses this configuration: ${guard_reason:-its boot guard did not pass}. Nothing was started, stopped or migrated"
+    fi
+  done
+  echo "boot guard: the new api and worker images accept this configuration"
 fi
 "${COMPOSE[@]}" up -d --wait postgres redis meilisearch
 # [S3-L1] The database says which deployment it belongs to (deployment_identity,

@@ -115,6 +115,14 @@ import {
 //      (sec. 5.2 / 7.5) with the part as TotalAmount, and refund() counts only
 //      an approval of exactly the amount asked; a refusal is `failed`. The
 //      lookup judges a partial refund against that part (judgeRefundRecord).
+//   8. [CARDS-SWITCH-ON] The production root: PowerTranz's written answer to
+//      Swift (4 Nov 2026, item 4) gives production as
+//      https://gateway.ptranz.com/api/spi/ (its SPI address). Swift's root is
+//      the bare origin (POWERTRANZ_PRODUCTION_ROOT) and every path above is
+//      derived from it exactly as on staging; POWERTRANZ_API_URL may name the
+//      origin or that SPI address, nothing else. The lookup's production
+//      address (<root>/api/Transactions/{id}) is ASSUMED by analogy with
+//      staging until PowerTranz confirms (asked).
 //
 // What the guide does NOT document, so this provider does not do it:
 //   - charging a saved card without the cardholder present: a token charge
@@ -153,6 +161,16 @@ export const POWERTRANZ_PROVIDER = 'powertranz';
 /** sec. 2.1 diagram ("base url"), sec. 2.3: the staging API root. Production's is "TBD — provided to merchant once
  *  staging tests are validated" (sec. 2.3), so production always names its own. */
 export const POWERTRANZ_SANDBOX_ROOT = 'https://staging.ptranz.com';
+/** [CARDS-SWITCH-ON] PowerTranz's written answer to Swift (4 Nov 2026, item 4): production is
+ *  "https://gateway.ptranz.com/api/spi/" — its SPI address. Swift's root is the bare origin of sec. 3 (every path
+ *  carries /api/...), exactly as staging's: production's root is this origin, and the page, completion, refund,
+ *  void and lookup paths are derived from it as on staging. POWERTRANZ_API_URL still names it explicitly for live
+ *  cards (no default); it may be written as this origin or as the SPI address PowerTranz gave (powerTranzConfigFromEnv).
+ *  ASSUMED until PowerTranz confirms (asked): the lookup is <root>/api/Transactions/{id} on production as on staging. */
+export const POWERTRANZ_PRODUCTION_ROOT = 'https://gateway.ptranz.com';
+/** [CARDS-SWITCH-ON] The one path POWERTRANZ_API_URL may carry: PowerTranz writes its addresses as the SPI path
+ *  (staging's "<root>/api/spi/...", production's "https://gateway.ptranz.com/api/spi/"). It names the same root. */
+const SPI_ADDRESS_PATHS: readonly string[] = ['/api/spi', '/api/spi/'];
 
 /** sec. 3 endpoint table: <API Root>/api/... */
 const PATH = {
@@ -289,15 +307,19 @@ export class PowerTranzConfigError extends Error {
   override readonly name = 'PowerTranzConfigError';
 }
 
-function httpsOrigin(raw: string, what: string): string {
+function httpsOrigin(raw: string, what: string, allowedPaths: readonly string[] = []): string {
   let url: URL;
   try {
     url = new URL(raw);
   } catch {
     throw new PowerTranzConfigError(`${what} must be an https:// origin`);
   }
-  if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash || (url.pathname !== '/' && url.pathname !== '')) {
-    throw new PowerTranzConfigError(`${what} must be a bare https:// origin (no path, query or credentials)`);
+  // [CARDS-SWITCH-ON] `raw.includes('?'/'#')` too: an empty query or fragment ("…/?", "…#") reads as none in URL.
+  if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash || raw.includes('?') || raw.includes('#')
+    || (url.pathname !== '/' && url.pathname !== '' && !allowedPaths.includes(url.pathname))) {
+    throw new PowerTranzConfigError(allowedPaths.length > 0
+      ? `${what} must be a bare https:// origin, or the provider's SPI address (the origin followed by /api/spi/), with no other path, query or credentials`
+      : `${what} must be a bare https:// origin (no path, query or credentials)`);
   }
   return url.origin;
 }
@@ -325,8 +347,9 @@ export function powerTranzConfigFromEnv(env: Record<string, string | undefined> 
     throw new PowerTranzConfigError('CARD_RAIL_ACCOUNT must be a short label (letters, digits, dot, dash, underscore; at most 64)');
   }
   const rawRoot = env['POWERTRANZ_API_URL'] || (environment === 'sandbox' ? POWERTRANZ_SANDBOX_ROOT : '');
-  if (!rawRoot) throw new PowerTranzConfigError('POWERTRANZ_API_URL is required for live cards (the guide gives production its own address, sec. 2.3)');
-  const apiRoot = httpsOrigin(rawRoot, 'POWERTRANZ_API_URL');
+  if (!rawRoot) throw new PowerTranzConfigError(`POWERTRANZ_API_URL is required for live cards: PowerTranz's production address, ${POWERTRANZ_PRODUCTION_ROOT} (sec. 2.3; PowerTranz's written answer of 4 Nov 2026)`);
+  // [CARDS-SWITCH-ON] The origin, or the SPI address PowerTranz wrote for it: one root, every path derived from it.
+  const apiRoot = httpsOrigin(rawRoot, 'POWERTRANZ_API_URL', SPI_ADDRESS_PATHS);
   if (!PTRANZ_HOST.test(new URL(apiRoot).hostname)) {
     throw new PowerTranzConfigError('POWERTRANZ_API_URL must be the card provider\'s own address (a ptranz.com host, sec. 2.3)');
   }

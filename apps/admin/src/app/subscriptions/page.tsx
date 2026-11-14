@@ -331,6 +331,8 @@ export default function SubscriptionsPage() {
                           <span className="font-medium">{h.name}</span>
                         )}
                         <span className="text-xs mc-muted ml-2">{h.kind}</span>
+                        {/* [CARDS-GO · owner 14 Nov 2026] The id the live card list (CARD_RAIL_LIVE_SUBSCRIPTIONS) names, read here by the owner, never from the live database. */}
+                        <div className="text-xs mc-muted">Subscription <span className="font-mono break-all">{s.id}</span></div>
                       </td>
                       <td className="p-4">
                         <StatusPill value={s.status} />

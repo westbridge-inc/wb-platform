@@ -32,6 +32,7 @@ import { retainedCohort, retainedPhonePrefix, retireKeptScaffolding, without } f
 import { cleanupBillingClocks } from './helpers/billing-clock-cleanup';
 import { enqueueFeeDemand, handOffFeeDemand, persistFeeDemandInbox } from '../modules/billing/fee-demand-delivery';
 import * as cardFactory from '../providers/card/card-rail-factory';
+import { CARD_CHECKOUT_PLATFORMS_KEY } from '../modules/billing/card-pay-action';
 
 // ---------------------------------------------------------------------------
 // [PROD-PATH] MMG fully OFF (MMG_DRIVER=disabled), the owner's ruling for a
@@ -124,6 +125,10 @@ beforeAll(async () => {
   await app.register(socketPlugin);
   await app.ready();
   billing = new BillingService(app.prisma, new NotificationService(app.prisma, app.io), getPaymentProvider());
+  // [B-3 · CARDS-SWITCH-ON] Live cards count as a way to pay only with the card on EVERY platform (iOS is
+  // off without a row). This file's "card live" cases mean exactly that, so the card's switch row says so;
+  // the [B-3] case below takes it away. Dropped in afterAll.
+  await app.prisma.platformConfig.upsert({ where: { key: CARD_CHECKOUT_PLATFORMS_KEY }, create: { key: CARD_CHECKOUT_PLATFORMS_KEY, value: CARD_EVERY_PLATFORM }, update: { value: CARD_EVERY_PLATFORM } });
 });
 
 // Each case's stores leave billing when the case ends (the shared retire:
@@ -142,6 +147,7 @@ afterEach(async () => {
 
 afterAll(async () => {
   vi.unstubAllEnvs();
+  await app.prisma.platformConfig.deleteMany({ where: { key: CARD_CHECKOUT_PLATFORMS_KEY } }).catch(() => {});
   // Close any pause this file opened (resuming every clock it held) so no
   // later suite runs under it, then drop this file's pause records.
   await syncMmgPauseClock(app.prisma, new Date(), ON).catch(() => {});
@@ -178,7 +184,11 @@ async function whileOff<T>(fn: () => Promise<T>): Promise<T> {
 // This build has no real provider yet. These positive-path cases explicitly
 // supply future factory support; merely configuring an unknown name must fail.
 // [Review #2453 A-F1] Real cards: a TEST card system (the sandbox) is never a live way to pay.
-const CARD_LIVE = { MMG_DRIVER: 'disabled', CARD_RAIL_V2: '1', CARD_RAIL_KILL: '0', PAYMENT_PROVIDER: 'sandbox', CARD_RAIL_PROVIDER: 'powertranz', CARD_RAIL_ENVIRONMENT: 'live' };
+// [Review #2465-B B-2] "Cards live for every eligible partner" is the explicit list `*`: in production an unset list
+// serves nobody. A real environment always names its mode (runtime-mode.ts), so the fixture does too.
+const CARD_LIVE = { NODE_ENV: 'test', CARD_RAIL_LIVE_SUBSCRIPTIONS: '*', MMG_DRIVER: 'disabled', CARD_RAIL_V2: '1', CARD_RAIL_KILL: '0', PAYMENT_PROVIDER: 'sandbox', CARD_RAIL_PROVIDER: 'powertranz', CARD_RAIL_ENVIRONMENT: 'live' };
+/** [B-3] The card's own per-platform switch, on for every platform (set for this file in beforeAll). */
+const CARD_EVERY_PLATFORM = { ios: true, android: true, web: true };
 async function whileCardLive<T>(fn: () => Promise<T>): Promise<T> {
   const supported = vi.spyOn(cardFactory, 'cardRailProviderNames').mockReturnValue(['simulator', 'powertranz']);
   for (const [k, v] of Object.entries(CARD_LIVE)) vi.stubEnv(k, v);
@@ -631,6 +641,31 @@ describe('[PROD-PATH] the pause is decided by server facts only: nothing a partn
     expect(await noLivePayPath(app.prisma, CARD_LIVE)).toBe(false);
     expect(await noLivePayPath(app.prisma, { ...CARD_LIVE, CARD_RAIL_KILL: '1' })).toBe(true);
     expect(await noLivePayPath(app.prisma, { ...CARD_LIVE, CARD_RAIL_V2: '0' })).toBe(true);
+    // [B-2] Production: live cards count for the pause only when the list is `*`; unset, empty or a list of ids
+    // (cards for some partners only) is no way to pay for everyone else, so MMG alone decides the pause.
+    const PROD = { ...CARD_LIVE, NODE_ENV: 'production' };
+    expect(await noLivePayPath(app.prisma, PROD)).toBe(false);
+    for (const list of [undefined, '', 'sub_owner_only']) {
+      expect(await noLivePayPath(app.prisma, { ...PROD, CARD_RAIL_LIVE_SUBSCRIPTIONS: list }), String(list)).toBe(true);
+    }
+  });
+  // [Review #2453-B B-3 · CARDS-SWITCH-ON] Live cards with the card off on any platform (no row: iOS off by
+  // default) are no way to pay for EVERY partner: an iOS partner sees no card button. With MMG off the fee
+  // stays paused for everyone — never billed, failed and dunned with nothing to pay with.
+  it('[B-3] live cards count only with the card on every platform: no row (iOS off) or one platform off keeps the fee paused', async () => {
+    const { noLivePayPath } = await import('../modules/billing/fee-pause');
+    try {
+      await app.prisma.platformConfig.deleteMany({ where: { key: CARD_CHECKOUT_PLATFORMS_KEY } });
+      expect(await noLivePayPath(app.prisma, CARD_LIVE)).toBe(true);
+      for (const row of [{ ios: false }, { ios: true, android: false }, { ios: true, web: false }, { ios: 'true', android: true, web: true }]) {
+        await app.prisma.platformConfig.create({ data: { key: CARD_CHECKOUT_PLATFORMS_KEY, value: row } });
+        expect(await noLivePayPath(app.prisma, CARD_LIVE), JSON.stringify(row)).toBe(true);
+        await app.prisma.platformConfig.deleteMany({ where: { key: CARD_CHECKOUT_PLATFORMS_KEY } });
+      }
+    } finally {
+      await app.prisma.platformConfig.upsert({ where: { key: CARD_CHECKOUT_PLATFORMS_KEY }, create: { key: CARD_CHECKOUT_PLATFORMS_KEY, value: CARD_EVERY_PLATFORM }, update: { value: CARD_EVERY_PLATFORM } });
+    }
+    expect(await noLivePayPath(app.prisma, CARD_LIVE)).toBe(false);
   });
   it('the predicate reads only the server\'s MMG and card-rail switches', async () => {
     const { noLivePayPath } = await import('../modules/billing/fee-pause');

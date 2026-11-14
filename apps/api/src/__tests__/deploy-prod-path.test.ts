@@ -75,6 +75,16 @@ if argv[:1] == ["compose"] and "config" in argv and "--format" in argv:
     sys.exit(0)
 if argv[:1] == ["run"] and any("photon:2322" in a for a in argv) and os.environ.get("PHOTON_DOWN") == "1":
     sys.exit(1)
+if argv[:1] == ["compose"] and "run" in argv and "dist/boot/boot-guard.js" in argv:
+    # [CARDS-SWITCH-ON] the API's own boot guard in the new image, as api or worker: BOOT_GUARD_REFUSE names the
+    # service whose image refuses ("both" for either), with the server's own message.
+    service = argv[argv.index("node") - 1]
+    refuse = os.environ.get("BOOT_GUARD_REFUSE", "")
+    if refuse in (service, "both"):
+        sys.stderr.write("FATAL: CARD_RAIL_PROVIDER=simulator in production — the card simulator is a test page with no real money. Refusing to start.\n")
+        sys.exit(1)
+    print("OK boot guard: this configuration starts")
+    sys.exit(0)
 if argv[:1] == ["compose"] and "exec" in argv and "postgres" in argv and any("swift_app_login" in a for a in argv):
     # [TA-S0-003 · R3] pilot-up's count of the two runtime logins in the
     # database's cluster: 0 before Phase C (RUNTIME_LOGINS models after).
@@ -183,7 +193,7 @@ const PRODUCTION = {
   API_PUBLIC_URL: `https://${PROD_HOST}`, APP_PUBLIC_URL: 'https://swiftgy.com',
   // Admin top-ups stay on hold in production (owner ruling, 8 Oct).
   BILLING_TOPUP_HOLD: '1',
-  // No card payment in production until an attorney signs off (owner ruling, 13 Oct).
+  // Cards off in production until the owner's go-cards ruling (CARDS-SWITCH-ON below).
   PAYMENT_PROVIDER: 'disabled', CARD_RAIL_KILL: '1',
   // Address search (the API refuses production without it once #1563 lands;
   // osm or google is the owner's choice).
@@ -379,33 +389,113 @@ describe('[PROD-PATH] pilot-up.sh: a real production target', () => {
     expect(staging.stderr).not.toContain('refuses the agent-cash webhook');
   });
 
-  // [LAUNCH-LOCK] Owner ruling, 13 Oct: until an attorney signs off,
-  // production takes no card payment and runs no ads. The API's boot guard
-  // refuses the same settings (boot-config.test.ts); turning either on is a
-  // reviewed code change in both places, never an .env edit.
+  // [LAUNCH-LOCK → CARDS-SWITCH-ON] Cards on rests on the owner's go-cards ruling
+  // (OWNER-DECISIONS, dated at the go). History: 13 Oct (production refused cards
+  // and ads "until an attorney signs off"), 15 Oct (GUARDRAILS §8: what could be
+  // criminal — recurring card charges, ads — stays off until a lawyer confirms),
+  // and 7 Oct option A (this change's shape). The API's boot guard holds the same
+  // rule (boot-config.test.ts) and pilot-up runs it in the new image before the
+  // swap; changing it is a reviewed code change, never an .env edit.
   const everyMode = [[SHA], ['--data-only', SHA], ['--no-public', SHA]];
   const modeEnv = (args: string[]): Record<string, string> => (args.length > 1 ? { DNS_MAP: '' } : {});
-  it('production refuses any card provider but disabled, and no kill switch, in every mode, before anything changes', () => {
+  /** The switch-on lines COORD sets on the owner's go (synthetic labels; the secrets stay in the store). */
+  const CARDS_ON = {
+    CARD_RAIL_KILL: '0', CARD_RAIL_V2: '1', CARD_RAIL_V2_DRAIN: '0', CARD_RAIL_ENROLL: '0',
+    CARD_RAIL_PROVIDER: 'powertranz', CARD_RAIL_ENVIRONMENT: 'live', CARD_RAIL_ACCOUNT: 'swift-gy-live',
+    POWERTRANZ_API_URL: 'https://gateway.ptranz.com', POWERTRANZ_PAGE_SET: 'PTZ/SWIFT', POWERTRANZ_PAGE_NAME: 'WeeklyFee',
+    POWERTRANZ_ID_FILE: '/run/secrets/POWERTRANZ_ID', POWERTRANZ_PASSWORD_FILE: '/run/secrets/POWERTRANZ_PASSWORD',
+    // [Review #2465-B B-2] Cards on names who real cards serve (Monday: the owner's own subscription only).
+    CARD_RAIL_LIVE_SUBSCRIPTIONS: 'cmownersub0000000000000001',
+  };
+  const CARD_STORE = [...STORE, 'POWERTRANZ_ID', 'POWERTRANZ_PASSWORD'].join(' ');
+
+  it('production refuses any card provider but disabled, and a kill switch that is neither 1 nor 0, in every mode, before anything changes', () => {
     const cases: Array<[Record<string, string | undefined>, string]> = [
       [{ PAYMENT_PROVIDER: undefined }, 'needs PAYMENT_PROVIDER=disabled'],
       [{ PAYMENT_PROVIDER: 'stripe' }, 'needs PAYMENT_PROVIDER=disabled'],
       [{ PAYMENT_PROVIDER: 'powertranz' }, 'needs PAYMENT_PROVIDER=disabled'],
       [{ PAYMENT_PROVIDER: 'Disabled' }, 'needs PAYMENT_PROVIDER=disabled'],
-      [{ CARD_RAIL_KILL: undefined }, 'needs CARD_RAIL_KILL=1'],
-      [{ CARD_RAIL_KILL: '0' }, 'needs CARD_RAIL_KILL=1'],
-      [{ CARD_RAIL_KILL: 'yes' }, 'needs CARD_RAIL_KILL=1'],
+      [{ ...CARDS_ON, PAYMENT_PROVIDER: 'powertranz' }, 'needs PAYMENT_PROVIDER=disabled'],
+      [{ CARD_RAIL_KILL: undefined }, 'needs CARD_RAIL_KILL=1 (cards off) or 0 (cards on'],
+      [{ CARD_RAIL_KILL: 'yes' }, 'needs CARD_RAIL_KILL=1 (cards off) or 0 (cards on'],
+      [{ CARD_RAIL_KILL: '00' }, 'needs CARD_RAIL_KILL=1 (cards off) or 0 (cards on'],
+      [{ ...CARDS_ON, CARD_RAIL_KILL: 'off' }, 'needs CARD_RAIL_KILL=1 (cards off) or 0 (cards on'],
     ];
     for (const args of everyMode) {
       for (const [over, refusal] of cases) {
         writeFileSync(log, '');
-        const r = runPilot({ ...PRODUCTION, ...over }, { args, env: modeEnv(args) });
+        const r = runPilot({ ...PRODUCTION, ...over }, { args, env: { ...modeEnv(args), STORE_NAMES: CARD_STORE } });
         expect(r.status, `${args.join(' ')} ${JSON.stringify(over)}`).not.toBe(0);
         expect(r.stderr).toContain(`PILOT_ENV=production ${refusal}`);
-        expect(r.stderr).toContain('until an attorney signs off');
+        expect(r.stderr).toContain("the owner's go-cards ruling, OWNER-DECISIONS, dated at the go");
+        expect(r.stderr).not.toContain('7 Oct');
+        expect(r.stderr).not.toMatch(/attorney/i);
         expect(changedNothing(r.calls)).toEqual([]);
       }
     }
   });
+
+  it('LIFTED: production deploys Pay now by card — the kill switch 0 with v2 on PowerTranz, live cards, the credentials wired from the store — in every mode', () => {
+    for (const args of everyMode) {
+      writeFileSync(log, '');
+      const r = runPilot({ ...PRODUCTION, ...CARDS_ON }, { args, env: { ...modeEnv(args), STORE_NAMES: CARD_STORE, ...(args[0] === '--data-only' ? { API_STOPPED: '1' } : {}), ...(args[0] === '--no-public' ? { CADDY_STOPPED: '1' } : {}) } });
+      expect(r.status, `${args.join(' ')}: ${r.stderr}`).toBe(0);
+    }
+    writeFileSync(log, '');
+    const full = runPilot({ ...PRODUCTION, ...CARDS_ON }, { env: { STORE_NAMES: CARD_STORE } });
+    expect(full.stdout).toContain(`PRODUCTION READY at exact SHA ${SHA}`);
+    // The optional gateway key, when PowerTranz issued one, comes from the store too.
+    writeFileSync(log, '');
+    const withKey = runPilot({ ...PRODUCTION, ...CARDS_ON, POWERTRANZ_GATEWAY_KEY_FILE: '/run/secrets/POWERTRANZ_GATEWAY_KEY' }, { env: { STORE_NAMES: `${CARD_STORE} POWERTRANZ_GATEWAY_KEY` } });
+    expect(withKey.status, withKey.stderr).toBe(0);
+  });
+
+  it('LIFTED: the rollback deploys — the kill switch back to 1 with v2 left on (open card payments are still confirmed)', () => {
+    const r = runPilot({ ...PRODUCTION, ...CARDS_ON, CARD_RAIL_KILL: '1' }, { env: { STORE_NAMES: CARD_STORE } });
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.stdout).toContain(`PRODUCTION READY at exact SHA ${SHA}`);
+  });
+
+  it('KEPT: cards on, or v2 on, need the real provider, live cards, its address and the credentials wired from the store — refused before anything changes', () => {
+    const cases: Array<[Record<string, string | undefined>, string, string?]> = [
+      [{ CARD_RAIL_KILL: '0' }, 'with CARD_RAIL_KILL=0 (cards on) needs CARD_RAIL_V2=1, CARD_RAIL_PROVIDER=powertranz and CARD_RAIL_ENVIRONMENT=live'],
+      [{ ...CARDS_ON, CARD_RAIL_V2: '0' }, 'with CARD_RAIL_KILL=0 (cards on) needs CARD_RAIL_V2=1, CARD_RAIL_PROVIDER=powertranz and CARD_RAIL_ENVIRONMENT=live'],
+      [{ ...CARDS_ON, CARD_RAIL_V2: undefined }, 'with CARD_RAIL_KILL=0 (cards on) needs CARD_RAIL_V2=1, CARD_RAIL_PROVIDER=powertranz and CARD_RAIL_ENVIRONMENT=live'],
+      [{ ...CARDS_ON, CARD_RAIL_ENVIRONMENT: 'sandbox' }, 'with CARD_RAIL_KILL=0 (cards on) needs CARD_RAIL_V2=1, CARD_RAIL_PROVIDER=powertranz and CARD_RAIL_ENVIRONMENT=live'],
+      [{ ...CARDS_ON, CARD_RAIL_PROVIDER: 'simulator' }, 'with CARD_RAIL_KILL=0 (cards on) needs CARD_RAIL_V2=1, CARD_RAIL_PROVIDER=powertranz and CARD_RAIL_ENVIRONMENT=live'],
+      [{ ...CARDS_ON, CARD_RAIL_KILL: '1', CARD_RAIL_ENVIRONMENT: 'sandbox' }, 'with CARD_RAIL_V2=1 needs CARD_RAIL_PROVIDER=powertranz and CARD_RAIL_ENVIRONMENT=live'],
+      [{ ...CARDS_ON, CARD_RAIL_V2: 'true' }, 'needs CARD_RAIL_V2 unset, 0 or 1'],
+      [{ ...CARDS_ON, POWERTRANZ_ID_FILE: undefined }, 'with CARD_RAIL_V2=1 needs POWERTRANZ_ID_FILE=/run/secrets/POWERTRANZ_ID and POWERTRANZ_PASSWORD_FILE=/run/secrets/POWERTRANZ_PASSWORD'],
+      [{ ...CARDS_ON, POWERTRANZ_PASSWORD_FILE: undefined }, 'with CARD_RAIL_V2=1 needs POWERTRANZ_ID_FILE=/run/secrets/POWERTRANZ_ID and POWERTRANZ_PASSWORD_FILE=/run/secrets/POWERTRANZ_PASSWORD'],
+      [{ ...CARDS_ON, POWERTRANZ_ID_FILE: '/tmp/POWERTRANZ_ID' }, 'with CARD_RAIL_V2=1 needs POWERTRANZ_ID_FILE=/run/secrets/POWERTRANZ_ID and POWERTRANZ_PASSWORD_FILE=/run/secrets/POWERTRANZ_PASSWORD'],
+      [{ ...CARDS_ON, CARD_RAIL_KILL: '1', POWERTRANZ_PASSWORD_FILE: undefined }, 'with CARD_RAIL_V2=1 needs POWERTRANZ_ID_FILE=/run/secrets/POWERTRANZ_ID and POWERTRANZ_PASSWORD_FILE=/run/secrets/POWERTRANZ_PASSWORD'],
+      [{ ...CARDS_ON, POWERTRANZ_API_URL: undefined }, 'with CARD_RAIL_V2=1 needs POWERTRANZ_API_URL'],
+      // [Review #2466-B F2] The page set carries PowerTranz's PTZ/ prefix, or the new boot refuses it after the swap.
+      [{ ...CARDS_ON, POWERTRANZ_PAGE_SET: 'SWIFT' }, 'with CARD_RAIL_V2=1 needs POWERTRANZ_PAGE_SET=PTZ/<set>'],
+      [{ ...CARDS_ON, POWERTRANZ_PAGE_SET: 'PTZ/' }, 'with CARD_RAIL_V2=1 needs POWERTRANZ_PAGE_SET=PTZ/<set>'],
+      [{ ...CARDS_ON, POWERTRANZ_PAGE_SET: undefined }, 'with CARD_RAIL_V2=1 needs POWERTRANZ_PAGE_SET=PTZ/<set>'],
+      [{ ...CARDS_ON, CARD_RAIL_KILL: '1', POWERTRANZ_PAGE_SET: 'ptz/SWIFT' }, 'with CARD_RAIL_V2=1 needs POWERTRANZ_PAGE_SET=PTZ/<set>'],
+    ];
+    for (const args of everyMode) {
+      for (const [over, refusal] of cases) {
+        writeFileSync(log, '');
+        const r = runPilot({ ...PRODUCTION, ...over }, { args, env: { ...modeEnv(args), STORE_NAMES: CARD_STORE } });
+        expect(r.status, `${args.join(' ')} ${JSON.stringify(over)}`).not.toBe(0);
+        expect(r.stderr, JSON.stringify(over)).toContain(`PILOT_ENV=production ${refusal}`);
+        expect(changedNothing(r.calls)).toEqual([]);
+      }
+    }
+    // The credentials wired but not in the store: the store check refuses them by name (unchanged rule).
+    writeFileSync(log, '');
+    const notStored = runPilot({ ...PRODUCTION, ...CARDS_ON }, { env: { STORE_NAMES: STORE.join(' ') } });
+    expect(notStored.status).not.toBe(0);
+    expect(notStored.stderr).toContain('POWERTRANZ_ID is wired as POWERTRANZ_ID_FILE but is not in the encrypted store');
+    // A secret typed into deploy/.env is refused, as every secret is.
+    writeFileSync(log, '');
+    const typed = runPilot({ ...PRODUCTION, ...CARDS_ON, POWERTRANZ_ID_FILE: undefined, POWERTRANZ_ID: 'LIVEID01' }, { env: { STORE_NAMES: CARD_STORE } });
+    expect(typed.status).not.toBe(0);
+    expect(typed.stderr + typed.stdout).not.toContain('LIVEID01');
+  }, 240_000); // dozens of pilot-up runs: the default 30 s is too short on a loaded machine
 
   // [BUG-HUNT F23] A near miss reads as closed, which on ordering day would hold every partner with no word to anyone.
   it.each(['true', 'yes', 'on', '2', 'open', '1 '])('PARTNER_APPROVALS_OPEN=%j is refused before anything changes', (value) => {
@@ -422,14 +512,21 @@ describe('[PROD-PATH] pilot-up.sh: a real production target', () => {
     expect(r.stderr).not.toContain('PARTNER_APPROVALS_OPEN');
   });
 
-  it.each(['CARD_RAIL_V2', 'CARD_RAIL_V2_DRAIN', 'CARD_RAIL_ENROLL', 'ADS_ENABLED'])('production refuses %s unless it is unset or 0, in every mode, before anything changes', (name) => {
+  it.each([
+    ['CARD_RAIL_ENROLL', 'saved cards and automatic weekly card charges stay off until a lawyer confirms them (GUARDRAILS §8; owner rulings, 13 and 15 Oct)'],
+    ['CARD_RAIL_V2_DRAIN', 'to stop card payments set CARD_RAIL_KILL=1 and leave CARD_RAIL_V2=1'],
+    ['ADS_ENABLED', 'ads stay off until a lawyer confirms them (GUARDRAILS §8; owner rulings, 15 Oct and 6 Nov)'],
+  ])('KEPT: production refuses %s unless it is unset or 0 — cards off or on, in every mode, before anything changes', (name, why) => {
     for (const args of everyMode) {
-      for (const value of ['1', 'true', 'on']) {
-        writeFileSync(log, '');
-        const r = runPilot({ ...PRODUCTION, [name]: value }, { args, env: modeEnv(args) });
-        expect(r.status, `${args.join(' ')} ${name}=${value}`).not.toBe(0);
-        expect(r.stderr).toContain(`PILOT_ENV=production refuses ${name} unless it is unset or 0`);
-        expect(changedNothing(r.calls)).toEqual([]);
+      for (const base of [{}, CARDS_ON]) {
+        for (const value of ['1', 'true', 'on']) {
+          writeFileSync(log, '');
+          const r = runPilot({ ...PRODUCTION, ...base, [name]: value }, { args, env: { ...modeEnv(args), STORE_NAMES: CARD_STORE } });
+          expect(r.status, `${args.join(' ')} ${name}=${value}`).not.toBe(0);
+          expect(r.stderr).toContain(`PILOT_ENV=production refuses ${name} unless it is unset or 0: ${why}`);
+          expect(r.stderr).not.toMatch(/attorney/i);
+          expect(changedNothing(r.calls)).toEqual([]);
+        }
       }
     }
     for (const off of ['', '0']) {
@@ -444,6 +541,170 @@ describe('[PROD-PATH] pilot-up.sh: a real production target', () => {
     expect(r.status, r.stderr).toBe(0);
     expect(r.stdout).toContain(`STAGING READY at exact SHA ${SHA}`);
   });
+
+  // [Review #2465-A F2] The test-subscription list names what a TEST card system may serve; production runs none.
+  it('production refuses a test-subscription list (CARD_RAIL_TEST_SUBSCRIPTIONS), cards off or on, in every mode, before anything changes', () => {
+    for (const args of everyMode) {
+      for (const base of [{}, CARDS_ON]) {
+        for (const value of ['sub_1', 'sub_1,sub_2']) {
+          writeFileSync(log, '');
+          const r = runPilot({ ...PRODUCTION, ...base, CARD_RAIL_TEST_SUBSCRIPTIONS: value }, { args, env: { ...modeEnv(args), STORE_NAMES: CARD_STORE } });
+          expect(r.status, `${args.join(' ')} ${value}`).not.toBe(0);
+          expect(r.stderr).toContain('PILOT_ENV=production refuses CARD_RAIL_TEST_SUBSCRIPTIONS unless it is empty');
+          expect(changedNothing(r.calls)).toEqual([]);
+        }
+      }
+    }
+    writeFileSync(log, '');
+    expect(runPilot({ ...PRODUCTION, CARD_RAIL_TEST_SUBSCRIPTIONS: '' }).status).toBe(0);
+    writeFileSync(log, '');
+    expect(runPilot({ ...STAGING, CARD_RAIL_TEST_SUBSCRIPTIONS: 'sub_1' }).status).toBe(0);
+  });
+
+  // [CARDS-GO · owner ruling 14 Nov 2026] The live list: while set, real cards open ONLY for the subscriptions it names
+  // (the owner's own account first); empty, every eligible partner. pilot-up refuses a malformed list before anything
+  // changes, and says who live cards serve: the setting's name and a count, never an id.
+  it('[CARDS-GO] production deploys cards on with a live list, saying who live cards serve by name and count only', () => {
+    const owner = 'cmownersub0000000000000001';
+    for (const [list, says] of [
+      [owner, 'cards: ON (CARD_RAIL_KILL=0, CARD_RAIL_V2=1). CARD_RAIL_LIVE_SUBSCRIPTIONS names 1 subscription(s): live cards open ONLY for them; every other partner sees no card and keeps today\'s fee'],
+      [` ${owner} , ${owner},sub_2`, 'CARD_RAIL_LIVE_SUBSCRIPTIONS names 2 subscription(s)'],
+      ['*', 'cards: ON (CARD_RAIL_KILL=0, CARD_RAIL_V2=1). CARD_RAIL_LIVE_SUBSCRIPTIONS=*: live cards open for every eligible partner'],
+    ] as const) {
+      writeFileSync(log, '');
+      const r = runPilot({ ...PRODUCTION, ...CARDS_ON, CARD_RAIL_LIVE_SUBSCRIPTIONS: list }, { env: { STORE_NAMES: CARD_STORE } });
+      expect(r.status, `${JSON.stringify(list)}: ${r.stderr}`).toBe(0);
+      expect(r.stdout).toContain(says);
+      expect(r.stdout + r.stderr).not.toContain(owner);
+    }
+    writeFileSync(log, '');
+    const off = runPilot(PRODUCTION);
+    expect(off.status, off.stderr).toBe(0);
+    expect(off.stdout).toContain('cards: OFF (CARD_RAIL_KILL=1). CARD_RAIL_LIVE_SUBSCRIPTIONS is empty: live cards open for NOBODY');
+    writeFileSync(log, '');
+    const paused = runPilot({ ...PRODUCTION, ...CARDS_ON, CARD_RAIL_KILL: '1', CARD_RAIL_LIVE_SUBSCRIPTIONS: owner }, { env: { STORE_NAMES: CARD_STORE } });
+    expect(paused.status, paused.stderr).toBe(0);
+    expect(paused.stdout).toContain('cards: PAUSED (CARD_RAIL_KILL=1, CARD_RAIL_V2=1): no new card payment starts. CARD_RAIL_LIVE_SUBSCRIPTIONS names 1 subscription(s)');
+  });
+
+  // [Review #2465-B B-2] Fails CLOSED: cards on with the list unset or empty is refused before anything changes.
+  it('[B-2] production refuses cards on (CARD_RAIL_KILL=0) with the live list unset or empty, in every mode, before anything changes', () => {
+    for (const args of everyMode) {
+      for (const value of [undefined, '']) {
+        writeFileSync(log, '');
+        const r = runPilot({ ...PRODUCTION, ...CARDS_ON, CARD_RAIL_LIVE_SUBSCRIPTIONS: value }, { args, env: { ...modeEnv(args), STORE_NAMES: CARD_STORE } });
+        expect(r.status, `${args.join(' ')} ${JSON.stringify(value)}`).not.toBe(0);
+        expect(r.stderr).toContain('PILOT_ENV=production with CARD_RAIL_KILL=0 (cards on) needs CARD_RAIL_LIVE_SUBSCRIPTIONS');
+        expect(changedNothing(r.calls)).toEqual([]);
+      }
+    }
+    // Paused needs no list: no new card payment can start.
+    writeFileSync(log, '');
+    expect(runPilot({ ...PRODUCTION, ...CARDS_ON, CARD_RAIL_KILL: '1', CARD_RAIL_LIVE_SUBSCRIPTIONS: '' }, { env: { STORE_NAMES: CARD_STORE } }).status).toBe(0);
+  }, 240_000);
+
+  it('[CARDS-GO] production refuses a malformed live list, cards off or on, in every mode, before anything changes, never echoing it', () => {
+    for (const args of everyMode) {
+      for (const base of [{}, CARDS_ON]) {
+        for (const value of [',', 'sub_1,', ',sub_1', 'sub_1,,sub_2', 'sub 1', 'sub_1;sub_2', 'x'.repeat(65), '*,sub_1', '**']) {
+          writeFileSync(log, '');
+          const r = runPilot({ ...PRODUCTION, ...base, CARD_RAIL_LIVE_SUBSCRIPTIONS: value }, { args, env: { ...modeEnv(args), STORE_NAMES: CARD_STORE } });
+          expect(r.status, `${args.join(' ')} ${JSON.stringify(value)}`).not.toBe(0);
+          expect(r.stderr).toContain('PILOT_ENV=production refuses CARD_RAIL_LIVE_SUBSCRIPTIONS: it must be a comma-separated list of subscription ids (live cards ONLY for them) or * alone (every eligible partner)');
+          expect(changedNothing(r.calls)).toEqual([]);
+        }
+      }
+    }
+    // Staging is not asked (its cards are a test system with its own list).
+    writeFileSync(log, '');
+    expect(runPilot({ ...STAGING, CARD_RAIL_LIVE_SUBSCRIPTIONS: ',' }).status).toBe(0);
+  }, 240_000);
+
+  // [Reviews #2465-A F1 / B-B4] pilot-up's shell checks are a first pass; THE rule is the API's own boot guard, run in
+  // the image just built, as api and as worker, with Compose's own settings for each, before anything is started,
+  // stopped or migrated. A refusal ends the deploy there, with the server's own message.
+  const guardRun = (service: string) => `run --rm --no-deps -T ${service} node dist/boot/boot-guard.js`;
+  const firstIndex = (lines: string[], test: (l: string) => boolean) => lines.findIndex(test);
+  it('runs the API\'s own boot guard in the new image, as api and as worker, after the build and before anything starts or stops (production and staging)', () => {
+    for (const [settings, args, env] of [
+      [PRODUCTION, [SHA], {}], [{ ...PRODUCTION, ...CARDS_ON }, [SHA], { STORE_NAMES: CARD_STORE }],
+      [PRODUCTION, ['--no-public', SHA], { DNS_MAP: '', CADDY_STOPPED: '1' }], [STAGING, [SHA], {}],
+    ] as const) {
+      writeFileSync(log, '');
+      const r = runPilot(settings, { args: [...args], env: { ...env } });
+      expect(r.status, `${args.join(' ')}: ${r.stderr}`).toBe(0);
+      const api = indexOf(r.calls, guardRun('api'));
+      const worker = indexOf(r.calls, guardRun('worker'));
+      expect(api, args.join(' ')).toBeGreaterThan(indexOf(r.calls, ' build api'));
+      expect(worker).toBeGreaterThan(api);
+      const firstChange = firstIndex(r.calls, (l) => /^docker compose .* (up|stop)( |$)/.test(l) || (l.startsWith('systemctl ') && !/^systemctl (is-enabled|is-active|restart swift-secrets)/.test(l)));
+      expect(firstChange, args.join(' ')).toBeGreaterThan(worker);
+      expect(r.stdout).toContain('boot guard: the new api and worker images accept this configuration');
+    }
+  });
+
+  it.each(['api', 'worker', 'both'])('a refusal by the new %s image ends the deploy with the server\'s own message: nothing started, stopped or migrated', (refuse) => {
+    for (const [args, env] of [[[SHA], {}], [['--no-public', SHA], { DNS_MAP: '', CADDY_STOPPED: '1' }]] as const) {
+      writeFileSync(log, '');
+      const r = runPilot({ ...PRODUCTION, ...CARDS_ON }, { args: [...args], env: { ...env, STORE_NAMES: CARD_STORE, BOOT_GUARD_REFUSE: refuse } });
+      expect(r.status, args.join(' ')).not.toBe(0);
+      expect(r.stderr).toContain(`BOOT_GUARD: the new ${refuse === 'worker' ? 'worker' : 'api'} image refuses this configuration: FATAL: CARD_RAIL_PROVIDER=simulator in production`);
+      expect(r.stderr).toContain('Nothing was started, stopped or migrated');
+      expect(r.calls.filter((l) => /^docker compose .* (up|stop)( |$)/.test(l))).toEqual([]);
+      expect(r.calls.filter((l) => l.includes('migrate'))).toEqual([]);
+    }
+  });
+
+  it('the database-only stage starts no API, so its image is not asked', () => {
+    const r = runPilot(PRODUCTION, { args: ['--data-only', SHA], env: { DNS_MAP: '', API_STOPPED: '1', BOOT_GUARD_REFUSE: 'both' } });
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.calls.filter((l) => l.includes('boot-guard'))).toEqual([]);
+  });
+
+  // [CARDS-SWITCH-ON · staging card test, 10 Nov 2026] Staging ran v2 on PowerTranz with NO POWERTRANZ_ID_FILE /
+  // POWERTRANZ_PASSWORD_FILE lines in deploy/.env: the API and the worker could not read the credentials, so cards
+  // could not work, and nothing said so. [Review #2466-B F2] Any server with v2 or its drain on PowerTranz — WHATEVER
+  // THE KILL SWITCH (a killed rail still confirms, looks up, voids and refunds through the provider) — now refuses
+  // that deploy, and a page set without PowerTranz's PTZ/ prefix, before anything changes: the API refuses to boot
+  // the same way (boot-config.test.ts), and api and worker would otherwise crash-loop after the swap.
+  it('[CARDS-SWITCH-ON] any server with v2 or its drain on PowerTranz, whatever the kill switch, refuses to deploy without the credentials wired from the store or the PTZ/ page set, before anything changes', () => {
+    const sandboxOn = { PAYMENT_PROVIDER: 'disabled', CARD_RAIL_KILL: '0', CARD_RAIL_V2: '1', CARD_RAIL_PROVIDER: 'powertranz', CARD_RAIL_ENVIRONMENT: 'sandbox', POWERTRANZ_PAGE_SET: 'PTZ/SWIFT' };
+    const wired = { POWERTRANZ_ID_FILE: '/run/secrets/POWERTRANZ_ID', POWERTRANZ_PASSWORD_FILE: '/run/secrets/POWERTRANZ_PASSWORD' };
+    const store = [...STORE, 'POWERTRANZ_ID', 'POWERTRANZ_PASSWORD'].join(' ');
+    const wiringRefusal = 'card rail v2 (CARD_RAIL_V2=1 or CARD_RAIL_V2_DRAIN=1) on CARD_RAIL_PROVIDER=powertranz needs POWERTRANZ_ID_FILE=/run/secrets/POWERTRANZ_ID and POWERTRANZ_PASSWORD_FILE=/run/secrets/POWERTRANZ_PASSWORD in deploy/.env';
+    const setRefusal = 'card rail v2 (CARD_RAIL_V2=1 or CARD_RAIL_V2_DRAIN=1) on CARD_RAIL_PROVIDER=powertranz needs POWERTRANZ_PAGE_SET=PTZ/<set>';
+    // Every switch state that still reaches the provider.
+    const reaching = [
+      {}, { CARD_RAIL_KILL: '1' }, { CARD_RAIL_KILL: undefined }, { CARD_RAIL_KILL: '' },
+      { CARD_RAIL_V2: '0', CARD_RAIL_V2_DRAIN: '1' }, { CARD_RAIL_V2: '0', CARD_RAIL_V2_DRAIN: '1', CARD_RAIL_KILL: '1' },
+    ];
+    for (const state of reaching) {
+      for (const [over, refusal] of [
+        [{}, wiringRefusal], [{ POWERTRANZ_ID_FILE: wired.POWERTRANZ_ID_FILE }, wiringRefusal],
+        [{ POWERTRANZ_PASSWORD_FILE: wired.POWERTRANZ_PASSWORD_FILE }, wiringRefusal],
+        [{ ...wired, POWERTRANZ_ID_FILE: '/run/secrets/PAYMENT_GATEWAY_KEY' }, wiringRefusal],
+        [{ ...wired, POWERTRANZ_PAGE_SET: 'SWIFT' }, setRefusal], [{ ...wired, POWERTRANZ_PAGE_SET: 'PTZ/' }, setRefusal],
+        [{ ...wired, POWERTRANZ_PAGE_SET: undefined }, setRefusal],
+      ] as const) {
+        writeFileSync(log, '');
+        const r = runPilot({ ...STAGING, ...sandboxOn, ...state, ...over }, { env: { STORE_NAMES: store } });
+        const label = `${JSON.stringify(state)} ${JSON.stringify(over)}`;
+        expect(r.status, label).not.toBe(0);
+        expect(r.stderr, label).toContain(refusal);
+        expect(changedNothing(r.calls)).toEqual([]);
+      }
+      writeFileSync(log, '');
+      const ok = runPilot({ ...STAGING, ...sandboxOn, ...state, ...wired }, { env: { STORE_NAMES: store } });
+      expect(ok.status, `${JSON.stringify(state)}: ${ok.stderr}`).toBe(0);
+      expect(ok.stdout).toContain(`STAGING READY at exact SHA ${SHA}`);
+    }
+    // v2 and its drain both off, or another provider: not asked.
+    for (const over of [{ CARD_RAIL_V2: '0' }, { CARD_RAIL_V2: '0', CARD_RAIL_V2_DRAIN: '0', CARD_RAIL_KILL: '1' }, { CARD_RAIL_PROVIDER: 'simulator' }]) {
+      writeFileSync(log, '');
+      const r = runPilot({ ...STAGING, ...sandboxOn, ...over, POWERTRANZ_PAGE_SET: undefined });
+      expect(r.status, `${JSON.stringify(over)}: ${r.stderr}`).toBe(0);
+    }
+  }, 240_000); // dozens of pilot-up runs: the default 30 s is too short on a loaded machine
 });
 
 // [S3-L1] A host deploys only onto a database of its own kind: pilot-up reads
@@ -1716,5 +1977,254 @@ INSERT INTO public.subscriptions VALUES ('s1', 'r1', NULL, NULL);
       expect(r.stderr).toContain('may not be the live database');
       expect(calls()).toEqual([]);
     }
+  });
+});
+
+// [Review #2465-B B-1 · A-1] Every documented card switch (on, rollback, go-live) on production is applied with the
+// compose set pilot-up uses (the wall overlay while TENANT_RLS_BIND=1, the hardening overlay while STACK_HARDENING=1),
+// the image of the deployed commit (SWIFT_TAG), the API's own boot guard first, and --no-build. A plain recreate on the
+// base file alone wants swift-api:local, builds on the production host and drops the wall: api and worker refuse to
+// boot, a full outage instead of a card stop.
+describe('[B-1] the card switch is documented with production\'s own compose set, never a plain recreate', () => {
+  const PLAIN = 'docker compose --project-directory deploy -f deploy/docker-compose.yml up -d --no-deps --force-recreate api worker';
+  const flat = (text: string) => text.replace(/\s+/g, ' ');
+  const docs = {
+    runbook: readFileSync(join(DEPLOY, 'PILOT-RUNBOOK.md'), 'utf8'),
+    api: readFileSync(join(DEPLOY, '..', 'apps', 'api', 'src', 'modules', 'billing', 'CARD-CHECKOUT-API.md'), 'utf8'),
+    envTemplate: readFileSync(join(DEPLOY, '.env.deploy.example'), 'utf8'),
+  };
+
+  it('no document gives the plain base-file recreate', () => {
+    for (const [name, text] of Object.entries(docs)) {
+      expect(flat(text).replace(/#\s*/g, ''), name).not.toContain(PLAIN);
+      expect(flat(text).replace(/#\s*/g, ''), name).not.toMatch(/docker compose --project-directory deploy -f deploy\/docker-compose\.yml up -d --no-deps --force-recreate api worker/);
+    }
+  });
+
+  it('the runbook and the card contract give the recreate with the overlays, the deployed tag, the boot guard first and --no-build', () => {
+    for (const [name, text] of [['runbook', docs.runbook], ['api', docs.api]] as const) {
+      for (const piece of [
+        'CARDC=(docker compose --project-directory deploy -f deploy/docker-compose.yml)',
+        "grep -qx 'TENANT_RLS_BIND=1' deploy/.env && CARDC+=(-f deploy/docker-compose.wall.yml)",
+        "grep -qx 'STACK_HARDENING=1' deploy/.env && CARDC+=(-f deploy/docker-compose.hardening.yml)",
+        'export SWIFT_TAG="$(git -C /opt/swift rev-parse HEAD)"',
+        '[ -z "$(git -C /opt/swift status --porcelain --untracked-files=normal)" ] || stop "the checkout is not clean; nothing was recreated"',
+        `[ "$(docker inspect -f '{{.Config.Image}}' swift-api-1)" = "swift-api:$SWIFT_TAG" ] || stop "api does not run HEAD's image (a deploy is half done); nothing was recreated"`,
+        '"${CARDC[@]}" run --rm --no-deps -T api node dist/boot/boot-guard.js </dev/null || stop "the api boot guard refused (FATAL above); nothing was recreated"',
+        '"${CARDC[@]}" run --rm --no-deps -T worker node dist/boot/boot-guard.js </dev/null || stop "the worker boot guard refused (FATAL above); nothing was recreated"',
+        '"${CARDC[@]}" up -d --no-deps --no-build --force-recreate api worker </dev/null || stop "the recreate itself failed: docker ps NOW"',
+      ]) expect(text, `${name}: ${piece}`).toContain(piece);
+      // [Review #2465-A2 S3-2] The clean checkout and the running image are checked before the guard and the swap.
+      const at = (piece: string) => text.indexOf(piece);
+      expect(at('status --porcelain'), name).toBeLessThan(at('-T api node dist/boot/boot-guard.js'));
+      expect(at("{{.Config.Image}}' swift-api-1)\" = \"swift-api:$SWIFT_TAG\""), name).toBeLessThan(at('-T api node dist/boot/boot-guard.js'));
+      expect(at('-T worker node dist/boot/boot-guard.js'), name).toBeLessThan(at('--no-build --force-recreate api worker'));
+    }
+    expect(docs.envTemplate).toContain('THE RECREATE');
+  });
+
+  // [Review #2465-B2] THE RECREATE as the operator really runs it: its own `ssh ... 'bash -s' <<'EOF'` block, so bash
+  // reads the script from standard input. The block is the runbook's own text, the same in the card contract.
+  const recreateBlock = (text: string): string => {
+    const lines = text.split('\n');
+    const start = lines.findIndex((l) => l.trim() === 'set -u; cd /opt/swift');
+    expect(start, 'the block starts with `set -u; cd /opt/swift`').toBeGreaterThan(-1);
+    const indent = lines[start]!.length - lines[start]!.trimStart().length;
+    const out: string[] = [];
+    for (const l of lines.slice(start)) {
+      if (l.trim() === '```') break;
+      out.push(l.slice(indent));
+    }
+    return out.join('\n') + '\n';
+  };
+
+  it('[B2] the runbook and the card contract carry the same block, and it parses (bash -n)', () => {
+    const block = recreateBlock(docs.runbook);
+    expect(recreateBlock(docs.api)).toBe(block);
+    const r = spawnSync('bash', ['-n'], { input: block, encoding: 'utf8' });
+    expect(r.status, r.stderr).toBe(0);
+  });
+
+  it('[B2 S2-1 S2-2 S3-1 S4-2] every Compose call reads </dev/null, every refusal names a STOP, the health word is whole, and the shell is checked as pilot-up checks it', () => {
+    for (const [name, text] of [['runbook', docs.runbook], ['api', docs.api]] as const) {
+      const block = recreateBlock(text);
+      const lines = block.split('\n');
+      expect(block, name).toContain('stop() { echo "STOP: $*"; exit 1; }');
+      const compose = lines.filter((l) => l.includes('"${CARDC[@]}"'));
+      expect(compose.length, name).toBe(3);
+      for (const l of compose) expect(l, `${name}: ${l}`).toMatch(/ <\/dev\/null \|\| stop "[^"]+"$/);
+      const preconditions = lines.filter((l) => /^\[ /.test(l) || l.startsWith('docker image inspect'));
+      expect(preconditions.length, name).toBe(3);
+      for (const l of preconditions) expect(l, `${name}: ${l}`).toMatch(/ \|\| stop "[^"]+; nothing was recreated"$/);
+      // The last line reads what the NEW containers run with: the kill switch in api and worker, the list as counts.
+      const last = lines.filter(Boolean).at(-1)!;
+      expect(last, name).toMatch(/^echo "api \$\(docker inspect -f '\{\{\.State\.Health\.Status\}\}' swift-api-1\) \| /);
+      expect(last, name).toContain('KILL api=$(docker exec swift-api-1 printenv CARD_RAIL_KILL) worker=$(docker exec swift-worker-1 printenv CARD_RAIL_KILL)');
+      expect(last, name).toContain("list entries=$(printf '%s' \"$L\" | tr ',' '\\n' | grep -c .) star=$(printf '%s\\n' \"$L\" | grep -cFx '*')");
+      // The list is read into L and only ever counted: never printed.
+      expect(block.match(/"\$L"/g)?.length, name).toBe(2);
+      expect(block.match(/printf '%s(\\n)?' "\$L" \| /g)?.length, name).toBe(2);
+      expect(block.match(/printenv CARD_RAIL_LIVE_SUBSCRIPTIONS/g)?.length, name).toBe(1);
+      expect(block, name).toContain('L="$(docker exec swift-api-1 printenv CARD_RAIL_LIVE_SUBSCRIPTIONS)"');
+      for (const n of ['COMPOSE_PROJECT_NAME', 'COMPOSE_PROFILES', 'COMPOSE_FILE', 'COMPOSE_ENV_FILES', 'DOCKER_HOST', 'DOCKER_CONTEXT', 'DOCKER_CONFIG']) {
+        expect(lines[2], `${name}: ${n}`).toContain(` ${n}`);
+      }
+    }
+    for (const [name, text] of Object.entries(docs)) expect(text, name).not.toContain('cut -c1-30');
+  });
+
+  describe('[B2] the block, run through `bash -s` on standard input against stub docker and git', () => {
+    let root = '';
+    let log = '';
+    const SHA = 'a'.repeat(40);
+    beforeEach(() => {
+      root = mkdtempSync(join(tmpdir(), 'card-recreate-'));
+      log = join(root, 'calls.log');
+      mkdirSync(join(root, 'deploy'));
+      mkdirSync(join(root, 'bin'));
+      for (const f of ['docker-compose.yml', 'docker-compose.wall.yml', 'docker-compose.hardening.yml']) copyFileSync(join(DEPLOY, f), join(root, 'deploy', f));
+      writeFileSync(join(root, 'deploy', '.env'), 'NODE_ENV=production\nTENANT_RLS_BIND=1\n');
+      writeFileSync(join(root, 'bin', 'git'), [
+        '#!/bin/bash',
+        'case "$*" in',
+        '  *"rev-parse HEAD"*) echo "$STUB_SHA" ;;',
+        '  *"status --porcelain"*) printf "%s" "${STUB_DIRTY:-}" ;;',
+        'esac',
+      ].join('\n'));
+      // `docker compose run` forwards standard input to the container unless told otherwise: the stub reads it all,
+      // as the real one does, so a run without </dev/null eats the rest of a script given on standard input.
+      writeFileSync(join(root, 'bin', 'docker'), [
+        '#!/bin/bash',
+        'echo "docker $*" >> "$CALL_LOG"',
+        'case "$1" in',
+        '  compose)',
+        '    case " $* " in',
+        '      *" run "*) cat >/dev/null',
+        '        case " $* " in *" -T ${STUB_GUARD_REFUSES:-none} "*) echo "BOOT_GUARD: FATAL stub" >&2; exit 1 ;; esac',
+        '        echo "OK boot guard: this configuration starts" ;;',
+        '      *" up "*) cat >/dev/null ;;',
+        '    esac ;;',
+        '  inspect)',
+        '    case "$3" in',
+        '      "{{.Config.Image}}") echo "$STUB_RUNNING" ;;',
+        '      "{{.State.Health.Status}}") echo healthy ;;',
+        '      *) echo "running restarts=0" ;;',
+        '    esac ;;',
+        '  image) [ -z "${STUB_IMAGE_MISSING:-}" ] ;;',
+        '  logs) : ;;',
+        '  exec)',
+        '    case "$4" in',
+        '      CARD_RAIL_KILL) echo "$STUB_KILL" ;;',
+        '      CARD_RAIL_LIVE_SUBSCRIPTIONS) printf "%s\\n" "$STUB_LIST" ;;',
+        '    esac ;;',
+        'esac',
+      ].join('\n'));
+      chmodSync(join(root, 'bin', 'git'), 0o755);
+      chmodSync(join(root, 'bin', 'docker'), 0o755);
+    });
+    afterEach(() => rmSync(root, { recursive: true, force: true }));
+
+    const run = (stub: Record<string, string>, block = recreateBlock(docs.runbook)) => {
+      const script = block.replaceAll('/opt/swift', root);
+      const env = {
+        PATH: `${join(root, 'bin')}:/usr/bin:/bin`, CALL_LOG: log, STUB_SHA: SHA, STUB_RUNNING: `swift-api:${SHA}`,
+        STUB_KILL: '0', STUB_LIST: 'sub_owner_only_1', ...stub,
+      };
+      writeFileSync(log, '');
+      const r = spawnSync('bash', ['-s'], { input: script, env, encoding: 'utf8' });
+      return { ...r, calls: readFileSync(log, 'utf8') };
+    };
+
+    it('switch-on: both guard lines, the recreate with the wall overlay and --no-build, then the status line read from the new containers (no id)', () => {
+      const r = run({});
+      expect(r.status, r.stderr).toBe(0);
+      const out = r.stdout.trim().split('\n');
+      expect(out).toEqual([
+        'OK boot guard: this configuration starts',
+        'OK boot guard: this configuration starts',
+        'api healthy | worker running restarts=0 | FATAL=0 | KILL api=0 worker=0 | list entries=1 star=0',
+      ]);
+      expect(r.stdout + r.stderr).not.toContain('sub_owner_only_1');
+      expect(r.calls).toMatch(/docker compose --project-directory deploy -f deploy\/docker-compose\.yml -f deploy\/docker-compose\.wall\.yml up -d --no-deps --no-build --force-recreate api worker/);
+    });
+
+    it('rollback reads KILL api=1 worker=1; the go-live reads star=1', () => {
+      expect(run({ STUB_KILL: '1' }).stdout.trim().split('\n').at(-1)).toContain('| KILL api=1 worker=1 | list entries=1 star=0');
+      expect(run({ STUB_LIST: '*' }).stdout.trim().split('\n').at(-1)).toContain('| KILL api=0 worker=0 | list entries=1 star=1');
+    });
+
+    it.each([
+      [{ STUB_DIRTY: ' M deploy/.env.x' }, "STOP: the checkout is not clean; nothing was recreated"],
+      [{ STUB_RUNNING: `swift-api:${'b'.repeat(40)}` }, "STOP: api does not run HEAD's image (a deploy is half done); nothing was recreated"],
+      [{ STUB_IMAGE_MISSING: '1' }, "STOP: HEAD's image is missing; nothing was recreated"],
+      [{ STUB_GUARD_REFUSES: 'worker' }, 'STOP: the worker boot guard refused (FATAL above); nothing was recreated'],
+      [{ NODE_ENV: 'development' }, 'STOP: NODE_ENV is set in this shell, and Compose or Docker would use it; run from a fresh ssh block; nothing was recreated'],
+      [{ COMPOSE_FILE: 'x.yml' }, 'STOP: COMPOSE_FILE is set in this shell, and Compose or Docker would use it; run from a fresh ssh block; nothing was recreated'],
+      [{ DOCKER_HOST: 'tcp://elsewhere:2375' }, 'STOP: DOCKER_HOST is set in this shell, and Compose or Docker would use it; run from a fresh ssh block; nothing was recreated'],
+    ] as const)('a refusal prints its named STOP and nothing else, and nothing is recreated (%j)', (stub, stop) => {
+      const r = run(stub);
+      expect(r.status).toBe(1);
+      expect(r.stdout.trim().split('\n').at(-1)).toBe(stop);
+      expect(r.stdout).not.toContain('api healthy');
+      expect(r.calls).not.toContain(' up -d ');
+    });
+
+    it('the hazard the </dev/null closes: without it, the first guard run eats the rest of the script and no status line prints', () => {
+      const bare = recreateBlock(docs.runbook).replaceAll(' </dev/null', '');
+      const r = run({}, bare);
+      expect(r.stdout).toContain('OK boot guard: this configuration starts');
+      expect(r.stdout).not.toContain('api healthy');
+    });
+  });
+
+  it('[B2 S3-2 S4-3 S4-1] the rollback sets the kill switch itself and never restores a saved file; the switch-on restore takes the OLDEST copy and checks it; step 1 expects pilot-up\'s own guard line', () => {
+    const runbook = flat(docs.runbook);
+    expect(runbook).toContain('8. Set `CARD_RAIL_KILL=1` in deploy/.env (leave `CARD_RAIL_V2=1`');
+    expect(runbook).toContain("check `grep -c '^CARD_RAIL_KILL=1$' /opt/swift/deploy/.env` prints 1. Then run step 6's block unchanged");
+    expect(runbook).toContain('**Success is `KILL api=1 worker=1`**');
+    expect(runbook).toContain('If the block prints `STOP: ...` during the rollback, never put back a saved copy');
+    expect(runbook).not.toContain('put the saved deploy/.env back');
+    expect(runbook).toContain('the OLDEST copy of the day, never the newest');
+    expect(runbook).toContain("`install -m 600 <that copy> /opt/swift/deploy/.env && grep -c '^CARD_RAIL_KILL=1$' /opt/swift/deploy/.env` must print 1. On the rollback, never do this");
+    const api = flat(docs.api);
+    expect(api).toContain('**Success is `KILL api=1 worker=1`**');
+    expect(api).toContain('never put back a saved file: each one from that day has cards on');
+    expect(api).toContain('the OLDEST copy of the day, never the newest');
+    // Step 1 expects the line pilot-up really prints (it captures the guard's own output).
+    const pilotUp = readFileSync(join(DEPLOY, 'pilot-up.sh'), 'utf8');
+    const line = 'boot guard: the new api and worker images accept this configuration';
+    expect(pilotUp).toContain(`echo "${line}"`);
+    expect(runbook).toContain(`Expect \`${line}\``);
+    expect(runbook).not.toContain('1. Deploy main with cards OFF through pilot-up. Expect `OK boot guard` twice');
+  });
+
+  // [Review #2465-A2 S3-1] The production helper session defines `C` as a string that its read-only count and its
+  // own recreate use; a documented `C=(...)` array in that shell turns `$C` into plain `docker` and breaks the
+  // rollback. No document assigns `C` as an array.
+  it('[A2 S3-1] no document assigns the compose array as `C`, which would break the helper session\'s $C', () => {
+    for (const [name, text] of Object.entries(docs)) {
+      expect(text, name).not.toMatch(/(^|[\s;(])C\+?=\(/m);
+      expect(text, name).not.toContain('"${C[@]}"');
+    }
+    expect(flat(docs.runbook)).toContain('THE RECREATE must never run in a shell that sourced the production helper session');
+    expect(flat(docs.api)).toContain('in a FRESH shell that has not sourced the production helper session');
+  });
+
+  it('[A2 S4] the card-day checklist counts every open hold, names the config table, checks `*` as a fixed string, and names the stop when the guard refuses the kill switch', () => {
+    const runbook = flat(docs.runbook);
+    expect(runbook).toContain("status IN ('ACTIVE','SETTLEMENT_APPLY_PENDING')");
+    expect(runbook).toContain('FROM platform_config WHERE key=\'billing.cardCheckout.platforms\'');
+    for (const text of [runbook, flat(docs.api)]) {
+      expect(text).toContain("grep -cFx 'CARD_RAIL_LIVE_SUBSCRIPTIONS=*' /opt/swift/deploy/.env");
+      expect(text).toMatch(/If the guard refuses even `?CARD_RAIL_KILL=1/);
+      expect(text).toMatch(/never put back a saved (file|copy)/i);
+    }
+  });
+
+  it('[A-2] before switch-on the runbook reads the card platform row and the saved-card counts', () => {
+    const runbook = flat(docs.runbook);
+    expect(runbook).toContain('`billing.cardCheckout.platforms`');
+    expect(runbook).toContain('`payment_instruments` = 0');
+    expect(runbook).toContain("`billingMethod='CARD'` = 0");
   });
 });

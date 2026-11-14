@@ -1456,12 +1456,53 @@ checkout moves to the requested SHA; everything else before that):
 - AGENT_CASH_WEBHOOK_SECRET or AGENT_CASH_WEBHOOK_SECRET_FILE set: partners
   pay the weekly fee only on the MMG checkout page, never through an agent or
   a Swift Number (the agent-cash webhook answers 503 without its secret);
-- the launch lock (owner ruling, 13 Oct): until an attorney signs off,
-  production takes no card payment and runs no ads. PAYMENT_PROVIDER must be
-  exactly `disabled` and CARD_RAIL_KILL exactly `1`; CARD_RAIL_V2,
-  CARD_RAIL_V2_DRAIN, CARD_RAIL_ENROLL and ADS_ENABLED must each be unset or
-  `0`. Lifting it is a reviewed code change here and in the API's boot guard,
+- the card and ad switches (cards on rests on the owner's go-cards ruling,
+  OWNER-DECISIONS, dated at the go; saved cards and ads stay refused under
+  GUARDRAILS section 8; the 13 Oct "until an attorney signs off" lock is
+  replaced): PAYMENT_PROVIDER exactly `disabled` (the legacy card seam stays off);
+  CARD_RAIL_KILL exactly `1` (cards off) or `0` (cards on, only on the owner's
+  go), and `0` only beside CARD_RAIL_V2=`1`, CARD_RAIL_PROVIDER=`powertranz`
+  and CARD_RAIL_ENVIRONMENT=`live`; CARD_RAIL_V2 unset, `0` or `1`, and `1`
+  only on PowerTranz live with POWERTRANZ_API_URL set and
+  `POWERTRANZ_ID_FILE=/run/secrets/POWERTRANZ_ID` and
+  `POWERTRANZ_PASSWORD_FILE=/run/secrets/POWERTRANZ_PASSWORD` (the owner's
+  live credentials in the store) and `POWERTRANZ_PAGE_SET=PTZ/<set>`;
+  CARD_RAIL_ENROLL (saved cards and automatic
+  weekly card charges), CARD_RAIL_V2_DRAIN and ADS_ENABLED each unset or `0`;
+  CARD_RAIL_TEST_SUBSCRIPTIONS empty; CARD_RAIL_LIVE_SUBSCRIPTIONS a
+  comma-separated list of subscription ids (live cards ONLY for them: the
+  owner's 14 Nov 2026 ruling, his own account first; everyone else sees no card
+  and keeps today's fee) or `*` alone (every eligible partner, after
+  PowerTranz's go-live); unset or empty serves NOBODY and is refused beside
+  CARD_RAIL_KILL=`0` (review #2465-B B-2). For a mover, list the canonical
+  subscription (B-4). pilot-up
+  prints the card posture and the list's name and count, never an id
+  (`cards: ON (...). CARD_RAIL_LIVE_SUBSCRIPTIONS names 1 subscription(s) ...`).
+  The rollback is CARD_RAIL_KILL=`1` with
+  CARD_RAIL_V2=`1` left on (open card payments are still confirmed); with one
+  admin it is the only immediate stop (the card platform row needs a second
+  admin's approval, a 12-hour solo wait). Any card switch made by editing
+  deploy/.env (on, off, the list) is applied ONLY with THE RECREATE in "Card
+  day" below, never a plain `docker compose -f deploy/docker-compose.yml up ...
+  api worker`: that wants `swift-api:local`, builds on the production host, and
+  drops the wall overlay, so api and worker refuse to boot (a full outage;
+  review #2465-B B-1). A `restart` does NOT re-read deploy/.env.
+  Changing these rules is a reviewed code change here and in the API's boot guard,
   never a deploy/.env edit;
+- for the whole stack and `--no-public` (not `--data-only`), THE API'S OWN BOOT
+  GUARD: after the API image is built and before anything is started, stopped
+  or migrated, the new image runs `node dist/boot/boot-guard.js` once as api
+  and once as worker, with Compose's own settings for each (deploy/.env, its
+  `_FILE` lines, the store). Any refusal ends the deploy there with the
+  server's own message (`BOOT_GUARD: ...`), so a setting the API refuses never
+  reaches the swap;
+- on ANY host (staging included): CARD_RAIL_V2=`1` or CARD_RAIL_V2_DRAIN=`1`
+  with CARD_RAIL_PROVIDER=`powertranz`, whatever the kill switch (a killed
+  rail still confirms, looks up, voids and refunds through the provider),
+  needs the two POWERTRANZ_*_FILE lines above and a page set with
+  PowerTranz's prefix (`POWERTRANZ_PAGE_SET=PTZ/<set>`), or the deploy is
+  refused before anything changes (the API refuses to boot the same way):
+  without them nothing can read the credentials or open a card page;
 - for the whole stack and `--no-public` (not `--data-only`), no address-search
   provider: `PLACES_PROVIDER=osm` with `PHOTON_URL=http://photon:2322` (the
   script then also starts the private Photon service from the routing file's
@@ -1538,8 +1579,9 @@ explicitly off. Beyond the earlier guards:
   (one platform off pauses every fee on the server, cash included);
   turning a real card provider on also ends the pause, so do it only when
   partners can open the card pages (note the per-platform card switch: iOS
-  is off unless switched on). While the launch lock below holds, production
-  refuses a card provider outright.
+  is off unless switched on). Live cards count as a way to pay for the
+  pause only with the card on EVERY platform (`billing.cardCheckout.platforms`;
+  iOS is off unless the row says `"ios": true`), as MMG's checkout does.
 - **OPS_ONCALL_PHONES.** One or more E.164 numbers, comma-separated. An
   unacknowledged SOS escalates to them by SMS.
 - **Email.** `EMAIL_PROVIDER=smtp` with SMTP_HOST, SMTP_PORT, SMTP_USER,
@@ -1552,13 +1594,14 @@ explicitly off. Beyond the earlier guards:
   AGENT_CASH_WEBHOOK_SECRET (nor its `_FILE`): the same two rules pilot-up.sh
   checks, held by the API itself however it is started (a hand-run compose,
   an old script). The refusal names the setting, never a value.
-- **The launch lock.** No card payment and no ads until an attorney signs
-  off (owner ruling, 13 Oct): the same settings pilot-up.sh checks above
-  (PAYMENT_PROVIDER `disabled`, CARD_RAIL_KILL `1`, CARD_RAIL_V2,
-  CARD_RAIL_V2_DRAIN, CARD_RAIL_ENROLL and ADS_ENABLED unset or `0`). The
-  card rail's own production checks still run first, so a refusal names the
-  real problem before the lock. The value-free preflight
-  (`deploy/preflight.ts`) lists every one.
+- **The card and ad switches.** The same rule pilot-up.sh checks above:
+  cards off (CARD_RAIL_KILL `1`), cards on (CARD_RAIL_KILL `0` beside
+  CARD_RAIL_V2 `1` on PowerTranz with live cards and the complete live setup:
+  the owner's go-cards ruling, OWNER-DECISIONS, dated at the go), or paused (CARD_RAIL_KILL `1` with v2
+  left on); PAYMENT_PROVIDER `disabled`; CARD_RAIL_ENROLL, CARD_RAIL_V2_DRAIN
+  and ADS_ENABLED unset or `0`. The card rail's own production checks still
+  run first, so a refusal names the real problem before the switches. The
+  value-free preflight (`deploy/preflight.ts`) lists every one.
 
 ### Database first, before the providers and DNS
 
@@ -1801,6 +1844,150 @@ In this order, on the owner's go:
 
 To brake again, empty the setting and recreate both services. Approved partners
 stay approved and their trials keep running; only new partners wait.
+
+### Card day: real cards for the listed subscriptions, then for everyone
+
+Cards go on only on the owner's go (OWNER-DECISIONS, dated at the go), and first
+only for the subscriptions in `CARD_RAIL_LIVE_SUBSCRIPTIONS` (his own account
+first). Everyone else sees no card button and keeps today's fee. Production
+reads are counts and config only, never a personal row. Each numbered block
+runs in its OWN fresh shell (one ssh call each): THE RECREATE must never run in
+a shell that sourced the production helper session, whose `$C` and helpers it
+would otherwise break (review #2465-A2 S3-1; its array is named `CARDC` for the
+same reason).
+
+**Before the day**
+
+1. Deploy main with cards OFF through pilot-up. Expect `boot guard: the new api
+   and worker images accept this configuration` (pilot-up prints that one line;
+   `OK boot guard` is THE RECREATE's own output, review #2465-B2 S4-1), `cards:
+   OFF (CARD_RAIL_KILL=1). CARD_RAIL_LIVE_SUBSCRIPTIONS is empty: live cards
+   open for NOBODY (cards on needs it set)` (or `cards: PAUSED ...` while
+   `CARD_RAIL_V2=1`), then `PRODUCTION READY at exact SHA ...`.
+2. The owner reads his subscription id on the admin Subscriptions page (for a
+   mover, the canonical subscription, B-4). Nobody selects it from the database.
+3. Readiness, counts only (`ID` = that id):
+
+   ```
+   SELECT count(*) FROM subscriptions WHERE id='ID' AND status::text IN ('TRIAL','ACTIVE','PAST_DUE','SUSPENDED','CHURNED') AND "feeWaived"=false;  -- 1
+   -- EITHER a running clock:
+   SELECT count(*) FROM billing_dunning_clocks WHERE "subscriptionId"='ID' AND "pausedAt" IS NULL AND "authorityHoldReason" IS NULL;  -- 1
+   -- OR (with trial pay-ahead deployed) a trial that has no clock yet:
+   SELECT count(*) FROM subscriptions s WHERE s.id='ID' AND s.status::text='TRIAL' AND s."isTrialActive" AND s."trialEndDate" > now() AND s."nextBillingDate" = s."trialEndDate" AND NOT EXISTS (SELECT 1 FROM billing_dunning_clocks c WHERE c."subscriptionId"=s.id);  -- 1
+   SELECT count(*) FROM payment_confirmation_holds WHERE "subscriptionId"='ID' AND status IN ('ACTIVE','SETTLEMENT_APPLY_PENDING');  -- 0
+   SELECT count(*) FROM subscriptions WHERE "billingMethod"::text='CARD';  -- 0
+   SELECT count(*) FROM payment_instruments;  -- 0
+   SELECT count(*) FROM card_sessions;  -- 0
+   SELECT coalesce((SELECT value::text FROM platform_config WHERE key='billing.cardCheckout.platforms'),'NO ROW');  -- NO ROW, or ios false with android and web true
+   ```
+
+   That is: the card platform row `billing.cardCheckout.platforms` (table
+   `platform_config`; no row means iOS off, Android and web on),
+   `payment_instruments` = 0 and subscriptions with `billingMethod='CARD'` = 0
+   (review #2465-A A-2), and no payment hold that is still open: a hold counts
+   while its status is `ACTIVE` or `SETTLEMENT_APPLY_PENDING`, the same states
+   the dunning clock waits on (review #2465-A2 S4-5).
+4. Test on the website or Android. iPhone stays off for cards unless a second
+   admin switches it on.
+
+**On the day** (hold every other deploy)
+
+5. Edit deploy/.env: the list first, the kill switch last
+   (`CARD_RAIL_LIVE_SUBSCRIPTIONS=<id>` ... `CARD_RAIL_KILL=0`). Keep a copy
+   of the file from before the day's FIRST edit (it has `CARD_RAIL_KILL=1`).
+   Then, in the same shell, the hard checks, which print counts, never values:
+
+   ```
+   grep -c '^CARD_RAIL_LIVE_SUBSCRIPTIONS=[A-Za-z0-9_-]\{1,64\}$' /opt/swift/deploy/.env   # 1
+   grep -c '^CARD_RAIL_KILL=0$' /opt/swift/deploy/.env                                # 1
+   awk -F= '/^[A-Z]/{print $1}' /opt/swift/deploy/.env | sort | uniq -d | wc -l       # 0
+   ```
+
+6. THE RECREATE, in a fresh shell (its own `ssh ... 'bash -s'` block). It
+   refuses, with a named `STOP: ...` line and nothing recreated, when this
+   shell exports a setting Compose or Docker would use (the same check as
+   pilot-up), when the checkout is not clean, or when HEAD is not the image api
+   runs now (a pilot-up that died after its build leaves HEAD and a newer image
+   on the host while the old one still runs; review #2465-A2 S3-2). It then
+   runs the API's own boot guard in that image, as api and as worker (review
+   #2465-A A-1), uses the compose set pilot-up uses (the wall overlay while
+   `TENANT_RLS_BIND=1`, the hardening overlay while `STACK_HARDENING=1`),
+   never builds, and waits for health. Every Compose call reads `</dev/null`:
+   run from a script on standard input, `docker compose run` would otherwise
+   read the rest of the script and the last line would never run (review
+   #2465-B2 S2-1). The last line reads back what the NEW containers run with:
+   the health word whole, the kill switch inside api and worker, and the list
+   as counts only, never an id (B2 S2-2, S3-1):
+
+   ```
+   set -u; cd /opt/swift
+   stop() { echo "STOP: $*"; exit 1; }
+   for n in $(cat deploy/docker-compose.yml deploy/docker-compose.wall.yml deploy/docker-compose.hardening.yml | grep -oE '\$\{[A-Za-z_][A-Za-z0-9_]*' | sed 's/^..//' | sort -u) COMPOSE_PROJECT_NAME COMPOSE_PROFILES COMPOSE_FILE COMPOSE_ENV_FILES DOCKER_HOST DOCKER_CONTEXT DOCKER_CONFIG; do
+     [ "$n" = SWIFT_TAG ] || [ -z "${!n+set}" ] || stop "$n is set in this shell, and Compose or Docker would use it; run from a fresh ssh block; nothing was recreated"
+   done
+   CARDC=(docker compose --project-directory deploy -f deploy/docker-compose.yml)
+   grep -qx 'TENANT_RLS_BIND=1' deploy/.env && CARDC+=(-f deploy/docker-compose.wall.yml)
+   grep -qx 'STACK_HARDENING=1' deploy/.env && CARDC+=(-f deploy/docker-compose.hardening.yml)
+   export SWIFT_TAG="$(git -C /opt/swift rev-parse HEAD)"
+   [ -z "$(git -C /opt/swift status --porcelain --untracked-files=normal)" ] || stop "the checkout is not clean; nothing was recreated"
+   [ "$(docker inspect -f '{{.Config.Image}}' swift-api-1)" = "swift-api:$SWIFT_TAG" ] || stop "api does not run HEAD's image (a deploy is half done); nothing was recreated"
+   docker image inspect "swift-api:$SWIFT_TAG" >/dev/null || stop "HEAD's image is missing; nothing was recreated"
+   "${CARDC[@]}" run --rm --no-deps -T api node dist/boot/boot-guard.js </dev/null || stop "the api boot guard refused (FATAL above); nothing was recreated"
+   "${CARDC[@]}" run --rm --no-deps -T worker node dist/boot/boot-guard.js </dev/null || stop "the worker boot guard refused (FATAL above); nothing was recreated"
+   "${CARDC[@]}" up -d --no-deps --no-build --force-recreate api worker </dev/null || stop "the recreate itself failed: docker ps NOW"
+   for i in $(seq 1 90); do [ "$(docker inspect -f '{{.State.Health.Status}}' swift-api-1)" = healthy ] && break; sleep 2; done
+   L="$(docker exec swift-api-1 printenv CARD_RAIL_LIVE_SUBSCRIPTIONS)"
+   echo "api $(docker inspect -f '{{.State.Health.Status}}' swift-api-1) | worker $(docker inspect -f '{{.State.Status}} restarts={{.RestartCount}}' swift-worker-1) | FATAL=$(docker logs --since 3m swift-api-1 2>&1 | grep -c FATAL) | KILL api=$(docker exec swift-api-1 printenv CARD_RAIL_KILL) worker=$(docker exec swift-worker-1 printenv CARD_RAIL_KILL) | list entries=$(printf '%s' "$L" | tr ',' '\n' | grep -c .) star=$(printf '%s\n' "$L" | grep -cFx '*')"
+   ```
+
+   - **Switch-on, expect:** `OK boot guard: this configuration starts` twice,
+     then `api healthy | worker running restarts=0 | FATAL=0 | KILL api=0
+     worker=0 | list entries=1 star=0`.
+   - **`STOP: ...` on the switch-on** (and only there): nothing changed. Put
+     back the copy from before the day's FIRST edit, which is the OLDEST copy
+     of the day, never the newest (a retried edit leaves a newer copy that
+     already has `CARD_RAIL_KILL=0`; review #2465-B2 S4-3), then check it and
+     stop:
+     `install -m 600 <that copy> /opt/swift/deploy/.env && grep -c '^CARD_RAIL_KILL=1$' /opt/swift/deploy/.env`
+     must print 1. On the rollback, never do this: see step 9.
+   - **`STOP: the recreate itself failed`:** look at `docker ps` at once; it is
+     the only refusal after which api or worker may be down. Recover with the
+     same block once the cause is fixed, or with a pilot-up of the same SHA.
+7. `GET https://<API_HOST>/api/v1/public/capabilities` still says
+   `"cardPayments":"soon"` and the site footer lists Cash and MMG only. That
+   does NOT prove the switch took: with a list of ids it reads `soon` before
+   and after. The proof is step 6's `KILL api=0 worker=0 | list entries=1`
+   line and the listed partner's card button on the website or Android; any
+   other partner sees none.
+
+**Rollback: stop new card payments**
+
+8. Set `CARD_RAIL_KILL=1` in deploy/.env (leave `CARD_RAIL_V2=1`, so open card
+   payments are still confirmed and refundable) and check
+   `grep -c '^CARD_RAIL_KILL=1$' /opt/swift/deploy/.env` prints 1. Then run
+   step 6's block unchanged, in a fresh shell. **Success is `KILL api=1
+   worker=1`** in its last line (no partner login needed); then the card
+   button is gone, and a new card session answers 503 `CARD_RAIL_DISABLED`.
+9. If the block prints `STOP: ...` during the rollback, never put back a saved
+   copy: each one from that day has cards on (review #2465-B2 S3-2).
+   - "the checkout is not clean": `git -C /opt/swift status --short`, and
+     report; nothing is reset without the coordinator.
+   - "api does not run HEAD's image": a deploy is half done. Follow that
+     deploy's ROLLBACK note, or check out the running SHA again, then rerun.
+   - If the guard refuses even `CARD_RAIL_KILL=1`, another line in deploy/.env
+     is broken (review #2465-A2 S4-6). Fix THAT line and rerun.
+   - Until the block succeeds, the cards stay as they were; the only other
+     immediate stop is stopping api and worker, which is a full outage, and
+     that is the owner's call.
+
+**Every eligible partner (after PowerTranz's go-live)**
+
+10. Set `CARD_RAIL_LIVE_SUBSCRIPTIONS=*` (exactly `*`, alone). A self-check
+    that greps the line as a pattern reads `*` as "zero or more" and prints 0
+    for a correct line, so check it as a fixed string (review #2465-A2 S4-4):
+    `grep -cFx 'CARD_RAIL_LIVE_SUBSCRIPTIONS=*' /opt/swift/deploy/.env` must
+    print 1. Then step 6 (expect `KILL api=0 worker=0 | list entries=1
+    star=1`), then `cardPayments` reads `live`.
 
 ## 13. The least-privilege database logins (TA-S0-003)
 
