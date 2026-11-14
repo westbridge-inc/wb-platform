@@ -1,5 +1,6 @@
 -- Rollback for 20261113210000_store_vat_exclusive. RUN THIS WHILE THE NEW CODE IS STILL SERVING, then roll the code back.
 -- [REVIEW-A F2 · REVIEW-B S3-3] The order (README.md beside this file is the runbook):
+--   0. Switch STORE_VAT_EXCLUSIVE OFF first (and confirm it), so nothing can put PRICES_EXCLUDE_VAT back on a store.
 --   1. CLOSE every store on "prices before VAT" (PRICES_EXCLUDE_VAT): its open-now switch off.
 --   2. Let its orders finish: no order with "vatOnTop" may still be open (this file refuses while one is).
 --   3. Run this file (new code still live): each such store goes back to PENDING on "My prices do not include VAT"
@@ -9,14 +10,15 @@
 --      Prisma client cannot read a row carrying PRICES_EXCLUDE_VAT. And an open on-top order under the previous code
 --      would tell its rider to pay the store the goods WITHOUT the VAT the rider collected.)
 -- NOTHING IS DROPPED. orders."vatOnTop" is the only record of each placed order's VAT basis (its VAT was ADDED, its
--- vatBase excludes it): dropping it would make the previous release read those orders as VAT-inclusive (wrong VAT
--- report, wrong receipts), and a later roll-forward would re-add it as false for good. The previous release ignores the
--- column (NOT NULL DEFAULT false is safe for its inserts) and order_items."substituteVatClass" (nullable). The enum value
+-- vatBase excludes it). The previous release ignores it either way (NOT NULL DEFAULT false is safe for its inserts), as it
+-- ignores order_items."substituteVatClass" (nullable); keeping it protects the roll-forward (a re-added column would
+-- read false for good). The enum value
 -- stays too (Postgres cannot drop one; no store row uses it after this). The migration stays recorded as applied, so a
 -- roll-forward does not re-run it.
--- KNOWN LIMIT after the code rollback: the previous release's VAT report treats every VAT order as VAT-inclusive, so its
--- report for a period that holds on-top orders understates line 17 by their VAT. Use the new release's report (or that
--- period's export: tax + vat_basis) for such periods.
+-- KNOWN LIMITS after the code rollback, for on-top orders (README.md; settle by hand): the previous release's VAT report
+-- reads them as VAT-inclusive (line 17 short by their VAT: use the export's tax + vat_basis); it re-renders their receipts
+-- with no "VAT 14%" row (rows short of the Total); and it computes their returns without the added VAT (settle returns by
+-- hand, taxAmount included).
 -- [Sol] orders and vendors force row-level security: row security is off for this transaction, so a role that does not
 -- bypass it is refused with an error instead of finding the tables "empty". Run as a role that bypasses it.
 BEGIN;

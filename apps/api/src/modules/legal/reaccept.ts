@@ -139,9 +139,10 @@ export const MATERIAL_CHANGES: ReadonlyArray<MaterialChange> = [
       'Privacy: PowerTranz also receives your device’s network (IP) address and browser details, for the payment and the bank’s security check, and its page asks ipapi.co, an IP-location service, where your network address is located. Swift keeps the payment’s reference, amount and result, never your card number.',
       'Partners: when you close your account, a weekly fee you paid by card for a week that has not started goes back to that card. If that card refund is refused, Swift keeps the money as credit for your weekly fees and returns it another way only once you agree to that way in writing.',
     ],
-  },  {
+  },
+  {
     // [STORE-VAT-EXCLUSIVE · owner approved the words 13 Nov 2026 · MATERIAL for everyone: customers read prices that may
-    // now be before VAT (Terms section 5), and a business lists them so (Business Agreement). GUARDRAILS standing rule 1:
+    // now be before VAT (Terms section 4), and a business lists them so (Business Agreement section 4). GUARDRAILS standing rule 1:
     // the in-app notice and a fresh tick, never "continued use"]
     version: '2026-11-13',
     summary: [

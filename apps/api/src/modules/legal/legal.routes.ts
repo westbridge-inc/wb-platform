@@ -257,8 +257,8 @@ import { OPERATOR, OPERATOR_ADDRESS } from './operator';
 // evidence/STORE-VAT-EXCLUSIVE-20261113/TERMS-DRAFT.md · MATERIAL for everyone: a fresh tick with the in-app notice
 // (reaccept.ts MATERIAL_CHANGES; GUARDRAILS standing rule 1)] A VAT-registered store may list its prices BEFORE VAT
 // (marked "+ VAT"), its VAT then added at checkout as its own line before the Total (store-vat/store-vat.ts
-// PRICES_EXCLUDE_VAT). Terms section 5: the price a customer sees no longer always includes the store's VAT; the full
-// Total, VAT included, is always shown before confirming. Business Agreement listings paragraph: the listed price is what
+// PRICES_EXCLUDE_VAT). Terms section 4 (Payments are direct; the brief called it ¶5): the price a customer sees no longer always includes the store's VAT; the full
+// Total, VAT included, is always shown before confirming. Business Agreement section 4 (Listings, prices and honesty): the listed price is what
 // customers pay for the goods; on the before-VAT basis the VAT is added at checkout; the VAT is the business's to account
 // for to the GRA, on items not marked zero-rated or exempt. Privacy, the Mover Agreement and Child Safety change only by
 // their date. A new day: LAST_UPDATED moves.

@@ -410,11 +410,13 @@ describe('14. [REVIEW-A F2 · REVIEW-B S3-3] the rollback keeps the VAT basis of
 
   it('the README is the runbook: close the stores, let their orders finish, run it with the new code live, then roll the code back', async () => {
     const { readme, sql } = await dir();
-    const steps = ['**Close**', '**Let their orders finish.**', '**Run `rollback.sql`**', '**Roll the code back.**'].map((s) => readme.indexOf(s));
+    const steps = ['**Switch STORE_VAT_EXCLUSIVE off**', '**Close**', '**Let their orders finish.**', '**Run `rollback.sql`**', '**Roll the code back.**'].map((s) => readme.indexOf(s));
     expect(steps.every((i) => i >= 0)).toBe(true);
     expect([...steps].sort((a, b) => a - b)).toEqual(steps);
     expect(sql).toContain('RUN THIS WHILE THE NEW CODE IS STILL SERVING');
     expect(readme).toContain('Nothing is dropped');
+    // [REVIEW-B-DELTA S4-N2] What the previous release gets wrong for on-top orders is said, with "settle by hand".
+    for (const limit of ['**VAT report:**', '**Receipts:**', '**Returns:**', 'Settle every return of such an order by hand']) expect(readme).toContain(limit);
   });
 });
 

@@ -13,6 +13,9 @@ Nothing changes for any store until `STORE_VAT_EXCLUSIVE=1` and a person approve
 
 Run `rollback.sql` while the NEW code is still serving, and only roll the code back after it.
 
+0. **Switch STORE_VAT_EXCLUSIVE off** (unset in deploy/.env, recreate api + worker) and confirm it is off
+   (`GET /vendor/vat` `modesOffered` no longer lists `PRICES_EXCLUDE_VAT`). While it is on, a store or a person could put
+   `PRICES_EXCLUDE_VAT` back on a store row after step 3, and the previous release cannot read that row.
 1. **Close** every store on "prices before VAT": its open-now switch off (Admin, or the store). Check:
    `SELECT count(*) FROM vendors WHERE "vatMode" = 'PRICES_EXCLUDE_VAT' AND "vatStatus" = 'APPROVED' AND "isCurrentlyOpen" AND "acceptingOrders";` = 0.
 2. **Let their orders finish.** Check:
@@ -26,12 +29,18 @@ Never the other way round: the previous release's Prisma client cannot read a st
 (every read of that store fails until the SQL runs), and an open on-top order under the previous code tells its rider to
 pay the store the goods without the VAT the rider collected at the door.
 
-Nothing is dropped. `orders."vatOnTop"` is the only record of each placed order's VAT basis; the previous release ignores
-it. The migration stays recorded as applied, so rolling forward again does not re-run it.
+Nothing is dropped. The previous release ignores `orders."vatOnTop"` either way; keeping it keeps each placed order's VAT
+basis for a later roll-forward (a re-added column would default to false for good). The migration stays recorded as
+applied, so rolling forward again does not re-run it.
 
-Known limit after the code rollback: the previous release's VAT report reads every VAT order as VAT-inclusive, so for a
-period holding on-top orders its line 17 is short by their VAT. Use the new release's report, or the order export
-(`tax` and `vat_basis`), for such periods.
+Known limits after the code rollback, for orders placed on "prices before VAT" (settle these by hand until rolled forward):
+
+- **VAT report:** the previous release reads every VAT order as VAT-inclusive, so for a period holding such orders its
+  line 17 is short by their VAT. Use the order export (`tax` and `vat_basis`) for such periods.
+- **Receipts:** the previous release re-renders such an order's receipt as "VAT included" with no "VAT 14%" row, so its
+  rows add up to less than its Total (the Total, the amount paid, is right).
+- **Returns:** the previous release computes a return of such an order without the VAT added on top, so the refund it
+  shows is short by that VAT. Settle every return of such an order by hand (the order's `taxAmount` comes back too).
 
 ## STORE_VAT and STORE_VAT_EXCLUSIVE are not full off-switches for these stores
 

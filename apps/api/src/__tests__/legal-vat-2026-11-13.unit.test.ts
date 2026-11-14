@@ -6,9 +6,9 @@ import { MATERIAL_CHANGES, NON_MATERIAL_CHANGES, acceptanceStatus, materialVersi
 // ---------------------------------------------------------------------------
 // [STORE-VAT-EXCLUSIVE · 13 Nov 2026 · owner approved the words 13 Nov 2026 01:07Z, verbatim from
 // evidence/STORE-VAT-EXCLUSIVE-20261113/TERMS-DRAFT.md] A VAT-registered store may list its prices BEFORE VAT:
-//   - Terms section 5: the price a customer sees no longer always includes the store's VAT; such prices are marked
+//   - Terms section 4 (Payments are direct): the price a customer sees no longer always includes the store's VAT; such prices are marked
 //     "+ VAT", the VAT is added at checkout as a separate line, and the full Total is always shown before confirming;
-//   - Business Agreement, the listings paragraph: the listed price is what customers pay for the goods; the before-VAT
+//   - Business Agreement section 4 (Listings, prices and honesty): the listed price is what customers pay for the goods; the before-VAT
 //     basis; the VAT is the business's to account for to the GRA, on items not marked zero-rated or exempt.
 // MATERIAL for everyone (GUARDRAILS standing rule 1): the in-app notice and a fresh tick for customers and businesses.
 // ---------------------------------------------------------------------------
@@ -44,7 +44,7 @@ describe('LEGAL_VERSION 2026-11-13: prices before VAT, material for everyone', (
     expect(words).toContain('you see the full Total, VAT included, before you confirm your order');
   });
 
-  it('Terms section 5 and the Business Agreement carry the approved words, verbatim; the old sentences are gone', () => {
+  it('Terms section 4 and Business Agreement section 4 carry the approved words, verbatim; the old sentences are gone', () => {
     expect(TERMS).toContain('Prices are the Business\'s own prices. Where a Business is registered for VAT and Swift has approved its details, that Business\'s VAT is either included in the prices you see, or, where the Business shows its prices before VAT (marked "+ VAT"), added at checkout as a separate "VAT" line before the Total. Either way, you see the full Total, VAT included, before you confirm the Order.');
     expect(TERMS).not.toContain('the price you see includes that Business\'s VAT');
     expect(VENDOR_AGREEMENT).toContain('Prices you list are the prices customers pay for your goods — the platform adds no markup, and you may not use the platform to mislead. If Swift has approved your VAT details: where your prices include VAT, or you chose to have VAT added to your prices, customers see and pay your price with VAT included; where you chose to list your prices before VAT, customers see your prices as you list them, marked "+ VAT", and your VAT is added at checkout as a separate line before the Total. In every case that VAT is yours to account for to the GRA, and only items you have not marked zero-rated or exempt carry it.');
