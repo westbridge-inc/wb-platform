@@ -38,6 +38,7 @@ vi.mock('../lib/uploadImage', () => ({
 vi.mock('../stores/authStore', () => ({
   useAuthStore: (selector: (s: unknown) => unknown) => selector({}),
   getAuthSessionSnapshot: () => null, requireAuthSessionForPrincipal: () => null, requireAuthSessionSnapshot: () => null,
+  newCommandKey: () => 'command-key-1',
 }));
 vi.mock('../lib/billingMutation', () => ({ runBillingMutation: vi.fn() }));
 vi.mock('./cashSettlement', () => ({ confirmVendorCashSettlement: vi.fn() }));
@@ -53,6 +54,7 @@ vi.mock('../stores/vendorPreview', () => ({ useVendorPreview: (selector: (s: { p
 import {
   useAddOption, useAddOptionGroup, useCreateCategory, useDeleteCategory, useDeleteItem, useDeleteOption,
   useDeleteOptionGroup, useSaveItem, useSetItemAvailability, useUpdateCategory, useUploadItemImage,
+  useAdjustStock, newStockKey,
 } from './vendorops';
 
 type Hook = {
@@ -241,5 +243,31 @@ describe('[TAP-AUDIT] an item photo is sized on the phone before it is sent (as 
   it('the photo the server kept is on the menu at once', async () => {
     await tap(useUploadItemImage() as unknown as Hook, { id: 'roti', file: { uri: 'file:///a.jpg', name: 'a.jpg', type: 'image/jpeg' } });
     expect(items('mains')[0].imageUrl).toBe('store-photos/roti.jpg');
+  });
+});
+
+// [MENU-ROW-TOOLS · REVIEW #2516 S4-1] "Adjust stock" on the menu row, through the REAL hook: the amount and reason
+// go to POST /items/:id/adjust with the entry's own key (so a retry never moves stock twice), and the ledger's answer
+// (the count, and the item switched off at zero) is written into the menu on screen at once.
+describe('[MENU-ROW-TOOLS] useAdjustStock', () => {
+  it('sends the amount, the reason and the entry\'s key; the answer is written into the menu', async () => {
+    fx.api['adjustStock'] = vi.fn(async () => ({ data: { success: true, data: { stockQuantity: 0, isAvailable: false, replayed: false } } }));
+    const { settled } = await tap(useAdjustStock() as unknown as Hook, { itemId: 'curry', delta: -3, reason: 'DAMAGED', commandKey: 'entry-key-7' });
+    expect(fx.api['adjustStock']).toHaveBeenCalledWith('curry', { delta: -3, reason: 'DAMAGED' }, 'entry-key-7');
+    const curry = items('mains').find((i: any) => i.id === 'curry');
+    expect(curry).toMatchObject({ stockQuantity: 0, isAvailable: false });
+    expect(settled).toBeUndefined();
+    expect(menuRereads(), 'no whole-menu download at the answer').toBe(0);
+  });
+
+  it('an answer without a count changes nothing on screen', async () => {
+    fx.api['adjustStock'] = vi.fn(async () => ({ data: { success: true, data: {} } }));
+    await tap(useAdjustStock() as unknown as Hook, { itemId: 'curry', delta: 5, reason: 'RECEIVED', commandKey: 'entry-key-8' });
+    expect(items('mains').find((i: any) => i.id === 'curry')).toMatchObject({ isAvailable: true });
+    expect(items('mains').find((i: any) => i.id === 'curry').stockQuantity).toBeUndefined();
+  });
+
+  it('newStockKey is the store\'s command key', () => {
+    expect(newStockKey()).toBe('command-key-1');
   });
 });

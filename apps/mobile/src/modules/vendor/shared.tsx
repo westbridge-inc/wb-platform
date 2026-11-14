@@ -271,10 +271,13 @@ export function InlineInput({
   multiline,
   style,
   center,
+  accessibilityLabel,
 }: {
   value: string;
   onChangeText: (t: string) => void;
   placeholder?: string;
+  /** What a screen reader says for the box (the placeholder alone is not read once text is typed). */
+  accessibilityLabel?: string;
   keyboardType?: 'default' | 'phone-pad' | 'number-pad' | 'decimal-pad';
   autoCapitalize?: 'none' | 'sentences' | 'words' | 'characters';
   multiline?: boolean;
@@ -307,6 +310,7 @@ export function InlineInput({
         onChangeText={onChangeText}
         placeholder={placeholder}
         placeholderTextColor={color.text.muted}
+        accessibilityLabel={accessibilityLabel}
         keyboardType={keyboardType}
         autoCapitalize={autoCapitalize}
         multiline={multiline}

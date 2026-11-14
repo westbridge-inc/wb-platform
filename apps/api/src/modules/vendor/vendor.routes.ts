@@ -99,6 +99,7 @@ import { scheduleVendorSearchSync } from '../search/search-sync';
 import { LIBRARY_TX, assertLibraryRules, attachLibraryGroup, deleteLibraryGroup, detachCopy, detachLibraryGroup, keepLowestSize, libraryGroupOf, lowestSizeTyped, menuOptionsRule, normalizedGroupFlags, readLibrary, setLibraryOptionAvailability, settleItems, sharedGroupEditRefusal, syncLibraryGroup } from './modifier-library';
 import { declaresMenuOptionsV2 } from '../order/options';
 import { assertNoneBanned, assertNotBanned, assertNotBannedGoods, assertStoreAllowed, catalogueChecksFor, partnerStoreView, partnerView, storeCheckOf, unhideRestocked } from '../compliance/prohibited-gate';
+import { notAllowedMessage } from '../compliance/prohibited-items';
 import { SearchService } from '../search/search.service';
 import { subscriptionOperability } from '../subscription/operate-gate';
 import { QrService } from '../qr/qr.service';
@@ -406,6 +407,15 @@ const respondReviewSchema = z.object({
 
 const itemAvailabilitySchema = z.object({
   isAvailable: z.boolean().optional(),
+});
+
+/** [MENU-BULK] The most items one batch switches: a whole large menu (Parampara 328) in one go. */
+const MAX_BULK_AVAILABILITY = 500;
+/** [REVIEW-2520-A S4-1] Staff read this as it is: no id, and what to do. */
+const BULK_ITEM_GONE = 'One of these items was deleted on another device. Refresh and try again.';
+const bulkAvailabilitySchema = z.object({
+  itemIds: z.array(z.string().min(1).max(64)).min(1).max(MAX_BULK_AVAILABILITY),
+  isAvailable: z.boolean(),
 });
 
 const addOptionGroupSchema = optionGroupInputSchema.extend({
@@ -4842,6 +4852,72 @@ export async function vendorRoutes(app: FastifyInstance) {
     scheduleVendorSearchSync(app, vendorId);
 
     return { success: true, data: item };
+  });
+
+  /**
+   * POST /items/availability/bulk — [MENU-BULK · parity audit C2, owner 14 Nov 2026] several items sold out, or back
+   * on, in one go (ticked on the menu list). The one-item switch's rules, item by item (PUT /items/:id/availability):
+   * any member of the store; the store's own live items only (one that is not refuses the whole batch as not found,
+   * and nothing changes); an item Swift does not allow is never switched back on (it stays off and is named in the
+   * answer; the rest go on); the owner's switch clears the engine's auto-hide and a till file's "not for sale"; each
+   * item that changed leaves its own ITEM_AVAILABILITY_SET row (bulk: true). Idempotent: an item already as asked,
+   * with no marker to clear, is left untouched and writes nothing, so a resend changes nothing.
+   */
+  app.post('/items/availability/bulk', { ...auth, config: { rateLimit: { max: 30, timeWindow: '1 minute' } } }, async (request) => {
+    const { vendorId } = await resolveVendor(app, request.user.userId, selectedVendorId(request));
+    const body = bulkAvailabilitySchema.parse(request.body ?? {});
+    // [REVIEW-2520-A S3-1] Sorted: rows are locked in id order, as every path that moves several items locks them
+    // (checkout, stock, till sync, the un-hide guard), so a batch never deadlocks a customer's checkout.
+    const ids = [...new Set(body.itemIds)].sort();
+    const target = body.isAvailable;
+
+    const outcome = await app.prisma.$transaction(async (tx) => {
+      // The store's own live items, locked in id order BEFORE anything is read or decided.
+      const locked = await tx.$queryRaw<Array<{ id: string }>>`SELECT id FROM "items" WHERE id IN (${Prisma.join(ids)}) AND "vendorId" = ${vendorId} AND "archivedAt" IS NULL ORDER BY id FOR UPDATE`;
+      // Another store's item, or a deleted one: the batch is refused whole, never naming which. [S4-1] Plain words.
+      if (locked.length !== ids.length) throw new AppError(404, 'NOT_FOUND', BULK_ITEM_GONE);
+
+      // Everything below is read under those locks: no item can be deleted or banned between the read and the write.
+      const items = await tx.item.findMany({
+        where: { id: { in: ids }, vendorId, archivedAt: null },
+        select: { id: true, name: true, isAvailable: true, autoHiddenAt: true, tillOffAt: true },
+        orderBy: { id: 'asc' },
+      });
+      // [GUARDRAILS §8] Switching a banned item off is always fine; back on, never (one read for the whole batch).
+      const refused: Array<{ id: string; name: string; message: string }> = [];
+      if (target) {
+        const checks = await catalogueChecksFor(tx, ids);
+        for (const item of items) {
+          const check = checks.get(item.id);
+          if (check?.state === 'BANNED') refused.push({ id: item.id, name: item.name, message: notAllowedMessage(check.prohibitedClass) });
+        }
+      }
+      const refusedIds = new Set(refused.map((r) => r.id));
+      const toChange = items.filter((item) => !refusedIds.has(item.id)
+        && (item.isAvailable !== target || item.autoHiddenAt !== null || item.tillOffAt !== null));
+      const changing = new Set(toChange.map((item) => item.id));
+      const unchangedIds = items.filter((item) => !refusedIds.has(item.id) && !changing.has(item.id)).map((item) => item.id);
+
+      if (toChange.length > 0) {
+        await tx.item.updateMany({
+          where: { id: { in: toChange.map((item) => item.id) }, vendorId, archivedAt: null },
+          data: { isAvailable: target, autoHiddenAt: null, tillOffAt: null },
+        });
+        await tx.auditLog.createMany({
+          data: toChange.map((item) => ({
+            userId: request.user.userId,
+            action: 'ITEM_AVAILABILITY_SET',
+            entity: 'Item',
+            entityId: item.id,
+            changes: { vendorId, from: item.isAvailable, to: target, wasAutoHidden: item.autoHiddenAt !== null, bulk: true },
+          })),
+        });
+      }
+      return { changedIds: toChange.map((item) => item.id), unchangedIds, refused };
+    });
+
+    if (outcome.changedIds.length > 0) scheduleVendorSearchSync(app, vendorId);
+    return { success: true, data: { isAvailable: target, ...outcome } };
   });
 
   // =========================================================================
