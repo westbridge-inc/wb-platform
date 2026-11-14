@@ -110,7 +110,7 @@ function StoreSwitcher({ storeId, onSwitch, list, isError }: {
 /**
  * [SPEED 30 Oct · owner] A first tap on a tab shows its content: once the board's own reads have
  * landed, the reads the other tabs of this login make on their first draw are made once. All of it
- * lives in lib/dashboard-tab-reads, its own chunk (no page's first load carries it). Staff prefetch
+ * lives in lib/dashboard-tab-reads, loaded with the ring in the shell's after-load chunk (no page's first load carries it). Staff prefetch
  * only what they can see; a store switch or a role change starts again for the new store or role.
  */
 function useTabPrefetch(storeId: string | null, role: VendorMemberRole | undefined, vendorType: string | undefined, roleKnown: boolean) {
@@ -119,7 +119,7 @@ function useTabPrefetch(storeId: string | null, role: VendorMemberRole | undefin
     if (!storeId || !roleKnown) return;
     let stop: (() => void) | undefined;
     let live = true;
-    void import('@/lib/dashboard-tab-reads')
+    void import('@/components/dashboard-after-load')
       .then((reads) => { if (live) stop = reads.prefetchWhenIdle(queryClient, reads.dashboardTabReads(storeId, role, vendorType)); })
       .catch(() => undefined);
     return () => { live = false; stop?.(); };
@@ -128,9 +128,9 @@ function useTabPrefetch(storeId: string | null, role: VendorMemberRole | undefin
 
 /**
  * [STORE-BOARD S1 · parity audit B1] The new-order ring (takeover, chime, flashing title) on every dashboard page,
- * mounted once here. Its code is its own chunk, fetched right after the page (no page's first load carries it,
- * scripts/perf-budget.json); a failed fetch is tried again every 15 s, because a store must never be left without
- * its ring.
+ * mounted once here. Its code rides in the shell's after-load chunk (components/dashboard-after-load, with the
+ * tabs' first reads), fetched right after the page: no page's first load carries it and the build's chunk map gains
+ * no entry (scripts/perf-budget.json). A failed fetch is tried again every 15 s: a store is never left without its ring.
  */
 export const RING_RETRY_MS = 15_000;
 function StoreRingLoader({ storeId }: { storeId: string }) {
@@ -140,7 +140,7 @@ function StoreRingLoader({ storeId }: { storeId: string }) {
     let live = true;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const load = () => {
-      import('@/components/store-ring').then(
+      import('@/components/dashboard-after-load').then(
         (m) => { if (live) setRing(() => m.StoreRing); },
         () => { if (live) timer = setTimeout(load, RING_RETRY_MS); },
       );
