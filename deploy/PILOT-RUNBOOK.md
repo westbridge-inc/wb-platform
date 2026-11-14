@@ -1858,9 +1858,12 @@ same reason).
 
 **Before the day**
 
-1. Deploy main with cards OFF through pilot-up. Expect `OK boot guard` twice,
-   `cards: OFF (CARD_RAIL_KILL=1). CARD_RAIL_LIVE_SUBSCRIPTIONS is empty: live
-   cards open for NOBODY`, then `READY`.
+1. Deploy main with cards OFF through pilot-up. Expect `boot guard: the new api
+   and worker images accept this configuration` (pilot-up prints that one line;
+   `OK boot guard` is THE RECREATE's own output, review #2465-B2 S4-1), `cards:
+   OFF (CARD_RAIL_KILL=1). CARD_RAIL_LIVE_SUBSCRIPTIONS is empty: live cards
+   open for NOBODY (cards on needs it set)` (or `cards: PAUSED ...` while
+   `CARD_RAIL_V2=1`), then `PRODUCTION READY at exact SHA ...`.
 2. The owner reads his subscription id on the admin Subscriptions page (for a
    mover, the canonical subscription, B-4). Nobody selects it from the database.
 3. Readiness, counts only (`ID` = that id):
@@ -1890,9 +1893,9 @@ same reason).
 **On the day** (hold every other deploy)
 
 5. Edit deploy/.env: the list first, the kill switch last
-   (`CARD_RAIL_LIVE_SUBSCRIPTIONS=<id>` ... `CARD_RAIL_KILL=0`). Keep the
-   saved copy of the file. Then, in the same shell, the hard checks, which
-   print counts, never values:
+   (`CARD_RAIL_LIVE_SUBSCRIPTIONS=<id>` ... `CARD_RAIL_KILL=0`). Keep a copy
+   of the file from before the day's FIRST edit (it has `CARD_RAIL_KILL=1`).
+   Then, in the same shell, the hard checks, which print counts, never values:
 
    ```
    grep -c '^CARD_RAIL_LIVE_SUBSCRIPTIONS=[A-Za-z0-9_-]\{1,64\}$' /opt/swift/deploy/.env   # 1
@@ -1900,50 +1903,82 @@ same reason).
    awk -F= '/^[A-Z]/{print $1}' /opt/swift/deploy/.env | sort | uniq -d | wc -l       # 0
    ```
 
-6. THE RECREATE, in a fresh shell. It refuses unless the checkout is clean
-   and HEAD is the image api is running now (a pilot-up that died after its
-   build leaves HEAD and a newer image on the host while the old one still
-   runs; review #2465-A2 S3-2). It then runs the API's own boot guard in that
-   image, as api and as worker (review #2465-A A-1), uses the compose set
-   pilot-up uses (the wall overlay while `TENANT_RLS_BIND=1`, the hardening
-   overlay while `STACK_HARDENING=1`), never builds, and waits for health:
+6. THE RECREATE, in a fresh shell (its own `ssh ... 'bash -s'` block). It
+   refuses, with a named `STOP: ...` line and nothing recreated, when this
+   shell exports a setting Compose or Docker would use (the same check as
+   pilot-up), when the checkout is not clean, or when HEAD is not the image api
+   runs now (a pilot-up that died after its build leaves HEAD and a newer image
+   on the host while the old one still runs; review #2465-A2 S3-2). It then
+   runs the API's own boot guard in that image, as api and as worker (review
+   #2465-A A-1), uses the compose set pilot-up uses (the wall overlay while
+   `TENANT_RLS_BIND=1`, the hardening overlay while `STACK_HARDENING=1`),
+   never builds, and waits for health. Every Compose call reads `</dev/null`:
+   run from a script on standard input, `docker compose run` would otherwise
+   read the rest of the script and the last line would never run (review
+   #2465-B2 S2-1). The last line reads back what the NEW containers run with:
+   the health word whole, the kill switch inside api and worker, and the list
+   as counts only, never an id (B2 S2-2, S3-1):
 
    ```
    set -u; cd /opt/swift
+   stop() { echo "STOP: $*"; exit 1; }
+   for n in $(cat deploy/docker-compose.yml deploy/docker-compose.wall.yml deploy/docker-compose.hardening.yml | grep -oE '\$\{[A-Za-z_][A-Za-z0-9_]*' | sed 's/^..//' | sort -u) COMPOSE_PROJECT_NAME COMPOSE_PROFILES COMPOSE_FILE COMPOSE_ENV_FILES DOCKER_HOST DOCKER_CONTEXT DOCKER_CONFIG; do
+     [ "$n" = SWIFT_TAG ] || [ -z "${!n+set}" ] || stop "$n is set in this shell, and Compose or Docker would use it; run from a fresh ssh block; nothing was recreated"
+   done
    CARDC=(docker compose --project-directory deploy -f deploy/docker-compose.yml)
    grep -qx 'TENANT_RLS_BIND=1' deploy/.env && CARDC+=(-f deploy/docker-compose.wall.yml)
    grep -qx 'STACK_HARDENING=1' deploy/.env && CARDC+=(-f deploy/docker-compose.hardening.yml)
    export SWIFT_TAG="$(git -C /opt/swift rev-parse HEAD)"
-   [ -z "$(git -C /opt/swift status --porcelain --untracked-files=normal)" ] &&
-   [ "$(docker inspect -f '{{.Config.Image}}' swift-api-1)" = "swift-api:$SWIFT_TAG" ] &&
-   docker image inspect "swift-api:$SWIFT_TAG" >/dev/null &&
-     "${CARDC[@]}" run --rm --no-deps -T api node dist/boot/boot-guard.js &&
-     "${CARDC[@]}" run --rm --no-deps -T worker node dist/boot/boot-guard.js &&
-     "${CARDC[@]}" up -d --no-deps --no-build --force-recreate api worker &&
+   [ -z "$(git -C /opt/swift status --porcelain --untracked-files=normal)" ] || stop "the checkout is not clean; nothing was recreated"
+   [ "$(docker inspect -f '{{.Config.Image}}' swift-api-1)" = "swift-api:$SWIFT_TAG" ] || stop "api does not run HEAD's image (a deploy is half done); nothing was recreated"
+   docker image inspect "swift-api:$SWIFT_TAG" >/dev/null || stop "HEAD's image is missing; nothing was recreated"
+   "${CARDC[@]}" run --rm --no-deps -T api node dist/boot/boot-guard.js </dev/null || stop "the api boot guard refused (FATAL above); nothing was recreated"
+   "${CARDC[@]}" run --rm --no-deps -T worker node dist/boot/boot-guard.js </dev/null || stop "the worker boot guard refused (FATAL above); nothing was recreated"
+   "${CARDC[@]}" up -d --no-deps --no-build --force-recreate api worker </dev/null || stop "the recreate itself failed: docker ps NOW"
    for i in $(seq 1 90); do [ "$(docker inspect -f '{{.State.Health.Status}}' swift-api-1)" = healthy ] && break; sleep 2; done
-   echo "api $(docker inspect -f '{{.Config.Image}} {{.State.Health.Status}}' swift-api-1 | cut -c1-30) | worker $(docker inspect -f '{{.State.Status}} restarts={{.RestartCount}}' swift-worker-1) | FATAL=$(docker logs --since 3m swift-api-1 2>&1 | grep -c FATAL)"
+   L="$(docker exec swift-api-1 printenv CARD_RAIL_LIVE_SUBSCRIPTIONS)"
+   echo "api $(docker inspect -f '{{.State.Health.Status}}' swift-api-1) | worker $(docker inspect -f '{{.State.Status}} restarts={{.RestartCount}}' swift-worker-1) | FATAL=$(docker logs --since 3m swift-api-1 2>&1 | grep -c FATAL) | KILL api=$(docker exec swift-api-1 printenv CARD_RAIL_KILL) worker=$(docker exec swift-worker-1 printenv CARD_RAIL_KILL) | list entries=$(printf '%s' "$L" | tr ',' '\n' | grep -c .) star=$(printf '%s\n' "$L" | grep -cFx '*')"
    ```
 
-   Expect `OK boot guard` twice, then `healthy`, `running restarts=0` and
-   `FATAL=0`. A refusal (a dirty checkout, another running image, a guard
-   FATAL) means nothing changed: put the saved deploy/.env back and stop.
+   - **Switch-on, expect:** `OK boot guard: this configuration starts` twice,
+     then `api healthy | worker running restarts=0 | FATAL=0 | KILL api=0
+     worker=0 | list entries=1 star=0`.
+   - **`STOP: ...` on the switch-on** (and only there): nothing changed. Put
+     back the copy from before the day's FIRST edit, which is the OLDEST copy
+     of the day, never the newest (a retried edit leaves a newer copy that
+     already has `CARD_RAIL_KILL=0`; review #2465-B2 S4-3), then check it and
+     stop:
+     `install -m 600 <that copy> /opt/swift/deploy/.env && grep -c '^CARD_RAIL_KILL=1$' /opt/swift/deploy/.env`
+     must print 1. On the rollback, never do this: see step 9.
+   - **`STOP: the recreate itself failed`:** look at `docker ps` at once; it is
+     the only refusal after which api or worker may be down. Recover with the
+     same block once the cause is fixed, or with a pilot-up of the same SHA.
 7. `GET https://<API_HOST>/api/v1/public/capabilities` still says
-   `"cardPayments":"soon"` (cards serve only the list), and the site footer
-   lists Cash and MMG only. The listed partner sees the card button on the
-   website or Android; any other partner does not.
+   `"cardPayments":"soon"` and the site footer lists Cash and MMG only. That
+   does NOT prove the switch took: with a list of ids it reads `soon` before
+   and after. The proof is step 6's `KILL api=0 worker=0 | list entries=1`
+   line and the listed partner's card button on the website or Android; any
+   other partner sees none.
 
 **Rollback: stop new card payments**
 
 8. Set `CARD_RAIL_KILL=1` in deploy/.env (leave `CARD_RAIL_V2=1`, so open card
-   payments are still confirmed and refundable), then run step 6 unchanged in
-   a fresh shell. The guard always accepts the kill switch with an otherwise
-   sound file. Check: `cardPayments` reads `soon`, the card button is gone,
-   and a new card session answers 503 `CARD_RAIL_DISABLED`.
-9. If the guard refuses even `CARD_RAIL_KILL=1`, another line in deploy/.env
-   is broken (review #2465-A2 S4-6). Fix THAT line and run step 6 again. Never
-   put back a saved file that has cards on. Until it boots, the cards stay
-   as they were; the only other immediate stop is stopping api and worker,
-   which is a full outage, and that is the owner's call.
+   payments are still confirmed and refundable) and check
+   `grep -c '^CARD_RAIL_KILL=1$' /opt/swift/deploy/.env` prints 1. Then run
+   step 6's block unchanged, in a fresh shell. **Success is `KILL api=1
+   worker=1`** in its last line (no partner login needed); then the card
+   button is gone, and a new card session answers 503 `CARD_RAIL_DISABLED`.
+9. If the block prints `STOP: ...` during the rollback, never put back a saved
+   copy: each one from that day has cards on (review #2465-B2 S3-2).
+   - "the checkout is not clean": `git -C /opt/swift status --short`, and
+     report; nothing is reset without the coordinator.
+   - "api does not run HEAD's image": a deploy is half done. Follow that
+     deploy's ROLLBACK note, or check out the running SHA again, then rerun.
+   - If the guard refuses even `CARD_RAIL_KILL=1`, another line in deploy/.env
+     is broken (review #2465-A2 S4-6). Fix THAT line and rerun.
+   - Until the block succeeds, the cards stay as they were; the only other
+     immediate stop is stopping api and worker, which is a full outage, and
+     that is the owner's call.
 
 **Every eligible partner (after PowerTranz's go-live)**
 
@@ -1951,7 +1986,8 @@ same reason).
     that greps the line as a pattern reads `*` as "zero or more" and prints 0
     for a correct line, so check it as a fixed string (review #2465-A2 S4-4):
     `grep -cFx 'CARD_RAIL_LIVE_SUBSCRIPTIONS=*' /opt/swift/deploy/.env` must
-    print 1. Then step 6, then `cardPayments` reads `live`.
+    print 1. Then step 6 (expect `KILL api=0 worker=0 | list entries=1
+    star=1`), then `cardPayments` reads `live`.
 
 ## 13. The least-privilege database logins (TA-S0-003)
 

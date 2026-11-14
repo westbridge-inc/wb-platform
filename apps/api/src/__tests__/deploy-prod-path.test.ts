@@ -2008,11 +2008,11 @@ describe('[B-1] the card switch is documented with production\'s own compose set
         "grep -qx 'TENANT_RLS_BIND=1' deploy/.env && CARDC+=(-f deploy/docker-compose.wall.yml)",
         "grep -qx 'STACK_HARDENING=1' deploy/.env && CARDC+=(-f deploy/docker-compose.hardening.yml)",
         'export SWIFT_TAG="$(git -C /opt/swift rev-parse HEAD)"',
-        '[ -z "$(git -C /opt/swift status --porcelain --untracked-files=normal)" ] &&',
-        `[ "$(docker inspect -f '{{.Config.Image}}' swift-api-1)" = "swift-api:$SWIFT_TAG" ] &&`,
-        '"${CARDC[@]}" run --rm --no-deps -T api node dist/boot/boot-guard.js &&',
-        '"${CARDC[@]}" run --rm --no-deps -T worker node dist/boot/boot-guard.js &&',
-        '"${CARDC[@]}" up -d --no-deps --no-build --force-recreate api worker',
+        '[ -z "$(git -C /opt/swift status --porcelain --untracked-files=normal)" ] || stop "the checkout is not clean; nothing was recreated"',
+        `[ "$(docker inspect -f '{{.Config.Image}}' swift-api-1)" = "swift-api:$SWIFT_TAG" ] || stop "api does not run HEAD's image (a deploy is half done); nothing was recreated"`,
+        '"${CARDC[@]}" run --rm --no-deps -T api node dist/boot/boot-guard.js </dev/null || stop "the api boot guard refused (FATAL above); nothing was recreated"',
+        '"${CARDC[@]}" run --rm --no-deps -T worker node dist/boot/boot-guard.js </dev/null || stop "the worker boot guard refused (FATAL above); nothing was recreated"',
+        '"${CARDC[@]}" up -d --no-deps --no-build --force-recreate api worker </dev/null || stop "the recreate itself failed: docker ps NOW"',
       ]) expect(text, `${name}: ${piece}`).toContain(piece);
       // [Review #2465-A2 S3-2] The clean checkout and the running image are checked before the guard and the swap.
       const at = (piece: string) => text.indexOf(piece);
@@ -2021,6 +2021,181 @@ describe('[B-1] the card switch is documented with production\'s own compose set
       expect(at('-T worker node dist/boot/boot-guard.js'), name).toBeLessThan(at('--no-build --force-recreate api worker'));
     }
     expect(docs.envTemplate).toContain('THE RECREATE');
+  });
+
+  // [Review #2465-B2] THE RECREATE as the operator really runs it: its own `ssh ... 'bash -s' <<'EOF'` block, so bash
+  // reads the script from standard input. The block is the runbook's own text, the same in the card contract.
+  const recreateBlock = (text: string): string => {
+    const lines = text.split('\n');
+    const start = lines.findIndex((l) => l.trim() === 'set -u; cd /opt/swift');
+    expect(start, 'the block starts with `set -u; cd /opt/swift`').toBeGreaterThan(-1);
+    const indent = lines[start]!.length - lines[start]!.trimStart().length;
+    const out: string[] = [];
+    for (const l of lines.slice(start)) {
+      if (l.trim() === '```') break;
+      out.push(l.slice(indent));
+    }
+    return out.join('\n') + '\n';
+  };
+
+  it('[B2] the runbook and the card contract carry the same block, and it parses (bash -n)', () => {
+    const block = recreateBlock(docs.runbook);
+    expect(recreateBlock(docs.api)).toBe(block);
+    const r = spawnSync('bash', ['-n'], { input: block, encoding: 'utf8' });
+    expect(r.status, r.stderr).toBe(0);
+  });
+
+  it('[B2 S2-1 S2-2 S3-1 S4-2] every Compose call reads </dev/null, every refusal names a STOP, the health word is whole, and the shell is checked as pilot-up checks it', () => {
+    for (const [name, text] of [['runbook', docs.runbook], ['api', docs.api]] as const) {
+      const block = recreateBlock(text);
+      const lines = block.split('\n');
+      expect(block, name).toContain('stop() { echo "STOP: $*"; exit 1; }');
+      const compose = lines.filter((l) => l.includes('"${CARDC[@]}"'));
+      expect(compose.length, name).toBe(3);
+      for (const l of compose) expect(l, `${name}: ${l}`).toMatch(/ <\/dev\/null \|\| stop "[^"]+"$/);
+      const preconditions = lines.filter((l) => /^\[ /.test(l) || l.startsWith('docker image inspect'));
+      expect(preconditions.length, name).toBe(3);
+      for (const l of preconditions) expect(l, `${name}: ${l}`).toMatch(/ \|\| stop "[^"]+; nothing was recreated"$/);
+      // The last line reads what the NEW containers run with: the kill switch in api and worker, the list as counts.
+      const last = lines.filter(Boolean).at(-1)!;
+      expect(last, name).toMatch(/^echo "api \$\(docker inspect -f '\{\{\.State\.Health\.Status\}\}' swift-api-1\) \| /);
+      expect(last, name).toContain('KILL api=$(docker exec swift-api-1 printenv CARD_RAIL_KILL) worker=$(docker exec swift-worker-1 printenv CARD_RAIL_KILL)');
+      expect(last, name).toContain("list entries=$(printf '%s' \"$L\" | tr ',' '\\n' | grep -c .) star=$(printf '%s\\n' \"$L\" | grep -cFx '*')");
+      // The list is read into L and only ever counted: never printed.
+      expect(block.match(/"\$L"/g)?.length, name).toBe(2);
+      expect(block.match(/printf '%s(\\n)?' "\$L" \| /g)?.length, name).toBe(2);
+      expect(block.match(/printenv CARD_RAIL_LIVE_SUBSCRIPTIONS/g)?.length, name).toBe(1);
+      expect(block, name).toContain('L="$(docker exec swift-api-1 printenv CARD_RAIL_LIVE_SUBSCRIPTIONS)"');
+      for (const n of ['COMPOSE_PROJECT_NAME', 'COMPOSE_PROFILES', 'COMPOSE_FILE', 'COMPOSE_ENV_FILES', 'DOCKER_HOST', 'DOCKER_CONTEXT', 'DOCKER_CONFIG']) {
+        expect(lines[2], `${name}: ${n}`).toContain(` ${n}`);
+      }
+    }
+    for (const [name, text] of Object.entries(docs)) expect(text, name).not.toContain('cut -c1-30');
+  });
+
+  describe('[B2] the block, run through `bash -s` on standard input against stub docker and git', () => {
+    let root = '';
+    let log = '';
+    const SHA = 'a'.repeat(40);
+    beforeEach(() => {
+      root = mkdtempSync(join(tmpdir(), 'card-recreate-'));
+      log = join(root, 'calls.log');
+      mkdirSync(join(root, 'deploy'));
+      mkdirSync(join(root, 'bin'));
+      for (const f of ['docker-compose.yml', 'docker-compose.wall.yml', 'docker-compose.hardening.yml']) copyFileSync(join(DEPLOY, f), join(root, 'deploy', f));
+      writeFileSync(join(root, 'deploy', '.env'), 'NODE_ENV=production\nTENANT_RLS_BIND=1\n');
+      writeFileSync(join(root, 'bin', 'git'), [
+        '#!/bin/bash',
+        'case "$*" in',
+        '  *"rev-parse HEAD"*) echo "$STUB_SHA" ;;',
+        '  *"status --porcelain"*) printf "%s" "${STUB_DIRTY:-}" ;;',
+        'esac',
+      ].join('\n'));
+      // `docker compose run` forwards standard input to the container unless told otherwise: the stub reads it all,
+      // as the real one does, so a run without </dev/null eats the rest of a script given on standard input.
+      writeFileSync(join(root, 'bin', 'docker'), [
+        '#!/bin/bash',
+        'echo "docker $*" >> "$CALL_LOG"',
+        'case "$1" in',
+        '  compose)',
+        '    case " $* " in',
+        '      *" run "*) cat >/dev/null',
+        '        case " $* " in *" -T ${STUB_GUARD_REFUSES:-none} "*) echo "BOOT_GUARD: FATAL stub" >&2; exit 1 ;; esac',
+        '        echo "OK boot guard: this configuration starts" ;;',
+        '      *" up "*) cat >/dev/null ;;',
+        '    esac ;;',
+        '  inspect)',
+        '    case "$3" in',
+        '      "{{.Config.Image}}") echo "$STUB_RUNNING" ;;',
+        '      "{{.State.Health.Status}}") echo healthy ;;',
+        '      *) echo "running restarts=0" ;;',
+        '    esac ;;',
+        '  image) [ -z "${STUB_IMAGE_MISSING:-}" ] ;;',
+        '  logs) : ;;',
+        '  exec)',
+        '    case "$4" in',
+        '      CARD_RAIL_KILL) echo "$STUB_KILL" ;;',
+        '      CARD_RAIL_LIVE_SUBSCRIPTIONS) printf "%s\\n" "$STUB_LIST" ;;',
+        '    esac ;;',
+        'esac',
+      ].join('\n'));
+      chmodSync(join(root, 'bin', 'git'), 0o755);
+      chmodSync(join(root, 'bin', 'docker'), 0o755);
+    });
+    afterEach(() => rmSync(root, { recursive: true, force: true }));
+
+    const run = (stub: Record<string, string>, block = recreateBlock(docs.runbook)) => {
+      const script = block.replaceAll('/opt/swift', root);
+      const env = {
+        PATH: `${join(root, 'bin')}:/usr/bin:/bin`, CALL_LOG: log, STUB_SHA: SHA, STUB_RUNNING: `swift-api:${SHA}`,
+        STUB_KILL: '0', STUB_LIST: 'sub_owner_only_1', ...stub,
+      };
+      writeFileSync(log, '');
+      const r = spawnSync('bash', ['-s'], { input: script, env, encoding: 'utf8' });
+      return { ...r, calls: readFileSync(log, 'utf8') };
+    };
+
+    it('switch-on: both guard lines, the recreate with the wall overlay and --no-build, then the status line read from the new containers (no id)', () => {
+      const r = run({});
+      expect(r.status, r.stderr).toBe(0);
+      const out = r.stdout.trim().split('\n');
+      expect(out).toEqual([
+        'OK boot guard: this configuration starts',
+        'OK boot guard: this configuration starts',
+        'api healthy | worker running restarts=0 | FATAL=0 | KILL api=0 worker=0 | list entries=1 star=0',
+      ]);
+      expect(r.stdout + r.stderr).not.toContain('sub_owner_only_1');
+      expect(r.calls).toMatch(/docker compose --project-directory deploy -f deploy\/docker-compose\.yml -f deploy\/docker-compose\.wall\.yml up -d --no-deps --no-build --force-recreate api worker/);
+    });
+
+    it('rollback reads KILL api=1 worker=1; the go-live reads star=1', () => {
+      expect(run({ STUB_KILL: '1' }).stdout.trim().split('\n').at(-1)).toContain('| KILL api=1 worker=1 | list entries=1 star=0');
+      expect(run({ STUB_LIST: '*' }).stdout.trim().split('\n').at(-1)).toContain('| KILL api=0 worker=0 | list entries=1 star=1');
+    });
+
+    it.each([
+      [{ STUB_DIRTY: ' M deploy/.env.x' }, "STOP: the checkout is not clean; nothing was recreated"],
+      [{ STUB_RUNNING: `swift-api:${'b'.repeat(40)}` }, "STOP: api does not run HEAD's image (a deploy is half done); nothing was recreated"],
+      [{ STUB_IMAGE_MISSING: '1' }, "STOP: HEAD's image is missing; nothing was recreated"],
+      [{ STUB_GUARD_REFUSES: 'worker' }, 'STOP: the worker boot guard refused (FATAL above); nothing was recreated'],
+      [{ NODE_ENV: 'development' }, 'STOP: NODE_ENV is set in this shell, and Compose or Docker would use it; run from a fresh ssh block; nothing was recreated'],
+      [{ COMPOSE_FILE: 'x.yml' }, 'STOP: COMPOSE_FILE is set in this shell, and Compose or Docker would use it; run from a fresh ssh block; nothing was recreated'],
+      [{ DOCKER_HOST: 'tcp://elsewhere:2375' }, 'STOP: DOCKER_HOST is set in this shell, and Compose or Docker would use it; run from a fresh ssh block; nothing was recreated'],
+    ] as const)('a refusal prints its named STOP and nothing else, and nothing is recreated (%j)', (stub, stop) => {
+      const r = run(stub);
+      expect(r.status).toBe(1);
+      expect(r.stdout.trim().split('\n').at(-1)).toBe(stop);
+      expect(r.stdout).not.toContain('api healthy');
+      expect(r.calls).not.toContain(' up -d ');
+    });
+
+    it('the hazard the </dev/null closes: without it, the first guard run eats the rest of the script and no status line prints', () => {
+      const bare = recreateBlock(docs.runbook).replaceAll(' </dev/null', '');
+      const r = run({}, bare);
+      expect(r.stdout).toContain('OK boot guard: this configuration starts');
+      expect(r.stdout).not.toContain('api healthy');
+    });
+  });
+
+  it('[B2 S3-2 S4-3 S4-1] the rollback sets the kill switch itself and never restores a saved file; the switch-on restore takes the OLDEST copy and checks it; step 1 expects pilot-up\'s own guard line', () => {
+    const runbook = flat(docs.runbook);
+    expect(runbook).toContain('8. Set `CARD_RAIL_KILL=1` in deploy/.env (leave `CARD_RAIL_V2=1`');
+    expect(runbook).toContain("check `grep -c '^CARD_RAIL_KILL=1$' /opt/swift/deploy/.env` prints 1. Then run step 6's block unchanged");
+    expect(runbook).toContain('**Success is `KILL api=1 worker=1`**');
+    expect(runbook).toContain('If the block prints `STOP: ...` during the rollback, never put back a saved copy');
+    expect(runbook).not.toContain('put the saved deploy/.env back');
+    expect(runbook).toContain('the OLDEST copy of the day, never the newest');
+    expect(runbook).toContain("`install -m 600 <that copy> /opt/swift/deploy/.env && grep -c '^CARD_RAIL_KILL=1$' /opt/swift/deploy/.env` must print 1. On the rollback, never do this");
+    const api = flat(docs.api);
+    expect(api).toContain('**Success is `KILL api=1 worker=1`**');
+    expect(api).toContain('never put back a saved file: each one from that day has cards on');
+    expect(api).toContain('the OLDEST copy of the day, never the newest');
+    // Step 1 expects the line pilot-up really prints (it captures the guard's own output).
+    const pilotUp = readFileSync(join(DEPLOY, 'pilot-up.sh'), 'utf8');
+    const line = 'boot guard: the new api and worker images accept this configuration';
+    expect(pilotUp).toContain(`echo "${line}"`);
+    expect(runbook).toContain(`Expect \`${line}\``);
+    expect(runbook).not.toContain('1. Deploy main with cards OFF through pilot-up. Expect `OK boot guard` twice');
   });
 
   // [Review #2465-A2 S3-1] The production helper session defines `C` as a string that its read-only count and its
@@ -2042,7 +2217,7 @@ describe('[B-1] the card switch is documented with production\'s own compose set
     for (const text of [runbook, flat(docs.api)]) {
       expect(text).toContain("grep -cFx 'CARD_RAIL_LIVE_SUBSCRIPTIONS=*' /opt/swift/deploy/.env");
       expect(text).toMatch(/If the guard refuses even `?CARD_RAIL_KILL=1/);
-      expect(text).toMatch(/never put back a saved file that has cards on/i);
+      expect(text).toMatch(/never put back a saved (file|copy)/i);
     }
   });
 
