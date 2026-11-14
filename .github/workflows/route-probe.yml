@@ -1,0 +1,25 @@
+name: Route Probe (temporary, removed in the next commit)
+
+# Proves the runs-on routing expression on a real pull_request event with a
+# literal stand-in for vars.SWIFT_CI_RUNNERS: the pr lane must land on
+# ubuntu-22.04 (string form) and ubuntu-22.04 (array form), never 24.04.
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  string-lane:
+    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || fromJSON('{"main":"ubuntu-24.04","pr":"ubuntu-22.04"}')[(github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/gh-readonly-queue/main/')) && 'main' || 'pr'] || 'ubuntu-latest' }}
+    steps:
+      - run: echo "ImageOS=$ImageOS"; grep VERSION_ID /etc/os-release; test "$ImageOS" = ubuntu22
+  array-lane:
+    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || fromJSON('{"main":["ubuntu-24.04"],"pr":["ubuntu-22.04"]}')[(github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/gh-readonly-queue/main/')) && 'main' || 'pr'] || 'ubuntu-latest' }}
+    steps:
+      - run: echo "ImageOS=$ImageOS"; grep VERSION_ID /etc/os-release; test "$ImageOS" = ubuntu22
+  missing-lane:
+    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || fromJSON('{"main":["ubuntu-22.04"]}')[(github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/gh-readonly-queue/main/')) && 'main' || 'pr'] || 'ubuntu-latest' }}
+    steps:
+      - run: echo "ImageOS=$ImageOS"; grep VERSION_ID /etc/os-release; test "$ImageOS" = ubuntu24
