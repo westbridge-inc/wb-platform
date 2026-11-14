@@ -33,7 +33,7 @@ import { lineOptionsAsMade } from '../order/substitution-view';
 import { makeDispatchService } from '../dispatch/dispatch.service';
 import { dispatchTrigger, enqueueDeliveryDispatch } from '../dispatch/dispatch-trigger';
 import { resolveDeliveryMode } from '../fulfillment/fulfillment-mode';
-import { assertKitchenDoesNotHold, kitchenStoreView, kitchenSyncStateOf, noteOverflowKeptWithStore, readKitchenOverflowSetting, writeKitchenOverflowSetting } from '../kitchen/kitchen-overflow';
+import { assertKitchenDoesNotHold, KITCHEN_OVERFLOW_AUDIT_ACTION, kitchenStoreView, kitchenSyncStateOf, noteOverflowKeptWithStore, readKitchenOverflowSetting, writeKitchenOverflowSetting } from '../kitchen/kitchen-overflow';
 import { HANDOVER_SECRETS_OMIT } from '../handover/handover-security';
 import { pickingReadinessCounter, mmgAttestationCounter } from '../../plugins/observability';
 import { assertMmgAttestable, normaliseMmgReference, recordVendorAttestation } from './mmg-attestation';
@@ -2070,8 +2070,15 @@ export async function vendorRoutes(app: FastifyInstance) {
     return { success: true, data: await readKitchenOverflowSetting(app.prisma, vendorId) };
   });
   app.put('/kitchen-overflow', auth, async (request) => {
-    const { vendorId } = await requireVendor(app, request, 'MANAGER');
-    return { success: true, data: await writeKitchenOverflowSetting(app.prisma, vendorId, request.body) };
+    const { vendorId, role } = await requireVendor(app, request, 'MANAGER');
+    // [round 3 · review B S4-3] Who moved this branch's cash deliveries between two dispatch systems: an audit row in
+    // the same transaction (the person's id and store role, the mode and busy-window count before and after).
+    return { success: true, data: await writeKitchenOverflowSetting(app.prisma, vendorId, request.body, process.env, async (tx, entityId, facts) => {
+      await tx.auditLog.create({ data: {
+        userId: request.user.userId, action: KITCHEN_OVERFLOW_AUDIT_ACTION, entity: 'VendorIntegration', entityId,
+        changes: { vendorId, role, ...facts },
+      } });
+    }) };
   });
 
   app.put('/profile', auth, async (request) => {

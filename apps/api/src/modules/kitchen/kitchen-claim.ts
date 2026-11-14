@@ -1,7 +1,7 @@
 import type { Prisma, PrismaClient } from '@prisma/client';
 import { log } from '../../utils/logger';
 import { dragontailIntegrationEnabled, dragontailSettings, KITCHEN_STUCK_MS } from './kitchen-switch';
-import { fallbackKitchenRoute, planKitchenRoute, type KitchenRouteDecision, type KitchenRouteDeps } from './kitchen-overflow';
+import { decidedOffline, fallbackKitchenRoute, planKitchenRoute, type KitchenRouteDecision, type KitchenRouteDeps } from './kitchen-overflow';
 
 /**
  * [KITCHEN-INTEGRATION] The two questions the order spine asks, kept light (no service imports) so order.service
@@ -71,26 +71,38 @@ export async function claimForKitchenInTransaction(
       vendor: { select: { selfDeliveryEnabled: true } },
     },
   });
-  // [DT-OVERFLOW] Already routed to the Swift tablet and Swift riders: never claimed afterwards.
-  if (order?.kitchenRoute === 'SWIFT_RIDERS') return false;
+  // [DT-OVERFLOW] Already routed to the Swift tablet (Swift riders, or [round 3] the own driver while the link was
+  // offline): never claimed afterwards.
+  if (order?.kitchenRoute === 'SWIFT_RIDERS' || order?.kitchenRoute === 'TABLET') return false;
   if (!order?.vendorId || order.status !== 'PENDING') return false;
   const integration = await tx.vendorIntegration.findUnique({
     where: { vendorId_provider: { vendorId: order.vendorId, provider: 'DRAGONTAIL' } },
     select: { id: true, enabled: true, externalStoreNo: true, overflowMode: true, linkOfflineAt: true },
   });
   if (!integration?.enabled || integration.externalStoreNo == null) return false;
-  // [DT-OUTAGE] The branch's kitchen link is OFFLINE (kitchen-link.ts): nothing is claimed; the order rings the tablet
-  // as for any store (pickups and deliveries), and no route is recorded.
-  if (integration.linkOfflineAt) return false;
   const eligible = kitchenEligibility({
     orderType: order.orderType, fulfillment: order.fulfillment, paymentMethod: order.paymentMethod,
     vendorSelfDelivers: order.vendor?.selfDeliveryEnabled ?? false,
   });
+  // [DT-OUTAGE] The branch's kitchen link is OFFLINE (kitchen-link.ts): nothing is claimed; the order rings the tablet
+  // as for any store. [round 3 · review B S3-2] A delivery still gets its route, written once: Swift riders when the
+  // overflow says so (busy hours), otherwise TABLET (own driver, not in the kitchen system), so the store is told.
+  if (integration.linkOfflineAt) {
+    if (eligible.ok && order.fulfillment === 'DELIVERY') {
+      const decision = plan && plan.orderId === orderId && plan.route !== 'KITCHEN' ? plan : decidedOffline(orderId);
+      await tx.order.updateMany({
+        where: { id: orderId, kitchenRoute: null },
+        data: { kitchenRoute: decision.route, kitchenRouteReason: decision.reason, kitchenRouteAt: new Date() },
+      });
+    }
+    return false;
+  }
   if (!eligible.ok) return false;
   if (order.fulfillment === 'DELIVERY') {
     // [DT-OVERFLOW] The ONE route of this delivery, written once (compare-and-set on a still-unrouted order). A
-    // concurrent claim that routed it first wins: its commit is seen here, and this claim answers from it.
-    const decision = plan && plan.orderId === orderId ? plan : fallbackKitchenRoute(orderId, integration.overflowMode);
+    // concurrent claim that routed it first wins: its commit is seen here, and this claim answers from it. A plan made
+    // while the link was offline (TABLET) is not used now that it is online: the kitchen, the safe default.
+    const decision = plan && plan.orderId === orderId && plan.route !== 'TABLET' ? plan : fallbackKitchenRoute(orderId, integration.overflowMode);
     const routed = await tx.order.updateMany({
       where: { id: orderId, kitchenRoute: null },
       data: { kitchenRoute: decision.route, kitchenRouteReason: decision.reason, kitchenRouteAt: new Date() },

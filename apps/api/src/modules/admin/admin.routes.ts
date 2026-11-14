@@ -2580,6 +2580,14 @@ export async function adminRoutes(app: FastifyInstance) {
     return { success: true, data: await putKitchenOverflow(app.prisma, (request.params as { id: string }).id, request.body,
       (tx, entityId, facts) => auditWithin(tx, request as unknown as AuditRequestLike, app.prefix, { entityId, extra: facts })) };
   });
+  // [round 3 · review B S4-8] Operations confirmed with the store that Dragontail does not have this order: the
+  // "maybe in Dragontail" hold on "Get a Swift rider" is cleared. Audited in the same transaction.
+  app.post('/vendors/:id/kitchen-integration/orders/:orderId/not-in-kitchen', { preHandler: [adminGuard] }, async (request) => {
+    const { clearMaybeInKitchen } = await import('../kitchen/kitchen-admin');
+    const { id, orderId } = request.params as { id: string; orderId: string };
+    return { success: true, data: await clearMaybeInKitchen(app.prisma, id, orderId,
+      (tx, entityId, facts) => auditWithin(tx, request as unknown as AuditRequestLike, app.prefix, { entityId, extra: facts })) };
+  });
   app.get('/vendors/:id/kitchen-integration/routes', { preHandler: [adminGuard] }, async (request) => {
     const { listKitchenRoutesFor } = await import('../kitchen/kitchen-admin');
     return { success: true, data: await listKitchenRoutesFor(app.prisma, (request.params as { id: string }).id, request.query as { limit?: unknown }) };

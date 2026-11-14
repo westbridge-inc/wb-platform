@@ -2463,6 +2463,9 @@ enum KitchenOverflowMode {
 enum KitchenRoute {
   KITCHEN
   SWIFT_RIDERS
+  /// [round 3 · review B S3-2] The branch's kitchen link was offline: on the Swift tablet with the branch's own
+  /// driver, NOT in the kitchen system (a busy-hours overflow still goes to Swift riders).
+  TABLET
 }
 
 /// [KITCHEN-INTEGRATION] One store's connection to a kitchen system. Credentials are NEVER stored here: secretRef and
@@ -2507,6 +2510,8 @@ model VendorIntegration {
   /// [DT-OUTAGE round 2 · review A S3-2] The outage this link is in, from its first opening until a REAL send goes
   /// through. A probe's login re-opens the link only on trial: one more certain failure re-opens it with no new alert.
   linkOutageSince     DateTime?
+  /// [round 3 · review B S2-1] Trials of this outage that failed: each doubles the wait before the next probe.
+  linkTrialFailures   Int                    @default(0)
   /// [DT-OVERFLOW round 2 · review A S2-2] The branch's latest driver check, made by the kitchen tick (order queue),
   /// never by the hold-release sweep or checkout: they only read it. Null free count = the check failed (problem).
   driverCheckAt       DateTime?

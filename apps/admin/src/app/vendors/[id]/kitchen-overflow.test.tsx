@@ -63,4 +63,24 @@ describe('[DT-OVERFLOW] the console panel', () => {
     await waitFor(() => expect(writes).toHaveLength(1));
     expect(JSON.parse(String(writes[0]!.init?.body))).toEqual({ mode: 'NONE' });
   });
+
+  it('[round 3] orders Dragontail may also have are listed; "Dragontail does not have it" clears one', async () => {
+    const writes: ApiRequest[] = [];
+    mockApi((r) => {
+      if (r.method === 'GET' && r.url.pathname === `${PATH}/overflow`) {
+        return { body: { success: true, data: { ...on, maybeInKitchen: [{ orderId: 'o9', orderNumber: 'SW-2009', orderStatus: 'ACCEPTED', fallbackAt: '2026-11-14T22:10:00.000Z' }] } } };
+      }
+      if (r.method === 'GET' && r.url.pathname === `${PATH}/routes`) {
+        return { body: { success: true, data: [{ id: 'o8', orderNumber: 'SW-2008', status: 'PENDING', kitchenRoute: 'TABLET', kitchenRouteReason: 'LINK_OFFLINE', kitchenRouteAt: null, fulfillmentMode: null, riderId: null }] } };
+      }
+      if (r.method === 'POST' && r.url.pathname === `${PATH}/orders/o9/not-in-kitchen`) { writes.push(r); return { body: { success: true, data: { orderId: 'o9', maybeInKitchen: false } } }; }
+      throw new Error(`Unexpected ${r.method} ${r.url.pathname}`);
+    });
+    const { user } = renderWithQuery(<KitchenOverflowPanel vendorId="vendor-dt" />);
+    expect(await screen.findByText(/SW-2008: tablet, own driver \(kitchen link offline/)).toBeTruthy();
+    expect(screen.getByText(/SW-2009/)).toBeTruthy();
+    await user.click(screen.getByRole('button', { name: 'Dragontail does not have it' }));
+    await waitFor(() => expect(writes).toHaveLength(1));
+  });
 });
+

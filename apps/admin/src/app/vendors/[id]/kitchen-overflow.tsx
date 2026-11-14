@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { fetchKitchenOverflow, fetchKitchenRoutes, setKitchenOverflow, type KitchenBusyWindow, type KitchenOverflowMode } from '@/lib/api';
+import { clearMaybeInKitchen, fetchKitchenOverflow, fetchKitchenRoutes, setKitchenOverflow, type KitchenBusyWindow, type KitchenOverflowMode } from '@/lib/api';
 import { MutationError } from '@/components/MutationError';
 import { QueryFailed } from '@/components/mc/QueryFailed';
 import { gyDate } from '@/lib/dates';
@@ -29,6 +29,7 @@ export const ROUTE_REASON_WORDS: Record<string, string> = {
   SWIFT_RIDER_CHECK_FAILED: 'Swift rider check failed',
   OVERFLOW_CHECK_FAILED: 'overflow check failed (safe default)',
   DRIVER_CHECK_OFF: 'driver check switched off',
+  LINK_OFFLINE: 'kitchen link offline: on the tablet, own driver',
   BUSY_HOURS: 'busy hours',
   NO_FREE_DRIVER: 'no free driver',
 };
@@ -53,6 +54,10 @@ export function KitchenOverflowPanel({ vendorId }: { vendorId: string }) {
   }, [setting]);
   const save = useMutation({
     mutationFn: () => setKitchenOverflow(vendorId, { mode, ...(usesHours(mode) ? { busyHours: windows } : {}) }),
+    onSettled: () => qc.invalidateQueries({ queryKey: ['kitchen-overflow', vendorId] }),
+  });
+  const clear = useMutation({
+    mutationFn: (orderId: string) => clearMaybeInKitchen(vendorId, orderId),
     onSettled: () => qc.invalidateQueries({ queryKey: ['kitchen-overflow', vendorId] }),
   });
 
@@ -100,6 +105,21 @@ export function KitchenOverflowPanel({ vendorId }: { vendorId: string }) {
       )}
       <button type="button" className="mc-btn" disabled={save.isPending || lockedMode(mode, setting?.driverCheckAvailable)} onClick={() => save.mutate()}>{save.isPending ? 'Saving…' : 'Save'}</button>
       <MutationError error={save.error} label="Saving the overflow setting" />
+      {(setting?.maybeInKitchen?.length ?? 0) > 0 && (
+        <div className="space-y-1">
+          <h3 className="mc-label">On the tablet, and maybe in Dragontail</h3>
+          <p className="text-sm">The switch went off while these were being sent. &ldquo;Get a Swift rider&rdquo; stays refused for them until you confirm with the store that Dragontail does not have the order.</p>
+          <ul className="space-y-1 text-sm">
+            {setting!.maybeInKitchen!.map((m) => (
+              <li key={m.orderId} className="flex items-center gap-2">
+                <span>{m.orderNumber} ({m.orderStatus})</span>
+                <button type="button" className="mc-btn" disabled={clear.isPending} onClick={() => clear.mutate(m.orderId)}>Dragontail does not have it</button>
+              </li>
+            ))}
+          </ul>
+          <MutationError error={clear.error} label="Clearing the Dragontail check" />
+        </div>
+      )}
       <h3 className="mc-label">Recent deliveries: where they went</h3>
       {routes.isError ? (
         <QueryFailed error={routes.error} what="the recent routes" onRetry={() => void routes.refetch()} retrying={routes.isFetching} />
@@ -109,7 +129,7 @@ export function KitchenOverflowPanel({ vendorId }: { vendorId: string }) {
         <ul className="space-y-1 text-sm">
           {rows.map((r) => (
             <li key={r.id}>
-              {r.orderNumber}: {r.kitchenRoute === 'SWIFT_RIDERS' ? 'Swift riders' : 'Dragontail'} ({ROUTE_REASON_WORDS[r.kitchenRouteReason ?? ''] ?? 'reason not recorded'}){r.kitchenRouteAt ? `, ${gyDate(r.kitchenRouteAt)}` : ''}
+              {r.orderNumber}: {r.kitchenRoute === 'SWIFT_RIDERS' ? 'Swift riders' : r.kitchenRoute === 'TABLET' ? 'tablet, own driver' : 'Dragontail'} ({ROUTE_REASON_WORDS[r.kitchenRouteReason ?? ''] ?? 'reason not recorded'}){r.kitchenRouteAt ? `, ${gyDate(r.kitchenRouteAt)}` : ''}
             </li>
           ))}
         </ul>

@@ -50,16 +50,22 @@ export interface DragontailClientOptions {
 
 export const DRAGONTAIL_MAX_RETRIES = 3;
 
+/** One answer. `after5xx`: an EARLIER attempt of the same request was answered 5xx (it reached Dragontail). */
+export interface DragontailAnswer { status: number; json: unknown; after5xx: boolean }
+
 const realSleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 /** [DT-OUTAGE] Error codes that can only happen BEFORE a request is on the wire (no connection, no TLS session). */
 const NEVER_SENT_CODES = new Set([
-  'ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN', 'EAI_NONAME', 'EAI_FAIL', 'EHOSTUNREACH', 'ENETUNREACH', 'EHOSTDOWN', 'ENETDOWN',
-  'EADDRNOTAVAIL', 'UND_ERR_CONNECT_TIMEOUT',
+  'ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN', 'EAI_NONAME', 'EAI_FAIL', 'UND_ERR_CONNECT_TIMEOUT',
   // TLS: the handshake failed, so no HTTP request was ever sent.
   'CERT_HAS_EXPIRED', 'DEPTH_ZERO_SELF_SIGNED_CERT', 'SELF_SIGNED_CERT_IN_CHAIN', 'UNABLE_TO_VERIFY_LEAF_SIGNATURE',
   'UNABLE_TO_GET_ISSUER_CERT_LOCALLY', 'ERR_TLS_CERT_ALTNAME_INVALID', 'CERT_NOT_YET_VALID', 'ERR_SSL_WRONG_VERSION_NUMBER',
 ]);
+
+/** [round 3 · review B S3-4] Codes a pooled keep-alive socket can also report AFTER the request was written: they prove
+ *  nothing was sent only when the failing system call was the connect itself. */
+const CONNECT_SYSCALL_ONLY_CODES = new Set(['EHOSTUNREACH', 'ENETUNREACH', 'EHOSTDOWN', 'ENETDOWN', 'EADDRNOTAVAIL']);
 
 /**
  * [DT-OUTAGE] Did this fetch failure certainly happen before the request was sent? Only for a named connect-phase
@@ -73,6 +79,7 @@ export function requestNeverSent(err: unknown, aborted: boolean): boolean {
   for (let depth = 0; depth < 4 && at && typeof at === 'object'; depth += 1) {
     const code = (at as { code?: unknown }).code;
     if (typeof code === 'string' && NEVER_SENT_CODES.has(code)) return true;
+    if (typeof code === 'string' && CONNECT_SYSCALL_ONLY_CODES.has(code) && (at as { syscall?: unknown }).syscall === 'connect') return true;
     // An AggregateError (happy eyeballs: every address refused) carries one per address: all must be connect-phase.
     const errors = (at as { errors?: unknown }).errors;
     if (Array.isArray(errors) && errors.length > 0 && errors.every((e) => requestNeverSent(e, false))) return true;
@@ -156,13 +163,15 @@ export class DragontailClient {
    * An authenticated call: logs in when there is no token, and once more on a 403. `idempotent` = a timeout may
    * be retried (reads); a write is never re-sent after a timeout.
    */
-  async call(method: 'GET' | 'POST', path: string, body?: unknown, idempotent = method === 'GET'): Promise<{ status: number; json: unknown }> {
+  async call(method: 'GET' | 'POST', path: string, body?: unknown, idempotent = method === 'GET'): Promise<DragontailAnswer> {
     await this.ensureToken();
     let answer = await this.send(method, path, body, true, idempotent);
     if (answer.status === 403) {
+      const earlier5xx = answer.after5xx;
       this.setToken(null);
       await this.login();
       answer = await this.send(method, path, body, true, idempotent);
+      answer = { ...answer, after5xx: answer.after5xx || earlier5xx };
       if (answer.status === 403) {
         this.setToken(null);
         throw new KitchenPermanentError(`Dragontail refused ${path} after a fresh login (HTTP 403)`, true);
@@ -172,7 +181,7 @@ export class DragontailClient {
   }
 
   /** One request with the retry policy. Never throws for a non-5xx status: the caller decides. */
-  private async send(method: 'GET' | 'POST', path: string, body: unknown, withToken: boolean, idempotent: boolean): Promise<{ status: number; json: unknown }> {
+  private async send(method: 'GET' | 'POST', path: string, body: unknown, withToken: boolean, idempotent: boolean): Promise<DragontailAnswer> {
     let lastProblem = '';
     // [round 2 · review A S2-1] Did ANY attempt reach Dragontail (an HTTP answer, even a 5xx)? A gateway's 502/504 is the
     // classic "the backend may have it": a later attempt that cannot even connect does not make the write certainly
@@ -204,6 +213,7 @@ export class DragontailClient {
           redirect: 'error',
         });
         const text = await res.text();
+        const earlierAnswered5xx = reachedServer;
         reachedServer = true;
         if (res.status >= 500 && res.status <= 599) {
           const words = failureWords(text);
@@ -216,7 +226,9 @@ export class DragontailClient {
         } catch {
           json = null;
         }
-        return { status: res.status, json };
+        // [round 3 · review B S3-5] An earlier attempt of this request got a 5xx (it reached Dragontail): the caller
+        // must not read a refusal now as "certainly not taken".
+        return { status: res.status, json, after5xx: earlierAnswered5xx };
       } catch (err) {
         // [DT-OUTAGE] Certainly never sent (no connection, no TLS session): Dragontail cannot have it.
         const neverSent = requestNeverSent(err, controller.signal.aborted);

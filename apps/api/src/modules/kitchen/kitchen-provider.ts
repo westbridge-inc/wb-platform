@@ -107,7 +107,9 @@ export class KitchenTransientError extends Error {
   /** [review B S3-3] A write that timed out or lost its connection: the kitchen system may HAVE the order. */
   readonly mayHaveLanded: boolean;
   /** [round 2] The LINK failed (no connection, or 5xx answers): counts toward the branch's outage breaker, whether or
-   *  not the write may have arrived. A timeout alone does not (a slow kitchen is not a down one). */
+   *  not the write may have arrived. A timeout of the WRITE alone does not (a slow kitchen is not a down one). [review B
+   *  S4-11] A send that never got to write — a login that failed or timed out on every attempt, or no attempt fitting the
+   *  send's deadline — does count: the order certainly was not sent, and the link is not working. */
   readonly linkFailure: boolean;
   constructor(message: string, mayHaveLanded = false, linkFailure = !mayHaveLanded) {
     super(message);
@@ -127,6 +129,8 @@ export interface KitchenIntegrationProvider {
   readonly name: 'DRAGONTAIL';
   /** Log in only: proves the credentials and the address. */
   testConnection(): Promise<void>;
+  /** [round 3] The outage probe: proves the order API answers (not only the login). Optional: absent → testConnection. */
+  probeOrderApi?(storeNo: number, cursor: bigint): Promise<void>;
   /** Every request until the next call must finish by `at` (ms since epoch); null clears it. */
   setDeadline(at: number | null): void;
   insertOrder(order: KitchenOrder): Promise<KitchenInsertResult>;

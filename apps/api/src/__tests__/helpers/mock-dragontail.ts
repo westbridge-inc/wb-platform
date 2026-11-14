@@ -52,6 +52,8 @@ export class MockDragontail {
   readonly destroyPaths = new Set<string>();
   /** Answer a path with a redirect to this address. */
   readonly redirects = new Map<string, string>();
+  /** [round 3] Paths that answer this status EVERY time (a backend that stays down behind a working login). */
+  readonly downPaths = new Map<string, number>();
   private server: http.Server | null = null;
   private seq = 0;
   url = '';
@@ -98,6 +100,7 @@ export class MockDragontail {
     this.vehicles = null;
     this.vehicleKey = 'vehicles';
     this.destroyPaths.clear();
+    this.downPaths.clear();
   }
 
   count(path: string): number {
@@ -145,6 +148,11 @@ export class MockDragontail {
       res.writeHead(status, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(json));
     };
+    const down = this.downPaths.get(path);
+    if (down !== undefined) {
+      send(down, { time: this.now(), status: 'error', rowCount: 0, errDescription: 'down (injected)' });
+      return;
+    }
     const queued = this.failures.get(path);
     if (queued && queued.length > 0) {
       const status = queued.shift()!;

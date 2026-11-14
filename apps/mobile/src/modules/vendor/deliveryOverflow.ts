@@ -23,7 +23,7 @@ export const OVERFLOW_NOTE = 'Swift decides order by order, before sending. Each
 
 export const OVERFLOW_MODE_OPTIONS: ReadonlyArray<{ mode: OverflowMode; label: string; detail: string }> = [
   { mode: 'NONE', label: 'Off', detail: 'Every delivery goes to Dragontail and your own drivers.' },
-  { mode: 'AUTO_DRIVER_CHECK', label: 'When all my drivers are busy', detail: 'Before each delivery, Swift asks Dragontail for a free driver. None free: a Swift rider takes it. No answer in time: it goes to Dragontail as usual.' },
+  { mode: 'AUTO_DRIVER_CHECK', label: 'When all my drivers are busy', detail: 'Swift checks Dragontail for a free driver about every 20 seconds. None free: a Swift rider takes the delivery. No recent answer: it goes to Dragontail as usual.' },
   { mode: 'BUSY_HOURS', label: 'During my busy hours', detail: 'Deliveries in the hours you set go to Swift riders.' },
   { mode: 'BOTH', label: 'Both', detail: 'Busy hours first. Outside them, when all your drivers are busy.' },
 ];

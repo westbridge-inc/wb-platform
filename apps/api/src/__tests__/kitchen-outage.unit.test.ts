@@ -9,16 +9,27 @@ import { kitchenBreakerSettings } from '../modules/kitchen/kitchen-link';
 // ---------------------------------------------------------------------------
 
 /** Node's fetch failure shape: TypeError('fetch failed', { cause }) with the system error's code on the cause. */
-const fetchFailed = (code: string) => Object.assign(new TypeError('fetch failed'), { cause: Object.assign(new Error(code), { code }) });
+const fetchFailed = (code: string, syscall?: string) => Object.assign(new TypeError('fetch failed'), { cause: Object.assign(new Error(code), { code, ...(syscall ? { syscall } : {}) }) });
 
 describe('[DT-OUTAGE] requestNeverSent', () => {
   it('connect-phase failures: refused, no such host, no route, TLS handshake, undici connect timeout', () => {
-    for (const code of ['ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN', 'EHOSTUNREACH', 'ENETUNREACH', 'UND_ERR_CONNECT_TIMEOUT', 'CERT_HAS_EXPIRED', 'ERR_TLS_CERT_ALTNAME_INVALID']) {
+    for (const code of ['ECONNREFUSED', 'ENOTFOUND', 'EAI_AGAIN', 'UND_ERR_CONNECT_TIMEOUT', 'CERT_HAS_EXPIRED', 'ERR_TLS_CERT_ALTNAME_INVALID']) {
       expect(requestNeverSent(fetchFailed(code), false), code).toBe(true);
+    }
+    for (const code of ['EHOSTUNREACH', 'ENETUNREACH', 'EHOSTDOWN', 'ENETDOWN', 'EADDRNOTAVAIL']) {
+      expect(requestNeverSent(fetchFailed(code, 'connect'), false), `${code} on connect`).toBe(true);
     }
     // Every address refused (happy eyeballs): an AggregateError of connect failures.
     const all = Object.assign(new TypeError('fetch failed'), { cause: new AggregateError([Object.assign(new Error('a'), { code: 'ECONNREFUSED' }), Object.assign(new Error('b'), { code: 'ECONNREFUSED' })]) });
     expect(requestNeverSent(all, false)).toBe(true);
+  });
+
+  it('[round 3 · review B S3-4] an unreachable/down code from a write or read on a pooled socket is NOT certain', () => {
+    for (const code of ['EHOSTUNREACH', 'ENETUNREACH', 'EHOSTDOWN', 'ENETDOWN', 'EADDRNOTAVAIL']) {
+      expect(requestNeverSent(fetchFailed(code, 'write'), false), `${code} on write`).toBe(false);
+      expect(requestNeverSent(fetchFailed(code, 'read'), false), `${code} on read`).toBe(false);
+      expect(requestNeverSent(fetchFailed(code), false), `${code} with no syscall`).toBe(false);
+    }
   });
 
   it('anything that may have happened after the request left is NOT certain: reset, socket closed, our timeout, unknown', () => {
@@ -79,6 +90,22 @@ describe('[DT-OUTAGE] the client says which it was', () => {
     expect((login as KitchenTransientError).mayHaveLanded).toBe(false);
   });
 
+  it('[round 3 · review B S3-5] a 504, then a REFUSAL answer on the retry (flowError, a duplicate): may have arrived', async () => {
+    let calls = 0;
+    const c = client(async () => {
+      calls += 1;
+      return calls === 1 ? { status: 504, text: async () => 'gateway timeout' } : { status: 200, text: async () => JSON.stringify({ status: 'flowError' }) };
+    });
+    const answer = await c.call('POST', '/PosInsertOrders', {}, false) as { status: number; after5xx?: boolean };
+    expect(calls).toBe(2);
+    expect(answer.status).toBe(200);
+    expect(answer.after5xx, 'the caller is told an earlier attempt reached Dragontail').toBe(true);
+    let first = 0;
+    const plain = await client(async () => { first += 1; return { status: 200, text: async () => JSON.stringify({ status: 'validationError' }) }; }).call('POST', '/PosInsertOrders', {}, false) as { after5xx?: boolean };
+    expect(first).toBe(1);
+    expect(plain.after5xx ?? false, 'a first-attempt refusal is a real refusal').toBe(false);
+  });
+
   it('a timeout alone is "may have landed" but NOT a link failure (a slow kitchen is not a down one)', async () => {
     const err = await client(async () => { throw fetchFailed('ECONNRESET'); }).call('POST', '/PosInsertOrders', {}, false).catch((e: unknown) => e);
     expect((err as KitchenTransientError).mayHaveLanded).toBe(true);
@@ -92,9 +119,15 @@ describe('[DT-OUTAGE] the client says which it was', () => {
     expect((err as KitchenPermanentError).linkFailure).toBe(true);
   });
 
-  it('breaker defaults: 3 in 2 minutes, a probe a minute; out-of-range settings ignored', () => {
-    expect(kitchenBreakerSettings({})).toEqual({ failures: 3, windowMs: 120_000, probeMs: 60_000 });
-    expect(kitchenBreakerSettings({ DRAGONTAIL_BREAKER_FAILURES: '5', DRAGONTAIL_BREAKER_WINDOW_SECONDS: '300', DRAGONTAIL_BREAKER_PROBE_SECONDS: '30' })).toEqual({ failures: 5, windowMs: 300_000, probeMs: 30_000 });
-    expect(kitchenBreakerSettings({ DRAGONTAIL_BREAKER_FAILURES: '0', DRAGONTAIL_BREAKER_WINDOW_SECONDS: 'x' })).toEqual({ failures: 3, windowMs: 120_000, probeMs: 60_000 });
+  it('breaker defaults: 3 in a row, a probe a minute (at most 15 min after failed trials), quiet after 10 min; out-of-range settings ignored', () => {
+    expect(kitchenBreakerSettings({})).toEqual({ failures: 3, probeMs: 60_000, probeMaxMs: 900_000, quietMs: 600_000 });
+    expect(kitchenBreakerSettings({ DRAGONTAIL_BREAKER_FAILURES: '5', DRAGONTAIL_BREAKER_PROBE_SECONDS: '30', DRAGONTAIL_LINK_QUIET_SECONDS: '300' })).toEqual({ failures: 5, probeMs: 30_000, probeMaxMs: 900_000, quietMs: 300_000 });
+    expect(kitchenBreakerSettings({ DRAGONTAIL_BREAKER_FAILURES: '0', DRAGONTAIL_LINK_QUIET_SECONDS: 'x' })).toEqual({ failures: 3, probeMs: 60_000, probeMaxMs: 900_000, quietMs: 600_000 });
+  });
+
+  it('[round 3 · review B S2-1] the probe waits twice as long after each failed trial, at most 15 minutes', async () => {
+    const link = await import('../modules/kitchen/kitchen-link') as unknown as { probeWaitMs?: (s: { probeMs: number; probeMaxMs: number }, n: number) => number };
+    const s = { probeMs: 60_000, probeMaxMs: 900_000 };
+    expect([0, 1, 2, 3, 4, 5, 40].map((n) => link.probeWaitMs?.(s, n))).toEqual([60_000, 120_000, 240_000, 480_000, 900_000, 900_000, 900_000]);
   });
 });

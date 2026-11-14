@@ -217,7 +217,16 @@ export async function getKitchenOverflow(prisma: PrismaClient, vendorId: string)
       linkOutageSince: true, driverCheckAt: true, driverCheckFree: true, driverCheckProblem: true,
     },
   });
+  // [round 3 · review B S4-8] Orders on the tablet that Dragontail MAY also have (the switch went off mid-send): "Get a
+  // Swift rider" stays refused for them until operations confirm with the store that Dragontail does not have them.
+  const maybe = row ? await prisma.orderIntegrationSync.findMany({
+    where: { vendorIntegration: { vendorId }, state: 'FALLBACK', maybeInKitchen: true },
+    orderBy: { fallbackAt: 'desc' },
+    take: 20,
+    select: { orderId: true, fallbackAt: true, order: { select: { orderNumber: true, status: true } } },
+  }) : [];
   return {
+    maybeInKitchen: maybe.map((m) => ({ orderId: m.orderId, orderNumber: m.order.orderNumber, orderStatus: m.order.status, fallbackAt: m.fallbackAt })),
     switchOn: dragontailIntegrationEnabled(),
     // [round 2 · review A S2-3] The driver check's own switch: off until Dragontail confirms what it lists.
     driverCheckAvailable: dragontailDriverCheckEnabled(),
@@ -241,6 +250,28 @@ export async function putKitchenOverflow(prisma: PrismaClient, vendorId: string,
   await vendorOrThrow(prisma, vendorId);
   await writeKitchenOverflowSetting(prisma, vendorId, body, process.env, audit);
   return getKitchenOverflow(prisma, vendorId);
+}
+
+/**
+ * [round 3 · review B S4-8] Operations confirmed with the store that Dragontail does NOT have this order (absent, or
+ * cancelled there): the "maybe in Dragontail" hold is cleared, so the store may get a Swift rider for it again. Only a
+ * tablet order still flagged; audited (the order, never a person's detail).
+ */
+export async function clearMaybeInKitchen(prisma: PrismaClient, vendorId: string, orderId: string, audit?: KitchenAudit) {
+  await vendorOrThrow(prisma, vendorId);
+  return prisma.$transaction(async (tx) => {
+    const sync = await tx.orderIntegrationSync.findFirst({
+      where: { orderId, provider: 'DRAGONTAIL', vendorIntegration: { vendorId } },
+      select: { id: true, state: true, maybeInKitchen: true },
+    });
+    if (!sync) throw new AppError(404, 'NOT_FOUND', 'This order has no kitchen-system record at this store.');
+    if (sync.state !== 'FALLBACK' || !sync.maybeInKitchen) {
+      throw new AppError(409, 'NOT_MAYBE_IN_KITCHEN', 'This order is not waiting on a "maybe in Dragontail" check.');
+    }
+    await tx.orderIntegrationSync.update({ where: { id: sync.id }, data: { maybeInKitchen: false } });
+    await audit?.(tx, sync.id, { orderId, maybeInKitchenBefore: true, maybeInKitchenAfter: false });
+    return { orderId, maybeInKitchen: false };
+  });
 }
 
 /** [DT-OVERFLOW] Where the branch's recent deliveries went (its kitchen system or Swift riders), and why. */

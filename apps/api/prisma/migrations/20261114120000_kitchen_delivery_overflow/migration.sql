@@ -4,11 +4,13 @@
 -- branch's own drivers) or to the Swift tablet and Swift riders: never both. Pickups never move.
 --
 -- FORWARD
---  1. Enums KitchenOverflowMode (NONE, AUTO_DRIVER_CHECK, BUSY_HOURS, BOTH) and KitchenRoute (KITCHEN, SWIFT_RIDERS).
+--  1. Enums KitchenOverflowMode (NONE, AUTO_DRIVER_CHECK, BUSY_HOURS, BOTH) and KitchenRoute (KITCHEN, SWIFT_RIDERS, TABLET).
 --  2. vendor_integrations: "overflowMode" (NOT NULL DEFAULT 'NONE': every branch stays off), "overflowBusyHours"
 --     (NOT NULL DEFAULT '[]': no busy hours) and "overflowUpdatedAt" (nullable). Constant defaults: no table rewrite.
 --  2b. [DT-OUTAGE] vendor_integrations: the kitchen-link breaker — "linkFailures" (NOT NULL DEFAULT 0),
 --     "linkFirstFailureAt", "linkOfflineAt", "linkProbeAt" (nullable). Null "linkOfflineAt" = online (as today).
+--  2d. [round 3] vendor_integrations."linkTrialFailures" (NOT NULL DEFAULT 0); KitchenRoute gains TABLET (an order the
+--     branch's offline kitchen link left on the Swift tablet with its own driver).
 --  2c. [round 2] vendor_integrations: "linkOutageSince" (the outage a link is in until a real send works: one alert pair
 --     per outage), and the kitchen tick's latest driver check: "driverCheckAt", "driverCheckFree", "driverCheckProblem"
 --     (all nullable). order_integration_syncs: "maybeInKitchen" (NOT NULL DEFAULT false: a constant default, no rewrite).
@@ -26,7 +28,7 @@ SET lock_timeout = '10s';
 
 CREATE TYPE "KitchenOverflowMode" AS ENUM ('NONE', 'AUTO_DRIVER_CHECK', 'BUSY_HOURS', 'BOTH');
 
-CREATE TYPE "KitchenRoute" AS ENUM ('KITCHEN', 'SWIFT_RIDERS');
+CREATE TYPE "KitchenRoute" AS ENUM ('KITCHEN', 'SWIFT_RIDERS', 'TABLET');
 
 ALTER TABLE "vendor_integrations"
   ADD COLUMN "overflowMode" "KitchenOverflowMode" NOT NULL DEFAULT 'NONE',
@@ -37,6 +39,7 @@ ALTER TABLE "vendor_integrations"
   ADD COLUMN "linkOfflineAt" TIMESTAMP(3),
   ADD COLUMN "linkProbeAt" TIMESTAMP(3),
   ADD COLUMN "linkOutageSince" TIMESTAMP(3),
+  ADD COLUMN "linkTrialFailures" INTEGER NOT NULL DEFAULT 0,
   ADD COLUMN "driverCheckAt" TIMESTAMP(3),
   ADD COLUMN "driverCheckFree" INTEGER,
   ADD COLUMN "driverCheckProblem" TEXT;

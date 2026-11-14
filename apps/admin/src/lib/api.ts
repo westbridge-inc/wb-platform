@@ -1816,14 +1816,19 @@ export interface KitchenOverflowView {
   driverCheckAvailable?: boolean;
   driverCheck?: { at: string; free: number | null; problem: string | null } | null;
   linkOnTrial?: boolean;
+  /** [round 3] Tablet orders Dragontail MAY also have: "Get a Swift rider" is refused until operations clear them. */
+  maybeInKitchen?: Array<{ orderId: string; orderNumber: string; orderStatus: string; fallbackAt: string | null }>;
 }
 export interface KitchenRouteRow {
-  id: string; orderNumber: string; status: string; kitchenRoute: 'KITCHEN' | 'SWIFT_RIDERS'; kitchenRouteReason: string | null;
+  id: string; orderNumber: string; status: string; kitchenRoute: 'KITCHEN' | 'SWIFT_RIDERS' | 'TABLET'; kitchenRouteReason: string | null;
   kitchenRouteAt: string | null; fulfillmentMode: string | null; riderId: string | null;
 }
 const kitchenOverflow = (vendorId: string) => `/api/v1/admin/vendors/${encodeURIComponent(vendorId)}/kitchen-integration/overflow`;
 export const fetchKitchenOverflow = (vendorId: string): Promise<Envelope<KitchenOverflowView>> => apiFetch(kitchenOverflow(vendorId));
 export const setKitchenOverflow = (vendorId: string, body: { mode: KitchenOverflowMode; busyHours?: KitchenBusyWindow[] }): Promise<Envelope<KitchenOverflowView>> =>
   apiFetch(kitchenOverflow(vendorId), { method: 'PUT', body: JSON.stringify(body) });
+/** [round 3] Operations confirmed with the store that Dragontail does not have this order. */
+export const clearMaybeInKitchen = (vendorId: string, orderId: string): Promise<Envelope<{ orderId: string; maybeInKitchen: boolean }>> =>
+  apiFetch(`/api/v1/admin/vendors/${encodeURIComponent(vendorId)}/kitchen-integration/orders/${encodeURIComponent(orderId)}/not-in-kitchen`, { method: 'POST', body: JSON.stringify({}) });
 export const fetchKitchenRoutes = (vendorId: string): Promise<Envelope<KitchenRouteRow[]>> =>
   apiFetch(`/api/v1/admin/vendors/${encodeURIComponent(vendorId)}/kitchen-integration/routes?limit=20`);

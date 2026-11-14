@@ -583,6 +583,15 @@ describe('[round 2 · S3-3] "Get a Swift rider" stays refused while Dragontail M
     expect((await orderOf(order.id)).fulfillmentMode).toBe('VENDOR_DELIVERY');
     const detail = await call('GET', `/api/v1/vendor/orders/${order.id}`, owner.token);
     expect(detail.json().data.kitchen).toMatchObject({ holdsOrder: true, title: 'On this tablet, and maybe in Dragontail' });
+
+    // [round 3 · review B S4-8] Operations confirm with the store that Dragontail does not have it: the hold clears.
+    const clear = (kitchenAdmin as unknown as { clearMaybeInKitchen?: (p: unknown, v: string, o: string, a?: unknown) => Promise<unknown> }).clearMaybeInKitchen;
+    const audited: unknown[] = [];
+    await clear?.(app.prisma, vendorId, order.id, async (_tx: unknown, _id: string, facts: unknown) => { audited.push(facts); });
+    expect(audited, 'audited').toHaveLength(1);
+    expect((await syncOf(order.id))?.maybeInKitchen).toBe(false);
+    const again = await call('PUT', `/api/v1/vendor/orders/${order.id}/fulfillment-mode`, owner.token, { mode: 'PLATFORM_RIDER' });
+    expect(again.statusCode, again.body).toBe(200);
   });
 });
 
@@ -626,3 +635,77 @@ describe('[round 2 · S4-1] the console’s change of the overflow is audited', 
     expect(handler, 'the console route passes auditWithin').toMatch(/auditWithin\(/);
   });
 });
+
+// ── ROUND 3 (review B) ──────────────────────────────────────────────────────
+
+describe('[round 3 · S3-2] the kitchen link offline: busy-hours overflow still applies, and the store sees the truth', () => {
+  const offline = () => sys(() => app.prisma.vendorIntegration.update({ where: { id: integrationId }, data: { linkOfflineAt: new Date(), linkProbeAt: new Date() } }));
+  const online = () => sys(() => app.prisma.vendorIntegration.update({ where: { id: integrationId }, data: { linkOfflineAt: null, linkProbeAt: null, linkOutageSince: null } }));
+
+  it('inside busy hours: Swift riders (nothing asked of Dragontail); otherwise: the tablet with the own driver, said so', async () => {
+    await offline();
+    try {
+      await setOverflow('BUSY_HOURS', ALL_WEEK);
+      const busy = await makeOrder();
+      await releaseOnly();
+      expect(await orderOf(busy.id)).toMatchObject({ kitchenRoute: 'SWIFT_RIDERS', kitchenRouteReason: 'BUSY_HOURS' });
+      expect(await syncOf(busy.id)).toBeNull();
+      expect(await ringsOf(busy.id)).toBe(1);
+      const accept = await call('PUT', `/api/v1/vendor/orders/${busy.id}/accept`, owner.token, {});
+      expect(accept.statusCode, accept.body).toBe(200);
+      expect((await orderOf(busy.id)).fulfillmentMode, 'bound to Swift riders, as the branch asked').toBe('PLATFORM_RIDER');
+
+      await setOverflow('NONE');
+      const plain = await makeOrder();
+      await releaseOnly();
+      expect(await orderOf(plain.id)).toMatchObject({ kitchenRoute: 'TABLET', kitchenRouteReason: 'LINK_OFFLINE' });
+      const detail = await call('GET', `/api/v1/vendor/orders/${plain.id}`, owner.token);
+      expect(detail.json().data.kitchen).toMatchObject({ holdsOrder: false, title: 'On this tablet only, not in Dragontail' });
+      const accepted = await call('PUT', `/api/v1/vendor/orders/${plain.id}/accept`, owner.token, {});
+      expect(accepted.statusCode, accepted.body).toBe(200);
+      expect((await orderOf(plain.id)).fulfillmentMode).toBe('VENDOR_DELIVERY');
+      expect(mock.requests, 'nothing sent to an offline link').toHaveLength(0);
+    } finally {
+      await online();
+    }
+    // Back online: an order routed to the tablet while offline is never claimed afterwards.
+    const later = await makeOrder();
+    await offline();
+    await releaseOnly();
+    await online();
+    expect(await claimForKitchen(app.prisma, later.id)).toBe(false);
+    expect(await syncOf(later.id)).toBeNull();
+  });
+});
+
+describe('[round 3 · S3-3] the store’s words follow what Swift knows', () => {
+  it('queued: "Being sent to Dragontail"; no answer: "Maybe in Dragontail"; accepted by Dragontail: "In Dragontail"', async () => {
+    const order = await makeOrder();
+    await releaseOnly();
+    expect((await syncOf(order.id))?.state).toBe('QUEUED');
+    const queued = await call('GET', `/api/v1/vendor/orders/${order.id}`, owner.token);
+    expect(queued.json().data.kitchen).toMatchObject({ holdsOrder: true, title: 'Being sent to Dragontail' });
+    await sys(() => app.prisma.orderIntegrationSync.update({ where: { orderId_provider: { orderId: order.id, provider: 'DRAGONTAIL' } }, data: { state: 'UNKNOWN' } }));
+    const unknown = await call('GET', `/api/v1/vendor/orders/${order.id}`, owner.token);
+    expect(unknown.json().data.kitchen).toMatchObject({ holdsOrder: true, title: 'Maybe in Dragontail: check Dragontail' });
+    expect(unknown.json().data.kitchen.detail).not.toContain('Sent to Dragontail');
+  });
+});
+
+describe('[round 3 · S4] the store’s own change is audited; busy hours need a window', () => {
+  it('the owner’s change writes an audit row with who and what; busy hours with no window at all are refused', async () => {
+    const before = await app.prisma.auditLog.count({ where: { entityId: integrationId, action: 'VENDOR_KITCHEN_OVERFLOW_CHANGED' } });
+    const set = await call('PUT', '/api/v1/vendor/kitchen-overflow', owner.token, { mode: 'BUSY_HOURS', busyHours: [{ day: 3, start: '12:00', end: '14:00' }] });
+    expect(set.statusCode, set.body).toBe(200);
+    const rows = await app.prisma.auditLog.findMany({ where: { entityId: integrationId, action: 'VENDOR_KITCHEN_OVERFLOW_CHANGED' }, orderBy: { createdAt: 'desc' } });
+    expect(rows.length - before).toBe(1);
+    expect(rows[0]).toMatchObject({ userId: owner.userId, entity: 'VendorIntegration' });
+    expect(rows[0]!.changes).toMatchObject({ vendorId, role: 'OWNER', modeAfter: 'BUSY_HOURS', busyWindowsAfter: 1 });
+
+    await setOverflow('NONE', []);
+    const none = await call('PUT', '/api/v1/vendor/kitchen-overflow', owner.token, { mode: 'BUSY_HOURS' });
+    expect(none.statusCode, none.body).toBe(400);
+    expect(none.json().error.code).toBe('BUSY_HOURS_EMPTY');
+  });
+});
+

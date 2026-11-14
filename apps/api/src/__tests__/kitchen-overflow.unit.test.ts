@@ -175,8 +175,10 @@ describe('[DT-OVERFLOW] the decision, order by order', () => {
   });
 
   it('every reason names exactly one route, and the decision always carries the route its reason names', () => {
-    for (const [reason, route] of Object.entries(KITCHEN_ROUTE_REASONS)) expect(['KITCHEN', 'SWIFT_RIDERS'], reason).toContain(route);
+    for (const [reason, route] of Object.entries(KITCHEN_ROUTE_REASONS)) expect(['KITCHEN', 'SWIFT_RIDERS', 'TABLET'], reason).toContain(route);
     expect(Object.entries(KITCHEN_ROUTE_REASONS).filter(([, r]) => r === 'SWIFT_RIDERS').map(([k]) => k).sort()).toEqual(['BUSY_HOURS', 'NO_FREE_DRIVER']);
+    // [round 3] Only an offline link puts a delivery on the tablet with its own driver.
+    expect(Object.entries(KITCHEN_ROUTE_REASONS).filter(([, r]) => r === 'TABLET').map(([k]) => k)).toEqual(['LINK_OFFLINE']);
   });
 
   it('the driver check budget: 2 s by default, 300 ms..5 s when set, anything else ignored', () => {
@@ -213,7 +215,10 @@ describe('[DT-OVERFLOW] the store sees where the order went', () => {
   it('in Dragontail: holdsOrder (no "Get a Swift rider"); fell back to the tablet: not held', () => {
     for (const state of ['QUEUED', 'SENDING', 'SENT', 'UNKNOWN', 'CANCELLING', 'CANCEL_QUEUED']) {
       expect(kitchenHoldsOrder(state), state).toBe(true);
-      expect(kitchenStoreView({ kitchenRoute: 'KITCHEN', kitchenRouteReason: 'DRIVER_FREE' }, state)).toMatchObject({ holdsOrder: true, title: 'In Dragontail: your own driver delivers it' });
+      expect(kitchenStoreView({ kitchenRoute: 'KITCHEN', kitchenRouteReason: 'DRIVER_FREE' }, state)?.holdsOrder, state).toBe(true);
+    }
+    for (const state of ['SENT', 'CANCEL_QUEUED']) {
+      expect(kitchenStoreView({ kitchenRoute: 'KITCHEN', kitchenRouteReason: 'DRIVER_FREE' }, state)).toMatchObject({ title: 'In Dragontail: your own driver delivers it' });
     }
     expect(kitchenHoldsOrder('FALLBACK')).toBe(false);
     expect(kitchenHoldsOrder(null)).toBe(false);
@@ -267,5 +272,31 @@ describe('[round 2 · S3-3] a fallback the kitchen MAY still have holds the orde
     expect(kitchenHoldsOrder({ state: 'FALLBACK', maybeInKitchen: false })).toBe(false);
     expect(kitchenStoreView({ kitchenRoute: 'KITCHEN', kitchenRouteReason: 'DRIVER_FREE' }, { state: 'FALLBACK', maybeInKitchen: true }))
       .toMatchObject({ holdsOrder: true, title: 'On this tablet, and maybe in Dragontail' });
+  });
+});
+
+describe('[round 3 · review B S3-3] the store is told only what Swift knows', () => {
+  it('queued or mid-send: "Being sent"; no answer: "Maybe in Dragontail"; never "Sent to Dragontail" before Dragontail took it', () => {
+    for (const state of ['QUEUED', 'SENDING']) {
+      const view = kitchenStoreView({ kitchenRoute: 'KITCHEN', kitchenRouteReason: 'DRIVER_FREE' }, state);
+      expect(view, state).toMatchObject({ holdsOrder: true, title: 'Being sent to Dragontail' });
+      expect(view?.detail, state).not.toContain('Sent to Dragontail');
+    }
+    for (const state of ['UNKNOWN', 'CANCELLING']) {
+      const view = kitchenStoreView({ kitchenRoute: 'KITCHEN', kitchenRouteReason: 'OVERFLOW_OFF' }, state);
+      expect(view, state).toMatchObject({ holdsOrder: true, title: 'Maybe in Dragontail: check Dragontail' });
+      expect(view?.detail, state).not.toContain('Sent to Dragontail');
+    }
+  });
+});
+
+describe('[round 3 · review B S3-2] an offline link: the overflow still applies, and the store sees the truth', () => {
+  it('a decision for the kitchen becomes the tablet (own driver); Swift riders stand; the store reads "not in Dragontail"', async () => {
+    const mod = await import('../modules/kitchen/kitchen-overflow') as unknown as {
+      offlineRoute?: (d: { orderId: string; route: string; reason: string; note: string }) => { route: string; reason: string };
+    };
+    expect(mod.offlineRoute?.({ orderId: 'o1', route: 'KITCHEN', reason: 'OVERFLOW_OFF', note: 'off' })).toMatchObject({ route: 'TABLET', reason: 'LINK_OFFLINE' });
+    expect(mod.offlineRoute?.({ orderId: 'o1', route: 'SWIFT_RIDERS', reason: 'BUSY_HOURS', note: 'busy' })).toMatchObject({ route: 'SWIFT_RIDERS', reason: 'BUSY_HOURS' });
+    expect(kitchenStoreView({ kitchenRoute: 'TABLET', kitchenRouteReason: 'LINK_OFFLINE' }, null)).toMatchObject({ holdsOrder: false, title: 'On this tablet only, not in Dragontail' });
   });
 });

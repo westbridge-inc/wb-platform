@@ -10,7 +10,7 @@ import { emitToOrderRoom, emitToStoreRoom } from '../order/order-room-emission.s
 import { vendorOperateRefusal, type StoreRoleVerifier } from '../vendor/vendor-operate';
 import { kitchenLoginFor } from './kitchen-credentials';
 import { KITCHEN_ACCEPT_GRACE_MS, kitchenLadderDecision } from './kitchen-claim';
-import { kitchenBreakerSettings, recordLinkFailure, recordLinkProbeSuccess, recordLinkSuccess } from './kitchen-link';
+import { kitchenBreakerSettings, probeWaitMs, recordLinkFailure, recordLinkProbeSuccess, recordLinkSuccess } from './kitchen-link';
 import {
   KitchenPermanentError,
   KitchenTransientError,
@@ -1213,11 +1213,16 @@ export async function probeOfflineKitchenLinks(deps: KitchenDeps, opts: KitchenW
   if (!dragontailIntegrationEnabled(env)) return 0;
   const until = untilOf(opts);
   const now = nowOf(deps);
-  const { probeMs } = kitchenBreakerSettings(env);
-  const due = await deps.prisma.vendorIntegration.findMany({
-    where: { enabled: true, linkOfflineAt: { not: null }, OR: [{ linkProbeAt: null }, { linkProbeAt: { lte: new Date(now.getTime() - probeMs) } }] },
-    take: 20,
+  const settings = kitchenBreakerSettings(env);
+  const candidates = await deps.prisma.vendorIntegration.findMany({
+    where: { enabled: true, linkOfflineAt: { not: null }, OR: [{ linkProbeAt: null }, { linkProbeAt: { lte: new Date(now.getTime() - settings.probeMs) } }] },
+    orderBy: { linkProbeAt: 'asc' },
+    take: 50,
   });
+  // [round 3 · review B S2-1] After a failed trial the next probe waits twice as long (at most 15 min).
+  const due = candidates
+    .filter((i) => !i.linkProbeAt || now.getTime() - i.linkProbeAt.getTime() >= probeWaitMs(settings, i.linkTrialFailures))
+    .slice(0, 20);
   let closed = 0;
   for (const integration of due) {
     if (Date.now() >= until) break;
@@ -1230,7 +1235,12 @@ export async function probeOfflineKitchenLinks(deps: KitchenDeps, opts: KitchenW
     }
     answer.provider.setDeadline(Date.now() + 10_000);
     try {
-      await answer.provider.testConnection();
+      // [round 3 · review B S2-1] A login AND an order-API read: a backend down behind a working login stays offline.
+      if (answer.provider.probeOrderApi && integration.externalStoreNo != null) {
+        await answer.provider.probeOrderApi(integration.externalStoreNo, integration.pollUpdateStamp);
+      } else {
+        await answer.provider.testConnection();
+      }
       if ((await recordLinkProbeSuccess(deps, integration.id)) === 'trial') closed += 1;
     } catch (err) {
       await noteIntegrationError(deps, integration.id, `link probe: ${problemOf(err)}`);
@@ -1262,12 +1272,13 @@ export async function runKitchenTick(deps: KitchenDeps): Promise<'ran' | 'skippe
       ['driver-check', async () => (await import('./kitchen-overflow')).refreshKitchenDriverChecks(deps.prisma, envOf(deps), {
         ...(deps.now ? { now: deps.now } : {}), ...(deps.client ? { client: deps.client } : {}),
       })],
+      // [round 3 · review B S4-7] Probes before the drain: a long drain must not keep an offline link offline longer.
+      ['link-probe', () => probeOfflineKitchenLinks(deps, window)],
       ['drain', () => drainKitchenSyncs(deps, window)],
       ['cancel', () => propagateKitchenCancellations(deps, window)],
       ['unknown', () => resolveUnknownKitchenSyncs(deps, window)],
       ['backstop', () => kitchenBackstopSweep(deps)],
       ['poll', () => pollKitchenIntegrations(deps, window)],
-      ['link-probe', () => probeOfflineKitchenLinks(deps, window)],
     ] as const) {
       try {
         await run();
