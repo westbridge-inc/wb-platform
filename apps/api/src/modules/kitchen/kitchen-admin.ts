@@ -287,12 +287,12 @@ export async function tryKitchenLinkNow(deps: Pick<KitchenDeps, 'prisma' | 'io' 
   await vendorOrThrow(prisma, vendorId);
   const row = await prisma.vendorIntegration.findUnique({
     where: { vendorId_provider: { vendorId, provider: 'DRAGONTAIL' } },
-    select: { id: true, provider: true, enabled: true, linkOfflineAt: true, linkProbeAt: true, externalStoreNo: true, pollUpdateStamp: true },
+    select: { id: true, enabled: true, linkOfflineAt: true, linkProbeAt: true, externalStoreNo: true, pollUpdateStamp: true },
   });
   if (!row) throw new AppError(404, 'KITCHEN_NOT_SET_UP', 'This store has no kitchen-system connection yet.');
   if (!row.enabled) throw new AppError(409, 'KITCHEN_CONNECTION_OFF', 'This connection is switched off.');
   if (!row.linkOfflineAt) throw new AppError(409, 'LINK_NOT_OFFLINE', 'The kitchen link is not offline: there is nothing to try.');
-  const result = await probeKitchenLink(deps as KitchenDeps, row);
+  const result = await probeKitchenLink(deps as KitchenDeps, { ...row, provider: 'DRAGONTAIL' });
   const after = await prisma.vendorIntegration.findUnique({ where: { id: row.id }, select: { linkOfflineAt: true, lastError: true } });
   await prisma.$transaction(async (tx) => {
     await audit?.(tx, row.id, { result, offlineSince: row.linkOfflineAt?.toISOString() ?? null, offlineAfter: after?.linkOfflineAt != null });
