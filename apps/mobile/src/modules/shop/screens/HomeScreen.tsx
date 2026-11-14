@@ -58,6 +58,7 @@ import {
 } from '../../../kit';
 import { touchTarget } from '../../../kit/touch-target';
 import { PRICE_PROMISE_BODY, PRICE_PROMISE_TITLE } from '../../../lib/pricePromiseCopy';
+import { HomeNotice } from '../../../components/HomeNotice';
 // Per-vertical identity colour lives in the KIT [F-263] — it was a local hex
 // map here once and the no-literal-hex-in-screens rule cleaned it away, which
 // is how the grid ended up as eight identical squares.
@@ -623,6 +624,10 @@ export function HomeScreen() {
             statusNote={home.isFetching || home.isPlaceholderData ? 'Updating order…' : home.isError || home.fetchStatus === 'paused' ? 'Last known' : ''}
           />
         ) : null}
+
+        {/* [HOME-NOTICE · owner 13 Nov 2026] The owner's notice, for everyone (signed in or not) until it is turned
+            off; the X closes it on this phone. Under the live order, which outranks it; nothing drawn when off. */}
+        <HomeNotice gutter={GUTTER} live={live} />
 
         {/* THE services grid — 4x2, drawn icons, ON OPEN PAPER.
             [100x pass §5/§6] "hairline rows on open paper (no card chassis)".

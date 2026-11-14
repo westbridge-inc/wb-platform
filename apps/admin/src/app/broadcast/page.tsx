@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import { broadcastNotification } from '@/lib/api';
 import { useActionRunner } from '@/components/mc/useActionRunner';
+import { HomeNoticePanel } from './home-notice-panel';
 
 const AUDIENCES = [
   { value: '', label: 'Everyone (all active users)' },
@@ -116,6 +117,8 @@ export default function BroadcastPage() {
           </button>
         </div>
       </div>
+      {/* [HOME-NOTICE] The notice on every customer's Home: a standing message, not a one-off send. */}
+      <HomeNoticePanel />
     </div>
   );
 }
