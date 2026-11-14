@@ -1469,7 +1469,13 @@ checkout moves to the requested SHA; everything else before that):
   live credentials in the store) and `POWERTRANZ_PAGE_SET=PTZ/<set>`;
   CARD_RAIL_ENROLL (saved cards and automatic
   weekly card charges), CARD_RAIL_V2_DRAIN and ADS_ENABLED each unset or `0`;
-  CARD_RAIL_TEST_SUBSCRIPTIONS empty. The rollback is CARD_RAIL_KILL=`1` with
+  CARD_RAIL_TEST_SUBSCRIPTIONS empty; CARD_RAIL_LIVE_SUBSCRIPTIONS empty (live
+  cards for every eligible partner) or a comma-separated list of subscription
+  ids (live cards ONLY for them: the owner's 14 Nov 2026 ruling, his own
+  account first; everyone else sees no card and keeps today's fee). pilot-up
+  prints the card posture and the list's name and count, never an id
+  (`cards: ON (...). CARD_RAIL_LIVE_SUBSCRIPTIONS names 1 subscription(s) ...`).
+  The rollback is CARD_RAIL_KILL=`1` with
   CARD_RAIL_V2=`1` left on (open card payments are still confirmed), applied
   with `docker compose --project-directory deploy -f deploy/docker-compose.yml
   up -d --no-deps --force-recreate api worker` (a `restart` does NOT re-read

@@ -61,7 +61,9 @@ export async function cardCheckoutEveryPlatformOn(db: Pick<PrismaClient, 'platfo
  *  one platform? The server's own switches first (weeklyFeeCardLive: v2 on, not killed, the real provider, live cards),
  *  then this row, read fresh and only when they say yes (so while cards are off nothing is read). The public site's
  *  card claims follow it (GET /public/capabilities → cardPayments), so the website never lists Visa and Mastercard
- *  before a partner can use them, and stops within its own short cache after the kill switch. */
+ *  before a partner can use them, and stops within its own short cache after the kill switch. [CARDS-GO] While live
+ *  cards serve only the listed subscriptions (CARD_RAIL_LIVE_SUBSCRIPTIONS), weeklyFeeCardLive is false: the site
+ *  keeps "coming soon". */
 export async function cardPaymentsOffered(db: Pick<PrismaClient, 'platformConfig'>, env: Record<string, string | undefined> = process.env): Promise<boolean> {
   if (!weeklyFeeCardLive(env)) return false;
   const row = await db.platformConfig.findUnique({ where: { key: CARD_CHECKOUT_PLATFORMS_KEY }, select: { value: true } });

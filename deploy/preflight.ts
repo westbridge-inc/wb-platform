@@ -47,6 +47,7 @@ import { assertSafeBootConfig } from '../apps/api/src/utils/boot-config';
 import { SECRET_FILE_NAMES, applySecretFiles, assembleDatabaseUrl } from '../apps/api/src/utils/secret-files';
 import { bucketVersioningStatus, kekEscrowStatus, parseBucketVersioning } from '../apps/api/src/modules/ops/document-durability';
 import { darkFeatureMisconfigurations, darkFeatureStatus } from '../apps/api/src/modules/ops/dark-features';
+import { cardLiveSubscriptionCount, cardLiveSubscriptionsLimited, cardLiveSubscriptionsWellFormed } from '../apps/api/src/utils/card-rail';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 let envPath = path.join(HERE, '.env');
@@ -119,6 +120,8 @@ const STUBS: Record<string, string> = {
   CARD_RAIL_KILL: '1',
   // [CARDS-SWITCH-ON] The cards-off posture (the kill switch on, v2 off) and no ads: stubs only.
   CARD_RAIL_V2: '0', CARD_RAIL_V2_DRAIN: '0', CARD_RAIL_ENROLL: '0', ADS_ENABLED: '0',
+  // [CARDS-GO] An empty live list (every eligible partner): a stub only, to see past a malformed one.
+  CARD_RAIL_LIVE_SUBSCRIPTIONS: '',
   PAYMENT_GATEWAY_KEY: 'STUB-NOT-A-REAL-KEY',
   PAYMENT_GATEWAY_SECRET: 'STUB-NOT-A-REAL-KEY',
   POWERTRANZ_API_URL: 'https://stub.invalid/powertranz',
@@ -260,6 +263,28 @@ if (fileEnv['MALWARE_SCAN_BYPASS'] === '1') {
   console.log(`  ✗ MALWARE_SCAN=${fileEnv['MALWARE_SCAN']}: uploads are stored unscanned (production refuses this).`);
 } else {
   console.log('  ✓ every upload is scanned by the private clamd service before it is stored');
+}
+console.log('');
+
+// ── CARDS [CARDS-GO · owner 14 Nov 2026] ─────────────────────────────────
+// Who real cards serve. While CARD_RAIL_LIVE_SUBSCRIPTIONS is set, ONLY the
+// subscriptions it lists (the owner's own account first); empty, every eligible
+// partner. The name and a count only, never an id. A malformed list is the boot
+// guard's refusal (above).
+console.log('CARDS');
+console.log('─'.repeat(72));
+{
+  const kill = fileEnv['CARD_RAIL_KILL'];
+  const v2 = fileEnv['CARD_RAIL_V2'] === '1';
+  const posture = kill === '0' ? 'ON (CARD_RAIL_KILL=0)' : kill === '1' && v2 ? 'PAUSED (CARD_RAIL_KILL=1, CARD_RAIL_V2=1)' : 'OFF';
+  console.log(`  cards: ${posture}`);
+  if (!cardLiveSubscriptionsLimited(fileEnv)) {
+    console.log('  CARD_RAIL_LIVE_SUBSCRIPTIONS is empty: live cards open for every eligible partner');
+  } else if (!cardLiveSubscriptionsWellFormed(fileEnv)) {
+    console.log('  ✗ CARD_RAIL_LIVE_SUBSCRIPTIONS is set but malformed: the server refuses to start (see PROBLEMS)');
+  } else {
+    console.log(`  CARD_RAIL_LIVE_SUBSCRIPTIONS names ${cardLiveSubscriptionCount(fileEnv)} subscription(s): live cards open ONLY for them; every other partner sees no card and keeps today's fee`);
+  }
 }
 console.log('');
 

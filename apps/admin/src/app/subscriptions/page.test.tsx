@@ -642,3 +642,16 @@ describe('[owner 5 Nov] recording a fee paid in person', () => {
     expect(bodyOf(posts)).toEqual({ method: 'BANK_TRANSFER', amount: 5000, reference: 'FT-77120', seenInBank: true });
   });
 });
+
+// [CARDS-GO · owner 14 Nov 2026] Live cards serve only the subscriptions CARD_RAIL_LIVE_SUBSCRIPTIONS lists (the owner's
+// own account first). The owner reads his subscription's id here, in the console, so nobody selects it from the live
+// database (owner 13 Nov: live-database reads are counts only).
+describe('[CARDS-GO] each row shows its subscription id', () => {
+  it('the id the live card list names is on the row, beside the holder', async () => {
+    mockApi(handler(() => ({ body: { success: true, data: {} } })));
+    renderWithQuery(<SubscriptionsPage />);
+    const holder = await screen.findByText('Shanta Kitchen');
+    const cell = holder.closest('td')!;
+    expect(cell.textContent).toContain('Subscription sub-1');
+  });
+});

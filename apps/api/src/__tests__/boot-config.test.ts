@@ -1572,6 +1572,29 @@ describe('[CARDS-SWITCH-ON] production card and ad switches: cards off by defaul
     expect(() => assertSafeBootConfig({ NODE_ENV: 'development', CARD_RAIL_V2: '1', CARD_RAIL_PROVIDER: 'simulator', CARD_RAIL_TEST_SUBSCRIPTIONS: 'sub_1' })).not.toThrow();
   });
 
+  // [CARDS-GO · owner 14 Nov 2026] "Connect tonight, ONLY the owner's own account sees cards": the live list limits real
+  // cards to the subscriptions it names. Production boots with it empty (everyone eligible) or well formed (only them),
+  // cards off, on or paused; a malformed list, which would serve nobody, is refused rather than read as anything.
+  it('[CARDS-GO] production boots cards on with the live list limiting real cards to the owner\'s own subscription', () => {
+    for (const [label, base] of [['cards off', good], ['cards on', { ...good, ...cardsOn }], ['cards paused', { ...good, ...cardsPaused }]] as const) {
+      for (const value of [undefined, '', 'cmownersub0000000000000001', ' cmownersub0000000000000001 ', 'sub_1,sub-2', 'sub_1 , sub_2']) {
+        expect(refusal({ ...base, CARD_RAIL_LIVE_SUBSCRIPTIONS: value }), `${label} ${JSON.stringify(value)}`).toBe('');
+      }
+    }
+  });
+
+  it('[CARDS-GO] production refuses a malformed live list (an empty entry or not a subscription id), cards off, on or paused, naming the setting and never the value', () => {
+    for (const [label, base] of [['cards off', good], ['cards on', { ...good, ...cardsOn }], ['cards paused', { ...good, ...cardsPaused }]] as const) {
+      for (const value of [' ', ',', 'sub_1,', ',sub_1', 'sub_1,,sub_2', 'sub 1', 'sub_1;sub_2', 'sub_1/x', 'x'.repeat(65)]) {
+        const message = refusal({ ...base, CARD_RAIL_LIVE_SUBSCRIPTIONS: value });
+        expect(message, `${label} ${JSON.stringify(value)}`).toMatch(/^FATAL: CARD_RAIL_LIVE_SUBSCRIPTIONS must be empty \(live cards for every eligible partner\) or a comma-separated list of subscription ids/);
+        if (value.trim().length > 1) expect(message).not.toContain(value.trim());
+      }
+    }
+    // Off production the list is not a boot refusal (live cards run only in production).
+    expect(() => assertSafeBootConfig({ NODE_ENV: 'development', CARD_RAIL_LIVE_SUBSCRIPTIONS: ',' })).not.toThrow();
+  });
+
   // [Reviews #2465-A F1 / B-B4] pilot-up.sh runs THIS guard in the new image before the swap
   // (node dist/boot/boot-guard.js, as api and as worker): the entry prints the server's own refusal and exits 1, or
   // prints one OK line and exits 0. Run here as pilot-up runs it, as its own process with only the given settings.
@@ -1598,6 +1621,7 @@ describe('[CARDS-SWITCH-ON] production card and ad switches: cards off by defaul
         ['no account label', { ...good, ...cardsOn, CARD_RAIL_ACCOUNT: undefined }, /CARD_RAIL_ACCOUNT/],
         ['a malformed provider address', { ...good, ...cardsOn, POWERTRANZ_API_URL: 'gateway.ptranz.com/api/spi' }, /POWERTRANZ_API_URL/],
         ['a test-subscription list', { ...good, CARD_RAIL_TEST_SUBSCRIPTIONS: 'sub_1' }, /CARD_RAIL_TEST_SUBSCRIPTIONS/],
+        ['[CARDS-GO] a malformed live list', { ...good, ...cardsOn, CARD_RAIL_LIVE_SUBSCRIPTIONS: 'sub_1,,sub_2' }, /CARD_RAIL_LIVE_SUBSCRIPTIONS/],
         ['saved cards', { ...good, ...cardsOn, CARD_RAIL_ENROLL: '1' }, /CARD_RAIL_ENROLL/],
         ['a non-card refusal (no on-call list)', { ...good, OPS_ONCALL_PHONES: undefined }, /OPS_ONCALL_PHONES/],
         ['a store secret that cannot be read', { ...good, ...cardsOn, POWERTRANZ_ID: undefined, POWERTRANZ_ID_FILE: '/nonexistent/POWERTRANZ_ID' }, /POWERTRANZ_ID_FILE/],
@@ -1627,6 +1651,22 @@ describe('[CARDS-SWITCH-ON] production card and ad switches: cards off by defaul
     expect(result.stdout).toContain('PAYMENT_PROVIDER must be exactly disabled');
     expect(result.stdout).toContain('CARD_RAIL_ENROLL must be unset or 0');
     expect(result.stdout).toContain('ADS_ENABLED must be unset or 0');
+  });
+
+  it('[CARDS-GO] the preflight says who live cards serve: the setting\'s name and a count, never an id', () => {
+    const owner = 'cmownersub0000000000000001';
+    const only = runPreflight({ ...good, ...cardsOn, CARD_RAIL_LIVE_SUBSCRIPTIONS: owner });
+    expect(only.status, only.stdout + only.stderr).toBe(0);
+    expect(only.stdout).toContain('cards: ON (CARD_RAIL_KILL=0)');
+    expect(only.stdout).toContain('CARD_RAIL_LIVE_SUBSCRIPTIONS names 1 subscription(s): live cards open ONLY for them; every other partner sees no card and keeps today\'s fee');
+    expect(only.stdout + only.stderr).not.toContain(owner);
+    const everyone = runPreflight({ ...good, ...cardsOn });
+    expect(everyone.stdout).toContain('CARD_RAIL_LIVE_SUBSCRIPTIONS is empty: live cards open for every eligible partner');
+    const malformed = runPreflight({ ...good, ...cardsOn, CARD_RAIL_LIVE_SUBSCRIPTIONS: `${owner},,` });
+    expect(malformed.status).toBe(1);
+    expect(malformed.stdout).toContain('CARD_RAIL_LIVE_SUBSCRIPTIONS must be empty');
+    expect(malformed.stdout).toContain('CARD_RAIL_LIVE_SUBSCRIPTIONS is set but malformed');
+    expect(malformed.stdout + malformed.stderr).not.toContain(owner);
   });
 });
 

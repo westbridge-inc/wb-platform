@@ -1,6 +1,6 @@
 import type { PrismaClient, Subscription, SubscriptionStatus } from '@prisma/client';
 import { log } from '../../utils/logger';
-import { cardEnrollEnabled, cardRailKilled, cardRailV2Enabled, cardSimulatorLiveEnabled, cardTestSubscriptions } from '../../utils/card-rail';
+import { cardEnrollEnabled, cardLiveSubscriptionAllowed, cardRailKilled, cardRailV2Enabled, cardSimulatorLiveEnabled, cardTestSubscriptions } from '../../utils/card-rail';
 import { OPERABLE_STATUSES } from '../subscription/operate-gate';
 import { subscriptionPayer } from '../subscription/mover-fee-authority';
 import { weeklyFeeAmount } from './subscription-fee';
@@ -82,7 +82,7 @@ export async function cardCheckoutPlatforms(prisma: Pick<PrismaClient, 'platform
 
 export type CardSessionsDecision =
   | { allowed: true; provider: CardRailProvider }
-  | { allowed: false; reason: 'FLAG_OFF' | 'KILLED' | 'NO_PROVIDER' | 'NOT_TEST_SUBSCRIPTION' | 'PLATFORM_OFF' | 'NOT_PAYABLE' | 'NOT_PRODUCTION_PAYER' };
+  | { allowed: false; reason: 'FLAG_OFF' | 'KILLED' | 'NO_PROVIDER' | 'NOT_TEST_SUBSCRIPTION' | 'NOT_LIVE_SUBSCRIPTION' | 'PLATFORM_OFF' | 'NOT_PAYABLE' | 'NOT_PRODUCTION_PAYER' };
 
 type PayableSub = Pick<Subscription, 'id' | 'status' | 'feeWaived' | 'weeklyRate' | 'customRate'>;
 
@@ -95,6 +95,9 @@ type PayableSub = Pick<Subscription, 'id' | 'status' | 'feeWaived' | 'weeklyRate
  * [Reviews S2 / S2-1] A TEST card system — the simulator or a provider's
  * sandbox: no real money, yet an approval books a week — serves only the TEST
  * subscriptions listed in CARD_RAIL_TEST_SUBSCRIPTIONS.
+ * [CARDS-GO · owner 14 Nov 2026] REAL cards, while CARD_RAIL_LIVE_SUBSCRIPTIONS
+ * is set, serve only the subscriptions it lists (utils/card-rail.ts
+ * cardLiveSubscriptionsLimited): every other partner gets today's no-card answer.
  */
 export async function cardSessionsAllowed(
   prisma: PrismaClient,
@@ -112,6 +115,7 @@ export async function cardSessionsAllowed(
     return { allowed: false, reason: 'NO_PROVIDER' };
   }
   if ((provider.simulator || provider.binding.environment !== 'live') && !cardTestSubscriptions().has(sub.id)) return { allowed: false, reason: 'NOT_TEST_SUBSCRIPTION' };
+  if (!provider.simulator && provider.binding.environment === 'live' && !cardLiveSubscriptionAllowed(sub.id)) return { allowed: false, reason: 'NOT_LIVE_SUBSCRIPTION' };
   const switches = await cardCheckoutPlatforms(prisma);
   const platformOn = platform === 'unknown' ? switches.ios && switches.android && switches.web : switches[platform];
   if (!platformOn) return { allowed: false, reason: 'PLATFORM_OFF' };

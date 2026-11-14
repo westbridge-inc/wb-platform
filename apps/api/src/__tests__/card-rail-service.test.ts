@@ -620,6 +620,48 @@ describe('[C7] the kill switch and the flag stop NEW sessions only', () => {
   });
 });
 
+// [CARDS-GO · owner ruling 14 Nov 2026] The door refuses first (card-rail-routes.test.ts); the service holds the same
+// rule before anything is reserved or sent, so no other path opens a real-card page for a subscription the live list
+// (CARD_RAIL_LIVE_SUBSCRIPTIONS) does not name.
+describe('[CARDS-GO] startSession on REAL cards opens a page only for a subscription the live list names', () => {
+  /** A provider that takes REAL cards (never the simulator); every page it is asked for is counted. The simulator's
+   *  own page refuses a live binding, so reaching it (a 502 here) is what "it opens" means. */
+  const asked: string[] = [];
+  const live = (): CardRailProvider => ({
+    binding: { ...sim.binding, environment: 'live' },
+    simulator: false,
+    savesCards: false,
+    createSession: async (i) => { asked.push(i.sessionRef); throw new Error('the live provider was asked for a page'); },
+    parseReturn: (params) => sim.parseReturn(params),
+    confirm: (i) => sim.confirm(i),
+    chargeInstrument: (i) => sim.chargeInstrument(i),
+    retrieve: (i) => sim.retrieve(i),
+    refund: (i) => sim.refund(i),
+  } as CardRailProvider);
+  afterEach(() => { delete process.env['CARD_RAIL_LIVE_SUBSCRIPTIONS']; asked.length = 0; });
+
+  it('not listed: 409 PAY_ACTION_OFF before the provider is asked, no session row; listed, or the list empty: the provider is asked', async () => {
+    const owner = await partner();
+    const other = await partner();
+    const svc = cardWith(live());
+    process.env['CARD_RAIL_LIVE_SUBSCRIPTIONS'] = owner.subId;
+    await expect(svc.startSession({ userId: other.userId, subscriptionId: other.subId, purpose: 'PAY_NOW' })).rejects.toMatchObject({ statusCode: 409, code: 'PAY_ACTION_OFF' });
+    expect(asked).toEqual([]);
+    expect(await app.prisma.cardSession.count({ where: { subscriptionId: other.subId } })).toBe(0);
+    await expect(svc.startSession({ userId: owner.userId, subscriptionId: owner.subId, purpose: 'PAY_NOW' })).rejects.toMatchObject({ statusCode: 502, code: 'CARD_SESSION_UNAVAILABLE' });
+    expect(asked).toHaveLength(1);
+    process.env['CARD_RAIL_LIVE_SUBSCRIPTIONS'] = '';
+    await expect(svc.startSession({ userId: other.userId, subscriptionId: other.subId, purpose: 'PAY_NOW' })).rejects.toMatchObject({ statusCode: 502, code: 'CARD_SESSION_UNAVAILABLE' });
+    expect(asked).toHaveLength(2);
+  });
+
+  it('a test card system keeps its own list: the live list never applies to the simulator', async () => {
+    const p = await partner();
+    process.env['CARD_RAIL_LIVE_SUBSCRIPTIONS'] = 'cmownersub0000000000000001';
+    expect((await start(p, 'PAY_NOW')).sessionId).toBeTruthy();
+  });
+});
+
 describe('[C2] a session belongs to the provider setup that opened it', () => {
   it('confirmed under another account, it is asked of nobody and grants nothing; admins are paged', async () => {
     const p = await partner();

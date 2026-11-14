@@ -51,6 +51,12 @@ import { cardCheckoutEveryPlatformOn } from './card-checkout-switch';
 // With it live, a partner can pay now by card on whatever app they use, so
 // nobody is paused, MMG on or off. With the card off on any platform the
 // pause is decided by MMG alone (paying by card still works where it is on).
+//   - [CARDS-GO · owner 14 Nov 2026] And never while live cards serve only the
+//     subscriptions listed in CARD_RAIL_LIVE_SUBSCRIPTIONS (the owner's own
+//     account first, everyone after PowerTranz's go-live): weeklyFeeCardLive is
+//     false then, so every partner who is not listed keeps exactly today's fee,
+//     paused or not by MMG alone — never billed, failed or dunned toward a card
+//     button they cannot see. One answer for the server, as always.
 //
 // This switch rule is one part of the persisted hold predicate in mmg-pause.
 // Billing and both operate gates also wait for clock repair after switches return.

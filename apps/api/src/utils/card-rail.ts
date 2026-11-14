@@ -49,7 +49,53 @@ export function cardRailV2Enabled(env: Record<string, string | undefined> = proc
 export function weeklyFeeCardLive(env: Record<string, string | undefined> = process.env): boolean {
   const provider = env['CARD_RAIL_PROVIDER'] ?? '';
   return cardRailV2Enabled(env) && !cardRailKilled(env) && provider !== 'simulator' && cardRailProviderNames().includes(provider)
-    && env['CARD_RAIL_ENVIRONMENT'] === 'live';
+    && env['CARD_RAIL_ENVIRONMENT'] === 'live'
+    // [CARDS-GO · owner 14 Nov 2026] While live cards serve only the listed subscriptions, they are no way to pay for
+    // every OTHER partner: the fee pause stays decided by MMG alone and the public site lists no card.
+    && !cardLiveSubscriptionsLimited(env);
+}
+
+/** [CARDS-GO · owner ruling 14 Nov 2026, 00:31Z: "connect tonight, ONLY the owner's own account sees cards; everyone
+ * else after PowerTranz's go-live approval"] CARD_RAIL_LIVE_SUBSCRIPTIONS, a comma-separated list of subscription
+ * ids. While it is set (anything but unset or empty), REAL cards serve ONLY the listed subscriptions:
+ *   - the card door (card-pay-action.ts cardSessionsAllowed) and the session it opens (card-rail.service.ts
+ *     startSession) refuse every other subscription on the server, so its Pay screen shows no card button and a
+ *     card request it sends anyway is refused (409 PAY_ACTION_OFF) before any page or row;
+ *   - live cards are no way to pay for the fee pause (weeklyFeeCardLive, above): every partner who is not listed
+ *     keeps exactly today's no-card fee, paused or not by MMG alone, never billed toward a card they cannot see;
+ *   - the public site keeps cards "coming soon" (GET /public/capabilities → cardPayments).
+ * Unset or empty: every eligible partner (the later go-live). It keys on the SUBSCRIPTION, as the door and the test
+ * list (CARD_RAIL_TEST_SUBSCRIPTIONS) do: the weekly fee, the card session, its booking and its refund all belong
+ * to one subscription, and the door checks who may pay it (its payer) by itself. It never stops what is already
+ * open: a card payment opened while listed is still confirmed, booked once and refundable after the list changes.
+ * A value that is set but names no valid id fails CLOSED (nobody); production also refuses it at boot
+ * (assertProductionCardSwitches). Test card systems keep their own list. */
+export function cardLiveSubscriptionsLimited(env: Record<string, string | undefined> = process.env): boolean {
+  const raw = env['CARD_RAIL_LIVE_SUBSCRIPTIONS'];
+  return raw !== undefined && raw !== '';
+}
+
+const SUBSCRIPTION_ID_SHAPE = /^[A-Za-z0-9_-]{1,64}$/;
+const liveSubscriptionEntries = (raw: string): string[] => raw.split(',').map((s) => s.trim());
+
+/** [CARDS-GO] May REAL cards serve this subscription? Yes unless the live list is set and does not name it. */
+export function cardLiveSubscriptionAllowed(subscriptionId: string, env: Record<string, string | undefined> = process.env): boolean {
+  if (!cardLiveSubscriptionsLimited(env)) return true;
+  return liveSubscriptionEntries(env['CARD_RAIL_LIVE_SUBSCRIPTIONS']!).some((id) => SUBSCRIPTION_ID_SHAPE.test(id) && id === subscriptionId);
+}
+
+/** [CARDS-GO] How many subscriptions the live list names (0 when unset or empty), for the deploy's output; the ids
+ *  themselves are never printed. */
+export function cardLiveSubscriptionCount(env: Record<string, string | undefined> = process.env): number {
+  if (!cardLiveSubscriptionsLimited(env)) return 0;
+  return new Set(liveSubscriptionEntries(env['CARD_RAIL_LIVE_SUBSCRIPTIONS']!).filter((id) => SUBSCRIPTION_ID_SHAPE.test(id))).size;
+}
+
+/** [CARDS-GO] A set live list is well formed: one or more subscription ids, comma-separated, spaces allowed around
+ *  each, no empty entry. */
+export function cardLiveSubscriptionsWellFormed(env: Record<string, string | undefined> = process.env): boolean {
+  if (!cardLiveSubscriptionsLimited(env)) return true;
+  return liveSubscriptionEntries(env['CARD_RAIL_LIVE_SUBSCRIPTIONS']!).every((id) => SUBSCRIPTION_ID_SHAPE.test(id));
 }
 
 /** [PT-1 · AX297 F5] With CARD_RAIL_V2 off, drain what v2 left in flight:
@@ -125,8 +171,11 @@ const switchSet = (value: string | undefined): boolean => value !== undefined &&
  * card charges), the drain switch (CARD_RAIL_V2_DRAIN: the rollback keeps v2
  * on instead) and [review #2465-A F2] a test-subscription list
  * (CARD_RAIL_TEST_SUBSCRIPTIONS: it only ever names what a TEST card system may
- * serve). Changing any of this is a reviewed code change, never a deploy/.env
- * edit. Each refusal names its setting, never a value. */
+ * serve). [CARDS-GO · owner 14 Nov 2026] The live list
+ * (CARD_RAIL_LIVE_SUBSCRIPTIONS, cardLiveSubscriptionsLimited) is allowed in
+ * every posture, empty or well formed; a malformed one is refused. Changing any
+ * of this is a reviewed code change, never a deploy/.env edit. Each refusal
+ * names its setting, never a value. */
 export function assertProductionCardSwitches(env: Record<string, string | undefined>): void {
   if (env['PAYMENT_PROVIDER'] !== 'disabled') {
     throw new Error('FATAL: PAYMENT_PROVIDER must be exactly disabled in production — the legacy card seam (a stored card token Swift charges itself) stays off; production takes cards only as Pay now on the provider\'s hosted page (card rail v2, on the owner\'s go-cards ruling: OWNER-DECISIONS, dated at the go). Turning the legacy seam on is a reviewed code change, not a setting. Refusing to start.');
@@ -139,6 +188,11 @@ export function assertProductionCardSwitches(env: Record<string, string | undefi
   }
   if (env['CARD_RAIL_TEST_SUBSCRIPTIONS'] !== undefined && env['CARD_RAIL_TEST_SUBSCRIPTIONS'] !== '') {
     throw new Error('FATAL: CARD_RAIL_TEST_SUBSCRIPTIONS must be empty in production — it names the only subscriptions a TEST card system may serve, and production runs none; a listed id would let a test record be booked or refunded as a test. Remove the value. Refusing to start.');
+  }
+  // [CARDS-GO · owner 14 Nov 2026] The live list limits real cards to the subscriptions it names. A list that is set
+  // but malformed would serve nobody (it fails closed), and a typo must never read as "empty" (everyone): refuse it.
+  if (!cardLiveSubscriptionsWellFormed(env)) {
+    throw new Error('FATAL: CARD_RAIL_LIVE_SUBSCRIPTIONS must be empty (live cards for every eligible partner) or a comma-separated list of subscription ids (live cards ONLY for them: the owner\'s go-cards ruling of 14 Nov 2026, his own account first) — one of its entries is empty or not a subscription id. Correct the list. Refusing to start.');
   }
   // The switch is OFF exactly at '1', everywhere (cardRailKilled; the dark-features census). Production also
   // refuses every near miss of ON: only exactly '0' turns cards on here (the one '0' comparison the census allows).

@@ -78,6 +78,20 @@ describe('[CARDS-SWITCH-ON] GET /public/capabilities → cardPayments follows th
     }
   });
 
+  // [CARDS-GO · owner 14 Nov 2026] While live cards serve only the listed subscriptions (the owner's own account
+  // first), no other partner can pay by card: the site keeps cards "coming soon" until the list is emptied.
+  it('[CARDS-GO] cards on, every platform open, the live list set: soon, nothing read; the list emptied: live', async () => {
+    row = { value: { ios: true, android: true, web: true } };
+    for (const list of ['cmownersub0000000000000001', 'a,b', ',']) {
+      findUnique.mockClear();
+      vi.unstubAllEnvs();
+      expect(await cardPayments({ ...CARDS_ON, CARD_RAIL_LIVE_SUBSCRIPTIONS: list }), list).toBe('soon');
+      expect(findUnique, list).not.toHaveBeenCalled();
+    }
+    vi.unstubAllEnvs();
+    expect(await cardPayments({ ...CARDS_ON, CARD_RAIL_LIVE_SUBSCRIPTIONS: '' })).toBe('live');
+  });
+
   it('the switch row cannot be read: soon, and the capabilities still answer', async () => {
     readFails = true;
     expect(await cardPayments(CARDS_ON)).toBe('soon');

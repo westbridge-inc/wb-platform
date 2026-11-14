@@ -4,7 +4,7 @@ import { lockFeeCollectionAuthority, lockSubscriptionPayer, subscriptionPayer } 
 import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
 import type { CardObservationSource, CardObservationVerdict, CardObservedStatus, CardSession, CardSessionStatus, Prisma, PrismaClient } from '@prisma/client';
 import { AppError, NotFoundError } from '../../utils/errors';
-import { cardRailKilled, cardRailV2Enabled, cardTestSubscriptions } from '../../utils/card-rail';
+import { cardLiveSubscriptionAllowed, cardRailKilled, cardRailV2Enabled, cardTestSubscriptions } from '../../utils/card-rail';
 import { toProviderMinor } from '../../utils/currency-amount';
 import { log } from '../../utils/logger';
 import { getTenantContext } from '../../plugins/tenant-context';
@@ -332,6 +332,12 @@ export class CardRailService {
     }
 
     const provider = this.rail();
+    // [CARDS-GO · owner 14 Nov 2026] While CARD_RAIL_LIVE_SUBSCRIPTIONS is set, REAL cards open a page only for the
+    // subscriptions it lists. The door (card-pay-action.ts cardSessionsAllowed) refuses first; this holds the same
+    // rule here, before anything is reserved or sent to the provider, so no other path can open one.
+    if (!provider.simulator && provider.binding.environment === 'live' && !cardLiveSubscriptionAllowed(sub.id)) {
+      throw new AppError(409, 'PAY_ACTION_OFF', 'Paying by card is not available for this account here.');
+    }
     const state = randomBytes(32).toString('base64url');
     const expiresAt = new Date(now.getTime() + CARD_SESSION_TTL_MS);
     let session: CardSession;

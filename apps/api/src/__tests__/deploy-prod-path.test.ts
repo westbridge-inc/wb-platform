@@ -559,6 +559,49 @@ describe('[PROD-PATH] pilot-up.sh: a real production target', () => {
     expect(runPilot({ ...STAGING, CARD_RAIL_TEST_SUBSCRIPTIONS: 'sub_1' }).status).toBe(0);
   });
 
+  // [CARDS-GO · owner ruling 14 Nov 2026] The live list: while set, real cards open ONLY for the subscriptions it names
+  // (the owner's own account first); empty, every eligible partner. pilot-up refuses a malformed list before anything
+  // changes, and says who live cards serve: the setting's name and a count, never an id.
+  it('[CARDS-GO] production deploys cards on with a live list, saying who live cards serve by name and count only', () => {
+    const owner = 'cmownersub0000000000000001';
+    for (const [list, says] of [
+      [owner, 'cards: ON (CARD_RAIL_KILL=0, CARD_RAIL_V2=1). CARD_RAIL_LIVE_SUBSCRIPTIONS names 1 subscription(s): live cards open ONLY for them; every other partner sees no card and keeps today\'s fee'],
+      [` ${owner} , ${owner},sub_2`, 'CARD_RAIL_LIVE_SUBSCRIPTIONS names 2 subscription(s)'],
+      ['', 'cards: ON (CARD_RAIL_KILL=0, CARD_RAIL_V2=1). CARD_RAIL_LIVE_SUBSCRIPTIONS is empty: live cards open for every eligible partner'],
+    ] as const) {
+      writeFileSync(log, '');
+      const r = runPilot({ ...PRODUCTION, ...CARDS_ON, CARD_RAIL_LIVE_SUBSCRIPTIONS: list }, { env: { STORE_NAMES: CARD_STORE } });
+      expect(r.status, `${JSON.stringify(list)}: ${r.stderr}`).toBe(0);
+      expect(r.stdout).toContain(says);
+      expect(r.stdout + r.stderr).not.toContain(owner);
+    }
+    writeFileSync(log, '');
+    const off = runPilot(PRODUCTION);
+    expect(off.status, off.stderr).toBe(0);
+    expect(off.stdout).toContain('cards: OFF (CARD_RAIL_KILL=1). CARD_RAIL_LIVE_SUBSCRIPTIONS is empty');
+    writeFileSync(log, '');
+    const paused = runPilot({ ...PRODUCTION, ...CARDS_ON, CARD_RAIL_KILL: '1', CARD_RAIL_LIVE_SUBSCRIPTIONS: owner }, { env: { STORE_NAMES: CARD_STORE } });
+    expect(paused.status, paused.stderr).toBe(0);
+    expect(paused.stdout).toContain('cards: PAUSED (CARD_RAIL_KILL=1, CARD_RAIL_V2=1): no new card payment starts. CARD_RAIL_LIVE_SUBSCRIPTIONS names 1 subscription(s)');
+  });
+
+  it('[CARDS-GO] production refuses a malformed live list, cards off or on, in every mode, before anything changes, never echoing it', () => {
+    for (const args of everyMode) {
+      for (const base of [{}, CARDS_ON]) {
+        for (const value of [',', 'sub_1,', ',sub_1', 'sub_1,,sub_2', 'sub 1', 'sub_1;sub_2', 'x'.repeat(65)]) {
+          writeFileSync(log, '');
+          const r = runPilot({ ...PRODUCTION, ...base, CARD_RAIL_LIVE_SUBSCRIPTIONS: value }, { args, env: { ...modeEnv(args), STORE_NAMES: CARD_STORE } });
+          expect(r.status, `${args.join(' ')} ${JSON.stringify(value)}`).not.toBe(0);
+          expect(r.stderr).toContain('PILOT_ENV=production refuses CARD_RAIL_LIVE_SUBSCRIPTIONS: it must be empty (live cards for every eligible partner) or a comma-separated list of subscription ids');
+          expect(changedNothing(r.calls)).toEqual([]);
+        }
+      }
+    }
+    // Staging is not asked (its cards are a test system with its own list).
+    writeFileSync(log, '');
+    expect(runPilot({ ...STAGING, CARD_RAIL_LIVE_SUBSCRIPTIONS: ',' }).status).toBe(0);
+  }, 240_000);
+
   // [Reviews #2465-A F1 / B-B4] pilot-up's shell checks are a first pass; THE rule is the API's own boot guard, run in
   // the image just built, as api and as worker, with Compose's own settings for each, before anything is started,
   // stopped or migrated. A refusal ends the deploy there, with the server's own message.
