@@ -9,7 +9,7 @@
     "/(app)/checkout/page": 159,
     "/login/page": 119,
     "/signup/page": 125,
-    "/dashboard/orders/page": 173,
+    "/dashboard/orders/page": 174,
     "/dashboard/inventory/page": 159,
     "/dashboard/inventory/import/page": 158,
     "/dashboard/insights/page": 150,
@@ -31,6 +31,7 @@
     "/(welcome)/page": 114
   },
   "raisedBecause": {
+    "/dashboard/orders/page": "[APP-PREPTIME #2511 ROUND 2 · owner 14 Nov] 173 -> 174 kB (CI measured 173.2): the owner ruled that Accept pre-selects the store's own declared prep time (or the closest of the six choices) on the website as on the app, so the new-order popup and the order window carry the one small closest-choice rule (lib/prep-time.ts) and keep a pick per order instead of one shared 20. No new dependency.",
     "/(welcome)/page": "[WEB-PHONES · owner 8 Nov] 113 -> 114 kB (local build: 113.0, the same as /launching-soon; CI on main measured 112.4 before): the real app screens are back on the welcome page, drawn by the server as plain sized images (no next/image, no client component). The only script they bring is the build's short record of each image file the page imports (its address and size, about 0.4 kB gzip for the eight screens), in the one page chunk the welcome page now shares with /launching-soon.",
     "/(app)/market/page": "[STORE-VAT-EXCLUSIVE #2508 · owner 13 Nov] 153 -> 154 kB (CI measured 153.1): a store pricing before VAT says so on every price, so the market card prints \"+ VAT\" from the server's per-item flag, and the shared customer client (every ordering page) sends the VAT_LINE_V1 capability on cart writes and checkout (the API refuses an older client a basket it cannot show). No new module or import.",
     "/(app)/order/browse/page": "[WEB-APPBAR · owner 7 Nov] 150 -> 151 kB (local build at a matched path: 149.8 -> 150.2): the app frame now carries the one small loader for \"Get the app\" (the phone bar's gate after load, on phones only, and the menus' store badges after load) and the menus' Welcome link; the bar, its badges and their switch all load after the page. The same change took the ordering Home (now /order) and the store page DOWN by 1.2-1.5 kB (the header no longer rides in every page that draws the footer), so their ceilings come down: Home 156 -> 155, store 168 -> 167.",
