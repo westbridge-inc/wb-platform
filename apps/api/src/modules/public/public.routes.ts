@@ -8,6 +8,7 @@ import { NotFoundError } from '../../utils/errors';
 import { ratingSurfaces } from '../rating/rating-surface';
 import { serveEmergencyPolicy } from '../country/emergency-policy';
 import { readAppVersionPolicy } from '../ops/app-version';
+import { readPublicHomeNotice } from '../ops/home-notice';
 import { emergencyPolicyCounter } from '../../plugins/observability';
 import { notProhibitedStore, PUBLIC_VENDOR_TENANT } from '../vendor/vendor-visibility';
 import { adsEnabled } from '../ads/ads-enabled';
@@ -142,6 +143,18 @@ export async function publicRoutes(app: FastifyInstance) {
   app.get('/app-version', async (_request, reply) => {
     reply.header('Cache-Control', 'no-store');
     return { success: true, data: await readAppVersionPolicy(app.prisma) };
+  });
+  /**
+   * [HOME-NOTICE · owner 13 Nov 2026] The notice at the top of the customer Home
+   * (ops/home-notice.ts), or `notice: null`. Unauthenticated: it shows to people
+   * who are signed out too. Cacheable for a minute, the same for everyone (it
+   * carries nothing personal), so a notice the owner stops is gone from every
+   * screen within about a minute of the next read.
+   */
+  app.get('/home-notice', async (_request, reply) => {
+    const notice = await readPublicHomeNotice(app.prisma);
+    reply.header('Cache-Control', 'public, max-age=60');
+    return { success: true, data: { notice } };
   });
   /** GET /storefronts — the public directory. */
   /**
