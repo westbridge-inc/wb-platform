@@ -112,7 +112,7 @@ export function KitchenOverflowPanel({ vendorId }: { vendorId: string }) {
           <ul className="space-y-1 text-sm">
             {setting!.maybeInKitchen!.map((m) => (
               <li key={m.orderId} className="flex items-center gap-2">
-                <span>{m.orderNumber} ({m.orderStatus})</span>
+                <span>{m.orderNumber}{m.fallbackAt ? `, on the tablet since ${gyDate(m.fallbackAt)}` : ''}</span>
                 <button type="button" className="mc-btn" disabled={clear.isPending} onClick={() => clear.mutate(m.orderId)}>Dragontail does not have it</button>
               </li>
             ))}
