@@ -165,11 +165,19 @@ export function reviewerTypedBody(docType: string, docId: string): Record<string
   return {};
 }
 
-/** The approve request's body: what the reviewer types, an expiry, and hire insurance for a taxi. */
+/** Vehicle classes with no motor (config/vehicle-classes.ts isMotorVehicle is false only for these). Pinned by
+ *  apps/api/src/__tests__/livetest-insurance-scope.unit.test.ts. */
+const NO_MOTOR = new Set(['BICYCLE']);
+
+/** The approve request's body: what the reviewer types, an expiry, and the reviewer's insurance check.
+ *  [R13 · #1774] EVERY motor vehicle's insurance must permit use for hire or reward, confirmed by the reviewer from
+ *  the policy's limitations as to use: a taxi's for passengers carried for hire, a delivery motorbike's or car's for
+ *  commercial use. Without the check the API refuses the approval (400 INSURANCE_SCOPE_INSUFFICIENT), so no fresh
+ *  motorbike rider ever got approved (load seed on the walled copy, 13 Nov: riders 0/390). Only a bicycle is exempt. */
 export function approvalBody(docId: string, docType: string, vehicleType?: string): Record<string, unknown> {
   const body: Record<string, unknown> = { ...reviewerTypedBody(docType, docId) };
   if (EXPIRING.has(docType)) body.expiresAt = inDays(300);
-  if (docType === 'vehicle_insurance' && vehicleType && ['CAR', 'WAGON_CAR', 'BUS_9', 'BUS_15'].includes(vehicleType)) {
+  if (docType === 'vehicle_insurance' && vehicleType && !NO_MOTOR.has(vehicleType)) {
     body.insurance = { insurerName: 'Synthetic Assurance', policyNumber: `SYN-${docId.slice(-8)}`, coverageClass: 'HIRE', hireClassConfirmed: true, plateCrossChecked: true };
   }
   return body;
