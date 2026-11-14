@@ -1,4 +1,4 @@
-import { screen } from '@testing-library/react';
+import { screen, waitFor } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 import { DeliveryOverflowCard } from './delivery-overflow-card';
 import { mockApi, renderWithQuery, type ApiRequest } from '@/test/test-utils';
@@ -26,7 +26,8 @@ describe('[DT-OVERFLOW] the branch card', () => {
     serve({ available: true, mode: 'BUSY_HOURS', busyHours: [{ day: 5, start: '22:00', end: '02:00' }], linkOffline: true });
     renderWithQuery(<DeliveryOverflowCard />);
     expect(await screen.findByText('Kitchen link offline, orders on tablet')).toBeTruthy();
-    expect(screen.getByRole('radio', { name: /During my busy hours/ })).toHaveProperty('checked', true);
+    // The saved setting fills the form once it has been read (an effect after the first draw).
+    await waitFor(() => expect(screen.getByRole('radio', { name: /During my busy hours/ })).toHaveProperty('checked', true));
     expect((screen.getByLabelText('Busy hours 1: from') as HTMLInputElement).value).toBe('22:00');
   });
 });
