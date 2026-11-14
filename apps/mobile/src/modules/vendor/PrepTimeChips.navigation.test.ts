@@ -12,12 +12,13 @@ import { createRoot } from 'react-dom/client';
 
 vi.mock('react-native', async () => {
   const { createElement: h } = await import('react');
-  const Box = (p: any) => h('div', { role: p.accessibilityRole, 'aria-label': p.accessibilityLabel }, p.children);
+  const Box = (p: any) => h('div', { role: p.accessibilityRole, 'aria-label': p.accessibilityLabel, 'data-style': JSON.stringify((Array.isArray(p.style) ? Object.assign({}, ...p.style) : p.style) ?? {}) }, p.children);
   const Press = (p: any) => h('button', {
     role: p.accessibilityRole,
     'aria-label': p.accessibilityLabel,
     'aria-checked': p.accessibilityState?.checked ? 'true' : 'false',
     'data-min-height': (Array.isArray(p.style) ? Object.assign({}, ...p.style) : p.style)?.minHeight,
+    'data-style': JSON.stringify((Array.isArray(p.style) ? Object.assign({}, ...p.style) : p.style) ?? {}),
     disabled: p.disabled,
     onClick: p.onPress,
   }, p.children);
@@ -71,6 +72,21 @@ describe('[APP-PREPTIME] the preparation time chips', () => {
   it('large tablet targets: every chip at least 56 tall', async () => {
     await render({ value: 20 });
     for (const b of chips()) expect(Number(b.getAttribute('data-min-height'))).toBeGreaterThanOrEqual(56);
+  });
+
+  it('[REVIEW-A S4-1 · REVIEW-B F1] one row of six on every width: never 4 + 2, and one row tall on a phone', async () => {
+    await render({ value: 20 });
+    const row = chips()[0]!.parentElement!;
+    const rowStyle = JSON.parse(row.getAttribute('data-style')!);
+    expect(rowStyle.flexDirection).toBe('row');
+    expect(rowStyle.flexWrap ?? 'nowrap').toBe('nowrap');
+    // Every chip takes an equal share of the row (no basis to wrap on), so six always sit side by side.
+    for (const b of chips()) {
+      const st = JSON.parse(b.getAttribute('data-style')!);
+      expect(st.flexGrow).toBe(1);
+      expect(st.flexBasis).toBe(0);
+      expect(st.minWidth ?? 0).toBe(0);
+    }
   });
 
   it('held while a tap is on its way', async () => {

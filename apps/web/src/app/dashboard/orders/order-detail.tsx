@@ -34,6 +34,7 @@ import { HANDOVER_WORDS, canMarkHandedToRider, handoverNeedsNoCode, pickupCheckW
 import { orderLineOptionsParts } from '../../../../../mobile/src/modules/vendor/orderLineOptions';
 import { handedToRider } from '@/lib/store-handover-api';
 import { RiderHandoverLine } from '@/components/rider-handover-line';
+import { PREP_TIME_CHOICES, storePrepChoice } from '@/lib/prep-time';
 
 const COURIER_ACTIVE = ['RIDER_ASSIGNED', 'RIDER_EN_ROUTE_PICKUP', 'RIDER_ARRIVED_PICKUP'];
 
@@ -369,7 +370,10 @@ export function OrderDetail({ id, onClose }: { id: string; onClose: () => void }
     // order; the order's own read replaces it the moment it answers (isPlaceholderData).
     placeholderData: () => boardOrder(queryClient.getQueryData(storeKey(storeId, 'orders')), id),
   });
-  const [prepTime, setPrepTime] = useState(20);
+  // [APP-PREPTIME ROUND 2 · owner 14 Nov 2026] The order starts at its store's own declared prep time (the order's,
+  // from checkout), or the closest choice, as on the app; staff can pick another.
+  const [prepPick, setPrepPick] = useState<{ id: string; minutes: number } | null>(null);
+  const prepTime = prepPick?.id === id ? prepPick.minutes : storePrepChoice(order.data?.estimatedPrepTime);
   const [pickupCode, setPickupCode] = useState('');
   // [W-25] The store's attestation carries the provider reference from its own
   // wallet message. Without one there is nothing to reconcile against later.
@@ -545,7 +549,9 @@ export function OrderDetail({ id, onClose }: { id: string; onClose: () => void }
   const riderName = o.rider?.user ? [o.rider.user.firstName, o.rider.user.lastName].filter(Boolean).join(' ') : '';
   const recovery = recoveryView(o.custodyRecovery);
   const timeline = [...(o.statusHistory ?? [])].reverse();
-  const prepLine = prepTimeLine(o);
+  // [REVIEW-B F3 on #2511] While Accept asks the time, the quoted line says the time the choice holds, never a second number.
+  const asksPrep = o.fulfillment !== 'APPOINTMENT' && actions.some((a) => a.kind === 'accept');
+  const prepLine = prepTimeLine(asksPrep ? { ...o, estimatedPrepTime: prepTime } : o);
   const fulfilmentWord = { DELIVERY: 'Delivery', PICKUP: 'Pickup', APPOINTMENT: 'Appointment' }[String(o.fulfillment ?? '')] ?? null;
   const riderAssigned = Boolean(o.riderId || o.rider);
   const isDelivery = o.fulfillment === 'DELIVERY';
@@ -883,11 +889,11 @@ export function OrderDetail({ id, onClose }: { id: string; onClose: () => void }
               {a.kind === 'accept' && o.fulfillment !== 'APPOINTMENT' && (
                 <select
                   value={prepTime}
-                  onChange={(e) => setPrepTime(Number(e.target.value))}
+                  onChange={(e) => setPrepPick({ id, minutes: Number(e.target.value) })}
                   aria-label="Preparation time"
                   className="rounded-lg border border-[var(--swift-border)] px-2 py-2 text-sm"
                 >
-                  {[10, 15, 20, 30, 45, 60].map((m) => <option key={m} value={m}>{readyTimeLabel(o.vendor?.vendorType ?? storeKind, m)}</option>)}
+                  {PREP_TIME_CHOICES.map((m) => <option key={m} value={m}>{readyTimeLabel(o.vendor?.vendorType ?? storeKind, m)}</option>)}
                 </select>
               )}
               {a.kind === 'complete-pickup' && (

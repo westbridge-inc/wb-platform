@@ -20,6 +20,9 @@ import { PrepTimeChips } from './PrepTimeChips';
 import { acceptPrepMinutes, asksPrepTime } from './prepTime';
 import { usePrepChoice } from './prepTimeMemory';
 
+/** [ROUND 2 · REVIEW-B F1] The least the items list keeps on a short screen: about one line of an item. */
+export const TAKEOVER_ITEMS_MIN_HEIGHT = 72;
+
 /**
  * The NEW-ORDER takeover (alerts spec §A1 + design-100× Part 5 moment 2):
  * impossible to sleep through while the app is open, decidable from across a
@@ -112,10 +115,11 @@ export function NewOrderTakeover({
   const expired = Number.isFinite(respondByMs) && respondByMs <= nowTs;
   useJobRing(!!orderId && !settled && !expired);
   const [canRing] = useState(hasJobRing);
-  // [APP-PREPTIME · owner 14 Nov 2026] The preparation time, as on the website's takeover: 20 pre-selected (or this
-  // store's last choice on this device), so ONE tap on Accept still accepts; a booking is never asked.
-  // (Remembered per store: the order's own store, known once the order is read; until then nothing is asked.)
-  const [prepMinutes, choosePrep] = usePrepChoice(orderId, o?.vendorId);
+  // [APP-PREPTIME · owner 14 Nov 2026] The preparation time, as on the website's takeover: [ROUND 2] the store's own
+  // declared time (the order's, stamped at checkout) or the closest choice is pre-selected (or a change staff made for
+  // this store on this device), so ONE tap on Accept still accepts; a booking is never asked.
+  // (Per store: the order's own store, known once the order is read; until then nothing is asked.)
+  const [prepMinutes, choosePrep] = usePrepChoice(orderId, o?.vendorId, o?.estimatedPrepTime);
 
   if (!current) return null;
   const remainSecs = clockActive ? Math.max(0, Math.ceil((respondByMs - nowTs) / 1000)) : 0;
@@ -207,8 +211,9 @@ export function NewOrderTakeover({
           </T>
         </View>
 
-        {/* Items — glanceable from across a kitchen. */}
-        <ScrollView style={{ flex: 1, marginTop: space.xl }} contentContainerStyle={{ gap: space.sm }}>
+        {/* Items — glanceable from across a kitchen. [ROUND 2 · REVIEW-B F1] They keep a height of their own (about
+            one line), so the decisions below can never squeeze them to nothing. */}
+        <ScrollView style={{ flex: 1, minHeight: TAKEOVER_ITEMS_MIN_HEIGHT, marginTop: space.xl }} contentContainerStyle={{ gap: space.sm }}>
           {items.map((i) => (
             <View key={i.id} style={{ flexDirection: 'row', alignItems: 'baseline', gap: space.md }}>
               <T variant="numM">{i.quantity}×</T>
@@ -260,6 +265,10 @@ export function NewOrderTakeover({
           ))}
         </ScrollView>
 
+        {/* [ROUND 2 · REVIEW-B F1] The money, the clock line and every decision scroll as one block when the screen is
+            short (a 667dp phone, a landscape tablet, the reject reasons open): it takes its own height while it fits
+            and scrolls when it does not, so Back and the reasons are always reachable. "View later" stays pinned. */}
+        <ScrollView testID="takeover-decide" style={{ flexGrow: 0, flexShrink: 1 }}>
         {/* [RING-FOOD · owner 11 Nov 2026] The store's money for the goods, never the customer's whole total (that
             carries the rider's delivery fee and tip). One plain line says whose the fee and tip are. */}
         {ring?.food != null ? (
@@ -299,7 +308,8 @@ export function NewOrderTakeover({
             </T>
           ) : (
           <>
-          {askPrep && !lastOut ? (
+          {/* [ROUND 2 · REVIEW-A S3-1 · REVIEW-B F1] Not while a reason to reject is asked: no time is quoted then. */}
+          {askPrep && !lastOut && !rejecting ? (
             <PrepTimeChips value={prepMinutes} onChange={choosePrep} vendorType={o?.vendor?.vendorType ?? storeKind} disabled={busy} />
           ) : null}
           <PillButton
@@ -341,7 +351,9 @@ export function NewOrderTakeover({
             {(act.error as any)?.response?.data?.error?.message ?? 'That didn’t work — try again.'}
           </T>
         ) : null}
+        </ScrollView>
         <T
+          testID="takeover-view-later"
           variant="caption"
           tone="muted"
           center

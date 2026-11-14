@@ -35,6 +35,7 @@ import { canAttestPayment } from '@/lib/vendor-hub';
 import { mmgDisputePaused } from '@/lib/mmg-dispute';
 import { storeKey, useStoreId } from '@/lib/store-scope';
 import { focusableIn } from '@/components/modal';
+import { PREP_TIME_CHOICES, storePrepChoice } from '@/lib/prep-time';
 
 /**
  * The NEW-ORDER takeover (alerts spec §A1, web dashboard flavor): the moment
@@ -86,7 +87,10 @@ export default function NewOrderTakeover({ orders, onOpenOrder }: { orders: Vend
   const storeKind = useStoreKind({ cachedOnly: true });
   const [seen, setSeen] = useState<Set<string> | null>(null); // null until first poll
   const [queue, setQueue] = useState<VendorOrder[]>([]);
-  const [prepTime, setPrepTime] = useState(20);
+  // [APP-PREPTIME ROUND 2 · owner 14 Nov 2026] The time staff picked, for the order it was picked on; every order
+  // starts at its store's own declared prep time (or the closest choice), as on the app.
+  const [prepPick, setPrepPick] = useState<{ id: string; minutes: number } | null>(null);
+  const prepFor = (o: VendorOrder | undefined) => (o && prepPick?.id === o.id ? prepPick.minutes : storePrepChoice(o?.estimatedPrepTime));
   // [E10 · UI-SWEEP U21] The API requires a reason on every rejection, and a
   // rejection cannot be undone. The phone asks in two steps ("Reject — tell us
   // why", then the reason); one stray tap here used to reject with a
@@ -207,7 +211,10 @@ export default function NewOrderTakeover({ orders, onOpenOrder }: { orders: Vend
     queryClient.invalidateQueries({ queryKey: storeKey(storeId, 'orders') });
   };
   const accept = useMutation({
-    mutationFn: (id: string) => acceptOrder(id, queue.find((o) => o.id === id)?.fulfillment === 'APPOINTMENT' ? undefined : prepTime),
+    mutationFn: (id: string) => {
+      const o = queue.find((q) => q.id === id);
+      return acceptOrder(id, o?.fulfillment === 'APPOINTMENT' ? undefined : prepFor(o));
+    },
     onSuccess: (_r, id) => done(id),
     onError: (e) => setError((e as Error).message),
   });
@@ -386,12 +393,12 @@ export default function NewOrderTakeover({ orders, onOpenOrder }: { orders: Vend
             <p role="status" className="w-full text-sm font-semibold text-[var(--swift-red)]">{OUT_OF_STOCK_WORDS.nothing}</p>
           ) : <>
           {!booking && <select
-            value={prepTime}
-            onChange={(e) => setPrepTime(Number(e.target.value))}
+            value={prepFor(current)}
+            onChange={(e) => setPrepPick({ id: current.id, minutes: Number(e.target.value) })}
             aria-label="Preparation time"
             className="min-h-11 w-full min-w-0 rounded-lg border border-black/10 px-2 py-3 text-sm min-[400px]:w-auto"
           >
-            {[10, 15, 20, 30, 45, 60].map((m) => (
+            {PREP_TIME_CHOICES.map((m) => (
               <option key={m} value={m}>{readyTimeLabel(current.vendor?.vendorType ?? storeKind, m)}</option>
             ))}
           </select>}

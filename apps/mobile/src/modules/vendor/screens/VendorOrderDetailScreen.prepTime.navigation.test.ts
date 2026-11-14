@@ -7,9 +7,12 @@ import { createRoot } from 'react-dom/client';
 // ---------------------------------------------------------------------------
 // [APP-PREPTIME · owner 14 Nov 2026] The store order screen's Accept (the one a
 // tablet reaches from the board) asks the preparation time like the website's
-// order page: 20 pre-selected, one more tap for another time, the minutes sent
-// with the Accept; a booking is never asked. The REAL VendorOrderDetailScreen
-// on a real React renderer (the harness of VendorOrderDetailScreen.reuse).
+// order page: [ROUND 2 · owner 14 Nov] the store's own declared prep time (or
+// the closest choice) pre-selected, one more tap for another time, the minutes
+// sent with the Accept; a booking is never asked. [REVIEW-B F3] While the
+// choices are asked, the "Quoted prep time" line says the chosen time, never a
+// second number. The REAL VendorOrderDetailScreen on a real React renderer
+// (the harness of VendorOrderDetailScreen.reuse).
 // ---------------------------------------------------------------------------
 
 const fx = vi.hoisted(() => ({
@@ -74,7 +77,7 @@ import { bindPrepTimeStorage } from '../prepTimeMemory';
 
 const order = (id: string, extra: Record<string, unknown>) => ({
   id, orderNumber: id.toUpperCase(), items: [], statusHistory: [], customer: { firstName: `Customer ${id}` },
-  vendor: { vendorType: 'RESTAURANT' }, paymentMethod: 'CASH', ...extra,
+  vendor: { vendorType: 'RESTAURANT' }, paymentMethod: 'CASH', estimatedPrepTime: 30, ...extra,
 });
 
 let host: HTMLDivElement;
@@ -103,13 +106,41 @@ afterEach(async () => {
 });
 
 describe('[APP-PREPTIME] the store order screen accepts with a preparation time', () => {
-  it('20 pre-selected: Accept sends 20', async () => {
+  it('the store\'s own time pre-selected: Accept sends 30', async () => {
     fx.orders = { a: order('a', { status: 'PENDING', fulfillment: 'DELIVERY', vendorId: 'store-a' }) };
     await show('a');
     expect(host.textContent).toContain('Preparation time');
-    expect(checked()).toEqual(['20 min']);
+    expect(checked()).toEqual(['30 min']);
     await click(button('Accept')!);
-    expect(fx.mutate).toHaveBeenCalledExactlyOnceWith({ id: 'a', action: 'accept', prepMinutes: 20 });
+    expect(fx.mutate).toHaveBeenCalledExactlyOnceWith({ id: 'a', action: 'accept', prepMinutes: 30 });
+  });
+
+  it('a store that declared 15 starts at 15; 40 starts at the closest choice, 45', async () => {
+    fx.orders = { a1: order('a1', { status: 'PENDING', fulfillment: 'DELIVERY', vendorId: 'store-a', estimatedPrepTime: 15 }) };
+    await show('a1');
+    expect(checked()).toEqual(['15 min']);
+    fx.orders = { a2: order('a2', { status: 'PENDING', fulfillment: 'DELIVERY', vendorId: 'store-a', estimatedPrepTime: 40 }) };
+    await show('a2');
+    expect(checked()).toEqual(['45 min']);
+    await click(button('Accept')!);
+    expect(fx.mutate).toHaveBeenCalledExactlyOnceWith({ id: 'a2', action: 'accept', prepMinutes: 45 });
+  });
+
+  it('[REVIEW-B F3] the waiting order\'s "Quoted prep time" is the time the choices hold, never a second number', async () => {
+    fx.orders = { q: order('q', { status: 'PENDING', fulfillment: 'DELIVERY', vendorId: 'store-a', estimatedPrepTime: 25 }) };
+    await show('q');
+    expect(checked()).toEqual(['30 min']);
+    expect(host.textContent).toContain('Quoted prep time: 30 min');
+    expect(host.textContent).not.toContain('25 min');
+    await click(chip('60 min')!);
+    expect(host.textContent).toContain('Quoted prep time: 60 min');
+    expect(host.textContent).not.toContain('Quoted prep time: 30 min');
+  });
+
+  it('after the decision, the line is the time the order was accepted with', async () => {
+    fx.orders = { r: order('r', { status: 'READY_FOR_PICKUP', fulfillment: 'PICKUP', vendorId: 'store-a', estimatedPrepTime: 25 }) };
+    await show('r');
+    expect(host.textContent).toContain('Quoted prep time: 25 min');
   });
 
   it('60 tapped: Accept sends 60', async () => {
@@ -124,7 +155,7 @@ describe('[APP-PREPTIME] the store order screen accepts with a preparation time'
   it('a booking: nothing asked, nothing sent', async () => {
     fx.orders = { c: order('c', { status: 'PENDING', fulfillment: 'APPOINTMENT', vendorId: 'store-a', vendor: { vendorType: 'SERVICE' } }) };
     await show('c');
-    expect(chip('20 min')).toBeUndefined();
+    expect(chip('30 min')).toBeUndefined();
     await click(button('Accept')!);
     expect(fx.mutate).toHaveBeenCalledExactlyOnceWith({ id: 'c', action: 'accept' });
   });
@@ -132,7 +163,7 @@ describe('[APP-PREPTIME] the store order screen accepts with a preparation time'
   it('past the decision (preparing), no choices are shown', async () => {
     fx.orders = { d: order('d', { status: 'READY_FOR_PICKUP', fulfillment: 'PICKUP', vendorId: 'store-a' }) };
     await show('d');
-    expect(chip('20 min')).toBeUndefined();
+    expect(chip('30 min')).toBeUndefined();
     expect(host.textContent).not.toContain('Preparation time');
   });
 });

@@ -20,8 +20,9 @@ import { freshOrderPlaceBudget } from './helpers/order-place-budget';
 // to 60 minutes) on the website AND on the store app (tablet). Both send the
 // same field on PUT /vendor/orders/:id/accept: { estimatedPrepTime }. The API
 // stores it on the order on the accept's own locked commit, the store's and
-// the customer's order reads carry it, and the clients' default of 20 is what
-// lands when the staff do not change it. A body with no minutes keeps the
+// the customer's order reads carry it, and the time the clients pre-select
+// lands when the staff do not change it ([ROUND 2 · owner 14 Nov] the store's
+// own declared prep time, or the closest choice). A body with no minutes keeps the
 // time the order was placed with (the store's declared prep time); a time
 // outside 1..480 whole minutes is refused and the order stays waiting.
 // Real customer + vendor routes, the production request composition.
@@ -167,7 +168,7 @@ afterAll(async () => {
 });
 
 describe('[APP-PREPTIME] Accept with a preparation time: the website and the store app send the same field', () => {
-  it('the default 20: stored on the order, in the answer, and on both order reads', async () => {
+  it('a chosen 20: stored on the order, in the answer, and on both order reads', async () => {
     const orderId = await placeOrder();
     expect((await orderRow(orderId)).estimatedPrepTime).toBe(30); // placed with the store's declared time
     const res = await accept(orderId, { estimatedPrepTime: 20 });

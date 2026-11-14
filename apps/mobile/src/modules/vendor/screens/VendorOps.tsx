@@ -137,8 +137,9 @@ const VendorOrderCard = React.memo(function VendorOrderCard({
   // [OTA-CATCH-UP · REVIEW-1 L1 on #2431] A typed MMG reference is never lost to a restart into an update.
   useOtaRestartHold(mmgRef.trim().length > 0);
   // [APP-PREPTIME · owner 14 Nov 2026] Accept on the board card asks the preparation time too (the website's six
-  // choices, 20 or this store's last choice pre-selected): one tap still accepts.
-  const [prepMinutes, choosePrep] = usePrepChoice(order.id, order.vendorId);
+  // choices; [ROUND 2] the store's own declared time, or the closest choice, pre-selected, or a change staff made for
+  // this store on this device): one tap still accepts.
+  const [prepMinutes, choosePrep] = usePrepChoice(order.id, order.vendorId, order.estimatedPrepTime);
   const asksPrep = asksPrepTime(order) && actions.some((a) => a.action === 'accept');
   const items = order.itemCount ?? order.items?.length ?? 0;
   const lines: any[] = order.items ?? [];

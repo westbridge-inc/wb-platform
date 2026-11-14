@@ -7,9 +7,13 @@ import { createRoot } from 'react-dom/client';
 // ---------------------------------------------------------------------------
 // [APP-PREPTIME · owner 14 Nov 2026] The full-screen new-order alert on the
 // store's tablet: staff accept with a preparation time, like the website's
-// takeover. 20 is pre-selected so a busy kitchen still accepts in ONE tap;
-// another time is one more tap; the last choice is remembered for the store
-// on this device. A booking is never asked and sends no minutes.
+// takeover. [ROUND 2 · owner 14 Nov] The store's own declared prep time (the
+// order carries it from checkout) is pre-selected, or the closest choice, so a
+// busy kitchen still accepts in ONE tap; another time is one more tap and is
+// remembered for the store on this device. A booking is never asked and sends
+// no minutes. [REVIEW-B F1] The choices step aside while a reason to reject is
+// asked, and the bottom of the alert scrolls so Back and "View later" are
+// always reachable.
 // ---------------------------------------------------------------------------
 
 const fx = vi.hoisted(() => ({
@@ -20,9 +24,12 @@ const fx = vi.hoisted(() => ({
 
 vi.mock('react-native', async () => {
   const { createElement: h } = await import('react');
-  const Box = (p: any) => h('div', { role: p.accessibilityRole, 'aria-label': p.accessibilityLabel }, p.children);
+  const flat = (st: any) => (Array.isArray(st) ? Object.assign({}, ...st) : st) ?? {};
+  const Box = (p: any) => h('div', { role: p.accessibilityRole, 'aria-label': p.accessibilityLabel, 'data-testid': p.testID }, p.children);
+  // A scroll area says it scrolls and carries its own style, so the layout rule is checked on the real tree.
+  const Scroll = (p: any) => h('div', { 'data-scroll': 'true', 'data-testid': p.testID, 'data-style': JSON.stringify(flat(p.style)) }, p.children);
   const Press = (p: any) => h('button', { role: p.accessibilityRole, 'aria-checked': p.accessibilityState?.checked ? 'true' : 'false', disabled: p.disabled, onClick: p.onPress }, p.children);
-  return { View: Box, ScrollView: Box, Modal: Box, Pressable: Press };
+  return { View: Box, ScrollView: Scroll, Modal: Box, Pressable: Press };
 });
 vi.mock('react-native-safe-area-context', () => ({ useSafeAreaInsets: () => ({ top: 0, bottom: 0, left: 0, right: 0 }) }));
 vi.mock('react-native-reanimated', async () => {
@@ -39,7 +46,7 @@ vi.mock('react-native-reanimated', async () => {
 vi.mock('@expo/vector-icons', () => ({ Feather: () => null }));
 vi.mock('../../kit', async () => {
   const { createElement: h } = await import('react');
-  const Text = (p: any) => h('span', { onClick: p.onPress }, p.children);
+  const Text = (p: any) => h('span', { onClick: p.onPress, 'data-testid': p.testID }, p.children);
   return {
     T: Text,
     Money: () => null,
@@ -61,7 +68,7 @@ import { NewOrderTakeover } from './NewOrderTakeover';
 import { bindPrepTimeStorage } from './prepTimeMemory';
 
 const pending = (id: string, extra: Record<string, unknown> = {}) => ({
-  id, orderNumber: `SW-${id}`, status: 'PENDING', vendorId: 'store-a', fulfillment: 'DELIVERY',
+  id, orderNumber: `SW-${id}`, status: 'PENDING', vendorId: 'store-a', fulfillment: 'DELIVERY', estimatedPrepTime: 30,
   vendor: { vendorType: 'RESTAURANT' }, items: [{ id: `${id}-l1`, name: 'Cook-up', quantity: 1, subStatus: null }],
   ...extra,
 });
@@ -85,15 +92,25 @@ const selected = () => [...host.querySelectorAll('button[aria-checked="true"]')]
 const sent = () => fx.mutate.mock.calls.map((c) => c[0]);
 
 describe('[APP-PREPTIME] the new-order alert accepts with a preparation time', () => {
-  it('20 is pre-selected: ONE tap on Accept sends 20', async () => {
+  it('the store\'s own time (30) is pre-selected: ONE tap on Accept sends 30', async () => {
     await show(pending('o1'));
     expect(host.textContent).toContain('Preparation time');
-    expect(selected()).toEqual(['20 min']);
+    expect(selected()).toEqual(['30 min']);
     await act(async () => button('ACCEPT ORDER')!.click());
-    expect(sent()).toEqual([{ id: 'o1', action: 'accept', prepMinutes: 20 }]);
+    expect(sent()).toEqual([{ id: 'o1', action: 'accept', prepMinutes: 30 }]);
   });
 
-  it('45 tapped, then Accept: sends 45, and the next order starts at 45', async () => {
+  it('a store that declared 45 starts at 45; one that declared 25 starts at the closest, longer choice, 30', async () => {
+    await show(pending('o1a', { estimatedPrepTime: 45 }));
+    expect(selected()).toEqual(['45 min']);
+    await act(async () => root!.unmount()); root = undefined; host.remove();
+    await show(pending('o1b', { estimatedPrepTime: 25 }));
+    expect(selected()).toEqual(['30 min']);
+    await act(async () => button('ACCEPT ORDER')!.click());
+    expect(sent()).toEqual([{ id: 'o1b', action: 'accept', prepMinutes: 30 }]);
+  });
+
+  it('45 tapped, then Accept: sends 45, and the store\'s next order starts at 45', async () => {
     await show(pending('o2'));
     await act(async () => button('45 min')!.click());
     expect(selected()).toEqual(['45 min']);
@@ -108,7 +125,7 @@ describe('[APP-PREPTIME] the new-order alert accepts with a preparation time', (
     await show(pending('o4', { fulfillment: 'APPOINTMENT', vendor: { vendorType: 'SERVICE' } }));
     expect(host.textContent).not.toContain('Preparation time');
     expect(host.textContent).not.toContain('Ready time');
-    expect(button('20 min')).toBeUndefined();
+    expect(button('30 min')).toBeUndefined();
     await act(async () => button('ACCEPT ORDER')!.click());
     expect(sent()).toEqual([{ id: 'o4', action: 'accept' }]);
   });
@@ -121,5 +138,50 @@ describe('[APP-PREPTIME] the new-order alert accepts with a preparation time', (
     expect(sent()).toHaveLength(1);
     expect(sent()[0]).toMatchObject({ id: 'o5', action: 'reject' });
     expect(sent()[0]).not.toHaveProperty('prepMinutes');
+  });
+});
+
+describe('[REVIEW-B F1 · REVIEW-A S3-1] the alert keeps Back and "View later" reachable', () => {
+  const chipsShown = () => !!host.querySelector('[role="radiogroup"]');
+
+  it('the choices step aside while a reason to reject is asked, and come back on Back', async () => {
+    await show(pending('o6'));
+    expect(chipsShown()).toBe(true);
+    await act(async () => button('Reject — tell us why')!.click());
+    expect(chipsShown()).toBe(false);
+    expect(button('Back')).toBeTruthy();
+    await act(async () => button('Back')!.click());
+    expect(chipsShown()).toBe(true);
+    expect(selected()).toEqual(['30 min']);
+  });
+
+  it('the choices step aside while "reject the last item" is asked', async () => {
+    await show(pending('o7'));
+    await act(async () => button('Out of stock — reject the order')!.click());
+    expect(host.textContent).toContain('This is the last item.');
+    expect(chipsShown()).toBe(false);
+  });
+
+  it('the items keep a height of their own, and the decisions scroll above a pinned "View later"', async () => {
+    await show(pending('o8'));
+    const scrolls = [...host.querySelectorAll<HTMLElement>('[data-scroll="true"]')];
+    const items = scrolls.find((el) => el.textContent?.includes('Cook-up'))!;
+    const itemsStyle = JSON.parse(items.dataset['style']!);
+    expect(itemsStyle.flex).toBe(1);
+    expect(itemsStyle.minHeight).toBeGreaterThanOrEqual(64);
+    const decide = host.querySelector<HTMLElement>('[data-testid="takeover-decide"]')!;
+    expect(decide?.dataset['scroll']).toBe('true');
+    const decideStyle = JSON.parse(decide.dataset['style']!);
+    expect(decideStyle.flexGrow).toBe(0);
+    expect(decideStyle.flexShrink).toBe(1);
+    // Every decision lives in the scrolling block: the choices, Accept, Reject (and its reasons, and Back).
+    expect(decide.querySelector('[role="radiogroup"]')).toBeTruthy();
+    expect(decide.textContent).toContain('ACCEPT ORDER');
+    await act(async () => button('Reject — tell us why')!.click());
+    expect(decide.textContent).toContain('Back');
+    // "View later" is never inside a scroll: it stays on screen whatever the height.
+    const later = host.querySelector<HTMLElement>('[data-testid="takeover-view-later"]')!;
+    expect(later.textContent).toContain('View later');
+    expect(later.closest('[data-scroll="true"]')).toBeNull();
   });
 });

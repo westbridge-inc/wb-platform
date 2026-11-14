@@ -150,8 +150,8 @@ describe('[REVIEW-F S3-1 on #2054] the board card: no hand-over prompt on a paus
 });
 
 // [APP-PREPTIME · owner 14 Nov 2026] The board card's Accept (a tablet's main surface) asks the preparation time
-// like the website: the chips sit above Accept with 20 pre-selected, and Accept sends the minutes to the store's one
-// order mutation. A booking is never asked and sends none. The card is called with the board's own props.
+// like the website: the chips sit above Accept with [ROUND 2 · owner 14 Nov] the store's own declared prep time (or
+// the closest choice) pre-selected, and Accept sends the minutes to the store's one order mutation. A booking is never asked and sends none. The card is called with the board's own props.
 describe('[APP-PREPTIME] the board card accepts with a preparation time', () => {
   function cardOf(o: { id: string } & Record<string, unknown>) {
     fx.orders = [o];
@@ -165,11 +165,18 @@ describe('[APP-PREPTIME] the board card accepts with a preparation time', () => 
   const chipsIn = (tree: El[]) => tree.filter((e) => typeof e.type === 'function' && (e.type as { name?: string }).name === 'PrepTimeChips') as Array<El & { props: { value?: number } }>;
   const pill = (tree: El[], label: string) => tree.find((e) => (e.props as { label?: unknown }).label === label) as (El & { props: { onPress: () => void } }) | undefined;
 
-  it('a new delivery order: 20 pre-selected above Accept, and Accept sends 20', () => {
-    const { tree, onAction } = cardOf({ ...order('order-n', 'PENDING'), vendorId: 'store-A' });
-    expect(chipsIn(tree).map((c) => c.props.value)).toEqual([20]);
+  it('a new delivery order: the store\'s own time (45) pre-selected above Accept, and Accept sends 45', () => {
+    const { tree, onAction } = cardOf({ ...order('order-n', 'PENDING'), vendorId: 'store-A', estimatedPrepTime: 45 });
+    expect(chipsIn(tree).map((c) => c.props.value)).toEqual([45]);
     pill(tree, 'Accept')!.props.onPress();
-    expect(onAction).toHaveBeenCalledExactlyOnceWith('accept', undefined, 20);
+    expect(onAction).toHaveBeenCalledExactlyOnceWith('accept', undefined, 45);
+  });
+
+  it('a store that declared 35 (not a choice): the closest choice, 30', () => {
+    const { tree, onAction } = cardOf({ ...order('order-m', 'PENDING'), vendorId: 'store-A', estimatedPrepTime: 35 });
+    expect(chipsIn(tree).map((c) => c.props.value)).toEqual([30]);
+    pill(tree, 'Accept')!.props.onPress();
+    expect(onAction).toHaveBeenCalledExactlyOnceWith('accept', undefined, 30);
   });
 
   it('the board sends the card\'s minutes with the Accept; other steps carry none', () => {

@@ -8,8 +8,9 @@ import { PREP_TIME_CHOICES, prepChipLabel, prepChoiceHeading, type PrepChoice } 
 
 /** A tablet-sized target: comfortably above the 48dp floor (kit/touch-target), hit from across a counter. */
 export const PREP_CHIP_MIN_HEIGHT = 56;
-/** Each choice's share of the row before it grows: all six sit in one row on a tablet, three a row on a phone. */
-const PREP_CHIP_BASIS = 80;
+// [ROUND 2 · REVIEW-A S4-1 · REVIEW-B F1] Six equal shares of ONE row on every width (no basis to wrap on): wide
+// buttons on a tablet, about 48dp each on a 375dp phone, whose words then wrap to "10 / min" inside the 56dp height.
+// One row (not two of three, nor 4 + 2) keeps the block ~82dp tall, so the new-order alert keeps room for its items.
 
 /**
  * [APP-PREPTIME · owner 14 Nov 2026] The preparation time beside the app's
@@ -34,7 +35,7 @@ export function PrepTimeChips({
       <T variant="label" weight="semibold" tone="muted">
         {heading}
       </T>
-      <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: space.sm, marginTop: space.sm }}>
+      <View style={{ flexDirection: 'row', gap: space.sm, marginTop: space.sm }}>
         {PREP_TIME_CHOICES.map((minutes) => {
           const selected = minutes === value;
           return (
@@ -51,7 +52,8 @@ export function PrepTimeChips({
               }}
               style={{
                 flexGrow: 1,
-                flexBasis: PREP_CHIP_BASIS,
+                flexBasis: 0,
+                minWidth: 0,
                 minHeight: PREP_CHIP_MIN_HEIGHT,
                 alignItems: 'center',
                 justifyContent: 'center',
@@ -62,7 +64,7 @@ export function PrepTimeChips({
                 opacity: disabled ? 0.5 : 1,
               }}
             >
-              <T variant="bodyStrong" tone={selected ? 'onBrand' : 'ink'}>
+              <T variant="bodyStrong" tone={selected ? 'onBrand' : 'ink'} center>
                 {prepChipLabel(minutes)}
               </T>
             </Pressable>
