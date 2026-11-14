@@ -91,12 +91,15 @@ describe('itemMatches: name, SKU and option names', () => {
   });
 });
 
-describe('low stock: the website\'s "Low stock only" rule', () => {
-  it('a counted item at or under its alert level (5 when none is set)', () => {
-    expect(isLowStockItem(item({ stockQuantity: 5 }))).toBe(true);
-    expect(isLowStockItem(item({ stockQuantity: 6 }))).toBe(false);
+describe('low stock: ONE rule for the filter, the row pill, the alerts card and the website\'s row [REVIEW #2514 S4-3]', () => {
+  it('a counted item at 0, or at or under its OWN alert level (no level, no "low" above 0)', () => {
+    expect(isLowStockItem(item({ stockQuantity: 5, lowStockThreshold: 5 }))).toBe(true);
+    expect(isLowStockItem(item({ stockQuantity: 6, lowStockThreshold: 5 }))).toBe(false);
     expect(isLowStockItem(item({ stockQuantity: 9, lowStockThreshold: 10 }))).toBe(true);
     expect(isLowStockItem(item({ stockQuantity: 0 }))).toBe(true);
+    expect(isLowStockItem(item({ stockQuantity: -2 }))).toBe(true);
+    expect(isLowStockItem(item({ stockQuantity: 3 })), 'no alert level set: 3 left is not "low"').toBe(false);
+    expect(isLowStockItem(item({ stockQuantity: 3, lowStockThreshold: null }))).toBe(false);
     expect(isLowStockItem(item({ stockQuantity: null }))).toBe(false);
     expect(isLowStockItem(item({ stockQuantity: undefined }))).toBe(false);
   });
@@ -120,7 +123,7 @@ describe('words on screen', () => {
 
 describe('filterCatalogue: the app\'s sections, filtered', () => {
   const menu = [
-    { id: 'c1', name: 'Mains', items: [item({ id: 'a', name: 'Chicken Curry' }), item({ id: 'b', name: 'Beef Stew', stockQuantity: 2 })] },
+    { id: 'c1', name: 'Mains', items: [item({ id: 'a', name: 'Chicken Curry' }), item({ id: 'b', name: 'Beef Stew', stockQuantity: 2, lowStockThreshold: 3 })] },
     { id: 'c2', name: 'Drinks', items: [item({ id: 'c', name: 'Mauby' }), item({ id: 'd', name: 'Chicken Soup' })] },
     { id: 'c3', name: 'Empty', items: [] },
   ];
@@ -165,9 +168,10 @@ describe('filter buttons', () => {
     expect(matchesFilter(item({ isAvailable: true }), 'SOLD_OUT')).toBe(false);
     expect(matchesFilter(item({ isAvailable: undefined }), 'SOLD_OUT')).toBe(false);
   });
-  it('Low stock: the website\'s rule', () => {
-    expect(matchesFilter(item({ stockQuantity: 5 }), 'LOW_STOCK')).toBe(true);
-    expect(matchesFilter(item({ stockQuantity: 6 }), 'LOW_STOCK')).toBe(false);
+  it('Low stock: the one rule (at 0, or at or under the item\'s own alert level)', () => {
+    expect(matchesFilter(item({ stockQuantity: 5, lowStockThreshold: 5 }), 'LOW_STOCK')).toBe(true);
+    expect(matchesFilter(item({ stockQuantity: 5 }), 'LOW_STOCK')).toBe(false);
+    expect(matchesFilter(item({ stockQuantity: 0 }), 'LOW_STOCK')).toBe(true);
   });
   it('No photo: no photo customers see (none, or an outside address that is no longer shown)', () => {
     expect(matchesFilter(item({ imageUrl: null }), 'NO_PHOTO')).toBe(true);
@@ -184,7 +188,7 @@ describe('filter buttons', () => {
     expect(matchesFilter(item({ isAvailable: false }), null)).toBe(true);
   });
   it('how many each button holds', () => {
-    const items = [item({ isAvailable: false }), item({ isAvailable: false, imageUrl: 'stores/a.jpg' }), item({ stockQuantity: 1 })];
+    const items = [item({ isAvailable: false }), item({ isAvailable: false, imageUrl: 'stores/a.jpg' }), item({ stockQuantity: 0 })];
     expect(filterCount(items, 'SOLD_OUT')).toBe(2);
     expect(filterCount(items, 'LOW_STOCK')).toBe(1);
     expect(filterCount(items, 'NO_PHOTO')).toBe(2);

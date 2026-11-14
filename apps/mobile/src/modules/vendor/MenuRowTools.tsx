@@ -6,6 +6,7 @@ import { Chip, PillButton, T } from '../../kit';
 import { InlineInput } from './shared';
 import { newStockKey, useAdjustStock, useSaveItem, type StockReason } from '../../hooks/vendorops';
 import { editablePrice, itemPricePayload } from '../../lib/storeVat';
+import { WHOLE_PRICE_NOTE, wholePriceInput } from '../../lib/menuOptionsEditor';
 
 /**
  * [MENU-ROW-TOOLS · parity audit A5 + A6, owner 14 Nov 2026] The website's row tools on the app's menu list.
@@ -24,11 +25,12 @@ export function RowPriceEdit({ item, onDone }: { item: any; onDone: () => void }
   const save = useSaveItem();
   const [price, setPrice] = useState<string>(() => editablePrice(item));
   const [error, setError] = useState<string | null>(null);
-  const n = Number(price);
-  const valid = price.trim() !== '' && Number.isFinite(n) && n > 0;
+  // [REVIEW #2516 S3-1 · S4-2] Whole Guyana dollars from 0 to 10,000,000, as the server and the item editor take them.
+  const n = wholePriceInput(price);
+  const valid = n != null;
   const beforeVat = item.vatListedPrice != null;
   const submit = () => {
-    if (!valid || save.isPending) return;
+    if (n == null || save.isPending) return;
     setError(null);
     save.mutate(
       { id: item.id, data: itemPricePayload(item, n, false) },
@@ -43,7 +45,16 @@ export function RowPriceEdit({ item, onDone }: { item: any; onDone: () => void }
       <T variant="label" weight="semibold">
         {beforeVat ? 'Price before VAT' : 'Price'}
       </T>
-      <InlineInput value={price} onChangeText={(v) => { setPrice(v); setError(null); }} keyboardType="decimal-pad" placeholder="0.00" />
+      <InlineInput
+        value={price}
+        onChangeText={(v) => { setPrice(v); setError(null); }}
+        keyboardType="number-pad"
+        placeholder="0"
+        accessibilityLabel={`${beforeVat ? 'Price before VAT' : 'Price'}: ${item.name}`}
+      />
+      <T variant="caption" tone="muted">
+        {WHOLE_PRICE_NOTE}
+      </T>
       {error ? (
         <T variant="caption" tone="error">
           {error}
@@ -102,7 +113,7 @@ export function RowStockAdjust({ item }: { item: any }) {
       <T variant="label" weight="semibold">
         Adjust stock
       </T>
-      <InlineInput value={delta} onChangeText={(v) => { setDelta(v); changed(); }} placeholder="+24 received, -3 damaged" />
+      <InlineInput value={delta} onChangeText={(v) => { setDelta(v); changed(); }} placeholder="+24 received, -3 damaged" accessibilityLabel={`Adjust stock amount: ${item.name}`} />
       <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: space.sm }}>
         {REASONS.map((r) => (
           <Chip key={r.reason} label={r.label} selected={reason === r.reason} onPress={() => { setReason(r.reason); changed(); }} />

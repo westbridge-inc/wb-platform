@@ -441,3 +441,47 @@ describe('[IN-STORE-SALE · REVIEW-F #2157 M-F501] the web editor says when an i
     expect(within(editor).getByText('Tracked items sell down automatically and hide at 0. You’ll get an alert at your low-stock level.')).toBeTruthy();
   });
 });
+
+// [REVIEW #2516 S3-1 · S4-2] A price a store types is WHOLE Guyana dollars, 0 to 10,000,000 (the server's wholePrice()).
+// The website's row price box and the item editor took "1250.50" and the server answered "Invalid request data". Both
+// now use the app's own rule (lib/menuOptionsEditor wholePriceInput) and say it in words.
+describe('[REVIEW #2516 S3-1] prices are whole Guyana dollars on the website too', () => {
+  it('the row price box: a whole-number box, the rule in words; cents or more than 10,000,000 cannot be saved', async () => {
+    renderWithQuery(<InventoryPage />);
+    const row = await screen.findByRole('article', { name: 'Rice 20 kg' });
+    await click(within(row).getByRole('button', { name: /6,000/ }));
+    const box = within(row).getByRole('spinbutton', { name: 'Price: Rice 20 kg' }) as HTMLInputElement;
+    expect(box.getAttribute('inputmode')).toBe('numeric');
+    expect(box.getAttribute('placeholder')).toBe('0');
+    expect(within(row).getByText('Prices are whole Guyana dollars.')).toBeTruthy();
+    for (const typed of ['1250.50', '10000001', 'abc']) {
+      await act(async () => { fireEvent.change(box, { target: { value: typed } }); });
+      expect((within(row).getByRole('button', { name: 'Save' }) as HTMLButtonElement).disabled, typed).toBe(true);
+    }
+    await act(async () => { fireEvent.change(box, { target: { value: '0' } }); });
+    expect((within(row).getByRole('button', { name: 'Save' }) as HTMLButtonElement).disabled, '0 is a price, as in the editor').toBe(false);
+    expect(box.getAttribute('step')).toBe('1');
+    await act(async () => { fireEvent.change(box, { target: { value: '6500' } }); });
+    await click(within(row).getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(writes.some((w) => w.method === 'PUT' && w.url.pathname === '/api/v1/vendor/items/rice')).toBe(true));
+    const sent = writes.find((w) => w.method === 'PUT' && w.url.pathname === '/api/v1/vendor/items/rice')!;
+    expect(body(sent)).toEqual({ basePrice: 6500 });
+  });
+
+  it('the item editor: cents or more than 10,000,000 read "Set a price"; the rule is said in words', async () => {
+    renderWithQuery(<InventoryPage />);
+    await screen.findByRole('article', { name: 'Roti' });
+    await click(await screen.findByRole('button', { name: '+ Add item' }));
+    const editor = await dialog();
+    expect(field(editor, 'Price (GYD)').getAttribute('inputmode')).toBe('numeric');
+    expect(within(editor).getByText('Prices are whole Guyana dollars.')).toBeTruthy();
+    await type(editor, 'Item name', 'Chow mein');
+    await click(within(editor).getByRole('button', { name: 'Mains' }));
+    for (const typed of ['1250.50', '10000001']) {
+      await type(editor, 'Price (GYD)', typed);
+      expect(within(editor).queryByRole('button', { name: 'Set a price' }), typed).toBeTruthy();
+    }
+    await type(editor, 'Price (GYD)', '1,250');
+    expect(within(editor).queryByRole('button', { name: 'Set a price' })).toBeNull();
+  });
+});

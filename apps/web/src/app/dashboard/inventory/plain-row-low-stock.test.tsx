@@ -41,3 +41,23 @@ describe('[FOLLOWUPS] the plain row (before the tools arrive) says "Low stock"',
     expect(toolsArrived.value).toBe(false);
   });
 });
+
+// [REVIEW #2514 S4-3] The website's row marker follows the ONE Low stock rule (the app's, lib/catalogueSearch): at 0, or
+// at or under the item's own alert level. An item with no alert level is not "Low stock" above 0 (it was at 5 or less).
+describe('[REVIEW #2514 S4-3] the plain row\'s "Low stock" is the Low stock button\'s rule', () => {
+  it('no alert level and 3 left: not low; none left: low', async () => {
+    mockApi(({ url }) => {
+      if (url.pathname === '/api/v1/vendor/items') return { body: { data: [
+        { id: 'item-4', name: 'Salt', basePrice: '300.00', stockQuantity: 3, lowStockThreshold: null, isAvailable: true },
+        { id: 'item-5', name: 'Pepper', basePrice: '300.00', stockQuantity: 0, lowStockThreshold: null, isAvailable: true },
+      ] } };
+      if (url.pathname === '/api/v1/vendor/categories') return { body: { data: [] } };
+      if (url.pathname === '/api/v1/vendor/stores') return { body: { data: { stores: [], selectedId: null, myRole: 'OWNER' } } };
+      throw new Error(`Unexpected request: ${url}`);
+    });
+    renderWithQuery(<InventoryPage />);
+    const salt = await screen.findByRole('article', { name: 'Salt' });
+    expect(within(salt).queryByText('Low stock')).toBeNull();
+    expect(within(screen.getByRole('article', { name: 'Pepper' })).getByText('Low stock')).toBeTruthy();
+  });
+});

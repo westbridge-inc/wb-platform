@@ -3,7 +3,7 @@
 import { addedBySwiftLine, photoAddedBySwiftLine } from '../../../../../mobile/src/lib/assistedSetupCopy';
 // [MENU-SEARCH · owner 14 Nov 2026] The app's matcher: the same words find the same items on the phone and here.
 import {
-  CATALOGUE_FILTER_WORDS, CATALOGUE_SEARCH_PLACEHOLDER, filterCount, filterShownLine, itemCountLine, itemMatches, matchesFilter, noMatchLine,
+  CATALOGUE_FILTER_WORDS, CATALOGUE_SEARCH_PLACEHOLDER, filterCount, filterShownLine, isLowStockItem, itemCountLine, itemMatches, matchesFilter, noMatchLine,
   offeredFilters, searchTerms, type CatalogueFilter,
 } from '../../../../../mobile/src/lib/catalogueSearch';
 import { memo, Suspense, useCallback, useDeferredValue, useEffect, useMemo, useState } from 'react';
@@ -90,7 +90,8 @@ function RowStock({ item, onAdjust }: { item: CatalogItem; onAdjust: () => void 
   const tools = menuTools.usePart(true);
   const storeId = useStoreId();
   if (tools) return <tools.SaleStock item={item} storeId={storeId} onAdjust={onAdjust} />;
-  const low = item.stockQuantity != null && item.stockQuantity <= (item.lowStockThreshold ?? 5);
+  // [REVIEW #2514 S4-3] The one Low stock rule (the "Low stock" button's and the app's).
+  const low = isLowStockItem(item);
   return <>
     {low && <span className="font-semibold text-amber-700">Low stock</span>}
     <button onClick={onAdjust} className="sw-link-btn min-h-8">{item.stockQuantity} in stock · Adjust stock</button>
@@ -278,6 +279,17 @@ export default function InventoryPage() {
   // As in the app: the items under their section's heading, in the store's section order (an item whose section the
   // page does not know yet comes last, under no heading). With nothing filtered, an empty section shows too.
   const filtered = terms.length > 0 || filter !== null;
+  // [REVIEW #2514 S4-2] As the app: while searching (or a button is on), each section chip counts its matches.
+  const matchedPerSection = useMemo(() => {
+    const counts = new Map<string, number>();
+    let all = 0;
+    for (const i of items.data ?? []) {
+      if ((terms.length && !itemMatches(i, terms)) || (filter && !matchesFilter(i, filter))) continue;
+      all += 1;
+      if (i.category?.id) counts.set(i.category.id, (counts.get(i.category.id) ?? 0) + 1);
+    }
+    return { all, counts };
+  }, [items.data, terms, filter]);
   const groups = useMemo(() => {
     const known = new Set(sections.map((c) => c.id));
     const out = sections.filter((c) => !categoryId || c.id === categoryId)
@@ -375,8 +387,8 @@ export default function InventoryPage() {
       </div>
       {/* The app's SECTIONS chips: every section with how many items it holds, then "Add section". */}
       <div className="sw-chip-row" aria-label="Sections">
-        <button type="button" className="sw-chip max-w-64 truncate" aria-pressed={!categoryId} onClick={() => setCategoryId('')}>All · {(items.data ?? []).length}</button>
-        {sections.map((c) => <button key={c.id} type="button" className="sw-chip max-w-64 truncate" title={c.name} aria-pressed={categoryId === c.id} onClick={() => setCategoryId(c.id)}>{c.name} · {perSection.get(c.id) ?? 0}</button>)}
+        <button type="button" className="sw-chip max-w-64 truncate" aria-pressed={!categoryId} onClick={() => setCategoryId('')}>All · {filtered ? matchedPerSection.all : (items.data ?? []).length}</button>
+        {sections.map((c) => <button key={c.id} type="button" className="sw-chip max-w-64 truncate" title={c.name} aria-pressed={categoryId === c.id} onClick={() => setCategoryId(c.id)}>{c.name} · {(filtered ? matchedPerSection.counts : perSection).get(c.id) ?? 0}</button>)}
         {manager && <button type="button" className="sw-chip" onClick={() => setDialog({ kind: 'section', mode: 'add', section: null })}>+ Add section</button>}
       </div>
 

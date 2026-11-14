@@ -8,6 +8,7 @@ import { sellInStore, undoInStoreSale } from '@/lib/stock-adjust';
 import type { CatalogItem } from '@/lib/vendor-api';
 // The app's own line of taps and words (a plain file with no imports, used as is: the website copies the app).
 import { SOLD_IN_STORE, createSoldInStore, type SaleAnswer, type SaleFailure } from '../../../../../mobile/src/lib/inStoreSale';
+import { isLowStockItem } from '../../../../../mobile/src/lib/catalogueSearch';
 
 // [IN-STORE-SALE · owner 27 Oct] "Sold in store −1" on a tracked item's row of the Products page, as in the app
 // (VendorMenuScreen SoldInStoreControls): one tap takes one sold in person off the Swift stock. The count moves at the
@@ -80,7 +81,8 @@ export function SaleStock({ item, storeId, onAdjust }: { item: CatalogItem; stor
   const sale = soldInStore.view(item.id);
   const shown = soldInStore.shown(item.id, item.stockQuantity ?? 0);
   // [REVIEW-F #2157 S4-7] As the app: the Low stock label moves at the tap with the count.
-  const low = shown <= (item.lowStockThreshold ?? 5);
+  // [REVIEW #2514 S4-3] The one Low stock rule (the "Low stock" button's and the app's), on the count shown.
+  const low = isLowStockItem({ stockQuantity: shown, lowStockThreshold: item.lowStockThreshold });
   return (
     <>
       {low && <span className="font-semibold text-amber-700">Low stock</span>}

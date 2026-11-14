@@ -22,6 +22,7 @@ import {
   choicePriceInput, choicePricePlaceholder, flagsOf, followUpLabel, followUpTargets, fromPriceWords, groupFlagsBody, groupFlagsEdit, groupRuleWords,
   isFollowUpGroup, itemTypedPrice, libraryGroupsToAdd, lowestSizePrice, needsSizeSwitchConfirm, sharedEditWarning, sharedUse, sizePriceLabel,
   parseStorePrice, sizeSwitchBody, sizeSwitchRows, sizeSwitchTyped, usedByWords, type GroupFlags,
+  MAX_STORE_PRICE, WHOLE_PRICE_NOTE, wholePriceInput,
 } from '../../../../../mobile/src/lib/menuOptionsEditor';
 import {
   GroupRules, NEW_GROUP_FLAGS, OptionLibraryDialog, OptionLibraryPanel, SizeSwitchConfirm, optionWriteFailure, rereadAfterLibrary, useLibrary, type LibraryItem,
@@ -184,11 +185,18 @@ export function PriceEdit({ item, onSave, onDone }: { item: CatalogItem; onSave:
   const [price, setPrice] = useState(String(editablePrice(item) ?? ''));
   // [TAP-AUDIT] The new price shows on the row at the tap; the page sends it (and puts the old one back if the
   // server refuses, saying why).
-  const save = () => { if (Number(price) > 0) { onSave(Number(price)); onDone(); } };
+  // [REVIEW #2516 S3-1 · S4-2] Whole Guyana dollars from 0 to 10,000,000 (the server's rule, and the app's).
+  const typed = wholePriceInput(price);
+  const save = () => { if (typed != null) { onSave(typed); onDone(); } };
   return (
     <span className="flex items-center gap-1">
       <input
         type="number"
+        inputMode="numeric"
+        step={1}
+        min={0}
+        max={MAX_STORE_PRICE}
+        placeholder="0"
         value={price}
         onChange={(e) => setPrice(e.target.value)}
         onKeyDown={(e) => e.key === 'Enter' && save()}
@@ -196,10 +204,11 @@ export function PriceEdit({ item, onSave, onDone }: { item: CatalogItem; onSave:
         aria-label={item.vatListedPrice != null ? `Price before VAT: ${item.name}` : `Price: ${item.name}`}
         className="w-24 rounded-lg border border-[var(--swift-red)] px-2 py-1 text-sm"
       />
-      <button onClick={save} disabled={!(Number(price) > 0)} className="text-xs font-bold text-[var(--swift-red)]">
+      <button onClick={save} disabled={typed == null} className="text-xs font-bold text-[var(--swift-red)]">
         Save
       </button>
       <button onClick={onDone} className="text-xs text-[var(--swift-muted)]">✕</button>
+      <span className="text-xs text-[var(--swift-muted)]">{WHOLE_PRICE_NOTE}</span>
     </span>
   );
 }
@@ -291,18 +300,20 @@ export function ItemEditor({
   // size; its own price is the lowest size, kept so by the server. The field is then read-only ("From $X").
   const [liveGroups, setLiveGroups] = useState<OptionGroupRow[]>(item?.optionGroups ?? []);
   const sizedFrom = isService ? null : lowestSizePrice(item ? liveGroups : draftGroups.map((g) => ({ setsPrice: g.setsPrice, options: g.options.map((o) => ({ additionalPrice: o.additionalPrice })) })));
-  const priceNum = sizedFrom ?? Number(price);
+  // [REVIEW #2516 S3-1] Whole Guyana dollars from 0 to 10,000,000 (the server's rule): null = not a price to save.
+  const priceNum = sizedFrom ?? wholePriceInput(price);
   const priceTyped = sizedFrom != null || price.trim() !== '';
-  const valid = name.trim().length >= 1 && priceTyped && Number.isFinite(priceNum) && priceNum >= 0 && !!categoryId && (!isService || hoursProblem == null) && vatKnown;
+  const valid = name.trim().length >= 1 && priceTyped && priceNum != null && !!categoryId && (!isService || hoursProblem == null) && vatKnown;
   const label = !vatKnown ? 'Loading the store’s prices…'
     : !name.trim() ? 'Name the item first'
-    : !(priceTyped && Number.isFinite(priceNum) && priceNum >= 0) ? 'Set a price'
+    : !(priceTyped && priceNum != null) ? 'Set a price'
       : !categoryId ? 'Pick a category'
         : isService && hoursProblem ? 'Fix the hours'
           : item ? 'Save changes' : 'Add item';
 
   const save = useMutation({
     mutationFn: async () => {
+      if (priceNum == null) throw new Error(WHOLE_PRICE_NOTE);
       const stockNum = stock.trim() === '' ? undefined : Number(stock);
       const body: ItemBody = {
         categoryId,
@@ -413,8 +424,9 @@ export function ItemEditor({
             <p className="sw-caption">Set by the choices of the group that sets the price.</p>
           </div>
         ) : (
-          <input className="sw-input" aria-label={beforeVatField ? 'Price before VAT (GYD)' : 'Price (GYD)'} placeholder={beforeVatField ? 'Price before VAT (GYD)' : 'Price (GYD)'} inputMode="decimal" value={price} onChange={(e) => setPrice(e.target.value)} />
+          <input className="sw-input" aria-label={beforeVatField ? 'Price before VAT (GYD)' : 'Price (GYD)'} placeholder={beforeVatField ? 'Price before VAT (GYD)' : 'Price (GYD)'} inputMode="numeric" value={price} onChange={(e) => setPrice(e.target.value)} />
         )}
+        {sizedFrom == null && <p className="text-xs text-[var(--swift-muted)]">{WHOLE_PRICE_NOTE}</p>}
         {/* [REVIEW-F #2256 S4-2] A new item in a store whose VAT is added: the same words as the phone. */}
         {!item && vatPricing?.adds && <p className="text-xs text-[var(--swift-muted)]">{newItemBeforeVatHint(vatPricing.ratePercent)}</p>}
         {/* [STORE-VAT-EXCLUSIVE] A store pricing before VAT: the same words as the phone. */}
