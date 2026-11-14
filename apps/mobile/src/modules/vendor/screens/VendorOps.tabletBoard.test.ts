@@ -55,7 +55,7 @@ import { VendorOps } from './VendorOps';
 // The board is rendered by calling VendorOps with its hooks stubbed (the harness of VendorOps.boardWait.test.ts).
 // ---------------------------------------------------------------------------
 
-type El = { type: unknown; props: Record<string, any> & { children?: unknown } };
+type El = { type: unknown; props: Record<string, any> & { children?: unknown; testID?: string; label?: string; onPress?: () => void; order?: any; busy?: boolean } };
 function elements(node: unknown): El[] {
   if (Array.isArray(node)) return node.flatMap(elements);
   if (!node || typeof node !== 'object' || !('props' in node)) return [];
@@ -104,7 +104,7 @@ describe('[STORE-BOARD A4] staff open finished orders', () => {
     navigation.navigate.mockClear();
     const tile = tiles(elements(board())).find((e) => e.props.label === 'Finished orders');
     expect(tile).toBeTruthy();
-    tile!.props.onPress();
+    tile!.props.onPress!();
     expect(navigation.navigate).toHaveBeenCalledWith('VendorOrderHistory');
     fx.role = 'OWNER';
   });
