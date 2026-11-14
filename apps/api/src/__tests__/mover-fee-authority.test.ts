@@ -283,7 +283,7 @@ describe('one mover fee across actual role surfaces', () => {
 
       if (approvalId) {
         // The second admin approves: the cash is recorded at the rate it was paid at, and at the trial's end it pays the week.
-        await app.prisma.privilegedApproval.update({ where: { id: approvalId }, data: { status: 'EXECUTED' } });
+        await app.prisma.privilegedApproval.update({ where: { id: approvalId }, data: { status: 'APPLIED' } });
         await app.prisma.$transaction((tx) => billing.recordTopUpInTransaction(tx, { subscriptionId: rider.id, amount: 6000, recordedBy: finance.userId,
           eventKey: `trial-flight:${run}:${rider.id}`, channel: 'IN_PERSON_CASH', rail: 'IN_PERSON_CASH' }));
         const at = new Date(end.getTime() + 60_000);
@@ -299,7 +299,7 @@ describe('one mover fee across actual role surfaces', () => {
 
   // [REVIEW-A2 #2513 S4-2] A trial that has ended while its payer's fee is held for finance is not converted (the daily
   // job leaves it too), so its started first week cannot be paid from the credit: the refund says exactly that.
-  it('a refund for a trial that ended under a finance hold is refused in words for the hold, never "ask again"', async () => {
+  it('a refund for a trial that ended under a finance hold is refused in its own words while a started week is owed, and goes through when none is', async () => {
     const who = await dual();
     const f = await sys(async () => {
       // Two trial sources of one mover, both ended a day ago; the delivery one already holds a week paid ahead. Money on a
@@ -323,6 +323,12 @@ describe('one mover fee across actual role surfaces', () => {
       await expect(setAsideCreditRefund(app.prisma, { adminId: finance.userId, approvalId: `held-trial-${run}`, subscriptionId: f.rider.id, amount: 6000 }))
         .rejects.toMatchObject({ statusCode: 409, code: 'TRIAL_CONVERSION_HELD' });
       expect(Number((await app.prisma.prepaidBalance.findUniqueOrThrow({ where: { subscriptionId: f.rider.id } })).balance)).toBe(6000);
+      // [CONFIRM-R4 S4-1] Only a started week that is owed is refused: once a closure hold keeps that week from being born,
+      // nothing is owed, so the whole credit is set aside for the refund as before.
+      await app.prisma.subscription.update({ where: { id: f.rider.id }, data: { closureHoldAt: new Date(Date.now() - 2 * DAY) } });
+      const setAside = await setAsideCreditRefund(app.prisma, { adminId: finance.userId, approvalId: `held-trial-closing-${run}`, subscriptionId: f.rider.id, amount: 6000 });
+      expect(setAside).toMatchObject({ replayed: false, amount: 6000 });
+      expect(Number((await app.prisma.prepaidBalance.findUniqueOrThrow({ where: { subscriptionId: f.rider.id } })).balance)).toBe(0);
     });
   });
 
