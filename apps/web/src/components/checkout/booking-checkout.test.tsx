@@ -137,6 +137,8 @@ describe('[BOOK-S6b] the one checkout books an appointment', () => {
     expect(bodyOf(checkouts[0])).toEqual({
       paymentMethod: 'CASH', tipAmount: 0, appointments: [{ itemId: 'i9', slotStart: SLOT, mode: 'AT_BUSINESS' }],
       expectedTotal: 2500, expectedLines: [{ lineId: 'l9', unitPrice: 2500 }],
+      // [STORE-VAT-EXCLUSIVE] This site shows a store's "VAT 14%" line.
+      capabilities: ['MENU_OPTIONS_V2', 'VAT_LINE_V1'],
     });
     expect((checkouts[0]![1].headers as Record<string, string>)['Idempotency-Key']).toMatch(/.{8,}/);
     // At the business: no address is priced or sent.
@@ -303,7 +305,7 @@ describe('[BOOK-S6b] Book on the store page', () => {
     fireEvent.click(await within(sheet).findByRole('button', { name: /10:00\sAM/ }));
     fireEvent.click(within(sheet).getByRole('button', { name: /^Book 10:00\sAM · \$2,500$/ }));
     await waitFor(() => expect(state.push).toHaveBeenCalledWith('/checkout'));
-    expect(bodyOf(calls('POST', '/api/v1/customer/cart/items')[0])).toEqual({ vendorId: 'v1', itemId: 'i9', quantity: 1, capabilities: ['MENU_OPTIONS_V2'] });
+    expect(bodyOf(calls('POST', '/api/v1/customer/cart/items')[0])).toEqual({ vendorId: 'v1', itemId: 'i9', quantity: 1, capabilities: ['MENU_OPTIONS_V2', 'VAT_LINE_V1'] });
     expect(JSON.parse(sessionStorage.getItem('swift_web_held_time:c1')!)).toEqual({ itemId: 'i9', slotStart: SLOT, mode: 'AT_BUSINESS', serviceMode: 'AT_BUSINESS' });
   });
 

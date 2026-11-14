@@ -66,9 +66,9 @@ describe('[VAT-DOCS] editing the price of an item Swift adds VAT to', () => {
   });
 
   it('[security review #2256] the word comes from the profile every role reads (never the owner-only VAT read)', () => {
-    expect(vatPricingOf({ vatAddsToPrices: true, vatRatePercent: 14 })).toEqual({ adds: true, ratePercent: 14 });
-    expect(vatPricingOf({ vatAddsToPrices: false, vatRatePercent: 14 })).toEqual({ adds: false, ratePercent: 14 });
-    expect(vatPricingOf({})).toEqual({ adds: false, ratePercent: 0 }); // an older server: the bare price
+    expect(vatPricingOf({ vatAddsToPrices: true, vatRatePercent: 14 })).toEqual({ adds: true, ratePercent: 14, beforeVat: false });
+    expect(vatPricingOf({ vatAddsToPrices: false, vatRatePercent: 14 })).toEqual({ adds: false, ratePercent: 14, beforeVat: false });
+    expect(vatPricingOf({})).toEqual({ adds: false, ratePercent: 0, beforeVat: false }); // an older server: the bare price
     expect(vatPricingOf(null)).toBeNull(); // not loaded: no new price is sent
   });
 

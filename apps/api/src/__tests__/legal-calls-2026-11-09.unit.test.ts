@@ -24,12 +24,13 @@ const flat = (s: string) => s.replace(/\s+/g, ' ');
 
 describe('LEGAL_VERSION 2026-11-09 for the in-app call wording: material, so everyone ticks again', () => {
   it('is served, and classed material exactly once, for everyone', () => {
-    expect(LEGAL_VERSION).toBe('2026-11-10');
+    expect(LEGAL_VERSION).toBe('2026-11-13'); // [STORE-VAT-EXCLUSIVE] served now under 2026-11-13 (prices before VAT, material for everyone)
     const entry = MATERIAL_CHANGES.filter((c) => c.version === '2026-11-09');
     expect(entry).toHaveLength(1);
     expect(entry[0]!.audience).toBeUndefined();
     expect(NON_MATERIAL_CHANGES.map((c) => c.version)).not.toContain('2026-11-09');
-    expect(materialVersion(LEGAL_VERSION)).toBe('2026-11-09');
+    expect(materialVersion('2026-11-10')).toBe('2026-11-09');
+    expect(materialVersion(LEGAL_VERSION)).toBe('2026-11-13'); // [STORE-VAT-EXCLUSIVE] prices before VAT, material for everyone
   });
 
   it.each([
@@ -54,7 +55,7 @@ describe('LEGAL_VERSION 2026-11-09 for the in-app call wording: material, so eve
 
   it('only the Privacy Policy states in-app calls; the other texts change by their date alone', () => {
     for (const doc of [TERMS, DRIVER_AGREEMENT, VENDOR_AGREEMENT]) {
-      expect(doc).toContain('10 November 2026'); // [LEGAL-CARDS] the date moved with 2026-11-10
+      expect(doc).toContain('13 November 2026'); // [LEGAL-CARDS] the date moved with 2026-11-10; [STORE-VAT-EXCLUSIVE] and with 2026-11-13
       expect(doc).not.toMatch(/in-app call/i);
     }
   });

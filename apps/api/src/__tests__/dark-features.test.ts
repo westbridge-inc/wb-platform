@@ -163,6 +163,8 @@ describe('[dark features] the registry matches the code that reads the switch', 
       read('apps/api/src/modules/vendor/authority-letter/esign-switch.ts'),
       // [KITCHEN-INTEGRATION] orders straight to a store's kitchen system
       read('apps/api/src/modules/kitchen/kitchen-switch.ts'),
+      // [STORE-VAT-EXCLUSIVE] prices before VAT, then a "VAT 14%" line
+      read('apps/api/src/modules/store-vat/store-vat.ts'),
     ].join('\n');
     expect(sources.length, 'could not read the sources — the check cannot run').toBeGreaterThan(500);
     for (const f of DARK_FEATURES) {

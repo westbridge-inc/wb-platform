@@ -1,6 +1,7 @@
 import { AppError } from '../../utils/errors';
 import { lineChangeDiscount, type LineDiscountRedemption } from './line-discount';
 import { assertMmgFulfilmentAllowed } from './order.service';
+import { vatOnTopChange } from '../store-vat/order-vat';
 
 /**
  * [L09 · M026 · M028] One place for what an out-of-stock swap does to an order
@@ -106,14 +107,20 @@ type ViewLine = {
   substitutePrice: unknown;
   substituteDecideBy?: Date | null;
   selectedOptions: readonly OptionSnapshot[];
+  /** [STORE-VAT-EXCLUSIVE] The substitute item's VAT class (the line takes it at the yes); absent = the line's own. */
+  substituteVatClass?: string | null;
 };
 type ViewOrder = Parameters<typeof assertMmgFulfilmentAllowed>[0] & AdjustableOrder & {
   totalAmount: unknown;
   /** [Review A S3-1] The order's discount, its lines and its promo record: the discount that goes with a change
    *  (line-discount.ts). Absent on an older projection: no discount moves. */
   discount?: unknown;
-  items?: ReadonlyArray<{ id: string; subStatus: string; totalCustomer: unknown }>;
-  promoRedemption?: LineDiscountRedemption | null;
+  items?: ReadonlyArray<{ id: string; subStatus: string; totalCustomer: unknown; vatClass?: string | null }>;
+  promoRedemption?: (LineDiscountRedemption & { funder?: string }) | null;
+  /** [STORE-VAT-EXCLUSIVE] The VAT the order froze: on an order whose VAT is added on top, a change moves its VAT line too. */
+  vatOnTop?: boolean;
+  vatRateBps?: number | null;
+  vatAmount?: unknown;
 };
 
 /** [Review A S3-1] How much of the order's discount goes with this change, by the rule the change itself applies. */
@@ -121,6 +128,17 @@ function discountBackOf(line: ViewLine, order: ViewOrder, newLineTotal: number):
   if (!line.id || !order.items || !(Number(order.discount) > 0)) return 0;
   const live = order.items.filter((i) => i.subStatus !== 'REFUNDED' && i.subStatus !== 'REJECTED').map((i) => ({ id: i.id, amount: Number(i.totalCustomer) }));
   return lineChangeDiscount({ orderDiscount: order.discount, live, change: { lineId: line.id, newLineTotal }, redemption: order.promoRedemption ?? null }).amount;
+}
+
+/** [STORE-VAT-EXCLUSIVE] The change in an order's added VAT that a change to this line makes (recompute's own rule);
+ *  0 unless the order's VAT is added on top and the view was given its lines. */
+function vatChangeOf(line: ViewLine, order: ViewOrder, newLineTotal: number): number {
+  if (!order.vatOnTop || !line.id || !order.items) return 0;
+  return vatOnTopChange({
+    vatRateBps: order.vatRateBps, vatOnTop: order.vatOnTop, vatAmount: order.vatAmount, discount: order.discount ?? 0,
+    items: order.items,
+    promoRedemption: order.promoRedemption ? { ...order.promoRedemption, funder: order.promoRedemption.funder ?? 'VENDOR' } : null,
+  }, { lineId: line.id, newLineTotal, ...(newLineTotal > 0 && line.substituteVatClass !== undefined ? { vatClass: line.substituteVatClass } : {}) });
 }
 
 /** The order facts that decide whether its total may change in-app. Each one
@@ -296,7 +314,8 @@ export function substitutionView(line: ViewLine, order: ViewOrder, ctx: { onlyIt
       original,
       proposed: null,
       // The line's price less the discount that goes with it, never below zero (picking.service closeLine).
-      priceDelta: -Math.min(Math.max(0, Number(line.totalCustomer) - discountBackOf(line, order, 0)), Number(order.totalAmount)),
+      // [STORE-VAT-EXCLUSIVE] On an order whose VAT is added on top, the line's VAT comes off too.
+      priceDelta: -Math.min(Math.max(0, Number(line.totalCustomer) - discountBackOf(line, order, 0)), Number(order.totalAmount)) + vatChangeOf(line, order, 0),
       decisions: { approve: !approvalHold && adjustable, reject: false },
       settlementGuidance: approvalHold ?? (adjustable ? null : totalFixedCopy(order)),
       decideBy,
@@ -304,7 +323,9 @@ export function substitutionView(line: ViewLine, order: ViewOrder, ctx: { onlyIt
     };
   }
   // [Review A S3-1] The total moves by the line's change less the discount that goes with it: what approving charges.
-  const totalChange = cents(delta + discountBackOf(line, order, substitutionLineChange(line).newLineTotal));
+  // [STORE-VAT-EXCLUSIVE] On an order whose VAT is added on top, its VAT line moves with the swap (the substitute's class).
+  const vatChange = vatChangeOf(line, order, substitutionLineChange(line).newLineTotal);
+  const totalChange = cents(delta + discountBackOf(line, order, substitutionLineChange(line).newLineTotal) + vatChange);
   const negativeTotal = Number(order.totalAmount) + totalChange < 0;
   const settlementGuidance = approvalHold
     ?? (!adjustable ? totalFixedCopy(order) : negativeTotal
@@ -319,7 +340,7 @@ export function substitutionView(line: ViewLine, order: ViewOrder, ctx: { onlyIt
     // [O-4 · REVIEW-F S3-1] Declining the only item left would empty the order: not offered.
     // [OOS-FLOW · REVIEW-1 S3-1] On an accepted order's only item a decline cancels the order: offered only to a
     // client that labels it so (lastItemDecline); older cards read "Rejecting removes the item".
-    decisions: { approve: !approvalHold && !negativeTotal && (adjustable || delta === 0), reject: adjustable && !waitingLast && (!acceptedLast || ctx.lastItemDecline === true) },
+    decisions: { approve: !approvalHold && !negativeTotal && (adjustable || (delta === 0 && vatChange === 0)), reject: adjustable && !waitingLast && (!acceptedLast || ctx.lastItemDecline === true) },
     ...(lastItem ? { lastItem: true } : {}),
     settlementGuidance,
     // [SUBSTITUTION] The wait is bounded and the customer is told how: answer

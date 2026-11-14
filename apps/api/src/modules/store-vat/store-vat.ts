@@ -68,10 +68,39 @@ export interface StoreVatRow {
   vatEffectiveFrom?: Date | null;
 }
 
-/** The modes a store may choose. PRICES_INCLUDE_VAT: its typed prices already include VAT. ADD_VAT_AT_CHECKOUT
- *  [VAT-DOCS · owner 30 Oct 2026]: its typed prices exclude VAT and the server adds 14% INTO the price customers see
- *  and pay while the approval stands (vat-pricing.ts), so the customer sees the full price before ordering. */
-export const STORE_VAT_MODES_OFFERED: ReadonlySet<string> = new Set(['PRICES_INCLUDE_VAT', 'ADD_VAT_AT_CHECKOUT']);
+/** [STORE-VAT-EXCLUSIVE · owner 13 Nov 2026] Prices BEFORE VAT: the store's typed prices are shown exactly as typed,
+ *  and every order adds the store's VAT on its standard-rated goods as one "VAT 14%" line above the Total. */
+export const PRICES_EXCLUDE_VAT = 'PRICES_EXCLUDE_VAT';
+
+export const STORE_VAT_EXCLUSIVE_ENV = 'STORE_VAT_EXCLUSIVE';
+
+/**
+ * [STORE-VAT-EXCLUSIVE] The switch for prices before VAT. OFF unless set to exactly '1' (deployed dark). OFF: no store can
+ * choose the basis or be approved on it, and every store sees exactly the choices it had before. It never changes what a
+ * customer pays: a store a person already approved on this basis keeps adding its VAT at checkout while that approval
+ * stands (its typed prices are before VAT, so dropping the VAT would undercharge it); a PERSON moves such a store off
+ * the basis (an approved change of choice, or withdrawing its VAT).
+ */
+export function storeVatExclusiveEnabled(env: Record<string, string | undefined> = process.env): boolean {
+  return env[STORE_VAT_EXCLUSIVE_ENV] === '1';
+}
+
+/** Every mode the server honours on an APPROVED store (the predicate): a store approved on a basis keeps it until a
+ *  person approves a change, whatever is offered to new claims. */
+export const STORE_VAT_MODES_HONOURED: ReadonlySet<string> = new Set(['PRICES_INCLUDE_VAT', 'ADD_VAT_AT_CHECKOUT', PRICES_EXCLUDE_VAT]);
+
+/** The modes a store may choose now, in the order the screens offer them. PRICES_INCLUDE_VAT: its typed prices already
+ *  include VAT. [STORE-VAT-EXCLUSIVE · owner 13 Nov 2026] With STORE_VAT_EXCLUSIVE on, a store whose prices exclude VAT
+ *  chooses PRICES_EXCLUDE_VAT (listed first: the basis going forward), and ADD_VAT_AT_CHECKOUT (14% added INTO each
+ *  price, vat-pricing.ts) is no longer offered to a new choice; stores already on it keep it until a person approves a
+ *  change. With the switch off the choices are exactly the earlier two [VAT-DOCS · owner 30 Oct 2026]. */
+export function storeVatModesOffered(env: Record<string, string | undefined> = process.env): readonly string[] {
+  return storeVatExclusiveEnabled(env) ? [PRICES_EXCLUDE_VAT, 'PRICES_INCLUDE_VAT'] : ['PRICES_INCLUDE_VAT', 'ADD_VAT_AT_CHECKOUT'];
+}
+
+export function storeVatModeOffered(mode: string | null | undefined, env: Record<string, string | undefined> = process.env): boolean {
+  return mode != null && storeVatModesOffered(env).includes(mode);
+}
 
 /**
  * THE predicate: does this store's next order carry VAT? Every reader (checkout, cart quote, storefront) asks
@@ -81,13 +110,21 @@ export const STORE_VAT_MODES_OFFERED: ReadonlySet<string> = new Set(['PRICES_INC
  * certificate's effective date has arrived in Guyana (inEffectOn).
  */
 export function storeVatEffective(row: StoreVatRow, env: Record<string, string | undefined> = process.env, now: Date = new Date()): boolean {
-  if (!storeVatEnabled(env)) return false;
+  // [STORE-VAT-EXCLUSIVE] A store approved on prices BEFORE VAT keeps its VAT while the approval stands, switch or not:
+  // its typed prices exclude VAT, so a switch flip must never take 14% off what its customers pay (storeVatExclusiveEnabled).
+  if (!storeVatEnabled(env) && row.vatMode !== PRICES_EXCLUDE_VAT) return false;
   if (row.vatStatus !== 'APPROVED') return false;
-  if (!row.vatMode || !STORE_VAT_MODES_OFFERED.has(row.vatMode)) return false;
+  if (!row.vatMode || !STORE_VAT_MODES_HONOURED.has(row.vatMode)) return false;
   if (!row.vatApprovedNumber || !row.vatApprovedName) return false;
   if (row.vatApprovedNumber !== row.vatRegistrationNumber) return false;
   if (row.vatEffectiveFrom && !inEffectOn(row.vatEffectiveFrom, now)) return false;
   return true;
+}
+
+/** [STORE-VAT-EXCLUSIVE] Does this store's next order ADD its VAT on top of the goods (a "VAT 14%" line above the
+ *  Total)? Exactly while its VAT is in effect on the prices-before-VAT basis. */
+export function storeVatOnTop(row: StoreVatRow, env: Record<string, string | undefined> = process.env, now: Date = new Date()): boolean {
+  return row.vatMode === PRICES_EXCLUDE_VAT && storeVatEffective(row, env, now);
 }
 
 /**

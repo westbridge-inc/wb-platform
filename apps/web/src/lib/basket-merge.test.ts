@@ -12,7 +12,7 @@ describe('uploading a browser basket', () => {
     expect((await uploadGuestBasket('customer-a'))?.applied).toBe(true);
     const [, request, options] = fetch.mock.calls[0]!;
     expect(request?.headers).toEqual({ 'Idempotency-Key': pending.key }); expect(options).toEqual({ redirectOnExpired: false });
-    expect(JSON.parse(String(request?.body))).toEqual({ lines: [{ clientLineId: pending.lines[0]!.clientLineId, vendorId: 'v1', itemId: 'soup', quantity: 2, expectedUnitPrice: 800, selectedOptions: {} }], capabilities: ['MENU_OPTIONS_V2'] });
+    expect(JSON.parse(String(request?.body))).toEqual({ lines: [{ clientLineId: pending.lines[0]!.clientLineId, vendorId: 'v1', itemId: 'soup', quantity: 2, expectedUnitPrice: 800, selectedOptions: {} }], capabilities: ['MENU_OPTIONS_V2', 'VAT_LINE_V1'] });
     expect(readGuestBasket().lines).toEqual([]);
   });
   it('keeps the exact upload after a lost response and retries it without a new key', async () => {

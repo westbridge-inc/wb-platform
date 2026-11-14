@@ -17,6 +17,11 @@
  * next month. Swift NEVER files: the report says so, and covers only the store's sales through Swift.
  *
  * Money: whole GYD columns summed as integer cents, never as floats.
+ *
+ * [STORE-VAT-EXCLUSIVE · owner 13 Nov 2026] An order whose store priced BEFORE VAT froze vatOnTop: its vatBase already
+ * excludes the VAT (line 17 is the base itself; the VAT-inclusive figure is base + VAT). Every other order's vatBase
+ * includes it (line 17 = base - VAT). Each order is read on its own basis, so a store that changed basis mid-period
+ * still reports both kinds correctly.
  */
 import type { Prisma, PrismaClient } from '@prisma/client';
 import { AppError } from '../../utils/errors';
@@ -84,6 +89,8 @@ export interface VatReportRow {
   vatExemptGoods: unknown;
   vatSellerName: string | null;
   vatSellerNumber: string | null;
+  /** [STORE-VAT-EXCLUSIVE] The VAT was added on top: vatBase excludes it. Absent/false: vatBase includes it. */
+  vatOnTop?: boolean;
   /** The Guyana day of supply (supplyInstant). */
   supplyDay: string;
 }
@@ -103,7 +110,9 @@ class Sum {
   incl = 0; vat = 0; zero = 0; exempt = 0;
   add(r: VatReportRow): void {
     this.orders += 1;
-    this.incl += cents(r.vatBase); this.vat += cents(r.vatAmount); this.zero += cents(r.vatZeroRatedGoods); this.exempt += cents(r.vatExemptGoods);
+    // The VAT-inclusive standard-rated figure: the base itself, or base + VAT where the VAT was added on top.
+    this.incl += cents(r.vatBase) + (r.vatOnTop ? cents(r.vatAmount) : 0);
+    this.vat += cents(r.vatAmount); this.zero += cents(r.vatZeroRatedGoods); this.exempt += cents(r.vatExemptGoods);
   }
   figures(): Figures {
     return {
@@ -169,16 +178,11 @@ export async function storeVatReport(db: PrismaClient | Prisma.TransactionClient
     where: {
       vendorId,
       vatRateBps: { not: null },
-      status: { in: ['DELIVERED', 'COMPLETED'] },
-      OR: [
-        { deliveredAt: window },
-        { deliveredAt: null, statusHistory: { some: { status: 'COMPLETED', createdAt: window } } },
-        { deliveredAt: null, statusHistory: { none: { status: 'COMPLETED' } }, placedAt: window },
-      ],
+      ...suppliedInWindowWhere(window),
     },
     select: {
       id: true, orderNumber: true, vatRateBps: true, vatBase: true, vatStandardGoods: true, vatAmount: true,
-      vatZeroRatedGoods: true, vatExemptGoods: true, vatSellerName: true, vatSellerNumber: true, deliveredAt: true, placedAt: true,
+      vatZeroRatedGoods: true, vatExemptGoods: true, vatSellerName: true, vatSellerNumber: true, vatOnTop: true, deliveredAt: true, placedAt: true,
       statusHistory: { where: { status: 'COMPLETED' }, select: { createdAt: true }, orderBy: { createdAt: 'asc' }, take: 1 },
     },
     orderBy: { placedAt: 'asc' },
@@ -196,9 +200,49 @@ export async function storeVatReport(db: PrismaClient | Prisma.TransactionClient
     vatExemptGoods: o.vatExemptGoods,
     vatSellerName: o.vatSellerName,
     vatSellerNumber: o.vatSellerNumber,
+    vatOnTop: o.vatOnTop,
     supplyDay: guyanaDayKey(supplyInstant({ deliveredAt: o.deliveredAt, completedAt: o.statusHistory[0]?.createdAt ?? null, placedAt: o.placedAt })),
   }));
   // [REVIEW-M #2109 S4] The query window is a coarse cut (any COMPLETED row inside it); the order's ONE supply day is the
   // first completion. Keep exactly the orders whose supply day falls in the period, so an order counts once, on that day.
   return buildVatReport(rows.filter((r) => r.supplyDay >= range.from && r.supplyDay <= range.to), range.from, range.to);
+}
+
+/** The orders supplied (delivered, completed at the counter, else placed) inside a window: a coarse cut, refined to the
+ *  ONE supply instant (supplyInstant, first completion) by the reader. Shared by the VAT report and the statement's row. */
+function suppliedInWindowWhere(window: { gte: Date; lt?: Date; lte?: Date }) {
+  return {
+    status: { in: ['DELIVERED', 'COMPLETED'] as Array<'DELIVERED' | 'COMPLETED'> },
+    OR: [
+      { deliveredAt: window },
+      { deliveredAt: null, statusHistory: { some: { status: 'COMPLETED' as const, createdAt: window } } },
+      { deliveredAt: null, statusHistory: { none: { status: 'COMPLETED' as const } }, placedAt: window },
+    ],
+  };
+}
+
+/**
+ * [STORE-VAT-EXCLUSIVE · owner 13 Nov 2026] The VAT a store pricing before VAT added on top at checkout, for its sales
+ * statement (the store's, for the GRA; never part of its sales). 0 for every other store.
+ *
+ * [REVIEW-A F7 · REVIEW-B S4-1] Only orders that froze the before-VAT basis (vatOnTop), and counted on the SAME day basis as
+ * the VAT report: the day the goods were supplied (delivered, else completed, else placed), never the day placed. So the
+ * statement's "VAT added at checkout" for a month equals line 18 of that month's VAT report for these orders; a month-end
+ * order lands in the same month in both. Its own read, so the sales components (and the weekly digest) are unchanged.
+ */
+export async function vatAddedOnTopSum(db: PrismaClient | Prisma.TransactionClient, scope: { vendorId: string; from: Date; to: Date }): Promise<number> {
+  const window = { gte: scope.from, lte: scope.to };
+  const rows = await db.order.findMany({
+    where: { vendorId: scope.vendorId, vatOnTop: true, ...suppliedInWindowWhere(window) },
+    select: {
+      taxAmount: true, deliveredAt: true, placedAt: true,
+      statusHistory: { where: { status: 'COMPLETED' }, select: { createdAt: true }, orderBy: { createdAt: 'asc' }, take: 1 },
+    },
+  });
+  let total = 0;
+  for (const o of rows) {
+    const at = supplyInstant({ deliveredAt: o.deliveredAt, completedAt: o.statusHistory[0]?.createdAt ?? null, placedAt: o.placedAt });
+    if (at >= scope.from && at <= scope.to) total += cents(o.taxAmount);
+  }
+  return total / 100;
 }

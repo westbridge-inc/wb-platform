@@ -43,6 +43,8 @@ export interface CheckoutWireOrder {
   isExpress?: boolean;
   tipAmount: string | number;
   discount: string | number;
+  /** [STORE-VAT-EXCLUSIVE] The VAT added on top (a store pricing before VAT); 0 / absent otherwise. */
+  taxAmount?: string | number;
   totalAmount: string | number;
   paymentMethod: string;
   estimatedPrepTime?: number | null;
@@ -121,6 +123,8 @@ export function shapeCheckoutAnswer(input: {
     isExpress: order.isExpress ?? false,
     tip: Number(order.tipAmount),
     discount: Number(order.discount),
+    // [STORE-VAT-EXCLUSIVE] The "VAT 14%" line inside `total`, only on an order that carries one (every other answer is unchanged).
+    ...(Number(order.taxAmount ?? 0) > 0 ? { tax: Number(order.taxAmount) } : {}),
     total: Number(order.totalAmount),
     paymentMethod: order.paymentMethod,
     estimatedPrepTime: order.estimatedPrepTime ?? null,

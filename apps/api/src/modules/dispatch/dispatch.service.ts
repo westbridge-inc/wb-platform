@@ -289,7 +289,9 @@ export function cashMathForOffer(order: {
   const ride = order.orderType === 'TAXI';
   if (ride && order.taxiFareTotal == null) return null;
   const total = n(order.totalAmount);
-  const vendorShare = ride ? 0 : riderFloatForOrder(order as { paymentMethod: string; subtotalBase: number });
+  // [STORE-VAT-EXCLUSIVE] The store's share includes the VAT a store pricing before VAT adds (taxAmount): the rider pays
+  // the store both at pickup, and the reconciliation below counts the tax once, inside this share.
+  const vendorShare = ride ? 0 : riderFloatForOrder(order as { paymentMethod: string; subtotalBase: number; taxAmount: number });
   const fee = ride ? n(order.taxiFareTotal) : n(order.deliveryFee);
   const tip = n(order.tipAmount);
   const service = n(order.serviceFee);
@@ -301,7 +303,9 @@ export function cashMathForOffer(order: {
   // Reconciliation, in minor units so decimal representation cannot decide it.
   const cents = (v: number) => Math.round(v * 100);
   const keep = fee + tip;
-  if (cents(vendorShare) + cents(keep) + cents(service) + cents(tax) - cents(discount) !== cents(total)) {
+  // A ride carries no store VAT; a store order's tax is already inside vendorShare.
+  const taxOutsideShare = ride ? tax : 0;
+  if (cents(vendorShare) + cents(keep) + cents(service) + cents(taxOutsideShare) - cents(discount) !== cents(total)) {
     return null;
   }
   // With the above satisfied and the extras zero, collect - pay === keep. State
@@ -2816,6 +2820,7 @@ export class DispatchService {
         status: string;
         holdExpiresAt: Date | null;
         subtotalBase: Prisma.Decimal;
+        taxAmount: Prisma.Decimal;
         deliveryFee: Prisma.Decimal;
         taxiPassengerCount: number | null;
         mmgClaimMismatchAt: Date | null;
@@ -2832,6 +2837,7 @@ export class DispatchService {
                "paymentStatus"::text AS "paymentStatus",
                "orderType"::text AS "orderType",
                "subtotalBase",
+               "taxAmount",
                "deliveryFee",
                "taxiPassengerCount"
         FROM "orders"

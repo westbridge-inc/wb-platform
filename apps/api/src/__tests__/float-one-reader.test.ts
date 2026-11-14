@@ -39,23 +39,23 @@ const files = walk(SRC).map((f) => ({ rel: f.slice(SRC.length + 1), code: strip(
 
 describe('one reader of what a rider fronts', () => {
   it('a non-CASH order fronts nothing', () => {
-    expect(riderFloatForOrder({ paymentMethod: 'MMG', subtotalBase: 4000 })).toBe(0);
-    expect(riderFloatForOrder({ paymentMethod: 'CARD', subtotalBase: new Prisma.Decimal('4000.00') })).toBe(0);
+    expect(riderFloatForOrder({ paymentMethod: 'MMG', subtotalBase: 4000, taxAmount: 0 })).toBe(0);
+    expect(riderFloatForOrder({ paymentMethod: 'CARD', subtotalBase: new Prisma.Decimal('4000.00'), taxAmount: 0 })).toBe(0);
   });
 
   it('a CASH order fronts the goods at the store price, Decimal or number', () => {
-    expect(riderFloatForOrder({ paymentMethod: 'CASH', subtotalBase: new Prisma.Decimal('4250.50') })).toBe(4250.5);
-    expect(riderFloatForOrder({ paymentMethod: 'CASH', subtotalBase: 4250.5 })).toBe(4250.5);
-    expect(riderFloatForOrder({ paymentMethod: 'CASH', subtotalBase: '4250.50' })).toBe(4250.5);
+    expect(riderFloatForOrder({ paymentMethod: 'CASH', subtotalBase: new Prisma.Decimal('4250.50'), taxAmount: 0 })).toBe(4250.5);
+    expect(riderFloatForOrder({ paymentMethod: 'CASH', subtotalBase: 4250.5, taxAmount: 0 })).toBe(4250.5);
+    expect(riderFloatForOrder({ paymentMethod: 'CASH', subtotalBase: '4250.50', taxAmount: 0 })).toBe(4250.5);
   });
 
   it('never returns a number the gate cannot hold — NaN, null and negatives are zero', () => {
     // FloatService.commit/release treat ≤ 0 as "nothing to do". A NaN would
     // pass `amount <= 0` as false and reach SQL as NULL arithmetic.
-    expect(riderFloatForOrder({ paymentMethod: 'CASH', subtotalBase: null })).toBe(0);
-    expect(riderFloatForOrder({ paymentMethod: 'CASH', subtotalBase: undefined })).toBe(0);
-    expect(riderFloatForOrder({ paymentMethod: 'CASH', subtotalBase: 'not money' })).toBe(0);
-    expect(riderFloatForOrder({ paymentMethod: 'CASH', subtotalBase: -12 })).toBe(0);
+    expect(riderFloatForOrder({ paymentMethod: 'CASH', subtotalBase: null, taxAmount: 0 })).toBe(0);
+    expect(riderFloatForOrder({ paymentMethod: 'CASH', subtotalBase: undefined, taxAmount: 0 })).toBe(0);
+    expect(riderFloatForOrder({ paymentMethod: 'CASH', subtotalBase: 'not money', taxAmount: 0 })).toBe(0);
+    expect(riderFloatForOrder({ paymentMethod: 'CASH', subtotalBase: -12, taxAmount: 0 })).toBe(0);
   });
 });
 
@@ -94,7 +94,7 @@ describe('[B4] the one reader reconciles against the money matrix', () => {
   // exactly that number — in minor units, as the matrix speaks — or the float
   // ceiling is a ceiling on a different quantity than the one that moves.
   it('RIDER_FRONTED on a CASH platform delivery is exactly what the gate commits', () => {
-    const order = { paymentMethod: 'CASH', subtotalBase: 4250.5 };
+    const order = { paymentMethod: 'CASH', subtotalBase: 4250.5, taxAmount: 0 };
     const matrix = settle({ foodTotal: 425050, deliveryFee: 50000, mode: 'PLATFORM_RIDER', payment: 'CASH' });
     expect(matrix.riderFronts).toBe(Math.round(riderFloatForOrder(order) * 100));
     expect(matrix.movements.find((m) => m.type === 'RIDER_FRONTED')?.amount).toBe(425050);
@@ -104,7 +104,7 @@ describe('[B4] the one reader reconciles against the money matrix', () => {
   it('on the MMG rail the rider fronts nothing — both say so', () => {
     const matrix = settle({ foodTotal: 425050, deliveryFee: 50000, mode: 'PLATFORM_RIDER', payment: 'VENDOR_MMG' });
     expect(matrix.riderFronts).toBe(0);
-    expect(riderFloatForOrder({ paymentMethod: 'MOBILE_MONEY', subtotalBase: 4250.5 })).toBe(0);
+    expect(riderFloatForOrder({ paymentMethod: 'MOBILE_MONEY', subtotalBase: 4250.5, taxAmount: 0 })).toBe(0);
   });
 });
 

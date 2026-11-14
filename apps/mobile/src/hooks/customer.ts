@@ -222,6 +222,8 @@ export type MarketItem = {
   /** [MENU-OPTIONS] A size sets the item's price: basePrice is its smallest size ("From"). Absent from an older
    *  server: read as not sized, as before. */
   pricedFrom?: boolean;
+  /** [STORE-VAT-EXCLUSIVE] A standard-rated price of a store pricing before VAT: "+ VAT". Absent from an older server. */
+  vatAddedAtCheckout?: boolean;
 };
 
 /**

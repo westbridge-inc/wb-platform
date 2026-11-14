@@ -61,3 +61,22 @@ describe('[P35 · board 4b] the item sheet', () => {
     expect(screen.queryByRole('button', { name: 'Read more' })).toBeNull();
   });
 });
+
+// [STORE-VAT-EXCLUSIVE · REVIEW-B S3-1] A standard-rated item of a store pricing before VAT: the sheet's prices say "+ VAT"
+// (the Add button and every choice's price); any other item's sheet is unchanged.
+describe('[STORE-VAT-EXCLUSIVE] the sheet of an item whose VAT is added at checkout', () => {
+  const sized = {
+    id: 'g-size', name: 'Size', setsPrice: true, isRequired: true, minSelect: 1, maxSelect: 1,
+    options: [{ id: 'o-l', name: 'Large', additionalPrice: 3500, isAvailable: true }],
+  };
+  it('"+ VAT" on the Add button and on each choice\'s price', () => {
+    sheet({ vatAdded: true, item: { id: 'basket', name: 'Warishi basket', description: null, basePrice: 3500, customerPrice: 3500, imageUrl: null, isAvailable: true, optionGroups: [sized] } as unknown as ItemSheetProps['item'] });
+    expect(screen.getByRole('button', { name: /Add to order · \$3,500 \+ VAT/ })).toBeTruthy();
+    expect(screen.getByText(/\$3,500 \+ VAT/, { selector: 'span, p, label' })).toBeTruthy();
+  });
+  it('nothing for any other item', () => {
+    sheet();
+    expect(screen.getByRole('button', { name: /Add to order · \$3,500$/ })).toBeTruthy();
+    expect(screen.queryByText(/\+ VAT/)).toBeNull();
+  });
+});

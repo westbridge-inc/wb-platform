@@ -9,7 +9,7 @@ import { LEGAL_URL } from '@/lib/legal-url';
 import { storeKey } from '@/lib/store-scope';
 import { GRA_VAT_URL } from '@/lib/gra-vat-url';
 import {
-  calendarDay, MODE_CHANGE_REVIEW_NOTE, modeRequestedLine, TURN_OFF_ADDED_PRICES_LINE, VAT_DOCUMENT_ROW, VAT_MODE_CHOICES, vatModeHelp, type StoreVatMode,
+  calendarDay, MODE_CHANGE_REVIEW_NOTE, modeRequestedLine, TURN_OFF_ADDED_PRICES_LINE, TURN_OFF_VAT_LINE_LINE, VAT_DOCUMENT_ROW, vatBasisChangeWarning, vatModeChoices, vatModeHelp, vatModeLabel, vatSettingsOffLine, type StoreVatMode,
 } from '@/lib/store-vat-words';
 
 /**
@@ -26,7 +26,9 @@ export function vatStatusLine(v: StoreVatView): string {
         : 'Send your GRA VAT registration certificate below. A person at Swift checks it before anything changes.';
     case 'APPROVED':
       if (!v.effective) return 'Approved, but VAT is not on your orders right now. Your prices and receipts show no VAT.';
-      return `Approved from ${calendarDay(v.approved?.effectiveFrom)}. ${v.mode === 'ADD_VAT_AT_CHECKOUT'
+      return `Approved from ${calendarDay(v.approved?.effectiveFrom)}. ${v.mode === 'PRICES_EXCLUDE_VAT'
+        ? `Your prices are shown before VAT, and VAT at ${v.ratePercent}% is added at checkout as its own line`
+        : v.mode === 'ADD_VAT_AT_CHECKOUT'
         ? `VAT at ${v.ratePercent}% is added to the prices you type for standard-rated items`
         : `Your prices include VAT at ${v.ratePercent}%`}, and receipts say “VAT charged by ${v.approved?.registeredName ?? ''} · VAT reg. no. ${v.approved?.number ?? ''}”.`;
     case 'REJECTED':
@@ -99,11 +101,16 @@ export function VatCard({ storeId }: { storeId: string | null }) {
   const canSave = registered ? claimed && number.trim().length > 0 && mode !== null && (numberChanged || modeChanged) : claimed;
   const claimReady = !firstClaim || (number.trim().length > 0 && mode !== null);
   const approved = v.status === 'APPROVED';
+  // [STORE-VAT-EXCLUSIVE] The server's offer (prices before VAT first while it is on), plus the store's own approved
+  // choice when it is no longer offered: it keeps it until a person approves a change.
+  const offered = vatModeChoices(v.modesOffered);
+  const ownLabel = approved && v.mode && !offered.some((c) => c.value === v.mode) ? vatModeLabel(v.mode) : null;
+  const modeChoices = ownLabel && v.mode ? [...offered, { value: v.mode, label: ownLabel }] : offered;
   const turnOff = () => (approved && !confirmOff ? setConfirmOff(true) : save.mutate(false));
   const confirmLine = confirmOff ? (
     <p role="alert" className="mt-2 text-sm">
-      Turning VAT off ends your approval: your prices stop saying &ldquo;incl. VAT&rdquo; at once, and a person at Swift must
-      check your certificate again before VAT can come back.{v.addsVatToPrices ? TURN_OFF_ADDED_PRICES_LINE : ''} Press the button again to turn it off.
+      Turning VAT off ends your approval: your prices stop saying {v.vatOnTop ? <>&ldquo;+ VAT&rdquo;</> : <>&ldquo;incl. VAT&rdquo;</>} at once, and a person at Swift must
+      check your certificate again before VAT can come back.{v.addsVatToPrices ? TURN_OFF_ADDED_PRICES_LINE : v.vatOnTop ? TURN_OFF_VAT_LINE_LINE : ''} Press the button again to turn it off.
     </p>
   ) : null;
   const needsCertificate = firstClaim || (v.available && (v.status === 'PENDING' || v.status === 'REJECTED' || v.status === 'REVOKED')
@@ -150,7 +157,7 @@ export function VatCard({ storeId }: { storeId: string | null }) {
               <fieldset className="mt-2">
                 <legend className="text-sm font-semibold">Your prices</legend>
                 <div className="mt-1 space-y-1 text-sm">
-                  {VAT_MODE_CHOICES.map((c) => (
+                  {modeChoices.map((c) => (
                     <label key={c.value} className="flex items-center gap-2">
                       <input type="radio" name="vat-mode" checked={mode === c.value} onChange={() => setMode(c.value)} className="accent-[var(--swift-red)]" />
                       {c.label}
@@ -158,6 +165,8 @@ export function VatCard({ storeId }: { storeId: string | null }) {
                   ))}
                 </div>
                 {mode && <p className="mt-1 text-sm text-[var(--swift-muted)]">{vatModeHelp(mode, v.ratePercent)}</p>}
+                {/* [STORE-VAT-EXCLUSIVE · REVIEW-B S4-6] Moving from prices that include VAT to prices before VAT. */}
+                {v.status === 'APPROVED' && vatBasisChangeWarning(v.mode, mode, v.ratePercent) && <p role="note" className="mt-1 text-sm font-medium text-[var(--swift-red)]">{vatBasisChangeWarning(v.mode, mode, v.ratePercent)}</p>}
                 {changeNeedsPerson && <p className="mt-1 text-sm text-[var(--swift-muted)]">{MODE_CHANGE_REVIEW_NOTE}</p>}
               </fieldset>
             </div>
@@ -178,7 +187,8 @@ export function VatCard({ storeId }: { storeId: string | null }) {
       ) : (
         claimed && (
           <div className="mt-3">
-            <p className="text-sm text-[var(--swift-muted)]">VAT settings are not available on Swift right now. Your prices stay exactly as you typed them.</p>
+            {/* [STORE-VAT-EXCLUSIVE · REVIEW-A F5] Never "not available" alone while its VAT is still added at checkout. */}
+            <p className="text-sm text-[var(--swift-muted)]">{vatSettingsOffLine(v)}</p>
             <button
               type="button"
               onClick={turnOff}

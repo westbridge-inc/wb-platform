@@ -34,7 +34,10 @@ function store(id: string, tenant: Row): Row {
     estimatedPrepTime: 10, averageRating: 4, totalRatings: 1, minOrderAmount: 0, totalOrders: 1,
     deliveryRadius: 4, distanceKm: null,
     // [CHAINS PR3] the brand columns every customer list reads to show one card per brand: this store has no brand
-    ownerId: `owner-${id}`, owner: { brandName: null }, brandListedAlone: false };
+    ownerId: `owner-${id}`, owner: { brandName: null }, brandListedAlone: false,
+    // [STORE-VAT-EXCLUSIVE] the VAT terms every item list reads for its "+ VAT" mark (withVatAddedHint): no VAT here
+    vatRegistrationNumber: null, vatStatus: 'NONE', vatMode: null, vatModeRequested: null, vatCertificateDocId: null,
+    vatApprovedNumber: null, vatApprovedName: null, vatEffectiveFrom: null, vatReviewedBy: null, vatReviewedAt: null, vatReviewNote: null };
 }
 
 async function fixture() {

@@ -21,7 +21,8 @@ describe('[MENU-OPTIONS] Money reads "From" for an item whose size sets its pric
     const { join } = await import('node:path');
     const search = readFileSync(join(__dirname, '../modules/shop/screens/SearchScreen.tsx'), 'utf8');
     const market = readFileSync(join(__dirname, '../modules/shop/screens/MarketScreen.tsx'), 'utf8');
-    expect(search.match(/<Money amount=\{it\.basePrice\} from=\{it\.pricedFrom === true\} \/>/g)).toHaveLength(2);
-    expect(market).toMatch(/<Money amount=\{item\.basePrice\} from=\{item\.pricedFrom === true\} tone="brand" \/>/);
+    // [STORE-VAT-EXCLUSIVE] ...and the server's "+ VAT" flag beside it.
+    expect(search.match(/<Money amount=\{it\.basePrice\} from=\{it\.pricedFrom === true\} vatAdded=\{it\.vatAddedAtCheckout === true\} \/>/g)).toHaveLength(2);
+    expect(market).toMatch(/<Money amount=\{item\.basePrice\} from=\{item\.pricedFrom === true\} vatAdded=\{item\.vatAddedAtCheckout === true\} tone="brand" \/>/);
   });
 });

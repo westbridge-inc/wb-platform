@@ -492,7 +492,8 @@ describe('the response is the EXISTING item shape', () => {
     // closed store's dish); the market card receives the same field, never a fork.
     // [MENU-OPTIONS] `pricedFrom` joined the same way: a sized item's card reads "From" on search and market alike.
     expect(Object.keys(item).sort()).toEqual(
-      ['basePrice', 'categoryName', 'id', 'imageUrl', 'isNew', 'name', 'pricedFrom', 'vendorId', 'vendorIsCurrentlyOpen', 'vendorName'].sort(),
+      // [STORE-VAT-EXCLUSIVE] + vatAddedAtCheckout ("+ VAT" beside a before-VAT store's standard-rated price).
+      ['basePrice', 'categoryName', 'id', 'imageUrl', 'isNew', 'name', 'pricedFrom', 'vatAddedAtCheckout', 'vendorId', 'vendorIsCurrentlyOpen', 'vendorName'].sort(),
     );
     expect(typeof item.basePrice, 'price is a number, never a Decimal string').toBe('number');
   });

@@ -38,6 +38,7 @@ import { orderLineChoices, type OrderLineChoice } from '../../../../../../mobile
 import { pickupCodeWords } from './pickup-words';
 import { lazyRetry } from '@/lib/chunk-retry';
 import { orderReadyEstimate } from '@/lib/store-kind-words';
+import { orderVatAddedRow } from '@/lib/order-vat-row';
 
 /** The store kinds the web search filters by (its own chips): a declined order opens search on the same kind. */
 const SEARCH_TYPES: ReadonlySet<string> = new Set(['RESTAURANT', 'SUPERMARKET', 'STORE', 'SERVICE']);
@@ -86,6 +87,10 @@ type OrderDetail = {
   deliveryFee?: number;
   discount?: number;
   tipAmount?: number;
+  /** [STORE-VAT-EXCLUSIVE] The VAT a store pricing before VAT added (the "VAT 14%" row), its basis and rate. */
+  taxAmount?: number;
+  vatOnTop?: boolean;
+  vatRateBps?: number | null;
   totalAmount?: number;
   total?: number;
   paymentMethod?: 'CASH' | 'MOBILE_MONEY' | string;
@@ -948,6 +953,8 @@ export default function OrderDetailPage() {
               : null}
             {Number(order.discount ?? 0) > 0 ? <div className={styles.line}><span>Discount</span><strong>−{money(Number(order.discount))}</strong></div> : null}
             {Number(order.tipAmount ?? 0) > 0 ? <div className={styles.line}><span>{isTaxi ? 'Driver tip' : 'Rider tip'}</span><strong>{money(Number(order.tipAmount))}</strong></div> : null}
+            {/* [STORE-VAT-EXCLUSIVE · owner 13 Nov 2026] A store pricing before VAT: "VAT 14%" right above the Total. */}
+            {orderVatAddedRow(order) ? <div className={styles.line}><span>{orderVatAddedRow(order)!.label}</span><strong>{money(orderVatAddedRow(order)!.amount)}</strong></div> : null}
             <div className={styles.totalLine}><span>Total</span><strong>{money(isTaxi && order.fareBreakdown ? order.fareBreakdown.total : order.totalAmount ?? order.total)}</strong></div>
           </div>
           {showPaymentTruth ? (
