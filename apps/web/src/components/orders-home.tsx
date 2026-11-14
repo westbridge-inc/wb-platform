@@ -32,7 +32,7 @@ import { HANDOVER_WORDS, boardStepLabel, withHandoverSteps } from '../../../mobi
 import { handedToRider } from '@/lib/store-handover-api';
 import { RiderHandoverLine } from './rider-handover-line';
 import { billingHeadline, billingPill } from '@/lib/subscription-words';
-import { acceptHeldForPayment, mmgMovedLabel, mmgMoneyMoved, mmgPayBlockedReason } from '@/lib/mmg-pay-words';
+import { MMG_PAY_AFTER_ACCEPT, acceptHeldForPayment, mmgMovedLabel, mmgMoneyMoved, mmgPayBlockedReason } from '@/lib/mmg-pay-words';
 // Plain app files, imported as is (and copied into the web image by the Dockerfile).
 import { MMG_DISPUTE_NOTICE, mmgDisputePaused } from '@/lib/mmg-dispute';
 // [REVIEW-LIGHT2 #2306 S3] the app's own reading of a held store (plain file), and its words
@@ -520,9 +520,10 @@ export function OrderCardActions({ order, onOpen }: { order: VendorOrder; onOpen
   });
   const reject = useMutation({ mutationFn: (why: string) => rejectOrder(order.id, why), onSettled: () => { setRejecting(false); refresh(); } });
   // The app card's MMG step (VendorOrderCard): the payment's state, and the
-  // store's confirmation where money plausibly landed. Payment-first — the
-  // server accepts an MMG order only after that confirmation — so an unpaid
-  // MMG order offers the confirmation instead of an Accept it would refuse.
+  // store's confirmation where money plausibly landed. [owner 14 Nov 2026] An
+  // unpaid MMG order is accepted first: the customer sees the store's MMG number
+  // only once it is accepted, and nothing moves past Accept until "Paid by MMG".
+  // Only a payment that can no longer happen holds Accept back (the server refuses it).
   const status = (order.status || '').toUpperCase();
   const isMmg = order.paymentMethod === 'MOBILE_MONEY';
   const moneyMoved = mmgMoneyMoved(order.paymentStatus);
@@ -544,6 +545,7 @@ export function OrderCardActions({ order, onOpen }: { order: VendorOrder; onOpen
         </p>
       )}
       {blockedReason && <p className="sw-caption">{blockedReason}</p>}
+      {actions.some((a) => a.action === 'accept') && isMmg && !moneyMoved && <p className="sw-caption font-semibold">{MMG_PAY_AFTER_ACCEPT}</p>}
       {/* [REVIEW-F S4-3 on #2032] One name for the MMG step: the window's own button (the reference is typed there). */}
       {canConfirm && <button type="button" onClick={onOpen} className="sw-btn sw-btn-md sw-btn-outline w-full">Paid by MMG</button>}
       {/* [STORE-DASH · O-2] What the store checks before a one-tap hand-over (the app card's line): the

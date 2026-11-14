@@ -15,7 +15,7 @@ import { MutationNotice } from '@/components/mutation-notice';
 import { CallPartyButton } from '@/components/call-party-button';
 import { storeKey, useStoreId } from '@/lib/store-scope';
 import { useFeedPollInterval } from '@/lib/store-live-feed';
-import { acceptHeldForPayment, mmgMovedLabel, mmgMoneyMoved, mmgPayBlockedReason } from '@/lib/mmg-pay-words';
+import { MMG_PAY_AFTER_ACCEPT, acceptHeldForPayment, mmgMovedLabel, mmgMoneyMoved, mmgPayBlockedReason } from '@/lib/mmg-pay-words';
 import { formatAppointmentSlot } from '@/lib/appointmentTime';
 import {
   confirmedOrderFields, customerLines, orderMoneyNotes, orderMoneyRows, orderPaymentLine, prepTimeLine, recoveryView, storeCanConfirmReturn, vendorStatusLabel, whenLabel,
@@ -524,9 +524,10 @@ export function OrderDetail({ id, onClose }: { id: string; onClose: () => void }
 
   const s = (o.status || '').toUpperCase();
   const paused = mmgDisputePaused(o);
-  // Payment-first, the same rule as the card (lib/mmg-pay-words): an MMG order
-  // is accepted only once its money has moved (CAPTURED or CLAIMED). Until then
-  // the window offers the store's confirmation, or says why it cannot.
+  // The same rule as the card (lib/mmg-pay-words). [owner 14 Nov 2026] An unpaid
+  // MMG order is accepted first (the customer then pays the store's number), and
+  // the window also offers the store's confirmation; only a payment that can no
+  // longer happen holds Accept back, and the window says why.
   // (A disputed order keeps only Reject: actionsFor.)
   const actions = actionsFor(o).filter((a) => !(a.kind === 'accept' && acceptHeldForPayment(o)));
   const pickable = !paused && ['SUPERMARKET', 'STORE'].includes(o.vendor?.vendorType ?? '') && PICKABLE_STATES.includes(s);
@@ -793,6 +794,10 @@ export function OrderDetail({ id, onClose }: { id: string; onClose: () => void }
       <div className="mt-5 flex flex-wrap items-center gap-2">
         {payBlockedReason && (
           <p className="w-full text-sm text-[var(--swift-muted)]">{payBlockedReason}</p>
+        )}
+        {/* [owner 14 Nov 2026] An unpaid MMG order is accepted first; the customer then pays the store's number. */}
+        {isMmg && !mmgMoneyMoved(o.paymentStatus) && actions.some((a) => a.kind === 'accept') && (
+          <p className="w-full text-sm font-semibold text-[var(--swift-warning)]">{MMG_PAY_AFTER_ACCEPT}</p>
         )}
         {confirmPayNeedsManager && (
           <p className="w-full text-sm text-[var(--swift-muted)]">Only the owner or a manager can confirm MMG payments.</p>

@@ -30,7 +30,7 @@ export function ringLineChoices(options: readonly OrderLineOption[] | null | und
   return (options ?? []).map((o) => (o.group ? `${o.group}: ${o.name ?? ''}` : o.name ?? '')).filter((t) => t.trim() !== '');
 }
 import { formatAppointmentSlot } from '@/lib/appointmentTime';
-import { acceptHeldForPayment, mmgPayBlockedReason } from '@/lib/mmg-pay-words';
+import { MMG_PAY_AFTER_ACCEPT, acceptHeldForPayment, mmgPayBlockedReason, paysAfterAccept } from '@/lib/mmg-pay-words';
 import { canAttestPayment } from '@/lib/vendor-hub';
 import { mmgDisputePaused } from '@/lib/mmg-dispute';
 import { storeKey, useStoreId } from '@/lib/store-scope';
@@ -276,9 +276,10 @@ export default function NewOrderTakeover({ orders, onOpenOrder }: { orders: Vend
 
   if (!current) return null;
   const remainSecs = clockActive ? Math.max(0, Math.ceil((respondByMs - nowTs) / 1000)) : 0;
-  // Payment-first, the one rule every Accept on the web follows (lib/mmg-pay-words):
-  // an unpaid MMG order offers the store's confirmation (in the order window), not Accept.
+  // The one rule every Accept on the web follows (lib/mmg-pay-words). [owner 14 Nov 2026] An unpaid MMG order is
+  // accepted first (the customer then pays the store's number); only a payment that can no longer happen holds it.
   const held = acceptHeldForPayment(current);
+  const payAfter = paysAfterAccept(current);
   const attestable = held && canAttestPayment(current.paymentStatus);
   const canConfirm = attestable && current.canConfirmPayment === true;
   const heldReason = held && !attestable ? mmgPayBlockedReason(current.paymentStatus) : null;
@@ -363,6 +364,9 @@ export default function NewOrderTakeover({ orders, onOpenOrder }: { orders: Vend
           </p>
         )}
 
+        {payAfter && (
+          <p className="mt-3 text-sm font-semibold text-[var(--swift-warning)]">{MMG_PAY_AFTER_ACCEPT}</p>
+        )}
         {held && (
           <p className="mt-3 text-sm font-semibold text-[var(--swift-warning)]">
             {heldReason ?? 'Awaiting MMG payment'}

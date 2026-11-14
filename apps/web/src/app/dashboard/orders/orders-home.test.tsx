@@ -22,6 +22,8 @@ interface Opts {
 }
 
 const writes: Array<{ method: string; path: string; body: unknown }> = [];
+/** [owner 14 Nov 2026] The owner-approved line beside Accept on an unpaid MMG order. */
+const PAY_AFTER = 'The customer pays your MMG number after you accept, so tap Paid by MMG when it lands.';
 const reads: string[] = [];
 
 function hubApi(opts: Opts = {}) {
@@ -371,14 +373,16 @@ describe('the store controls read the real server state', () => {
 });
 
 describe('MMG orders on the board follow the app', () => {
-  it('an unpaid MMG order offers the payment confirmation, not an Accept the server refuses', async () => {
+  // [owner 14 Nov 2026 · option A] Accept first, then the customer pays the store's number; the confirmation stays.
+  it('an unpaid MMG order offers Accept (the customer pays after it) and keeps the payment confirmation', async () => {
     hubApi({ orders: [wireVendorOrder({ id: 'o-mmg', orderNumber: 'SW-7201', status: 'PENDING', paymentMethod: 'MOBILE_MONEY', paymentStatus: 'PENDING', canConfirmPayment: true })] });
     const view = renderWithQuery(<OrdersPage />);
     const later = await screen.findByText(/View later/).catch(() => null);
     if (later) await view.user.click(later);
     const card = await screen.findByRole('article', { name: 'Order SW-7201' });
     expect(within(card).getByText('Awaiting MMG payment')).toBeTruthy();
-    expect(within(card).queryByRole('button', { name: 'Accept' })).toBeNull();
+    expect(within(card).getByRole('button', { name: 'Accept' })).toBeTruthy();
+    expect(within(card).getByText(PAY_AFTER)).toBeTruthy();
     expect(within(card).getByRole('button', { name: 'Reject' })).toBeTruthy();
     await view.user.click(within(card).getByRole('button', { name: 'Paid by MMG' }));
     expect(await screen.findByRole('dialog', { name: 'Order details' })).toBeTruthy();
@@ -445,11 +449,12 @@ describe('MMG payment states on the card', () => {
     expect(within(c).getByText('MMG payment received')).toBeTruthy();
     expect(within(c).getByRole('button', { name: 'Accept' })).toBeTruthy();
   });
-  it('a pending payment offers the confirmation step instead of Accept', async () => {
+  it('[owner 14 Nov] a pending payment offers Accept first (the customer pays after it) and the confirmation step', async () => {
     const c = await card('PENDING');
     expect(within(c).getByText('Awaiting MMG payment')).toBeTruthy();
     expect(within(c).getByRole('button', { name: 'Paid by MMG' })).toBeTruthy();
-    expect(within(c).queryByRole('button', { name: 'Accept' })).toBeNull();
+    expect(within(c).getByRole('button', { name: 'Accept' })).toBeTruthy();
+    expect(within(c).getByText(PAY_AFTER)).toBeTruthy();
   });
   it('a failed payment says why, instead of "Awaiting"', async () => {
     const c = await card('FAILED');
@@ -489,9 +494,10 @@ describe('the store state stays current', () => {
   });
 });
 
-// DS914 on #1615: the order window follows the same payment rule as the card —
-// an unpaid MMG order shows the confirmation step and no Accept; Accept only
-// once the money has moved (CAPTURED or CLAIMED); a failed payment says why.
+// DS914 on #1615: the order window follows the same payment rule as the card.
+// [owner 14 Nov 2026 · option A] An unpaid MMG order shows Accept (the customer
+// pays the store's number after it) and the confirmation step; a payment that
+// moved (CAPTURED or CLAIMED) shows Accept; a failed payment says why, no Accept.
 describe('the order window\'s payment rule matches the card', () => {
   async function windowFor(paymentStatus: string) {
     hubApi({ orders: [wireVendorOrder({ id: 'o-mmg', orderNumber: 'SW-7601', status: 'PENDING', paymentMethod: 'MOBILE_MONEY', paymentStatus, canConfirmPayment: true })] });
@@ -504,10 +510,11 @@ describe('the order window\'s payment rule matches the card', () => {
     await within(dialog).findByText('MMG — the customer pays your store’s MMG account.');
     return dialog;
   }
-  it('PENDING: the confirmation step, no Accept', async () => {
+  it('[owner 14 Nov] PENDING: Accept first (the customer pays after it), and the confirmation step', async () => {
     const d = await windowFor('PENDING');
     expect(within(d).getByLabelText('MMG transaction reference')).toBeTruthy();
-    expect(within(d).queryByRole('button', { name: 'Accept' })).toBeNull();
+    expect(within(d).getByRole('button', { name: 'Accept' })).toBeTruthy();
+    expect(within(d).getByText(PAY_AFTER)).toBeTruthy();
     expect(within(d).getByRole('button', { name: 'Reject' })).toBeTruthy();
   });
   it('CLAIMED: Accept, and the store\'s report said as such', async () => {
@@ -536,40 +543,51 @@ describe('every locked store control says why', () => {
 });
 
 // DS916 on #1615: one payment rule for EVERY place the web can accept an order.
-// An unpaid MMG order is offered the store's confirmation, never an Accept the
-// server refuses (409) — on the card, in the new-order popup, and in the order window.
-describe('no Accept entry point offers an unpaid MMG order', () => {
-  it('card, popup and window all hold Accept back and offer the confirmation', async () => {
-    hubApi({ orders: [wireVendorOrder({ id: 'o-unpaid', orderNumber: 'SW-7701', status: 'PENDING', paymentMethod: 'MOBILE_MONEY', paymentStatus: 'PENDING', canConfirmPayment: true })] });
+// [owner 14 Nov 2026 · option A, PAYMENT-SIMPLIFY Q1] An unpaid MMG order is ACCEPTED FIRST: the customer sees the
+// store's MMG number only once the store accepts, and pays it; nothing moves past Accept until "Paid by MMG". So the
+// card, the new-order popup and the order window all offer Accept (with the preparation time, as for any order) and
+// say what happens next. Only a payment that can no longer happen holds Accept back (the server refuses that one).
+describe('an unpaid MMG order is accepted first, then paid', () => {
+  it('card, popup and window all offer Accept and say the customer pays after it', async () => {
+    hubApi({ orders: [wireVendorOrder({ id: 'o-unpaid', orderNumber: 'SW-7701', status: 'PENDING', paymentMethod: 'MOBILE_MONEY', paymentStatus: 'PENDING', mmgAttestedRef: null, canConfirmPayment: true, estimatedPrepTime: 45 })] });
     const view = renderWithQuery(<OrdersPage />);
-    // 1. The new-order popup.
+    // 1. The new-order popup: Accept with the store's own preparation time, and the line.
     const later = await screen.findByText(/View later/);
     const popup = later.closest('div.fixed') as HTMLElement;
-    expect(within(popup).queryByRole('button', { name: 'Accept' })).toBeNull();
-    expect(within(popup).getByText('Awaiting MMG payment')).toBeTruthy();
-    // Its confirmation opens the order window (and the popup steps aside).
-    await view.user.click(within(popup).getByRole('button', { name: 'Paid by MMG' }));
-    const dialog = await screen.findByRole('dialog', { name: 'Order details' });
-    expect(screen.queryByText(/View later/)).toBeNull();
-    // 2. The order window.
-    await within(dialog).findByText('MMG — the customer pays your store’s MMG account.');
-    expect(within(dialog).queryByRole('button', { name: 'Accept' })).toBeNull();
-    expect(within(dialog).getByLabelText('MMG transaction reference')).toBeTruthy();
-    // 3. The card.
+    expect(within(popup).getByText(PAY_AFTER)).toBeTruthy();
+    expect((within(popup).getByRole('combobox', { name: 'Preparation time' }) as HTMLSelectElement).value).toBe('45');
+    await view.user.click(within(popup).getByRole('button', { name: 'Accept' }));
+    await waitFor(() => expect(writes.filter((w) => w.path.endsWith('/accept'))).toEqual([
+      { method: 'PUT', path: '/vendor/orders/o-unpaid/accept', body: { estimatedPrepTime: 45 } },
+    ]));
+    await waitFor(() => expect(screen.queryByText(/View later/)).toBeNull());
+    // 2. The card (the board still holds the waiting copy): Accept and the line.
     const card = screen.getByRole('article', { name: 'Order SW-7701' });
-    expect(within(card).queryByRole('button', { name: 'Accept' })).toBeNull();
-    expect(within(card).getByRole('button', { name: 'Paid by MMG' })).toBeTruthy();
-    expect(writes.filter((w) => w.path.endsWith('/accept'))).toEqual([]);
+    expect(within(card).getByRole('button', { name: 'Accept' })).toBeTruthy();
+    expect(within(card).getByText(PAY_AFTER)).toBeTruthy();
+    // 3. The order window: Accept and the line.
+    await view.user.click(within(card).getByText('#SW-7701'));
+    const dialog = await screen.findByRole('dialog', { name: 'Order details' });
+    expect(await within(dialog).findByRole('button', { name: 'Accept' })).toBeTruthy();
+    expect(within(dialog).getByText(PAY_AFTER)).toBeTruthy();
   });
 
-  it('the popup tells staff who can confirm, and says why for a failed payment', async () => {
+  it('a staff login accepts it too (confirming the money stays with the owner or a manager)', async () => {
     hubApi({ orders: [
-      wireVendorOrder({ id: 'o-staff', orderNumber: 'SW-7702', status: 'PENDING', paymentMethod: 'MOBILE_MONEY', paymentStatus: 'PENDING', canConfirmPayment: false }),
+      wireVendorOrder({ id: 'o-staff', orderNumber: 'SW-7702', status: 'PENDING', paymentMethod: 'MOBILE_MONEY', paymentStatus: 'PENDING', mmgAttestedRef: null, canConfirmPayment: false }),
     ] });
     renderWithQuery(<OrdersPage />);
     const popup = (await screen.findByText(/View later/)).closest('div.fixed') as HTMLElement;
-    expect(within(popup).getByText('Only the owner or a manager can confirm MMG payments.')).toBeTruthy();
-    expect(within(popup).queryByRole('button', { name: /Accept|Paid by MMG/ })).toBeNull();
+    expect(within(popup).getByRole('button', { name: 'Accept' })).toBeTruthy();
+    expect(within(popup).getByText(PAY_AFTER)).toBeTruthy();
+  });
+
+  it('a store claim an operator rejected can never be paid on this order: no Accept', async () => {
+    hubApi({ orders: [wireVendorOrder({ id: 'o-rej', orderNumber: 'SW-7704', status: 'PENDING', paymentMethod: 'MOBILE_MONEY', paymentStatus: 'PENDING', mmgAttestedRef: 'ABC123', canConfirmPayment: true })] });
+    renderWithQuery(<OrdersPage />);
+    const popup = (await screen.findByText(/View later/)).closest('div.fixed') as HTMLElement;
+    expect(within(popup).queryByRole('button', { name: 'Accept' })).toBeNull();
+    expect(within(popup).queryByText(PAY_AFTER)).toBeNull();
   });
 
   it('a failed payment in the popup gives its reason and no Accept', async () => {
