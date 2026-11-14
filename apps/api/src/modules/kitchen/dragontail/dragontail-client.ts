@@ -174,6 +174,10 @@ export class DragontailClient {
   /** One request with the retry policy. Never throws for a non-5xx status: the caller decides. */
   private async send(method: 'GET' | 'POST', path: string, body: unknown, withToken: boolean, idempotent: boolean): Promise<{ status: number; json: unknown }> {
     let lastProblem = '';
+    // [round 2 · review A S2-1] Did ANY attempt reach Dragontail (an HTTP answer, even a 5xx)? A gateway's 502/504 is the
+    // classic "the backend may have it": a later attempt that cannot even connect does not make the write certainly
+    // unsent. Remembered across the whole retry loop.
+    let reachedServer = false;
     for (let attempt = 0; attempt <= DRAGONTAIL_MAX_RETRIES; attempt += 1) {
       if (attempt > 0) {
         const wait = this.backoffMs * 2 ** (attempt - 1);
@@ -200,6 +204,7 @@ export class DragontailClient {
           redirect: 'error',
         });
         const text = await res.text();
+        reachedServer = true;
         if (res.status >= 500 && res.status <= 599) {
           const words = failureWords(text);
           lastProblem = `HTTP ${res.status}${words ? ` (${words})` : ''}`;
@@ -216,20 +221,26 @@ export class DragontailClient {
         // [DT-OUTAGE] Certainly never sent (no connection, no TLS session): Dragontail cannot have it.
         const neverSent = requestNeverSent(err, controller.signal.aborted);
         const problem = controller.signal.aborted ? `timed out after ${timeout} ms`
-          : neverSent ? 'could not connect (nothing was sent)' : 'network error (or a refused redirect)';
-        if (!idempotent && !neverSent) {
-          // A write that may have reached Dragontail is never re-sent blind: the caller decides what it means.
-          throw new KitchenTransientError(`Dragontail ${path}: ${problem}; it may have arrived`, true);
+          : neverSent && reachedServer ? 'could not connect on a retry'
+            : neverSent ? 'could not connect (nothing was sent)' : 'network error (or a refused redirect)';
+        if (!idempotent && (!neverSent || reachedServer)) {
+          // A write that may have reached Dragontail (this attempt, or an EARLIER one that got an answer) is never
+          // re-sent blind: the caller decides what it means. A link failure too when an earlier attempt got a 5xx.
+          throw new KitchenTransientError(`Dragontail ${path}: ${problem}${reachedServer ? ' after an earlier 5xx' : ''}; it may have arrived`, true, reachedServer || neverSent);
         }
         if (!idempotent) {
-          // Never sent: not "may have arrived". Not retried either (the spec retries only 50x): the caller falls back.
-          throw new KitchenTransientError(`Dragontail ${path}: ${problem}`, false);
+          // Never sent, by ANY attempt: not "may have arrived". Not retried either (the spec retries only 50x): the
+          // caller falls back.
+          throw new KitchenTransientError(`Dragontail ${path}: ${problem}`, false, true);
         }
         lastProblem = problem;
       } finally {
         clearTimeout(timer);
       }
     }
-    throw new KitchenTransientError(`Dragontail ${path} failed (${lastProblem || 'no attempt fit the deadline'})`, false);
+    // [round 2 · review A S2-1] Still 5xx after every retry: for a WRITE that is "may have arrived" (the careful path:
+    // verify, cancel there, then ring), never "certainly not". A read, or a login, may simply be asked again.
+    throw new KitchenTransientError(`Dragontail ${path} failed (${lastProblem || 'no attempt fit the deadline'})${!idempotent && reachedServer ? '; it may have arrived' : ''}`,
+      !idempotent && reachedServer, true);
   }
 }

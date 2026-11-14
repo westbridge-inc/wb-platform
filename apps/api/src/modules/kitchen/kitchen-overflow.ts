@@ -2,7 +2,7 @@ import type { Prisma, PrismaClient } from '@prisma/client';
 import { z } from '../../lib/zod';
 import { AppError } from '../../utils/errors';
 import { log } from '../../utils/logger';
-import { dragontailIntegrationEnabled } from './kitchen-switch';
+import { dragontailDriverCheckEnabled, dragontailIntegrationEnabled } from './kitchen-switch';
 import type { DragontailClientOptions } from './dragontail/dragontail-client';
 
 type KitchenClientOverrides = Partial<Pick<DragontailClientOptions, 'fetch' | 'sleep' | 'backoffMs'>>;
@@ -28,6 +28,15 @@ type KitchenClientOverrides = Partial<Pick<DragontailClientOptions, 'fetch' | 's
  *   AUTO_DRIVER_CHECK  ask Dragontail for a free driver (GET /PosGetVehicles/{StoreNo}, "(Optional) Retrieve
  *                      unassigned vehicles"): none free → Swift riders; one or more free → the kitchen system;
  *   BOTH               busy hours first (no call is made inside them), then the driver check.
+ *
+ * [round 2 · review A S2-3] The driver check (AUTO_DRIVER_CHECK, and BOTH's second half) is behind its own switch,
+ * DRAGONTAIL_DRIVER_CHECK (kitchen-switch.ts), OFF until Dragontail confirms what PosGetVehicles lists. While off:
+ * AUTO_DRIVER_CHECK = every delivery to the kitchen (DRIVER_CHECK_OFF), BOTH = busy hours only, and neither can be set.
+ *
+ * [round 2 · review A S2-2] The driver check is NEVER made by the hold-release sweep (dispatch queue) or checkout: the
+ * kitchen tick (order queue) asks Dragontail for each such branch about every 20 s, all branches at once under one
+ * deadline, and stores the answer (vendor_integrations.driverCheck*). The route only READS it: an answer older than
+ * 45 s, or none, is a failed check (the kitchen). After a failed check the branch is not asked again for 60 s.
  *
  * SAFE DEFAULTS (never both paths, never neither):
  *   - The driver check has a short budget (DRAGONTAIL_DRIVER_CHECK_MS, 2 s by default, at most 5 s). A timeout, an
@@ -65,6 +74,8 @@ export const KITCHEN_ROUTE_REASONS = {
   SWIFT_RIDER_CHECK_FAILED: 'KITCHEN',
   /** The overflow could not be worked out before the claim (a failed read): the safe default. */
   OVERFLOW_CHECK_FAILED: 'KITCHEN',
+  /** [round 2] AUTO_DRIVER_CHECK while the driver-check switch is off: as if the overflow were off. */
+  DRIVER_CHECK_OFF: 'KITCHEN',
   /** Inside the branch's busy hours. */
   BUSY_HOURS: 'SWIFT_RIDERS',
   /** Dragontail listed no free vehicle. */
@@ -167,13 +178,16 @@ export async function decideKitchenRoute(input: {
   mode: KitchenOverflowModeName;
   busyHours: readonly BusyWindow[];
   now: Date;
+  /** [round 2 · review A S2-3] DRAGONTAIL_DRIVER_CHECK: false = the driver check is never asked. */
+  driverCheckOn: boolean;
   driverCheck: () => Promise<DriverCheck>;
   swiftRiders: () => Promise<SwiftRiderCheck>;
 }): Promise<KitchenRouteDecision> {
   const { orderId, mode } = input;
   if (mode === 'NONE') return decided(orderId, 'OVERFLOW_OFF', 'overflow is off');
+  if (mode === 'AUTO_DRIVER_CHECK' && !input.driverCheckOn) return decided(orderId, 'DRIVER_CHECK_OFF', 'the driver check is switched off: sent to the kitchen system');
   const usesHours = mode === 'BUSY_HOURS' || mode === 'BOTH';
-  const usesDriverCheck = mode === 'AUTO_DRIVER_CHECK' || mode === 'BOTH';
+  const usesDriverCheck = (mode === 'AUTO_DRIVER_CHECK' || mode === 'BOTH') && input.driverCheckOn;
   let want: 'BUSY_HOURS' | 'NO_FREE_DRIVER';
   let why: string;
   if (usesHours && inBusyHours(input.busyHours, input.now)) {
@@ -181,12 +195,12 @@ export async function decideKitchenRoute(input: {
     why = 'inside the busy hours';
   } else if (usesDriverCheck) {
     const check = await input.driverCheck().catch((err: unknown): DriverCheck => ({ kind: 'FAILED', problem: problemOf(err), ms: 0 }));
-    if (check.kind === 'FREE') return decided(orderId, 'DRIVER_FREE', `Dragontail listed ${check.count} free vehicle(s) (${check.ms} ms)`);
+    if (check.kind === 'FREE') return decided(orderId, 'DRIVER_FREE', `Dragontail listed ${check.count} free vehicle(s) (answer ${check.ms} ms old)`);
     if (check.kind === 'FAILED') {
-      return decided(orderId, 'DRIVER_CHECK_FAILED', `driver check failed (${check.problem}; ${check.ms} ms): sent to the kitchen system, the safe default`);
+      return decided(orderId, 'DRIVER_CHECK_FAILED', `driver check failed (${check.problem}): sent to the kitchen system, the safe default`);
     }
     want = 'NO_FREE_DRIVER';
-    why = `Dragontail listed no free vehicle (${check.ms} ms)`;
+    why = `Dragontail listed no free vehicle (answer ${check.ms} ms old)`;
   } else {
     return decided(orderId, 'OUTSIDE_BUSY_HOURS', 'outside the busy hours');
   }
@@ -209,14 +223,13 @@ export function driverCheckBudgetMs(env: Record<string, string | undefined> = pr
 
 export interface KitchenRouteDeps {
   now?: () => Date;
-  /** Tests: the HTTP layer of the kitchen client. */
-  client?: KitchenClientOverrides;
   /** Tests: replace a question outright. */
   driverCheck?: (storeNo: number) => Promise<DriverCheck>;
   swiftRiders?: (order: SwiftRiderProbeOrder) => Promise<SwiftRiderCheck>;
 }
 
-/** Ask Dragontail for the branch's free vehicles, within the budget. Never throws. */
+/** Ask Dragontail for the branch's free vehicles, within the budget. Never throws. Only the kitchen tick calls it
+ *  (refreshKitchenDriverChecks): never the hold-release sweep or checkout. */
 export async function dragontailDriverCheck(
   integration: { id: string; provider: 'DRAGONTAIL' },
   storeNo: number,
@@ -282,9 +295,79 @@ export async function swiftRidersNearCheck(prisma: PrismaClient, order: SwiftRid
   }
 }
 
+// ── The driver check, refreshed by the kitchen tick ─────────────────────────
+
+/** Ask a branch again this long after an answer... */
+export const DRIVER_CHECK_EVERY_MS = 20_000;
+/** ...and this long after a failed check (a slow or broken endpoint is left alone for a minute). */
+export const DRIVER_CHECK_BACKOFF_MS = 60_000;
+/** An answer older than this is no answer: the route treats it as a failed check (the kitchen). */
+export const DRIVER_CHECK_FRESH_MS = 45_000;
+
+/** What the route reads: the branch's stored answer, if fresh enough. No call. */
+export function storedDriverCheck(
+  row: { driverCheckAt: Date | null; driverCheckFree: number | null; driverCheckProblem: string | null },
+  now: Date,
+): DriverCheck {
+  let age = row.driverCheckAt ? now.getTime() - row.driverCheckAt.getTime() : Number.POSITIVE_INFINITY;
+  // A few seconds "from the future" is another server's clock, not a bad answer.
+  if (!row.driverCheckAt || age < -5_000 || age > DRIVER_CHECK_FRESH_MS) {
+    return { kind: 'FAILED', problem: `no driver check in the last ${DRIVER_CHECK_FRESH_MS / 1000} s`, ms: 0 };
+  }
+  age = Math.max(0, age);
+  if (row.driverCheckFree == null) return { kind: 'FAILED', problem: row.driverCheckProblem ?? 'the last driver check failed', ms: age };
+  return row.driverCheckFree > 0 ? { kind: 'FREE', count: row.driverCheckFree, ms: age } : { kind: 'NONE_FREE', ms: age };
+}
+
 /**
- * Work out the route for one order BEFORE the claim's transaction (the driver check is an HTTP call: never inside a
- * database transaction). Null when the order is not one the overflow decides: not a cash DELIVERY, not a connected
+ * [round 2 · review A S2-2] The kitchen tick's part: ask Dragontail about every branch whose overflow uses the driver
+ * check and is due (20 s after an answer, 60 s after a failure), ALL AT ONCE under one deadline (the check's budget),
+ * and store each answer. A failure is stored with its words (the console shows it). Inert unless both switches are
+ * on. A BOTH branch inside its busy hours is not asked (the hours already answer). Never throws.
+ */
+export async function refreshKitchenDriverChecks(
+  prisma: PrismaClient,
+  env: Record<string, string | undefined> = process.env,
+  deps: { now?: () => Date; client?: KitchenClientOverrides } = {},
+): Promise<number> {
+  if (!dragontailDriverCheckEnabled(env)) return 0;
+  const now = deps.now ? deps.now() : new Date();
+  const rows = await prisma.vendorIntegration.findMany({
+    where: {
+      provider: 'DRAGONTAIL', enabled: true, linkOfflineAt: null, externalStoreNo: { not: null },
+      overflowMode: { in: ['AUTO_DRIVER_CHECK', 'BOTH'] },
+      OR: [
+        { driverCheckAt: null },
+        { driverCheckFree: { not: null }, driverCheckAt: { lte: new Date(now.getTime() - DRIVER_CHECK_EVERY_MS) } },
+        { driverCheckFree: null, driverCheckAt: { lte: new Date(now.getTime() - DRIVER_CHECK_BACKOFF_MS) } },
+      ],
+    },
+    select: { id: true, externalStoreNo: true, overflowMode: true, overflowBusyHours: true },
+    take: 50,
+  });
+  const due = rows.filter((r) => !(r.overflowMode === 'BOTH' && inBusyHours(readBusyHours(r.overflowBusyHours), now)));
+  const answers = await Promise.all(due.map(async (r) => ({
+    id: r.id,
+    check: await dragontailDriverCheck({ id: r.id, provider: 'DRAGONTAIL' }, r.externalStoreNo as number, env, deps.client),
+  })));
+  let written = 0;
+  for (const { id, check } of answers) {
+    const at = deps.now ? deps.now() : new Date();
+    const ok = await prisma.vendorIntegration.update({
+      where: { id },
+      data: check.kind === 'FAILED'
+        ? { driverCheckAt: at, driverCheckFree: null, driverCheckProblem: `${check.problem} (${check.ms} ms)`.slice(0, 200) }
+        : { driverCheckAt: at, driverCheckFree: check.kind === 'FREE' ? check.count : 0, driverCheckProblem: null },
+    }).then(() => true, () => false);
+    if (check.kind === 'FAILED') log().warn({ integrationId: id, problem: check.problem, ms: check.ms }, '[KITCHEN-OVERFLOW] driver check failed: deliveries go to the kitchen system');
+    if (ok) written += 1;
+  }
+  return written;
+}
+
+/**
+ * Work out the route for one order BEFORE the claim's transaction (never inside a database transaction). It makes
+ * no call to the kitchen system: the driver check is the stored answer (refreshKitchenDriverChecks). Null when the order is not one the overflow decides: not a cash DELIVERY, not a connected
  * own-driver branch, already decided, or the switch is off. The claim re-checks everything on the row and writes the
  * decision once; a decision for an order that changed meanwhile is simply not used.
  */
@@ -308,17 +391,23 @@ export async function planKitchenRoute(
   if (order.orderType !== 'FOOD_DELIVERY' || order.fulfillment !== 'DELIVERY' || order.paymentMethod !== 'CASH' || !order.vendor?.selfDeliveryEnabled) return null;
   const integration = await prisma.vendorIntegration.findUnique({
     where: { vendorId_provider: { vendorId: order.vendorId, provider: 'DRAGONTAIL' } },
-    select: { id: true, enabled: true, externalStoreNo: true, overflowMode: true, overflowBusyHours: true, linkOfflineAt: true },
+    select: {
+      id: true, enabled: true, externalStoreNo: true, overflowMode: true, overflowBusyHours: true, linkOfflineAt: true,
+      driverCheckAt: true, driverCheckFree: true, driverCheckProblem: true,
+    },
   });
   // [DT-OUTAGE] An offline kitchen link claims nothing (the claim answers no): no route, no driver check.
   if (!integration?.enabled || integration.externalStoreNo == null || integration.linkOfflineAt) return null;
   const storeNo = integration.externalStoreNo;
+  const now = deps.now ? deps.now() : new Date();
   const decision = await decideKitchenRoute({
     orderId,
     mode: integration.overflowMode,
     busyHours: readBusyHours(integration.overflowBusyHours),
-    now: deps.now ? deps.now() : new Date(),
-    driverCheck: () => (deps.driverCheck ? deps.driverCheck(storeNo) : dragontailDriverCheck({ id: integration.id, provider: 'DRAGONTAIL' }, storeNo, env, deps.client)),
+    now,
+    driverCheckOn: dragontailDriverCheckEnabled(env),
+    // [round 2 · review A S2-2] The stored answer: no HTTP call here (this runs in the hold-release sweep).
+    driverCheck: () => (deps.driverCheck ? deps.driverCheck(storeNo) : Promise.resolve(storedDriverCheck(integration, now))),
     swiftRiders: () => (deps.swiftRiders ? deps.swiftRiders(order) : swiftRidersNearCheck(prisma, order, env)),
   });
   log().info({ orderId, route: decision.route, reason: decision.reason, note: decision.note }, '[KITCHEN-OVERFLOW] route decided');
@@ -332,17 +421,56 @@ export function fallbackKitchenRoute(orderId: string, mode: KitchenOverflowModeN
     : decided(orderId, 'OVERFLOW_CHECK_FAILED', 'the overflow could not be worked out before the claim: sent to the kitchen system, the safe default');
 }
 
-// ── What the store sees ─────────────────────────────────────────────────────
-
-/** Kitchen-sync states in which the kitchen system has (or may have) the order: Swift must not send a rider. */
-export function kitchenHoldsOrder(syncState: string | null | undefined): boolean {
-  return syncState != null && syncState !== 'FALLBACK';
+/**
+ * [round 2 · review A S3-4] An overflow delivery (routed to Swift riders) whose cash no Swift rider may carry was bound
+ * to the store's OWN driver at accept. It is on the tablet only, NOT in Dragontail, where this branch dispatches its
+ * drivers, and its drivers were busy: operations are told, once per order, so it is not forgotten. Never throws.
+ */
+export async function noteOverflowKeptWithStore(
+  prisma: PrismaClient,
+  io: unknown,
+  orderId: string,
+): Promise<void> {
+  try {
+    const order = await prisma.order.findUnique({
+      where: { id: orderId },
+      select: { tenantId: true, orderNumber: true, kitchenRoute: true, kitchenRouteReason: true, fulfillmentMode: true, vendor: { select: { name: true } } },
+    });
+    if (order?.kitchenRoute !== 'SWIFT_RIDERS' || order.fulfillmentMode !== 'VENDOR_DELIVERY') return;
+    const why = SWIFT_REASON_WORDS[order.kitchenRouteReason as KitchenRouteReason] ?? 'the overflow moved it';
+    const name = order.vendor?.name ?? 'A branch';
+    const { notifyAdmins, NotificationService } = await import('../notification/notification.service');
+    await notifyAdmins(prisma, new NotificationService(prisma, io as never), {
+      tenantId: order.tenantId,
+      title: `Overflow order with the store's own driver: ${name}`,
+      body: `Order ${order.orderNumber} was moved to Swift riders (${why}), but no Swift rider could carry its cash, so ${name}'s own driver delivers it. It is on the Swift tablet only, NOT in Dragontail, and the branch's drivers were busy: call the store so it is not forgotten.`,
+      data: { kind: 'kitchen_integration', orderId },
+      dedupeKey: `kitchen:overflow-own-driver:${orderId}`,
+    });
+  } catch (err) {
+    log().error({ err, orderId }, '[KITCHEN-OVERFLOW] operations note (own driver after overflow) failed');
+  }
 }
 
-/** The store's kitchen-sync state for one order (one unique-key read), or null. */
-export async function kitchenSyncStateOf(db: Pick<Prisma.TransactionClient, 'orderIntegrationSync'>, orderId: string): Promise<string | null> {
-  const sync = await db.orderIntegrationSync.findUnique({ where: { orderId_provider: { orderId, provider: 'DRAGONTAIL' } }, select: { state: true } });
-  return sync?.state ?? null;
+// ── What the store sees ─────────────────────────────────────────────────────
+
+/** One order's kitchen-sync facts the store's screens and the rider refusal need. A bare state string is accepted. */
+export type KitchenSyncFacts = { state: string; maybeInKitchen?: boolean } | string;
+
+const stateOf = (sync: KitchenSyncFacts | null | undefined) => (sync == null ? null : typeof sync === 'string' ? sync : sync.state);
+
+/** Kitchen-sync states in which the kitchen system has (or may have) the order: Swift must not send a rider.
+ *  [round 2 · review A S3-3] A FALLBACK the kitchen MAY still have (the switch went off mid-send) counts too. */
+export function kitchenHoldsOrder(sync: KitchenSyncFacts | null | undefined): boolean {
+  const state = stateOf(sync);
+  if (state == null) return false;
+  if (state !== 'FALLBACK') return true;
+  return typeof sync === 'object' && sync !== null && sync.maybeInKitchen === true;
+}
+
+/** The store's kitchen-sync facts for one order (one unique-key read), or null. */
+export async function kitchenSyncStateOf(db: Pick<Prisma.TransactionClient, 'orderIntegrationSync'>, orderId: string): Promise<{ state: string; maybeInKitchen: boolean } | null> {
+  return db.orderIntegrationSync.findUnique({ where: { orderId_provider: { orderId, provider: 'DRAGONTAIL' } }, select: { state: true, maybeInKitchen: true } });
 }
 
 /** [DT-OVERFLOW] "Get a Swift rider" is refused while the kitchen system has the order (switch on or off: the row
@@ -360,7 +488,7 @@ const SWIFT_REASON_WORDS: Partial<Record<KitchenRouteReason, string>> = {
 
 const KITCHEN_REASON_WORDS: Partial<Record<KitchenRouteReason, string>> = {
   DRIVER_FREE: 'one of your drivers was free',
-  DRIVER_CHECK_FAILED: 'Dragontail did not answer the driver check in time, so it went to your drivers as usual',
+  DRIVER_CHECK_FAILED: 'Swift could not check your drivers, so it went to them as usual',
   NO_SWIFT_RIDER_NEAR: 'no Swift rider near could carry it',
   SWIFT_RIDER_CHECK_FAILED: 'Swift could not check its riders, so it went to your drivers as usual',
   OVERFLOW_CHECK_FAILED: 'Swift could not check your drivers, so it went to them as usual',
@@ -378,8 +506,9 @@ export interface KitchenStoreView {
 /** The store's words for where a connected branch's order went. Null for an order the integration never touched. */
 export function kitchenStoreView(
   order: { kitchenRoute?: string | null; kitchenRouteReason?: string | null; fulfillmentMode?: string | null },
-  syncState: string | null | undefined,
+  sync: KitchenSyncFacts | null | undefined,
 ): KitchenStoreView | null {
+  const syncState = stateOf(sync);
   const route = order.kitchenRoute === 'KITCHEN' || order.kitchenRoute === 'SWIFT_RIDERS' ? order.kitchenRoute : null;
   const reason = order.kitchenRouteReason ?? null;
   if (route === 'SWIFT_RIDERS') {
@@ -394,7 +523,13 @@ export function kitchenStoreView(
     };
   }
   if (syncState == null) return null;
-  if (!kitchenHoldsOrder(syncState)) {
+  if (syncState === 'FALLBACK' && kitchenHoldsOrder(sync)) {
+    return {
+      holdsOrder: true, route, reason, title: 'On this tablet, and maybe in Dragontail',
+      detail: 'Dragontail may also have this order. Check Dragontail before you make it, so it is made once. Swift can’t send a rider for it: a Dragontail driver may come.',
+    };
+  }
+  if (!kitchenHoldsOrder(sync)) {
     return { holdsOrder: false, route, reason, title: 'On this tablet', detail: 'Dragontail could not take this order, so it came to this tablet instead.' };
   }
   const why = KITCHEN_REASON_WORDS[reason as KitchenRouteReason];
@@ -416,6 +551,8 @@ export interface KitchenOverflowSettingView {
   /** [DT-OUTAGE] The branch's kitchen link is offline: orders ring the tablet until it is back. */
   linkOffline: boolean;
   linkOfflineSince: Date | null;
+  /** [round 2 · review A S2-3] "When all my drivers are busy" and "Both" may be chosen (DRAGONTAIL_DRIVER_CHECK). */
+  driverCheckAvailable: boolean;
 }
 
 /** The branch's overflow setting. Not available (and nothing else said) while the switch is off or no connection. */
@@ -424,7 +561,7 @@ export async function readKitchenOverflowSetting(
   vendorId: string,
   env: Record<string, string | undefined> = process.env,
 ): Promise<KitchenOverflowSettingView> {
-  const off: KitchenOverflowSettingView = { available: false, mode: 'NONE', busyHours: [], updatedAt: null, linkOffline: false, linkOfflineSince: null };
+  const off: KitchenOverflowSettingView = { available: false, mode: 'NONE', busyHours: [], updatedAt: null, linkOffline: false, linkOfflineSince: null, driverCheckAvailable: false };
   if (!dragontailIntegrationEnabled(env)) return off;
   const row = await prisma.vendorIntegration.findUnique({
     where: { vendorId_provider: { vendorId, provider: 'DRAGONTAIL' } },
@@ -434,32 +571,53 @@ export async function readKitchenOverflowSetting(
   return {
     available: row.enabled, mode: row.overflowMode, busyHours: readBusyHours(row.overflowBusyHours), updatedAt: row.overflowUpdatedAt,
     linkOffline: row.enabled && row.linkOfflineAt != null, linkOfflineSince: row.enabled ? row.linkOfflineAt : null,
+    driverCheckAvailable: dragontailDriverCheckEnabled(env),
   };
 }
 
+export const DRIVER_CHECK_OFF_WORDS = '“When all my drivers are busy” is not available yet: Swift is waiting for Dragontail to confirm its driver check. Use busy hours for now.';
+
+/** [round 2 · review A S4-1] Who changed it and how (the console's audit row, in the same transaction). No person data. */
+export type KitchenOverflowAudit = (tx: Prisma.TransactionClient, entityId: string, facts: Record<string, string | number | boolean | null>) => Promise<void>;
+
 /** Change the branch's overflow setting. Refused while the switch is off (nothing written) or with no connection. */
 export async function writeKitchenOverflowSetting(
-  prisma: Pick<PrismaClient, 'vendorIntegration'>,
+  prisma: Pick<PrismaClient, 'vendorIntegration' | '$transaction'>,
   vendorId: string,
   body: unknown,
   env: Record<string, string | undefined> = process.env,
+  audit?: KitchenOverflowAudit,
 ): Promise<KitchenOverflowSettingView> {
   if (!dragontailIntegrationEnabled(env)) {
     throw new AppError(409, 'KITCHEN_SWITCH_OFF', 'The kitchen-system connection is off, so this setting cannot be changed now.');
   }
   const input = kitchenOverflowSettingSchema.parse(body ?? {});
-  const row = await prisma.vendorIntegration.findUnique({ where: { vendorId_provider: { vendorId, provider: 'DRAGONTAIL' } }, select: { id: true } });
+  // [round 2 · review A S2-3] The driver check's two choices stay refused until Dragontail confirms what it lists.
+  if ((input.mode === 'AUTO_DRIVER_CHECK' || input.mode === 'BOTH') && !dragontailDriverCheckEnabled(env)) {
+    throw new AppError(409, 'DRIVER_CHECK_OFF', DRIVER_CHECK_OFF_WORDS);
+  }
+  const row = await prisma.vendorIntegration.findUnique({
+    where: { vendorId_provider: { vendorId, provider: 'DRAGONTAIL' } },
+    select: { id: true, overflowMode: true, overflowBusyHours: true },
+  });
   if (!row) throw new AppError(404, 'KITCHEN_NOT_SET_UP', 'This branch is not connected to a kitchen system.');
   if ((input.mode === 'BUSY_HOURS' || input.mode === 'BOTH') && input.busyHours !== undefined && input.busyHours.length === 0) {
     throw new AppError(400, 'BUSY_HOURS_EMPTY', 'Add at least one busy window, or choose another option.');
   }
-  await prisma.vendorIntegration.update({
-    where: { id: row.id },
-    data: {
-      overflowMode: input.mode,
-      ...(input.busyHours !== undefined && { overflowBusyHours: input.busyHours }),
-      overflowUpdatedAt: new Date(),
-    },
+  await prisma.$transaction(async (tx) => {
+    const written = await tx.vendorIntegration.update({
+      where: { id: row.id },
+      data: {
+        overflowMode: input.mode,
+        ...(input.busyHours !== undefined && { overflowBusyHours: input.busyHours }),
+        overflowUpdatedAt: new Date(),
+      },
+      select: { overflowMode: true, overflowBusyHours: true },
+    });
+    await audit?.(tx, row.id, {
+      modeBefore: row.overflowMode, modeAfter: written.overflowMode,
+      busyWindowsBefore: readBusyHours(row.overflowBusyHours).length, busyWindowsAfter: readBusyHours(written.overflowBusyHours).length,
+    });
   });
   return readKitchenOverflowSetting(prisma, vendorId, env);
 }

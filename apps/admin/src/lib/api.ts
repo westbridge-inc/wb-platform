@@ -1794,6 +1794,10 @@ export interface KitchenOverflowView {
   mode: KitchenOverflowMode; busyHours: KitchenBusyWindow[]; updatedAt: string | null;
   /** [DT-OUTAGE] Set while the branch's kitchen link is offline (orders ring the tablet). */
   linkOfflineAt?: string | null; linkFailures?: number;
+  /** [round 2] The driver check's own switch (off until Dragontail confirms it), its latest answer, and a link on trial. */
+  driverCheckAvailable?: boolean;
+  driverCheck?: { at: string; free: number | null; problem: string | null } | null;
+  linkOnTrial?: boolean;
 }
 export interface KitchenRouteRow {
   id: string; orderNumber: string; status: string; kitchenRoute: 'KITCHEN' | 'SWIFT_RIDERS'; kitchenRouteReason: string | null;

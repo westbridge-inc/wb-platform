@@ -28,12 +28,15 @@ export const ROUTE_REASON_WORDS: Record<string, string> = {
   NO_SWIFT_RIDER_NEAR: 'no Swift rider near could carry it',
   SWIFT_RIDER_CHECK_FAILED: 'Swift rider check failed',
   OVERFLOW_CHECK_FAILED: 'overflow check failed (safe default)',
+  DRIVER_CHECK_OFF: 'driver check switched off',
   BUSY_HOURS: 'busy hours',
   NO_FREE_DRIVER: 'no free driver',
 };
 
 const DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 const usesHours = (mode: KitchenOverflowMode) => mode === 'BUSY_HOURS' || mode === 'BOTH';
+/** [round 2] The driver check's two choices wait for Dragontail's written confirmation (the server refuses them). */
+const lockedMode = (mode: KitchenOverflowMode, available: boolean | undefined) => (mode === 'AUTO_DRIVER_CHECK' || mode === 'BOTH') && available !== true;
 
 export function KitchenOverflowPanel({ vendorId }: { vendorId: string }) {
   const qc = useQueryClient();
@@ -64,10 +67,19 @@ export function KitchenOverflowPanel({ vendorId }: { vendorId: string }) {
       {setting?.linkOfflineAt && (
         <p role="status" className="text-sm font-semibold">Kitchen link offline, orders on tablet (since {gyDate(setting.linkOfflineAt)}). Swift checks the link every minute.</p>
       )}
+      {setting?.linkOnTrial && (
+        <p role="status" className="text-sm">Kitchen link on trial: a test login worked, so orders go to Dragontail again. The outage ends when an order goes through; one more failure puts orders back on the tablet.</p>
+      )}
+      {setting?.driverCheck && (
+        <p className="text-sm">Last driver check ({gyDate(setting.driverCheck.at)}): {setting.driverCheck.free == null ? `failed: ${setting.driverCheck.problem ?? 'no answer'}` : `${setting.driverCheck.free} free vehicle(s)`}</p>
+      )}
       <p className="text-sm">Decided order by order, before sending: each cash delivery goes to Dragontail or to the Swift tablet and Swift riders, never both. Pickups always go to Dragontail.</p>
       <label className="grid gap-1 text-sm">When
         <select value={mode} onChange={(e) => setMode(e.target.value as KitchenOverflowMode)} className="rounded border px-2 py-1">
-          {(Object.keys(OVERFLOW_MODE_WORDS) as KitchenOverflowMode[]).map((m) => <option key={m} value={m}>{OVERFLOW_MODE_WORDS[m]}</option>)}
+          {(Object.keys(OVERFLOW_MODE_WORDS) as KitchenOverflowMode[]).map((m) => {
+            const locked = lockedMode(m, setting?.driverCheckAvailable);
+            return <option key={m} value={m} disabled={locked}>{OVERFLOW_MODE_WORDS[m]}{locked ? ' (waiting for Dragontail to confirm its driver check)' : ''}</option>;
+          })}
         </select>
       </label>
       {usesHours(mode) && (
@@ -86,7 +98,7 @@ export function KitchenOverflowPanel({ vendorId }: { vendorId: string }) {
           {windows.length < 28 && <button type="button" className="rounded border px-2 py-1 text-sm" onClick={() => setWindows((ws) => [...ws, { day: 5, start: '18:00', end: '21:00' }])}>Add busy hours</button>}
         </div>
       )}
-      <button type="button" className="mc-btn" disabled={save.isPending} onClick={() => save.mutate()}>{save.isPending ? 'Saving…' : 'Save'}</button>
+      <button type="button" className="mc-btn" disabled={save.isPending || lockedMode(mode, setting?.driverCheckAvailable)} onClick={() => save.mutate()}>{save.isPending ? 'Saving…' : 'Save'}</button>
       <MutationError error={save.error} label="Saving the overflow setting" />
       <h3 className="mc-label">Recent deliveries: where they went</h3>
       {routes.isError ? (

@@ -98,7 +98,7 @@ describe('[DT-OVERFLOW] busy hours, Guyana time', () => {
 });
 
 /** The decision with counted questions. */
-function decide(mode: KitchenOverflowModeName, opts: { busy?: boolean; driver?: DriverCheck | Error; riders?: SwiftRiderCheck | Error } = {}) {
+function decide(mode: KitchenOverflowModeName, opts: { busy?: boolean; driver?: DriverCheck | Error; riders?: SwiftRiderCheck | Error; driverCheckOn?: boolean } = {}) {
   const driverCheck = vi.fn(async (): Promise<DriverCheck> => {
     const d = opts.driver ?? { kind: 'FREE', count: 2, ms: 5 };
     if (d instanceof Error) throw d;
@@ -111,7 +111,7 @@ function decide(mode: KitchenOverflowModeName, opts: { busy?: boolean; driver?: 
   });
   const now = gy(`${MON}T19:00:00`);
   const busyHours: BusyWindow[] = opts.busy ? [{ day: 1, start: '18:00', end: '21:00' }] : [{ day: 2, start: '18:00', end: '21:00' }];
-  return { run: () => decideKitchenRoute({ orderId: 'o1', mode, busyHours, now, driverCheck, swiftRiders }), driverCheck, swiftRiders };
+  return { run: () => decideKitchenRoute({ orderId: 'o1', mode, busyHours, now, driverCheckOn: opts.driverCheckOn ?? true, driverCheck, swiftRiders }), driverCheck, swiftRiders };
 }
 
 describe('[DT-OVERFLOW] the decision, order by order', () => {
@@ -220,5 +220,52 @@ describe('[DT-OVERFLOW] the store sees where the order went', () => {
     expect(kitchenStoreView({ kitchenRoute: 'KITCHEN', kitchenRouteReason: 'OVERFLOW_OFF' }, 'FALLBACK')).toMatchObject({ holdsOrder: false, title: 'On this tablet' });
     // An order the integration never touched: nothing to say.
     expect(kitchenStoreView({ kitchenRoute: null }, null)).toBeNull();
+  });
+});
+
+describe('[round 2 · S2-3] the driver check switched off (its default until Dragontail confirms it)', () => {
+  it('AUTO_DRIVER_CHECK: the kitchen, nothing asked; BOTH: busy hours only, nothing asked of Dragontail', async () => {
+    const auto = decide('AUTO_DRIVER_CHECK', { driverCheckOn: false, driver: { kind: 'NONE_FREE', ms: 1 } });
+    expect(await auto.run()).toMatchObject({ route: 'KITCHEN', reason: 'DRIVER_CHECK_OFF' });
+    expect(auto.driverCheck).not.toHaveBeenCalled();
+    const outside = decide('BOTH', { driverCheckOn: false, busy: false, driver: { kind: 'NONE_FREE', ms: 1 } });
+    expect(await outside.run()).toMatchObject({ route: 'KITCHEN', reason: 'OUTSIDE_BUSY_HOURS' });
+    expect(outside.driverCheck).not.toHaveBeenCalled();
+    const inside = decide('BOTH', { driverCheckOn: false, busy: true });
+    expect(await inside.run()).toMatchObject({ route: 'SWIFT_RIDERS', reason: 'BUSY_HOURS' });
+    expect(inside.driverCheck).not.toHaveBeenCalled();
+  });
+
+  it('its switch is on only at exactly 1, and only with the integration on', async () => {
+    const { dragontailDriverCheckEnabled } = await import('../modules/kitchen/kitchen-switch');
+    expect(dragontailDriverCheckEnabled({})).toBe(false);
+    expect(dragontailDriverCheckEnabled({ DRAGONTAIL_DRIVER_CHECK: '1' })).toBe(false);
+    expect(dragontailDriverCheckEnabled({ DRAGONTAIL_INTEGRATION: '1', DRAGONTAIL_DRIVER_CHECK: 'true' })).toBe(false);
+    expect(dragontailDriverCheckEnabled({ DRAGONTAIL_INTEGRATION: '1', DRAGONTAIL_DRIVER_CHECK: ' 1 ' })).toBe(true);
+  });
+});
+
+describe('[round 2 · S2-2] the route reads the tick’s stored answer', () => {
+  it('fresh answers count; none, older than 45 s, or a failure → a failed check (the kitchen)', async () => {
+    const { storedDriverCheck } = await import('../modules/kitchen/kitchen-overflow');
+    const now = new Date('2026-11-16T23:00:00Z');
+    const ago = (s: number) => new Date(now.getTime() - s * 1000);
+    expect(storedDriverCheck({ driverCheckAt: ago(10), driverCheckFree: 2, driverCheckProblem: null }, now)).toMatchObject({ kind: 'FREE', count: 2 });
+    expect(storedDriverCheck({ driverCheckAt: ago(44), driverCheckFree: 0, driverCheckProblem: null }, now)).toMatchObject({ kind: 'NONE_FREE' });
+    expect(storedDriverCheck({ driverCheckAt: ago(46), driverCheckFree: 0, driverCheckProblem: null }, now)).toMatchObject({ kind: 'FAILED' });
+    expect(storedDriverCheck({ driverCheckAt: null, driverCheckFree: null, driverCheckProblem: null }, now)).toMatchObject({ kind: 'FAILED' });
+    expect(storedDriverCheck({ driverCheckAt: ago(5), driverCheckFree: null, driverCheckProblem: 'HTTP 404' }, now)).toMatchObject({ kind: 'FAILED', problem: 'HTTP 404' });
+    // A few seconds ahead is another server's clock; far ahead is not trusted.
+    expect(storedDriverCheck({ driverCheckAt: ago(-3), driverCheckFree: 0, driverCheckProblem: null }, now)).toMatchObject({ kind: 'NONE_FREE', ms: 0 });
+    expect(storedDriverCheck({ driverCheckAt: ago(-60), driverCheckFree: 0, driverCheckProblem: null }, now)).toMatchObject({ kind: 'FAILED' });
+  });
+});
+
+describe('[round 2 · S3-3] a fallback the kitchen MAY still have holds the order', () => {
+  it('maybeInKitchen keeps "Get a Swift rider" refused, and the store is told to check Dragontail', () => {
+    expect(kitchenHoldsOrder({ state: 'FALLBACK', maybeInKitchen: true })).toBe(true);
+    expect(kitchenHoldsOrder({ state: 'FALLBACK', maybeInKitchen: false })).toBe(false);
+    expect(kitchenStoreView({ kitchenRoute: 'KITCHEN', kitchenRouteReason: 'DRIVER_FREE' }, { state: 'FALLBACK', maybeInKitchen: true }))
+      .toMatchObject({ holdsOrder: true, title: 'On this tablet, and maybe in Dragontail' });
   });
 });

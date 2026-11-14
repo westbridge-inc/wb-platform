@@ -17,6 +17,8 @@ import {
   type BusyWindow,
   type OverflowMode,
   type OverflowSetting,
+  DRIVER_CHECK_WAITING,
+  overflowModeLocked,
 } from '../../../mobile/src/modules/vendor/deliveryOverflow';
 
 const PATH = '/api/v1/vendor/kitchen-overflow';
@@ -49,7 +51,7 @@ export function DeliveryOverflowCard() {
 
   const hours = usesBusyHours(mode);
   const problems = hours ? windows.map(busyWindowProblem) : [];
-  const blocked = problems.some(Boolean) || (hours && windows.length === 0);
+  const blocked = problems.some(Boolean) || (hours && windows.length === 0) || overflowModeLocked(mode, read.data);
   const update = (i: number, patch: Partial<BusyWindow>) => setWindows((ws) => ws.map((w, j) => (j === i ? { ...w, ...patch } : w)));
 
   return (
@@ -64,15 +66,18 @@ export function DeliveryOverflowCard() {
       <p className="sw-caption mt-1">{OVERFLOW_NOTE}</p>
       <fieldset className="mt-3 grid gap-2">
         <legend className="sr-only">When Swift riders take your deliveries</legend>
-        {OVERFLOW_MODE_OPTIONS.map((option) => (
-          <label key={option.mode} className={`flex min-h-11 cursor-pointer gap-3 rounded-lg border p-3 ${mode === option.mode ? 'border-[var(--swift-red)]' : 'border-[var(--swift-border)]'}`}>
-            <input type="radio" name="delivery-overflow" value={option.mode} checked={mode === option.mode} onChange={() => setMode(option.mode)} className="mt-1" />
-            <span className="min-w-0">
-              <span className="block text-sm font-semibold">{option.label}</span>
-              <span className="sw-caption block">{option.detail}</span>
-            </span>
-          </label>
-        ))}
+        {OVERFLOW_MODE_OPTIONS.map((option) => {
+          const locked = overflowModeLocked(option.mode, read.data);
+          return (
+            <label key={option.mode} className={`flex min-h-11 gap-3 rounded-lg border p-3 ${locked ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'} ${mode === option.mode ? 'border-[var(--swift-red)]' : 'border-[var(--swift-border)]'}`}>
+              <input type="radio" name="delivery-overflow" value={option.mode} checked={mode === option.mode} disabled={locked} onChange={() => setMode(option.mode)} className="mt-1" />
+              <span className="min-w-0">
+                <span className="block text-sm font-semibold">{option.label}</span>
+                <span className="sw-caption block">{locked ? DRIVER_CHECK_WAITING : option.detail}</span>
+              </span>
+            </label>
+          );
+        })}
       </fieldset>
       {hours && (
         <div className="mt-4 grid gap-3">

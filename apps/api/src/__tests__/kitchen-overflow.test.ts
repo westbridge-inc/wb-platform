@@ -13,10 +13,16 @@ import { MockDragontail } from './helpers/mock-dragontail';
 import { recordDispatchQueue } from './helpers/dispatch-queue';
 import { testPhone, wordFreeTag } from './helpers/fixture-ids';
 import { claimForKitchen, kitchenDefersStoreAlert } from '../modules/kitchen/kitchen-claim';
-import { drainKitchenSyncs, forgetKitchenTokens, KITCHEN_TICK_LOCK, type KitchenDeps } from '../modules/kitchen/kitchen-sync';
+import { drainKitchenSyncs, forgetKitchenTokens, kitchenBackstopSweep, KITCHEN_TICK_LOCK, type KitchenDeps } from '../modules/kitchen/kitchen-sync';
 import { kitchenLoginRef, kitchenWebhookRef } from '../modules/kitchen/kitchen-credentials';
-import { putKitchenIntegration } from '../modules/kitchen/kitchen-admin';
+import * as kitchenAdmin from '../modules/kitchen/kitchen-admin';
+import * as overflowModule from '../modules/kitchen/kitchen-overflow';
 import type { DriverCheck } from '../modules/kitchen/kitchen-overflow';
+
+const { putKitchenIntegration } = kitchenAdmin;
+// [round 2] Read through the module, so this file still loads against the round-1 code (the red-first run).
+type Refresh = (prisma: unknown, env: Record<string, string | undefined>, deps: { client?: { backoffMs: number } }) => Promise<number>;
+const refreshDriverChecks = () => (overflowModule as unknown as { refreshKitchenDriverChecks?: Refresh }).refreshKitchenDriverChecks?.(app.prisma, process.env, { client: { backoffMs: 1 } });
 
 // ---------------------------------------------------------------------------
 // [DT-OVERFLOW · owner 14 Nov 2026] Automatic delivery overflow against a real database and a mock Dragontail.
@@ -51,6 +57,7 @@ let integrationId = '';
 let itemId = '';
 let unmappedItemId = '';
 let riderId = '';
+let opsAdminId = '';
 
 const deps = (): KitchenDeps => ({ prisma: app.prisma, io: app.io, redis: app.redis, client: { backoffMs: 1 } });
 
@@ -61,7 +68,9 @@ function setEnv(on: boolean) {
     [kitchenLoginRef({ id: integrationId, provider: 'DRAGONTAIL' })]: { userName: 'pos-overflow', password: 'pw-overflow' },
     [kitchenWebhookRef({ id: integrationId, provider: 'DRAGONTAIL' })]: { webhookSecret: `whs-${nanoid(24)}` },
   });
-  for (const key of ['DRAGONTAIL_ACCEPT_ON', 'DRAGONTAIL_DRIVER_CHECK_MS', 'DRAGONTAIL_TIMEOUT_MS']) delete process.env[key];
+  for (const key of ['DRAGONTAIL_ACCEPT_ON', 'DRAGONTAIL_DRIVER_CHECK_MS', 'DRAGONTAIL_TIMEOUT_MS', 'DISPATCH_AVAILABILITY']) delete process.env[key];
+  // [round 2 · review A S2-3] The driver check has its own switch; these tests turn it on unless they say otherwise.
+  process.env['DRAGONTAIL_DRIVER_CHECK'] = on ? '1' : '';
 }
 
 async function makeUser(roles: UserRole[], activeRole: UserRole): Promise<Actor> {
@@ -103,7 +112,10 @@ async function makeOrder(opts: { fulfillment?: 'DELIVERY' | 'PICKUP'; mapped?: b
 const syncOf = (orderId: string) => app.prisma.orderIntegrationSync.findUnique({ where: { orderId_provider: { orderId, provider: 'DRAGONTAIL' } } });
 const orderOf = (orderId: string) => app.prisma.order.findUniqueOrThrow({ where: { id: orderId } });
 const ringsOf = (orderId: string) => app.prisma.notification.count({ where: { userId: owner.userId, title: { contains: 'New' }, data: { path: ['orderId'], equals: orderId } } });
-const setOverflow = (mode: string, busyHours: unknown = []) => sys(() => app.prisma.vendorIntegration.update({ where: { id: integrationId }, data: { overflowMode: mode as never, overflowBusyHours: busyHours as never } }));
+const setOverflow = (mode: string, busyHours: unknown = []) => sys(() => app.prisma.vendorIntegration.update({
+  where: { id: integrationId },
+  data: { overflowMode: mode as never, overflowBusyHours: busyHours as never, driverCheckAt: null, driverCheckFree: null, driverCheckProblem: null },
+}));
 const riderOnline = (online: boolean) => sys(() => app.prisma.rider.update({ where: { id: riderId }, data: { isOnline: online, lastLocationUpdate: new Date() } }));
 const ALL_WEEK = [0, 1, 2, 3, 4, 5, 6].map((day) => ({ day, start: '00:00', end: '24:00' }));
 const NEVER_NOW = (() => {
@@ -145,6 +157,7 @@ beforeAll(async () => {
 
   owner = await makeUser(['VENDOR_OWNER', 'CUSTOMER'], 'VENDOR_OWNER');
   customerId = (await makeUser(['CUSTOMER'], 'CUSTOMER')).userId;
+  opsAdminId = (await makeUser(['ADMIN'], 'ADMIN')).userId;
   staff = await makeUser(['CUSTOMER'], 'CUSTOMER');
   await sys(async () => {
     const vo = await app.prisma.vendorOwner.create({ data: { userId: owner.userId } });
@@ -190,7 +203,7 @@ afterEach(() => {
 });
 
 afterAll(async () => {
-  for (const key of ['DRAGONTAIL_INTEGRATION', 'DRAGONTAIL_API_URL', 'DRAGONTAIL_CREDENTIALS', 'DRAGONTAIL_DRIVER_CHECK_MS', 'DRAGONTAIL_TIMEOUT_MS']) delete process.env[key];
+  for (const key of ['DRAGONTAIL_INTEGRATION', 'DRAGONTAIL_API_URL', 'DRAGONTAIL_CREDENTIALS', 'DRAGONTAIL_DRIVER_CHECK', 'DRAGONTAIL_DRIVER_CHECK_MS', 'DRAGONTAIL_TIMEOUT_MS', 'DISPATCH_AVAILABILITY']) delete process.env[key];
   await sys(async () => {
     const orders = await app.prisma.order.findMany({ where: { OR: [{ customerId: { in: userIds } }, { vendorId: { in: vendorIds } }] }, select: { id: true } });
     const ids = orders.map((o) => o.id);
@@ -255,6 +268,7 @@ describe('[DT-OVERFLOW] AUTO_DRIVER_CHECK', () => {
 
   it('no free vehicle: the Swift path — the tablet rings, nothing is claimed or sent, and accept binds Swift riders', async () => {
     mock.vehicles = [];
+    await refreshDriverChecks();
     const order = await makeOrder();
     await releaseOnly();
     const { order: after } = await expectOnePlace(order.id);
@@ -288,6 +302,7 @@ describe('[DT-OVERFLOW] AUTO_DRIVER_CHECK', () => {
 
   it('a free vehicle (either spec shape): Dragontail as today', async () => {
     mock.vehicles = [{ id: '234', number: '234', status: 1 }];
+    await refreshDriverChecks();
     const order = await makeOrder();
     await releaseOnly();
     const { order: after, sync } = await expectOnePlace(order.id);
@@ -298,6 +313,8 @@ describe('[DT-OVERFLOW] AUTO_DRIVER_CHECK', () => {
     mock.reset();
     mock.vehicleKey = 'vehicle';
     mock.vehicles = [{ id: '345', number: '345', status: 1 }];
+    await setOverflow('AUTO_DRIVER_CHECK');
+    await refreshDriverChecks();
     const second = await makeOrder();
     await releaseOnly();
     expect(await orderOf(second.id)).toMatchObject({ kitchenRoute: 'KITCHEN', kitchenRouteReason: 'DRIVER_FREE' });
@@ -307,6 +324,9 @@ describe('[DT-OVERFLOW] AUTO_DRIVER_CHECK', () => {
     process.env['DRAGONTAIL_DRIVER_CHECK_MS'] = '400';
     mock.vehicles = [];
     mock.pathDelays.set(VEHICLES, 3_000);
+    const checking = Date.now();
+    await refreshDriverChecks();
+    expect(Date.now() - checking, 'the tick’s check is bounded by its budget').toBeLessThan(1_500);
     const order = await makeOrder();
     const started = Date.now();
     expect(await claimForKitchen(app.prisma, order.id)).toBe(true);
@@ -318,6 +338,7 @@ describe('[DT-OVERFLOW] AUTO_DRIVER_CHECK', () => {
 
   it('the endpoint missing (404: it is optional), or 5xx after the retries: Dragontail as today', async () => {
     mock.vehicles = null;
+    await refreshDriverChecks();
     const missing = await makeOrder();
     await releaseOnly();
     expect(await orderOf(missing.id)).toMatchObject({ kitchenRoute: 'KITCHEN', kitchenRouteReason: 'DRIVER_CHECK_FAILED' });
@@ -326,14 +347,17 @@ describe('[DT-OVERFLOW] AUTO_DRIVER_CHECK', () => {
     mock.reset();
     mock.vehicles = [];
     mock.failNext(VEHICLES, [500, 502, 503, 504]);
+    await setOverflow('AUTO_DRIVER_CHECK');
+    await refreshDriverChecks();
     const flaky = await makeOrder();
-    expect(await claimForKitchen(app.prisma, flaky.id, process.env, { client: { backoffMs: 1 } })).toBe(true);
+    expect(await claimForKitchen(app.prisma, flaky.id)).toBe(true);
     expect(await orderOf(flaky.id)).toMatchObject({ kitchenRoute: 'KITCHEN', kitchenRouteReason: 'DRIVER_CHECK_FAILED' });
   });
 
   it('no Swift rider near can carry it: kept with Dragontail rather than sent to nobody', async () => {
     await riderOnline(false);
     mock.vehicles = [];
+    await refreshDriverChecks();
     const order = await makeOrder();
     await releaseOnly();
     const { order: after, sync } = await expectOnePlace(order.id);
@@ -391,6 +415,7 @@ describe('[DT-OVERFLOW] BUSY_HOURS and BOTH', () => {
     expect(mock.count(VEHICLES)).toBe(0);
 
     await setOverflow('BOTH', NEVER_NOW);
+    await refreshDriverChecks();
     const busyDrivers = await makeOrder();
     await releaseOnly();
     expect(await orderOf(busyDrivers.id)).toMatchObject({ kitchenRoute: 'SWIFT_RIDERS', kitchenRouteReason: 'NO_FREE_DRIVER' });
@@ -451,5 +476,153 @@ describe('[DT-OVERFLOW] the store’s setting', () => {
     const byStaff = await call('PUT', '/api/v1/vendor/kitchen-overflow', staff.token, { mode: 'NONE' });
     expect(byStaff.statusCode).toBe(403);
     expect((await app.prisma.vendorIntegration.findUniqueOrThrow({ where: { id: integrationId } })).overflowMode).toBe('BOTH');
+  });
+});
+
+// ── ROUND 2 (review A) ──────────────────────────────────────────────────────
+
+describe('[round 2 · S2-2] the driver check never runs in the hold-release sweep or checkout', () => {
+  it('the sweep only READS the tick’s answer: no Dragontail call while releasing, however slow Dragontail is', async () => {
+    await setOverflow('AUTO_DRIVER_CHECK');
+    mock.vehicles = [];
+    await refreshDriverChecks();
+    const before = mock.requests.length;
+    mock.pathDelays.set(VEHICLES, 3_000);
+    const orders = [await makeOrder(), await makeOrder(), await makeOrder()];
+    const started = Date.now();
+    await releaseOnly();
+    expect(mock.requests.length - before, 'the release made no call to Dragontail').toBe(0);
+    expect(Date.now() - started, 'three overflow deliveries released without waiting on Dragontail').toBeLessThan(2_000);
+    for (const o of orders) expect(await orderOf(o.id)).toMatchObject({ kitchenRoute: 'SWIFT_RIDERS', kitchenRouteReason: 'NO_FREE_DRIVER' });
+  });
+
+  it('no fresh answer (none yet, or older than 45 s): the kitchen, the safe default, with no call', async () => {
+    await setOverflow('AUTO_DRIVER_CHECK');
+    mock.vehicles = [];
+    const none = await makeOrder();
+    await releaseOnly();
+    expect(await orderOf(none.id)).toMatchObject({ kitchenRoute: 'KITCHEN', kitchenRouteReason: 'DRIVER_CHECK_FAILED' });
+    await sys(() => app.prisma.vendorIntegration.update({ where: { id: integrationId }, data: { driverCheckAt: new Date(Date.now() - 50_000), driverCheckFree: 0 } }));
+    const stale = await makeOrder();
+    await releaseOnly();
+    expect(await orderOf(stale.id)).toMatchObject({ kitchenRoute: 'KITCHEN', kitchenRouteReason: 'DRIVER_CHECK_FAILED' });
+    expect(mock.count(VEHICLES)).toBe(0);
+  });
+
+  it('a failed check is not asked again for a minute; an answered one every 20 s', async () => {
+    await setOverflow('AUTO_DRIVER_CHECK');
+    mock.vehicles = null; // 404: failed
+    await refreshDriverChecks();
+    expect(mock.count(VEHICLES)).toBe(1);
+    const failed = await app.prisma.vendorIntegration.findUniqueOrThrow({ where: { id: integrationId } });
+    expect(failed.driverCheckFree).toBeNull();
+    expect(failed.driverCheckProblem).toContain('404');
+    await sys(() => app.prisma.vendorIntegration.update({ where: { id: integrationId }, data: { driverCheckAt: new Date(Date.now() - 30_000) } }));
+    await refreshDriverChecks();
+    expect(mock.count(VEHICLES), '30 s after a failure: not asked').toBe(1);
+    await sys(() => app.prisma.vendorIntegration.update({ where: { id: integrationId }, data: { driverCheckAt: new Date(Date.now() - 61_000) } }));
+    mock.vehicles = [];
+    await refreshDriverChecks();
+    expect(mock.count(VEHICLES), 'a minute after a failure: asked again').toBe(2);
+    await sys(() => app.prisma.vendorIntegration.update({ where: { id: integrationId }, data: { driverCheckAt: new Date(Date.now() - 21_000) } }));
+    await refreshDriverChecks();
+    expect(mock.count(VEHICLES), '20 s after an answer: asked again').toBe(3);
+  });
+});
+
+describe('[round 2 · S2-3] the driver check stays OFF until Dragontail confirms it (its own switch)', () => {
+  it('AUTO_DRIVER_CHECK = off, BOTH = busy hours only, no call; the two choices cannot be set; busy hours can', async () => {
+    process.env['DRAGONTAIL_DRIVER_CHECK'] = '';
+    mock.vehicles = [];
+    await setOverflow('AUTO_DRIVER_CHECK');
+    await refreshDriverChecks();
+    const auto = await makeOrder();
+    await releaseOnly();
+    expect(await orderOf(auto.id)).toMatchObject({ kitchenRoute: 'KITCHEN', kitchenRouteReason: 'DRIVER_CHECK_OFF' });
+
+    await setOverflow('BOTH', NEVER_NOW);
+    await refreshDriverChecks();
+    const outside = await makeOrder();
+    await releaseOnly();
+    expect(await orderOf(outside.id)).toMatchObject({ kitchenRoute: 'KITCHEN', kitchenRouteReason: 'OUTSIDE_BUSY_HOURS' });
+    await setOverflow('BOTH', ALL_WEEK);
+    const inside = await makeOrder();
+    await releaseOnly();
+    expect(await orderOf(inside.id)).toMatchObject({ kitchenRoute: 'SWIFT_RIDERS', kitchenRouteReason: 'BUSY_HOURS' });
+    expect(mock.count(VEHICLES), 'never asked').toBe(0);
+
+    const read = await call('GET', '/api/v1/vendor/kitchen-overflow', owner.token);
+    expect(read.json().data).toMatchObject({ available: true, driverCheckAvailable: false });
+    for (const mode of ['AUTO_DRIVER_CHECK', 'BOTH']) {
+      const res = await call('PUT', '/api/v1/vendor/kitchen-overflow', owner.token, { mode, busyHours: [{ day: 5, start: '18:00', end: '21:00' }] });
+      expect(res.statusCode, `${mode}: ${res.body}`).toBe(409);
+      expect(res.json().error.code).toBe('DRIVER_CHECK_OFF');
+    }
+    const hours = await call('PUT', '/api/v1/vendor/kitchen-overflow', owner.token, { mode: 'BUSY_HOURS', busyHours: [{ day: 5, start: '18:00', end: '21:00' }] });
+    expect(hours.statusCode, hours.body).toBe(200);
+  });
+});
+
+describe('[round 2 · S3-3] "Get a Swift rider" stays refused while Dragontail MAY still have the order', () => {
+  it('the switch went off mid-send: rung on the tablet, but no Swift rider may be added (and the store is told why)', async () => {
+    const order = await makeOrder();
+    await releaseOnly();
+    expect((await syncOf(order.id))?.state).toBe('QUEUED');
+    // The send got no answer (it may be in the kitchen), then the switch was turned off.
+    await sys(() => app.prisma.orderIntegrationSync.update({ where: { orderId_provider: { orderId: order.id, provider: 'DRAGONTAIL' } }, data: { state: 'UNKNOWN', lastError: 'timed out' } }));
+    setEnv(false);
+    await kitchenBackstopSweep({ prisma: app.prisma, io: app.io });
+    expect((await syncOf(order.id))?.state).toBe('FALLBACK');
+    expect(await ringsOf(order.id), 'rung on the tablet').toBe(1);
+    const accept = await call('PUT', `/api/v1/vendor/orders/${order.id}/accept`, owner.token, {});
+    expect(accept.statusCode, accept.body).toBe(200);
+    expect((await orderOf(order.id)).fulfillmentMode).toBe('VENDOR_DELIVERY');
+    const swap = await call('PUT', `/api/v1/vendor/orders/${order.id}/fulfillment-mode`, owner.token, { mode: 'PLATFORM_RIDER' });
+    expect(swap.statusCode, swap.body).toBe(409);
+    expect(swap.json().error.code).toBe('KITCHEN_HAS_ORDER');
+    expect((await orderOf(order.id)).fulfillmentMode).toBe('VENDOR_DELIVERY');
+    const detail = await call('GET', `/api/v1/vendor/orders/${order.id}`, owner.token);
+    expect(detail.json().data.kitchen).toMatchObject({ holdsOrder: true, title: 'On this tablet, and maybe in Dragontail' });
+  });
+});
+
+describe('[round 2 · S3-4] an overflow order kept with the store’s driver for its cash: operations are told', () => {
+  it('routed to Swift riders, then no Swift rider may carry its cash at accept: own driver, and one note to operations', async () => {
+    await setOverflow('BUSY_HOURS', ALL_WEEK);
+    const order = await makeOrder();
+    await releaseOnly();
+    expect(await orderOf(order.id)).toMatchObject({ kitchenRoute: 'SWIFT_RIDERS', kitchenRouteReason: 'BUSY_HOURS' });
+    // The only rider near now has too small a cash limit for this order.
+    await sys(() => app.prisma.rider.update({ where: { id: riderId }, data: { floatLimit: 100 } }));
+    process.env['DISPATCH_AVAILABILITY'] = '1';
+    try {
+      const accept = await call('PUT', `/api/v1/vendor/orders/${order.id}/accept`, owner.token, {});
+      expect(accept.statusCode, accept.body).toBe(200);
+    } finally {
+      delete process.env['DISPATCH_AVAILABILITY'];
+      await sys(() => app.prisma.rider.update({ where: { id: riderId }, data: { floatLimit: 1_000_000 } }));
+    }
+    expect((await orderOf(order.id)).fulfillmentMode).toBe('VENDOR_DELIVERY');
+    const notes = await app.prisma.notification.findMany({ where: { userId: opsAdminId, data: { path: ['orderId'], equals: order.id } }, select: { title: true, body: true } });
+    expect(notes, JSON.stringify(notes)).toHaveLength(1);
+    expect(notes[0]!.title).toContain('own driver');
+    expect(notes[0]!.body).toContain('NOT in Dragontail');
+  });
+});
+
+describe('[round 2 · S4-1] the console’s change of the overflow is audited', () => {
+  it('the audit callback runs inside the write, with the mode before and after (no person data)', async () => {
+    const facts: Array<Record<string, unknown>> = [];
+    const put = kitchenAdmin.putKitchenOverflow as unknown as (p: unknown, v: string, b: unknown, a?: (tx: unknown, id: string, f: Record<string, unknown>) => Promise<void>) => Promise<unknown>;
+    await put(app.prisma, vendorId, { mode: 'BUSY_HOURS', busyHours: [{ day: 1, start: '11:00', end: '14:00' }] }, async (tx, id, f) => {
+      expect(typeof (tx as { auditLog?: unknown }).auditLog, 'a transaction client').toBe('object');
+      expect(id).toBe(integrationId);
+      facts.push(f);
+    });
+    expect(facts).toEqual([{ modeBefore: 'NONE', modeAfter: 'BUSY_HOURS', busyWindowsBefore: 0, busyWindowsAfter: 1 }]);
+    const [{ readFileSync }, { resolve }] = await Promise.all([import('node:fs'), import('node:path')]);
+    const routes = readFileSync(resolve(__dirname, '../modules/admin/admin.routes.ts'), 'utf8');
+    const handler = routes.slice(routes.indexOf("app.put('/vendors/:id/kitchen-integration/overflow'"), routes.indexOf("app.get('/vendors/:id/kitchen-integration/routes'"));
+    expect(handler, 'the console route passes auditWithin').toMatch(/auditWithin\(/);
   });
 });

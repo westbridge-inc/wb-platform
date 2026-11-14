@@ -53,6 +53,38 @@ describe('[DT-OUTAGE] the client says which it was', () => {
     expect((err as KitchenTransientError).mayHaveLanded).toBe(true);
   });
 
+  it('[round 2 · S2-1] a 504, then a refused connection on the retry: MAY have landed (an earlier attempt reached Dragontail)', async () => {
+    let calls = 0;
+    const c = client(async () => {
+      calls += 1;
+      if (calls === 1) return { status: 504, text: async () => 'gateway timeout' };
+      throw fetchFailed('ECONNREFUSED');
+    });
+    const err = await c.call('POST', '/PosInsertOrders', {}, false).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(KitchenTransientError);
+    expect(calls).toBe(2);
+    expect((err as KitchenTransientError).mayHaveLanded).toBe(true);
+    expect((err as KitchenTransientError).linkFailure, 'and the link is failing').toBe(true);
+    expect((err as Error).message).not.toContain('nothing was sent');
+  });
+
+  it('[round 2 · S2-1] a write still 5xx after every retry: MAY have landed; a read or a login: not (asked again)', async () => {
+    const fiveHundreds = () => client(async () => ({ status: 502, text: async () => 'bad gateway' }));
+    const write = await fiveHundreds().call('POST', '/PosInsertOrders', {}, false).catch((e: unknown) => e);
+    expect((write as KitchenTransientError).mayHaveLanded).toBe(true);
+    expect((write as KitchenTransientError).linkFailure).toBe(true);
+    const read = await fiveHundreds().call('GET', '/PosGetVehicles/1').catch((e: unknown) => e);
+    expect((read as KitchenTransientError).mayHaveLanded).toBe(false);
+    const login = await fiveHundreds().login().catch((e: unknown) => e);
+    expect((login as KitchenTransientError).mayHaveLanded).toBe(false);
+  });
+
+  it('a timeout alone is "may have landed" but NOT a link failure (a slow kitchen is not a down one)', async () => {
+    const err = await client(async () => { throw fetchFailed('ECONNRESET'); }).call('POST', '/PosInsertOrders', {}, false).catch((e: unknown) => e);
+    expect((err as KitchenTransientError).mayHaveLanded).toBe(true);
+    expect((err as KitchenTransientError).linkFailure ?? false).toBe(false);
+  });
+
   it('a login refused is a LINK failure; it is never "may have landed"', async () => {
     const c = new DragontailClient({ baseUrl: 'https://api.dragontailsystem.com', login: { userName: 'u', password: 'p' }, userLevel: -1, timeoutMs: 1_000, fetch: async () => ({ status: 400, text: async () => '{}' }), sleep: async () => {}, backoffMs: 1 });
     const err = await c.login().catch((e: unknown) => e);

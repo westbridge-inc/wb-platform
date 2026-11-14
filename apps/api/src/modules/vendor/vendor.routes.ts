@@ -33,7 +33,7 @@ import { lineOptionsAsMade } from '../order/substitution-view';
 import { makeDispatchService } from '../dispatch/dispatch.service';
 import { dispatchTrigger, enqueueDeliveryDispatch } from '../dispatch/dispatch-trigger';
 import { resolveDeliveryMode } from '../fulfillment/fulfillment-mode';
-import { assertKitchenDoesNotHold, kitchenStoreView, kitchenSyncStateOf, readKitchenOverflowSetting, writeKitchenOverflowSetting } from '../kitchen/kitchen-overflow';
+import { assertKitchenDoesNotHold, kitchenStoreView, kitchenSyncStateOf, noteOverflowKeptWithStore, readKitchenOverflowSetting, writeKitchenOverflowSetting } from '../kitchen/kitchen-overflow';
 import { HANDOVER_SECRETS_OMIT } from '../handover/handover-security';
 import { pickingReadinessCounter, mmgAttestationCounter } from '../../plugins/observability';
 import { assertMmgAttestable, normaliseMmgReference, recordVendorAttestation } from './mmg-attestation';
@@ -1208,7 +1208,7 @@ export async function vendorRoutes(app: FastifyInstance) {
       fulfillment: string;
       fulfillmentMode: FulfillmentMode | null;
     },
-    opts: { swiftRidersCannotCarry?: boolean } = {},
+    opts: { swiftRidersCannotCarry?: boolean; onOverflowKeptWithStore?: () => void } = {},
   ): Promise<'PLATFORM_RIDER' | 'VENDOR_DELIVERY' | null> {
     if (source.fulfillment !== 'DELIVERY' || source.riderId || source.fulfillmentMode != null) return null;
     const vendor = source.vendorId
@@ -1217,6 +1217,8 @@ export async function vendorRoutes(app: FastifyInstance) {
     // Only a store that delivers itself can have an overflow route to read (one read, only then).
     const routed = vendor?.selfDeliveryEnabled ? await tx.order.findUnique({ where: { id: source.id }, select: { kitchenRoute: true } }) : null;
     const overflowToSwift = routed?.kitchenRoute === 'SWIFT_RIDERS' && !opts.swiftRidersCannotCarry;
+    // [round 2 · review A S3-4] Kept with the store's driver for its cash: operations are told after the commit.
+    if (routed?.kitchenRoute === 'SWIFT_RIDERS' && opts.swiftRidersCannotCarry) opts.onOverflowKeptWithStore?.();
     const mode = resolveDeliveryMode(null, (vendor?.selfDeliveryEnabled ?? false) && !overflowToSwift);
     await tx.order.update({
       where: { id: source.id },
@@ -2755,6 +2757,7 @@ export async function vendorRoutes(app: FastifyInstance) {
     const cashRefusal = order.fulfillment === 'DELIVERY' && !order.riderId && order.fulfillmentMode == null
       ? await swiftRiderCashRefusal(app.prisma, (probe) => dispatch.getDeliveryCapacity(probe), order.id, 'accept')
       : null;
+    let overflowKeptWithStore = false;
     const updated = await orderService.updateStatus(order.id, acceptedStatus, request.user.userId, 'Accepted by vendor', {
       continueTo: { target: preparingStatus, note: 'Preparing: the store accepted the order', when: preparationMayStart },
       withinTransaction: async (tx, lockedOrder) => {
@@ -2785,9 +2788,13 @@ export async function vendorRoutes(app: FastifyInstance) {
         }
         // [REVIEW-2472 A-1] Refused before the accept commits: the order stays PENDING, nothing is sought.
         // [DT-OVERFLOW] An overflow order no Swift rider may carry stays with the store's own driver instead.
-        if (await bindUnresolvedDeliveryMode(tx, lockedOrder, { swiftRidersCannotCarry: cashRefusal != null }) === 'PLATFORM_RIDER' && cashRefusal) throw cashRefusal;
+        if (await bindUnresolvedDeliveryMode(tx, lockedOrder, {
+          swiftRidersCannotCarry: cashRefusal != null,
+          onOverflowKeptWithStore: () => { overflowKeptWithStore = true; },
+        }) === 'PLATFORM_RIDER' && cashRefusal) throw cashRefusal;
       },
     });
+    if (overflowKeptWithStore) await noteOverflowKeptWithStore(app.prisma, app.io, order.id);
     if (appointmentItemId) await bookingService.nudgeForItem(appointmentItemId).catch(() => {});
     await ackVendorAlert(app, request.user.userId, order.id); // accepting acknowledges the alert
 

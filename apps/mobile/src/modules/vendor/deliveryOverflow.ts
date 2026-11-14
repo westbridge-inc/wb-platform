@@ -12,7 +12,7 @@ export type OverflowMode = 'NONE' | 'AUTO_DRIVER_CHECK' | 'BUSY_HOURS' | 'BOTH';
 export interface BusyWindow { day: number; start: string; end: string }
 
 /** GET /api/v1/vendor/kitchen-overflow. `available` false: the branch is not connected (or the connection is off). */
-export interface OverflowSetting { available: boolean; mode: OverflowMode; busyHours: BusyWindow[]; linkOffline?: boolean }
+export interface OverflowSetting { available: boolean; mode: OverflowMode; busyHours: BusyWindow[]; linkOffline?: boolean; driverCheckAvailable?: boolean }
 
 /** [DT-OUTAGE] Shown while the branch's link to Dragontail is down: every order rings this tablet until it is back. */
 export const LINK_OFFLINE_TITLE = 'Kitchen link offline, orders on tablet';
@@ -29,6 +29,12 @@ export const OVERFLOW_MODE_OPTIONS: ReadonlyArray<{ mode: OverflowMode; label: s
 ];
 
 export const usesBusyHours = (mode: OverflowMode) => mode === 'BUSY_HOURS' || mode === 'BOTH';
+
+/** [round 2] The two choices that ask Dragontail for a free driver: shown greyed, and not chosen, until the server
+ *  says the driver check is on (it waits for Dragontail to confirm what its vehicle list means). */
+export const overflowModeLocked = (mode: OverflowMode, setting: Pick<OverflowSetting, 'driverCheckAvailable'> | null | undefined) =>
+  (mode === 'AUTO_DRIVER_CHECK' || mode === 'BOTH') && setting?.driverCheckAvailable !== true;
+export const DRIVER_CHECK_WAITING = 'Not available yet: Swift is waiting for Dragontail to confirm its driver check.';
 
 export const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'] as const;
 

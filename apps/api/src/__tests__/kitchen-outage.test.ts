@@ -159,7 +159,7 @@ beforeEach(async () => {
   forgetKitchenTokens();
   await sys(() => app.prisma.vendorIntegration.update({
     where: { id: integrationId },
-    data: { linkFailures: 0, linkFirstFailureAt: null, linkOfflineAt: null, linkProbeAt: null },
+    data: { linkFailures: 0, linkFirstFailureAt: null, linkOfflineAt: null, linkProbeAt: null, linkOutageSince: null },
   }));
 });
 
@@ -200,15 +200,38 @@ describe('[DT-OUTAGE] a send that certainly never arrived', () => {
     expect((await link()).linkOfflineAt).toBeNull();
   });
 
-  it('5xx answers after the spec’s retries: the same (rung, counted, no page)', async () => {
+  it('[round 2 · S2-1] 5xx answers after the spec’s retries: MAY have arrived (a gateway answered) — UNKNOWN, not rung, paged; and the link counts it', async () => {
     const order = await makeOrder();
     await release();
     mock.failNext('/PosInsertOrders', [500, 502, 503, 504]);
     await drainKitchenSyncs(deps(), { orderIds: [order.id] });
-    expect((await syncOf(order.id))?.state).toBe('FALLBACK');
-    expect(await ringsOf(order.id)).toBe(1);
-    expect(await orderPages(order.id)).toBe(0);
-    expect((await link()).linkFailures).toBe(1);
+    const sync = await syncOf(order.id);
+    expect(sync?.state, sync?.lastError ?? '').toBe('UNKNOWN');
+    expect(await ringsOf(order.id), 'never rung while the kitchen may have it').toBe(0);
+    expect(await orderPages(order.id), 'the per-order page: the human net').toBe(1);
+    expect((await link()).linkFailures, 'a kitchen answering 5xx is a failing link').toBe(1);
+  });
+
+  it('[round 2 · S2-1] a 504, then a REFUSED connection on the retry: MAY have arrived (the first attempt reached Dragontail)', async () => {
+    await warmToken();
+    const order = await makeOrder();
+    await release();
+    expect((await syncOf(order.id))?.state).toBe('QUEUED');
+    // The gateway answers 504 once, then the box is gone: the retry meets a REALLY refused connection (a closed port).
+    mock.failNext('/PosInsertOrders', [504]);
+    const sentBefore = mock.count('/PosInsertOrders');
+    let inserts = 0;
+    const fetch = (async (url: string, init: unknown) => {
+      const target = url.endsWith('/PosInsertOrders') && ++inserts > 1 ? url.replace(mock.url, closedUrl) : url;
+      return (globalThis.fetch as unknown as (u: string, i: unknown) => Promise<unknown>)(target, init);
+    }) as never;
+    await drainKitchenSyncs({ ...deps(), client: { backoffMs: 1, fetch } }, { orderIds: [order.id] });
+    expect(inserts, 'retried once after the 504').toBe(2);
+    expect(mock.count('/PosInsertOrders') - sentBefore, 'the first attempt did reach Dragontail').toBe(1);
+    const sync = await syncOf(order.id);
+    expect(sync?.state, sync?.lastError ?? '').toBe('UNKNOWN');
+    expect(await ringsOf(order.id), 'not rung: the store would make it twice').toBe(0);
+    expect(await orderPages(order.id)).toBe(1);
   });
 
   it('an order Dragontail refuses (validation) is not a link failure: rung and paged as before, not counted', async () => {
@@ -286,7 +309,7 @@ describe('[DT-OUTAGE] the branch breaker', () => {
     expect(await link()).toMatchObject({ linkFailures: 0, linkOfflineAt: null });
   });
 
-  it('the probe: still down → stays offline; Dragontail back → closes with ONE "back online" note; claims resume', async () => {
+  it('the probe: still down → stays offline; a login works → ON TRIAL (claims resume, no note yet); a real send ends the outage with ONE note', async () => {
     const since = new Date(Date.now() - 5 * 60_000);
     await sys(() => app.prisma.vendorIntegration.update({ where: { id: integrationId }, data: { linkOfflineAt: since, linkProbeAt: since, linkFailures: 3 } }));
     setEnv({ url: closedUrl });
@@ -300,9 +323,42 @@ describe('[DT-OUTAGE] the branch breaker', () => {
     await sys(() => app.prisma.vendorIntegration.update({ where: { id: integrationId }, data: { linkProbeAt: since } }));
     expect(await probeOfflineKitchenLinks(deps())).toBe(1);
     expect(await link()).toMatchObject({ linkOfflineAt: null, linkFailures: 0 });
-    expect(await linkNotes('Kitchen link back online')).toBe(1);
+    expect((await link()).linkOutageSince, '[round 2 · S3-2] a login proves the login, not inserts: on trial').not.toBeNull();
+    expect(await linkNotes('Kitchen link back online'), 'no note on a login alone').toBe(0);
     const order = await makeOrder();
     expect(await claimForKitchen(app.prisma, order.id)).toBe(true);
+    await drainKitchenSyncs(deps(), { orderIds: [order.id] });
+    expect((await syncOf(order.id))?.state).toBe('SENT');
+    expect(await link()).toMatchObject({ linkOfflineAt: null, linkOutageSince: null });
+    expect(await linkNotes('Kitchen link back online'), 'the real send ends the outage: one note').toBe(1);
+  });
+
+  it('[round 2 · S3-2] logins work but inserts keep failing: back offline at the FIRST failure on trial, ONE alert pair for the whole outage', async () => {
+    await warmToken();
+    // Notes from earlier tests of this branch: count this outage's own.
+    const offlineBefore = await linkNotes('Kitchen link offline, orders on tablet');
+    const backBefore = await linkNotes('Kitchen link back online');
+    for (let i = 0; i < 3; i += 1) await refusedSend();
+    expect((await link()).linkOfflineAt).not.toBeNull();
+    expect(await linkNotes('Kitchen link offline, orders on tablet') - offlineBefore).toBe(1);
+    for (let cycle = 0; cycle < 3; cycle += 1) {
+      await sys(() => app.prisma.vendorIntegration.update({ where: { id: integrationId }, data: { linkProbeAt: new Date(Date.now() - 120_000) } }));
+      expect(await probeOfflineKitchenLinks(deps()), `cycle ${cycle}: the probe's login works`).toBe(1);
+      expect((await link()).linkOfflineAt).toBeNull();
+      await refusedSend();
+      expect((await link()).linkOfflineAt, `cycle ${cycle}: ONE failure on trial takes it offline again`).not.toBeNull();
+    }
+    expect(await linkNotes('Kitchen link offline, orders on tablet') - offlineBefore, 'no alert per cycle').toBe(1);
+    expect(await linkNotes('Kitchen link back online') - backBefore, 'no back-online note while inserts fail').toBe(0);
+    // Dragontail really back: probe, then a send goes through: the pair closes.
+    await sys(() => app.prisma.vendorIntegration.update({ where: { id: integrationId }, data: { linkProbeAt: new Date(Date.now() - 120_000) } }));
+    await probeOfflineKitchenLinks(deps());
+    const ok = await makeOrder();
+    await release();
+    await drainKitchenSyncs(deps(), { orderIds: [ok.id] });
+    expect((await syncOf(ok.id))?.state).toBe('SENT');
+    expect(await linkNotes('Kitchen link back online') - backBefore).toBe(1);
+    expect(await link()).toMatchObject({ linkOfflineAt: null, linkOutageSince: null, linkFailures: 0 });
   });
 
   it('switch OFF: no probe, no call', async () => {

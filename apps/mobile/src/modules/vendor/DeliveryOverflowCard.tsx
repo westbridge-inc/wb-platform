@@ -11,7 +11,9 @@ import {
   OVERFLOW_MODE_OPTIONS,
   OVERFLOW_NOTE,
   OVERFLOW_TITLE,
+  DRIVER_CHECK_WAITING,
   busyWindowProblem,
+  overflowModeLocked,
   usesBusyHours,
   type BusyWindow,
   type OverflowMode,
@@ -38,7 +40,7 @@ export function DeliveryOverflowCard({ enabled }: { enabled: boolean }) {
 
   const hours = usesBusyHours(mode);
   const problems = hours ? windows.map(busyWindowProblem) : [];
-  const blocked = problems.some(Boolean) || (hours && windows.length === 0);
+  const blocked = problems.some(Boolean) || (hours && windows.length === 0) || overflowModeLocked(mode, setting);
   const update = (i: number, patch: Partial<BusyWindow>) => setWindows((ws) => ws.map((w, j) => (j === i ? { ...w, ...patch } : w)));
 
   return (
@@ -52,20 +54,24 @@ export function DeliveryOverflowCard({ enabled }: { enabled: boolean }) {
       <T variant="body" weight="bold">{OVERFLOW_TITLE}</T>
       <T variant="caption" tone="muted" style={{ marginTop: space.xs }}>{OVERFLOW_NOTE}</T>
       <View style={{ marginTop: space.md, gap: space.sm }}>
-        {OVERFLOW_MODE_OPTIONS.map((option) => (
-          <Pressable
-            key={option.mode}
-            onPress={() => setMode(option.mode)}
-            accessibilityRole="radio"
-            accessibilityState={{ checked: mode === option.mode }}
-            accessibilityLabel={option.label}
-            testID={`overflow-mode-${option.mode}`}
-            style={{ borderWidth: 1, borderRadius: 12, padding: space.md, borderColor: mode === option.mode ? color.brand[500] : color.border.strong }}
-          >
-            <T variant="label" weight="semibold">{option.label}</T>
-            <T variant="caption" tone="muted" style={{ marginTop: 2 }}>{option.detail}</T>
-          </Pressable>
-        ))}
+        {OVERFLOW_MODE_OPTIONS.map((option) => {
+          const locked = overflowModeLocked(option.mode, setting);
+          return (
+            <Pressable
+              key={option.mode}
+              onPress={() => { if (!locked) setMode(option.mode); }}
+              disabled={locked}
+              accessibilityRole="radio"
+              accessibilityState={{ checked: mode === option.mode, disabled: locked }}
+              accessibilityLabel={option.label}
+              testID={`overflow-mode-${option.mode}`}
+              style={{ borderWidth: 1, borderRadius: 12, padding: space.md, opacity: locked ? 0.5 : 1, borderColor: mode === option.mode ? color.brand[500] : color.border.strong }}
+            >
+              <T variant="label" weight="semibold">{option.label}</T>
+              <T variant="caption" tone="muted" style={{ marginTop: 2 }}>{locked ? DRIVER_CHECK_WAITING : option.detail}</T>
+            </Pressable>
+          );
+        })}
       </View>
       {hours ? (
         <View style={{ marginTop: space.md, gap: space.md }}>

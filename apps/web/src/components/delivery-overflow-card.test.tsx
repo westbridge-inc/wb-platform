@@ -30,4 +30,20 @@ describe('[DT-OVERFLOW] the branch card', () => {
     await waitFor(() => expect(screen.getByRole('radio', { name: /During my busy hours/ })).toHaveProperty('checked', true));
     expect((screen.getByLabelText('Busy hours 1: from') as HTMLInputElement).value).toBe('22:00');
   });
+
+  it('[round 2] the two choices that ask Dragontail for a free driver are greyed until the server turns the check on', async () => {
+    serve({ available: true, mode: 'NONE', busyHours: [], linkOffline: false, driverCheckAvailable: false });
+    renderWithQuery(<DeliveryOverflowCard />);
+    const auto = await screen.findByRole('radio', { name: /When all my drivers are busy/ });
+    expect(auto).toHaveProperty('disabled', true);
+    expect(screen.getByRole('radio', { name: /^Both/ })).toHaveProperty('disabled', true);
+    expect(screen.getByRole('radio', { name: /During my busy hours/ })).toHaveProperty('disabled', false);
+    expect(screen.getAllByText(/waiting for Dragontail to confirm its driver check/)).toHaveLength(2);
+  });
+
+  it('[round 2] once the server turns the check on, they can be chosen', async () => {
+    serve({ available: true, mode: 'NONE', busyHours: [], linkOffline: false, driverCheckAvailable: true });
+    renderWithQuery(<DeliveryOverflowCard />);
+    expect(await screen.findByRole('radio', { name: /When all my drivers are busy/ })).toHaveProperty('disabled', false);
+  });
 });

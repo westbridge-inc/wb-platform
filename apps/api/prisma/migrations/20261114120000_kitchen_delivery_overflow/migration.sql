@@ -9,6 +9,9 @@
 --     (NOT NULL DEFAULT '[]': no busy hours) and "overflowUpdatedAt" (nullable). Constant defaults: no table rewrite.
 --  2b. [DT-OUTAGE] vendor_integrations: the kitchen-link breaker — "linkFailures" (NOT NULL DEFAULT 0),
 --     "linkFirstFailureAt", "linkOfflineAt", "linkProbeAt" (nullable). Null "linkOfflineAt" = online (as today).
+--  2c. [round 2] vendor_integrations: "linkOutageSince" (the outage a link is in until a real send works: one alert pair
+--     per outage), and the kitchen tick's latest driver check: "driverCheckAt", "driverCheckFree", "driverCheckProblem"
+--     (all nullable). order_integration_syncs: "maybeInKitchen" (NOT NULL DEFAULT false: a constant default, no rewrite).
 --  3. orders: "kitchenRoute", "kitchenRouteReason", "kitchenRouteAt", all nullable with no default (a catalogue change
 --     only, no rewrite, no scan). Written once per such order by the kitchen claim, only while DRAGONTAIL_INTEGRATION is
 --     on; null for every other order.
@@ -16,7 +19,7 @@
 -- Nothing reads or writes these while DRAGONTAIL_INTEGRATION is off (production: off), except the store's order screen,
 -- which shows a route only when one was recorded. Not platform config: no re-seed.
 --
--- ROLLBACK: rollback.sql beside this file.
+-- ROLLBACK: code only, drop nothing (rollback.sql beside this file says why).
 
 -- [F-021-25] Bounded lock waits: DDL must never queue unboundedly behind traffic.
 SET lock_timeout = '10s';
@@ -32,7 +35,14 @@ ALTER TABLE "vendor_integrations"
   ADD COLUMN "linkFailures" INTEGER NOT NULL DEFAULT 0,
   ADD COLUMN "linkFirstFailureAt" TIMESTAMP(3),
   ADD COLUMN "linkOfflineAt" TIMESTAMP(3),
-  ADD COLUMN "linkProbeAt" TIMESTAMP(3);
+  ADD COLUMN "linkProbeAt" TIMESTAMP(3),
+  ADD COLUMN "linkOutageSince" TIMESTAMP(3),
+  ADD COLUMN "driverCheckAt" TIMESTAMP(3),
+  ADD COLUMN "driverCheckFree" INTEGER,
+  ADD COLUMN "driverCheckProblem" TEXT;
+
+ALTER TABLE "order_integration_syncs"
+  ADD COLUMN "maybeInKitchen" BOOLEAN NOT NULL DEFAULT false;
 
 -- The busy hours are always a JSON list (the server validates each window; this keeps a hand edit honest).
 ALTER TABLE "vendor_integrations"

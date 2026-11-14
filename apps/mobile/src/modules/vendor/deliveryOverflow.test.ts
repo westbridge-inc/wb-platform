@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { busyWindowProblem, busyWindowWords, kitchenHoldsOrder, OVERFLOW_MODE_OPTIONS, usesBusyHours, withKitchenHold, type OrderKitchenView } from './deliveryOverflow';
+import { busyWindowProblem, busyWindowWords, kitchenHoldsOrder, OVERFLOW_MODE_OPTIONS, overflowModeLocked, usesBusyHours, withKitchenHold, type OrderKitchenView } from './deliveryOverflow';
 import { deliveryOwnerView, type DeliveryOwnerInput } from './screens/delivery-owner';
 
 /** The phone's order screen: the delivery card, then the kitchen system's facts on it. */
@@ -60,3 +60,17 @@ describe('[DT-OVERFLOW] busy hours as the store types them', () => {
     expect(OVERFLOW_MODE_OPTIONS.filter((o) => usesBusyHours(o.mode)).map((o) => o.mode)).toEqual(['BUSY_HOURS', 'BOTH']);
   });
 });
+
+describe('[round 2] the driver check waits for Dragontail', () => {
+  it('its two choices are locked unless the server says the check is on; off and busy hours never are', () => {
+    for (const setting of [undefined, null, {}, { driverCheckAvailable: false }]) {
+      expect(overflowModeLocked('AUTO_DRIVER_CHECK', setting)).toBe(true);
+      expect(overflowModeLocked('BOTH', setting)).toBe(true);
+      expect(overflowModeLocked('NONE', setting)).toBe(false);
+      expect(overflowModeLocked('BUSY_HOURS', setting)).toBe(false);
+    }
+    expect(overflowModeLocked('AUTO_DRIVER_CHECK', { driverCheckAvailable: true })).toBe(false);
+    expect(overflowModeLocked('BOTH', { driverCheckAvailable: true })).toBe(false);
+  });
+});
+

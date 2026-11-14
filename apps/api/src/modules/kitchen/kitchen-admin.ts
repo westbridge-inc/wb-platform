@@ -2,7 +2,7 @@ import type { Prisma, PrismaClient } from '@prisma/client';
 import { z } from '../../lib/zod';
 import { AppError } from '../../utils/errors';
 import { kitchenLoginRef, kitchenSecretStatus, kitchenWebhookRef, newKitchenIntegrationId } from './kitchen-credentials';
-import { dragontailApiUrl, dragontailIntegrationEnabled, dragontailSettings } from './kitchen-switch';
+import { dragontailApiUrl, dragontailDriverCheckEnabled, dragontailIntegrationEnabled, dragontailSettings } from './kitchen-switch';
 import { kitchenProvider } from './kitchen-sync';
 import { listKitchenRoutes, readBusyHours, writeKitchenOverflowSetting } from './kitchen-overflow';
 
@@ -212,10 +212,19 @@ export async function getKitchenOverflow(prisma: PrismaClient, vendorId: string)
   await vendorOrThrow(prisma, vendorId);
   const row = await prisma.vendorIntegration.findUnique({
     where: { vendorId_provider: { vendorId, provider: 'DRAGONTAIL' } },
-    select: { enabled: true, overflowMode: true, overflowBusyHours: true, overflowUpdatedAt: true, linkOfflineAt: true, linkFailures: true },
+    select: {
+      enabled: true, overflowMode: true, overflowBusyHours: true, overflowUpdatedAt: true, linkOfflineAt: true, linkFailures: true,
+      linkOutageSince: true, driverCheckAt: true, driverCheckFree: true, driverCheckProblem: true,
+    },
   });
   return {
     switchOn: dragontailIntegrationEnabled(),
+    // [round 2 · review A S2-3] The driver check's own switch: off until Dragontail confirms what it lists.
+    driverCheckAvailable: dragontailDriverCheckEnabled(),
+    // [round 2 · review A S2-2] The kitchen tick's latest driver check for this branch (null free = it failed: why).
+    driverCheck: row?.driverCheckAt ? { at: row.driverCheckAt, free: row.driverCheckFree, problem: row.driverCheckProblem } : null,
+    // [round 2 · review A S3-2] A probe's login re-opened the link; the outage ends when a real send goes through.
+    linkOnTrial: row != null && row.linkOfflineAt == null && row.linkOutageSince != null,
     // [DT-OUTAGE] "Kitchen link offline, orders on tablet" (kitchen-link.ts), and the certain failures counted so far.
     linkOfflineAt: row?.linkOfflineAt ?? null,
     linkFailures: row?.linkFailures ?? 0,
@@ -228,9 +237,9 @@ export async function getKitchenOverflow(prisma: PrismaClient, vendorId: string)
 }
 
 /** [DT-OVERFLOW] The console's change of a branch's delivery overflow (refused while the switch is off). */
-export async function putKitchenOverflow(prisma: PrismaClient, vendorId: string, body: unknown) {
+export async function putKitchenOverflow(prisma: PrismaClient, vendorId: string, body: unknown, audit?: KitchenAudit) {
   await vendorOrThrow(prisma, vendorId);
-  await writeKitchenOverflowSetting(prisma, vendorId, body);
+  await writeKitchenOverflowSetting(prisma, vendorId, body, process.env, audit);
   return getKitchenOverflow(prisma, vendorId);
 }
 

@@ -25,7 +25,7 @@ function serve(setting: Record<string, unknown>, writes: ApiRequest[] = []) {
   });
 }
 
-const on = { switchOn: true, connected: true, enabled: true, mode: 'AUTO_DRIVER_CHECK', busyHours: [], updatedAt: null };
+const on = { switchOn: true, connected: true, enabled: true, mode: 'AUTO_DRIVER_CHECK', busyHours: [], updatedAt: null, driverCheckAvailable: true };
 
 describe('[DT-OVERFLOW] the console panel', () => {
   it('shows nothing while the switch is off', async () => {
@@ -44,5 +44,23 @@ describe('[DT-OVERFLOW] the console panel', () => {
     await user.click(screen.getByRole('button', { name: 'Save' }));
     await waitFor(() => expect(writes).toHaveLength(1));
     expect(JSON.parse(String(writes[0]!.init?.body))).toEqual({ mode: 'AUTO_DRIVER_CHECK' });
+  });
+
+  it('[round 2] while the driver check waits for Dragontail: its two choices are greyed, and a branch still set to one cannot be saved as is', async () => {
+    const writes: ApiRequest[] = [];
+    serve({ ...on, driverCheckAvailable: false, driverCheck: null }, writes);
+    const { user } = renderWithQuery(<KitchenOverflowPanel vendorId="vendor-dt" />);
+    await screen.findByText(/SW-2001/);
+    const auto = screen.getByRole('option', { name: /When all its drivers are busy/ }) as HTMLOptionElement;
+    const both = screen.getByRole('option', { name: /Busy hours, then/ }) as HTMLOptionElement;
+    expect(auto.disabled).toBe(true);
+    expect(auto.textContent).toContain('waiting for Dragontail');
+    expect(both.disabled).toBe(true);
+    expect((screen.getByRole('option', { name: /During its busy hours/ }) as HTMLOptionElement).disabled).toBe(false);
+    expect((screen.getByRole('button', { name: 'Save' }) as HTMLButtonElement).disabled).toBe(true);
+    await user.selectOptions(screen.getByRole('combobox'), 'NONE');
+    await user.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(writes).toHaveLength(1));
+    expect(JSON.parse(String(writes[0]!.init?.body))).toEqual({ mode: 'NONE' });
   });
 });

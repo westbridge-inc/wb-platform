@@ -2504,6 +2504,14 @@ model VendorIntegration {
   linkFirstFailureAt  DateTime?
   linkOfflineAt       DateTime?
   linkProbeAt         DateTime?
+  /// [DT-OUTAGE round 2 · review A S3-2] The outage this link is in, from its first opening until a REAL send goes
+  /// through. A probe's login re-opens the link only on trial: one more certain failure re-opens it with no new alert.
+  linkOutageSince     DateTime?
+  /// [DT-OVERFLOW round 2 · review A S2-2] The branch's latest driver check, made by the kitchen tick (order queue),
+  /// never by the hold-release sweep or checkout: they only read it. Null free count = the check failed (problem).
+  driverCheckAt       DateTime?
+  driverCheckFree     Int?
+  driverCheckProblem  String?
   createdAt           DateTime               @default(now())
   updatedAt           DateTime               @updatedAt
   syncs               OrderIntegrationSync[]
@@ -2565,6 +2573,9 @@ model OrderIntegrationSync {
   lastError           String?
   sentAt              DateTime?
   fallbackAt          DateTime?
+  /// [DT-OVERFLOW round 2 · review A S3-3] Fell back while the kitchen system MAY still have it (the switch went off
+  /// mid-send): "Get a Swift rider" stays refused, as while the kitchen holds it.
+  maybeInKitchen      Boolean           @default(false)
   cancelledAt         DateTime?
   dispatchedAt        DateTime?
   createdAt           DateTime          @default(now())

@@ -2574,7 +2574,10 @@ export async function adminRoutes(app: FastifyInstance) {
   });
   app.put('/vendors/:id/kitchen-integration/overflow', { preHandler: [adminGuard] }, async (request) => {
     const { putKitchenOverflow } = await import('../kitchen/kitchen-admin');
-    return { success: true, data: await putKitchenOverflow(app.prisma, (request.params as { id: string }).id, request.body) };
+    // [round 2 · review A S4-1] Who moved this branch's cash deliveries between two dispatch systems: the audit row, in
+    // the same transaction, carries the mode and the number of busy windows before and after (no person data).
+    return { success: true, data: await putKitchenOverflow(app.prisma, (request.params as { id: string }).id, request.body,
+      (tx, entityId, facts) => auditWithin(tx, request as unknown as AuditRequestLike, app.prefix, { entityId, extra: facts })) };
   });
   app.get('/vendors/:id/kitchen-integration/routes', { preHandler: [adminGuard] }, async (request) => {
     const { listKitchenRoutesFor } = await import('../kitchen/kitchen-admin');
