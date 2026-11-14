@@ -145,6 +145,10 @@ COPY apps/mobile/src/modules/vendor/tier-view.ts apps/mobile/src/modules/vendor/
 COPY apps/mobile/src/lib/documentExpiry.ts apps/mobile/src/lib/documentExpiry.ts
 COPY apps/mobile/src/lib/storeVat.ts apps/mobile/src/lib/storeVat.ts
 COPY apps/mobile/src/lib/money.ts apps/mobile/src/lib/money.ts
+# [WEB-INSIGHTS] Insights holds the last revenue pair that agreed (lib/insightsHeldView.ts) and says how a
+# Standing is grouped (components/standingNote.ts), the app's own plain files.
+COPY apps/mobile/src/lib/insightsHeldView.ts apps/mobile/src/lib/insightsHeldView.ts
+COPY apps/mobile/src/components/standingNote.ts apps/mobile/src/components/standingNote.ts
 WORKDIR /app/apps/web
 RUN pnpm run build
 

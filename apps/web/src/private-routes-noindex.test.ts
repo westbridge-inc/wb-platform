@@ -78,6 +78,7 @@ const PRIVATE_PAGES = [
   'dashboard/inventory/page.tsx',
   'dashboard/inventory/import/page.tsx',
   'dashboard/orders/page.tsx',
+  'dashboard/orders/history/page.tsx', // [WEB-HISTORY] a store's own past orders (customer first names)
   'dashboard/insights/page.tsx',
   'dashboard/help/page.tsx', // [BUG-HUNT F04] a partner's way to a person
   'dashboard/qr/page.tsx', // [STORE-LINK] the store's own QR code and share link (owners and managers)

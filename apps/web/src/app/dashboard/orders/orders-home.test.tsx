@@ -174,6 +174,8 @@ describe('the Orders home copies the app', () => {
     expect(tile('My QR & number').getAttribute('href')).toBe('/dashboard/qr');
     expect(tile('My QR & number').getAttribute('target')).toBeNull();
     await waitFor(() => expect(tile('Order history').textContent).toContain('31 recent orders'));
+    // [WEB-HISTORY · audit B2] The tile opens the real Order history (search, status, days, Load more), as the app's.
+    expect(tile('Order history').getAttribute('href')).toBe('/dashboard/orders/history');
     await waitFor(() => expect(tile('Billing').textContent).toContain('Payment due since 18 Oct 2026'));
     expect(tile('Billing').getAttribute('href')).toBe('/dashboard/weekly-fee');
     expect(tile('Billing').textContent).toContain('Payment due');

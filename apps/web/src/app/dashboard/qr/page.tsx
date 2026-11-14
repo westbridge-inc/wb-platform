@@ -2,11 +2,12 @@
 
 import { useEffect, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { Check, CheckCircle2, ChevronDown, ChevronRight, Copy, ExternalLink, Maximize, PhoneOff, Share2, ShoppingBag } from 'lucide-react';
+import { Check, CheckCircle2, ChevronDown, ChevronRight, Copy, ExternalLink, Maximize, PhoneOff, Printer, Share2, ShoppingBag } from 'lucide-react';
 import { storeKey, useStoreId } from '@/lib/store-scope';
 import { useStoreRole } from '@/lib/store-role';
 import { useCatalogueName } from '@/lib/catalogue-name';
 import { getQr, getQrPublicState } from '@/lib/vendor-api';
+import { downloadQrCounterCard } from '@/lib/store-insights-api';
 
 /**
  * [STORE-LINK+NAMES · owner 30 Oct 21:47Z] "My QR & number" on the web business dashboard: the phone
@@ -14,7 +15,8 @@ import { getQr, getQrPublicState } from '@/lib/vendor-api';
  * and its words. A store shares its Swift link with customers who message it (WhatsApp and the like):
  * the live code, the short link to copy, Share link and Open web menu. Nothing can be shared, copied
  * or opened until the public resolver confirms that the code opens THIS store, as on the phone.
- * The QR lifecycle controls and the scan figures stay on the phone for now.
+ * The QR lifecycle controls and the scan figures stay on the phone for now. [WEB-QR · audit C8] The website also
+ * downloads the print-ready counter card the server makes (the phone cannot download it yet).
  */
 
 /** Placement tips — exactly the phone's six. */
@@ -41,6 +43,37 @@ const STATE_WORDS: Record<PublicState, string> = {
   unavailable: 'This code is not taking customers to a live store yet.',
   error: "Swift couldn't confirm that this store link is live.",
 };
+
+/** [WEB-QR · audit C8] "Print counter card": the server's print-ready card (GET /vendor/qr/assets/pdf, template card)
+ *  as a PDF to print. Offered once Swift has confirmed the code opens this store, as every share on this page. */
+function CounterCard({ storeId, live }: { storeId: string | null; live: boolean }) {
+  const [state, setState] = useState<{ busy: boolean; error: string | null; done: boolean }>({ busy: false, error: null, done: false });
+  useEffect(() => { setState({ busy: false, error: null, done: false }); }, [storeId]);
+  const download = async () => {
+    if (state.busy || !live || !storeId) return;
+    setState({ busy: true, error: null, done: false });
+    try {
+      await downloadQrCounterCard(storeId);
+      setState({ busy: false, error: null, done: true });
+    } catch (e) {
+      setState({ busy: false, error: e instanceof Error && e.message ? e.message : 'Couldn’t download the card. Try again.', done: false });
+    }
+  };
+  return (
+    <section aria-label="Print counter card" className="sw-card p-5">
+      <div className="flex flex-wrap items-center gap-3">
+        <Printer size={18} aria-hidden="true" className="text-[var(--swift-muted)]" />
+        <p className="flex-1 font-semibold">Print counter card</p>
+      </div>
+      <p className="sw-caption mt-2">A print-ready card with your live code and store name (PDF). Print it for your counter, door or delivery bags.</p>
+      <button type="button" onClick={() => void download()} disabled={!live || state.busy} className="sw-btn sw-btn-md sw-btn-outline mt-3 w-full disabled:cursor-not-allowed disabled:opacity-55">
+        <Printer size={16} aria-hidden="true" />{state.busy ? 'Preparing the card…' : 'Download the card (PDF)'}
+      </button>
+      {state.done && <p role="status" className="sw-caption mt-2">Downloaded. Open the file to print it.</p>}
+      {state.error && <p role="alert" className="mt-2 text-[13px] text-[var(--swift-red)]">{state.error}</p>}
+    </section>
+  );
+}
 
 function HowItWorks() {
   return (
@@ -201,6 +234,8 @@ export default function StoreQrPage() {
                   <button type="button" onClick={checkAgain} className="sw-btn sw-btn-md sw-btn-outline mt-3 w-full">Check again</button>
                 </section>
               )}
+
+              <CounterCard storeId={storeId} live={live} />
 
               <section aria-label="Your Swift call-in number" className="sw-card p-5">
                 <div className="flex flex-wrap items-center gap-3">
