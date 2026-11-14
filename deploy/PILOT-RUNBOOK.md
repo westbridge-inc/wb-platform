@@ -1469,18 +1469,43 @@ checkout moves to the requested SHA; everything else before that):
   live credentials in the store) and `POWERTRANZ_PAGE_SET=PTZ/<set>`;
   CARD_RAIL_ENROLL (saved cards and automatic
   weekly card charges), CARD_RAIL_V2_DRAIN and ADS_ENABLED each unset or `0`;
-  CARD_RAIL_TEST_SUBSCRIPTIONS empty; CARD_RAIL_LIVE_SUBSCRIPTIONS empty (live
-  cards for every eligible partner) or a comma-separated list of subscription
-  ids (live cards ONLY for them: the owner's 14 Nov 2026 ruling, his own
-  account first; everyone else sees no card and keeps today's fee). pilot-up
+  CARD_RAIL_TEST_SUBSCRIPTIONS empty; CARD_RAIL_LIVE_SUBSCRIPTIONS a
+  comma-separated list of subscription ids (live cards ONLY for them: the
+  owner's 14 Nov 2026 ruling, his own account first; everyone else sees no card
+  and keeps today's fee) or `*` alone (every eligible partner, after
+  PowerTranz's go-live); unset or empty serves NOBODY and is refused beside
+  CARD_RAIL_KILL=`0` (review #2465-B B-2). For a mover, list the canonical
+  subscription (B-4). pilot-up
   prints the card posture and the list's name and count, never an id
   (`cards: ON (...). CARD_RAIL_LIVE_SUBSCRIPTIONS names 1 subscription(s) ...`).
   The rollback is CARD_RAIL_KILL=`1` with
-  CARD_RAIL_V2=`1` left on (open card payments are still confirmed), applied
-  with `docker compose --project-directory deploy -f deploy/docker-compose.yml
-  up -d --no-deps --force-recreate api worker` (a `restart` does NOT re-read
-  deploy/.env); with one admin it is the only immediate stop (the card
-  platform row needs a second admin's approval, a 12-hour solo wait).
+  CARD_RAIL_V2=`1` left on (open card payments are still confirmed); with one
+  admin it is the only immediate stop (the card platform row needs a second
+  admin's approval, a 12-hour solo wait). Any card switch made by editing
+  deploy/.env (on, off, the list) is applied ONLY with the recreate below,
+  never a plain `docker compose -f deploy/docker-compose.yml up ... api worker`:
+  that wants `swift-api:local`, builds on the production host, and drops the
+  wall overlay, so api and worker refuse to boot (a full outage; review
+  #2465-B B-1). The recreate runs the API's own boot guard in the running
+  image first, as api and as worker (review #2465-A A-1), and never builds
+  (a `restart` does NOT re-read deploy/.env):
+
+  ```
+  cd /opt/swift
+  C=(docker compose --project-directory deploy -f deploy/docker-compose.yml)
+  grep -qx 'TENANT_RLS_BIND=1' deploy/.env && C+=(-f deploy/docker-compose.wall.yml)
+  grep -qx 'STACK_HARDENING=1' deploy/.env && C+=(-f deploy/docker-compose.hardening.yml)
+  export SWIFT_TAG="$(git -C /opt/swift rev-parse HEAD)"
+  docker image inspect "swift-api:$SWIFT_TAG" >/dev/null &&
+    "${C[@]}" run --rm --no-deps -T api node dist/boot/boot-guard.js &&
+    "${C[@]}" run --rm --no-deps -T worker node dist/boot/boot-guard.js &&
+    "${C[@]}" up -d --no-deps --no-build --force-recreate api worker
+  ```
+
+  Before switching cards on, read (config and counts only) the card platform
+  row `billing.cardCheckout.platforms` (no row: iOS off, Android and web on)
+  and confirm `payment_instruments` = 0 and subscriptions with
+  `billingMethod='CARD'` = 0 (review #2465-A A-2).
   Changing this is a reviewed code change here and in the API's boot guard,
   never a deploy/.env edit;
 - for the whole stack and `--no-public` (not `--data-only`), THE API'S OWN BOOT

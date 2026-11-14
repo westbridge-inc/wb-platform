@@ -439,28 +439,34 @@ if [ "$PILOT_ENV" = production ]; then
   # [Review #2465-A F2] The test-subscription list names what a TEST card system may serve; production runs none.
   [ -z "$(env_setting CARD_RAIL_TEST_SUBSCRIPTIONS)" ] ||
     die "PILOT_ENV=production refuses CARD_RAIL_TEST_SUBSCRIPTIONS unless it is empty: it names the only subscriptions a TEST card system may serve, and production runs none"
-  # [CARDS-GO · owner 14 Nov 2026] The live list: while set, real cards open ONLY
-  # for the subscriptions it names (the owner's own account first); empty means
-  # every eligible partner (after PowerTranz's go-live). The API refuses a
-  # malformed list at boot (card-rail.ts assertProductionCardSwitches); this
-  # refuses it before anything changes. Only the setting's name and how many ids
-  # it names are printed, never an id.
-  card_live_list="$(env_setting CARD_RAIL_LIVE_SUBSCRIPTIONS)"
+  # [CARDS-GO · owner 14 Nov 2026] The live list: real cards open ONLY for the
+  # subscriptions it names (the owner's own account first); `*` alone means
+  # every eligible partner (after PowerTranz's go-live). [Review #2465-B B-2]
+  # Unset or empty is NEVER everyone in production: it serves nobody, and cards
+  # on (CARD_RAIL_KILL=0) without it is refused. The API refuses the same at
+  # boot (card-rail.ts assertProductionCardSwitches); this refuses it before
+  # anything changes. Only the setting's name and how many ids it names are
+  # printed, never an id.
+  card_live_list="$(env_setting CARD_RAIL_LIVE_SUBSCRIPTIONS | sed -E 's/^[[:space:]]+//')"
   card_live_ids=""
-  if [ -n "$card_live_list" ]; then
+  if [ -z "$card_live_list" ]; then
+    [ "$card_kill" != 0 ] ||
+      die "PILOT_ENV=production with CARD_RAIL_KILL=0 (cards on) needs CARD_RAIL_LIVE_SUBSCRIPTIONS: the subscription ids live cards serve (the owner's own account first), or * for every eligible partner after PowerTranz's go-live; unset or empty is never read as everyone"
+    card_live_who="CARD_RAIL_LIVE_SUBSCRIPTIONS is empty: live cards open for NOBODY (cards on needs it set)"
+  elif [ "$card_live_list" = '*' ]; then
+    card_live_who="CARD_RAIL_LIVE_SUBSCRIPTIONS=*: live cards open for every eligible partner"
+  else
     card_live_rest="$card_live_list,"
     while [ -n "$card_live_rest" ]; do
       card_live_entry="${card_live_rest%%,*}"
       card_live_rest="${card_live_rest#*,}"
       card_live_entry="$(printf '%s' "$card_live_entry" | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')"
       [[ "$card_live_entry" =~ ^[A-Za-z0-9_-]{1,64}$ ]] ||
-        die "PILOT_ENV=production refuses CARD_RAIL_LIVE_SUBSCRIPTIONS: it must be empty (live cards for every eligible partner) or a comma-separated list of subscription ids (live cards ONLY for them), and one of its entries is empty or not a subscription id"
+        die "PILOT_ENV=production refuses CARD_RAIL_LIVE_SUBSCRIPTIONS: it must be a comma-separated list of subscription ids (live cards ONLY for them) or * alone (every eligible partner), and one of its entries is empty or not a subscription id"
       card_live_ids="$card_live_ids$card_live_entry"$'\n'
     done
     card_live_count="$(printf '%s' "$card_live_ids" | sort -u | grep -c .)"
     card_live_who="CARD_RAIL_LIVE_SUBSCRIPTIONS names $card_live_count subscription(s): live cards open ONLY for them; every other partner sees no card and keeps today's fee"
-  else
-    card_live_who="CARD_RAIL_LIVE_SUBSCRIPTIONS is empty: live cards open for every eligible partner"
   fi
   case "$card_kill:$card_v2" in
     0:*) echo "cards: ON (CARD_RAIL_KILL=0, CARD_RAIL_V2=1). $card_live_who" ;;

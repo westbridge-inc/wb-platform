@@ -92,6 +92,17 @@ describe('[CARDS-SWITCH-ON] GET /public/capabilities → cardPayments follows th
     expect(await cardPayments({ ...CARDS_ON, CARD_RAIL_LIVE_SUBSCRIPTIONS: '' })).toBe('live');
   });
 
+  // [Review #2465-B B-2] In production "everyone" is only the explicit `*`: a forgotten or emptied list says "soon".
+  it('[B-2] production: cards on with the list unset or empty reads soon; only `*` reads live', async () => {
+    row = { value: { ios: true, android: true, web: true } };
+    for (const list of [undefined, '', 'cmownersub0000000000000001']) {
+      vi.unstubAllEnvs();
+      expect(await cardPayments({ ...CARDS_ON, NODE_ENV: 'production', CARD_RAIL_LIVE_SUBSCRIPTIONS: list }), String(list)).toBe('soon');
+    }
+    vi.unstubAllEnvs();
+    expect(await cardPayments({ ...CARDS_ON, NODE_ENV: 'production', CARD_RAIL_LIVE_SUBSCRIPTIONS: '*' })).toBe('live');
+  });
+
   it('the switch row cannot be read: soon, and the capabilities still answer', async () => {
     readFails = true;
     expect(await cardPayments(CARDS_ON)).toBe('soon');

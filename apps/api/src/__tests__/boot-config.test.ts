@@ -1419,7 +1419,8 @@ describe('[CARDS-SWITCH-ON] production card and ad switches: cards off by defaul
     POWERTRANZ_PAGE_SET: 'PTZ/Swift', POWERTRANZ_PAGE_NAME: 'Weekly', API_PUBLIC_URL: 'https://api.example.com',
   };
   /** The switch-on: Pay now by card on the provider's hosted page, real cards. */
-  const cardsOn = { ...liveCardRail, CARD_RAIL_V2: '1', CARD_RAIL_KILL: '0' };
+  // [Review #2465-B B-2] Cards on names who real cards serve: Monday's posture, the owner's own subscription only.
+  const cardsOn = { ...liveCardRail, CARD_RAIL_V2: '1', CARD_RAIL_KILL: '0', CARD_RAIL_LIVE_SUBSCRIPTIONS: 'cmownersub0000000000000001' };
   /** The rollback: the kill switch back on; v2 stays on, so open card payments are still confirmed. */
   const cardsPaused = { ...liveCardRail, CARD_RAIL_V2: '1', CARD_RAIL_KILL: '1' };
   const refusal = (env: Record<string, string | undefined>): string => {
@@ -1575,11 +1576,26 @@ describe('[CARDS-SWITCH-ON] production card and ad switches: cards off by defaul
   // [CARDS-GO · owner 14 Nov 2026] "Connect tonight, ONLY the owner's own account sees cards": the live list limits real
   // cards to the subscriptions it names. Production boots with it empty (everyone eligible) or well formed (only them),
   // cards off, on or paused; a malformed list, which would serve nobody, is refused rather than read as anything.
-  it('[CARDS-GO] production boots cards on with the live list limiting real cards to the owner\'s own subscription', () => {
+  it('[CARDS-GO] production boots cards on with the live list limiting real cards to the owner\'s own subscription, or `*` for everyone', () => {
     for (const [label, base] of [['cards off', good], ['cards on', { ...good, ...cardsOn }], ['cards paused', { ...good, ...cardsPaused }]] as const) {
-      for (const value of [undefined, '', 'cmownersub0000000000000001', ' cmownersub0000000000000001 ', 'sub_1,sub-2', 'sub_1 , sub_2']) {
+      for (const value of ['cmownersub0000000000000001', ' cmownersub0000000000000001 ', 'sub_1,sub-2', 'sub_1 , sub_2', '*', ' * ']) {
         expect(refusal({ ...base, CARD_RAIL_LIVE_SUBSCRIPTIONS: value }), `${label} ${JSON.stringify(value)}`).toBe('');
       }
+    }
+    // Cards off or paused need no list (nobody can start a card payment).
+    for (const base of [good, { ...good, ...cardsPaused }]) {
+      for (const value of [undefined, '']) expect(refusal({ ...base, CARD_RAIL_LIVE_SUBSCRIPTIONS: value }), String(value)).toBe('');
+    }
+  });
+
+  // [Review #2465-B B-2] Fails CLOSED: a forgotten, emptied or late list line never opens live cards to everyone.
+  it('[B-2] production refuses cards on (CARD_RAIL_KILL=0) with the live list unset or empty: everyone is the explicit `*`', () => {
+    for (const value of [undefined, '']) {
+      expect(refusal({ ...good, ...cardsOn, CARD_RAIL_LIVE_SUBSCRIPTIONS: value }), String(value))
+        .toMatch(/^FATAL: CARD_RAIL_KILL=0 \(cards on\) in production needs CARD_RAIL_LIVE_SUBSCRIPTIONS/);
+    }
+    for (const value of ['*,cmownersub0000000000000001', '**', '* *']) {
+      expect(refusal({ ...good, ...cardsOn, CARD_RAIL_LIVE_SUBSCRIPTIONS: value }), value).toMatch(/^FATAL: CARD_RAIL_LIVE_SUBSCRIPTIONS must be/);
     }
   });
 
@@ -1587,7 +1603,7 @@ describe('[CARDS-SWITCH-ON] production card and ad switches: cards off by defaul
     for (const [label, base] of [['cards off', good], ['cards on', { ...good, ...cardsOn }], ['cards paused', { ...good, ...cardsPaused }]] as const) {
       for (const value of [' ', ',', 'sub_1,', ',sub_1', 'sub_1,,sub_2', 'sub 1', 'sub_1;sub_2', 'sub_1/x', 'x'.repeat(65)]) {
         const message = refusal({ ...base, CARD_RAIL_LIVE_SUBSCRIPTIONS: value });
-        expect(message, `${label} ${JSON.stringify(value)}`).toMatch(/^FATAL: CARD_RAIL_LIVE_SUBSCRIPTIONS must be empty \(live cards for every eligible partner\) or a comma-separated list of subscription ids/);
+        expect(message, `${label} ${JSON.stringify(value)}`).toMatch(/^FATAL: CARD_RAIL_LIVE_SUBSCRIPTIONS must be a comma-separated list of subscription ids \(live cards ONLY for them.*\) or \* alone \(every eligible partner/);
         if (value.trim().length > 1) expect(message).not.toContain(value.trim());
       }
     }
@@ -1622,6 +1638,7 @@ describe('[CARDS-SWITCH-ON] production card and ad switches: cards off by defaul
         ['a malformed provider address', { ...good, ...cardsOn, POWERTRANZ_API_URL: 'gateway.ptranz.com/api/spi' }, /POWERTRANZ_API_URL/],
         ['a test-subscription list', { ...good, CARD_RAIL_TEST_SUBSCRIPTIONS: 'sub_1' }, /CARD_RAIL_TEST_SUBSCRIPTIONS/],
         ['[CARDS-GO] a malformed live list', { ...good, ...cardsOn, CARD_RAIL_LIVE_SUBSCRIPTIONS: 'sub_1,,sub_2' }, /CARD_RAIL_LIVE_SUBSCRIPTIONS/],
+        ['[B-2] cards on with no live list', { ...good, ...cardsOn, CARD_RAIL_LIVE_SUBSCRIPTIONS: undefined }, /CARD_RAIL_LIVE_SUBSCRIPTIONS/],
         ['saved cards', { ...good, ...cardsOn, CARD_RAIL_ENROLL: '1' }, /CARD_RAIL_ENROLL/],
         ['a non-card refusal (no on-call list)', { ...good, OPS_ONCALL_PHONES: undefined }, /OPS_ONCALL_PHONES/],
         ['a store secret that cannot be read', { ...good, ...cardsOn, POWERTRANZ_ID: undefined, POWERTRANZ_ID_FILE: '/nonexistent/POWERTRANZ_ID' }, /POWERTRANZ_ID_FILE/],
@@ -1660,11 +1677,17 @@ describe('[CARDS-SWITCH-ON] production card and ad switches: cards off by defaul
     expect(only.stdout).toContain('cards: ON (CARD_RAIL_KILL=0)');
     expect(only.stdout).toContain('CARD_RAIL_LIVE_SUBSCRIPTIONS names 1 subscription(s): live cards open ONLY for them; every other partner sees no card and keeps today\'s fee');
     expect(only.stdout + only.stderr).not.toContain(owner);
-    const everyone = runPreflight({ ...good, ...cardsOn });
-    expect(everyone.stdout).toContain('CARD_RAIL_LIVE_SUBSCRIPTIONS is empty: live cards open for every eligible partner');
+    const everyone = runPreflight({ ...good, ...cardsOn, CARD_RAIL_LIVE_SUBSCRIPTIONS: '*' });
+    expect(everyone.status, everyone.stdout + everyone.stderr).toBe(0);
+    expect(everyone.stdout).toContain('CARD_RAIL_LIVE_SUBSCRIPTIONS=*: live cards open for every eligible partner');
+    // [B-2] Cards on with no list: the guard's refusal, and the CARDS section says nobody.
+    const none = runPreflight({ ...good, ...cardsOn, CARD_RAIL_LIVE_SUBSCRIPTIONS: '' });
+    expect(none.status).toBe(1);
+    expect(none.stdout).toContain('CARD_RAIL_KILL=0 (cards on) in production needs CARD_RAIL_LIVE_SUBSCRIPTIONS');
+    expect(none.stdout).toContain('CARD_RAIL_LIVE_SUBSCRIPTIONS is empty: live cards open for NOBODY');
     const malformed = runPreflight({ ...good, ...cardsOn, CARD_RAIL_LIVE_SUBSCRIPTIONS: `${owner},,` });
     expect(malformed.status).toBe(1);
-    expect(malformed.stdout).toContain('CARD_RAIL_LIVE_SUBSCRIPTIONS must be empty');
+    expect(malformed.stdout).toContain('CARD_RAIL_LIVE_SUBSCRIPTIONS must be a comma-separated list of subscription ids');
     expect(malformed.stdout).toContain('CARD_RAIL_LIVE_SUBSCRIPTIONS is set but malformed');
     expect(malformed.stdout + malformed.stderr).not.toContain(owner);
   });
@@ -1685,6 +1708,8 @@ describe('[CARDS-SWITCH-ON] production card and ad switches: cards off by defaul
 // ---------------------------------------------------------------------------
 describe('[CARDS-SWITCH-ON] card rail v2 (or its drain) on PowerTranz refuses to start without its credentials, whatever the kill switch, in every mode', () => {
   const sandboxOn = {
+    // [Review #2465-B B-2] Production with cards on names who real cards serve; a test server ignores the line.
+    CARD_RAIL_LIVE_SUBSCRIPTIONS: 'cmownersub0000000000000001',
     PAYMENT_PROVIDER: 'disabled', CARD_RAIL_KILL: '0', CARD_RAIL_V2: '1', CARD_RAIL_PROVIDER: 'powertranz', CARD_RAIL_ENVIRONMENT: 'sandbox',
     CARD_RAIL_ACCOUNT: 'swift-gy-test', POWERTRANZ_PAGE_SET: 'PTZ/SWIFT', POWERTRANZ_PAGE_NAME: 'WeeklyFee', API_PUBLIC_URL: 'https://api-staging.example.test',
   };

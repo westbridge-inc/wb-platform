@@ -159,3 +159,59 @@ describe('[CARDS-GO] the card door: refused server-side for every subscription t
     expect(await cardSessionsAllowed(db, sub(OTHER_SUB), 'android', liveProvider)).toEqual({ allowed: false, reason: 'NOT_LIVE_SUBSCRIPTION' });
   });
 });
+
+// [Review #2465-B B-2] The list fails CLOSED in production: "everyone" is the explicit value `*`, never a forgotten,
+// emptied or late line. In production an unset or empty list serves NOBODY (and the boot guard refuses it beside
+// CARD_RAIL_KILL=0); off production (where live cards never run) unset keeps meaning every eligible partner.
+describe('[B-2] production: unset or empty is nobody; `*` is the explicit "every eligible partner"', () => {
+  const PROD_LIVE = { ...CARDS_LIVE, NODE_ENV: 'production' };
+
+  it('production, the list unset or empty: real cards serve nobody, count for no fee pause, and the site says "soon"', async () => {
+    for (const value of [undefined, '']) {
+      const env = { ...PROD_LIVE, ...NO_MMG, CARD_RAIL_LIVE_SUBSCRIPTIONS: value };
+      expect(cardLiveSubscriptionsLimited(env), String(value)).toBe(true);
+      expect(cardLiveSubscriptionAllowed(OWNER_SUB, env), String(value)).toBe(false);
+      expect(weeklyFeeCardLive(env), String(value)).toBe(false);
+      expect(await noLivePayPath(rows({ [CARD_CHECKOUT_PLATFORMS_KEY]: ALL_ON }) as never, env), String(value)).toBe(true);
+      const reader = rows({ [CARD_CHECKOUT_PLATFORMS_KEY]: ALL_ON });
+      expect(await cardPaymentsOffered(reader as never, env), String(value)).toBe(false);
+    }
+  });
+
+  it('production, `*`: every eligible partner — cards count for the fee pause and the site says "live"', async () => {
+    for (const value of ['*', ' * ']) {
+      const env = { ...PROD_LIVE, ...NO_MMG, CARD_RAIL_LIVE_SUBSCRIPTIONS: value };
+      expect(cardLiveSubscriptionsLimited(env), value).toBe(false);
+      expect(cardLiveSubscriptionAllowed(OTHER_SUB, env), value).toBe(true);
+      expect(cardLiveSubscriptionsWellFormed(env), value).toBe(true);
+      expect(weeklyFeeCardLive(env), value).toBe(true);
+      expect(await noLivePayPath(rows({ [CARD_CHECKOUT_PLATFORMS_KEY]: ALL_ON }) as never, env), value).toBe(false);
+      expect(await cardPaymentsOffered(rows({ [CARD_CHECKOUT_PLATFORMS_KEY]: ALL_ON }) as never, env), value).toBe(true);
+    }
+  });
+
+  it('production, a list of ids: only them; `*` mixed with ids is malformed (nobody)', () => {
+    const env = { ...PROD_LIVE, CARD_RAIL_LIVE_SUBSCRIPTIONS: OWNER_SUB };
+    expect(cardLiveSubscriptionAllowed(OWNER_SUB, env)).toBe(true);
+    expect(cardLiveSubscriptionAllowed(OTHER_SUB, env)).toBe(false);
+    for (const value of [`*,${OWNER_SUB}`, '**', '* *']) {
+      const mixed = { ...PROD_LIVE, CARD_RAIL_LIVE_SUBSCRIPTIONS: value };
+      expect(cardLiveSubscriptionsWellFormed(mixed), value).toBe(false);
+      expect(cardLiveSubscriptionAllowed(OTHER_SUB, mixed), value).toBe(false);
+      expect(weeklyFeeCardLive(mixed), value).toBe(false);
+    }
+  });
+
+  it('off production (no live cards run there) unset still means every eligible partner, as before', () => {
+    expect(cardLiveSubscriptionsLimited({ NODE_ENV: 'test' })).toBe(false);
+    expect(cardLiveSubscriptionsLimited({ NODE_ENV: 'development', CARD_RAIL_LIVE_SUBSCRIPTIONS: '' })).toBe(false);
+  });
+
+  it('the production door refuses every subscription while the list is unset', async () => {
+    stubEnvLive({ ...PROD_LIVE, CARD_RAIL_LIVE_SUBSCRIPTIONS: undefined });
+    const decision = await cardSessionsAllowed({} as PrismaClient, { id: OWNER_SUB, status: 'ACTIVE', feeWaived: false, weeklyRate: 2100, customRate: null } as never, 'android', (() => ({ binding: { provider: 'powertranz', environment: 'live', account: 'swift-gy-live' }, simulator: false, savesCards: false })) as never);
+    expect(decision).toEqual({ allowed: false, reason: 'NOT_LIVE_SUBSCRIPTION' });
+  });
+});
+
+function stubEnvLive(env: Record<string, string | undefined>) { for (const [name, value] of Object.entries(env)) vi.stubEnv(name, value); }

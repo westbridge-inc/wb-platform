@@ -118,6 +118,8 @@ describe('explicitly disabled card provider', () => {
   const SWITCH_ON = {
     NODE_ENV: 'production', PAYMENT_PROVIDER: 'disabled', CARD_RAIL_KILL: '0', CARD_RAIL_V2: '1',
     CARD_RAIL_PROVIDER: 'powertranz', CARD_RAIL_ENVIRONMENT: 'live',
+    // [Review #2465-B B-2] Cards on names who real cards serve (unset is never everyone in production).
+    CARD_RAIL_LIVE_SUBSCRIPTIONS: 'cmownersub0000000000000001',
   };
   it.each([
     ['cards on', SWITCH_ON],

@@ -404,6 +404,8 @@ describe('[PROD-PATH] pilot-up.sh: a real production target', () => {
     CARD_RAIL_PROVIDER: 'powertranz', CARD_RAIL_ENVIRONMENT: 'live', CARD_RAIL_ACCOUNT: 'swift-gy-live',
     POWERTRANZ_API_URL: 'https://gateway.ptranz.com', POWERTRANZ_PAGE_SET: 'PTZ/SWIFT', POWERTRANZ_PAGE_NAME: 'WeeklyFee',
     POWERTRANZ_ID_FILE: '/run/secrets/POWERTRANZ_ID', POWERTRANZ_PASSWORD_FILE: '/run/secrets/POWERTRANZ_PASSWORD',
+    // [Review #2465-B B-2] Cards on names who real cards serve (Monday: the owner's own subscription only).
+    CARD_RAIL_LIVE_SUBSCRIPTIONS: 'cmownersub0000000000000001',
   };
   const CARD_STORE = [...STORE, 'POWERTRANZ_ID', 'POWERTRANZ_PASSWORD'].join(' ');
 
@@ -567,7 +569,7 @@ describe('[PROD-PATH] pilot-up.sh: a real production target', () => {
     for (const [list, says] of [
       [owner, 'cards: ON (CARD_RAIL_KILL=0, CARD_RAIL_V2=1). CARD_RAIL_LIVE_SUBSCRIPTIONS names 1 subscription(s): live cards open ONLY for them; every other partner sees no card and keeps today\'s fee'],
       [` ${owner} , ${owner},sub_2`, 'CARD_RAIL_LIVE_SUBSCRIPTIONS names 2 subscription(s)'],
-      ['', 'cards: ON (CARD_RAIL_KILL=0, CARD_RAIL_V2=1). CARD_RAIL_LIVE_SUBSCRIPTIONS is empty: live cards open for every eligible partner'],
+      ['*', 'cards: ON (CARD_RAIL_KILL=0, CARD_RAIL_V2=1). CARD_RAIL_LIVE_SUBSCRIPTIONS=*: live cards open for every eligible partner'],
     ] as const) {
       writeFileSync(log, '');
       const r = runPilot({ ...PRODUCTION, ...CARDS_ON, CARD_RAIL_LIVE_SUBSCRIPTIONS: list }, { env: { STORE_NAMES: CARD_STORE } });
@@ -578,21 +580,37 @@ describe('[PROD-PATH] pilot-up.sh: a real production target', () => {
     writeFileSync(log, '');
     const off = runPilot(PRODUCTION);
     expect(off.status, off.stderr).toBe(0);
-    expect(off.stdout).toContain('cards: OFF (CARD_RAIL_KILL=1). CARD_RAIL_LIVE_SUBSCRIPTIONS is empty');
+    expect(off.stdout).toContain('cards: OFF (CARD_RAIL_KILL=1). CARD_RAIL_LIVE_SUBSCRIPTIONS is empty: live cards open for NOBODY');
     writeFileSync(log, '');
     const paused = runPilot({ ...PRODUCTION, ...CARDS_ON, CARD_RAIL_KILL: '1', CARD_RAIL_LIVE_SUBSCRIPTIONS: owner }, { env: { STORE_NAMES: CARD_STORE } });
     expect(paused.status, paused.stderr).toBe(0);
     expect(paused.stdout).toContain('cards: PAUSED (CARD_RAIL_KILL=1, CARD_RAIL_V2=1): no new card payment starts. CARD_RAIL_LIVE_SUBSCRIPTIONS names 1 subscription(s)');
   });
 
+  // [Review #2465-B B-2] Fails CLOSED: cards on with the list unset or empty is refused before anything changes.
+  it('[B-2] production refuses cards on (CARD_RAIL_KILL=0) with the live list unset or empty, in every mode, before anything changes', () => {
+    for (const args of everyMode) {
+      for (const value of [undefined, '']) {
+        writeFileSync(log, '');
+        const r = runPilot({ ...PRODUCTION, ...CARDS_ON, CARD_RAIL_LIVE_SUBSCRIPTIONS: value }, { args, env: { ...modeEnv(args), STORE_NAMES: CARD_STORE } });
+        expect(r.status, `${args.join(' ')} ${JSON.stringify(value)}`).not.toBe(0);
+        expect(r.stderr).toContain('PILOT_ENV=production with CARD_RAIL_KILL=0 (cards on) needs CARD_RAIL_LIVE_SUBSCRIPTIONS');
+        expect(changedNothing(r.calls)).toEqual([]);
+      }
+    }
+    // Paused needs no list: no new card payment can start.
+    writeFileSync(log, '');
+    expect(runPilot({ ...PRODUCTION, ...CARDS_ON, CARD_RAIL_KILL: '1', CARD_RAIL_LIVE_SUBSCRIPTIONS: '' }, { env: { STORE_NAMES: CARD_STORE } }).status).toBe(0);
+  }, 240_000);
+
   it('[CARDS-GO] production refuses a malformed live list, cards off or on, in every mode, before anything changes, never echoing it', () => {
     for (const args of everyMode) {
       for (const base of [{}, CARDS_ON]) {
-        for (const value of [',', 'sub_1,', ',sub_1', 'sub_1,,sub_2', 'sub 1', 'sub_1;sub_2', 'x'.repeat(65)]) {
+        for (const value of [',', 'sub_1,', ',sub_1', 'sub_1,,sub_2', 'sub 1', 'sub_1;sub_2', 'x'.repeat(65), '*,sub_1', '**']) {
           writeFileSync(log, '');
           const r = runPilot({ ...PRODUCTION, ...base, CARD_RAIL_LIVE_SUBSCRIPTIONS: value }, { args, env: { ...modeEnv(args), STORE_NAMES: CARD_STORE } });
           expect(r.status, `${args.join(' ')} ${JSON.stringify(value)}`).not.toBe(0);
-          expect(r.stderr).toContain('PILOT_ENV=production refuses CARD_RAIL_LIVE_SUBSCRIPTIONS: it must be empty (live cards for every eligible partner) or a comma-separated list of subscription ids');
+          expect(r.stderr).toContain('PILOT_ENV=production refuses CARD_RAIL_LIVE_SUBSCRIPTIONS: it must be a comma-separated list of subscription ids (live cards ONLY for them) or * alone (every eligible partner)');
           expect(changedNothing(r.calls)).toEqual([]);
         }
       }
@@ -1959,5 +1977,49 @@ INSERT INTO public.subscriptions VALUES ('s1', 'r1', NULL, NULL);
       expect(r.stderr).toContain('may not be the live database');
       expect(calls()).toEqual([]);
     }
+  });
+});
+
+// [Review #2465-B B-1 · A-1] Every documented card switch (on, rollback, go-live) on production is applied with the
+// compose set pilot-up uses (the wall overlay while TENANT_RLS_BIND=1, the hardening overlay while STACK_HARDENING=1),
+// the image of the deployed commit (SWIFT_TAG), the API's own boot guard first, and --no-build. A plain recreate on the
+// base file alone wants swift-api:local, builds on the production host and drops the wall: api and worker refuse to
+// boot, a full outage instead of a card stop.
+describe('[B-1] the card switch is documented with production\'s own compose set, never a plain recreate', () => {
+  const PLAIN = 'docker compose --project-directory deploy -f deploy/docker-compose.yml up -d --no-deps --force-recreate api worker';
+  const flat = (text: string) => text.replace(/\s+/g, ' ');
+  const docs = {
+    runbook: readFileSync(join(DEPLOY, 'PILOT-RUNBOOK.md'), 'utf8'),
+    api: readFileSync(join(DEPLOY, '..', 'apps', 'api', 'src', 'modules', 'billing', 'CARD-CHECKOUT-API.md'), 'utf8'),
+    envTemplate: readFileSync(join(DEPLOY, '.env.deploy.example'), 'utf8'),
+  };
+
+  it('no document gives the plain base-file recreate', () => {
+    for (const [name, text] of Object.entries(docs)) {
+      expect(flat(text).replace(/#\s*/g, ''), name).not.toContain(PLAIN);
+      expect(flat(text).replace(/#\s*/g, ''), name).not.toMatch(/docker compose --project-directory deploy -f deploy\/docker-compose\.yml up -d --no-deps --force-recreate api worker/);
+    }
+  });
+
+  it('the runbook and the card contract give the recreate with the overlays, the deployed tag, the boot guard first and --no-build', () => {
+    for (const [name, text] of [['runbook', docs.runbook], ['api', docs.api]] as const) {
+      for (const piece of [
+        "grep -qx 'TENANT_RLS_BIND=1' deploy/.env && C+=(-f deploy/docker-compose.wall.yml)",
+        "grep -qx 'STACK_HARDENING=1' deploy/.env && C+=(-f deploy/docker-compose.hardening.yml)",
+        'export SWIFT_TAG="$(git -C /opt/swift rev-parse HEAD)"',
+        '"${C[@]}" run --rm --no-deps -T api node dist/boot/boot-guard.js &&',
+        '"${C[@]}" run --rm --no-deps -T worker node dist/boot/boot-guard.js &&',
+        '"${C[@]}" up -d --no-deps --no-build --force-recreate api worker',
+      ]) expect(text, `${name}: ${piece}`).toContain(piece);
+      expect(text.indexOf('-T worker node dist/boot/boot-guard.js'), name).toBeLessThan(text.indexOf('--no-build --force-recreate api worker'));
+    }
+    expect(docs.envTemplate).toContain('THE RECREATE');
+  });
+
+  it('[A-2] before switch-on the runbook reads the card platform row and the saved-card counts', () => {
+    const runbook = flat(docs.runbook);
+    expect(runbook).toContain('`billing.cardCheckout.platforms`');
+    expect(runbook).toContain('`payment_instruments` = 0');
+    expect(runbook).toContain("`billingMethod='CARD'` = 0");
   });
 });

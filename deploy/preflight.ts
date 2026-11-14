@@ -47,7 +47,7 @@ import { assertSafeBootConfig } from '../apps/api/src/utils/boot-config';
 import { SECRET_FILE_NAMES, applySecretFiles, assembleDatabaseUrl } from '../apps/api/src/utils/secret-files';
 import { bucketVersioningStatus, kekEscrowStatus, parseBucketVersioning } from '../apps/api/src/modules/ops/document-durability';
 import { darkFeatureMisconfigurations, darkFeatureStatus } from '../apps/api/src/modules/ops/dark-features';
-import { cardLiveSubscriptionCount, cardLiveSubscriptionsLimited, cardLiveSubscriptionsWellFormed } from '../apps/api/src/utils/card-rail';
+import { cardLiveForEveryone, cardLiveSubscriptionCount, cardLiveSubscriptionsWellFormed } from '../apps/api/src/utils/card-rail';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 let envPath = path.join(HERE, '.env');
@@ -267,9 +267,9 @@ if (fileEnv['MALWARE_SCAN_BYPASS'] === '1') {
 console.log('');
 
 // ── CARDS [CARDS-GO · owner 14 Nov 2026] ─────────────────────────────────
-// Who real cards serve. While CARD_RAIL_LIVE_SUBSCRIPTIONS is set, ONLY the
-// subscriptions it lists (the owner's own account first); empty, every eligible
-// partner. The name and a count only, never an id. A malformed list is the boot
+// Who real cards serve: ONLY the subscriptions CARD_RAIL_LIVE_SUBSCRIPTIONS
+// lists (the owner's own account first), every eligible partner for `*`, and
+// nobody while it is empty (cards on needs it set). The name and a count only, never an id. A malformed list is the boot
 // guard's refusal (above).
 console.log('CARDS');
 console.log('─'.repeat(72));
@@ -278,8 +278,12 @@ console.log('─'.repeat(72));
   const v2 = fileEnv['CARD_RAIL_V2'] === '1';
   const posture = kill === '0' ? 'ON (CARD_RAIL_KILL=0)' : kill === '1' && v2 ? 'PAUSED (CARD_RAIL_KILL=1, CARD_RAIL_V2=1)' : 'OFF';
   console.log(`  cards: ${posture}`);
-  if (!cardLiveSubscriptionsLimited(fileEnv)) {
-    console.log('  CARD_RAIL_LIVE_SUBSCRIPTIONS is empty: live cards open for every eligible partner');
+  const list = fileEnv['CARD_RAIL_LIVE_SUBSCRIPTIONS'];
+  if (list === undefined || list === '') {
+    // [Review #2465-B B-2] Never everyone in production: that is the explicit `*`.
+    console.log('  CARD_RAIL_LIVE_SUBSCRIPTIONS is empty: live cards open for NOBODY (cards on needs it set)');
+  } else if (cardLiveForEveryone(fileEnv)) {
+    console.log('  CARD_RAIL_LIVE_SUBSCRIPTIONS=*: live cards open for every eligible partner');
   } else if (!cardLiveSubscriptionsWellFormed(fileEnv)) {
     console.log('  ✗ CARD_RAIL_LIVE_SUBSCRIPTIONS is set but malformed: the server refuses to start (see PROBLEMS)');
   } else {

@@ -64,38 +64,62 @@ export function weeklyFeeCardLive(env: Record<string, string | undefined> = proc
  *   - live cards are no way to pay for the fee pause (weeklyFeeCardLive, above): every partner who is not listed
  *     keeps exactly today's no-card fee, paused or not by MMG alone, never billed toward a card they cannot see;
  *   - the public site keeps cards "coming soon" (GET /public/capabilities → cardPayments).
- * Unset or empty: every eligible partner (the later go-live). It keys on the SUBSCRIPTION, as the door and the test
- * list (CARD_RAIL_TEST_SUBSCRIPTIONS) do: the weekly fee, the card session, its booking and its refund all belong
- * to one subscription, and the door checks who may pay it (its payer) by itself. It never stops what is already
- * open: a card payment opened while listed is still confirmed, booked once and refundable after the list changes.
- * A value that is set but names no valid id fails CLOSED (nobody); production also refuses it at boot
- * (assertProductionCardSwitches). Test card systems keep their own list. */
-export function cardLiveSubscriptionsLimited(env: Record<string, string | undefined> = process.env): boolean {
+ * `*` (alone): every eligible partner (the go-live, after PowerTranz's approval). [Review #2465-B B-2] Unset or
+ * empty is NEVER read as everyone in production: there it serves NOBODY, and the boot guard and pilot-up refuse
+ * CARD_RAIL_KILL=0 without the line, so a forgotten, emptied or late line cannot open live cards (and the public
+ * site's card marks) to every partner. Off production, where live cards never run, unset keeps meaning everyone.
+ * It keys on the SUBSCRIPTION, as the door and the test list (CARD_RAIL_TEST_SUBSCRIPTIONS) do: the weekly fee, the
+ * card session, its booking and its refund all belong to one subscription, and the door checks who may pay it (its
+ * payer) by itself. For a mover with both a rider and a driver profile, name the CANONICAL subscription (the one
+ * the mover fee authority names: the other cannot be priced, review B-4). It never stops what is already open: a
+ * card payment opened while listed is still confirmed, booked once and refundable after the list changes. A value
+ * that is set but names no valid id (or mixes `*` with ids) fails CLOSED (nobody); production also refuses it at
+ * boot (assertProductionCardSwitches). Test card systems keep their own list. */
+export const CARD_LIVE_EVERYONE = '*';
+
+const liveListRaw = (env: Record<string, string | undefined>): string | undefined => {
   const raw = env['CARD_RAIL_LIVE_SUBSCRIPTIONS'];
-  return raw !== undefined && raw !== '';
+  return raw === undefined || raw === '' ? undefined : raw;
+};
+
+/** [B-2] The list is exactly `*` (spaces around it allowed): every eligible partner. */
+export function cardLiveForEveryone(env: Record<string, string | undefined> = process.env): boolean {
+  return liveListRaw(env)?.trim() === CARD_LIVE_EVERYONE;
+}
+
+/** Do real cards serve only some subscriptions (or none)? Off production an unset list is everyone; in production
+ *  only `*` is. */
+export function cardLiveSubscriptionsLimited(env: Record<string, string | undefined> = process.env): boolean {
+  const raw = liveListRaw(env);
+  if (raw === undefined) return env['NODE_ENV'] === 'production';
+  return raw.trim() !== CARD_LIVE_EVERYONE;
 }
 
 const SUBSCRIPTION_ID_SHAPE = /^[A-Za-z0-9_-]{1,64}$/;
 const liveSubscriptionEntries = (raw: string): string[] => raw.split(',').map((s) => s.trim());
 
-/** [CARDS-GO] May REAL cards serve this subscription? Yes unless the live list is set and does not name it. */
+/** [CARDS-GO] May REAL cards serve this subscription? Yes when the list does not limit them, else only if it names it. */
 export function cardLiveSubscriptionAllowed(subscriptionId: string, env: Record<string, string | undefined> = process.env): boolean {
   if (!cardLiveSubscriptionsLimited(env)) return true;
-  return liveSubscriptionEntries(env['CARD_RAIL_LIVE_SUBSCRIPTIONS']!).some((id) => SUBSCRIPTION_ID_SHAPE.test(id) && id === subscriptionId);
+  const raw = liveListRaw(env);
+  if (raw === undefined) return false;
+  return liveSubscriptionEntries(raw).some((id) => SUBSCRIPTION_ID_SHAPE.test(id) && id === subscriptionId);
 }
 
 /** [CARDS-GO] How many subscriptions the live list names (0 when unset or empty), for the deploy's output; the ids
  *  themselves are never printed. */
 export function cardLiveSubscriptionCount(env: Record<string, string | undefined> = process.env): number {
-  if (!cardLiveSubscriptionsLimited(env)) return 0;
-  return new Set(liveSubscriptionEntries(env['CARD_RAIL_LIVE_SUBSCRIPTIONS']!).filter((id) => SUBSCRIPTION_ID_SHAPE.test(id))).size;
+  const raw = liveListRaw(env);
+  if (raw === undefined || cardLiveForEveryone(env)) return 0;
+  return new Set(liveSubscriptionEntries(raw).filter((id) => SUBSCRIPTION_ID_SHAPE.test(id))).size;
 }
 
-/** [CARDS-GO] A set live list is well formed: one or more subscription ids, comma-separated, spaces allowed around
- *  each, no empty entry. */
+/** [CARDS-GO] A set live list is well formed: `*` alone, or one or more subscription ids, comma-separated, spaces
+ *  allowed around each, no empty entry. */
 export function cardLiveSubscriptionsWellFormed(env: Record<string, string | undefined> = process.env): boolean {
-  if (!cardLiveSubscriptionsLimited(env)) return true;
-  return liveSubscriptionEntries(env['CARD_RAIL_LIVE_SUBSCRIPTIONS']!).every((id) => SUBSCRIPTION_ID_SHAPE.test(id));
+  const raw = liveListRaw(env);
+  if (raw === undefined || cardLiveForEveryone(env)) return true;
+  return liveSubscriptionEntries(raw).every((id) => SUBSCRIPTION_ID_SHAPE.test(id));
 }
 
 /** [PT-1 · AX297 F5] With CARD_RAIL_V2 off, drain what v2 left in flight:
@@ -173,7 +197,8 @@ const switchSet = (value: string | undefined): boolean => value !== undefined &&
  * (CARD_RAIL_TEST_SUBSCRIPTIONS: it only ever names what a TEST card system may
  * serve). [CARDS-GO · owner 14 Nov 2026] The live list
  * (CARD_RAIL_LIVE_SUBSCRIPTIONS, cardLiveSubscriptionsLimited) is allowed in
- * every posture, empty or well formed; a malformed one is refused. Changing any
+ * every posture when well formed (ids, or * alone); a malformed one is refused,
+ * and [review #2465-B B-2] cards ON needs it set (unset is never everyone). Changing any
  * of this is a reviewed code change, never a deploy/.env edit. Each refusal
  * names its setting, never a value. */
 export function assertProductionCardSwitches(env: Record<string, string | undefined>): void {
@@ -192,7 +217,7 @@ export function assertProductionCardSwitches(env: Record<string, string | undefi
   // [CARDS-GO · owner 14 Nov 2026] The live list limits real cards to the subscriptions it names. A list that is set
   // but malformed would serve nobody (it fails closed), and a typo must never read as "empty" (everyone): refuse it.
   if (!cardLiveSubscriptionsWellFormed(env)) {
-    throw new Error('FATAL: CARD_RAIL_LIVE_SUBSCRIPTIONS must be empty (live cards for every eligible partner) or a comma-separated list of subscription ids (live cards ONLY for them: the owner\'s go-cards ruling of 14 Nov 2026, his own account first) — one of its entries is empty or not a subscription id. Correct the list. Refusing to start.');
+    throw new Error('FATAL: CARD_RAIL_LIVE_SUBSCRIPTIONS must be a comma-separated list of subscription ids (live cards ONLY for them: the owner\'s go-cards ruling of 14 Nov 2026, his own account first) or * alone (every eligible partner, after PowerTranz\'s go-live) — one of its entries is empty or not a subscription id. Correct the list. Refusing to start.');
   }
   // The switch is OFF exactly at '1', everywhere (cardRailKilled; the dark-features census). Production also
   // refuses every near miss of ON: only exactly '0' turns cards on here (the one '0' comparison the census allows).
@@ -203,5 +228,10 @@ export function assertProductionCardSwitches(env: Record<string, string | undefi
   }
   if (cardsOn && !(env['CARD_RAIL_V2'] === '1' && env['CARD_RAIL_PROVIDER'] === 'powertranz' && env['CARD_RAIL_ENVIRONMENT'] === 'live')) {
     throw new Error('FATAL: CARD_RAIL_KILL=0 (cards on) in production needs CARD_RAIL_V2=1, CARD_RAIL_PROVIDER=powertranz and CARD_RAIL_ENVIRONMENT=live — production takes cards only as Pay now on the provider\'s hosted page, with real cards and the complete live setup, on the owner\'s go-cards ruling (OWNER-DECISIONS, dated at the go); anything else is a reviewed code change, not a setting. Refusing to start.');
+  }
+  // [Review #2465-B B-2] Cards on names who real cards serve. A forgotten, emptied or late list line is never read as
+  // everyone: that is the explicit `*`, after PowerTranz's go-live.
+  if (cardsOn && liveListRaw(env) === undefined) {
+    throw new Error('FATAL: CARD_RAIL_KILL=0 (cards on) in production needs CARD_RAIL_LIVE_SUBSCRIPTIONS: the subscription ids live cards serve (the owner\'s own account first: the owner\'s go-cards ruling of 14 Nov 2026), or * for every eligible partner after PowerTranz\'s go-live; unset or empty is never read as everyone. Refusing to start.');
   }
 }
