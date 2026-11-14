@@ -7,6 +7,9 @@ import type { TopupRail } from './ledger';
 // a receipt can read it without loading the payment door.
 // ---------------------------------------------------------------------------
 
+/** The in-person payment route, as the approval gate names it (in-person-payment.ts records it). */
+export const IN_PERSON_ACTION = 'POST /subscriptions/:id/in-person-payment';
+
 export const IN_PERSON_METHODS = ['CASH', 'CHEQUE', 'BANK_TRANSFER'] as const;
 export type InPersonMethod = (typeof IN_PERSON_METHODS)[number];
 

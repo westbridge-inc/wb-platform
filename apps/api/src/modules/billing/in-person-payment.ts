@@ -13,7 +13,7 @@ import type { BillingService } from './billing.service';
 import { PAYABLE } from './fee-pay-actions';
 import { feeReceiptDocument } from './fee-receipt';
 import { lockFeePaymentDecision, readFeePaymentDecision, type FeePaymentDecision } from './fee-payment-authority';
-import { inPersonChannel, inPersonRail, IN_PERSON_CHANNELS, inPersonMethodOf } from './in-person-channel';
+import { IN_PERSON_ACTION, inPersonChannel, inPersonRail, IN_PERSON_CHANNELS, inPersonMethodOf } from './in-person-channel';
 import { amountDueNow } from './amount-due';
 import { feePauseHoldsBilling } from './mmg-pause';
 import { referenceOnRecord } from './mmg-fee-reversal';
@@ -62,8 +62,8 @@ import { weeklyFeeAmount } from './subscription-fee';
 // (PAY-AHEAD-AND-REFUNDS.md section 6), never a made-up payout.
 // ---------------------------------------------------------------------------
 
-/** The route, as the approval gate names it. */
-export const IN_PERSON_ACTION = 'POST /subscriptions/:id/in-person-payment';
+/** The route, as the approval gate names it (in-person-channel.ts). */
+export { IN_PERSON_ACTION };
 const EVENT_KEY = 'in-person:';
 const PROVIDER_REF = 'IN_PERSON:';
 const LIST_LIMIT = 100;
@@ -165,7 +165,7 @@ function overPayAheadLimit(position: PayAheadPosition): AppError {
   if (position.trialEnded) {
     // [REVIEW-A #2513 S3-1] The trial has ended and its first fee is not applied yet: only that week may be taken.
     return new AppError(409, PAY_AHEAD_LIMIT, position.room > 0
-      ? `This account's free trial has ended and its first weekly fee is due; nothing ahead is taken until it is applied, within a day. Nothing was recorded. Take at most ${most}; if you already took more, hand the rest back.`
+      ? `This account's free trial has ended and its first weekly fee is due; nothing ahead is taken until it is applied. Nothing was recorded. Take at most ${most}; if you already took more, hand the rest back.`
       : `This account's free trial has ended and its first weekly fee is already paid. Nothing was recorded: do not take this money. ${HAND_BACK}`, details);
   }
   if (limitedByTrial(position)) {

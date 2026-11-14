@@ -3,6 +3,7 @@ import { requireIdentityAuthority, IdentityReviewRequiredError, lockIdentityAuth
 import { lockVendorActivationBilling } from '../billing/billing-access';
 import { holdFeeRiseInTx } from '../billing/fee-rise-notice';
 import { convertEndedTrialInTx } from '../billing/trial-conversion';
+import { feeMoneyInFlightInTx } from '../billing/payment-in-flight';
 import { type Prisma, type PrismaClient, type Subscription, type SubscriptionType, type VendorType } from '@prisma/client';
 import { AppError, NotFoundError } from '../../utils/errors';
 import { accountErasedUnderLock } from '../user/account-closure';
@@ -299,9 +300,12 @@ export class SubscriptionService {
         // not yet spent (MMG, in person, an agent, a card Pay now kept as credit) was paid at this rate, so the rise
         // is held and told exactly as for a captured payment, never applied at once to the week the credit pays.
         const from = Number(sub.weeklyRate);
+        // [REVIEW-A2 #2513 S3-1] So is money paid for it that is not credited yet (an MMG checkout being confirmed or
+        // held, a card page in progress, cash taken in person waiting for the second admin): it lands at this rate.
         const paidAtRate = priced.rate > from && (!!await tx.subscriptionPayment.findFirst({
           where: { subscriptionId: sub.id, status: 'CAPTURED', amount: { gt: 0 } }, select: { id: true } })
-          || Number((await tx.prepaidBalance.findUnique({ where: { subscriptionId: sub.id }, select: { balance: true } }))?.balance ?? 0) > 0);
+          || Number((await tx.prepaidBalance.findUnique({ where: { subscriptionId: sub.id }, select: { balance: true } }))?.balance ?? 0) > 0
+          || await feeMoneyInFlightInTx(tx, sub.id, new Date()));
         // [REVIEW-M #1844 S4-1] A paid weekly rate of 0 or less is legacy or hand-made data: never kept
         // as the floor, nor raised at once to the taxi rate. The activation is refused (loudly: the approval
         // outbox retries it with backoff, then dead-letters it to the admin page) until finance corrects it.

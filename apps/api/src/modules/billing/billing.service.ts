@@ -495,7 +495,15 @@ export class BillingService {
     // the daily conversion: convert this one account now, exactly as the conversion would, so the billing path below
     // can pay that week from the credit instead of refunding a week that has started.
     const trial = await this.prisma.subscription.findUnique({ where: { id: subscriptionId }, select: { status: true, trialEndDate: true } });
-    if (trial && trialEndedUnconverted(trial, now)) await this.prisma.$transaction((tx) => convertEndedTrialInTx(tx, subscriptionId, now));
+    // [REVIEW-A2 #2513 S4-2] A payer whose fee is held for finance (or whose ownership needs repair) is not converted
+    // here, exactly as the daily job leaves it: the set-aside then refuses in words for that case (credit-refund.ts).
+    if (trial && trialEndedUnconverted(trial, now)) {
+      try {
+        await this.prisma.$transaction((tx) => convertEndedTrialInTx(tx, subscriptionId, now));
+      } catch (error) {
+        if (!(error instanceof AppError) || error.code !== 'MOVER_FEE_OWNERSHIP_INVALID') throw error;
+      }
+    }
     for (let week = 0; week < 6; week += 1) {
       const sub = await this.prisma.subscription.findUnique({ where: { id: subscriptionId }, include: PAYER_INCLUDE });
       if (!sub || !(await startedWeekOwed(this.prisma, sub, now))) return paid ? 'paid' : 'none';

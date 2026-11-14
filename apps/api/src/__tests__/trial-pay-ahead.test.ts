@@ -316,7 +316,7 @@ describe('[owner 14 Nov] MMG during the free trial: one week, credited once, kep
     expect(await readPayAhead(app.prisma, s.subId, new Date())).toMatchObject({ trial: true, trialEnded: true, due: true, room: 0, excess: 0 });
     expect(await mmgAction(s.subId)).toEqual({ id: 'MMG_CHECKOUT', state: 'off' });
     await expect(start(s)).rejects.toMatchObject({ statusCode: 409, code: 'PAY_AHEAD_LIMIT',
-      message: 'Your first weekly fee after your free trial is already paid. You can pay again once Swift has applied it, within a day.' });
+      message: 'Your first weekly fee after your free trial is already paid. You can pay again once Swift has applied it.' });
     const sub = await subOf(s.subId);
     expect((await feeStatusFor(app.prisma, sub, await payInfo(app.prisma, sub))).state).toBe('COVERED');
   });

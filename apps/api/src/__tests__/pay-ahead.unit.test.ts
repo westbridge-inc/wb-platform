@@ -92,10 +92,11 @@ describe('[owner 14 Nov 2026] a free trial may pay ONE week ahead: the first wee
     expect(payAheadPosition(ended, 0, NOW)).toMatchObject({ trial: true, trialEnded: true, maxWeeks: 0, due: true, room: FEE, cap: 0, excess: 0 });
     const paid = payAheadPosition(ended, FEE, NOW);
     expect(paid).toMatchObject({ room: 0, excess: 0 });
-    expect(payAheadRefusal(paid, 'partner').message).toBe('Your first weekly fee after your free trial is already paid. You can pay again once Swift has applied it, within a day.');
+    expect(payAheadRefusal(paid, 'partner').message).toBe('Your first weekly fee after your free trial is already paid. You can pay again once Swift has applied it.');
     expect(payAheadRefusal(payAheadPosition(ended, 0, NOW), 'partner').message).toBe('Your free trial has ended and your first weekly fee is due. You can pay at most GY$8,000 now.');
     expect(payAheadRefusal(paid, 'admin').message).toMatch(/^This account's free trial has ended and its first weekly fee is already paid\./);
     expect(payAheadPosition(ended, 2 * FEE, NOW)).toMatchObject({ excess: FEE });
+    expect(payAheadRefusal(paid, 'attach').message).toMatch(/\(only its first weekly fee, until that fee is applied after its free trial\)/);
   });
 
   it('once the trial has ended the four-week limit applies, as for everyone', () => {

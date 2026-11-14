@@ -199,7 +199,7 @@ export function payAheadRefusal(position: PayAheadPosition, audience: 'partner' 
   if (audience === 'attach') {
     // An agent payment is attached whole or not at all: refunding it is the only action.
     return new AppError(409, PAY_AHEAD_LIMIT,
-      `Attaching this agent payment would pay more than this account can take now (${position.trial ? `${TRIAL_PAY_AHEAD_WORDS} during its free trial` : PAY_AHEAD_LIMIT_WORDS}${rise ? `, and only weeks before its higher fee from ${day}` : ''}). It is attached whole or not at all: refund it to the partner instead (${PROCEDURE}).`, details);
+      `Attaching this agent payment would pay more than this account can take now (${position.trialEnded ? 'only its first weekly fee, until that fee is applied after its free trial' : position.trial ? `${TRIAL_PAY_AHEAD_WORDS} during its free trial` : PAY_AHEAD_LIMIT_WORDS}${rise ? `, and only weeks before its higher fee from ${day}` : ''}). It is attached whole or not at all: refund it to the partner instead (${PROCEDURE}).`, details);
   }
   if (trial) {
     // [TRIAL PAY-AHEAD · owner 14 Nov 2026] One week ahead during a free trial: the first week after it ends.
@@ -207,7 +207,7 @@ export function payAheadRefusal(position: PayAheadPosition, audience: 'partner' 
       return new AppError(409, PAY_AHEAD_LIMIT, audience === 'partner'
         ? (position.room > 0
           ? `Your free trial has ended and your first weekly fee is due. You can pay at most ${room} now.`
-          : 'Your first weekly fee after your free trial is already paid. You can pay again once Swift has applied it, within a day.')
+          : 'Your first weekly fee after your free trial is already paid. You can pay again once Swift has applied it.')
         : (position.room > 0
           ? `This account's free trial has ended and its first weekly fee is due; nothing ahead is taken until it is applied. Record at most ${room} now and refund the rest to the partner (${PROCEDURE}).`
           : `This account's free trial has ended and its first weekly fee is already paid. Record nothing more until it is applied: refund this payment to the partner (${PROCEDURE}).`), details);
