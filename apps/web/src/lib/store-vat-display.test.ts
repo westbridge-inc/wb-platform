@@ -59,3 +59,14 @@ describe('the store owner\'s words', () => {
     expect(beforeVatAtCheckoutHint(14)).toBe('Before VAT. 14% VAT is added at checkout for standard-rated items.');
   });
 });
+
+// [REVIEW-A / REVIEW-B follow-ups · 13 Nov 2026]
+describe('[REVIEW-B S4-6 · REVIEW-A F5] the store\'s VAT card words (the same as the phone\'s)', () => {
+  it('the basis-change warning and the switch-off words', async () => {
+    const { vatBasisChangeWarning, vatSettingsOffLine } = await import('./store-vat-words');
+    expect(vatBasisChangeWarning('PRICES_INCLUDE_VAT', 'PRICES_EXCLUDE_VAT', 14)).toBe('Your prices now include VAT. Before VAT is added at checkout, lower each standard-rated price to its price before VAT (the price ÷ 1.14), or customers pay 14% more.');
+    expect(vatBasisChangeWarning('ADD_VAT_AT_CHECKOUT', 'PRICES_EXCLUDE_VAT', 14)).toBeNull();
+    expect(vatSettingsOffLine({ effective: true, vatOnTop: true, ratePercent: 14 })).toBe('VAT settings cannot be changed on Swift right now, but your approved VAT is still added at checkout: 14% on your standard-rated items. To stop it, turn VAT off.');
+    expect(vatSettingsOffLine({ effective: false, ratePercent: 14 })).toBe('VAT settings are not available on Swift right now. Your prices stay exactly as you typed them.');
+  });
+});

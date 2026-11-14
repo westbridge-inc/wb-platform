@@ -91,7 +91,7 @@ describe('[W4] one checkout', () => {
     await waitFor(() => expect(state.push).toHaveBeenCalledWith('/orders/o1'));
     const checkouts = calls('POST', '/api/v1/customer/checkout') as Array<[unknown, RequestInit]>;
     expect(checkouts).toHaveLength(1);
-    expect(JSON.parse(String(checkouts[0]![1].body))).toEqual({ paymentMethod: 'CASH', tipAmount: 0, expectedTotal: 2100, expectedLines: [{ lineId: 'l1', unitPrice: 900 }] });
+    expect(JSON.parse(String(checkouts[0]![1].body))).toEqual({ paymentMethod: 'CASH', tipAmount: 0, expectedTotal: 2100, expectedLines: [{ lineId: 'l1', unitPrice: 900 }], capabilities: ['MENU_OPTIONS_V2', 'VAT_LINE_V1'] });
     expect((checkouts[0]![1].headers as Record<string, string>)['Idempotency-Key']).toMatch(/.{8,}/);
   });
 

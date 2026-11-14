@@ -34,11 +34,11 @@ import { EXPRESS_DELIVERY_SURCHARGE, deliveryFeeFromRates, type DeliveryRates } 
 import { canonicalBillableKm } from '../../utils/billable-distance';
 import { customerPoint } from '../discovery/customer-point';
 import { CountryConfigService } from '../country/country-config.service';
-import { storeVatEffective, storeVatOnTop } from '../store-vat/store-vat';
+import { STORE_VAT_SELECT, storeVatEffective, storeVatOnTop } from '../store-vat/store-vat';
 import { STORE_VAT_RATE_PERCENT } from '../store-vat/vat-rate';
 import { cartVatByVendor, vatOnTopPlan, vatTermsByVendor } from '../store-vat/order-vat';
 import { assertAppShowsVatLine, declaresVatLine } from '../store-vat/vat-line-capability';
-import { vatAddedAtCheckout, withVatAddedHint } from '../store-vat/vat-added-hint';
+import { vatAddedAtCheckout } from '../store-vat/vat-added-hint';
 import { estimateDrivingDistance, estimateDeliveryMinutes } from '../../utils/distance';
 import { MAX_DELIVERY_RADIUS_KM, brandBranchesFor, brandFactsFor, collapseBrands, oneDishPerBrand } from '../vendor/brand';
 import { getMapsProvider, type LatLng } from '../../providers/maps/maps-provider';
@@ -1373,7 +1373,9 @@ export async function customerRoutes(app: FastifyInstance) {
             imageUrl: true,
             basePrice: true,
             vendorId: true,
-            vendor: { select: { id: true, name: true, vendorType: true, latitude: true, longitude: true, estimatedPrepTime: true } },
+            // [STORE-VAT-EXCLUSIVE] The item's class and its store's VAT terms: "+ VAT" on the rail, in the same read.
+            vatClass: true,
+            vendor: { select: { ...STORE_VAT_SELECT, id: true, name: true, vendorType: true, latitude: true, longitude: true, estimatedPrepTime: true } },
           },
         }),
       ]);
@@ -1429,6 +1431,9 @@ export async function customerRoutes(app: FastifyInstance) {
         name: it.name,
         imageUrl: servedPhotoAddress(it.imageUrl),
         price: Number(it.basePrice),
+        // [STORE-VAT-EXCLUSIVE · REVIEW-B S3-1] A standard-rated dish of a store pricing before VAT says "+ VAT" (decided
+        // with the rail; a basis change shows once the rail's short cache turns over: the charge itself is always live).
+        vatAddedAtCheckout: vatAddedAtCheckout(!!it.vendor && storeVatOnTop(it.vendor), it.vatClass),
         vendorId: it.vendorId,
         vendorName: it.vendor?.name ?? '',
         vendorType: it.vendor?.vendorType ?? null,
@@ -1556,9 +1561,7 @@ export async function customerRoutes(app: FastifyInstance) {
       // business's booking, otherwise the persisted type — never a client guess.
       activeOrder: activeOrder ? { ...activeOrder, vertical: orderVertical(activeOrder), promise: promiseView(activeOrder) } : activeOrder,
       // [CHAINS PR3] A chain sells the same dish at every branch: the rail shows it once (its most-ordered branch's).
-      // [STORE-VAT-EXCLUSIVE] "+ VAT" beside a standard-rated price of a store pricing before VAT (read live, never from
-      // the cached rail).
-      popularItems: await withVatAddedHint(app.prisma, oneDishPerBrand(discovery.popularItems, brandFacts)),
+      popularItems: oneDishPerBrand(discovery.popularItems, brandFacts),
       featured,
       nearby,
       orderAgain,

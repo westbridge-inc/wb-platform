@@ -5,7 +5,7 @@ vi.mock('@swift/ui', () => ({ space: { xs: 4, sm: 8, md: 12, lg: 16, xl: 20, '2x
 vi.mock('../../../kit', () => ({ CheckRow: 'CheckRow', Chip: 'Chip', Segmented: 'Segmented', T: 'T', TonePill: 'TonePill' }));
 vi.mock('../../../lib/money', () => ({ money: (amount: number) => `$${amount.toLocaleString('en-US')}` }));
 
-import { ItemChoices } from './ItemChoices';
+import { ItemChoices, choicePriceWords, halfPriceWords } from './ItemChoices';
 import { chooseOption, defaultSelection, placeOption, type SheetGroup, type SheetOption, type SheetSelection } from '../../../lib/menuSheet';
 import { sheetUnitPrice } from '../../../lib/menuPrice';
 
@@ -108,5 +108,17 @@ describe('[MENU-OPTIONS] the phone item sheet', () => {
     expect(s.selection['toppings']).toEqual(['pep:left']);
     expect(s.tree().find((n) => n.type === 'Segmented').props.value).toBe('LEFT');
     expect(sheetUnitPrice(PIZZA, s.selection)).toBe(1200 + 150);
+  });
+});
+
+// [STORE-VAT-EXCLUSIVE · REVIEW-B S3-1] A standard-rated item of a store pricing before VAT: each choice's price says "+ VAT".
+describe('[STORE-VAT-EXCLUSIVE] "+ VAT" beside a choice\'s price', () => {
+  it('a size and an extra; nothing changes for any other item', () => {
+    const size = group('g', 'Size', [], { setsPrice: true });
+    const extras = group('e', 'Extras', [], { halfPricePercent: 50 });
+    expect(choicePriceWords(size, opt('l', 'Large', 2500), true)).toBe('$2,500 + VAT');
+    expect(choicePriceWords(extras, opt('c', 'Cheese', 300), true)).toBe('+$300 + VAT');
+    expect(choicePriceWords(extras, opt('c', 'Cheese', 300))).toBe('+$300');
+    expect(halfPriceWords(extras, opt('c', 'Cheese', 300), true)).toBe('Whole +$300 · half +$150 (+ VAT)');
   });
 });

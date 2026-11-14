@@ -9,7 +9,7 @@ import { LEGAL_URL } from '@/lib/legal-url';
 import { storeKey } from '@/lib/store-scope';
 import { GRA_VAT_URL } from '@/lib/gra-vat-url';
 import {
-  calendarDay, MODE_CHANGE_REVIEW_NOTE, modeRequestedLine, TURN_OFF_ADDED_PRICES_LINE, TURN_OFF_VAT_LINE_LINE, VAT_DOCUMENT_ROW, vatModeChoices, vatModeHelp, vatModeLabel, type StoreVatMode,
+  calendarDay, MODE_CHANGE_REVIEW_NOTE, modeRequestedLine, TURN_OFF_ADDED_PRICES_LINE, TURN_OFF_VAT_LINE_LINE, VAT_DOCUMENT_ROW, vatBasisChangeWarning, vatModeChoices, vatModeHelp, vatModeLabel, vatSettingsOffLine, type StoreVatMode,
 } from '@/lib/store-vat-words';
 
 /**
@@ -165,6 +165,8 @@ export function VatCard({ storeId }: { storeId: string | null }) {
                   ))}
                 </div>
                 {mode && <p className="mt-1 text-sm text-[var(--swift-muted)]">{vatModeHelp(mode, v.ratePercent)}</p>}
+                {/* [STORE-VAT-EXCLUSIVE · REVIEW-B S4-6] Moving from prices that include VAT to prices before VAT. */}
+                {v.status === 'APPROVED' && vatBasisChangeWarning(v.mode, mode, v.ratePercent) && <p role="note" className="mt-1 text-sm font-medium text-[var(--swift-red)]">{vatBasisChangeWarning(v.mode, mode, v.ratePercent)}</p>}
                 {changeNeedsPerson && <p className="mt-1 text-sm text-[var(--swift-muted)]">{MODE_CHANGE_REVIEW_NOTE}</p>}
               </fieldset>
             </div>
@@ -185,7 +187,8 @@ export function VatCard({ storeId }: { storeId: string | null }) {
       ) : (
         claimed && (
           <div className="mt-3">
-            <p className="text-sm text-[var(--swift-muted)]">VAT settings are not available on Swift right now. Your prices stay exactly as you typed them.</p>
+            {/* [STORE-VAT-EXCLUSIVE · REVIEW-A F5] Never "not available" alone while its VAT is still added at checkout. */}
+            <p className="text-sm text-[var(--swift-muted)]">{vatSettingsOffLine(v)}</p>
             <button
               type="button"
               onClick={turnOff}

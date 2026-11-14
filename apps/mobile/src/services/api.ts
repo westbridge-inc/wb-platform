@@ -23,7 +23,7 @@ import {
 } from './apiOrigin';
 import { explainDemoEnded, isReviewSessionClosed } from '../lib/reviewSessionClosed';
 import { CALL_BRIDGE_HEADER, CALL_BRIDGE_VERSION, type CallConfig, type CallTarget } from '../lib/callBridge';
-import { cartWriteCapabilities } from '../lib/menuOptionsCapability';
+import { cartWriteCapabilities, customerOrderCapabilities } from '../lib/menuOptionsCapability';
 
 // Build-time override (set per EAS build profile, e.g. preview→staging,
 // production→prod). Development follows the current Expo/Metro bundle host so
@@ -575,7 +575,8 @@ export const customerApi = {
     // only when the order is placed or an unsent cart intent changes. The server refuses
     // a concurrent twin and replays a finished one — so a double tap, a
     // timed-out response and a reopened app all resolve to ONE order.
-    api.post('/customer/checkout', data, capturedAuthConfig(session, {
+    // [STORE-VAT-EXCLUSIVE · REVIEW-A F3] This app shows a store's "VAT 14%" line (VAT_LINE_V1).
+    api.post('/customer/checkout', { ...data, capabilities: customerOrderCapabilities() }, capturedAuthConfig(session, {
       headers: { 'Idempotency-Key': idempotencyKey },
     })),
   /** [MOB-020] What became of a checkout attempt whose answer never arrived:
@@ -620,12 +621,13 @@ export const customerApi = {
     selectedOptions?: Record<string, unknown>;
     specialInstructions?: string;
   }, session?: AuthSessionSnapshot) =>
-    api.post('/customer/cart/items', { ...data, capabilities: cartWriteCapabilities() }, capturedAuthConfig(session)),
+    // [STORE-VAT-EXCLUSIVE] ...and a store's "VAT 14%" line (VAT_LINE_V1).
+    api.post('/customer/cart/items', { ...data, capabilities: customerOrderCapabilities() }, capturedAuthConfig(session)),
   updateCartItem: (
     id: string,
     data: { quantity: number; selectedOptions?: Record<string, unknown>; specialInstructions?: string },
     session?: AuthSessionSnapshot,
-  ) => api.put(`/customer/cart/items/${id}`, { ...data, capabilities: cartWriteCapabilities() }, capturedAuthConfig(session)),
+  ) => api.put(`/customer/cart/items/${id}`, { ...data, capabilities: customerOrderCapabilities() }, capturedAuthConfig(session)),
   removeCartItem: (id: string, session?: AuthSessionSnapshot) => api.delete(`/customer/cart/items/${id}`, capturedAuthConfig(session)),
   clearCart: (session?: AuthSessionSnapshot) => api.delete('/customer/cart', capturedAuthConfig(session)),
   setCartAddress: (addressId: string, session?: AuthSessionSnapshot) => api.put('/customer/cart/address', { addressId }, capturedAuthConfig(session)),

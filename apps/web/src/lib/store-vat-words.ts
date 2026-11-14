@@ -45,6 +45,21 @@ export function vatModeHelp(mode: StoreVatMode, ratePercent: number): string {
     ? `Once a person at Swift approves your certificate, ${ratePercent}% VAT is added to the price you type for each standard-rated item, so customers see and pay the full price, VAT included, before they order. Every item counts as standard-rated until you mark it zero-rated or exempt: mark those before a person approves, or customers pay VAT on them.`
     : 'Customers pay the prices you type; receipts show the VAT inside them.';
 }
+/** [STORE-VAT-EXCLUSIVE · REVIEW-B S4-6] A store whose approved prices INCLUDE VAT asking to price before VAT: its typed
+ *  prices stay as they are and 14% is added on top, so customers pay 14% more unless it lowers its prices first.
+ *  (The same words as the phone, lib/storeVat.ts vatBasisChangeWarning.) */
+export function vatBasisChangeWarning(from: StoreVatMode | null | undefined, to: StoreVatMode | null | undefined, ratePercent: number): string | null {
+  if (to !== 'PRICES_EXCLUDE_VAT' || from !== 'PRICES_INCLUDE_VAT') return null;
+  return `Your prices now include VAT. Before VAT is added at checkout, lower each standard-rated price to its price before VAT (the price ÷ ${(1 + ratePercent / 100).toFixed(2)}), or customers pay ${ratePercent}% more.`;
+}
+/** [STORE-VAT-EXCLUSIVE · REVIEW-A F5 · REVIEW-B S4-5] While Swift's VAT settings are off: a store whose VAT is still
+ *  added at checkout is told so (never "not available" alone), and that turning VAT off stops it. */
+export function vatSettingsOffLine(v: { effective?: boolean; vatOnTop?: boolean; ratePercent: number }): string {
+  if (v.vatOnTop === true && v.effective === true) {
+    return `VAT settings cannot be changed on Swift right now, but your approved VAT is still added at checkout: ${v.ratePercent}% on your standard-rated items. To stop it, turn VAT off.`;
+  }
+  return 'VAT settings are not available on Swift right now. Your prices stay exactly as you typed them.';
+}
 /** [VAT-DOCS · owner ruling 31 Oct 2026] An APPROVED store that picks the other choice: a person checks the change first. */
 export const MODE_CHANGE_REVIEW_NOTE = 'A person at Swift checks a change of this choice before it applies. Until then your prices and what customers pay stay as they are.';
 /** [owner ruling 31 Oct 2026] The change of choice the store is waiting on (GET /vendor/vat `modeRequested`), or null. */

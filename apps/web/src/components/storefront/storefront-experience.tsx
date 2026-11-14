@@ -1174,7 +1174,7 @@ export function StorefrontExperience({ store, returnPath, fromQr = false, initia
                             ) : null}
                             {needsReview ? <span className={styles.reviewTag}>Needs review</span> : null}
                           </span>
-                          <span className={styles.railPrice}>{gyMoney(line.lineTotal ?? line.customerPrice * line.quantity)}</span>
+                          <span className={styles.railPrice}>{gyMoney(line.lineTotal ?? line.customerPrice * line.quantity)}{line.vatAddedAtCheckout ? ' + VAT' : ''}</span>
                           <button
                             type="button"
                             className={styles.removeLineButton}
@@ -1268,6 +1268,8 @@ export function StorefrontExperience({ store, returnPath, fromQr = false, initia
           // current (public storefront isVerified, seller-verified.ts). An older API sends nothing: no pill.
           seller={{ name: store.name, city: store.city, verified: store.isVerified === true }}
           vendorType={catalog.vendorType}
+          // [STORE-VAT-EXCLUSIVE · REVIEW-B S3-1] "+ VAT" on the sheet's prices too (the same word as the menu row).
+          vatAdded={itemVatAddedHint((catalog as { vat?: unknown }).vat, modalItem as { vatClass?: string | null }) !== null}
           selectedOptions={selectedOptions}
           onChoose={chooseOption}
           onPlace={placeTopping}

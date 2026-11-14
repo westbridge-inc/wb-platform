@@ -5,7 +5,7 @@ import { BrandCheckbox, Card, ChoiceChip, ErrorState, LabeledInput, PillButton, 
 import { space } from '@swift/ui';
 import { DOCUMENT_CONSENT_TEXT } from '../../lib/uploadConsentCopy';
 import {
-  MODE_CHANGE_REVIEW_NOTE, modeRequestedLine, storeVatStatusLine, turnOffAddedPricesLine, turnOffVatLineLine, vatModeChoices, vatModeHelp, vatModeLabel, type StoreVatMode,
+  MODE_CHANGE_REVIEW_NOTE, modeRequestedLine, storeVatStatusLine, turnOffAddedPricesLine, turnOffVatLineLine, vatBasisChangeWarning, vatModeChoices, vatModeHelp, vatModeLabel, vatSettingsOffLine, type StoreVatMode,
 } from '../../lib/storeVat';
 import { errorMessage } from '../../lib/apiError';
 import { useStoreVat, useUpdateStoreVat } from '../../hooks/storeVat';
@@ -157,6 +157,8 @@ export function StoreVatSection({ style }: { style?: StyleProp<ViewStyle> } = {}
                 ))}
               </View>
               {mode ? <T variant="label" tone="muted" testID="store-vat-mode-help">{vatModeHelp(mode, v.ratePercent)}</T> : null}
+              {/* [STORE-VAT-EXCLUSIVE · REVIEW-B S4-6] Moving from prices that include VAT to prices before VAT. */}
+              {v.status === 'APPROVED' && vatBasisChangeWarning(v.mode, mode, v.ratePercent) ? <T variant="label" tone="warning" testID="store-vat-basis-warning">{vatBasisChangeWarning(v.mode, mode, v.ratePercent)}</T> : null}
               {changeNeedsPerson ? <T variant="label" tone="muted" testID="store-vat-mode-review">{MODE_CHANGE_REVIEW_NOTE}</T> : null}
             </>
           ) : null}
@@ -177,7 +179,8 @@ export function StoreVatSection({ style }: { style?: StyleProp<ViewStyle> } = {}
         </View>
       ) : claimed ? (
         <View style={{ gap: space.sm, marginTop: space.sm }}>
-          <T variant="label" tone="muted">VAT settings are not available on Swift right now. Your prices stay exactly as you typed them.</T>
+          {/* [STORE-VAT-EXCLUSIVE · REVIEW-A F5] Never "not available" alone while its VAT is still added at checkout. */}
+          <T variant="label" tone="muted" testID="store-vat-off-line">{vatSettingsOffLine(v)}</T>
           <PillButton
             label="Turn VAT off"
             variant="outline"

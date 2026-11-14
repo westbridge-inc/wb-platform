@@ -889,7 +889,8 @@ export function CartScreen() {
                       {/* No total we can stand behind → an em-dash, never a
                           number. A wrong price in a cart is the worst possible
                           lie: it is the figure someone agrees to pay. */}
-                      {hasTotal ? <Money amount={shownTotal} /> : <T variant="numM" tone="muted">—</T>}
+                      {/* [STORE-VAT-EXCLUSIVE · REVIEW-B S3-1] A standard-rated line of a store pricing before VAT: "+ VAT". */}
+                      {hasTotal ? <Money amount={shownTotal} vatAdded={it.vatAddedAtCheckout === true} /> : <T variant="numM" tone="muted">—</T>}
                     </View>
                     {meta ? (
                       <T variant="caption" tone="muted" style={{ marginTop: 2 }}>

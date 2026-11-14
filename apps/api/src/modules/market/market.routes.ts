@@ -268,7 +268,7 @@ export async function marketRoutes(app: FastifyInstance) {
     const page = listable.slice(0, q.limit);
     // [STORE-HOURS] Each dish's store is "open" as checkout decides it (switch AND the store's weekly hours).
     // [STORE-VAT-EXCLUSIVE] "+ VAT" beside a standard-rated price of a store pricing before VAT (read live).
-    const items: Array<ItemHit & { vatAddedAtCheckout: boolean }> = await withVatAddedHint(app.prisma, await applyItemStoreOpenNow(app.prisma, page.map(toItemHit)));
+    const items: ItemHit[] = await withVatAddedHint(app.prisma, await applyItemStoreOpenNow(app.prisma, page.map(toItemHit)));
     const last = page[page.length - 1];
 
     return {

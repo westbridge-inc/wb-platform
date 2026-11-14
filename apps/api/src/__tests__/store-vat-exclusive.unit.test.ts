@@ -436,7 +436,8 @@ describe('15. [REVIEW-A F3 · REVIEW-B S3-1] an app that cannot show the VAT lin
     const src = (f: string) => readFileSync(join(__dirname, '..', f), 'utf8');
     expect(src('modules/search/search.routes.ts').match(/withVatAddedHint\(app\.prisma/g)).toHaveLength(3);
     expect(src('modules/market/market.routes.ts').match(/withVatAddedHint\(app\.prisma/g)).toHaveLength(1);
-    expect(src('modules/user/customer.routes.ts')).toMatch(/popularItems: await withVatAddedHint\(app\.prisma/);
+    expect(src('modules/user/customer.routes.ts')).toMatch(/vatAddedAtCheckout: vatAddedAtCheckout\(!!it\.vendor && storeVatOnTop\(it\.vendor\), it\.vatClass\)/);
+    expect(src('modules/user/home-cache.ts')).toMatch(/vatAddedAtCheckout: z\.boolean\(\)\.optional\(\)/);
     expect(src('modules/user/customer.routes.ts')).toMatch(/items: itemDetails\.map\(\(d, i\) => \(\{ \.\.\.d, vatAddedAtCheckout: vatAddedAtCheckout\(/);
     const { vatAddedAtCheckout } = await import('../modules/store-vat/vat-added-hint');
     expect(vatAddedAtCheckout(true, 'STANDARD')).toBe(true);

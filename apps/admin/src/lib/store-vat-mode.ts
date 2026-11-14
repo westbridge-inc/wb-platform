@@ -16,7 +16,9 @@ export function vatApprovedWords(name: string, mode: string | null): string {
 }
 
 /** [VAT-DOCS · owner ruling 31 Oct 2026] An APPROVED store asks to change its price choice: what approving the change does. */
-export function vatModeChangeWords(requested: string | null | undefined): string {
+export function vatModeChangeWords(requested: string | null | undefined, current?: string | null): string {
+  // [STORE-VAT-EXCLUSIVE · REVIEW-B S4-6] From prices that already include VAT: approving adds 14% on top of them.
+  if (requested === 'PRICES_EXCLUDE_VAT' && current === 'PRICES_INCLUDE_VAT') return 'Asks to change from “prices already include VAT” to “prices before VAT”: approving keeps its menu prices exactly as typed and adds a “VAT 14%” line at checkout, so unless the store lowered its prices to before VAT first, its customers pay 14% more. Check its menu prices before approving.';
   if (requested === 'PRICES_EXCLUDE_VAT') return 'Asks to change to “prices before VAT”: approving puts its menu prices back to what it typed and adds a “VAT 14%” line at checkout on its standard-rated goods.';
   if (requested === 'ADD_VAT_AT_CHECKOUT') return 'Asks to change to “prices do not include VAT”: approving adds VAT to each standard-rated price its customers see (every item it has not marked zero-rated or exempt).';
   if (requested === 'PRICES_INCLUDE_VAT') return 'Asks to change to “prices already include VAT”: approving takes the added VAT off, so customers pay the prices the store typed.';

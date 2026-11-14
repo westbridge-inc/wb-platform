@@ -58,6 +58,7 @@ function DishGrid({ items }: { items: MarketItem[] }) {
             name={item.name}
             price={item.basePrice}
             priceFrom={item.pricedFrom === true}
+            vatAdded={item.vatAddedAtCheckout === true}
             imageUrl={item.imageUrl}
             meta={item.vendorIsCurrentlyOpen === false ? `${item.vendorName} · Closed right now` : item.vendorName}
             isNew={item.isNew}

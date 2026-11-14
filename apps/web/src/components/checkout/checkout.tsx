@@ -688,7 +688,8 @@ export function CheckoutPanel() {
                 <div className={styles.itemTop}>
                   <p className={styles.itemName}>{l.name}</p>
                   {/* The server's own line total, or the em-dash: never price × quantity worked out here. */}
-                  <p className={styles.lineTotal}>{money(l.lineTotal)}</p>
+                  {/* [STORE-VAT-EXCLUSIVE · REVIEW-B S3-1] A standard-rated line of a store pricing before VAT: "+ VAT". */}
+                  <p className={styles.lineTotal}>{money(l.lineTotal)}{l.vatAddedAtCheckout ? ' + VAT' : ''}</p>
                 </div>
                 {(l.selectedOptionNames?.length ?? 0) > 0 ? <p className={styles.itemMeta}>{l.selectedOptionNames?.join(' · ')}</p> : null}
                 <p className={styles.itemPrice}>{l.fulfillment === 'APPOINTMENT' ? money(l.customerPrice) : `${money(l.customerPrice)} each`}</p>

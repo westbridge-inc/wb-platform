@@ -317,6 +317,7 @@ function PopularRail({ items }: { items: PopularItem[] }) {
               href={`/order/vendor/${encodeURIComponent(item.vendorId)}?item=${encodeURIComponent(item.id)}`}
               name={item.name}
               price={item.price}
+              vatAdded={item.vatAddedAtCheckout === true}
               imageUrl={item.imageUrl}
               vendorType={item.vendorType}
               meta={item.etaMin != null ? `${item.vendorName} · ${item.etaMin} min` : item.vendorName}

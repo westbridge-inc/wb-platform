@@ -10,7 +10,19 @@
  */
 export const MENU_OPTIONS_CAPABILITY = 'MENU_OPTIONS_V2';
 
+/**
+ * [STORE-VAT-EXCLUSIVE · REVIEW-A F3] This app shows a store's "VAT 14%" line at checkout, "+ VAT" beside a before-VAT
+ * price and the store-page note. The API refuses a cart add or a checkout with a store pricing before VAT from an app
+ * that does not say so (409 APP_UPDATE_REQUIRED): an older app's screen would not add up to the Total.
+ */
+export const VAT_LINE_CAPABILITY = 'VAT_LINE_V1';
+
 /** A fresh list for a request body. */
 export function cartWriteCapabilities(): string[] {
   return [MENU_OPTIONS_CAPABILITY];
+}
+
+/** A fresh list for a CUSTOMER's cart write or checkout: menu options and the VAT line. */
+export function customerOrderCapabilities(): string[] {
+  return [MENU_OPTIONS_CAPABILITY, VAT_LINE_CAPABILITY];
 }

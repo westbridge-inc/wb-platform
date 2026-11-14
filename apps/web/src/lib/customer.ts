@@ -51,7 +51,7 @@ export interface VendorDetail extends Vendor {
   /** [IMAGES-E2E PR5] imageUrl: the section's own photo (a kept one; absent from an older API). */
   categories: Array<{ id: string; name: string; imageUrl?: string | null; items: MenuItem[] }>;
 }
-export interface CartLine { id: string; itemId: string; name: string; quantity: number; customerPrice: number; lineTotal?: number; selectedOptions?: Record<string, string | string[]> | null; selectedOptionNames?: string[]; specialInstructions?: string | null; isAvailable?: boolean; fulfillment?: string; imageUrl?: string | null; vendorId?: string; vendorName?: string; }
+export interface CartLine { id: string; itemId: string; name: string; quantity: number; customerPrice: number; lineTotal?: number; selectedOptions?: Record<string, string | string[]> | null; selectedOptionNames?: string[]; specialInstructions?: string | null; isAvailable?: boolean; fulfillment?: string; imageUrl?: string | null; vendorId?: string; vendorName?: string; /** [STORE-VAT-EXCLUSIVE] "+ VAT" on this line. */ vatAddedAtCheckout?: boolean; }
 export interface Cart {
   items: CartLine[];
   subtotal?: number;
@@ -93,6 +93,8 @@ export interface Cart {
 export interface PopularItem {
   id: string; name: string; imageUrl: string | null; price: number;
   vendorId: string; vendorName: string; vendorType: string | null; etaMin: number | null;
+  /** [STORE-VAT-EXCLUSIVE] A standard-rated price of a store pricing before VAT ("+ VAT"). */
+  vatAddedAtCheckout?: boolean;
 }
 /** The live order Home shows at the top (guests have none). */
 export interface HomeActiveOrder {
@@ -161,6 +163,8 @@ export interface MarketItem {
   /** [MENU-OPTIONS] A size sets the item's price: basePrice is its smallest size ("From"). Absent from an older
    *  server: read as not sized, as before. */
   pricedFrom?: boolean;
+  /** [STORE-VAT-EXCLUSIVE] A standard-rated price of a store pricing before VAT ("+ VAT"). Absent: nothing to say. */
+  vatAddedAtCheckout?: boolean;
 }
 export interface MarketCategory { slug: string; name: string; vertical: string }
 
@@ -191,7 +195,8 @@ export async function getCart(options?: { redirectOnExpired?: boolean }): Promis
 // The word itself, not an import of the app's capability file: this client is in every ordering page's first load
 // (the market page sits at its size ceiling). Pinned equal to MENU_OPTIONS_CAPABILITY in
 // customer-menu-options-capability.test.ts.
-export const CART_WRITE_CAPABILITIES: readonly string[] = ['MENU_OPTIONS_V2'];
+// [STORE-VAT-EXCLUSIVE · REVIEW-A F3] ...and that it shows a store's "VAT 14%" line (VAT_LINE_V1): sent on checkout too.
+export const CART_WRITE_CAPABILITIES: readonly string[] = ['MENU_OPTIONS_V2', 'VAT_LINE_V1'];
 export async function addToCart(body: { vendorId: string; itemId: string; quantity: number; selectedOptions?: Record<string, string | string[]> }) {
   return (await apiFetch('/api/v1/customer/cart/items', { method: 'POST', body: JSON.stringify({ ...body, capabilities: CART_WRITE_CAPABILITIES }) })).data;
 }
@@ -360,7 +365,7 @@ export async function checkout(body: CheckoutBody, idempotencyKey: string) {
   return (await apiFetch('/api/v1/customer/checkout', {
     method: 'POST',
     headers: { 'Idempotency-Key': idempotencyKey },
-    body: JSON.stringify(body),
+    body: JSON.stringify({ ...body, capabilities: CART_WRITE_CAPABILITIES }),
   })).data;
 }
 // [W-13] `Math.round(n ?? 0)` printed "GY$0" for a price the server never sent

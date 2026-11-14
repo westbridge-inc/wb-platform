@@ -691,7 +691,8 @@ export function HomeScreen() {
                   width={RAIL_CARD_W}
                   image={itemPhoto(it)}
                   name={it.name}
-                  priceLabel={money(it.price)}
+                  // [STORE-VAT-EXCLUSIVE · REVIEW-B S3-1] A standard-rated dish of a store pricing before VAT says "+ VAT".
+                  priceLabel={`${money(it.price)}${it.vatAddedAtCheckout === true ? ' + VAT' : ''}`}
                   // [Wave 3 vs reference 03 · #941] "Vendor · 25 min" — the
                   // vendor's own enrichVendor ETA now rides popularItems;
                   // null (no buyer position) says nothing, never a guess.

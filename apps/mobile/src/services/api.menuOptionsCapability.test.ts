@@ -46,7 +46,7 @@ describe('[MENU-OPTIONS] the cart writes declare MENU_OPTIONS_V2', () => {
     const seen = capture();
     await customerApi.addToCart({ vendorId: 'store-1', itemId: 'pizza-1', quantity: 2, selectedOptions: { size: 'large', toppings: ['pep:left', 'mush:right'] } });
     expect(seen).toEqual([{ url: '/customer/cart/items', method: 'post', body: {
-      vendorId: 'store-1', itemId: 'pizza-1', quantity: 2, selectedOptions: { size: 'large', toppings: ['pep:left', 'mush:right'] }, capabilities: ['MENU_OPTIONS_V2'],
+      vendorId: 'store-1', itemId: 'pizza-1', quantity: 2, selectedOptions: { size: 'large', toppings: ['pep:left', 'mush:right'] }, capabilities: ['MENU_OPTIONS_V2', 'VAT_LINE_V1'],
     } }]);
   });
 
@@ -55,8 +55,8 @@ describe('[MENU-OPTIONS] the cart writes declare MENU_OPTIONS_V2', () => {
     await customerApi.updateCartItem('line-1', { quantity: 3 });
     await customerApi.updateCartItem('line-1', { quantity: 1, selectedOptions: { size: 'medium' } });
     expect(seen.map((s) => [s.method, s.url, s.body])).toEqual([
-      ['put', '/customer/cart/items/line-1', { quantity: 3, capabilities: ['MENU_OPTIONS_V2'] }],
-      ['put', '/customer/cart/items/line-1', { quantity: 1, selectedOptions: { size: 'medium' }, capabilities: ['MENU_OPTIONS_V2'] }],
+      ['put', '/customer/cart/items/line-1', { quantity: 3, capabilities: ['MENU_OPTIONS_V2', 'VAT_LINE_V1'] }],
+      ['put', '/customer/cart/items/line-1', { quantity: 1, selectedOptions: { size: 'medium' }, capabilities: ['MENU_OPTIONS_V2', 'VAT_LINE_V1'] }],
     ]);
   });
 
@@ -64,5 +64,13 @@ describe('[MENU-OPTIONS] the cart writes declare MENU_OPTIONS_V2', () => {
     const seen = capture();
     await customerApi.reorder('order-1');
     expect(seen).toEqual([{ url: '/customer/orders/order-1/reorder', method: 'post', body: { capabilities: ['MENU_OPTIONS_V2'] } }]);
+  });
+});
+
+describe('[STORE-VAT-EXCLUSIVE · REVIEW-A F3] the cart writes and the checkout declare VAT_LINE_V1', () => {
+  it('this app shows a store\'s "VAT 14%" line: its checkout says so (the server refuses one that does not)', async () => {
+    const seen = capture();
+    await customerApi.placeOrder({ paymentMethod: 'CASH', expectedTotal: 914 }, 'attempt-key-0001');
+    expect(seen).toEqual([{ url: '/customer/checkout', method: 'post', body: { paymentMethod: 'CASH', expectedTotal: 914, capabilities: ['MENU_OPTIONS_V2', 'VAT_LINE_V1'] } }]);
   });
 });
