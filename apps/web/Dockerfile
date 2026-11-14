@@ -99,6 +99,8 @@ COPY apps/mobile/src/lib/vendorRbac.ts apps/mobile/src/lib/vendorRbac.ts
 # [ASSISTED SETUP] The store's "Added by Swift on <date> with your OK" words (Documents, Products): the phone's own
 # pure module, no imports, so exactly this file.
 COPY apps/mobile/src/lib/assistedSetupCopy.ts apps/mobile/src/lib/assistedSetupCopy.ts
+# [MENU-SEARCH] The menu page's search: the app's own matcher, so the same words find the same items on both.
+COPY apps/mobile/src/lib/catalogueSearch.ts apps/mobile/src/lib/catalogueSearch.ts
 COPY apps/mobile/src/lib/bulkWords.ts apps/mobile/src/lib/bulkWords.ts
 COPY apps/mobile/src/lib/appointmentTime.ts apps/mobile/src/lib/appointmentTime.ts
 COPY apps/mobile/src/modules/vendor/acceptClock.ts apps/mobile/src/modules/vendor/acceptClock.ts
