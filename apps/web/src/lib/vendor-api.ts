@@ -6,8 +6,8 @@ import type { OrderLineOption } from '../../../mobile/src/modules/vendor/orderLi
 import type { ServerStoreMoney } from '../../../mobile/src/modules/vendor/ringMoney';
 import type { SubstitutionStatus } from '@swift/types';
 import { apiFetch } from './auth';
-// [STORE-BOARD S1] The app's own open-board rules and words (plain file, imported as is).
-import { fallbackMetaOf, missingOpenRead, openMetaOf, type OpenBoardMeta } from '../../../mobile/src/modules/vendor/openBoard';
+// [STORE-BOARD S1] The app's open-board meta shape (apps/mobile/src/modules/vendor/openBoard.ts; type only).
+import type { OpenBoardMeta } from '../../../mobile/src/modules/vendor/openBoard';
 import { formatMoney, parseAmount } from './money';
 
 const V = '/api/v1/vendor';
@@ -341,6 +341,23 @@ export const getOrders = (
  * status for the Done and Needs attention lanes. `open` is what the open read says about itself (the board's
  * "not shown" note). A server without the open read (404) gets the newest 100 instead (capped at 50), as before.
  */
+// [STORE-BOARD S1] The app's openMetaOf / fallbackMetaOf / missingOpenRead (mobile modules/vendor/openBoard.ts), kept
+// here rather than imported: this file is in every console page's first load, and an import of that file made the
+// build split it into a chunk of its own, which grew the chunk map every page of the site loads (perf budget). The
+// board's note words still come from that file (the Orders page imports openBoardNote).
+const metaNum = (v: unknown): number | null => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+const metaTotal = (raw: unknown): number | null => metaNum(((raw ?? {}) as Record<string, unknown>)['total']);
+function openMetaOf(raw: unknown, shown: number): OpenBoardMeta {
+  const total = metaTotal(raw) ?? shown;
+  const notShown = metaNum(((raw ?? {}) as Record<string, unknown>)['notShown']);
+  return { total, shown, notShown: notShown ?? Math.max(0, total - shown), partial: false };
+}
+function fallbackMetaOf(raw: unknown, shown: number): OpenBoardMeta {
+  const total = metaTotal(raw);
+  return { total: total ?? shown, shown, notShown: 0, partial: total == null || total > shown };
+}
+const missingOpenRead = (error: unknown) => (error as { status?: number } | null)?.status === 404;
+
 /** The board read's poll (fast, and slower while the store's live feed is up): the board and the ring share it. */
 export const BOARD_ORDERS_POLL = [10_000, 30_000] as const;
 export const getBoardOrders = async (): Promise<{ orders: VendorOrder[]; meta: unknown; open: OpenBoardMeta }> => {
