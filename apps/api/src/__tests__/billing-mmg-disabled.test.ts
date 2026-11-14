@@ -184,7 +184,9 @@ async function whileOff<T>(fn: () => Promise<T>): Promise<T> {
 // This build has no real provider yet. These positive-path cases explicitly
 // supply future factory support; merely configuring an unknown name must fail.
 // [Review #2453 A-F1] Real cards: a TEST card system (the sandbox) is never a live way to pay.
-const CARD_LIVE = { MMG_DRIVER: 'disabled', CARD_RAIL_V2: '1', CARD_RAIL_KILL: '0', PAYMENT_PROVIDER: 'sandbox', CARD_RAIL_PROVIDER: 'powertranz', CARD_RAIL_ENVIRONMENT: 'live' };
+// [Review #2465-B B-2] "Cards live for every eligible partner" is the explicit list `*`: in production an unset list
+// serves nobody. A real environment always names its mode (runtime-mode.ts), so the fixture does too.
+const CARD_LIVE = { NODE_ENV: 'test', CARD_RAIL_LIVE_SUBSCRIPTIONS: '*', MMG_DRIVER: 'disabled', CARD_RAIL_V2: '1', CARD_RAIL_KILL: '0', PAYMENT_PROVIDER: 'sandbox', CARD_RAIL_PROVIDER: 'powertranz', CARD_RAIL_ENVIRONMENT: 'live' };
 /** [B-3] The card's own per-platform switch, on for every platform (set for this file in beforeAll). */
 const CARD_EVERY_PLATFORM = { ios: true, android: true, web: true };
 async function whileCardLive<T>(fn: () => Promise<T>): Promise<T> {
@@ -639,6 +641,13 @@ describe('[PROD-PATH] the pause is decided by server facts only: nothing a partn
     expect(await noLivePayPath(app.prisma, CARD_LIVE)).toBe(false);
     expect(await noLivePayPath(app.prisma, { ...CARD_LIVE, CARD_RAIL_KILL: '1' })).toBe(true);
     expect(await noLivePayPath(app.prisma, { ...CARD_LIVE, CARD_RAIL_V2: '0' })).toBe(true);
+    // [B-2] Production: live cards count for the pause only when the list is `*`; unset, empty or a list of ids
+    // (cards for some partners only) is no way to pay for everyone else, so MMG alone decides the pause.
+    const PROD = { ...CARD_LIVE, NODE_ENV: 'production' };
+    expect(await noLivePayPath(app.prisma, PROD)).toBe(false);
+    for (const list of [undefined, '', 'sub_owner_only']) {
+      expect(await noLivePayPath(app.prisma, { ...PROD, CARD_RAIL_LIVE_SUBSCRIPTIONS: list }), String(list)).toBe(true);
+    }
   });
   // [Review #2453-B B-3 · CARDS-SWITCH-ON] Live cards with the card off on any platform (no row: iOS off by
   // default) are no way to pay for EVERY partner: an iOS partner sees no card button. With MMG off the fee
