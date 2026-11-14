@@ -1214,7 +1214,8 @@ export async function vendorRoutes(app: FastifyInstance) {
     const vendor = source.vendorId
       ? await tx.vendor.findUnique({ where: { id: source.vendorId }, select: { selfDeliveryEnabled: true } })
       : null;
-    const routed = await tx.order.findUnique({ where: { id: source.id }, select: { kitchenRoute: true } });
+    // Only a store that delivers itself can have an overflow route to read (one read, only then).
+    const routed = vendor?.selfDeliveryEnabled ? await tx.order.findUnique({ where: { id: source.id }, select: { kitchenRoute: true } }) : null;
     const overflowToSwift = routed?.kitchenRoute === 'SWIFT_RIDERS' && !opts.swiftRidersCannotCarry;
     const mode = resolveDeliveryMode(null, (vendor?.selfDeliveryEnabled ?? false) && !overflowToSwift);
     await tx.order.update({

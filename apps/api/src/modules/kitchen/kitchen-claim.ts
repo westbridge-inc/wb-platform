@@ -76,9 +76,12 @@ export async function claimForKitchenInTransaction(
   if (!order?.vendorId || order.status !== 'PENDING') return false;
   const integration = await tx.vendorIntegration.findUnique({
     where: { vendorId_provider: { vendorId: order.vendorId, provider: 'DRAGONTAIL' } },
-    select: { id: true, enabled: true, externalStoreNo: true, overflowMode: true },
+    select: { id: true, enabled: true, externalStoreNo: true, overflowMode: true, linkOfflineAt: true },
   });
   if (!integration?.enabled || integration.externalStoreNo == null) return false;
+  // [DT-OUTAGE] The branch's kitchen link is OFFLINE (kitchen-link.ts): nothing is claimed; the order rings the tablet
+  // as for any store (pickups and deliveries), and no route is recorded.
+  if (integration.linkOfflineAt) return false;
   const eligible = kitchenEligibility({
     orderType: order.orderType, fulfillment: order.fulfillment, paymentMethod: order.paymentMethod,
     vendorSelfDelivers: order.vendor?.selfDeliveryEnabled ?? false,

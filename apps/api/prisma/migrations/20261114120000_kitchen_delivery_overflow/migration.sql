@@ -7,6 +7,8 @@
 --  1. Enums KitchenOverflowMode (NONE, AUTO_DRIVER_CHECK, BUSY_HOURS, BOTH) and KitchenRoute (KITCHEN, SWIFT_RIDERS).
 --  2. vendor_integrations: "overflowMode" (NOT NULL DEFAULT 'NONE': every branch stays off), "overflowBusyHours"
 --     (NOT NULL DEFAULT '[]': no busy hours) and "overflowUpdatedAt" (nullable). Constant defaults: no table rewrite.
+--  2b. [DT-OUTAGE] vendor_integrations: the kitchen-link breaker — "linkFailures" (NOT NULL DEFAULT 0),
+--     "linkFirstFailureAt", "linkOfflineAt", "linkProbeAt" (nullable). Null "linkOfflineAt" = online (as today).
 --  3. orders: "kitchenRoute", "kitchenRouteReason", "kitchenRouteAt", all nullable with no default (a catalogue change
 --     only, no rewrite, no scan). Written once per such order by the kitchen claim, only while DRAGONTAIL_INTEGRATION is
 --     on; null for every other order.
@@ -26,7 +28,11 @@ CREATE TYPE "KitchenRoute" AS ENUM ('KITCHEN', 'SWIFT_RIDERS');
 ALTER TABLE "vendor_integrations"
   ADD COLUMN "overflowMode" "KitchenOverflowMode" NOT NULL DEFAULT 'NONE',
   ADD COLUMN "overflowBusyHours" JSONB NOT NULL DEFAULT '[]',
-  ADD COLUMN "overflowUpdatedAt" TIMESTAMP(3);
+  ADD COLUMN "overflowUpdatedAt" TIMESTAMP(3),
+  ADD COLUMN "linkFailures" INTEGER NOT NULL DEFAULT 0,
+  ADD COLUMN "linkFirstFailureAt" TIMESTAMP(3),
+  ADD COLUMN "linkOfflineAt" TIMESTAMP(3),
+  ADD COLUMN "linkProbeAt" TIMESTAMP(3);
 
 -- The busy hours are always a JSON list (the server validates each window; this keeps a hand edit honest).
 ALTER TABLE "vendor_integrations"

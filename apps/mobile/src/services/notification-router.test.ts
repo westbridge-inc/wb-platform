@@ -424,6 +424,7 @@ const CENSUS: Case[] = [
   { k: 'ops_delivery_rider_dropped', d: O, to: DELIVERY('o1'), why: 'admins' },
   { k: 'ops_dispatch_exhausted', d: O, to: DELIVERY('o1'), why: 'admins' },
   { k: 'ops_food_too_old', d: O, to: DELIVERY('o1'), why: 'admins — [ALG-06] an order too old to deliver was cancelled by the system and needs a person' },
+  { k: 'kitchen_link', d: { vendorIntegrationId: 'vi1' }, to: null, why: "admins — [DT-OUTAGE] a branch's link to its kitchen system went offline (orders ring the tablet) or came back; one note per outage, a console matter" },
   { k: 'kitchen_integration', d: O, to: DELIVERY('o1'), why: "admins — [KITCHEN-INTEGRATION] an order could not go to a store's kitchen system (the tablet was rung), a cancel did not reach it, or its driver could not deliver" },
   { k: 'ops_rider_no_show', d: { ...O, riderId: 'r1' }, to: DELIVERY('o1'), why: 'admins — [OF-33] a rider accepted and never picked up; the order went back to dispatch' },
   { k: 'ops_rider_waiting', d: { ...O, riderId: 'r1' }, to: DELIVERY('o1'), why: 'admins — [OF-33] a rider is waiting at a store that has not marked the order ready' },

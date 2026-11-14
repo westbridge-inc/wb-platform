@@ -2497,6 +2497,13 @@ model VendorIntegration {
   /// end "HH:MM" }], an end at or before its start running past midnight. Validated by kitchen-overflow.ts.
   overflowBusyHours   Json                   @default("[]")
   overflowUpdatedAt   DateTime?
+  /// [DT-OUTAGE · owner 14 Nov 2026] The branch's kitchen-link breaker (kitchen-link.ts), shared by every API and
+  /// worker instance: certain send failures in a row (counted from the first, within the window), when the link was
+  /// marked OFFLINE (null = online: orders are claimed), and when it was last probed while offline.
+  linkFailures        Int                    @default(0)
+  linkFirstFailureAt  DateTime?
+  linkOfflineAt       DateTime?
+  linkProbeAt         DateTime?
   createdAt           DateTime               @default(now())
   updatedAt           DateTime               @updatedAt
   syncs               OrderIntegrationSync[]

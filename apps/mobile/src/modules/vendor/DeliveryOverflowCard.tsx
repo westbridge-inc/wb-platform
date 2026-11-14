@@ -5,6 +5,8 @@ import { Card, Chip, LabeledInput, PillButton, T } from '../../kit';
 import { useKitchenOverflow, useSetKitchenOverflow } from '../../hooks/vendorops';
 import {
   DAY_NAMES,
+  LINK_OFFLINE_DETAIL,
+  LINK_OFFLINE_TITLE,
   NEW_BUSY_WINDOW,
   OVERFLOW_MODE_OPTIONS,
   OVERFLOW_NOTE,
@@ -41,6 +43,12 @@ export function DeliveryOverflowCard({ enabled }: { enabled: boolean }) {
 
   return (
     <Card style={{ marginBottom: space.lg }} testID="delivery-overflow-card">
+      {setting.linkOffline ? (
+        <View style={{ marginBottom: space.md }} testID="link-offline">
+          <T variant="label" weight="bold" tone="error">{LINK_OFFLINE_TITLE}</T>
+          <T variant="caption" tone="muted" style={{ marginTop: 2 }}>{LINK_OFFLINE_DETAIL}</T>
+        </View>
+      ) : null}
       <T variant="body" weight="bold">{OVERFLOW_TITLE}</T>
       <T variant="caption" tone="muted" style={{ marginTop: space.xs }}>{OVERFLOW_NOTE}</T>
       <View style={{ marginTop: space.md, gap: space.sm }}>

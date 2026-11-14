@@ -377,6 +377,8 @@ export function serviceBooking(id: string, extra: Row = {}): Row {
     homeVisit: false,
     fulfillmentMode: null,
     fulfillmentModeVersion: 0,
+    // [DT-OVERFLOW] no kitchen-system route (a store without the integration), read by the store's money view
+    kitchenRoute: null,
     riderAssignmentVersion: 0,
     status: 'PENDING',
     customerId: 'user-customer',

@@ -212,10 +212,13 @@ export async function getKitchenOverflow(prisma: PrismaClient, vendorId: string)
   await vendorOrThrow(prisma, vendorId);
   const row = await prisma.vendorIntegration.findUnique({
     where: { vendorId_provider: { vendorId, provider: 'DRAGONTAIL' } },
-    select: { enabled: true, overflowMode: true, overflowBusyHours: true, overflowUpdatedAt: true },
+    select: { enabled: true, overflowMode: true, overflowBusyHours: true, overflowUpdatedAt: true, linkOfflineAt: true, linkFailures: true },
   });
   return {
     switchOn: dragontailIntegrationEnabled(),
+    // [DT-OUTAGE] "Kitchen link offline, orders on tablet" (kitchen-link.ts), and the certain failures counted so far.
+    linkOfflineAt: row?.linkOfflineAt ?? null,
+    linkFailures: row?.linkFailures ?? 0,
     connected: row !== null,
     enabled: row?.enabled ?? false,
     mode: row?.overflowMode ?? 'NONE',

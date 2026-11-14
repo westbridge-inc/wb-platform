@@ -61,6 +61,9 @@ export function KitchenOverflowPanel({ vendorId }: { vendorId: string }) {
   return (
     <section aria-labelledby="kitchen-overflow" className="mc-card space-y-3">
       <h2 id="kitchen-overflow" className="mc-label">Dragontail: Swift riders when the branch is busy</h2>
+      {setting?.linkOfflineAt && (
+        <p role="status" className="text-sm font-semibold">Kitchen link offline, orders on tablet (since {gyDate(setting.linkOfflineAt)}). Swift checks the link every minute.</p>
+      )}
       <p className="text-sm">Decided order by order, before sending: each cash delivery goes to Dragontail or to the Swift tablet and Swift riders, never both. Pickups always go to Dragontail.</p>
       <label className="grid gap-1 text-sm">When
         <select value={mode} onChange={(e) => setMode(e.target.value as KitchenOverflowMode)} className="rounded border px-2 py-1">

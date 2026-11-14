@@ -48,6 +48,8 @@ export class MockDragontail {
    *  'vehicle' answers in the spec example's shape instead of the schema's. */
   vehicles: Array<{ id: string; number: string; status: number }> | null = null;
   vehicleKey: 'vehicles' | 'vehicle' = 'vehicles';
+  /** [DT-OUTAGE] Paths whose connection is cut AFTER the request arrived (a reset after the send: it may have landed). */
+  readonly destroyPaths = new Set<string>();
   /** Answer a path with a redirect to this address. */
   readonly redirects = new Map<string, string>();
   private server: http.Server | null = null;
@@ -95,6 +97,7 @@ export class MockDragontail {
     this.redirects.clear();
     this.vehicles = null;
     this.vehicleKey = 'vehicles';
+    this.destroyPaths.clear();
   }
 
   count(path: string): number {
@@ -125,6 +128,10 @@ export class MockDragontail {
     // extra "delivery insert with a phone" after the privacy test's pickup).
     if (generation !== this.generation) {
       res.destroy();
+      return;
+    }
+    if (this.destroyPaths.has(path)) {
+      req.socket.destroy();
       return;
     }
     const redirect = this.redirects.get(path);

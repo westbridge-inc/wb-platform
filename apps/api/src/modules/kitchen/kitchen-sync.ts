@@ -10,7 +10,9 @@ import { emitToOrderRoom, emitToStoreRoom } from '../order/order-room-emission.s
 import { vendorOperateRefusal, type StoreRoleVerifier } from '../vendor/vendor-operate';
 import { kitchenLoginFor } from './kitchen-credentials';
 import { KITCHEN_ACCEPT_GRACE_MS, kitchenLadderDecision } from './kitchen-claim';
+import { kitchenBreakerSettings, recordLinkFailure, recordLinkSuccess } from './kitchen-link';
 import {
+  KitchenPermanentError,
   KitchenTransientError,
   type KitchenEvent,
   type KitchenInsertResult,
@@ -358,7 +360,10 @@ const fromWhere = (from: FromState, now: Date) => ({
  */
 /** What the operations page says: the kitchen does not have it (default), it was cancelled there after an
  *  unanswered send, or — the switch being off — it MAY also be in the kitchen. */
-type FallbackPage = 'default' | 'cancelled-there' | 'maybe-in-kitchen-switch-off';
+type FallbackPage = 'default' | 'cancelled-there' | 'maybe-in-kitchen-switch-off'
+  /** [DT-OUTAGE] The branch's LINK failed (certainly not received) or is offline: no page per order; the breaker
+   *  sends one alert per outage, and the console shows the connection's last error. */
+  | 'link';
 
 async function fallBack(
   deps: Pick<KitchenDeps, 'prisma' | 'io'>,
@@ -376,6 +381,7 @@ async function fallBack(
   await noteIntegrationError(deps, sync.vendorIntegrationId, reason);
   const rang = await ringStoreForOrder(deps, sync.orderId);
   log().warn({ orderId: sync.orderId, reason }, '[KITCHEN] order not given to the kitchen system — the store tablet was rung instead');
+  if (page === 'link') return true;
   const number = await orderNumberOf(deps, sync.orderId);
   await pageOperations(deps, {
     orderId: sync.orderId, tenantId: sync.tenantId, key: `${sync.id}:fallback`,
@@ -579,6 +585,11 @@ async function prepareSend(
     await fallBack(deps, sync, 'the connection was switched off', own);
     return null;
   }
+  // [DT-OUTAGE] The branch's link is offline: nothing is sent; it rings the tablet (the outage was alerted once).
+  if (integration.linkOfflineAt) {
+    await fallBack(deps, sync, 'the kitchen link is offline', own, 'link');
+    return null;
+  }
   // [security scan · d68ff3f6] The order goes to the store number it was claimed under, never a different one.
   if (integration.externalStoreNo !== sync.externalStoreNo) {
     await fallBack(deps, sync, "the connection's store number changed after the claim", own);
@@ -631,8 +642,12 @@ async function sendOne(deps: KitchenDeps, syncId: string, leasedAt: number): Pro
       await markUnknown(deps, sync, problemOf(err), own);
       return;
     }
-    // A refusal, a 5xx after the spec's retries, or no attempt fitted the deadline: the kitchen does not have it.
-    await fallBack(deps, sync, problemOf(err), own);
+    // [DT-OUTAGE] CERTAINLY not received and the LINK failed (no connection, a 5xx after the spec's retries, no
+    // attempt fitted the deadline, a login refused): the tablet rings now, no page per order; the branch's breaker
+    // counts it. An order-specific refusal (validation) is not a link failure: rung, and operations paged, as before.
+    const linkFailure = err instanceof KitchenTransientError || (err instanceof KitchenPermanentError && err.linkFailure);
+    await fallBack(deps, sync, problemOf(err), own, linkFailure ? 'link' : 'default');
+    if (linkFailure) await recordLinkFailure(deps, sync.vendorIntegrationId, problemOf(err), envOf(deps));
     return;
   } finally {
     provider.setDeadline(null);
@@ -648,6 +663,8 @@ async function sendOne(deps: KitchenDeps, syncId: string, leasedAt: number): Pro
         updateStamp: inserted.updateStamp, promiseSeconds: inserted.promiseSeconds,
       },
     });
+    // [DT-OUTAGE] The link works: the breaker's count restarts (and an offline link would close).
+    await recordLinkSuccess(deps, sync.vendorIntegrationId);
     if (sent.count === 0) return;
     await deps.prisma.vendorIntegration.update({ where: { id: sync.vendorIntegrationId }, data: { lastHealthyAt: nowOf(deps) } }).catch(() => undefined);
     await acceptSentOrder(deps, sync, inserted.promiseSeconds);
@@ -1183,6 +1200,44 @@ export async function pollKitchenIntegrations(deps: KitchenDeps, opts: KitchenWo
 }
 
 /**
+ * [DT-OUTAGE] Probe each OFFLINE branch link at most once per cool-down (compare-and-set on its probe time, so one
+ * instance probes): a fresh login, the lightest call the spec has (it has no health check). Success closes the
+ * breaker (one "back online" note); failure leaves it offline. Switch off: nothing.
+ */
+export async function probeOfflineKitchenLinks(deps: KitchenDeps, opts: KitchenWorkWindow = {}): Promise<number> {
+  const env = envOf(deps);
+  if (!dragontailIntegrationEnabled(env)) return 0;
+  const until = untilOf(opts);
+  const now = nowOf(deps);
+  const { probeMs } = kitchenBreakerSettings(env);
+  const due = await deps.prisma.vendorIntegration.findMany({
+    where: { enabled: true, linkOfflineAt: { not: null }, OR: [{ linkProbeAt: null }, { linkProbeAt: { lte: new Date(now.getTime() - probeMs) } }] },
+    take: 20,
+  });
+  let closed = 0;
+  for (const integration of due) {
+    if (Date.now() >= until) break;
+    const claimed = await deps.prisma.vendorIntegration.updateMany({ where: { id: integration.id, linkProbeAt: integration.linkProbeAt }, data: { linkProbeAt: now } });
+    if (claimed.count === 0) continue;
+    const answer = kitchenProvider(deps, integration, () => '', { freshToken: true });
+    if (!answer.ok) {
+      await noteIntegrationError(deps, integration.id, answer.problem);
+      continue;
+    }
+    answer.provider.setDeadline(Date.now() + 10_000);
+    try {
+      await answer.provider.testConnection();
+      if ((await recordLinkSuccess(deps, integration.id)) === 'closed') closed += 1;
+    } catch (err) {
+      await noteIntegrationError(deps, integration.id, `link probe: ${problemOf(err)}`);
+    } finally {
+      answer.provider.setDeadline(null);
+    }
+  }
+  return closed;
+}
+
+/**
  * The worker's tick: send, propagate cancels, settle unanswered sends, ring stuck or unaccepted claims, poll.
  * [review A S3-1 · B S3-2] ONE tick at a time across every worker: a Redis lock that outlives the tick's window plus
  * the longest single piece of work (a send's lease); a tick that finds it held returns at once, so kitchen work never
@@ -1202,6 +1257,7 @@ export async function runKitchenTick(deps: KitchenDeps): Promise<'ran' | 'skippe
       ['unknown', () => resolveUnknownKitchenSyncs(deps, window)],
       ['backstop', () => kitchenBackstopSweep(deps)],
       ['poll', () => pollKitchenIntegrations(deps, window)],
+      ['link-probe', () => probeOfflineKitchenLinks(deps, window)],
     ] as const) {
       try {
         await run();

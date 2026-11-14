@@ -8,7 +8,6 @@ import { mmgDisputePaused } from '@/lib/mmg-dispute';
 import { storeKey, useStoreId } from '@/lib/store-scope';
 import { useFeedPollInterval } from '@/lib/store-live-feed';
 import { BUCKETS, type BucketKey, completeness, groupOrders } from '@/lib/order-buckets';
-import { DeliveryOverflowCard } from '@/components/delivery-overflow-card';
 import { BoardQuiet, LoadedBoard, ManageGrid, OrderCardActions, PickupCodeCard, RevenuePulse, SelfDeliveryCard, StaffAvailability, StoreHeader, StoreStatusCard, useHubStore } from '@/components/orders-home';
 import { useStoreRole } from '@/lib/store-role';
 import { DataUnavailable } from '@/components/data-unavailable';
@@ -30,6 +29,9 @@ const orderDetail = preloadedPart(() => import('./order-detail').then((module) =
 // from mount like the order window (perf budget).
 const firstSteps = preloadedPart(() => import('@/components/orders-home-guides'));
 
+// [DT-OVERFLOW] Only a Dragontail branch ever shows this card: its own chunk (perf budget), drawn once it is here.
+const overflowCard = preloadedPart(() => import('@/components/delivery-overflow-card').then((module) => module.DeliveryOverflowCard));
+
 /** Only if the tap beats the background fetch: the same view as an order still loading. */
 function OrderWindowLoading({ onClose }: { onClose: () => void }) {
   return (
@@ -49,6 +51,7 @@ export default function OrdersPage() {
   const [selected, setSelected] = useState<string | null>(null);
   // Fetched from mount; here (and drawn in the tap's frame) long before an order can be tapped.
   const OrderDetail = orderDetail.usePart(!!selected);
+  const DeliveryOverflowCard = overflowCard.usePart(false);
   const dialog = useRef<HTMLDivElement | null>(null);
   const store = useHubStore();
   const { role, manager } = useStoreRole();
@@ -181,7 +184,7 @@ export default function OrdersPage() {
       <StoreStatusCard store={store.data} manager={manager} owner={role === 'OWNER'} readFailed={store.isError} onRetryRead={() => void store.refetch()} />
       {manager && storeLive && <SelfDeliveryCard store={store.data} readFailed={store.isError} onRetryRead={() => void store.refetch()} />}
       {/* [DT-OVERFLOW] A Dragontail branch's "Swift riders when you're busy" (renders nothing elsewhere). */}
-      {manager && storeLive && store.data.selfDeliveryEnabled && <DeliveryOverflowCard />}
+      {manager && storeLive && store.data.selfDeliveryEnabled && DeliveryOverflowCard && <DeliveryOverflowCard />}
       {/* [STORE-DASH · O-2] Shown once the server serves the setting. */}
       {manager && storeLive && typeof store.data.requirePickupCode === 'boolean' && <PickupCodeCard store={store.data} readFailed={store.isError} onRetryRead={() => void store.refetch()} />}
     </div>}

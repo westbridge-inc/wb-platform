@@ -1792,6 +1792,8 @@ export interface KitchenBusyWindow { day: number; start: string; end: string }
 export interface KitchenOverflowView {
   switchOn: boolean; connected: boolean; enabled: boolean;
   mode: KitchenOverflowMode; busyHours: KitchenBusyWindow[]; updatedAt: string | null;
+  /** [DT-OUTAGE] Set while the branch's kitchen link is offline (orders ring the tablet). */
+  linkOfflineAt?: string | null; linkFailures?: number;
 }
 export interface KitchenRouteRow {
   id: string; orderNumber: string; status: string; kitchenRoute: 'KITCHEN' | 'SWIFT_RIDERS'; kitchenRouteReason: string | null;

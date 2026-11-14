@@ -6,6 +6,8 @@ import { apiFetch } from '@/lib/auth';
 import { storeKey, useStoreId } from '@/lib/store-scope';
 import {
   DAY_NAMES,
+  LINK_OFFLINE_DETAIL,
+  LINK_OFFLINE_TITLE,
   NEW_BUSY_WINDOW,
   OVERFLOW_MODE_OPTIONS,
   OVERFLOW_NOTE,
@@ -52,6 +54,12 @@ export function DeliveryOverflowCard() {
 
   return (
     <section aria-label={OVERFLOW_TITLE} className="sw-card p-5">
+      {read.data.linkOffline && (
+        <div role="status" className="mb-3">
+          <p className="font-semibold text-[var(--swift-error)]">{LINK_OFFLINE_TITLE}</p>
+          <p className="sw-caption mt-1">{LINK_OFFLINE_DETAIL}</p>
+        </div>
+      )}
       <p className="font-semibold">{OVERFLOW_TITLE}</p>
       <p className="sw-caption mt-1">{OVERFLOW_NOTE}</p>
       <fieldset className="mt-3 grid gap-2">

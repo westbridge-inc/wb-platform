@@ -308,16 +308,17 @@ export async function planKitchenRoute(
   if (order.orderType !== 'FOOD_DELIVERY' || order.fulfillment !== 'DELIVERY' || order.paymentMethod !== 'CASH' || !order.vendor?.selfDeliveryEnabled) return null;
   const integration = await prisma.vendorIntegration.findUnique({
     where: { vendorId_provider: { vendorId: order.vendorId, provider: 'DRAGONTAIL' } },
-    select: { id: true, provider: true, enabled: true, externalStoreNo: true, overflowMode: true, overflowBusyHours: true },
+    select: { id: true, enabled: true, externalStoreNo: true, overflowMode: true, overflowBusyHours: true, linkOfflineAt: true },
   });
-  if (!integration?.enabled || integration.externalStoreNo == null) return null;
+  // [DT-OUTAGE] An offline kitchen link claims nothing (the claim answers no): no route, no driver check.
+  if (!integration?.enabled || integration.externalStoreNo == null || integration.linkOfflineAt) return null;
   const storeNo = integration.externalStoreNo;
   const decision = await decideKitchenRoute({
     orderId,
     mode: integration.overflowMode,
     busyHours: readBusyHours(integration.overflowBusyHours),
     now: deps.now ? deps.now() : new Date(),
-    driverCheck: () => (deps.driverCheck ? deps.driverCheck(storeNo) : dragontailDriverCheck(integration, storeNo, env, deps.client)),
+    driverCheck: () => (deps.driverCheck ? deps.driverCheck(storeNo) : dragontailDriverCheck({ id: integration.id, provider: 'DRAGONTAIL' }, storeNo, env, deps.client)),
     swiftRiders: () => (deps.swiftRiders ? deps.swiftRiders(order) : swiftRidersNearCheck(prisma, order, env)),
   });
   log().info({ orderId, route: decision.route, reason: decision.reason, note: decision.note }, '[KITCHEN-OVERFLOW] route decided');
@@ -412,6 +413,9 @@ export interface KitchenOverflowSettingView {
   mode: KitchenOverflowModeName;
   busyHours: BusyWindow[];
   updatedAt: Date | null;
+  /** [DT-OUTAGE] The branch's kitchen link is offline: orders ring the tablet until it is back. */
+  linkOffline: boolean;
+  linkOfflineSince: Date | null;
 }
 
 /** The branch's overflow setting. Not available (and nothing else said) while the switch is off or no connection. */
@@ -420,14 +424,17 @@ export async function readKitchenOverflowSetting(
   vendorId: string,
   env: Record<string, string | undefined> = process.env,
 ): Promise<KitchenOverflowSettingView> {
-  const off: KitchenOverflowSettingView = { available: false, mode: 'NONE', busyHours: [], updatedAt: null };
+  const off: KitchenOverflowSettingView = { available: false, mode: 'NONE', busyHours: [], updatedAt: null, linkOffline: false, linkOfflineSince: null };
   if (!dragontailIntegrationEnabled(env)) return off;
   const row = await prisma.vendorIntegration.findUnique({
     where: { vendorId_provider: { vendorId, provider: 'DRAGONTAIL' } },
-    select: { enabled: true, overflowMode: true, overflowBusyHours: true, overflowUpdatedAt: true },
+    select: { enabled: true, overflowMode: true, overflowBusyHours: true, overflowUpdatedAt: true, linkOfflineAt: true },
   });
   if (!row) return off;
-  return { available: row.enabled, mode: row.overflowMode, busyHours: readBusyHours(row.overflowBusyHours), updatedAt: row.overflowUpdatedAt };
+  return {
+    available: row.enabled, mode: row.overflowMode, busyHours: readBusyHours(row.overflowBusyHours), updatedAt: row.overflowUpdatedAt,
+    linkOffline: row.enabled && row.linkOfflineAt != null, linkOfflineSince: row.enabled ? row.linkOfflineAt : null,
+  };
 }
 
 /** Change the branch's overflow setting. Refused while the switch is off (nothing written) or with no connection. */

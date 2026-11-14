@@ -12,7 +12,11 @@ export type OverflowMode = 'NONE' | 'AUTO_DRIVER_CHECK' | 'BUSY_HOURS' | 'BOTH';
 export interface BusyWindow { day: number; start: string; end: string }
 
 /** GET /api/v1/vendor/kitchen-overflow. `available` false: the branch is not connected (or the connection is off). */
-export interface OverflowSetting { available: boolean; mode: OverflowMode; busyHours: BusyWindow[] }
+export interface OverflowSetting { available: boolean; mode: OverflowMode; busyHours: BusyWindow[]; linkOffline?: boolean }
+
+/** [DT-OUTAGE] Shown while the branch's link to Dragontail is down: every order rings this tablet until it is back. */
+export const LINK_OFFLINE_TITLE = 'Kitchen link offline, orders on tablet';
+export const LINK_OFFLINE_DETAIL = 'Dragontail is not answering, so new orders ring here. Swift checks every minute and switches back by itself.';
 
 export const OVERFLOW_TITLE = 'Swift riders when you’re busy';
 export const OVERFLOW_NOTE = 'Swift decides order by order, before sending. Each delivery goes to Dragontail or to this tablet with a Swift rider — never both. Pickups always go to Dragontail.';

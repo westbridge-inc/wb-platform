@@ -18,7 +18,8 @@ DO $$ BEGIN
 END $$;
 ALTER TABLE "orders" DROP COLUMN IF EXISTS "kitchenRoute", DROP COLUMN IF EXISTS "kitchenRouteReason", DROP COLUMN IF EXISTS "kitchenRouteAt";
 ALTER TABLE "vendor_integrations" DROP CONSTRAINT IF EXISTS "vendor_integrations_overflow_busy_hours_list";
-ALTER TABLE "vendor_integrations" DROP COLUMN IF EXISTS "overflowMode", DROP COLUMN IF EXISTS "overflowBusyHours", DROP COLUMN IF EXISTS "overflowUpdatedAt";
+ALTER TABLE "vendor_integrations" DROP COLUMN IF EXISTS "overflowMode", DROP COLUMN IF EXISTS "overflowBusyHours", DROP COLUMN IF EXISTS "overflowUpdatedAt",
+  DROP COLUMN IF EXISTS "linkFailures", DROP COLUMN IF EXISTS "linkFirstFailureAt", DROP COLUMN IF EXISTS "linkOfflineAt", DROP COLUMN IF EXISTS "linkProbeAt";
 DROP TYPE IF EXISTS "KitchenRoute";
 DROP TYPE IF EXISTS "KitchenOverflowMode";
 COMMIT;

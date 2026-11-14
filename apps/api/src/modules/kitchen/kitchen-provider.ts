@@ -92,9 +92,13 @@ export interface KitchenInsertResult {
 
 /** A refusal the provider gave (validation, parse, a 4xx): retrying the same request will not help. */
 export class KitchenPermanentError extends Error {
-  constructor(message: string) {
+  /** [DT-OUTAGE] The LINK failed (a login refused, a session Dragontail would not renew), not this one order: it
+   *  counts toward the branch's outage breaker. An order-specific refusal (validation) does not. */
+  readonly linkFailure: boolean;
+  constructor(message: string, linkFailure = false) {
     super(message);
     this.name = 'KitchenPermanentError';
+    this.linkFailure = linkFailure;
   }
 }
 

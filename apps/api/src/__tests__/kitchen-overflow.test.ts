@@ -11,7 +11,7 @@ import { vendorRoutes } from '../modules/vendor/vendor.routes';
 import { OrderService } from '../modules/order/order.service';
 import { MockDragontail } from './helpers/mock-dragontail';
 import { recordDispatchQueue } from './helpers/dispatch-queue';
-import { testPhone } from './helpers/fixture-ids';
+import { testPhone, wordFreeTag } from './helpers/fixture-ids';
 import { claimForKitchen, kitchenDefersStoreAlert } from '../modules/kitchen/kitchen-claim';
 import { drainKitchenSyncs, forgetKitchenTokens, KITCHEN_TICK_LOCK, type KitchenDeps } from '../modules/kitchen/kitchen-sync';
 import { kitchenLoginRef, kitchenWebhookRef } from '../modules/kitchen/kitchen-credentials';
@@ -150,7 +150,7 @@ beforeAll(async () => {
     const vo = await app.prisma.vendorOwner.create({ data: { userId: owner.userId } });
     const vendor = await app.prisma.vendor.create({
       data: {
-        ownerId: vo.id, name: `Overflow Diner ${RUN}`, slug: `ko-${nanoid(8).toLowerCase()}`, vendorType: 'RESTAURANT', phone: '+5926990001',
+        ownerId: vo.id, name: `Overflow Diner ${wordFreeTag()}`, slug: `ko-${nanoid(8).toLowerCase()}`, vendorType: 'RESTAURANT', phone: '+5926990001',
         addressLine1: '1 Kitchen St', city: 'Lethem', region: 'Upper Takutu', latitude: AT.lat, longitude: AT.lng,
         status: 'ACTIVE', acceptingOrders: true, isCurrentlyOpen: true, isVerified: true, selfDeliveryEnabled: true,
       },
