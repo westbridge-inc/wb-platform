@@ -148,3 +148,54 @@ describe('[REVIEW-F S3-1 on #2054] the board card: no hand-over prompt on a paus
     expect(shown.some((t) => t.startsWith('Check the name'))).toBe(false);
   });
 });
+
+// [APP-PREPTIME · owner 14 Nov 2026] The board card's Accept (a tablet's main surface) asks the preparation time
+// like the website: the chips sit above Accept with 20 pre-selected, and Accept sends the minutes to the store's one
+// order mutation. A booking is never asked and sends none. The card is called with the board's own props.
+describe('[APP-PREPTIME] the board card accepts with a preparation time', () => {
+  function cardOf(o: { id: string } & Record<string, unknown>) {
+    fx.orders = [o];
+    fx.pending = new Set();
+    fx.steps = [{ label: 'Accept', action: 'accept' }, { label: 'Reject', action: 'reject' }];
+    const card = cards(board()).find((c) => c.props.order.id === o.id)! as El & { type: { type: (_p: unknown) => unknown } };
+    const onAction = vi.fn();
+    const tree = elements(card.type.type({ ...card.props, onAction }));
+    return { card, tree, onAction };
+  }
+  const chipsIn = (tree: El[]) => tree.filter((e) => typeof e.type === 'function' && (e.type as { name?: string }).name === 'PrepTimeChips') as Array<El & { props: { value?: number } }>;
+  const pill = (tree: El[], label: string) => tree.find((e) => (e.props as { label?: unknown }).label === label) as (El & { props: { onPress: () => void } }) | undefined;
+
+  it('a new delivery order: 20 pre-selected above Accept, and Accept sends 20', () => {
+    const { tree, onAction } = cardOf({ ...order('order-n', 'PENDING'), vendorId: 'store-A' });
+    expect(chipsIn(tree).map((c) => c.props.value)).toEqual([20]);
+    pill(tree, 'Accept')!.props.onPress();
+    expect(onAction).toHaveBeenCalledExactlyOnceWith('accept', undefined, 20);
+  });
+
+  it('the board sends the card\'s minutes with the Accept; other steps carry none', () => {
+    fx.mutate.mockClear();
+    const { card } = cardOf({ ...order('order-n', 'PENDING'), vendorId: 'store-A' });
+    card.props.onAction!('accept', undefined, 45);
+    card.props.onAction!('ready');
+    expect(fx.mutate.mock.calls).toEqual([
+      [{ id: 'order-n', action: 'accept', code: undefined, prepMinutes: 45 }],
+      [{ id: 'order-n', action: 'ready', code: undefined }],
+    ]);
+  });
+
+  it('a booking: no preparation time on the card, and Accept sends none', () => {
+    const { tree, onAction } = cardOf({ ...order('order-b', 'PENDING'), fulfillment: 'APPOINTMENT', vendorId: 'store-A' });
+    expect(chipsIn(tree)).toEqual([]);
+    pill(tree, 'Accept')!.props.onPress();
+    expect(onAction).toHaveBeenCalledExactlyOnceWith('accept', undefined, undefined);
+  });
+
+  it('an order past the decision shows no choices', () => {
+    fx.steps = [];
+    const o = { ...order('order-p', 'PREPARING'), vendorId: 'store-A' };
+    fx.orders = [o];
+    const card = cards(board()).find((c) => c.props.order.id === 'order-p')! as El & { type: { type: (_p: unknown) => unknown } };
+    fx.steps = [{ label: 'Ready for delivery', action: 'ready' }];
+    expect(chipsIn(elements(card.type.type(card.props)))).toEqual([]);
+  });
+});

@@ -16,6 +16,9 @@ import { RING_PERIOD_MS } from '../../services/jobRinger';
 import { hasJobRing } from '../../services/jobRingCapability';
 import { takeoverRingCopy } from './takeoverRingCopy';
 import { ringMoney } from './ringMoney';
+import { PrepTimeChips } from './PrepTimeChips';
+import { acceptPrepMinutes, asksPrepTime } from './prepTime';
+import { usePrepChoice } from './prepTimeMemory';
 
 /**
  * The NEW-ORDER takeover (alerts spec §A1 + design-100× Part 5 moment 2):
@@ -109,6 +112,10 @@ export function NewOrderTakeover({
   const expired = Number.isFinite(respondByMs) && respondByMs <= nowTs;
   useJobRing(!!orderId && !settled && !expired);
   const [canRing] = useState(hasJobRing);
+  // [APP-PREPTIME · owner 14 Nov 2026] The preparation time, as on the website's takeover: 20 pre-selected (or this
+  // store's last choice on this device), so ONE tap on Accept still accepts; a booking is never asked.
+  // (Remembered per store: the order's own store, known once the order is read; until then nothing is asked.)
+  const [prepMinutes, choosePrep] = usePrepChoice(orderId, o?.vendorId);
 
   if (!current) return null;
   const remainSecs = clockActive ? Math.max(0, Math.ceil((respondByMs - nowTs) / 1000)) : 0;
@@ -125,11 +132,14 @@ export function NewOrderTakeover({
   // [O-4] Every item came off: nothing to accept, only Reject with a reason.
   const nothingLeft = nothingToAccept(o);
 
-  const decide = (action: 'accept' | 'reject', reason?: string) =>
+  const askPrep = asksPrepTime(o);
+  const decide = (action: 'accept' | 'reject', reason?: string) => {
+    const minutes = action === 'accept' ? acceptPrepMinutes(o, prepMinutes) : undefined;
     act.mutate(
-      { id: current.orderId, action, ...(reason ? { reason } : {}) },
+      { id: current.orderId, action, ...(reason ? { reason } : {}), ...(minutes ? { prepMinutes: minutes } : {}) },
       { onSuccess: () => onDismiss(current.orderId) },
     );
+  };
 
   return (
     <Modal
@@ -288,6 +298,10 @@ export function NewOrderTakeover({
               {OUT_OF_STOCK_WORDS.nothing}
             </T>
           ) : (
+          <>
+          {askPrep && !lastOut ? (
+            <PrepTimeChips value={prepMinutes} onChange={choosePrep} vendorType={o?.vendor?.vendorType ?? storeKind} disabled={busy} />
+          ) : null}
           <PillButton
             // [Wave 3 vs reference 22] "ACCEPT ORDER", sized to be read across
             // a kitchen — the reference sets it in caps and says the thing.
@@ -299,6 +313,7 @@ export function NewOrderTakeover({
               decide('accept');
             }}
           />
+          </>
           )}
           {/* [Wave 3 vs reference 22] "A rejection always collects a reason."
               The route records it and the customer is told why — so the button

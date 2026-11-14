@@ -1417,7 +1417,9 @@ export const vendorApi = {
   orders: (params?: { status?: string; search?: string; page?: number; limit?: number }) =>
     api.get('/vendor/orders', { params }),
   order: (id: string, session?: AuthSessionSnapshot, storeId?: string | null) => api.get(`/vendor/orders/${id}`, capturedVendorAuthConfig(session, storeId)),
-  acceptOrder: (id: string) => api.put(`/vendor/orders/${id}/accept`),
+  // [APP-PREPTIME · owner 14 Nov 2026] The preparation time staff chose (10-60 min), as the website sends it; none for a booking.
+  acceptOrder: (id: string, estimatedPrepTime?: number) =>
+    api.put(`/vendor/orders/${id}/accept`, estimatedPrepTime ? { estimatedPrepTime } : undefined),
   // [W-25] a store's attestation carries the provider reference from its own wallet message
   confirmPayment: (id: string, reference: string) => api.post(`/vendor/orders/${id}/confirm-payment`, { reference }),
   // Grocery picking (§5.3)
