@@ -110,9 +110,10 @@ describe('[R048-005] the plan applies once; a replay changes nothing', () => {
     // 2026-10-22.1, and [FOOD-PERMIT · owner 24 Oct] a registered restaurant's food handler's certificate optional as
     // 2026-10-24.1, and [DEPT-PRICE · owner 29 Oct] the department-store weekly fee at 45,000 as 2026-10-29.1, and
     // [CHECKLIST-LEGAL · owner 1 Nov] the self-declared tier's three lists removed as 2026-11-01.1, and [O1 · owner
-    // 7 Nov] Guyana's rider cash limit at GY$100,000 and the store's 10 minutes to accept as 2026-11-07.1
+    // 7 Nov] Guyana's rider cash limit at GY$100,000 and the store's 10 minutes to accept as 2026-11-07.1, and
+    // [COMPANY-DOCS · owner 10 Nov] the registered-company and manager document lists as 2026-11-10.1
     // (production follows only when the owner signs a new seed plan; no boot check compares versions).
-    expect(desiredPlatformConfig().version).toBe('2026-11-07.1');
+    expect(desiredPlatformConfig().version).toBe('2026-11-12.1');
   });
 
   it.each(['create', 'policy'] as const)('seeds owner-confirmed emergency numbers for the Guyana %s path', (path) => {

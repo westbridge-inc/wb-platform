@@ -436,7 +436,7 @@ describe('[OF-01] the dispatch notices are told once per order state, not once p
     // Four 6-hour cycles ran (main: 8 "Still looking" + 4 "No movers").
     expect(count(customer, 'Still looking for a rider')).toBe(1);
     expect(count(customer, 'No riders available right now')).toBe(1);
-    expect(count(await noticesOf(id, cast.vendorOwner.userId), 'No riders available')).toBe(1);
+    expect(count(await noticesOf(id, cast.vendorOwner.userId), 'No rider found')).toBe(1); // [PROD-RIDER-TEST (a)1] asked at the first empty search, still once per state
     expect(count(await noticesOf(id, w.admin.userId), 'Dispatch exhausted — no mover found')).toBe(1);
 
     // A real change of state: a rider takes it and hands it back.

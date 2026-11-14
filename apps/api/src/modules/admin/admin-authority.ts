@@ -217,12 +217,16 @@ const E = {
   adRefundIntent: { model: 'adRefundIntent', fields: ['status', 'payoutRail', 'manualPayoutRef', 'providerRefundRef', 'completedAt'] },
   paymentConfirmation: { model: 'paymentConfirmationHold', fields: ['status', 'resolvedAt', 'resolvedBy', 'resolutionEvidence'] },
   // [PT-4] A held card payment's resolution: what finance decided and the provider actions it took.
-  cardSession: { model: 'cardSession', fields: ['status', 'failureCode', 'providerTransactionRef', 'providerVoidState', 'providerVoidRef', 'providerRefundState', 'bookClaimedAt', 'resolution', 'resolvedBy', 'resolvedAt'] },
+  cardSession: { model: 'cardSession', fields: ['status', 'failureCode', 'providerTransactionRef', 'providerVoidState', 'providerVoidRef', 'providerRefundState', 'providerRefundRef', 'providerReversalKind', 'reversalCheck', 'reversalRetryAt', 'bookClaimedAt', 'resolution', 'resolvedBy', 'resolvedAt'] },
   agentPayment: { model: 'mmgAgentPayment', fields: ['status', 'amount', 'subscriptionId'] },
   // [MMG REVERSAL] A return of a weekly-fee payment: where it stands and how a person resolved it.
+  // [Audit C1-1] A weekly-fee MMG checkout: where it stands and what credited it.
+  mmgCheckout: { model: 'mmgCheckoutIntent', fields: ['status', 'reason', 'providerPaymentId', 'mmgTransactionId', 'confirmedAt'] },
   feeReversal: { model: 'mmgFeeReversal', fields: ['state', 'heldReason', 'resolution', 'resolvedBy', 'failedAt', 'reversedAt', 'walletDebitedAt'] },
   settlementBatch: { model: 'settlementBatch', fields: ['status', 'expectedNetGyd', 'depositedGyd', 'depositedAt', 'bankRef'] },
   verification: { model: 'verificationDocument', fields: ['status', 'reviewedAt'] },
+  // [COMPANY-DOCS Part 3] An account change's decision (who decided, when, and why).
+  accountChange: { model: 'accountChangeRequest', fields: ['status', 'decidedAt', 'decidedById', 'decisionReason'] },
   // [STORE-VAT] A store's VAT decision (the number itself is never named in the trail's diff).
   storeVat: { model: 'vendor', routeParam: 'vendorId', fields: ['vatStatus', 'vatMode', 'vatModeRequested', 'vatEffectiveFrom', 'vatReviewedAt'] },
   // [ADM-002] `resolvedAt` does not exist on ReturnRequest (`reviewedAt` does).
@@ -300,14 +304,34 @@ export const ADMIN_ROUTE_AUTHORITY: Readonly<Record<AdminRouteKey, AdminRouteAut
   'GET /vendors/:id/party-phone': c('C1', 'vendor.contact.read'),
   // [MC-PR2] which of the owner's documents are approved, waiting, rejected or missing — document status, so C1
   'GET /vendors/:id/activation-checklist': c('C1', 'vendor.read'),
+  // [ASSISTED SETUP · owner 12 Nov 2026] A Swift admin sets a store up FOR it from the console, never as it (no login-as):
+  // its consent recorded first, then its papers, menu and item photos, each audited under the admin with the consent.
+  // `store.assist`: ADMIN and SUPER_ADMIN hold it by their role; a narrowed grant leaves it out unless named.
+  // The overview names the store's papers and who at the store agreed (C1, read logged).
+  'GET /vendors/:id/assisted-setup': c('C1', 'store.assist'),
+  'POST /vendors/:id/assisted-setup/consent': c('C3', 'store.assist', E.vendor),
+  'POST /vendors/:id/assisted-setup/documents': c('C3', 'store.assist', E.vendor),
+  // A preview writes nothing: what the import would add and refuse, row by row.
+  'POST /vendors/:id/assisted-setup/menu/preview': c('C2', 'store.assist'),
+  'POST /vendors/:id/assisted-setup/menu/preview-xlsx': c('C2', 'store.assist'),
+  'POST /vendors/:id/assisted-setup/menu/apply': c('C3', 'store.assist', E.vendor),
+  'POST /vendors/:id/assisted-setup/items/:itemId/photo': c('C3', 'store.assist', E.vendor),
   'PUT /vendors/:id/approve': c('C3', 'vendor.approve', E.vendor),
   'PUT /vendors/:id/suspend': c('C3', 'vendor.suspend', E.vendor),
   'PUT /vendors/:id/feature': c('C2', 'vendor.feature', E.vendor),
   // [BUG-HUNT F22] What the screens tell a store to ask support for: a type picked by mistake, a checked name.
   'PUT /vendors/:id/type': c('C3', 'vendor.edit', E.vendor),
-  'PUT /vendors/:id/name': c('C3', 'vendor.edit', E.vendor),
+  // [review-2476 F3] A rename ends the store name's seller-name confirmation: the diff names it.
+  'PUT /vendors/:id/name': c('C3', 'vendor.edit', { ...E.vendor, fields: [...E.vendor.fields, 'sellerNameCheckedName'] }),
   // [R3 · security review 10 Nov 2026] A person confirms the store's name as the seller's business or company name: the
   // same hands as approving a store (approving confirms it too).
+  // [KITCHEN-INTEGRATION] A store's kitchen-system connection. Switching it on sends that store's orders (and, for
+  // a delivery, the customer's first name, number and address) to the store's own kitchen system: consequential, so a reason.
+  'GET /vendors/:id/kitchen-integration': c('C0', 'vendor.integration.read'),
+  'PUT /vendors/:id/kitchen-integration': c('C3', 'vendor.integration.manage'),
+  'POST /vendors/:id/kitchen-integration/test': c('C2', 'vendor.integration.manage'),
+  'GET /vendors/:id/kitchen-integration/syncs': c('C0', 'vendor.integration.read'),
+  'PUT /vendors/:id/kitchen-integration/item-numbers': c('C2', 'vendor.integration.manage'),
   'PUT /vendors/:id/seller-name': c('C3', 'vendor.approve', { model: 'vendor', fields: ['sellerNameCheckedName', 'sellerNameCheckedAt', 'sellerNameCheckedById'] }),
 
   // ── Movers ──────────────────────────────────────────────────────────────
@@ -519,6 +543,8 @@ export const ADMIN_ROUTE_AUTHORITY: Readonly<Record<AdminRouteKey, AdminRouteAut
   'GET /billing/mmg-checkouts/:id/reversal': c('C0', 'billing.read'),
   'POST /billing/mmg-checkouts/:id/reverse': c('C4', 'billing.mmg.reverse'),
   'POST /billing/mmg-fee-reversals/:id/check': c('C2', 'billing.mmg.reverse.check'),
+  // [Audit FABLE-01 C1-1] A held weekly-fee payment checked with MMG again: it may credit (only on MMG's own records), so C4.
+  'POST /billing/mmg-checkouts/:id/recheck': c('C4', 'billing.mmg.recheck', E.mmgCheckout),
   // [Row 156] A partner asked for a weekly-fee payment back: a clock and a record, no money. A reason, one person; the
   // return itself stays the C4 above. A case closes only on a REVERSED reversal, never from here.
   'GET /billing/fee-refund-cases': c('C1', 'billing.mmg.read'),
@@ -560,6 +586,9 @@ export const ADMIN_ROUTE_AUTHORITY: Readonly<Record<AdminRouteKey, AdminRouteAut
   // [CARD-REFUND-LOOKUP] A refund whose answer is not known, checked with the card provider: it may record the
   // money as refunded (a HELD payment closed, or a refund of set-aside credit paid out) — money, two people.
   'POST /billing/card-sessions/:id/check-provider': c('C4', 'billing.card.resolve', E.cardSession),
+  // [REVIEW-2496-B S3-2 · OWNER RULING 12 Nov 2026] The owner and a second person confirm the PowerTranz portal shows
+  // nothing went back for a refused refund to the card: it frees held money — money, two people (owner one of them).
+  'POST /billing/card-sessions/:id/portal-checked': c('C4', 'billing.card.resolve', E.cardSession),
 
   // ── Algorithms ──────────────────────────────────────────────────────────
   'GET /algo/eta/report': c('C0', 'algo.read'),
@@ -585,6 +614,12 @@ export const ADMIN_ROUTE_AUTHORITY: Readonly<Record<AdminRouteKey, AdminRouteAut
   'PUT /verification/:id/reject': reviewed(c('C3', 'verification.decide', E.verification)),
   'PUT /verification/:id/revoke': reviewed(c('C3', 'verification.decide', E.verification)),
   // [STORE-VAT · owner O-5] A store's VAT certificate: decided by a document reviewer, like every document.
+  // [COMPANY-DOCS Part 3] A store's change of business type or of account holder: read and decided by a document
+  // reviewer (names and paper states, never a document); approving moves a business's papers, seller name or holder.
+  'GET /account-changes': reviewed(c('C1', 'verification.read')),
+  'GET /account-changes/:id': reviewed(c('C1', 'verification.read')),
+  'PUT /account-changes/:id/approve': reviewed(c('C3', 'verification.decide', E.accountChange)),
+  'PUT /account-changes/:id/refuse': reviewed(c('C3', 'verification.decide', E.accountChange)),
   'GET /store-vat/pending': c('C0', 'verification.read'),
   'POST /store-vat/:vendorId/approve': reviewed(c('C3', 'verification.decide', E.storeVat)),
   'POST /store-vat/:vendorId/reject': reviewed(c('C3', 'verification.decide', E.storeVat)),
@@ -953,6 +988,8 @@ export function reasonOf(body: unknown, headers?: Record<string, unknown>): stri
  *  holds this list closed: a C3-C5 route is either declared with an entity or
  *  named here with a reason a reviewer can check. */
 export const ADMIN_ROUTES_WITHOUT_ENTITY: Readonly<Record<AdminRouteKey, string>> = {
+  // [KITCHEN-INTEGRATION] the route names the store, and the connection row may not exist yet (the PUT creates it)
+  'PUT /vendors/:id/kitchen-integration': 'the route names the store and may create the connection row; the audit backstop records the request, and the row (one per store and provider) shows the result',
   'GET /legal/processors': 'code-declared register (DGP-1); no row to name',
   'POST /promos': 'creates the row; there is no before state to digest',
   // [OWNER-ASKS · security review 9 Nov 2026] the comparison IS the append-only audit row (SELFIE_ID_COMPARED)

@@ -147,6 +147,8 @@ model User {
 
   // [SAFE-B] Advisory MMG payer evidence recorded for this account.
   mmgPayerEvidence MmgPayerEvidence[]
+  // [COMPANY-DOCS PART 2] Letters of authority this account holder asked a director (or the owner) to sign in Swift.
+  authorityLetterRequests AuthorityLetterRequest[]
   @@index([tenantId])
   @@index([isSynthetic])
   @@map("users")
@@ -214,6 +216,12 @@ model Session {
   userAgent            String?
   expiresAt            DateTime
   createdAt            DateTime  @default(now())
+  /// [AUDIT-20261113 FABLE-03 #2] When this session proved an authenticator code (admin second factor).
+  mfaVerifiedAt        DateTime?
+  /// [REVIEW-2501-A S3-1] Set when the admin web console's own sign-in issued this session (its credentials went
+  /// out only as HttpOnly cookies to the console origin). ADMIN_API_CONSOLE_ONLY=1 accepts only such a session, so a
+  /// token from the desktop or the phone, re-sent as a cookie with copied headers, is refused.
+  consoleBoundAt       DateTime?
 
   @@map("sessions")
   @@index([expiresAt]) // retention sweep cutoff [F-021-20]
@@ -745,6 +753,19 @@ model VerificationDocument {
   record               DocumentRecord?
   /// [DOC-1 §9.3 P4-7] the renewal schedule the database keeps for an approved document with an expiry
   renewalSchedule      RenewalSchedule?
+  /// [COMPANY-DOCS Part 3 · owner rulings 10 Nov 2026 (c), (d)] A paper filed FOR a pending account change (a new business
+  /// type's papers, or a new account holder's): it counts for nothing until a person approves that change, and then it
+  /// counts with the switch, in the same transaction (vendor/account-change.ts). Set when the paper is filed, never
+  /// changed (database trigger). Null for every other paper.
+  accountChangeId      String?
+  accountChange        AccountChangeRequest?      @relation(fields: [accountChangeId], references: [id], onDelete: NoAction)
+  /// [ASSISTED SETUP · owner 12 Nov 2026] A paper a Swift admin uploaded FOR the store from the admin console, with the
+  /// store's recorded consent: who uploaded it (the admin's user id) and under which consent record. Null for every paper
+  /// the store sent itself. Set when the paper is filed, never changed (database trigger). The uploader may not approve it
+  /// while a second admin exists (verification.service approveDocument).
+  assistedById         String?
+  assistedConsentId    String?
+  assistedConsent      AssistedSetupConsent?      @relation(fields: [assistedConsentId], references: [id], onDelete: SetNull)
 
   @@index([status])
   @@index([userId])
@@ -753,7 +774,84 @@ model VerificationDocument {
   @@index([legalHoldId])
   @@index([state])
   @@index([subjectId])
+  @@index([accountChangeId])
+  @@index([assistedConsentId])
   @@map("verification_documents")
+}
+
+/// [ASSISTED SETUP · owner 12 Nov 2026] The store's OK for a Swift admin to set it up from the admin console (upload its
+/// papers, import its menu, add item photos): who at the store agreed (as the admin typed it), how, when, an optional
+/// reference, and the consent words read to them. Created FIRST: no assisted upload happens without one, and every
+/// assisted action names it (assisted_setup_actions, the audit trail). Written once (database trigger). Behind the tenant wall.
+model AssistedSetupConsent {
+  id                String                 @id @default(cuid())
+  tenantId          String
+  vendorId          String
+  vendor            Vendor                 @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  /// The store's account holder at the time (vendor_owners.userId): the person whose papers are filed.
+  holderId          String
+  /// Who at the store said yes: their name as the admin typed it, and WHO they are, as a choice (the account holder
+  /// themself, or a manager). A person's own papers (an ID) are filed only on the account holder's own OK [#2495 review].
+  agreedByName      String
+  agreedAs          AssistedAgreedAs
+  channel           AssistedConsentChannel
+  agreedAt          DateTime
+  reference         String?
+  /// The document-processing consent words read to the store (upload-consent.ts UPLOAD_CONSENT.document_v1).
+  consentDocumentType String
+  consentVersion    String
+  /// The admin who recorded it, and why.
+  recordedByAdminId String
+  reason            String
+  createdAt         DateTime               @default(now())
+  actions           AssistedSetupAction[]
+  documents         VerificationDocument[]
+
+  @@index([tenantId])
+  @@index([vendorId, createdAt])
+  @@map("assisted_setup_consents")
+}
+
+/// [ASSISTED SETUP] One thing a Swift admin did for a store under a consent record: a paper filed, a menu item imported,
+/// an item photo added. The store's Documents and Menu read these to show "Added by Swift on <date> with your OK".
+/// Written once (database trigger). Behind the tenant wall.
+model AssistedSetupAction {
+  id        String                 @id @default(cuid())
+  tenantId  String
+  vendorId  String
+  vendor    Vendor                 @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  consentId String
+  consent   AssistedSetupConsent   @relation(fields: [consentId], references: [id], onDelete: Cascade)
+  adminId   String
+  kind      AssistedActionKind
+  /// The row the action made or changed: a verification document's id, or an item's id.
+  targetId  String
+  /// DOCUMENT: the doc type. ITEM_PHOTO: the photo address set (a public store photo). MENU_ITEM: the import row.
+  detail    String?
+  createdAt DateTime               @default(now())
+
+  @@index([tenantId])
+  @@index([vendorId, kind, targetId])
+  @@index([consentId])
+  @@map("assisted_setup_actions")
+}
+
+enum AssistedAgreedAs {
+  ACCOUNT_HOLDER
+  MANAGER
+}
+
+enum AssistedConsentChannel {
+  IN_PERSON
+  PHONE
+  WHATSAPP
+  EMAIL
+}
+
+enum AssistedActionKind {
+  DOCUMENT
+  MENU_ITEM
+  ITEM_PHOTO
 }
 
 /// Liability shield (founder directive 2026-07-15): the ENFORCEMENT layer
@@ -1516,8 +1614,175 @@ model VendorOwner {
   dealChangeSwitchedAt  DateTime?
   /// [ENTERPRISE · E1] The owner's "pay all my branches" MMG checkouts (one MMG page for several branch fees).
   chainCheckouts   MmgCheckoutIntent[]
+  /// [R3 · CAA s.70(1) · owner ruling 10 Nov 2026 · review F1] The business's or company's LEGAL name, typed by the
+  /// PERSON at Swift who approved its registration paper (business registration / certificate of incorporation), from
+  /// that paper. One per account: every store and branch of the account is sold by it (the store name stays the trading
+  /// name). Shown as the seller's legal name only while that very paper (sellerLegalNameDocId) is a VALID record; a new
+  /// paper is typed again when a person approves it. Never written by the owner.
+  sellerLegalName      String?
+  sellerLegalNameAt    DateTime?
+  sellerLegalNameById  String?
+  sellerLegalNameDocId String?
+  /// [COMPANY-DOCS · owner rulings 10 Nov 2026] Who holds this account, chosen at sign-up, and so which papers the whole
+  /// account gives (verification/doc-registry COMPANY_TIER, MANAGER_TIER): OWNER (the default: the owner of a registered
+  /// business, or a person trading under their own name), COMPANY (a registered company; the holder is the ONE person who
+  /// manages its Swift account) or MANAGER (the manager of a registered business, not its owner). One choice for the
+  /// account: every branch rides it and uploads nothing. Every existing account is OWNER (unchanged).
+  accountBasis     VendorAccountBasis @default(OWNER)
+  /// [COMPANY-DOCS Part 3] The account's changes of business type and of account holder (one PENDING at a time).
+  accountChanges   AccountChangeRequest[]
 
   @@map("vendor_owners")
+}
+
+/// [COMPANY-DOCS · owner rulings 10 Nov 2026] Who holds a store account (VendorOwner.accountBasis).
+enum VendorAccountBasis {
+  OWNER
+  COMPANY
+  MANAGER
+}
+
+/// [COMPANY-DOCS Part 3 · owner rulings 10 Nov 2026 ~07:3xZ (c) + (d)] A change to who a store account is, waiting for a
+/// person at Swift:
+///  - BUSINESS_TYPE, "Change business type": the account's choice (a registered company, a registered business, its
+///    manager, or a trader under their own name) with the new choice's papers;
+///  - HOLDER_HANDOVER: a company's (or a manager's) account passes to a new account holder, named by a new letter of
+///    authority, who files their own papers from their own Swift account.
+/// The stores keep selling on the papers they have while it waits. The papers filed for it
+/// (VerificationDocument.accountChangeId) count for nothing until a person approves it; then the choice, the papers and
+/// the seller name (or the holder) switch in ONE transaction. Refused or withdrawn: nothing changes. One PENDING change
+/// per account and one per person named (partial unique indexes); a decided row is final (database trigger).
+model AccountChangeRequest {
+  id                  String              @id @default(cuid())
+  tenantId            String
+  vendorOwnerId       String
+  vendorOwner         VendorOwner         @relation(fields: [vendorOwnerId], references: [id], onDelete: Cascade)
+  kind                AccountChangeKind
+  status              AccountChangeStatus @default(PENDING)
+  /// Who asked: the account holder, signed in on their own account.
+  requestedById       String
+  /// BUSINESS_TYPE: the account's choice when it asked, and the choice it asks for.
+  fromOption          BusinessTypeOption?
+  toOption            BusinessTypeOption?
+  /// HOLDER_HANDOVER: the account holder when it was asked, and the person the new letter names (their own account).
+  holderId            String?
+  newHolderId         String?
+  /// HOLDER_HANDOVER: the person named said yes in their own app. Nobody is made an account holder unasked.
+  newHolderAcceptedAt DateTime?
+  decidedById         String?
+  decidedAt           DateTime?
+  /// The deciding person's reason (a refusal's is shown to the store, and to the person named).
+  decisionReason      String?
+  /// [R3 · review-2476 F1] The seller's legal name a person typed from a registration paper filed for THIS change, held
+  /// here (never on the account) while the change waits: the account's own name (VendorOwner.sellerLegalName) stays
+  /// what customers see. Approved, it becomes the account's legal name in the decision's transaction; with none held,
+  /// the account's legal name is cleared (it was typed for the old business type or holder) until a person types one
+  /// from a paper again. Refused or withdrawn: it never names anyone.
+  sellerLegalName     String?
+  sellerLegalNameAt   DateTime?
+  sellerLegalNameById String?
+  /// The registration paper it was typed from (verification_documents.id, filed for this change).
+  sellerLegalNameDocId String?
+  createdAt           DateTime            @default(now())
+  updatedAt           DateTime            @updatedAt
+  /// The papers filed for this change.
+  documents           VerificationDocument[]
+
+  @@index([tenantId])
+  @@index([vendorOwnerId, status])
+  @@index([status, createdAt])
+  @@index([newHolderId])
+  @@map("account_change_requests")
+}
+
+enum AccountChangeKind {
+  BUSINESS_TYPE
+  HOLDER_HANDOVER
+}
+
+enum AccountChangeStatus {
+  PENDING
+  APPROVED
+  REFUSED
+  WITHDRAWN
+}
+
+/// The four answers to "What kind of business are you?" (sign-up, and Change business type).
+enum BusinessTypeOption {
+  COMPANY
+  REGISTERED
+  MANAGER
+  OWN_NAME
+}
+
+/// [COMPANY-DOCS PART 2 · owner 10 Nov 2026 ~07:5xZ] A one-page letter of authority Swift writes for a company's account
+/// (or a registered business's manager's) and texts to the director (or the owner) to sign on THEIR OWN phone: a
+/// single-use link (only its SHA-256 is kept; 72 hours), a code texted to that phone (kept as an HMAC; 10 minutes,
+/// 5 tries), then a finger signature and an "I authorise" tick. The signed PDF is filed as the account holder's letter of
+/// authority document (encrypted and served exactly like an ID) and a person at Swift still checks it. The signer's name
+/// and number are a THIRD person's details: never in a log or an audit row, deleted with the account, and a request that
+/// ended unsigned is deleted 30 days after it ended (vendor/authority-letter).
+model AuthorityLetterRequest {
+  id                  String                @id @default(cuid())
+  /// The account holder who asked: the letter is filed as their document.
+  userId              String
+  user                User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  /// The store it was asked from: its type is the checklist role the letter is filed under.
+  vendorId            String
+  /// company_authority_letter (a director signs) or owner_authority_letter (the business's owner signs).
+  docType             String
+  accountBasis        VendorAccountBasis
+  businessName        String
+  registrationNumber  String
+  requesterName       String
+  requesterRole       String
+  signerName          String
+  /// E.164. Never the account holder's own number, nor one already on the store's team.
+  signerPhone         String
+  /// The exact words shown and signed, and their SHA-256 (hex).
+  letterText          String
+  letterSha256        String
+  status              AuthorityLetterStatus @default(SENT)
+  /// SHA-256 (hex) of the link's secret. The secret itself is only ever in the text message.
+  tokenHash           String                @unique
+  /// When the link stops working (72 hours after it was texted). Not a document expiry.
+  linkExpiresAt       DateTime
+  sendCount           Int                   @default(1)
+  lastSentAt          DateTime
+  openedAt            DateTime?
+  codeHash            String?
+  codeExpiresAt       DateTime?
+  codeAttempts        Int                   @default(0)
+  codeSends           Int                   @default(0)
+  codeVerifiedAt      DateTime?
+  signingKeyHash      String?
+  signingKeyExpiresAt DateTime?
+  /// A signature being filed right now (and when it was signed): a cancel, resend or expiry waits for it (5 minutes at most).
+  signingClaimedAt    DateTime?
+  signedAt            DateTime?
+  /// HMAC-SHA256(ip, CONSENT_IP_PEPPER), as the consent ledger keeps it: never the address itself.
+  signerIpHmac        String?
+  signerUserAgent     String?
+  signatureSha256     String?
+  /// The filed document (verification_documents.id) and its stored, encrypted PDF.
+  documentId          String?
+  pdfFileKey          String?
+  endedAt             DateTime?
+  createdAt           DateTime              @default(now())
+  updatedAt           DateTime              @updatedAt
+
+  @@index([userId, createdAt])
+  @@index([status, linkExpiresAt])
+  @@map("authority_letter_requests")
+}
+
+/// [COMPANY-DOCS PART 2] SENT (waiting for the signer) -> SIGNED, EXPIRED (72 hours passed; a resend opens it again) or
+/// CANCELLED (the account holder replaced or withdrew it).
+enum AuthorityLetterStatus {
+  SENT
+  SIGNED
+  EXPIRED
+  CANCELLED
 }
 
 /// Staff & roles (master plan §4.1): extra logins on a store. The OWNER
@@ -1601,8 +1866,13 @@ model Vendor {
   estimatedPrepTime       Int                      @default(30)
   categories              Category[]
   items                   Item[]
+  /// [ASSISTED SETUP] The store's consents for Swift to set it up, and what was done under them.
+  assistedConsents        AssistedSetupConsent[]
+  assistedActions         AssistedSetupAction[]
   /// [POS-SYNC] Till exports this store confirmed (one row per applied file).
   posImports              PosImport[]
+  /// [KITCHEN-INTEGRATION] The store's kitchen-system connections (one per provider; Dragontail today).
+  kitchenIntegrations     VendorIntegration[]
   isVerified              Boolean                  @default(false)
   // [REPORT-013 F-013-06] The wall-clock bound of the document authority
   // behind isVerified: min(expiresAt) over the checklist evidence, written
@@ -1651,6 +1921,8 @@ model Vendor {
   status                  VendorStatus             @default(PENDING_APPROVAL)
   orders                  Order[]
   carts                   Cart[]
+  /// [MENU-OPTIONS · owner 11 Nov 2026] The store's shared option-group library (build once, attach to many items).
+  modifierGroups          ModifierGroup[]
 
   /// DORMANT (never wired to a route): superseded by the QrCode model, which
   /// owns printed-QR deep links via /s/{shortCode}. Kept only because rows
@@ -1872,6 +2144,9 @@ model Item {
   archivedAt        DateTime?
   isPopular         Boolean           @default(false)
   sku               String?
+  /// [KITCHEN-INTEGRATION] The item's number in the store's kitchen system's catalogue (Dragontail ItemNo). Null = not
+  /// mapped: an order with an unmapped line is never sent to the kitchen system; the store's tablet rings instead.
+  externalItemNo    String?
   barcode           String?
   unit              String?
 
@@ -2035,7 +2310,23 @@ model OptionGroup {
   maxSelect  Int      @default(1)
   options    Option[]
   sortOrder  Int      @default(0)
+  /// [MENU-OPTIONS · owner 11 Nov 2026] SIZE SETS THE PRICE: the chosen option's price (Option.additionalPrice, read
+  /// as the whole price) IS the item's price; other groups' extras add on top. At most one per item, always pick
+  /// exactly one (isRequired, min 1, max 1). The item's basePrice is kept at the lowest size price (the "from" price).
+  setsPrice        Boolean @default(false)
+  /// [MENU-OPTIONS] HALF-AND-HALF: each choice may be placed on the whole item, the left half or the right half.
+  allowHalves      Boolean @default(false)
+  /// [MENU-OPTIONS] The store's price rule for a choice on one half: this percent of the choice's price, rounded
+  /// half-up to the whole dollar (100 = full price). Read only while allowHalves.
+  halfPricePercent Int     @default(100)
+  /// [MENU-OPTIONS] Set when this group is the item's copy of a shared library group: the library is the only editor,
+  /// and every edit there is written to every copy (vendor/modifier-library.ts). Null = the item's own group.
+  libraryGroupId   String?
+  libraryGroup     ModifierGroup? @relation(fields: [libraryGroupId], references: [id], onDelete: SetNull)
+  /// [MENU-OPTIONS] Options (of this item) that open this group as their follow-up (nested, one level deep).
+  parentOptions    Option[] @relation("OptionFollowUp")
 
+  @@index([libraryGroupId])
   @@map("option_groups")
 }
 
@@ -2051,8 +2342,209 @@ model Option {
   isDefault       Boolean     @default(false)
   isAvailable     Boolean     @default(true)
   sortOrder       Int         @default(0)
+  /// [MENU-OPTIONS · owner 11 Nov 2026] NESTED, one level deep: choosing this option opens this follow-up group of the
+  /// same item (e.g. Stuffed crust -> pick the cheese). The follow-up group is offered, required and priced only
+  /// while this option is chosen; a follow-up group's own options never open another.
+  followUpGroupId String?
+  followUpGroup   OptionGroup? @relation("OptionFollowUp", fields: [followUpGroupId], references: [id], onDelete: SetNull)
+  /// [MENU-OPTIONS] The library option this is the copy of (see OptionGroup.libraryGroupId). Kept across library edits,
+  /// so a copy's id (held by carts) never changes while the option exists in the library.
+  libraryOptionId String?
+  libraryOption   ModifierOption? @relation(fields: [libraryOptionId], references: [id], onDelete: SetNull)
+  /// [KITCHEN-INTEGRATION] The choice's number in the store's kitchen system's catalogue (Dragontail ItemNo of the
+  /// modifier). Null = not mapped (see Item.externalItemNo).
+  externalItemNo  String?
 
+  @@index([followUpGroupId])
+  @@index([libraryOptionId])
   @@map("options")
+}
+
+/// [MENU-OPTIONS · owner 11 Nov 2026] A store's SHARED option group (the modifier library): built once, attached to
+/// many items. Attaching writes a copy (OptionGroup.libraryGroupId) onto each item, so every reader of an item's
+/// options (cart, checkout, storefront, kitchen, copy, export) keeps reading the item's own rows; editing the library
+/// group rewrites every copy in the same transaction. Prices here are what the store TYPED (before any VAT); each
+/// copy's price is reconciled with its item's VAT (store-vat/vat-pricing.ts).
+model ModifierGroup {
+  id               String           @id @default(cuid())
+  tenantId         String           @default("swift-default")
+  vendorId         String
+  vendor           Vendor           @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  name             String
+  isRequired       Boolean          @default(false)
+  minSelect        Int              @default(0)
+  maxSelect        Int              @default(1)
+  sortOrder        Int              @default(0)
+  setsPrice        Boolean          @default(false)
+  allowHalves      Boolean          @default(false)
+  halfPricePercent Int              @default(100)
+  options          ModifierOption[] @relation("ModifierGroupOptions")
+  /// Library options that open this group as their follow-up.
+  parentOptions    ModifierOption[] @relation("ModifierFollowUp")
+  copies           OptionGroup[]
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
+
+  @@index([tenantId])
+  @@index([vendorId])
+  @@map("modifier_groups")
+}
+
+/// [MENU-OPTIONS] One choice of a shared library group. `price` is what the store typed (before VAT).
+model ModifierOption {
+  id              String         @id @default(cuid())
+  modifierGroupId String
+  modifierGroup   ModifierGroup  @relation("ModifierGroupOptions", fields: [modifierGroupId], references: [id], onDelete: Cascade)
+  name            String
+  price           Decimal        @default(0) @db.Decimal(10, 2)
+  isDefault       Boolean        @default(false)
+  isAvailable     Boolean        @default(true)
+  sortOrder       Int            @default(0)
+  /// The library group this choice opens (nested, one level deep); attached with it to every item.
+  followUpGroupId String?
+  followUpGroup   ModifierGroup? @relation("ModifierFollowUp", fields: [followUpGroupId], references: [id], onDelete: SetNull)
+  /// [MENU-OPTIONS · kitchen-system hook] The choice's code in a store's kitchen system (e.g. a Dragontail item number
+  /// for a modifier). Stored and edited here only; nothing reads it until a kitchen integration maps it.
+  externalCode    String?
+  copies          Option[]
+
+  @@index([modifierGroupId])
+  @@index([followUpGroupId])
+  @@map("modifier_options")
+}
+
+/// [KITCHEN-INTEGRATION · owner 11 Nov 2026] The kitchen systems a store's orders can be sent to. Behind
+/// DRAGONTAIL_INTEGRATION (default off).
+enum KitchenProvider {
+  DRAGONTAIL
+}
+
+/// [KITCHEN-INTEGRATION] Where one order stands with its store's kitchen system. The edges live in
+/// modules/kitchen/kitchen-sync-state.ts, never here.
+enum KitchenSyncState {
+  /// Claimed when the store would have been alerted; waiting for the sender.
+  QUEUED
+  /// A sender holds the lease and is talking to the kitchen system.
+  SENDING
+  /// The kitchen system took the order.
+  SENT
+  /// [review B S3-3] The insert timed out (or its sender died mid-send): the kitchen MAY have it. Never re-sent and
+  /// never rung on the tablet while unknown (no double-make): operations are paged, kitchen events for it confirm it
+  /// (-> SENT), a Swift cancel tells the kitchen (-> CANCEL_QUEUED), and past the verify window with no sign of it a
+  /// cancel is sent and, once that goes through, the tablet rings (-> FALLBACK).
+  UNKNOWN
+  /// [delta review S3-1] An UNKNOWN send being cancelled at the kitchen right now: a kitchen event cannot confirm
+  /// (and so accept) it meanwhile. The cancel going through -> FALLBACK (rung); failing -> back to UNKNOWN.
+  CANCELLING
+  /// Never sent: the store's tablet was rung instead (the order is the store's on Swift, as for any store).
+  FALLBACK
+  /// The Swift order was cancelled after it was sent; the kitchen system still has to be told.
+  CANCEL_QUEUED
+  /// The kitchen system was told of the cancellation.
+  CANCELLED
+  /// The order finished (delivered or collected); nothing more is owed either way.
+  DONE
+}
+
+/// [KITCHEN-INTEGRATION] One store's connection to a kitchen system. Credentials are NEVER stored here: secretRef and
+/// webhookSecretRef name entries in the DRAGONTAIL_CREDENTIALS secret file (utils/secret-files.ts).
+model VendorIntegration {
+  id                  String                 @id @default(cuid())
+  vendorId            String
+  vendor              Vendor                 @relation(fields: [vendorId], references: [id], onDelete: Cascade)
+  /// The store's tenant, stamped from the vendor by vendor_integrations_tenant_matches_vendor.
+  tenantId            String                 @default("swift-default")
+  provider            KitchenProvider
+  /// The store's number in the kitchen system (Dragontail storeNo, an integer).
+  externalStoreNo     Int?
+  enabled             Boolean                @default(false)
+  /// The key of this store's login in the credentials secret; never the credential itself. DERIVED from this row's
+  /// id by the server (kitchen/<provider>/<id>/login), never supplied by a request: unique, and held equal to that
+  /// form by vendor_integrations_refs_check, so no connection can name another's login.
+  secretRef           String?                @unique
+  /// The key of this store's webhook secret (kitchen/<provider>/<id>/webhook); derived and held the same way.
+  webhookSecretRef    String?                @unique
+  /// Dragontail GetOrderUpdatesForPos: the last updateStamp processed (0 = from the start of the working day).
+  pollUpdateStamp     BigInt                 @default(0)
+  lastPolledAt        DateTime?
+  lastHealthyAt       DateTime?
+  /// The last failure, in operator words (never a credential, never a customer detail).
+  lastError           String?
+  lastErrorAt         DateTime?
+  createdAt           DateTime               @default(now())
+  updatedAt           DateTime               @updatedAt
+  syncs               OrderIntegrationSync[]
+
+  @@unique([vendorId, provider])
+  @@unique([provider, externalStoreNo])
+  @@index([tenantId])
+  @@map("vendor_integrations")
+}
+
+/// [KITCHEN-INTEGRATION · review B S4-1, A S2-1] Swift's order-number counter at one kitchen-system store, keyed by
+/// (provider, store number), NOT by the connection: Dragontail's key is (storeNo, orderId), so a recreated or
+/// renumbered connection continues the counter and never reuses an id. The base is frozen when the counter is
+/// born, so changing DRAGONTAIL_ORDER_ID_BASE later can never collide with ids already used. Holds no person data.
+model KitchenOrderCounter {
+  provider        KitchenProvider
+  externalStoreNo Int
+  /// The id base in force when this store's counter was born (DRAGONTAIL_ORDER_ID_BASE then).
+  orderIdBase     Int
+  /// The next sequence number to hand out (1 first).
+  next            Int             @default(1)
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+
+  @@id([provider, externalStoreNo])
+  @@map("kitchen_order_counters")
+}
+
+/// [KITCHEN-INTEGRATION] One order's sync with its store's kitchen system. At most one per order and provider, so a
+/// sweep or a replay can never send an order twice.
+model OrderIntegrationSync {
+  id                  String            @id @default(cuid())
+  orderId             String
+  order               Order             @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  vendorIntegrationId String
+  vendorIntegration   VendorIntegration @relation(fields: [vendorIntegrationId], references: [id], onDelete: Cascade)
+  /// The order's tenant, stamped from the order by order_integration_syncs_tenant_matches_order.
+  tenantId            String            @default("swift-default")
+  provider            KitchenProvider
+  /// The order's id in the kitchen system (Dragontail orderId, an integer unique with the storeNo).
+  externalOrderId     Int
+  /// [security scan · d68ff3f6] The kitchen store number this order was claimed under, frozen at the claim: its send,
+  /// its cancel and its events always use this number, never the connection's current one.
+  externalStoreNo     Int
+  /// The number the kitchen shows (Dragontail dailyNo).
+  dailyNo             Int
+  state               KitchenSyncState  @default(QUEUED)
+  /// The last kitchen-system action applied (e.g. Prepared, Pack, Dispatched).
+  lastAction          String?
+  lastActionAt        DateTime?
+  /// Dragontail updateStamp from the last insert answer.
+  updateStamp         BigInt?
+  /// The kitchen system's own promise for the order, in seconds, when it gave one.
+  promiseSeconds      Int?
+  attempts            Int               @default(0)
+  /// A sender's lease: another sender leaves the row alone until it lapses.
+  leaseUntil          DateTime?
+  /// The last failure, in operator words (never a credential, never a customer detail).
+  lastError           String?
+  sentAt              DateTime?
+  fallbackAt          DateTime?
+  cancelledAt         DateTime?
+  dispatchedAt        DateTime?
+  createdAt           DateTime          @default(now())
+  updatedAt           DateTime          @updatedAt
+
+  @@unique([orderId, provider])
+  /// [delta review S3-2] Dragontail's own key: (storeNo, orderId), per provider. Never the connection's, so a
+  /// renumbered connection's new store number cannot collide with its own old ids.
+  @@unique([provider, externalStoreNo, externalOrderId])
+  @@index([vendorIntegrationId, externalOrderId])
+  @@index([state, leaseUntil])
+  @@index([tenantId])
+  @@map("order_integration_syncs")
 }
 
 // ==========================================
@@ -2429,6 +2921,8 @@ model Order {
   // [SAFE-B] Issued handover photos and the failed-handover filing (retained evidence).
   handoverPhotoProofs HandoverPhotoProof[]
   handoverEvidence    CashHandoverEvidence?
+  /// [KITCHEN-INTEGRATION] Where this order stands with its store's kitchen system (none for most stores).
+  kitchenSyncs        OrderIntegrationSync[]
   @@index([customerId])
   @@index([vendorId])
   @@index([riderId])
@@ -3157,6 +3651,23 @@ model OrderItemOption {
   basePrice       Decimal   @db.Decimal(10, 2)
   markedUpPrice   Decimal   @db.Decimal(10, 2)
   markupAmount    Decimal   @db.Decimal(10, 2)
+  /// [MENU-OPTIONS · owner 11 Nov 2026] SNAPSHOTS (ADR SWIFT-AUD-D5-04, like every column above): a later menu edit
+  /// never changes a past order. optionGroupName / optionName above are the DISPLAY words every app already shows
+  /// ("Toppings: Pepperoni (left half)", "Cheese (Stuffed crust): Mozzarella"); these keep the parts. Null on a row
+  /// written before them (the display words are then the plain names).
+  /// The plain group and option names, as the menu had them.
+  plainGroupName   String?
+  plainOptionName  String?
+  /// WHOLE | LEFT | RIGHT for a choice of a half-and-half group; null otherwise.
+  placement        String?
+  /// The option whose follow-up group this choice was made in (nested); null for a top-level choice.
+  parentOptionName String?
+  /// True for the size (price-setting) choice: its price is the line's basePrice, so basePrice here is 0.
+  setsPrice        Boolean   @default(false)
+  /// The choice's own menu price: the size price, or a topping's full price before the half rule.
+  listedPrice      Decimal?  @db.Decimal(10, 2)
+  /// Loose pointer to the menu option (no FK, like OrderItem.itemId) for a kitchen system's mapping.
+  optionId         String?
 
   @@map("order_item_options")
 }
@@ -4154,8 +4665,18 @@ model CardCreditRefund {
   id                String    @id @default(cuid())
   tenantId          String
   subscriptionId    String
-  /// The original card payment (a Pay now kept as fee credit). One refund per payment, ever.
-  cardSessionId     String    @unique
+  /// The original card payment (a Pay now kept as fee credit). One reversal of each kind per payment, ever (partial
+  /// unique indexes, migration 20261112130000); a REFUND beside a VOID only once that void was refused and checked.
+  cardSessionId     String
+  /// [VOID-REFUND-CHECK F4] VOID (the whole payment, not yet certainly settled by the bank) or REFUND. Written once.
+  kind              String    @default("REFUND")
+  /// [VOID-REFUND-CHECK F5] A check of a REFUSED reversal found nothing back on the provider's record: only then may the
+  /// money be paid back another way (Record payout), or a refused void be followed by one refund to the card.
+  checkedAt         DateTime?
+  /// [REVIEW-2496-B S3-2 · OWNER 12 Nov 2026] Who checked it (written with checkedAt, once).
+  checkedBy         String?
+  /// How: LOOKUP:<record sha256>, or PORTAL:<portal reference> (owner + a second person, "nothing went back").
+  checkedRef        String?
   /// The open refund set-aside (its PREPAID_REFUND_RESERVED event) this refund pays part of.
   setAsideId        String
   /// The whole card payment, frozen when asked.
@@ -4181,6 +4702,7 @@ model CardCreditRefund {
   @@index([tenantId])
   @@index([subscriptionId])
   @@index([setAsideId])
+  @@index([cardSessionId])
   @@map("card_credit_refunds")
 }
 
@@ -4825,6 +5347,18 @@ model CardSession {
   /// only when the provider's own record shows the whole payment back (CARD-REFUND-LOOKUP).
   providerRefundState String?
   providerRefundAt   DateTime?
+  /// [R1 · CARD-STAGING-TEST R2] The refund's OWN provider transaction (PowerTranz: a refund is its own TransactionType 5
+  /// transaction; the sale's record does not name it), from PowerTranz's approved answer to a HELD payment's refund, for
+  /// finance matching. Only beside providerRefundState REFUNDED (CHECK card_sessions_refund_ref_check), written once.
+  providerRefundRef  String?
+  /// [VOID-REFUND-CHECK F1] What finance's reversal sent: VOID (a sale the bank may not have settled) or REFUND (one it
+  /// certainly has, or after a refused void). Its state is providerRefundState. Written only with the claim that sends it.
+  providerReversalKind String?
+  /// [VOID-REFUND-CHECK F3] What a check of a REFUSED reversal found on the provider's record: SALE_STANDS (approved,
+  /// captured, unreversed: one more reversal may be sent) or NOT_TAKEN (declined / never completed: "nothing taken").
+  reversalCheck      String?
+  /// [VOID-REFUND-CHECK F3] The one further reversal after SALE_STANDS, claimed once (FAILED -> SENDING). Never a third.
+  reversalRetryAt    DateTime?
   /// [PT-4] Finance's decision to BOOK a HELD session, claimed (once) before the week is booked.
   bookClaimedAt      DateTime?
   /// [PT-4] The finance decision on a HELD session (two-person): BOOKED | REFUNDED | NOTHING_TAKEN.
@@ -5468,6 +6002,17 @@ model Admin {
   user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   permissions String[]
   createdAt   DateTime @default(now())
+  /// [AUDIT-20261113 FABLE-03 #2] The authenticator-app (TOTP) secret, only ever encrypted (MASTER_KEK
+  /// envelope, admin-totp.ts). Null until enrolment is confirmed.
+  totpSecretEnc        String?
+  /// An enrolment started but not yet confirmed with a code (encrypted), and when it started (10 minutes).
+  totpPendingSecretEnc String?
+  totpPendingAt        DateTime?
+  totpEnabledAt        DateTime?
+  /// The last 30-second step accepted: a code is accepted once.
+  totpLastStep         Int?
+  /// SHA-256 digests of the unused recovery codes (shown once at enrolment; each works once).
+  totpRecoveryHashes   String[] @default([])
 
   @@map("admins")
 }

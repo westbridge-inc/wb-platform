@@ -16,3 +16,11 @@ a9098c8ff4db34dd95f2d334f674d9c564452b60:apps/api/src/__tests__/boot-config.test
 4ad1f3b7dca9b18cb0c6ccfda7f98d3be5ec7f44:apps/mobile/src/lib/checkoutAttempt.test.ts:generic-api-key:278
 4ad1f3b7dca9b18cb0c6ccfda7f98d3be5ec7f44:apps/mobile/src/lib/checkoutAttempt.test.ts:generic-api-key:280
 4ad1f3b7dca9b18cb0c6ccfda7f98d3be5ec7f44:apps/mobile/src/lib/checkoutAttempt.test.ts:generic-api-key:283
+# [COMPANY-DOCS PART 2 · coordinator 10 Nov 2026] A synthetic signing-link token in a web test (43 URL-safe letters, never
+# a real secret), replaced by a plainly fake value later on the same branch. Only this exact finding is ignored.
+1750b253384623fa65117eb41b2ef794adc9295d:apps/web/src/app/sign-letter/sign-letter-client.test.tsx:generic-api-key:11
+# admin-reason.test.ts uses the config key literal 'test.ADM006_PROBE' (a platform_config row name in a test,
+# not a credential). Verified false positive 2026-11-13 (generic-api-key on `key: '...'`); the branch's next
+# commit rewrites the literal. Commit 0df2a92fb is on fix/audit-security-a-20261113 (PR #2499).
+0df2a92fb87000ccac42f2cfd09a04e860c9142c:apps/api/src/__tests__/admin-reason.test.ts:generic-api-key:144
+0df2a92fb87000ccac42f2cfd09a04e860c9142c:apps/api/src/__tests__/admin-reason.test.ts:generic-api-key:147

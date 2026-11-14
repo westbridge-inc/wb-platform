@@ -25,8 +25,9 @@ import { servicesRoutes } from './modules/services/services.routes';
 import { serviceCatalogRoutes } from './modules/services/service-catalog.routes';
 import { providerFeeRoutes } from './modules/services/provider-fee.routes';
 import { partnerRoutes } from './modules/partner/partner.routes';
+import { authorityLetterPublicRoutes, authorityLetterVendorRoutes } from './modules/vendor/authority-letter/authority-letter.routes';
 import { setAppLogger } from './utils/logger';
-import { evaluateSchedulerHealth, schedulerStallMs, workerCheckStatus } from './utils/scheduler-health';
+import { evaluateSchedulerHealth, schedulerPageAllowed, schedulerSelfWatchMs, schedulerStallMs, workerCheckStatus, type SchedulerHealth } from './utils/scheduler-health';
 import { prismaPlugin, beginRequestTenantContext } from './plugins/prisma';
 import { authPlugin } from './plugins/auth';
 import { socketPlugin } from './plugins/socket';
@@ -228,40 +229,7 @@ export async function buildApp(options: BuildAppOptions = {}) {
     const workerHealth = evaluateSchedulerHealth({ beat, nowMs: Date.now(), bootAtMs: SERVER_BOOTED_AT, stallMs: schedulerStallMs() });
     checks['worker'] = workerCheckStatus(workerHealth, beat);
 
-    // SWIFT-AUD-D7-02: scheduler-stall paging. A stalled worker can't page
-    // about itself, so the check rides the load balancer's /health polls —
-    // the one thing still running when the job scheduler is dead. Dedup'd
-    // (30 min) and fire-and-caught: paging never slows a probe.
-    void (async () => {
-      // `!beat` is NOT benign: the heartbeat key has no TTL, so its absence means
-      // the worker fleet never booted (crash / RUN_WORKERS misconfigured). Page it
-      // once we're past the grace window — the case this check used to swallow.
-      const health = workerHealth;
-      if (!health.page) return;
-      const neverBooted = health.kind === 'never-booted';
-      // Separate dedup keys so a "never booted" alert and a later "stall" don't mask each other.
-      const pageKey = neverBooted ? 'ops_page:scheduler-never-booted' : 'ops_page:scheduler-stall';
-      const mins = Math.round(health.ageMs / 60_000);
-      const { NotificationService } = await import('./modules/notification/notification.service');
-      // [R048-006] A page is an OpsAlert row before it is a notification: the dedupe key is claimed
-      // only for a page that reached someone; nobody staffed leaves it PENDING and retryable.
-      await pageOps({ prisma: app.prisma, redis: app.redis, notifications: new NotificationService(app.prisma, app.io) }, {
-        key: pageKey,
-        title: neverBooted ? 'Job scheduler never started' : 'Job scheduler stalled',
-        body: neverBooted
-          ? `No scheduler heartbeat since boot (${mins} min) — the worker fleet never started (crash or RUN_WORKERS misconfigured). Holds, expiry sweeps, billing and settlements have NEVER run. Start the worker.`
-          : `No scheduler heartbeat for ${mins} min — holds, expiry sweeps, billing and settlements are NOT running. Restart the worker.`,
-        data: { kind: neverBooted ? 'ops_scheduler_never_booted' : 'ops_scheduler_stall', ageMs: health.ageMs },
-      });
-    })().catch(() => {});
-    // the condition cleared: close the open page so the outbox stays truthful
-    if (!workerHealth.page && beat) {
-      // In order, never-started first: once the stall page reads closed, this probe has finished with both.
-      void (async () => {
-        await resolveOpsPage(app.prisma, 'Job scheduler never started').catch(() => {});
-        await resolveOpsPage(app.prisma, 'Job scheduler stalled').catch(() => {});
-      })();
-    }
+    pageSchedulerVerdict(workerHealth, beat);
 
     // `starting` is the worker inside its boot grace: not a failure, and not a
     // reason to call a freshly deployed API degraded. Everything else must be ok.
@@ -305,9 +273,66 @@ export async function buildApp(options: BuildAppOptions = {}) {
     };
   });
 
+  // SWIFT-AUD-D7-02: scheduler-stall paging, from ONE verdict. Called by every /health probe and, since
+  // [FABLE-05 3.2], by this process's own timer below: a stalled worker cannot page about itself, and
+  // there is no load balancer polling /health. Dedup'd (30 min) and fire-and-caught: paging never slows
+  // a probe.
+  function pageSchedulerVerdict(workerHealth: SchedulerHealth, beat: string | null): void {
+    void (async () => {
+      // `!beat` is NOT benign: the heartbeat key has no TTL, so its absence means
+      // the worker fleet never booted (crash / RUN_WORKERS misconfigured). Page it
+      // once we're past the grace window — the case this check used to swallow.
+      const health = workerHealth;
+      if (!health.page) return;
+      if (!schedulerPageAllowed(health, Date.now(), SERVER_BOOTED_AT, schedulerStallMs())) return;
+      const neverBooted = health.kind === 'never-booted';
+      // Separate dedup keys so a "never booted" alert and a later "stall" don't mask each other.
+      const pageKey = neverBooted ? 'ops_page:scheduler-never-booted' : 'ops_page:scheduler-stall';
+      const mins = Math.round(health.ageMs / 60_000);
+      const { NotificationService } = await import('./modules/notification/notification.service');
+      // [R048-006] A page is an OpsAlert row before it is a notification: the dedupe key is claimed
+      // only for a page that reached someone; nobody staffed leaves it PENDING and retryable.
+      await pageOps({ prisma: app.prisma, redis: app.redis, notifications: new NotificationService(app.prisma, app.io) }, {
+        key: pageKey,
+        title: neverBooted ? 'Job scheduler never started' : 'Job scheduler stalled',
+        body: neverBooted
+          ? `No scheduler heartbeat since boot (${mins} min) — the worker fleet never started (crash or RUN_WORKERS misconfigured). Holds, expiry sweeps, billing and settlements have NEVER run. Start the worker.`
+          : `No scheduler heartbeat for ${mins} min — holds, expiry sweeps, billing and settlements are NOT running. Restart the worker.`,
+        data: { kind: neverBooted ? 'ops_scheduler_never_booted' : 'ops_scheduler_stall', ageMs: health.ageMs },
+      });
+    })().catch(() => {});
+    // the condition cleared: close the open page so the outbox stays truthful
+    if (!workerHealth.page && beat) {
+      // In order, never-started first: once the stall page reads closed, this probe has finished with both.
+      void (async () => {
+        await resolveOpsPage(app.prisma, 'Job scheduler never started').catch(() => {});
+        await resolveOpsPage(app.prisma, 'Job scheduler stalled').catch(() => {});
+      })();
+    }
+  }
+
   // Readiness is stricter than liveness: schema, Redis, BullMQ producer
   // connections, and host/DB/Redis clock agreement must all be healthy.
   registerReadinessRoute(app, runtimeReadiness);
+
+  // [FABLE-05 3.2] The same check on this process's own timer: the stall page no longer waits for
+  // someone outside to poll /health. Off under test unless SCHEDULER_SELF_WATCH_SECONDS is set.
+  const selfWatchMs = schedulerSelfWatchMs();
+  if (selfWatchMs > 0) {
+    let selfWatch: ReturnType<typeof setInterval> | undefined;
+    app.addHook('onReady', async () => {
+      selfWatch = setInterval(() => {
+        void (async () => {
+          const beat = await app.redis.get('scheduler:heartbeat').catch(() => null);
+          pageSchedulerVerdict(evaluateSchedulerHealth({ beat, nowMs: Date.now(), bootAtMs: SERVER_BOOTED_AT, stallMs: schedulerStallMs() }), beat);
+        })().catch(() => {});
+      }, selfWatchMs);
+      selfWatch.unref();
+    });
+    app.addHook('onClose', async () => {
+      if (selfWatch) clearInterval(selfWatch);
+    });
+  }
 
   // Public upload trees only (items/, avatars/). Path-traversal-guarded;
   // KYC docs in other /uploads folders are never exposed here.
@@ -320,6 +345,9 @@ export async function buildApp(options: BuildAppOptions = {}) {
   await app.register(authRoutes, { prefix: '/api/v1/auth' });
   await app.register(customerRoutes, { prefix: '/api/v1/customer' });
   await app.register(vendorRoutes, { prefix: '/api/v1/vendor' });
+  // [COMPANY-DOCS PART 2] A company's (or a manager's) account holder asks the director (or the owner) to sign the
+  // letter of authority in Swift: the account holder only (authority-letter.routes.ts).
+  await app.register(authorityLetterVendorRoutes, { prefix: '/api/v1/vendor/authority-letters' });
   await app.register(riderRoutes, { prefix: '/api/v1/rider' });
   await app.register(driverRoutes, { prefix: '/api/v1/driver' });
   await app.register(adminRoutes, { prefix: '/api/v1/admin' });
@@ -354,6 +382,9 @@ export async function buildApp(options: BuildAppOptions = {}) {
   }
   // Unauthenticated read-only storefront pages (web SEO) — see module header.
   await app.register(publicRoutes, { prefix: '/api/v1/public' });
+  // [COMPANY-DOCS PART 2] The signing page a director (or an owner) opens from Swift's text: no account; the link's
+  // secret (POST body only) is the credential for its one letter; rate-limited by address and the SMS by number.
+  await app.register(authorityLetterPublicRoutes, { prefix: '/api/v1/public/authority-letter' });
   // Printed-QR short links: /s/{code} at the ROOT path (the production web
   // domain proxies /s/* here — LAUNCH_BLOCKERS deploy item). Public attack
   // surface; treatment and decision table live in the module header.
@@ -396,6 +427,16 @@ export async function buildApp(options: BuildAppOptions = {}) {
   const { inAppCallsRoutes, inAppVoiceRoutes } = await import('./modules/calls/inapp-calls.routes');
   await app.register(inAppCallsRoutes, { prefix: '/api/v1/calls/app' });
   await app.register(inAppVoiceRoutes, { prefix: '/api/v1/calls/voice' });
+  // [KITCHEN-INTEGRATION · owner 11 Nov 2026] Dragontail's order notifications (webhook; the poller is the
+  // fallback). Registered ONLY while DRAGONTAIL_INTEGRATION is on, so with the switch off the server is unchanged.
+  // Proof checked before the body is read (shared secret and/or HMAC, TODO-CONFIRM); rate-limited, body-capped.
+  {
+    const { dragontailIntegrationEnabled } = await import('./modules/kitchen/kitchen-switch');
+    if (dragontailIntegrationEnabled()) {
+      const { kitchenWebhookRoutes } = await import('./modules/kitchen/kitchen-webhook.routes');
+      await app.register(kitchenWebhookRoutes, { prefix: '/api/v1/integrations/dragontail' });
+    }
+  }
 
   // Background job queues.
   // SWIFT-AUD-D7-01: workers are opt-out per process. Default (unset) keeps

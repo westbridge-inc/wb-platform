@@ -72,7 +72,7 @@ async function pendingCase(userId: string) {
   return { doc, kase };
 }
 const post = (adminId: string, path: string) => adminApp.inject({ method: 'POST', url: `/api/v1/admin/verification/cases/${path}`, payload: {}, headers: { authorization: `Bearer ${tokens.get(adminId)}`, 'content-type': 'application/json' } });
-const approve = (adminId: string, docId: string) => adminApp.inject({ method: 'PUT', url: `/api/v1/admin/verification/${docId}/approve`, payload: { registrationKind: 'COMPANY' } /* [R16] */, headers: { authorization: `Bearer ${tokens.get(adminId)}`, 'content-type': 'application/json', 'x-swift-reason': REASON } });
+const approve = (adminId: string, docId: string) => adminApp.inject({ method: 'PUT', url: `/api/v1/admin/verification/${docId}/approve`, payload: { registrationKind: 'COMPANY', legalName: 'Fixture Registered Name Ltd' } /* [R16] */, headers: { authorization: `Bearer ${tokens.get(adminId)}`, 'content-type': 'application/json', 'x-swift-reason': REASON } });
 const caseRow = (id: string) => system(() => app.prisma.reviewCase.findUniqueOrThrow({ where: { id } }));
 
 beforeAll(async () => {
@@ -146,6 +146,24 @@ describe('[DOC-1 P8-6] reviewer recusal, enforced server-side (test_reviewer_rec
     const ok = await approve(otherReviewer, doc.id);
     expect(ok.statusCode).toBe(200);
     expect((await system(() => app.prisma.verificationDocument.findUniqueOrThrow({ where: { id: doc.id } }))).status).toBe('APPROVED');
+  });
+
+  it('[FABLE-02 F9] view: the linked reviewer cannot open the subject’s document (403 REVIEWER_RECUSED, no link, no view row); the unlinked reviewer can', async () => {
+    // A fresh subject in the same identity cluster (the earlier subject's paper is already decided).
+    const viewed = await subject(5);
+    await system(() => app.prisma.identityClusterMember.create({ data: { clusterId, accountId: viewed, linkedVia: [{ type: 'DEVICE', strength: 1, matchedAccountId: linkedReviewer, at: new Date().toISOString() }] } }));
+    expect(await isRecused(app.prisma, linkedReviewer, viewed)).toBe(true);
+    const { doc } = await pendingCase(viewed);
+    const view = (adminId: string) => adminApp.inject({ method: 'GET', url: `/api/v1/admin/verification/${doc.id}/document-url`, headers: { authorization: `Bearer ${tokens.get(adminId)}` } });
+    const refused = await view(linkedReviewer);
+    expect(refused.statusCode).toBe(403);
+    expect(refused.json().error?.code ?? refused.json().code).toBe('REVIEWER_RECUSED');
+    expect(refused.body).not.toContain('/render');
+    expect(await system(() => app.prisma.auditLog.count({ where: { action: 'VIEW_VERIFICATION_DOC', entityId: doc.id, userId: linkedReviewer } }))).toBe(0);
+    const ok = await view(otherReviewer);
+    expect(ok.statusCode).toBe(200);
+    expect(typeof ok.json().data.url).toBe('string');
+    expect(await system(() => app.prisma.auditLog.count({ where: { action: 'VIEW_VERIFICATION_DOC', entityId: doc.id, userId: otherReviewer } }))).toBe(1);
   });
 
   it('a case another reviewer holds is not taken over (409 CASE_CLAIMED); only its holder releases it (409 NOT_CASE_HOLDER otherwise); a decided case cannot be claimed', async () => {

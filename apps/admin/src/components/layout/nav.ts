@@ -3,7 +3,7 @@ import {
   Users, Store, Bike, Car, ShoppingCart,
   RefreshCw, DollarSign, Receipt, Banknote, Tag, ShieldCheck,
   Radar, Headphones, Scale, ListRestart, Megaphone, BellRing, Siren,
-  FileText, Globe, Map, Settings, Compass, Fingerprint, Megaphone as AdsIcon, Truck,
+  FileText, Globe, Map, Settings, Compass, Fingerprint, Megaphone as AdsIcon, Truck, KeyRound,
   type LucideIcon,
 } from 'lucide-react';
 
@@ -48,6 +48,8 @@ export const NAV_GROUPS: NavGroup[] = [
     title: 'Queues',
     items: [
       { label: 'Documents', href: '/verification', icon: FileCheck2, blurb: 'Review each document and decide it', keywords: 'verification review center kyc id licence' },
+      // [COMPANY-DOCS Part 3] A store's change of business type, or a company's new account holder, waiting for a person.
+      { label: 'Account changes', href: '/account-changes', icon: FileCheck2, blurb: 'A store’s new business type, or a company’s new account holder, to check', keywords: 'business type company handover account holder director letter' },
       { label: 'Selfie checks', href: '/selfie-checks', icon: FileCheck2, blurb: 'Compare a home-visit business’s selfie with its approved ID', keywords: 'selfie photo id compare home visit face' },
       // [STORE-VAT · owner O-5] A store's VAT shows only after a person checked its GRA VAT certificate here.
       { label: 'Store VAT', href: '/store-vat', icon: Receipt, blurb: 'Stores waiting for a person to check their GRA VAT certificate', keywords: 'vat gra tax certificate registration' },
@@ -105,6 +107,8 @@ export const NAV_GROUPS: NavGroup[] = [
     title: 'System',
     items: [
       { label: 'Audit log', href: '/audit', icon: FileText, blurb: 'Who did what, and why', keywords: 'history trail' },
+      // [AUDIT-20261113 FABLE-03 #2] The authenticator app: the second step of an admin sign-in.
+      { label: 'Security', href: '/security', icon: KeyRound, blurb: 'Your authenticator app for signing in', keywords: 'two factor 2fa mfa totp authenticator recovery codes' },
       { label: 'Markets', href: '/markets', icon: Globe, blurb: 'Countries Swift runs in', keywords: 'countries' },
       { label: 'Zones', href: '/zones', icon: Map, blurb: 'Delivery zones and fares', keywords: 'fares areas', founderOnly: true },
       { label: 'Config', href: '/config', icon: Settings, blurb: 'Platform settings', keywords: 'settings', founderOnly: true },

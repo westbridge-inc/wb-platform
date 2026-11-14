@@ -24,6 +24,7 @@ export default function robots(): MetadataRoute.Robots {
           '/trip/',        // tokenised trip share — private by construction
           '/track/',       // tokenised parcel tracking — private by construction
           '/safety-check', // Trip Guardian's texted answer link — a bearer link
+          '/sign-letter',  // [COMPANY-DOCS PART 2] the letter-of-authority signing link — a bearer link
           '/s/',           // QR resolver records a scan on GET [AX303 F3]
           '/api/',
         ],

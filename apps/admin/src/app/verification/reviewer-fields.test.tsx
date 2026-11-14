@@ -4,11 +4,11 @@ import VerificationPage from './page';
 import { DocumentViewer } from '@/components/verification/DocumentViewer';
 import { mockApi, renderWithQuery, requestsByMethod } from '@/test/test-utils';
 
-function fixture(docType: string, reviewerTypes: string[]) {
+function fixture(docType: string, reviewerTypes: string[], extra: Record<string, unknown> = {}) {
   return mockApi((r) => {
     if (r.url.pathname.endsWith('/queue/counts')) return { body: { data: {} } };
     if (r.url.pathname.endsWith('/queue')) return { body: { data: [{ id: 'synthetic-doc', userId: 'synthetic-user', docType, reviewerTypes,
-      role: 'MOVER', status: 'PENDING', user: { id: 'synthetic-user', firstName: 'Synthetic', lastName: 'Applicant' } }], meta: { hasNext: false } } };
+      role: 'MOVER', status: 'PENDING', user: { id: 'synthetic-user', firstName: 'Synthetic', lastName: 'Applicant' }, ...extra }], meta: { hasNext: false } } };
     if (r.url.pathname.includes('/users/')) return { body: { data: {} } };
     if (r.url.pathname.endsWith('/custody')) return { body: { data: { timeline: [] } } };
     if (r.url.pathname.endsWith('/document-url')) return { body: { data: { url: '/api/v1/verification/render/synthetic-doc?sig=fixture&expires=1' } } };
@@ -19,7 +19,8 @@ function fixture(docType: string, reviewerTypes: string[]) {
 }
 
 describe('reviewer fields required by the approval route', () => {
-  it.each(['national_id', 'owner_national_id', 'passport', 'drivers_licence'])('%s sends the number the reviewer read', async (docType) => {
+  // [COMPANY-DOCS · owner 10 Nov 2026] a company's or a manager's account holder's ID is checked exactly as an owner's
+  it.each(['national_id', 'owner_national_id', 'passport', 'drivers_licence', 'account_holder_id'])('%s sends the number the reviewer read', async (docType) => {
     const fetch = fixture(docType, ['documentNumber']);
     const { user } = renderWithQuery(<VerificationPage />);
     await user.click(await screen.findByRole('button', { name: 'Review' }));
@@ -34,6 +35,32 @@ describe('reviewer fields required by the approval route', () => {
     await user.click(within(dialog).getByRole('button', { name: 'Confirm approval' }));
     await waitFor(() => expect(requestsByMethod(fetch, 'PUT')).toHaveLength(1));
     expect(JSON.parse(String(requestsByMethod(fetch, 'PUT')[0]![1]?.body))).toMatchObject({ documentNumber: 'SYNTH-1234' });
+  });
+
+  // [COMPANY-DOCS · owner 10 Nov 2026] The reviewer is told which path a store account signed up on, and what to check.
+  it('a company’s account holder’s ID names the path and the check, and is never called the owner’s ID', async () => {
+    fixture('account_holder_id', ['documentNumber'], { role: 'VENDOR_OWNER', accountBasis: 'COMPANY' });
+    const { user } = renderWithQuery(<VerificationPage />);
+    await user.click(await screen.findByRole('button', { name: 'Review' }));
+    expect(await screen.findByText(/Signed up as a registered company/)).toBeTruthy();
+    expect(screen.getByText(/The ID of the one person who manages this Swift account/)).toBeTruthy();
+    expect(screen.getAllByText('Account holder’s ID (company or manager)').length).toBeGreaterThan(0);
+  });
+
+  it('a manager’s owner letter names the manager path and the owner check', async () => {
+    fixture('owner_authority_letter', [], { role: 'VENDOR_OWNER', accountBasis: 'MANAGER' });
+    const { user } = renderWithQuery(<VerificationPage />);
+    await user.click(await screen.findByRole('button', { name: 'Review' }));
+    expect(await screen.findByText(/Signed up by the manager of a registered business \(not the owner\)/)).toBeTruthy();
+    expect(screen.getByText(/owner named on the Business Registration/)).toBeTruthy();
+  });
+
+  it('an owner’s account shows no path line', async () => {
+    fixture('owner_national_id', ['documentNumber'], { role: 'VENDOR_OWNER', accountBasis: 'OWNER' });
+    const { user } = renderWithQuery(<VerificationPage />);
+    await user.click(await screen.findByRole('button', { name: 'Review' }));
+    await screen.findAllByText('National ID');
+    expect(screen.queryByText(/Signed up as a registered company|Signed up by the manager/)).toBeNull();
   });
 
   // [Rule 11 Oct 2026: no ID-number duplicate check at launch] The server asks nothing typed for a customer's ID.
@@ -101,7 +128,8 @@ describe('[R15] certificate-year documents', () => {
 // carries its year (checked every January); a company's incorporation certificate never expires.
 describe('[R16] business registration kind', () => {
   async function open(docType = 'business_registration') {
-    const fetch = fixture(docType, ['registrationKind', 'certificateYear']);
+    // [R3 · review F1] the server also asks for the legal name printed on the paper
+    const fetch = fixture(docType, ['registrationKind', 'certificateYear', 'legalName']);
     const rendered = renderWithQuery(<VerificationPage />);
     await rendered.user.click(await screen.findByRole('button', { name: 'Review' }));
     await rendered.user.click(screen.getByRole('button', { name: 'View document' }));
@@ -110,18 +138,25 @@ describe('[R16] business registration kind', () => {
   }
   const approve = () => screen.getByRole('button', { name: 'Approve' }) as HTMLButtonElement;
 
-  it('a company sends only its kind (no year, no date)', async () => {
+  it('a company sends its kind and the legal name typed from it (no year, no date)', async () => {
     const { fetch, user } = await open();
     expect(approve().disabled).toBe(true);
     expect(screen.queryByLabelText('Year printed on the certificate')).toBeNull();
     await user.selectOptions(screen.getByLabelText('What this certificate is'), 'COMPANY');
     expect(screen.queryByLabelText('Year printed on the certificate')).toBeNull();
+    // [R3 · review F1] not without the legal name printed on it: customers see it as the seller
+    expect(approve().disabled).toBe(true);
+    // [review-2476 F2] the words never read as allowing a person's name for the seller
+    const hint = screen.getByLabelText('Registered name, exactly as printed').closest('label')!.textContent ?? '';
+    expect(hint).toContain('Never the proprietor’s, a director’s or the account holder’s personal name.');
+    expect(hint).not.toMatch(/unless/i);
+    await user.type(screen.getByLabelText('Registered name, exactly as printed'), '  Sample Holdings Limited ');
     expect(approve().disabled).toBe(false);
     await user.click(approve());
     await user.type(screen.getByLabelText('Decision note'), 'Synthetic evidence checked');
     await user.click(screen.getByRole('button', { name: 'Confirm approval' }));
     await waitFor(() => expect(requestsByMethod(fetch, 'PUT')).toHaveLength(1));
-    expect(JSON.parse(String(requestsByMethod(fetch, 'PUT')[0]![1]?.body))).toEqual({ registrationKind: 'COMPANY' });
+    expect(JSON.parse(String(requestsByMethod(fetch, 'PUT')[0]![1]?.body))).toEqual({ registrationKind: 'COMPANY', legalName: 'Sample Holdings Limited' });
   });
 
   it('a business name needs this year typed, and sends its kind and year', async () => {
@@ -132,12 +167,44 @@ describe('[R16] business registration kind', () => {
     fireEvent.change(screen.getByLabelText('Year printed on the certificate'), { target: { value: String(year - 2) } });
     expect(approve().disabled).toBe(true);
     fireEvent.change(screen.getByLabelText('Year printed on the certificate'), { target: { value: String(year) } });
+    expect(approve().disabled).toBe(true);
+    fireEvent.change(screen.getByLabelText('Registered name, exactly as printed'), { target: { value: 'Sample Traders' } });
     expect(approve().disabled).toBe(false);
     await user.click(approve());
     await user.type(screen.getByLabelText('Decision note'), 'Synthetic evidence checked');
     await user.click(screen.getByRole('button', { name: 'Confirm approval' }));
     await waitFor(() => expect(requestsByMethod(fetch, 'PUT')).toHaveLength(1));
-    expect(JSON.parse(String(requestsByMethod(fetch, 'PUT')[0]![1]?.body))).toEqual({ registrationKind: 'BUSINESS_NAME', certificateYear: year });
+    expect(JSON.parse(String(requestsByMethod(fetch, 'PUT')[0]![1]?.body))).toEqual({ registrationKind: 'BUSINESS_NAME', certificateYear: year, legalName: 'Sample Traders' });
+  });
+
+  // [COMPANY-DOCS · review F3] a company's paper that is a business-name registration: the proprietor must be a company
+  it('a company’s business-name registration waits for the “proprietor is a company” tick, and sends it', async () => {
+    const { fetch, user } = await open('certificate_of_incorporation');
+    await user.selectOptions(screen.getByLabelText('What this certificate is'), 'BUSINESS_NAME');
+    const year = new Date().getFullYear();
+    fireEvent.change(screen.getByLabelText('Year printed on the certificate'), { target: { value: String(year) } });
+    // [R3 · review F1] the registered name printed on it is typed too: the tick is then the last thing approval waits for
+    fireEvent.change(screen.getByLabelText('Registered name, exactly as printed'), { target: { value: 'Sample Holdings Limited' } });
+    expect(approve().disabled).toBe(true);
+    await user.click(screen.getByLabelText('The proprietor named on it is a company'));
+    expect(approve().disabled).toBe(false);
+    await user.click(approve());
+    await user.type(screen.getByLabelText('Decision note'), 'Synthetic evidence checked');
+    await user.click(screen.getByRole('button', { name: 'Confirm approval' }));
+    await waitFor(() => expect(requestsByMethod(fetch, 'PUT')).toHaveLength(1));
+    expect(JSON.parse(String(requestsByMethod(fetch, 'PUT')[0]![1]?.body))).toEqual({ registrationKind: 'BUSINESS_NAME', certificateYear: year, legalName: 'Sample Holdings Limited', proprietorIsCompany: true });
+  });
+
+  it('a company certificate, or an owner’s business registration, is never asked about its proprietor', async () => {
+    const company = await open('certificate_of_incorporation');
+    await company.user.selectOptions(screen.getByLabelText('What this certificate is'), 'COMPANY');
+    expect(screen.queryByLabelText('The proprietor named on it is a company')).toBeNull();
+  });
+
+  it('an owner’s business registration as a business name: no proprietor tick', async () => {
+    const owner = await open('business_registration');
+    await owner.user.selectOptions(screen.getByLabelText('What this certificate is'), 'BUSINESS_NAME');
+    expect(screen.queryByLabelText('The proprietor named on it is a company')).toBeNull();
   });
 });
 

@@ -39,12 +39,26 @@
 #   ./deploy/gen-secrets.sh            # refuses if MASTER_KEK is already stored
 #   ./deploy/gen-secrets.sh --missing  # store only the names not yet stored
 #   ./deploy/gen-secrets.sh --force    # rotate: swift-secrets keeps NAME.cred.prev
+#   ./deploy/gen-secrets.sh --force --replace-master-kek --replace-postgres-password
 #
 # ROTATION IS NOT FREE. Re-generating MASTER_KEK makes every already-encrypted
 # verification document undecryptable, and re-generating STORAGE_SIGNING_SECRET
 # invalidates every signed URL in flight. --force keeps the previous encrypted
 # version beside the new one and says so; it cannot un-break data that was
 # encrypted under the old key. --missing never replaces anything.
+# [FABLE-05 3.9] --force never replaces a stored MASTER_KEK (every stored ID
+# document is encrypted under it) or a stored POSTGRES_PASSWORD (the database
+# keeps the old one, so the next deploy stops at the migration with the API
+# down): each is kept, by name, unless its own flag is given as well
+# (--replace-master-kek, --replace-postgres-password). The salts
+# (IDENTITY_SALT, CONSENT_IP_PEPPER, ATTRIB_SALT, SCAN_IP_SALT) are rotated by
+# --force: every hash already kept under them stops matching, silently.
+# [FABLE-05 3.4] REDIS_PASSWORD and REDIS_URL (redis://:<password>@redis:6379) are
+# one pair, generated together: Redis reads the first and the API and worker the
+# second once deploy/.env sets STACK_HARDENING=1 (unused before). --missing
+# refuses a store that holds one without the other. After --force rotates them,
+# recreate Redis with the API and worker (a deploy does not recreate an
+# unchanged Redis): until then Redis still asks for the old password.
 #
 # Afterwards: sudo systemctl restart swift-secrets.service (or run
 # deploy/pilot-up.sh, which does it), then restart api and worker.
@@ -57,7 +71,9 @@ ENV_FILE="$HERE/.env"
 TEMPLATE="$HERE/.env.deploy.example"
 FORCE=0
 MISSING=0
-GENERATED="MASTER_KEK JWT_SECRET OTP_HASH_SECRET STORAGE_SIGNING_SECRET CONSENT_IP_PEPPER POSTGRES_PASSWORD MEILISEARCH_KEY TEST_CONTROL_SECRET METRICS_TOKEN HEALTH_DETAIL_TOKEN ATTRIB_SALT IDENTITY_SALT SCAN_IP_SALT ADS_EVENT_SECRET"
+REPLACE_KEK=0
+REPLACE_PG=0
+GENERATED="MASTER_KEK JWT_SECRET OTP_HASH_SECRET STORAGE_SIGNING_SECRET CONSENT_IP_PEPPER POSTGRES_PASSWORD MEILISEARCH_KEY TEST_CONTROL_SECRET METRICS_TOKEN HEALTH_DETAIL_TOKEN ATTRIB_SALT IDENTITY_SALT SCAN_IP_SALT ADS_EVENT_SECRET REDIS_PASSWORD REDIS_URL"
 
 die() { echo "FATAL: $*" >&2; exit 1; }
 
@@ -65,11 +81,15 @@ for arg in "$@"; do
   case "$arg" in
     --force) FORCE=1 ;;
     --missing) MISSING=1 ;;
-    -h|--help) sed -n '2,52p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    --replace-master-kek) REPLACE_KEK=1 ;;
+    --replace-postgres-password) REPLACE_PG=1 ;;
+    -h|--help) sed -n '2,64p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown argument: $arg (try --help)" >&2; exit 2 ;;
   esac
 done
 [ "$FORCE" -eq 0 ] || [ "$MISSING" -eq 0 ] || die "--force and --missing are exclusive"
+[ "$REPLACE_KEK" -eq 0 ] && [ "$REPLACE_PG" -eq 0 ] || [ "$FORCE" -eq 1 ] ||
+  die "--replace-master-kek and --replace-postgres-password go with --force only; nothing was stored"
 
 command -v openssl >/dev/null 2>&1 ||
   die "openssl not found. Every secret here is generated locally with it; there is no fallback worth having."
@@ -102,9 +122,10 @@ stored verification document, and replacing it makes those documents
 undecryptable — permanently.
 
 To add names this version generates and the store does not hold yet, re-run
-with --missing (nothing stored is touched). If you genuinely mean to rotate,
-re-run with --force (swift-secrets keeps the previous encrypted version as
-MASTER_KEK.cred.prev), and understand that a rotated MASTER_KEK does not
+with --missing (nothing stored is touched). To rotate the other generated
+names, re-run with --force: it keeps MASTER_KEK and POSTGRES_PASSWORD. Only
+--force --replace-master-kek replaces the key (swift-secrets keeps the previous
+encrypted version as MASTER_KEK.cred.prev), and a rotated MASTER_KEK does not
 re-encrypt anything that already exists.
 MSG
   exit 1
@@ -143,6 +164,17 @@ ATTRIB_SALT="$(gen_secret)"
 IDENTITY_SALT="$(gen_secret)"
 SCAN_IP_SALT="$(gen_secret)"
 ADS_EVENT_SECRET="$(gen_secret)"
+# Hex: safe inside a URL and a Redis config line without any escaping.
+REDIS_PASSWORD="$(gen_token)"
+REDIS_URL="redis://:${REDIS_PASSWORD}@redis:6379"
+if [ "$MISSING" -eq 1 ]; then
+  redis_pair=0
+  stored REDIS_PASSWORD && redis_pair=$((redis_pair + 1))
+  stored REDIS_URL && redis_pair=$((redis_pair + 1))
+  if [ "$redis_pair" -eq 1 ]; then
+    die "the store holds only one of REDIS_PASSWORD and REDIS_URL; they are one pair (the URL carries the password). Nothing was stored"
+  fi
+fi
 
 # Into the store, one value per pipe. `printf '%s'` sends no trailing newline,
 # so the stored bytes are exactly the generated ones. With --missing, a name
@@ -150,11 +182,20 @@ ADS_EVENT_SECRET="$(gen_secret)"
 STORED_NOW=""
 KEPT=""
 MASTER_KEK_STORED=0
+PROTECTED_KEPT=""
 store_generated() {
   local name="$1"
   if [ "$MISSING" -eq 1 ] && stored "$name"; then
     KEPT="$KEPT $name"
     return 0
+  fi
+  # [FABLE-05 3.9] --force alone never replaces these two.
+  if [ "$FORCE" -eq 1 ] && stored "$name"; then
+    if { [ "$name" = MASTER_KEK ] && [ "$REPLACE_KEK" -eq 0 ]; } || { [ "$name" = POSTGRES_PASSWORD ] && [ "$REPLACE_PG" -eq 0 ]; }; then
+      KEPT="$KEPT $name"
+      PROTECTED_KEPT="$PROTECTED_KEPT $name"
+      return 0
+    fi
   fi
   printf '%s' "${!name}" | store set "$name"
   STORED_NOW="$STORED_NOW $name"
@@ -174,8 +215,10 @@ store_generated ATTRIB_SALT
 store_generated IDENTITY_SALT
 store_generated SCAN_IP_SALT
 store_generated ADS_EVENT_SECRET
+store_generated REDIS_PASSWORD
+store_generated REDIS_URL
 unset MASTER_KEK JWT_SECRET OTP_HASH_SECRET STORAGE_SIGNING_SECRET CONSENT_IP_PEPPER POSTGRES_PASSWORD MEILISEARCH_KEY
-unset TEST_CONTROL_SECRET METRICS_TOKEN HEALTH_DETAIL_TOKEN ATTRIB_SALT IDENTITY_SALT SCAN_IP_SALT ADS_EVENT_SECRET
+unset TEST_CONTROL_SECRET METRICS_TOKEN HEALTH_DETAIL_TOKEN ATTRIB_SALT IDENTITY_SALT SCAN_IP_SALT ADS_EVENT_SECRET REDIS_PASSWORD REDIS_URL
 
 # deploy/.env: settings only. Created from the value-free template when absent.
 # When it exists, every line is kept EXCEPT secret declarations (any spelling
@@ -241,6 +284,12 @@ if [ -n "$KEPT" ]; then
   echo "already stored, kept (names only):"
   for v in $KEPT; do echo "  - $v"; done
 fi
+for v in $PROTECTED_KEPT; do
+  case "$v" in
+    MASTER_KEK) echo "NOT rotated: MASTER_KEK (every stored ID document is encrypted under it). Only with --force --replace-master-kek, and only with its escrow updated the same day." ;;
+    POSTGRES_PASSWORD) echo "NOT rotated: POSTGRES_PASSWORD (the database still has the old one; the next deploy would stop at the migration). Only with --force --replace-postgres-password, after ALTER ROLE in the database." ;;
+  esac
+done
 [ "$MASTER_KEK_STORED" -eq 0 ] || echo "verified: MASTER_KEK decodes to exactly 32 bytes"
 echo "$ENV_ACTION $(basename "$ENV_FILE") (mode 600, settings only)"
 [ "$REMOVED" -eq 0 ] || echo "removed $REMOVED secret line(s) from $(basename "$ENV_FILE") (secrets live in the store)"

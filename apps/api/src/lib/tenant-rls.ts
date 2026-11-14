@@ -35,6 +35,9 @@ export const TENANT_TABLES = [
   'stock_movements',
   // [POS-SYNC] A till export a store confirmed, walled like the store.
   'pos_imports',
+  // [KITCHEN-INTEGRATION] A store kitchen-system connection, and each order sync with it.
+  'vendor_integrations',
+  'order_integration_syncs',
   // [R048-007] money-surface commands: one operator's decided money changes.
   'money_surface_commands',
   // [E02] MMG refund obligations and the sends that answer them, walled like their order.
@@ -54,6 +57,8 @@ export const TENANT_TABLES = [
   'categories',
   // [BOOK-S1] A booking takes its business time: walled on the row like the listing it was made on.
   'bookings',
+  // [MENU-OPTIONS] A store shared option-group library, walled on the row like the items it is attached to.
+  'modifier_groups',
   // [BOOK-P1] The bookable services and time off of a pro: walled on the row like the jobs they book.
   'service_offerings',
   'service_provider_time_off',
@@ -123,6 +128,10 @@ export const TENANT_TABLES = [
   'fee_refund_cases',
   // [CARD-READY] A partner's card money paid back to their card: the payer's operator's money.
   'card_credit_refunds',
+  // [COMPANY-DOCS Part 3] A store account change waiting for a person, walled like the account.
+  'account_change_requests',
+  // [ASSISTED SETUP] A store's consent for Swift to set it up from the console, and what was done under it.
+  'assisted_setup_consents', 'assisted_setup_actions',
   'billing_dunning_clocks', 'payment_confirmation_holds', 'billing_fee_notices', 'billing_notice_handoffs',
   // [#1393] Consumed weekly-fee coverage: the paid or resumed obligation a clock moved past.
   'billing_obligation_transitions',
@@ -273,6 +282,8 @@ export const TENANT_LINEAGE_TABLES: readonly TenantLineageRule[] = [
   { table: 'categories', trigger: 'categories_tenant_matches_vendor', parent: 'vendors', fk: 'vendorId' },
   // [BOOK-S1] one hop: a booking inherits the tenant of the business whose time it takes
   { table: 'bookings', trigger: 'bookings_tenant_matches_vendor', parent: 'vendors', fk: 'vendorId' },
+  // [MENU-OPTIONS] one hop: a shared option group inherits the tenant of its store
+  { table: 'modifier_groups', trigger: 'modifier_groups_tenant_matches_vendor', parent: 'vendors', fk: 'vendorId' },
   // [BOOK-P1] two hops: a pro's service and time off inherit the tenant of the person the provider profile belongs to
   { table: 'service_offerings', trigger: 'service_offerings_tenant_matches_provider', parent: 'service_providers', fk: 'providerId',
     parentTenantSql: `SELECT u."tenantId" FROM users u JOIN service_providers p ON p."userId" = u.id WHERE p.id = NEW."providerId"` },
@@ -285,6 +296,13 @@ export const TENANT_LINEAGE_TABLES: readonly TenantLineageRule[] = [
   { table: 'settlements', trigger: 'settlements_tenant_matches_vendor', parent: 'vendors', fk: 'vendorId' },
   // [POS-SYNC] one hop: an applied till export inherits the tenant of its store
   { table: 'pos_imports', trigger: 'pos_imports_tenant_matches_vendor', parent: 'vendors', fk: 'vendorId' },
+  // [KITCHEN-INTEGRATION] one hop: a connection inherits its store, an order sync inherits its order
+  { table: 'vendor_integrations', trigger: 'vendor_integrations_tenant_matches_vendor', parent: 'vendors', fk: 'vendorId' },
+  // Two parents: the order and the connection must agree on tenant, store and provider, or the row is refused
+  // (an UPDATE too: both foreign keys are required, so a missing parent is never an unlink).
+  { table: 'order_integration_syncs', trigger: 'order_integration_syncs_tenant_matches_order', parent: 'orders', fk: 'orderId',
+    parentTenantSql: `SELECT o."tenantId" FROM orders o JOIN vendor_integrations vi ON vi.id = NEW."vendorIntegrationId" WHERE o.id = NEW."orderId" AND vi."tenantId" = o."tenantId" AND vi."vendorId" = o."vendorId" AND vi.provider = NEW.provider`,
+    watch: ['orderId', 'vendorIntegrationId', 'provider'], requiredParent: true },
   { table: 'delivery_cash_settlements', trigger: 'delivery_cash_settlements_tenant_matches_order', parent: 'orders', fk: 'orderId' },
   // [E02] an MMG refund obligation and a refund send belong to the tenant of their order
   { table: 'mmg_refund_obligations', trigger: 'mmg_refund_obligations_tenant_matches_order', parent: 'orders', fk: 'orderId' },

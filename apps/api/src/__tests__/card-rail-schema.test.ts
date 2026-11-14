@@ -130,6 +130,8 @@ describe('[PT-1] the three tables are walled like every tenant table', () => {
       // [PT-4] The provider's transaction reference, the one void / refund / booking claim and a finance
       // decision only move forward; a booking never stands beside a void or refund that may have worked.
       'card_sessions.card_sessions_provider_actions',
+      // [R1 · CARD-STAGING-TEST R2] a HELD payment's refund: its own provider reference is written once (card_session_refund_ref).
+      'card_sessions.card_sessions_refund_ref_once',
       'card_sessions.card_sessions_tenant_matches_user',
       // [CARD-STAGING-TEST 10 Nov 2026 · REVIEW-2466-B F6] the void's own provider reference is written once.
       'card_sessions.card_sessions_void_ref_once',
@@ -148,7 +150,12 @@ describe('[PT-1] the three tables are walled like every tenant table', () => {
       // [PT-4] the provider-action markers' shapes (see the migration card_session_provider_actions)
       'card_sessions_provider_ref_check',
       'card_sessions_purpose_shape_check',
-      'card_sessions_refund_needs_ref_check', 'card_sessions_refund_state_check', 'card_sessions_resolution_check',
+      'card_sessions_refund_needs_ref_check',
+      // [R1 · CARD-STAGING-TEST R2] the refund's own provider transaction, only beside a confirmed refund (card_session_refund_ref)
+      'card_sessions_refund_ref_check',
+      'card_sessions_refund_state_check', 'card_sessions_resolution_check',
+      // [VOID-REFUND-CHECK F1/F3] finance's reversal: its kind (VOID / REFUND) and what a check of a refused one found
+      'card_sessions_reversal_check_check', 'card_sessions_reversal_kind_check',
       'card_sessions_state_hash_check',
       'card_sessions_void_needs_ref_check',
       // [CARD-STAGING-TEST 10 Nov 2026] the void's own provider transaction, only beside a confirmed void (card_void_ref)

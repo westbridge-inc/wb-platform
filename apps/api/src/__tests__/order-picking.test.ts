@@ -171,6 +171,11 @@ afterAll(async () => {
   await app.close();
 });
 
+
+/** [MENU-OPTIONS] A row written without the pizza parts reads back with its plain names = its words, no placement,
+ *  no opener, not a size: what every screen gets for an order placed before them. */
+const asMade = (o: { group: string; name: string; price: number }) => ({ ...o, plainGroup: o.group, plainName: o.name, placement: null, parentOptionName: null, setsPrice: false });
+
 describe('pick list + ready gate', () => {
   // [O-4 · owner 22 Oct 2026] The store accepts the WHOLE order: a tick is a tool, never a gate. Only an
   // open customer question holds the bag (proved below); the ticks still work.
@@ -269,6 +274,33 @@ describe('substitution round-trip', () => {
     expect(subAfter.stockQuantity).toBe(5);
   });
 
+  it('[audit M-1] a substitute that needs a choice (a size, a required group) is refused at the proposal and again at the customer\'s yes', async () => {
+    const original = await makeItem({ name: itemName('Large pie'), price: 4500 });
+    const order = await makeOrderWithLines([{ itemId: original.id, name: original.name, qty: 1, price: 4500 }, await keeperLine()]);
+    const line = order.items.find((l) => l.itemId === original.id)!;
+    const propose = (substituteItemId: string) => inject('POST', `/api/v1/vendor/orders/${order.id}/items/${line.id}/substitute`, owner.token, { substituteItemId });
+    // Sizes set the price: the item's basePrice is only its "from" price.
+    const sized = await makeItem({ name: itemName('Sized pie'), price: 2000 });
+    await app.prisma.optionGroup.create({ data: { itemId: sized.id, name: 'Size', setsPrice: true, isRequired: true, minSelect: 1, maxSelect: 1, options: { create: [{ name: 'Small', additionalPrice: 2000 }, { name: 'Large', additionalPrice: 4500 }] } } });
+    const refusedSized = await propose(sized.id);
+    expect(refusedSized.statusCode, refusedSized.body).toBe(409);
+    expect(refusedSized.json().error.code).toBe('SUBSTITUTE_NEEDS_CHOICES');
+    const required = await makeItem({ name: itemName('Combo'), price: 3000 });
+    await app.prisma.optionGroup.create({ data: { itemId: required.id, name: 'Side', isRequired: true, minSelect: 1, maxSelect: 1, options: { create: [{ name: 'Fries', additionalPrice: 0 }] } } });
+    expect((await propose(required.id)).json().error.code).toBe('SUBSTITUTE_NEEDS_CHOICES');
+    expect((await app.prisma.orderItem.findUniqueOrThrow({ where: { id: line.id } })).subStatus).toBe('NONE');
+    // Optional extras only: the plain item is a whole order, so it may be offered.
+    const plainWithExtras = await makeItem({ name: itemName('Plain pie'), price: 4000 });
+    await app.prisma.optionGroup.create({ data: { itemId: plainWithExtras.id, name: 'Extras', maxSelect: 3, options: { create: [{ name: 'Cheese', additionalPrice: 300 }] } } });
+    expect((await propose(plainWithExtras.id)).statusCode).toBe(200);
+    // The store gives it sizes while the customer decides: the yes is refused and the question stays open.
+    await app.prisma.optionGroup.create({ data: { itemId: plainWithExtras.id, name: 'Size', setsPrice: true, isRequired: true, minSelect: 1, maxSelect: 1, options: { create: [{ name: 'Large', additionalPrice: 5000 }] } } });
+    const yes = await inject('POST', `/api/v1/customer/orders/${order.id}/items/${line.id}/substitution`, customer.token, { approve: true });
+    expect(yes.statusCode, yes.body).toBe(409);
+    expect(yes.json().error.code).toBe('SUBSTITUTE_NEEDS_CHOICES');
+    expect((await app.prisma.orderItem.findUniqueOrThrow({ where: { id: line.id } })).subStatus).toBe('PENDING');
+  });
+
   it('customer rejects: line refunded, totals shrink, original restocked', async () => {
     const original = await makeItem({ name: `Juice ${seq}`, price: 600, stock: 4, group: `juice-${seq}` });
     const substitute = await makeItem({ name: `Other Juice ${seq}`, price: 700, stock: 4, group: `juice-${seq}` });
@@ -334,6 +366,125 @@ describe('substitution round-trip', () => {
     expect(Number(after.totalAmount)).toBe(0);
     expect(Number(after.subtotalCustomer)).toBe(0);
     expect(Number(after.subtotalBase)).toBe(0);
+  });
+
+  it('[audit A-1] a line removed from a discounted order comes off net of its own discount share, and the discount shrinks with it', async () => {
+    // A store's own 50% code on two 1,000 lines: discount 1,000, total 1,000 + the 300 fee.
+    const a = await makeItem({ name: itemName('Half A'), price: 1000, stock: 3 });
+    const b = await makeItem({ name: itemName('Half B'), price: 1000, stock: 3 });
+    const order = await makeOrderWithLines([{ itemId: a.id, name: a.name, qty: 1, price: 1000 }, { itemId: b.id, name: b.name, qty: 1, price: 1000 }]);
+    const lineA = order.items.find((l) => l.itemId === a.id)!;
+    const lineB = order.items.find((l) => l.itemId === b.id)!;
+    const promo = await app.prisma.promoCode.create({ data: {
+      code: `HALF${nanoid(6).replace(/[^A-Za-z0-9]/g, '0').toUpperCase()}`, description: 'half off', vendorId, discountType: 'PERCENTAGE', discountValue: 50,
+      applicableTo: [], validFrom: new Date(Date.now() - DAY), validUntil: new Date(Date.now() + DAY), funder: 'VENDOR',
+    } });
+    await app.prisma.order.update({ where: { id: order.id }, data: { discount: 1000, totalAmount: 1300, promoCodeId: promo.id } });
+    await app.prisma.promoRedemption.create({ data: {
+      orderId: order.id, promoCodeId: promo.id, termsVersion: 1, discountType: 'PERCENTAGE', discountValue: 50, funder: 'VENDOR',
+      goodsDiscount: 1000, deliveryDiscount: 0, lineAllocations: [{ orderItemId: lineA.id, goods: 500 }, { orderItemId: lineB.id, goods: 500 }],
+    } });
+
+    const refund = await inject('POST', `/api/v1/vendor/orders/${order.id}/items/${lineA.id}/refund-line`, owner.token, {});
+    expect(refund.statusCode).toBe(200);
+    const after = await app.prisma.order.findUniqueOrThrow({ where: { id: order.id }, include: { promoRedemption: true } });
+    // B at half price plus the fee: 500 + 300. Before the fix the whole 1,000 came off and B was free.
+    expect(Number(after.totalAmount)).toBe(800);
+    expect(Number(after.discount)).toBe(500);
+    expect(Number(after.subtotalCustomer)).toBe(1000);
+    expect(Number(after.promoRedemption!.goodsDiscount)).toBe(500);
+    expect(after.promoRedemption!.lineAllocations).toEqual([{ orderItemId: lineA.id, goods: 0 }, { orderItemId: lineB.id, goods: 500 }]);
+  });
+
+  it('[audit A-1] a capped percentage code is re-priced under its cap; a fixed code shrinks with the goods still coming', async () => {
+    const promoFor = (discountType: 'PERCENTAGE' | 'FIXED_AMOUNT', discountValue: number, maxDiscount: number | null) => app.prisma.promoCode.create({ data: {
+      code: `CAP${nanoid(6).replace(/[^A-Za-z0-9]/g, '0').toUpperCase()}`, description: 'capped', vendorId, discountType, discountValue, maxDiscount,
+      applicableTo: [], validFrom: new Date(Date.now() - DAY), validUntil: new Date(Date.now() + DAY), funder: 'VENDOR',
+    } });
+    const discounted = async (discountType: 'PERCENTAGE' | 'FIXED_AMOUNT', discountValue: number, maxDiscount: number | null, discount: number) => {
+      const a = await makeItem({ name: itemName('Cap A'), price: 1000, stock: 3 });
+      const b = await makeItem({ name: itemName('Cap B'), price: 1000, stock: 3 });
+      const order = await makeOrderWithLines([{ itemId: a.id, name: a.name, qty: 1, price: 1000 }, { itemId: b.id, name: b.name, qty: 1, price: 1000 }]);
+      const promo = await promoFor(discountType, discountValue, maxDiscount);
+      await app.prisma.order.update({ where: { id: order.id }, data: { discount, totalAmount: 2300 - discount, promoCodeId: promo.id } });
+      await app.prisma.promoRedemption.create({ data: {
+        orderId: order.id, promoCodeId: promo.id, termsVersion: 1, discountType, discountValue, maxDiscount, funder: 'VENDOR', goodsDiscount: discount, deliveryDiscount: 0,
+        lineAllocations: order.items.map((l) => ({ orderItemId: l.id, goods: discount / 2 })),
+      } });
+      const lineA = order.items.find((l) => l.itemId === a.id)!;
+      expect((await inject('POST', `/api/v1/vendor/orders/${order.id}/items/${lineA.id}/refund-line`, owner.token, {})).statusCode).toBe(200);
+      return app.prisma.order.findUniqueOrThrow({ where: { id: order.id }, include: { promoRedemption: true } });
+    };
+    // 50% capped at 300: B alone still earns the full 300, so B costs 700 plus the fee.
+    const capped = await discounted('PERCENTAGE', 50, 300, 300);
+    expect(Number(capped.totalAmount)).toBe(1000);
+    expect(Number(capped.discount)).toBe(300);
+    // [review N-4] 50% capped at 800: the cap binds before the removal (1,000 of 2,000) and not after (half of B is
+    // 500), so the discount is re-priced to 500. B costs 500 plus the fee.
+    const binds = await discounted('PERCENTAGE', 50, 800, 800);
+    expect(Number(binds.totalAmount)).toBe(800);
+    expect(Number(binds.discount)).toBe(500);
+    // [Owner ruling 13 Nov 2026, supersedes R2] 1,500 off shrinks with the goods still coming: half the goods are
+    // left, so 750 of it stays. B costs 250 plus the fee.
+    const fixed = await discounted('FIXED_AMOUNT', 1500, null, 1500);
+    expect(Number(fixed.totalAmount)).toBe(550);
+    expect(Number(fixed.discount)).toBe(750);
+    expect(Number(fixed.promoRedemption!.goodsDiscount)).toBe(750);
+  });
+
+  it('[review S3-1] a cheaper substitute on a discounted order re-prices the discount: shown and charged the same', async () => {
+    const a = await makeItem({ name: itemName('Swap A'), price: 1000, stock: 3, group: `swaphalf-${seq}` });
+    const b = await makeItem({ name: itemName('Swap B'), price: 1000, stock: 3 });
+    const cheap = await makeItem({ name: itemName('Swap cheap'), price: 100, stock: 3, group: `swaphalf-${seq}` });
+    const order = await makeOrderWithLines([{ itemId: a.id, name: a.name, qty: 1, price: 1000 }, { itemId: b.id, name: b.name, qty: 1, price: 1000 }]);
+    const lineA = order.items.find((l) => l.itemId === a.id)!;
+    const lineB = order.items.find((l) => l.itemId === b.id)!;
+    const promo = await app.prisma.promoCode.create({ data: {
+      code: `SWAPHALF${nanoid(5).replace(/[^A-Za-z0-9]/g, '0').toUpperCase()}`, description: 'half off', vendorId, discountType: 'PERCENTAGE', discountValue: 50,
+      applicableTo: [], validFrom: new Date(Date.now() - DAY), validUntil: new Date(Date.now() + DAY), funder: 'VENDOR',
+    } });
+    await app.prisma.order.update({ where: { id: order.id }, data: { discount: 1000, totalAmount: 1300, promoCodeId: promo.id } });
+    await app.prisma.promoRedemption.create({ data: {
+      orderId: order.id, promoCodeId: promo.id, termsVersion: 1, discountType: 'PERCENTAGE', discountValue: 50, funder: 'VENDOR',
+      goodsDiscount: 1000, deliveryDiscount: 0, lineAllocations: [{ orderItemId: lineA.id, goods: 500 }, { orderItemId: lineB.id, goods: 500 }],
+    } });
+    expect((await inject('POST', `/api/v1/vendor/orders/${order.id}/items/${lineA.id}/substitute`, owner.token, { substituteItemId: cheap.id })).statusCode).toBe(200);
+    const shown = (await inject('GET', `/api/v1/customer/orders/${order.id}?swapDecisions=v1`, customer.token)).json().data.items.find((i: { id: string }) => i.id === lineA.id).substitution;
+    expect(shown).toMatchObject({ kind: 'SWAP', priceDelta: -450 });
+    expect((await inject('POST', `/api/v1/customer/orders/${order.id}/items/${lineA.id}/substitution`, customer.token, { approve: true })).statusCode).toBe(200);
+    const after = await app.prisma.order.findUniqueOrThrow({ where: { id: order.id }, include: { promoRedemption: true } });
+    // Goods 1,100 at half price is 550, plus the 300 fee. Before: the whole 1,000 discount stayed and the total was 400.
+    expect(Number(after.totalAmount)).toBe(850);
+    expect(Number(after.totalAmount)).toBe(1300 + shown.priceDelta);
+    expect(Number(after.discount)).toBe(550);
+    expect(Number(after.promoRedemption!.goodsDiscount)).toBe(550);
+  });
+
+  it('[review N-3] with no redemption record, the part of the discount above the goods (the delivery fee\'s) never comes off with a line', async () => {
+    const a = await makeItem({ name: itemName('Legacy fee A'), price: 500, stock: 3 });
+    const b = await makeItem({ name: itemName('Legacy fee B'), price: 500, stock: 3 });
+    const order = await makeOrderWithLines([{ itemId: a.id, name: a.name, qty: 1, price: 500 }, { itemId: b.id, name: b.name, qty: 1, price: 500 }]);
+    // 1,000 of goods free plus 100 off the 300 fee: discount 1,100, total 200.
+    await app.prisma.order.update({ where: { id: order.id }, data: { discount: 1100, totalAmount: 200 } });
+    const lineA = order.items.find((l) => l.itemId === a.id)!;
+    expect((await inject('POST', `/api/v1/vendor/orders/${order.id}/items/${lineA.id}/refund-line`, owner.token, {})).statusCode).toBe(200);
+    const after = await app.prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+    expect(Number(after.discount)).toBe(600); // B's 500 of goods, and the fee's 100, still given
+    expect(Number(after.totalAmount)).toBe(200);
+  });
+
+  it('[audit A-1] with no redemption record the line carries its proportional share of the order discount', async () => {
+    const a = await makeItem({ name: itemName('Legacy A'), price: 1500, stock: 3 });
+    const b = await makeItem({ name: itemName('Legacy B'), price: 500, stock: 3 });
+    const order = await makeOrderWithLines([{ itemId: a.id, name: a.name, qty: 1, price: 1500 }, { itemId: b.id, name: b.name, qty: 1, price: 500 }]);
+    // 20% off 2,000: discount 400, total 1,600 + the 300 fee.
+    await app.prisma.order.update({ where: { id: order.id }, data: { discount: 400, totalAmount: 1900 } });
+    const lineA = order.items.find((l) => l.itemId === a.id)!;
+    expect((await inject('POST', `/api/v1/vendor/orders/${order.id}/items/${lineA.id}/refund-line`, owner.token, {})).statusCode).toBe(200);
+    const after = await app.prisma.order.findUniqueOrThrow({ where: { id: order.id } });
+    // A carried 300 of the 400: B at 400 plus the fee.
+    expect(Number(after.totalAmount)).toBe(700);
+    expect(Number(after.discount)).toBe(100);
   });
 
   it('a picking refund releases the CASH rider’s committed-float delta (no perma-leak)', async () => {
@@ -757,7 +908,7 @@ describe('[L09 · M028] the customer sees the actual substitute and decides on i
     expect(pending.substitution).toEqual({
       state: 'PENDING',
       kind: 'SWAP', // [O-4] a swap, as against a removal question asked before acceptance
-      original: { name: original.name, unitPrice: 1450, options: chosen },
+      original: { name: original.name, unitPrice: 1450, options: chosen.map(asMade) },
       proposed: { itemId: substitute.id, name: substitute.name, unitPrice: 1150 },
       priceDelta: -300,
       decisions: { approve: true, reject: true },
@@ -766,10 +917,10 @@ describe('[L09 · M028] the customer sees the actual substitute and decides on i
       decideBy: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/),
       ifNoAnswer: 'REMOVE',
     });
-    expect(pending.options).toEqual(chosen);
+    expect(pending.options).toEqual(chosen.map(asMade));
     // The store still sees what was ordered while the customer decides.
     const storePending = (await inject('GET', `/api/v1/vendor/orders/${order.id}`, owner.token)).json().data.items.find((i: { id: string }) => i.id === line.id);
-    expect(storePending.options).toEqual(expect.arrayContaining(chosen));
+    expect(storePending.options).toEqual(expect.arrayContaining(chosen.map(asMade)));
 
     const totalBefore = Number((await app.prisma.order.findUniqueOrThrow({ where: { id: order.id } })).totalAmount);
     expect((await inject('POST', `/api/v1/customer/orders/${order.id}/items/${line.id}/substitution`, customer.token, { approve: true })).statusCode).toBe(200);
@@ -858,7 +1009,7 @@ describe('[L09 · M026] the store sees the options the customer chose', () => {
     const expected = [
       { group: 'Size', name: 'Large', price: 300 },
       { group: 'Extras', name: 'Cheese', price: 150 },
-    ];
+    ].map(asMade);
     const detail = await inject('GET', `/api/v1/vendor/orders/${order.id}`, owner.token);
     expect(detail.statusCode, detail.body).toBe(200);
     expect(detail.json().data.items[0].options).toEqual(expect.arrayContaining(expected));
@@ -912,7 +1063,10 @@ describe('swap capability and current money holds', () => {
     expect(Number(unchanged.totalAmount)).toBe(100);
     expect(unchanged.items.find((i) => i.id === line.id)!.subStatus).toBe('PENDING');
     expect((await app.prisma.item.findUniqueOrThrow({ where: { id: replacement.id } })).stockQuantity).toBe(10);
-    expect(view).toMatchObject({ priceDelta: -900, decisions: { approve: false, reject: true } });
+    // [Review A S3-1] The view shows the TOTAL's change: the line's −900 less the discount that goes with it (no
+    // promo record: 900 of the 1,100 goods discounted; 200 of goods after keeps 164 of it, so 736 goes back) = −164.
+    // Still below zero on a total of 100, so approving stays off.
+    expect(view).toMatchObject({ priceDelta: -164, decisions: { approve: false, reject: true } });
     expect(view.settlementGuidance).toBe(refused.json().error.message);
     expect((await inject('POST', `/api/v1/customer/orders/${order.id}/items/${line.id}/substitution`, customer.token, { approve: false })).statusCode).toBe(200);
     expect(Number((await app.prisma.order.findUniqueOrThrow({ where: { id: order.id } })).totalAmount)).toBe(0);

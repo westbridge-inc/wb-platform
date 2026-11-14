@@ -207,6 +207,10 @@ export type CardLookupOutcome = Evidence & (
   /** [REVIEW-2460] A credit smaller than the capture: part was refunded, the rest is still taken. */
   | { status: 'part_credited'; reason: string }
   | { status: 'not_bookable'; reason: string }
+  /** [VOID-REFUND-CHECK F2] The record proves nothing was taken: a definitive decline, or a page that never reached
+   *  completion (SP4 / 3D0 ...) — no capture, no credit, no void, not approved, and a code that is not ambiguous. Never
+   *  voided (PowerTranz refuses to void it, and refunds of a declined sale are impossible: 12 Nov 2026). */
+  | { status: 'not_taken'; reason: string; stage: 'declined' | 'never_completed' }
   | { status: 'unknown'; reason: string; backoff?: true }
 );
 
@@ -214,8 +218,9 @@ export type CardLookupOutcome = Evidence & (
  *  whose answer is not known (lost, pending, or a claim stuck past its wait). Asked ONLY when a person presses "Check
  *  with the card provider" (two people), never as the normal flow, and never instead of an answer. `refunded`: the
  *  record shows the WHOLE payment credited back (TotalCreditAmount = TotalCaptureAmount = Swift's price) or the sale
- *  voided (a real VoidDateTime). `part_credited`: a credit that is not exactly the whole payment — held for the owner,
- *  never "refunded". `not_refunded`: readable, and no credit or void on it yet. `unknown`: no readable answer, or
+ *  voided (a real VoidDateTime) — or, for a PARTIAL refund [owner 10 Nov 2026], exactly the part Swift asked credited
+ *  back of Swift's whole capture. `part_credited`: a credit that is not exactly what Swift asked back — held for the
+ *  owner, never "refunded". `not_refunded`: readable, and no credit or void on it yet. `unknown`: no readable answer, or
  *  (`backoff`) not asked this time. Nothing here carries the refund's own TransactionIdentifier: PowerTranz has not said
  *  the record lists it (asked), so Swift never reads one from it. */
 export type CardRefundLookupOutcome = Evidence & (
@@ -309,8 +314,10 @@ export interface CardRailProvider {
 
   /** [CARD-REFUND-LOOKUP] Optional: read the provider's record of the ORIGINAL transaction to learn whether a refund
    *  Swift sent (answer not known) took the whole payment back. A read only: nothing is sent, nothing is resent. Same
-   *  backoff as lookupTransaction (one window per transaction). */
-  lookupRefund?(input: { binding: CardRailBinding; providerRef: string; orderRef: string; amountMinor: number; currencyCode: string; notBefore?: Date }): Promise<CardRefundLookupOutcome>;
+   *  backoff as lookupTransaction (one window per transaction). `amountMinor` is the payment (Swift's whole capture);
+   *  [OWNER 10 Nov 2026] `refundMinor`, when given, is what Swift asked back: below the payment, a PARTIAL refund, judged
+   *  `refunded` only when exactly that part was credited back; absent or equal, the whole payment. */
+  lookupRefund?(input: { binding: CardRailBinding; providerRef: string; orderRef: string; amountMinor: number; refundMinor?: number; currencyCode: string; notBefore?: Date }): Promise<CardRefundLookupOutcome>;
 }
 
 /** Where a v2 provider comes from, resolved lazily: only v2 work ever asks. */

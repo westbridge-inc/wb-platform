@@ -41,7 +41,12 @@ const LEDGER: Record<string, { count: number; why: string }> = {
   'modules/driver/driver.routes.ts': { count: 3, why: `2 ${OWN}; 1 ${GATED}` },
   'modules/rider/rider.routes.ts': { count: 3, why: `2 ${OWN}; 1 ${GATED} (the store's account line is no longer selected)` },
   'modules/user/customer.routes.ts': { count: 4, why: `2 ${OWN}; 1 receipt input (the receipt prints only the seller's PUBLISHED phone); 1 ${GATED}` },
-  'modules/vendor/vendor.routes.ts': { count: 5, why: `3 ${GATED}; 1 ${OWN} (store team; GET+PUT /staff share staffMemberUserSelect); 1 ${INTERNAL} (reserved-name check)` },
+  'modules/vendor/vendor.routes.ts': { count: 6, why: `3 ${GATED}; 2 ${OWN} (store team; GET+PUT /staff share staffMemberUserSelect; GET /subscription compares the fee's MMG payer number with the caller's own [review-2475 G1]); 1 ${INTERNAL} (reserved-name check)` },
+  // [COMPANY-DOCS Part 3] the handover approval: the old holder's number is compared with each store's phones (a store phone that is theirs stops being the store's) and the new holder's becomes the private contact line. Never in a response or a notice.
+  'modules/vendor/account-change.ts': { count: 3, why: INTERNAL },
+  // [KITCHEN-INTEGRATION · OWNER RULING 12 Nov 2026] a deliberate O-1 exception: a cash DELIVERY customer's number goes
+  // to a PARTY, the store, through its own kitchen system, for its own driver (switch off by default).
+  'modules/kitchen/kitchen-sync.ts': { count: 1, why: `owner ruling 12 Nov 2026 (O-1 exception): a cash delivery customer's number goes to the store's own kitchen system for its driver; never for a pickup, never the last name` },
   'utils/counterparty.ts': { count: 1, why: 'the opt-in itself (riderCounterpartySelect withPhone)' },
   'modules/calls/call-bridge.ts': { count: 5, why: `${INTERNAL} (the Swift call bridge: each party's number, and the caller's own, read at the moment a leg is dialled and handed only to the voice provider; never in a response, a push or a call_sessions row)` },
   // [BOOK-FU2 · owner B3] +1: the missed-appointment review's customer row (masked unless user.contact.read, like the people list).
@@ -72,6 +77,8 @@ const LEDGER: Record<string, { count: number; why: string }> = {
   'modules/review/content-pack.ts': { count: 1, why: INTERNAL },
   'modules/safety/deletion-hold.ts': { count: 2, why: INTERNAL },
   'modules/safety/emergency-contact.service.ts': { count: 2, why: OWN },
+  // [COMPANY-DOCS PART 2] the signer's number checked against the account holder's own and the store team's; never in a response
+  'modules/vendor/authority-letter/authority-letter.service.ts': { count: 2, why: INTERNAL },
   'modules/safety/guardian-delivery.ts': { count: 1, why: `${INTERNAL} (SMS fallback to the passenger's own verified phone)` },
   'modules/safety/sos-escalation.ts': { count: 1, why: INTERNAL },
   'modules/support/support.service.ts': { count: 1, why: OPS },

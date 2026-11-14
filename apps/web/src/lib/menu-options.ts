@@ -10,100 +10,42 @@
  *
  * The page's figures are a preview. The server re-prices every line when it is
  * added and again at checkout.
+ *
+ * [MENU-OPTIONS · owner 11 Nov 2026] Pizza-grade choices: a size SETS the item
+ * price (lineBasePrice), a half topping costs the store's half price
+ * (halfPrice), a follow-up group opens under the option that opens it. What a
+ * tap does to the selection is the phone's own sheet model
+ * (apps/mobile/src/lib/menuSheet.ts, import-free, imported here by path so the
+ * phone and the site behave the same; apps/web/Dockerfile copies it too).
  */
 import { parseAmount } from './money';
-import { normalizeItemNote, resolveSelectedOptions, validateSelectedOptions } from '../../../api/src/modules/order/options';
+import { lineBasePrice, resolveSelectedOptions, validateSelectedOptions } from '../../../api/src/modules/order/options';
+import { basePrice, type PricedGroup, type PricedItem } from './menu-prices';
 
-export { OptionSelectionError, resolveSelectedOptions, validateSelectedOptions } from '../../../api/src/modules/order/options';
+export { halfPrice, OptionSelectionError, resolveSelectedOptions, validateSelectedOptions } from '../../../api/src/modules/order/options';
 export type { OptionSelection, OptionSelectionReason, ValidatableGroup } from '../../../api/src/modules/order/options';
-
-type PricedOption = { id: string; name: string; additionalPrice: unknown; isAvailable?: boolean | null; isDefault?: boolean };
-type PricedGroup = { id: string; name: string; isRequired: boolean; minSelect: number; maxSelect: number; options: PricedOption[] };
-type PricedItem = { basePrice: unknown; customerPrice?: unknown; optionGroups?: PricedGroup[] | null };
-
-/** The item's own price, or null when the server's figure cannot be read. */
-export function basePrice(item: PricedItem): number | null {
-  return parseAmount(item.customerPrice ?? item.basePrice);
-}
-
-/** How many choices a group needs before the item can be added (the validator's rule for an empty group). */
-export function requiredCount(group: PricedGroup): number {
-  return group.isRequired ? Math.max(1, group.minSelect) : 0;
-}
-
-/** The item cannot be added without opening its choices. */
-export function needsChoices(item: PricedItem): boolean {
-  return (item.optionGroups ?? []).some((group) => requiredCount(group) > 0);
-}
+export {
+  chooseOption, choiceId, defaultSelection, followUpFor, groupGuidance, hasSizes, isChosen, onSale,
+  orderLineChoices, placeOption, placementOf, restoreSelection, singleChoice, clearableSingle, maxChoices, requiredGroup,
+  sortedOptions, topLevelGroups, wireSelection,
+} from '../../../mobile/src/lib/menuSheet';
+export type { ChoiceLine, OrderLineChoice, Placement, SheetGroup, SheetSelection } from '../../../mobile/src/lib/menuSheet';
+export { basePrice, fromPrice, isPlainLine, needsChoices, noteIsEmpty, opensChoices, requiredChoiceSoldOut, requiredCount } from './menu-prices';
 
 /**
- * The item's Add opens its choices first: a choice is required, or the store
- * pre-selects one (the phone app pre-selects the same picks). One tap must
- * neither drop a store's pick from the order nor add it, and its price, unseen.
- */
-export function opensChoices(item: PricedItem): boolean {
-  return needsChoices(item)
-    || (item.optionGroups ?? []).some((group) => group.options.some((option) => option.isDefault === true && option.isAvailable !== false));
-}
-
-/**
- * A required group has fewer choices on sale than it needs, so the item
- * cannot be ordered with any selection right now (the sheet says which).
- */
-export function requiredChoiceSoldOut(item: PricedItem): boolean {
-  return (item.optionGroups ?? []).some((group) =>
-    group.options.filter((option) => option.isAvailable !== false).length < requiredCount(group));
-}
-
-/**
- * The lowest price the item can be ordered at: its price plus the cheapest
- * choices each required group needs, counting only choices on sale. This is
- * the "From" figure on the menu. Null when any figure in it cannot be read,
- * and when a required choice is sold out: no price can be ordered at then.
- */
-export function fromPrice(item: PricedItem): number | null {
-  const base = basePrice(item);
-  if (base === null || requiredChoiceSoldOut(item)) return null;
-  let total = base;
-  for (const group of item.optionGroups ?? []) {
-    const needed = requiredCount(group);
-    if (needed === 0) continue;
-    const deltas: number[] = [];
-    for (const option of group.options) {
-      if (option.isAvailable === false) continue;
-      const delta = parseAmount(option.additionalPrice);
-      if (delta === null) return null;
-      deltas.push(delta);
-    }
-    deltas.sort((a, b) => a - b);
-    for (const delta of deltas.slice(0, needed)) total += delta;
-  }
-  return total;
-}
-
-/**
- * A cart line in the item's plain configuration: no choice and no note —
- * exactly what one tap adds (the server keys a line by item, choices and the
- * note it normalises with `normalizeItemNote`).
- */
-export function isPlainLine(line: { selectedOptions?: unknown; selectedOptionNames?: readonly string[] | null; specialInstructions?: string | null }): boolean {
-  const selection = line.selectedOptions;
-  const chosen = selection && typeof selection === 'object' && !Array.isArray(selection)
-    ? Object.values(selection as Record<string, unknown>).some((value) => (Array.isArray(value) ? value.length > 0 : Boolean(value)))
-    : false;
-  return !chosen && (line.selectedOptionNames?.length ?? 0) === 0 && normalizeItemNote(line.specialInstructions) === null;
-}
-
-/**
- * One unit's price with these choices: the item's price plus each chosen
- * choice's price, resolved against the item's OWN groups by the API's
- * resolver. Null when any figure cannot be read.
+ * One unit's price with these choices, resolved against the item's OWN groups
+ * by the API's resolver: the chosen size's price (or the item's price), plus
+ * each other choice (a half at the store's half price). Null when any figure
+ * cannot be read.
  */
 export function selectionPrice(item: PricedItem, selected: Record<string, string[]>): number | null {
-  const base = basePrice(item);
+  const itemPrice = basePrice(item);
+  if (itemPrice === null) return null;
+  const resolved = resolveSelectedOptions(item, selected);
+  const base = parseAmount(lineBasePrice(itemPrice, resolved));
   if (base === null) return null;
   let total = base;
-  for (const option of resolveSelectedOptions(item, selected)) {
+  for (const option of resolved) {
     const extra = parseAmount(option.additionalPrice);
     if (extra === null) return null;
     total += extra;
@@ -119,4 +61,10 @@ export function selectionComplete(item: { optionGroups?: PricedGroup[] | null },
   } catch {
     return false;
   }
+}
+
+/** The choices' words as the cart shows them ("Large", "Pepperoni (left half)"): the API's own display words, so a
+ *  browser basket line reads exactly like the saved cart line it becomes. */
+export function selectionNames(item: PricedItem, selected: Record<string, string | string[]>): string[] {
+  return resolveSelectedOptions(item, selected).map((option) => option.optionName);
 }

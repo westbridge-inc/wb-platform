@@ -194,8 +194,18 @@ async function ride03(rec: Recorder, ctx: Ctx, feast: WorldItem): Promise<void> 
   // checkout refusal is measured against the riders' LIVE limit, so it runs on any target; the steps after it need
   // the owner's limit (a near-limit order above the GY$8,000 shown-amount rule).
   const OWNER_LIMIT = 100_000;
-  const p0 = (await GET('/rider/profile', mover(ctx, pool[0]!).session.token)).json?.data;
-  const LIMIT = Number(p0?.float?.limit ?? p0?.floatLimit) || OWNER_LIMIT;
+  // [REVIEW-2469 S3-3] Every goods mover in play, not just the first: on a target with mixed trust levels (staging:
+  // 8,000 / 20,000 / 40,000) the refusal is certain only above the LARGEST limit among them (the riders, and a taxi
+  // car's delivery profile when /rider/profile answers for its driver: with car deliveries on, a free twin near the
+  // store is one of checkout's dispatch candidates), and the near-limit steps need the SMALLEST to be the owner's.
+  const drivers = onlineOf(ctx, 'driver');
+  const riderLimits = await cashLimitsOf(ctx, pool);
+  const twinLimits = await cashLimitsOf(ctx, drivers);
+  const limits = [...riderLimits, ...twinLimits];
+  rec.require('the cash limits of the riders in play are readable', riderLimits.length >= 1,
+    `read ${riderLimits.length} of ${pool.length} riders, ${twinLimits.length} taxi car delivery profiles`);
+  const LIMIT = Math.max(...limits);
+  const MIN_LIMIT = Math.min(...limits);
   const bigQty = Math.floor(LIMIT / feast.price) + 1; // 23 × 4500 = 103,500 at 100,000
   // [RIDE-03 fix] cap at checkout: a cash basket more than any rider near may carry is refused BEFORE it is placed,
   // with the alternatives that work (the store's MMG when it takes MMG; pickup) — never an order no rider can take.
@@ -205,9 +215,11 @@ async function ride03(rec: Recorder, ctx: Ctx, feast: WorldItem): Promise<void> 
   rec.check('the refusal says why (too much cash for any rider near) and offers pickup', why?.details?.reason === 'CASH_OVER_RIDER_LIMIT' && /Pickup/.test(String(why?.message ?? '')),
     `reason=${why?.details?.reason} message=${why?.message}`);
   for (const id of orderIdsOf(big.res)) await POST(`/customer/orders/${id}/cancel`, { reason: 'journey cleanup' }, ctx.roster.customers.C4!.session.token);
+  await twinGap(rec, ctx, feast, Math.max(...riderLimits), twinLimits, drivers);
   // The same basket paid to the store by MMG is placed (no cash to carry): proven in CI (rider-safe-capacity.test
   // RIDE-03). Not here: an MMG order needs a store with a live MMG number, which needs the owner's SMS step-up.
-  rec.require('the riders carry the owner’s GY$100,000 cash limit (seed 2026-11-07.1) for the near-limit steps', LIMIT === OWNER_LIMIT, `rider cash limit on this target = ${LIMIT}`);
+  rec.require('every rider in play carries the owner’s GY$100,000 cash limit (seed 2026-11-07.1) for the near-limit steps',
+    MIN_LIMIT === OWNER_LIMIT && LIMIT === OWNER_LIMIT, `rider cash limits on this target: ${[...new Set(limits)].sort((x, y) => x - y).join(', ')}`);
   const nearQty = Math.floor(LIMIT / feast.price); // 22 × 4500 = 99,000: fits alone, not beside a first order
 
   const first = await assignedExpress(rec, ctx, 'C4', 'ride03-f1', 'R1-feast', 1, pool);
@@ -257,6 +269,41 @@ async function ride03(rec: Recorder, ctx: Ctx, feast: WorldItem): Promise<void> 
   }
   const pa3 = (await GET('/rider/profile', a.session.token)).json?.data;
   rec.check('delivery releases the float', Number(pa3?.float?.committed ?? pa3?.committedFloat ?? 0) === 0, `committed=${pa3?.float?.committed ?? pa3?.committedFloat}`);
+}
+
+/** The cash limit of each mover that answers /rider/profile (a rider, or a taxi driver's car delivery profile). */
+async function cashLimitsOf(ctx: Ctx, ids: MoverId[]): Promise<number[]> {
+  const out: number[] = [];
+  for (const id of ids) {
+    const p = (await GET('/rider/profile', mover(ctx, id).session.token)).json?.data;
+    const lim = Number(p?.float?.limit ?? p?.floatLimit);
+    if (Number.isFinite(lim) && lim > 0) out.push(lim);
+  }
+  return out;
+}
+
+/**
+ * [REVIEW-2472 A-5] The twin gap. Checkout's "riders near" (and their cash limits) never count a taxi car's delivery
+ * profile; a twin counts only as a dispatch candidate (car deliveries on, its taxi online, free and near). So where a
+ * twin's limit is above every rider's, a basket between the riders' largest limit and the twin's must still be
+ * refused for its cash once no twin is a candidate (every taxi offline for the step, back online after): the refusal
+ * follows the riders' own limits, not only the largest limit in play. Nothing to add where no twin carries more cash
+ * than the riders: the refusal above LIMIT is then this one.
+ */
+async function twinGap(rec: Recorder, ctx: Ctx, feast: WorldItem, riderMax: number, twinLimits: number[], drivers: MoverId[]): Promise<void> {
+  const gapQty = Math.floor(riderMax / feast.price) + 1;
+  const gapCash = gapQty * feast.price;
+  if (!twinLimits.some((l) => l >= gapCash)) return;
+  for (const id of drivers) await setOnline(ctx, id, false);
+  try {
+    const gap = await placeExpress(ctx, 'C4', 'R1', 'R1-feast', 'ride03-gap', gapQty);
+    rec.deny('a cash basket above every rider’s limit, within a taxi car’s, is refused while no taxi is online', gap.res, [409], ['DELIVERY_NO_RIDERS'],
+      `store price ${gapCash} > riders' largest limit ${riderMax}; car limits ${twinLimits.join(', ')}`);
+    rec.check('the twin-gap refusal is for the cash', gap.res.json?.error?.details?.reason === 'CASH_OVER_RIDER_LIMIT', `reason=${gap.res.json?.error?.details?.reason}`);
+    for (const id of orderIdsOf(gap.res)) await POST(`/customer/orders/${id}/cancel`, { reason: 'journey cleanup' }, ctx.roster.customers.C4!.session.token);
+  } finally {
+    for (const id of drivers) await setOnline(ctx, id, true);
+  }
 }
 
 export const RIDE_04: Journey<Ctx> = {

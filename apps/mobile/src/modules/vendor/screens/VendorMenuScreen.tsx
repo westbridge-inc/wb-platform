@@ -47,6 +47,7 @@ import { Switch as AvailabilitySwitch } from '../../../kit/switch';
 import { catalogueMeta, safeVendorRole, numericFact } from '../shared';
 import { storeKindWords } from '../../../lib/storeKindWords';
 import { catalogueCheckLine } from '../../../lib/catalogueCheck';
+import { addedBySwiftLine, photoAddedBySwiftLine } from '../../../lib/assistedSetupCopy';
 
 export function MenuItemRow({
   item,
@@ -155,6 +156,12 @@ export function MenuItemRow({
           {catalogueCheckLine(item.catalogueCheck) ? (
             <T variant="caption" weight="semibold" style={{ marginTop: space.xs, color: item.catalogueCheck?.status === 'NOT_ALLOWED' ? color.error : color.warning }}>
               {catalogueCheckLine(item.catalogueCheck)}
+            </T>
+          ) : null}
+          {/* [ASSISTED SETUP · owner 12 Nov 2026] Added by Swift with the store's OK: edited or replaced as the store's own. */}
+          {item.addedBySwiftAt || item.photoAddedBySwiftAt ? (
+            <T variant="caption" tone="muted" style={{ marginTop: space.xs }}>
+              {[item.addedBySwiftAt ? addedBySwiftLine(item.addedBySwiftAt) : null, item.photoAddedBySwiftAt ? photoAddedBySwiftLine(item.photoAddedBySwiftAt) : null].filter(Boolean).join(' · ')}
             </T>
           ) : null}
         </View>
@@ -748,6 +755,18 @@ export function VendorMenuScreen({ navigation }: any) {
                 <T variant="caption" tone="muted" style={{ marginBottom: space.md }}>
                   Add a section first, then add individual items.
                 </T>
+              ) : null}
+              {/* [MENU-OPTIONS · owner 11 Nov 2026] Shared option groups (sizes, crusts, toppings): built once, on many items. */}
+              {store?.vendorType !== 'SERVICE' ? (
+                <PillButton
+                  label="Option library"
+                  icon="layers"
+                  variant="outline"
+                  size="md"
+                  style={{ marginBottom: space.md }}
+                  disabled={readOnly}
+                  onPress={() => navigation.navigate('VendorOptionLibrary')}
+                />
               ) : null}
             </>
           ) : (

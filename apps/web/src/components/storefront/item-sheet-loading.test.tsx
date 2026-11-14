@@ -44,7 +44,8 @@ type Gate = { release: () => void; fail: boolean };
  * `preloaded`: the code is already evaluated, so it lands within microtasks of
  * the release (a fetch that completes at a precise moment).
  */
-async function freshPage(gate: Gate, options: { preloaded?: boolean; liveMenu?: Promise<unknown>; cart?: unknown } = {}) {
+async function freshPage(gate: Gate, options: { preloaded?: boolean; liveMenu?: Promise<unknown>; cart?: unknown; menu?: StorefrontDetail } = {}) {
+  const shown = options.menu ?? store;
   vi.resetModules();
   let open!: () => void;
   let held = new Promise<void>((resolve) => { open = resolve; });
@@ -61,8 +62,8 @@ async function freshPage(gate: Gate, options: { preloaded?: boolean; liveMenu?: 
   const customer: typeof CustomerModule = await import('@/lib/customer');
   const auth = await import('@/lib/auth');
   vi.spyOn(auth, 'sessionProbe').mockResolvedValue({ ok: true } as Awaited<ReturnType<typeof auth.sessionProbe>>);
-  vi.spyOn(customer, 'getPublicStorefront').mockResolvedValue(store);
-  const vendor = { ...store, description: undefined } as unknown as CustomerModule.VendorDetail;
+  vi.spyOn(customer, 'getPublicStorefront').mockResolvedValue(shown);
+  const vendor = { ...shown, description: undefined } as unknown as CustomerModule.VendorDetail;
   if (options.liveMenu) vi.spyOn(customer, 'getPublicVendor').mockImplementation(() => options.liveMenu!.then(() => vendor));
   else vi.spyOn(customer, 'getPublicVendor').mockResolvedValue(vendor);
   vi.spyOn(customer, 'getCart').mockResolvedValue((options.cart ?? emptyCart) as unknown as CustomerModule.Cart);
@@ -136,6 +137,21 @@ describe('[W6] the item sheet is not in the store page’s first load', () => {
     await waitFor(() => expect(document.activeElement).toBe(within(sheet).getByRole('button', { name: 'Close item options' })));
     fireEvent.click(within(sheet).getByRole('button', { name: 'Close item options' }));
     await waitFor(() => expect(document.activeElement).toBe(choose));
+  });
+
+  it('[W6 · size] a tap before its code arrives still opens the sheet with the store’s pre-selected choice (the sheet model arrives with the code)', async () => {
+    const preset = { ...SIZE, options: [option('regular', 'Regular', '0'), { ...option('large', 'Large', '400'), isDefault: true }] };
+    const menu = { ...store, categories: [{ id: 'mains', name: 'Mains', items: [soup, { ...curry, optionGroups: [preset] }] }] } as unknown as StorefrontDetail;
+    const gate: Gate = { release: () => undefined, fail: false };
+    const { StorefrontExperience } = await freshPage(gate, { menu });
+    render(<StorefrontExperience store={menu} returnPath="/store/sample-kitchen" />);
+    await chooseCurry();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(screen.queryByRole('dialog')).toBeNull();
+    gate.release();
+    const sheet = await screen.findByRole('dialog', { name: 'Curry & roti' }, ARRIVAL);
+    await waitFor(() => expect((within(sheet).getByRole('radio', { name: /Large/ }) as HTMLInputElement).checked).toBe(true));
+    expect((within(sheet).getByRole('radio', { name: /Regular/ }) as HTMLInputElement).checked).toBe(false);
   });
 
   it('a link that names an item (?item=) opens its sheet once the live menu and the sheet’s code are in', async () => {

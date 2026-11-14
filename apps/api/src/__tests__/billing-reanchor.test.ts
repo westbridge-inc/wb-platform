@@ -7,7 +7,7 @@ import { redisPlugin } from '../plugins/redis';
 import { authPlugin } from '../plugins/auth';
 import { socketPlugin } from '../plugins/socket';
 import { registerErrorHandler } from '../middleware/error-handler';
-import { BillingService } from '../modules/billing/billing.service';
+import { BillingService, cardPayNowSettlement } from '../modules/billing/billing.service';
 import { NotificationService } from '../modules/notification/notification.service';
 import { getPaymentProvider } from '../providers/payment/payment-provider';
 import { sandboxSetTxStatus } from '../providers/mmg/mmg-provider';
@@ -237,6 +237,29 @@ describe('BILLING-REANCHOR — a returning partner pays from the week they retur
     expect((await sub(v.subId)).status).toBe('ACTIVE');
   });
 
+  it('[audit FABLE-01 C2-1] stopping weekly billing while PAST_DUE: the grace still ends in a suspension, so the return pays from the week they return (no arrears)', async () => {
+    const due = new Date(Date.now() - 15 * DAY);
+    const v = await brokeVendorSub(due);
+    await billing.runBillingCycle(due);
+    expect((await sub(v.subId)).status).toBe('PAST_DUE');
+    await billing.stopBilling(v.subId, v.userId);
+    // Stopped: nothing is charged or retried, but the grace still runs out (the operate gate refuses work from then).
+    await billing.runBillingCycle(new Date(due.getTime() + 25 * HOUR));
+    await billing.runBillingCycle(new Date(due.getTime() + 50 * HOUR));
+    expect(await attempts(v.subId)).toBe(1);
+    const suspended = await sub(v.subId);
+    expect(suspended.status).toBe('SUSPENDED');
+    expect(suspended.autoRenew).toBe(false);
+    suspendedAtOf.set(v.subId, suspended.suspendedAt!);
+    // Two weeks later they come back: resume, then two weeks of money.
+    const before = Date.now();
+    await billing.setBillingRail(v.subId, 'CASH');
+    await topUp(v.subId, 2 * RATE, 'back after a stop');
+    for (const h of [0, 1]) await billing.runBillingCycle(new Date(Date.now() + h * 1000));
+    await expectReturnedAt(v.subId, due, before - 1000, Date.now() + 1000);
+    expect(await balance(v.subId)).toBe(RATE); // the second week's money is still theirs: no stopped week was billed
+  });
+
   it('[REVIEW-G S2-1 · COORD 17 Oct] no fee cut by gaming the grace: let a charge fail, operate through the 48-hour grace, get suspended, pay at once: the grace days are still paid', async () => {
     const due = new Date(Date.now() - 50 * HOUR - 60_000);
     const v = await brokeVendorSub(due);
@@ -391,6 +414,28 @@ describe('BILLING-REANCHOR — a returning partner pays from the week they retur
     expect(await app.prisma.billingEvent.count({ where: { idempotencyKey: `bank:${capture.id}` } })).toBe(1);
     expect(await successes(v.subId)).toHaveLength(1);
     expect(await balance(v.subId)).toBe(RATE - 15_000);
+  });
+
+  // [N1 · CARD-STAGING-TEST R2 · owner 10 Nov 2026] A card payment that brings a suspended partner back is kept as fee
+  // credit and spent AT ONCE on the return week (above): the week is paid. The card rail's settlement says so
+  // (`advanced`), on the booking's own answer and on every repeat, never `banked` ("kept for your next weekly fee"),
+  // although a bank event is written for it. Money kept for a week that has not started stays `banked`.
+  it('[N1] a card return reports its week PAID (advanced), on the first answer and on a repeat; booked once', async () => {
+    const due = new Date(Date.now() - 10 * DAY);
+    const v = await brokeVendorSub(due);
+    await suspendFrom(v.subId, due);
+    const capture = await cardInstruction(v.subId, due, RATE);
+    const providerRef = `card-capture-${capture.id}`;
+    const from = Date.now();
+    expect(await billing.settleHostedCardPayment({ subscriptionId: v.subId, paymentId: capture.id, providerRef })).toEqual({ outcome: 'advanced' });
+    await expectReturnedAt(v.subId, due, from, Date.now());
+    expect(await app.prisma.billingEvent.count({ where: { idempotencyKey: `bank:${capture.id}` } })).toBe(1);
+    expect(await cardPayNowSettlement(app.prisma, capture.id)).toBe('advanced');
+    // Asked again (a racing confirmation, the sweep, a finance BOOK replay): nothing more is booked, and it is still the week paid.
+    expect(await billing.settleHostedCardPayment({ subscriptionId: v.subId, paymentId: capture.id, providerRef })).toEqual({ outcome: 'advanced' });
+    expect(await app.prisma.billingEvent.count({ where: { idempotencyKey: `bank:${capture.id}` } })).toBe(1);
+    expect(await successes(v.subId)).toHaveLength(1);
+    expect(await balance(v.subId)).toBe(0);
   });
 
   it('a repeated top-up key credits once and reinstates once', async () => {

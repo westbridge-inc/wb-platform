@@ -42,6 +42,17 @@ export async function approvedEvidenceFor(db: EvidenceDb, userId: string, checkl
 }
 
 /**
+ * [COMPANY-DOCS Part 3 · owner rulings 10 Nov 2026 (c), (d)] A paper filed FOR an account change (a new business type's,
+ * or a new account holder's) is evidence only once a person approved that change: until then the account keeps working
+ * on the papers it had, and a refused or withdrawn change leaves nothing behind. `withChange` also counts the papers of
+ * that one change (what the change would give, read before it is decided). The one live-paper rule: evidence below and
+ * the storefront's supplier block (storefront-disclosure.ts) both read it.
+ */
+export function liveSubmissionWhere(withChange?: string): Prisma.VerificationDocumentWhereInput {
+  return { OR: [{ accountChangeId: null }, { accountChange: { status: 'APPROVED' } }, ...(withChange ? [{ accountChangeId: withChange }] : [])] };
+}
+
+/**
  * [SEC-TRUST F9] The vehicle subjects whose evidence counts for this account: every OPEN, APPROVED link —
  * except that the link of the account that REGISTERED the vehicle counts only while that account holds a
  * paper of its own for the vehicle that a person approved (not revoked). Naming a plate first proves
@@ -63,7 +74,9 @@ export async function countableVehicleSubjectIds(db: EvidenceDb, userId: string,
 }
 
 /** The records themselves: the evidence rule. */
-export async function recordEvidenceFor(db: EvidenceDb, userId: string, checklist: readonly string[], now: Date): Promise<EvidenceRow[]> {
+export async function recordEvidenceFor(
+  db: EvidenceDb, userId: string, checklist: readonly string[], now: Date, opts: { withChange?: string; onlyChange?: string } = {},
+): Promise<EvidenceRow[]> {
   const vehicleIds = await countableVehicleSubjectIds(db, userId);
   const records = await db.documentRecord.findMany({
     where: {
@@ -74,6 +87,10 @@ export async function recordEvidenceFor(db: EvidenceDb, userId: string, checklis
         { OR: validExpiryOr('expiresOn', now) },
         { OR: [{ accountId: userId }, ...(vehicleIds.length ? [{ subjectId: { in: vehicleIds } }] : [])] },
         { submission: { purgedAt: null, OR: [{ retentionExpiresAt: null }, { retentionExpiresAt: { gt: now } }] } },
+        // [COMPANY-DOCS Part 3] never a paper waiting for its account change (liveSubmissionWhere)
+        { submission: liveSubmissionWhere(opts.withChange) },
+        // [review-2475 F1] a handover reads only the papers filed for it (never one the person holds from another account)
+        ...(opts.onlyChange ? [{ submission: { accountChangeId: opts.onlyChange } }] : []),
       ],
     },
     select: {

@@ -184,6 +184,9 @@ describe('[V3] the grant is explicit-only: `*`, a wildcard or a role default nev
       // [OWNER-ASKS · security review 9 Nov 2026] The home-visit selfie compared with the approved ID: its queue and its
       // decision show and judge a person's ID beside their face, so the same reviewers.
       'GET /verification/selfie-checks', 'POST /verification/:id/selfie-check',
+      // [COMPANY-DOCS Part 3 · owner rulings 10 Nov 2026 (c), (d)] An account change (a new business type, a new account
+      // holder) is decided against the papers filed for it: its queue, its page and its decisions are the same reviewers'.
+      'GET /account-changes', 'GET /account-changes/:id', 'PUT /account-changes/:id/approve', 'PUT /account-changes/:id/refuse',
     ];
     for (const door of doors) expect((authority.ADMIN_ROUTE_AUTHORITY[door] as { requires?: string } | undefined)?.requires, door).toBe(GRANT);
     const others = Object.entries(authority.ADMIN_ROUTE_AUTHORITY).filter(([k, a]) => !doors.includes(k) && (a as { requires?: string }).requires);
@@ -279,7 +282,7 @@ describe('[V3] deciding a document', () => {
   it('approve, reject and revoke are refused without the grant and change nothing', async () => {
     const a = await admin(['*'], 'SUPER_ADMIN');
     const pending = await pendingOwnerDoc();
-    const approve = await call(a.token, 'PUT', `/verification/${pending.id}/approve`, { registrationKind: 'COMPANY' }); // [R16]
+    const approve = await call(a.token, 'PUT', `/verification/${pending.id}/approve`, { registrationKind: 'COMPANY', legalName: 'Fixture Registered Name Ltd' }); // [R16]
     expect(approve.statusCode).toBe(403);
     expect(approve.json().error.code).toBe(REQUIRED);
     const reject = await call(a.token, 'PUT', `/verification/${pending.id}/reject`, { reason: REASON, reasonCode: 'UNREADABLE' });
@@ -295,7 +298,7 @@ describe('[V3] deciding a document', () => {
   it('with the grant the same admin approves and rejects', async () => {
     const r = await admin(['*', GRANT], 'SUPER_ADMIN');
     const one = await pendingOwnerDoc();
-    expect((await call(r.token, 'PUT', `/verification/${one.id}/approve`, { registrationKind: 'COMPANY' })).statusCode).toBe(200); // [R16]
+    expect((await call(r.token, 'PUT', `/verification/${one.id}/approve`, { registrationKind: 'COMPANY', legalName: 'Fixture Registered Name Ltd' })).statusCode).toBe(200); // [R16]
     expect(await statusOf(one.id)).toBe('APPROVED');
     const two = await pendingOwnerDoc();
     expect((await call(r.token, 'PUT', `/verification/${two.id}/reject`, { reason: REASON, reasonCode: 'UNREADABLE' })).statusCode).toBe(200);

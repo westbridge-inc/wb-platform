@@ -108,6 +108,7 @@ describe('the allowlist census — no secret the API reads can fall back to the 
   /** Secret-shaped by spelling, settings by nature. Each carries its reason. */
   const NON_SECRET: Record<string, string> = {
     DEV_OTP_BYPASS: 'a development switch (0/1), refused in production by the boot guard',
+    AUTHORITY_LETTER_ESIGN: 'the letter-of-authority signing switch (1 = on; "AUTH" is from authority): a setting, not a secret',
     MALWARE_SCAN_BYPASS: 'the scanner-down emergency switch (1 = on; "PASS" is from bypass): a setting, not a secret; every upload it lets through is recorded as scan debt and rescanned',
     MASTER_KEK_ESCROW_FINGERPRINT: 'the sha256 of the key bytes, recorded beside the key on purpose so a stale escrow is caught',
     NOT_MY_DRIVER_AUTHORITY_KILL: 'a kill switch for a dispatch rule',
@@ -171,6 +172,7 @@ describe('the allowlist census — no secret the API reads can fall back to the 
     APP_STORE_URL: 'a public store listing',
     PLAY_STORE_URL: 'a public store listing',
     AWS_S3_ENDPOINT: 'object-storage endpoint; the keys travel as AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY',
+    DRAGONTAIL_API_URL: 'kitchen-system API base; the per-store logins travel as DRAGONTAIL_CREDENTIALS, never in the address',
     TWILIO_INBOUND_SMS_URL: 'this deployment\'s own public inbound-SMS webhook address, exactly as set on the Twilio number; Twilio signs over it with TWILIO_WEBHOOK_AUTH_TOKEN, and no credential rides in it',
   };
   const urlLike = [...reads.keys()].filter((n) => URL_LIKE.test(n) && !PUBLIC_PREFIX.test(n)).sort();

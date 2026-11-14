@@ -43,7 +43,8 @@ function fixture() {
       findUnique: vi.fn(async () => driver), findUniqueOrThrow: vi.fn(async () => driver),
     },
     rider: { findUnique: vi.fn(async () => order.riderId ? { ...driver, id: order.riderId } : null), findUniqueOrThrow: vi.fn(async () => ({ ...driver, id: order.riderId })) },
-    user: { findUnique: vi.fn(async () => ({ lossProtectionSuspendedAt: null })) },
+    // [audit B-1] The claim's recusal reads the deciding admins' roles: none of these fixture people is staff.
+    user: { findUnique: vi.fn(async () => ({ lossProtectionSuspendedAt: null })), findMany: vi.fn(async () => []) },
     session: { findFirst: vi.fn(async () => ({ id: 'safeb-session' })) },
     identityClusterMember: { findUnique: vi.fn(async () => null) },
     order: {

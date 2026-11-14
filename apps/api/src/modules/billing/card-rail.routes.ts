@@ -16,9 +16,9 @@ import type { CardRailProvider, CardRailSource } from '../../providers/card/card
 import type { OnAudit } from '../../lib/audit-writer';
 import { SIMULATOR_PAGE, SimulatorCardRailProvider, SimulatorRefusal } from '../../providers/card/simulator-provider';
 import { PowerTranzCardRailProvider, type PowerTranzHostedPage } from '../../providers/card/powertranz-provider';
-import { BillingService } from './billing.service';
-import { creditRefundCheckable, heldRefundCheckable } from './card-credit-refund';
-import { CARD_ON_FILE_CONSENT_VERSION, CARD_RESOLVE_ACTIONS, CARD_SANDBOX_TEST_LABEL, CardRailService, INSTRUMENT_DTO_SELECT, cardTestLabel, type CardSessionDto, type PaymentInstrumentDto } from './card-rail.service';
+import { BillingService, cardPayNowSettlement } from './billing.service';
+import { confirmPortalNothingBack, creditRefundCheckable, heldRefundCheckable } from './card-credit-refund';
+import { CARD_ON_FILE_CONSENT_VERSION, CARD_RESOLVE_ACTIONS, CARD_SANDBOX_TEST_LABEL, CardRailService, INSTRUMENT_DTO_SELECT, cardTestLabel, heldReversalRefused, type CardSessionDto, type PaymentInstrumentDto } from './card-rail.service';
 import { CARD_OFF, cardPayAction, cardSessionsAllowed, type CardPayAction } from './card-pay-action';
 import { clientPlatform, type PayAction } from './fee-pay-actions';
 import { LOCK_ICON, SWIFT_PAGE_HEADER, buttonLink, cardPageHtml, escapeHtml, testBanner, toneChip, type CardPageTone } from './card-page-look';
@@ -155,8 +155,8 @@ export interface CardSessionView {
   amount?: number;
   currencyCode?: string;
   card?: PaymentInstrumentDto;
-  /** PAY_NOW that SUCCEEDED: the paid week moved (`advanced`), or the money
-   *  went to the balance because that week was already covered (`banked`). */
+  /** PAY_NOW that SUCCEEDED: a week was paid (`advanced`: the paid week moved, or a return's money paid its return
+   *  week at once), or the money was kept as fee credit for a week that has not started (`banked`). */
   settlement?: 'advanced' | 'banked';
   /** FAILED, EXPIRED or CANCELLED: why, in one plain category the screen can word. */
   failure?: CardSessionFailure;
@@ -312,7 +312,8 @@ export function cardSessionFailure(status: CardSessionStatus, failureCode: strin
     case 'DECLINED': return 'DECLINED';
     case 'NOT_AUTHENTICATED': case 'EXPIRED_UNAUTHENTICATED': return 'NOT_AUTHENTICATED';
     case 'CARD_EXPIRED': return 'CARD_EXPIRED';
-    case 'EXPIRED_UNUSED': case 'PROVIDER_UNKNOWN': return 'NOT_FINISHED';
+    // [REVIEW-2496-B S4-4] PowerTranz's record shows the page never completed: "not finished, nothing charged".
+    case 'EXPIRED_UNUSED': case 'PROVIDER_UNKNOWN': case 'NOT_COMPLETED_ON_RECORD': return 'NOT_FINISHED';
     case 'PROVIDER_PAGE_UNAVAILABLE': return 'PAGE_UNAVAILABLE';
     default: return undefined;
   }
@@ -331,9 +332,10 @@ async function cardSessionView(
   const card = s.instrumentId
     ? await prisma.paymentInstrument.findUnique({ where: { id: s.instrumentId }, select: INSTRUMENT_DTO_SELECT })
     : null;
-  // The same evidence settleHostedCardPayment reads: a bank event for this payment means it was banked.
+  // [N1] The same answer settleHostedCardPayment gives: kept as fee credit (`banked`), or a week paid (`advanced`) — a
+  // RETURN included, whose credit paid the return week at once (cardPayNowSettlement).
   const settlement = s.purpose === 'PAY_NOW' && s.status === 'SUCCEEDED' && s.paymentId
-    ? ((await prisma.billingEvent.findUnique({ where: { idempotencyKey: `bank:${s.paymentId}` }, select: { id: true } })) ? 'banked' as const : 'advanced' as const)
+    ? await cardPayNowSettlement(prisma, s.paymentId)
     : undefined;
   const testModeLabel = cardTestLabel(s);
   const testMode = testModeLabel !== undefined;
@@ -754,8 +756,13 @@ const ADMIN_SESSION_SELECT = {
   instrumentId: true, paymentId: true, createdAt: true,
   // [Review S2-2] What finance needs to look a held payment up and resolve it.
   providerTransactionRef: true, providerVoidState: true, providerRefundState: true, bookClaimedAt: true, resolution: true, resolvedBy: true, resolvedAt: true,
+  // [VOID-REFUND-CHECK F1/F3] What finance's reversal sent (VOID or REFUND), what a check of a refused one found, and
+  // whether the one further reversal was used.
+  providerReversalKind: true, reversalCheck: true, reversalRetryAt: true, providerVoidAt: true,
   // [CARD-STAGING-TEST 10 Nov 2026] The void's own provider transaction, when PowerTranz named it (the portal's Void row).
   providerVoidRef: true,
+  // [R1 · CARD-STAGING-TEST R2] A HELD payment's refund: its own provider transaction, when PowerTranz named it (the portal's refund row).
+  providerRefundRef: true,
 } as const;
 
 const ADMIN_CARD_SELECT = {
@@ -796,14 +803,14 @@ export async function adminCardSessions(prisma: PrismaClient, query: unknown) {
   if (q.before && !cursor) throw new AppError(400, 'INVALID_CURSOR', 'There is no such card session to page from.');
   const unanswered = ['UNKNOWN', 'PENDING', 'SENDING'];
   const creditRefundSessions = q.refund
-    ? (await prisma.cardCreditRefund.findMany({ where: { tenantId, state: { in: unanswered } }, select: { cardSessionId: true } })).map((r) => r.cardSessionId)
+    ? (await prisma.cardCreditRefund.findMany({ where: { tenantId, OR: [{ state: { in: unanswered } }, { state: 'FAILED', checkedAt: null }] }, select: { cardSessionId: true } })).map((r) => r.cardSessionId)
     : [];
   const rows = await prisma.cardSession.findMany({
     where: {
       tenantId, ...(q.status ? { status: q.status } : {}), ...(q.purpose ? { purpose: q.purpose } : {}), ...(q.subscriptionId ? { subscriptionId: q.subscriptionId } : {}),
       AND: [
         ...(cursor ? [{ OR: [{ createdAt: { lt: cursor.createdAt } }, { createdAt: cursor.createdAt, id: { lt: cursor.id } }] }] : []),
-        ...(q.refund ? [{ OR: [{ status: 'HELD' as const, resolution: null, providerRefundState: { in: unanswered } }, { id: { in: creditRefundSessions } }] }] : []),
+        ...(q.refund ? [{ OR: [{ status: 'HELD' as const, resolution: null, providerRefundState: { in: [...unanswered, 'FAILED'] } }, { id: { in: creditRefundSessions } }] }] : []),
       ],
     },
     orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
@@ -815,7 +822,7 @@ export async function adminCardSessions(prisma: PrismaClient, query: unknown) {
   // [CARD-REFUND-LOOKUP] Beside each payment: its refund of set-aside credit to the card (if any), and whether a
   // refund of it can be checked with the card provider now ("Check with the card provider", two people).
   const refunds = page.length
-    ? await prisma.cardCreditRefund.findMany({ where: { tenantId, cardSessionId: { in: page.map((r) => r.id) } }, select: { cardSessionId: true, state: true, providerRefundRef: true, createdAt: true } })
+    ? await prisma.cardCreditRefund.findMany({ where: { tenantId, cardSessionId: { in: page.map((r) => r.id) } }, select: { cardSessionId: true, state: true, kind: true, checkedAt: true, providerRefundRef: true, createdAt: true }, orderBy: { createdAt: 'desc' } })
     : [];
   const now = new Date();
   return {
@@ -823,8 +830,8 @@ export async function adminCardSessions(prisma: PrismaClient, query: unknown) {
       const credit = refunds.find((r) => r.cardSessionId === row.id);
       return {
         ...withAmount(row),
-        cardRefund: credit ? { state: credit.state, providerRefundRef: credit.providerRefundRef } : null,
-        providerCheck: heldRefundCheckable({ ...row, providerRefundAt }, now) || (row.status !== 'HELD' && !!credit && creditRefundCheckable(credit, now)),
+        cardRefund: credit ? { state: credit.state, kind: credit.kind, checked: !!credit.checkedAt, providerRefundRef: credit.providerRefundRef } : null,
+        providerCheck: heldRefundCheckable({ ...row, providerRefundAt }, now) || heldReversalRefused(row, now) || (row.status !== 'HELD' && !!credit && creditRefundCheckable(credit, now)),
       };
     }),
     next: more ? page[page.length - 1]!.id : null,
@@ -903,6 +910,29 @@ export async function adminCheckCardProvider(app: FastifyInstance, id: string, b
     cardRailRuntimeOf(app).service.checkWithCardProvider({ sessionId: id, tenantId, adminUserId, ...(onAudit ? { onAudit } : {}) }),
     'CARD_SESSION_NOT_FOUND', 'There is no such card session.',
   );
+}
+
+const portalCheckedBody = z.object({
+  /** The reference PowerTranz's Merchant Portal shows for the payment (or its refused refund), as checked. */
+  portalReference: z.string().trim().min(4).max(64),
+  reason: z.string().trim().max(2000).optional(),
+}).strict();
+
+/**
+ * [REVIEW-2496-B S3-2 · OWNER RULING 12 Nov 2026] POST /billing/card-sessions/:id/portal-checked — "Checked the PowerTranz
+ * portal: nothing went back", for a REFUSED refund (or void) to the card that the lookup cannot settle. Declared C4:
+ * the owner and a second person (confirmPortalNothingBack refuses anything else). It sends nothing and records no
+ * money: it frees the held amount to be paid back another way, or released.
+ */
+export async function adminPortalCheckedCardRefund(app: FastifyInstance, id: string, body: unknown, adminUserId: string, approvalId: string, onAudit?: OnAudit) {
+  if (!cardRailV2Enabled() && !cardRailV2DrainEnabled()) throw new AppError(404, 'CARD_RAIL_UNAVAILABLE', 'Card payments are not available.');
+  if (!ID_SHAPE.test(id)) throw notFound('CARD_SESSION_NOT_FOUND', 'There is no such card session.');
+  const parsed = portalCheckedBody.safeParse(body ?? {});
+  if (!parsed.success) throw new AppError(400, 'INVALID_PORTAL_CHECK', 'Send { portalReference }: the reference PowerTranz\'s portal shows.');
+  const tenantId = boundTenant();
+  const owned = await app.prisma.cardSession.findFirst({ where: { id, tenantId }, select: { id: true } });
+  if (!owned) throw notFound('CARD_SESSION_NOT_FOUND', 'There is no such card session.');
+  return confirmPortalNothingBack(app.prisma, { adminId: adminUserId, approvalId, tenantId, cardSessionId: id, portalReference: parsed.data.portalReference, ...(onAudit ? { onAudit } : {}) });
 }
 
 /** GET /billing/subscriptions/:subscriptionId/cards — the bound setup, consent and how each card left service. */

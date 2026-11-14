@@ -94,6 +94,7 @@ import {
   reconciledRevenueDays,
   windowTotals,
 } from '../shared';
+import { ringMoney } from '../ringMoney';
 
 // Memoized: the live board re-renders on every socket event, but react-query's
 // structural sharing keeps the SAME reference for orders that didn't change, so
@@ -135,6 +136,8 @@ const VendorOrderCard = React.memo(function VendorOrderCard({
   const items = order.itemCount ?? order.items?.length ?? 0;
   const lines: any[] = order.items ?? [];
   const isPickup = order.fulfillment === 'PICKUP';
+  // [STORE-MONEY] The store's own money on this order (the server's storeMoney; ringMoney.ts reads it).
+  const boardMoney = ringMoney(order);
   const isAppt = order.fulfillment === 'APPOINTMENT';
   // A mobile service stores the customer's address (≠ the store's pickup address).
   const apptMobile = isAppt && !!order.deliveryAddress && order.deliveryAddress !== order.pickupAddress;
@@ -235,9 +238,16 @@ const VendorOrderCard = React.memo(function VendorOrderCard({
           </T>
         </View>
       ) : null}
+      {/* [STORE-MONEY · owner 11 Nov 2026] The store's own money (the food), never the customer's total with the
+          rider's delivery fee and tip; the server's lines say whose the rest is. */}
       <T variant="heading" style={{ marginTop: space.sm }}>
-        {money(order.totalAmount ?? order.total)}
+        {`${boardMoney.label} ${money(boardMoney.food)}`}
       </T>
+      {boardMoney.notes.map((line) => (
+        <T key={line} variant="caption" tone="muted" style={{ marginTop: 2 }}>
+          {line}
+        </T>
+      ))}
       {/* MMG direct-pay: the customer paid the store's own MMG. The vendor
           confirms they got it → the customer's screen flips to Paid. */}
       {isMmg ? (
@@ -307,6 +317,13 @@ const VendorOrderCard = React.memo(function VendorOrderCard({
       {order.handedToRiderAt ? (
         <T variant="caption" weight="semibold" tone="muted" style={{ marginTop: space.sm }}>
           {HANDOVER_WORDS.handedToRider}
+        </T>
+      ) : null}
+      {/* [PROD-RIDER-TEST (a)1] The search for this order came back empty: the board says so in the server's words;
+          the order screen holds the one-tap "We'll deliver it" and "Find a rider". */}
+      {order.noRiderFound === true && typeof order.noRiderPrompt === 'string' ? (
+        <T variant="label" weight="semibold" style={{ marginTop: space.sm, color: color.warning }}>
+          {order.noRiderPrompt} Open the order to choose.
         </T>
       ) : null}
       {/* [STORE-DASH · O-4] Why there is no Accept: the customer is answering, or nothing is left. */}

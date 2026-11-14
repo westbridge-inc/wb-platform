@@ -158,9 +158,13 @@ describe('census: nothing else turns subtotalBase into a float amount', () => {
     // the old one, in one transaction, through the one reader.
     // custody-case only READS it, to tell a store and a rider the same fronted
     // amount when goods come back (owner ruling, 4 Oct) — through the one reader.
+    // [REVIEW-2472 A-1] delivery-capacity only READS it too: before a placed CASH order is handed to Swift riders
+    // (the store's accept, or "Get a Swift rider"), it asks checkout's rider-cash question with the amount the
+    // float gate will hold.
     expect(importers).toEqual([
       'modules/custody/custody-case.ts',
       'modules/custody/custody-recovery.ts',
+      'modules/dispatch/delivery-capacity.ts',
       'modules/dispatch/delivery-watchdog.ts',
       'modules/dispatch/dispatch.service.ts',
       'modules/dispatch/float.service.ts',

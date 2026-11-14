@@ -14,8 +14,11 @@ describe('[FOOD-PERMIT · CHECKLIST-LEGAL] the business FAQ', () => {
     expect(FAQ).not.toMatch(/restaurant adds its GRA licence and food handler&apos;s permit/);
   });
 
-  it('says the restaurant confirms its food handlers, under the GRA Food Restaurant Licence', () => {
-    expect(FAQ).toContain('a restaurant adds its GRA Food Restaurant Licence and confirms that everyone who handles its food holds a current food handler&apos;s certificate');
+  // [RESTAURANT-TIN · owner ruling 12 Nov 2026 — a DELIBERATE change] a restaurant sends its TIN certificate in the GRA
+  // licence's place; the licence is optional, and the FAQ never says it is required
+  it('says the restaurant sends its TIN certificate and confirms its food handlers; its GRA licence is optional', () => {
+    expect(FAQ).toContain('a restaurant adds its TIN certificate from the GRA and confirms that everyone who handles its food holds a current food handler&apos;s certificate; its GRA Food Restaurant Licence is optional');
+    expect(FAQ).not.toMatch(/restaurant adds its GRA (Food Restaurant )?Licence/i);
   });
 
   it('offers no way in without a registration: a registered business name, or the own-name declaration', () => {

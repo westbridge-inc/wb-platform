@@ -23,9 +23,10 @@ const CERT = 'food_handler_cert';
 
 describe('[FOOD-PERMIT] the restaurant lists', () => {
   it('a registered restaurant (business name or own name) no longer must upload the certificate, and may', () => {
-    expect(DEFAULT_DOCUMENT_CHECKLISTS['RESTAURANT']).toEqual(['owner_national_id', 'business_registration', 'gra_restaurant_licence', 'storefront_photo']);
-    expect(DEFAULT_DOCUMENT_CHECKLISTS['RESTAURANT_OWN_NAME']).toEqual(['owner_national_id', 'own_name_declaration', 'gra_restaurant_licence', 'storefront_photo']);
-    expect(DEFAULT_DOCUMENT_CHECKLISTS['RESTAURANT_OPTIONAL']).toEqual([CERT]);
+    expect(DEFAULT_DOCUMENT_CHECKLISTS['RESTAURANT']).toEqual(['owner_national_id', 'business_registration', 'tin_certificate', 'storefront_photo']);
+    expect(DEFAULT_DOCUMENT_CHECKLISTS['RESTAURANT_OWN_NAME']).toEqual(['owner_national_id', 'own_name_declaration', 'tin_certificate', 'storefront_photo']);
+    // [RESTAURANT-TIN · owner 12 Nov 2026] the TIN certificate in the GRA licence's place; the licence optional
+    expect(DEFAULT_DOCUMENT_CHECKLISTS['RESTAURANT_OPTIONAL']).toEqual([CERT, 'gra_restaurant_licence']);
   });
 
   it('chef and caterer keep it required; [CHECKLIST-LEGAL] there is no self-declared tier any more', () => {
@@ -48,7 +49,8 @@ describe('[FOOD-PERMIT] the restaurant lists', () => {
     // [DEPT-PRICE] 2026-10-29.1 carries these lists on, with the department-store fee at 45,000 (dept-price.unit.test.ts);
     // [CHECKLIST-LEGAL] 2026-11-01.1 without the self-declared tier's lists (unregistered-tier-removed.test.ts)
     // [O1] 2026-11-07.1 carries the lists on unchanged (rider-cash-no-limit.test.ts)
-    expect(PLATFORM_CONFIG_VERSION).toBe('2026-11-07.1');
+    // [COMPANY-DOCS] 2026-11-10.1 carries them on, adding only the company and manager lists (company-signup-documents.test.ts)
+    expect(PLATFORM_CONFIG_VERSION).toBe('2026-11-12.1');
   });
 });
 

@@ -197,6 +197,10 @@ const ROUTE_CLASS: Record<string, 'ordering' | 'open'> = {
   '/vendors': 'open', '/drivers': 'open', '/legal/child-safety': 'open', '/legal/delivery': 'open', '/legal/privacy': 'open',
   '/legal/refunds': 'open', '/legal/terms': 'open', '/account/delete': 'open', '/launching-soon': 'open', '/offline': 'open',
   '/login': 'open', '/signup': 'open',
+  // [COMPANY-DOCS · owner 10 Nov 2026] the printable letters of authority a partner signs (linked from the app and Documents).
+  '/letters/company-authority': 'open', '/letters/owner-authority': 'open',
+  // [COMPANY-DOCS PART 2] the page a director (or an owner) signs the letter of authority on, from Swift's text.
+  '/sign-letter': 'open',
   // [WEB-DELETE] Where a person lands once their account is deleted (signed out by then; partners delete before launch).
   '/account-deleted': 'open',
   // Partner consoles (stores, riders, drivers, advertisers) work before launch.
@@ -205,6 +209,7 @@ const ROUTE_CLASS: Record<string, 'ordering' | 'open'> = {
   '/dashboard/branches': 'open', '/dashboard/branches/add': 'open', '/dashboard/team': 'open', // [CHAINS PR2]
   '/dashboard/promotions': 'open', '/dashboard/categories': 'open', // [WEB-SETTINGS PR-B] ([CHECKLIST-LEGAL] no seller status)
   '/dashboard/settings/delete-account': 'open', // [WEB-DELETE] a store's people delete (or close) their own account
+  '/dashboard/settings/business-type': 'open', // [COMPANY-DOCS Part 3] the account holder changes the business type (no ordering)
   '/portal': 'open', '/portal/account': 'open', '/portal/documents': 'open', '/portal/history': 'open',
   '/portal/notifications': 'open', '/portal/weekly-fee': 'open', '/portal/account/delete': 'open', // [WEB-DELETE]
   '/portal/help': 'open', '/dashboard/help': 'open', // [BUG-HUNT F04] a partner's way to a person works before launch

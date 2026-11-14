@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { ADDED_BY_SWIFT_REPLACE_HINT, addedBySwiftLine } from '../../lib/assistedSetupCopy';
 import { Alert, Linking, Pressable, View, ActivityIndicator } from 'react-native';
 import * as ImagePicker from 'expo-image-picker';
 import { useNavigation } from '@react-navigation/native';
@@ -45,8 +46,10 @@ export function DocumentUploadCard({
   reviewNote,
   isNext,
   replaced = false,
+  addedBySwift = false,
   optionalHint,
   hint,
+  paperHelp,
   consented = false,
   askConsentFirst = false,
   consentVia = 'checkbox',
@@ -61,11 +64,15 @@ export function DocumentUploadCard({
   isNext?: boolean;
   /** [REPLACE-PENDING] This copy replaced an earlier one that was still waiting for review. */
   replaced?: boolean;
+  /** [ASSISTED SETUP · owner 12 Nov 2026] A Swift admin added this paper for the store with its OK (the date is submittedAt). */
+  addedBySwift?: boolean;
   /** [VERIFY-DOCS] Set for a document the person MAY add: what it is for. Never a gate, so no
    *  "keep operating" copy and no "next step" nudge. */
   optionalHint?: string;
   /** [Owner ruling 11 Oct 2026] What this document is, in plain words (taxi checklist). */
   hint?: string;
+  /** [COMPANY-DOCS · owner 10 Nov 2026] What a company's or a manager's paper is, and the website's one-page letter to sign. */
+  paperHelp?: { text: string; link?: { label: string; url: string } };
   /** [R17] The checklist's consent tick is given: only then can a document be uploaded. */
   consented?: boolean;
   /** [DOC-CONSENT · DPA s.9(1)(a), research D1] The tick on screen stands only on the person's record and this
@@ -286,9 +293,24 @@ function explainPermissionDenied(
               {hint}
             </T>
           ) : null}
+          {paperHelp ? (
+            <T variant="micro" tone="muted" style={{ marginTop: 2 }}>
+              {paperHelp.text}
+            </T>
+          ) : null}
+          {paperHelp?.link ? (
+            <View style={{ marginTop: 2, alignSelf: 'flex-start' }}>
+              <LinkText label={paperHelp.link.label} onPress={() => { void Linking.openURL(paperHelp.link!.url).catch(() => undefined); }} />
+            </View>
+          ) : null}
           {optionalHint ? (
             <T variant="micro" tone="muted" style={{ marginTop: 2 }}>
               {optionalHint}
+            </T>
+          ) : null}
+          {addedBySwift ? (
+            <T variant="micro" tone="muted" style={{ marginTop: 2 }}>
+              {`${addedBySwiftLine(submittedAt)}. ${ADDED_BY_SWIFT_REPLACE_HINT}`}
             </T>
           ) : null}
         </View>

@@ -1,8 +1,10 @@
 import { emitToOrderRoom, emitToStoreRoom } from '../order/order-room-emission.service';
+import { assertAdminSessionPosture } from '../auth/admin-mfa';
+import { assertConfigKeyWritable } from './machine-owned-config';
 import { scanUpload } from '../../lib/malware-scan';
 import { documentScanState, uploadScanRefusal, retryHeldEvidenceScan } from '../../lib/upload-scan-debt';
 import { vatTracker } from '../billing/vat-tracker';
-import { CARD_PROVIDER_CHECK_ACTION, adminCardSession, adminCardSessions, adminCheckCardProvider, adminResolveCardSession, adminSubscriptionCards, cardRailRuntimeOf } from '../billing/card-rail.routes';
+import { CARD_PROVIDER_CHECK_ACTION, adminCardSession, adminCardSessions, adminCheckCardProvider, adminPortalCheckedCardRefund, adminResolveCardSession, adminSubscriptionCards, cardRailRuntimeOf } from '../billing/card-rail.routes';
 import { cardRailV2DrainEnabled, cardRailV2Enabled } from '../../utils/card-rail';
 import { listCases, caseDetail, claimCase, directCase, assignRelay, confirmReturn } from '../custody/custody-recovery';
 import { CUSTODY_CASE_DIRECTABLE, CUSTODY_CASE_OPEN_STATES } from '../order/order-status';
@@ -13,6 +15,7 @@ import { withPreviousDecisions } from '../verification/previous-decision';
 import { REVIEW_QUEUE_SELECT, reviewQueueRow } from './review-queue-row';
 import type { FastifyInstance } from 'fastify';
 import { resolveVerificationObject } from '../verification/object-authority';
+import { SELLER_NAME_UNCONFIRMED, SELLER_UNNAMED_BASES, sellerNameViews, unnamedLiveStoreIds } from '../verification/storefront-disclosure';
 import { staffInviteAcceptEnabled } from '../vendor/staff-invites';
 import { bindTenantTransaction, runWithoutTenant } from '../../plugins/prisma';
 import { countWaiting, type WaitingKey } from './dashboard-waiting';
@@ -23,7 +26,7 @@ import { Prisma, type VehicleType, UserRole, UserStatus, VendorStatus, VendorTyp
 import { idsByLiveDocuments, LIVE_DOCUMENTS_FILTER_CAP, withLiveDocuments } from './live-documents';
 import { NotificationService } from '../notification/notification.service';
 import { SupportService } from '../support/support.service';
-import { VerificationService, REJECTION_REASON_CODES } from '../verification/verification.service';
+import { VerificationService, REJECTION_REASON_CODES, approvalSellerNameTrail, isAccountPersonsName, type StoreActivation } from '../verification/verification.service';
 import { AdvertiserService } from '../ads/advertiser.service';
 import { CreativeService, CREATIVE_REJECT_REASONS, looksLikeMp4 } from '../ads/creative.service';
 import { AdsLifecycleService } from '../ads/lifecycle.service';
@@ -49,6 +52,9 @@ import { CATALOGUE_APPROVER_CAPABILITY, catalogueApproverRequired, holdsCatalogu
 import { isOwnSelfiePointer, signupSelfieFor, signupSelfieRequired } from '../verification/signup-selfie';
 import { isDocumentValidAt } from '../verification/document-validity';
 import { assertNotRecused } from '../verification/recusal';
+import { DOCUMENT_VIEW_LINKS_PER_HOUR } from '../verification/document-view-limit';
+import { disconnectUserSockets } from '../../utils/socket-revocation';
+import { completeMoverSessionRevocation } from '../mover-authority';
 import { ADMIN_ACTION_CLASSES, ADMIN_REASON_HEADER, ADMIN_ROUTE_AUTHORITY, capabilitiesOf, capabilityMode, decideCapability, holdsCapability, reasonOf, reasonProblem, reasonRefusal, routeTemplateOf } from './admin-authority';
 import {
   APPROVAL_HEADER, approvalRefusalMessage, approvalSubjectOf, decideApproval, fillRouteTemplate,
@@ -57,6 +63,20 @@ import {
 } from './admin-approval';
 import { ABSENT, snapshot, type EntitySnapshot } from './audit-change';
 import { adminAuditRow, auditWithin, markReplayAudited, verifyInlineRow, wroteAuditInline, type AuditRequestLike } from './audit-within';
+import {
+  ASSISTED_CONSENT_VALID_DAYS, ASSISTED_DOCUMENT_CONSENT, ASSISTED_PRIVACY_NOTICE_VERSION, ASSISTED_SETUP_QUESTION, assertAssistableDocType,
+  NEVER_ASSISTED_DOC_TYPES, assertHolderTakesPapers, assistedItemMarks, consentInputSchema, consentsOf, isPersonalPaper, liveConsent,
+  recordAction, recordAssistedConsent, recordAssistedFiling, storeForAssist, assistedConsentNotice, assistedPaperNotice,
+} from './assisted-setup';
+import { docTypeName } from '../verification/doc-names';
+import { sealVerificationUpload } from '../verification/upload-seal';
+import { listingAllowed } from '../vendor/listing-gate';
+import { setItemPhoto } from '../vendor/item-photo';
+import { XLSX_MAX_COMPRESSED_BYTES, automapBodySchema, automapRows, columnChoiceSchema, importCsvSchema, readXlsxRows, runMenuImport } from '../vendor/menu-import';
+import { keepPublicPhoto } from '../../utils/owned-photo-upload';
+import { parseCsvWithHeader } from '../../utils/csv';
+import { toSourceCsv } from '../../utils/catalogue-map';
+import { assertStoreAllowed } from '../compliance/prohibited-gate';
 import { cancelChainDealChange, chainOf, changeChainDeal, setChainDeal } from '../vendor/chain-deal';
 import { completeMmgClaimNotice, mmgClaimView, resolveMmgClaimDisagreement } from '../order/mmg-claim.service';
 import { tellCustomersOfStoreSuspension } from '../vendor/store-suspension-notices';
@@ -78,6 +98,7 @@ import { maskPhone } from '../auth/step-up';
 import { maskOwnPhone } from './person-contact';
 import { consoleRoleOf } from '../auth/console-role';
 import { MmgFeeReversalService } from '../billing/mmg-fee-reversal';
+import { MmgCheckoutService } from '../billing/mmg-checkout.service';
 import { feeRefundCaseOf, listFeeRefundCases, openFeeRefundCase } from '../billing/fee-refund-case';
 import { MAJOR_AMOUNT_CEILING } from '../../utils/currency-amount';
 import {
@@ -108,6 +129,7 @@ import { PRICING_KINDS, PRICING_SCHEMA_VERSION, PRICING_UNITS, readPricingConfig
 import { readFareBreakdown } from '../rides/taxi-waiting';
 import { readAdminItinerary } from '../rides/taxi-stops-read';
 import { createHash } from 'node:crypto';
+import { auditChangesForReaders } from './audit-redaction';
 import { adminAuditCounter, adminApprovalCounter, adminCapabilityCounter, adminReasonCounter, sensitiveReadCounter, billingTopupMissingKeyCounter, ratingReportTenancyCounter, returnRefundCounter, orderRefundCounter } from '../../plugins/observability';
 import { isUsableTopUpKey, TOPUP_KEY_MAX, TOPUP_KEY_MIN } from '../billing/billing.service';
 import { recoveryFor, requeueRefusal } from '../../jobs/recovery-policy';
@@ -135,6 +157,7 @@ import { MMG_SUPPORT_PAGE_DEFAULT, MMG_SUPPORT_PAGE_MAX, MMG_SUPPORT_STATUSES, d
 import { assertNotBannedGoods, catalogueChecksFor, flaggedItemsInTenant, prohibitedStoreCategory, storeCheckOf, storesHeldInTenant, STORE_WORDS_SELECT, wordsFor } from '../compliance/prohibited-gate';
 import { judgedWordsHash, notAllowedMessage, PROHIBITED_CLASSES, PROHIBITED_CLASS_LABELS, storeWordsHash, type CatalogueCheck } from '../compliance/prohibited-items';
 import { REGISTRATION_KINDS, SELFIE_COMPARE_DOC_TYPES } from '../verification/doc-registry';
+import { AUTHORITY_CONFIRMATION_METHODS, AUTHORITY_REASON_MAX, AUTHORITY_REASON_MIN } from '../verification/authority-confirmation';
 import { maskOrderPartyPhones, maskRowUserPhones, ORDER_CONTACT_PARTIES, revealOrderPartyPhone } from './order-contact';
 import { PROOF_PHOTO_NAMES, openProofPhoto } from './order-proof-photo';
 import { moverUserOf, PAYER_INCLUDE, subscriptionTenantWhere } from '../subscription/subscription-owner';
@@ -201,6 +224,8 @@ const vendorsQuerySchema = z.object({
   status: z.nativeEnum(VendorStatus).optional(),
   type: z.nativeEnum(VendorType).optional(),
   search: z.string().max(100).optional(),
+  // [R3 · review F2] only LIVE stores whose storefront names no seller yet ("Ask the store")
+  sellerName: z.enum(['unnamed']).optional(),
 });
 
 // Riders/drivers list filters use UI keywords, not DB enums
@@ -434,8 +459,19 @@ const approveDocSchema = z.object({
   certificateYear: z.coerce.number().int().min(1900).max(9999).optional(),
   // [R16] a business registration: a yearly business NAME (sole trader, partnership) or a COMPANY's incorporation
   registrationKind: z.enum(REGISTRATION_KINDS).optional(),
+  // [COMPANY-DOCS PART 2 · review F2] a letter of authority: how the reviewer confirmed its signer, and what they checked
+  authorityConfirmed: z.object({
+    method: z.enum(AUTHORITY_CONFIRMATION_METHODS), reason: z.string().trim().min(AUTHORITY_REASON_MIN).max(AUTHORITY_REASON_MAX),
+  }).strict().optional(),
   // [ROLE-DOCS · owner 21 Oct 2026] an own-name declaration: the reviewer confirms the store name against the owner's ID
   ownNameConfirmed: z.boolean().optional(),
+  // [R3 · review F1] a registration paper: the legal name printed on it, which the storefront names the seller by
+  legalName: z.string().trim().min(2).max(160).optional(),
+  // [COMPANY-DOCS · review F3] a company's business-name registration: the proprietor named on it is a company
+  proprietorIsCompany: z.boolean().optional(),
+  // [ASSISTED SETUP · owner 12 Nov 2026] the admin who uploaded this paper for the store, approving it alone: "I checked
+  // it myself, no second admin available" (refused whenever a second admin exists; audited)
+  soleAdminChecked: z.boolean().optional(),
   // Insurance 5-point manual check (spec §3.4) — supplied for hire-insurance docs
   insurance: z.object({
     insurerName: z.string().min(1).max(120),
@@ -765,6 +801,9 @@ export async function adminRoutes(app: FastifyInstance) {
       throw new ForbiddenError('Admin access required');
     }
     requireTenantId();
+    // [AUDIT-20261113 FABLE-03 #2] The admin session's posture: a fixed 12-hour life, the authenticator code
+    // (ADMIN_TOTP_REQUIRED=1), and the console only (ADMIN_API_CONSOLE_ONLY=1). See auth/admin-mfa.ts.
+    await assertAdminSessionPosture(app, request);
   };
 
   // Trial-integrity Part 0.2: the platform-wide identity graph is the one
@@ -1279,6 +1318,8 @@ export async function adminRoutes(app: FastifyInstance) {
       claimsAutoToPay: () => tenantPrisma.reimbursementClaim.count({ where: { status: 'AUTO_APPROVED' } }),
       returnsToDecide: () => tenantPrisma.returnRequest.count({ where: { status: 'REQUESTED' } }),
       refundsOwed: () => tenantPrisma.returnRequest.count({ where: { status: 'REFUND_DUE' } }),
+      // [R3 · review F2] live stores whose storefront names no seller yet: the vendors list's own filter
+      sellersUnnamed: async () => (await unnamedLiveStoreIds(app.prisma)).length,
       moderation: async () => {
         const [reports, ratings] = await Promise.all([
           tenantPrisma.contentReport.count({ where: { status: 'PENDING' } }),
@@ -1697,10 +1738,13 @@ export async function adminRoutes(app: FastifyInstance) {
 
   app.get('/vendors', { preHandler: [adminGuard] }, async (request) => {
     const { page, limit, skip } = parsePagination(request.query as Record<string, string>);
-    const { status, type, search } = vendorsQuerySchema.parse(request.query);
+    const { status, type, search, sellerName } = vendorsQuerySchema.parse(request.query);
     const { excludeFixtures } = excludeFixturesQuerySchema.parse(request.query);
+    // [R3 · review F2] the same rule the storefront applies (sellerNameOf), over the live stores
+    const unnamedIds = sellerName === 'unnamed' ? await unnamedLiveStoreIds(app.prisma) : null;
 
     const base: any = {
+      ...(unnamedIds && { id: { in: unnamedIds }, status: 'ACTIVE' }),
       ...(status && { status }),
       ...(type && { vendorType: type }),
       ...(search && {
@@ -1730,7 +1774,12 @@ export async function adminRoutes(app: FastifyInstance) {
 
     // [SEC-PII] The store's and its owner's numbers and emails masked unless the live grant holds vendor.contact.read.
     const contact = holdsPersonContact(request, 'vendor');
-    const rows = vendors.map((v) => ({ ...(contact ? v : maskVendorListRow(v)), vatRegistrationNumber: undefined }));
+    // [R3 · review F2] the badge: a LIVE store whose storefront names no seller yet
+    const views = await sellerNameViews(app.prisma, vendors.filter((v) => v.status === 'ACTIVE').map((v) => v.id));
+    const rows = vendors.map((v) => ({
+      ...(contact ? v : maskVendorListRow(v)), vatRegistrationNumber: undefined,
+      sellerNameUnnamed: v.status === 'ACTIVE' && SELLER_UNNAMED_BASES.includes(views.get(v.id)?.basis ?? 'NONE'),
+    }));
     const result = paginatedResponse(rows, total, { page, limit, skip });
     return { success: true, data: result.data, meta: { ...result.meta, hiddenTestRecords } };
   });
@@ -1795,6 +1844,8 @@ export async function adminRoutes(app: FastifyInstance) {
         prohibitedItems,
         // [owner 14 Oct, store names] Whether the store's own words are held for a person (or were approved).
         storeCheck: storeCheckOf(vendor),
+        // [R3 · review F5] who the storefront names as the seller, by the server's own rule (never re-derived by the console)
+        sellerName: (await sellerNameViews(app.prisma, [vendor.id])).get(vendor.id) ?? { basis: 'NONE', value: null },
       },
     };
   });
@@ -1990,6 +2041,222 @@ export async function adminRoutes(app: FastifyInstance) {
     };
   });
 
+  // ─── [ASSISTED SETUP · owner 12 Nov 2026] A Swift admin sets a store up FOR it ──────────────────────────────────
+  // Never AS it: no session for the store, no login-as. The store's OK is recorded first (who agreed, how, when, the
+  // words read to them), and every action names it: its papers filed by the store's own filing, its menu by the store's
+  // own import behind the store's own listing gate, its item photos by the store's own photo keeping; each audited under
+  // the admin's own id in the action's transaction. See modules/admin/assisted-setup.ts.
+  const assistedPhotoStorage = getStorageProvider();
+  const assistedDeps = () => ({ prisma: app.prisma, storage: assistedPhotoStorage, log: app.log });
+  const assistedAudit = (tx: Prisma.TransactionClient, request: unknown, entityId: string, extra: Record<string, string | number | boolean | null>) =>
+    auditWithin(tx, request as AuditRequestLike, app.prefix, { entityId, extra });
+  /** [#2495 review A S3-1] The store an action is done for, never by an admin who is its account holder or shares an
+   *  identity with them (recusal, as for a review decision). */
+  const assistStoreFor = async (adminId: string, vendorId: string) => {
+    const store = await storeForAssist(app.prisma, vendorId);
+    await assertNotRecused(app.prisma, adminId, store.holderId);
+    return store;
+  };
+  /** [FABLE-02 F4] One in-app notice to the store's account holder; logged (never thrown) when it cannot be sent. */
+  const tellHolder = async (holderId: string, notice: { title: string; body: string }, dedupeKey: string, log: { warn: (o: object, m: string) => void }) => {
+    try {
+      await notifications.send({ userId: holderId, type: 'SYSTEM_ANNOUNCEMENT', audience: 'business', ...notice, dedupeKey });
+    } catch (err) {
+      log.warn({ errName: err instanceof Error ? err.name : typeof err }, 'assisted setup: the account holder notice was not sent');
+    }
+  };
+  const assistedConsentIdOf = (request: { query: unknown }) =>
+    z.object({ consentId: z.string().min(1).max(64).optional() }).passthrough().parse(request.query ?? {}).consentId;
+
+  /** GET /vendors/:id/assisted-setup — the panel: the store's OKs, its paper list (required and optional, each paper's
+   *  state), its items, the words to read, and whether it may add items yet. */
+  app.get('/vendors/:id/assisted-setup', { preHandler: [adminGuard] }, async (request) => {
+    const { id } = request.params as { id: string };
+    const store = await storeForAssist(app.prisma, id);
+    const [consents, papers, items, canAddItems] = await Promise.all([
+      consentsOf(app.prisma, store),
+      verification.getStatus(store.holderId, store.vendorType),
+      tenantPrisma.item.findMany({
+        where: { vendorId: store.id, archivedAt: null },
+        select: { id: true, name: true, imageUrl: true, category: { select: { name: true } } },
+        orderBy: [{ category: { sortOrder: 'asc' } }, { sortOrder: 'asc' }, { name: 'asc' }],
+        take: 500,
+      }),
+      listingAllowed(app.prisma, verification, store.id),
+    ]);
+    const marks = await assistedItemMarks(app.prisma, [store.id], items);
+    return {
+      success: true,
+      data: {
+        store: { id: store.id, name: store.name, vendorType: store.vendorType, status: store.status },
+        script: { question: ASSISTED_SETUP_QUESTION, consentText: ASSISTED_DOCUMENT_CONSENT.text, consentVersion: ASSISTED_DOCUMENT_CONSENT.version },
+        validDays: ASSISTED_CONSENT_VALID_DAYS,
+        consents,
+        papers: {
+          checklist: papers.checklist, optional: papers.optional, missing: papers.missing, documents: papers.documents,
+          // [#2495 review] What the store signs, ticks or consents to itself (no upload), and a person's own papers (only on
+          // the account holder's own OK).
+          storeOnly: [...papers.checklist, ...papers.optional].filter((d) => NEVER_ASSISTED_DOC_TYPES.has(d)),
+          personal: [...papers.checklist, ...papers.optional].filter((d) => !NEVER_ASSISTED_DOC_TYPES.has(d) && isPersonalPaper(d)),
+        },
+        items: items.map((i) => ({ id: i.id, name: i.name, category: i.category?.name ?? null, imageUrl: i.imageUrl, ...(marks.get(i.id) ?? {}) })),
+        canAddItems,
+      },
+    };
+  });
+
+  /** POST /vendors/:id/assisted-setup/consent — record the store's OK. Nothing else happens without one. */
+  app.post('/vendors/:id/assisted-setup/consent', { preHandler: [adminGuard] }, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const body = consentInputSchema.parse(request.body ?? {});
+    const store = await assistStoreFor(request.user.userId, id);
+    const reason = reasonOf(request.body, request.headers as never) ?? '';
+    const consent = await recordAssistedConsent(app.prisma, {
+      store, adminId: request.user.userId, body, reason,
+      audit: (tx, consentId) => assistedAudit(tx, request, store.id, {
+        assistedConsentId: consentId, channel: body.channel, agreedAs: body.agreedAs,
+        agreedAt: body.agreedAt.toISOString(), consentVersion: ASSISTED_DOCUMENT_CONSENT.version,
+      }),
+    });
+    // [FABLE-02 F4] The account holder hears of it (after the commit; a failed notice never undoes the OK).
+    await tellHolder(store.holderId, assistedConsentNotice(store.name, body), `assisted-consent:${consent.id}`, request.log);
+    reply.code(201);
+    return { success: true, data: { id: consent.id, agreedAt: consent.agreedAt, channel: consent.channel, validDays: ASSISTED_CONSENT_VALID_DAYS } };
+  });
+
+  /** POST /vendors/:id/assisted-setup/documents?consentId&docType — one paper for the store's account holder (multipart
+   *  file; the reason in the x-swift-reason header), filed exactly as the store's own upload, under the consent. */
+  app.post('/vendors/:id/assisted-setup/documents', { preHandler: [adminGuard], config: { rateLimit: { max: 20, timeWindow: '1 minute' } } }, async (request, reply) => {
+    const { id } = request.params as { id: string };
+    const { docType } = z.object({ docType: z.string().min(2).max(60) }).passthrough().parse(request.query ?? {});
+    const consentId = assistedConsentIdOf(request);
+    const store = await assistStoreFor(request.user.userId, id);
+    const consent = await liveConsent(app.prisma, store, consentId);
+    // [#2495 review B S2-1] Everything the filing would refuse is refused here, before the file is stored.
+    assertHolderTakesPapers(store);
+    const lists = await verification.getStatus(store.holderId, store.vendorType);
+    assertAssistableDocType(docType, lists, consent);
+    const file = await request.file();
+    if (!file) throw new AppError(400, 'NO_FILE', 'Attach a document file');
+    const buffer = await file.toBuffer();
+    const fileUrl = await sealVerificationUpload(app.prisma, notifications, { ownerUserId: store.holderId, buffer, mimetype: file.mimetype, log: request.log });
+    const adminId = request.user.userId;
+    const doc = await verification.submitDocument(store.holderId, store.vendorType, docType, fileUrl, ASSISTED_PRIVACY_NOTICE_VERSION, undefined, {
+      assisted: {
+        byId: adminId,
+        consentId: consent.id,
+        afterCreate: async (tx, filed) => {
+          await recordAssistedFiling(tx, { store, consentId: consent.id, adminId, docId: filed.id, docType });
+          await assistedAudit(tx, request, store.id, { assistedConsentId: consent.id, documentId: filed.id, docType, accountHolderId: store.holderId });
+        },
+      },
+    });
+    // [FABLE-02 F4] ...and of every paper filed under it.
+    await tellHolder(store.holderId, assistedPaperNotice(store.name, docTypeName(docType)), `assisted-paper:${doc.id}`, request.log);
+    reply.code(201);
+    return { success: true, data: { id: doc.id, docType: doc.docType, status: doc.status, createdAt: doc.createdAt, addedBySwift: true } };
+  });
+
+  /** The preview both menu routes answer: the columns read (the store's own automap) and, row by row, what the import
+   *  would add and refuse (the store's own rules, nothing written). */
+  const assistedMenuPreview = async (storeId: string, automap: Awaited<ReturnType<typeof automapRows>>) => {
+    const plan = await runMenuImport(app.prisma, { vendorId: storeId, csv: automap.normalizedCsv, actorId: 'preview', dryRun: true });
+    const canAddItems = await listingAllowed(app.prisma, verification, storeId);
+    return { automap, plan, canAddItems };
+  };
+
+  /** POST /vendors/:id/assisted-setup/menu/preview — a CSV file's text, read and judged for the store. Writes nothing. */
+  app.post('/vendors/:id/assisted-setup/menu/preview', { preHandler: [adminGuard] }, async (request) => {
+    const { id } = request.params as { id: string };
+    const body = automapBodySchema.extend({ consentId: z.string().min(1).max(64) }).parse(request.body ?? {});
+    const store = await assistStoreFor(request.user.userId, id);
+    await liveConsent(app.prisma, store, body.consentId);
+    await assertStoreAllowed(app.prisma, store.id);
+    const automap = await automapRows(parseCsvWithHeader(body.csv), { mode: 'add', ...(body.tillStore ? { tillStore: body.tillStore } : {}), ...(body.mapping ? { mapping: body.mapping } : {}) });
+    return { success: true, data: await assistedMenuPreview(store.id, automap) };
+  });
+
+  /** POST /vendors/:id/assisted-setup/menu/preview-xlsx?consentId — an Excel workbook (multipart), read and judged. */
+  app.post('/vendors/:id/assisted-setup/menu/preview-xlsx', { preHandler: [adminGuard] }, async (request) => {
+    const { id } = request.params as { id: string };
+    const consentId = assistedConsentIdOf(request);
+    // [#2495 review B S3-2] The store's own column choices ride along: its till store, and the columns it picked
+    // (a JSON object in the query, as the multipart body carries only the file).
+    const choiceQuery = z.object({ tillStore: z.string().trim().min(1).max(100).optional(), mapping: z.string().max(4000).optional() }).passthrough().parse(request.query ?? {});
+    let mapping: unknown;
+    try { mapping = choiceQuery.mapping ? JSON.parse(choiceQuery.mapping) : undefined; } catch { throw new AppError(400, 'BAD_MAPPING', 'The column choices could not be read. Choose the columns again.'); }
+    const choice = columnChoiceSchema.parse({ mode: 'add', ...(choiceQuery.tillStore ? { tillStore: choiceQuery.tillStore } : {}), ...(mapping ? { mapping } : {}) });
+    const store = await assistStoreFor(request.user.userId, id);
+    await liveConsent(app.prisma, store, consentId);
+    await assertStoreAllowed(app.prisma, store.id);
+    let buffer: Buffer;
+    try {
+      const file = await request.file({ limits: { fileSize: XLSX_MAX_COMPRESSED_BYTES, files: 1 } });
+      if (!file) throw new AppError(400, 'NO_FILE', 'Attach an .xlsx file');
+      buffer = await file.toBuffer();
+    } catch (err) {
+      if (err instanceof AppError) throw err;
+      if ((err as { code?: string }).code === 'FST_REQ_FILE_TOO_LARGE') {
+        throw new AppError(400, 'XLSX_TOO_LARGE', `That workbook is too large: the compressed file must be under ${XLSX_MAX_COMPRESSED_BYTES / (1024 * 1024)} MB.`);
+      }
+      throw err;
+    }
+    const { headers, rows } = await readXlsxRows(buffer);
+    const sourceCsv = toSourceCsv(headers.filter(Boolean), rows);
+    const automap = await automapRows(rows, choice, sourceCsv.length <= 2_000_000 ? sourceCsv : null);
+    return { success: true, data: await assistedMenuPreview(store.id, automap) };
+  });
+
+  /** POST /vendors/:id/assisted-setup/menu/apply — the previewed file (its read-out CSV) imported for the store, under the
+   *  consent, behind the store's own listing gate: each item added names the consent and is audited with it. */
+  app.post('/vendors/:id/assisted-setup/menu/apply', { preHandler: [adminGuard] }, async (request) => {
+    const { id } = request.params as { id: string };
+    const body = importCsvSchema.extend({ consentId: z.string().min(1).max(64), reason: z.string().optional() }).strict().parse(request.body ?? {});
+    const store = await assistStoreFor(request.user.userId, id);
+    const consent = await liveConsent(app.prisma, store, body.consentId);
+    // The store's own gate: an unverified store adds no new items, whoever presses the button.
+    if (!(await listingAllowed(app.prisma, verification, store.id))) {
+      throw new AppError(403, 'VERIFICATION_REQUIRED', 'Complete document verification before listing items');
+    }
+    await assertStoreAllowed(app.prisma, store.id);
+    const adminId = request.user.userId;
+    const { rows: added, ...outcome } = await runMenuImport(app.prisma, {
+      vendorId: store.id, csv: body.csv, actorId: adminId,
+      onCreated: async (tx, item) => {
+        await recordAction(tx, { store, consentId: consent.id, adminId, kind: 'MENU_ITEM', targetId: item.id, detail: `row ${item.row}` });
+        await auditIn(tx, adminId, 'ASSISTED_MENU_ITEM_ADDED', 'Item', item.id, { vendorId: store.id, assistedConsentId: consent.id, row: item.row }, request);
+      },
+    });
+    void added;
+    if (outcome.imported > 0) scheduleVendorSearchSync(app, store.id);
+    await app.prisma.$transaction((tx) => assistedAudit(tx, request, store.id, {
+      assistedConsentId: consent.id, imported: outcome.imported, failedCount: outcome.failedCount, waitingForCheckCount: outcome.waitingForCheckCount,
+    }));
+    return { success: true, data: outcome };
+  });
+
+  /** POST /vendors/:id/assisted-setup/items/:itemId/photo?consentId — one item's photo (multipart), kept and set exactly
+   *  as the store's own upload, under the consent. Another store's item: not found. */
+  app.post('/vendors/:id/assisted-setup/items/:itemId/photo', { preHandler: [adminGuard] }, async (request) => {
+    const { id, itemId } = request.params as { id: string; itemId: string };
+    const consentId = assistedConsentIdOf(request);
+    const store = await assistStoreFor(request.user.userId, id);
+    const consent = await liveConsent(app.prisma, store, consentId);
+    const existing = await tenantPrisma.item.findFirst({ where: { id: itemId, vendorId: store.id, archivedAt: null }, select: { id: true } });
+    if (!existing) throw new NotFoundError('Item', itemId);
+    const url = await keepPublicPhoto(request, assistedPhotoStorage, `items/${store.id}`, 'store-media');
+    const adminId = request.user.userId;
+    const item = await setItemPhoto(assistedDeps(), {
+      vendorId: store.id, itemId, url,
+      within: async (tx, set) => {
+        await recordAction(tx, { store, consentId: consent.id, adminId, kind: 'ITEM_PHOTO', targetId: set.id, detail: url });
+        await assistedAudit(tx, request, store.id, { assistedConsentId: consent.id, itemId: set.id });
+      },
+    });
+    scheduleVendorSearchSync(app, store.id);
+    return { success: true, data: { ...item, photoAddedBySwift: true } };
+  });
+
   /**
    * [ACTIVATION AUTHORITY / EV-ACT-11 · MC-PR2] Activate a store that is waiting
    * for approval, or reinstate a suspended one — never past a gate the single
@@ -2048,6 +2315,7 @@ export async function adminRoutes(app: FastifyInstance) {
     let updated;
     // [#1541] Documents approved while billing holds the weekly fee: live under that hold, not open.
     let feeHeld = false;
+    let sellerNameNotConfirmed: StoreActivation['sellerNameNotConfirmed'] = null;
     if (next === 'CAN_ACTIVATE') {
       // The one authority that makes a store live, on every path (review,
       // auto-approval, the reconcile belt — and now this button), run for this
@@ -2057,9 +2325,13 @@ export async function adminRoutes(app: FastifyInstance) {
       // ONLY when the console sent the name it showed (`sellerName`); a different name under the lock is refused. With
       // no name sent (an older console, a script) the store goes live as before but nothing is confirmed: its storefront
       // names nobody until a person confirms the name (PUT /vendors/:id/seller-name). Never a name nobody was shown.
-      await verification.activateStore(goLive.ownerUserId, id, (tx) => auditWithin(tx, request as unknown as AuditRequestLike, app.prefix, {
-        extra: { previousStatus: vendor.status, previousSuspensionSource: vendor.suspensionSource, verdict: next, sellerNameConfirmed: shownName ?? null },
+      // [COORD ruling 11 Nov 2026 · review-2479] A person's own name is never confirmed (the store still goes live): the
+      // trail and the answer say so, and the console shows why.
+      const activation = await verification.activateStore(goLive.ownerUserId, id, (tx, decided) => auditWithin(tx, request as unknown as AuditRequestLike, app.prefix, {
+        extra: { previousStatus: vendor.status, previousSuspensionSource: vendor.suspensionSource, verdict: next,
+          ...approvalSellerNameTrail(shownName, decided) },
       }), shownName !== undefined ? { by: request.user.userId, name: shownName } : undefined);
+      sellerNameNotConfirmed = activation.sellerNameNotConfirmed;
       updated = await app.prisma.vendor.findUniqueOrThrow({ where: { id } });
       feeHeld = updated.status === 'SUSPENDED' && updated.suspensionSource === 'BILLING';
       if (updated.status !== 'ACTIVE' && !feeHeld) {
@@ -2157,7 +2429,7 @@ export async function adminRoutes(app: FastifyInstance) {
     });
 
     // [VERIFY-DOCS V5] The owner's VAT billing number never rides an admin store reply.
-    return { success: true, data: { ...updated, vatRegistrationNumber: undefined } };
+    return { success: true, data: { ...updated, vatRegistrationNumber: undefined, sellerNameNotConfirmed } };
   });
 
   app.put('/vendors/:id/suspend', { preHandler: [adminGuard] }, async (request) => {
@@ -2247,7 +2519,12 @@ export async function adminRoutes(app: FastifyInstance) {
     if (vendor.tradesUnderOwnName) {
       throw new AppError(409, 'OWN_NAME_RENAME', 'This store trades under its owner’s own name, which a person checked. A different name has to be registered as a business name first.');
     }
-    const updated = await app.prisma.vendor.update({ where: { id }, data: { name } });
+    // [R3 · review F7 · security review] A new name is not a confirmed seller name: the storefront names nobody for it
+    // until a person confirms it through PUT /vendors/:id/seller-name, which needs vendor.approve. This door (vendor.edit)
+    // never confirms one, whatever it is sent: the console offers that second, separately authorised step.
+    // [review-2476 F3] A rename also ends the old confirmation, so renaming back to a name confirmed earlier confirms
+    // nothing: a confirmation belongs to the moment a person gave it, not to the string.
+    const updated = await app.prisma.vendor.update({ where: { id }, data: { name, ...SELLER_NAME_UNCONFIRMED } });
     await audit(request.user.userId, 'CHANGE_VENDOR_NAME', 'Vendor', id, { from: vendor.name, to: name }, request);
     scheduleVendorSearchSync(app, id);
     await notifications.send({
@@ -2263,16 +2540,57 @@ export async function adminRoutes(app: FastifyInstance) {
    * confirmation). The body is the exact name the console showed; a name changed since is refused, never confirmed
    * unseen. Until a person confirms, the storefront's seller block names nobody ("Ask the store"), never the owner.
    */
+  // [KITCHEN-INTEGRATION · owner 11 Nov 2026] A store's kitchen-system connection (Dragontail): status, settings,
+  // a login-only test, the sync log and the kitchen item numbers. Handlers in modules/kitchen/kitchen-admin.ts;
+  // nothing here returns a credential.
+  app.get('/vendors/:id/kitchen-integration', { preHandler: [adminGuard] }, async (request) => {
+    const { getKitchenIntegration } = await import('../kitchen/kitchen-admin');
+    return { success: true, data: await getKitchenIntegration(app.prisma, (request.params as { id: string }).id) };
+  });
+  app.put('/vendors/:id/kitchen-integration', { preHandler: [adminGuard] }, async (request) => {
+    const { putKitchenIntegration } = await import('../kitchen/kitchen-admin');
+    // [review A S4-5] enabling starts customer details flowing to the store's kitchen system: the audit row, in the
+    // same transaction, carries the before and after (no person data).
+    return { success: true, data: await putKitchenIntegration(app.prisma, (request.params as { id: string }).id, request.body,
+      (tx, entityId, facts) => auditWithin(tx, request as unknown as AuditRequestLike, app.prefix, { entityId, extra: facts })) };
+  });
+  app.post('/vendors/:id/kitchen-integration/test', { preHandler: [adminGuard] }, async (request) => {
+    const { testKitchenConnection } = await import('../kitchen/kitchen-admin');
+    return { success: true, data: await testKitchenConnection(app.prisma, (request.params as { id: string }).id) };
+  });
+  app.get('/vendors/:id/kitchen-integration/syncs', { preHandler: [adminGuard] }, async (request) => {
+    const { listKitchenSyncs } = await import('../kitchen/kitchen-admin');
+    return { success: true, data: await listKitchenSyncs(app.prisma, (request.params as { id: string }).id, request.query as { limit?: unknown }) };
+  });
+  app.put('/vendors/:id/kitchen-integration/item-numbers', { preHandler: [adminGuard] }, async (request) => {
+    const { setKitchenItemNumbers } = await import('../kitchen/kitchen-admin');
+    return { success: true, data: await setKitchenItemNumbers(app.prisma, (request.params as { id: string }).id, request.body) };
+  });
+
   app.put('/vendors/:id/seller-name', { preHandler: [adminGuard] }, async (request) => {
     const { id } = request.params as { id: string };
     const { name } = sellerNameConfirmSchema.parse(request.body ?? {});
     const confirmed = await app.prisma.$transaction(async (tx) => {
       await bindTenantTransaction(tx);
       await tx.$queryRaw`SELECT "id" FROM "vendors" WHERE "id" = ${id} FOR UPDATE /* admin-seller-name-check */`;
-      const vendor = await tx.vendor.findUnique({ where: { id }, select: { name: true, sellerNameCheckedName: true } });
+      const vendor = await tx.vendor.findUnique({ where: { id }, select: { name: true, sellerNameCheckedName: true, tradesUnderOwnName: true, owner: { select: { userId: true } } } });
       if (!vendor) throw new NotFoundError('Vendor', id);
       if (vendor.name.trim() !== name) {
         throw new AppError(409, 'SELLER_NAME_CHANGED', `The store's name is now “${vendor.name.trim()}”. Check that name, then confirm again.`);
+      }
+      // [owner ruling 10 Nov 2026 · review-2479 F6 · COORD Option A 11 Nov] The seller is the business: a person's own
+      // name (the account holder's, or someone named in its letter of authority) is never stamped as a business's name,
+      // for an own-name trader too. A trader under their own name is named only through their live own-name declaration
+      // (the storefront's own-name basis), so the name goes when the declaration does; a stamp would outlive it.
+      // [final review S3-1] So a store trading under its owner's own name is refused whatever its name (as approval
+      // never stamps one): its name is the owner's, even where the full-name matcher would not see it (a bare surname).
+      if (vendor.tradesUnderOwnName) {
+        throw new AppError(400, 'SELLER_NAME_IS_A_PERSON',
+          'This store trades under its owner’s own name: a person’s name, shown to customers only through the owner’s approved own-name declaration, never confirmed as a business’s name.');
+      }
+      if (await isAccountPersonsName(tx, vendor.owner.userId, name)) {
+        throw new AppError(400, 'SELLER_NAME_IS_A_PERSON',
+          'That is a person’s name (the account holder’s, or the person named in its letter of authority), not a business’s. A trader under their own name is named through the own-name declaration; otherwise the store needs its registered business or company name.');
       }
       if (vendor.sellerNameCheckedName === name) throw new AppError(409, 'NOTHING_TO_CHANGE', 'That name is already confirmed as the seller’s name.');
       const row = await tx.vendor.update({
@@ -4447,6 +4765,8 @@ export async function adminRoutes(app: FastifyInstance) {
 
   app.put('/config/:key', { preHandler: [platformControlGuard] }, async (request) => {
     const key = configKeySchema.parse((request.params as { key: string }).key);
+    // [AUDIT C2-2] Refused at the ask too (admin-approval.ts); checked again where it is written.
+    assertConfigKeyWritable(key);
     const { value } = configValueSchema.parse(request.body);
 
     // [ADM-002] The config row and its audit row commit together. This used
@@ -5274,6 +5594,9 @@ export async function adminRoutes(app: FastifyInstance) {
   app.post('/subscriptions/:id/refund-credit/set-aside', { preHandler: [adminGuard] }, async (request) => {
     const id = await refundSubject(request);
     const body = z.object({ amount: refundAmount }).parse(request.body);
+    // [REVIEW-2484-A S4-6] A week that has started is never refunded: it is paid from the credit first (credit only).
+    // The set-aside then asks for exactly what is left (FEE_CREDIT_CHANGED names it when the week was just paid).
+    await billing.settleStartedWeekFromCredit(id);
     return refundAnswer(await setAsideCreditRefund(app.prisma, {
       adminId: request.user.userId, approvalId: approvalOf(request), subscriptionId: id, amount: body.amount,
       onAudit: (tx, facts) => auditWithin(tx, request as unknown as AuditRequestLike, app.prefix, { extra: facts }),
@@ -5308,6 +5631,15 @@ export async function adminRoutes(app: FastifyInstance) {
       adminId: request.user.userId, approvalId: approvalOf(request), subscriptionId: id,
       setAsideId: body.setAsideId, cardSessionId: body.cardSessionId, amount: body.amount,
       onAudit: (tx, facts) => auditWithin(tx, request as unknown as AuditRequestLike, app.prefix, { extra: facts }),
+      // [CARDS-FOLLOWUP] A refund to the card that did not go back (refused, pending, not confirmed) is never silent.
+      alertAdmins: async (message, dedupeKey, tenantId) => {
+        const { notifyAdmins } = await import('../notification/notification.service');
+        return notifyAdmins(app.prisma, notifications, {
+          tenantId, title: 'Refund to card did not go back', body: message,
+          data: { kind: 'billing_invariants', alert: 'card-refund-not-done', subscriptionId: id, cardSessionId: body.cardSessionId },
+          dedupeKey,
+        });
+      },
     });
     return { success: true, replayed: done.replayed, data: done };
   });
@@ -6601,6 +6933,20 @@ export async function adminRoutes(app: FastifyInstance) {
     return { success: true, data: reversalOut(row as never) };
   });
 
+  // [Audit FABLE-01 C1-1] A weekly-fee payment held for review, checked with MMG again (C4: a reason and a second
+  // person, or solo). The same lookups and conditions as every automatic check: credited once if MMG's records now
+  // meet them all, otherwise it stays held and nothing changes. Nothing typed here is evidence.
+  const heldCheckouts = new MmgCheckoutService(app.prisma, billing, notifications);
+  app.post('/billing/mmg-checkouts/:id/recheck', { preHandler: [adminGuard] }, async (request) => {
+    const tenantId = requireTenantId();
+    const { id } = z.object({ id: z.string().min(1).max(64) }).parse(request.params);
+    const result = await heldCheckouts.recheckHeld({ tenantId, checkoutId: id, actorId: request.user.userId });
+    await auditWithin(app.prisma, request as unknown as AuditRequestLike, app.prefix, {
+      extra: { checkoutId: id, checkoutStatus: result.status, checkoutReason: result.reason },
+    });
+    return { success: true, data: result };
+  });
+
   // [DS1112] A person resolves a HELD return (C4: a reason and a second
   // person, or solo): "MMG shows nothing was returned" (only while MMG's
   // lookup shows the payment standing) or "returned, here is MMG's reference"
@@ -7162,13 +7508,39 @@ export async function adminRoutes(app: FastifyInstance) {
       ...(body.issuedOn !== undefined ? { issuedOn: body.issuedOn } : {}),
       ...(body.certificateYear !== undefined ? { certificateYear: body.certificateYear } : {}),
       ...(body.registrationKind !== undefined ? { registrationKind: body.registrationKind } : {}),
+      ...(body.authorityConfirmed !== undefined ? { authorityConfirmed: body.authorityConfirmed } : {}),
       ...(body.ownNameConfirmed !== undefined ? { ownNameConfirmed: body.ownNameConfirmed } : {}),
+      ...(body.legalName !== undefined ? { legalName: body.legalName } : {}),
+      ...(body.proprietorIsCompany !== undefined ? { proprietorIsCompany: body.proprietorIsCompany } : {}),
+      ...(body.soleAdminChecked !== undefined ? { soleAdminChecked: body.soleAdminChecked } : {}),
     }, {
       // [S2-29 · KYC-DECISION-ATOMIC] The trail commits with the decision, in its transaction: the
       // action row and the canonical admin row. A decision cannot commit without them.
-      within: async (tx, decided) => {
+      within: async (tx, decided, facts) => {
+        // [ASSISTED SETUP] The uploader approving their own upload alone (the service refused it otherwise) says so on the record.
+        const ownUpload = decided.assistedById === request.user.userId;
         await auditIn(tx, request.user.userId, 'APPROVE_VERIFICATION_DOC', 'VerificationDocument', id,
-          { docType: decided.docType, ...(body.insurance ? { insurance: body.insurance } : {}) }, request);
+          // [SEC-AUDIT 13 Nov 2026 · F9] The reviewer's CHECKS only: the insurer and the policy number stay on the
+          // document row (behind documents.review, purged with it), never in the append-only trail any audit.read admin reads.
+          { docType: decided.docType, ...(body.insurance ? { insurance: { coverageClass: body.insurance.coverageClass, hireClassConfirmed: body.insurance.hireClassConfirmed, plateCrossChecked: body.insurance.plateCrossChecked } } : {}), ...(body.authorityConfirmed ? { signerConfirmedBy: body.authorityConfirmed.method } : {}),
+            ...(ownUpload ? { assistedUploadedBySameAdmin: true, soleAdminChecked: true, assistedConsentId: decided.assistedConsentId } : {}) }, request);
+        if (ownUpload) {
+          await auditIn(tx, request.user.userId, 'ASSISTED_SAME_ADMIN_APPROVAL', 'VerificationDocument', id,
+            { docType: decided.docType, assistedConsentId: decided.assistedConsentId, acknowledgement: 'I checked it myself, no second admin available' }, request);
+        }
+        // [R3 · review-2476 F1] The seller's legal name typed from this paper names the seller of every branch of the
+        // account: who set it, when, for which account and paper, and what it replaced (a business name, not a person's).
+        if (facts?.legalName) {
+          const n = facts.legalName;
+          await auditIn(tx, request.user.userId, 'SET_SELLER_LEGAL_NAME', 'VendorOwner', n.vendorOwnerId,
+            { accountId: n.accountId, documentId: decided.id, docType: decided.docType, from: n.from, fromDocumentId: n.fromDocumentId, to: n.to }, request);
+        }
+        // [COMPANY-DOCS Part 3] A paper filed for a change still waiting: its name is held on the change, not shown yet.
+        if (facts?.legalNameHeld) {
+          const h = facts.legalNameHeld;
+          await auditIn(tx, request.user.userId, 'HOLD_SELLER_LEGAL_NAME', 'AccountChangeRequest', h.changeId,
+            { accountId: decided.userId, documentId: decided.id, docType: decided.docType, from: h.from, fromDocumentId: h.fromDocumentId, to: h.to }, request);
+        }
         await auditWithin(tx, request as unknown as AuditRequestLike, app.prefix);
       },
     });
@@ -7305,6 +7677,89 @@ export async function adminRoutes(app: FastifyInstance) {
     mode: z.enum(['PRICES_INCLUDE_VAT', 'ADD_VAT_AT_CHECKOUT']),
     reason: z.string().trim().min(3).max(500).optional(),
   }).refine((b) => b.approve || b.reason !== undefined, { message: 'Say why, in words the store will read.', path: ['reason'] });
+
+  // ─── [COMPANY-DOCS Part 3 · owner rulings 10 Nov 2026 (c), (d)] Account changes ─────────────────────────────────
+  // A store's change of business type, or a company's handover to a new account holder (vendor/account-change.ts).
+  // A person with the document reviewer grant checks each paper in the Documents queue, then decides the change here,
+  // with a reason: approved, everything switches in one transaction; refused, nothing changes and the store reads why.
+  // Never decided by the account holder or the person named, nor by anyone the identity graph links to them.
+  const accountChangeIdOf = (request: { params: unknown }) => (request.params as { id: string }).id;
+  // [review-2475 F6] Checked before the decision, then again INSIDE its transaction (under the identity lock every document
+  // decision takes), so an identity-graph link made in between is seen.
+  const accountChangeRecusal = async (reviewerId: string, changeId: string, db: Prisma.TransactionClient | PrismaClient = app.prisma) => {
+    const { loadChange } = await import('../vendor/account-change');
+    const change = await loadChange(db, changeId);
+    const people = [change.vendorOwner.userId, ...(change.newHolderId ? [change.newHolderId] : [])];
+    if (people.includes(reviewerId)) throw new ForbiddenError('You cannot decide a change to your own account.');
+    for (const person of people) await assertNotRecused(db, reviewerId, person);
+  };
+
+  app.get('/account-changes', { preHandler: [adminGuard] }, async (request) => {
+    const { status } = z.object({ status: z.enum(['PENDING', 'APPROVED', 'REFUSED', 'WITHDRAWN']).default('PENDING') }).parse(request.query ?? {});
+    const { adminChangeQueue } = await import('../vendor/account-change');
+    return { success: true, data: await adminChangeQueue(app.prisma, status) };
+  });
+
+  app.get('/account-changes/:id', { preHandler: [adminGuard] }, async (request) => {
+    const { adminChangeView, loadChange } = await import('../vendor/account-change');
+    return { success: true, data: await adminChangeView(app.prisma, await loadChange(app.prisma, accountChangeIdOf(request))) };
+  });
+
+  app.put('/account-changes/:id/approve', { preHandler: [adminGuard] }, async (request) => {
+    const id = accountChangeIdOf(request);
+    // The store names exactly as the console showed them (a business type change confirms them as the seller's).
+    const body = z.object({ sellerNames: z.record(z.string(), z.string().trim().min(1).max(100)).optional(), reason: z.string().max(500).optional() }).parse(request.body ?? {});
+    const reason = reasonOf(request.body, request.headers) ?? '';
+    await accountChangeRecusal(request.user.userId, id);
+    const { adminChangeView, approveAccountChange, loadChange } = await import('../vendor/account-change');
+    const { revoked, ...notConfirmed } = await verification.decideAccountChange(async (tx) => {
+      await accountChangeRecusal(request.user.userId, id, tx);
+      const outcome = await approveAccountChange(tx, {
+        changeId: id, adminId: request.user.userId, reason, sellerNames: body.sellerNames,
+        audit: (t, change, facts) => auditIn(t, request.user.userId, change.kind === 'BUSINESS_TYPE' ? 'APPROVE_BUSINESS_TYPE_CHANGE' : 'APPROVE_ACCOUNT_HANDOVER', 'AccountChangeRequest', change.id, facts, request),
+        storeComplete: (t, holderUserId, store) => verification.isRoleVerified(holderUserId, store.vendorType as 'RESTAURANT' | 'SUPERMARKET' | 'STORE' | 'SERVICE', t, store.id),
+      });
+      // [R3 · review-2476 F1] The account's seller legal name moved with the change (set from its paper, or cleared):
+      // the same trail as a paper's approval, naming the change.
+      if (outcome.sellerLegalName) {
+        const n = outcome.sellerLegalName;
+        await auditIn(tx, request.user.userId, 'SET_SELLER_LEGAL_NAME', 'VendorOwner', n.vendorOwnerId,
+          { accountId: n.accountId, documentId: n.documentId, docType: n.docType, changeId: id, from: n.from, fromDocumentId: n.fromDocumentId, to: n.to }, request);
+      }
+      return {
+        result: { revoked: outcome.revoked ?? null, sellerNamesNotConfirmed: outcome.sellerNamesNotConfirmed ?? null, sellerLegalNameNotUsed: outcome.sellerLegalNameNotUsed ?? null },
+        holderUserId: outcome.holderUserId, notices: outcome.notices,
+      };
+    });
+    if (revoked) {
+      // The old holder's open screens close now; the mover outbox finishes any mover authority their sessions held.
+      disconnectUserSockets(app.io, revoked.userId);
+      await completeMoverSessionRevocation(app, revoked.cleanup)
+        .catch((err: unknown) => request.log.error({ err, changeId: id }, 'account handover: mover session cleanup held for the outbox'));
+    }
+    // [review-2475 delta S4-2] The console says what approval did not confirm, and why (store ids and the server's words;
+    // never a name), as activating a store does.
+    return { success: true, data: { ...(await adminChangeView(app.prisma, await loadChange(app.prisma, id))), ...notConfirmed } };
+  });
+
+  app.put('/account-changes/:id/refuse', { preHandler: [adminGuard] }, async (request) => {
+    const id = accountChangeIdOf(request);
+    z.object({ reason: z.string().max(500).optional() }).parse(request.body ?? {});
+    const reason = reasonOf(request.body, request.headers) ?? '';
+    await accountChangeRecusal(request.user.userId, id);
+    const { adminChangeView, endAccountChange, loadChange } = await import('../vendor/account-change');
+    const notices = await app.prisma.$transaction(async (tx) => {
+      await bindTenantTransaction(tx);
+      await lockIdentityAuthority(tx);
+      await accountChangeRecusal(request.user.userId, id, tx);
+      return endAccountChange(tx, {
+        changeId: id, by: request.user.userId, outcome: 'REFUSED', reason,
+        audit: (t, change) => auditIn(t, request.user.userId, 'REFUSE_ACCOUNT_CHANGE', 'AccountChangeRequest', change.id, { kind: change.kind }, request),
+      });
+    });
+    for (const noticeId of notices) await notifications.publishPersisted(noticeId).catch(() => undefined);
+    return { success: true, data: await adminChangeView(app.prisma, await loadChange(app.prisma, id)) };
+  });
 
   app.get('/store-vat/pending', { preHandler: [adminGuard] }, async () => {
     const { pendingStoreVat } = await import('../store-vat/store-vat-decisions');
@@ -7459,7 +7914,8 @@ export async function adminRoutes(app: FastifyInstance) {
     return { success: true, data: narrative };
   });
 
-  app.get('/verification/:id/document-url', { preHandler: [adminGuard] }, async (request) => {
+  // [FABLE-02 F3 · 13 Nov 2026] Capped per reviewer per hour (document-view-limit.ts): no bulk walk of the store.
+  app.get('/verification/:id/document-url', { preHandler: [adminGuard], config: { rateLimit: { max: DOCUMENT_VIEW_LINKS_PER_HOUR, timeWindow: '1 hour' } } }, async (request) => {
     const { id } = request.params as { id: string };
     const doc = await tenantPrisma.verificationDocument.findUnique({
       where: { id },
@@ -7469,6 +7925,9 @@ export async function adminRoutes(app: FastifyInstance) {
     if (doc.purgedAt || !doc.fileUrl) {
       throw new AppError(410, 'DOCUMENT_PURGED', 'This document has been deleted under the retention policy');
     }
+    // [FABLE-02 F9 · 13 Nov 2026] Recusal covers OPENING a paper, not only deciding it: a reviewer who shares an
+    // identity signal with its owner (or is its owner) gets no link and leaves no view.
+    await assertNotRecused(app.prisma, request.user.userId, doc.userId);
 
     const ttlSeconds = 300;
 
@@ -7860,7 +8319,7 @@ export async function adminRoutes(app: FastifyInstance) {
     // [ADM-002] The claim transition and its audit row commit together;
     // `E.claim` declares the diff (status, amount, paidAt, paymentRef, paidAmount).
     const claim = await cashRules.approveClaim(id, request.user.userId, body.reason,
-      (tx, facts) => auditWithin(tx, request as unknown as AuditRequestLike, app.prefix, { extra: facts }));
+      (tx, facts) => auditWithin(tx, request as unknown as AuditRequestLike, app.prefix, { extra: facts }), { approvalId: typeof request.headers[APPROVAL_HEADER] === 'string' ? request.headers[APPROVAL_HEADER] : undefined });
     return { success: true, data: claim };
   });
 
@@ -7890,7 +8349,7 @@ export async function adminRoutes(app: FastifyInstance) {
     // evidence and the audit row commit together. `E.claim` declares paymentRef
     // and paidAmount, so the diff IS the evidence — the legacy row is retired.
     const claim = await cashRules.markClaimPaid(id, request.user.userId, body.reference, body.amount,
-      (tx, facts) => auditWithin(tx, request as unknown as AuditRequestLike, app.prefix, { extra: facts }), { evidenceReason: body.evidenceReason });
+      (tx, facts) => auditWithin(tx, request as unknown as AuditRequestLike, app.prefix, { extra: facts }), { evidenceReason: body.evidenceReason, approvalId: typeof request.headers[APPROVAL_HEADER] === 'string' ? request.headers[APPROVAL_HEADER] : undefined });
     return { success: true, data: claim };
   });
 
@@ -8211,7 +8670,7 @@ export async function adminRoutes(app: FastifyInstance) {
     ]);
 
     const names = await accountNames(logs.map((log) => log.userId));
-    const rows = logs.map((log) => ({ ...log, actorName: (log.userId && names.get(log.userId)) ?? null, reason: statedReason(log.changes) }));
+    const rows = logs.map((log) => ({ ...log, changes: auditChangesForReaders(log.action, log.changes), actorName: (log.userId && names.get(log.userId)) ?? null, reason: statedReason(log.changes) }));
     return { success: true, ...paginatedResponse(rows, total, { page, limit, skip }) };
   });
 
@@ -8965,6 +9424,13 @@ export async function adminRoutes(app: FastifyInstance) {
   app.post<{ Params: { id: string } }>('/billing/card-sessions/:id/check-provider', { preHandler: [adminGuard] }, async (request) => ({
     success: true,
     data: await adminCheckCardProvider(app, request.params.id, request.body, request.user.userId,
+      (tx, facts) => auditWithin(tx, request as unknown as AuditRequestLike, app.prefix, { extra: facts })),
+  }));
+  // [REVIEW-2496-B S3-2 · OWNER RULING 12 Nov 2026] The owner + a second person: the portal shows nothing went back.
+  app.post<{ Params: { id: string } }>('/billing/card-sessions/:id/portal-checked', { preHandler: [adminGuard] }, async (request) => ({
+    success: true,
+    data: await adminPortalCheckedCardRefund(app, request.params.id, request.body, request.user.userId,
+      (request as unknown as { privilegedApprovalId?: string }).privilegedApprovalId ?? '',
       (tx, facts) => auditWithin(tx, request as unknown as AuditRequestLike, app.prefix, { extra: facts })),
   }));
 }

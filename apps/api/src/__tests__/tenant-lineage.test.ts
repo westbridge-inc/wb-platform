@@ -20,7 +20,7 @@ export const WALLED_BY_PARENT: Record<string, readonly string[]> = {
   Session: ['User'],
   DeviceToken: ['User'],
   Address: ['User'],
-  VerificationDocument: ['User', 'DocLegalHold', 'Subject'],
+  VerificationDocument: ['User', 'DocLegalHold', 'Subject', 'AccountChangeRequest', 'AssistedSetupConsent'],
   ComplianceViolation: ['User'],
   ComplianceReviewCase: ['User'],
   Strike: ['User'],
@@ -31,7 +31,10 @@ export const WALLED_BY_PARENT: Record<string, readonly string[]> = {
   VendorStaff: ['Vendor', 'User'],
   VendorImage: ['Vendor'],
   OperatingHours: ['Vendor'],
-  OptionGroup: ['Item'],
+  // [MENU-OPTIONS] An item's copy of a shared group also names that library group (same store, a DB trigger holds it).
+  OptionGroup: ['Item', 'ModifierGroup'],
+  // [MENU-OPTIONS] A shared library choice: walled by its library group (tenantId, RLS, scoped), deleted with it.
+  ModifierOption: ['ModifierGroup'],
   OrderItem: ['Order'],
   StockAdjustment: ['Item'],
   OrderStatusLog: ['Order'],
@@ -62,6 +65,10 @@ export const WALLED_BY_PARENT: Record<string, readonly string[]> = {
   // [R12 · REVIEW-M #1963 S2-1] One row per (wallet debit, receipt it used): walled by its receipt (tenantId, RLS,
   // scoped), deleted only with it (FK cascade), read only through the scoped receipt include (fee-receipt.ts).
   FeeReceiptAllocation: ['FeeReceipt'],
+  // [COMPANY-DOCS PART 2] A letter of authority an account holder asked a director (or the owner) to sign: walled by
+  // the account holder (User). The signed copy is filed as their verification document (walled the same way); the
+  // public signing page reaches ONE row by its link's secret and binds the holder's tenant before filing.
+  AuthorityLetterRequest: ['User'],
 };
 
 /** These foreign keys preserve global reservations, not tenant ownership.
@@ -86,6 +93,8 @@ export const GRANDCHILD_OF: Record<string, string> = {
 
 /** Platform-wide by design — the reason a reviewer can check. */
 export const PLATFORM_WIDE: Record<string, string> = {
+  // [KITCHEN-INTEGRATION · review A S2-1 / B S4-1]
+  KitchenOrderCounter: "Swift's order-number counter at one kitchen-system store, keyed by (provider, store number) so a recreated or renumbered connection never reuses an id: two numbers, no person, order or tenant data; a store number belongs to one Swift store at a time (unique on vendor_integrations), and only the claim (in the order's tenant) touches it",
   UploadScanDebt: 'the malware-rescan ledger of uploads stored unscanned (row 312): no person or tenant id, only an object key, a digest and the outcome; the scanner and its rescan job are platform infrastructure, like the scanner itself',
   ErasureLedgerEntry: 'the off-site erasure ledger: one platform-wide append-only sequence written by triggers, ids and de-identified columns only, shipped by the host unit',
   ErasureLedgerShipment: 'the shipment record of the off-site erasure ledger (one row per shipped entry)',

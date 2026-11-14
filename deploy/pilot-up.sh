@@ -51,7 +51,16 @@ SHA="${1:-}"
 COMPOSE=(docker compose --project-directory "$HERE" -f "$HERE/docker-compose.yml")
 ROUTING=(docker compose --project-directory "$HERE" -f "$HERE/docker-compose.routing.yml")
 
+# [FABLE-05 3.8] Once the database is about to change, every failure (a refusal, or any command
+# that stops this script) also says how to go back.
+ROLLBACK_NOTE=""
 die() { echo "FATAL: $*" >&2; exit 1; }
+# [REVIEW-2503-A S3-3] The first rollback point of an unfinished deploy is kept in a file (outside the
+# checkout) until a deploy reaches READY: a re-run after a failure past the migration keeps pointing at
+# the FIRST pre-migration backup and the revision that served before, never at its own.
+ROLLBACK_STATE="${PILOT_UP_ROLLBACK_FILE:-}"
+ROLLBACK_WRITTEN=0
+trap 'pilot_up_rc=$?; if [ "$pilot_up_rc" -eq 0 ]; then [ "$ROLLBACK_WRITTEN" -eq 0 ] || rm -f -- "$ROLLBACK_STATE"; elif [ -n "$ROLLBACK_NOTE" ]; then printf "%s\n" "$ROLLBACK_NOTE" >&2; fi' EXIT
 PILOT_UP_SELF_TEXT="$(< "$PILOT_UP_SELF")" || die "cannot read the running deploy script $PILOT_UP_SELF"
 env_value() {
   grep -E "^$1=" "$HERE/.env" | head -1 | cut -d= -f2- || true
@@ -130,6 +139,18 @@ if [ "$WALL" -eq 1 ]; then
       die "TENANT_RLS_BIND=1: deploy/.env must not set $wall_name; deploy/docker-compose.wall.yml wires the two runtime logins and keeps the owner's password away from the API and the worker"
   done
 fi
+# [FABLE-05 3.4] STACK_HARDENING=1: the segmented stack with a password on Redis
+# (deploy/docker-compose.hardening.yml, and its routing and journeys companions):
+# Caddy, the website and the console off the data network, routing on its own,
+# Redis behind a password. Without the line nothing here changes.
+HARDENING=0
+ROUTING_NET=swift-pilot-private
+case "$(env_setting STACK_HARDENING)" in
+  1) HARDENING=1; ROUTING_NET=swift-pilot-routing
+     COMPOSE+=(-f "$HERE/docker-compose.hardening.yml"); ROUTING+=(-f "$HERE/docker-compose.routing.hardening.yml") ;;
+  "" | 0) ;;
+  *) die "STACK_HARDENING must be 1, 0 or empty" ;;
+esac
 # [item 20] The owner wall (swift_owner_wall + OWNER_RLS_BIND=1) is a separate,
 # later switch with its own staging journey run; Phase C switches the business
 # wall only. Production refuses the line until that switch is approved.
@@ -629,6 +650,7 @@ fi
 WIRED="$({
   grep -oE '^[[:space:]]+[A-Z][A-Z0-9_]*_FILE: /run/secrets/[A-Z][A-Z0-9_]*' "$HERE/docker-compose.yml" || true
   [ "${WALL:-0}" -ne 1 ] || grep -oE '^[[:space:]]+[A-Z][A-Z0-9_]*_FILE: /run/secrets/[A-Z][A-Z0-9_]*' "$HERE/docker-compose.wall.yml" || true
+  [ "${HARDENING:-0}" -ne 1 ] || { grep -oE '^[[:space:]]+[A-Z][A-Z0-9_]*_FILE: /run/secrets/[A-Z][A-Z0-9_]*' "$HERE/docker-compose.hardening.yml"; echo "  X_FILE: /run/secrets/REDIS_PASSWORD"; } || true
   grep -oE '^[A-Z][A-Z0-9_]*_FILE=/run/secrets/[A-Z][A-Z0-9_]*' "$HERE/.env" || true
 } | sed -E 's#.*/run/secrets/##' | sort -u)"
 for name in $WIRED; do
@@ -652,6 +674,27 @@ docker network inspect swift-pilot-private >/dev/null 2>&1 ||
   docker network create --driver bridge swift-pilot-private >/dev/null
 [ "$(docker network inspect -f '{{.Driver}}' swift-pilot-private)" = bridge ] ||
   die "swift-pilot-private is not a bridge network"
+# [FABLE-05 3.4] The hardened stack's two networks. The API trusts the client address Caddy and the
+# website forward only from TRUST_PROXY's ranges: an edge network outside them would make every
+# visitor one rate-limit bucket, so it is refused here, before anything changes.
+if [ "$HARDENING" -eq 1 ]; then
+  for net in swift-pilot-edge swift-pilot-routing; do
+    docker network inspect "$net" >/dev/null 2>&1 || docker network create --driver bridge "$net" >/dev/null
+    [ "$(docker network inspect -f '{{.Driver}}' "$net")" = bridge ] || die "$net is not a bridge network"
+  done
+  edge_ranges="$(docker network inspect -f '{{range .IPAM.Config}}{{.Subnet}} {{end}}' swift-pilot-edge)"
+  python3 -I -c '
+import ipaddress, sys
+trusted = [t.strip() for t in sys.argv[1].split(",") if t.strip() and t.strip() not in ("loopback", "linklocal", "uniquelocal")]
+nets = []
+for t in trusted:
+    try: nets.append(ipaddress.ip_network(t, strict=False))
+    except ValueError: pass
+edge = [ipaddress.ip_network(r) for r in sys.argv[2].split()]
+sys.exit(0 if edge and all(any(e.version == n.version and e.subnet_of(n) for n in nets) for e in edge) else 1)
+' "$(env_setting TRUST_PROXY)" "$edge_ranges" ||
+    die "STACK_HARDENING=1: the swift-pilot-edge network's range is not inside TRUST_PROXY, so the API would see every visitor as Caddy (one rate limit for all). Widen TRUST_PROXY to cover it, or recreate the network in a covered range. Nothing was changed"
+fi
 "${COMPOSE[@]}" config --quiet
 "${ROUTING[@]}" config --quiet
 verify_private_ports() {
@@ -696,7 +739,9 @@ if "osrm" not in s or any(x.get("ports") for x in s.values()):
     python3 "$HERE/verify-journeys-isolation.py" "$HERE/Caddyfile" >/dev/null ||
     die "public API isolation failed"
   if [ "$PILOT_ENV" != production ] && [ -f "$HERE/docker-compose.journeys.yml" ]; then
-    "${COMPOSE[@]}" -f "$HERE/docker-compose.journeys.yml" --profile journeys config --format json |
+    JOURNEYS_HARDENING=()
+    [ "${HARDENING:-0}" -ne 1 ] || JOURNEYS_HARDENING=(-f "$HERE/docker-compose.journeys.hardening.yml")
+    "${COMPOSE[@]}" -f "$HERE/docker-compose.journeys.yml" ${JOURNEYS_HARDENING[@]+"${JOURNEYS_HARDENING[@]}"} --profile journeys config --format json |
       python3 "$HERE/verify-journeys-isolation.py" "$HERE/Caddyfile" --require-journeys >/dev/null ||
       die "journeys override isolation failed"
   fi
@@ -732,6 +777,27 @@ if [ "$NO_PUBLIC" -eq 1 ]; then
     die "--no-public could not ask Docker whether caddy is running; refusing to deploy without that answer"
   [ -z "$running" ] ||
     die "--no-public refuses a stack whose caddy is running (it already serves its public names); use the full deploy"
+fi
+
+# [REVIEW-2503-A S3-4] Read-only pre-checks, printed before anything changes: the disk, the memory,
+# what each container uses (the first sizing data), and Redis's own use against the 768 MB limit it
+# gets (noeviction: past it every write is refused). A Redis already above 600 MB refuses the deploy:
+# it would refuse writes the moment it is recreated.
+echo "pre-check: disk: $(df -h / 2>/dev/null | awk 'NR == 2 {print $5 " used, " $4 " free"}')"
+if command -v free >/dev/null 2>&1; then echo "pre-check: memory: $(free -m | awk '/^Mem:/ {print $7 " MB available of " $2 " MB"}')"; fi
+echo "pre-check: containers (memory):"
+docker stats --no-stream --format '  {{.Name}} {{.MemUsage}}' 2>/dev/null || true
+REDIS_USED_BYTES=""
+if [ -n "$("${COMPOSE[@]}" ps -q redis 2>/dev/null || true)" ]; then
+  REDIS_USED_BYTES="$("${COMPOSE[@]}" exec -T redis sh -c 'if [ -r /run/secrets/REDIS_PASSWORD ]; then REDISCLI_AUTH="$(cat /run/secrets/REDIS_PASSWORD)" exec redis-cli info memory; fi; exec redis-cli info memory' 2>/dev/null |
+    sed -n 's/^used_memory:\([0-9][0-9]*\).*/\1/p' | head -1 || true)"
+fi
+if [[ "$REDIS_USED_BYTES" =~ ^[0-9]+$ ]]; then
+  echo "pre-check: redis used_memory $((REDIS_USED_BYTES / 1048576)) MB (its limit is 768 MB)"
+  [ "$REDIS_USED_BYTES" -le $((600 * 1048576)) ] ||
+    die "Redis already uses $((REDIS_USED_BYTES / 1048576)) MB, above 600 MB: with its 768 MB limit (noeviction) it would refuse writes (sign-in codes, rate limits, queues) as soon as it is recreated. Find what grew first (redis-cli info memory; queue sizes). Nothing was changed"
+else
+  echo "pre-check: redis used_memory not read (Redis is not running here yet)"
 fi
 
 # Pull versioned infrastructure images, then build the exact checked-out API.
@@ -812,8 +878,20 @@ else
 fi
 
 # Check routing from the same private Docker network that the API uses.
-docker run --rm --network swift-pilot-private --entrypoint node "swift-api:$SHA" \
-  -e "fetch('http://osrm:5000/nearest/v1/driving/-58.16,6.80').then(async r => { if (!r.ok || (await r.json()).code !== 'Ok') process.exit(1) }).catch(() => process.exit(1))"
+# [REVIEW-2503-A S3-5] OSRM has no healthcheck, so `up --wait` returns while a (re)created osrm-routed
+# is still loading its data: the check is asked again, 2 s apart, for up to 3 minutes, and a routing
+# engine that never answers is a named refusal, before the running API is stopped.
+OSRM_READY=0
+for _ in $(seq 1 90); do
+  if docker run --rm --network "$ROUTING_NET" --entrypoint node "swift-api:$SHA" \
+    -e "fetch('http://osrm:5000/nearest/v1/driving/-58.16,6.80', { signal: AbortSignal.timeout(5000) }).then(async r => { if (!r.ok || (await r.json()).code !== 'Ok') process.exit(1) }).catch(() => process.exit(1))" >/dev/null 2>&1; then
+    OSRM_READY=1
+    break
+  fi
+  sleep 2
+done
+[ "$OSRM_READY" = 1 ] ||
+  die "the routing engine (OSRM) did not answer a nearest-road check within 3 minutes; the running API and the database were not changed; inspect: docker compose -f deploy/docker-compose.routing.yml logs --tail=100 osrm"
 # [PROD-PATH · DS963] Address search, the same way, before the running API is
 # stopped: Photon has no healthcheck, so `up --wait` returns while its first
 # start is still downloading and importing the index. A Georgetown search must
@@ -822,7 +900,7 @@ docker run --rm --network swift-pilot-private --entrypoint node "swift-api:$SHA"
 if [ "$PLACES_PHOTON" -eq 1 ]; then
   PHOTON_READY=0
   for _ in $(seq 1 90); do
-    if docker run --rm --network swift-pilot-private --entrypoint node "swift-api:$SHA" \
+    if docker run --rm --network "$ROUTING_NET" --entrypoint node "swift-api:$SHA" \
       -e "fetch('http://photon:2322/api?q=Georgetown&limit=1', { signal: AbortSignal.timeout(5000) }).then(async r => { const d = r.ok ? await r.json() : null; const usable = d && Array.isArray(d.features) && d.features.some(f => f && f.geometry && Array.isArray(f.geometry.coordinates) && f.geometry.coordinates.length === 2 && f.properties && f.properties.name); if (!usable) process.exit(1) }).catch(() => process.exit(1))" >/dev/null 2>&1; then
       PHOTON_READY=1
       break
@@ -856,6 +934,72 @@ if [ "$DATA_ONLY" -eq 0 ]; then
     die "the upload malware scanner did not refuse the EICAR test string (or did not pass ordinary bytes) through the API's own gate on the scanner network; the running API and the database were not changed; inspect: docker compose -f deploy/docker-compose.yml logs --tail=100 clamd"
   echo "upload malware scanner ready: signatures loaded, EICAR refused through the API's gate"
 fi
+# [FABLE-05 3.8] A backup before the migration, and the way back written down. The migration
+# changes the database and Prisma never rolls it back, so the deploy takes a fresh backup through
+# the hourly unit (encrypted to the owner's key on production, signed, proven off-site) while the old
+# API still serves, and refuses to stop it if the backup fails. Production always has the unit (the
+# hourly timer is required above); a host without it (a new host's --data-only stage, a bare
+# staging) says so and goes on.
+PREVIOUS_IMAGE=""
+API_RUNNING="$("${COMPOSE[@]}" ps -q api 2>/dev/null || true)"
+[ -z "$API_RUNNING" ] || PREVIOUS_IMAGE="$(docker inspect -f '{{.Config.Image}}' "$API_RUNNING" 2>/dev/null || true)"
+PREVIOUS_SHA=""
+[[ "$PREVIOUS_IMAGE" =~ ^swift-api:([0-9a-f]{40})$ ]] && PREVIOUS_SHA="${BASH_REMATCH[1]}"
+ROLLBACK_POINT="none"
+if systemctl cat swift-backup.service >/dev/null 2>&1; then
+  echo "backup before the migration: sudo systemctl start swift-backup.service"
+  sudo -n systemctl start swift-backup.service ||
+    die "the backup before the migration failed (sudo journalctl -u swift-backup.service -n 40 --no-pager); nothing was stopped or migrated. Fix the backup first: a deploy never migrates without one"
+  ROLLBACK_POINT="$(ls -t "${PILOT_UP_BACKUP_DIR:-/var/backups/swift}"/swift-*.dump.gpg "${PILOT_UP_BACKUP_DIR:-/var/backups/swift}"/swift-*.dump 2>/dev/null | head -1 || true)"
+  ROLLBACK_POINT="${ROLLBACK_POINT##*/}"
+  ROLLBACK_POINT="${ROLLBACK_POINT:-the newest object in the backup bucket (sudo journalctl -u swift-backup.service -n 20)}"
+else
+  [ "$PILOT_ENV" != production ] || [ "$DATA_ONLY" -eq 1 ] ||
+    die "PILOT_ENV=production: swift-backup.service is not installed, so no backup can be taken before the migration. Nothing was stopped or migrated"
+  echo "WARNING: swift-backup.service is not installed: no backup is taken before the migration" >&2
+fi
+if [ "$ROLLBACK_POINT" = none ]; then ROLLBACK_BACKUP="NO backup was taken (no swift-backup.service on this host)"
+else ROLLBACK_BACKUP="the database was backed up just before the migration as ${ROLLBACK_POINT}"; fi
+ROLLBACK_FIRST=""
+ROLLBACK_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+# [REVIEW-2503-A D-1] The kept point is honoured only for ITS deploy: a re-run of the same SHA, or a
+# deploy that fixes forward over that deploy while it is what the API runs.
+kept_target=""
+rollback_kept_for_this_deploy() {
+  kept_target="$(sed -n 's/^target=//p' "$ROLLBACK_STATE" | head -1)"
+  [[ "$kept_target" =~ ^[0-9a-f]{40}$ ]] || return 1
+  [ "$kept_target" = "$SHA" ] || [ "$PREVIOUS_IMAGE" = "swift-api:$kept_target" ]
+}
+# Kept inside the checkout's own git directory (never a tracked or untracked file of the checkout).
+if [ -z "$ROLLBACK_STATE" ]; then
+  git_dir="$(git -C "$ROOT" rev-parse --absolute-git-dir 2>/dev/null || true)"
+  [ -z "$git_dir" ] || [ ! -d "$git_dir" ] || ROLLBACK_STATE="$git_dir/swift-pilot-up-rollback"
+fi
+if [ -z "$ROLLBACK_STATE" ]; then
+  echo "WARNING: no place to keep the rollback point; copy the FIRST ROLLBACK block of this deploy into the deploy notes" >&2
+elif [ -s "$ROLLBACK_STATE" ] && rollback_kept_for_this_deploy; then
+  # A re-run of an unfinished deploy: the FIRST run's point stands (this run's backup may already be migrated).
+  first_backup="$(sed -n 's/^backup=//p' "$ROLLBACK_STATE" | head -1)"
+  first_previous="$(sed -n 's/^previous=//p' "$ROLLBACK_STATE" | head -1)"
+  first_at="$(sed -n 's/^at=//p' "$ROLLBACK_STATE" | head -1)"
+  [ -z "$first_backup" ] || ROLLBACK_BACKUP="$first_backup"
+  [[ "$first_previous" =~ ^[0-9a-f]{40}$ ]] && PREVIOUS_SHA="$first_previous" || PREVIOUS_SHA=""
+  ROLLBACK_AT="${first_at:-unknown}"
+  ROLLBACK_FIRST=" (the FIRST attempt's rollback point: a deploy of ${kept_target} since then did not reach READY; this run's own backup is not the way back)"
+else
+  if [ -s "$ROLLBACK_STATE" ]; then
+    # [REVIEW-2503-A D-1] A point kept for ANOTHER deploy (one that failed and was then rolled back by an
+    # older script, or abandoned) is never this deploy's way back: discarded, and this run's own taken.
+    echo "WARNING: a rollback point kept since $(sed -n 's/^at=//p' "$ROLLBACK_STATE" | head -1) for another deploy (${kept_target:-unknown}) was discarded: the API now runs ${PREVIOUS_IMAGE:-nothing}, not that deploy. This run's own backup is the rollback point" >&2
+  fi
+  (umask 077; printf 'backup=%s\nprevious=%s\ntarget=%s\nat=%s\n' "$ROLLBACK_BACKUP" "${PREVIOUS_SHA:-none}" "$SHA" "$ROLLBACK_AT" > "$ROLLBACK_STATE") ||
+    echo "WARNING: could not keep the rollback point in $ROLLBACK_STATE; copy the ROLLBACK block below into the deploy notes" >&2
+fi
+[ -z "$ROLLBACK_STATE" ] || ROLLBACK_WRITTEN=1
+ROLLBACK_NOTE="ROLLBACK${ROLLBACK_FIRST}: recorded ${ROLLBACK_AT}; ${ROLLBACK_BACKUP}; previous good revision ${PREVIOUS_SHA:-not recorded} (the API served it before this deploy).
+  - Code only, and the new migrations are additive (the previous revision can live with them): ./deploy/pilot-up.sh ${PREVIOUS_SHA:-<previous full SHA>}
+  - Otherwise (a destructive migration, or not sure): keep the API stopped and restore that backup to a serving database with deploy/recover.sh (PILOT-RUNBOOK section 5b). Never point restore.sh at the live database."
+printf '%s\n' "$ROLLBACK_NOTE"
 [ "${DATA_ONLY:-0}" -eq 1 ] || "${COMPOSE[@]}" stop api worker
 "${COMPOSE[@]}" up -d --force-recreate migrate
 MIGRATE_ID="$("${COMPOSE[@]}" ps -a -q migrate)"

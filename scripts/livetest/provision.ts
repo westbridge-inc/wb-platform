@@ -142,7 +142,8 @@ const inDays = (d: number) => new Date(Date.now() + d * 86_400_000).toISOString(
 /** [VERIFY-DOCS] What a reviewer TYPES at approval (the queue's `reviewerTypes`): the number on an ID or
  *  licence — synthetic and unique to the document, so no two journey accounts are ever joined — or a
  *  police clearance's issue date. */
-const NUMBER_TYPED = new Set(['national_id', 'owner_national_id', 'passport', 'identity_l2', 'drivers_licence']);
+// [COMPANY-DOCS · owner 10 Nov 2026] a company's or a manager's account holder's ID: the number, as an owner's ID
+const NUMBER_TYPED = new Set(['national_id', 'owner_national_id', 'passport', 'identity_l2', 'drivers_licence', 'account_holder_id']);
 /** [R15] Certificates checked again every January: the reviewer types the year printed on them
  *  (doc-registry CERTIFICATE_YEAR_DOC_TYPES). */
 const YEAR_TYPED = new Set([
@@ -157,7 +158,8 @@ export function reviewerTypedBody(docType: string, docId: string): Record<string
   if (YEAR_TYPED.has(docType)) return { certificateYear: guyanaYear() };
   // [R16] A business registration says what it is: the synthetic stores are companies (a certificate of
   // incorporation never expires, so no January re-check falls inside a journey). The year is typed too.
-  if (docType === 'business_registration') return { registrationKind: 'COMPANY', certificateYear: guyanaYear() };
+  // [R3 · review F1] and the legal name printed on it: the storefront names the seller by it (a synthetic company's).
+  if (docType === 'business_registration' || docType === 'certificate_of_incorporation') return { registrationKind: 'COMPANY', certificateYear: guyanaYear(), legalName: 'TEST Synthetic Company Ltd' };
   // [ROLE-DOCS] An own-name declaration is approved only on the reviewer's check of the name against the ID.
   if (docType === 'own_name_declaration') return { ownNameConfirmed: true };
   return {};

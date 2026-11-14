@@ -33,9 +33,9 @@ import { CashRulesService, customerTrustSummaries, gpsEvidence } from '../cash/c
 import { BillingService } from '../billing/billing.service';
 import { getPaymentProvider } from '../../providers/payment/payment-provider';
 import { DeliveryCashSettlementService, assertSettlementId, settlementAttestationSchema } from '../cash/delivery-cash-settlement.service';
-import { makeDispatchService, vehicleCanCarry, vehicleCanCarryParcel, cashMathForOffer } from '../dispatch/dispatch.service';
+import { makeDispatchService, vehicleCanCarry, vehicleCanCarryParcel, cashMathForOffer, CASH_MATH_SELECT, rememberCashUnshown } from '../dispatch/dispatch.service';
 import { FloatService, riderFloatForOrder, floatAdvice } from '../dispatch/float.service';
-import { assertCashShown } from '../dispatch/cash-limit';
+import { assertCashShown, UNSHOWN_CASH_MAX } from '../dispatch/cash-limit';
 import { explainEarning } from '../../utils/explain-earning';
 import { carNoParcelsClaim, passengersOnlyRefusal, riderStackingCapacity, riderLiveLegCount, settleRiderLegs } from '../dispatch/concurrency-policy';
 import { reopenPreCustodyLeg } from '../dispatch/delivery-watchdog';
@@ -224,6 +224,21 @@ const STATUS_TRANSITIONS: Record<string, { from: OrderStatus[]; to: OrderStatus;
   'en-route-delivery': { from: ['PICKED_UP'], to: 'EN_ROUTE_DELIVERY', note: 'Rider started the run to the customer' },
   'arrived':         { from: ['EN_ROUTE_DELIVERY'], to: 'ARRIVED', note: 'Rider reported arriving at the customer' },
 };
+
+/** The answer to a rider step. `replayed` [FOLLOWUPS 11 Nov 2026]: the step was already taken (nothing was
+ *  written or sent this time); additive, the apps read only `status`. */
+function riderStepAnswer(order: { id: string; orderNumber: string }, status: OrderStatus, replayed: boolean) {
+  return {
+    success: true,
+    data: {
+      orderId: order.id,
+      orderNumber: order.orderNumber,
+      status,
+      updatedAt: new Date().toISOString(),
+      ...(replayed ? { replayed: true } : {}),
+    },
+  };
+}
 
 /** The two rungs that assert a position. Which endpoint the claim is about
  *  decides which point the distance is measured to. */
@@ -1593,7 +1608,12 @@ export async function riderRoutes(app: FastifyInstance) {
       // from the LOCKED order: the amount the board row showed must not have gone up since (a basket can change while
       // the board sits open), and an app that showed none (an older app) keeps the board it was built under, up to
       // UNSHOWN_CASH_MAX; above it the rider takes the job from the offer card, which shows the cash.
-      assertCashShown(lockedFloatAmt, shownPayToVendor, order.vendor?.name);
+      // [PROD-RIDER-TEST (b)1] Today's board shows any split Swift can state (cashMathForOffer, from this locked row):
+      // no amount for such a job means an older app, and the refusal says to close and reopen Swift for the update.
+      const cashShowable = shownPayToVendor === undefined && lockedFloatAmt > UNSHOWN_CASH_MAX
+        ? cashMathForOffer(await tx.order.findUniqueOrThrow({ where: { id }, select: CASH_MATH_SELECT })) != null
+        : false;
+      assertCashShown(lockedFloatAmt, shownPayToVendor, order.vendor?.name, cashShowable);
       if (lockedFloatAmt > 0) {
         const floatReserved = await floatService.commit(tx, rider.id, lockedFloatAmt);
         if (!floatReserved) {
@@ -1606,6 +1626,13 @@ export async function riderRoutes(app: FastifyInstance) {
       }
 
       return staged;
+    }).catch(async (error: unknown) => {
+      // [PROD-RIDER-TEST (b)2] An app that could not show this job's cash is not offered it again either
+      // (dispatch skips this rider for this job until the app updates or the store searches afresh).
+      if (error instanceof AppError && error.code === 'CASH_AMOUNT_NOT_SHOWN') {
+        await rememberCashUnshown(app.redis, id, order.fulfillmentModeVersion, rider.id);
+      }
+      throw error;
     });
 
     // [REPORT-014 F-014-09] Board grab stages its own assignment, so retire the
@@ -1644,6 +1671,11 @@ export async function riderRoutes(app: FastifyInstance) {
       const { id } = request.params as { id: string };
       const rider = await getRider(app, request.user.userId);
       const order = await getOwnedOrder(app, id, rider.id);
+
+      // [FOLLOWUPS 11 Nov 2026] A repeat of the step this rider already took (a double tap, a retry after a lost
+      // answer): the answer the first tap lost, with nothing written or sent again. The seam re-checks the same
+      // fact under the order lock for two taps that race (replayAtTarget).
+      if (order.status === to) return riderStepAnswer(order, to, true);
 
       if (!from.includes(order.status)) {
         throw new AppError(
@@ -1710,15 +1742,7 @@ export async function riderRoutes(app: FastifyInstance) {
         { riderId: rider.id, assignmentVersion: order.riderAssignmentVersion, allowedFrom: from },
       );
 
-      return {
-        success: true,
-        data: {
-          orderId: updated.id,
-          orderNumber: updated.orderNumber,
-          status: to,
-          updatedAt: new Date().toISOString(),
-        },
-      };
+      return riderStepAnswer(updated, to, false);
     });
   }
 

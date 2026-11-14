@@ -28,6 +28,8 @@ function storeOf(status: string) {
     createdAt: '2026-08-01T00:00:00.000Z', recentOrders: [], subscription: null, tier: 'REGISTERED',
     owner: { user: { id: 'owner-1', firstName: 'Store', lastName: 'Owner', phone: 'owner-phone', email: null, status: 'ACTIVE' }, vendors: [] },
     _count: { items: 0, orders: 0 },
+    // [R3 · review F5] the server's own answer: documents on file, no seller named yet
+    sellerName: { basis: 'AWAITING_PERSON', value: null },
   };
 }
 
@@ -128,6 +130,8 @@ describe('[MC-PR2] when the server says the rules are met', () => {
     expect(dialog.textContent).toContain('Only this store is activated.');
     // [CHECKLIST-LEGAL · owner 1 Nov 2026 (a)] no tier is promoted or lifted any more
     expect(dialog.textContent).not.toMatch(/unregistered|promotes/i);
+    // [R3 · review F4] an explicit answer: the shown name matches the certificate
+    await user.click(within(dialog).getByRole('radio', { name: /^Yes: it matches the certificate/ }));
     await user.type(within(dialog).getByRole('textbox', { name: 'Reason' }), REASON);
     await user.click(within(dialog).getByRole('button', { name: 'Activate store' }));
     expect((await screen.findByRole('status')).textContent).toContain('Target Store is live and can take orders.');
@@ -137,6 +141,36 @@ describe('[MC-PR2] when the server says the rules are met', () => {
     // [R3 · security review 10 Nov 2026] activating confirms the name the dialog showed as the seller's — and says so
     expect(dialog.textContent).toContain('Customers will see “Target Store” as the seller on the store page.');
     expect(JSON.parse(String(init?.body))).toEqual({ sellerName: 'Target Store' });
+  });
+
+  // [COORD ruling 11 Nov 2026 · review-2479] The server never confirms a person's own name as the seller's: the store goes
+  // live all the same, and the page says, in the server's words, that the name was not confirmed and why.
+  it('[review-2479] activating a store named by a person: says it is live AND that its name was not confirmed, and why', async () => {
+    const notice = { code: 'SELLER_NAME_IS_A_PERSON', message: 'The store’s name is a person’s name, so it was not confirmed as the seller’s name. Customers see “Ask the store”.' };
+    serve('PENDING_APPROVAL', checklistOf('CAN_ACTIVATE'), () => ({ body: { success: true, data: { ...storeOf('ACTIVE'), sellerNameNotConfirmed: notice } } }));
+    const { user } = page();
+    await user.click(await screen.findByRole('button', { name: 'Activate now…' }));
+    const dialog = screen.getByRole('dialog', { name: 'Activate Target Store now?' });
+    await user.click(within(dialog).getByRole('radio', { name: /^Yes: it matches the certificate/ }));
+    await user.type(within(dialog).getByRole('textbox', { name: 'Reason' }), REASON);
+    await user.click(within(dialog).getByRole('button', { name: 'Activate store' }));
+    const status = await screen.findByRole('status');
+    expect(status.textContent).toContain('Target Store is live and can take orders.');
+    expect(status.textContent).toContain(notice.message);
+    expect(status.textContent).not.toContain('SELLER_NAME_IS_A_PERSON');
+  });
+
+  it('[review-2479] a confirmed name adds no notice', async () => {
+    serve('PENDING_APPROVAL', checklistOf('CAN_ACTIVATE'), () => ({ body: { success: true, data: { ...storeOf('ACTIVE'), sellerNameNotConfirmed: null } } }));
+    const { user } = page();
+    await user.click(await screen.findByRole('button', { name: 'Activate now…' }));
+    const dialog = screen.getByRole('dialog', { name: 'Activate Target Store now?' });
+    await user.click(within(dialog).getByRole('radio', { name: /^Yes: it matches the certificate/ }));
+    await user.type(within(dialog).getByRole('textbox', { name: 'Reason' }), REASON);
+    await user.click(within(dialog).getByRole('button', { name: 'Activate store' }));
+    const status = await screen.findByRole('status');
+    expect(status.textContent).toContain('Target Store is live and can take orders.');
+    expect(status.textContent).not.toMatch(/not confirmed/);
   });
 
   it('[owner #51 · DS1145 S3] a store suspended before it was ever live, with no phone, is lifted back to waiting — the page says so, never "live"', async () => {
@@ -233,23 +267,25 @@ describe('[MC-PR2] when the server says the rules are met', () => {
   });
 });
 
-// [R3 · owner ruling 10 Nov 2026 · security review] The storefront names the seller by the store's name only once a person
-// confirmed that exact name as the business or company name; the page says who customers see, and confirms only the
-// name it shows.
+// [R3 · owner ruling 10 Nov 2026 · security review · review F2/F4/F5/F6] The page renders the SERVER's answer for who the
+// storefront names as the seller (never its own guess), flags a live store that names nobody, confirms only the name it
+// shows, and asks before an activation confirms a store name — never for an own-name trader or a typed legal name.
 describe('[R3] the seller name customers see', () => {
-  function serveLive(extra: Record<string, unknown>, onWrite?: (_r: ApiRequest) => { status?: number; body: unknown }) {
+  function serveStore(status: string, extra: Record<string, unknown>, onWrite?: (_r: ApiRequest) => { status?: number; body: unknown }, next = 'LIVE') {
     return mockApi((request) => {
-      if (request.method === 'GET' && request.url.pathname === '/api/v1/admin/vendors/vendor-target') return { body: { success: true, data: { ...storeOf('ACTIVE'), ...extra } } };
-      if (request.method === 'GET' && request.url.pathname === '/api/v1/admin/vendors/vendor-target/activation-checklist') return { body: { success: true, data: checklistOf('LIVE', { storeStatus: 'ACTIVE' }) } };
+      if (request.method === 'GET' && request.url.pathname === '/api/v1/admin/vendors/vendor-target') return { body: { success: true, data: { ...storeOf(status), ...extra } } };
+      if (request.method === 'GET' && request.url.pathname === '/api/v1/admin/vendors/vendor-target/activation-checklist') return { body: { success: true, data: checklistOf(next, { storeStatus: status }) } };
       if (onWrite && request.method !== 'GET') return onWrite(request);
       throw new Error(`Unexpected request: ${request.method} ${request.url}`);
     });
   }
+  const live = (extra: Record<string, unknown>, onWrite?: (_r: ApiRequest) => { status?: number; body: unknown }) => serveStore('ACTIVE', extra, onWrite);
 
-  it('not confirmed: says customers see "Ask the store", and confirms exactly the name shown, with a reason', async () => {
-    const fetchMock = serveLive({ tradesUnderOwnName: false, sellerNameCheckedName: null }, () => ({ body: { success: true, data: { id: 'vendor-target', sellerNameCheckedName: 'Target Store' } } }));
+  it('nobody named: says customers see "Ask the store", flags the live store, and confirms exactly the name shown, with a reason', async () => {
+    const fetchMock = live({ sellerName: { basis: 'AWAITING_PERSON', value: null } }, () => ({ body: { success: true, data: { id: 'vendor-target', sellerNameCheckedName: 'Target Store' } } }));
     const { user } = page();
-    expect(await screen.findByText(/Nobody yet: customers see “Ask the store” until a person confirms the store’s name\./)).toBeTruthy();
+    expect(await screen.findByText(/Nobody yet: customers see “Ask the store” until a person names the seller\./)).toBeTruthy();
+    expect(screen.getByText('Seller not named')).toBeTruthy();
     await user.click(screen.getByRole('button', { name: 'Confirm seller name…' }));
     const dialog = screen.getByRole('dialog', { name: 'Confirm “Target Store” as the seller’s name?' });
     expect(dialog.textContent).toContain('Check it is exactly the registered business or company name on the store’s certificate.');
@@ -262,23 +298,72 @@ describe('[R3] the seller name customers see', () => {
     expect((init?.headers as Record<string, string>)['x-swift-reason']).toBe(REASON);
   });
 
-  it('confirmed for the name it has now: shows it, offers nothing; confirmed for an older name: not confirmed', async () => {
-    const view = renderWithSeller({ tradesUnderOwnName: false, sellerNameCheckedName: 'Target Store' });
-    expect(await screen.findByText('Target Store (confirmed by a person)')).toBeTruthy();
+  it.each([
+    [{ basis: 'LEGAL_NAME', value: 'Sample Holdings Limited' }, 'Sample Holdings Limited (the legal name typed from its registration paper)'],
+    [{ basis: 'OWN_NAME', value: 'Fixture Trader' }, 'Fixture Trader (the owner’s own name, which the store trades under)'],
+    [{ basis: 'PERSON_CHECKED', value: 'Target Store' }, 'Target Store (the store’s name, confirmed by a person)'],
+  ] as const)('named (%j): says who, offers nothing to confirm, no flag', async (sellerName, words) => {
+    live({ sellerName });
+    page();
+    expect(await screen.findByText(words)).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Confirm seller name…' })).toBeNull();
-    view.unmount();
-    renderWithSeller({ tradesUnderOwnName: false, sellerNameCheckedName: 'Old Store Name' });
-    expect(await screen.findByRole('button', { name: 'Confirm seller name…' })).toBeTruthy();
+    expect(screen.queryByText('Seller not named')).toBeNull();
   });
 
-  it('a trader under their own name: their full name is shown once their declaration is approved, no store name to confirm', async () => {
-    renderWithSeller({ tradesUnderOwnName: true, sellerNameCheckedName: null });
-    expect(await screen.findByText('The owner’s full name, once their own-name declaration is approved')).toBeTruthy();
+  // [COORD Option A · final review S3-1 · a DELIBERATE rule change] The page still reads "nobody" from the server's
+  // answer, but a store trading under its owner's own name is never offered a seller-name confirmation: the server
+  // refuses every such store (its name is a person's, shown only through the live own-name declaration).
+  it('[review-2479 S3-1] an own-name store the server names nobody reads "nobody" but offers no seller-name confirmation', async () => {
+    live({ tradesUnderOwnName: true, sellerName: { basis: 'AWAITING_PERSON', value: null } });
+    page();
+    expect(await screen.findByText(/Nobody yet: customers see “Ask the store”/)).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Confirm seller name…' })).toBeNull();
   });
 
-  function renderWithSeller(extra: Record<string, unknown>) {
-    serveLive(extra);
-    return page();
-  }
+  it('an older server that does not answer: says it is not known, offers nothing, flags nothing', async () => {
+    live({ sellerName: undefined });
+    page();
+    expect(await screen.findByText('Not known: refresh this page.')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Confirm seller name…' })).toBeNull();
+    expect(screen.queryByText('Seller not named')).toBeNull();
+  });
+
+  it('[review F4] "Activate now…" with "No, or not checked": activates without confirming any name', async () => {
+    const fetchMock = serveStore('PENDING_APPROVAL', { sellerName: { basis: 'AWAITING_PERSON', value: null } }, () => ({ body: { success: true, data: { ...storeOf('ACTIVE') } } }), 'CAN_ACTIVATE');
+    const { user } = page();
+    await user.click(await screen.findByRole('button', { name: 'Activate now…' }));
+    const dialog = screen.getByRole('dialog', { name: 'Activate Target Store now?' });
+    await user.click(within(dialog).getByRole('radio', { name: /^No, or not checked/ }));
+    await user.type(within(dialog).getByRole('textbox', { name: 'Reason' }), REASON);
+    await user.click(within(dialog).getByRole('button', { name: 'Activate store' }));
+    await screen.findByRole('status');
+    const [url, init] = requestsByMethod(fetchMock, 'PUT')[0]!;
+    expect(String(url)).toMatch(/\/vendor-target\/approve$/);
+    expect(init?.body).toBeUndefined();
+  });
+
+  it.each(['OWN_NAME', 'LEGAL_NAME', 'PERSON_CHECKED'] as const)('[review F4/F6] "Activate now…" for a seller already named (%s): no question, no name stamped', async (basis) => {
+    const fetchMock = serveStore('PENDING_APPROVAL', { sellerName: { basis, value: 'Named Seller' } }, () => ({ body: { success: true, data: { ...storeOf('ACTIVE') } } }), 'CAN_ACTIVATE');
+    const { user } = page();
+    await user.click(await screen.findByRole('button', { name: 'Activate now…' }));
+    const dialog = screen.getByRole('dialog', { name: 'Activate Target Store now?' });
+    expect(within(dialog).queryByRole('radio')).toBeNull();
+    expect(dialog.textContent).not.toContain('certificate');
+    await user.type(within(dialog).getByRole('textbox', { name: 'Reason' }), REASON);
+    await user.click(within(dialog).getByRole('button', { name: 'Activate store' }));
+    await screen.findByRole('status');
+    expect(requestsByMethod(fetchMock, 'PUT')[0]![1]?.body).toBeUndefined();
+  });
+
+  it('[review-2479 S3-1] activating an own-name store the server names nobody asks no certificate question and sends no name', async () => {
+    const fetchMock = serveStore('PENDING_APPROVAL', { tradesUnderOwnName: true, sellerName: { basis: 'AWAITING_PERSON', value: null } }, () => ({ body: { success: true, data: { ...storeOf('ACTIVE') } } }), 'CAN_ACTIVATE');
+    const { user } = page();
+    await user.click(await screen.findByRole('button', { name: 'Activate now…' }));
+    const dialog = screen.getByRole('dialog', { name: 'Activate Target Store now?' });
+    expect(within(dialog).queryByRole('radio')).toBeNull();
+    await user.type(within(dialog).getByRole('textbox', { name: 'Reason' }), REASON);
+    await user.click(within(dialog).getByRole('button', { name: 'Activate store' }));
+    await screen.findByRole('status');
+    expect(requestsByMethod(fetchMock, 'PUT')[0]![1]?.body).toBeUndefined();
+  });
 });

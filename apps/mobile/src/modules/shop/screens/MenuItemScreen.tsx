@@ -39,6 +39,9 @@ import { ItemDescription } from '../components/ItemDescription';
 import { readItemPreview, type ItemPreview } from '../../../lib/doorPreview';
 import { readyTimeLabel, storeKindWords } from '../../../lib/storeKindWords';
 import { KeyboardAvoider } from '../../../kit/keyboard-avoider';
+import { ItemChoices } from '../components/ItemChoices';
+import { asSheetSelection, chooseOption, defaultSelection, hasSizes, placeOption, sizeChosen, wireSelection, type Placement, type SheetSelection } from '../../../lib/menuSheet';
+import { selectionProblem, sheetUnitPrice } from '../../../lib/menuPrice';
 
 /** [P35 · board 4b] "Craft & Kind · Georgetown": the store's name, and its city when it has one. */
 export function storeLine(store: { name?: string | null; city?: string | null }): string {
@@ -49,24 +52,8 @@ export function storeLine(store: { name?: string | null; city?: string | null })
 const SCREEN_W = Dimensions.get('window').width;
 const GUTTER = space['2xl'];
 
-type Selected = Record<string, string | string[]>;
-
-/** [F4] A choice the store marked sold out is shown, but never chosen. */
-const onSale = (o: any) => o.isAvailable !== false;
-
-function defaultSelections(groups: any[]): Selected {
-  const out: Selected = {};
-  for (const g of groups ?? []) {
-    // A sold-out default is never pre-selected: the customer chooses.
-    const defaults = (g.options ?? []).filter((o: any) => o.isDefault && onSale(o)).map((o: any) => o.id);
-    if (g.maxSelect === 1) {
-      if (defaults[0]) out[g.id] = defaults[0];
-    } else if (defaults.length) {
-      out[g.id] = defaults;
-    }
-  }
-  return out;
-}
+// [MENU-OPTIONS · owner 11 Nov 2026] The choices are lib/menuSheet's (size sets the price, half-and-half, follow-up
+// groups; a sold-out default is never pre-selected) and the price the server's own rules (lib/menuPrice).
 
 /** [APP-SPEED A] A dish opening from its card: the card's photo and name, a visible Back, and the
  *  rest loading below. Drawn only from what the server sent the card. */
@@ -132,7 +119,7 @@ export function MenuItemScreen() {
     [vendor.data, itemId],
   );
   const groups: any[] = useMemo(() => item?.optionGroups ?? [], [item]);
-  const [selected, setSelected] = useState<Selected>(() => addDraft?.selectedOptions ?? defaultSelections(groups));
+  const [selected, setSelected] = useState<SheetSelection>(() => (addDraft ? asSheetSelection(addDraft.selectedOptions) : defaultSelection(groups)));
   // [row 70] A note for the store travels with this line (and through sign-in).
   // Declared after the existing state so the screen's hook order is unchanged.
   const [note, setNote] = useState(addDraft?.notes ?? '');
@@ -166,50 +153,36 @@ export function MenuItemScreen() {
   React.useEffect(() => {
     if (item && seededFor.current !== itemId) {
       seededFor.current = itemId;
-      setSelected(defaultSelections(item.optionGroups ?? []));
+      setSelected(defaultSelection(item.optionGroups ?? []));
     }
   }, [item, itemId]);
 
   const outOfStock = item?.stockQuantity === 0;
   const basePrice = Number(item?.customerPrice ?? item?.basePrice) || 0;
 
-  const optionsPrice = groups.reduce((sum, g) => {
-    const sel = selected[g.id];
-    const ids = Array.isArray(sel) ? sel : sel ? [sel] : [];
-    return sum + ids.reduce((s, id) => s + (Number(g.options?.find((o: any) => o.id === id)?.additionalPrice) || 0), 0);
-  }, 0);
-  const total = (basePrice + optionsPrice) * qty;
+  // [MENU-OPTIONS] One unit as the server prices it: the chosen size IS the price, extras on top, a half topping at
+  // the store's half price, a follow-up choice its own price.
+  const unitPrice = item ? (sheetUnitPrice(item, selected) ?? basePrice) : basePrice;
+  const total = unitPrice * qty;
+  const sized = hasSizes(item);
 
-  const requiredUnmet = groups.some((g) => {
-    if (!g.isRequired) return false;
-    const sel = selected[g.id];
-    const count = Array.isArray(sel) ? sel.length : sel ? 1 : 0;
-    return count < Math.max(1, g.minSelect ?? 1);
-  });
+  // [MENU-OPTIONS] Add waits until the server's own validator would accept the choices (required, minimum, maximum,
+  // a size, an open follow-up group, nothing sold out).
+  const requiredUnmet = item ? selectionProblem(item, selected) !== null : false;
 
-  const toggleOption = (g: any, optionId: string) => {
-    setSelected((prev) => {
-      const next = { ...prev };
-      if (g.maxSelect === 1) {
-        next[g.id] = prev[g.id] === optionId && !g.isRequired ? [] : optionId;
-        if (Array.isArray(next[g.id]) && (next[g.id] as string[]).length === 0) delete next[g.id];
-        return next;
-      }
-      const cur = Array.isArray(prev[g.id]) ? [...(prev[g.id] as string[])] : [];
-      const at = cur.indexOf(optionId);
-      if (at >= 0) cur.splice(at, 1);
-      else if (!g.maxSelect || cur.length < g.maxSelect) cur.push(optionId);
-      if (cur.length) next[g.id] = cur;
-      else delete next[g.id];
-      return next;
-    });
+  const toggleOption = (groupId: string, optionId: string) => {
+    setSelected((prev) => chooseOption(groups, prev, groupId, optionId));
   };
+  const placeTopping = (groupId: string, optionId: string, placement: Placement) => {
+    setSelected((prev) => placeOption(groups, prev, groupId, optionId, placement));
+  };
+  const wireOptions = wireSelection(groups, selected);
 
   const resumedAdd = React.useRef(false);
   const onAdd = React.useCallback(() => {
     if (!isAuthenticated) {
       requestAuthContinuation({ screen: 'MenuItem', vendorId, itemId,
-        addDraft: { quantity: qty, selectedOptions: selected, dayOffset, slot, visitMode, ...(trimmedNote ? { notes: trimmedNote } : {}) },
+        addDraft: { quantity: qty, selectedOptions: wireOptions, dayOffset, slot, visitMode, ...(trimmedNote ? { notes: trimmedNote } : {}) },
       }, promptLogin);
       // If Auth already owns the root, promptLogin does not change its key.
       if (wantsAuth) navigation.getParent()?.navigate('Auth');
@@ -221,7 +194,7 @@ export function MenuItemScreen() {
     if (route.params?.addAfterSignIn) navigation.setParams({ addAfterSignIn: undefined, addDraft: undefined });
     addToCart.mutate(
       {
-        vendorId, itemId, quantity: isBooking ? 1 : qty, selectedOptions: Object.keys(selected).length ? selected : undefined,
+        vendorId, itemId, quantity: isBooking ? 1 : qty, selectedOptions: Object.keys(wireOptions).length ? wireOptions : undefined,
         ...(trimmedNote ? { specialInstructions: trimmedNote } : {}),
       },
       {
@@ -233,19 +206,15 @@ export function MenuItemScreen() {
         },
       },
     );
-  }, [isAuthenticated, wantsAuth, vendorId, itemId, qty, selected, dayOffset, slot, visitMode, trimmedNote, promptLogin, navigation, addToCart, isBooking, serviceMode, instantConfirmation, setAppointment, route.params?.addAfterSignIn]);
+  }, [isAuthenticated, wantsAuth, vendorId, itemId, qty, wireOptions, dayOffset, slot, visitMode, trimmedNote, promptLogin, navigation, addToCart, isBooking, serviceMode, instantConfirmation, setAppointment, route.params?.addAfterSignIn]);
   React.useEffect(() => {
     if (!route.params?.addAfterSignIn || resumedAdd.current || !isAuthenticated || !item || vendor.isLoading || vendor.isError) return;
     if (outOfStock || item.isAvailable === false || requiredUnmet || addToCart.isPending) return;
-    // Revalidate restored options against the current menu before replaying Add.
-    const optionsValid = Object.entries(selected).every(([groupId, value]) => {
-      const group = groups.find((g) => g.id === groupId);
-      const ids = Array.isArray(value) ? value : [value];
-      return group && (!group.maxSelect || ids.length <= group.maxSelect) && ids.every((id) => group.options?.some((option: any) => option.id === id && option.isAvailable !== false));
-    });
-    if (!optionsValid || (isBooking && (!slot || !daySlots.includes(slot) || slotsQ.isError || slotsQ.isPending))) return;
+    // Restored options were revalidated against the current menu above: `requiredUnmet` is the server's own
+    // validator (an unknown, sold-out or too-many choice, a missing size or follow-up), so nothing stale replays.
+    if (isBooking && (!slot || !daySlots.includes(slot) || slotsQ.isError || slotsQ.isPending)) return;
     onAdd();
-  }, [route.params?.addAfterSignIn, isAuthenticated, item, vendor.isLoading, vendor.isError, outOfStock, requiredUnmet, addToCart.isPending, selected, groups, isBooking, slot, daySlots, slotsQ.isError, slotsQ.isPending, navigation, onAdd]);
+  }, [route.params?.addAfterSignIn, isAuthenticated, item, vendor.isLoading, vendor.isError, outOfStock, requiredUnmet, addToCart.isPending, isBooking, slot, daySlots, slotsQ.isError, slotsQ.isPending, navigation, onAdd]);
 
   if (vendor.isLoading) {
     // [APP-SPEED A] Opened from a dish card: its photo and name at once, the rest loading below.
@@ -341,7 +310,10 @@ export function MenuItemScreen() {
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.md, marginTop: space.sm }}>
               {/* [Wave 3 audit · law 3] Money is INK, never brand — maroon is
                   reserved for the acts (the CTA below), not the numbers. */}
-              <Money amount={basePrice} size="l" />
+              {/* [MENU-OPTIONS] A sized item: "From" its smallest size until a size is chosen, then that size's price
+                  with the choices made (the price the Add shows for one). */}
+              {sized && !sizeChosen(groups, selected) ? <T variant="label" tone="muted">From</T> : null}
+              <Money amount={sized && sizeChosen(groups, selected) ? unitPrice : basePrice} size="l" />
               {/* [STORE-VAT · VAT Act s.90(2)] A person-approved VAT store's standard-rated price includes VAT and says so. */}
               {itemVatNote(storefrontVat(vendor.data?.vat), item) ? <T variant="caption" tone="muted">{itemVatNote(storefrontVat(vendor.data?.vat), item)}</T> : null}
               {outOfStock ? (
@@ -414,50 +386,8 @@ export function MenuItemScreen() {
               </>
             ) : null}
 
-            {/* Modifiers — Swift option groups in kit chip language */}
-            {groups.map((g) => {
-              const sel = selected[g.id];
-              const selIds = Array.isArray(sel) ? sel : sel ? [sel] : [];
-              return (
-                <View key={g.id}>
-                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.md, marginTop: space['2xl'] }}>
-                    <T variant="heading" style={{ flex: 1 }}>
-                      {g.name}
-                    </T>
-                    <T variant="caption" tone={g.isRequired ? 'warning' : 'faint'}>
-                      {g.isRequired ? 'Required' : 'Optional'}
-                      {g.maxSelect > 1 ? ` · up to ${g.maxSelect}` : ''}
-                    </T>
-                  </View>
-                  <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: space.md, marginTop: space.md }}>
-                    {(g.options ?? []).map((o: any) => {
-                      const on = selIds.includes(o.id);
-                      const price = Number(o.additionalPrice) || 0;
-                      // [F4] Sold out: shown so the menu stays honest, but it
-                      // cannot be chosen (and the server refuses it anyway).
-                      if (!onSale(o)) {
-                        return (
-                          <Chip
-                            key={o.id}
-                            label={`${o.name} · sold out`}
-                            style={{ height: 42, paddingHorizontal: space.lg, opacity: 0.45 }}
-                          />
-                        );
-                      }
-                      return (
-                        <Chip
-                          key={o.id}
-                          label={`${o.name}${price ? ` +${money(price)}` : ''}`}
-                          selected={on}
-                          onPress={() => toggleOption(g, o.id)}
-                          style={{ height: 42, paddingHorizontal: space.lg }}
-                        />
-                      );
-                    })}
-                  </View>
-                </View>
-              );
-            })}
+            {/* [MENU-OPTIONS] The item's choices, like a pizza shop's sheet (components/ItemChoices). */}
+            <ItemChoices groups={groups} selection={selected} onChoose={toggleOption} onPlace={placeTopping} />
 
             {isBooking ? (
               <>

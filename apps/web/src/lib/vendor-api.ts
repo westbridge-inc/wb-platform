@@ -2,6 +2,8 @@
 
 // Typed client over the EXISTING vendor endpoints — the web dashboard is
 // another client on the same backend; it never invents its own order logic.
+import type { OrderLineOption } from '../../../mobile/src/modules/vendor/orderLineOptions';
+import type { ServerStoreMoney } from '../../../mobile/src/modules/vendor/ringMoney';
 import type { SubstitutionStatus } from '@swift/types';
 import { apiFetch } from './auth';
 import { formatMoney, parseAmount } from './money';
@@ -74,6 +76,9 @@ export interface OrderLine {
   subStatus?: SubstitutionStatus | null;
   substituteItemId?: string | null;
   substituteName?: string | null;
+  /** [L09 · M026 · MENU-OPTIONS] The choices the line is made with (none once a substitute replaced it): the display
+   *  words (group, name) and, from a server with pizza options, their parts (size, half, follow-up's opener). */
+  options?: OrderLineOption[];
 
   // ── Never sent — kept as tombstones so the lie cannot come back ──────────
   /** PHANTOM. There is no `totalPrice` column; the line total is `totalCustomer`. */
@@ -121,6 +126,9 @@ export interface VendorOrder {
   deliveryFee?: number | null;
   tipAmount?: number | null;
   discount?: number | null;
+  /** [STORE-MONEY] The server's word on the store's own money: the food (the big number) and whose the delivery fee
+   *  and tip are, in plain lines. Read through ringMoney (the app's rule file); absent on an older server. */
+  storeMoney?: ServerStoreMoney | null;
   /** [U25] Straight off the order record: why and when it was cancelled. */
   cancellationReason?: string | null;
   cancelledAt?: string | null;
@@ -142,6 +150,11 @@ export interface VendorOrder {
   pickupCodeRequired?: boolean;
   /** [O-2] When the store tapped "Handed to rider" (absent on an older server, which has no such step). */
   handedToRiderAt?: string | null;
+  /** [PROD-RIDER-TEST (a)1] The rider search for this order came back empty while it is still the store's to choose:
+   *  "No rider found. Deliver it yourselves?" (both routes; absent on an older server = false). */
+  noRiderFound?: boolean;
+  noRiderPrompt?: string | null;
+  noRiderDetail?: string | null;
   /**
    * The two routes select DIFFERENT vendor columns: the board sends
    * `{ id, name, selfDeliveryEnabled }`, the detail sends
@@ -199,6 +212,9 @@ export interface CatalogItem {
   /** [VAT-DOCS] The price the store typed before VAT, while Swift adds VAT to this item (basePrice = what customers
    *  pay); null otherwise. Such an item is edited by this price (lib/vat-price-edit.ts). */
   vatListedPrice?: number | null;
+  /** [ASSISTED SETUP] Added by Swift for the store with its OK (ISO date); the photo too, while it is still Swift's. */
+  addedBySwiftAt?: string;
+  photoAddedBySwiftAt?: string;
 }
 
 /** [STORE-VAT · owner O-5] Only STANDARD goods carry VAT, and only for a store whose VAT a person approved. */

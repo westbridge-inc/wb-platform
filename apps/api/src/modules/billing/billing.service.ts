@@ -56,6 +56,7 @@ import { lockFeeCollectionAuthority, lockMoverFeeAuthority, lockSubscriptionPaye
 import { moverUserIdOf, PAYER_INCLUDE, payerAudienceOf, payerOf, payerUserIdOf } from '../subscription/subscription-owner';
 import { sweepChainDealChanges } from '../vendor/chain-deal';
 import { CLOSURE_FEE_HOLD_REFUSAL, CLOSURE_LAPSE_NOTE, closureHoldsWeek } from './closure-fee-hold';
+import { startedWeekOwed } from './credit-refund';
 
 // ---------------------------------------------------------------------------
 // BillingService — the one place V1 touches money: Swift's own weekly fee.
@@ -145,6 +146,24 @@ const MMG_HISTORY_HOLD = 'MMG_HISTORY_APPROVAL_UNVERIFIED';
 /** [PT-1] A hosted Pay-now payment's clientKey: `cardpay:<card session id>`.
  *  The session sweep owns these rows; the weekly-intent reconciler skips them. */
 export const CARD_PAY_NOW_KEY_PREFIX = 'cardpay:';
+/** [BILLING-REANCHOR] The receipt channel of a card capture that brought a suspended partner back: kept as fee credit
+ *  and spent at once, in the same transaction, on the return week. */
+export const CARD_RETURN_CHANNEL = 'CARD_RETURN';
+
+/**
+ * [N1 · CARD-STAGING-TEST R2 · owner 10 Nov 2026] What a booked card payment did with its money, as the partner is told
+ * (CardSessionView.settlement): `banked` when it was kept as fee credit — a week that has not started (CARD_PAY_AHEAD),
+ * or money kept without moving the account (CARD_LATE_APPROVAL) — and `advanced` when it paid a week. A RETURN is kept
+ * as fee credit too (its bank event), but that credit is spent AT ONCE on the return week in the same transaction
+ * (receipt channel CARD_RETURN): the week is paid, so it is `advanced`, never "kept for your next weekly fee". Read from
+ * what was durably booked, so every repeat (a racing confirmation, the sweep, a finance BOOK) answers the same.
+ */
+export async function cardPayNowSettlement(db: PrismaClient | Prisma.TransactionClient, paymentId: string): Promise<'advanced' | 'banked'> {
+  const kept = await db.billingEvent.findUnique({ where: { idempotencyKey: `bank:${paymentId}` }, select: { id: true } });
+  if (!kept) return 'advanced';
+  const receipt = await db.feeReceipt.findUnique({ where: { billingEventId: kept.id }, select: { channel: true } });
+  return receipt?.channel === CARD_RETURN_CHANNEL ? 'advanced' : 'banked';
+}
 /** [PT-1] Why an instrument charge did not happen — shown to the partner in
  *  the ordinary failure notice ("<reason>. We will retry tomorrow…", then the
  *  real ways to pay from fee-notice-copy.ts). A fact, never a door: the app
@@ -460,6 +479,28 @@ export class BillingService {
     return notified;
   }
 
+  /**
+   * [REVIEW-2484-A S4-6] Closing: a week that has started is never refunded. Before a partner's credit is set aside
+   * for a refund, the week that has started and is owed (credit-refund.ts startedWeekOwed: the rules the billing run
+   * itself applies) is paid from that credit, through the ordinary billing path, so only weeks that have not started
+   * remain. Credit only: no MMG prompt or card charge is ever made here. `paid`: at least one started week was paid;
+   * `none`: nothing was owed; `not_covered`: a started week is owed and the credit does not cover it (set-aside then
+   * refuses, STARTED_WEEK_UNPAID); `pending`: its payment is being confirmed.
+   */
+  async settleStartedWeekFromCredit(subscriptionId: string, now = new Date()): Promise<'paid' | 'none' | 'not_covered' | 'pending'> {
+    let paid = false;
+    // A week at a time, as the billing run would; bounded (a plan is never more than a few weeks behind its run).
+    for (let week = 0; week < 6; week += 1) {
+      const sub = await this.prisma.subscription.findUnique({ where: { id: subscriptionId }, include: PAYER_INCLUDE });
+      if (!sub || !(await startedWeekOwed(this.prisma, sub, now))) return paid ? 'paid' : 'none';
+      const outcome = await this.billSubscription(sub as SubWithRelations, now, undefined, false, { prepaidOnly: true });
+      if (outcome === 'pending') return 'pending';
+      if (outcome !== 'succeeded') return 'not_covered';
+      paid = true;
+    }
+    return 'paid';
+  }
+
   /** Bill everything due. One subscription's failure never kills the batch. */
   async runBillingCycle(at?: Date): Promise<BillingCycleResult> {
     // [REVIEW-M #1832 S3-1] Each subscription is billed at the time it is really billed
@@ -518,6 +559,9 @@ export class BillingService {
         log().error({ subscriptionId: sub.id, code }, '[billing] one subscription failed in the billing run; the run goes on and retries it next hour');
       }
     }
+    // [Audit FABLE-01 C2-1] A partner who stopped billing while behind is never retried above, yet their grace runs
+    // out like anyone's: suspended at its end, so their return is re-anchored instead of billed as arrears.
+    result.suspended += await this.suspendStoppedPastDue(now).catch((err) => { log().error({ code: billingErrorCode(err) }, '[billing] the stopped-overdue suspension pass failed; the next run retries it'); return 0; });
 
     return result;
   }
@@ -612,6 +656,9 @@ export class BillingService {
      *  a stale one. The attempt event exists; re-inserting it would collide
      *  with the very row that licensed this pass. */
     reclaimedAttempt = false,
+    /** [REVIEW-2484-A S4-6] `prepaidOnly`: pay the week from the partner's credit or not at all — no attempt is
+     *  opened unless the credit covers the price, and no MMG prompt or card charge is ever made (closing). */
+    opts: { prepaidOnly?: boolean } = {},
   ): Promise<'succeeded' | 'failed' | 'suspended' | 'skipped' | 'pending'> {
     // Selection is not collection authority. Old workers carrying a second
     // source ID must not open another fee after the payer has one authority.
@@ -654,6 +701,10 @@ export class BillingService {
     // so that week's price, at its own start, is the one charged.
     const returning = await returnReanchorProof(this.prisma, sub, now);
     let priced = await this.priceEligibleFor(returning ? { ...sub, nextBillingDate: returnWeekStart(sub, now) } : sub, usd);
+    if (opts.prepaidOnly && !sub.feeWaived && Number(priced.amount) > 0) {
+      const credit = await this.prisma.prepaidBalance.findUnique({ where: { subscriptionId: sub.id }, select: { balance: true, currencyCode: true } });
+      if (!credit || credit.currencyCode !== sub.currencyCode || Number(credit.balance) < Number(priced.amount)) return 'skipped';
+    }
 
     if (!reclaimedAttempt) try {
       const reserved = await this.prisma.$transaction(async (tx) => {
@@ -734,7 +785,7 @@ export class BillingService {
         // reserved (both rails write their intent before they call out), and
         // the provider keys are deterministic regardless.
         if (await this.reclaimStaleAttempt(sub, attemptKey, now)) {
-          return this.billSubscription(sub, now, usd, true);
+          return this.billSubscription(sub, now, usd, true, opts);
         }
         return 'skipped'; // someone (or a concurrent run) already attempted this
       }
@@ -771,19 +822,22 @@ export class BillingService {
     if (sub.feeWaived || amount === 0) {
       // [REVIEW-G #1769 S2-2] Booked with the price this week kept (as the checkout
       // path books a waived week), so the next week measures a rise from it.
-      const applied = await this.applySuccessfulCharge(sub, 0, 'fee-waived', now, periodKey, undefined, priced.usdTrio);
-      if (!applied) return 'skipped';
       // A waive covers ONE period — the admin notice promises "for this period".
       // Clear it so normal billing resumes next cycle instead of a permanent free
       // ride (silent, recurring revenue loss). A genuinely $0 tier (amount===0,
       // feeWaived false) is NOT a waive and stays free.
-      if (sub.feeWaived) {
-        await this.prisma.subscription.update({ where: { id: sub.id }, data: { feeWaived: false } });
-      }
+      // [AUDIT C2-4] Cleared in the SAME transaction that books the free week, under its locks: a crash between two
+      // commits can no longer leave the waiver standing for a second free week, and a waiver given after this commit
+      // is never erased by a late clear.
+      const consumeWaiver = sub.feeWaived
+        ? async (tx: Prisma.TransactionClient) => { await tx.subscription.updateMany({ where: { id: sub.id, feeWaived: true }, data: { feeWaived: false } }); }
+        : undefined;
+      const applied = await this.applySuccessfulCharge(sub, 0, 'fee-waived', now, periodKey, undefined, priced.usdTrio, undefined, consumeWaiver);
+      if (!applied) return 'skipped';
       return 'succeeded';
     }
 
-    const charged = await this.attemptCharge(sub, amount, now);
+    const charged = await this.attemptCharge(sub, amount, now, opts.prepaidOnly === true);
 
     if (charged.ok) {
       if (charged.rail === 'MOBILE_MONEY') {
@@ -1098,7 +1152,12 @@ export class BillingService {
 
     const cardRail = this.resolveCardRail();
     if (!cardRail) return { ok: false, deferred: true };
-    const instrument = await this.prisma.paymentInstrument.findFirst({ where: { subscriptionId: sub.id, status: 'ACTIVE' } });
+    // [review-2475 F2] Only the payer's own card: a card another person enrolled (a store's previous account holder)
+    // is never charged for this subscription's fee.
+    // [delta D3] A payer that can't be read now defers the attempt: never a "no card on file" failure and strike.
+    const payer = await subscriptionPayer(this.prisma, sub.id).catch(() => null);
+    if (!payer) return { ok: false, deferred: true };
+    const instrument = await this.prisma.paymentInstrument.findFirst({ where: { subscriptionId: sub.id, status: 'ACTIVE', userId: payer.userId } });
     if (!instrument) return { ok: false, reason: NO_CARD_REASON };
     if (cardExpiredAt(instrument, now)) {
       await this.prisma.paymentInstrument.updateMany({ where: { id: instrument.id, status: 'ACTIVE' }, data: { status: 'EXPIRED', expiredAt: now } });
@@ -1280,11 +1339,12 @@ export class BillingService {
     const { intentId, instrumentId, now } = input;
     const outcome = await this.prisma.$transaction(async (tx) => {
       const authority = await this.lockPaymentOutcomeAuthority(tx, sub);
-      const [card] = await tx.$queryRaw<Array<{ status: string; subscriptionId: string }>>`
-        SELECT "status", "subscriptionId" FROM "payment_instruments" WHERE "id" = ${instrumentId} FOR UPDATE
+      const [card] = await tx.$queryRaw<Array<{ status: string; subscriptionId: string; userId: string }>>`
+        SELECT "status", "subscriptionId", "userId" FROM "payment_instruments" WHERE "id" = ${instrumentId} FOR UPDATE
       `;
       await tx.$queryRaw`SELECT "id" FROM "subscription_payments" WHERE "id" = ${intentId} FOR UPDATE`;
-      if (!card || card.subscriptionId !== sub.id || card.status !== 'ACTIVE') {
+      // [review-2475 F2] the payer's own card only (see authorizeInstrumentCharge)
+      if (!card || card.subscriptionId !== sub.id || card.status !== 'ACTIVE' || card.userId !== (await subscriptionPayer(tx, sub.id)).userId) {
         await closeUnsentCardIntents(tx, { intentId }, 'CARD_OUT_OF_SERVICE', now);
         return 'card_changed' as const;
       }
@@ -1342,13 +1402,15 @@ export class BillingService {
     try {
       return await this.prisma.$transaction(async (tx) => {
         const authority = await this.lockPaymentOutcomeAuthority(tx, sub);
-        const [card] = await tx.$queryRaw<Array<{ status: string; subscriptionId: string }>>`
-          SELECT "status", "subscriptionId" FROM "payment_instruments" WHERE "id" = ${instrumentId} FOR UPDATE
+        const [card] = await tx.$queryRaw<Array<{ status: string; subscriptionId: string; userId: string }>>`
+          SELECT "status", "subscriptionId", "userId" FROM "payment_instruments" WHERE "id" = ${instrumentId} FOR UPDATE
         `;
         await this.observer.afterInstrumentChargeLocked?.(sub.id, instrumentId, tx);
         if (!card || card.subscriptionId !== sub.id || card.status !== 'ACTIVE') {
           return { outcome: 'card_changed' as const, cardStatus: card?.status ?? 'MISSING' };
         }
+        // [review-2475 F2] Under the payer lock: the card is the payer's own, or nothing is sent.
+        if (card.userId !== (await subscriptionPayer(tx, sub.id)).userId) return { outcome: 'card_changed' as const, cardStatus: 'NOT_THE_PAYERS' };
         const maySend = !await this.subscriptionHasConfirmationHold(tx, sub.id, undefined, now)
           && !authority.bankInsteadOfAdvance
           && !authority.suppressNotice
@@ -1577,7 +1639,8 @@ export class BillingService {
       this.prisma.subscriptionPayment.findUnique({ where: { id: payment.id } }),
       this.prisma.billingEvent.findUnique({ where: { idempotencyKey: `bank:${payment.id}` }, select: { id: true } }),
     ]);
-    if (banked) return { outcome: 'banked' };
+    // [N1] Kept as fee credit — unless it was a RETURN, whose credit already paid the return week (cardPayNowSettlement).
+    if (banked) return { outcome: await cardPayNowSettlement(this.prisma, payment.id) };
     if (after?.status === 'CAPTURED' && after.externalRef === input.providerRef) return { outcome: 'advanced' };
     if (after?.failureCode === 'WALLET_CURRENCY_MISMATCH' || after?.failureCode === 'CURRENCY_UNPINNED') {
       return { outcome: 'held', failureCode: after.failureCode };
@@ -1878,6 +1941,8 @@ export class BillingService {
     sub: SubWithRelations,
     amount: number,
     now: Date,
+    /** [REVIEW-2484-A S4-6] Credit only: never an external rail (a credit spent meanwhile defers the attempt). */
+    prepaidOnly = false,
   ): Promise<ChargeAttemptResult> {
     if (await this.subscriptionHasConfirmationHold(this.prisma, sub.id, undefined, now)) return { ok: false, deferred: true };
     // [PROD-PATH] No live way to pay: the fee is paused before the prepaid
@@ -1912,6 +1977,7 @@ export class BillingService {
     if (balanceRow && Number(balanceRow.balance) >= amount) {
       return { ok: true, ref: 'prepaid', spendPrepaid: amount };
     }
+    if (prepaidOnly) return { ok: false, deferred: true };
 
     // [PT-1] Card rail v2: the weekly card charge uses the subscription's
     // ACTIVE instrument, through the provider recorded ON it. The legacy
@@ -2272,7 +2338,7 @@ export class BillingService {
         if (bankCapture) {
           await this.creditWalletInTx(tx, {
             subscriptionId: sub.id, amount, currencyCode: sub.currencyCode,
-            eventKey: `bank:${payment.id}`, channel: returning ? 'CARD_RETURN' : bankedAnyway ? 'CARD_LATE_APPROVAL' : 'CARD_PAY_AHEAD', rail: 'CARD',
+            eventKey: `bank:${payment.id}`, channel: returning ? CARD_RETURN_CHANNEL : bankedAnyway ? 'CARD_LATE_APPROVAL' : 'CARD_PAY_AHEAD', rail: 'CARD',
             note: returning
               ? `Card payment received for ${periodKey} from a suspended partner: their return; spent on the return week (the time suspended is not billed) (payment ${payment.id})`
               : bankedAnyway
@@ -4077,17 +4143,57 @@ export class BillingService {
    * snapshot: every value written is absolute (`failedAttempts + 1` from the
    * snapshot), so a repeat with the same snapshot lands the same row.
    */
-  private async finishExhaustedGrace(sub: SubWithRelations, now: Date): Promise<'pending' | 'suspended' | null> {
+  /**
+   * [Audit FABLE-01 C2-1] The rows billing was stopped on while PAST_DUE (no retry is armed for them) whose grace
+   * has run out are suspended, the same suspension a failed retry gives. One row never stops the pass.
+   */
+  async suspendStoppedPastDue(now = new Date()): Promise<number> {
+    // [Review A N-1] Every such row, page by page in id order: a row that stays pending (a paused clock, collection
+    // under review) never hides the rows after it.
+    const PAGE = 500;
+    let suspended = 0;
+    let after: string | undefined;
+    for (;;) {
+      const stopped = await this.prisma.subscription.findMany({
+        where: { status: 'PAST_DUE', autoRenew: false, autoSuspendEnabled: true, ...(after ? { id: { gt: after } } : {}) },
+        include: PAYER_INCLUDE,
+        orderBy: { id: 'asc' },
+        take: PAGE,
+      });
+      for (const sub of stopped) {
+        try {
+          if (await this.finishExhaustedGrace(sub as SubWithRelations, now, { stopped: true }) === 'suspended') suspended += 1;
+        } catch (err) {
+          log().error({ subscriptionId: sub.id, code: billingErrorCode(err) }, '[billing] suspending a stopped, overdue subscription failed; the next run retries it');
+        }
+      }
+      if (stopped.length < PAGE) break;
+      after = stopped[stopped.length - 1]!.id;
+    }
+    return suspended;
+  }
+
+  private async finishExhaustedGrace(sub: SubWithRelations, now: Date, opts: { stopped?: boolean } = {}): Promise<'pending' | 'suspended' | null> {
     // [PROD-PATH] Nothing suspends anyone while no partner can pay.
     if (await noLivePayPath(this.prisma)) return 'pending';
     const result = await this.prisma.$transaction(async (tx) => {
       const authority = await this.lockPaymentOutcomeAuthority(tx, sub);
       const clock = await currentDunningClock(tx, sub.id, now);
       const fresh = await tx.subscription.findUniqueOrThrow({ where: { id: sub.id } });
-      if (fresh.status !== 'PAST_DUE' || fresh.failedAttempts < MAX_FAILED_ATTEMPTS || !fresh.autoSuspendEnabled) return null;
-      if (clock.pausedAt || authority.bankInsteadOfAdvance || !fresh.autoRenew) return 'pending' as const;
-      await tx.billingDunningClock.update({ where: { subscriptionId: sub.id }, data: { retryAtMs: BigInt(FULL_FEE_GRACE_MS) } });
-      await tx.subscription.update({ where: { id: sub.id }, data: { nextRetryAt: activeDeadline(clock, FULL_FEE_GRACE_MS, now) } });
+      if (opts.stopped) {
+        // [Audit FABLE-01 C2-1] Billing stopped while behind: nothing is retried, so no failure count ever reaches
+        // the limit, but the grace still runs out (the operate gate refuses work from then). Enforcement only: the
+        // row is suspended exactly as one whose retries failed, so a return pays from the week they come back.
+        if (fresh.status !== 'PAST_DUE' || fresh.autoRenew || !fresh.autoSuspendEnabled) return null;
+        // The stop itself is what makes bankInsteadOfAdvance true here; the rest of that rule (a payer who is not
+        // active, a fee whose collection is under review) still holds the suspension, as it does for a retry.
+        if (clock.pausedAt || authority.suppressNotice) return 'pending' as const;
+      } else {
+        if (fresh.status !== 'PAST_DUE' || fresh.failedAttempts < MAX_FAILED_ATTEMPTS || !fresh.autoSuspendEnabled) return null;
+        if (clock.pausedAt || authority.bankInsteadOfAdvance || !fresh.autoRenew) return 'pending' as const;
+        await tx.billingDunningClock.update({ where: { subscriptionId: sub.id }, data: { retryAtMs: BigInt(FULL_FEE_GRACE_MS) } });
+        await tx.subscription.update({ where: { id: sub.id }, data: { nextRetryAt: activeDeadline(clock, FULL_FEE_GRACE_MS, now) } });
+      }
       if (activeOverdueMs(clock, now) < FULL_FEE_GRACE_MS || resumedNoEarlierThan(clock, now)) return 'pending' as const;
       await tx.subscription.update({ where: { id: sub.id }, data: { status: 'SUSPENDED', suspendedAt: now, isInGracePeriod: false } });
       await this.suspendAccessRows(tx, { ...sub, ...fresh }, fresh.nextBillingDate.toISOString().slice(0, 10), now);

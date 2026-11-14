@@ -103,6 +103,8 @@ vi.mock('./screens/VendorMenuScreen', () => fx.probeModule('VendorMenuScreen', '
 vi.mock('./screens/VendorInsightsScreen', () => fx.probeModule('VendorInsightsScreen', 'Insights'));
 vi.mock('./screens/VendorAccountScreen', () => fx.probeModule('VendorAccountScreen', 'Account'));
 vi.mock('../profile/screens/PersonalDataScreen', () => ({ PersonalDataScreen: () => null }));
+vi.mock('./screens/VendorBusinessTypeScreen', () => ({ VendorBusinessTypeScreen: () => null })); // [COMPANY-DOCS Part 3] its papers list carries a camera picker
+vi.mock('./screens/VendorHandoverScreen', () => ({ VendorHandoverScreen: () => null }));
 vi.mock('../../screens/auth/SelfieCaptureScreen', () => ({ SelfieCaptureScreen: () => null })); // [OWNER-ASKS 9 Nov] the business stack's pushed photo screen
 vi.mock('../profile/screens/GetHelpScreen', () => ({ GetHelpScreen: () => null }));
 vi.mock('../billing/screens/WeeklyFeeRouteScreen', () => ({ WeeklyFeeRouteScreen: () => null }));
@@ -111,6 +113,7 @@ vi.mock('./screens/BusinessSetup', () => ({ BusinessSetup: () => null, VendorOnb
 vi.mock('./screens/VendorBillingSuspended', () => ({ VendorBillingSuspended: () => null }));
 vi.mock('./screens/VendorStoreBlocked', () => ({ VendorStoreBlocked: () => null }));
 vi.mock('./screens/VendorBulkImportScreen', () => ({ VendorBulkImportScreen: () => null }));
+vi.mock('./screens/VendorOptionLibraryScreen', () => ({ VendorOptionLibraryScreen: () => null }));
 vi.mock('./screens/VendorCategoryReviewScreen', () => ({ VendorCategoryReviewScreen: () => null }));
 vi.mock('./screens/VendorItemEditorScreen', () => ({ VendorItemEditorScreen: () => null }));
 vi.mock('./screens/VendorOrderDetailScreen', () => ({ VendorOrderDetailScreen: () => null }));

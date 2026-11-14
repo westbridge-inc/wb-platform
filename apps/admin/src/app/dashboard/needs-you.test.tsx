@@ -22,7 +22,7 @@ const quiet = {
 };
 const KEYS = ['opsAlerts', 'supportSafety', 'supportSafetyInProgress', 'documents', 'approvals', 'paymentConfirmations', 'support',
   'supportInProgress', 'catalogue', 'storeVat', 'custody', 'claimsToDecide', 'claimsToPay', 'claimsAutoToPay', 'returnsToDecide',
-  'refundsOwed', 'moderation'] as const;
+  'refundsOwed', 'moderation', 'sellersUnnamed'] as const;
 const counts = (over: Partial<Record<(typeof KEYS)[number], number | null>> = {}, notCounted: string[] = []) => ({
   queues: KEYS.filter((k) => !notCounted.includes(k)).map((key) => ({ key, count: key in over ? over[key]! : 0 })),
   notCounted,
@@ -59,8 +59,11 @@ describe('[ADMIN-AUDIT S2-1] Today lists every queue that waits for a person', (
     // Each door opens the tab that lists its row [REVIEW-F #2152 S4-4].
     expect(doors().map(([, href]) => href)).toEqual(['/ops-alerts', '/support?status=OPEN', '/support?status=IN_PROGRESS', '/verification',
       '/approvals', '/payment-confirmations', '/support?status=OPEN', '/support?status=IN_PROGRESS', '/catalogue-check', '/store-vat',
-      '/custody', '/claims', '/claims?status=APPROVED', '/claims?status=AUTO_APPROVED', '/returns', '/returns?status=REFUND_DUE', '/moderation']);
+      '/custody', '/claims', '/claims?status=APPROVED', '/claims?status=AUTO_APPROVED', '/returns', '/returns?status=REFUND_DUE', '/moderation',
+      // [R3 · review F2] live stores whose seller is not named: the store list, filtered to them
+      '/vendors?sellerName=unnamed']);
     expect(doors()[0]![0]).toBe('2 SOS or ops pages waiting to be acknowledged');
+    expect(doors().at(-1)![0]).toBe('2 live stores whose seller is not named yet (customers see “Ask the store”)');
   });
 
   it('the overview\'s own alerts stay, after SOS and safety', async () => {

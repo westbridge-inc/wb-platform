@@ -18,6 +18,8 @@ export function reviewerTyped(docType: string, documentId: string): Record<strin
     if (field === 'certificateYear') typed['certificateYear'] = String(guyanaWallClockParts(new Date()).year);
     // [R16] a business registration: a company's incorporation (never expires) unless a test says otherwise
     if (field === 'registrationKind') typed['registrationKind'] = 'COMPANY';
+    // [R3 · review F1] the legal name printed on a registration paper (a synthetic company's)
+    if (field === 'legalName') typed['legalName'] = 'Fixture Registered Name Ltd';
   }
   return typed;
 }

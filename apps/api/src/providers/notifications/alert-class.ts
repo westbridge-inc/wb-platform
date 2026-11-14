@@ -61,6 +61,10 @@ export const ALERT_CLASS_KINDS: Readonly<Record<AlertClass, readonly string[]>> 
     // Orders, the customer side of a journey
     'substitution_pending', 'line_refunded', 'handover_review', 'delivery_options', 'delivery_cash_settlement',
     'dispatch_retrying', 'dispatch_exhausted', 'converted_to_pickup', 'mover_session_revocation',
+    // [PROD-RIDER-TEST (a)] the store delivers it itself (customer); the customer cancelled after no rider (store).
+    'store_delivers', 'no_rider_cancelled',
+    // [KITCHEN-INTEGRATION] the store's own driver has the order (customer); a kitchen-system problem (operations).
+    'kitchen_dispatched', 'kitchen_integration',
     // [OF-01/17] The ONE "no rider yet — you can cancel for free" notice; standard, like its dispatch peers.
     'riderless_cutoff',
     // [OF-33] The customer and the store, once each: the rider did not come, a new rider is being found.
@@ -145,6 +149,10 @@ export const ALERT_CLASS_KINDS: Readonly<Record<AlertClass, readonly string[]>> 
     'email_changed', 'password_changed', 'password_sign_in_paused',
     // Store and advertiser business surfaces (an ad that needs action stays loud)
     'low_stock', 'staff_added', 'staff_invite', 'staff_joined', 'ad_team_invite', 'review_response', 'rating_removed', 'category_request_resolved',
+    // [COMPANY-DOCS Part 3] an account change: decided (business type changed / refused), a handover named, completed or
+    // ended; ops: a change waiting for a document reviewer (like verification_pending). Informational, never loud.
+    'account_change_approved', 'account_change_refused', 'account_handover_named', 'account_handover_completed', 'account_handover_ended',
+    'account_change_pending',
     'category_backfill_review', 'vendor_needs_public_phone', 'vendor_needs_food_handler_tick', 'vendor_needs_weekly_fee_tick', 'support_update', 'store_pin_moved',
     'ad_campaign_paused', 'ad_campaign_cancelled', 'ad_campaign_killed', 'ad_campaign_auto_cancelled',
     'ad_creative_rejected', 'ad_reservation_expiring', 'ad_late_capture', 'ad_mmg_checkout',
@@ -158,6 +166,8 @@ export const ALERT_CLASS_KINDS: Readonly<Record<AlertClass, readonly string[]>> 
     'csae_report',
     'safety_sweep_slo', 'ops_delivery_rider_dropped', 'ops_dispatch_exhausted', 'ops_riders_short', 'ops_food_too_old', 'ops_rider_no_show', 'ops_rider_waiting', 'ops_rider_waiting_long',
     'ops_taxi_driver_dropped', 'ops_mmg_refund_overdue', 'ops_ride_overdue', 'ops_pickup_uncollected', 'ops_custody_case', 'ops_cash_door_short', 'ops_cash_return_held', 'ops_error_spike', 'ops_error_sustained', 'ops_collusion_affinity', 'ops_billing_failures',
+    // [FABLE-05] the worker's infrastructure watch: disk, memory, Twilio, routing, MMG answers
+    'ops_host_disk', 'ops_host_memory', 'ops_redis_memory', 'ops_twilio_failing', 'ops_routing_down', 'ops_mmg_waiting',
     'ops_pool_saturation', 'ops_backup_stale', 'ops_malware_scanner_down', 'ops_malware_scan_bypass', 'ops_evidence_unscanned', 'ops_evidence_held', 'ops_upload_quarantined', 'ops_reaper_stale', 'ops_reaper_failed',
     'ops_image_policy_failed', 'ops_extraction_breaker_open', 'ops_dlq_non_empty', 'ops_osrm_fallback',
     // [PLACES-LOUD] address search (Google) failing: customers cannot search a place

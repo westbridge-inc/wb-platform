@@ -12,6 +12,7 @@ import { makeDispatchService, type DispatchService } from '../modules/dispatch/d
 import { desiredPlatformConfig, PLATFORM_CONFIG_VERSION, seedFxRate } from '../modules/ops/platform-config';
 import { AUTO_REJECT_KEY, vendorResponseSlaMinutes } from '../modules/order/response-sla';
 import { recordDispatchQueue } from './helpers/dispatch-queue';
+import { APP_UPDATE_STEPS } from '../modules/dispatch/cash-limit';
 
 // ---------------------------------------------------------------------------
 // [O1 · owner ruling 7 Nov 2026 ~04:10Z, replacing "no cap" of 5 Nov] Guyana's rider cash limit is GY$100,000 at every
@@ -59,7 +60,8 @@ describe('[O1] the seed plan: GY$100,000 rider cash limit; the store gets 10 min
   });
 
   it('is a new configuration version', () => {
-    expect(PLATFORM_CONFIG_VERSION).toBe('2026-11-07.1');
+    // [COMPANY-DOCS] 2026-11-10.1 carries the cash limit and the 10 minutes on unchanged (company-signup-documents.test.ts)
+    expect(PLATFORM_CONFIG_VERSION).toBe('2026-11-12.1');
     expect(spine.version).toBe(PLATFORM_CONFIG_VERSION);
   });
 });
@@ -235,7 +237,9 @@ describe('[O1] dispatch, the board, the offer and the profile under the GY$100,0
     expect(blind.statusCode, blind.body).toBe(409);
     expect(blind.json().error).toMatchObject({ code: 'CASH_AMOUNT_NOT_SHOWN' });
     expect(blind.json().error.message).toContain('GY$90,000');
-    expect(blind.json().error.message).not.toContain('update');
+    // [PROD-RIDER-TEST (b)1 · COORD 11 Nov 2026] The board showed this split, so a grab with no amount is an older app:
+    // the refusal says to close and reopen Swift for the update (the discount case below still never says it).
+    expect(blind.json().error.message).toContain(APP_UPDATE_STEPS);
     const stale = await call('POST', `/api/v1/rider/orders/${job.id}/accept`, r.token, { payToVendor: 80_000 });
     expect(stale.statusCode, stale.body).toBe(409);
     expect(stale.json().error).toMatchObject({ code: 'CASH_AMOUNT_CHANGED' });
@@ -307,6 +311,7 @@ describe('[O1] dispatch, the board, the offer and the profile under the GY$100,0
     expect(res.statusCode, res.body).toBe(409);
     expect(res.json().error).toMatchObject({ code: 'CASH_AMOUNT_NOT_SHOWN' });
     expect(res.json().error.message).toContain('GY$20,000');
+    expect(res.json().error.message).not.toContain('update');
     expect(Number((await riderRow(r.riderId)).committedFloat)).toBe(0);
   });
 });

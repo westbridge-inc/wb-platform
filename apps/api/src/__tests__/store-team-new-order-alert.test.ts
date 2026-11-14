@@ -514,7 +514,11 @@ describe('[#15] every publication to a store room goes through the team gate', (
     // + [BUG-HUNT-2 G20] a pickup the customer never collected, cancelled free: the store board hears it, through the gate.
     // + [OOS-FLOW · owner 8 Nov 2026] an accepted order ended because its last item is out of stock: the store
     //   board hears it (picking.service cancelForStockOut, through the gate).
-    expect(publishers).toBe(20);
+    // + [PROD-RIDER-TEST (a)2] no rider found, the customer switched to pickup: the store board hears it at once
+    //   (customer convert-to-pickup, through the gate).
+    // + [KITCHEN-INTEGRATION] the tablet ring when a kitchen-system send falls back (order:new, the release's own
+    //   alert) and the store board hearing its driver left (order:kitchen_update), both through the gate.
+    expect(publishers).toBe(23);
   });
 });
 

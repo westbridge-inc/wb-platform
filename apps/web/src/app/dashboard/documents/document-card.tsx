@@ -7,8 +7,8 @@ import {
   submitPoliceClearance, submitStoreDocument, uploadStoreDocumentFile, withdrawPoliceClearance, type StoreUploadConsentVia,
 } from '@/lib/store-documents-api';
 import {
-  DOCUMENT_FILE_TYPES, POLICE_WITHDRAW_FAILED, POLICE_WITHDRAW_LINK, POLICE_WITHDRAW_TITLE, REPLACE_BODY, REPLACE_TITLE, STILL_UPLOADING,
-  docLabel, documentCardView, policeWithdrawOutcome, uploadErrorWords, type PoliceClearanceWords, type StoreDocumentRow,
+  ADDED_BY_SWIFT_REPLACE_HINT, DOCUMENT_FILE_TYPES, POLICE_WITHDRAW_FAILED, POLICE_WITHDRAW_LINK, POLICE_WITHDRAW_TITLE, REPLACE_BODY, REPLACE_TITLE, STILL_UPLOADING,
+  addedBySwiftLine, docLabel, documentCardView, policeWithdrawOutcome, uploadErrorWords, type PoliceClearanceWords, type StoreDocumentRow,
 } from '@/lib/store-documents';
 
 const BADGE_TONE = {
@@ -36,7 +36,7 @@ const codeOf = (error: unknown) => (error && typeof error === 'object' ? (error 
  * upload and when the words change; the filing sends the clearance's tick and the words' version; and a clearance on
  * file can be withdrawn at any time, asked first in the API's words, then told what happened in the phone's.
  */
-export function DocumentCard({ role, docType, doc, isNext, optionalHint, hint, consented, consentVia, policeConsent = null, onSent }: {
+export function DocumentCard({ role, docType, doc, isNext, optionalHint, hint, hintLink, consented, consentVia, policeConsent = null, onSent }: {
   role: string;
   docType: string;
   doc: StoreDocumentRow | undefined;
@@ -44,6 +44,8 @@ export function DocumentCard({ role, docType, doc, isNext, optionalHint, hint, c
   optionalHint?: string;
   /** What this document is, or what waits for it, in plain words (never a gate). */
   hint?: string;
+  /** [COMPANY-DOCS · owner 10 Nov 2026] A page that helps with this paper (the one-page authority letter to fill in and sign). */
+  hintLink?: { label: string; href: string };
   consented: boolean;
   consentVia: StoreUploadConsentVia;
   policeConsent?: PoliceClearanceWords | null;
@@ -136,7 +138,10 @@ export function DocumentCard({ role, docType, doc, isNext, optionalHint, hint, c
           <span id={captionId} className={`block text-xs ${CAPTION_TONE[view.captionTone]}`}>{send.isPending ? STILL_UPLOADING : view.caption}</span>
           <span className="block font-semibold">{docLabel(docType)}</span>
           {hint && <span className="mt-0.5 block text-xs text-[var(--swift-muted)]">{hint}</span>}
+          {hintLink && <a href={hintLink.href} target="_blank" rel="noopener" className="mt-0.5 block text-xs font-semibold text-[var(--swift-red)] underline" data-letter-link>{hintLink.label}</a>}
           {optionalHint && <span className="mt-0.5 block text-xs text-[var(--swift-muted)]">{optionalHint}</span>}
+          {/* [ASSISTED SETUP] A paper Swift added for the store with its OK; the store replaces it as its own. */}
+          {doc?.addedBySwift && <span className="mt-0.5 block text-xs text-[var(--swift-muted)]" data-testid="added-by-swift">{addedBySwiftLine(doc.createdAt)}. {ADDED_BY_SWIFT_REPLACE_HINT}</span>}
         </span>
         {send.isPending ? (
           <span role="status" className="text-xs font-semibold text-[var(--swift-muted)]">Uploading…</span>

@@ -23,6 +23,7 @@ import {
 } from './apiOrigin';
 import { explainDemoEnded, isReviewSessionClosed } from '../lib/reviewSessionClosed';
 import { CALL_BRIDGE_HEADER, CALL_BRIDGE_VERSION, type CallConfig, type CallTarget } from '../lib/callBridge';
+import { cartWriteCapabilities } from '../lib/menuOptionsCapability';
 
 // Build-time override (set per EAS build profile, e.g. preview→staging,
 // production→prod). Development follows the current Expo/Metro bundle host so
@@ -547,6 +548,11 @@ export const customerApi = {
   cancelOrder: (id: string, reason?: string) =>
     api.post(`/customer/orders/${id}/cancel`, { reason })
       .then((res) => (res.data?.data ?? {}) as { message?: string }),
+  // [PROD-RIDER-TEST (a)2] No rider was found: collect it instead. The server takes the delivery fee and any rider
+  // tip off and answers with the new total (offered only when the order read carries `switchToPickup`).
+  switchToPickup: (id: string) =>
+    api.post(`/customer/orders/${id}/convert-to-pickup`, {})
+      .then((res) => (res.data?.data ?? {}) as { fulfillment?: string; totalAmount?: number }),
   // Order placement = checkout; it reads the server-side cart. (The old POST
   // /customer/orders had no backend route.)
   placeOrder: (data: {
@@ -582,7 +588,8 @@ export const customerApi = {
   teamInvites: () => api.get('/customer/team-invites'),
   acceptTeamInvite: (id: string) => api.post(`/customer/team-invites/${id}/accept`, {}),
   declineTeamInvite: (id: string) => api.post(`/customer/team-invites/${id}/decline`, {}),
-  reorder: (id: string, session?: AuthSessionSnapshot) => api.post(`/customer/orders/${id}/reorder`, {}, capturedAuthConfig(session)),
+  // [MENU-OPTIONS] A reorder is a cart write too: it says this app shows sizes, halves and follow-up choices.
+  reorder: (id: string, session?: AuthSessionSnapshot) => api.post(`/customer/orders/${id}/reorder`, { capabilities: cartWriteCapabilities() }, capturedAuthConfig(session)),
   ratingTags: () => api.get('/customer/rating-tags'),
   itemFeedback: (id: string, body: { itemId: string; verdict: 'UP' | 'DOWN' }) =>
     api.post(`/customer/orders/${id}/item-feedback`, body),
@@ -604,18 +611,21 @@ export const customerApi = {
   // [RIDER-SAFE 1] Whether delivery from this store can be ordered now, for this basket and address.
   getDeliveryAvailability: (vendorId: string, paymentMethod: 'CASH' | 'MOBILE_MONEY') =>
     api.get('/customer/delivery-availability', { params: { vendorId, paymentMethod } }),
+  // [MENU-OPTIONS] Every cart write says this app shows sizes that set the price, halves and follow-up choices
+  // (MENU_OPTIONS_V2): the server refuses such an item from an app that does not (409 APP_UPDATE_REQUIRED).
   addToCart: (data: {
     vendorId: string;
     itemId: string;
     quantity?: number;
     selectedOptions?: Record<string, unknown>;
     specialInstructions?: string;
-  }, session?: AuthSessionSnapshot) => api.post('/customer/cart/items', data, capturedAuthConfig(session)),
+  }, session?: AuthSessionSnapshot) =>
+    api.post('/customer/cart/items', { ...data, capabilities: cartWriteCapabilities() }, capturedAuthConfig(session)),
   updateCartItem: (
     id: string,
     data: { quantity: number; selectedOptions?: Record<string, unknown>; specialInstructions?: string },
     session?: AuthSessionSnapshot,
-  ) => api.put(`/customer/cart/items/${id}`, data, capturedAuthConfig(session)),
+  ) => api.put(`/customer/cart/items/${id}`, { ...data, capabilities: cartWriteCapabilities() }, capturedAuthConfig(session)),
   removeCartItem: (id: string, session?: AuthSessionSnapshot) => api.delete(`/customer/cart/items/${id}`, capturedAuthConfig(session)),
   clearCart: (session?: AuthSessionSnapshot) => api.delete('/customer/cart', capturedAuthConfig(session)),
   setCartAddress: (addressId: string, session?: AuthSessionSnapshot) => api.put('/customer/cart/address', { addressId }, capturedAuthConfig(session)),
@@ -1356,6 +1366,17 @@ export interface VendorItemInput {
   vatClass?: 'STANDARD' | 'ZERO_RATED' | 'EXEMPT';
 }
 
+/** [MENU-OPTIONS] A shared library group's fields (all optional on an edit). */
+export type LibraryGroupBody = {
+  name?: string; isRequired?: boolean; minSelect?: number; maxSelect?: number; sortOrder?: number;
+  setsPrice?: boolean; allowHalves?: boolean; halfPricePercent?: number;
+};
+/** [MENU-OPTIONS] A shared library choice's fields; followUpGroupId is another LIBRARY group (or null), externalCode the kitchen code. */
+export type LibraryOptionBody = {
+  name?: string; price?: number; isDefault?: boolean; isAvailable?: boolean; sortOrder?: number;
+  followUpGroupId?: string | null; externalCode?: string | null;
+};
+
 export const vendorApi = {
   profile: (session?: AuthSessionSnapshot, storeId?: string | null) => api.get('/vendor/profile', capturedVendorAuthConfig(session, storeId)),
   /** [DOC-1 §3.6] The store's tier: caps, usage, what lifts the limits. */
@@ -1364,6 +1385,16 @@ export const vendorApi = {
   signOwnName: () => api.post('/vendor/onboarding/own-name', { accept: true, attestationVersion: OWN_NAME_DECLARATION_VERSION }),
   /** [ROLE-DOCS] Use a registered business name instead: the store asks for its registration again. */
   dropOwnName: () => api.delete('/vendor/onboarding/own-name'),
+  /** [COMPANY-DOCS PART 2 · owner 10 Nov 2026] The account's newest in-app letter of authority (null when none). */
+  authorityLetter: () => api.get('/vendor/authority-letters'),
+  /** [COMPANY-DOCS PART 2] Swift writes the one-page letter and texts the director (or the owner) a link to sign.
+   *  [FOLLOWUPS-2475] `docType` names the letter a business type change waiting asks for (the server decides it may). */
+  askAuthorityLetter: (body: { businessName: string; registrationNumber: string; requesterName: string; requesterRole: string; signerName: string; signerPhone: string; docType?: string }) =>
+    api.post('/vendor/authority-letters', body),
+  /** [COMPANY-DOCS PART 2] A new link (the old one stops working). */
+  resendAuthorityLetter: (id: string) => api.post(`/vendor/authority-letters/${encodeURIComponent(id)}/resend`, {}),
+  /** [COMPANY-DOCS PART 2] Withdraw it (a wrong number), then fill the form again. */
+  cancelAuthorityLetter: (id: string) => api.post(`/vendor/authority-letters/${encodeURIComponent(id)}/cancel`, {}),
   /** [FOOD-PERMIT · owner 24 Oct 2026] A registered restaurant's owner ticks, for ONE store (named by its id, so the tick
    *  never lands on whichever store happens to be selected): everyone who handles food there holds a current food
    *  handler's certificate. `version` is the server's (GET /verification/status → foodHandlerAttestation). */
@@ -1488,13 +1519,28 @@ export const vendorApi = {
       headers: { 'Content-Type': 'multipart/form-data' },
     })),
   // Modifiers (option groups + options on an item)
+  // [MENU-OPTIONS] setsPrice (size sets the price), allowHalves + halfPricePercent (half-and-half and its price rule).
+  // [REVIEW-MENU-B S3-5] Every option write says this app edits sizes, halves and follow-ups (MENU_OPTIONS_V2): the
+  // server refuses an older store app's edit of such a group (it would read a size's price as an add-on).
   addOptionGroup: (
     itemId: string,
-    data: { name: string; isRequired?: boolean; minSelect?: number; maxSelect?: number },
+    data: {
+      name: string; isRequired?: boolean; minSelect?: number; maxSelect?: number; setsPrice?: boolean; allowHalves?: boolean; halfPricePercent?: number;
+      // [REVIEW-MENU-B S2-1] A new size group comes with its sizes (the server refuses a size group with none).
+      options?: Array<{ name: string; additionalPrice?: number; vatListedAdditionalPrice?: number }>;
+    },
     session?: AuthSessionSnapshot,
-  ) => api.post(`/vendor/items/${itemId}/option-groups`, data, capturedAuthConfig(session)),
-  updateOptionGroup: (id: string, data: { name?: string; isRequired?: boolean; minSelect?: number; maxSelect?: number }) =>
-    api.put(`/vendor/option-groups/${id}`, data),
+  ) => api.post(`/vendor/items/${itemId}/option-groups`, { ...data, capabilities: cartWriteCapabilities() }, capturedAuthConfig(session)),
+  // [REVIEW-MENU-B S2-1] `prices`: switching "Sets the price" on or off converts every choice's price in the same
+  // request (the store confirmed them; the server refuses the switch without them).
+  updateOptionGroup: (
+    id: string,
+    data: {
+      name?: string; isRequired?: boolean; minSelect?: number; maxSelect?: number; setsPrice?: boolean; allowHalves?: boolean; halfPricePercent?: number;
+      prices?: Array<{ id: string; price: number }>;
+    },
+    session?: AuthSessionSnapshot,
+  ) => api.put(`/vendor/option-groups/${id}`, { ...data, capabilities: cartWriteCapabilities() }, capturedAuthConfig(session)),
   deleteOptionGroup: (id: string, session?: AuthSessionSnapshot) =>
     api.delete(`/vendor/option-groups/${id}`, capturedAuthConfig(session)),
   addOption: (
@@ -1502,11 +1548,39 @@ export const vendorApi = {
     // [VAT-DOCS] vatListedAdditionalPrice: the extra price as the store typed it (before VAT where VAT is added).
     data: { name: string; additionalPrice?: number; vatListedAdditionalPrice?: number; isDefault?: boolean },
     session?: AuthSessionSnapshot,
-  ) => api.post(`/vendor/option-groups/${groupId}/options`, data, capturedAuthConfig(session)),
-  updateOption: (id: string, data: { name?: string; additionalPrice?: number; isDefault?: boolean }) =>
-    api.put(`/vendor/options/${id}`, data),
+  ) => api.post(`/vendor/option-groups/${groupId}/options`, { ...data, capabilities: cartWriteCapabilities() }, capturedAuthConfig(session)),
+  // [MENU-OPTIONS] followUpGroupId: the group of the SAME item this choice opens (null = none); isAvailable alone is
+  // also taken on a shared group's choice (it marks the library choice sold out everywhere).
+  updateOption: (id: string, data: { name?: string; additionalPrice?: number; isDefault?: boolean; isAvailable?: boolean; followUpGroupId?: string | null }, session?: AuthSessionSnapshot) =>
+    api.put(`/vendor/options/${id}`, { ...data, capabilities: cartWriteCapabilities() }, capturedAuthConfig(session)),
   deleteOption: (id: string, session?: AuthSessionSnapshot) =>
     api.delete(`/vendor/options/${id}`, capturedAuthConfig(session)),
+  // [MENU-OPTIONS · owner 11 Nov 2026] The shared option library: a group built once, attached to many items; an edit
+  // changes every item that uses it. Prices are what the store types (before VAT where VAT is added).
+  // [REVIEW-MENU-A S4-11] Each call is pinned to the account that made it AND the store whose library the screen shows
+  // (capturedVendorAuthConfig: x-vendor-id), never whichever store is selected when the request leaves.
+  // [REVIEW-MENU-B S3-5] Every library write also says this app edits sizes, halves and follow-ups (MENU_OPTIONS_V2).
+  modifierGroups: (session?: AuthSessionSnapshot, storeId?: string | null) => api.get('/vendor/modifier-groups', capturedVendorAuthConfig(session, storeId)),
+  createModifierGroup: (data: LibraryGroupBody & { name: string; options?: LibraryOptionBody[] }, session?: AuthSessionSnapshot, storeId?: string | null) =>
+    api.post('/vendor/modifier-groups', { ...data, capabilities: cartWriteCapabilities() }, capturedVendorAuthConfig(session, storeId)),
+  updateModifierGroup: (id: string, data: LibraryGroupBody & { prices?: Array<{ id: string; price: number }> }, session?: AuthSessionSnapshot, storeId?: string | null) =>
+    api.put(`/vendor/modifier-groups/${id}`, { ...data, capabilities: cartWriteCapabilities() }, capturedVendorAuthConfig(session, storeId)),
+  deleteModifierGroup: (id: string, session?: AuthSessionSnapshot, storeId?: string | null) =>
+    api.delete(`/vendor/modifier-groups/${id}`, capturedVendorAuthConfig(session, storeId)),
+  orderModifierGroups: (ids: string[], session?: AuthSessionSnapshot, storeId?: string | null) =>
+    api.put('/vendor/modifier-groups/order', { ids, capabilities: cartWriteCapabilities() }, capturedVendorAuthConfig(session, storeId)),
+  addModifierOption: (groupId: string, data: LibraryOptionBody & { name: string }, session?: AuthSessionSnapshot, storeId?: string | null) =>
+    api.post(`/vendor/modifier-groups/${groupId}/options`, { ...data, capabilities: cartWriteCapabilities() }, capturedVendorAuthConfig(session, storeId)),
+  orderModifierOptions: (groupId: string, ids: string[], session?: AuthSessionSnapshot, storeId?: string | null) =>
+    api.put(`/vendor/modifier-groups/${groupId}/options/order`, { ids, capabilities: cartWriteCapabilities() }, capturedVendorAuthConfig(session, storeId)),
+  updateModifierOption: (id: string, data: LibraryOptionBody, session?: AuthSessionSnapshot, storeId?: string | null) =>
+    api.put(`/vendor/modifier-options/${id}`, { ...data, capabilities: cartWriteCapabilities() }, capturedVendorAuthConfig(session, storeId)),
+  deleteModifierOption: (id: string, session?: AuthSessionSnapshot, storeId?: string | null) =>
+    api.delete(`/vendor/modifier-options/${id}`, capturedVendorAuthConfig(session, storeId)),
+  attachModifierGroup: (id: string, itemIds: string[], session?: AuthSessionSnapshot, storeId?: string | null) =>
+    api.post(`/vendor/modifier-groups/${id}/attach`, { itemIds, capabilities: cartWriteCapabilities() }, capturedVendorAuthConfig(session, storeId)),
+  detachModifierGroup: (id: string, itemIds: string[], session?: AuthSessionSnapshot, storeId?: string | null) =>
+    api.post(`/vendor/modifier-groups/${id}/detach`, { itemIds, capabilities: cartWriteCapabilities() }, capturedVendorAuthConfig(session, storeId)),
   // Insights / settings
   analytics: () => api.get('/vendor/analytics/overview'),
   analyticsRevenue: (days = 14) => api.get('/vendor/analytics/revenue', { params: { days } }),
@@ -1516,6 +1590,13 @@ export const vendorApi = {
   analyticsRepeatCustomers: () => api.get('/vendor/analytics/repeat-customers'),
   salesStatement: (session?: AuthSessionSnapshot) =>
     api.get('/vendor/sales-statement', capturedAuthConfig(session, { params: { link: 1 } })),
+  // [ORDER-EXPORT · owner 11 Nov 2026] The order history as CSV text (owners and managers; finance columns only).
+  // branch: a store's id or 'all'. Read as text, never parsed as JSON.
+  exportBranches: () => api.get('/vendor/orders/export/branches'),
+  exportOrders: (params: { from: string; to: string; branch: string }, storeId: string, session?: AuthSessionSnapshot) =>
+    api.get<string>('/vendor/orders/export', capturedAuthConfig(session, {
+      params, responseType: 'text', transformResponse: (data: unknown) => data, headers: { 'x-vendor-id': storeId },
+    })),
   hours: () => api.get('/vendor/hours'),
   bookings: (params?: { from?: string; to?: string }) => api.get('/vendor/bookings', { params }),
   // [BOOK-S5a · owner B2] The business moves a booking to another free time of the same service.

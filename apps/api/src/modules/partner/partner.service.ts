@@ -45,6 +45,8 @@ export type Business = {
   region?: string;
   latitude: number;
   longitude: number;
+  /** [COMPANY-DOCS] Who signs the account up (a first store only; a branch rides its account's). Absent = the owner. */
+  accountBasis?: 'OWNER' | 'COMPANY' | 'MANAGER';
 };
 
 export interface BecomePartnerInput {
@@ -364,10 +366,16 @@ export class PartnerService {
   }
 
   private async provisionVendor(tx: Tx, userId: string, roles: UserRole[], business: Business): Promise<PartnerProvisionResult> {
-    const owner = await tx.vendorOwner.upsert({ where: { userId }, create: { userId }, update: {} });
+    // [COMPANY-DOCS · owner 10 Nov 2026] The account's first store sets who holds it (absent = the owner, as every older
+    // client): the papers the whole account gives follow it (vendor/account-basis.ts). An account with a store keeps its own.
+    const basis = business.accountBasis;
+    const owner = await tx.vendorOwner.upsert({ where: { userId }, create: { userId, ...(basis ? { accountBasis: basis } : {}) }, update: {} });
 
     // One store per owner at onboarding (idempotent).
     const existing = await tx.vendor.findFirst({ where: { ownerId: owner.id } });
+    if (!existing && basis && owner.accountBasis !== basis) {
+      await tx.vendorOwner.update({ where: { id: owner.id }, data: { accountBasis: basis } });
+    }
     if (existing) {
       const updatedRoles = await this.ensureRoles(tx, userId, roles, ['VENDOR_OWNER']);
       return { kind: 'VENDOR' as const, id: existing.id, created: false, roles: updatedRoles, targetRole: 'VENDOR_OWNER' as const };

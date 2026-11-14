@@ -74,6 +74,8 @@ const TENANT_QUERY_EXTENSIONS = {
   serviceJob: scoped,
   // [M-11] The checkout command's durable tail and result are one operator's rows.
   orderOutbox: scoped, checkoutReceipt: scoped, cartMergeReceipt: scoped,
+  // [KITCHEN-INTEGRATION] a store kitchen-system connection and its order syncs
+  vendorIntegration: scoped, orderIntegrationSync: scoped,
   // [M-34] Fare zones are one operator's, in one market.
   zone: scoped,
   sosAlert: scoped, emergencyContact: scoped, tripShareToken: scoped, tripSafetySession: scoped,
@@ -103,6 +105,12 @@ const TENANT_QUERY_EXTENSIONS = {
   feeRefundCase: scoped,
   // [CARD-READY] A partner's card money paid back to their card.
   cardCreditRefund: scoped,
+  // [MENU-OPTIONS] A store's shared option-group library.
+  modifierGroup: scoped,
+  // [COMPANY-DOCS Part 3] A store account's change of business type or of account holder, walled like the account.
+  accountChangeRequest: scoped,
+  // [ASSISTED SETUP] A store's consent for Swift to set it up, and what was done under it, walled like the store.
+  assistedSetupConsent: scoped, assistedSetupAction: scoped,
   billingDunningClock: scoped, billingObligationTransition: scoped, paymentConfirmationHold: scoped, billingFeeNotice: scoped, billingNoticeHandoff: scoped,
   tenantBillingCurrency: scoped, trialGrant: scoped,
   moverFeeAuthority: scoped, moverFeeSubscription: scoped,

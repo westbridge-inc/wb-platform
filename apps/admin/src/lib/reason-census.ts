@@ -52,6 +52,9 @@ export const REASONED_CALLERS: readonly ReasonCaller[] = [
   // [R3 · security review 10 Nov 2026] "Activate now" sends the store name it showed; a person confirms the seller name
   { route: 'PUT /vendors/:id/approve', helper: 'activateVendor', args: ['vnd_1', 'Shown Store Name'], requiredBodyKeys: ['sellerName'] },
   { route: 'PUT /vendors/:id/seller-name', helper: 'confirmSellerName', args: ['vnd_1', 'Shown Store Name'], requiredBodyKeys: ['name'] },
+  // [COMPANY-DOCS Part 3] Deciding a change of business type (with the store names shown) or of account holder.
+  { route: 'PUT /account-changes/:id/approve', helper: 'approveAccountChange', args: ['chg_1', { vnd_1: 'Shown Store Name' }], requiredBodyKeys: ['sellerNames'] },
+  { route: 'PUT /account-changes/:id/refuse', helper: 'refuseAccountChange', args: ['chg_1'] },
   { route: 'PUT /vendors/:id/suspend', helper: 'suspendVendor', args: ['vnd_1'] },
   { route: 'PUT /vendors/:id/type', helper: 'changeStoreType', args: ['vnd_1', 'STORE'], requiredBodyKeys: ['vendorType'] },
   { route: 'PUT /vendors/:id/name', helper: 'changeStoreName', args: ['vnd_1', 'New Name'], requiredBodyKeys: ['name'] },
@@ -71,6 +74,7 @@ export const REASONED_CALLERS: readonly ReasonCaller[] = [
   { route: 'POST /subscriptions/:id/refund-credit/card', helper: 'refundCreditToCard', args: ['sub_1', 'evt_aside_1', 'cs_1', 1000], requiredBodyKeys: ['setAsideId', 'cardSessionId', 'amount'] },
   { route: 'POST /billing/card-sessions/:id/resolve', helper: 'resolveCardPayment', args: ['cs_1', 'NOTHING_TAKEN', 'TXN-1', null], requiredBodyKeys: ['action', 'providerReference'] },
   { route: 'POST /billing/card-sessions/:id/check-provider', helper: 'checkCardProvider', args: ['cs_1'] },
+  { route: 'POST /billing/card-sessions/:id/portal-checked', helper: 'confirmPortalNothingBack', args: ['cs_1', 'PTZ-0001'], requiredBodyKeys: ['portalReference'] },
   { route: 'POST /mmg-refunds/:id/void', helper: 'voidMmgRefund', args: ['obl_1', 'Settled in cash'], requiredBodyKeys: ['note'], reply: { id: 'obl_1', status: 'VOIDED' } },
   { route: 'POST /orders/:id/door-cash-return/resolve', helper: 'resolveHeldDoorCash', args: ['ord_1'], reply: { orderId: 'ord_1', doorCashReturn: { status: 'RESOLVED' } } },
 
@@ -142,6 +146,8 @@ export const REASONED_CALLERS: readonly ReasonCaller[] = [
   // [MMG REVERSAL · owner #11] Return a whole MMG weekly-fee payment: the whole amount, typed.
   { route: 'POST /billing/mmg-checkouts/:id/refund-case', helper: 'openFeeRefundCase', args: ['mco_1', 'DUPLICATE'], requiredBodyKeys: ['kind', 'reason'] },
   { route: 'POST /billing/mmg-checkouts/:id/reverse', helper: 'reverseMmgFeePayment', args: ['mco_1', 2100], requiredBodyKeys: ['amountGyd'] },
+  // [Audit C1-1] A held weekly-fee payment checked with MMG again: a reason and a second admin.
+  { route: 'POST /billing/mmg-checkouts/:id/recheck', helper: 'recheckHeldMmgCheckout', args: ['mco_1'] },
   { route: 'POST /billing/mmg-fee-reversals/:id/resolve', helper: 'resolveMmgFeeReversal', args: ['rev_1', 'NOT_RETURNED', 'MMG-STMT-123'], requiredBodyKeys: ['outcome', 'mmgReference'] },
   // [continues #1592] Weekly-fee payment confirmations: the reason travels in the body (and the header).
   { route: 'POST /billing/confirmations/:id/resolve', helper: 'requestConfirmationResolution', args: ['hold_1', { sourceId: 'chk_1', epoch: 1, clockVersion: 3, decision: 'UNPAID', evidenceReference: 'MMG-STATEMENT-1', reason: 'Checked the MMG statement for this payment' }], requiredBodyKeys: ['sourceId', 'epoch', 'clockVersion', 'decision', 'evidenceReference', 'reason'] },

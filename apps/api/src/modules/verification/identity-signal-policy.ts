@@ -1,12 +1,14 @@
 import { normalizeDocNumber } from '../integrity/normalize';
-import { CERTIFICATE_YEAR_DOC_TYPES, IDENTITY_DOC_TYPES, ISSUE_DATE_DOC_TYPES, LICENCE_NUMBER_DOC_TYPES, OWN_NAME_DOC_TYPE, REGISTRATION_DOC_TYPES } from './doc-registry';
+import { AUTHORITY_LETTER_DOC_TYPES } from './authority-confirmation';
+import { CERTIFICATE_YEAR_DOC_TYPES, ISSUE_DATE_DOC_TYPES, LICENCE_NUMBER_DOC_TYPES, OWN_NAME_DOC_TYPE, PERSON_ID_DOC_TYPES, REGISTRATION_DOC_TYPES } from './doc-registry';
 
 // The two type lists live in the registry's own text (DOC-INV-2); re-exported for this module's callers.
 export { ISSUE_DATE_DOC_TYPES, LICENCE_NUMBER_DOC_TYPES };
 
 /** [CHECKLIST-LEGAL · owner ruling 1 Nov 2026 (b)] The partner identity documents only: the customer's ID (the synthetic
  *  L2 flow) is gone, so no customer ID number can become an identity key any more. */
-const IDENTITY_NUMBER_DOC_TYPES = new Set<string>([...IDENTITY_DOC_TYPES]);
+// [COMPANY-DOCS · owner 10 Nov 2026] A company's or a manager's account holder's ID joins them: protected exactly as an owner's.
+const IDENTITY_NUMBER_DOC_TYPES = new Set<string>([...PERSON_ID_DOC_TYPES]);
 
 /**
  * Convert only a declared identity-document identifier into a HARD integrity
@@ -56,7 +58,7 @@ export function approvedIdentityDocumentNumber(
  * an identity key and never links two customers.
  */
 export const REVIEWER_TYPED_NUMBER_DOC_TYPES: ReadonlySet<string> = new Set([
-  ...IDENTITY_DOC_TYPES,
+  ...PERSON_ID_DOC_TYPES,
   ...LICENCE_NUMBER_DOC_TYPES,
 ]);
 /** Fewer characters than this identify nobody (and would union strangers). */
@@ -70,7 +72,7 @@ export function reviewerTypedDocumentSignal(docType: string, raw: unknown): stri
   return LICENCE_NUMBER_DOC_TYPES.has(docType) ? `DL:${normalized}` : normalized;
 }
 
-export type ReviewerTypedField = 'documentNumber' | 'issuedOn' | 'certificateYear' | 'registrationKind' | 'ownNameConfirmed';
+export type ReviewerTypedField = 'documentNumber' | 'issuedOn' | 'certificateYear' | 'registrationKind' | 'ownNameConfirmed' | 'legalName' | 'authorityConfirmed';
 
 /** What the console must ask the reviewer for, for this document type. */
 export function reviewerTypedFields(docType: string): ReviewerTypedField[] {
@@ -78,9 +80,12 @@ export function reviewerTypedFields(docType: string): ReviewerTypedField[] {
   if (ISSUE_DATE_DOC_TYPES.has(docType)) return ['issuedOn'];
   // [R15] a licence or food certificate checked again every January: the year printed on it
   if (CERTIFICATE_YEAR_DOC_TYPES.has(docType)) return ['certificateYear'];
-  // [R16] a business registration: which kind it is, and for a business name the year it is registered for
-  if (REGISTRATION_DOC_TYPES.includes(docType)) return ['registrationKind', 'certificateYear'];
+  // [R16] a business registration: which kind it is, and for a business name the year it is registered for;
+  // [R3 · review F1] and the legal name printed on it, which the storefront names the seller by
+  if (REGISTRATION_DOC_TYPES.includes(docType)) return ['registrationKind', 'certificateYear', 'legalName'];
   // [ROLE-DOCS · owner 21 Oct 2026] an own-name declaration: the reviewer's check of the name against the owner's ID
   if (docType === OWN_NAME_DOC_TYPE) return ['ownNameConfirmed'];
+  // [COMPANY-DOCS PART 2 · review F2] a letter of authority: how the reviewer confirmed the signer is a director (or the owner)
+  if (AUTHORITY_LETTER_DOC_TYPES.has(docType)) return ['authorityConfirmed'];
   return [];
 }

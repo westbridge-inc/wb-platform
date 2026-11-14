@@ -1,4 +1,5 @@
 import { assertPlacesConfig } from '../providers/places/places-config';
+import { assertKitchenIntegrationConfig } from '../modules/kitchen/kitchen-switch';
 import { runtimeMode } from './runtime-mode';
 import { malformedAllowlistPositions } from '../providers/notifications/sms-recipient-allowlist';
 import { firstInvalidTwilioConfig } from './twilio-identity';
@@ -242,6 +243,8 @@ export function assertSafeBootConfig(env: Record<string, string | undefined> = p
   assertCallRelayConfig(env);
   // [INAPP-CALLS] INAPP_CALLS=1 needs the TwiML App, both push credentials, the identity key and the Twilio account.
   assertInAppCallsConfig(env);
+  // [KITCHEN-INTEGRATION] DRAGONTAIL_INTEGRATION=1 needs an https Dragontail address (a store login goes there).
+  assertKitchenIntegrationConfig(env);
   // [EXPO-PUSH-AUTH] The Expo access token is optional (unset = no header, as
   // before), but a set one must be usable, in every mode.
   assertExpoAccessTokenConfig(env);

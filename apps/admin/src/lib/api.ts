@@ -94,7 +94,8 @@ async function apiFetch(path: string, options?: RequestInit & { reason?: string 
       ...requestOptions,
       credentials: 'include',
       headers: {
-        'Content-Type': 'application/json',
+        // [ASSISTED SETUP] A file travels as multipart: the browser writes its own Content-Type (with the boundary).
+        ...(typeof FormData !== 'undefined' && requestOptions.body instanceof FormData ? {} : { 'Content-Type': 'application/json' }),
         ...clientHeaders,
         ...(reason ? { [REASON_HEADER]: reason } : {}),
         ...requestOptions.headers,
@@ -133,10 +134,48 @@ async function apiFetch(path: string, options?: RequestInit & { reason?: string 
     // which row they are looking for.
     if (json?.error?.details && typeof json.error.details === 'object') error.details = json.error.details;
     error.status = res.status;
+    // [AUDIT-20261113 FABLE-03 #2] The admin API wants the authenticator step for this session: go and do it.
+    if (res.status === 403 && (error.code === 'ADMIN_MFA_REQUIRED' || error.code === 'ADMIN_MFA_ENROLMENT_REQUIRED')
+      && typeof window !== 'undefined' && window.location.pathname !== '/login') {
+      window.location.href = '/login?step=mfa';
+    }
     throw error;
   }
   return json;
 }
+
+// ── [AUDIT-20261113 FABLE-03 #2] The admin second factor (authenticator app) ──
+export interface AdminMfaStatus {
+  required: boolean;
+  enrolled: boolean;
+  enrolledAt: string | null;
+  sessionVerified: boolean;
+  recoveryCodesLeft: number;
+}
+export async function fetchAdminMfaStatus(): Promise<AdminMfaStatus> {
+  return (await apiFetch('/api/v1/auth/admin-mfa')).data as AdminMfaStatus;
+}
+export async function startAdminMfaEnrolment(): Promise<{ secret: string; otpauthUrl: string; expiresInSeconds: number }> {
+  return (await apiFetch('/api/v1/auth/admin-mfa/enrol', { method: 'POST', body: '{}' })).data;
+}
+export async function confirmAdminMfaEnrolment(code: string): Promise<{ enrolled: true; recoveryCodes: string[] }> {
+  return (await apiFetch('/api/v1/auth/admin-mfa/enrol/confirm', { method: 'POST', body: JSON.stringify({ code }) })).data;
+}
+export async function verifyAdminMfa(input: { code: string } | { recoveryCode: string }): Promise<{ verified: true; recoveryCodesLeft?: number }> {
+  return (await apiFetch('/api/v1/auth/admin-mfa/verify', { method: 'POST', body: JSON.stringify(input) })).data;
+}
+// [REVIEW-2501-A S4-6] Self-service, each proved by the current app code or one recovery code.
+export type AdminFactorProof = { code: string } | { recoveryCode: string };
+export async function regenerateAdminRecoveryCodes(proof: AdminFactorProof): Promise<{ recoveryCodes: string[] }> {
+  return (await apiFetch('/api/v1/auth/admin-mfa/recovery-codes', { method: 'POST', body: JSON.stringify(proof) })).data;
+}
+export async function startAdminMfaReplacement(proof: AdminFactorProof): Promise<{ secret: string; otpauthUrl: string; expiresInSeconds: number }> {
+  return (await apiFetch('/api/v1/auth/admin-mfa/replace', { method: 'POST', body: JSON.stringify(proof) })).data;
+}
+export async function confirmAdminMfaReplacement(code: string): Promise<{ replaced: true; recoveryCodes: string[] }> {
+  return (await apiFetch('/api/v1/auth/admin-mfa/replace/confirm', { method: 'POST', body: JSON.stringify({ code }) })).data;
+}
+
 
 /** The HTTP status of a thrown apiFetch error. 202 is not a failure — see
  *  lib/cashRail `outcomeOfThrown`. */
@@ -301,7 +340,7 @@ export const fetchDashboard = (): Promise<Envelope<DashboardOverview>> =>
 export type WaitingKey =
   | 'opsAlerts' | 'supportSafety' | 'supportSafetyInProgress' | 'documents' | 'approvals' | 'paymentConfirmations' | 'support'
   | 'supportInProgress' | 'catalogue' | 'storeVat' | 'custody' | 'claimsToDecide' | 'claimsToPay' | 'claimsAutoToPay'
-  | 'returnsToDecide' | 'refundsOwed' | 'moderation';
+  | 'returnsToDecide' | 'refundsOwed' | 'moderation' | 'sellersUnnamed';
 export interface WaitingCounts {
   /** `door: false` = this account may know the count but not open the queue's page. */
   queues: { key: WaitingKey; count: number | null; door?: boolean }[];
@@ -433,6 +472,10 @@ export const changeStoreType = (id: string, vendorType: string, reason: string) 
   apiFetch(`/api/v1/admin/vendors/${id}/type`, { method: 'PUT', body: JSON.stringify({ vendorType }), reason });
 export const changeStoreName = (id: string, name: string, reason: string) =>
   apiFetch(`/api/v1/admin/vendors/${id}/name`, { method: 'PUT', body: JSON.stringify({ name }), reason });
+/** [R3 · review F5] Who the storefront names as the seller, as the SERVER decides it (GET /admin/vendors/:id
+ *  `sellerName`). The console renders it; it never re-derives it. */
+export type SellerNameBasis = 'OWN_NAME' | 'LEGAL_NAME' | 'PERSON_CHECKED' | 'AWAITING_PERSON' | 'NONE';
+export interface SellerNameView { basis: SellerNameBasis; value: string | null }
 /** [BUG-HUNT F22] Move an account to a new number: a code goes to the new number, the person reads it back. */
 export const startPhoneChange = (id: string, phone: string, reason: string) =>
   apiFetch(`/api/v1/admin/users/${id}/phone-change`, { method: 'POST', body: JSON.stringify({ phone }), reason });
@@ -537,12 +580,19 @@ export interface RefundSources {
   byRail: Array<{ rail: 'CARD' | 'MMG' | 'IN_PERSON' | 'OTHER' | 'NOT_RECORDED'; amount: number }>;
   cardPayments: Array<{
     cardSessionId: string; orderReference: string; providerTransactionRef: string | null; amount: number; currencyCode: string;
-    inSetAside: number; paidAt: string | null; refund: { state: string; providerRefundRef: string | null } | null; refundable: boolean;
+    inSetAside: number; paidAt: string | null; refundable: boolean;
+    /** [VOID-REFUND-CHECK F4/F5] The latest reversal of it (a VOID or a REFUND), and whether a refused one was checked. */
+    refund: { state: string; providerRefundRef: string | null; kind?: 'VOID' | 'REFUND'; checked?: boolean } | null;
+    /** [VOID-REFUND-CHECK F4] Part of a payment the bank may not have settled: when it can go back (Guyana time). */
+    notBefore?: string | null;
+    /** [OWNER 10 Nov 2026] What Refund to card sends: the whole payment, or (`partial`) its weeks that have not started. */
+    refundAmount: number; partial: boolean;
   }>;
 }
 export const fetchRefundSources = (id: string): Promise<{ data: RefundSources }> => apiFetch(`/api/v1/admin/subscriptions/${id}/refund-credit/sources`);
 /** [CARD-READY] Card money goes back to the same card only through the card provider's refund: Swift asks it once for the
- *  whole card payment, and it counts as paid back only on the provider's approval. Two people (C4). */
+ *  card payment's money in the refund (the whole payment, or [owner 10 Nov 2026] its weeks that have not started as a
+ *  partial refund), and it counts as paid back only on the provider's approval. Two people (C4). */
 export const refundCreditToCard = (id: string, setAsideId: string, cardSessionId: string, amount: number, reason: string) =>
   apiFetch(`/api/v1/admin/subscriptions/${id}/refund-credit/card`, {
     method: 'POST',
@@ -644,9 +694,15 @@ export const resolveCardPayment = (id: string, action: CardDecision, providerRef
   });
 /** [CARD-REFUND-LOOKUP] "Check with the card provider": a refund Swift sent whose answer is not known, read against the
  *  provider's own record. Two people (C4); it never sends a refund. The answer's `check` says what was found. */
-export type ProviderCheck = 'REFUNDED' | 'OWNER_HOLD' | 'NO_REFUND_ON_RECORD' | 'NOT_KNOWN' | 'ASKED_RECENTLY';
+export type ProviderCheck = 'REFUNDED' | 'OWNER_HOLD' | 'NO_REFUND_ON_RECORD' | 'NOT_KNOWN' | 'ASKED_RECENTLY'
+  /** [VOID-REFUND-CHECK F3] A held payment whose reversal the card provider refused. */
+  | 'SALE_STANDS' | 'NOT_TAKEN_ON_RECORD' | 'ESCALATE' | 'REVERSED_ON_RECORD' | 'CHECKED_NOTHING_BACK';
 export const checkCardProvider = (id: string, reason: string) =>
   apiFetch(`/api/v1/admin/billing/card-sessions/${encodeURIComponent(id)}/check-provider`, { method: 'POST', body: JSON.stringify({}), reason });
+/** [REVIEW-2496-B S3-2 · OWNER RULING 12 Nov 2026] The owner and a second person confirm PowerTranz's portal shows nothing
+ *  went back for a refused refund to the card (with the portal's reference). Frees the held money; sends nothing. */
+export const confirmPortalNothingBack = (id: string, portalReference: string, reason: string) =>
+  apiFetch(`/api/v1/admin/billing/card-sessions/${encodeURIComponent(id)}/portal-checked`, { method: 'POST', body: JSON.stringify({ portalReference }), reason });
 /** [BUG-HUNT-2 G08] What stores owe customers back by MMG. Swift holds none of it: these are records. */
 export const fetchMmgRefunds = (filter: 'open' | 'overdue' | 'disputed') =>
   apiFetch(`/api/v1/admin/mmg-refunds?limit=50&filter=${filter}`);
@@ -937,6 +993,61 @@ export const activateVendor = (id: string, sellerName: string, reason: string) =
  *  company name: until then the storefront names nobody as the seller. */
 export const confirmSellerName = (id: string, name: string, reason: string) =>
   apiFetch(`/api/v1/admin/vendors/${id}/seller-name`, { method: 'PUT', body: JSON.stringify({ name }), reason });
+
+// [COMPANY-DOCS Part 3 · owner rulings 10 Nov 2026 (c), (d)] A store's change of business type, or a company's handover to
+// a new account holder: a document reviewer checks each paper in Documents, then decides the change here with a reason.
+export type BusinessTypeOption = 'COMPANY' | 'REGISTERED' | 'MANAGER' | 'OWN_NAME';
+export interface AccountChangePaper { docType: string; state: 'APPROVED' | 'PENDING' | 'REJECTED' | 'MISSING'; forChange: boolean; documentId: string | null; note: string | null }
+export interface AccountChange {
+  id: string;
+  kind: 'BUSINESS_TYPE' | 'HOLDER_HANDOVER';
+  status: 'PENDING' | 'APPROVED' | 'REFUSED' | 'WITHDRAWN';
+  fromOption: BusinessTypeOption | null;
+  toOption: BusinessTypeOption | null;
+  createdAt: string;
+  decidedAt: string | null;
+  accepted: boolean | null;
+  papers: AccountChangePaper[];
+  papersComplete: boolean;
+  accountBasis: 'OWNER' | 'COMPANY' | 'MANAGER';
+  /** `nameIsAPerson` (server, review-2475 delta S4-2): approval leaves this store's seller name unconfirmed (a business type
+   *  change) or ends its confirmation (a handover), because the name is a person's. Never re-derived here. */
+  stores: Array<{ id: string; name: string; vendorType: string; status: string; sellerNameCheckedName: string | null; nameIsAPerson?: boolean }>;
+  holder: { id: string; name: string };
+  newHolder: { id: string; name: string } | null;
+  decisionReason: string | null;
+  /** Which business the papers name: the seller's legal name customers see now, and the one typed from THIS change's
+   *  registration paper (null: none typed, so approving clears the account's). */
+  legalName?: { account: string | null; change: string | null };
+  /** A change waiting: what approving it does to the account's seller legal name, computed by the server's own approval
+   *  rule (account-change.ts planSellerLegalName); never re-derived here. Decided: null. */
+  sellerLegalNameOnApproval: SellerLegalNameOnApproval | null;
+}
+export interface SellerLegalNameOnApproval {
+  effect: 'KEPT' | 'SET' | 'CLEARED';
+  /** The account's legal name now (what customers see while the change waits). */
+  from: string | null;
+  /** The account's legal name after approval. */
+  to: string | null;
+  /** SET: the change's own paper the name was typed from. */
+  docType: string | null;
+  /** [review-2475 delta S4-2] A name was typed from the change's paper but it is a person's, so approval does not use it. */
+  heldNameIsAPerson?: boolean;
+}
+/** [review-2475 delta S4-2] What an approval did not confirm, and why: the server's words (never a name). */
+export interface AccountChangeApproval {
+  sellerNamesNotConfirmed?: { storeIds: string[]; code: string; message: string } | null;
+  sellerLegalNameNotUsed?: { code: string; message: string } | null;
+}
+export const fetchAccountChanges = (status: AccountChange['status'] = 'PENDING') =>
+  apiFetch(`/api/v1/admin/account-changes?status=${status}`).then((r) => ((r as { data?: AccountChange[] }).data ?? []));
+/** Approving a business type change confirms each store's name exactly as shown (the seller name customers see). */
+export const approveAccountChange = (id: string, sellerNames: Record<string, string> | undefined, reason: string) =>
+  apiFetch(`/api/v1/admin/account-changes/${id}/approve`, { method: 'PUT', body: JSON.stringify(sellerNames ? { sellerNames } : {}), reason })
+    .then((r) => ((r as { data?: AccountChangeApproval } | null)?.data ?? {}));
+/** The reason is what the store (and the person named) read. */
+export const refuseAccountChange = (id: string, reason: string) =>
+  apiFetch(`/api/v1/admin/account-changes/${id}/refuse`, { method: 'PUT', body: JSON.stringify({}), reason });
 export const verifyRiderDocuments = (id: string, reason: string) => apiFetch(`/api/v1/admin/riders/${id}/verify-documents`, { method: 'PUT', reason });
 export const verifyDriverDocuments = (id: string, reason: string) => apiFetch(`/api/v1/admin/drivers/${id}/verify-documents`, { method: 'PUT', reason });
 export const setDriverRideClass = (id: string, rideClass: string, reason: string) =>
@@ -1084,7 +1195,7 @@ export const fetchSelfieChecks = () =>
   apiFetch('/api/v1/admin/verification/selfie-checks').then((r) => ((r as { data?: { pending?: SelfieCheck[] } }).data?.pending ?? []));
 export const decideSelfieCheck = (documentId: string, match: boolean, selfieCapturedAt: string, reason: string) =>
   apiFetch(`/api/v1/admin/verification/${documentId}/selfie-check`, { method: 'POST', body: JSON.stringify({ match, selfieCapturedAt }), reason });
-export const approveDoc = (id: string, body: { expiresAt?: string; insurance?: InsuranceCheck; documentNumber?: string; issuedOn?: string; certificateYear?: number; registrationKind?: 'BUSINESS_NAME' | 'COMPANY'; ownNameConfirmed?: boolean } | undefined, reason: string) =>
+export const approveDoc = (id: string, body: { expiresAt?: string; insurance?: InsuranceCheck; documentNumber?: string; issuedOn?: string; certificateYear?: number; registrationKind?: 'BUSINESS_NAME' | 'COMPANY'; ownNameConfirmed?: boolean; proprietorIsCompany?: boolean; legalName?: string; soleAdminChecked?: boolean } | undefined, reason: string) =>
   apiFetch(`/api/v1/admin/verification/${id}/approve`, { method: 'PUT', body: JSON.stringify(body ?? {}), reason });
 // [ADMIN-CONSOLE] The route's whole body (admin.routes.ts rejectDocSchema): the
 // reviewer's words and the server's reason code. The words also ride the
@@ -1341,8 +1452,18 @@ export const cancelApproval = (id: string) =>
   apiFetch(`/api/v1/admin/approvals/${id}/cancel`, { method: 'POST', body: '{}' });
 // [ALG-34] The account's existing step-up: a code texted to the phone on the
 // admin account, good for one protected decision on THIS session.
-export const sendStepUpCode = () =>
-  apiFetch('/api/v1/auth/step-up', { method: 'POST', body: '{}' });
+// [REVIEW-2501-A S3-3] An admin who set up an authenticator app confirms with its code instead: the API texts
+// nothing and says so (409 STEP_UP_USE_AUTHENTICATOR), which is an answer here, not a failure.
+export type StepUpSent = { method: 'text' | 'authenticator' };
+export async function sendStepUpCode(): Promise<StepUpSent> {
+  try {
+    await apiFetch('/api/v1/auth/step-up', { method: 'POST', body: '{}' });
+    return { method: 'text' };
+  } catch (e) {
+    if (errorCode(e) === 'STEP_UP_USE_AUTHENTICATOR') return { method: 'authenticator' };
+    throw e;
+  }
+}
 export const verifyStepUpCode = (code: string) =>
   apiFetch('/api/v1/auth/step-up/verify', { method: 'POST', body: JSON.stringify({ code }) });
 
@@ -1471,6 +1592,14 @@ export const resolveMmgFeeReversal = (reversalId: string, outcome: 'NOT_RETURNED
   apiFetch(`/api/v1/admin/billing/mmg-fee-reversals/${encodeURIComponent(reversalId)}/resolve`, {
     method: 'POST',
     body: JSON.stringify({ outcome, mmgReference, reason }),
+    reason,
+  });
+// [Audit FABLE-01 C1-1] A weekly-fee payment held for review, checked with MMG again (a reason and a second admin).
+// Credited only if MMG's own records now meet every condition; otherwise it stays held.
+export const recheckHeldMmgCheckout = (checkoutId: string, reason: string) =>
+  apiFetch(`/api/v1/admin/billing/mmg-checkouts/${encodeURIComponent(checkoutId)}/recheck`, {
+    method: 'POST',
+    body: '{}',
     reason,
   });
 export const checkMmgFeeReversal = (reversalId: string) =>
@@ -1603,3 +1732,55 @@ export const resolveHeldDoorCash = async (id: string, reason: string) => {
   if (response?.success !== true || response.data?.orderId !== id || response.data?.doorCashReturn?.status !== 'RESOLVED') throw unreadableOrderAction();
   return response;
 };
+
+// ── [ASSISTED SETUP · owner 12 Nov 2026] Setting a store up FOR it, with its OK ──────────────────────────────────────
+export type AssistedChannel = 'IN_PERSON' | 'PHONE' | 'WHATSAPP' | 'EMAIL';
+/** [#2495 review] Who said yes, as a choice: the account holder themself, or a manager at the store. */
+export type AssistedAgreedAs = 'ACCOUNT_HOLDER' | 'MANAGER';
+export interface AssistedConsent {
+  id: string; agreedByName: string; agreedAs: AssistedAgreedAs; channel: AssistedChannel; agreedAt: string; reference: string | null;
+  recordedByAdminId: string; createdAt: string; live: boolean;
+}
+export interface AssistedPaper { id: string; docType: string; status: string; createdAt: string; expiresAt: string | null; reviewNote: string | null; addedBySwift?: boolean }
+export interface AssistedItem { id: string; name: string; category: string | null; imageUrl: string | null; addedBySwiftAt?: string; photoAddedBySwiftAt?: string }
+export interface AssistedSetupView {
+  store: { id: string; name: string; vendorType: string; status: string };
+  script: { question: string; consentText: string; consentVersion: string };
+  validDays: number;
+  consents: AssistedConsent[];
+  /** storeOnly: steps the store signs, ticks or consents to itself (never uploaded by Swift); personal: a person's own
+   *  papers, uploaded only on the account holder's own OK. */
+  papers: { checklist: string[]; optional: string[]; missing: string[]; documents: AssistedPaper[]; storeOnly?: string[]; personal?: string[] };
+  items: AssistedItem[];
+  canAddItems: boolean;
+}
+export interface MenuImportPlan {
+  imported: number; failedCount: number; failures: Array<{ row: number; errors: string[] }>;
+  notes: Array<{ row: number; note: string }>; notesCount: number; waitingForCheckCount: number;
+  rows: Array<{ row: number; name: string; category: string; basePrice: number }>;
+}
+export interface MenuPreview {
+  automap: { rowCount: number; normalizedCsv: string; mapping: Record<string, string>; headers: string[] };
+  plan: MenuImportPlan;
+  canAddItems: boolean;
+}
+export interface ConsentEntry { agreedByName: string; agreedAs: AssistedAgreedAs; channel: AssistedChannel; agreedAt: string; reference?: string; consentVersion: string }
+
+const assisted = (vendorId: string) => `/api/v1/admin/vendors/${encodeURIComponent(vendorId)}/assisted-setup`;
+const fileForm = (file: Blob, name: string) => { const form = new FormData(); form.append('file', file, name); return form; };
+
+export const fetchAssistedSetup = (vendorId: string): Promise<Envelope<AssistedSetupView>> => apiFetch(assisted(vendorId));
+export const recordAssistedConsent = (vendorId: string, entry: ConsentEntry, reason: string) =>
+  apiFetch(`${assisted(vendorId)}/consent`, { method: 'POST', body: JSON.stringify({ ...entry, wordsRead: true }), reason });
+export const uploadAssistedPaper = (vendorId: string, consentId: string, docType: string, file: Blob, name: string, reason: string) =>
+  apiFetch(`${assisted(vendorId)}/documents?${new URLSearchParams({ consentId, docType })}`, { method: 'POST', body: fileForm(file, name), reason });
+/** The store's own column choices (field -> the file's column, '' = not used) and, for a multi-store till export, its store. */
+export interface MenuColumnChoice { mapping?: Record<string, string>; tillStore?: string }
+export const previewAssistedMenuCsv = (vendorId: string, consentId: string, csv: string, choice: MenuColumnChoice = {}): Promise<Envelope<MenuPreview>> =>
+  apiFetch(`${assisted(vendorId)}/menu/preview`, { method: 'POST', body: JSON.stringify({ consentId, csv, ...choice }) });
+export const previewAssistedMenuXlsx = (vendorId: string, consentId: string, file: Blob, name: string, choice: MenuColumnChoice = {}): Promise<Envelope<MenuPreview>> =>
+  apiFetch(`${assisted(vendorId)}/menu/preview-xlsx?${new URLSearchParams({ consentId, ...(choice.tillStore ? { tillStore: choice.tillStore } : {}), ...(choice.mapping ? { mapping: JSON.stringify(choice.mapping) } : {}) })}`, { method: 'POST', body: fileForm(file, name) });
+export const applyAssistedMenu = (vendorId: string, consentId: string, csv: string, reason: string): Promise<Envelope<MenuImportPlan>> =>
+  apiFetch(`${assisted(vendorId)}/menu/apply`, { method: 'POST', body: JSON.stringify({ consentId, csv }), reason });
+export const uploadAssistedItemPhoto = (vendorId: string, consentId: string, itemId: string, file: Blob, name: string, reason: string) =>
+  apiFetch(`${assisted(vendorId)}/items/${encodeURIComponent(itemId)}/photo?${new URLSearchParams({ consentId })}`, { method: 'POST', body: fileForm(file, name), reason });

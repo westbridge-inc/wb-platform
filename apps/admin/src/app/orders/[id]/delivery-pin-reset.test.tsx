@@ -36,7 +36,7 @@ describe('[M2] a delivery PIN locked at the door', () => {
     expect(dialog.textContent).toMatch(/customer reads the new PIN on their order screen/);
     expect(dialog.textContent).toMatch(/Swift does not message them/);
     expect(dialog.textContent).toMatch(/give it a few seconds/);
-    await user.type(within(dialog).getByRole('textbox', { name: 'Code sent to your phone' }), '654321');
+    await user.type(within(dialog).getByRole('textbox', { name: 'Code from your text or authenticator app' }), '654321');
     await user.type(within(dialog).getByRole('textbox', { name: 'Reason' }), REASON);
     await user.click(within(dialog).getByRole('button', { name: 'Give a new PIN' }));
     await waitFor(() => expect(paths).toEqual(['/api/v1/auth/step-up', '/api/v1/auth/step-up/verify', '/api/v1/admin/orders/ord-p-1/handover-secret/reset-delivery-pin']));
@@ -57,7 +57,7 @@ describe('[M2] a delivery PIN locked at the door', () => {
     const { user } = open();
     await user.click(await screen.findByRole('button', { name: 'New delivery PIN' }));
     const dialog = await screen.findByRole('dialog', { name: 'Give SW-3003 a new delivery PIN?' });
-    await user.type(within(dialog).getByRole('textbox', { name: 'Code sent to your phone' }), '111111');
+    await user.type(within(dialog).getByRole('textbox', { name: 'Code from your text or authenticator app' }), '111111');
     await user.type(within(dialog).getByRole('textbox', { name: 'Reason' }), REASON);
     await user.click(within(dialog).getByRole('button', { name: 'Give a new PIN' }));
     expect(await within(dialog).findByText(/That code is not right/)).toBeTruthy();

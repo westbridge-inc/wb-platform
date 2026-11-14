@@ -17,7 +17,7 @@ import {
   returnEvidence,
   totalAmountOf,
   voidDateOf,
-  RECORD_ZONE,
+  RECORD_TIME_ZONE,
   SELF_CHECK_PAGE_LINE,
   SELF_CHECK_PAGE_OPENS,
   VOID_DATE_SKEW_MS,
@@ -811,6 +811,18 @@ describe('refund and void (sec. 5.2, 7.5, 7.6): the original transaction, at mos
     expect(await p.refund({ binding: p.binding, providerRef: original, amountMinor: 210_000, currencyCode: 'GYD', idempotencyKey: key })).toEqual(first);
     expect(gw.calls).toHaveLength(1);
   });
+  // [OWNER 10 Nov 2026 · PARTLY USED] A partial refund is the same documented call (POST /api/refund, the ORIGINAL
+  // transaction) with the part as TotalAmount ("Powertranz supports partial capture and refund"). Only PowerTranz's
+  // approval of THAT amount is a refund; an approval of the whole payment (or anything else) is unknown, never done.
+  it('[PARTLY USED] a partial refund: the part is the TotalAmount sent; only an approval of exactly that part succeeds', async () => {
+    const answer = (total: number) => gateway({ '/api/refund': () => ({ status: 200, body: { OriginalTrxnIdentifier: original, TransactionType: 5, Approved: true, TransactionIdentifier: '5c1e0f3a-8b7d-4e2a-9f6b-1d2c3b4a5e6f', TotalAmount: total, CurrencyCode: '328', IsoResponseCode: '00' } }) });
+    const gw = answer(1000);
+    const p = provider(gw);
+    expect(await p.refund({ binding: p.binding, providerRef: original, amountMinor: 100_000, currencyCode: 'GYD', idempotencyKey: `refund-${nanoid(6)}` })).toMatchObject({ status: 'succeeded', providerRef: '5c1e0f3a-8b7d-4e2a-9f6b-1d2c3b4a5e6f' });
+    expect(JSON.parse(gw.calls[0]!.body!)).toEqual({ Refund: true, TransactionIdentifier: original, TotalAmount: 1000, CurrencyCode: '328' });
+    const whole = provider(answer(2100));
+    expect(await whole.refund({ binding: whole.binding, providerRef: original, amountMinor: 100_000, currencyCode: 'GYD', idempotencyKey: `refund-${nanoid(6)}` })).toMatchObject({ status: 'unknown', reason: 'REFUND_APPROVAL_NOT_FOR_THIS_AMOUNT' });
+  });
   it('a refund whose answer was lost is unknown and is never sent again under its key; a refused one is failed', async () => {
     const lost = gateway({ '/api/refund': () => 'timeout' });
     const p = provider(lost);
@@ -836,6 +848,10 @@ describe('refund and void (sec. 5.2, 7.5, 7.6): the original transaction, at mos
       ['refund', { OriginalTrxnIdentifier: original, TransactionType: 5, TotalAmount: 1, CurrencyCode: '328' }, 'REFUND_APPROVAL_NOT_FOR_THIS_AMOUNT'],
       ['refund', { OriginalTrxnIdentifier: original, TransactionType: 5, TotalAmount: 2100, CurrencyCode: '840' }, 'REFUND_APPROVAL_NOT_FOR_THIS_AMOUNT'],
       ['refund', { OriginalTrxnIdentifier: original, TransactionType: 5 }, 'REFUND_APPROVAL_NOT_FOR_THIS_AMOUNT'],
+      // [VOID-REFUND-CHECK F7 · PowerTranz 12 Nov 2026: answers carry the original's details] An answer naming ANOTHER
+      // original is never ours, even when it echoes ours as its own TransactionIdentifier.
+      ['refund', { OriginalTrxnIdentifier: other, TransactionIdentifier: original, TransactionType: 5, TotalAmount: 2100, CurrencyCode: '328' }, 'REFUND_APPROVAL_NOT_FOR_THIS_TRANSACTION'],
+      ['void', { OriginalTrxnIdentifier: other, TransactionIdentifier: original, TransactionType: 4 }, 'VOID_APPROVAL_NOT_FOR_THIS_TRANSACTION'],
     ];
     for (const [action, fields, reason] of cases) {
       const gw = gateway({ [`/api/${action}`]: () => ({ status: 200, body: { Approved: true, IsoResponseCode: '00', ResponseMessage: 'Transaction is approved.', ...fields } }) });
@@ -1022,7 +1038,8 @@ describe('[CARD-LOOKUP] the transaction lookup: read strictly, judged against wh
       [{ TotalAmount: 2000 }, {}, 'LOOKUP_AMOUNT_MISMATCH'],
       [{ CurrencyCode: '840' }, { CurrencyCode: '840' }, 'LOOKUP_CURRENCY_MISMATCH'],
       [{ CurrencyCode: '840' }, { CurrencyCode: undefined }, 'LOOKUP_CURRENCY_MISMATCH'],
-      [{ IsoResponseCode: '05' }, { TotalCaptureAmount: 0, CaptureCount: 0 }, 'LOOKUP_NOT_APPROVED_05'],
+      // A decline WITH a capture contradicts itself: not proven untaken, so the old path (one void, then a person).
+      [{ IsoResponseCode: '05' }, { CaptureCount: 1 }, 'LOOKUP_NOT_APPROVED_05'],
       [{ Approved: false }, {}, 'LOOKUP_NOT_APPROVED_00'],
       [{ Approved: true, IsoResponseCode: '96' }, {}, 'LOOKUP_NOT_APPROVED_96'],
       [{}, { CaptureCount: 0 }, 'LOOKUP_NOT_CAPTURED'],
@@ -1032,6 +1049,32 @@ describe('[CARD-LOOKUP] the transaction lookup: read strictly, judged against wh
     for (const [fields, summary, reason] of cases) {
       expect(await ask(fresh(at({ status: 200, body: record(fields, summary) }))), JSON.stringify({ fields, summary })).toMatchObject({ status: 'not_bookable', reason });
     }
+  });
+
+  // [VOID-REFUND-CHECK F2 · LEGAL-CARDS 12 Nov 2026] A record that PROVES nothing was taken is never voided: PowerTranz
+  // refuses to void it (staging, WRITES.md:63) and a declined transaction can never be refunded (code 12).
+  it('[VOID-REFUND-CHECK F2] judgeTransactionRecord: 05 with capture 0 -> declined (not not_bookable); 3D0 / SP4 with capture 0 -> never completed; an ambiguous code or any capture, credit or void keeps the old path', async () => {
+    expect(await ask(fresh(at({ status: 200, body: record({ IsoResponseCode: '05' }, { TotalCaptureAmount: 0, CaptureCount: 0 }) })))).toMatchObject({ status: 'not_taken', stage: 'declined', reason: 'LOOKUP_DECLINED_05' });
+    expect(await ask(fresh(at({ status: 200, body: record({ IsoResponseCode: '51', Approved: false }, { TotalCaptureAmount: 0, CaptureCount: 0 }) })))).toMatchObject({ status: 'not_taken', stage: 'declined', reason: 'LOOKUP_DECLINED_51' });
+    expect(await ask(fresh(at({ status: 200, body: record({ IsoResponseCode: '3D0' }, { TotalCaptureAmount: 0, CaptureCount: 0 }) })))).toMatchObject({ status: 'not_taken', stage: 'never_completed', reason: 'LOOKUP_NEVER_COMPLETED_3D0' });
+    expect(await ask(fresh(at({ status: 200, body: record({ IsoResponseCode: 'SP4' }, { TotalCaptureAmount: 0, CaptureCount: 0 }) })))).toMatchObject({ status: 'not_taken', stage: 'never_completed', reason: 'LOOKUP_NEVER_COMPLETED_SP4' });
+    // Not proven: an ambiguous code (the money may have moved), a capture, an Approved true, an empty code.
+    expect(await ask(fresh(at({ status: 200, body: record({ IsoResponseCode: '91' }, { TotalCaptureAmount: 0, CaptureCount: 0 }) })))).toMatchObject({ status: 'not_bookable', reason: 'LOOKUP_NOT_APPROVED_91' });
+    expect(await ask(fresh(at({ status: 200, body: record({ IsoResponseCode: '05' }, { TotalCaptureAmount: 2100, CaptureCount: 0 }) })))).toMatchObject({ status: 'not_bookable' });
+    expect(await ask(fresh(at({ status: 200, body: record({ IsoResponseCode: '05', Approved: true }, { TotalCaptureAmount: 0, CaptureCount: 0 }) })))).toMatchObject({ status: 'not_bookable' });
+    expect(await ask(fresh(at({ status: 200, body: record({ IsoResponseCode: '' }, { TotalCaptureAmount: 0, CaptureCount: 0 }) })))).toMatchObject({ status: 'not_bookable' });
+  });
+
+  // [REVIEW-2496-A S3-2] Appendix 1 lists HP0 "HPP preprocessing complete", TK0 "Tokenize complete", FC0 "Fraud Check
+  // complete" as completed STAGES, not bank declines: only a 2-digit numeric code is a decline. Anything else proves
+  // nothing — the old path (one void, then a person), never "declined, closed unpaid at once".
+  it('[REVIEW-2496-A S3-2] HP0 / TK0 / FC0 (stage codes) or any undocumented code with capture 0 -> never declined: not_bookable (the old void-then-person path)', async () => {
+    for (const code of ['HP0', 'TK0', 'FC0', 'XY9', '5A']) {
+      expect(await ask(fresh(at({ status: 200, body: record({ IsoResponseCode: code }, { TotalCaptureAmount: 0, CaptureCount: 0 }) }))), code).toMatchObject({ status: 'not_bookable', reason: `LOOKUP_NOT_APPROVED_${code}` });
+    }
+    // SP* / 3D* still wait as never completed; a 2-digit numeric decline still closes at once.
+    expect(await ask(fresh(at({ status: 200, body: record({ IsoResponseCode: '3D6' }, { TotalCaptureAmount: 0, CaptureCount: 0 }) })))).toMatchObject({ status: 'not_taken', stage: 'never_completed' });
+    expect(await ask(fresh(at({ status: 200, body: record({ IsoResponseCode: '14' }, { TotalCaptureAmount: 0, CaptureCount: 0 }) })))).toMatchObject({ status: 'not_taken', stage: 'declined' });
   });
 
   it('an unreadable answer is unknown, never success: another transaction or order, missing or mistyped fields, HTTP errors, no answer', async () => {
@@ -1188,6 +1231,29 @@ describe('[CARD-REFUND-LOOKUP] a refund whose answer is not known: the original 
     expect(await ask(fresh(at({ status: 200, body: record({}, credited(2100, { TotalCaptureAmount: 2200 })) })))).toMatchObject({ status: 'part_credited', reason: 'LOOKUP_PARTIAL_CREDIT' });
     // Swift's price differs from the record's whole credit: never refunded.
     expect(await ask(fresh(at({ status: 200, body: record({}, credited(2100)) })), 200_000)).toMatchObject({ status: 'part_credited', reason: 'LOOKUP_CREDIT_NOT_THE_PAYMENT' });
+  });
+
+  // [OWNER 10 Nov 2026 · PARTLY USED] A partial refund Swift sent (the payment's weeks that have not started) is judged
+  // against the PART asked (refundMinor), of Swift's whole capture: refunded only when TotalCreditAmount is exactly that
+  // part and the capture is Swift's price. More back (the whole payment, a void), less, or another capture: never
+  // "refunded" — held for the owner. A part that is not below the payment is the whole-payment rule above.
+  it('[PARTLY USED] a partial refund: exactly the part credited of Swift\'s capture -> refunded; the whole payment, a void, less or more -> part_credited (the owner)', async () => {
+    const part = (p: PowerTranzCardRailProvider, refundMinor = 100_000) =>
+      p.lookupRefund({ binding: p.binding, providerRef: txn, orderRef: order, amountMinor: 210_000, refundMinor, currencyCode: 'GYD' });
+    expect(await part(fresh(at({ status: 200, body: record({}, credited(1000)) })))).toMatchObject({ status: 'refunded', how: 'credit', reason: 'LOOKUP_CREDITED' });
+    for (const credit of [2100, 999.99, 1500, 1]) {
+      expect(await part(fresh(at({ status: 200, body: record({}, credited(credit)) }))), String(credit)).toMatchObject({ status: 'part_credited', reason: 'LOOKUP_CREDIT_NOT_THE_PART' });
+    }
+    expect(await part(fresh(at({ status: 200, body: record({}, { VoidDateTime: '2026-11-09T12:00:00' }) })))).toMatchObject({ status: 'part_credited', reason: 'LOOKUP_VOIDED_NOT_THE_PART' });
+    expect(await part(fresh(at({ status: 200, body: record({}, credited(1000, { TotalCaptureAmount: 2000 })) })))).toMatchObject({ status: 'part_credited', reason: 'LOOKUP_CREDIT_NOT_THE_PAYMENT' });
+    expect(await part(fresh(at({ status: 200, body: record() })))).toMatchObject({ status: 'not_refunded', reason: 'LOOKUP_NO_CREDIT' });
+    expect(await part(fresh(at({ status: 200, body: record({}, credited(2100)) })), 210_000)).toMatchObject({ status: 'refunded', reason: 'LOOKUP_CREDITED' });
+    // A part that is no amount, or more than the payment, is never asked: unknown, no call.
+    for (const bad of [0, -1, 210_001, 1.5]) {
+      const gw = at({ status: 200, body: record({}, credited(1000)) });
+      expect(await part(fresh(gw), bad), String(bad)).toMatchObject({ status: 'unknown', reason: 'LOOKUP_REQUEST_INVALID' });
+      expect(gw.calls).toHaveLength(0);
+    }
   });
 
   it('no credit and no void on the record -> not_refunded (nothing to record yet)', async () => {
@@ -1402,9 +1468,12 @@ describe('[CARD-STAGING-TEST] the real lookup records: read strictly, a void rea
   const fresh = (gw: ReturnType<typeof gateway>) => provider(gw, { now: () => new Date(STAGING_READ_AT_MS), config: { account: `st-${nanoid(6).replace(/[^A-Za-z0-9]/g, '0')}` } });
   const notBefore = new Date(STAGING_SESSION_AT_MS - VOID_DATE_SKEW_MS);
 
-  it('dates name no zone: read as UTC-4 (the void Swift sent at 05:03:11Z is dated 01:03:11)', () => {
-    expect(RECORD_ZONE).toBe('-04:00');
+  it('dates name no zone: read as Atlantic time — UTC-4 in November (the void Swift sent at 05:03:11Z is dated 01:03:11), ADT UTC-3 in summer (PowerTranz 12 Nov 2026)', () => {
+    expect(RECORD_TIME_ZONE).toBe('Atlantic/Bermuda');
     expect(voidDateOf(STAGING_VOID_DATE_TIME)).toBe(STAGING_VOID_AT_MS);
+    // [VOID-REFUND-CHECK F8] A summer date is ADT: 01:03:11 is 04:03:11Z, not 05:03:11Z.
+    expect(voidDateOf('2026-07-10T01:03:11')).toBe(Date.UTC(2026, 6, 10, 4, 3, 11));
+    expect(voidDateOf('2026-07-10 01:03:11.5')).toBe(Date.UTC(2026, 6, 10, 4, 3, 11, 500));
     expect(voidDateOf('2026-11-10T01:03:11.773Z')).toBe(STAGING_VOID_AT_MS - 4 * 60 * 60_000); // a named zone is its own
     expect(voidDateOf('0001-01-01T00:00:00')).toBeNull();
   });
@@ -1430,10 +1499,11 @@ describe('[CARD-STAGING-TEST] the real lookup records: read strictly, a void rea
     expect(await askRefund(fresh(at(stagingSaleRecord())))).toMatchObject({ status: 'not_refunded', reason: 'LOOKUP_NO_CREDIT' });
   });
 
-  it('a page only preprocessed (SP4) or only authenticated (3D0) is no approved sale: not_bookable, never confirmed', async () => {
+  // [VOID-REFUND-CHECK F2] The staging lane voided exactly such a page and PowerTranz refused the void (WRITES.md:63).
+  it('a page only preprocessed (SP4) or only authenticated (3D0) is no approved sale, and proven NOT taken: not_taken (never completed), never confirmed, never voided', async () => {
     expect(readTransactionRecord(stagingPreprocessedRecord())).toMatchObject({ orderIdentifier: null, approved: null, captureCount: 0, voided: false });
-    expect(await ask(fresh(at(stagingPreprocessedRecord())))).toMatchObject({ status: 'not_bookable', reason: 'LOOKUP_NOT_APPROVED_SP4' });
-    expect(await ask(fresh(at(stagingAuthenticatedRecord())))).toMatchObject({ status: 'not_bookable', reason: 'LOOKUP_NOT_APPROVED_3D0' });
+    expect(await ask(fresh(at(stagingPreprocessedRecord())))).toMatchObject({ status: 'not_taken', stage: 'never_completed', reason: 'LOOKUP_NEVER_COMPLETED_SP4' });
+    expect(await ask(fresh(at(stagingAuthenticatedRecord())))).toMatchObject({ status: 'not_taken', stage: 'never_completed', reason: 'LOOKUP_NEVER_COMPLETED_3D0' });
     // For a refund check, a record that names no order is not about this payment.
     expect(await askRefund(fresh(at(stagingAuthenticatedRecord())))).toMatchObject({ status: 'unknown', reason: 'LOOKUP_NO_ORDER' });
   });

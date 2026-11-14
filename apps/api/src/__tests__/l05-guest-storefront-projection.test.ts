@@ -21,8 +21,10 @@ const ITEM_KEYS = [
   'allergens', 'basePrice', 'bookingConfig', 'customerPrice', 'description', 'dietaryTags', 'fulfillment',
   'id', 'imageUrl', 'isAvailable', 'isPopular', 'name', 'optionGroups', 'sortOrder', 'stockQuantity', 'totalOrdered', 'unit',
 ];
-const OPTION_GROUP_KEYS = ['id', 'isRequired', 'maxSelect', 'minSelect', 'name', 'options', 'sortOrder'];
-const OPTION_KEYS = ['additionalPrice', 'id', 'isAvailable', 'isDefault', 'name', 'sortOrder'];
+// [MENU-OPTIONS] + the pizza rules a customer sheet shows (size sets the price, halves and their price rule).
+const OPTION_GROUP_KEYS = ['allowHalves', 'halfPricePercent', 'id', 'isRequired', 'maxSelect', 'minSelect', 'name', 'options', 'setsPrice', 'sortOrder'];
+// [MENU-OPTIONS] + the follow-up group a choice opens (never the library link or a kitchen code).
+const OPTION_KEYS = ['additionalPrice', 'followUpGroupId', 'id', 'isAvailable', 'isDefault', 'name', 'sortOrder'];
 const IMAGE_KEYS = ['caption', 'id', 'sortOrder', 'url'];
 const HOURS_KEYS = ['closeTime', 'dayOfWeek', 'id', 'isClosed', 'openTime'];
 

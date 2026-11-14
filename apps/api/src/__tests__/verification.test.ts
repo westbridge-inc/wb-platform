@@ -231,10 +231,13 @@ describe('Checklists drive from config', () => {
     expect(restaurant.json().data.checklist).toEqual([
       // [FOOD-PERMIT · owner ruling 24 Oct 2026 — a DELIBERATE change] the food handler's certificate is optional for a
       // registered restaurant (its owner ticks for its food handlers instead: food-handlers.test.ts)
+      // [RESTAURANT-TIN · owner ruling 12 Nov 2026 — a DELIBERATE change] a restaurant's TIN certificate in the GRA
+      // licence's place (restaurants only); the licence is optional (restaurant-tin-certificate.test.ts)
       'owner_national_id', 'business_registration',
-      'gra_restaurant_licence', 'storefront_photo',
+      'tin_certificate', 'storefront_photo',
     ]);
     expect(restaurant.json().data.optional).toContain('food_handler_cert');
+    expect(restaurant.json().data.optional).toContain('gra_restaurant_licence');
 
     const supermarket = await inject('GET', '/api/v1/verification/status?role=SUPERMARKET', undefined, vendorToken);
     expect(supermarket.json().data.checklist).toEqual([
@@ -387,7 +390,9 @@ describe('Provider auto-decisions (swappable interface)', () => {
     }, vendorToken);
     expect(res.statusCode).toBe(201);
     expect(res.json().data.status).toBe('APPROVED');
-    expect(res.json().data.kycRef).toMatch(/^sbx_/);
+    // The sandbox provider decided it (its reference is on the stored row); [FABLE-02 F10] the answer never carries it.
+    expect((await app.prisma.verificationDocument.findUniqueOrThrow({ where: { id: res.json().data.id } })).kycRef).toMatch(/^sbx_/);
+    expect(res.json().data).not.toHaveProperty('kycRef');
 
     // [VERIFY-DOCS · owner ruling 6 Oct 2026 ~21:25 GYT — a DELIBERATE change] The owner's ID IS
     // the service business's bar now. A police clearance is needed only for HOME-VISIT bookings

@@ -108,17 +108,18 @@ describe('[CHECKLIST-LEGAL (a)] no list asks for the self-declared tier', () => 
       expect(list, key).not.toContain(DECLARATION);
     }
     // The ways in are unchanged: a registered business, or a trader under their own name.
-    expect(DEFAULT_DOCUMENT_CHECKLISTS['RESTAURANT']).toEqual(['owner_national_id', 'business_registration', 'gra_restaurant_licence', 'storefront_photo']);
+    expect(DEFAULT_DOCUMENT_CHECKLISTS['RESTAURANT']).toEqual(['owner_national_id', 'business_registration', 'tin_certificate', 'storefront_photo']);
     expect(DEFAULT_DOCUMENT_CHECKLISTS['SUPERMARKET']).toEqual(['owner_national_id', 'business_registration', 'storefront_photo']);
     expect(DEFAULT_DOCUMENT_CHECKLISTS['STORE']).toEqual(['owner_national_id', 'business_registration', 'storefront_photo']);
-    expect(DEFAULT_DOCUMENT_CHECKLISTS['RESTAURANT_OWN_NAME']).toEqual(['owner_national_id', 'own_name_declaration', 'gra_restaurant_licence', 'storefront_photo']);
+    expect(DEFAULT_DOCUMENT_CHECKLISTS['RESTAURANT_OWN_NAME']).toEqual(['owner_national_id', 'own_name_declaration', 'tin_certificate', 'storefront_photo']);
     expect(DEFAULT_DOCUMENT_CHECKLISTS['SUPERMARKET_OWN_NAME']).toEqual(['owner_national_id', 'own_name_declaration', 'storefront_photo']);
     expect(DEFAULT_DOCUMENT_CHECKLISTS['STORE_OWN_NAME']).toEqual(['owner_national_id', 'own_name_declaration', 'storefront_photo']);
     // A checklist change is a platform-config change: production takes it with the next owner-signed seed.
-    // [O1] 2026-11-07.1 carries these lists on unchanged (rider-cash-no-limit.test.ts).
-    expect(PLATFORM_CONFIG_VERSION).toBe('2026-11-07.1');
+    // [O1] 2026-11-07.1 carries these lists on unchanged (rider-cash-no-limit.test.ts); [COMPANY-DOCS] 2026-11-10.1 too,
+    // adding only the company and manager lists (company-signup-documents.test.ts).
+    expect(PLATFORM_CONFIG_VERSION).toBe('2026-11-12.1');
     const desired = desiredPlatformConfig();
-    expect(desired.version).toBe('2026-11-07.1');
+    expect(desired.version).toBe('2026-11-12.1');
     for (const c of desired.countries) {
       const lists = c.policy['documentChecklists'] as Record<string, string[]>;
       for (const key of TIER_LISTS) expect(lists[key], `${c.code} ${key}`).toBeUndefined();

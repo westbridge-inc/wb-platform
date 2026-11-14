@@ -379,7 +379,7 @@ function SoloPanel({ row, onChanged }: { row: ApprovalRow; onChanged: () => void
       {askCode && (
         <div className="rounded-lg border border-[var(--mc-line)] bg-[var(--mc-card)] p-3 flex flex-col gap-2">
           <p className="font-semibold">Confirm it is you</p>
-          <p className="mc-muted text-xs">We text a 6-digit code to the phone on your admin account. It approves this one request.</p>
+          <p className="mc-muted text-xs">A 6-digit code approves this one request: the code from your authenticator app if you set one up, otherwise press Send me a code and we text one to the phone on your admin account.</p>
           <div className="flex flex-wrap items-center gap-2">
             <button
               disabled={send.isPending}
@@ -405,7 +405,7 @@ function SoloPanel({ row, onChanged }: { row: ApprovalRow; onChanged: () => void
               Confirm and approve
             </button>
           </div>
-          {send.isSuccess && <p className="mc-muted text-xs">Code sent.</p>}
+          {send.isSuccess && <p className="mc-muted text-xs">{send.data?.method === 'authenticator' ? 'Nothing was texted: your account confirms with your authenticator app. Enter its code.' : 'Code sent.'}</p>}
           {send.error && <MutationError error={send.error} label="The code was not sent" />}
           {verify.error && <MutationError error={verify.error} label="That code did not work" />}
         </div>

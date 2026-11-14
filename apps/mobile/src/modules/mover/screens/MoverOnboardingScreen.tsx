@@ -8,6 +8,7 @@ import { Card, LabeledInput, LinkText, PillButton, T, useLogoutConfirm } from '.
 import { BackToSwiftButton } from '../../../components/onboarding/BackToSwiftButton';
 import { BackToSwiftScreen, useBackToSwift } from '../../../components/onboarding/backToSwift';
 import { DocumentChecklist } from '../../../components/onboarding/DocumentChecklist';
+import { checklistProgress, MOVER_IN_REVIEW } from '../../../components/onboarding/documentChecklistPresentation';
 import { TAXI_TWO_LICENCES } from '../../../components/onboarding/taxiDocumentCopy';
 import { PricingCard } from '../../../components/onboarding/PricingCard';
 import { WeeklyFeeTerms } from '../../../components/onboarding/WeeklyFeeTerms';
@@ -302,8 +303,15 @@ export function MoverOnboardingScreen({ status }: { status: any }) {
   const pricing = usePartnerPricing(countryCode);
   const savedOffered = !savedVehicle || vehicleOffered(savedVehicle, pricing.data);
   const savedLabel = VTYPES.find((v) => v.key === (savedVehicle ?? vt))?.label ?? 'Your vehicle';
-  const { data: preview, isLoading: statusLoading, isError: statusError, refetch: refetchStatus } = useVerificationStatus<any>('MOVER', vt);
+  // [REVIEW-2490 S4-3] While the papers are in review this read polls too (as the root's does), so a paper sent back
+  // shows here by itself, as the in-review words promise, and not only an approval (which the root's poll carries).
+  const [pollInReview, setPollInReview] = useState(false);
+  const { data: preview, isLoading: statusLoading, isError: statusError, refetch: refetchStatus } = useVerificationStatus<any>('MOVER', vt, { poll: pollInReview });
   const checklistStatus = preview ?? status;
+  // [FOLLOWUPS 11 Nov 2026] Everything sent for the saved vehicle, waiting for a person to approve it: the screen
+  // opens on that plain status (the list below still shows each paper), never on the sign-up pitch.
+  const inReview = vehicleSaved && !changing && checklistProgress(checklistStatus).inReview;
+  useEffect(() => { setPollInReview(inReview); }, [inReview]);
 
   return (
     <BackToSwiftScreen onBack={back.leave}>
@@ -315,6 +323,17 @@ export function MoverOnboardingScreen({ status }: { status: any }) {
         </View>
       </View>
       <ScrollView contentContainerStyle={{ paddingHorizontal: GUTTER, paddingBottom: space['3xl'] }} showsVerticalScrollIndicator={false}>
+        {inReview ? (
+          <View testID="mover-in-review" accessibilityRole="summary" style={{ marginTop: space.sm, flexDirection: 'row', alignItems: 'flex-start', gap: space.md }}>
+            <View style={{ width: 40, height: 40, borderRadius: 20, alignItems: 'center', justifyContent: 'center', backgroundColor: color.soft.info }}>
+              <MaterialCommunityIcons name="clock-outline" size={20} color={color.info} />
+            </View>
+            <View style={{ flex: 1 }}>
+              <T variant="title">{MOVER_IN_REVIEW.title}</T>
+              <T variant="body" tone="muted" style={{ marginTop: space.sm }}>{MOVER_IN_REVIEW.body}</T>
+            </View>
+          </View>
+        ) : <>
         <T variant="title" style={{ marginTop: space.sm }}>
           {approvedBefore ? 'Your documents need attention' : 'Start earning with Swift'}
         </T>
@@ -323,8 +342,9 @@ export function MoverOnboardingScreen({ status }: { status: any }) {
             ? 'You can’t go online until the documents below are sorted — we review them Monday to Saturday, 8:00–16:00 Guyana time.'
             : 'Set up your vehicle and documents — we review them Monday to Saturday, 8:00–16:00 Guyana time, then you go online and start earning.'}
         </T>
+        </>}
         <MoverWorkDoors />
-        {approvedBefore ? null : <>
+        {approvedBefore || inReview ? null : <>
         <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: space.md, marginTop: space.lg }}>
           <ValuePill icon="check-decagram" label="Keep 100%" />
           {/* "Cash in hand", never "Cash payouts". A payout is money Swift

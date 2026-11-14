@@ -61,6 +61,9 @@ describe('[SEC-TRUST F12] review step-up code', () => {
       prisma: {
         user: { findUnique: async () => ({ phone, tenantId: cred.tenantId }) },
         reviewCredential: { findFirst: async () => cred },
+        // [REVIEW-2501-A S3-3] step-up asks whether the account confirms with an authenticator app: a review
+        // account holds no admin row.
+        admin: { findUnique: async () => null },
       },
       userId,
     } as unknown as FastifyInstance;

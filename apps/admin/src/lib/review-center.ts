@@ -23,11 +23,15 @@ export interface ReviewDocument {
   createdAt?: string; consentAt?: string | null; privacyNoticeVersion?: string | null;
   expiresAt?: string | null;
   previousDecision?: PreviousDecision | null;
-  reviewerTypes?: Array<'documentNumber' | 'issuedOn' | 'certificateYear' | 'registrationKind' | 'ownNameConfirmed'>;
+  reviewerTypes?: Array<'documentNumber' | 'issuedOn' | 'certificateYear' | 'registrationKind' | 'ownNameConfirmed' | 'legalName' | 'authorityConfirmed'>;
+  /** [COMPANY-DOCS · owner 10 Nov 2026] Who holds a store account (the path its papers follow); null for anyone else. */
+  accountBasis?: 'OWNER' | 'COMPANY' | 'MANAGER' | null;
   /** A reviewer's id, or the server's automatic marker ('auto:id-on-file', 'kyc:auto') — never shown raw. */
   reviewedBy?: string | null;
   /** [BUG-HUNT F23] A reviewer checked this paper and it waits for ordering day: nobody needs to check it again. */
   approvalHeldAt?: string | null;
+  /** [ASSISTED SETUP] The admin who uploaded this paper for the store (null: the store sent it itself). */
+  assistedById?: string | null;
   user?: {
     /** `phone` arrives masked (its last 4 digits only) [DOC-SECURITY G3]: the full number is the person page's audited reveal. */
     id: string; firstName?: string; lastName?: string; phone?: string; countryCode?: string;
@@ -53,6 +57,9 @@ const LABELS: Record<string, string> = {
   self_declaration_unregistered: 'Unregistered business declaration (no longer accepted)',
   // [MC-PR2] checklist photo types the queue and the activation checklist both name
   storefront_photo: 'Storefront photo', own_name_declaration: 'Own-name declaration (no business registration)', vehicle_plate_photo: 'Number-plate photo', vehicle_exterior_photo: 'Vehicle photo',
+  // [COMPANY-DOCS · owner 10 Nov 2026] a registered company's papers, and a registered business run by its manager
+  certificate_of_incorporation: 'Certificate of Incorporation (company)', account_holder_id: 'Account holder’s ID (company or manager)',
+  company_authority_letter: 'Director’s letter of authority (or director listing)', owner_authority_letter: 'Owner’s letter of authority (manager)',
   // [TRADES · 13 Oct 2026; R15] service-trade documents
   pest_control_operator_licence: 'PTCCB pest-control operator licence', pesticide_applicator_certificate: 'PTCCB applicator certificate',
   eating_house_registration: 'Eating-house registration', gei_electrical_licence: 'GEI electrical licence',
@@ -94,7 +101,26 @@ const REVIEWER_HINTS: Record<string, string> = {
   // [R13 · owner 15 Oct 2026, research D6] every motor vehicle, not only a taxi
   vehicle_insurance: "Read 'Limitations as to use': it must permit use for hire or reward (taxi: passengers for hire; delivery: commercial use). A policy for social, domestic and pleasure use only is rejected as 'Insurance does not permit use for hire or reward'.",
 };
-export const reviewerHint = (type: string): string | undefined => REVIEWER_HINTS[type];
+// [COMPANY-DOCS · owner rulings 10 Nov 2026] What a person checks on a company's or a manager's papers. Nothing is approved
+// by a machine: the server queues every one of them for a person.
+const ACCOUNT_PAPER_HINTS: Record<string, string> = {
+  // [review F3, F4] a company's business-name registration only when its proprietor is a company; brands may differ
+  certificate_of_incorporation: 'The company’s Certificate of Incorporation from the DCRA (or the company’s Business Registration). Choose “Company” for a certificate of incorporation. A business name registration counts only when the proprietor named on it is a company (Ltd. or Inc.): if it names a person, reject it, because that business signs up as a registered business or through its manager. The store’s name must be the company’s name or a business name the company has registered (brands and franchises often differ): if they differ, ask for that business name registration.',
+  // [review F8] never an expired ID
+  account_holder_id: 'The ID of the one person who manages this Swift account: a National ID, Digital ID card or passport. Refuse an expired ID or passport. The name must match the account and the person named in the letter of authority. This is not the owner’s ID: never show this person’s name on the store.',
+  // [review F2] a certificate of incorporation names no directors: the signer's directorship is checked on its own
+  // [Part 2 review F12] a letter signed in Swift has no letterhead; [Part 2 review F1] a listing proves a name, not who signed
+  company_authority_letter: 'A letter on the company’s letterhead, or signed in Swift (no letterhead), signed and dated by a director, naming the account holder and allowing them to run the company’s Swift store account; or the company’s list of directors showing the account holder as a director. A certificate of incorporation names no directors, and a director listing proves a name, not who signed: unless this paper IS the director listing naming the account holder (DCRA notice of directors or annual return), confirm it by calling the company on a number Swift finds itself, never a number on the letter or the form, and asking whether it authorised this account holder. If you cannot confirm it, reject the letter.',
+  owner_authority_letter: 'A letter signed and dated by the business owner named on the Business Registration (on paper, or signed in Swift), naming this manager and allowing them to run the business’s Swift store account. The owner’s name must match the registration; the manager’s must match their ID. A registration proves a name, not who signed: always call the business on a number Swift finds itself, never a number on the letter or the form, and ask whether its owner authorised this manager. If you cannot confirm it, reject the letter.',
+};
+export const reviewerHint = (type: string): string | undefined => REVIEWER_HINTS[type] ?? ACCOUNT_PAPER_HINTS[type];
+
+/** [COMPANY-DOCS · owner 10 Nov 2026] The path a store account signed up on, in words, for the reviewer (null: not a store account, or the owner's own path). */
+export function accountPathLine(basis: ReviewDocument['accountBasis']): string | null {
+  if (basis === 'COMPANY') return 'Signed up as a registered company: check the certificate, the director’s letter and the account holder’s ID together. No owner’s ID is asked for.';
+  if (basis === 'MANAGER') return 'Signed up by the manager of a registered business (not the owner): check the business registration, the owner’s letter and the manager’s ID together.';
+  return null;
+}
 
 /**
  * [TRADES · 13 Oct 2026] What the reviewer checks on a service-trade document, in plain words.
@@ -111,7 +137,11 @@ const REVIEW_NOTES: Record<string, string> = {
   gei_electrical_licence: 'Government Electrical Inspectorate licence in this person’s name. Type the year it is for; it is checked again every January.',
   // [owner 16 Oct 2026] a store's yearly licences: the same January re-check as a business name
   // [CHECKLIST-LEGAL · COORD 1 Nov 2026 (d), delegated] the GRA's own name for it, and its provisional licence is accepted
+  // [RESTAURANT-TIN · owner 12 Nov 2026] optional for a restaurant now (the TIN certificate is the required paper); a store
+  // that sends it still has it checked, the same way
   gra_restaurant_licence: 'GRA Food Restaurant Licence for this store. A GRA Provisional Licence is accepted too. Type the year it is for; it is checked again every January.',
+  // [RESTAURANT-TIN · owner 12 Nov 2026] a restaurant's required paper in place of the GRA licence; a person reads it
+  tin_certificate: 'GRA Taxpayer Identification Number (TIN) certificate naming this business or its owner (for a company, the company). It has no expiry. Never copy the TIN anywhere: it stays on the certificate.',
   sanitary_certificate: 'Sanitary certificate for this store’s premises. Type the year it is for; it is checked again every January.',
   trade_licence: 'Trade licence for this store. Type the year it is for; it is checked again every January.',
 };
@@ -323,3 +353,9 @@ export function waitingSince(timestamp: number, now: number): string {
   const hours = Math.floor(minutes / 60);
   return hours < 24 ? `Waiting ${hours}h` : `Waiting ${Math.floor(hours / 24)}d ${hours % 24}h`;
 }
+
+/** [ASSISTED SETUP · owner 12 Nov 2026] A paper a Swift admin uploaded for a store, with the store's OK. */
+export const ASSISTED_UPLOAD_TITLE = 'Uploaded by Swift for the store';
+export const ASSISTED_UPLOAD_WORDS = 'A Swift admin uploaded this paper for the store, with the store’s recorded OK. Check it as you would any paper.';
+export const ASSISTED_OWN_UPLOAD_WORDS = 'You uploaded this paper. Another admin must approve it. If you are the only admin, you may approve it only after checking it yourself; Swift refuses it whenever a second admin exists.';
+export const SOLE_ADMIN_CHECK = 'I checked it myself, no second admin available';

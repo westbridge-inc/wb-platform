@@ -16,6 +16,9 @@ export const GUYANA_RIDER_CASH_LIMIT = 100_000;
  */
 export const UNSHOWN_CASH_MAX = 8000;
 
+/** [PROD-RIDER-TEST (b)1] What a rider on an older app does: an update is applied when Swift starts again. */
+export const APP_UPDATE_STEPS = 'Close Swift completely and open it again to get the update, then try again.';
+
 const gyd = (n: number) => `GY$${Math.round(n).toLocaleString('en-US')}`;
 const cents = (n: number) => Math.round(n * 100);
 
@@ -27,8 +30,14 @@ const cents = (n: number) => Math.round(n * 100);
  *     CASH_AMOUNT_CHANGED, with the new amount, so the rider can look again;
  *   - no amount was shown and the job needs more than UNSHOWN_CASH_MAX: CASH_AMOUNT_NOT_SHOWN.
  * A lower amount than shown is never refused (the rider fronts less than they agreed to).
+ *
+ * [PROD-RIDER-TEST 11 Nov 2026 · COORD ruling (b) under the owner's "just fix these issues"] `showable`: Swift could
+ * state this job's cash split (cashMathForOffer, read from the same locked order), so today's app WOULD have shown it
+ * and sent it back. No amount then means the rider's app is older than the cash card: the refusal tells them, in
+ * plain words, to close and reopen Swift to get the update, then try again (the amount stays in the words). A job
+ * whose split cannot be stated (a discount) shows no cash on any app, so it never says "update".
  */
-export function assertCashShown(locked: number, shown: number | undefined, storeName: string | null | undefined): void {
+export function assertCashShown(locked: number, shown: number | undefined, storeName: string | null | undefined, showable = false): void {
   if (!(locked > 0)) return;
   const store = storeName || 'the store';
   if (shown !== undefined && cents(locked) > cents(shown)) {
@@ -37,8 +46,9 @@ export function assertCashShown(locked: number, shown: number | undefined, store
       { payToVendor: locked });
   }
   if (shown === undefined && locked > UNSHOWN_CASH_MAX) {
-    throw new AppError(409, 'CASH_AMOUNT_NOT_SHOWN',
-      `This cash job needs you to pay ${store} ${gyd(locked)} at pickup, and that amount was not shown to you with it, so it cannot be accepted here.`,
-      { payToVendor: locked });
+    throw new AppError(409, 'CASH_AMOUNT_NOT_SHOWN', showable
+      ? `This cash job needs you to pay ${store} ${gyd(locked)} at pickup. Your Swift app is out of date, so it did not show you that amount. ${APP_UPDATE_STEPS}`
+      : `This cash job needs you to pay ${store} ${gyd(locked)} at pickup, and that amount was not shown to you with it, so it cannot be accepted here.`,
+      { payToVendor: locked, ...(showable ? { appUpdateNeeded: true } : {}) });
   }
 }

@@ -376,6 +376,9 @@ const CENSUS: Case[] = [
   { k: 'dispatch_retrying', d: { ...O, audience: 'customer' }, to: DELIVERY('o1'), why: 'customer — still looking for a mover' },
   { k: 'converted_to_pickup', d: { ...O, audience: 'business' }, to: { screen: 'VendorOrderDetail', params: { orderId: 'o1' } }, why: 'store — the order became a pickup [audience rule]' },
   { k: 'dispatch_exhausted', d: { ...O, audience: 'customer' }, to: DELIVERY('o1'), why: 'customer — no mover found' },
+  { k: 'kitchen_dispatched', d: { ...O, orderNumber: 'SW-1' }, to: DELIVERY('o1'), why: "customer — [KITCHEN-INTEGRATION] the store's kitchen system handed the order to the store's own driver; on their tracking screen" },
+  { k: 'store_delivers', d: { ...O, audience: 'customer' }, to: DELIVERY('o1'), why: 'customer — [PROD-RIDER-TEST (a)1] no rider was found and the store delivers it with its own rider; the own-rider notice is on their tracking screen' },
+  { k: 'no_rider_cancelled', d: { ...O, status: 'CANCELLED', audience: 'business' }, to: { screen: 'VendorOrderDetail', params: { orderId: 'o1' } }, why: 'store — [PROD-RIDER-TEST (a)3] the customer cancelled after no rider was found [audience rule]' },
   { k: 'riderless_cutoff', d: { ...O, orderNumber: 'SW-1', audience: 'customer', canCancelFree: true, cancelsInMinutes: 15 }, to: DELIVERY('o1'), why: 'customer — [OF-01/17] no rider yet, they can cancel for free; the cancel is on their tracking screen' },
   { k: 'rider_no_show', d: { ...O, orderNumber: 'SW-1', status: 'READY_FOR_PICKUP', audience: 'customer' }, to: DELIVERY('o1'), why: 'customer — [OF-33] their rider did not come; a new rider is being found, on their tracking screen (the store copy, audience business, takes the order desk by the audience rule)' },
   { k: 'rider_waiting', d: { ...O, orderNumber: 'SW-1', audience: 'business' }, to: { screen: 'VendorOrderDetail', params: { orderId: 'o1' } }, why: 'store — [OF-33] their rider is at the counter and the order is not marked ready; the order desk (audience rule)' },
@@ -421,6 +424,7 @@ const CENSUS: Case[] = [
   { k: 'ops_delivery_rider_dropped', d: O, to: DELIVERY('o1'), why: 'admins' },
   { k: 'ops_dispatch_exhausted', d: O, to: DELIVERY('o1'), why: 'admins' },
   { k: 'ops_food_too_old', d: O, to: DELIVERY('o1'), why: 'admins — [ALG-06] an order too old to deliver was cancelled by the system and needs a person' },
+  { k: 'kitchen_integration', d: O, to: DELIVERY('o1'), why: "admins — [KITCHEN-INTEGRATION] an order could not go to a store's kitchen system (the tablet was rung), a cancel did not reach it, or its driver could not deliver" },
   { k: 'ops_rider_no_show', d: { ...O, riderId: 'r1' }, to: DELIVERY('o1'), why: 'admins — [OF-33] a rider accepted and never picked up; the order went back to dispatch' },
   { k: 'ops_rider_waiting', d: { ...O, riderId: 'r1' }, to: DELIVERY('o1'), why: 'admins — [OF-33] a rider is waiting at a store that has not marked the order ready' },
   { k: 'ops_rider_waiting_long', d: { ...O, riderId: 'r1', waitedMinutes: 61, opsAlertId: 'a1' }, to: { screen: 'OpsAlerts', params: { opsAlertId: 'a1' } }, why: 'responders — [OF-33 · DRILL-STORM] the loud ops-alert page: a rider has waited 3 release windows at a store that is not ready; a person decides — the page is acknowledged on Ops alerts (the order screen was the CUSTOMER tracking screen)' },
@@ -509,6 +513,12 @@ const CENSUS: Case[] = [
   { k: 'staff_added', d: { vendorId: 'v1' }, to: { screen: 'VendorRoot' }, why: 'the person ADDED to a store team — the store’s own screen, selected by its vendorId; it is reached in Business mode, which the body tells them to choose' },
   { k: 'staff_invite', d: { vendorId: 'v1', audience: 'customer' }, to: { screen: 'Storefront', params: { screen: 'Notifications' } }, why: '[row 55] the invite is answered on the inbox Accept card' },
   { k: 'staff_joined', d: { vendorId: 'v1', audience: 'business' }, to: VENDOR_TAB('Account'), why: 'store owner — [row 55] someone accepted their invite; the team panel is on the Account tab' },
+  // [COMPANY-DOCS Part 3 · owner rulings 10 Nov 2026 (c), (d)] A change of business type or of account holder.
+  { k: 'account_change_approved', d: { changeId: 'c1' }, to: VENDOR_TAB('Account'), why: 'account holder — their business type changed: Account, where Change business type shows it' },
+  { k: 'account_change_refused', d: { changeId: 'c1' }, to: VENDOR_TAB('Account'), why: 'account holder — a change was refused or withdrawn: Account → Change business type shows the reason' },
+  { k: 'account_handover_named', d: { changeId: 'c1' }, to: { screen: 'AccountHandover' }, why: 'the person a company named as its new account holder — they say yes or no, then upload their papers, on that screen' },
+  { k: 'account_handover_completed', d: { changeId: 'c1' }, to: { screen: 'VendorRoot' }, why: 'the new account holder — the store is theirs now, reached in Business mode' },
+  { k: 'account_handover_ended', d: { changeId: 'c1' }, to: HOME, why: 'HOME: the old holder (signed out of the store), or the person named when it did not go through — the notice is the whole message' },
   { k: 'review_response', d: { ratingId: 'r1', vendorId: 'v1' }, to: { screen: 'VendorReviews', params: { vendorId: 'v1' } }, why: 'the customer who wrote the review — the store replied; the store’s reviews page shows the reply' },
   { k: 'rating_removed', to: HOME, why: 'HOME: the person whose review was removed — the payload names no rating and no store, so there is nothing to open; the notice is the whole message' },
   { k: 'category_request_resolved', to: VENDOR_TAB('Menu'), why: 'store owner — a category they asked for was added, mapped or declined; items are tagged in the catalogue tab' },
@@ -532,6 +542,7 @@ const CENSUS: Case[] = [
 
   // ── Admin / ops pages. null is CORRECT: there is no mobile admin app.
   { k: 'ops_error_spike', to: null, why: 'admins' },
+  { k: 'account_change_pending', to: null, why: 'admins — [COMPANY-DOCS Part 3] a change of business type or a handover to check; decided in the console' },
   { k: 'ops_fee_refund_overdue', to: null, why: 'admins' },
   { k: 'ops_error_sustained', to: null, why: 'admins' },
   { k: 'ops_ride_overdue', to: null, why: 'admins' },
@@ -544,6 +555,14 @@ const CENSUS: Case[] = [
   { k: 'ops_backup_stale', to: null, why: 'admins' },
   // The upload malware scanner (clamd) stopped answering: uploads are refused until it is back.
   { k: 'ops_malware_scanner_down', d: { failures: 2, reason: 'x' }, to: null, why: 'admins — ops page, acted on from the server (row 312)' },
+  // [FABLE-05] The worker's infrastructure watch: disk or memory nearly full, sign-in texts failing at
+  // Twilio, the routing engine down, payments waiting for MMG. Admin-only, acted on from the server.
+  { k: 'ops_host_disk', d: { usedPercent: 86 }, to: null, why: 'admins — ops page (FABLE-05)' },
+  { k: 'ops_host_memory', d: { usedPercent: 93 }, to: null, why: 'admins — ops page (FABLE-05)' },
+  { k: 'ops_redis_memory', d: { usedPercent: 81 }, to: null, why: 'admins — ops page (REVIEW-2503-A S3-4)' },
+  { k: 'ops_twilio_failing', d: { failures: 5 }, to: null, why: 'admins — ops page (FABLE-05)' },
+  { k: 'ops_routing_down', d: { failures: 2, status: 502 }, to: null, why: 'admins — ops page (FABLE-05)' },
+  { k: 'ops_mmg_waiting', d: { waiting: 1 }, to: null, why: 'admins — ops page (FABLE-05)' },
   // Uploads stored before a clean scan (row 312 follow-up): the emergency bypass is on, evidence is
   // held for its scan, or a stored upload was quarantined. Admin-only, acted on from the server.
   { k: 'ops_malware_scan_bypass', d: { unscannedOpen: 1 }, to: null, why: 'admins — ops page (row 312)' },

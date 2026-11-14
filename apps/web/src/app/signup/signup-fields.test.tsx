@@ -107,9 +107,9 @@ describe('[WEB-ONBOARDING] an example in every box, and no more than the server 
 
   it('a store under its owner’s own name is shown a surname as the example', async () => {
     const user = await toBusiness();
-    await user.click(await screen.findByRole('radio', { name: /My own name — I’m one person trading under just my surname/ }));
+    await user.click(await screen.findByRole('radio', { name: /I trade under my own name — I’m one person trading under just my surname/ }));
     expect(box('Business name').placeholder).toBe('e.g. R. Persaud');
-    await user.click(screen.getByRole('radio', { name: 'A registered business name or a company (I have the DCRA certificate)' }));
+    await user.click(screen.getByRole('radio', { name: 'We’re a registered business (a business name registered with the DCRA)' }));
     expect(box('Business name').placeholder).toBe('e.g. Corner Basket');
   });
 

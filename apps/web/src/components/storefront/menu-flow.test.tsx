@@ -345,3 +345,117 @@ describe('[W8] the item sheet is accessible', () => {
     expect(await axeViolations(sheet)).toEqual([]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// [MENU-OPTIONS · owner 11 Nov 2026] A pizza-grade item on the website: "From" its smallest size; the size row
+// shows its price and SETS the item's price; a topping goes on the whole pizza or one half (50% here); "Stuffed
+// crust" opens its follow-up group right under it, and choosing Thin closes it and drops its choice; the cart and
+// the browser basket get the choices as the API reads them (`pep:left`). Synthetic store and menu only.
+// ---------------------------------------------------------------------------
+
+const PIZZA_SIZE: customer.OptionGroup = { id: 'size', name: 'Size', isRequired: true, minSelect: 1, maxSelect: 1, sortOrder: 0, setsPrice: true,
+  options: [option('personal', 'Personal', '1200'), option('large', 'Large', '3500', { sortOrder: 1 })] };
+const PIZZA_CRUST: customer.OptionGroup = { id: 'crust', name: 'Crust', isRequired: true, minSelect: 1, maxSelect: 1, sortOrder: 1,
+  options: [option('thin', 'Thin', '0', { isDefault: true }), option('stuffed', 'Stuffed crust', '500', { sortOrder: 1, followUpGroupId: 'cheese' })] };
+const PIZZA_CHEESE: customer.OptionGroup = { id: 'cheese', name: 'Cheese', isRequired: true, minSelect: 1, maxSelect: 1, sortOrder: 2,
+  options: [option('mozz', 'Mozzarella', '0'), option('cheddar', 'Cheddar', '100', { sortOrder: 1 })] };
+const PIZZA_TOPPINGS: customer.OptionGroup = { id: 'toppings', name: 'Toppings', isRequired: false, minSelect: 0, maxSelect: 3, sortOrder: 3,
+  allowHalves: true, halfPricePercent: 50,
+  options: [option('pep', 'Pepperoni', '300'), option('mush', 'Mushroom', '175', { sortOrder: 1, isAvailable: false })] };
+const pizzaItem = { ...soup, id: 'pizza', name: 'Garden pizza', basePrice: 1200, customerPrice: 1200, optionGroups: [PIZZA_SIZE, PIZZA_CRUST, PIZZA_CHEESE, PIZZA_TOPPINGS] };
+
+async function openPizza() {
+  live([soup, pizzaItem]);
+  await start();
+  const card = screen.getByRole('button', { name: 'Choose options for Garden pizza' }).closest('article')!;
+  fireEvent.click(within(card).getByRole('button', { name: 'Choose options for Garden pizza' }));
+  return { card, sheet: await screen.findByRole('dialog', { name: 'Garden pizza' }) };
+}
+const addButton = (sheet: HTMLElement) => within(sheet).getByRole('button', { name: /^Add to order/ });
+
+describe('[MENU-OPTIONS] the pizza sheet on the website', () => {
+  it('lists the pizza "From" its smallest size, and a size row shows its price, not "+"', async () => {
+    const { card, sheet } = await openPizza();
+    expect(card.textContent).toContain('From');
+    expect(card.textContent).toContain('$1,200');
+    const large = within(sheet).getByRole('radio', { name: /Large/ }).closest('label')!;
+    expect(large.textContent).toContain('$3,500');
+    expect(large.textContent).not.toContain('+$3,500');
+    expect(within(sheet).getByRole('radio', { name: /Stuffed crust/ }).closest('label')!.textContent).toContain('+$500');
+    const size = sheet.querySelector('[data-option-group="size"]')!;
+    expect(size.textContent).toContain('Required');
+    expect(size.textContent).toContain('Choose 1');
+    expect(sheet.querySelector('[data-option-group="toppings"]')!.textContent).toContain('Choose up to 3');
+  });
+
+  it('a sold-out topping is shown and cannot be chosen', async () => {
+    const { sheet } = await openPizza();
+    expect(within(sheet).queryByRole('checkbox', { name: /Mushroom/ })).toBeNull();
+    expect(sheet.querySelector('[data-option-group="toppings"]')!.textContent).toContain('Mushroom');
+  });
+
+  it('the size SETS the price, a half topping costs 50%, and the cart gets `pep:left` with the capability', async () => {
+    const { sheet } = await openPizza();
+    fireEvent.click(within(sheet).getByRole('radio', { name: /Large/ }));
+    expect(addButton(sheet).textContent).toContain('$3,500');
+    fireEvent.click(within(sheet).getByRole('checkbox', { name: /Pepperoni/ }));
+    expect(addButton(sheet).textContent).toContain('$3,800');
+    const where = within(sheet).getByRole('radiogroup', { name: 'Where Pepperoni goes' });
+    expect(within(where).getByRole('radio', { name: 'Whole' }).getAttribute('aria-checked')).toBe('true');
+    expect(sheet.textContent).toContain('Whole +$300 · half +$150');
+    fireEvent.click(within(where).getByRole('radio', { name: 'Left half' }));
+    expect(within(where).getByRole('radio', { name: 'Left half' }).getAttribute('aria-checked')).toBe('true');
+    expect(addButton(sheet).textContent).toContain('$3,650');
+    fireEvent.click(addButton(sheet));
+    await waitFor(() => expect(customer.addToCart).toHaveBeenCalledExactlyOnceWith({
+      vendorId: 'menu-store', itemId: 'pizza', quantity: 1, selectedOptions: { crust: 'thin', size: 'large', toppings: ['pep:left'] },
+    }));
+  });
+
+  it('Stuffed crust opens Cheese right under it (then required); Thin closes it and its choice goes', async () => {
+    const { sheet } = await openPizza();
+    fireEvent.click(within(sheet).getByRole('radio', { name: /Personal/ }));
+    expect(sheet.querySelector('[data-option-group="cheese"]')).toBeNull();
+    fireEvent.click(within(sheet).getByRole('radio', { name: /Stuffed crust/ }));
+    const cheese = sheet.querySelector('[data-option-group="cheese"]')!;
+    expect(cheese, 'the follow-up group opens').toBeTruthy();
+    expect(sheet.querySelector('[data-option-group="crust"]')!.contains(cheese), 'inside Crust, under Stuffed crust').toBe(true);
+    fireEvent.click(addButton(sheet));
+    expect((await within(sheet).findByRole('alert')).textContent).toBe('Choose an option for Cheese.');
+    fireEvent.click(within(sheet).getByRole('radio', { name: /Cheddar/ }));
+    expect(addButton(sheet).textContent).toContain('$1,800');
+    fireEvent.click(within(sheet).getByRole('radio', { name: /Thin/ }));
+    expect(sheet.querySelector('[data-option-group="cheese"]')).toBeNull();
+    expect(addButton(sheet).textContent).toContain('$1,200');
+    fireEvent.click(addButton(sheet));
+    await waitFor(() => expect(customer.addToCart).toHaveBeenCalledExactlyOnceWith({
+      vendorId: 'menu-store', itemId: 'pizza', quantity: 1, selectedOptions: { crust: 'thin', size: 'personal' },
+    }));
+  });
+
+  it('a guest’s basket keeps the choices as the API reads them, the price by the API’s rules, and the words to show', async () => {
+    signedIn = false;
+    const ensureSignedIn = vi.fn(async () => false);
+    live([soup, pizzaItem]);
+    await start({ wrap: (node) => <CustomerSessionProvider value={shellSession(ensureSignedIn)}>{node}</CustomerSessionProvider> });
+    fireEvent.click(screen.getByRole('button', { name: 'Choose options for Garden pizza' }));
+    const sheet = await screen.findByRole('dialog', { name: 'Garden pizza' });
+    fireEvent.click(within(sheet).getByRole('radio', { name: /Large/ }));
+    fireEvent.click(within(sheet).getByRole('checkbox', { name: /Pepperoni/ }));
+    fireEvent.click(within(within(sheet).getByRole('radiogroup', { name: 'Where Pepperoni goes' })).getByRole('radio', { name: 'Right half' }));
+    fireEvent.click(addButton(sheet));
+    await waitFor(() => expect(localStorage.getItem('swift_guest_basket_v1')).not.toBeNull());
+    expect(JSON.parse(localStorage.getItem('swift_guest_basket_v1')!).lines[0]).toMatchObject({
+      itemId: 'pizza', unitPrice: 3650, selectedOptions: { size: 'large', crust: 'thin', toppings: ['pep:right'] },
+      selectedOptionNames: ['Large', 'Thin', 'Pepperoni (right half)'],
+    });
+    expect(customer.addToCart).not.toHaveBeenCalled();
+  });
+
+  it('the open pizza sheet, halves and follow-up included, has no accessibility violations axe can find', async () => {
+    const { sheet } = await openPizza();
+    fireEvent.click(within(sheet).getByRole('radio', { name: /Stuffed crust/ }));
+    fireEvent.click(within(sheet).getByRole('checkbox', { name: /Pepperoni/ }));
+    expect(await axeViolations(sheet)).toEqual([]);
+  });
+});

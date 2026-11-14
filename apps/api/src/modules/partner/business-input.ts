@@ -3,6 +3,7 @@ import { z } from '../../lib/zod';
 import { AppError } from '../../utils/errors';
 import { assertNameNotReserved } from '../../lib/fixture-filter';
 import { OWN_NAME_VENDOR_TYPES, storeNameIsOwnName } from '../vendor/own-name';
+import { ACCOUNT_BASES, assertAccountBasisAllowed } from '../vendor/account-basis';
 
 /** The details of a store, as sign-up (POST /partner/become) and add-a-branch (POST /vendor/stores) take them. */
 export const businessSchema = z.object({
@@ -18,6 +19,10 @@ export const businessSchema = z.object({
   // (no business registration needed: Business Names (Registration) Act s.3) or a business name? Absent = a business
   // name, as every older client. OWN_NAME is only checked here; the owner signs the declaration after the store exists.
   nameBasis: z.enum(['OWN_NAME', 'REGISTERED']).optional(),
+  // [COMPANY-DOCS · owner 10 Nov 2026] Who signs up the store: its OWNER (absent = owner, as every older client), a registered
+  // COMPANY's account holder, or the MANAGER of a registered business. It decides the papers of the whole account
+  // (vendor/account-basis.ts); a branch rides its account's and may not send another.
+  accountBasis: z.enum(ACCOUNT_BASES).optional(),
 });
 
 /** The weekly-fee tick as a client sends it (Row 628): the words' version and the fee it showed. */
@@ -30,12 +35,15 @@ export const weeklyFeeAckSchema = z.object({
 /**
  * A store's name, checked before the store exists: [MC-PR3] "TEST-" names belong to test accounts only, and
  * [ROLE-DOCS] an own-name store is refused when its name clearly is not the owner's own name.
+ * [COMPANY-DOCS] And who signs it up: a company or a manager never trades under an own name, a basis is open only to its
+ * store types, and a branch rides its account's basis (vendor/account-basis.ts).
  */
 export async function assertStoreNameAllowed(
-  prisma: PrismaClient, userId: string, business: Pick<z.infer<typeof businessSchema>, 'name' | 'vendorType' | 'nameBasis'>,
+  prisma: PrismaClient, userId: string, business: Pick<z.infer<typeof businessSchema>, 'name' | 'vendorType' | 'nameBasis' | 'accountBasis'>,
 ): Promise<void> {
   const me = await prisma.user.findUnique({ where: { id: userId }, select: { phone: true, firstName: true, lastName: true } });
   assertNameNotReserved(business.name, me?.phone);
+  await assertAccountBasisAllowed(prisma, userId, business);
   if (business.nameBasis !== 'OWN_NAME') return;
   if (!(OWN_NAME_VENDOR_TYPES as readonly string[]).includes(business.vendorType)) {
     throw new AppError(400, 'OWN_NAME_NOT_APPLICABLE', 'A service business is not asked for a business registration, so it needs no own-name declaration.');

@@ -1,3 +1,4 @@
+import { countsAsProviderOutage, providerStatusOf, recordProviderFailure } from '../../lib/provider-failure';
 import type { FastifyInstance } from 'fastify';
 import { shownRatingTotals } from '../rating/rating-groups';
 import { revokeUserDevice, revokeUserDevices } from '../../lib/owner-rls';
@@ -21,6 +22,7 @@ import {
   type MoverSessionRevocationCleanup,
 } from '../mover-authority';
 import { persistMoverRevocationOutboxInTransaction } from '../mover-revocation-outbox';
+import { revokeAllSessionsInTransaction } from './session-revocation';
 import { captureError, securityAuditFailuresCounter } from '../../plugins/observability';
 import {
   hasPrivilegedSessionAssurance,
@@ -69,6 +71,8 @@ interface DeviceInfo {
   deviceType: string;
   ipAddress: string;
   userAgent: string;
+  /** [REVIEW-2501-A S3-1] The admin web console's own sign-in issues this session (cookies only, console origin). */
+  consoleBound?: boolean;
 }
 
 /** Public signup roles (locked model) mapped to internal UserRole values. */
@@ -91,6 +95,8 @@ const NO_ACCOUNT_ID = '';
 /** Fields that must never leave the API on a user object. A deny-list (not a
  *  select) so the response keeps its shape — the app reads roles and the
  *  rider/driver/vendorOwner includes to route the account to its surface. */
+/** [REVIEW-2501-A S1-1] The admin row's fields a sign-in answer may carry. Never a `totp*` column. */
+export const SIGNED_IN_ADMIN_FIELDS = { id: true, userId: true, permissions: true, createdAt: true } as const;
 const SENSITIVE_USER_FIELDS = [
   'passwordHash',
   'failedLoginAttempts',
@@ -227,7 +233,11 @@ export class AuthService {
       // The provider failed: give back the budget this attempt just spent so
       // undeliverable sends don't permanently burn the day's ceiling.
       await budget.refund?.().catch(() => {});
-      this.app.log.error({ err, phone: phone.slice(0, 5) + '***' }, '[otp] SMS send failed');
+      // [FABLE-05 3.7] The provider's status as a field (a number, never its message), and one more
+      // failure for the worker's watch: five in ten minutes page "sign-in texts are failing". Only a
+      // provider-side failure counts: a number Twilio refuses is the caller's choice, never a page.
+      this.app.log.error({ err, phone: phone.slice(0, 5) + '***', provider: 'twilio', providerStatus: providerStatusOf(err) }, '[otp] SMS send failed');
+      if (countsAsProviderOutage(err)) await recordProviderFailure(this.app.redis, 'twilio').catch(() => {});
       throw new AppError(502, 'SMS_SEND_FAILED', "We couldn't send your code right now. Please try again in a moment.");
     }
 
@@ -312,7 +322,9 @@ export class AuthService {
       where: { id: userId },
       // tenant.kind rides the login response: the app's "Demo environment"
       // chip (STA-1 DL-1) reads it, and nothing else about the response differs.
-      include: { customer: true, rider: true, driver: true, vendorOwner: true, admin: true, tenant: { select: { kind: true } }, vendorStaffMemberships: { select: { id: true }, take: 1 } },
+      // [REVIEW-2501-A S1-1] The admin row is SELECTED, never included whole: it holds the authenticator secret
+      // and the recovery-code digests, which must never ride a sign-in answer.
+      include: { customer: true, rider: true, driver: true, vendorOwner: true, admin: { select: SIGNED_IN_ADMIN_FIELDS }, tenant: { select: { kind: true } }, vendorStaffMemberships: { select: { id: true }, take: 1 } },
     });
     if (!user) throw new AppError(400, 'INVALID_OTP', 'Invalid or expired OTP');
     // [COORD 18 Oct, option S] The signed-in person never gets the live averageRating/totalRatings of their own
@@ -1309,19 +1321,8 @@ export class AuthService {
     userId: string,
     dedupeKey: string,
   ): Promise<MoverSessionRevocationCleanup> {
-    const moverCleanup = await retireMoverSessionAuthorityInTransaction(tx, userId, null);
-    const outboxId = await persistMoverRevocationOutboxInTransaction(tx, {
-      dedupeKey,
-      userId,
-      cleanup: moverCleanup,
-    });
-    await tx.session.deleteMany({ where: { userId } });
-    // Global revocation (logout-all, password reset) must silence a lost or
-    // stolen device as well as its API session. A future sign-in explicitly
-    // re-registers and reactivates the token on the current account.
-    // [item 20] Through the narrow action: an admin-forced reset acts for someone else (owner wall).
-    await revokeUserDevices(tx, userId);
-    return { ...moverCleanup, outboxId };
+    // [COMPANY-DOCS Part 3] The one core, shared with an account-holder handover (auth/session-revocation.ts).
+    return revokeAllSessionsInTransaction(tx, userId, dedupeKey);
   }
 
   async logoutAll(userId: string, underLock?: (tx: Prisma.TransactionClient) => Promise<void>) {
@@ -1377,6 +1378,7 @@ export class AuthService {
         deviceType: deviceInfo.deviceType,
         ipAddress: deviceInfo.ipAddress,
         userAgent: deviceInfo.userAgent,
+        ...(deviceInfo.consoleBound ? { consoleBoundAt: new Date() } : {}),
         expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
       },
     });

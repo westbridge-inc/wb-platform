@@ -2,7 +2,7 @@ import { screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import NewOrderTakeover from './NewOrderTakeover';
 import { mockApi, renderWithQuery, stubAudioContext } from '@/test/test-utils';
-import { wireVendorOrder } from '@/test/vendor-wire-fixtures';
+import { wireOrderLine, wireVendorOrder } from '@/test/vendor-wire-fixtures';
 import { normalizeVendorOrder } from '@/lib/vendor-api';
 import { storeKey } from '@/lib/store-scope';
 import { getSelectedStore, setSelectedStore } from '@/lib/auth';
@@ -21,13 +21,51 @@ describe('new-order takeover', () => {
     stubAudioContext();
   });
 
-  it('shows the real total from `totalAmount`, never "$NaN"', async () => {
+  it('shows the store\'s food amount, never "$NaN" [RING-FOOD: it used to show the customer\'s whole total]', async () => {
     const { rerender } = renderWithQuery(<NewOrderTakeover orders={[]} />);
     rerender(<NewOrderTakeover orders={[normalizeVendorOrder(wireVendorOrder())]} />);
 
     const headline = await screen.findByText(new RegExp(`SW-1001`));
-    expect(headline.textContent).toContain(`$${(4500).toLocaleString()}`);
+    expect(headline.textContent).toContain(`Food $${(4000).toLocaleString()}`);
+    expect(headline.textContent).not.toContain(`$${(4500).toLocaleString()}`);
+    expect(screen.getByText('Delivery fee goes to the rider')).toBeTruthy();
     expect(document.body.textContent ?? '').not.toMatch(/NaN/);
+  });
+
+  it('[RING-FOOD · owner 11 Nov] a tip to the rider is never in the store\'s number', async () => {
+    const tipped = wireVendorOrder({ tipAmount: '300.00', totalAmount: '4800.00' });
+    const { rerender } = renderWithQuery(<NewOrderTakeover orders={[]} />);
+    rerender(<NewOrderTakeover orders={[normalizeVendorOrder(tipped)]} />);
+
+    const headline = await screen.findByText(new RegExp(`SW-1001`));
+    expect(headline.textContent).toContain(`Food $${(4000).toLocaleString()}`);
+    expect(headline.textContent).not.toContain(`$${(4800).toLocaleString()}`);
+    expect(screen.getByText('Delivery fee & tip go to the rider')).toBeTruthy();
+  });
+
+  it('[STORE-MONEY] the server\'s storeMoney wins: its food and its own words (an MMG order\'s rider share)', async () => {
+    const storeMoney = {
+      food: 4000, foodWord: 'Food', foodLabel: 'Food — you receive', delivery: 'SWIFT_RIDER', payment: 'MMG', swiftPaysYou: 0,
+      riderFeeAndTip: 800, yoursFeeAndTip: 0, customerPaysYou: 4800,
+      lines: ["Customer pays you $4,800 by MMG — $800 of it is the rider's, pay it at pickup"],
+    };
+    const mmg = wireVendorOrder({ paymentMethod: 'MOBILE_MONEY', tipAmount: '300.00', totalAmount: '4800.00', storeMoney });
+    const { rerender } = renderWithQuery(<NewOrderTakeover orders={[]} />);
+    rerender(<NewOrderTakeover orders={[normalizeVendorOrder(mmg)]} />);
+
+    const headline = await screen.findByText(new RegExp(`SW-1001`));
+    expect(headline.textContent).toContain(`Food $${(4000).toLocaleString()}`);
+    expect(screen.getByText("Customer pays you $4,800 by MMG — $800 of it is the rider's, pay it at pickup")).toBeTruthy();
+  });
+
+  it('[RING-FOOD] the store\'s own rider delivers: the fee and tip are the store\'s, still not in the food number', async () => {
+    const own = wireVendorOrder({ tipAmount: '300.00', totalAmount: '4800.00', fulfillmentMode: 'VENDOR_DELIVERY' });
+    const { rerender } = renderWithQuery(<NewOrderTakeover orders={[]} />);
+    rerender(<NewOrderTakeover orders={[normalizeVendorOrder(own)]} />);
+
+    const headline = await screen.findByText(new RegExp(`SW-1001`));
+    expect(headline.textContent).toContain(`Food $${(4000).toLocaleString()}`);
+    expect(screen.getByText('Delivery fee & tip are yours — your rider delivers')).toBeTruthy();
   });
 
   it('[Q12] an order the next poll shows cancelled leaves the takeover — no chime for an order that no longer exists', async () => {
@@ -42,9 +80,9 @@ describe('new-order takeover', () => {
     expect(screen.queryByRole('button', { name: 'Accept' })).toBeNull();
   });
 
-  it('renders an em-dash rather than a made-up $0 when no total arrived', async () => {
+  it('renders an em-dash rather than a made-up $0 when no amount arrived', async () => {
     const raw = wireVendorOrder() as Record<string, unknown>;
-    delete raw['totalAmount'];
+    delete raw['subtotalCustomer'];
     const { rerender } = renderWithQuery(<NewOrderTakeover orders={[]} />);
     rerender(<NewOrderTakeover orders={[normalizeVendorOrder(raw)]} />);
 
@@ -232,5 +270,33 @@ describe('MMG dispute during a new-order takeover', () => {
     await screen.findByRole('button', { name: 'Accept' });
     rerender(<NewOrderTakeover orders={[{ ...order, mmgClaimMismatchAt: '2026-10-07T12:00:00.000Z' } as typeof order]} />);
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Accept' })).toBeNull());
+  });
+  // [REVIEW-MENU-B S3-1] The website's ring shows what to make, as the app's ring does: one group per line, the halves
+  // as Left / Right / Whole, a follow-up under its opener. Before this it showed "1× Pizza" and nothing else.
+  it('[MENU-OPTIONS] shows each line\'s choices, halves included, like the app\'s ring', async () => {
+    const pizza = wireOrderLine({ name: 'Pizza', quantity: 1, totalCustomer: '4100.00', specialInstructions: null, options: [
+      { group: 'Size', name: 'Large', price: 0, plainGroup: 'Size', plainName: 'Large', placement: null, parentOptionName: null, setsPrice: true },
+      { group: 'Crust', name: 'Stuffed crust', price: 300, plainGroup: 'Crust', plainName: 'Stuffed crust', placement: null, parentOptionName: null, setsPrice: false },
+      { group: 'Cheese (Stuffed crust)', name: 'Cheddar', price: 0, plainGroup: 'Cheese', plainName: 'Cheddar', placement: null, parentOptionName: 'Stuffed crust', setsPrice: false },
+      { group: 'Toppings', name: 'Pepperoni (left half)', price: 200, plainGroup: 'Toppings', plainName: 'Pepperoni', placement: 'LEFT', parentOptionName: null, setsPrice: false },
+      { group: 'Toppings', name: 'Mushroom (right half)', price: 150, plainGroup: 'Toppings', plainName: 'Mushroom', placement: 'RIGHT', parentOptionName: null, setsPrice: false },
+    ] });
+    const { rerender } = renderWithQuery(<NewOrderTakeover orders={[]} />);
+    rerender(<NewOrderTakeover orders={[normalizeVendorOrder(wireVendorOrder({ items: [pizza] }))]} />);
+    await screen.findByText(new RegExp('SW-1001'));
+    await waitFor(() => expect(screen.getAllByTestId('ring-line-option').map((el) => el.textContent)).toEqual([
+      'Large', 'Crust: Stuffed crust → Cheese: Cheddar', 'Toppings — Left: Pepperoni / Right: Mushroom',
+    ]));
+  });
+
+  it('[MENU-OPTIONS] before the kitchen formatter arrives, each choice still shows in its own snapshot words', async () => {
+    // A fresh module whose formatter fetch never lands (a slow or dropped chunk).
+    vi.resetModules();
+    vi.doMock('../../../mobile/src/modules/vendor/orderLineOptions', () => new Promise(() => undefined));
+    const fresh = await import('./NewOrderTakeover');
+    expect(fresh.ringLineChoices([{ group: 'Size', name: 'Large' }, { group: 'Toppings', name: 'Pepperoni (left half)' }]))
+      .toEqual(['Size: Large', 'Toppings: Pepperoni (left half)']);
+    vi.doUnmock('../../../mobile/src/modules/vendor/orderLineOptions');
+    vi.resetModules();
   });
 });

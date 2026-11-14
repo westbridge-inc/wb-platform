@@ -1049,7 +1049,7 @@ export function useAddOptionGroup() {
     mutationKey: MENU_WRITE_KEY,
     mutationFn: ({ itemId, data, authSession }: {
       itemId: string;
-      data: { name: string; isRequired?: boolean; minSelect?: number; maxSelect?: number };
+      data: Parameters<typeof vendorApi.addOptionGroup>[1];
       authSession?: AuthSessionSnapshot;
     }) => unwrap<any>(vendorApi.addOptionGroup(itemId, data, authSession)),
     onMutate: menuScope,
@@ -1501,6 +1501,16 @@ export type BranchTerms = {
   /** [REVIEW-F #2220 S3-1] A restaurant branch's food handlers tick: the server's words and version (null otherwise). */
   foodHandlers?: { version: string; tick: string } | null;
 };
+
+/** [ORDER-EXPORT · REVIEW-2485-B S4-7] The branches this login may export (owner: every branch; a manager: the stores they manage). */
+export function useOrderExportBranches(enabled = true) {
+  const pv = usePreviewDataset();
+  return useQuery({
+    queryKey: ['vendor', 'order-export', 'branches'],
+    queryFn: () => unwrap<{ scope: 'owner' | 'manager'; branches: Array<{ id: string; name: string; city: string | null }> }>(vendorApi.exportBranches()),
+    enabled: enabled && !pv,
+  });
+}
 
 /** Every store this account works in (GET /vendor/stores), with which branch waits for Swift's approval. */
 export function useBranchStores(enabled = true) {

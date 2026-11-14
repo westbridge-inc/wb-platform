@@ -2,6 +2,7 @@ import { accountErasedUnderLock } from '../user/account-closure';
 import { documentLapsesAt, isDocumentValidAt, lapsedExpiryAnd, validExpiryOr } from './document-validity';
 import { bindTenantTransaction } from '../../plugins/prisma';
 import { Prisma, type PrismaClient, type VerificationDocument, type UserRole, type VehicleType } from '@prisma/client';
+import { sameUploaderDecision } from './assisted-uploader';
 import type { DocState, ReviewQueue } from '@prisma/client';
 import { hopDocState, NOT_RETIRED_DOC } from './doc-state';
 import { holdsValidDocument } from './category-gate';
@@ -9,7 +10,10 @@ import { EXPIRABLE_DOC_STATES, ExpirySweepReport } from './expiry-sweep-report';
 import { DOCUMENT_REPLACED, isReplacedNote, replacedNoteFor, supersedeAwaitingCopies } from './replace-pending';
 import { approveRegistrantLink, linkedAccountIds, normalizeRegistrationMark, plateClassOf, resolveSubject, rootSubjectId } from './subjects';
 import { POLICE_CLEARANCE_WITHDRAWN_NOTE } from './police-clearance-consent';
-import { AUTO_APPROVE_EXPIRY_DAYS, BUCKET_OF, CERTIFICATE_YEAR_DOC_TYPES, FOOD_HANDLER_ATTESTATION_TYPE, isNeverAcceptedDocType, OWN_NAME_DOC_TYPE, OWN_NAME_TIER, POLICE_CLEARANCE_DOC_TYPE, REGISTRATION_DOC_TYPES, registryCode, type RegistrationKind } from './doc-registry';
+import { ACCOUNT_HOLDER_ID_DOC_TYPE, AUTO_APPROVE_EXPIRY_DAYS, CERTIFICATE_OF_INCORPORATION_DOC_TYPE, BUCKET_OF, CERTIFICATE_YEAR_DOC_TYPES, FOOD_HANDLER_ATTESTATION_TYPE, isNeverAcceptedDocType, OWN_NAME_DOC_TYPE, OWN_NAME_TIER, PERSON_ONLY_DOC_TYPES, POLICE_CLEARANCE_DOC_TYPE, REGISTRATION_DOC_TYPES, registryCode, GRA_RESTAURANT_LICENCE_DOC_TYPE, RESTAURANT_TIN_ROLE, TIN_CERTIFICATE_DOC_TYPE, type RegistrationKind } from './doc-registry';
+import { accountTierOf } from '../vendor/account-basis';
+import { assertChangeTakesPapers, changePaperStaging, holdChangeLegalName, isChangePersonsNameById, type HeldLegalName } from '../vendor/account-change';
+import { AUTHORITY_LETTER_DOC_TYPES, authorityConfirmationNote, type AuthorityConfirmation } from './authority-confirmation';
 import { guyanaWallClockParts, startOfGuyanaDay } from '../../utils/guyana-day';
 import type { ValidatorContext } from './validators';
 import { plausibleExpiryCeiling, startOfToday } from './validators';
@@ -37,6 +41,7 @@ import { CountryConfigService, PricingConfigError } from '../country/country-con
 import { log } from '../../utils/logger';
 import { awaitingFirstGoLive, goLiveMissing, NEEDS_PUBLIC_PHONE_KIND, storeGoLive, type StoreGoLive } from '../vendor/go-live';
 import { storeFeeNotice, storeFeeNoticeDedupeKey, storeFeeStanding, type StoreFeeQuote } from '../partner/store-fee';
+import { restaurantLicenceStanding, tinCertificateExcused } from './restaurant-tin';
 import { FOOD_HANDLERS_NOTICE_KIND, FOOD_HANDLERS_TICK_V1, FOOD_HANDLERS_VERSION, FOOD_HANDLERS_WHERE, foodHandlerAttestationView, foodHandlersNotice, foodHandlerStoresOf, foodHandlerTickApplies, storeAttested } from '../vendor/food-handlers';
 import { carDeliveriesEnabled, isMotorVehicle, isPassengerVehicle, VEHICLE_CLASSES } from '../../config/vehicle-classes';
 import { docTypeName } from './doc-names';
@@ -137,7 +142,9 @@ const CUSTOMER_ID_SCOPE = { docType: IDENTITY_DOC_TYPE, role: 'CUSTOMER' } as co
  *  merely OCR-checked: the portrait is face-matched against the operator's
  *  camera-captured signup selfie (master plan §3 — "face-matched to profile
  *  photo"), through the same KycProvider.verifyIdentity seam the L2 flow uses. */
-export const IDENTITY_FACE_MATCH_DOCS: ReadonlySet<string> = new Set(['national_id', 'owner_national_id']);
+// [COMPANY-DOCS · owner 10 Nov 2026] A company's or a manager's account holder's ID is treated exactly as an owner's: the same
+// face rule (#2454: only a person who takes the sign-up selfie is ever face-matched, and a store's account holder never does).
+export const IDENTITY_FACE_MATCH_DOCS: ReadonlySet<string> = new Set(['national_id', 'owner_national_id', ACCOUNT_HOLDER_ID_DOC_TYPE]);
 
 /**
  * [DOC-1 §0.5 · FD-D5] The face-match leg of a document submission: an
@@ -263,11 +270,25 @@ export interface ReviewerTypedInput {
   certificateYear?: number;
   /** [R16] A business registration: a yearly business NAME (sole trader, partnership) or a COMPANY's incorporation. */
   registrationKind?: RegistrationKind;
+  /** [COMPANY-DOCS PART 2 · review F2] A letter of authority: how a person confirmed its signer is a director (or the owner),
+   *  and what they checked (authority-confirmation.ts). Required to approve one; never by default. */
+  authorityConfirmed?: AuthorityConfirmation;
   /** [ROLE-DOCS · owner 21 Oct 2026] An own-name declaration: the reviewer confirms, from the owner's ID, that the store's
    *  name is the owner's true surname with only first names or initials (Business Names (Registration) Act s.3). */
   ownNameConfirmed?: boolean;
+  /** [R3 · review F1] A registration paper: the business's or company's legal name, typed from the paper exactly as
+   *  printed. Stored once for the account (every branch is sold by it) and shown as the seller's legal name while
+   *  this paper stays VALID. */
+  legalName?: string;
+  /** [COMPANY-DOCS · review F3] A company's paper that is a business-NAME registration: the reviewer confirms the proprietor
+   *  named on it is a company (Ltd. or Inc.), never a person (a person's registration is the owner or manager path). */
+  proprietorIsCompany?: boolean;
   /** The reviewer console's contract: the fields this type needs must be typed. */
   required?: boolean;
+  /** [ASSISTED SETUP · owner 12 Nov 2026] The admin who uploaded this paper for the store approves it themselves, while
+   *  they are the only admin: "I checked it myself, no second admin available" (audited). Refused outright whenever a
+   *  second admin exists (sameUploaderDecision). */
+  soleAdminChecked?: boolean;
 }
 
 /** A police clearance is re-checked a year after it was issued. */
@@ -474,7 +495,10 @@ export function applicantDocumentView<D extends { [K in (typeof APPLICANT_DOCUME
   for (const key of APPLICANT_DOCUMENT_FIELDS) view[key] = document[key];
   if (document.replaced) view['replaced'] = true;
   view['reviewNote'] = applicantReason(document as { state?: string | null; reviewNote?: string | null });
-  return view as { [K in (typeof APPLICANT_DOCUMENT_FIELDS)[number]]: D[K] } & { replaced?: true; reviewNote: string | null };
+  // [ASSISTED SETUP · owner 12 Nov 2026] A paper Swift added for the store with its OK says so ("Added by Swift on <date>
+  // with your OK"); never who at Swift. Additive: older apps ignore it.
+  if ((document as { assistedById?: string | null }).assistedById) view['addedBySwift'] = true;
+  return view as { [K in (typeof APPLICANT_DOCUMENT_FIELDS)[number]]: D[K] } & { replaced?: true; reviewNote: string | null; addedBySwift?: true };
 }
 
 /** [DOC-1 §24 · DOC-INV-32] A fraud hold is reviewed within 90 days (ruling; the spec sets no figure). */
@@ -520,7 +544,125 @@ function hireLicenceUploadWords(missing: readonly string[]): string {
  * admin route's audit rows. Called inside the decision transaction, after the decision and its
  * projections, with the decided document; a throw rolls the whole decision back.
  */
-export type DecisionWithin = (tx: Prisma.TransactionClient, decided: VerificationDocument) => Promise<void>;
+export type DecisionWithin = (tx: Prisma.TransactionClient, decided: VerificationDocument, facts?: DecisionFacts) => Promise<void>;
+/** [R3 · review-2476 F1] What a decision changed beyond the paper, for the caller's audit row: the account's seller legal
+ *  name typed from this registration paper (who customers see as the seller of every branch), old and new. */
+export interface DecisionFacts {
+  legalName?: { vendorOwnerId: string; accountId: string; from: string | null; fromDocumentId: string | null; to: string };
+  /** [COMPANY-DOCS Part 3] The name typed from a paper filed for a change still waiting: held on the change, not shown. */
+  legalNameHeld?: HeldLegalName;
+}
+
+/** [R3 · review-2476 F2 · delta B] Is a typed seller legal name this PERSON's name? Compared by the name's WORDS, so honest
+ *  copying errors from a proprietor line still count: accents and compatibility forms folded (NFKD, marks removed), case
+ *  ignored, apostrophes and hyphens ignored (O'Brien = OBrien = O Brien), every other mark a word break ("Last, First").
+ *  It is the person's name when every typed word is one of their name's words (or joined parts of one, or a single-letter
+ *  initial), in any order, and it names both their first name (a first or middle name on record, or its initial) and their
+ *  whole last name; or when it is their first and last names run together. A business word ("Holdings", "Trading",
+ *  "Bakery") or an unknown name makes it not theirs. Lookalike letters from other scripts are not folded (an insider's
+ *  trick, and every typed name is on the audit trail).
+ *  [review-2479] A title ("Mr", "Dr.") and a generational suffix ("Jr.", "III") are ignored on both sides, and an
+ *  initial stands only for a first or middle name. (A letter's free-text signer field holding a company's name is no
+ *  person: signerAsPerson. An account holder's own recorded name is always a person's, "Kim Co" included.) */
+const NAME_JOINERS = /['\u2018\u2019\u02BC`\u00B4\u2010-\u2015-]/gu;
+const foldName = (s: string) => s.normalize('NFKD').replace(/\p{M}+/gu, '').toLowerCase();
+/** Words around a name that are not the name: titles and generational suffixes (compared without their full stops). */
+const NAME_TITLES = new Set(['mr', 'mrs', 'ms', 'miss', 'dr', 'prof', 'rev', 'sir', 'hon', 'mx']);
+const NAME_SUFFIXES = new Set(['jr', 'sr', 'ii', 'iii', 'iv']);
+const notTheName = (w: string) => NAME_TITLES.has(w) || NAME_SUFFIXES.has(w);
+/** A word only a company's name carries. */
+const COMPANY_WORDS = new Set(['limited', 'ltd', 'inc', 'incorporated', 'llc', 'llp', 'plc', 'co', 'company', 'corp', 'corporation', 'holdings']);
+/** The words of a typed name: joiners removed inside a word, any other mark a break. */
+const typedNameWords = (s: string) => foldName(s).replace(NAME_JOINERS, '').split(/[^\p{L}\p{N}]+/u).filter((w) => w && !notTheName(w));
+/** A name on record: its parts (joiners and marks both break), every run of neighbouring parts joined, and the whole. */
+function recordedName(s: string | null): { parts: string[]; known: Set<string>; whole: string } {
+  const parts = foldName(s ?? '').split(/[^\p{L}\p{N}]+/u).filter((p) => p && !notTheName(p));
+  const known = new Set<string>();
+  for (let i = 0; i < parts.length; i += 1) for (let j = i + 1; j <= parts.length; j += 1) known.add(parts.slice(i, j).join(''));
+  return { parts, known, whole: parts.join('') };
+}
+export function isPersonsFullName(typed: string, person: { firstName: string | null; lastName: string | null }): boolean {
+  const first = recordedName(person.firstName);
+  const last = recordedName(person.lastName);
+  if (!first.whole && !last.whole) return false;
+  const words = typedNameWords(typed);
+  if (words.length === 0) return false;
+  const together = words.join('');
+  if (together === first.whole + last.whole || together === last.whole + first.whole) return true;
+  const initials = new Set(first.parts.map((p) => p[0]!));
+  if (!words.every((w) => first.known.has(w) || last.known.has(w) || (w.length === 1 && initials.has(w)))) return false;
+  const namesFirst = !first.whole || words.some((w) => first.known.has(w) || (w.length === 1 && first.parts.some((p) => p[0] === w)));
+  const namesLast = !last.whole || together.includes(last.whole);
+  return namesFirst && namesLast;
+}
+/** [final review S3-1 · R5 review S4-A] Is a typed name the person's whole surname, alone or with only their first
+ *  names or the initials of those (the names the own-name rule accepts), compared on the folded words: accents folded,
+ *  titles and suffixes dropped, split or joined forms equal ("O Brien" = "OBrien" = "O'Brien"). */
+export function namesHoldersSurname(typed: string, person: { firstName: string | null; lastName: string | null }): boolean {
+  const last = recordedName(person.lastName);
+  if (!last.whole) return false;
+  const first = recordedName(person.firstName);
+  const words = typedNameWords(typed);
+  const forename = (w: string) => first.known.has(w) || (w.length === 1 && first.parts.some((p) => p[0] === w));
+  for (let i = 0; i < words.length; i += 1) {
+    for (let j = i + 1; j <= words.length; j += 1) {
+      if (words.slice(i, j).join('') !== last.whole) continue;
+      if ([...words.slice(0, i), ...words.slice(j)].every(forename)) return true;
+    }
+  }
+  return false;
+}
+/** [review-2479 F1 · final review S4-1] A letter's signer, typed as free text by the account holder, as a person; or
+ *  null when the field holds a company's name (a word only a company's name carries): a company's name typed there by
+ *  mistake must never block that company's own legal name. For signers only, never the account holder's own name. */
+export function signerAsPerson(signerName: string): { firstName: string; lastName: string } | null {
+  return foldName(signerName).split(/[^\p{L}\p{N}]+/u).some((w) => COMPANY_WORDS.has(w)) ? null : splitFullName(signerName);
+}
+/** A full name kept as one string (a letter's signer): its last word is taken as the last name, never a generational
+ *  suffix after it ("John Smith Jr." is Smith). */
+export function splitFullName(full: string): { firstName: string; lastName: string } {
+  const words = full.trim().split(/\s+/).filter(Boolean);
+  while (words.length > 1 && NAME_SUFFIXES.has(foldName(words[words.length - 1]!).replace(/[^\p{L}\p{N}]+/gu, ''))) words.pop();
+  return { firstName: words.slice(0, -1).join(' '), lastName: words[words.length - 1] ?? '' };
+}
+
+/** [R3 · owner ruling 10 Nov 2026 · review-2479 F6] Is this name a person's the server knows for the account: its holder,
+ *  or anyone the account named in a letter of authority (whatever the letter's status: a company's director, a business's
+ *  owner)? One check for the legal name typed from a registration paper and the store name a person confirms as the
+ *  seller's. */
+export async function isAccountPersonsName(
+  db: Pick<Prisma.TransactionClient, 'user' | 'authorityLetterRequest'>, userId: string, name: string,
+): Promise<boolean> {
+  const [holder, letters] = await Promise.all([
+    db.user.findUnique({ where: { id: userId }, select: { firstName: true, lastName: true } }),
+    db.authorityLetterRequest.findMany({ where: { userId }, select: { signerName: true } }),
+  ]);
+  // [final review S3-1 · R5 review S4-A] A name the own-name rule accepts for the holder (a bare or hyphenated surname,
+  // with or without first names or initials) is their name too, at every door: compared on the folded words.
+  if (holder && namesHoldersSurname(name, holder)) return true;
+  const people = [...(holder ? [holder] : []), ...letters.flatMap((l) => signerAsPerson(l.signerName) ?? [])];
+  return people.some((person) => isPersonsFullName(name, person));
+}
+
+/** [COORD ruling 11 Nov 2026 · review-2479] What a store's activation decided about the name the person approving sent. */
+export interface StoreActivation {
+  /** [final review S3-2] A seller-name confirmation was written by this activation. */
+  sellerNameStamped: boolean;
+  sellerNameNotConfirmed: { code: 'SELLER_NAME_IS_A_PERSON'; message: string } | null;
+}
+/** [final review S3-2] What the approval's audit row says of the name the approving person sent: confirmed only when it
+ *  was stamped; otherwise why not (a person's name, or a store trading under its owner's own name, which approval never
+ *  stamps). */
+export function approvalSellerNameTrail(shownName: string | undefined, decided: StoreActivation): { sellerNameConfirmed: string | null; sellerNameNotConfirmed: string | null } {
+  if (shownName === undefined) return { sellerNameConfirmed: null, sellerNameNotConfirmed: null };
+  if (decided.sellerNameStamped) return { sellerNameConfirmed: shownName, sellerNameNotConfirmed: null };
+  return { sellerNameConfirmed: null, sellerNameNotConfirmed: decided.sellerNameNotConfirmed?.code ?? 'OWN_NAME_STORE' };
+}
+/** The words never repeat the name: it is a person's. */
+export const SELLER_NAME_IS_A_PERSON_NOTICE = {
+  code: 'SELLER_NAME_IS_A_PERSON',
+  message: 'The store’s name is a person’s name (the account holder’s, or the person named in its letter of authority), so it was not confirmed as the seller’s name. Customers see “Ask the store” until the registered business or company name is typed from its registration paper, or the owner’s own-name declaration is approved.',
+} as const;
 
 /** [S2-29] The one command an approval's outbox row carries: the work that must follow the
  *  reviewer-typed identity capture (which runs on the system login, in its own transaction). */
@@ -639,7 +781,11 @@ export class VerificationService {
    *  paused (KYC latency), cannot land new PII after the purge committed. */
   private async createDocumentLively(
     data: Prisma.VerificationDocumentUncheckedCreateInput,
-    review: { queue: ReviewQueue; extraction?: ExtractionPlan; authority?: SubmissionAuthority } = { queue: 'STANDARD' },
+    review: {
+      queue: ReviewQueue; extraction?: ExtractionPlan; authority?: SubmissionAuthority;
+      /** [ASSISTED SETUP] Runs last, in the filing's transaction: a paper Swift filed for a store is never on file without its record. */
+      afterCreate?: (tx: Prisma.TransactionClient, doc: VerificationDocument) => Promise<void>;
+    } = { queue: 'STANDARD' },
   ) {
     const doc = await this.projectionTransaction(async (tx) => {
       const exclusive = review.authority;
@@ -651,6 +797,8 @@ export class VerificationService {
         throw new AppError(409, 'ACCOUNT_INACTIVE', 'This account is not active — documents cannot be submitted.');
       }
       if (review.authority) await revalidateSubmissionAuthority(tx, data.userId, review.authority);
+      // [COMPANY-DOCS Part 3] A paper for an account change is filed only while that change still waits for a person.
+      if (data.accountChangeId) await assertChangeTakesPapers(tx, data.accountChangeId);
       if (data.status === 'APPROVED') {
         try { await requireIdentityAuthority(tx, data.userId); }
         catch (err) {
@@ -716,6 +864,7 @@ export class VerificationService {
           createdAt: queuedAt, slaDueAt: new Date(queuedAt.getTime() + REVIEW_SLA_HOURS * 3_600_000),
         } });
       }
+      if (review.afterCreate) await review.afterCreate(tx, doc);
       return doc;
     });
     if (review.extraction) recordExtractionMetrics(review.extraction);
@@ -810,7 +959,13 @@ export class VerificationService {
     /** [ROLE-DOCS · security review] `ownNameSigned`: set ONLY by the signed own-name route (vendor.routes POST /onboarding/own-name).
      *  [STORE-VAT] `storeVatCertificate`: set ONLY by the store-VAT certificate route (vendor.routes POST /vat/certificate); the
      *  generic document route can never file one. */
-    internal: { ownNameSigned?: true; storeVatCertificate?: true } = {},
+    internal: {
+      ownNameSigned?: true; storeVatCertificate?: true;
+      /** [ASSISTED SETUP · owner 12 Nov 2026] Set ONLY by the admin console's assisted setup: a Swift admin files this paper
+       *  for the store under its recorded consent. Filed exactly as the store's own upload, except it names its uploader and
+       *  the consent, always waits for a person, and `afterCreate` (the record and the audit row) commits with it. */
+      assisted?: { byId: string; consentId: string; afterCreate: (tx: Prisma.TransactionClient, doc: VerificationDocument) => Promise<void> };
+    } = {},
   ) {
     // [ROLE-DOCS · owner 21 Oct 2026 · security review] An own-name declaration is the signed words the owner ticked,
     // filed by its own route — never an uploaded file. Refused before anything is read or recorded.
@@ -868,7 +1023,21 @@ export class VerificationService {
         ? await this.storeSubmittableChecklist(userId, user.countryCode, roleKey)
         : await this.checklistFor(userId, user.countryCode, roleKey);
       checklist = [...required, ...await this.optionalFor(userId, user.countryCode, roleKey, required)];
+      // [RESTAURANT-TIN · #2494 review S4-2] The TIN certificate is a restaurant's paper only (ruling 7 still holds for every
+      // other store): an owner whose stores are all of another kind, who names the RESTAURANT role, is refused it like any
+      // type off their lists. (An account with no store yet keeps the role's list, as for every other restaurant paper.)
+      if (docType === TIN_CERTIFICATE_DOC_TYPE && roleKey === RESTAURANT_TIN_ROLE) {
+        const stores = await this.prisma.vendor.findMany({ where: { owner: { userId } }, select: { vendorType: true } });
+        if (stores.length > 0 && !stores.some((v) => v.vendorType === RESTAURANT_TIN_ROLE)) checklist = checklist.filter((type) => type !== TIN_CERTIFICATE_DOC_TYPE);
+      }
     }
+    // [COMPANY-DOCS Part 3 · owner rulings 10 Nov 2026 (c), (d)] A pending account change takes its own papers (a new
+    // business type's, or a named new holder's: vendor/account-change.ts). One it holds counts for nothing until a person
+    // approves the change, and always waits for a person. Whatever files the paper (an upload, Part 2's signed letter)
+    // comes through here, so it is held the same way.
+    const staging = vatCertificate ? null : await changePaperStaging(this.prisma, userId, roleKey, user.countryCode);
+    if (staging) checklist = [...new Set([...checklist, ...staging.submittable])];
+    const accountChangeId = staging?.stages(docType) ? staging.changeId : null;
     if (!vatCertificate && !checklist.includes(docType)) {
       // [DOC-1 §18.3] A document type a category gate names in this country is
       // submittable by a vendor even when no checklist lists it — a shop that wants
@@ -977,7 +1146,11 @@ export class VerificationService {
     result = gateAutoApproval(result, extraction, registryType);
     // [ROLE-DOCS · security review] Fail closed: no engine, auto-approval or auto-rejection decides an own-name
     // declaration. A person compares the name with the owner's ID (approveDocument requires ownNameConfirmed).
-    if (docType === OWN_NAME_DOC_TYPE && result.status !== 'pending_manual') result = { ...result, status: 'pending_manual' as const };
+    // [COMPANY-DOCS · owner 10 Nov 2026] Nor a company's or a manager's papers: "all checked by a person at Swift".
+    if ((PERSON_ONLY_DOC_TYPES.has(docType) || accountChangeId) && result.status !== 'pending_manual') result = { ...result, status: 'pending_manual' as const };
+    // [ASSISTED SETUP · owner 12 Nov 2026] A paper a Swift admin uploaded for a store is always checked by a person: no
+    // engine approves or rejects what Swift itself put on file (and a person who uploaded it may not approve it alone).
+    if (internal.assisted && result.status !== 'pending_manual') result = { ...result, status: 'pending_manual' as const };
 
     const autoExpiryDays = AUTO_APPROVE_EXPIRY_DAYS[docType];
     const doc = await this.createDocumentLively({
@@ -988,6 +1161,8 @@ export class VerificationService {
         kycRef: result.referenceToken,
         consentAt: new Date(),
         privacyNoticeVersion,
+        ...(accountChangeId ? { accountChangeId } : {}),
+        ...(internal.assisted ? { assistedById: internal.assisted.byId, assistedConsentId: internal.assisted.consentId } : {}),
         status:
           result.status === 'approved' ? 'APPROVED'
           : result.status === 'rejected' ? 'REJECTED'
@@ -1000,7 +1175,7 @@ export class VerificationService {
           ...(autoExpiryDays && { expiresAt: autoApprovalExpiry(docType, autoExpiryDays) }),
         }),
         ...(result.status === 'rejected' && { reviewedBy: 'kyc:auto', reviewedAt: new Date(), reviewNote: result.reason }),
-    }, { queue: (result as { collided?: boolean }).collided ? 'SECOND_REVIEW' : 'STANDARD', extraction, authority });
+    }, { queue: (result as { collided?: boolean }).collided ? 'SECOND_REVIEW' : 'STANDARD', extraction, authority, ...(internal.assisted ? { afterCreate: internal.assisted.afterCreate } : {}) });
 
     // Provider listability is the first post-document projection. Everything
     // below (audit, integrity, notifications, trials) may fail independently;
@@ -1112,7 +1287,7 @@ export class VerificationService {
     // boundary — the conditional transition below still is.
     const candidate = await this.prisma.verificationDocument.findUnique({
       where: { id: docId },
-      select: { docType: true, expiresAt: true, status: true, userId: true, role: true },
+      select: { docType: true, expiresAt: true, status: true, userId: true, role: true, accountChangeId: true, assistedById: true },
     });
     if (!candidate) throw new NotFoundError('VerificationDocument', docId);
     assertStoreVatDoor(candidate.docType, decision);
@@ -1122,6 +1297,9 @@ export class VerificationService {
     // [DOC-1 §8.6 · R16] Recusal before anything the reviewer typed is judged: a recused reviewer is told so, never
     // asked for a certificate's year or a registration's kind first. (The decision boundary checks it again.)
     await assertNotRecused(this.prisma, adminId, candidate.userId);
+    // [ASSISTED SETUP · owner 12 Nov 2026] The admin who uploaded this paper for the store may not approve it while a second
+    // admin exists, and alone only with "I checked it myself, no second admin available" (assisted-uploader.ts).
+    if (candidate.status === 'PENDING') await sameUploaderDecision(this.prisma, candidate, adminId, typed.soleAdminChecked === true);
     // [VERIFY-DOCS · owner ruling 6 Oct 2026] What the reviewer must TYPE for
     // this type: the ID/licence number (kept only as a blind-index identity
     // key) or the police clearance's issue date (the re-check falls due a year
@@ -1132,6 +1310,7 @@ export class VerificationService {
     // whatever IS typed is checked and used the same way.
     let identitySignal: string | null = null;
     let issuedOn: Date | null = null;
+    let authorityNote: string | null = null;
     if (candidate.status === 'PENDING') {
       if (REVIEWER_TYPED_NUMBER_DOC_TYPES.has(candidate.docType)) {
         const supplied = typeof typed.documentNumber === 'string' && typed.documentNumber.trim().length > 0;
@@ -1159,6 +1338,12 @@ export class VerificationService {
       // that year and checked again every January (the store goes offline on 16 January if it is not
       // renewed). A company's certificate of incorporation never expires: nothing is set for it (the console
       // keys no date for a business registration).
+      // [COMPANY-DOCS PART 2 · review F2] A letter of authority (paper or signed in Swift) is approved only once a person
+      // confirmed its signer IS a director (or the owner) on their own, and said how. Never by default.
+      // [Part 2 review F1] A letter a third person signed in Swift can only be confirmed by a call on a number Swift found.
+      const signedInSwift = AUTHORITY_LETTER_DOC_TYPES.has(candidate.docType)
+        && (await this.prisma.authorityLetterRequest.count({ where: { documentId: docId } })) > 0;
+      authorityNote = authorityConfirmationNote(candidate.docType, typed.authorityConfirmed, { signedInSwift });
       // [ROLE-DOCS · owner 21 Oct 2026] An own-name declaration is approved only on the reviewer's own check of the name
       // against the owner's ID. Never by default: an internal caller that does not say so cannot approve one either.
       if (candidate.docType === OWN_NAME_DOC_TYPE && typed.ownNameConfirmed !== true) {
@@ -1166,11 +1351,35 @@ export class VerificationService {
           'Confirm, from the owner\u2019s ID, that the store\u2019s name is their true surname with nothing added except their first names or initials. If it is not, reject the declaration: the store must register its business name.');
       }
       if (REGISTRATION_DOC_TYPES.includes(candidate.docType) && (typed.required || typed.registrationKind !== undefined)) {
+        // [COMPANY-DOCS · review F3] A company's paper may be a business-name registration only when the proprietor it
+        // names is a company: one that names a person belongs to the owner's (or the manager's) path, never a company's.
+        if (typed.registrationKind === 'BUSINESS_NAME' && candidate.docType === CERTIFICATE_OF_INCORPORATION_DOC_TYPE && typed.proprietorIsCompany !== true) {
+          throw new AppError(400, 'PROPRIETOR_NOT_A_COMPANY',
+            'A business name registration counts for a company only when the proprietor named on it is a company (Ltd. or Inc.). If it names a person, reject it: that business signs up as a registered business, or through its manager.');
+        }
         if (typed.registrationKind === 'BUSINESS_NAME') expiresAt = certificateYearRecheck(typed.certificateYear);
         else if (typed.registrationKind !== 'COMPANY') {
           throw new AppError(400, 'REGISTRATION_KIND_REQUIRED',
             'Say what this certificate is: a business name registration (a sole trader or partnership, renewed every year) or a company’s certificate of incorporation.');
         }
+      }
+      // [R3 · CAA s.70(1) · review F1] The person approving a registration paper types the legal name printed on it: the
+      // storefront names the seller by it (never the owner's personal name, never the store's own trading name unchecked).
+      if (REGISTRATION_DOC_TYPES.includes(candidate.docType) && typed.required && !(typed.legalName?.trim())) {
+        throw new AppError(400, 'LEGAL_NAME_REQUIRED',
+          'Type the business’s or company’s registered name exactly as it is printed on this paper. Customers see it as the seller.');
+      }
+      // [R3 · owner ruling 10 Nov 2026 · review-2476 F2 · COORD ruling (delta A)] The seller is the business: a legal name
+      // that is a person's own name is refused for EVERY account. A trader under their own name is named through the
+      // own-name declaration, never a registration paper. The people the server knows by name: the account holder, and
+      // [delta B] whoever the account named in a letter of authority (a company's director, a business's owner).
+      // [COMPANY-DOCS Part 3] A paper filed for a change is the filer's: a handover's new holder's own name is refused too.
+      // [review-2475 delta S4-1] And on a handover, the old holder's (and whoever their letters named): never the seller.
+      const typedName = typed.legalName?.trim();
+      if (REGISTRATION_DOC_TYPES.includes(candidate.docType) && typedName && (await isAccountPersonsName(this.prisma, candidate.userId, typedName)
+        || (candidate.accountChangeId !== null && await isChangePersonsNameById(this.prisma, candidate.accountChangeId, typedName)))) {
+        throw new AppError(400, 'LEGAL_NAME_IS_A_PERSON',
+          'That is a person’s name (the account holder’s, or the person named in its letter of authority). Type the registered business or company name printed on this paper: never the proprietor’s, a director’s or the account holder’s personal name.');
       }
     }
     // Never on any later write: the typed number leaves this method only as the blind index.
@@ -1199,9 +1408,31 @@ export class VerificationService {
           hireClassConfirmed: insurance.hireClassConfirmed,
           plateCrossChecked: insurance.plateCrossChecked,
         }),
-    }, { reviewerId: adminId, approval: { expiresAt, insurance, ...(issuedOn ? { issuedOn } : {}) } }, async (tx, decided) => {
+    }, { reviewerId: adminId, ...(authorityNote ? { note: authorityNote } : {}), approval: { expiresAt, insurance, ...(issuedOn ? { issuedOn } : {}) } }, async (tx, decided) => {
       // [BUG-HUNT F23] First, on the row just written: the whole decision rolls back and the paper stays waiting.
       await this.holdTheLastPaper(tx, unfinished);
+      // [R3 · review F1] The legal name typed from THIS registration paper becomes the account's seller name (one per
+      // account: every store and branch). Tied to this paper: the storefront shows it only while the paper is VALID.
+      // [review-2476 F1] The name it replaces is read under the row's lock, so the caller's audit row says exactly what
+      // customers saw before (old -> new) and the decision's trail names who set it, for which account and paper.
+      const typedLegalName = typed.legalName?.trim();
+      const facts: DecisionFacts = {};
+      // [COMPANY-DOCS Part 3] A paper filed for a change still waiting names nobody yet: its name is held on the change
+      // (account-change holdChangeLegalName) and becomes the account's only if a person approves the change.
+      const forChange = typedLegalName && REGISTRATION_DOC_TYPES.includes(decided.docType) && decided.accountChangeId
+        ? await holdChangeLegalName(tx, decided.accountChangeId, { name: typedLegalName, at: new Date(), byId: adminId, documentId: decided.id })
+        : null;
+      if (forChange?.to === 'HELD') facts.legalNameHeld = forChange.held;
+      if (typedLegalName && REGISTRATION_DOC_TYPES.includes(decided.docType) && (!forChange || forChange.to === 'ACCOUNT')) {
+        const [held] = await tx.$queryRaw<Array<{ id: string; sellerLegalName: string | null; sellerLegalNameDocId: string | null }>>`
+          SELECT "id", "sellerLegalName", "sellerLegalNameDocId" FROM "vendor_owners" WHERE "userId" = ${decided.userId} FOR UPDATE /* seller-legal-name */`;
+        if (held) {
+          await tx.vendorOwner.update({ where: { id: held.id }, data: {
+            sellerLegalName: typedLegalName, sellerLegalNameAt: new Date(), sellerLegalNameById: adminId, sellerLegalNameDocId: decided.id,
+          } });
+          facts.legalName = { vendorOwnerId: held.id, accountId: decided.userId, from: held.sellerLegalName, fromDocumentId: held.sellerLegalNameDocId, to: typedLegalName };
+        }
+      }
       // [S2-29 · KYC-DECISION-ATOMIC] Everything the approval owes commits with it, or none of it does:
       // the approval notice (published after commit), the caller's audit rows, and the outbox row that owes the
       // trial decision. A throw anywhere here leaves the document PENDING, so the reviewer's retry decides it, once.
@@ -1218,7 +1449,7 @@ export class VerificationService {
         });
         this.projectionNotices.get(tx)?.push(notice.id);
       }
-      if (decision.within) await decision.within(tx, decided);
+      if (decision.within) await decision.within(tx, decided, facts);
     }, async (tx, userId) => { unfinished = await this.unfinishedPartners(tx, userId); }).catch(async (error: unknown) => {
       if (error instanceof AppError && error.code === PARTNER_APPROVAL_HELD) await this.markPaperHeld(docId, adminId);
       throw error;
@@ -2002,7 +2233,13 @@ export class VerificationService {
     }
     // [ROLE-DOCS] A store trading under its owner's own name reads the role's own-name set; everyone else the standard
     // one. [CHECKLIST-LEGAL · owner 1 Nov 2026 (a)] There is no other tier: the self-declared one is removed.
-    return this.countryConfig.getDocumentChecklist(countryCode, roleKey, await this.vendorTierOf(userId, roleKey, db, vendorId), db);
+    const list = await this.countryConfig.getDocumentChecklist(countryCode, roleKey, await this.vendorTierOf(userId, roleKey, db, vendorId), db);
+    // [RESTAURANT-TIN · owner 12 Nov 2026, review S2-1] A restaurant live today is asked to ADD its TIN certificate, never
+    // held for it, WHILE its GRA licence is valid (restaurant-tin.ts): its list leaves it out here, and optionalFor offers it.
+    if (roleKey === RESTAURANT_TIN_ROLE && list.includes(TIN_CERTIFICATE_DOC_TYPE) && await tinCertificateExcused(db, userId, vendorId)) {
+      return list.filter((docType) => docType !== TIN_CERTIFICATE_DOC_TYPE);
+    }
+    return list;
   }
 
   /**
@@ -2031,7 +2268,13 @@ export class VerificationService {
       const { providerOptionalDocuments } = await import('../services/services.service');
       return providerOptionalDocuments(this.prisma, userId, required);
     }
-    return this.countryConfig.getOptionalDocuments(countryCode, roleKey, required);
+    const optional = await this.countryConfig.getOptionalDocuments(countryCode, roleKey, required);
+    // [RESTAURANT-TIN · owner 12 Nov 2026] A restaurant whose list does not hold it (a live one: restaurant-tin.ts) is
+    // offered its TIN certificate to add, first: shown, uploadable and reviewed, never a gate for it.
+    if (roleKey === RESTAURANT_TIN_ROLE && !required.includes(TIN_CERTIFICATE_DOC_TYPE) && !optional.includes(TIN_CERTIFICATE_DOC_TYPE)) {
+      return [TIN_CERTIFICATE_DOC_TYPE, ...optional];
+    }
+    return optional;
   }
 
   /** [CHECKLIST-LEGAL · owner 1 Nov 2026 (a)] Never UNREGISTERED: that tier is removed, and a store row still marked
@@ -2041,8 +2284,16 @@ export class VerificationService {
    *  store (the owner's Documents view) it is OWN_NAME only when every store of the type trades under the owner's own
    *  name — while any one does not, the registration is asked for. Otherwise undefined (standard). */
   private async vendorTierOf(userId: string, roleKey: ChecklistRole, db: Prisma.TransactionClient | PrismaClient, vendorId?: string): Promise<string | undefined> {
-    const owner = await db.vendorOwner.findUnique({ where: { userId }, select: { vendors: { select: { id: true, vendorType: true, tradesUnderOwnName: true } } } });
+    const owner = await db.vendorOwner.findUnique({ where: { userId }, select: { accountBasis: true, vendors: { select: { id: true, vendorType: true, tradesUnderOwnName: true } } } });
     if (!owner) return undefined;
+    // [COMPANY-DOCS · owner rulings 10 Nov 2026] A company's or a manager's account gives ONE set of papers for the whole
+    // account: every store of the type reads the account's tier (a branch included), never an owner's ID. Own name is
+    // an owner's alone (the own-name route refuses such an account).
+    const accountTier = accountTierOf(owner.accountBasis, roleKey);
+    if (accountTier) {
+      if (vendorId !== undefined) return owner.vendors.some((v) => v.id === vendorId && v.vendorType === roleKey) ? accountTier : undefined;
+      return accountTier;
+    }
     if (vendorId !== undefined) {
       const store = owner.vendors.find((v) => v.id === vendorId);
       return store && store.vendorType === roleKey && store.tradesUnderOwnName ? OWN_NAME_TIER : undefined;
@@ -2285,13 +2536,21 @@ export class VerificationService {
     // Additive (an older app ignores it; a newer app reading an older server finds none and offers nothing). Read
     // beside the name basis.
     const storeRole = roleKey === 'RESTAURANT' || roleKey === 'SUPERMARKET' || roleKey === 'STORE';
+    // [COMPANY-DOCS · owner 10 Nov 2026] `nameBasis` keeps its two words (a company's or a manager's store uses a registered
+    // name); `accountBasis` (additive) says who holds the account: OWNER, COMPANY or MANAGER. A company or manager account
+    // is never offered the own-name route (ownNameFits false for each store: the route refuses it).
+    const storeOwner = roleKey === 'RESTAURANT' || roleKey === 'SUPERMARKET' || roleKey === 'STORE' || roleKey === 'SERVICE'
+      ? await this.prisma.vendorOwner.findUnique({ where: { userId }, select: { accountBasis: true, vendors: { where: { vendorType: roleKey }, select: { id: true, name: true } } } })
+      : null;
+    const accountBasis = storeOwner?.accountBasis;
     const [nameBasis, ownNameFits] = storeRole
       ? await Promise.all([
-        this.vendorTierOf(userId, roleKey, this.prisma).then((tier) => tier ?? 'REGISTERED'),
-        Promise.all([
-          import('../vendor/own-name'),
-          this.prisma.vendorOwner.findUnique({ where: { userId }, select: { vendors: { where: { vendorType: roleKey }, select: { id: true, name: true } } } }),
-        ]).then(([{ ownNameFitsByStore }, owner]) => ownNameFitsByStore(owner?.vendors ?? [], user.firstName, user.lastName)),
+        this.vendorTierOf(userId, roleKey, this.prisma).then((tier) => (tier === OWN_NAME_TIER ? 'OWN_NAME' : 'REGISTERED')),
+        import('../vendor/own-name').then(({ ownNameFitsByStore }) => {
+          const fits = ownNameFitsByStore(storeOwner?.vendors ?? [], user.firstName, user.lastName);
+          if (accountBasis && accountBasis !== 'OWNER') for (const id of Object.keys(fits)) fits[id] = false;
+          return fits;
+        }),
       ])
       : [undefined, undefined];
     if (roleKey === 'SERVICE') {
@@ -2373,6 +2632,7 @@ export class VerificationService {
       ...(homeVisits ? { homeVisits } : {}),
       ...(nameBasis ? { nameBasis } : {}),
       ...(ownNameFits ? { ownNameFits } : {}),
+      ...(accountBasis ? { accountBasis } : {}),
       ...(foodHandlerAttestation ? { foodHandlerAttestation } : {}),
     };
   }
@@ -2618,6 +2878,21 @@ export class VerificationService {
   }
 
   /**
+   * [COMPANY-DOCS Part 3] An account change's decision (vendor/account-change.ts): the caller's writes, then the activation
+   * projection for whoever holds the account AFTER the change, in ONE projection transaction — under the identity lock
+   * every document decision takes, so no paper is decided half-way through it. A throw anywhere rolls all of it back; the
+   * notices it wrote are published after the commit.
+   */
+  async decideAccountChange<T>(work: (tx: Prisma.TransactionClient) => Promise<{ result: T; holderUserId: string; notices: string[] }>): Promise<T> {
+    return this.projectionTransaction(async (tx) => {
+      const { result, holderUserId, notices } = await work(tx);
+      this.projectionNotices.get(tx)?.push(...notices);
+      await this.projectVendorActivation(tx, holderUserId);
+      return result;
+    });
+  }
+
+  /**
    * [MC-PR2] Run the single vendor activation projection now, for ONE store —
    * the console's "activate now" for a store whose documents are complete. It
    * applies every go-live rule the document path applies (checklist, the
@@ -2627,13 +2902,15 @@ export class VerificationService {
    * other stores are left to the document path and the daily belt.
    */
   async activateStore(
-    userId: string, vendorId: string, onActivated?: (tx: Prisma.TransactionClient) => Promise<void>,
+    userId: string, vendorId: string, onActivated?: (tx: Prisma.TransactionClient, decided: StoreActivation) => Promise<void>,
     sellerName?: { by: string; name: string },
-  ): Promise<void> {
+  ): Promise<StoreActivation> {
+    let decided: StoreActivation = { sellerNameStamped: false, sellerNameNotConfirmed: null };
     await this.projectionTransaction(async (tx) => {
+      decided = { sellerNameStamped: false, sellerNameNotConfirmed: null };
       await tx.$queryRaw`SELECT "id" FROM "users" WHERE "id" = ${userId} FOR NO KEY UPDATE`;
       await tx.$queryRaw`SELECT "id" FROM "vendors" WHERE "id" = ${vendorId} FOR UPDATE`;
-      const held = await tx.vendor.findUniqueOrThrow({ where: { id: vendorId }, select: { name: true, subscription: { select: { id: true } } } });
+      const held = await tx.vendor.findUniqueOrThrow({ where: { id: vendorId }, select: { name: true, tradesUnderOwnName: true, subscription: { select: { id: true } } } });
       if (!held.subscription && !partnerApprovalsOpen()) throw lastPaperHeld({ name: held.name, trial: true });
       const before = await tx.vendor.findUniqueOrThrow({ where: { id: vendorId }, select: { status: true, owner: { select: { user: { select: { status: true } } } } } });
       if (before.status !== 'PENDING_APPROVAL' || before.owner.user.status !== 'ACTIVE') {
@@ -2642,12 +2919,20 @@ export class VerificationService {
       // [R3 · security review 10 Nov 2026] The person approving confirms the store's name as the seller's business or
       // company name — exactly the name they saw: a never-live store's owner may rename it freely, so a name changed
       // since is refused, never confirmed unseen. Written in the activation's own transaction: a refused activation
-      // confirms nothing. (No name given: an internal caller; the store's name stays unconfirmed.)
-      if (sellerName) {
+      // confirms nothing. (No name given: an internal caller; the store's name stays unconfirmed.) [review F6] A store
+      // trading under its owner's own name is named by the owner's checked declaration, never by a store-name stamp.
+      if (sellerName && !held.tradesUnderOwnName) {
         if (held.name.trim() !== sellerName.name.trim()) {
           throw new AppError(409, 'SELLER_NAME_CHANGED', `The store's name is now “${held.name.trim()}”. Check that name, then approve again.`);
         }
-        await tx.vendor.update({ where: { id: vendorId }, data: { sellerNameCheckedName: held.name.trim(), sellerNameCheckedAt: new Date(), sellerNameCheckedById: sellerName.by } });
+        // [COORD ruling 11 Nov 2026 · review-2479] A person's own name (the account holder's, or someone named in its
+        // letter of authority) is never confirmed as the business's: the store still goes live (a name never blocks an
+        // approval), nothing is stamped, the storefront names nobody, and the answer tells the person why.
+        if (await isAccountPersonsName(tx, userId, held.name.trim())) decided = { sellerNameStamped: false, sellerNameNotConfirmed: SELLER_NAME_IS_A_PERSON_NOTICE };
+        else {
+          await tx.vendor.update({ where: { id: vendorId }, data: { sellerNameCheckedName: held.name.trim(), sellerNameCheckedAt: new Date(), sellerNameCheckedById: sellerName.by } });
+          decided = { sellerNameStamped: true, sellerNameNotConfirmed: null };
+        }
       }
       // A person is approving this store now (the admin button): a branch waiting for a person goes through.
       await this.projectVendorActivation(tx, userId, { vendorId, personApproved: true });
@@ -2658,8 +2943,9 @@ export class VerificationService {
       if (after.status !== 'ACTIVE' && !heldForFee) throw new AppError(409, 'ACTIVATION_HELD', 'The store was not activated. Refresh its checklist.');
       // [CHAINS] The person's approval is spent: from now on the branch is projected like any store.
       await tx.vendor.update({ where: { id: vendorId }, data: { personApprovalRequired: false } });
-      await onActivated?.(tx);
+      await onActivated?.(tx, decided);
     });
+    return decided;
   }
 
   /**
@@ -3081,11 +3367,13 @@ export class VerificationService {
         // [VERIFY-DOCS] An optional document's lapse costs the person nothing but the police-cleared
         // flag — say so. No screen shows a badge yet, so the notice never promises one (GUARDRAILS §4).
         const optional = await this.isOptionalMoverDocument(doc.userId, doc.role, doc.docType);
+        // [RESTAURANT-TIN · #2494 review S3-1] a restaurant's GRA licence: optional, or "add your TIN certificate" (S2-1)
+        const restaurantLicence = optional ? null : await this.restaurantLicenceWords(doc.userId, doc.role, doc.docType, 'EXPIRED');
         await this.notifications.send({
           userId: doc.userId,
           type: 'SYSTEM_ANNOUNCEMENT',
           title: 'Document expired',
-          body: optional
+          body: restaurantLicence !== null ? restaurantLicence : optional
             ? `Your ${doc.docType.replace(/_/g, ' ')} has expired.${doc.docType === POLICE_CLEARANCE_DOC_TYPE ? ' You are no longer recorded as police-cleared until you upload a current one.' : ''} It is optional: you can keep working, and upload a new one any time.`
             : doc.docType === HIRE_PERMIT_DOC_TYPE
               ? `Your hire-car permit has expired. ${hireLicenceUploadWords(HIRE_SPLIT_DOC_TYPES)} in Documents to go online.`
@@ -3128,6 +3416,35 @@ export class VerificationService {
     return required.every((list) => !list.includes(docType));
   }
 
+  /** [RESTAURANT-TIN · owner 12 Nov 2026, #2494 review S2-1 / S3-1] The words of a GRA Food Restaurant Licence's reminder
+   *  or expiry notice for an owner whose every store is a restaurant (restaurant-tin restaurantLicenceStanding): optional
+   *  when the owner holds a valid TIN certificate; otherwise the restaurant stands on this licence only while it is valid,
+   *  so they say to add the TIN certificate. Null for anyone else (a supermarket's prepared food still needs the licence:
+   *  the old words stand). */
+  private async restaurantLicenceWords(userId: string, role: UserRole, docType: string, moment: 'REMINDER' | 'EXPIRED'): Promise<string | null> {
+    if (role !== 'VENDOR_OWNER' || docType !== GRA_RESTAURANT_LICENCE_DOC_TYPE) return null;
+    const standing = await restaurantLicenceStanding(this.prisma, userId);
+    if (standing === null) return null;
+    const name = docTypeName(GRA_RESTAURANT_LICENCE_DOC_TYPE);
+    const tin = docTypeName(TIN_CERTIFICATE_DOC_TYPE);
+    if (standing === 'OPTIONAL') {
+      return moment === 'REMINDER'
+        ? 'It is optional for a restaurant and does not affect your store: renew it only if you want it on file.'
+        : `Your ${name} has expired. It is optional for a restaurant: upload a new one only if you want it on file.`;
+    }
+    // [#2494 delta S3-C] true for each case: a TIN certificate waiting for a person; a restaurant live on this licence
+    // right now; or none live on it (a pending application, a branch waiting, a store already stopped)
+    if (standing === 'TIN_PENDING') {
+      return moment === 'REMINDER'
+        ? `Your ${tin} is being checked: once it is approved, this licence is optional for your restaurant.`
+        : `Your ${name} has expired. Your restaurant now needs its ${tin}, which is being checked: nothing else to send.`;
+    }
+    if (moment === 'EXPIRED') return `Your ${name} has expired. Your restaurant now needs its ${tin}: add it in Documents to keep operating.`;
+    return standing === 'TIN_NEEDED_LIVE'
+      ? `Your restaurant stays live on it only until then: add your ${tin} in Documents to keep operating.`
+      : `It is optional for a restaurant: add your ${tin} in Documents to go live.`;
+  }
+
   /** One reminder per document, 30 days before expiry. */
   /**
    * [DOC-1 §9.3 · P4-7] Renewal notices from the schedule the database keeps:
@@ -3144,12 +3461,15 @@ export class VerificationService {
       if (doc.subjectId === null && await holdsValidDocument(this.prisma, n.subjectId, doc.docType, now, n.documentId)) continue;
       // [VERIFY-DOCS] Never threaten a suspension over a document nobody requires.
       const optional = await this.isOptionalMoverDocument(n.subjectId, doc.role, doc.docType);
+      // [RESTAURANT-TIN · owner 12 Nov 2026, review S2-1] a restaurant's GRA licence: optional, or "add your TIN certificate"
+      const restaurantLicence = optional ? null : await this.restaurantLicenceWords(n.subjectId, doc.role, doc.docType, 'REMINDER');
       await this.notifications.send({
         userId: n.subjectId,
         type: 'SYSTEM_ANNOUNCEMENT',
         title: n.daysLeft <= 1 ? 'Document expires tomorrow' : 'Document expiring soon',
         body: `Your ${doc.docType.replace(/_/g, ' ')} expires on ${n.expiresOn.toISOString().slice(0, 10)} — ${n.daysLeft} day${n.daysLeft === 1 ? '' : 's'} left. ${optional
           ? (doc.docType === POLICE_CLEARANCE_DOC_TYPE ? 'Renew it to stay recorded as police-cleared. It is optional and does not affect your work.' : 'It is optional and does not affect your work.')
+          : restaurantLicence !== null ? restaurantLicence
           : doc.docType === HIRE_PERMIT_DOC_TYPE ? `This permit no longer counts on its own. ${hireLicenceUploadWords(HIRE_SPLIT_DOC_TYPES)} in Documents to go online.` : 'Renew it to avoid suspension.'}`,
         audience: audienceForRole(doc.role),
         data: { kind: 'verification_expiry_reminder', docId: n.documentId, daysLeft: n.daysLeft },

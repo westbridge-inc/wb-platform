@@ -1078,6 +1078,53 @@
   opacity: 0.65;
 }
 
+/* [MENU-OPTIONS] A follow-up group sits indented right under the choice that opens it; a chosen half-and-half
+   topping gets its Whole / Left half / Right half switch under its row. */
+.optionRow {
+  display: grid;
+  gap: var(--swift-space-sm);
+}
+
+.followUpGroup {
+  margin-inline-start: var(--swift-space-xl);
+  padding-inline-start: var(--swift-space-md);
+  border-inline-start: 2px solid var(--swift-border);
+}
+
+.halfPicker {
+  display: grid;
+  gap: var(--swift-space-xs);
+  margin-inline-start: var(--swift-space-xl);
+}
+
+.halfChoices {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: var(--swift-space-xs);
+}
+
+.halfChoice {
+  min-height: var(--swift-touch);
+  padding: var(--swift-space-xs) var(--swift-space-md);
+  border: thin solid var(--swift-border);
+  border-radius: var(--swift-radius-full);
+  background: var(--swift-card);
+  color: var(--swift-ink);
+  font-size: var(--swift-type-caption);
+  cursor: pointer;
+}
+
+.halfChoiceOn {
+  border-color: var(--swift-ink);
+  box-shadow: inset 0 0 0 1px var(--swift-ink);
+  font-family: var(--swift-font-body-semibold), system-ui, sans-serif;
+}
+
+.halfChoice:focus-visible {
+  outline: 2px solid var(--swift-focus);
+  outline-offset: 2px;
+}
+
 .optionChoice {
   display: inline-flex;
   align-items: center;

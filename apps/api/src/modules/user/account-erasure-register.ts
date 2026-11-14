@@ -39,6 +39,8 @@ export const ERASURE_CLEARED: Readonly<Record<string, string>> = {
   'RideQueueEntry.customerId': 'ephemeral high-risk rows (NR-3 gap 6): exact-location queue rows',
   'SupplyWatch.customerId': 'ephemeral high-risk rows (NR-3 gap 6): exact-location watch rows',
   'CallSession.callerUserId': 'deleted with the account (the NR-3 ephemeral-rows step): the Swift-bridged calls the person asked for (roles and times; Swift stores no number for a call)',
+  'AssistedSetupConsent.holderId': 'deleted with the account (the NR-3 ephemeral-rows step): the OKs recorded for Swift to set up the person’s store, with the name a store person gave (the consent ledger row and the audit trail stay, ids only); their action rows go with them',
+  'AuthorityLetterRequest.userId': 'deleted with the account (the NR-3 ephemeral-rows step): the letters of authority the person asked a director (or the owner) to sign, with that third person’s name and number (a signed letter itself is a verification document, purged with the others)',
   'FaceTemplate.accountId': 'identity-integrity purge: the biometric template, in every case',
   'IdentityKey.accountId': 'identity-integrity purge (kept only as salted fraud tombstones while IntegritySettings.tombstoneRetentionEnabled is ON; default OFF)',
   'IdentityClusterMember.accountId': 'identity-integrity purge (kept only as fraud tombstones while IntegritySettings.tombstoneRetentionEnabled is ON; default OFF)',
@@ -79,6 +81,17 @@ export const ERASURE_DEIDENTIFIED: Readonly<Record<string, string>> = {
 
 /** Link -> why the person's rows stay after erasure (they point at the de-identified account row). */
 export const ERASURE_KEPT: Readonly<Record<string, string>> = {
+  // [COMPANY-DOCS Part 3 · review-2475 F4] A decided account change is final (database trigger): who held a store
+  // account, who it passed to, and who decided, is the business record of who could act for those stores (Privacy
+  // Policy §6 business records, §7 administrative trail). Ids only: the person's name and papers go with the erasure.
+  'AccountChangeRequest.requestedById': 'the business record of a change to who a store account is (Privacy Policy §6, §7): ids only; a decided change is final',
+  'AccountChangeRequest.holderId': 'the business record of who held the store account before a handover (Privacy Policy §6, §7): ids only',
+  'AccountChangeRequest.newHolderId': 'the business record of who a store account was offered or handed to (Privacy Policy §6, §7): ids only',
+  'AccountChangeRequest.decidedById': 'the administrative trail of who decided an account change (Privacy Policy §7): ids only',
+  // [review-2475 D5] Who at Swift named the seller from the papers: the §7 administrative trail behind what customers see.
+  'AccountChangeRequest.sellerLegalNameById': 'the administrative trail of who typed a seller’s legal name from a paper (Privacy Policy §7): ids only',
+  'VendorOwner.sellerLegalNameById': 'the administrative trail of who typed the seller’s legal name from a paper (Privacy Policy §7): ids only',
+  'Vendor.sellerNameCheckedById': 'the administrative trail of who confirmed the store’s name as the seller’s (Privacy Policy §7): ids only',
   'Order.customerId': 'order history, kept for disputes, payments Swift has decided to make, tax and legal duties (Privacy Policy §6)',
   'Order.riderId': 'order history (Privacy Policy §6)',
   'Order.driverId': 'ride history (Privacy Policy §6)',

@@ -55,6 +55,7 @@ import { rideIsOver } from '../../../lib/rideAfterTrip';
 import { pickupShowsCode, pickupWords } from '../pickup-words';
 import { BookingRescheduleCard } from '../BookingRescheduleCard';
 import { appointmentBookingView } from '../../../lib/appointmentBooking';
+import { orderLineChoices } from '../../../lib/menuSheet';
 import { customerCancellationWords } from '@swift/types/src/customer-cancellation-words';
 
 /** The store kinds Search can filter by (its own chips): a declined order opens Search on the same kind. */
@@ -428,6 +429,9 @@ const DeliveryMap = React.memo(function DeliveryMap({
   );
 });
 
+/** [PROD-RIDER-TEST review S4-4] Said before the second tap: the switch is final. */
+const PICKUP_SWITCH_FINAL = 'You collect it from the store yourself, and this can’t be undone.';
+
 export function DeliveryScreen() {
   const navigation = useNavigation<any>();
   const route = useRoute<any>();
@@ -523,6 +527,25 @@ export function DeliveryScreen() {
       // The outcome is unknown (a timeout can mean the cancel DID land), so
       // the feed is treated as suspect too.
       void qc.invalidateQueries({ queryKey: customerKeys.homeAll });
+      void order.refetch();
+    },
+  });
+  // [PROD-RIDER-TEST (a)2] "Switch to pickup" after no rider was found: the server decides (a rider or the store may
+  // have taken it meanwhile) and its words are shown either way; the order is read again.
+  // [review S4-4] The confirmation is open for this order (null: closed).
+  const [confirmPickupFor, setConfirmPickupFor] = useState<string | null>(null);
+  const switchToPickup = useMutation<unknown, any, { targetOrderId: string }>({
+    mutationFn: ({ targetOrderId }) => customerApi.switchToPickup(targetOrderId),
+    meta: { silent: true },
+    onSuccess: (_res, target) => {
+      void qc.invalidateQueries({ queryKey: customerKeys.homeAll });
+      if (target.targetOrderId !== activeOrderIdRef.current) return;
+      toast.show('Switched to pickup', 'The delivery fee is off. Collect your order from the store.');
+      void order.refetch();
+    },
+    onError: (error: any, target) => {
+      if (target.targetOrderId !== activeOrderIdRef.current) return;
+      toast.error('Couldn’t switch to pickup', errorMessage(error, 'Check the latest status of your order and try again.'));
       void order.refetch();
     },
   });
@@ -757,10 +780,18 @@ export function DeliveryScreen() {
     setCancelPreviewOrderId(null);
     setCancelMessage(null);
     setPendingMmgClaim(null);
+    setConfirmPickupFor(null);
     lastCourierServerFixAt.current = null;
     prevStatus.current = null;
     prevStatusRef.current = undefined;
   }, [orderId]);
+
+  // [FOLLOWUPS 11 Nov · REVIEW-2481-DELTA D-2] The "Switch to pickup" confirmation ends with its offer (the store
+  // delivers, a rider takes it, the switch landed): a later "no rider" offer on this order never re-opens it unasked.
+  const pickupSwitchOffered = !!o?.switchToPickup;
+  useEffect(() => {
+    if (!pickupSwitchOffered) setConfirmPickupFor(null);
+  }, [pickupSwitchOffered]);
 
   // Arrival popup once, on the transition into DELIVERED.
   useEffect(() => {
@@ -1629,11 +1660,19 @@ export function DeliveryScreen() {
           </T>
           <View style={{ marginTop: space.sm }}>
             {items.map((it: any, i: number) => (
-              <InfoRow
-                key={it.id ?? i}
-                label={`${it.quantity} ${it.item?.name ?? it.name}${lineRemoved(it) ? ' (out of stock, removed)' : ''}`}
-                value={money(lineRemoved(it) ? 0 : it.totalPrice ?? it.lineTotal ?? Number(it.unitPrice ?? 0) * (it.quantity ?? 1))}
-              />
+              <View key={it.id ?? i}>
+                <InfoRow
+                  label={`${it.quantity} ${it.item?.name ?? it.name}${lineRemoved(it) ? ' (out of stock, removed)' : ''}`}
+                  value={money(lineRemoved(it) ? 0 : it.totalPrice ?? it.lineTotal ?? Number(it.unitPrice ?? 0) * (it.quantity ?? 1))}
+                />
+                {/* [MENU-OPTIONS] The line's choices as the store makes it: "Size: Large", a follow-up under its opener,
+                    a half-and-half pizza as "Toppings — Left: Pepperoni / Right: Mushroom". */}
+                {orderLineChoices(it.options).map((choice, at) => (
+                  <T key={at} variant="caption" tone="muted" style={{ marginLeft: choice.followUp ? space.lg : 0, marginTop: at === 0 ? -space.xs : 0 }}>
+                    {choice.text}
+                  </T>
+                ))}
+              </View>
             ))}
             {Number(o.deliveryFee ?? 0) > 0 ? <InfoRow label="Delivery" value={money(o.deliveryFee)} /> : null}
             {Number(o.tipAmount ?? 0) > 0 ? <InfoRow label="Tip" value={money(o.tipAmount)} /> : null}
@@ -1803,6 +1842,25 @@ export function DeliveryScreen() {
             </View>
           ) : null}
 
+          {/* [PROD-RIDER-TEST (a)2] No rider was found: collect it instead, offered BEFORE the cancel (which stays,
+              last). The server's own words: what comes off and what is left to pay. */}
+          {!terminal && o.switchToPickup && typeof o.switchToPickup.message === 'string' ? (
+            <View
+              accessibilityRole="summary"
+              style={{ marginTop: space.md, padding: space.md, borderRadius: radius.md, backgroundColor: color.soft.info, gap: space.sm }}
+            >
+              <T variant="label" tone="info">{o.switchToPickup.message}</T>
+              <PillButton
+                label="Switch to pickup"
+                icon="shopping-bag"
+                size="md"
+                loading={switchToPickup.isPending}
+                disabled={switchToPickup.isPending || cancelOrder.isPending}
+                onPress={() => setConfirmPickupFor(orderId)}
+              />
+            </View>
+          ) : null}
+
           {o.canCancel && !terminal && !holdActive && !holdTimingUnavailable && !releasePending ? (
             <PillButton
               label={`Cancel ${referenceNoun}`}
@@ -1814,6 +1872,42 @@ export function DeliveryScreen() {
           ) : null}
         </ScrollView>
       </View>
+
+      {/* [PROD-RIDER-TEST review S4-4] "Switch to pickup" cannot be undone: the server's own words (what comes off,
+          what is left to pay) are repeated, and a second tap confirms. Bound to the order it was opened on. */}
+      <PopupCard
+        visible={confirmPickupFor === orderId && !!o.switchToPickup}
+        onClose={() => { if (!switchToPickup.isPending) setConfirmPickupFor(null); }}
+      >
+        <IconChip icon="shopping-bag" size={56} />
+        <PopupTitle variant="heading" center style={{ marginTop: space.md }}>
+          Switch to pickup?
+        </PopupTitle>
+        {typeof o.switchToPickup?.message === 'string' ? (
+          <T variant="label" tone="muted" center style={{ marginTop: space.sm }}>
+            {o.switchToPickup.message}
+          </T>
+        ) : null}
+        <T variant="label" weight="semibold" center style={{ marginTop: space.md }}>
+          {PICKUP_SWITCH_FINAL}
+        </T>
+        <View style={{ alignSelf: 'stretch', gap: space.md, marginTop: space.xl }}>
+          <PillButton
+            label="Yes, switch to pickup"
+            icon="shopping-bag"
+            size="md"
+            loading={switchToPickup.isPending}
+            onPress={() => switchToPickup.mutate({ targetOrderId: orderId }, { onSettled: () => setConfirmPickupFor(null) })}
+          />
+          <PillButton
+            label="Keep delivery"
+            variant="soft"
+            size="md"
+            disabled={switchToPickup.isPending}
+            onPress={() => setConfirmPickupFor(null)}
+          />
+        </View>
+      </PopupCard>
 
       {/* Cancel confirm */}
       <PopupCard

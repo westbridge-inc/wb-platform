@@ -242,6 +242,9 @@ describe('[DISPATCH 1/3 · B4] every cancellation withdraws the live offer card 
       // IS the job's Redis (queue.ts passes ctx.redis) or the dispatch
       // service's app Redis — the one offer store.
       if (line === 'modules/dispatch/rescue.ts: deps.redis') continue;
+      // [KITCHEN-INTEGRATION] KitchenDeps.redis IS the job's Redis (queue.ts passes ctx.redis to the tick) or the
+      // app's (the webhook passes app.redis): the one offer store.
+      if (line === 'modules/kitchen/kitchen-sync.ts: deps.redis') continue;
       expect(line, 'pass the app/job Redis as the fifth argument').toMatch(/: (app|ctx)\.redis$/);
     }
   });

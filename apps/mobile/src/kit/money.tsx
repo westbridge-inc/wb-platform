@@ -12,11 +12,16 @@ import { T, type TP } from './text';
 export function Money({
   amount,
   size = 'm',
+  from = false,
   ...rest
-}: Omit<TP, 'variant' | 'children'> & { amount: number | null | undefined; size?: 'm' | 'l' }) {
+}: Omit<TP, 'variant' | 'children'> & {
+  amount: number | null | undefined; size?: 'm' | 'l';
+  /** [MENU-OPTIONS] The item's size sets its price: `amount` is its smallest size, read "From $X". */
+  from?: boolean;
+}) {
   return (
     <T variant={size === 'l' ? 'numL' : 'numM'} {...rest}>
-      {money(amount)}
+      {from ? 'From ' : ''}{money(amount)}
     </T>
   );
 }

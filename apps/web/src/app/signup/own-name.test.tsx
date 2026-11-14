@@ -28,7 +28,7 @@ vi.mock('./own-name-loader', async () => {
 
 const DOOR = { placeId: 'door', primary: '12 Regent Street', secondary: 'Georgetown', lat: 6.812, lng: -58.163 };
 const loadMap = () => screen.getByRole('application').querySelectorAll('img').forEach((tile) => fireEvent.load(tile));
-const OWN = /My own name — I’m one person trading under just my surname/;
+const OWN = /I trade under my own name — I’m one person trading under just my surname/;
 
 beforeEach(() => {
   vi.resetAllMocks();
@@ -65,7 +65,7 @@ describe('[ROLE-DOCS] the web sign-up offers and signs the own-name declaration'
     const user = await businessStep();
     const own = (await screen.findByRole('radio', { name: OWN })) as HTMLInputElement;
     expect(own.checked).toBe(false);
-    expect((screen.getByRole('radio', { name: 'A registered business name or a company (I have the DCRA certificate)' }) as HTMLInputElement).checked).toBe(true);
+    expect((screen.getByRole('radio', { name: 'We’re a registered business (a business name registered with the DCRA)' }) as HTMLInputElement).checked).toBe(true);
     expect(screen.queryByText(/I TRADE UNDER MY OWN NAME/)).toBeNull();
     await user.click(own);
     // [OWNER-ASKS 9 Nov 2026] a plain title and its version, then the signed words unchanged: title line + body = the text
@@ -103,17 +103,68 @@ describe('[ROLE-DOCS] the web sign-up offers and signs the own-name declaration'
     expect(fx.sign).not.toHaveBeenCalled();
   });
 
-  it('a services business is never offered the choice', async () => {
+  it('a services business is never offered the own-name choice', async () => {
     await businessStep('Test services');
     await screen.findByRole('radio', { name: OWN });
     fireEvent.change(screen.getByLabelText('Business type'), { target: { value: 'SERVICE' } });
     expect(screen.queryByRole('radio', { name: OWN })).toBeNull();
   });
+});
+
+// [COMPANY-DOCS · owner rulings 10 Nov 2026] ONE choice, three options: the papers follow it.
+describe('[COMPANY-DOCS] a registered company, a registered business or its manager, or my own name', () => {
+  const COMPANY = 'We’re a registered company (incorporated, for example a “Ltd.” or “Inc.”)';
+  const REGISTERED = 'We’re a registered business (a business name registered with the DCRA)';
+  const MANAGER = 'I’m the manager, not the owner';
+
+  it('the question asks how the business is set up, with three choices in the owner’s order', async () => {
+    await businessStep('Chicken Co');
+    await screen.findByRole('radio', { name: OWN });
+    expect(screen.getByText('How is your business set up?')).toBeTruthy();
+    expect(screen.getAllByRole('radio').map((r) => r.closest('label')!.textContent!.trim())).toEqual([COMPANY, REGISTERED, expect.stringMatching(OWN)]);
+  });
+
+  it('a company says what it uploads, that branches and staff upload nothing, and signs up as a company', async () => {
+    const user = await businessStep('Chicken Co');
+    await user.click(await screen.findByRole('radio', { name: COMPANY }));
+    expect(screen.getByText(/One person manages your Swift account for the whole company: your branches and your staff don’t upload anything\./)).toBeTruthy();
+    expect(screen.getByText(/Certificate of Incorporation/)).toBeTruthy();
+    expect(screen.queryByRole('checkbox', { name: MANAGER })).toBeNull();
+    await user.click(screen.getByRole('button', { name: 'Create business' }));
+    expect(fx.become).toHaveBeenCalledTimes(1);
+    expect(fx.become.mock.calls[0]![0].business).toMatchObject({ accountBasis: 'COMPANY' });
+    expect(fx.become.mock.calls[0]![0].business).not.toHaveProperty('nameBasis');
+    expect(fx.sign).not.toHaveBeenCalled();
+  });
+
+  it('“I’m the manager, not the owner” under a registered business signs up as the manager', async () => {
+    const user = await businessStep('Chicken Co');
+    await screen.findByRole('radio', { name: OWN });
+    await user.click(screen.getByRole('checkbox', { name: MANAGER }));
+    expect(screen.getByText(/a letter of authority signed by the owner/)).toBeTruthy();
+    await user.click(screen.getByRole('button', { name: 'Create business' }));
+    expect(fx.become.mock.calls[0]![0].business).toMatchObject({ accountBasis: 'MANAGER' });
+  });
+
+  it('the owner of a registered business sends no account basis, exactly as before', async () => {
+    const user = await businessStep('Chicken Co');
+    await screen.findByRole('radio', { name: OWN });
+    await user.click(screen.getByRole('button', { name: 'Create business' }));
+    expect(fx.become.mock.calls[0]![0].business).not.toHaveProperty('accountBasis');
+  });
+
+  it('a services business is asked: a registered company, or I own this business', async () => {
+    await businessStep('Test services');
+    await screen.findByRole('radio', { name: OWN });
+    fireEvent.change(screen.getByLabelText('Business type'), { target: { value: 'SERVICE' } });
+    expect(screen.getAllByRole('radio').map((r) => r.closest('label')!.textContent!.trim())).toEqual([COMPANY, 'I own this business']);
+    expect(screen.queryByRole('checkbox', { name: MANAGER })).toBeNull();
+  });
 
   it('a failed load of the choice offers a retry that brings it back (nothing typed is lost)', async () => {
     fx.loadFails.n = 1;
     const user = await businessStep();
-    await user.click(await screen.findByRole('button', { name: 'Couldn’t load the store-name choice — try again' }));
+    await user.click(await screen.findByRole('button', { name: 'Couldn’t load the business-type choice — try again' }));
     expect(await screen.findByRole('radio', { name: OWN })).toBeTruthy();
     expect((screen.getByLabelText('Business name') as HTMLInputElement).value).toBe('Persaud');
   });

@@ -5,7 +5,8 @@ import Redis from 'ioredis';
 import { Writable } from 'node:stream';
 import { createHash, randomBytes } from 'node:crypto';
 import { nanoid } from 'nanoid';
-import type { CardSession, SubscriptionStatus, UserRole } from '@prisma/client';
+import type { CardSession, Prisma, SubscriptionStatus, UserRole } from '@prisma/client';
+import { referenceOnRecord } from '../modules/billing/mmg-fee-reversal';
 import { prismaPlugin } from '../plugins/prisma';
 import { redisPlugin } from '../plugins/redis';
 import { authPlugin } from '../plugins/auth';
@@ -23,7 +24,7 @@ import { BillingService } from '../modules/billing/billing.service';
 import { resolveConfirmationInTx, ACTIVE_CONFIRMATION_STATES, hasConfirmationInTx, readDunningClock } from '../modules/billing/dunning-clock';
 import { readFeePaymentDecision } from '../modules/billing/fee-payment-authority';
 import { confirmationReviewQueue, resolveFinanceConfirmation } from '../modules/billing/confirmation-finance';
-import { CARD_ON_FILE_CONSENT_VERSION, CARD_SANDBOX_TEST_LABEL, CardRailService, type CardConfirmResult } from '../modules/billing/card-rail.service';
+import { CARD_ON_FILE_CONSENT_VERSION, CARD_SANDBOX_TEST_LABEL, CardRailService, NOT_TAKEN_FINAL_MS, VOID_CHECK_WAIT_MS, type CardConfirmResult } from '../modules/billing/card-rail.service';
 import { CARD_CHECKOUT_PLATFORMS_KEY, resetCardCheckoutSwitchCache } from '../modules/billing/card-pay-action';
 import {
   CARD_APP_RETURN_LINK,
@@ -55,8 +56,8 @@ import { askAndApprove, injectWithApproval } from './helpers/admin-approval';
 import { setAsideCreditRefund } from '../modules/billing/credit-refund';
 import { CARD_REFUND_ACTION, refundCardCreditToCard } from '../modules/billing/card-credit-refund';
 import { TEST_ADMIN_REASON } from './helpers/admin-reason';
-import { setAppLogger } from '../utils/logger';
-import { STAGING_CARD_SUFFIX, STAGING_RETURN_SECRETS, leaksCardSuffix, stagingPageNotFoundPost, stagingReturnPost, stagingSaleRecord } from './fixtures/powertranz-staging-shapes';
+import { log, setAppLogger } from '../utils/logger';
+import { STAGING_CARD_SUFFIX, STAGING_RETURN_SECRETS, leaksCardSuffix, stagingPageNotFoundPost, stagingAuthenticatedRecord, stagingReturnPost, stagingSaleRecord } from './fixtures/powertranz-staging-shapes';
 
 // ---------------------------------------------------------------------------
 // [PT-2] The card rail v2 ROUTES against the database and the real simulator
@@ -516,6 +517,56 @@ describe('Pay now through HTTP: priced by the server, booked once, and only on t
     const later = await money(p.subId);
     expect(later.successes).toBe(1);
     expect(later.sub.currentPeriodEnd.getTime()).toBe(periodEndBefore + 7 * DAY);
+  });
+
+  // [N1 · CARD-STAGING-TEST R2 · owner 10 Nov 2026] A card payment that brings a suspended store back (a RETURN) is kept as
+  // fee credit and spent AT ONCE on its return week. The partner's view says the week is paid (`advanced`, which the shipped
+  // apps and website word "Paid: <amount> received."), never `banked` ("Payment received. It is kept for your next weekly
+  // fee."), and no "kept for your next weekly fee" notice is sent. Server-side only: no app change.
+  it('[N1] a suspended store returns by card: its view says the week is PAID (advanced); no "kept for your next weekly fee" notice', async () => {
+    const due = new Date(Date.now() - 10 * DAY);
+    const p = await makeStore({ due });
+    const billable = async () => (await app.prisma.subscription.findUniqueOrThrow({
+      where: { id: p.subId },
+      include: { rider: { select: { userId: true } }, driver: { select: { userId: true } }, vendor: { select: { id: true, owner: { select: { userId: true } } } } },
+    })) as never;
+    // The billing engine's own suspension: three failed charges over 50 hours from the due date.
+    for (const hours of [0, 25, 50]) await runtime.billing.billSubscription(await billable(), new Date(due.getTime() + hours * 3_600_000));
+    expect((await money(p.subId)).sub.status).toBe('SUSPENDED');
+
+    const opened = await startSession(p, 'PAY_NOW');
+    expect(opened.statusCode, opened.body).toBe(201);
+    const session = opened.json().data;
+    expect(pageState((await follow(await press(session.hostedUrl, 'APPROVE'))).body)).toBe('SUCCEEDED');
+    const row = await app.prisma.cardSession.findUniqueOrThrow({ where: { id: session.sessionId } });
+    // It was a RETURN: the capture was kept as credit (one bank event, receipt channel CARD_RETURN) and the return week paid from it.
+    const kept = await app.prisma.billingEvent.findUniqueOrThrow({ where: { idempotencyKey: `bank:${row.paymentId}` } });
+    expect((await app.prisma.feeReceipt.findUniqueOrThrow({ where: { billingEventId: kept.id } })).channel).toBe('CARD_RETURN');
+    const after = await money(p.subId);
+    expect(after.sub.status).toBe('ACTIVE');
+    expect(after.successes).toBe(1);
+    expect(after.sub.nextBillingDate.getTime()).toBeGreaterThan(Date.now());
+
+    const view = (await partnerCall(p, 'GET', `${SESSIONS}/${session.sessionId}`)).json().data;
+    expect(view).toMatchObject({ status: 'SUCCEEDED', settlement: 'advanced' });
+    const kepts = await app.prisma.notification.count({ where: { userId: p.userId, data: { path: ['kind'], equals: 'billing_banked' } } });
+    expect(kepts, 'a return was told its money is "kept for your next weekly fee"').toBe(0);
+    // Confirmed again (the page's own poll, the sweep): still the week paid, nothing booked twice.
+    expect(await runtime.service.confirm(session.sessionId)).toMatchObject({ status: 'SUCCEEDED' });
+    expect((await partnerCall(p, 'GET', `${SESSIONS}/${session.sessionId}`)).json().data).toMatchObject({ settlement: 'advanced' });
+    expect((await money(p.subId)).successes).toBe(1);
+    expect(await app.prisma.billingEvent.count({ where: { subscriptionId: p.subId, idempotencyKey: { startsWith: 'bank:' } } })).toBe(1);
+  });
+
+  it('[N1] a week paid ahead (not started) is still reported as kept (banked), with its notice', async () => {
+    const p = await makeStore({ due: new Date(Date.now() + 3 * DAY) });
+    const opened = await startSession(p, 'PAY_NOW');
+    expect(opened.statusCode, opened.body).toBe(201);
+    const session = opened.json().data;
+    expect(pageState((await follow(await press(session.hostedUrl, 'APPROVE'))).body)).toBe('SUCCEEDED');
+    expect((await partnerCall(p, 'GET', `${SESSIONS}/${session.sessionId}`)).json().data).toMatchObject({ status: 'SUCCEEDED', settlement: 'banked' });
+    expect((await money(p.subId)).successes).toBe(0);
+    expect(await app.prisma.notification.count({ where: { userId: p.userId, data: { path: ['kind'], equals: 'billing_banked' } } })).toBe(1);
   });
 
   it('a client cannot name the amount, or send anything that is not the contract (a card number least of all): 400, nothing opened', async () => {
@@ -1299,14 +1350,14 @@ describe('[PT-4] real cards through HTTP: Swift\'s hosted page, the bank\'s chec
     return { sessionId: session.sessionId as string, txnId: row.providerTransactionRef! };
   }
 
-  async function verifiedHeldPayment(p: Partner) {
+  async function verifiedHeldPayment(p: Partner, from?: string) {
     const billing = (serviceOf() as unknown as { billing: BillingService }).billing;
     const settle = billing.settleHostedCardPayment.bind(billing);
     billing.settleHostedCardPayment = async () => ({ outcome: 'held', failureCode: 'WALLET_CURRENCY_MISMATCH' });
     try {
       payment = approve();
       const session = (await open(p)).json().data;
-      await bankFramePosts(session.sessionId, 'Y');
+      await bankFramePosts(session.sessionId, 'Y', {}, from);
       const row = await rowOf(session.sessionId);
       expect(row.status).toBe('HELD');
       expect(row.completionEvidence).toMatchObject({ Approved: true, IsoResponseCode: '00', TransactionType: 2 });
@@ -2253,6 +2304,54 @@ describe('[PT-4] real cards through HTTP: Swift\'s hosted page, the bank\'s chec
       expect((await money(refused.subId)).successes).toBe(0);
     });
 
+    // [VOID-REFUND-CHECK F2 · LEGAL-CARDS 12 Nov 2026] A record that PROVES nothing was taken is never voided: PowerTranz
+    // refuses to void it (the staging lane voided a 3D0 page and was refused, WRITES.md:63) and a declined transaction can
+    // never be refunded (code 12). The session closes as unpaid: no void, no HELD, no admin page.
+    const gateOfLookup = (txnId: string) => `${PTZ_PREFIX}l:${real.binding.account}:${txnId.toLowerCase()}`;
+    const neverCompleted = (txnId: string) => (id: string): Answer => id.toLowerCase() !== txnId.toLowerCase() ? { status: 404, body: 'not found' } : { status: 200, body: stagingAuthenticatedRecord(txnId) };
+    it('[VOID-REFUND-CHECK F2] lost completion + lookup 05 / capture 0 -> FAILED DECLINED, unpaid, /api/void never called, nobody paged', async () => {
+      const finance = await makeFinance();
+      const p = await makeStore();
+      const { row, txnId, orderId, lost } = await lostCompletion(p, { proof: false });
+      lookupAnswer = recordOf(txnId, orderId, { IsoResponseCode: '05', ResponseMessage: 'Do not honour' }, { TotalCaptureAmount: 0, CaptureCount: 0 });
+      expect((await serviceOf().confirm(row.id, { now: lost })).status).toBe('FAILED');
+      expect(lookups(txnId)).toBe(1);
+      expect(voidsOf(txnId)).toBe(0);
+      expect(await rowOf(row.id)).toMatchObject({ status: 'FAILED', failureCode: 'DECLINED', providerVoidState: null, paymentId: null });
+      expect((await confirmationOf(row.id))?.status).toBe('PROVEN_UNPAID');
+      expect(await app.prisma.notification.count({ where: { userId: finance.userId, dedupeKey: `card-session-held:${row.id}` } })).toBe(0);
+      expect((await money(p.subId)).successes).toBe(0);
+    });
+
+    it('[VOID-REFUND-CHECK F2 · staging replay] COMPLETION lost + lookup 3D0 / capture 0 -> no void, no HELD, no admin page; asked again until NOT_TAKEN_FINAL_MS, then FAILED unpaid', async () => {
+      const finance = await makeFinance();
+      const p = await makeStore();
+      const { row, txnId, lost } = await lostCompletion(p, { proof: false });
+      lookupAnswer = neverCompleted(txnId);
+      // Soon after the claim: a slow completion could still land on the record. Nothing is voided or closed yet.
+      expect((await serviceOf().confirm(row.id, { now: lost })).status).toBe('OPEN');
+      expect(lookups(txnId)).toBe(1);
+      expect(voidsOf(txnId)).toBe(0);
+      const claimedAt = (await rowOf(row.id)).completionClaimedAt!;
+      await redis.del(gateOfLookup(txnId));
+      expect((await serviceOf().confirm(row.id, { now: new Date(claimedAt.getTime() + NOT_TAKEN_FINAL_MS + 1_000) })).status).toBe('FAILED');
+      expect(lookups(txnId)).toBe(2);
+      expect(voidsOf(txnId)).toBe(0);
+      expect(await rowOf(row.id)).toMatchObject({ status: 'FAILED', failureCode: 'NOT_COMPLETED_ON_RECORD', providerVoidState: null, paymentId: null });
+      expect((await confirmationOf(row.id))?.status).toBe('PROVEN_UNPAID');
+      expect(await app.prisma.notification.count({ where: { userId: finance.userId, dedupeKey: `card-session-held:${row.id}` } })).toBe(0);
+      expect((await money(p.subId)).successes).toBe(0);
+    });
+
+    it('[VOID-REFUND-CHECK F2] lookup 91 (ambiguous: the money may have moved), capture 0 -> the void is still sent (unchanged)', async () => {
+      const p = await makeStore();
+      const { row, txnId, orderId, lost } = await lostCompletion(p, { proof: false });
+      lookupAnswer = recordOf(txnId, orderId, { IsoResponseCode: '91' }, { TotalCaptureAmount: 0, CaptureCount: 0 });
+      expect((await serviceOf().confirm(row.id, { now: lost })).status).toBe('FAILED');
+      expect(voidsOf(txnId)).toBe(1);
+      expect(await rowOf(row.id)).toMatchObject({ status: 'FAILED', failureCode: 'VOIDED_UNPROVEN', providerVoidState: 'VOIDED' });
+    });
+
     it('the lookup shows the payment reversed (a real VoidDateTime) or refunded in full: nothing booked, no void sent, HELD; finance can never BOOK or REFUND it, only record nothing taken', async () => {
       const finance = await makeFinance();
       const voidedAt = guyanaNow(); // PowerTranz's answer names no zone: UTC-4
@@ -2799,6 +2898,8 @@ describe('[PT-4] real cards through HTTP: Swift\'s hosted page, the bank\'s chec
       refundAnswer = () => 'network';
       const lost = await refundCardCreditToCard(app.prisma, () => real, {
         adminId: 'admin-c', approvalId: await approval(CARD_REFUND_ACTION, 'admin-c', 'admin-b'), subscriptionId: p.subId, setAsideId: aside.billingEventId, cardSessionId: row.id, amount: 2100,
+        // [VOID-REFUND-CHECK F4] Past SETTLED_CERTAIN: a refund (a younger whole payment is voided instead).
+        now: new Date(Date.now() + 14 * DAY),
       });
       expect(lost.state).toBe('UNKNOWN');
       refundAnswer = adjusted;
@@ -2817,7 +2918,7 @@ describe('[PT-4] real cards through HTTP: Swift\'s hosted page, the bank\'s chec
       });
       expect(applied.statusCode, applied.body).toBe(200);
       expect(applied.json().data).toMatchObject({ status: 'APPLIED', providerCheck: 'REFUNDED' });
-      const refund = await app.prisma.cardCreditRefund.findUniqueOrThrow({ where: { cardSessionId: row.id } });
+      const refund = await app.prisma.cardCreditRefund.findFirstOrThrow({ where: { cardSessionId: row.id } });
       expect(refund).toMatchObject({ state: 'REFUNDED', providerRefundRef: `LOOKUP-CREDIT-${txnId.toUpperCase()}`, answeredAt: lost.state === 'UNKNOWN' ? expect.any(Date) : null });
       expect(await app.prisma.billingEvent.count({ where: { subscriptionId: p.subId, type: 'PREPAID_REFUND' } })).toBe(1);
       expect(lookups(txnId)).toBe(1);
@@ -2954,6 +3055,63 @@ describe('[PT-4] real cards through HTTP: Swift\'s hosted page, the bank\'s chec
       expect((await confirmationOf(sessionId))?.status).toBe('PROVEN_UNPAID');
       expect((await money(p.subId)).successes).toBe(0);
       expect((await call(p, 'GET', '/subscription')).json().data.payActions[1]).toMatchObject({ state: 'live' });
+    });
+
+    // [R1 · CARD-STAGING-TEST R2] A refund is PowerTranz's OWN transaction (TransactionType 5, its own TransactionIdentifier),
+    // and the sale's record does not name it. A HELD payment refunded by finance keeps that id from PowerTranz's approved
+    // answer, as voids (providerVoidRef) and refunds to the card (card_credit_refunds.providerRefundRef) already do, so
+    // finance matches the portal's refund row. Only beside REFUNDED, written once, and a money reference Swift records.
+    it('[R1] REFUND answered: the refund\'s own transaction is kept on the session (shown to admins, a recorded money reference), written once and only beside REFUNDED', async () => {
+      const finance = await makeFinance();
+      const p = await makeStore();
+      const { sessionId, txnId } = await heldPayment(p, '203.0.113.49'); // its own source: the return page is rate-limited per address
+      const refundId = `d4e5f6a7-0000-4000-8000-${randomBytes(6).toString('hex')}`;
+      refundAnswer = (b) => ({ status: 200, body: { OriginalTrxnIdentifier: b['TransactionIdentifier'], TransactionType: 5, Approved: true, TransactionIdentifier: refundId, TotalAmount: b['TotalAmount'], CurrencyCode: b['CurrencyCode'], IsoResponseCode: '00', ResponseMessage: 'Transaction is approved' } });
+      try {
+        const done = await resolve(finance, sessionId, { action: 'REFUND', providerReference: txnId, amount: 2100 });
+        expect(done.statusCode, done.body).toBe(200);
+        expect(done.json().data).toMatchObject({ status: 'FAILED', resolution: 'REFUNDED', refund: 'succeeded' });
+      } finally { refundAnswer = adjusted; }
+      const row = await rowOf(sessionId);
+      expect(row).toMatchObject({ failureCode: 'REFUNDED_BY_FINANCE', providerRefundState: 'REFUNDED', providerRefundRef: refundId });
+      expect(row.providerTransactionRef).toBe(txnId);
+      const admin = await ptz.inject({ method: 'GET', url: `/api/v1/admin/billing/card-sessions/${sessionId}`, headers: { authorization: `Bearer ${finance.token}` } });
+      expect(admin.json().data).toMatchObject({ session: { providerRefundRef: refundId } });
+      // A typed "this is the return's reference" naming it is refused: it is a money reference Swift already holds.
+      expect(await referenceOnRecord(app.prisma as unknown as Prisma.TransactionClient, refundId.toUpperCase())).toBe(true);
+      // Written once.
+      await expect(app.prisma.cardSession.update({ where: { id: sessionId }, data: { providerRefundRef: 'e5f6a7b8-0000-4000-8000-00000000beef' } })).rejects.toThrow(/written once/);
+      await expect(app.prisma.cardSession.update({ where: { id: sessionId }, data: { providerRefundRef: null } })).rejects.toThrow(/written once/);
+      // Only beside a confirmed refund, and never longer than a provider reference.
+      const other = await heldPayment(await makeStore(), '203.0.113.47');
+      await expect(app.prisma.cardSession.update({ where: { id: other.sessionId }, data: { providerRefundRef: refundId } })).rejects.toThrow(/refund_ref_check|check constraint/i);
+      expect((await rowOf(sessionId)).providerRefundRef).toBe(refundId);
+    });
+
+    it('[R1] a refund answer that names only the sale (no id of its own) keeps no refund reference: never the sale\'s id twice', async () => {
+      const finance = await makeFinance();
+      const p = await makeStore();
+      const { sessionId, txnId } = await heldPayment(p, '203.0.113.48');
+      refundAnswer = (b) => ({ status: 200, body: { OriginalTrxnIdentifier: b['TransactionIdentifier'], TransactionType: 5, Approved: true, TransactionIdentifier: b['TransactionIdentifier'], TotalAmount: b['TotalAmount'], CurrencyCode: b['CurrencyCode'], IsoResponseCode: '00' } });
+      try {
+        expect((await resolve(finance, sessionId, { action: 'REFUND', providerReference: txnId, amount: 2100 })).json().data).toMatchObject({ resolution: 'REFUNDED', refund: 'succeeded' });
+      } finally { refundAnswer = adjusted; }
+      expect(await rowOf(sessionId)).toMatchObject({ providerRefundState: 'REFUNDED', providerRefundRef: null });
+    });
+
+    // [REVIEW-2484-B S4-5] A malformed id of the refund's own is not kept, but it is said (a warning, never the value).
+    it('[R1] an approved refund naming a malformed id of its own keeps no refund reference and logs a warning', async () => {
+      const finance = await makeFinance();
+      const p = await makeStore();
+      const { sessionId, txnId } = await heldPayment(p, '203.0.113.51');
+      const warned = vi.spyOn(log(), 'warn');
+      refundAnswer = (b) => ({ status: 200, body: { OriginalTrxnIdentifier: b['TransactionIdentifier'], TransactionType: 5, Approved: true, TransactionIdentifier: 'not a ref; DROP', TotalAmount: b['TotalAmount'], CurrencyCode: b['CurrencyCode'], IsoResponseCode: '00' } });
+      try {
+        expect((await resolve(finance, sessionId, { action: 'REFUND', providerReference: txnId, amount: 2100 })).json().data).toMatchObject({ resolution: 'REFUNDED', refund: 'succeeded' });
+        expect(warned.mock.calls.some(([, msg]) => String(msg).includes('malformed refund reference'))).toBe(true);
+        expect(JSON.stringify(warned.mock.calls)).not.toContain('DROP');
+      } finally { refundAnswer = adjusted; warned.mockRestore(); }
+      expect(await rowOf(sessionId)).toMatchObject({ providerRefundState: 'REFUNDED', providerRefundRef: null });
     });
 
     it('[Opus S3-3] REFUND never sends more than the card payment took: above the session amount it is refused before any claim or call', async () => {
@@ -3127,8 +3285,22 @@ describe('[PT-4] real cards through HTTP: Swift\'s hosted page, the bank\'s chec
       const book = await resolve(finance, session.sessionId, { action: 'BOOK', providerReference: txnId, amount: 2100 });
       expect(book.json().error?.code, book.body).toBe('VOID_MAY_HAVE_TAKEN_EFFECT');
       expect((await money(p.subId)).successes).toBe(0);
-      const refund = await resolve(finance, session.sessionId, { action: 'REFUND', providerReference: txnId, amount: 2100 });
-      expect(refund.json().data, refund.body).toMatchObject({ status: 'FAILED', resolution: 'REFUNDED', refund: 'succeeded' });
+      // [VOID-REFUND-CHECK F6] Nor is it reversed again while that void may have worked: first the provider's record.
+      const early = await resolve(finance, session.sessionId, { action: 'REFUND', providerReference: txnId, amount: 2100 });
+      expect(early.json().error?.code, early.body).toBe('VOID_MAY_HAVE_TAKEN_EFFECT');
+      lookupAnswer = (id) => id.toLowerCase() !== txnId.toLowerCase() ? { status: 404, body: 'not found' }
+        : { status: 200, body: stagingSaleRecord({ txn: txnId, order: `SWIFT-${session.sessionId}`, top: { TotalAmount: 2100 }, summary: { TotalCaptureAmount: 2100 } }) };
+      // The lost completion was already looked up once (its backoff window): a person's check comes later — and
+      // [REVIEW-2496-A S3-1] only ten minutes after Swift's void was sent (a void still in flight may yet land).
+      await redis.del(`${PTZ_PREFIX}l:${real.binding.account}:${txnId.toLowerCase()}`);
+      const row = await rowOf(session.sessionId);
+      const later = new Date(row.providerVoidAt!.getTime() + VOID_CHECK_WAIT_MS + 1_000);
+      const checked = await serviceOf().checkWithCardProvider({ sessionId: session.sessionId, tenantId: row.tenantId, adminUserId: finance.userId, now: later });
+      expect(checked).toMatchObject({ check: 'SALE_STANDS' });
+      const refund = await serviceOf().resolveHeld({ sessionId: session.sessionId, tenantId: row.tenantId, action: 'REFUND', providerReference: txnId, amount: 2100, adminUserId: finance.userId, now: later });
+      expect(refund).toMatchObject({ status: 'FAILED', resolution: 'REFUNDED', refund: 'succeeded', reversal: 'REFUND' });
+      expect(sent('/api/refund').filter((b) => b['TransactionIdentifier'] === txnId)).toHaveLength(1);
+      expect(sent('/api/void').filter((b) => b['TransactionIdentifier'] === txnId)).toHaveLength(1);
       expect((await money(p.subId)).successes).toBe(0);
     });
 
@@ -3226,13 +3398,267 @@ describe('[PT-4] real cards through HTTP: Swift\'s hosted page, the bank\'s chec
     });
   });
 
+  // [VOID-REFUND-CHECK F1/F3/F6 · LEGAL-CARDS 12 Nov 2026] PowerTranz: VOID a sale the bank has not settled, REFUND it once
+  // settled (by the bank, typically 2-3 business days); a declined transaction can never be refunded (code 12). Finance's
+  // REFUND decision now sends the reversal that fits the sale's age (SETTLED_CERTAIN, card-settlement.ts), and a reversal
+  // the provider REFUSES is never followed by another send in the same request: admins are paged, a person checks the
+  // provider's record, and only then may ONE more reversal (or "nothing taken") follow.
+  describe('[VOID-REFUND-CHECK] finance\'s reversal of a HELD card payment: void before settlement, refund after; a refused one goes to a person', () => {
+    const voidsOf = (txnId: string) => sent('/api/void').filter((b) => b['TransactionIdentifier'] === txnId);
+    const refundsOf = (txnId: string) => sent('/api/refund').filter((b) => b['TransactionIdentifier'] === txnId);
+    let addr = 0;
+    const from = () => `198.18.2.${(addr += 1)}`;
+    const refusedAnswer = (): Answer => ({ status: 200, body: { Approved: false, IsoResponseCode: '12', ResponseMessage: 'Invalid transaction' } });
+    const recordOf = (txnId: string, sessionId: string, fields: Record<string, unknown> = {}, summary: Record<string, unknown> = {}) => (id: string): Answer =>
+      id.toLowerCase() !== txnId.toLowerCase() ? { status: 404, body: 'not found' } : {
+        status: 200,
+        body: stagingSaleRecord({ txn: txnId, order: `SWIFT-${sessionId}`, top: { TotalAmount: 2100, ...fields },
+          summary: { TotalCaptureAmount: 2100, CreditCount: Number(summary['TotalCreditAmount'] ?? 0) > 0 ? 1 : 0, ...summary } }),
+      };
+    const check = (admin: { token: string }, sessionId: string) => injectWithApproval(ptz, {
+      method: 'POST', url: `/api/v1/admin/billing/card-sessions/${sessionId}/check-provider`,
+      headers: { authorization: `Bearer ${admin.token}`, 'content-type': 'application/json', 'x-swift-reason': TEST_ADMIN_REASON },
+      payload: {} as never,
+    });
+    const paged = (userId: string, sessionId: string) => app.prisma.notification.count({ where: { userId, dedupeKey: { startsWith: `card-held-reversal-not-done:${sessionId}:` } } });
+
+    it('[F1] HELD REFUND of a sale captured < SETTLED_CERTAIN ago sends /api/void (no TotalAmount), not /api/refund; closed REFUNDED as voided', async () => {
+      const finance = await makeFinance();
+      const p = await makeStore();
+      const { sessionId, txnId } = await verifiedHeldPayment(p, from());
+      const done = await resolve(finance, sessionId, { action: 'REFUND', providerReference: txnId, amount: 2100 });
+      expect(done.statusCode, done.body).toBe(200);
+      expect(done.json().data).toMatchObject({ status: 'FAILED', resolution: 'REFUNDED', refund: 'succeeded', reversal: 'VOID' });
+      expect(voidsOf(txnId)).toEqual([{ TransactionIdentifier: txnId }]);
+      expect(refundsOf(txnId)).toHaveLength(0);
+      expect(await rowOf(sessionId)).toMatchObject({ failureCode: 'VOIDED_BY_FINANCE', providerRefundState: 'REFUNDED', providerReversalKind: 'VOID', resolvedBy: finance.userId });
+      expect((await confirmationOf(sessionId))?.status).toBe('PROVEN_UNPAID');
+      expect((await money(p.subId)).successes).toBe(0);
+    });
+
+    it('[F1] HELD REFUND of a sale captured >= SETTLED_CERTAIN ago sends /api/refund with the whole TotalAmount', async () => {
+      const finance = await makeFinance();
+      const p = await makeStore();
+      const { sessionId, txnId } = await verifiedHeldPayment(p, from());
+      const row = await rowOf(sessionId);
+      // Decided 14 days on: past SETTLED_CERTAIN, the bank has certainly settled the sale (the session's own times never change).
+      const done = await serviceOf().resolveHeld({ sessionId, tenantId: row.tenantId, action: 'REFUND', providerReference: txnId, amount: 2100, adminUserId: finance.userId, now: new Date(Date.now() + 14 * DAY) });
+      expect(done).toMatchObject({ status: 'FAILED', resolution: 'REFUNDED', refund: 'succeeded', reversal: 'REFUND' });
+      expect(refundsOf(txnId)).toEqual([{ Refund: true, TransactionIdentifier: txnId, TotalAmount: 2100, CurrencyCode: '328' }]);
+      expect(voidsOf(txnId)).toHaveLength(0);
+      expect(await rowOf(sessionId)).toMatchObject({ failureCode: 'REFUNDED_BY_FINANCE', providerRefundState: 'REFUNDED', providerReversalKind: 'REFUND' });
+    });
+
+    it('[F1 · F3a · F3b] HELD void refused 12 -> no /api/refund in the same request; HELD for a check, admins paged once; the record showing an approved unreversed sale allows exactly ONE refund under a new key; a second press sends nothing', async () => {
+      const finance = await makeFinance();
+      const p = await makeStore();
+      const { sessionId, txnId } = await verifiedHeldPayment(p, from());
+      voidAnswer = refusedAnswer;
+      const refused = await resolve(finance, sessionId, { action: 'REFUND', providerReference: txnId, amount: 2100 });
+      voidAnswer = adjusted;
+      expect(refused.statusCode, refused.body).toBe(200);
+      expect(refused.json().data).toMatchObject({ status: 'HELD', resolution: null, refund: 'failed', reversal: 'VOID', next: 'CHECK_WITH_CARD_PROVIDER' });
+      expect(voidsOf(txnId)).toHaveLength(1);
+      expect(refundsOf(txnId)).toHaveLength(0);
+      expect(await rowOf(sessionId)).toMatchObject({ status: 'HELD', providerRefundState: 'FAILED', providerReversalKind: 'VOID', reversalCheck: null, reversalRetryAt: null });
+      expect(await paged(finance.userId, sessionId)).toBe(1);
+      const [page] = await app.prisma.notification.findMany({ where: { userId: finance.userId, dedupeKey: { startsWith: `card-held-reversal-not-done:${sessionId}:` } } });
+      expect(page?.body).toContain('Check with the card provider');
+      // Pressed again before any check: refused, nothing sent; "nothing taken" needs the check too.
+      const again = await resolve(finance, sessionId, { action: 'REFUND', providerReference: txnId, amount: 2100 });
+      expect(again.json().error?.code, again.body).toBe('REVERSAL_CHECK_REQUIRED');
+      const nothing = await resolve(finance, sessionId, { action: 'NOTHING_TAKEN', providerReference: txnId });
+      expect(nothing.json().error?.code, nothing.body).toBe('REFUND_SENT');
+      expect(voidsOf(txnId)).toHaveLength(1);
+      expect(refundsOf(txnId)).toHaveLength(0);
+      expect(await paged(finance.userId, sessionId)).toBe(1);
+      // The provider's record: an approved, captured sale, no credit, no void -> SALE_STANDS.
+      lookupAnswer = recordOf(txnId, sessionId);
+      const checked = await check(finance, sessionId);
+      expect(checked.json().data, checked.body).toMatchObject({ kind: 'HELD_PAYMENT', check: 'SALE_STANDS', status: 'HELD', resolution: null });
+      expect((await rowOf(sessionId)).reversalCheck).toBe('SALE_STANDS');
+      expect(voidsOf(txnId)).toHaveLength(1);
+      expect(refundsOf(txnId)).toHaveLength(0);
+      // ONE further reversal: a refund (the void was refused), under its own key; the void's key is never sent again.
+      const retry = await resolve(finance, sessionId, { action: 'REFUND', providerReference: txnId, amount: 2100 });
+      expect(retry.json().data, retry.body).toMatchObject({ status: 'FAILED', resolution: 'REFUNDED', refund: 'succeeded', reversal: 'REFUND' });
+      expect(refundsOf(txnId)).toEqual([{ Refund: true, TransactionIdentifier: txnId, TotalAmount: 2100, CurrencyCode: '328' }]);
+      expect(voidsOf(txnId)).toHaveLength(1);
+      expect(await redis.exists(`${PTZ_PREFIX}r:${real.binding.account}:refund:retry-refund:${sessionId}`)).toBe(1);
+      expect(await rowOf(sessionId)).toMatchObject({ providerRefundState: 'REFUNDED', providerReversalKind: 'REFUND', failureCode: 'REFUNDED_BY_FINANCE' });
+      expect((await rowOf(sessionId)).reversalRetryAt).not.toBeNull();
+      const third = await resolve(finance, sessionId, { action: 'REFUND', providerReference: txnId, amount: 2100 });
+      expect(third.json().error?.code, third.body).toBe('CARD_SESSION_NOT_HELD');
+      expect(refundsOf(txnId)).toHaveLength(1);
+      expect(voidsOf(txnId)).toHaveLength(1);
+    });
+
+    it('[F3] Swift\'s void refused, then finance\'s refund refused: the sale still stands on the record, but nothing more is ever sent: the owner', async () => {
+      const finance = await makeFinance();
+      const p = await makeStore();
+      const { sessionId, txnId } = await heldPayment(p, from());
+      refundAnswer = refusedAnswer;
+      const refused = await resolve(finance, sessionId, { action: 'REFUND', providerReference: txnId, amount: 2100 });
+      refundAnswer = adjusted;
+      // Swift's own void was already refused: finance's reversal is a refund, whatever the sale's age.
+      expect(refused.json().data, refused.body).toMatchObject({ status: 'HELD', refund: 'failed', reversal: 'REFUND', next: 'CHECK_WITH_CARD_PROVIDER' });
+      lookupAnswer = recordOf(txnId, sessionId);
+      expect((await check(finance, sessionId)).json().data).toMatchObject({ check: 'SALE_STANDS' });
+      const more = await resolve(finance, sessionId, { action: 'REFUND', providerReference: txnId, amount: 2100 });
+      expect(more.json().error?.code, more.body).toBe('REVERSAL_ALREADY_RETRIED');
+      expect(refundsOf(txnId)).toHaveLength(1);
+      expect(voidsOf(txnId)).toHaveLength(1); // Swift's own void, refused at the start
+    });
+
+    it('[F3b] HELD refund FAILED + the record shows 3D0 / capture 0 (never approved) -> NOTHING_TAKEN allowed (two people), resolved PROVEN_UNPAID; never booked', async () => {
+      const finance = await makeFinance();
+      const p = await makeStore();
+      const { sessionId, txnId } = await heldPayment(p, from());
+      refundAnswer = refusedAnswer;
+      expect((await resolve(finance, sessionId, { action: 'REFUND', providerReference: txnId, amount: 2100 })).json().data).toMatchObject({ refund: 'failed' });
+      refundAnswer = adjusted;
+      lookupAnswer = (id) => id.toLowerCase() !== txnId.toLowerCase() ? { status: 404, body: 'not found' } : { status: 200, body: stagingAuthenticatedRecord(txnId) };
+      const checked = await check(finance, sessionId);
+      expect(checked.json().data, checked.body).toMatchObject({ check: 'NOT_TAKEN_ON_RECORD', status: 'HELD' });
+      expect((await rowOf(sessionId)).reversalCheck).toBe('NOT_TAKEN');
+      const book = await resolve(finance, sessionId, { action: 'BOOK', providerReference: txnId, amount: 2100 });
+      expect(book.json().error?.code, book.body).toBe('PROVIDER_SAYS_NOT_TAKEN');
+      const more = await resolve(finance, sessionId, { action: 'REFUND', providerReference: txnId, amount: 2100 });
+      expect(more.json().error?.code, more.body).toBe('REVERSAL_CHECK_REQUIRED');
+      const none = await resolve(finance, sessionId, { action: 'NOTHING_TAKEN', providerReference: txnId });
+      expect(none.json().data, none.body).toMatchObject({ status: 'FAILED', resolution: 'NOTHING_TAKEN' });
+      expect((await confirmationOf(sessionId))?.status).toBe('PROVEN_UNPAID');
+      expect(refundsOf(txnId)).toHaveLength(1);
+      expect((await money(p.subId)).successes).toBe(0);
+    });
+
+    it('[F3b · F5] HELD refund FAILED + the record shows the payment voided: recorded REFUNDED (never paid back twice), the owner told', async () => {
+      const finance = await makeFinance();
+      const p = await makeStore();
+      const { sessionId, txnId } = await heldPayment(p, from());
+      refundAnswer = refusedAnswer;
+      await resolve(finance, sessionId, { action: 'REFUND', providerReference: txnId, amount: 2100 });
+      refundAnswer = adjusted;
+      lookupAnswer = recordOf(txnId, sessionId, {}, { VoidDateTime: new Date(Date.now() - 4 * 60 * 60_000).toISOString().slice(0, 19) });
+      const checked = await check(finance, sessionId);
+      expect(checked.json().data, checked.body).toMatchObject({ check: 'REFUNDED', status: 'FAILED', resolution: 'REFUNDED' });
+      expect(await rowOf(sessionId)).toMatchObject({ providerRefundState: 'REFUNDED', resolution: 'REFUNDED' });
+      expect(await app.prisma.notification.count({ where: { userId: finance.userId, dedupeKey: `card-reversal-check:${sessionId}:REFUNDED` } })).toBe(1);
+      expect(refundsOf(txnId)).toHaveLength(1);
+    });
+
+    it('[F6] HELD with Swift\'s own void UNKNOWN: REFUND -> 409 VOID_MAY_HAVE_TAKEN_EFFECT, nothing sent', async () => {
+      payment = () => 'network';
+      voidAnswer = () => 'network';
+      const finance = await makeFinance();
+      const p = await makeStore();
+      const session = (await open(p)).json().data;
+      const txnId = (await heldOf(session.sessionId))['txnId']!;
+      await bankFramePosts(session.sessionId, 'Y', {}, from());
+      voidAnswer = adjusted;
+      payment = approve();
+      expect(await rowOf(session.sessionId)).toMatchObject({ status: 'HELD', providerVoidState: 'UNKNOWN' });
+      const refund = await resolve(finance, session.sessionId, { action: 'REFUND', providerReference: txnId, amount: 2100 });
+      expect(refund.statusCode, refund.body).toBe(409);
+      expect(refund.json().error?.code).toBe('VOID_MAY_HAVE_TAKEN_EFFECT');
+      expect(refundsOf(txnId)).toHaveLength(0);
+      expect(voidsOf(txnId)).toHaveLength(1);
+      expect((await rowOf(session.sessionId)).providerRefundState).toBeNull();
+    });
+
+    /** A HELD payment whose own void got no answer (UNKNOWN), its completion's lookup gate cleared for a person's check. */
+    async function voidUnknown(p: Partner) {
+      payment = () => 'network';
+      voidAnswer = () => 'network';
+      const session = (await open(p)).json().data;
+      const txnId = (await heldOf(session.sessionId))['txnId']!;
+      await bankFramePosts(session.sessionId, 'Y', {}, from());
+      voidAnswer = adjusted;
+      payment = approve();
+      await redis.del(`${PTZ_PREFIX}l:${real.binding.account}:${txnId.toLowerCase()}`);
+      const row = await rowOf(session.sessionId);
+      expect(row).toMatchObject({ status: 'HELD', providerVoidState: 'UNKNOWN', providerRefundState: null });
+      return { sessionId: session.sessionId as string, txnId, row };
+    }
+    const lookupsOf = (txnId: string) => calls.filter((c) => c.path === `/api/Transactions/${txnId}`).length;
+
+    it('[REVIEW-2496-A S3-1] void UNKNOWN 1 min ago -> the check is refused (wait), no lookup; 11 min later -> SALE_STANDS -> one refund, never a double reversal', async () => {
+      const finance = await makeFinance();
+      const p = await makeStore();
+      const { sessionId, txnId, row } = await voidUnknown(p);
+      lookupAnswer = recordOf(txnId, sessionId);
+      const soon = new Date(row.providerVoidAt!.getTime() + 60_000);
+      const before = lookupsOf(txnId);
+      await expect(serviceOf().checkWithCardProvider({ sessionId, tenantId: row.tenantId, adminUserId: finance.userId, now: soon })).rejects.toMatchObject({ code: 'NOTHING_TO_CHECK' });
+      expect(lookupsOf(txnId) - before).toBe(0);
+      const later = new Date(row.providerVoidAt!.getTime() + VOID_CHECK_WAIT_MS + 60_000);
+      expect(await serviceOf().checkWithCardProvider({ sessionId, tenantId: row.tenantId, adminUserId: finance.userId, now: later })).toMatchObject({ check: 'SALE_STANDS' });
+      expect(lookupsOf(txnId) - before).toBe(1);
+      // Even with the check, a refund sent before the void's ten minutes would be refused (the same gate, at the send).
+      await expect(serviceOf().resolveHeld({ sessionId, tenantId: row.tenantId, action: 'REFUND', providerReference: txnId, amount: 2100, adminUserId: finance.userId, now: soon }))
+        .rejects.toMatchObject({ code: 'VOID_MAY_HAVE_TAKEN_EFFECT' });
+      // [REVIEW-2496-A S4-1] The record shows the sale standing: never "nothing taken".
+      await expect(serviceOf().resolveHeld({ sessionId, tenantId: row.tenantId, action: 'NOTHING_TAKEN', providerReference: txnId, adminUserId: finance.userId, now: later }))
+        .rejects.toMatchObject({ code: 'PROVIDER_SAYS_TAKEN' });
+      expect(await serviceOf().resolveHeld({ sessionId, tenantId: row.tenantId, action: 'REFUND', providerReference: txnId, amount: 2100, adminUserId: finance.userId, now: later }))
+        .toMatchObject({ status: 'FAILED', resolution: 'REFUNDED', reversal: 'REFUND' });
+      expect(refundsOf(txnId)).toHaveLength(1);
+      expect(voidsOf(txnId)).toHaveLength(1);
+    });
+
+    it('[REVIEW-2496-B S3-1] void UNKNOWN -> check SALE_STANDS -> refund refused: the check is spent (reversalCheck null), the check is offered again, and nothing more can be sent (owner)', async () => {
+      const finance = await makeFinance();
+      const p = await makeStore();
+      const { sessionId, txnId, row } = await voidUnknown(p);
+      lookupAnswer = recordOf(txnId, sessionId);
+      const later = new Date(row.providerVoidAt!.getTime() + VOID_CHECK_WAIT_MS + 60_000);
+      expect(await serviceOf().checkWithCardProvider({ sessionId, tenantId: row.tenantId, adminUserId: finance.userId, now: later })).toMatchObject({ check: 'SALE_STANDS' });
+      refundAnswer = refusedAnswer;
+      expect(await serviceOf().resolveHeld({ sessionId, tenantId: row.tenantId, action: 'REFUND', providerReference: txnId, amount: 2100, adminUserId: finance.userId, now: later }))
+        .toMatchObject({ status: 'HELD', refund: 'failed', reversal: 'REFUND', next: 'CHECK_WITH_CARD_PROVIDER' });
+      refundAnswer = adjusted;
+      expect(await rowOf(sessionId)).toMatchObject({ providerRefundState: 'FAILED', reversalCheck: null });
+      const listed = await ptz.inject({ method: 'GET', url: '/api/v1/admin/billing/card-sessions?status=HELD&limit=200', headers: { authorization: `Bearer ${finance.token}` } });
+      expect(listed.json().data.sessions.find((x: { id: string }) => x.id === sessionId), listed.body).toMatchObject({ providerCheck: true, reversalCheck: null });
+      // Checked again: the sale still stands — but both kinds were refused (Swift's void, then the refund): the owner.
+      await redis.del(`${PTZ_PREFIX}l:${real.binding.account}:${txnId.toLowerCase()}`);
+      expect(await serviceOf().checkWithCardProvider({ sessionId, tenantId: row.tenantId, adminUserId: finance.userId, now: later })).toMatchObject({ check: 'SALE_STANDS' });
+      await expect(serviceOf().resolveHeld({ sessionId, tenantId: row.tenantId, action: 'REFUND', providerReference: txnId, amount: 2100, adminUserId: finance.userId, now: later }))
+        .rejects.toMatchObject({ code: 'REVERSAL_ALREADY_RETRIED' });
+      expect(refundsOf(txnId)).toHaveLength(1);
+      expect(voidsOf(txnId)).toHaveLength(1);
+      // The database: a claim that keeps a check is refused (a stale check can never authorise a retry), and a check is
+      // never recorded on a payment whose reversal was neither refused nor unanswered.
+      await expect(app.prisma.cardSession.update({ where: { id: sessionId }, data: { providerRefundState: 'SENDING', reversalRetryAt: new Date() } })).rejects.toThrow(/spends its check/);
+      const fresh = await makeStore();
+      const { sessionId: other } = await verifiedHeldPayment(fresh, from());
+      await expect(app.prisma.cardSession.update({ where: { id: other }, data: { reversalCheck: 'NOT_TAKEN' } })).rejects.toThrow(/refused or unanswered reversal/);
+      // [REVIEW-2496 round 2] A NULL state never slips past the guards (NOT NULL is not TRUE): no reversal is ever
+      // recorded done, or a void done, without its claim.
+      await expect(app.prisma.cardSession.update({ where: { id: other }, data: { providerRefundState: 'REFUNDED' } })).rejects.toThrow(/only moves forward/);
+      await expect(app.prisma.cardSession.update({ where: { id: other }, data: { providerVoidState: 'VOIDED' } })).rejects.toThrow(/only moves forward/);
+    });
+
+    it('[REVIEW-2496-A S4-2] BOOK after a refused reversal needs a check first (a refusal can mean it was already reversed)', async () => {
+      const finance = await makeFinance();
+      const p = await makeStore();
+      const { sessionId, txnId } = await verifiedHeldPayment(p, from());
+      voidAnswer = refusedAnswer;
+      expect((await resolve(finance, sessionId, { action: 'REFUND', providerReference: txnId, amount: 2100 })).json().data).toMatchObject({ refund: 'failed', reversal: 'VOID' });
+      voidAnswer = adjusted;
+      const book = await resolve(finance, sessionId, { action: 'BOOK', providerReference: txnId, amount: 2100 });
+      expect(book.json().error?.code, book.body).toBe('REVERSAL_CHECK_REQUIRED');
+      expect((await money(p.subId)).successes).toBe(0);
+    });
+  });
+
   it('the result can also arrive as a form field holding the JSON; a result naming another page completes nothing', async () => {
     const p = await makeRider();
     const session = (await open(p)).json().data;
     const held = await heldOf(session.sessionId);
     const forged = { IsoResponseCode: '3D0', SpiToken: 'spi-someone-else', TransactionIdentifier: held['txnId'], RiskManagement: { ThreeDSecure: { ResponseCode: '3D0', AuthenticationStatus: 'Y' } } };
     const before = completions();
-    const res = await ptz.inject({ method: 'POST', url: merchantResponsePath(), headers: { 'content-type': 'application/x-www-form-urlencoded' }, payload: `Response=${encodeURIComponent(JSON.stringify(forged))}` });
+    const res = await ptz.inject({ method: 'POST', url: merchantResponsePath(), headers: { 'content-type': 'application/x-www-form-urlencoded' }, payload: `Response=${encodeURIComponent(JSON.stringify(forged))}`, remoteAddress: '203.0.113.50' });
     expect(pageState(res.body)).toBe('FAILED');
     expect(completions()).toBe(before);
     expect((await money(p.subId)).successes).toBe(0);

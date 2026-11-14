@@ -98,6 +98,12 @@ export interface ExportEntry {
   readonly month?: readonly string[];
   /** Only rows whose column is before the person's last daily rating fold (the boundary the app honours). */
   readonly foldedBefore?: string;
+  /**
+   * [FABLE-02 F1 · 13 Nov 2026] A row read as the person's own app reads it: 'applicantDocument' gives a document's
+   * `reviewNote` as applicantReason (verification.service.ts) — a fraud-class rejection as the generic line, a
+   * withdrawal as "Withdrawn by our team", a coded note without its code — never the reviewer's raw internal note.
+   */
+  readonly shape?: 'applicantDocument';
   /** The file's row order (after `month`): never creation order, which would pair the k-th row with the k-th trip. */
   readonly sortBy?: readonly string[];
   /**
@@ -224,7 +230,7 @@ export const EXPORT_REGISTER: readonly ExportEntry[] = [
   },
   {
     category: 'sessions', model: 'Session', by: ['userId'], key: 'id',
-    fields: ['id', 'userId', 'authMethod', 'rotatedAt', 'deviceType', 'ipAddress', 'userAgent', 'expiresAt', 'createdAt'],
+    fields: ['id', 'userId', 'authMethod', 'rotatedAt', 'deviceType', 'ipAddress', 'userAgent', 'expiresAt', 'createdAt', 'mfaVerifiedAt', 'consoleBoundAt'],
   },
   {
     category: 'devices', model: 'DeviceToken', by: ['userId'], key: 'id',
@@ -233,8 +239,8 @@ export const EXPORT_REGISTER: readonly ExportEntry[] = [
     fields: ['id', 'userId', 'platform', 'isActive', 'createdAt', 'alertsVersion'],
   },
   {
-    category: 'verificationDocuments', model: 'VerificationDocument', by: ['userId'], key: 'id', omit: { approvalHeldAt: 'SYSTEM' },
-    fields: ['id', 'userId', 'role', 'docType', 'status', 'state', 'expiresAt', 'reviewNote', 'reviewedAt', 'insurerName', 'policyNumber', 'coverageClass', 'hireClassConfirmed', 'plateCrossChecked', 'consentAt', 'privacyNoticeVersion', 'retentionExpiresAt', 'purgedAt', 'createdAt', 'updatedAt', 'subjectId', 'imagePurgedAt'],
+    category: 'verificationDocuments', model: 'VerificationDocument', by: ['userId'], key: 'id', omit: { approvalHeldAt: 'SYSTEM', accountChangeId: 'SYSTEM' }, shape: 'applicantDocument',
+    fields: ['id', 'userId', 'role', 'docType', 'status', 'state', 'expiresAt', 'reviewNote', 'reviewedAt', 'insurerName', 'policyNumber', 'coverageClass', 'hireClassConfirmed', 'plateCrossChecked', 'consentAt', 'privacyNoticeVersion', 'retentionExpiresAt', 'purgedAt', 'createdAt', 'updatedAt', 'subjectId', 'imagePurgedAt', 'assistedConsentId'],
   },
   {
     category: 'uploadedFiles', model: 'EncryptedObject', by: ['createdBy'], key: 'fileKey',
@@ -294,7 +300,7 @@ export const EXPORT_REGISTER: readonly ExportEntry[] = [
   },
   {
     category: 'cardPayments', model: 'CardSession', by: ['userId'], key: 'id',
-    fields: ['id', 'subscriptionId', 'userId', 'purpose', 'status', 'provider', 'environment', 'providerAccount', 'amount', 'currencyCode', 'periodStart', 'expiresAt', 'returnedAt', 'confirmedAt', 'lastCheckedAt', 'consentVersion', 'consentAt', 'failureCode', 'instrumentId', 'paymentId', 'providerTransactionRef', 'completionClaimedAt', 'providerVoidState', 'providerVoidAt', 'providerVoidRef', 'providerRefundState', 'providerRefundAt', 'bookClaimedAt', 'resolution', 'resolvedAt', 'createdAt', 'updatedAt'],
+    fields: ['id', 'subscriptionId', 'userId', 'purpose', 'status', 'provider', 'environment', 'providerAccount', 'amount', 'currencyCode', 'periodStart', 'expiresAt', 'returnedAt', 'confirmedAt', 'lastCheckedAt', 'consentVersion', 'consentAt', 'failureCode', 'instrumentId', 'paymentId', 'providerTransactionRef', 'completionClaimedAt', 'providerVoidState', 'providerVoidAt', 'providerVoidRef', 'providerRefundState', 'providerRefundAt', 'providerRefundRef', 'providerReversalKind', 'reversalCheck', 'reversalRetryAt', 'bookClaimedAt', 'resolution', 'resolvedAt', 'createdAt', 'updatedAt'],
   },
   {
     category: 'mmgCheckouts', model: 'MmgCheckoutIntent', by: ['createdByUserId'], key: 'id', omit: { candidates: 'SYSTEM' },
@@ -307,6 +313,38 @@ export const EXPORT_REGISTER: readonly ExportEntry[] = [
   {
     category: 'emergencyContacts', model: 'EmergencyContact', by: ['userId'], key: 'id',
     fields: ['id', 'userId', 'name', 'phoneE164', 'relationship', 'priority', 'verifiedAt', 'createdAt', 'updatedAt'],
+  },
+  {
+    // [COMPANY-DOCS PART 2] The letters of authority the person asked a director (or the business's owner) to sign in
+    // Swift: what they typed (as an emergency contact: the business, their own name and role, the signer's name and
+    // number) and how far it got. The signer's own evidence (their network address digest, browser and signature
+    // fingerprint) is the signer's, not the account holder's; the link and code are secrets; the PDF is a stored file.
+    category: 'authorityLetters', model: 'AuthorityLetterRequest', by: ['userId'], key: 'id',
+    omit: {
+      tokenHash: 'SECRET', codeHash: 'SECRET', signingKeyHash: 'SECRET', letterSha256: 'SECRET', pdfFileKey: 'STORED_FILE',
+      signerIpHmac: 'OTHER_PERSON', signerUserAgent: 'OTHER_PERSON', signatureSha256: 'OTHER_PERSON',
+      codeExpiresAt: 'SYSTEM', codeAttempts: 'SYSTEM', codeSends: 'SYSTEM', signingKeyExpiresAt: 'SYSTEM', signingClaimedAt: 'SYSTEM', accountBasis: 'SYSTEM',
+    },
+    fields: ['id', 'userId', 'docType', 'businessName', 'registrationNumber', 'requesterName', 'requesterRole', 'signerName', 'signerPhone',
+      'letterText', 'status', 'linkExpiresAt', 'sendCount', 'lastSentAt', 'openedAt', 'codeVerifiedAt', 'signedAt', 'documentId', 'endedAt', 'createdAt', 'updatedAt'],
+  },
+  {
+    // [COMPANY-DOCS Part 3 · review-2475 F4] A change of business type, or of account holder, the person asked for
+    // (requestedById: the holder) or was named in (newHolderId: the person named), and how it was decided (the reason
+    // is the words the store and the person named read). The previous holder's id (holderId: the asker) and the
+    // deciding person's id are not repeated; the account row and the paper ids are bookkeeping.
+    category: 'accountChanges', model: 'AccountChangeRequest', by: ['requestedById', 'newHolderId'], key: 'id',
+    omit: { holderId: 'OTHER_PERSON', vendorOwnerId: 'SYSTEM', sellerLegalNameDocId: 'SYSTEM' },
+    fields: ['id', 'kind', 'status', 'requestedById', 'fromOption', 'toOption', 'newHolderId', 'newHolderAcceptedAt', 'decidedAt', 'decisionReason',
+      'sellerLegalName', 'sellerLegalNameAt', 'createdAt', 'updatedAt'],
+  },
+  {
+    // [ASSISTED SETUP · owner 12 Nov 2026] The OKs recorded for Swift to set up the person's store from the console:
+    // who at the store agreed (as the admin typed it), how, when, the reference and the consent words' version. The
+    // admin's id and their reason are staff work; the store row is bookkeeping.
+    category: 'assistedSetupConsents', model: 'AssistedSetupConsent', by: ['holderId'], key: 'id',
+    omit: { vendorId: 'SYSTEM', recordedByAdminId: 'OTHER_PERSON', reason: 'INTERNAL_NOTE' },
+    fields: ['id', 'holderId', 'agreedByName', 'agreedAs', 'channel', 'agreedAt', 'reference', 'consentDocumentType', 'consentVersion', 'createdAt'],
   },
   {
     // [O-1] The Swift-bridged calls the person asked for on their orders: which party (a role, never a
@@ -347,7 +385,10 @@ export const EXPORT_REGISTER: readonly ExportEntry[] = [
     // [CHAINS] The chain deal is the owner's own commercial term: its weekly fee, currency and when it was set. Who at
     // Swift set it and the staff's reason are Swift's internal record.
     // [CHAINS PR3] The brand name customers see for all the owner's branches is the owner's own business name.
-    fields: ['id', 'userId', 'createdAt', 'dealWeeklyRate', 'dealCurrencyCode', 'dealSetAt', 'brandName', 'dealChangeKind', 'dealChangeFrom', 'dealChangeTo', 'dealChangeNotBefore', 'dealChangeSetAt', 'dealChangeSwitchedAt'],
+    // [R3 · review F1] the business's legal name a person at Swift typed from its registration paper, when, and which of
+    // the person's own papers it was typed from (who typed it is another person: left out by the `…ById` rule)
+    // [COMPANY-DOCS] Who holds the account (owner, a company's account holder, a business's manager): the person's own choice.
+    fields: ['id', 'userId', 'createdAt', 'dealWeeklyRate', 'dealCurrencyCode', 'dealSetAt', 'brandName', 'dealChangeKind', 'dealChangeFrom', 'dealChangeTo', 'dealChangeNotBefore', 'dealChangeSetAt', 'dealChangeSwitchedAt', 'accountBasis', 'sellerLegalName', 'sellerLegalNameAt', 'sellerLegalNameDocId'],
     omit: { dealReason: 'INTERNAL_NOTE', dealSetBy: 'OTHER_PERSON', dealChangeReason: 'INTERNAL_NOTE', dealChangeSetBy: 'OTHER_PERSON' },
   },
   {
@@ -492,6 +533,11 @@ export const WITHHELD: Readonly<Record<string, { readonly reason: WithheldReason
   'CashHandoverEvidence.customerId': { reason: 'OTHER_PEOPLE', note: 'the cash handover record a mover filed for an order of yours' },
   'Admin.userId': { reason: 'STAFF_WORK', note: 'your Swift staff permissions' },
   'AdCreative.reviewedByUserId': { reason: 'STAFF_WORK', note: 'ad reviews done as staff' },
+  // [review-2475 D5] The person at Swift who typed a seller's legal name, or confirmed a store's name, from its papers.
+  'AccountChangeRequest.sellerLegalNameById': { reason: 'STAFF_WORK', note: 'seller names typed from papers as staff' },
+  'VendorOwner.sellerLegalNameById': { reason: 'STAFF_WORK', note: 'seller names typed from papers as staff' },
+  'Vendor.sellerNameCheckedById': { reason: 'STAFF_WORK', note: 'store names confirmed as staff' },
+  'AccountChangeRequest.decidedById': { reason: 'STAFF_WORK', note: 'account changes decided as staff (a change the person asked for, or was named in, is in the file with its answer)' },
   'CardCreditRefund.requestedByUserId': { reason: 'STAFF_WORK', note: 'card refunds of weekly-fee money asked by staff' },
   'FeeRefundCase.openedByUserId': { reason: 'STAFF_WORK', note: 'weekly-fee refund cases recorded as staff' },
   'AdCampaign.destinationApprovedByUserId': { reason: 'STAFF_WORK', note: 'ad links approved as staff' },
@@ -552,6 +598,7 @@ export const PLACES_NOT_EXPORTED: Readonly<Record<string, string>> = {
 export const ALSO_COVERED: Readonly<Record<string, string>> = {
   'HandoverPhotoProof.actorId': 'handoverPhotoProofs',
   'CashHandoverEvidence.actorId': 'cashHandoverRecords',
+  'AccountChangeRequest.holderId': 'accountChanges', // the holder who asked: always requestedById on a handover
 };
 
 /** Columns whose name looks like a person link but that hold something else. */

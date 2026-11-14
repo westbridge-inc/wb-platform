@@ -27,8 +27,13 @@ declare const styles: {
   readonly factPaused: string;
   readonly facts: string;
   readonly field: string;
+  readonly followUpGroup: string;
   readonly fromLabel: string;
   readonly guestCopy: string;
+  readonly halfChoice: string;
+  readonly halfChoiceOn: string;
+  readonly halfChoices: string;
+  readonly halfPicker: string;
   readonly heartOn: string;
   readonly iconButton: string;
   readonly itemCopy: string;
@@ -61,6 +66,7 @@ declare const styles: {
   readonly optionLabelDisabled: string;
   readonly optionMeta: string;
   readonly optionPrice: string;
+  readonly optionRow: string;
   readonly optionTitle: string;
   readonly options: string;
   readonly page: string;

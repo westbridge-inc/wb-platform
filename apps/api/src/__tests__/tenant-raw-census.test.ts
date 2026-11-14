@@ -93,6 +93,8 @@ const CENSUS: Record<string, { sites: number; role: Role }> = {
   'modules/user/account.service.ts': { sites: 1, role: 'SHARED' },
   'modules/user/partner-wind-down.ts': { sites: 2, role: 'SHARED' },
   'modules/vendor/vendor.routes.ts': { sites: 1, role: 'REQUEST' },
+  // [COMPANY-DOCS PART 2] The daily belt's read of signed letters whose filed document was purged (runAsSystem 'authority-letter-sweep').
+  'modules/vendor/authority-letter/authority-letter.service.ts': { sites: 1, role: 'JOB' },
   // [Row 249] The abandoned-application sweep's open-case census (reports about a person's rating, message, store or
   // item): read-only, run by the daily documents job on the system login (runAsSystem 'verification:abandoned-case-census').
   'modules/verification/abandoned-application.ts': { sites: 2, role: 'JOB' },

@@ -399,3 +399,65 @@ describe('[STORE-ALERT-RECONNECT] the offer card recovers on the screen\'s retur
     expect(asked).toBe(0);
   });
 });
+
+// [PROD-RIDER-TEST review S3-2] After a return to the screen the card the server holds is not drawn until the
+// recovery read answers; until then the hook says `recovering`, and the rider's home is not a resting screen for an
+// OTA restart (lib/moverHomeResting).
+/** The recovery read (unwrap, then the finally) needs a few more ticks than a card to land. */
+async function landRider() {
+  for (let i = 0; i < 8; i += 1) await Promise.resolve();
+  return render('RIDER');
+}
+
+describe('[review S3-2] the hook says when an offer recovery is in flight', () => {
+  it('true from a return to the screen until the slow read answers (with the card), then false', async () => {
+    expect(render('RIDER').recovering).toBe(true); // the mount's own read is in flight
+    await landRider();
+    expect(render('RIDER').recovering).toBe(false);
+    let answer!: (v: unknown) => void;
+    h.riderOverride.currentOffer = () => new Promise((resolve) => { answer = resolve; });
+    emitAppForeground();
+    let view = render('RIDER');
+    expect(view.recovering).toBe(true);
+    expect(view.offer).toBeNull(); // the card is still on the server, not on screen
+    answer({ data: { data: { offer: { orderId: 'R1', offerAttemptId: 'r1', expiresInSeconds: 12 } } } });
+    view = await landRider();
+    expect(view.offer?.orderId).toBe('R1');
+    expect(view.recovering).toBe(false);
+  });
+
+  it('a failed read still ends the in-flight state', async () => {
+    render('RIDER');
+    await landRider();
+    h.riderOverride.currentOffer = () => Promise.reject(new Error('offline'));
+    emitAppForeground();
+    expect(render('RIDER').recovering).toBe(true);
+    expect((await landRider()).recovering).toBe(false);
+  });
+
+  it('offline: never recovering', () => {
+    expect(render('RIDER', false).recovering).toBe(false);
+  });
+
+  // [FOLLOWUPS 11 Nov · REVIEW-2481-DELTA D-1] The effect re-runs while online (here "taxi rides and deliveries"
+  // turns on; another device can change the kind the same way) with a read in flight. The old run's read never
+  // counts down (it is gone), so the new run must start from nothing in flight, or `recovering` stuck true and the
+  // OTA catch-up never fired on Home in that session.
+  it('an effect re-run while online with a read in flight: recovering ends with the new run\'s read', async () => {
+    render('RIDER');
+    await landRider();
+    let answerStale!: (v: unknown) => void;
+    h.riderOverride.currentOffer = () => new Promise((resolve) => { answerStale = resolve; });
+    emitAppForeground();
+    expect(render('RIDER').recovering).toBe(true);
+    h.riderOverride.currentOffer = null; // the new run's own read answers at once: no card
+    const rerun = async () => {
+      for (let i = 0; i < 8; i += 1) await Promise.resolve();
+      return render('RIDER', true, true);
+    };
+    render('RIDER', true, true); // the dependencies change: cleanup, then the new run's recovery
+    expect((await rerun()).recovering).toBe(false);
+    answerStale({ data: { data: { offer: null } } }); // the old run's read lands late: it changes nothing
+    expect((await rerun()).recovering).toBe(false);
+  });
+});

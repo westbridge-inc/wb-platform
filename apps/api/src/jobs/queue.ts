@@ -316,6 +316,25 @@ export function createQueues(
   }
 }
 
+/** [KITCHEN-INTEGRATION] THE TABLET BACKSTOP for a claimed order. While a store's kitchen system is being given an
+ *  order, its alert ladder waits a rung instead of ringing the tablet (true = re-armed, the caller stops), never past
+ *  KITCHEN_STUCK_MS. A claim that is stuck, sent but not accepted, or left waiting when the switch was turned off is
+ *  RUNG on the tablet here, and the ladder then carries on as for any store (false). One unique-key read per rung,
+ *  switch on or off; nothing else changes for an order with no claim. Never throws. */
+async function kitchenAlertWaits(
+  ctx: Pick<JobContext, 'prisma' | 'io'>,
+  queues: Pick<SwiftQueues, 'notificationQueue'>,
+  orderId: string,
+  level: number,
+): Promise<boolean> {
+  const { kitchenLadderStep } = await import('../modules/kitchen/kitchen-sync');
+  const next = await inTenantOf(ctx.prisma, { order: orderId }, () => kitchenLadderStep({ prisma: ctx.prisma, io: ctx.io }, orderId));
+  if (next === 'GO') return false;
+  // The same rung again in 30 s: waiting never skips the re-alert or jumps to the text.
+  await queues.notificationQueue.add('vendor-alert-escalate', { orderId, level }, { delay: 30_000, removeOnComplete: 100, removeOnFail: 50 });
+  return true;
+}
+
 export async function enqueueVendorAlertFollowup(
   queues: Pick<SwiftQueues, 'notificationQueue'>,
   orderId: string,
@@ -817,6 +836,15 @@ export async function releaseHeldOrdersJob(
       .catch((err: unknown) => ctx.log.error({ err }, '[Q12] release ladder drain failed — the outbox sweep will publish'));
     ctx.log.info({ count: released.length }, 'Held orders released to vendors/dispatch (+escalation ladders armed)');
   }
+  // [KITCHEN-INTEGRATION · review B S2-1] The tablet backstop, switch on or OFF: a claim left waiting (the switch
+  // turned off, or no sender running) or a sent order not accepted in time is rung on the store's tablet here too,
+  // never left to auto-cancel. No outside call; one indexed read when nothing is stuck. Never fails the release.
+  try {
+    const { kitchenBackstopSweep } = await import('../modules/kitchen/kitchen-sync');
+    await kitchenBackstopSweep({ prisma: ctx.prisma, io: ctx.io });
+  } catch (err) {
+    ctx.log.error({ err }, '[KITCHEN] backstop sweep failed — the alert ladder still rings each order');
+  }
   return released;
 }
 
@@ -1209,6 +1237,15 @@ export async function createWorkers(ctx: JobContext, queues: SwiftQueues) {
         }
         case 'auto-complete': {
           await inTenantOf(ctx.prisma, { order: job.data.orderId }, () => autoCompleteDeliveredOrder(ctx, job.data.orderId));
+          break;
+        }
+        // [KITCHEN-INTEGRATION] Send claimed orders to the store's kitchen system, tell it of cancellations, poll
+        // it. On the order queue, never the dispatch queue: a slow kitchen system (timeouts and the spec's retries)
+        // must not hold the hold release or dispatch sweeps. Registered only while DRAGONTAIL_INTEGRATION is on; a
+        // stale registration does nothing while off.
+        case 'kitchen-integration-tick': {
+          const { runKitchenTick } = await import('../modules/kitchen/kitchen-sync');
+          await runKitchenTick({ prisma: ctx.prisma, io: ctx.io, redis: ctx.redis });
           break;
         }
       }
@@ -1621,6 +1658,23 @@ export async function createWorkers(ctx: JobContext, queues: SwiftQueues) {
         const { NotificationService } = await import('../modules/notification/notification.service');
         const result = await watchErrorRate({ prisma: ctx.prisma, redis: ctx.redis, notifications: new NotificationService(ctx.prisma, ctx.io) });
         if (result.outcome === 'delivered' || result.outcome === 'pending') ctx.log.warn({ ...result }, 'server errors keep happening');
+        // [FABLE-05 3.7 · 3.11] The same tick reads what paged nobody: the server's disk and memory,
+        // Twilio's sign-in texts, the routing engine and MMG's answers. Each on its own: one that
+        // cannot run never stops the error page above or the others.
+        const { watchHostResources, watchProviderOutages } = await import('../modules/ops/infra-watch');
+        const infraDeps = { prisma: ctx.prisma, redis: ctx.redis, notifications: new NotificationService(ctx.prisma, ctx.io) };
+        try {
+          const host = await watchHostResources(infraDeps);
+          ctx.log.info(host, 'host resources read');
+        } catch (err) {
+          ctx.log.error({ err }, '[FABLE-05] the host disk/memory watch could not run this tick');
+        }
+        try {
+          const providers = await watchProviderOutages(infraDeps);
+          if (providers.routing === 'down' || (providers.twilio ?? 0) > 0 || (providers.mmgWaiting ?? 0) > 0) ctx.log.warn(providers, 'provider outage watch');
+        } catch (err) {
+          ctx.log.error({ err }, '[FABLE-05] the provider outage watch could not run this tick');
+        }
         return;
       }
       if (job.name === 'upload-rescan') {
@@ -1815,6 +1869,16 @@ export async function createWorkers(ctx: JobContext, queues: SwiftQueues) {
               data: { kind: 'ops_reaper_failed', error: err instanceof Error ? err.message.slice(0, 200) : String(err).slice(0, 200) },
             }),
           );
+        }
+        // [COMPANY-DOCS PART 2] Letters of authority waiting to be signed: a link past its 72 hours expires (audited), and
+        // a request that ended unsigned 30 days ago is deleted with the signer's name and number. Contained: it never
+        // stops the document sweep.
+        try {
+          const { sweepAuthorityLetters } = await import('../modules/vendor/authority-letter/authority-letter.service');
+          const letters = await sweepAuthorityLetters(ctx.prisma);
+          if (letters.expired > 0 || letters.deleted > 0) ctx.log.info(letters, 'authority letters swept');
+        } catch (err) {
+          ctx.log.error({ err }, 'authority-letter sweep failed; the document sweep still runs');
         }
         const expired = await verification.expireLapsedDocuments();
         const reminded = await verification.sendExpiryReminders();
@@ -2051,6 +2115,7 @@ export async function createWorkers(ctx: JobContext, queues: SwiftQueues) {
       const { getChannels } = await import('../providers/notifications/channels');
 
       const { orderId, level = 0 } = job.data;
+      if (await kitchenAlertWaits(ctx, queues, orderId, level)) return; // [KITCHEN] see the helper
       const outcome = await inTenantOf(ctx.prisma, { order: orderId }, () => escalateVendorAlert(ctx.prisma, ctx.io, getChannels(), orderId, level));
 
       if (outcome === 'realerted') {
@@ -2553,7 +2618,7 @@ export async function createWorkers(ctx: JobContext, queues: SwiftQueues) {
               // tenant's event. Explicitly null so it reads as a decision [NOC-A F45].
               tenantId: null,
               title: 'Billing invariant failures',
-              body: `${report.walletMismatches.length} fee-paid-ahead mismatch(es), ${report.wrongfulSuspensions.length} wrongful suspension(s) auto-healed, ${report.paidSuspensionsLeftHeld.length} paid suspension(s) left held for a person, ${report.enforcementLeaks.length} enforcement leak(s), ${report.unjudgedSubscriptions.length} subscription(s) needing an ownership review, ${report.receiptGaps.length} receipt gap(s), ${report.ledgerWalletMismatches.length} ledger vs fee-paid-ahead drift(s), ${report.refundPayableMismatches.length} refund set-aside drift(s)${report.ledgerTrialImbalance ? ', LEDGER TRIAL BALANCE BROKEN' : ''}.`,
+              body: `${report.walletMismatches.length} fee-paid-ahead mismatch(es), ${report.wrongfulSuspensions.length} wrongful suspension(s) auto-healed, ${report.paidSuspensionsLeftHeld.length} paid suspension(s) left held for a person, ${report.enforcementLeaks.length} enforcement leak(s), ${report.unjudgedSubscriptions.length} subscription(s) needing an ownership review, ${report.receiptGaps.length} receipt gap(s), ${report.ledgerWalletMismatches.length} ledger vs fee-paid-ahead drift(s), ${report.refundPayableMismatches.length} refund set-aside drift(s), ${report.cardRefundsNotDone.length} refund(s) to the card not done (refused with the money still owed, or not confirmed)${report.ledgerTrialImbalance ? ', LEDGER TRIAL BALANCE BROKEN' : ''}.`,
               data: { kind: 'billing_invariants', report: { ...report, walletsChecked: report.walletsChecked } },
             }),
           );
@@ -3535,6 +3600,20 @@ export async function scheduleRecurringJobs(queues: ReturnType<typeof createQueu
     removeOnComplete: 20,
     removeOnFail: 20,
   });
+
+  // [KITCHEN-INTEGRATION · owner 11 Nov 2026] The kitchen-system sender and poller, every 5 s (the poll keeps
+  // its own per-store interval). Registered ONLY while DRAGONTAIL_INTEGRATION is on: with the switch off the
+  // boot registers nothing new.
+  {
+    const { dragontailIntegrationEnabled } = await import('../modules/kitchen/kitchen-switch');
+    if (dragontailIntegrationEnabled()) {
+      await queues.orderQueue.add('kitchen-integration-tick', {}, {
+        repeat: { every: 5_000 },
+        removeOnComplete: 20,
+        removeOnFail: 20,
+      });
+    }
+  }
 
   // [owner 18 Oct 2026 · PAYMENT-SIMPLIFY] An accepted MMG order not marked
   // "Paid by MMG" within 30 minutes cancels. Every 10 s, so it cancels within

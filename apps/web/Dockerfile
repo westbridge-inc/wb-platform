@@ -85,17 +85,31 @@ COPY apps/mobile/src/lib/reorderNotice.ts apps/mobile/src/lib/reorderNotice.ts
 # (src/lib/menu-options.ts imports it by path, never a second copy). It is a
 # pure module with no imports of its own, so exactly this file.
 COPY apps/api/src/modules/order/options.ts apps/api/src/modules/order/options.ts
+# [MENU-OPTIONS] The item sheet's choices (size sets the price, half-and-half,
+# follow-up groups) are the phone's own sheet model, imported by path; it
+# imports nothing, so exactly this file.
+COPY apps/mobile/src/lib/menuSheet.ts apps/mobile/src/lib/menuSheet.ts
+# [MENU-OPTIONS] What every menu-options write declares (MENU_OPTIONS_V2): the
+# store tools and the customer's cart writes import it by path; imports nothing.
+COPY apps/mobile/src/lib/menuOptionsCapability.ts apps/mobile/src/lib/menuOptionsCapability.ts
 # The business console reuses the app's plain board files by path (PR A): the
 # role matrix, the accept clock, the MMG-dispute pause, the store-delivery rule
 # and the market-calendar helpers. None imports anything but @swift/types.
 COPY apps/mobile/src/lib/vendorRbac.ts apps/mobile/src/lib/vendorRbac.ts
+# [ASSISTED SETUP] The store's "Added by Swift on <date> with your OK" words (Documents, Products): the phone's own
+# pure module, no imports, so exactly this file.
+COPY apps/mobile/src/lib/assistedSetupCopy.ts apps/mobile/src/lib/assistedSetupCopy.ts
 COPY apps/mobile/src/lib/bulkWords.ts apps/mobile/src/lib/bulkWords.ts
 COPY apps/mobile/src/lib/appointmentTime.ts apps/mobile/src/lib/appointmentTime.ts
 COPY apps/mobile/src/modules/vendor/acceptClock.ts apps/mobile/src/modules/vendor/acceptClock.ts
 COPY apps/mobile/src/modules/vendor/order-dispute.ts apps/mobile/src/modules/vendor/order-dispute.ts
 COPY apps/mobile/src/modules/vendor/storeOrderRules.ts apps/mobile/src/modules/vendor/storeOrderRules.ts
+COPY apps/mobile/src/modules/vendor/ringMoney.ts apps/mobile/src/modules/vendor/ringMoney.ts
 COPY apps/mobile/src/modules/vendor/acceptedOutOfStock.ts apps/mobile/src/modules/vendor/acceptedOutOfStock.ts
 COPY apps/mobile/src/modules/vendor/storeHandover.ts apps/mobile/src/modules/vendor/storeHandover.ts
+# [MENU-OPTIONS] The kitchen view's formatter (web order window) and the store tools' option rules (web Products page).
+COPY apps/mobile/src/modules/vendor/orderLineOptions.ts apps/mobile/src/modules/vendor/orderLineOptions.ts
+COPY apps/mobile/src/lib/menuOptionsEditor.ts apps/mobile/src/lib/menuOptionsEditor.ts
 COPY apps/mobile/src/modules/vendor/screens/delivery-owner.ts apps/mobile/src/modules/vendor/screens/delivery-owner.ts
 # [REVIEW-LIGHT2 #2306 S3 · #2311] The Orders home's store status card reads a held store's hold the app's way (storeHoldOf; imports nothing).
 COPY apps/mobile/src/lib/vendorProfile.ts apps/mobile/src/lib/vendorProfile.ts
@@ -115,6 +129,12 @@ COPY apps/mobile/src/components/onboarding/documentConsentRecord.ts apps/mobile/
 COPY apps/mobile/src/components/onboarding/foodHandlers.ts apps/mobile/src/components/onboarding/foodHandlers.ts
 COPY apps/mobile/src/lib/uploadConsentCopy.ts apps/mobile/src/lib/uploadConsentCopy.ts
 COPY apps/mobile/src/lib/ownNameCopy.ts apps/mobile/src/lib/ownNameCopy.ts
+# [COMPANY-DOCS] the sign-up's three-option choice and the company/manager papers' words (ownNameCopy re-exports from it)
+COPY apps/mobile/src/lib/businessBasisCopy.ts apps/mobile/src/lib/businessBasisCopy.ts
+# [COMPANY-DOCS Part 3] the business-type change and handover words, shared with the phone (imports businessBasisCopy and ownNameCopy only)
+COPY apps/mobile/src/lib/accountChangeCopy.ts apps/mobile/src/lib/accountChangeCopy.ts
+# [COMPANY-DOCS PART 2] the in-app letter of authority's words and form rules (the Documents page's "ask the director to sign")
+COPY apps/mobile/src/lib/authorityLetterCopy.ts apps/mobile/src/lib/authorityLetterCopy.ts
 # [WEB-SETTINGS] The store's MMG number card speaks the phone's hold sentence and its "takes effect" time (each imports nothing).
 COPY apps/mobile/src/lib/mmgHold.ts apps/mobile/src/lib/mmgHold.ts
 COPY apps/mobile/src/lib/stepUp.ts apps/mobile/src/lib/stepUp.ts

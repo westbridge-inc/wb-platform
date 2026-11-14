@@ -91,6 +91,11 @@ export const BUCKET_OF: Readonly<Record<string, DocBucket>> = {
   self_declaration_unregistered: 'BUSINESS',
   // [ROLE-DOCS · owner 21 Oct 2026] the signed "I trade under my own name" declaration (vendor/own-name.ts)
   own_name_declaration: 'BUSINESS',
+  // [COMPANY-DOCS · owner 10 Nov 2026] a registered company's papers, and a registered business run by its manager:
+  // the company's certificate and the two authority letters are business records; the account holder's ID is a
+  // person's ID, PERSONAL exactly like an owner's (purged after review: IMAGE_POLICY_OF_BUCKET).
+  certificate_of_incorporation: 'BUSINESS', company_authority_letter: 'BUSINESS', owner_authority_letter: 'BUSINESS',
+  account_holder_id: 'PERSONAL',
   // [TRADES · 13 Oct 2026; R15] service-trade documents: a person's licence is PERSONAL; a premises
   // certificate is BUSINESS and always reviewed by a person (ALWAYS_REVIEW_LEGACY_CODES).
   pest_control_operator_licence: 'PERSONAL', pesticide_applicator_certificate: 'PERSONAL',
@@ -171,6 +176,10 @@ export const ALWAYS_REVIEW_LEGACY_CODES: ReadonlySet<string> = new Set([
   // [ROLE-DOCS · owner 21 Oct 2026 · security review] whether a store's name is its owner's true surname (BNA s.3)
   // is read from the owner's ID by a person, never by a machine
   'own_name_declaration',
+  // [COMPANY-DOCS · owner 10 Nov 2026] which company, and who may act for it, is a person's judgement
+  'certificate_of_incorporation', 'company_authority_letter', 'owner_authority_letter',
+  // [RESTAURANT-TIN · owner 12 Nov 2026] whether a TIN certificate is the GRA's and names this business is a person's judgement
+  'tin_certificate',
 ]);
 
 export const registryCode = (countryCode: string, legacyCode: string) => `${countryCode}.${legacyCode}`;
@@ -186,8 +195,10 @@ export const registryCode = (countryCode: string, legacyCode: string) => `${coun
  * from the code (the liquor licence's annual printed expiry is gone), so the registry never carries recall.
  * [CHECKLIST-LEGAL · owner 1 Nov 2026 (a)] The unregistered trader's self-declaration joined them with its tier: the
  * route that filed it is gone, and a stored copy is described (BUSINESS bucket, no expiry) until its retention clock.
+ * [RESTAURANT-TIN · owner 12 Nov 2026] The TIN certificate is NOT retired any more: a restaurant's lists ask for it
+ * (withRestaurantTinRule), so the seed mints and describes it from the lists, as every listed type.
  */
-export const RETIRED_DOC_TYPES: readonly string[] = ['vehicle_plate_photo', 'tin_certificate', 'hire_car_permit', 'liquor_licence', 'pharmacy_authorisation', 'nis_employer_reg', 'self_declaration_unregistered'];
+export const RETIRED_DOC_TYPES: readonly string[] = ['vehicle_plate_photo', 'hire_car_permit', 'liquor_licence', 'pharmacy_authorisation', 'nis_employer_reg', 'self_declaration_unregistered'];
 const humanize = (code: string) => code.split('_').map((w) => (w === 'id' || w === 'tin' || w === 'gra' || w === 'gei' ? w.toUpperCase() : w[0]!.toUpperCase() + w.slice(1))).join(' ');
 
 export interface RegistrySeedResult { docTypes: number; requirementSets: number; requirementItems: number; validators: number; extraDocTypes: number; categoryGates: number }
@@ -282,6 +293,8 @@ export interface GateSeed {
  */
 export const CATEGORY_GATES: readonly GateSeed[] = [
   { code: 'GY:slug:meat-poultry:sanitary_certificate', categorySlug: 'meat-poultry', docType: 'sanitary_certificate', enforcement: 'BLOCK_LISTING', note: '§18.3: meat / butcher' },
+  // [RESTAURANT-TIN · owner 12 Nov 2026] For a RESTAURANT these two rows are judged against its TIN certificate
+  // (category-gate gateDocFor): the licence is optional for a restaurant. Any other store selling prepared food keeps them.
   { code: 'GY:kind:CUISINE:gra_restaurant_licence', categoryKind: 'CUISINE', docType: 'gra_restaurant_licence', enforcement: 'BLOCK_LISTING', note: '§18.3: prepared food' },
   { code: 'GY:kind:DISH:gra_restaurant_licence', categoryKind: 'DISH', docType: 'gra_restaurant_licence', enforcement: 'BLOCK_LISTING', note: '§18.3: prepared food' },
   { code: 'GY:kind:CUISINE:food_handler_cert', categoryKind: 'CUISINE', docType: 'food_handler_cert', enforcement: 'BLOCK_LISTING', note: '§18.3: prepared food — at least one food handler permit' },
@@ -432,6 +445,8 @@ export async function seedDocRegistry(prisma: PrismaClient): Promise<RegistrySee
     const lists: Record<string, string[]> = { ...DEFAULT_DOCUMENT_CHECKLISTS, ...((c.documentChecklists ?? {}) as Record<string, string[]>) };
     // [ROLE-DOCS · owner 21 Oct 2026] a retired list in a stored copy from an older seed declares nothing
     for (const key of RETIRED_REGISTRY_LIST_KEYS) delete lists[key];
+    // [RESTAURANT-TIN · owner 12 Nov 2026] a restaurant's TIN certificate in the GRA licence's required place; the licence optional
+    Object.assign(lists, withRestaurantTinRule(lists));
     // [VERIFY-DOCS] A type no list asks for any more keeps its registry row: documents of it already
     // exist (approved permits, TIN certificates) and their bucket and retention still have to be read.
     // A never-accepted type (a medical document) is never minted, whatever a stored list says.
@@ -562,6 +577,20 @@ export const FIELD_CATALOGUE: Readonly<Record<string, readonly FieldRow[]>> = {
   owner_national_id: IDENTITY,
   passport: IDENTITY,
   digital_id: IDENTITY,
+  // [COMPANY-DOCS · owner 10 Nov 2026] the account holder's National ID, Digital ID card or passport: an ID like any other
+  account_holder_id: IDENTITY,
+  // [COMPANY-DOCS] the company's certificate (or its business registration): its number, the company's name and registered
+  // office (public facts of a company) and the date. No proprietor: a company has none.
+  certificate_of_incorporation: [
+    { fieldCode: 'registration_number', dataType: 'text', blind: true, identifier: true },
+    { fieldCode: 'company_name', dataType: 'text' },
+    { fieldCode: 'registered_address', dataType: 'text' },
+    { fieldCode: 'registration_date', dataType: 'date' },
+  ],
+  // [COMPANY-DOCS] the authority letters are read by a person and nothing is extracted from them (like a photo): no name
+  // or signature on them is ever copied into a field, an export of fields, or a storefront.
+  company_authority_letter: [],
+  owner_authority_letter: [],
   // A photo declares no EXTRACTED fields: its capture metadata (captured_at, geo_point, device_attestation —
   // §3.2) is recorded by the capture attestation (P22), not read from the image. Photo types stay field-less.
   storefront_photo: [],
@@ -688,6 +717,7 @@ export const RETIRED_FIELDS: Readonly<Record<string, readonly string[]>> = {
   owner_national_id: ['sex', 'nationality'],
   passport: ['sex', 'nationality'],
   digital_id: ['sex', 'nationality'],
+  account_holder_id: ['sex', 'nationality'],
   vehicle_registration: ['owner_name'],
 };
 /** An empty placeholder for a retired field: nothing to show anyone. */
@@ -749,13 +779,36 @@ export const OWN_NAME_TIER = 'OWN_NAME';
 export const OWN_NAME_LIST_SUFFIX = '_OWN_NAME';
 /** [VERIFY-DOCS] `<KEY>_OPTIONAL` names documents the same role MAY add: never a gate. */
 export const OPTIONAL_LIST_SUFFIX = '_OPTIONAL';
+/**
+ * [COMPANY-DOCS · owner rulings 10 Nov 2026 ~07:0xZ and ~07:2xZ] Who signs up a store decides its papers:
+ *  - a registered COMPANY (incorporated, e.g. KFC): `<ROLE>_COMPANY`: the certificate of incorporation (or the company's
+ *    business registration), the ID of the ONE person who manages the Swift account, and the authority letter from a
+ *    director (or the director listing). Never an owner's ID. Branches and staff upload nothing.
+ *  - a registered business whose MANAGER signs up (the owner cannot give their ID): `<ROLE>_MANAGER`: the manager's ID,
+ *    a letter of authority signed by the owner, and the business registration.
+ * A person at Swift checks every one of them (PERSON_ONLY_DOC_TYPES). The account's choice is VendorOwner.accountBasis.
+ */
+export const COMPANY_TIER = 'COMPANY';
+export const COMPANY_LIST_SUFFIX = '_COMPANY';
+export const MANAGER_TIER = 'MANAGER';
+export const MANAGER_LIST_SUFFIX = '_MANAGER';
 /** RESTAURANT_OWN_NAME → { actorRole: 'RESTAURANT', tier: 'OWN_NAME' }; MOVER_OPTIONAL → { actorRole: 'MOVER', optional };
+ *  STORE_COMPANY → { actorRole: 'STORE', tier: 'COMPANY' }; STORE_MANAGER → { actorRole: 'STORE', tier: 'MANAGER' };
  *  anything else is the STANDARD tier's required list. */
 export function splitChecklistKey(listKey: string): { actorRole: string; tier: string; optional: boolean } {
   const optional = listKey.endsWith(OPTIONAL_LIST_SUFFIX);
   const key = optional ? listKey.slice(0, -OPTIONAL_LIST_SUFFIX.length) : listKey;
-  if (key.endsWith(OWN_NAME_LIST_SUFFIX)) return { actorRole: key.slice(0, -OWN_NAME_LIST_SUFFIX.length), tier: OWN_NAME_TIER, optional };
+  for (const [suffix, tier] of [[OWN_NAME_LIST_SUFFIX, OWN_NAME_TIER], [COMPANY_LIST_SUFFIX, COMPANY_TIER], [MANAGER_LIST_SUFFIX, MANAGER_TIER]] as const) {
+    if (key.endsWith(suffix)) return { actorRole: key.slice(0, -suffix.length), tier, optional };
+  }
   return { actorRole: key, tier: REGISTRY_TIER, optional };
+}
+/** The tier's list key for a role: `STORE` + COMPANY → `STORE_COMPANY`; the standard tier is the role's own key. */
+export function checklistKeyFor(roleKey: string, tier: string | undefined): string {
+  if (tier === OWN_NAME_TIER) return `${roleKey}${OWN_NAME_LIST_SUFFIX}`;
+  if (tier === COMPANY_TIER) return `${roleKey}${COMPANY_LIST_SUFFIX}`;
+  if (tier === MANAGER_TIER) return `${roleKey}${MANAGER_LIST_SUFFIX}`;
+  return roleKey;
 }
 
 export async function registryChecklist(prisma: Pick<PrismaClient, 'requirementSet'>, countryCode: string, actorRole: string, now = new Date(), tier: string = REGISTRY_TIER): Promise<string[] | null> {
@@ -780,7 +833,7 @@ export const IDENTITY_DOC_TYPES: readonly string[] = ['owner_national_id', 'nati
 /** [Item 98 · owner ruling 13 Oct 2026, row 30] The photo IDs a reviewer compares with the applicant's signup selfie, by
  *  eye and never by a machine: whichever was sent, a national ID, an owner's national ID, a passport or a driver's
  *  licence (a motorised mover's licence is their photo ID). Registry text (DOC-INV-2). */
-export const SELFIE_COMPARE_DOC_TYPES: ReadonlySet<string> = new Set([...IDENTITY_DOC_TYPES, 'drivers_licence']);
+export const SELFIE_COMPARE_DOC_TYPES: ReadonlySet<string> = new Set([...IDENTITY_DOC_TYPES, 'drivers_licence', 'account_holder_id']);
 /** [VERIFY-DOCS · owner ruling 6 Oct 2026 ~21:25 GYT] The licence whose NUMBER a reviewer types at approval (kept only as a
  *  blind index, for the duplicate-account check — verification/identity-signal-policy.ts). Registry text (DOC-INV-2). */
 export const LICENCE_NUMBER_DOC_TYPES: ReadonlySet<string> = new Set(['drivers_licence']);
@@ -790,7 +843,9 @@ export const ISSUE_DATE_DOC_TYPES: ReadonlySet<string> = new Set(['police_cleara
 /** [DOC-1 §3.6 · P3-2] The registration records: a VALID one is a store's business registration on file (the own-name
  *  route refuses a store that already holds one). [CHECKLIST-LEGAL · owner 1 Nov 2026 (a)] No tier is promoted by it any
  *  more: the self-declared tier is removed. */
-export const REGISTRATION_DOC_TYPES: readonly string[] = ['business_registration'];
+// [COMPANY-DOCS · owner 10 Nov 2026] A company's certificate of incorporation (or its business registration) is a registration
+// record too: the reviewer says which kind it is (a company's never expires; a business name is checked every January).
+export const REGISTRATION_DOC_TYPES: readonly string[] = ['business_registration', 'certificate_of_incorporation'];
 /**
  * [R16 · owner 15 Oct 2026, research D7] What a business registration certificate is, decided by the
  * reviewer who reads it: a business NAME registered by a sole trader or a partnership (Business Names
@@ -801,6 +856,63 @@ export const REGISTRATION_KINDS = ['BUSINESS_NAME', 'COMPANY'] as const;
 export type RegistrationKind = (typeof REGISTRATION_KINDS)[number];
 /** [ROLE-DOCS · owner 21 Oct 2026] The signed "I trade under my own name" declaration. Registry text (DOC-INV-2). */
 export const OWN_NAME_DOC_TYPE = 'own_name_declaration';
+/** [COMPANY-DOCS · owner 10 Nov 2026] A registered company's certificate of incorporation (or its business registration). */
+export const CERTIFICATE_OF_INCORPORATION_DOC_TYPE = 'certificate_of_incorporation';
+/** [COMPANY-DOCS] The ID (National ID, Digital ID card or passport) of the ONE person who manages the Swift account for a
+ *  company, or for a registered business whose manager signs up. Protected exactly as an owner's ID (PERSONAL, the same
+ *  fields, the reviewer's number check, the same face rules), but it is NOT a proprietor's ID: it is never in
+ *  IDENTITY_DOC_TYPES, so it never makes "<name> trading as <store>" on a storefront (the public name is the company's). */
+export const ACCOUNT_HOLDER_ID_DOC_TYPE = 'account_holder_id';
+/** [COMPANY-DOCS] The letter on company letterhead, signed by a director, naming the account holder (or the director listing). */
+export const COMPANY_AUTHORITY_DOC_TYPE = 'company_authority_letter';
+/** [COMPANY-DOCS] The letter signed by the business owner (named on the business registration) naming the manager. */
+export const OWNER_AUTHORITY_DOC_TYPE = 'owner_authority_letter';
+/** [COMPANY-DOCS] Every ID a person's identity number is read from at review: the proprietor's IDs and the account holder's. */
+export const PERSON_ID_DOC_TYPES: readonly string[] = [...IDENTITY_DOC_TYPES, ACCOUNT_HOLDER_ID_DOC_TYPE];
+/** [ROLE-DOCS · COMPANY-DOCS] Papers only a person at Swift decides: no engine, automatic approval or automatic rejection. */
+export const PERSON_ONLY_DOC_TYPES: ReadonlySet<string> = new Set([
+  OWN_NAME_DOC_TYPE, CERTIFICATE_OF_INCORPORATION_DOC_TYPE, ACCOUNT_HOLDER_ID_DOC_TYPE, COMPANY_AUTHORITY_DOC_TYPE, OWNER_AUTHORITY_DOC_TYPE,
+  // [RESTAURANT-TIN · owner 12 Nov 2026] a restaurant's TIN certificate: a person reads which business and which TIN it names
+  'tin_certificate',
+]);
+
+/**
+ * [RESTAURANT-TIN · owner ruling 12 Nov 2026, correcting the same day's first line] RESTAURANTS ONLY (vendorType
+ * RESTAURANT: the type the food handlers tick applies to; never a supermarket, a shop, a service business, a chef or a
+ * caterer): the GRA Food Restaurant Licence is OPTIONAL, and a TIN certificate takes its REQUIRED place, on every
+ * restaurant list (RESTAURANT, _OWN_NAME, _COMPANY, _MANAGER) and at the prepared-food listing gate (category-gate.ts
+ * judges the CUISINE / DISH gate for a restaurant against the TIN certificate). Supersedes the 6 Oct ruling 7 ("no TIN
+ * certificate on any store list") for restaurants only. No TIN is ever typed: the certificate is a document a person reads.
+ * An already-uploaded GRA licence stays valid evidence; nothing is deleted.
+ */
+export const TIN_CERTIFICATE_DOC_TYPE = 'tin_certificate';
+export const GRA_RESTAURANT_LICENCE_DOC_TYPE = 'gra_restaurant_licence';
+/** The one store type the rule applies to (the checklist role key and the vendor type are the same word). */
+export const RESTAURANT_TIN_ROLE = 'RESTAURANT';
+
+/**
+ * [RESTAURANT-TIN] The rule over a checklist map, applied by EVERY reader (country-config withoutRetiredLists and
+ * getOptionalDocuments, the registry seed): on each restaurant REQUIRED list the GRA licence is replaced by the TIN
+ * certificate (in its place), and the restaurant's `_OPTIONAL` list offers the GRA licence. It holds over a stored
+ * (owner-signed) copy too: production's copy still names the GRA licence until the next owner-signed seed writes the
+ * 2026-11-12.1 lists, and the owner's ruling applies from the deploy, not from that seed. Pure; never mutates `lists`.
+ * [#2494 review S4-3] While it runs in every reader, no signed copy can make the GRA licence a restaurant's required paper
+ * again: that would be a new owner ruling, and this rule is retired from the readers with it (or once production's stored
+ * copy is at 2026-11-12.1 or later, when it no longer changes anything).
+ */
+export function withRestaurantTinRule(lists: Readonly<Record<string, string[]>>): Record<string, string[]> {
+  const out: Record<string, string[]> = { ...lists };
+  for (const [key, codes] of Object.entries(lists)) {
+    const { actorRole, optional } = splitChecklistKey(key);
+    if (actorRole !== RESTAURANT_TIN_ROLE || optional || !Array.isArray(codes) || !codes.includes(GRA_RESTAURANT_LICENCE_DOC_TYPE)) continue;
+    const hasTin = codes.includes(TIN_CERTIFICATE_DOC_TYPE);
+    out[key] = codes.flatMap((code) => (code === GRA_RESTAURANT_LICENCE_DOC_TYPE ? (hasTin ? [] : [TIN_CERTIFICATE_DOC_TYPE]) : [code]));
+  }
+  const optionalKey = `${RESTAURANT_TIN_ROLE}${OPTIONAL_LIST_SUFFIX}`;
+  const offered = (Array.isArray(out[optionalKey]) ? out[optionalKey]! : []).filter((code) => code !== TIN_CERTIFICATE_DOC_TYPE);
+  out[optionalKey] = offered.includes(GRA_RESTAURANT_LICENCE_DOC_TYPE) ? offered : [...offered, GRA_RESTAURANT_LICENCE_DOC_TYPE];
+  return out;
+}
 /** [FOOD-PERMIT · owner ruling 24 Oct 2026] A food handler's certificate. Required of a chef and a caterer; OPTIONAL for a
  *  restaurant, which ticks the statement below instead. */
 export const FOOD_HANDLER_CERT_DOC_TYPE = 'food_handler_cert';
@@ -842,4 +954,6 @@ export const VEHICLE_REGISTRATION_DOC_TYPE = 'vehicle_registration';
 export const NAME_CHECKED_DOC_TYPES: readonly string[] = [
   'national_id', 'owner_national_id', 'drivers_licence', 'hire_car_driver_licence', 'own_name_declaration', 'police_clearance',
   'food_handler_cert', 'gei_electrical_licence', 'pest_control_operator_licence', 'pesticide_applicator_certificate', 'digital_id',
+  // [COMPANY-DOCS] the account holder's own ID carries the account holder's own name
+  'account_holder_id',
 ];

@@ -109,6 +109,10 @@ export function useDispatchOffers(kind: MoverKind | null, online: boolean, alsoD
   const [offerQueue, setOfferQueue] = useState<(DispatchOffer & { deadlineAt?: number })[]>([]);
   const offer = offerQueue[0] ?? null;
   const queuedBehind = Math.max(0, offerQueue.length - 1);
+  // [PROD-RIDER-TEST review S3-2] How many offer-recovery reads are in flight (mount, reconnect, a return to the
+  // screen, an offer push). While one is, the screen cannot know there is no card: the OTA catch-up must not treat
+  // the rider's home as resting (lib/moverHomeResting).
+  const [recoveriesInFlight, setRecoveriesInFlight] = useState(0);
   // [AX310] Cards this device has retired (withdrawn by the server, answered
   // here, or lapsed), by order and attempt, for the life of the hook. A
   // recovery answer the server read BEFORE a withdrawal can land after it; it
@@ -147,6 +151,7 @@ export function useDispatchOffers(kind: MoverKind | null, online: boolean, alsoD
     // No live offers in preview (read-only, no socket/auth).
     if (!kind || !online || pv) {
       setOfferQueue([]);
+      setRecoveriesInFlight(0);
       return;
     }
     connectSocket();
@@ -180,6 +185,7 @@ export function useDispatchOffers(kind: MoverKind | null, online: boolean, alsoD
     // the next socket ping still stand.
     let gone = false;
     const recover = async () => {
+      setRecoveriesInFlight((n) => n + 1);
       try {
         let data = await unwrap<{ offer: RecoveredDispatchOffer | null }>(api.currentOffer());
         if (!data?.offer?.orderId && alsoDeliveries && kind === 'DRIVER') {
@@ -193,7 +199,9 @@ export function useDispatchOffers(kind: MoverKind | null, online: boolean, alsoD
           setOffer(recoveredOffer);
           qc.invalidateQueries({ queryKey: ['mover', 'available', kind] });
         }
-      } catch { /* recovery only — never surface */ }
+      } catch { /* recovery only — never surface */ } finally {
+        if (!gone) setRecoveriesInFlight((n) => Math.max(0, n - 1));
+      }
     };
     void recover();
     s.on('connect', recover);
@@ -205,6 +213,10 @@ export function useDispatchOffers(kind: MoverKind | null, online: boolean, alsoD
     const stopPush = onForegroundPush((data) => { if (data['kind'] === 'dispatch_offer') void recover(); });
     return () => {
       gone = true;
+      // [FOLLOWUPS 11 Nov · REVIEW-2481-DELTA D-1] This run's reads no longer count down (`gone`), so the next run
+      // starts from none in flight: a re-run while online (kind or "also deliveries" changed) cannot leave
+      // `recovering` stuck true, which would hold the OTA catch-up off Home for the session.
+      setRecoveriesInFlight(0);
       s.off('dispatch:offer', onOffer);
       s.off('dispatch:offer_withdrawn', onWithdrawn);
       s.off('connect', recover);
@@ -254,6 +266,8 @@ export function useDispatchOffers(kind: MoverKind | null, online: boolean, alsoD
 
   return {
     offer,
+    /** [review S3-2] An offer-recovery read is in flight: whether a card is live is not known yet. */
+    recovering: recoveriesInFlight > 0,
     // Stacking: how many more offers wait behind the visible card — the UI
     // states queue depth honestly, like the vendor takeover does.
     queuedBehind,

@@ -36,7 +36,9 @@ const MOVED: Record<string, { calls: string[]; imports: string[]; users: Record<
   'lib/customer-orders.ts': {
     // [UI-SWEEP U13 / U17] The list reads live orders and paged history apart, and reorders.
     calls: ['getLiveOrders', 'getOrderHistoryPage', 'reorder', 'getOrder', 'decideSubstitution', 'cancelOrder', 'answerMmgRefund'],
-    imports: ["import { apiFetch } from './auth';"],
+    // [MENU-OPTIONS] reorder declares MENU_OPTIONS_V2: the one-constant, import-free capability file (the server asks a
+    // client without it to update).
+    imports: ["import { apiFetch } from './auth';", "import { cartWriteCapabilities } from '../../../mobile/src/lib/menuOptionsCapability';"],
     users: {
       'app/(app)/orders/page.tsx': "import { getLiveOrders, getOrderHistoryPage, reorder } from '@/lib/customer-orders';",
       'app/(app)/orders/[id]/page.tsx': "import { answerMmgRefund, cancelOrder, decideSubstitution, getOrder } from '@/lib/customer-orders';",

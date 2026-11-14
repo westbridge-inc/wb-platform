@@ -57,6 +57,7 @@ function DishGrid({ items }: { items: MarketItem[] }) {
             href={`/order/vendor/${encodeURIComponent(item.vendorId)}?item=${encodeURIComponent(item.id)}`}
             name={item.name}
             price={item.basePrice}
+            priceFrom={item.pricedFrom === true}
             imageUrl={item.imageUrl}
             meta={item.vendorIsCurrentlyOpen === false ? `${item.vendorName} · Closed right now` : item.vendorName}
             isNew={item.isNew}

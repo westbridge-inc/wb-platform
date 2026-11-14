@@ -79,7 +79,7 @@ export const JOB_RECOVERY: Record<JobName, Recovery> = {
   'ride-overdue-watch': { policy: 'SAFE_REPLAY', why: 'Reads the rides in progress and pages through pageOps, which keeps one open page per title. It writes no business rows and closes no ride; a replay is one more read.' },
   'pickup-not-collected-watch': { policy: 'SAFE_REPLAY', why: 'Reads the ready pickups past 24 hours. Each store notice carries a per-order dedupe key and the support page goes through pageOps, which keeps one open page per title. It closes no order; a replay is one more read.' },
   'fee-refund-case-sweep': { policy: 'SAFE_REPLAY', why: 'Closes a case by a compare-and-set on OPEN, only on a return of its payment that MMG proved, and pages through pageOps, which keeps one open page per title. It moves no money; a replay finds the closed cases gone from the open set.' },
-  'error-rate-watch': { policy: 'SAFE_REPLAY', why: 'Reads the hourly error tally and pages through pageOps, which keeps one open page per title and one delivered page per key window; a closed page stays closed. It writes no business rows; a replay is one more read.' },
+  'error-rate-watch': { policy: 'SAFE_REPLAY', why: 'Reads the hourly error tally, the host disk and memory, the provider failure tallies, one routing-engine ask and a count of MMG checkouts waiting, and pages through pageOps, which keeps one open page per title and one delivered page per key window; a closed page stays closed. It writes no business rows (only the routing failure tally in Redis); a replay is one more read.' },
   'upload-rescan': { policy: 'SAFE_REPLAY', why: 'Each row closes by a compare-and-set on rescannedAt IS NULL; a replay finds closed rows gone from the open set. A positive moved to quarantine is no longer open, and its page goes through pageOps (one open page per title).' },
   'backup-freshness': { policy: 'SAFE_REPLAY', why: 'Reads backup state and pages through opsPageOnce, which is explicitly deduped. It writes no business rows.' },
   'batching-shadow-scan': { policy: 'NOT_CERTIFIED', why: 'Not yet certified — see the method in this file.' },
@@ -124,6 +124,7 @@ export const JOB_RECOVERY: Record<JobName, Recovery> = {
   'rating-stats-recompute': { policy: 'SAFE_REPLAY', why: 'A full recompute whose contract is that it lands IDENTICAL to the incremental path. Running it twice produces the same aggregates.' },
   'reconcile-dispatch': { policy: 'SAFE_REPLAY', why: 'RECOMPUTES from its inputs and writes no business rows: it reads the stranded set (ready, riderless, no live offer, past the stuck window) and its only effect is re-enqueueing dispatch-order — itself SAFE_REPLAY — under a per-order NX cooldown claim (dispatch:reconciled:<id>), so a redelivered sweep over the same window re-drives nothing twice. Its scan cursor advances by compare-and-set, so a late replay cannot rewind a newer sweep. It already runs every two minutes; a replay is one more sweep.' },
   'reconcile-earnings': { policy: 'NOT_CERTIFIED', why: 'Not yet certified — see the method in this file.' },
+  'kitchen-integration-tick': { policy: 'SAFE_REPLAY', why: '[KITCHEN-INTEGRATION] A sweep over leased rows: every send first moves its order_integration_syncs row QUEUED to SENDING by compare-and-set (one row per order and provider, unique), a lapsed SENDING row is never re-sent (it becomes UNKNOWN: confirmed by the kitchen system own updates, or cancelled there before the tablet rings), one tick runs at a time (a Redis lock), cancellations move SENT to CANCEL_QUEUED to CANCELLED by compare-and-set, and the poll claims each store by its lastPolledAt. A replay finds the work done and sends nothing twice.' },
   'release-held-orders': { policy: 'SAFE_REPLAY', why: 'The release is a DB compare-and-set: updateMany matches status plus an expired hold on a row whose releasedToVendorAt is still null, and clears holdExpiresAt. The findMany of a replay filters on holdExpiresAt <= now, which a released (null) row no longer matches, so the second sweep releases nothing and notifies no vendor twice. The alert ladder is the order outbox row written inside the release transaction under the deterministic key order:<id>:vendor-alert-escalate (skipDuplicates), published by the lease-claimed drainer under jobId = row id, so a replay arms no duplicate ladder.' },
   'retention-sweep': { policy: 'SAFE_REPLAY', why: 'Seeds retention defaults (an upsert) and deletes rows past their window. A second run deletes nothing new.' },
   'route-match': { policy: 'NOT_CERTIFIED', why: 'Not yet certified — see the method in this file.' },
@@ -199,6 +200,7 @@ export type JobName =
   | 'rating-stats-recompute'
   | 'reconcile-dispatch'
   | 'reconcile-earnings'
+  | 'kitchen-integration-tick'
   | 'release-held-orders'
   | 'retention-sweep'
   | 'route-match'

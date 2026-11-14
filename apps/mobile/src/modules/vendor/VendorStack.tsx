@@ -12,6 +12,8 @@ import { VendorCategoryReviewScreen } from './screens/VendorCategoryReviewScreen
 import { VendorTierScreen } from './screens/VendorTierScreen';
 import { VendorBranchesScreen } from './screens/VendorBranchesScreen';
 import { VendorAddBranchScreen } from './screens/VendorAddBranchScreen';
+import { VendorBusinessTypeScreen } from './screens/VendorBusinessTypeScreen';
+import { VendorHandoverScreen } from './screens/VendorHandoverScreen';
 import { PersonalDataScreen } from '../profile/screens/PersonalDataScreen';
 import { SelfieCaptureScreen } from '../../screens/auth/SelfieCaptureScreen';
 import { GetHelpScreen } from '../profile/screens/GetHelpScreen';
@@ -35,6 +37,7 @@ import { VendorBillingSuspended } from './screens/VendorBillingSuspended';
 import { VendorStoreBlocked } from './screens/VendorStoreBlocked';
 import { VendorMenuScreen } from './screens/VendorMenuScreen';
 import { VendorItemEditorScreen } from './screens/VendorItemEditorScreen';
+import { VendorOptionLibraryScreen } from './screens/VendorOptionLibraryScreen';
 import { VendorInsightsScreen } from './screens/VendorInsightsScreen';
 import { VendorAccountScreen } from './screens/VendorAccountScreen';
 import { VendorScheduleScreen } from './screens/VendorScheduleScreen';
@@ -188,6 +191,8 @@ function MenuStackNav() {
       <Stack.Screen name="VendorMenu" component={VendorMenuScreen} />
       {canEdit ? <Stack.Screen name="VendorItemEditor" component={VendorItemEditorScreen} /> : null}
       {canEdit ? <Stack.Screen name="VendorBulkImport" component={VendorBulkImportScreen} /> : null}
+      {/* [MENU-OPTIONS] The shared option library (a group built once, attached to many items). */}
+      {canEdit ? <Stack.Screen name="VendorOptionLibrary" component={VendorOptionLibraryScreen} /> : null}
     </Stack.Navigator>
   );
 }
@@ -302,6 +307,10 @@ export function VendorStack() {
           the app (HomeVisitPhotoCard: the Menu tab's editor and the Account tab), never at the door. Pushed, so "Not now"
           goes back and a saved photo returns where it was asked. */}
       <Stack.Screen name="Selfie" component={SelfieCaptureScreen} />
+      {/* [COMPANY-DOCS Part 3 · owner rulings 10 Nov 2026 (c), (d)] The account's business type and its account holder:
+          the whole account's, not one store's, so outside the store group (reached from the Account tab). */}
+      <Stack.Screen name="VendorBusinessType" component={VendorBusinessTypeScreen} />
+      <Stack.Screen name="VendorHandover" component={VendorHandoverScreen} />
     </Stack.Navigator>
   );
 }

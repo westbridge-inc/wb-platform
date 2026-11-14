@@ -120,7 +120,7 @@ describe('[DOC-1 P4-2] the record is kept by the database', () => {
     const doc = await submit(u, 'business_registration');
     expect(await recordOf(doc.id)).toBeNull(); // queued for a human: no record yet
     // [R16] a business registration is approved with its kind (a company's never expires)
-    const res = await admin('PUT', `/verification/${doc.id}/approve`, { expiresAt: new Date(Date.now() + 100 * DAY).toISOString(), registrationKind: 'COMPANY' });
+    const res = await admin('PUT', `/verification/${doc.id}/approve`, { expiresAt: new Date(Date.now() + 100 * DAY).toISOString(), registrationKind: 'COMPANY', legalName: 'Fixture Registered Name Ltd' });
     expect(res.statusCode).toBe(200);
     const rec = await recordOf(doc.id);
     expect(rec).toMatchObject({ status: 'VALID', accountId: u, docType: 'business_registration', approvedBy: adminId, subjectId: (await docOf(doc.id)).subjectId, tenantId: 'swift-default', recheckBy: null });
@@ -161,11 +161,11 @@ describe('[DOC-1 P4-2] the record is kept by the database', () => {
     const u = await owner(3);
     const first = await submit(u, 'business_registration');
     // inside the 30-day renewal window, so a renewal is accepted (a document valid beyond it cannot be resubmitted)
-    expect((await admin('PUT', `/verification/${first.id}/approve`, { expiresAt: new Date(Date.now() + 20 * DAY).toISOString(), registrationKind: 'COMPANY' })).statusCode).toBe(200);
+    expect((await admin('PUT', `/verification/${first.id}/approve`, { expiresAt: new Date(Date.now() + 20 * DAY).toISOString(), registrationKind: 'COMPANY', legalName: 'Fixture Registered Name Ltd' })).statusCode).toBe(200);
     expect((await recordOf(first.id))!.status).toBe('VALID');
     // renewal: the same type commits again → the older record and submission are SUPERSEDED
     const second = await submit(u, 'business_registration');
-    expect((await admin('PUT', `/verification/${second.id}/approve`, { expiresAt: new Date(Date.now() + 400 * DAY).toISOString(), registrationKind: 'COMPANY' })).statusCode).toBe(200);
+    expect((await admin('PUT', `/verification/${second.id}/approve`, { expiresAt: new Date(Date.now() + 400 * DAY).toISOString(), registrationKind: 'COMPANY', legalName: 'Fixture Registered Name Ltd' })).statusCode).toBe(200);
     expect((await recordOf(second.id))!.status).toBe('VALID');
     expect((await recordOf(first.id))!.status).toBe('SUPERSEDED');
     expect(await docOf(first.id)).toMatchObject({ state: 'SUPERSEDED', status: 'APPROVED' });
@@ -178,7 +178,7 @@ describe('[DOC-1 P4-2] the record is kept by the database', () => {
     expect(await system(() => approvedEvidenceFor(app.prisma, u, ['business_registration'], new Date()))).toHaveLength(0);
     // expiry through the sweep
     const third = await submit(u, 'business_registration');
-    expect((await admin('PUT', `/verification/${third.id}/approve`, { expiresAt: new Date(Date.now() + 5 * DAY).toISOString(), registrationKind: 'COMPANY' })).statusCode).toBe(200);
+    expect((await admin('PUT', `/verification/${third.id}/approve`, { expiresAt: new Date(Date.now() + 5 * DAY).toISOString(), registrationKind: 'COMPANY', legalName: 'Fixture Registered Name Ltd' })).statusCode).toBe(200);
     await system(() => app.prisma.verificationDocument.update({ where: { id: third.id }, data: { expiresAt: new Date(Date.now() - DAY) } }));
     await system(() => service.expireLapsedDocuments());
     expect((await recordOf(third.id))!.status).toBe('EXPIRED');

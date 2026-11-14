@@ -243,6 +243,12 @@ const SCOPE: Record<string, Entry> = {
 
 /** Verb-matched routes that create none of the eight things (reviewed). */
 const OUT: Record<string, string> = {
+  // [AUDIT-20261113 FABLE-03 #2] Confirming an authenticator app sets a factor on the admin's own row (compare-and-set
+  // on the pending secret: a replay finds it already enrolled and is refused 409). It creates none of the eight.
+  'modules/auth/auth.routes.ts|POST|/admin-mfa/enrol/confirm': 'confirms the admin\'s own authenticator factor (compare-and-set; a replay is refused 409): creates no order, money row or payment',
+  // [REVIEW-2501-A S4-6] Moving to a new authenticator app: compare-and-set on the pending secret (a replay finds it
+  // spent and is refused 409). It changes the admin's own factor and creates none of the eight.
+  'modules/auth/auth.routes.ts|POST|/admin-mfa/replace/confirm': 'moves the admin\'s own authenticator factor to a new app (compare-and-set; a replay is refused 409): creates no order, money row or payment',
   // [BUG-HUNT-2 G08] A finding on one send: decided once under the order lock, compare-and-set on its revision. Moves no money.
   'modules/admin/admin.routes.ts|POST|/mmg-refunds/sends/:id/resolve': 'A support finding on a refund already recorded: a repeat is refused, it creates none of the eight.',
   // [Row 156] A note that a clock started, not one of the eight: it moves no money, and checkoutId is unique, so a retry is 409.
@@ -258,9 +264,15 @@ const OUT: Record<string, string> = {
   'modules/services/services.routes.ts|POST|/jobs/:id/confirm': 'The provider affirms a scheduled slot: a state transition (from SCHEDULED, bound to expectedUpdatedAt), not a new job.',
   'modules/safety/safety.routes.ts|POST|/sos/:id/confirm': 'Safety: confirms an existing SOS; it creates no order or money.',
   'modules/safety/safety.routes.ts|POST|/sos/:id/resolve': 'Safety: resolves an existing SOS; it creates no order or money.',
+  // [COMPANY-DOCS PART 2] Withdraws a letter-of-authority request: no order or money; a replay finds it CANCELLED and changes nothing.
+  'modules/vendor/authority-letter/authority-letter.routes.ts|POST|/:id/cancel': 'Withdraws a letter-of-authority request (the signing link stops working): no order, parcel, ride or money; a replay finds it already CANCELLED and changes nothing.',
   'modules/vendor/vendor.routes.ts|POST|/items/:id/adjust': 'A stock count adjustment on the store\'s item (inventory), not an order or money.',
   'modules/vendor/vendor.routes.ts|POST|/items/import/sync/confirm': 'Applies a till export to the store\'s own items (stock counts and prices), not an order or money. A replay is still a no-op: the upload id is the pos_imports row id, so a retried confirm returns the stored result, and (store, file hash) is unique.',
   'modules/vendor/vendor.routes.ts|POST|/store-categories/request': 'Asks Swift to add a store category; no order or money.',
+  // [MENU-OPTIONS] The store's shared option library: menu set-up, not one of the eight.
+  'modules/vendor/vendor.routes.ts|PUT|/modifier-groups/order': 'Sets the display ORDER of the store option library (a sort number per group); no order, parcel, ride or money, and a replay writes the same numbers.',
+  'modules/vendor/vendor.routes.ts|PUT|/modifier-groups/:id/options/order': 'Sets the display ORDER of one shared option group choices (a sort number per choice); no order or money, and a replay writes the same numbers.',
+  'modules/vendor/vendor.routes.ts|POST|/modifier-groups/:id/attach': 'Attaches a shared option group to the store items (menu set-up); no order or money. A replay finds the group already on each item and changes nothing (answered as already).',
   [`${ADMIN}|POST|/orders/:id/food-age-hold/release`]: 'Releases an age hold on an existing order (C2 workflow state), not a new order or money.',
   [`${ADMIN}|POST|/integrity/appeals/:id/resolve`]: 'Decides an integrity appeal (C3); it creates no order or money.',
   [`${ADMIN}|PUT|/verification/legal-holds/:id/release`]: 'Releases a legal hold on a verification record; no order or money.',
@@ -275,6 +287,9 @@ const OUT: Record<string, string> = {
   // [#1995 ads security] Accepting one's own advertiser team invitation creates nothing: one compare-and-set
   // (updateMany where acceptedAt is null, the invitee's own row, unexpired) sets acceptedAt; a retry finds no
   // open invitation and answers 404. No order, no money row, no new row.
+  // [COMPANY-DOCS Part 3] an account handover moves no money and creates none of the eight.
+  'modules/vendor/account-change.routes.ts|POST|/account-change/handover': 'The account holder names a new holder: one AccountChangeRequest row, at most one PENDING per account (a partial unique index; a retry is refused ACCOUNT_CHANGE_PENDING), and a notice. No order, payment or fee; nothing moves until a person approves.',
+  'modules/vendor/account-change.routes.ts|POST|/account-handovers/:id/accept': 'The person named says yes: one compare-and-set on the request (newHolderAcceptedAt null -> now); a retry changes nothing. Creates no row of the eight and moves no money.',
   'modules/ads/ads.routes.ts|POST|/advertiser/:id/members/accept': 'The invited person accepts their own open invitation: one compare-and-set on their row (acceptedAt null -> now); a retry finds nothing open (404). Creates no row and moves no money.',
   'modules/rider/rider.routes.ts|POST|/offers/accept': 'A rider takes an offered order (the offer is claimed once); assignment only, no money row.',
   'modules/driver/driver.routes.ts|POST|/rides/:id/accept': 'A driver takes an existing ride request (assignment); the fare is earned at complete, not here.',

@@ -16,8 +16,11 @@ export interface BusinessSetupDraft {
   agree: boolean;
   /** [Q8] Null until the owner confirms a spot on the map; never the phone's position. */
   pin: StorePin | null;
-  /** [ROLE-DOCS · owner 21 Oct 2026] The store trades under the owner's own name (no business registration) or a business name. */
-  nameBasis: 'REGISTERED' | 'OWN_NAME';
+  /** [ROLE-DOCS · owner 21 Oct 2026] The store trades under the owner's own name (no business registration) or a business name.
+   *  [COMPANY-DOCS · owner 10 Nov 2026] or is a registered company (lib/businessBasisCopy). */
+  nameBasis: 'REGISTERED' | 'OWN_NAME' | 'COMPANY';
+  /** [COMPANY-DOCS] "I'm the manager, not the owner" under a registered business. */
+  managerNotOwner: boolean;
   /** The own-name declaration tick (the signature is recorded when the store exists). Never outlives the process. */
   ownNameTick: boolean;
 }
@@ -32,6 +35,7 @@ export const EMPTY_BUSINESS_SETUP_DRAFT: Readonly<BusinessSetupDraft> = Object.f
   pin: null,
   nameBasis: 'REGISTERED',
   ownNameTick: false,
+  managerNotOwner: false,
 });
 
 type DraftPatch = Partial<BusinessSetupDraft> | ((draft: BusinessSetupDraft) => Partial<BusinessSetupDraft>);

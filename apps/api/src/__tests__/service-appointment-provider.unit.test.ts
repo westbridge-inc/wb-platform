@@ -121,7 +121,8 @@ describe('OrderService.releaseDueHeldOrders — a released booking goes to its p
     expect(h.store.rows[0]!['releasedToVendorAt']).toBeInstanceOf(Date);
     expect(h.io.emits).toEqual([{ room: ['provider-socket'], event: 'order:new', payload: { orderId: 'bk-held', vendorId: 'vendor-svc', orderNumber: 'ORD-BK-HELD' } }]);
     expect(h.vendorAlert).toHaveBeenCalledTimes(1);
-    expect(h.vendorAlert).toHaveBeenCalledWith('user-provider', 'ORD-BK-HELD', 1, 2000, 'bk-held', expect.any(Date));
+    // [STORE-MONEY] The alert carries the business's own money (billing/store-money.ts), not the customer's total.
+    expect(h.vendorAlert).toHaveBeenCalledWith('user-provider', 'ORD-BK-HELD', 1, expect.objectContaining({ food: 2000, foodWord: 'Service', delivery: 'APPOINTMENT' }), 'bk-held', expect.any(Date));
     // [Q10] ...carrying the booking's own response deadline, which its alert
     // push rings until: the auto-cancel cut-off, slot-relative for a booking
     // (the earlier of placement + 24 h and slot - 60 min; here the 24 h cap).
@@ -187,6 +188,8 @@ async function providerHost(rows: Row[]) {
     alertDelivery: { updateMany: async () => ({ count: 0 }) },
     notification: { updateMany: async () => ({ count: 0 }) },
     platformConfig: { findUnique: async () => null, findMany: async () => [] },
+    // [STORE-MONEY] The board and the order read the orders' promo snapshots (none on these fixtures).
+    promoRedemption: { findMany: async () => [] },
     // [O-4] The accept re-reads the order's lines on the locked row (no open customer question,
     // something left to accept): the fixture order's own lines.
     orderItem: {

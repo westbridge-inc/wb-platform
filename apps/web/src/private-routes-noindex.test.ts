@@ -47,6 +47,8 @@ const PUBLIC_PAGES = [
 ];
 
 const PRIVATE_PAGES = [
+  'letters/company-authority/page.tsx', // [COMPANY-DOCS] printable letter of authority: reachable, never indexed
+  'letters/owner-authority/page.tsx',
   'dashboard/notifications/page.tsx',
   'portal/notifications/page.tsx',
   'advertiser/page.tsx',
@@ -81,6 +83,7 @@ const PRIVATE_PAGES = [
   'dashboard/qr/page.tsx', // [STORE-LINK] the store's own QR code and share link (owners and managers)
   'dashboard/schedule/page.tsx', // a Services store's bookings (customer first names)
   'dashboard/settings/page.tsx',
+  'dashboard/settings/business-type/page.tsx', // [COMPANY-DOCS Part 3] the account holder changes the business type (its papers)
   'dashboard/settings/delete-account/page.tsx', // [WEB-DELETE] a store's people delete (or close) their own account
   'dashboard/settings/vat-report/page.tsx', // [O-5] a store's own VAT report (its order numbers and VAT figures)
   'dashboard/weekly-fee/page.tsx',
@@ -108,6 +111,7 @@ const TOKEN_DISALLOWED_PAGES = [
   'track/[token]/page.tsx',
   'trip/[token]/page.tsx',
   'safety-check/page.tsx', // [WEB-TAXI] Trip Guardian's texted answer link (its secret is after the #)
+  'sign-letter/page.tsx', // [COMPANY-DOCS PART 2] the letter-of-authority signing link (its secret is after the #)
 ];
 
 // Token-bearing HTML route handlers carry response headers instead of metadata.

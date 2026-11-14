@@ -37,9 +37,10 @@ const RUN = wordFreeTag(8);
 const DAY = 86_400_000;
 const system = <T>(fn: () => Promise<T>) => runWithoutTenant(fn, 'verification-queue-minimal-test');
 
-/** Every field a queue row may carry, and nothing else. */
+/** Every field a queue row may carry, and nothing else. [COMPANY-DOCS · owner 10 Nov 2026] `accountBasis`: which path a
+ *  store account signed up on (OWNER, COMPANY, MANAGER; null for anyone else), never the owner row itself. */
 const ROW_FIELDS = [
-  'approvalHeldAt', 'approvalHeldBy', 'consentAt', 'createdAt', 'docType', 'expiresAt', 'id', 'previousDecision', 'privacyNoticeVersion',
+  'accountBasis', 'approvalHeldAt', 'approvalHeldBy', 'assistedById', 'consentAt', 'createdAt', 'docType', 'expiresAt', 'id', 'previousDecision', 'privacyNoticeVersion',
   'reviewedBy', 'reviewerTypes', 'role', 'status', 'user', 'userId',
 ].sort();
 const USER_FIELDS = ['countryCode', 'driver', 'firstName', 'id', 'lastName', 'phone'].sort();

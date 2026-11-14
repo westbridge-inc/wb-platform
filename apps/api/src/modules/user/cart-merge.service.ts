@@ -3,7 +3,7 @@ import { z } from '../../lib/zod';
 import { getTenantId } from '../../plugins/tenant-context';
 import { AppError } from '../../utils/errors';
 import { checkoutRequestHash } from '../order/checkout-outbox';
-import { normalizeItemNote, OptionSelectionError, selectionKey, validateSelectedOptions } from '../order/options';
+import { declaresMenuOptionsV2, itemNeedsMenuOptionsV2, normalizeItemNote, OptionSelectionError, selectionKey, validateSelectedOptions } from '../order/options';
 import { priceCartLine } from '../order/cart-plans';
 import { vendorTenantForCaller } from '../vendor/vendor-visibility';
 import { hiddenAmong } from '../compliance/prohibited-gate';
@@ -16,6 +16,8 @@ export const cartMergeSchema = z.object({
     expectedUnitPrice: z.number().int().min(0).max(99999999),
     selectedOptions: z.record(z.string(), z.union([id, z.array(id).max(50)])).optional(),
   })).min(1).max(100),
+  // [MENU-OPTIONS] What the uploading app can render (MENU_OPTIONS_V2: sizes, halves, follow-up choices).
+  capabilities: z.array(z.string().max(40)).max(20).optional(),
 }).superRefine(({ lines }, ctx) => {
   if (new Set(lines.map(l => l.clientLineId)).size !== lines.length) ctx.addIssue({ code: 'custom', message: 'Each basket line needs its own identifier.' });
   if (new Set(lines.map(l => l.vendorId)).size !== 1) ctx.addIssue({ code: 'custom', message: 'Upload one store basket at a time.' });
@@ -67,6 +69,9 @@ export async function mergeGuestCart(prisma: PrismaClient, userId: string, key: 
       const item = items.find(i => i.id === line.itemId && i.vendorId === line.vendorId);
       let selection = {} as Record<string, string | string[]>;
       if (!item || !item.isAvailable || item.vendor.status !== 'ACTIVE' || hidden.has(item.id)) verdict.status = 'UNAVAILABLE';
+      // [MENU-OPTIONS] An app that cannot show sizes, halves or follow-up choices never lands such a line: the
+      // customer is asked to choose again (and adding it from the menu tells an older app to update).
+      else if (itemNeedsMenuOptionsV2(item) && !declaresMenuOptionsV2(input.capabilities)) verdict.status = 'OPTIONS_CHANGED';
       else {
         try {
           selection = validateSelectedOptions(item, line.selectedOptions).selection;

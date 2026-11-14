@@ -15,6 +15,7 @@ import { oldAppsKeepCounterpartPhones } from '../modules/calls/counterpart-phone
 import { callRelayEnabled } from '../modules/calls/call-relay-switch';
 import { inAppCallsEnabled } from '../modules/calls/inapp-calls-switch';
 import { instantBookingEnabled } from '../modules/booking/instant-booking';
+import { dragontailIntegrationEnabled } from '../modules/kitchen/kitchen-switch';
 
 // ---------------------------------------------------------------------------
 // A capability may ship switched off. It may not ship switched off SILENTLY.
@@ -158,6 +159,10 @@ describe('[dark features] the registry matches the code that reads the switch', 
       read('apps/api/src/modules/calls/inapp-calls-switch.ts'),
       // [BUG-HUNT F23] the brake on approving partners
       read('apps/api/src/modules/verification/approval-brake.ts'),
+      // [COMPANY-DOCS PART 2] the letter of authority signed in Swift
+      read('apps/api/src/modules/vendor/authority-letter/esign-switch.ts'),
+      // [KITCHEN-INTEGRATION] orders straight to a store's kitchen system
+      read('apps/api/src/modules/kitchen/kitchen-switch.ts'),
     ].join('\n');
     expect(sources.length, 'could not read the sources — the check cannot run').toBeGreaterThan(500);
     for (const f of DARK_FEATURES) {
@@ -263,6 +268,7 @@ describe('[SWITCHES] the launch switches are registered and read exactly as the 
     ['CALL_RELAY', (env) => callRelayEnabled(env)],
     ['INAPP_CALLS', (env) => inAppCallsEnabled(env)],
     ['INSTANT_BOOKING', (env) => instantBookingEnabled(env)],
+    ['DRAGONTAIL_INTEGRATION', (env) => dragontailIntegrationEnabled(env)],
   ];
   const VALUES = [undefined, '', '0', '1', ' 1', '1 ', '2', '3', '9', '01', 'true', 'TRUE', 'yes', '-1', '1.5'];
 

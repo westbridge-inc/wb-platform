@@ -1,12 +1,17 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { sendOtp, verifyOtpLogin } from '@/lib/api';
+import { fetchAdminMfaStatus, sendOtp, verifyOtpLogin } from '@/lib/api';
+import { AdminMfaSteps } from '@/components/mc/AdminMfaSteps';
 
 export default function LoginPage() {
   const router = useRouter();
-  const [step, setStep] = useState<'phone' | 'code'>('phone');
+  const [step, setStep] = useState<'phone' | 'code' | 'mfa'>('phone');
+  // [AUDIT-20261113 FABLE-03 #2] The admin API sent this signed-in browser here for the authenticator step.
+  useEffect(() => {
+    if (typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('step') === 'mfa') setStep('mfa');
+  }, []);
   const [phone, setPhone] = useState('+592');
   const [code, setCode] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -30,6 +35,12 @@ export default function LoginPage() {
     setBusy(true);
     try {
       await verifyOtpLogin(phone.trim(), code.trim());
+      // [AUDIT-20261113 FABLE-03 #2] When the authenticator step is required, it comes before the console.
+      const mfa = await fetchAdminMfaStatus().catch(() => null);
+      if (mfa?.required && !mfa.sessionVerified) {
+        setStep('mfa');
+        return;
+      }
       router.replace('/dashboard');
     } catch (e) {
       setError((e as Error).message);
@@ -45,10 +56,12 @@ export default function LoginPage() {
           <span className="text-[var(--mc-accent)]">Swift</span> Mission Control
         </h1>
         <p className="mc-muted mb-6">
-          {step === 'phone' ? 'Sign in with your admin phone number.' : `Enter the code sent to ${phone}.`}
+          {step === 'phone' ? 'Sign in with your admin phone number.' : step === 'code' ? `Enter the code sent to ${phone}.` : 'One more step: your authenticator app.'}
         </p>
 
-        {step === 'phone' ? (
+        {step === 'mfa' ? (
+          <AdminMfaSteps mode="sign-in" onDone={() => router.replace('/dashboard')} />
+        ) : step === 'phone' ? (
           <div className="space-y-4">
             <div>
               <label htmlFor="login-phone" className="text-xs font-semibold">Phone</label>

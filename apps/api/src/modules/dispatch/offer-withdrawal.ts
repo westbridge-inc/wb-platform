@@ -56,7 +56,9 @@ export const OFFER_WITHDRAWN_EVENT = 'dispatch:offer_withdrawn';
 export interface OfferWithdrawnPayload {
   orderId: string;
   offerAttemptId: string | null;
-  reason: 'ORDER_CANCELLED' | 'ORDER_CLOSED';
+  /** [PROD-RIDER-TEST S3-1] SWITCHED_TO_PICKUP: the customer collects it, so no rider carries it. Apps read only the
+   *  order and attempt (an older app ignores the reason). */
+  reason: 'ORDER_CANCELLED' | 'ORDER_CLOSED' | 'SWITCHED_TO_PICKUP';
 }
 
 /** The pair's TTL carries a ten-second worker grace tail beyond the card's own
@@ -70,58 +72,7 @@ export async function withdrawOfferOfClosedOrder(deps: OfferWithdrawalDeps, orde
   try {
     const order = await deps.prisma.order.findUnique({ where: { id: orderId }, select: { status: true, orderType: true } });
     if (!order || !TERMINAL_ORDER_STATUSES.includes(order.status)) return false;
-    const forward = dispatchOfferKey(orderId);
-    const live = await deps.redis.get(forward);
-    if (!live) return false;
-    // `<moverId>:<attemptId>`; a bare mover id is a card from before attempts.
-    const colon = live.indexOf(':');
-    const moverId = colon === -1 ? live : live.slice(0, colon);
-    const attemptId = colon === -1 ? null : live.slice(colon + 1);
-    const reverseValue = colon === -1 ? orderId : `${orderId}:${attemptId}`;
-    const removed = await deps.redis.eval(
-      `
-        -- WITHDRAW_CLOSED_ORDER_OFFER: only the exact pair read above.
-        if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end
-        local ttl = redis.call('PTTL', KEYS[1])
-        redis.call('DEL', KEYS[1])
-        if redis.call('GET', KEYS[2]) == ARGV[2] then
-          redis.call('DEL', KEYS[2])
-        end
-        -- [AX299 F2 · AX310] The withdrawn card's own server deadline (its
-        -- remaining TTL less the grace tail), recorded with the moment it was
-        -- withdrawn, whenever it could still be on screen by the reader's rule:
-        -- deadline + skew still ahead. Old records are trimmed as it goes.
-        if ttl > 0 then
-          local now = tonumber(ARGV[3])
-          local deadline = now + ttl - tonumber(ARGV[4])
-          local skew = tonumber(ARGV[6])
-          if deadline + skew > now then
-            local retention = tonumber(ARGV[5])
-            redis.call('ZADD', KEYS[3], deadline, ARGV[3] .. ':' .. ARGV[7])
-            redis.call('ZREMRANGEBYSCORE', KEYS[3], '-inf', now - skew - retention)
-            local keep = deadline + skew + retention - now
-            if redis.call('PTTL', KEYS[3]) < keep then
-              redis.call('PEXPIRE', KEYS[3], keep)
-            end
-          end
-        end
-        return 1
-      `,
-      3,
-      forward,
-      dispatchMoverOfferKey(moverId),
-      dispatchWithdrawnCardsKey(moverId),
-      live,
-      reverseValue,
-      String(Date.now()),
-      String(CARD_GRACE_TAIL_MS),
-      String(WITHDRAWN_CARD_RETENTION_MS),
-      String(WITHDRAWN_CARD_SCREEN_SKEW_MS),
-      `${orderId}:${attemptId ?? ''}`,
-    );
-    if (Number(removed) !== 1) return false;
-    await tellTheMover(deps, order, moverId, { orderId, offerAttemptId: attemptId, reason: order.status === 'CANCELLED' ? 'ORDER_CANCELLED' : 'ORDER_CLOSED' });
-    return true;
+    return await withdrawThePair(deps, orderId, order, order.status === 'CANCELLED' ? 'ORDER_CANCELLED' : 'ORDER_CLOSED');
   } catch (err) {
     try {
       log().warn({ err, orderId }, 'dispatch: offer withdrawal after the order closed failed');
@@ -130,6 +81,85 @@ export async function withdrawOfferOfClosedOrder(deps: OfferWithdrawalDeps, orde
     }
     return false;
   }
+}
+
+/**
+ * [PROD-RIDER-TEST S3-1] The same withdrawal when a delivery became a PICKUP (the customer's "Switch to pickup"
+ * after no rider was found): no rider carries it any more, so a card still ringing for it goes now, and its mover is
+ * free for the next offer. PostgreSQL decides, as above: nothing is removed unless the order is a pickup now. Called
+ * after the conversion's commit; never throws.
+ */
+export async function withdrawOfferOfPickupSwitch(deps: OfferWithdrawalDeps, orderId: string): Promise<boolean> {
+  try {
+    const order = await deps.prisma.order.findUnique({ where: { id: orderId }, select: { status: true, orderType: true, fulfillment: true } });
+    if (!order || order.fulfillment !== 'PICKUP') return false;
+    return await withdrawThePair(deps, orderId, order, 'SWITCHED_TO_PICKUP');
+  } catch (err) {
+    try {
+      log().warn({ err, orderId }, 'dispatch: offer withdrawal after a switch to pickup failed');
+    } catch {
+      // The card expires with its countdown; an accept is refused by the claim (it binds fulfillment DELIVERY).
+    }
+    return false;
+  }
+}
+
+/** Compare-and-delete the live pair, mark the withdrawn card for the screen guard, and tell the mover's app. */
+async function withdrawThePair(
+  deps: OfferWithdrawalDeps, orderId: string, order: { orderType: string }, reason: OfferWithdrawnPayload['reason'],
+): Promise<boolean> {
+  const forward = dispatchOfferKey(orderId);
+  const live = await deps.redis.get(forward);
+  if (!live) return false;
+  // `<moverId>:<attemptId>`; a bare mover id is a card from before attempts.
+  const colon = live.indexOf(':');
+  const moverId = colon === -1 ? live : live.slice(0, colon);
+  const attemptId = colon === -1 ? null : live.slice(colon + 1);
+  const reverseValue = colon === -1 ? orderId : `${orderId}:${attemptId}`;
+  const removed = await deps.redis.eval(
+    `
+      -- WITHDRAW_CLOSED_ORDER_OFFER: only the exact pair read above.
+      if redis.call('GET', KEYS[1]) ~= ARGV[1] then return 0 end
+      local ttl = redis.call('PTTL', KEYS[1])
+      redis.call('DEL', KEYS[1])
+      if redis.call('GET', KEYS[2]) == ARGV[2] then
+        redis.call('DEL', KEYS[2])
+      end
+      -- [AX299 F2 · AX310] The withdrawn card's own server deadline (its
+      -- remaining TTL less the grace tail), recorded with the moment it was
+      -- withdrawn, whenever it could still be on screen by the reader's rule:
+      -- deadline + skew still ahead. Old records are trimmed as it goes.
+      if ttl > 0 then
+        local now = tonumber(ARGV[3])
+        local deadline = now + ttl - tonumber(ARGV[4])
+        local skew = tonumber(ARGV[6])
+        if deadline + skew > now then
+          local retention = tonumber(ARGV[5])
+          redis.call('ZADD', KEYS[3], deadline, ARGV[3] .. ':' .. ARGV[7])
+          redis.call('ZREMRANGEBYSCORE', KEYS[3], '-inf', now - skew - retention)
+          local keep = deadline + skew + retention - now
+          if redis.call('PTTL', KEYS[3]) < keep then
+            redis.call('PEXPIRE', KEYS[3], keep)
+          end
+        end
+      end
+      return 1
+    `,
+    3,
+    forward,
+    dispatchMoverOfferKey(moverId),
+    dispatchWithdrawnCardsKey(moverId),
+    live,
+    reverseValue,
+    String(Date.now()),
+    String(CARD_GRACE_TAIL_MS),
+    String(WITHDRAWN_CARD_RETENTION_MS),
+    String(WITHDRAWN_CARD_SCREEN_SKEW_MS),
+    `${orderId}:${attemptId ?? ''}`,
+  );
+  if (Number(removed) !== 1) return false;
+  await tellTheMover(deps, order, moverId, { orderId, offerAttemptId: attemptId, reason });
+  return true;
 }
 
 /** The card is gone from Redis; the mover's app hears which one. Taxi cards
