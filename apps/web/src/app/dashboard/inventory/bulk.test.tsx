@@ -83,6 +83,16 @@ describe('[MENU-BULK] several items at once on the website', () => {
     expect(within(bar()).getByText('0 selected')).toBeTruthy();
   });
 
+  it('[REVIEW-2520-A S4-4] ticks a search now hides are still counted, and said to be off screen', async () => {
+    renderWithQuery(<InventoryPage />);
+    await screen.findByRole('article', { name: 'Mauby' });
+    await click(button('Select'));
+    await click(tickOf('Mauby'));
+    await click(tickOf('Fried Chicken'));
+    await act(async () => { fireEvent.change(screen.getByRole('textbox', { name: 'Search name or SKU' }), { target: { value: 'mauby' } }); });
+    await waitFor(() => expect(within(bar()).getByText('2 selected · 1 not shown')).toBeTruthy());
+  });
+
   it('Make available, with an item Swift does not allow named in the answer', async () => {
     items = items.map((row) => ({ ...row, isAvailable: false }));
     answer = { body: { success: true, data: { isAvailable: true, changedIds: ['i3'], unchangedIds: [], refused: [{ id: 'i1', name: 'Fried Chicken', message: 'x' }] } } };

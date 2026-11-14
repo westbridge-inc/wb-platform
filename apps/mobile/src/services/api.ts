@@ -1430,11 +1430,11 @@ export const vendorApi = {
   // [OOS-FLOW · REVIEW-1 S3-2] endsOrder: the store confirmed that removing the last item cancels the order.
   refundLine: (orderId: string, lineId: string, endsOrder = false) =>
     api.post(`/vendor/orders/${orderId}/items/${lineId}/refund-line`, endsOrder ? { endsOrder: true } : {}),
-  /** [MASTER-025] `commandKey` names ONE adjustment: a retry with the same key
-   *  returns the committed movement instead of moving stock again. */
   /** [MENU-BULK] Several items sold out, or back on, in one go (the one-item switch's rules, item by item). */
   bulkAvailability: (itemIds: readonly string[], isAvailable: boolean) =>
     api.post('/vendor/items/availability/bulk', { itemIds, isAvailable }),
+  /** [MASTER-025] `commandKey` names ONE adjustment: a retry with the same key
+   *  returns the committed movement instead of moving stock again. */
   adjustStock: (itemId: string, body: { delta: number; reason: string; note?: string }, commandKey?: string) =>
     api.post(`/vendor/items/${itemId}/adjust`, body, commandKey ? { headers: { 'Idempotency-Key': commandKey } } : undefined),
   /** [IN-STORE-SALE] One sold in person ("Sold in store −1"). `tapKey` names that ONE tap: a resend is answered with

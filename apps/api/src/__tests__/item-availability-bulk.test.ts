@@ -44,10 +44,10 @@ async function makeUser(): Promise<Actor> {
   });
 }
 
-async function makeStore(ownerUserId: string): Promise<{ vendorId: string; sectionId: string }> {
+async function makeStore(ownerUserId: string, existingOwnerId?: string): Promise<{ vendorId: string; sectionId: string; ownerId: string }> {
   return sys(async () => {
-    const owner = await app.prisma.vendorOwner.create({ data: { userId: ownerUserId } });
-    ownerIds.push(owner.id);
+    const owner = existingOwnerId ? { id: existingOwnerId } : await app.prisma.vendorOwner.create({ data: { userId: ownerUserId } });
+    if (!existingOwnerId) ownerIds.push(owner.id);
     const vendor = await app.prisma.vendor.create({
       data: {
         ownerId: owner.id, name: `Bulk Menu ${wordFreeTag(6)}`, slug: `bulk-menu-${nanoid(6).toLowerCase()}`, vendorType: 'RESTAURANT',
@@ -57,16 +57,16 @@ async function makeStore(ownerUserId: string): Promise<{ vendorId: string; secti
     });
     vendorIds.push(vendor.id);
     const section = await app.prisma.category.create({ data: { vendorId: vendor.id, name: 'Mains' }, select: { id: true } });
-    return { vendorId: vendor.id, sectionId: section.id };
+    return { vendorId: vendor.id, sectionId: section.id, ownerId: owner.id };
   });
 }
 
-type ItemFacts = { isAvailable?: boolean; autoHiddenAt?: Date | null; tillOffAt?: Date | null; archivedAt?: Date | null; banned?: boolean };
+type ItemFacts = { isAvailable?: boolean; autoHiddenAt?: Date | null; tillOffAt?: Date | null; archivedAt?: Date | null; banned?: boolean; name?: string };
 async function makeItem(store: { vendorId: string; sectionId: string }, facts: ItemFacts = {}): Promise<string> {
   return sys(async () => {
     const row = await app.prisma.item.create({
       data: {
-        vendorId: store.vendorId, categoryId: store.sectionId, name: `Plate ${wordFreeTag(6)}`, basePrice: 1500,
+        vendorId: store.vendorId, categoryId: store.sectionId, name: facts.name ?? `Plate ${wordFreeTag(6)}`, basePrice: 1500,
         isAvailable: facts.isAvailable ?? true, autoHiddenAt: facts.autoHiddenAt ?? null, tillOffAt: facts.tillOffAt ?? null,
         archivedAt: facts.archivedAt ?? null,
         ...(facts.banned ? { prohibitedAt: new Date(), prohibitedClass: 'MEDICINE', prohibitedReason: 'Sold as a cure' } : {}),
@@ -92,8 +92,9 @@ let owner: Actor;
 let staff: Actor;
 let stranger: Actor;
 let otherOwner: Actor;
-let store: { vendorId: string; sectionId: string };
-let otherStore: { vendorId: string; sectionId: string };
+let store: { vendorId: string; sectionId: string; ownerId: string };
+let otherStore: { vendorId: string; sectionId: string; ownerId: string };
+let sameOwnerBranch: { vendorId: string; sectionId: string; ownerId: string };
 
 beforeAll(async () => {
   vi.stubEnv('RUN_WORKERS', '0');
@@ -105,6 +106,7 @@ beforeAll(async () => {
   otherOwner = await makeUser();
   store = await makeStore(owner.userId);
   otherStore = await makeStore(otherOwner.userId);
+  sameOwnerBranch = await makeStore(owner.userId, store.ownerId);
   await sys(() => app.prisma.vendorStaff.create({ data: { vendorId: store.vendorId, userId: staff.userId, role: 'STAFF', invitedBy: owner.userId } }));
 }, 60_000);
 
@@ -198,6 +200,8 @@ describe('[MENU-BULK] several items sold out, or back on, in one go', () => {
     const res = await send(owner.token, { itemIds: [mine, theirs], isAvailable: false });
     expect(res.statusCode).toBe(404);
     expect(res.body).not.toContain(theirs);
+    // [REVIEW-2520-A S4-1] Staff read the server's words: plain ones, naming no id.
+    expect(res.json().error.message).toBe('One of these items was deleted on another device. Refresh and try again.');
     expect((await stateOf([mine, theirs])).every((i) => i.isAvailable)).toBe(true);
     expect(await auditFor([mine, theirs])).toHaveLength(0);
   });
@@ -252,4 +256,59 @@ describe('[MENU-BULK] several items sold out, or back on, in one go', () => {
     expect(res.json().data.changedIds).toHaveLength(328);
     expect(await auditFor(ids)).toHaveLength(328);
   });
+
+  // [REVIEW-2520-A S4-3] The chain case: the batch is for the store chosen (its header), never the owner's other branch.
+  it('another branch of the SAME owner: its items in the batch refuse the whole batch; nothing changes in either branch', async () => {
+    const here = await makeItem(store);
+    const branch = await makeItem(sameOwnerBranch);
+    const res = await app.inject({
+      method: 'POST', url: URL, payload: { itemIds: [here, branch], isAvailable: false },
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${owner.token}`, 'x-vendor-id': store.vendorId },
+    });
+    expect(res.statusCode).toBe(404);
+    expect((await stateOf([here, branch])).every((i) => i.isAvailable)).toBe(true);
+    expect(await auditFor([here, branch])).toHaveLength(0);
+  });
+
+  it('[REVIEW-2520-A S4-3] an item banned by its words (not only by a person) stays off; the rest go on', async () => {
+    const fine = await makeItem(store, { isAvailable: false });
+    const rum = await makeItem(store, { isAvailable: false, name: `${wordFreeTag(6)} Dark Rum` });
+    const res = await send(owner.token, { itemIds: [fine, rum], isAvailable: true });
+    expect(res.statusCode, res.body).toBe(200);
+    expect(res.json().data.changedIds).toEqual([fine]);
+    expect(res.json().data.refused.map((r: { id: string }) => r.id)).toEqual([rum]);
+    expect(Object.fromEntries((await stateOf([fine, rum])).map((r) => [r.id, r.isAvailable]))).toEqual({ [fine]: true, [rum]: false });
+  });
+
+  // [REVIEW-2520-A S3-1] Every path that moves several items locks them in id order (checkout, stock, till sync, the
+  // un-hide guard), so two of them never deadlock. A batch that locked in table order deadlocked a checkout: the
+  // checkout held the lowest id and then asked for the highest, while the batch held the highest (first on disk) and
+  // waited for the lowest -> 40P01, and the customer's order failed. Rows are written here highest id first on disk.
+  it('a checkout-style locker (id order) and a whole-menu batch at the same time: both finish, no deadlock', async () => {
+    const tag = wordFreeTag(6).toLowerCase();
+    const ids = Array.from({ length: 400 }, (_, k) => `bulkdl${tag}${String(999 - k).padStart(3, '0')}`);
+    await sys(() => app.prisma.item.createMany({
+      data: ids.map((id, k) => ({ id, vendorId: store.vendorId, categoryId: store.sectionId, name: `Lock ${k} ${tag}`, basePrice: 500 })),
+    }));
+    const lowest = [...ids].sort()[0]!;
+    const highest = [...ids].sort().at(-1)!;
+    let lockedLowest!: () => void;
+    const holding = new Promise<void>((resolve) => { lockedLowest = resolve; });
+    const checkout = sys(() => app.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT id FROM "items" WHERE id = ${lowest} FOR UPDATE`;
+      lockedLowest();
+      await new Promise((r) => setTimeout(r, 600));
+      await tx.$queryRaw`SELECT id FROM "items" WHERE id = ${highest} FOR UPDATE`;
+      return 'ordered';
+    }, { timeout: 20_000, maxWait: 5_000 }));
+    await holding;
+    const batch = send(owner.token, { itemIds: ids, isAvailable: false });
+    const [checkoutResult, batchResult] = await Promise.allSettled([checkout, batch]);
+    expect(checkoutResult.status, String((checkoutResult as PromiseRejectedResult).reason ?? '')).toBe('fulfilled');
+    expect(batchResult.status).toBe('fulfilled');
+    const res = (batchResult as PromiseFulfilledResult<Awaited<ReturnType<typeof send>>>).value;
+    expect(res.statusCode, res.body).toBe(200);
+    expect(res.json().data.changedIds).toHaveLength(400);
+  }, 60_000);
 });
+

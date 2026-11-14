@@ -57,7 +57,7 @@ import {
 import { useDebouncedValue } from '../../../hooks/useDebouncedValue';
 import { CatalogueSearchBar } from '../CatalogueSearchBar';
 import { RowPriceEdit, RowStockAdjust } from '../MenuRowTools';
-import { bulkConfirmBody, bulkConfirmTitle, bulkResultLine, keepSelectable, selectAll, toggleSelected } from '../../../lib/bulkAvailability';
+import { bulkConfirmBody, bulkConfirmTitle, bulkResultLine, keepSelectable, selectAll, selectedLine, toggleSelected } from '../../../lib/bulkAvailability';
 import { lowestSizePrice } from '../../../lib/menuOptionsEditor';
 
 /** [IMAGES-E2E PR4 · REVIEW-F S4-2 on #1965] A photo address saved before photos were uploaded: named for what it is. */
@@ -1042,7 +1042,7 @@ export function VendorMenuScreen({ navigation }: any) {
           <View style={{ paddingHorizontal: GUTTER, paddingVertical: space.md, gap: space.sm, borderTopWidth: 1, borderTopColor: color.border.subtle, backgroundColor: color.surface.base }}>
             <View style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: space.md }}>
               <T variant="label" weight="semibold" accessibilityLiveRegion="polite" style={{ flexGrow: 1 }}>
-                {`${ticks.size} selected`}
+                {selectedLine(ticks, shownIds)}
               </T>
               <PillButton label="Select all shown" variant="outline" size="sm" disabled={shownIds.length === 0} onPress={() => setSelected((s) => selectAll(s, shownIds))} />
               <PillButton label="Clear" variant="soft" size="sm" disabled={ticks.size === 0} onPress={() => setSelected(NO_TICKS)} />

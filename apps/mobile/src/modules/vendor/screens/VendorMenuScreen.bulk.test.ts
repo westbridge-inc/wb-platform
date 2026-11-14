@@ -13,6 +13,7 @@ const h = vi.hoisted(() => ({
   at: 0,
   menu: [] as unknown[],
   role: 'OWNER' as string,
+  storeId: 'store-a' as string,
   preview: null as null | string,
   bulk: [] as Array<{ vars: any; options: any }>,
   bulkPending: false,
@@ -53,7 +54,7 @@ vi.mock('../../../hooks/useDebouncedValue', () => ({ useDebouncedValue: (v: unkn
 vi.mock('../../../hooks/vendorops', () => {
   const mutation = () => ({ mutate: () => undefined, isPending: false });
   return {
-    useVendorProfile: () => ({ owner: { myRole: h.role }, store: { vendorType: 'RESTAURANT' } }),
+    useVendorProfile: () => ({ owner: { myRole: h.role }, store: { id: h.storeId, vendorType: 'RESTAURANT' } }),
     useVendorMenu: () => ({ data: h.menu, isLoading: false, isError: false, refetch: h.refetch }),
     useCreateCategory: mutation, useUpdateCategory: mutation, useDeleteCategory: mutation,
     useDeleteItem: mutation, useSetItemAvailability: mutation, useUploadCategoryPhoto: mutation, useRemoveCategoryPhoto: mutation,
@@ -99,6 +100,7 @@ beforeEach(() => {
   h.menu = menu();
   h.role = 'OWNER';
   h.preview = null;
+  h.storeId = 'store-a';
   h.bulk = [];
   h.bulkPending = false;
 });
@@ -139,6 +141,14 @@ describe('several items at once', () => {
     expect(pill(tree, 'Mark sold out').props.disabled).toBe(false);
     tick(tree, 'c0-i1');
     expect(texts(draw())).toContain('1 selected');
+  });
+
+  it('[REVIEW-2520-A S4-4] ticks a search now hides are still counted, and said to be off screen', () => {
+    pill(draw(), 'Select').props.onPress();
+    tick(draw(), 'c0-i1');
+    tick(draw(), 'c2-i5');
+    bar(draw()).props.onChangeText('dish 2.5');
+    expect(texts(draw())).toContain('2 selected · 1 not shown');
   });
 
   it('"Select all shown" ticks what the search shows; "Clear" unticks all', () => {
@@ -222,6 +232,20 @@ describe('several items at once', () => {
     h.bulk[0]!.options.onError(new Error('Network Error'));
     tree = draw();
     expect(texts(tree)).toContain('The items didn’t change. Check your connection and try again.');
+  });
+
+  it('switching store drops the ticks, the ask and select mode (they belong to the other store)', () => {
+    pill(draw(), 'Select').props.onPress();
+    tick(draw(), 'c1-i0');
+    pill(draw(), 'Mark sold out').props.onPress();
+    expect(popup(draw())).toBeTruthy();
+    h.storeId = 'store-b';
+    draw();
+    const tree = draw();
+    expect(popup(tree)).toBeUndefined();
+    expect(selectable(tree)).toHaveLength(0);
+    pill(tree, 'Select').props.onPress();
+    expect(texts(draw())).toContain('0 selected');
   });
 
   it('floor staff may (as the one-item switch); a sample preview may not', () => {

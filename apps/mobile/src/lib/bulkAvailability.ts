@@ -40,6 +40,14 @@ export function bulkResultLine(answer: BulkAnswer, isAvailable: boolean): string
   return parts.join(' ');
 }
 
+/** [REVIEW-2520-A S4-4] The bar's count: every tick (all are sent), and how many the search or a button now hides. */
+export function selectedLine(selected: ReadonlySet<string>, shownIds: readonly string[]): string {
+  const shown = new Set(shownIds);
+  let hidden = 0;
+  for (const id of selected) if (!shown.has(id)) hidden += 1;
+  return hidden > 0 ? `${selected.size} selected · ${hidden} not shown` : `${selected.size} selected`;
+}
+
 /** One item ticked or unticked (a new set; the others untouched). */
 export function toggleSelected(selected: ReadonlySet<string>, id: string): Set<string> {
   const next = new Set(selected);

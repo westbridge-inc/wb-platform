@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { bulkConfirmBody, bulkConfirmTitle, bulkResultLine, keepSelectable, selectAll, toggleSelected } from './bulkAvailability';
+import { bulkConfirmBody, bulkConfirmTitle, bulkResultLine, keepSelectable, selectAll, selectedLine, toggleSelected } from './bulkAvailability';
 
 // [MENU-BULK · parity audit C2, owner 14 Nov 2026] Tick several items on the menu list and mark them sold out, or
 // back on, in one go: the words the app and the website show (both use this file), and the ticks.
@@ -48,5 +48,14 @@ describe('the ticks', () => {
     expect([...kept]).toEqual(['a']);
     const same = new Set(['a']);
     expect(keepSelectable(same, ['a', 'b']), 'unchanged ticks keep their set').toBe(same);
+  });
+});
+
+// [REVIEW-2520-A S4-4] Ticks the search or a button now hides are still sent: the bar says how many are off screen.
+describe('selectedLine', () => {
+  it('"N selected", and "· M not shown" when some ticks are off screen', () => {
+    expect(selectedLine(new Set(), ['a'])).toBe('0 selected');
+    expect(selectedLine(new Set(['a', 'b']), ['a', 'b', 'c'])).toBe('2 selected');
+    expect(selectedLine(new Set(['a', 'x', 'y']), ['a', 'b'])).toBe('3 selected · 2 not shown');
   });
 });

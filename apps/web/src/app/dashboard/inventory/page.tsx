@@ -12,7 +12,7 @@ import { useMutation, useMutationState, useQuery, useQueryClient } from '@tansta
 import { Search, X } from 'lucide-react';
 import { getCategories, getItems, getProfile, getStores, money, setItemAvailability, setItemsAvailability, toAmount, updateItem, type CatalogItem, type VatClass } from '@/lib/vendor-api';
 // [MENU-BULK] The app's words for several items at once (the same file the app's Menu tab reads).
-import { bulkConfirmBody, bulkConfirmTitle, bulkResultLine, keepSelectable, selectAll, toggleSelected } from '../../../../../mobile/src/lib/bulkAvailability';
+import { bulkConfirmBody, bulkConfirmTitle, bulkResultLine, keepSelectable, selectAll, selectedLine, toggleSelected } from '../../../../../mobile/src/lib/bulkAvailability';
 import { getStoreVat } from '@/lib/store-vat-read';
 import { Pictogram } from '@/components/glyphs';
 import { DataUnavailable } from '@/components/data-unavailable';
@@ -459,7 +459,7 @@ export default function InventoryPage() {
       {selecting && (
         <section aria-label="Selected items" className="sticky bottom-0 z-10 space-y-2 border-t border-[var(--swift-border)] bg-[var(--swift-card)] p-3">
           <div className="flex flex-wrap items-center gap-2">
-            <span className="flex-1 text-sm font-semibold" aria-live="polite">{`${ticks.size} selected`}</span>
+            <span className="flex-1 text-sm font-semibold" aria-live="polite">{selectedLine(ticks, list.map((i) => i.id))}</span>
             <button type="button" className="sw-chip" disabled={!list.length} onClick={() => setSelected((s) => selectAll(s, list.map((i) => i.id)))}>Select all shown</button>
             <button type="button" className="sw-chip" disabled={!ticks.size} onClick={() => setSelected(new Set())}>Clear</button>
           </div>
