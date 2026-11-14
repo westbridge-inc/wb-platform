@@ -12,11 +12,14 @@ import { mockApi, renderWithQuery, type ApiRequest } from '@/test/test-utils';
 
 const SHORT = 'https://swiftgy.test/s/abcdfghjkm';
 const asked: Array<{ url: URL; headers: Record<string, string> }> = [];
+let qrReads = 0;
 
-function qrApi(opts: { verdict?: string; card?: 'ok' | 'limit' | 'fail' } = {}) {
+function qrApi(opts: { verdict?: string; card?: 'ok' | 'limit' | 'fail' | 'expired-once' } = {}) {
+  let expired = opts.card === 'expired-once';
   const base = mockApi(({ url }: ApiRequest) => {
     const path = url.pathname.replace('/api/v1', '');
     if (path === '/vendor/stores') return { body: { success: true, data: { stores: [{ id: 'store-1', name: 'Sample Kitchen', vendorType: 'RESTAURANT', isCurrentlyOpen: true, acceptingOrders: true, city: null, isVerified: true }], selectedId: 'store-1', myRole: 'OWNER' } } };
+    if (path === '/vendor/qr') qrReads += 1;
     if (path === '/vendor/qr') return { body: { success: true, data: { shortUrl: SHORT, shortCode: 'ABCDFGHJKM', canonicalUrl: 'https://swiftgy.test/store/sample', version: 2, status: 'ACTIVE', svg: '<svg xmlns="http://www.w3.org/2000/svg"/>', vendorName: 'Sample Kitchen' } } };
     if (path === '/public/qr/ABCDFGHJKM') return { body: { success: true, data: { verdict: opts.verdict ?? 'WEB_RENDER', vendorId: 'store-1' } } };
     return { status: 404, body: { success: false } };
@@ -25,6 +28,7 @@ function qrApi(opts: { verdict?: string; card?: 'ok' | 'limit' | 'fail' } = {}) 
     const url = new URL(String(input));
     if (url.pathname === '/api/v1/vendor/qr/assets/pdf') {
       asked.push({ url, headers: init?.headers as Record<string, string> });
+      if (expired) { expired = false; return new Response(JSON.stringify({ success: false, error: { message: 'Unauthorized' } }), { status: 401 }); }
       if (opts.card === 'limit') return new Response(JSON.stringify({ success: false, error: { message: 'Too many requests' } }), { status: 429 });
       if (opts.card === 'fail') return new Response(JSON.stringify({ success: false, error: { message: 'The card could not be made right now.' } }), { status: 503 });
       return new Response(new Blob(['%PDF-1.7']), { status: 200, headers: { 'Content-Type': 'application/pdf', 'Content-Disposition': 'attachment; filename="swift-qr-card.pdf"' } });
@@ -84,5 +88,21 @@ describe('[WEB-QR] the website prints the counter card the server makes', () => 
     await user.click(button);
     card = await cardSection();
     await waitFor(() => expect(within(card).getByRole('alert').textContent).toBe('The card could not be made right now.'));
+  });
+});
+
+describe('[REVIEW-2517 S4-3] an expired sign-in renews itself, as on every other read', () => {
+  it('a 401 on the card goes through the signed-in read once, then the card downloads', async () => {
+    qrApi({ card: 'expired-once' });
+    const { user } = renderWithQuery(<StoreQrPage />);
+    const card = await cardSection();
+    const button = within(card).getByRole('button', { name: 'Download the card (PDF)' }) as HTMLButtonElement;
+    await waitFor(() => expect(button.disabled).toBe(false));
+    const before = qrReads;
+    await user.click(button);
+    await waitFor(() => expect(saved()).toEqual(['blob:card|swift-qr-card.pdf']));
+    expect(asked).toHaveLength(2);
+    expect(qrReads).toBe(before + 1);
+    expect(within(card).queryByRole('alert')).toBeNull();
   });
 });

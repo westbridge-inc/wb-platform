@@ -1,4 +1,5 @@
 import { act, screen, waitFor, within } from '@testing-library/react';
+import { focusManager } from '@tanstack/react-query';
 import { beforeEach, describe, expect, it } from 'vitest';
 import OrderHistoryPage from './page';
 import { mockApi, renderWithQuery, type ApiRequest } from '@/test/test-utils';
@@ -19,15 +20,17 @@ const order = (n: number, status = 'DELIVERED'): Row => ({
 });
 
 const reads: URL[] = [];
-function historyApi(opts: { total?: number; fail?: boolean; rows?: (_url: URL) => Row[]; role?: string } = {}) {
+function historyApi(opts: { total?: number; fail?: boolean; rows?: (_url: URL) => Row[]; role?: string; hold?: (_url: URL) => Promise<void> | undefined } = {}) {
   const total = opts.total ?? 45;
-  return mockApi(({ url, method }: ApiRequest) => {
+  return mockApi(async ({ url, method }: ApiRequest) => {
     const path = url.pathname.replace('/api/v1', '');
     if (path === '/vendor/stores') {
       return { body: { success: true, data: { stores: [{ id: 'store-1', name: 'Sample Kitchen', vendorType: 'RESTAURANT', isCurrentlyOpen: true, acceptingOrders: true, city: null, isVerified: true }], selectedId: 'store-1', myRole: opts.role ?? 'OWNER' } } };
     }
     if (path === '/vendor/orders' && method === 'GET') {
       reads.push(url);
+      const held = opts.hold?.(url);
+      if (held) await held;
       if (opts.fail) return { status: 503, body: { success: false, error: { message: 'Service unavailable' } } };
       const page = Number(url.searchParams.get('page'));
       const limit = Number(url.searchParams.get('limit'));
@@ -178,5 +181,62 @@ describe('[WEB-HISTORY] Order history on the website, as on the phone', () => {
     await waitFor(() => expect(rows()).toHaveLength(1));
     await new Promise((resolve) => { setTimeout(resolve, 50); });
     expect(screen.queryByRole('link', { name: 'Export orders on Insights' })).toBeNull();
+  });
+});
+
+describe('[REVIEW-2517] payment words, the count while loading, and one reading until Refresh', () => {
+  const opened = async (row: Row) => {
+    historyApi({ rows: () => [row] });
+    const { user } = renderWithQuery(<OrderHistoryPage />);
+    await waitFor(() => expect(rows()).toHaveLength(1));
+    await user.click(within(rows()[0]!).getByRole('button'));
+    return rows()[0]!.textContent ?? '';
+  };
+
+  it.each([
+    ['MOBILE_MONEY', 'CANCELLED', 'Payment method: MMG'],
+    ['MOBILE_MONEY', 'DELIVERED', 'Payment method: MMG'],
+    ['CASH', 'COMPLETED', 'Payment method: Cash'],
+    ['BANK_TRANSFER', 'DELIVERED', 'Payment method: Bank transfer'],
+    ['CARD', 'DELIVERED', 'Payment method: Card'],
+    ['WALLET', 'CANCELLED', 'Payment method: Other payment'],
+  ])('%s, %s: "%s", never a claim that it was paid (S3-1)', async (method, status, words) => {
+    const text = await opened({ ...order(1, status), paymentMethod: method } as Row);
+    expect(text).toContain(words);
+    expect(text).not.toMatch(/Paid by|paid/);
+  });
+
+  it('an order naming no payment method shows no payment line', async () => {
+    const text = await opened(order(1));
+    expect(text).not.toContain('Payment method');
+  });
+
+  it('while a new filter\'s first page loads, the last filter\'s count is not shown (S4-2)', async () => {
+    let release: () => void = () => undefined;
+    historyApi({ total: 45, hold: (url) => (url.searchParams.get('status') === 'CANCELLED' ? new Promise<void>((resolve) => { release = resolve; }) : undefined) });
+    const { user } = renderWithQuery(<OrderHistoryPage />);
+    expect(await screen.findByText(/Sample Kitchen · 45 orders/)).toBeTruthy();
+    await user.click(screen.getByRole('button', { name: 'Cancelled' }));
+    await waitFor(() => expect(lastRead().searchParams.get('status')).toBe('CANCELLED'));
+    expect(screen.queryByText(/Sample Kitchen · 45 orders/)).toBeNull();
+    await act(async () => { release(); });
+    expect(await screen.findByText(/Sample Kitchen · 45 orders/)).toBeTruthy();
+  });
+
+  it('coming back to the tab does not re-read one page under older ones; Refresh reads again from the first (S4-1)', async () => {
+    historyApi({ total: 45 });
+    const { user } = renderWithQuery(<OrderHistoryPage />);
+    await waitFor(() => expect(rows()).toHaveLength(20));
+    await user.click(screen.getByRole('button', { name: 'Load more (20 of 45)' }));
+    await waitFor(() => expect(rows()).toHaveLength(40));
+    const before = reads.length;
+    act(() => { focusManager.setFocused(false); });
+    act(() => { focusManager.setFocused(true); });
+    await act(async () => { await new Promise((resolve) => { setTimeout(resolve, 50); }); });
+    expect(reads.length).toBe(before);
+    act(() => { focusManager.setFocused(undefined); });
+    await user.click(screen.getByRole('button', { name: 'Refresh' }));
+    await waitFor(() => expect(rows()).toHaveLength(20));
+    expect(lastRead().searchParams.get('page')).toBe('1');
   });
 });

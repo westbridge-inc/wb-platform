@@ -88,10 +88,18 @@ export const getSalesStatementPath = () =>
  */
 export async function downloadQrCounterCard(storeId: string): Promise<void> {
   if (getSelectedStore() !== storeId) throw new Error('The selected store changed. Try again.');
-  const res = await fetch(`${API_URL}${V}/qr/assets/pdf?template=card`, {
+  const download = () => fetch(`${API_URL}${V}/qr/assets/pdf?template=card`, {
     credentials: 'include',
     headers: { 'X-Swift-Client': BROWSER_CLIENT, 'x-client-platform': 'web', 'x-vendor-id': storeId },
   });
+  let res = await download();
+  if (res.status === 401) {
+    // [REVIEW-2517 S4-3] An expired sign-in renews itself as on every other read: the store's code read goes through
+    // apiFetch, which renews the session (or signs out and says so), then the card is asked for once more.
+    await apiFetch(`${V}/qr`, undefined, { storeId });
+    if (getSelectedStore() !== storeId) throw new Error('The selected store changed. Try again.');
+    res = await download();
+  }
   if (!res.ok) {
     if (res.status === 429) throw new Error('You have downloaded the card many times this hour. Try again later.');
     const json = await res.json().catch(() => null) as { error?: { message?: string } } | null;

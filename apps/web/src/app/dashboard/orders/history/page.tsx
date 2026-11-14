@@ -13,6 +13,9 @@ import { HISTORY_FILTERS, getOrderHistory, historyRangeProblem, type OrderHistor
 import { DataUnavailable } from '@/components/data-unavailable';
 // [STORE-MONEY] The app's own reader of the store's money (plain file, imported as is).
 import { ringMoney } from '../../../../../../mobile/src/modules/vendor/ringMoney';
+// [REVIEW-2517 S3-1 · GUARDRAILS §1/§4] The app's words for HOW the customer pays ("MMG", "Cash", "Bank transfer",
+// "Card", "Other payment"), never a claim that a payment was made: this page checks no payment.
+import { paymentMethodWords } from '../../../../../../mobile/src/modules/vendor/storeWords';
 
 // [PERF · size budget] This page shares nothing with the order board beyond what every console page already loads:
 // no order window, no board chip, no modal. Each of those, shared or loaded on demand, either split the board's own
@@ -43,6 +46,7 @@ function HistoryRow({ order, open, onToggle }: { order: VendorOrder; open: boole
   const panel = `order-${order.id}-facts`;
   // The order window's own words for why it was cancelled (never the stored code).
   const cancelled = status === 'CANCELLED' ? cancellationReasonWords(order.cancellationReason, 'store') : null;
+  const pays = paymentMethodWords(order.paymentMethod);
   return (
     <article className="sw-card min-w-0 p-4" aria-label={`Order ${order.orderNumber}`}>
       <button type="button" onClick={onToggle} aria-expanded={open} aria-controls={panel} className="block w-full text-left">
@@ -73,7 +77,7 @@ function HistoryRow({ order, open, onToggle }: { order: VendorOrder; open: boole
           ))}
           <p className="sw-caption pt-1 font-semibold text-[var(--swift-ink)]">{sm.longLabel}: {money(sm.food)}</p>
           {sm.notes.map((line) => <p key={line} className="sw-caption">{line}</p>)}
-          {order.paymentMethod && <p className="sw-caption">{order.paymentMethod === 'MOBILE_MONEY' ? 'Paid by MMG' : order.paymentMethod === 'CASH' ? 'Cash' : 'Card'}</p>}
+          {pays && <p className="sw-caption">Payment method: {pays}</p>}
           {cancelled && <p className="sw-caption">{cancelled}</p>}
         </div>
       )}
@@ -95,7 +99,8 @@ export default function OrderHistoryPage() {
   const [from, setFrom] = useState('');
   const [to, setTo] = useState('');
   const [page, setPage] = useState(1);
-  const [rows, setRows] = useState<VendorOrder[]>([]);
+  // The pages read so far, by number: a page read again replaces its own rows, never adds them twice.
+  const [pages, setPages] = useState<Record<number, VendorOrder[]>>({});
   const [open, setOpen] = useState<string | null>(null);
 
   // As the phone: free typing reaches the server's search 400 ms after the last key, from the first page.
@@ -130,19 +135,25 @@ export default function OrderHistoryPage() {
     enabled: !!storeId && !rangeProblem,
     // As the phone (useVendorOrderHistory): the last answer stays up while the next one loads.
     placeholderData: (previous) => previous,
+    // [REVIEW-2517 S4-1] The list is one reading, renewed by Refresh (back to the first page): a re-read of the
+    // last page alone on focus would leave the pages above it older than the one under them.
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
   });
 
   // As the phone: a first page replaces the list, a later one is added under it (any filter change starts again).
+  // [REVIEW-2517 S4-1] A page read again (its answer refreshed) replaces only its own rows.
   useEffect(() => {
     if (!q.data || q.isPlaceholderData) return;
     const next = q.data;
-    setRows((prev) => {
-      if (next.page === 1) return next.orders;
-      // A page read after a new order arrived can repeat the last row of the page before it: shown once.
-      const seen = new Set(prev.map((o) => o.id));
-      return [...prev, ...next.orders.filter((o) => !seen.has(o.id))];
-    });
+    setPages((prev) => (next.page === 1 ? { 1: next.orders } : { ...prev, [next.page]: next.orders }));
   }, [q.data, q.isPlaceholderData]);
+  const rows = useMemo(() => {
+    const seen = new Set<string>();
+    // A page read after a new order arrived can repeat the last row of the page before it: shown once.
+    return Object.keys(pages).map(Number).sort((a, b) => a - b).flatMap((n) => pages[n] ?? [])
+      .filter((o) => (seen.has(o.id) ? false : (seen.add(o.id), true)));
+  }, [pages]);
 
   const changeFilter = (apply: () => void) => { apply(); setPage(1); };
   const total = q.data?.total ?? 0;
@@ -191,7 +202,8 @@ export default function OrderHistoryPage() {
         {manager && <p className="sw-caption">Need a spreadsheet for your accounts? <Link href="/dashboard/insights" className="font-semibold text-[var(--swift-red)]">Export orders on Insights</Link>.</p>}
       </div>
 
-      {!rangeProblem && q.data && storeName && (
+      {/* [REVIEW-2517 S4-2] Never the last filter's count while this one's first answer is on its way. */}
+      {!rangeProblem && q.data && !q.isPlaceholderData && storeName && (
         <p className="sw-caption flex items-center gap-2 font-semibold">
           <StoreIcon size={14} aria-hidden="true" className="text-[var(--swift-red)]" />
           {storeName} · {total} order{total === 1 ? '' : 's'}
