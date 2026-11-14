@@ -100,7 +100,7 @@ export const NAV_GROUPS: NavGroup[] = [
       { label: 'Support', href: '/support', icon: Headphones, blurb: 'Help tickets from customers and partners', keywords: 'tickets help' },
       { label: 'Compliance', href: '/compliance', icon: Scale, blurb: 'Movers taken offline for lapsed documents or cover', keywords: 'liability insurance' },
       { label: 'Background jobs', href: '/jobs', icon: ListRestart, blurb: 'Jobs that failed and can be retried', keywords: 'queues dlq workers', founderOnly: true },
-      { label: 'Broadcast', href: '/broadcast', icon: Megaphone, blurb: 'Send one message to everyone', keywords: 'announcement notification' },
+      { label: 'Broadcast', href: '/broadcast', icon: Megaphone, blurb: 'Send one message to everyone, or put a notice on customers’ Home', keywords: 'announcement notification home notice banner' },
     ],
   },
   {

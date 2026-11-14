@@ -4,6 +4,7 @@ import { FEE_RISE_PREFIX } from '../billing/fee-rise-notice';
 import { PROVIDER_IDENTITY_BACKFILL_KEY } from '../billing/provider-identity-backfill';
 import { HIRE_SPLIT_STARTED_KEY } from '../verification/hire-permit-grace';
 import { LAST_REAPER_RUN_KEY } from '../ops/reaper-freshness';
+import { HOME_NOTICE_KEY } from '../ops/home-notice';
 
 /**
  * [AUDIT C2-2 · 13 Nov 2026] Config rows the server writes for itself, never a person through the generic
@@ -20,6 +21,8 @@ const MACHINE_OWNED_KEYS: readonly string[] = [
   FEE_PAUSE_OPEN_KEY, MMG_PAUSE_CLOCKS_KEY, PROVIDER_IDENTITY_BACKFILL_KEY, HIRE_SPLIT_STARTED_KEY, LAST_REAPER_RUN_KEY,
   // Its own route checks the webhook is configured before promising webhook speed.
   'billing.mmg_agent.ingestion_mode',
+  // [HOME-NOTICE] Its own routes check the words and make turning it off immediate (ops/home-notice.ts).
+  HOME_NOTICE_KEY,
 ];
 
 export function isMachineOwnedConfigKey(key: string): boolean {

@@ -162,6 +162,7 @@ import { maskOrderPartyPhones, maskRowUserPhones, ORDER_CONTACT_PARTIES, revealO
 import { PROOF_PHOTO_NAMES, openProofPhoto } from './order-proof-photo';
 import { moverUserOf, PAYER_INCLUDE, subscriptionTenantWhere } from '../subscription/subscription-owner';
 import { readDeliveryPause, setDeliveryPause } from '../dispatch/delivery-pause';
+import { HOME_NOTICE_KEY, readHomeNotice, startHomeNotice, stopHomeNotice } from '../ops/home-notice';
 
 // ---------------------------------------------------------------------------
 // Input schemas
@@ -4784,6 +4785,46 @@ export async function adminRoutes(app: FastifyInstance) {
     });
 
     return { success: true, data: config };
+  });
+
+  // ─── Home notice ───────────────────────────────────────────────────────
+  // [HOME-NOTICE · owner 13 Nov 2026] The small notice on every customer's Home
+  // (ops/home-notice.ts). Reading it and stopping it are open to this
+  // platform's own admins; putting words in front of every customer is the
+  // founder's, like every other platform setting. ON is C5 (a reason and a
+  // second admin, solo mode for the owner); OFF is C3 (a reason, immediate).
+  // Each write and its audit row commit together.
+  app.get('/home-notice', { preHandler: [canonicalTenantGuard] }, async () => {
+    const notice = await readHomeNotice(app.prisma);
+    return { success: true, data: { notice, live: notice?.active === true } };
+  });
+
+  app.put('/home-notice', { preHandler: [platformControlGuard] }, async (request) => {
+    const { before, after } = await app.prisma.$transaction(async (tx) => {
+      const change = await startHomeNotice(tx, request.body);
+      await auditWithin(tx, request as unknown as AuditRequestLike, app.prefix, {
+        entityId: HOME_NOTICE_KEY,
+        extra: {
+          noticeId: change.after!.id, liveBefore: change.before?.active === true, liveAfter: true,
+          previousNoticeId: change.before?.id ?? null, title: change.after!.title, body: change.after!.body,
+        },
+      });
+      return change;
+    });
+    request.log.info({ noticeId: after?.id, replaced: before?.active === true && before.id !== after?.id }, '[home-notice] notice turned on');
+    return { success: true, data: { notice: after, live: true } };
+  });
+
+  app.post('/home-notice/stop', { preHandler: [canonicalTenantGuard] }, async (request) => {
+    const { after } = await app.prisma.$transaction(async (tx) => {
+      const change = await stopHomeNotice(tx);
+      await auditWithin(tx, request as unknown as AuditRequestLike, app.prefix, {
+        entityId: HOME_NOTICE_KEY,
+        extra: { noticeId: change.before?.id ?? null, liveBefore: change.before?.active === true, liveAfter: false },
+      });
+      return change;
+    });
+    return { success: true, data: { notice: after, live: false } };
   });
 
   // ─── Promos ────────────────────────────────────────────────────────────

@@ -242,3 +242,27 @@ describe('[Q7b · WEB-APPBAR] /order is the ordering home', () => {
     expect(screen.getAllByText('Swift Test Company Ltd').length).toBeGreaterThan(0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// [HOME-NOTICE ROUND 2 · REVIEW-A S3-1] The owner's notice sits UNDER the live order, as on the phone (HomeScreen:
+// "Under the live order, which outranks it"): a customer with an order in flight sees that order first.
+// ---------------------------------------------------------------------------
+describe('[HOME-NOTICE] the notice under the live order', () => {
+  it('a signed-in customer with a live order sees the order first, then the notice', async () => {
+    api = ((base) => (request: ApiRequest) => {
+      if (request.url.pathname === '/api/v1/auth/me') return { body: { success: true, data: { user: { id: 'c1' } } } };
+      if (request.url.pathname === '/api/v1/customer/addresses') return { body: { success: true, data: [] } };
+      if (request.url.pathname === '/api/v1/public/home-notice') {
+        return { body: { success: true, data: { notice: { id: 'abcdef0123456789', title: 'Pickup is open on Swift', body: 'Choose Pickup at checkout.', updatedAt: '2026-11-14T10:00:00.000Z' } } } };
+      }
+      if (request.url.pathname === '/api/v1/customer/home') {
+        return { body: { success: true, data: feed({ activeOrder: { id: 'o1', orderNumber: 'SW-1001', status: 'PREPARING', vendor: { id: 'v1', name: 'Shanta Kitchen' } } }) } };
+      }
+      return base(request);
+    })(api);
+    renderHome();
+    const order = await screen.findByRole('link', { name: /Track your live order SW-1001/ });
+    const notice = await screen.findByRole('note', { name: 'Notice from Swift' });
+    expect(order.compareDocumentPosition(notice) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+});
