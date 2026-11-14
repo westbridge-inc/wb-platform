@@ -10,6 +10,7 @@ import { manualFeeCreditHeld } from '../utils/fee-credit-hold';
 // payment reaches only weeks that start before its date (GUARDRAILS s7 rule 2).
 
 const DAY = 86_400_000;
+const HOUR_MS = 3_600_000;
 const NOW = new Date('2026-10-12T12:00:00Z');
 const FEE = 8000;
 const sub = (over: Partial<PayAheadSub> = {}): PayAheadSub => ({
@@ -73,18 +74,33 @@ describe('[owner 14 Nov 2026] a free trial may pay ONE week ahead: the first wee
   const trialEndDate = new Date(NOW.getTime() + 10 * DAY);
   const trial = (over: Partial<PayAheadSub> = {}) => sub({ status: 'TRIAL', isTrialActive: true, trialEndDate, nextBillingDate: trialEndDate, ...over });
 
-  it('one week, one constant, named in words from it; the four-week check for money that lands anyway still reads four', () => {
+  it('one week, one constant, named in words from it; money that lands above it anyway is named for a refund [REVIEW-A S4-2]', () => {
     expect(TRIAL_PAY_AHEAD_MAX_WEEKS).toBe(1);
     expect(TRIAL_PAY_AHEAD_WORDS).toBe('one weekly fee ahead');
-    expect(payAheadPosition(trial(), 0, NOW)).toMatchObject({ trial: true, maxWeeks: 1, openWeeks: 1, due: false, heldAhead: 0, room: FEE, cap: 4 * FEE, excess: 0 });
+    expect(payAheadPosition(trial(), 0, NOW)).toMatchObject({ trial: true, trialEnded: false, maxWeeks: 1, openWeeks: 1, due: false, heldAhead: 0, room: FEE, cap: FEE, excess: 0 });
     expect(payAheadPosition(trial(), FEE, NOW)).toMatchObject({ room: 0, excess: 0 });
+    expect(payAheadPosition(trial(), 3 * FEE, NOW)).toMatchObject({ room: 0, excess: 2 * FEE });
     expect(payAheadPosition(trial(), FEE / 2, NOW)).toMatchObject({ room: FEE / 2 });
     // A week booked beyond the trial by date counts toward the one week.
     expect(payAheadPosition(trial({ nextBillingDate: new Date(trialEndDate.getTime() + 7 * DAY) }), 0, NOW)).toMatchObject({ weeksAheadByDate: 1, room: 0 });
   });
 
+  // [REVIEW-A #2513 S3-1] Between the trial's end and the daily conversion the row is still TRIAL and its first week
+  // is due: only that week may be paid, never "already paid" beside a live Pay button for more weeks.
+  it('a trial that has ended but is not converted yet takes only its first week, and nothing once that is paid', () => {
+    const ended = trial({ trialEndDate: new Date(NOW.getTime() - HOUR_MS), nextBillingDate: new Date(NOW.getTime() - HOUR_MS) });
+    expect(payAheadPosition(ended, 0, NOW)).toMatchObject({ trial: true, trialEnded: true, maxWeeks: 0, due: true, room: FEE, cap: 0, excess: 0 });
+    const paid = payAheadPosition(ended, FEE, NOW);
+    expect(paid).toMatchObject({ room: 0, excess: 0 });
+    expect(payAheadRefusal(paid, 'partner').message).toBe('Your first weekly fee after your free trial is already paid. You can pay again once Swift has applied it, within a day.');
+    expect(payAheadRefusal(payAheadPosition(ended, 0, NOW), 'partner').message).toBe('Your free trial has ended and your first weekly fee is due. You can pay at most GY$8,000 now.');
+    expect(payAheadRefusal(paid, 'admin').message).toMatch(/^This account's free trial has ended and its first weekly fee is already paid\./);
+    expect(payAheadPosition(ended, 2 * FEE, NOW)).toMatchObject({ excess: FEE });
+  });
+
   it('once the trial has ended the four-week limit applies, as for everyone', () => {
-    const ended = trial({ trialEndDate: new Date(NOW.getTime() - DAY), nextBillingDate: new Date(NOW.getTime() - DAY) });
+    // Converted: ACTIVE, the trial flag down.
+    const ended = sub({ status: 'ACTIVE', trialEndDate: new Date(NOW.getTime() - DAY), nextBillingDate: new Date(NOW.getTime() - DAY) });
     expect(payAheadPosition(ended, 0, NOW)).toMatchObject({ trial: false, maxWeeks: 4, due: true, room: 5 * FEE });
     expect(payAheadPosition(sub(), 0, NOW)).toMatchObject({ trial: false, maxWeeks: 4, room: 4 * FEE });
   });

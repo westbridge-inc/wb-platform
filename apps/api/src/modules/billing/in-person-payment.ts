@@ -162,6 +162,12 @@ function overPayAheadLimit(position: PayAheadPosition): AppError {
     ...(position.trial ? { trial: true } : {}),
   };
   const most = formatMoney(Math.floor(position.room), 'GYD', { whole: true });
+  if (position.trialEnded) {
+    // [REVIEW-A #2513 S3-1] The trial has ended and its first fee is not applied yet: only that week may be taken.
+    return new AppError(409, PAY_AHEAD_LIMIT, position.room > 0
+      ? `This account's free trial has ended and its first weekly fee is due; nothing ahead is taken until it is applied, within a day. Nothing was recorded. Take at most ${most}; if you already took more, hand the rest back.`
+      : `This account's free trial has ended and its first weekly fee is already paid. Nothing was recorded: do not take this money. ${HAND_BACK}`, details);
+  }
   if (limitedByTrial(position)) {
     // [TRIAL PAY-AHEAD · owner 14 Nov 2026] One week ahead during a free trial: the first week after it ends.
     return new AppError(409, PAY_AHEAD_LIMIT, position.room > 0

@@ -18,7 +18,8 @@ import { readFeePaymentDecision } from '../modules/billing/fee-payment-authority
 import { readPayAhead } from '../modules/billing/pay-ahead';
 import { feeStatusFor } from '../modules/billing/fee-status';
 import { payInfo } from '../modules/billing/agent-cash.service';
-import { startedWeekOwed } from '../modules/billing/credit-refund';
+import { setAsideCreditRefund, startedWeekOwed } from '../modules/billing/credit-refund';
+import { readDunningClock } from '../modules/billing/dunning-clock';
 import { cleanupBillingClocks } from './helpers/billing-clock-cleanup';
 import { resetKeyProviderForTests } from '../providers/storage/envelope';
 import { ensureProviderIdentityBackfill, resetProviderIdentityBackfillCacheForTests } from '../modules/billing/provider-identity-backfill';
@@ -116,6 +117,16 @@ async function makeTrialStore(opts: { trialEnd?: Date; status?: 'TRIAL' | 'ACTIV
   });
   subIds.push(sub.id);
   return { userId: user.id, subId: sub.id, trialEnd: end };
+}
+
+/** A trial that paid its first week ahead and has just ended, before the daily conversion: still TRIAL, the first
+ *  week (from the trial's end) has started, the credit is held, and the door mapped the clock when it took the money. */
+async function endedPrepaidTrial() {
+  const s = await makeTrialStore({ trialEnd: new Date(Date.now() - 5 * 60_000) });
+  await readDunningClock(app.prisma, s.subId);
+  await app.prisma.$transaction((tx) => billing.recordTopUpInTransaction(tx, { subscriptionId: s.subId, amount: FEE,
+    recordedBy: 'mmg-checkout', channel: 'MMG_CHECKOUT', eventKey: `trial-gap:${RUN}:${s.subId}` }));
+  return s;
 }
 
 const start = (s: { subId: string; userId: string }, weeks?: number) =>
@@ -243,6 +254,12 @@ describe('[owner 14 Nov] MMG during the free trial: one week, credited once, kep
     expect(await reply(row, tx('TRIALTX1'))).toBe('CONFIRMED');
     expect(await app.prisma.billingEvent.count({ where: { subscriptionId: s.subId, type: 'PREPAID_TOPUP' } })).toBe(1);
     expect(await walletOf(s.subId)).toBe(FEE);
+    // The partner is told which week it pays, never that the trial is over (REVIEW-B #2513 S4-3).
+    const told = (await app.prisma.notification.findMany({ where: { userId: s.userId, data: { path: ['kind'], equals: 'billing_mmg_checkout' } } }))
+      .filter((n) => (n.data as Record<string, unknown>)['status'] === 'CONFIRMED');
+    expect(told).toHaveLength(1);
+    expect(told[0]).toMatchObject({ title: 'Weekly fee paid' });
+    expect(told[0]!.body).toMatch(/^GY\$2,100 received with MMG\. It pays your first week after your free trial, \d{1,2} \w{3} \d{4} to \d{1,2} \w{3} \d{4}\. Thank you\.$/);
 
     // The trial is untouched: same end, same first fee date, nothing charged, the clock running again.
     const after = await subOf(s.subId);
@@ -289,6 +306,35 @@ describe('[owner 14 Nov] MMG during the free trial: one week, credited once, kep
     // Nothing is due until that week ends: the fee screen says the week is paid.
     const paidStatus = await feeStatusFor(app.prisma, paid, await payInfo(app.prisma, paid), new Date(at.getTime() + 2 * 60_000));
     expect(paidStatus.state).toBe('PAID');
+  });
+
+  // [REVIEW-A #2513 S3-1] Conversion runs once a day: until it does, a trial that has ended is still TRIAL. One that
+  // paid its first week reads "already paid" and is offered nothing more (never a live Pay button beside it).
+  it('after the trial ends and before the daily conversion: "already paid", no Pay button, every door refuses more', async () => {
+    const s = await endedPrepaidTrial();
+    expect(await readFeePaymentDecision(app.prisma, s.subId)).toEqual({ allowed: true, reason: null });
+    expect(await readPayAhead(app.prisma, s.subId, new Date())).toMatchObject({ trial: true, trialEnded: true, due: true, room: 0, excess: 0 });
+    expect(await mmgAction(s.subId)).toEqual({ id: 'MMG_CHECKOUT', state: 'off' });
+    await expect(start(s)).rejects.toMatchObject({ statusCode: 409, code: 'PAY_AHEAD_LIMIT',
+      message: 'Your first weekly fee after your free trial is already paid. You can pay again once Swift has applied it, within a day.' });
+    const sub = await subOf(s.subId);
+    expect((await feeStatusFor(app.prisma, sub, await payInfo(app.prisma, sub))).state).toBe('COVERED');
+  });
+
+  // [REVIEW-A #2513 S3-2] A week that has started is never refunded: a refund asked in the same window first pays the
+  // first week from the credit (converting this one trial exactly as the daily job would), then finds nothing left.
+  it('a refund asked after the trial ended, before the conversion, pays the started first week from the credit first', async () => {
+    const s = await endedPrepaidTrial();
+    const before = await subOf(s.subId);
+    expect(await startedWeekOwed(app.prisma, before, new Date()), 'the first week has started').toBe(true);
+    expect(await billing.settleStartedWeekFromCredit(s.subId)).toBe('paid');
+    const paid = await subOf(s.subId);
+    expect(paid).toMatchObject({ status: 'ACTIVE', isTrialActive: false, failedAttempts: 0 });
+    expect(paid.nextBillingDate.getTime()).toBe(s.trialEnd.getTime() + WEEK);
+    expect(await walletOf(s.subId)).toBe(0);
+    await expect(setAsideCreditRefund(app.prisma, { adminId: s.userId, approvalId: `trial-gap-${RUN}`, subscriptionId: s.subId, amount: FEE }))
+      .rejects.toMatchObject({ code: 'NO_FEE_CREDIT' });
+    expect(await app.prisma.billingEvent.count({ where: { subscriptionId: s.subId, type: 'PREPAID_REFUND_RESERVED' } })).toBe(0);
   });
 
   it('a trial that did not pay ahead is due at its end as before: the pay-ahead changes nothing for it', async () => {

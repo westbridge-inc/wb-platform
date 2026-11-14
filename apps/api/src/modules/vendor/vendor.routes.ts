@@ -5847,13 +5847,16 @@ export async function vendorRoutes(app: FastifyInstance) {
 
     const { sanDisplay } = await import('../billing/san.service');
     const { payInfo } = await import('../billing/agent-cash.service');
-    const { feeStatusFor } = await import('../billing/fee-status');
+    const { feeStatusFor, payOpenOf } = await import('../billing/fee-status');
     if (!subscription) return { success: true, data: null };
     const fee = await payInfo(app.prisma, subscription);
     // [review-2475 G1] An MMG payer number is shown only to the person whose number it is: never one a store's previous
     // account holder left on the fee (a handover clears it; this never shows another person's number in any case).
     const caller = await app.prisma.user.findUnique({ where: { id: request.user.userId }, select: { phone: true } });
     const ownMmgNumber = subscription.mmgPayerMsisdn && caller?.phone === subscription.mmgPayerMsisdn ? subscription.mmgPayerMsisdn : null;
+    // payActions, latestMmgCheckout, recentCheckouts (MMG-CHECKOUT-API.md section 3); read first, so the fee status
+    // knows whether a way to pay is open (fee-status.ts payOpenOf).
+    const pay = withCardPayAction(await mmgCheckout.feePayload(subscription, request.headers), await cardRail.subscriptionFields(subscription, request));
     return {
       success: true,
       data: {
@@ -5863,9 +5866,8 @@ export async function vendorRoutes(app: FastifyInstance) {
         ...(await sanDisplay(app.prisma, subscription)),
         ...fee,
         // [FEE-STATUS] Where the fee stands, in the server's words: never a passed date as a next bill.
-        feeStatus: await feeStatusFor(app.prisma, subscription, fee),
-        // payActions, latestMmgCheckout, recentCheckouts (MMG-CHECKOUT-API.md section 3).
-        ...withCardPayAction(await mmgCheckout.feePayload(subscription, request.headers), await cardRail.subscriptionFields(subscription, request)),
+        feeStatus: await feeStatusFor(app.prisma, subscription, fee, undefined, { payOpen: payOpenOf(pay) }),
+        ...pay,
         weeklyRate: Number(subscription.weeklyRate),
         // [owner legal plan R12] The weekly-fee receipts, as printed (billing/fee-receipt.ts).
         feeReceipts: await (await import('../billing/fee-receipt')).feeReceiptsFor(app.prisma, subscription.id),

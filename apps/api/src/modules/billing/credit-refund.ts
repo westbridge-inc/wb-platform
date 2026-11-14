@@ -13,6 +13,7 @@ import { formatGuyanaTime } from '../../utils/guyana-day';
 import { recordSetAsideReleasedInTx, recordWalletDebitInTx } from './fee-receipt-allocation';
 import { closureHoldsWeek } from './closure-fee-hold';
 import { feePauseHoldsBilling } from './mmg-pause';
+import { trialEndedUnconverted } from './pay-ahead';
 
 // ---------------------------------------------------------------------------
 // [Owner ruling 2026-10-07] Unused prepaid weekly-fee credit is refunded, then
@@ -244,19 +245,23 @@ export interface CreditRefundStep extends CreditRefundState {
  *   2 Nov 2026: closure-fee-hold.ts);
  * - the fee is not paused for want of a way to pay (mmg-pause.ts).
  * Nothing is owed when the partner stopped the fee (it lapses at the end of the paid week, owing nothing), when the
- * account is suspended (the time suspended is not billed: BILLING-REANCHOR), or during a trial.
+ * account is suspended (the time suspended is not billed: BILLING-REANCHOR), or during a trial. A trial that has
+ * ended owes its first week even before the daily conversion has run.
  * BillingService.settleStartedWeekFromCredit pays such a week from credit only; this is the wall under it.
  */
 export async function startedWeekOwed(
   db: Prisma.TransactionClient | PrismaClient,
-  sub: { id: string; autoRenew: boolean; status: string; nextBillingDate: Date; closureHoldAt: Date | null },
+  sub: { id: string; autoRenew: boolean; status: string; nextBillingDate: Date; closureHoldAt: Date | null; trialEndDate: Date | null },
   now: Date,
 ): Promise<boolean> {
-  if (!sub.autoRenew || (sub.status !== 'ACTIVE' && sub.status !== 'PAST_DUE')) return false;
+  // [TRIAL PAY-AHEAD · REVIEW-A #2513 S3-2] A trial that has ended is owed its first week from that instant, whether
+  // or not the daily conversion has run: the same week the conversion makes due (trialEndedUnconverted).
+  const operating = sub.status === 'ACTIVE' || sub.status === 'PAST_DUE' || trialEndedUnconverted(sub, now);
+  if (!sub.autoRenew || !operating) return false;
   if (sub.nextBillingDate.getTime() > now.getTime() || closureHoldsWeek(sub, sub.nextBillingDate)) return false;
   return !(await feePauseHoldsBilling(db, sub.id));
 }
-export const STARTED_WEEK_SUB_SELECT = { id: true, autoRenew: true, status: true, nextBillingDate: true, closureHoldAt: true } as const;
+export const STARTED_WEEK_SUB_SELECT = { id: true, autoRenew: true, status: true, nextBillingDate: true, closureHoldAt: true, trialEndDate: true } as const;
 
 export async function setAsideCreditRefund(prisma: PrismaClient, input: {
   adminId: string;

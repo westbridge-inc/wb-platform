@@ -78,7 +78,7 @@ describe('fee status words [FEE-STATUS]', () => {
   // is paid. Nothing when no fee will be charged then.
   it('[owner 14 Nov] a free trial names the week a payment now covers, or says it is already paid', () => {
     const end = new Date('2026-11-22T15:00:00Z');
-    const trial = { isTrialActive: true, status: 'TRIAL', trialEndDate: end, nextBillingDate: end, amountDue: 0, paidThroughProven: false };
+    const trial = { isTrialActive: true, status: 'TRIAL', trialEndDate: end, nextBillingDate: end, amountDue: 0, paidThroughProven: false, payOpen: true };
     expect(words(trial)).toEqual({ state: 'TRIAL', headline: 'Free trial until 22 Nov 2026',
       detail: 'Your first weekly fee, GY$15,000, is due on 22 Nov 2026. Paying now covers 22 Nov 2026 to 29 Nov 2026: no trial day is lost.',
       date: end.toISOString() });
@@ -89,6 +89,17 @@ describe('fee status words [FEE-STATUS]', () => {
       expect(words({ ...trial, ...none }).detail, JSON.stringify(none)).toBeNull();
     }
     expect(`${words(trial).detail} ${words({ ...trial, paidAhead: 15_000 }).detail}`).not.toMatch(/wallet|balance|paid ahead|top.?up/i);
+    // [REVIEW-A #2513 S4-1] "Paying now" only while a way to pay is open on the screen; a told rise from the trial's
+    // end prices the first fee, and nothing is taken ahead at the old fee.
+    expect(words({ ...trial, payOpen: false }).detail).toBe('Your first weekly fee, GY$15,000, is due on 22 Nov 2026.');
+    expect(words({ ...trial, payOpen: undefined }).detail).toBe('Your first weekly fee, GY$15,000, is due on 22 Nov 2026.');
+    expect(words({ ...trial, firstFeeAtTrialEnd: 18_000 }).detail).toBe('Your first weekly fee, GY$18,000, is due on 22 Nov 2026.');
+  });
+
+  it('[COORD ruling on REVIEW-A #2513 S3-3] an MMG page that ran out unanswered says plainly it is being checked', () => {
+    const s = words({ paidThroughProven: false, checking: { kind: 'PAYMENT', amount: 15_000, beganAt: new Date('2026-10-24T21:20:43Z'), expiredCheckout: true } });
+    expect(s.state).toBe('CHECKING');
+    expect(s.detail).toBe("Your last MMG payment is being checked. You can pay again once it's closed.");
   });
 
   it('stopped billing, a server-wide fee pause, a waived week and a closed plan', () => {

@@ -1,13 +1,13 @@
 import { bindTenantTransaction } from '../../plugins/prisma';
 import { requireIdentityAuthority, IdentityReviewRequiredError, lockIdentityAuthority } from '../integrity/identity-review';
-import { currentDunningClock, lockBillingAuthority } from '../billing/dunning-clock';
 import { lockVendorActivationBilling } from '../billing/billing-access';
 import { holdFeeRiseInTx } from '../billing/fee-rise-notice';
+import { convertEndedTrialInTx } from '../billing/trial-conversion';
 import { type Prisma, type PrismaClient, type Subscription, type SubscriptionType, type VendorType } from '@prisma/client';
 import { AppError, NotFoundError } from '../../utils/errors';
 import { accountErasedUnderLock } from '../user/account-closure';
 import { ReviewDemoMoneyRefusedError } from '../review/demo-policy';
-import { activateMoverFeeType, lockFeeCollectionAuthority, lockMoverFeeAuthority, lockMoverSources, moverFeeTariffSubject, resolveMoverFeeAuthority } from './mover-fee-authority';
+import { activateMoverFeeType, lockMoverFeeAuthority, lockMoverSources, moverFeeTariffSubject, resolveMoverFeeAuthority } from './mover-fee-authority';
 import { CountryConfigService, partnerRateFor, type PartnerRate } from '../country/country-config.service';
 import { TrialEntitlementService } from '../integrity/trial-entitlement.service';
 import { previewTrial } from '../integrity/enforcement';
@@ -295,9 +295,13 @@ export class SubscriptionService {
         // for the 14-day fee-change notice (F2, billing/fee-rise-notice.ts), told and applied only
         // from the weekly fee it was told for. Before any paid week (a trial) the role they activate
         // prices the first fee, in either activation order.
+        // [TRIAL PAY-AHEAD · REVIEW-B #2513 S2-1] A week paid ahead is a paid week too, by whatever rail: a fee credit
+        // not yet spent (MMG, in person, an agent, a card Pay now kept as credit) was paid at this rate, so the rise
+        // is held and told exactly as for a captured payment, never applied at once to the week the credit pays.
         const from = Number(sub.weeklyRate);
-        const paidAtRate = priced.rate > from && !!await tx.subscriptionPayment.findFirst({
-          where: { subscriptionId: sub.id, status: 'CAPTURED', amount: { gt: 0 } }, select: { id: true } });
+        const paidAtRate = priced.rate > from && (!!await tx.subscriptionPayment.findFirst({
+          where: { subscriptionId: sub.id, status: 'CAPTURED', amount: { gt: 0 } }, select: { id: true } })
+          || Number((await tx.prepaidBalance.findUnique({ where: { subscriptionId: sub.id }, select: { balance: true } }))?.balance ?? 0) > 0);
         // [REVIEW-M #1844 S4-1] A paid weekly rate of 0 or less is legacy or hand-made data: never kept
         // as the floor, nor raised at once to the taxi rate. The activation is refused (loudly: the approval
         // outbox retries it with backoff, then dead-letters it to the admin page) until finance corrects it.
@@ -444,15 +448,8 @@ export class SubscriptionService {
     let count = 0;
     for (const row of rows) {
       try {
-        count += await this.prisma.$transaction(async (tx) => {
-          if (!(await lockFeeCollectionAuthority(tx, row.id)).allowed) return 0;
-          const { sub } = await lockBillingAuthority(tx, row.id);
-          if (sub.status !== 'TRIAL' || !sub.trialEndDate || sub.trialEndDate > now) return 0;
-          // Preserve the original obligation and time already paused before conversion.
-          await tx.subscription.update({ where: { id: row.id }, data: { status: 'ACTIVE', isTrialActive: false } });
-          await currentDunningClock(tx, row.id, now);
-          return 1;
-        });
+        // Preserve the original obligation and time already paused before conversion (billing/trial-conversion.ts).
+        count += await this.prisma.$transaction(async (tx) => (await convertEndedTrialInTx(tx, row.id, now)) ? 1 : 0);
       } catch (error) {
         if (!(error instanceof AppError) || error.code !== 'MOVER_FEE_OWNERSHIP_INVALID') throw error;
         log().warn({ subscriptionId: row.id }, 'trial conversion held: original financial source has no valid payer');

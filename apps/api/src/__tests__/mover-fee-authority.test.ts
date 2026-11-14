@@ -197,6 +197,53 @@ describe('one mover fee across actual role surfaces', () => {
     });
   });
 
+  // [TRIAL PAY-AHEAD · REVIEW-B #2513 S2-1 · GUARDRAILS §7 standing rule 2] A mover who paid the first week after the
+  // trial ahead holds it as fee credit (MMG and in person book no payment row; a card Pay now books one AND the credit).
+  // That week is paid at the rate it was paid at: a taxi activation during the trial holds the higher taxi rate for the
+  // 14-day notice exactly as for a paid week, whatever the rail, and at the trial's end the credit pays the week.
+  it.each(['MMG', 'IN_PERSON', 'CARD'] as const)('a trial mover who paid the first week ahead (%s) keeps that week\'s rate on a taxi activation; the credit pays it at the trial end', async (rail) => {
+    const f = await dual();
+    await sys(async () => {
+      // A delivery rider in a free trial that ends within the hour (so the conversion below reaches only trials this
+      // close to their end), born as activation makes one: its first fee falls due at the trial's end. The payer's fee
+      // authority (and its clock) is mapped from the row, as for every mover.
+      const end = new Date(Date.now() + 60 * 60_000);
+      const rider = await app.prisma.subscription.create({ data: { riderId: f.riderId, type: 'DELIVERY_RIDER', weeklyRate: 6000, currencyCode: 'GYD',
+        status: 'TRIAL', isTrialActive: true, trialEndDate: end, currentPeriodStart: new Date(end.getTime() - 14 * DAY), currentPeriodEnd: end, nextBillingDate: end } });
+      await app.prisma.$transaction((tx) => lockMoverFeeAuthority(tx, f));
+      const riderRate = Number(rider.weeklyRate);
+      expect(riderRate).toBeLessThan(8000); // the taxi card rate
+      if (rail === 'CARD') {
+        // As a card Pay now for that week books it: a CAPTURED card payment with the provider's reference, kept as credit.
+        await app.prisma.subscriptionPayment.create({ data: { subscriptionId: rider.id, amount: riderRate, paymentMethod: 'CARD', status: 'CAPTURED',
+          paidAt: new Date(), externalRef: `card-ahead-${run}-${rider.id}`, periodStart: end, periodEnd: new Date(end.getTime() + 7 * DAY) } });
+      }
+      await app.prisma.$transaction((tx) => billing.recordTopUpInTransaction(tx, {
+        subscriptionId: rider.id, amount: riderRate, recordedBy: rail === 'IN_PERSON' ? finance.userId : `trial-${rail.toLowerCase()}`,
+        eventKey: `trial-payahead:${run}:${rider.id}`,
+        channel: rail === 'MMG' ? 'MMG_CHECKOUT' : rail === 'CARD' ? 'CARD_PAY_AHEAD' : 'IN_PERSON_CASH',
+        ...(rail === 'CARD' ? { rail: 'CARD' as const } : rail === 'IN_PERSON' ? { rail: 'IN_PERSON_CASH' as const } : {}),
+      }));
+
+      const after = await subscriptions.startTrialForDriver(f.driverId);
+      expect(after.id).toBe(rider.id);
+      expect(Number(after.weeklyRate), 'the paid week keeps its rate').toBe(riderRate);
+      expect(await app.prisma.billingEvent.count({ where: { subscriptionId: rider.id, type: 'TIER_CHANGE' } })).toBe(0);
+      expect((await resolveMoverFeeAuthority(app.prisma, f))?.feeType).toBe('TAXI_DRIVER');
+      expect(await heldRiseOf(rider.id)).toMatchObject({ from: riderRate, to: 8000, source: 'TAXI_ACTIVATION', noticeAt: null, appliesFrom: null });
+
+      // The trial ends: the credit pays the first week at the rate it was paid at. Nothing fails, nothing is owed.
+      const at = new Date(end.getTime() + 60_000);
+      await subscriptions.convertExpiredTrials(at);
+      expect(await billing.billSubscription(await ready(rider), new Date(at.getTime() + 60_000))).toBe('succeeded');
+      const paid = await app.prisma.subscription.findUniqueOrThrow({ where: { id: rider.id } });
+      expect(paid).toMatchObject({ status: 'ACTIVE', failedAttempts: 0 });
+      expect(paid.nextBillingDate.getTime()).toBe(end.getTime() + 7 * DAY);
+      expect(Number((await app.prisma.prepaidBalance.findUniqueOrThrow({ where: { subscriptionId: rider.id } })).balance)).toBe(0);
+      expect(await app.prisma.billingEvent.count({ where: { subscriptionId: rider.id, type: 'CHARGE_FAILED' } })).toBe(0);
+    });
+  });
+
   it('a paid mover whose legacy weekly rate is 0 is refused the taxi activation: never kept at 0, never raised at once', async () => {
     const f = await dual();
     await sys(async () => {
