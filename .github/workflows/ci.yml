@@ -44,23 +44,35 @@ permissions:
 # (7-14 Nov 2026), instead of the 6-hour default: a hung job on a self-hosted
 # box would otherwise hold one of its few runners for hours.
 #
-# [CI-SELFHOST] Where every job runs is ONE repository variable, SWIFT_CI_RUNS_ON
-# (Settings -> Secrets and variables -> Actions -> Variables), read as JSON:
-#   unset or "ubuntu-latest"              -> GitHub-hosted runners (the default)
-#   ["self-hosted","linux","swift-ci"]    -> Swift's own CI box
-# Flipping back is one command: gh variable delete SWIFT_CI_RUNS_ON
-# Each job behaves the same on both. Service containers publish to a random
-# host port (read back through job.services.<name>.ports), because jobs that
-# share one host cannot all own 5432/6379; scratch files live in RUNNER_TEMP,
-# never a shared /tmp path. A self-hosted job starts and ends with an empty
-# workspace (the box's job-started/job-completed hooks), like a hosted one.
+# [CI-SELFHOST] Where a job runs is ONE repository variable, SWIFT_CI_RUNNERS
+# (Settings -> Secrets and variables -> Actions -> Variables): a JSON object
+# with one runner per lane, read by the runs-on line of every job.
+#   unset                                   -> every job on GitHub-hosted ubuntu-latest
+#   {"main":["swift-ci-main"],"pr":["swift-ci-pr"]}
+#     main lane: main and merge-queue refs only (code already reviewed onto main)
+#     pr lane:   every other ref (branches, PRs from this repository)
+#   a lane missing from the object          -> that lane on ubuntu-latest
+# A pull request from a FORK always runs on GitHub-hosted runners, whatever the
+# variable says: untrusted code never reaches Swift's own box. The two lanes are
+# separate users, runner groups and labels on the box, so nothing a PR job
+# writes there can reach a main job. Back to hosted in one command:
+#   gh variable delete SWIFT_CI_RUNNERS
+# The routing expression never skips a job, so a merge group runs every job.
+# Each job behaves the same on both runner kinds. Service containers are pinned
+# by digest and publish to a random host port (read back through
+# job.services.<name>.ports), because jobs that share one host cannot all own
+# 5432/6379; scratch files live in RUNNER_TEMP, never a shared /tmp path. On
+# the box every job gets a freshly unpacked runner, an empty HOME (so no pnpm
+# store, corepack, Gradle or tool cache survives from an earlier job) and an
+# empty workspace, like a hosted runner; caches come only through
+# actions/cache, which saves from main only.
 # The deploy workflows stay on GitHub-hosted runners: they carry deploy tokens,
 # and no deploy credential ever lives on the CI box.
 
 jobs:
   lint-and-type-check:
     name: Lint & Type Check
-    runs-on: ${{ fromJSON(vars.SWIFT_CI_RUNS_ON || '"ubuntu-latest"') }}
+    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || fromJSON(vars.SWIFT_CI_RUNNERS || '{}')[(github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/gh-readonly-queue/main/')) && 'main' || 'pr'] || 'ubuntu-latest' }}
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
@@ -120,7 +132,7 @@ jobs:
   # --count together (ci-api-shards.test.ts holds them in lockstep).
   api-test-shard:
     name: API Tests shard ${{ matrix.shard }}/${{ matrix.total }}
-    runs-on: ${{ fromJSON(vars.SWIFT_CI_RUNS_ON || '"ubuntu-latest"') }}
+    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || fromJSON(vars.SWIFT_CI_RUNNERS || '{}')[(github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/gh-readonly-queue/main/')) && 'main' || 'pr'] || 'ubuntu-latest' }}
     timeout-minutes: 45
     strategy:
       # Every shard runs to the end, so one red shard still shows every failure.
@@ -130,7 +142,7 @@ jobs:
         total: [8]
     services:
       postgres:
-        image: postgis/postgis:16-3.4
+        image: postgis/postgis:16-3.4@sha256:44126d872ac91993766c341e369c539e8196614321765d36a6f1bab0419a5fa5
         env:
           POSTGRES_USER: swift
           POSTGRES_PASSWORD: swift
@@ -143,7 +155,7 @@ jobs:
           --health-timeout=5s
           --health-retries=5
       redis:
-        image: redis:7-alpine
+        image: redis:7-alpine@sha256:7f7d30b7fdd09467bac58198a1f166dd69789d348d4fe859cccb20e0cf287fbe
         ports:
           - 6379
         options: >-
@@ -239,7 +251,7 @@ jobs:
   # cancelled — a SKIPPED required check reads as passing to branch protection.
   api-test:
     name: API Tests
-    runs-on: ${{ fromJSON(vars.SWIFT_CI_RUNS_ON || '"ubuntu-latest"') }}
+    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || fromJSON(vars.SWIFT_CI_RUNNERS || '{}')[(github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/gh-readonly-queue/main/')) && 'main' || 'pr'] || 'ubuntu-latest' }}
     timeout-minutes: 30
     needs: api-test-shard
     if: always()
@@ -291,7 +303,7 @@ jobs:
 
   api-build:
     name: API Build
-    runs-on: ${{ fromJSON(vars.SWIFT_CI_RUNS_ON || '"ubuntu-latest"') }}
+    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || fromJSON(vars.SWIFT_CI_RUNNERS || '{}')[(github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/gh-readonly-queue/main/')) && 'main' || 'pr'] || 'ubuntu-latest' }}
     timeout-minutes: 30
     needs: lint-and-type-check
     steps:
@@ -349,12 +361,12 @@ jobs:
   # No boot guard is relaxed: both processes run their own guards unchanged.
   api-boot-smoke:
     name: API Boot Smoke
-    runs-on: ${{ fromJSON(vars.SWIFT_CI_RUNS_ON || '"ubuntu-latest"') }}
+    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || fromJSON(vars.SWIFT_CI_RUNNERS || '{}')[(github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/gh-readonly-queue/main/')) && 'main' || 'pr'] || 'ubuntu-latest' }}
     needs: api-build
     timeout-minutes: 15
     services:
       postgres:
-        image: postgis/postgis:16-3.4
+        image: postgis/postgis:16-3.4@sha256:44126d872ac91993766c341e369c539e8196614321765d36a6f1bab0419a5fa5
         env:
           POSTGRES_USER: swift
           POSTGRES_PASSWORD: swift
@@ -367,7 +379,7 @@ jobs:
           --health-timeout=5s
           --health-retries=5
       redis:
-        image: redis:7-alpine
+        image: redis:7-alpine@sha256:7f7d30b7fdd09467bac58198a1f166dd69789d348d4fe859cccb20e0cf287fbe
         ports:
           - 6379
         options: >-
@@ -428,7 +440,7 @@ jobs:
 
   admin-build:
     name: Admin Build
-    runs-on: ${{ fromJSON(vars.SWIFT_CI_RUNS_ON || '"ubuntu-latest"') }}
+    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || fromJSON(vars.SWIFT_CI_RUNNERS || '{}')[(github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/gh-readonly-queue/main/')) && 'main' || 'pr'] || 'ubuntu-latest' }}
     timeout-minutes: 30
     needs: lint-and-type-check
     steps:
@@ -480,7 +492,7 @@ jobs:
 
   web-build:
     name: Web Build
-    runs-on: ${{ fromJSON(vars.SWIFT_CI_RUNS_ON || '"ubuntu-latest"') }}
+    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || fromJSON(vars.SWIFT_CI_RUNNERS || '{}')[(github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/gh-readonly-queue/main/')) && 'main' || 'pr'] || 'ubuntu-latest' }}
     timeout-minutes: 30
     needs: lint-and-type-check
     steps:
@@ -550,7 +562,7 @@ jobs:
     # TS/Vite half only — the Rust/Tauri binary is built + smoke-run locally
     # (CI runners lack the signing context; the webview build still gates types).
     name: Desktop Build (TS)
-    runs-on: ${{ fromJSON(vars.SWIFT_CI_RUNS_ON || '"ubuntu-latest"') }}
+    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || fromJSON(vars.SWIFT_CI_RUNNERS || '{}')[(github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/gh-readonly-queue/main/')) && 'main' || 'pr'] || 'ubuntu-latest' }}
     timeout-minutes: 30
     needs: lint-and-type-check
     steps:
@@ -604,12 +616,12 @@ jobs:
   # only in migrations do not false-positive the diff).
   migration-check:
     name: Migration Replay
-    runs-on: ${{ fromJSON(vars.SWIFT_CI_RUNS_ON || '"ubuntu-latest"') }}
+    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || fromJSON(vars.SWIFT_CI_RUNNERS || '{}')[(github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/gh-readonly-queue/main/')) && 'main' || 'pr'] || 'ubuntu-latest' }}
     timeout-minutes: 20
     needs: lint-and-type-check
     services:
       postgres:
-        image: postgis/postgis:16-3.4
+        image: postgis/postgis:16-3.4@sha256:44126d872ac91993766c341e369c539e8196614321765d36a6f1bab0419a5fa5
         env:
           POSTGRES_USER: swift
           POSTGRES_PASSWORD: swift
@@ -796,7 +808,7 @@ jobs:
   # push/PR. Blocking by design.
   ui-barrier:
     name: UI Barrier
-    runs-on: ${{ fromJSON(vars.SWIFT_CI_RUNS_ON || '"ubuntu-latest"') }}
+    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || fromJSON(vars.SWIFT_CI_RUNNERS || '{}')[(github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/gh-readonly-queue/main/')) && 'main' || 'pr'] || 'ubuntu-latest' }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
@@ -818,7 +830,7 @@ jobs:
   # and Lint & Type Check is still its own required check.
   mobile-bundle-gate:
     name: Mobile Bundle Gate
-    runs-on: ${{ fromJSON(vars.SWIFT_CI_RUNS_ON || '"ubuntu-latest"') }}
+    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || fromJSON(vars.SWIFT_CI_RUNNERS || '{}')[(github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/gh-readonly-queue/main/')) && 'main' || 'pr'] || 'ubuntu-latest' }}
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
@@ -885,6 +897,8 @@ jobs:
       # PR runs never fill the cache with copies. The NDK/CMake list is what the
       # build log shows Gradle installing; if it installs a new version, add it
       # here (the key changes with it).
+      # On Swift's own box the NDK and CMake are preinstalled root-owned and
+      # read-only (no job can write them), so only hosted runners restore them.
       - name: Restore the Android NDK and CMake
         id: android-ndk
         if: runner.environment == 'github-hosted'
@@ -897,7 +911,6 @@ jobs:
           key: android-ndk-27.1.12297006-27.0.12077973-cmake-3.22.1-${{ runner.os }}
       - name: Restore the Gradle downloads
         id: gradle-downloads
-        if: runner.environment == 'github-hosted'
         uses: actions/cache/restore@v6
         with:
           path: |
@@ -939,7 +952,7 @@ jobs:
             /usr/local/lib/android/sdk/cmake/3.22.1
           key: android-ndk-27.1.12297006-27.0.12077973-cmake-3.22.1-${{ runner.os }}
       - name: Save the Gradle downloads (main only)
-        if: runner.environment == 'github-hosted' && github.ref == 'refs/heads/main' && steps.gradle-downloads.outputs.cache-hit != 'true'
+        if: github.ref == 'refs/heads/main' && steps.gradle-downloads.outputs.cache-hit != 'true'
         uses: actions/cache/save@v6
         with:
           path: |
@@ -962,7 +975,7 @@ jobs:
 
   public-env-gate:
     name: Public Env Gate
-    runs-on: ${{ fromJSON(vars.SWIFT_CI_RUNS_ON || '"ubuntu-latest"') }}
+    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || fromJSON(vars.SWIFT_CI_RUNNERS || '{}')[(github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/gh-readonly-queue/main/')) && 'main' || 'pr'] || 'ubuntu-latest' }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
@@ -991,7 +1004,7 @@ jobs:
   # (owner's decision). First run: 246 tests, none skipped, about 3.5 minutes.
   deploy-python-tests:
     name: Deploy Python Tests
-    runs-on: ${{ fromJSON(vars.SWIFT_CI_RUNS_ON || '"ubuntu-latest"') }}
+    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || fromJSON(vars.SWIFT_CI_RUNNERS || '{}')[(github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/gh-readonly-queue/main/')) && 'main' || 'pr'] || 'ubuntu-latest' }}
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v7
@@ -1013,7 +1026,7 @@ jobs:
 
   secret-scan:
     name: Secret Scan
-    runs-on: ${{ fromJSON(vars.SWIFT_CI_RUNS_ON || '"ubuntu-latest"') }}
+    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || fromJSON(vars.SWIFT_CI_RUNNERS || '{}')[(github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/gh-readonly-queue/main/')) && 'main' || 'pr'] || 'ubuntu-latest' }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
@@ -1029,7 +1042,7 @@ jobs:
 
   licence-gate:
     name: Licence Gate
-    runs-on: ${{ fromJSON(vars.SWIFT_CI_RUNS_ON || '"ubuntu-latest"') }}
+    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || fromJSON(vars.SWIFT_CI_RUNNERS || '{}')[(github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/gh-readonly-queue/main/')) && 'main' || 'pr'] || 'ubuntu-latest' }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
@@ -1046,7 +1059,7 @@ jobs:
 
   security:
     name: Security Scan
-    runs-on: ${{ fromJSON(vars.SWIFT_CI_RUNS_ON || '"ubuntu-latest"') }}
+    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || fromJSON(vars.SWIFT_CI_RUNNERS || '{}')[(github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/gh-readonly-queue/main/')) && 'main' || 'pr'] || 'ubuntu-latest' }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7

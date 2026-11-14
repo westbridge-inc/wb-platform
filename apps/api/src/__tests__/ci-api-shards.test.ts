@@ -19,6 +19,10 @@ const REPO = join(__dirname, '..', '..', '..', '..');
 const SCRIPT = join(REPO, 'scripts', 'ci-api-shard-partition.mjs');
 const WORKFLOW = readFileSync(join(REPO, '.github', 'workflows', 'ci.yml'), 'utf8');
 
+/** The one runner-routing line every job carries (see the [CI-SELFHOST] note in ci.yml). */
+const RUNS_ON_ROUTE =
+  "runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || fromJSON(vars.SWIFT_CI_RUNNERS || '{}')[(github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/gh-readonly-queue/main/')) && 'main' || 'pr'] || 'ubuntu-latest' }}";
+
 /** The text of one job: from `  <id>:` to the next two-space-indented key. */
 function jobBlock(id: string): string {
   const lines = WORKFLOW.split('\n');
@@ -170,8 +174,25 @@ describe('[CI-SPLIT] the workflow keeps one honest "API Tests" verdict', () => {
     expect(on).toMatch(/^ {2}merge_group:\n {4}types: \[checks_requested\]\s*$/m);
     expect(on).toMatch(/^ {2}pull_request:\s*$/m);
     // A merge group has no pull request: a job keyed to one would skip there,
-    // and a skipped required check never satisfies the queue.
-    expect(WORKFLOW).not.toMatch(/github\.event\.pull_request|github\.head_ref|github\.base_ref|event_name\s*[!=]=\s*'pull_request'/);
+    // and a skipped required check never satisfies the queue. The one exception
+    // is the runner-routing line below, which reads the pull request only to keep
+    // a fork's code off Swift's own CI box and never skips a job.
+    expect(WORKFLOW.split(RUNS_ON_ROUTE).join('runs-on: <route>')).not.toMatch(/github\.event\.pull_request|github\.head_ref|github\.base_ref|event_name\s*[!=]=\s*'pull_request'/);
+  });
+
+  // [CI-SELFHOST] Every job reads its runner from the one SWIFT_CI_RUNNERS
+  // variable through this exact line. A pull request from a fork is pinned to
+  // GitHub-hosted runners before the variable is read, so no fork ever runs on
+  // a self-hosted runner; main and merge-queue refs read the main lane, every
+  // other ref the pr lane; a missing lane or an unset variable is ubuntu-latest.
+  it('every job is routed by the one runner line, and a fork pull request never reaches a self-hosted runner', () => {
+    const runsOn = WORKFLOW.split('\n').filter((line) => /^\s+runs-on:/.test(line));
+    expect(runsOn.length).toBeGreaterThan(10);
+    for (const line of runsOn) expect(line.trim()).toBe(RUNS_ON_ROUTE);
+    expect(RUNS_ON_ROUTE.indexOf("github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest'"))
+      .toBeLessThan(RUNS_ON_ROUTE.indexOf('vars.SWIFT_CI_RUNNERS'));
+    expect(RUNS_ON_ROUTE).toContain("(github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/gh-readonly-queue/main/')) && 'main' || 'pr'");
+    expect(RUNS_ON_ROUTE.endsWith("|| 'ubuntu-latest' }}")).toBe(true);
   });
 
   it('every shard is a full copy of the old job: its own database and redis, real migrations, the seed', () => {
