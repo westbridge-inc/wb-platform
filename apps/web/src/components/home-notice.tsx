@@ -39,3 +39,6 @@ export function HomeNotice({ className = '' }: { className?: string }) {
     </div>
   );
 }
+
+/** Home loads it as its own chunk (customer-home.tsx). */
+export default HomeNotice;

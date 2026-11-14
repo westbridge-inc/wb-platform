@@ -19,7 +19,6 @@ import { HomeSkeleton, RAIL } from '@/components/home-skeleton';
 import { EmptyNote, ItemCard, SectionHead, VendorCard, VendorHeroCard, VendorSquareCard, VENDOR_GRID } from '@/components/order-ui';
 import { PRICE_PROMISE_BODY, PRICE_PROMISE_TITLE } from '@/lib/price-promise';
 import { lazyRetry } from '@/lib/chunk-retry';
-import { HomeNotice } from '@/components/home-notice';
 
 // [owner, staging] Home's one place control: delivery or pickup together with
 // where (the phone app's Home has one location pill). Its code loads with the
@@ -27,6 +26,8 @@ import { HomeNotice } from '@/components/home-notice';
 const OrderingContextBar = lazyRetry(() => import('@/components/ordering-context-bar').then(module => ({ default: module.OrderingContextBar })));
 // [PERF · 6 Nov 2026] "Scan a store's Swift code" opens only on a tap: its own chunk, off the home's first load (perf budget).
 const ScanHelp = lazyRetry(() => import('@/components/scan-help'));
+// [HOME-NOTICE] The owner's notice draws only after its own read, so its code is its own chunk, off Home's first load.
+const HomeNotice = lazyRetry(() => import('@/components/home-notice'));
 
 /**
  * [Q7b · WEB-REDESIGN] HOME — what swiftgy.com opens on, in the owner's
@@ -176,7 +177,7 @@ export function CustomerHome({ market, seed = null }: { market: string; seed?: G
         </Link>
 
         {/* [HOME-NOTICE · owner 13 Nov 2026] The owner's notice, for everyone, until it is turned off; closed with an X. */}
-        <HomeNotice />
+        <Suspense fallback={null}><HomeNotice /></Suspense>
 
         {data?.activeOrder ? <LiveOrder order={data.activeOrder} /> : null}
 
