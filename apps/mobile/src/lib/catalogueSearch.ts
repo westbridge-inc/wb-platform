@@ -25,9 +25,6 @@ export const CATALOGUE_SEARCH_PLACEHOLDER = 'Search name or SKU';
 /** The longest search read: a pasted page is not a search. */
 export const MAX_CATALOGUE_SEARCH = 100;
 
-/** The "Low stock only" alert level when the item has none of its own (the website's rule). */
-const DEFAULT_LOW_STOCK_AT = 5;
-
 /** Lower-cased, accents off, runs of spaces made one: "  Crème  BRÛLÉE " -> "creme brulee". */
 export function foldText(value: unknown): string {
   if (typeof value !== 'string' || value.length === 0) return '';
@@ -85,11 +82,16 @@ export function itemMatches(item: Searchable, terms: readonly string[]): boolean
   return terms.length > 1 && terms.every((term) => startsAWord(haystack, term));
 }
 
-type Stocked = { stockQuantity?: number | null; lowStockThreshold?: number | null };
+type Stocked = { stockQuantity?: number | null; lowStockThreshold?: number | null; isAvailable?: unknown; imageUrl?: unknown };
 
-/** The website's "Low stock only": a counted item at or under its alert level (5 when it has none). */
+/** [REVIEW #2514 S4-3] THE low-stock rule, everywhere a store sees one (the "Low stock" button on the app and the website,
+ *  the app row's "N LEFT" / "0 LEFT" pill, its Inventory alerts card and summary, the website row's "Low stock"): a
+ *  counted item at 0, or at or under its OWN alert level. An item with no alert level is never "low" above 0. */
 export function isLowStockItem(item: Stocked): boolean {
-  return item.stockQuantity != null && item.stockQuantity <= (item.lowStockThreshold ?? DEFAULT_LOW_STOCK_AT);
+  const left = item.stockQuantity;
+  if (left == null) return false;
+  if (left <= 0) return true;
+  return item.lowStockThreshold != null && left <= item.lowStockThreshold;
 }
 
 /** "Low stock only" is offered only when some item's stock is counted (a restaurant's never is). */
@@ -112,6 +114,56 @@ export function noMatchLine(query: string): string {
   return `No items match “${shown}”.`;
 }
 
+// ---------------------------------------------------------------------------
+// [MENU-FILTERS · parity audit C1, owner 14 Nov 2026] The filter buttons next to the search, the same on the app and
+// the website. One at a time; tapped again, it is off.
+// ---------------------------------------------------------------------------
+
+export type CatalogueFilter = 'SOLD_OUT' | 'LOW_STOCK' | 'NO_PHOTO';
+
+/** The buttons' words, in the order they are shown. */
+export const CATALOGUE_FILTER_WORDS: Readonly<Record<CatalogueFilter, string>> = {
+  SOLD_OUT: 'Sold out',
+  LOW_STOCK: 'Low stock',
+  NO_PHOTO: 'No photo',
+};
+
+/** lib/images isKeptPhoto's rule (a key in Swift's own photo store), copied so this file stays free of React Native;
+ *  the suite pins the two to the same answer. An outside address is not shown to customers: no photo, to them. */
+const KEPT_PHOTO_ADDRESS = /^\/?[A-Za-z0-9_-][A-Za-z0-9_./-]*$/;
+
+/** Whether customers see a photo of the item. */
+export function hasCustomerPhoto(item: { imageUrl?: unknown }): boolean {
+  return typeof item.imageUrl === 'string' && KEPT_PHOTO_ADDRESS.test(item.imageUrl);
+}
+
+/** Whether the item belongs under the button (no button: every item). Sold out = switched off by the store. */
+export function matchesFilter(item: Stocked, filter: CatalogueFilter | null): boolean {
+  if (filter === 'SOLD_OUT') return item.isAvailable === false;
+  if (filter === 'LOW_STOCK') return isLowStockItem(item);
+  if (filter === 'NO_PHOTO') return !hasCustomerPhoto(item);
+  return true;
+}
+
+/** The buttons a store is offered: "Low stock" only when some item's stock is counted. */
+export function offeredFilters(items: readonly Stocked[]): CatalogueFilter[] {
+  const counts = tracksAnyStock(items);
+  return (Object.keys(CATALOGUE_FILTER_WORDS) as CatalogueFilter[]).filter((f) => f !== 'LOW_STOCK' || counts);
+}
+
+/** How many items a button holds. */
+export function filterCount(items: readonly Stocked[], filter: CatalogueFilter): number {
+  let n = 0;
+  for (const item of items) if (matchesFilter(item, filter)) n += 1;
+  return n;
+}
+
+/** Under an empty answer: which button is on. */
+export function filterShownLine(filter: CatalogueFilter): string {
+  if (filter === 'NO_PHOTO') return 'Showing items with no photo only.';
+  return `Showing ${CATALOGUE_FILTER_WORDS[filter].toLowerCase()} items only.`;
+}
+
 type Section = { items?: ReadonlyArray<Searchable & Stocked> | null };
 type ItemOf<C extends Section> = NonNullable<C['items']>[number];
 
@@ -122,14 +174,14 @@ type ItemOf<C extends Section> = NonNullable<C['items']>[number];
  */
 export function filterCatalogue<C extends Section>(
   categories: readonly C[],
-  { terms, lowOnly }: { terms: readonly string[]; lowOnly: boolean },
+  { terms, filter }: { terms: readonly string[]; filter: CatalogueFilter | null },
 ): { filtering: boolean; sections: Array<{ category: C; items: Array<ItemOf<C>> }>; count: number } {
-  const filtering = terms.length > 0 || lowOnly;
+  const filtering = terms.length > 0 || filter !== null;
   const sections: Array<{ category: C; items: Array<ItemOf<C>> }> = [];
   let count = 0;
   for (const category of categories) {
     const all = (Array.isArray(category.items) ? category.items : []) as Array<ItemOf<C>>;
-    const items = filtering ? all.filter((item) => (!lowOnly || isLowStockItem(item)) && itemMatches(item, terms)) : all;
+    const items = filtering ? all.filter((item) => matchesFilter(item, filter) && itemMatches(item, terms)) : all;
     if (filtering && items.length === 0) continue;
     sections.push({ category, items });
     count += items.length;

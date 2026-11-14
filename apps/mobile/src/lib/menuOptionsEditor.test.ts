@@ -294,3 +294,22 @@ describe('deleting a shared choice asks first', () => {
     expect(libraryChoiceDeleteWords('Pepperoni', 0).body).toBe('No item uses this group yet.');
   });
 });
+
+// [REVIEW #2516 S3-1] An item's price box: whole Guyana dollars from 0 to 10,000,000 (the server's wholePrice()).
+describe('wholePriceInput', () => {
+  it('whole dollars, as a store types them', async () => {
+    const { wholePriceInput, WHOLE_PRICE_NOTE, MAX_STORE_PRICE } = await import('./menuOptionsEditor');
+    expect(wholePriceInput('1500')).toBe(1500);
+    expect(wholePriceInput('1,500')).toBe(1500);
+    expect(wholePriceInput('$1,500')).toBe(1500);
+    expect(wholePriceInput('1500.00')).toBe(1500);
+    expect(wholePriceInput('0')).toBe(0);
+    expect(wholePriceInput('10000000')).toBe(10_000_000);
+    expect(MAX_STORE_PRICE).toBe(10_000_000);
+    expect(WHOLE_PRICE_NOTE).toBe('Prices are whole Guyana dollars.');
+  });
+  it('never cents, never more than ten million, never a guess', async () => {
+    const { wholePriceInput } = await import('./menuOptionsEditor');
+    for (const typed of ['1250.50', '12.5', '10000001', '', '  ', 'abc', '-5', '1.2.3']) expect(wholePriceInput(typed), typed).toBeNull();
+  });
+});

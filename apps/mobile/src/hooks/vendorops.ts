@@ -1021,6 +1021,27 @@ export function useSetItemAvailability() {
   });
 }
 
+/** [MENU-ROW-TOOLS · parity audit A6] A reasoned stock movement from the menu list (as the item editor's and the
+ *  website's): ±delta with a reason, one key per entry as typed (newStockKey) so a retry never moves stock twice. Any
+ *  member of the store may (the server's rule). The count the ledger now holds goes into the menu at once. */
+export type StockReason = 'RECEIVED' | 'DAMAGED' | 'MANUAL' | 'RECONCILE' | 'RETURN';
+export function newStockKey(): string {
+  return newCommandKey();
+}
+export function useAdjustStock() {
+  const qc = useQueryClient();
+  return usePreviewSafeMutation({
+    mutationKey: MENU_WRITE_KEY,
+    mutationFn: ({ itemId, delta, reason, commandKey }: { itemId: string; delta: number; reason: StockReason; commandKey: string }) =>
+      unwrap<{ stockQuantity?: unknown; isAvailable?: unknown }>(vendorApi.adjustStock(itemId, { delta, reason }, commandKey)),
+    onMutate: menuScope,
+    onSuccess: (answer, { itemId }, scope) => answerIntoMenu(qc, scope, (menu) => menuWithItemFields(menu, itemId, {
+      ...(typeof answer?.stockQuantity === 'number' ? { stockQuantity: answer.stockQuantity } : {}),
+      ...(typeof answer?.isAvailable === 'boolean' ? { isAvailable: answer.isAvailable } : {}),
+    })),
+  });
+}
+
 // [IN-STORE-SALE] The sender for the app's "Sold in store −1" taps (hooks/useSoldInStore, lib/inStoreSale): each tap
 // is one request with its own key; the server's count is written into the menu on screen (for the store it was tapped
 // in) and the menu is read again once, later. Its failures show on the row in words (never the app-wide toast).

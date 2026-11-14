@@ -41,15 +41,22 @@ import { inventorySummary } from '../../../lib/vendorInventory';
 import { isKeptPhoto, storePhotoUrl } from '../../../lib/images';
 import { MENU_LIST_WINDOW } from '../../../lib/listPerformance';
 import {
+  CATALOGUE_FILTER_WORDS,
   CATALOGUE_SEARCH_PLACEHOLDER,
   filterCatalogue,
+  filterCount,
+  filterShownLine,
   itemCountLine,
   noMatchLine,
+  isLowStockItem,
+  offeredFilters,
   searchTerms,
-  tracksAnyStock,
+  type CatalogueFilter,
 } from '../../../lib/catalogueSearch';
 import { useDebouncedValue } from '../../../hooks/useDebouncedValue';
 import { CatalogueSearchBar } from '../CatalogueSearchBar';
+import { RowPriceEdit, RowStockAdjust } from '../MenuRowTools';
+import { lowestSizePrice } from '../../../lib/menuOptionsEditor';
 
 /** [IMAGES-E2E PR4 · REVIEW-F S4-2 on #1965] A photo address saved before photos were uploaded: named for what it is. */
 export const OUTSIDE_PHOTO_NOTE = "Its old photo link isn't shown to customers. Upload the photo again.";
@@ -82,14 +89,15 @@ export function MenuItemRow({
   const stockNow: number = tracksStock ? soldInStore.shown(item.id, item.stockQuantity) : 0;
   const outOfStock = tracksStock && stockNow <= 0;
   const soldOut = !markedAvailable;
-  const lowStock =
-    markedAvailable &&
-    !outOfStock &&
-    tracksStock &&
-    item.lowStockThreshold != null &&
-    stockNow <= item.lowStockThreshold;
+  // [REVIEW #2514 S4-3] The one Low stock rule (the "Low stock" button's): above 0 and at or under its own alert level,
+  // switched off or not (0 shows as "0 LEFT").
+  const lowStock = tracksStock && !outOfStock && isLowStockItem({ stockQuantity: stockNow, lowStockThreshold: item.lowStockThreshold });
   const availabilityDisabled = readOnly || setAvail.isPending;
   const [confirmDelete, setConfirmDelete] = useState(false);
+  // [MENU-ROW-TOOLS · parity audit A5] A manager taps the price to change it, as on the website. Not an item whose size
+  // sets its price (its price is the lowest size, kept by the server), and not in a sample preview.
+  const [priceOpen, setPriceOpen] = useState(false);
+  const priceEditable = canEdit && !readOnly && lowestSizePrice(item.optionGroups) == null;
   const ordered = numericFact(item.totalOrdered);
   const stockDetail = outOfStock
     ? '0 left'
@@ -143,9 +151,25 @@ export function MenuItemRow({
             <T variant="heading" numberOfLines={2} style={{ flex: 1 }}>
               {item.name}
             </T>
-            <T variant="numM" numberOfLines={1}>
-              {money(item.basePrice)}
-            </T>
+            {priceEditable ? (
+              <Pressable
+                onPress={() => setPriceOpen(true)}
+                accessibilityRole="button"
+                accessibilityLabel={`Change price: ${item.name}`}
+                accessibilityHint="Type a new price on this row"
+                hitSlop={8}
+                style={{ flexDirection: 'row', alignItems: 'center', gap: space.xs }}
+              >
+                <T variant="numM" numberOfLines={1} tone="brand">
+                  {money(item.basePrice)}
+                </T>
+                <Feather name="edit-2" size={14} color={color.brand[500]} />
+              </Pressable>
+            ) : (
+              <T variant="numM" numberOfLines={1}>
+                {money(item.basePrice)}
+              </T>
+            )}
           </View>
           <View style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: space.sm, marginTop: space.sm }}>
             {soldOut ? <TonePill label="SOLD OUT" tone="warning" /> : null}
@@ -176,6 +200,8 @@ export function MenuItemRow({
           ) : null}
         </View>
       </View>
+
+      {priceOpen && priceEditable ? <RowPriceEdit item={item} onDone={() => setPriceOpen(false)} /> : null}
 
       <Pressable
         disabled={availabilityDisabled}
@@ -228,6 +254,8 @@ export function MenuItemRow({
 
       {/* [IN-STORE-SALE] Only an item whose stock is counted: one tap takes one sold in person off the Swift stock. */}
       {tracksStock && !readOnly ? <SoldInStoreControls itemId={item.id} shown={stockNow} /> : null}
+      {/* [MENU-ROW-TOOLS · parity audit A6] Received, damaged, a recount: adjusted here, as on the website. */}
+      {tracksStock && !readOnly ? <RowStockAdjust item={item} /> : null}
 
       {canEdit ? (
         <View style={{ flexDirection: 'row', gap: space.md, marginTop: space.md }}>
@@ -358,11 +386,7 @@ function InventorySummaryCard({ categories }: { categories: any[] }) {
 function LowStockCard({ categories, navigation, catOptions }: { categories: any[]; navigation: any; catOptions: { id: string; name: string }[] }) {
   const low = categories
     .flatMap((c: any) => c.items ?? [])
-    .filter(
-      (i: any) =>
-        i.stockQuantity != null &&
-        (i.stockQuantity <= 0 || (i.lowStockThreshold != null && i.stockQuantity <= i.lowStockThreshold)),
-    )
+    .filter((i: any) => isLowStockItem(i))
     .sort((a: any, b: any) => a.stockQuantity - b.stockQuantity);
   if (low.length === 0) return null;
   return (
@@ -675,15 +699,31 @@ export function VendorMenuScreen({ navigation }: any) {
   // [MENU-SEARCH · owner 14 Nov 2026] The website's "Search name or SKU" (dashboard/inventory), on the menu this tab
   // already holds (every item: nothing to page): the box shows each key at once, the list follows when typing pauses.
   const [query, setQuery] = useState('');
-  const [lowOnlyChosen, setLowOnly] = useState(false);
+  const [chosenFilter, setFilter] = useState<CatalogueFilter | null>(null);
   const settledQuery = useDebouncedValue(query);
   const terms = useMemo(() => searchTerms(settledQuery), [settledQuery]);
-  // The website's "Low stock only", offered only when some item's stock is counted (never a restaurant's).
-  const countsStock = tracksAnyStock(allItems);
-  const lowOnly = lowOnlyChosen && countsStock;
-  const shown = useMemo(() => filterCatalogue(visibleCategories, { terms, lowOnly }), [visibleCategories, terms, lowOnly]);
+  // [MENU-FILTERS · parity audit C1] The filter buttons, as on the website: Sold out, Low stock (only when some item's
+  // stock is counted, never a restaurant's), No photo. One at a time; tapped again, it is off.
+  const filters = offeredFilters(allItems);
+  const filter = chosenFilter && filters.includes(chosenFilter) ? chosenFilter : null;
+  const shown = useMemo(() => filterCatalogue(visibleCategories, { terms, filter }), [visibleCategories, terms, filter]);
   const searching = shown.filtering;
-  const showAll = useCallback(() => { setQuery(''); setLowOnly(false); }, []);
+  // [REVIEW #2514 S4-1] "Show all items" means all: the section chip too.
+  const showAll = useCallback(() => { setQuery(''); setFilter(null); setSelectedCategoryId(null); }, []);
+  // [REVIEW #2514 S4-4] Another store chosen: the tab starts afresh (no search, button or section of the other store).
+  const storeId: string | null = store?.id ?? null;
+  const [menuStoreId, setMenuStoreId] = useState<string | null>(storeId);
+  if (menuStoreId !== storeId) {
+    setMenuStoreId(storeId);
+    setQuery('');
+    setFilter(null);
+    setSelectedCategoryId(null);
+  }
+  // [REVIEW #2514 S4-2] While searching, each section chip counts its matches (the heading still counts the section).
+  const matchedEverywhere = useMemo(() => filterCatalogue(categories, { terms, filter }), [categories, terms, filter]);
+  const chipCount = (category: any): number => (matchedEverywhere.filtering
+    ? matchedEverywhere.sections.find((section) => section.category === category)?.items.length ?? 0
+    : (category.items ?? []).length);
   // [SPEED 22 Oct] One flat list of rows (section header, its items, a gap) for a
   // windowed list: the tab draws the first batch, not every item of every section.
   const rows = useMemo(() => menuRows(shown.sections), [shown]);
@@ -733,7 +773,14 @@ export function VendorMenuScreen({ navigation }: any) {
           <View style={{ paddingHorizontal: GUTTER, marginBottom: space.md }}>
             <CatalogueSearchBar value={query} onChangeText={setQuery} onClear={() => setQuery('')} placeholder={CATALOGUE_SEARCH_PLACEHOLDER} />
             <View style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: space.md, marginTop: space.sm }}>
-              {countsStock ? <Chip label="Low stock only" selected={lowOnly} onPress={() => setLowOnly(!lowOnly)} /> : null}
+              {filters.map((f) => (
+                <Chip
+                  key={f}
+                  label={`${CATALOGUE_FILTER_WORDS[f]} · ${filterCount(allItems, f)}`}
+                  selected={filter === f}
+                  onPress={() => setFilter(filter === f ? null : f)}
+                />
+              ))}
               <T variant="caption" tone="muted" accessibilityLiveRegion="polite" style={{ flexShrink: 1 }}>
                 {itemCountLine(shown.count)}
               </T>
@@ -824,14 +871,14 @@ export function VendorMenuScreen({ navigation }: any) {
               </T>
               <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: space.sm }}>
                 <Chip
-                  label={`All · ${allItems.length}`}
+                  label={`All · ${matchedEverywhere.filtering ? matchedEverywhere.count : allItems.length}`}
                   selected={selectedCategoryId === null}
                   onPress={() => setSelectedCategoryId(null)}
                 />
                 {categories.map((category) => (
                   <Chip
                     key={category.id}
-                    label={`${category.name} · ${(category.items ?? []).length}`}
+                    label={`${category.name} · ${chipCount(category)}`}
                     selected={selectedCategoryId === category.id}
                     onPress={() => setSelectedCategoryId(category.id)}
                   />
@@ -884,7 +931,7 @@ export function VendorMenuScreen({ navigation }: any) {
             <EmptyState
               icon="search"
               title={noMatchLine(settledQuery)}
-              body={lowOnly ? 'Only low stock items are shown.' : 'Check the spelling, or search by SKU.'}
+              body={filter ? filterShownLine(filter) : 'Check the spelling, or search by SKU.'}
               actionLabel="Show all items"
               onAction={showAll}
             />
