@@ -119,8 +119,8 @@ describe('the notice on Home', () => {
 describe('Home draws it for everyone', () => {
   it('the customer Home (guests and signed-in alike) renders the notice, not behind a sign-in check', () => {
     const home = readFileSync(join(process.cwd(), 'src/components/customer-home.tsx'), 'utf8');
-    expect(home).toMatch(/^const HomeNotice = lazyRetry\(\(\) => import\('@\/components\/home-notice'\)/m);
-    const at = home.indexOf('<Suspense fallback={null}><HomeNotice /></Suspense>');
+    expect(home).toMatch(/^import \{ HomeNotice \} from '@\/components\/home-notice';$/m);
+    const at = home.indexOf('<HomeNotice />');
     expect(at).toBeGreaterThan(-1);
     expect(home.slice(Math.max(0, at - 80), at)).not.toMatch(/status|signed/);
   });
