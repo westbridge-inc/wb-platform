@@ -19,12 +19,12 @@ const order = (n: number, status = 'DELIVERED'): Row => ({
 });
 
 const reads: URL[] = [];
-function historyApi(opts: { total?: number; fail?: boolean; rows?: (_url: URL) => Row[] } = {}) {
+function historyApi(opts: { total?: number; fail?: boolean; rows?: (_url: URL) => Row[]; role?: string } = {}) {
   const total = opts.total ?? 45;
   return mockApi(({ url, method }: ApiRequest) => {
     const path = url.pathname.replace('/api/v1', '');
     if (path === '/vendor/stores') {
-      return { body: { success: true, data: { stores: [{ id: 'store-1', name: 'Sample Kitchen', vendorType: 'RESTAURANT', isCurrentlyOpen: true, acceptingOrders: true, city: null, isVerified: true }], selectedId: 'store-1', myRole: 'OWNER' } } };
+      return { body: { success: true, data: { stores: [{ id: 'store-1', name: 'Sample Kitchen', vendorType: 'RESTAURANT', isCurrentlyOpen: true, acceptingOrders: true, city: null, isVerified: true }], selectedId: 'store-1', myRole: opts.role ?? 'OWNER' } } };
     }
     if (path === '/vendor/orders' && method === 'GET') {
       reads.push(url);
@@ -40,7 +40,7 @@ function historyApi(opts: { total?: number; fail?: boolean; rows?: (_url: URL) =
 }
 
 const lastRead = () => reads[reads.length - 1]!;
-const rows = () => screen.queryAllByRole('button', { name: /^Order SW-/ });
+const rows = () => screen.queryAllByRole('article', { name: /^Order SW-/ });
 
 beforeEach(async () => {
   reads.length = 0;
@@ -75,6 +75,9 @@ describe('[WEB-HISTORY] Order history on the website, as on the phone', () => {
     await user.click(screen.getByRole('button', { name: 'Load more (20 of 45)' }));
     await waitFor(() => expect(rows()).toHaveLength(40));
     expect(lastRead().searchParams.get('page')).toBe('2');
+    // The search box's 400 ms wait ending after the tap never sends the list back to its first page.
+    await act(async () => { await new Promise((resolve) => { setTimeout(resolve, 500); }); });
+    expect(rows()).toHaveLength(40);
     expect(rows()[20]!.textContent).toContain('#SW-1021');
     await user.click(screen.getByRole('button', { name: 'Load more (40 of 45)' }));
     await waitFor(() => expect(rows()).toHaveLength(45));
@@ -146,13 +149,34 @@ describe('[WEB-HISTORY] Order history on the website, as on the phone', () => {
     expect(await screen.findByText('Nothing matches')).toBeTruthy();
   });
 
-  it('a row opens the order window, as on the board', async () => {
-    historyApi({ rows: () => [order(1)] });
+  it('a row opens in place: its lines, the store\'s money and why it was cancelled', async () => {
+    historyApi({ rows: () => [{ ...order(1, 'CANCELLED'), cancellationReason: 'Out of stock', paymentMethod: 'CASH' } as Row] });
     const { user } = renderWithQuery(<OrderHistoryPage />);
     await waitFor(() => expect(rows()).toHaveLength(1));
-    await user.click(rows()[0]!);
-    expect(await screen.findByRole('dialog', { name: 'Order details' })).toBeTruthy();
-    await user.keyboard('{Escape}');
-    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Order details' })).toBeNull());
+    const toggle = within(rows()[0]!).getByRole('button');
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    expect(rows()[0]!.textContent).not.toContain('1× Pepperpot');
+    await user.click(toggle);
+    expect(toggle.getAttribute('aria-expanded')).toBe('true');
+    expect(rows()[0]!.textContent).toContain('1× Pepperpot');
+    expect(rows()[0]!.textContent).toContain('Out of stock');
+    expect(rows()[0]!.textContent).toContain('Cash');
+    await user.click(toggle);
+    expect(rows()[0]!.textContent).not.toContain('1× Pepperpot');
+  });
+
+  it('owners and managers are pointed to the spreadsheet export; staff are not', async () => {
+    historyApi({ rows: () => [order(1)] });
+    renderWithQuery(<OrderHistoryPage />);
+    const link = await screen.findByRole('link', { name: 'Export orders on Insights' });
+    expect(link.getAttribute('href')).toBe('/dashboard/insights');
+  });
+
+  it('a staff login reads the same history, without the export pointer', async () => {
+    historyApi({ rows: () => [order(1)], role: 'STAFF' });
+    renderWithQuery(<OrderHistoryPage />);
+    await waitFor(() => expect(rows()).toHaveLength(1));
+    await new Promise((resolve) => { setTimeout(resolve, 50); });
+    expect(screen.queryByRole('link', { name: 'Export orders on Insights' })).toBeNull();
   });
 });

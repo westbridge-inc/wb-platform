@@ -10,10 +10,10 @@
     "/login/page": 119,
     "/signup/page": 125,
     "/dashboard/orders/page": 174,
-    "/dashboard/orders/history/page": 160,
+    "/dashboard/orders/history/page": 152,
     "/dashboard/inventory/page": 159,
     "/dashboard/inventory/import/page": 158,
-    "/dashboard/insights/page": 150,
+    "/dashboard/insights/page": 159,
     "/dashboard/weekly-fee/page": 160,
     "/dashboard/weekly-fee/statement/page": 150,
     "/dashboard/weekly-fee/pay-all/page": 153,
@@ -32,7 +32,8 @@
     "/(welcome)/page": 114
   },
   "raisedBecause": {
-    "/dashboard/orders/history/page": "[WEB-HISTORY · audit B2 · owner rule: the website copies the app] NEW page, the store's Order history (search, status buttons, days, Load more over GET /vendor/orders). It carries the list, its filters and the store-money reader; the order window is its own chunk fetched after the page draws (as on the board), so it is not in this first load.",
+    "/dashboard/insights/page": "[WEB-INSIGHTS · audit B3 B4 B5 · owner rule: the website copies the app] 150 -> 159 kB (CI measured 158.5; local build at a matched path 159.1 against 148.5 on main): the app's whole Insights screen — revenue over 7 / 30 / 90 days with its chart, average order, acceptance, cancelled, most ordered, operations, busy hours, repeat customers, standing, ratings, reviews with the store's reply, the sales statement. All of it is this page's own code; nothing is shared with another page. Loading the lower cards on demand instead would add chunks to the map every page of the site downloads (/login is at its ceiling), so the cost stays on the one page that shows them. No new dependency.",
+    "/dashboard/orders/history/page": "[WEB-HISTORY · audit B2 · owner rule: the website copies the app] NEW page, the store's Order history (search, status buttons, days, Load more over GET /vendor/orders; local build at a matched path 151.7, CI about 0.6 less). It shares nothing with the order board beyond what every console page loads: an order window here (loaded on demand or not) split the board's files (+2 kB on /dashboard/orders) and added entries to the chunk map every page downloads (/login and /store went over), so a finished order opens in place instead and actions stay on the board.",
     "/dashboard/orders/page": "[APP-PREPTIME #2511 ROUND 2 · owner 14 Nov] 173 -> 174 kB (CI measured 173.2): the owner ruled that Accept pre-selects the store's own declared prep time (or the closest of the six choices) on the website as on the app, so the new-order popup and the order window carry the one small closest-choice rule (lib/prep-time.ts) and keep a pick per order instead of one shared 20. No new dependency.",
     "/(welcome)/page": "[WEB-PHONES · owner 8 Nov] 113 -> 114 kB (local build: 113.0, the same as /launching-soon; CI on main measured 112.4 before): the real app screens are back on the welcome page, drawn by the server as plain sized images (no next/image, no client component). The only script they bring is the build's short record of each image file the page imports (its address and size, about 0.4 kB gzip for the eight screens), in the one page chunk the welcome page now shares with /launching-soon.",
     "/(app)/market/page": "[STORE-VAT-EXCLUSIVE #2508 · owner 13 Nov] 153 -> 154 kB (CI measured 153.1): a store pricing before VAT says so on every price, so the market card prints \"+ VAT\" from the server's per-item flag, and the shared customer client (every ordering page) sends the VAT_LINE_V1 capability on cart writes and checkout (the API refuses an older client a basket it cannot show). No new module or import.",
