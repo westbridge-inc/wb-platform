@@ -48,7 +48,7 @@ afterEach(() => { vi.unstubAllEnvs(); vi.restoreAllMocks(); resetCardCheckoutSwi
 describe('[CARDS-GO] the live list: who real cards serve', () => {
   it('unset or empty: every eligible partner (not limited)', () => {
     for (const value of [undefined, '']) {
-      const env = { CARD_RAIL_LIVE_SUBSCRIPTIONS: value };
+      const env = { NODE_ENV: 'test', CARD_RAIL_LIVE_SUBSCRIPTIONS: value };
       expect(cardLiveSubscriptionsLimited(env), String(value)).toBe(false);
       expect(cardLiveSubscriptionAllowed(OTHER_SUB, env), String(value)).toBe(true);
       expect(cardLiveSubscriptionsWellFormed(env), String(value)).toBe(true);
@@ -205,6 +205,14 @@ describe('[B-2] production: unset or empty is nobody; `*` is the explicit "every
   it('off production (no live cards run there) unset still means every eligible partner, as before', () => {
     expect(cardLiveSubscriptionsLimited({ NODE_ENV: 'test' })).toBe(false);
     expect(cardLiveSubscriptionsLimited({ NODE_ENV: 'development', CARD_RAIL_LIVE_SUBSCRIPTIONS: '' })).toBe(false);
+  });
+
+  it('an unset or unknown NODE_ENV with the list unset fails CLOSED (limited, nobody), never "everyone"', () => {
+    for (const nodeEnv of [undefined, '', 'prod', 'Production']) {
+      const env = { NODE_ENV: nodeEnv, CARD_RAIL_LIVE_SUBSCRIPTIONS: undefined };
+      expect(cardLiveSubscriptionsLimited(env), String(nodeEnv)).toBe(true);
+      expect(cardLiveSubscriptionAllowed(OWNER_SUB, env), String(nodeEnv)).toBe(false);
+    }
   });
 
   it('the production door refuses every subscription while the list is unset', async () => {

@@ -1,4 +1,5 @@
 import { cardRailProviderNames } from '../providers/card/card-rail-factory';
+import { isProduction } from './runtime-mode';
 
 /** [CARD-DECOUPLE] The operational kill switch, CARD_RAIL_KILL exactly '1',
  * stops NEW card instructions on card rail v2 (hosted Pay now, enrolment,
@@ -77,6 +78,12 @@ export function weeklyFeeCardLive(env: Record<string, string | undefined> = proc
  * boot (assertProductionCardSwitches). Test card systems keep their own list. */
 export const CARD_LIVE_EVERYONE = '*';
 
+/** [B-2] Production posture through the one typed parser (the census forbids comparing the raw NODE_ENV). An
+ *  unset or unknown NODE_ENV cannot boot, but if one is ever seen here it counts as production: the list fails CLOSED. */
+const productionPostureOrUnknown = (env: Record<string, string | undefined>): boolean => {
+  try { return isProduction(env); } catch { return true; }
+};
+
 const liveListRaw = (env: Record<string, string | undefined>): string | undefined => {
   const raw = env['CARD_RAIL_LIVE_SUBSCRIPTIONS'];
   return raw === undefined || raw === '' ? undefined : raw;
@@ -91,7 +98,7 @@ export function cardLiveForEveryone(env: Record<string, string | undefined> = pr
  *  only `*` is. */
 export function cardLiveSubscriptionsLimited(env: Record<string, string | undefined> = process.env): boolean {
   const raw = liveListRaw(env);
-  if (raw === undefined) return env['NODE_ENV'] === 'production';
+  if (raw === undefined) return productionPostureOrUnknown(env);
   return raw.trim() !== CARD_LIVE_EVERYONE;
 }
 
