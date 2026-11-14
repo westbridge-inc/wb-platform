@@ -291,6 +291,25 @@ describe('delivery owner controls', () => {
     expect(screen.queryByRole('button', { name: 'We’ll deliver' })).toBeNull();
   });
 
+  it('[DT-OVERFLOW] an own-delivery order Dragontail has: no "Get a Swift rider", and the words say why', async () => {
+    await openDeliveryOwner({
+      fulfillmentMode: 'VENDOR_DELIVERY',
+      kitchen: { holdsOrder: true, route: 'KITCHEN', title: 'In Dragontail: your own driver delivers it', detail: 'Sent to Dragontail.' },
+    });
+    expect(screen.getByText('In Dragontail: your own driver delivers it')).toBeTruthy();
+    expect(screen.getByText(/Dispatch it from Dragontail/)).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Get a Swift rider' })).toBeNull();
+  });
+
+  it('[DT-OVERFLOW] an order Swift moved to its riders says why; one that fell back to the tablet keeps the choice', async () => {
+    await openDeliveryOwner({
+      fulfillmentMode: 'VENDOR_DELIVERY',
+      kitchen: { holdsOrder: false, route: 'KITCHEN', title: 'On this tablet', detail: 'Dragontail could not take this order, so it came to this tablet instead.' },
+    });
+    expect(screen.getByRole('button', { name: 'Get a Swift rider' })).toBeTruthy();
+    expect(screen.getByTestId('route-note').textContent).toBe('On this tablet');
+  });
+
   it('does not claim dispatch is searching when the delivery owner is unresolved', async () => {
     await openDeliveryOwner({ fulfillmentMode: null, status: 'PENDING' });
     expect(screen.getByText('Delivery owner not chosen yet')).toBeTruthy();

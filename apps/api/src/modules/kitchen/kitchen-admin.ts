@@ -2,8 +2,9 @@ import type { Prisma, PrismaClient } from '@prisma/client';
 import { z } from '../../lib/zod';
 import { AppError } from '../../utils/errors';
 import { kitchenLoginRef, kitchenSecretStatus, kitchenWebhookRef, newKitchenIntegrationId } from './kitchen-credentials';
-import { dragontailApiUrl, dragontailIntegrationEnabled, dragontailSettings } from './kitchen-switch';
+import { dragontailApiUrl, dragontailDriverCheckEnabled, dragontailIntegrationEnabled, dragontailSettings } from './kitchen-switch';
 import { kitchenProvider } from './kitchen-sync';
+import { listKitchenRoutes, readBusyHours, writeKitchenOverflowSetting } from './kitchen-overflow';
 
 /**
  * [KITCHEN-INTEGRATION] The operations console's door to a store's kitchen-system connection (UI later). Handlers
@@ -14,6 +15,8 @@ import { kitchenProvider } from './kitchen-sync';
  *   POST /vendors/:id/kitchen-integration/test          log in only (no order is sent)
  *   GET  /vendors/:id/kitchen-integration/syncs         the sync log, newest first
  *   PUT  /vendors/:id/kitchen-integration/item-numbers  bulk-set kitchen item numbers on listings and choices
+ *   PUT  /vendors/:id/kitchen-integration/overflow      [DT-OVERFLOW] the branch's delivery overflow (mode, busy hours)
+ *   GET  /vendors/:id/kitchen-integration/routes        [DT-OVERFLOW] where its recent deliveries went, and why
  *
  * [review A S3-2] While the switch (DRAGONTAIL_INTEGRATION) is off the two writing routes and the test are REFUSED
  * (409 KITCHEN_SWITCH_OFF): nothing is written to the kitchen tables and no call leaves Swift. The reads still
@@ -40,6 +43,7 @@ export const kitchenItemNumbersSchema = z.object({
 function view(row: {
   id: string; provider: string; enabled: boolean; externalStoreNo: number | null; secretRef: string | null; webhookSecretRef: string | null;
   pollUpdateStamp: bigint; lastPolledAt: Date | null; lastHealthyAt: Date | null; lastError: string | null; lastErrorAt: Date | null; updatedAt: Date;
+  overflowMode: string; overflowBusyHours: unknown; overflowUpdatedAt: Date | null;
 } | null) {
   const env = process.env;
   return {
@@ -54,6 +58,7 @@ function view(row: {
         pollUpdateStamp: row.pollUpdateStamp.toString(),
         lastPolledAt: row.lastPolledAt, lastHealthyAt: row.lastHealthyAt, lastError: row.lastError, lastErrorAt: row.lastErrorAt,
         updatedAt: row.updatedAt,
+        overflow: { mode: row.overflowMode, busyHours: readBusyHours(row.overflowBusyHours), updatedAt: row.overflowUpdatedAt },
       }
       : null,
   };
@@ -200,4 +205,77 @@ export async function setKitchenItemNumbers(prisma: PrismaClient, vendorId: stri
     }
     return { items, options };
   }, { timeout: 120_000, maxWait: 10_000 });
+}
+
+/** [DT-OVERFLOW] The branch's delivery overflow, for the console: the switch, the connection, the setting. */
+export async function getKitchenOverflow(prisma: PrismaClient, vendorId: string) {
+  await vendorOrThrow(prisma, vendorId);
+  const row = await prisma.vendorIntegration.findUnique({
+    where: { vendorId_provider: { vendorId, provider: 'DRAGONTAIL' } },
+    select: {
+      enabled: true, overflowMode: true, overflowBusyHours: true, overflowUpdatedAt: true, linkOfflineAt: true, linkFailures: true,
+      linkOutageSince: true, driverCheckAt: true, driverCheckFree: true, driverCheckProblem: true,
+    },
+  });
+  // [round 3 · review B S4-8] Orders on the tablet that Dragontail MAY also have (the switch went off mid-send): "Get a
+  // Swift rider" stays refused for them until operations confirm with the store that Dragontail does not have them.
+  const maybe = row ? await prisma.orderIntegrationSync.findMany({
+    where: { vendorIntegration: { vendorId }, state: 'FALLBACK', maybeInKitchen: true },
+    orderBy: { fallbackAt: 'desc' },
+    take: 20,
+    select: { orderId: true, fallbackAt: true, order: { select: { orderNumber: true, status: true } } },
+  }) : [];
+  return {
+    maybeInKitchen: maybe.map((m) => ({ orderId: m.orderId, orderNumber: m.order.orderNumber, orderStatus: m.order.status, fallbackAt: m.fallbackAt })),
+    switchOn: dragontailIntegrationEnabled(),
+    // [round 2 · review A S2-3] The driver check's own switch: off until Dragontail confirms what it lists.
+    driverCheckAvailable: dragontailDriverCheckEnabled(),
+    // [round 2 · review A S2-2] The kitchen tick's latest driver check for this branch (null free = it failed: why).
+    driverCheck: row?.driverCheckAt ? { at: row.driverCheckAt, free: row.driverCheckFree, problem: row.driverCheckProblem } : null,
+    // [round 2 · review A S3-2] A probe's login re-opened the link; the outage ends when a real send goes through.
+    linkOnTrial: row != null && row.linkOfflineAt == null && row.linkOutageSince != null,
+    // [DT-OUTAGE] "Kitchen link offline, orders on tablet" (kitchen-link.ts), and the certain failures counted so far.
+    linkOfflineAt: row?.linkOfflineAt ?? null,
+    linkFailures: row?.linkFailures ?? 0,
+    connected: row !== null,
+    enabled: row?.enabled ?? false,
+    mode: row?.overflowMode ?? 'NONE',
+    busyHours: readBusyHours(row?.overflowBusyHours),
+    updatedAt: row?.overflowUpdatedAt ?? null,
+  };
+}
+
+/** [DT-OVERFLOW] The console's change of a branch's delivery overflow (refused while the switch is off). */
+export async function putKitchenOverflow(prisma: PrismaClient, vendorId: string, body: unknown, audit?: KitchenAudit) {
+  await vendorOrThrow(prisma, vendorId);
+  await writeKitchenOverflowSetting(prisma, vendorId, body, process.env, audit);
+  return getKitchenOverflow(prisma, vendorId);
+}
+
+/**
+ * [round 3 · review B S4-8] Operations confirmed with the store that Dragontail does NOT have this order (absent, or
+ * cancelled there): the "maybe in Dragontail" hold is cleared, so the store may get a Swift rider for it again. Only a
+ * tablet order still flagged; audited (the order, never a person's detail).
+ */
+export async function clearMaybeInKitchen(prisma: PrismaClient, vendorId: string, orderId: string, audit?: KitchenAudit) {
+  await vendorOrThrow(prisma, vendorId);
+  return prisma.$transaction(async (tx) => {
+    const sync = await tx.orderIntegrationSync.findFirst({
+      where: { orderId, provider: 'DRAGONTAIL', vendorIntegration: { vendorId } },
+      select: { id: true, state: true, maybeInKitchen: true },
+    });
+    if (!sync) throw new AppError(404, 'NOT_FOUND', 'This order has no kitchen-system record at this store.');
+    if (sync.state !== 'FALLBACK' || !sync.maybeInKitchen) {
+      throw new AppError(409, 'NOT_MAYBE_IN_KITCHEN', 'This order is not waiting on a "maybe in Dragontail" check.');
+    }
+    await tx.orderIntegrationSync.update({ where: { id: sync.id }, data: { maybeInKitchen: false } });
+    await audit?.(tx, sync.id, { orderId, maybeInKitchenBefore: true, maybeInKitchenAfter: false });
+    return { orderId, maybeInKitchen: false };
+  });
+}
+
+/** [DT-OVERFLOW] Where the branch's recent deliveries went (its kitchen system or Swift riders), and why. */
+export async function listKitchenRoutesFor(prisma: PrismaClient, vendorId: string, query: { limit?: unknown }) {
+  await vendorOrThrow(prisma, vendorId);
+  return listKitchenRoutes(prisma, vendorId, query);
 }

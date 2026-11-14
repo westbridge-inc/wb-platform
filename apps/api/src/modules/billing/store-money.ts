@@ -71,11 +71,13 @@ export interface StoreMoneyOrder extends OrderMoneyRow {
   vatRateBps?: number | null;
   currencyCode?: string | null;
   vendor?: { vendorType?: string | null; selfDeliveryEnabled?: boolean | null } | null;
+  /** [DT-OVERFLOW] A connected branch's delivery routed to Swift riders is a Swift-rider delivery before it is bound. */
+  kitchenRoute?: string | null;
 }
 
 /** The columns `storeMoney` reads (a Prisma select). The vendor's two columns ride the order's own vendor select. */
 export const STORE_MONEY_SELECT = {
-  orderType: true, fulfillment: true, fulfillmentMode: true, paymentMethod: true, currencyCode: true,
+  orderType: true, fulfillment: true, fulfillmentMode: true, paymentMethod: true, currencyCode: true, kitchenRoute: true,
   subtotalCustomer: true, discount: true, deliveryFee: true, tipAmount: true, totalAmount: true, taxAmount: true, vatRateBps: true,
   promoRedemption: { select: { goodsDiscount: true, deliveryDiscount: true, funder: true } },
   vendor: { select: { vendorType: true, selfDeliveryEnabled: true } },
@@ -108,10 +110,11 @@ function deliveryOf(order: StoreMoneyOrder): StoreMoneyDelivery {
   if (order.fulfillment === 'PICKUP' || order.fulfillmentMode === 'PICKUP') return 'PICKUP';
   if (order.fulfillment === 'APPOINTMENT') return 'APPOINTMENT';
   // A delivery order: who delivers is the order's own recorded choice, else the store's standing preference — the
-  // exact rule acceptance binds with (fulfillment-mode.ts resolveDeliveryMode).
+  // exact rule acceptance binds with (fulfillment-mode.ts resolveDeliveryMode; [DT-OVERFLOW] an overflow order binds to
+  // Swift riders).
   return resolveDeliveryMode(
     order.fulfillmentMode === 'VENDOR_DELIVERY' || order.fulfillmentMode === 'PLATFORM_RIDER' ? order.fulfillmentMode : null,
-    order.vendor?.selfDeliveryEnabled === true,
+    order.vendor?.selfDeliveryEnabled === true && order.kitchenRoute !== 'SWIFT_RIDERS',
   ) === 'VENDOR_DELIVERY' ? 'STORE_RIDER' : 'SWIFT_RIDER';
 }
 

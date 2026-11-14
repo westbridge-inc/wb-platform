@@ -10,7 +10,9 @@ import { emitToOrderRoom, emitToStoreRoom } from '../order/order-room-emission.s
 import { vendorOperateRefusal, type StoreRoleVerifier } from '../vendor/vendor-operate';
 import { kitchenLoginFor } from './kitchen-credentials';
 import { KITCHEN_ACCEPT_GRACE_MS, kitchenLadderDecision } from './kitchen-claim';
+import { kitchenBreakerSettings, probeWaitMs, recordLinkFailure, recordLinkProbeSuccess, recordLinkSuccess } from './kitchen-link';
 import {
+  KitchenPermanentError,
   KitchenTransientError,
   type KitchenEvent,
   type KitchenInsertResult,
@@ -358,7 +360,10 @@ const fromWhere = (from: FromState, now: Date) => ({
  */
 /** What the operations page says: the kitchen does not have it (default), it was cancelled there after an
  *  unanswered send, or — the switch being off — it MAY also be in the kitchen. */
-type FallbackPage = 'default' | 'cancelled-there' | 'maybe-in-kitchen-switch-off';
+type FallbackPage = 'default' | 'cancelled-there' | 'maybe-in-kitchen-switch-off'
+  /** [DT-OUTAGE] The branch's LINK failed (certainly not received) or is offline: no page per order; the breaker
+   *  sends one alert per outage, and the console shows the connection's last error. */
+  | 'link';
 
 async function fallBack(
   deps: Pick<KitchenDeps, 'prisma' | 'io'>,
@@ -370,12 +375,14 @@ async function fallBack(
   const now = new Date();
   const moved = await deps.prisma.orderIntegrationSync.updateMany({
     where: { id: sync.id, ...fromWhere(from, now) },
-    data: { state: 'FALLBACK', fallbackAt: now, lastError: reason.slice(0, 300), leaseUntil: null },
+    // [round 2 · review A S3-3] The kitchen MAY still have it: "Get a Swift rider" stays refused for this order.
+    data: { state: 'FALLBACK', fallbackAt: now, lastError: reason.slice(0, 300), leaseUntil: null, maybeInKitchen: page === 'maybe-in-kitchen-switch-off' },
   });
   if (moved.count === 0) return false;
   await noteIntegrationError(deps, sync.vendorIntegrationId, reason);
   const rang = await ringStoreForOrder(deps, sync.orderId);
   log().warn({ orderId: sync.orderId, reason }, '[KITCHEN] order not given to the kitchen system — the store tablet was rung instead');
+  if (page === 'link') return true;
   const number = await orderNumberOf(deps, sync.orderId);
   await pageOperations(deps, {
     orderId: sync.orderId, tenantId: sync.tenantId, key: `${sync.id}:fallback`,
@@ -579,6 +586,11 @@ async function prepareSend(
     await fallBack(deps, sync, 'the connection was switched off', own);
     return null;
   }
+  // [DT-OUTAGE] The branch's link is offline: nothing is sent; it rings the tablet (the outage was alerted once).
+  if (integration.linkOfflineAt) {
+    await fallBack(deps, sync, 'the kitchen link is offline', own, 'link');
+    return null;
+  }
   // [security scan · d68ff3f6] The order goes to the store number it was claimed under, never a different one.
   if (integration.externalStoreNo !== sync.externalStoreNo) {
     await fallBack(deps, sync, "the connection's store number changed after the claim", own);
@@ -629,10 +641,17 @@ async function sendOne(deps: KitchenDeps, syncId: string, leasedAt: number): Pro
     if (err instanceof KitchenTransientError && err.mayHaveLanded) {
       // [review B S3-3] It may be in the kitchen: never re-sent, never rung while unknown; verified, then settled.
       await markUnknown(deps, sync, problemOf(err), own);
+      // [round 2 · review A S2-1] 5xx answers (then perhaps no connection): the order takes the careful path above,
+      // AND the link counts as failing, so a branch whose kitchen keeps answering 5xx stops being sent new orders.
+      if (err.linkFailure) await recordLinkFailure(deps, sync.vendorIntegrationId, problemOf(err), envOf(deps));
       return;
     }
-    // A refusal, a 5xx after the spec's retries, or no attempt fitted the deadline: the kitchen does not have it.
-    await fallBack(deps, sync, problemOf(err), own);
+    // [DT-OUTAGE] CERTAINLY not received and the LINK failed (no connection on every attempt, no attempt fitted the
+    // deadline, a login refused or answering 5xx): the tablet rings now, no page per order; the branch's breaker
+    // counts it. An order-specific refusal (validation) is not a link failure: rung, and operations paged, as before.
+    const linkFailure = err instanceof KitchenTransientError || (err instanceof KitchenPermanentError && err.linkFailure);
+    await fallBack(deps, sync, problemOf(err), own, linkFailure ? 'link' : 'default');
+    if (linkFailure) await recordLinkFailure(deps, sync.vendorIntegrationId, problemOf(err), envOf(deps));
     return;
   } finally {
     provider.setDeadline(null);
@@ -648,6 +667,8 @@ async function sendOne(deps: KitchenDeps, syncId: string, leasedAt: number): Pro
         updateStamp: inserted.updateStamp, promiseSeconds: inserted.promiseSeconds,
       },
     });
+    // [DT-OUTAGE] The link works: the breaker's count restarts (and an offline link would close).
+    await recordLinkSuccess(deps, sync.vendorIntegrationId);
     if (sent.count === 0) return;
     await deps.prisma.vendorIntegration.update({ where: { id: sync.vendorIntegrationId }, data: { lastHealthyAt: nowOf(deps) } }).catch(() => undefined);
     await acceptSentOrder(deps, sync, inserted.promiseSeconds);
@@ -1183,6 +1204,54 @@ export async function pollKitchenIntegrations(deps: KitchenDeps, opts: KitchenWo
 }
 
 /**
+ * [DT-OUTAGE] Probe each OFFLINE branch link at most once per cool-down (compare-and-set on its probe time, so one
+ * instance probes): a fresh login, the lightest call the spec has (it has no health check). [round 2] Success puts the
+ * link back ON TRIAL (kitchen-link.ts): only a real send ends the outage. Failure leaves it offline. Switch off: nothing.
+ */
+export async function probeOfflineKitchenLinks(deps: KitchenDeps, opts: KitchenWorkWindow = {}): Promise<number> {
+  const env = envOf(deps);
+  if (!dragontailIntegrationEnabled(env)) return 0;
+  const until = untilOf(opts);
+  const now = nowOf(deps);
+  const settings = kitchenBreakerSettings(env);
+  const candidates = await deps.prisma.vendorIntegration.findMany({
+    where: { enabled: true, linkOfflineAt: { not: null }, OR: [{ linkProbeAt: null }, { linkProbeAt: { lte: new Date(now.getTime() - settings.probeMs) } }] },
+    orderBy: { linkProbeAt: 'asc' },
+    take: 50,
+  });
+  // [round 3 · review B S2-1] After a failed trial the next probe waits twice as long (at most 15 min).
+  const due = candidates
+    .filter((i) => !i.linkProbeAt || now.getTime() - i.linkProbeAt.getTime() >= probeWaitMs(settings, i.linkTrialFailures))
+    .slice(0, 20);
+  let closed = 0;
+  for (const integration of due) {
+    if (Date.now() >= until) break;
+    const claimed = await deps.prisma.vendorIntegration.updateMany({ where: { id: integration.id, linkProbeAt: integration.linkProbeAt }, data: { linkProbeAt: now } });
+    if (claimed.count === 0) continue;
+    const answer = kitchenProvider(deps, integration, () => '', { freshToken: true });
+    if (!answer.ok) {
+      await noteIntegrationError(deps, integration.id, answer.problem);
+      continue;
+    }
+    answer.provider.setDeadline(Date.now() + 10_000);
+    try {
+      // [round 3 · review B S2-1] A login AND an order-API read: a backend down behind a working login stays offline.
+      if (answer.provider.probeOrderApi && integration.externalStoreNo != null) {
+        await answer.provider.probeOrderApi(integration.externalStoreNo, integration.pollUpdateStamp);
+      } else {
+        await answer.provider.testConnection();
+      }
+      if ((await recordLinkProbeSuccess(deps, integration.id)) === 'trial') closed += 1;
+    } catch (err) {
+      await noteIntegrationError(deps, integration.id, `link probe: ${problemOf(err)}`);
+    } finally {
+      answer.provider.setDeadline(null);
+    }
+  }
+  return closed;
+}
+
+/**
  * The worker's tick: send, propagate cancels, settle unanswered sends, ring stuck or unaccepted claims, poll.
  * [review A S3-1 · B S3-2] ONE tick at a time across every worker: a Redis lock that outlives the tick's window plus
  * the longest single piece of work (a send's lease); a tick that finds it held returns at once, so kitchen work never
@@ -1197,6 +1266,14 @@ export async function runKitchenTick(deps: KitchenDeps): Promise<'ran' | 'skippe
   const window: KitchenWorkWindow = { until: Date.now() + KITCHEN_TICK_BUDGET_MS };
   try {
     for (const [name, run] of [
+      // [DT-OVERFLOW round 2 · review A S2-2] The overflow's driver checks, all branches at once under one budget, HERE
+      // on the order queue: the hold-release sweep and checkout only read the stored answers. Inert unless
+      // DRAGONTAIL_DRIVER_CHECK is on too.
+      ['driver-check', async () => (await import('./kitchen-overflow')).refreshKitchenDriverChecks(deps.prisma, envOf(deps), {
+        ...(deps.now ? { now: deps.now } : {}), ...(deps.client ? { client: deps.client } : {}),
+      })],
+      // [round 3 · review B S4-7] Probes before the drain: a long drain must not keep an offline link offline longer.
+      ['link-probe', () => probeOfflineKitchenLinks(deps, window)],
       ['drain', () => drainKitchenSyncs(deps, window)],
       ['cancel', () => propagateKitchenCancellations(deps, window)],
       ['unknown', () => resolveUnknownKitchenSyncs(deps, window)],

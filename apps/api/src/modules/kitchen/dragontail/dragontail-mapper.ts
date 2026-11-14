@@ -270,3 +270,21 @@ export function dragontailUpdateEvents(body: unknown): KitchenEvent[] {
   }
   return out;
 }
+
+/**
+ * [DT-OVERFLOW] GET /PosGetVehicles/{StoreNo}, "(Optional) Retrieve unassigned vehicles": 200 → { time, rowCount,
+ * vehicles: [{ id, number, status }] }. How many vehicles the answer lists, or null when Swift cannot read it.
+ * TODO-CONFIRM (the spec disagrees with itself, and says too little):
+ *   - the list is `vehicles` in the schema and `vehicle` in the example (both are read; the schema's first);
+ *   - the example's rowCount (8) does not match its list (3): the LIST is counted, never rowCount;
+ *   - what `status` means is not documented: every listed vehicle is counted, whatever its status;
+ *   - whether an "unassigned vehicle" means a DRIVER free to take an order now (the reading Swift uses), or only a
+ *     vehicle not paired with a carrier (PosVehicleAssignment) — Dragontail must confirm before the check is used.
+ */
+export function dragontailFreeVehicles(body: unknown): number | null {
+  if (!body || typeof body !== 'object') return null;
+  const answer = body as { vehicles?: unknown; vehicle?: unknown };
+  const list = Array.isArray(answer.vehicles) ? answer.vehicles : Array.isArray(answer.vehicle) ? answer.vehicle : null;
+  if (!list) return null;
+  return list.filter((v) => v !== null && typeof v === 'object').length;
+}

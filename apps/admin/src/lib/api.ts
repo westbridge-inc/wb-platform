@@ -1802,3 +1802,33 @@ export const applyAssistedMenu = (vendorId: string, consentId: string, csv: stri
   apiFetch(`${assisted(vendorId)}/menu/apply`, { method: 'POST', body: JSON.stringify({ consentId, csv }), reason });
 export const uploadAssistedItemPhoto = (vendorId: string, consentId: string, itemId: string, file: Blob, name: string, reason: string) =>
   apiFetch(`${assisted(vendorId)}/items/${encodeURIComponent(itemId)}/photo?${new URLSearchParams({ consentId })}`, { method: 'POST', body: fileForm(file, name), reason });
+
+// [DT-OVERFLOW · owner 14 Nov 2026] A Dragontail branch's delivery overflow: when its cash deliveries go to Swift
+// riders instead of its own drivers (refused by the server while the kitchen-system switch is off).
+export type KitchenOverflowMode = 'NONE' | 'AUTO_DRIVER_CHECK' | 'BUSY_HOURS' | 'BOTH';
+export interface KitchenBusyWindow { day: number; start: string; end: string }
+export interface KitchenOverflowView {
+  switchOn: boolean; connected: boolean; enabled: boolean;
+  mode: KitchenOverflowMode; busyHours: KitchenBusyWindow[]; updatedAt: string | null;
+  /** [DT-OUTAGE] Set while the branch's kitchen link is offline (orders ring the tablet). */
+  linkOfflineAt?: string | null; linkFailures?: number;
+  /** [round 2] The driver check's own switch (off until Dragontail confirms it), its latest answer, and a link on trial. */
+  driverCheckAvailable?: boolean;
+  driverCheck?: { at: string; free: number | null; problem: string | null } | null;
+  linkOnTrial?: boolean;
+  /** [round 3] Tablet orders Dragontail MAY also have: "Get a Swift rider" is refused until operations clear them. */
+  maybeInKitchen?: Array<{ orderId: string; orderNumber: string; orderStatus: string; fallbackAt: string | null }>;
+}
+export interface KitchenRouteRow {
+  id: string; orderNumber: string; status: string; kitchenRoute: 'KITCHEN' | 'SWIFT_RIDERS' | 'TABLET'; kitchenRouteReason: string | null;
+  kitchenRouteAt: string | null; fulfillmentMode: string | null; riderId: string | null;
+}
+const kitchenOverflow = (vendorId: string) => `/api/v1/admin/vendors/${encodeURIComponent(vendorId)}/kitchen-integration/overflow`;
+export const fetchKitchenOverflow = (vendorId: string): Promise<Envelope<KitchenOverflowView>> => apiFetch(kitchenOverflow(vendorId));
+export const setKitchenOverflow = (vendorId: string, body: { mode: KitchenOverflowMode; busyHours?: KitchenBusyWindow[] }): Promise<Envelope<KitchenOverflowView>> =>
+  apiFetch(kitchenOverflow(vendorId), { method: 'PUT', body: JSON.stringify(body) });
+/** [round 3] Operations confirmed with the store that Dragontail does not have this order. */
+export const clearMaybeInKitchen = (vendorId: string, orderId: string): Promise<Envelope<{ orderId: string; maybeInKitchen: boolean }>> =>
+  apiFetch(`/api/v1/admin/vendors/${encodeURIComponent(vendorId)}/kitchen-integration/orders/${encodeURIComponent(orderId)}/not-in-kitchen`, { method: 'POST', body: JSON.stringify({}) });
+export const fetchKitchenRoutes = (vendorId: string): Promise<Envelope<KitchenRouteRow[]>> =>
+  apiFetch(`/api/v1/admin/vendors/${encodeURIComponent(vendorId)}/kitchen-integration/routes?limit=20`);

@@ -14,6 +14,7 @@ import { setDraftDirty, storeKey, useStoreId } from '@/lib/store-scope';
 import { RefundRuleCard } from './refund-rule-card';
 import { BookingCapacityCard } from './booking-capacity-card';
 import { KitchenCapacityCard } from './kitchen-capacity-card';
+import { DeliveryOverflowCard } from '@/components/delivery-overflow-card';
 import { DeliveryStatusNotice } from '../delivery-status-notice';
 import { FoodHandlersCard } from './food-handlers-card';
 import { StoreFeeCard } from './store-fee-card';
@@ -351,6 +352,9 @@ export default function SettingsPage() {
       <BookingCapacityCard storeId={storeId} />
       {/* [RIDER-SAFE 4] How many orders the kitchen holds at once (stores that cook or pack). */}
       <KitchenCapacityCard storeId={storeId} />
+      {/* [DT-OVERFLOW · DT-OUTAGE] A Dragontail branch's "Swift riders when you're busy" and its kitchen-link state
+          (owner and managers; renders nothing for any other store). Here, not on the Orders home (perf budget). */}
+      {seesBranches && <DeliveryOverflowCard />}
       <RefundRuleCard storeId={storeId} />
       {/* [REVIEW-F #2220 S3-1] the number customers can call (a waiting store's go-live step) */}
       <CallUsCard storeId={storeId} />
