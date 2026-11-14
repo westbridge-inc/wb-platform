@@ -23,6 +23,13 @@ on:
     - cron: '0 9 * * 1'
   workflow_dispatch: {}
 
+# [CI-TRIM] A newer push to the same PR (or to main) cancels the run it
+# supersedes: the group is per ref, so only the latest commit spends runner time.
+# The API matrix is deliberately NOT path-filtered: the API suite reads files
+# across the whole repository (measured 14 Nov 2026: 32 API test files read
+# apps/mobile, 43 apps/web, 24 apps/admin, 11 docs/), so a "mobile-only" or
+# "web-only" change can still turn an API test red, and skipping it there would
+# weaken the required "API Tests" check.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -33,10 +40,40 @@ concurrency:
 permissions:
   contents: read
 
+# [CI-TRIM] Every job has a timeout about 2.5-3x its slowest green run
+# (7-14 Nov 2026), instead of the 6-hour default: a hung job on a self-hosted
+# box would otherwise hold one of its few runners for hours.
+#
+# [CI-SELFHOST] Where a job runs is ONE repository variable, SWIFT_CI_RUNNERS
+# (Settings -> Secrets and variables -> Actions -> Variables): a JSON object
+# with one runner per lane, read by the runs-on line of every job.
+#   unset                                   -> every job on GitHub-hosted ubuntu-latest
+#   {"main":["swift-ci-main"],"pr":["swift-ci-pr"]}
+#     main lane: main and merge-queue refs only (code already reviewed onto main)
+#     pr lane:   every other ref (branches, PRs from this repository)
+#   a lane missing from the object          -> that lane on ubuntu-latest
+# A pull request from a FORK always runs on GitHub-hosted runners, whatever the
+# variable says: untrusted code never reaches Swift's own box. The two lanes are
+# separate users, runner groups and labels on the box, so nothing a PR job
+# writes there can reach a main job. Back to hosted in one command:
+#   gh variable delete SWIFT_CI_RUNNERS
+# The routing expression never skips a job, so a merge group runs every job.
+# Each job behaves the same on both runner kinds. Service containers are pinned
+# by digest and publish to a random host port (read back through
+# job.services.<name>.ports), because jobs that share one host cannot all own
+# 5432/6379; scratch files live in RUNNER_TEMP, never a shared /tmp path. On
+# the box every job gets a freshly unpacked runner, an empty HOME (so no pnpm
+# store, corepack, Gradle or tool cache survives from an earlier job) and an
+# empty workspace, like a hosted runner; caches come only through
+# actions/cache, which saves from main only.
+# The deploy workflows stay on GitHub-hosted runners: they carry deploy tokens,
+# and no deploy credential ever lives on the CI box.
+
 jobs:
   lint-and-type-check:
     name: Lint & Type Check
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || fromJSON(vars.SWIFT_CI_RUNNERS || '{}')[(github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/gh-readonly-queue/main/')) && 'main' || 'pr'] || 'ubuntu-latest' }}
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -95,7 +132,8 @@ jobs:
   # --count together (ci-api-shards.test.ts holds them in lockstep).
   api-test-shard:
     name: API Tests shard ${{ matrix.shard }}/${{ matrix.total }}
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || fromJSON(vars.SWIFT_CI_RUNNERS || '{}')[(github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/gh-readonly-queue/main/')) && 'main' || 'pr'] || 'ubuntu-latest' }}
+    timeout-minutes: 45
     strategy:
       # Every shard runs to the end, so one red shard still shows every failure.
       fail-fast: false
@@ -104,22 +142,22 @@ jobs:
         total: [8]
     services:
       postgres:
-        image: postgis/postgis:16-3.4
+        image: postgis/postgis:16-3.4@sha256:44126d872ac91993766c341e369c539e8196614321765d36a6f1bab0419a5fa5
         env:
           POSTGRES_USER: swift
           POSTGRES_PASSWORD: swift
           POSTGRES_DB: swift_test
         ports:
-          - 5432:5432
+          - 5432
         options: >-
           --health-cmd="pg_isready -U swift"
           --health-interval=10s
           --health-timeout=5s
           --health-retries=5
       redis:
-        image: redis:7-alpine
+        image: redis:7-alpine@sha256:7f7d30b7fdd09467bac58198a1f166dd69789d348d4fe859cccb20e0cf287fbe
         ports:
-          - 6379:6379
+          - 6379
         options: >-
           --health-cmd="redis-cli ping"
           --health-interval=10s
@@ -153,14 +191,14 @@ jobs:
       - name: Replay migrations (the real production schema)
         run: cd apps/api && npx prisma migrate deploy
         env:
-          DATABASE_URL: postgresql://swift:swift@localhost:5432/swift_test
+          DATABASE_URL: postgresql://swift:swift@localhost:${{ job.services.postgres.ports['5432'] }}/swift_test
       - name: Seed database
         run: cd apps/api && npx prisma db seed
         env:
           NODE_ENV: test
           SEED_DEMO_CONFIRM: "YES"
-          DATABASE_URL: postgresql://swift:swift@localhost:5432/swift_test
-          REDIS_URL: redis://localhost:6379
+          DATABASE_URL: postgresql://swift:swift@localhost:${{ job.services.postgres.ports['5432'] }}/swift_test
+          REDIS_URL: redis://localhost:${{ job.services.redis.ports['6379'] }}
       # Explicit reporters replace vitest's defaults, so github-actions (the
       # failure annotations) is listed by name. The blob carries this shard's
       # results and coverage for the merge; the JUnit report names every file
@@ -174,21 +212,22 @@ jobs:
           --outputFile.junit=ci-shard-report/junit/junit-${{ matrix.shard }}.xml
         env:
           NODE_ENV: test
-          DATABASE_URL: postgresql://swift:swift@localhost:5432/swift_test
+          DATABASE_URL: postgresql://swift:swift@localhost:${{ job.services.postgres.ports['5432'] }}/swift_test
           # [R048-001] The tests' own Redis database, never 0; the global setup refuses anything else.
-          REDIS_URL: redis://localhost:6379/15
+          REDIS_URL: redis://localhost:${{ job.services.redis.ports['6379'] }}/15
           JWT_SECRET: ci-test-jwt-secret-not-for-production
 
       # Step 15: an untested backup does not exist. Dump the post-suite
       # database and prove it restores into a scratch DB with sane contents.
       - name: Backup the database (pg_dump)
-        run: pg_dump "postgresql://swift:swift@localhost:5432/swift_test" -Fc -f /tmp/swift-ci.dump
+        run: pg_dump "postgresql://swift:swift@localhost:${{ job.services.postgres.ports['5432'] }}/swift_test" -Fc -f "$RUNNER_TEMP/swift-ci.dump"
       - name: Restore into a scratch DB and sanity-check
         env:
           PGPASSWORD: swift
+          PGPORT: ${{ job.services.postgres.ports['5432'] }}
         run: |
           createdb -h localhost -U swift swift_restore_check
-          pg_restore --no-owner -h localhost -U swift -d swift_restore_check /tmp/swift-ci.dump
+          pg_restore --no-owner -h localhost -U swift -d swift_restore_check "$RUNNER_TEMP/swift-ci.dump"
           USERS=$(psql -h localhost -U swift -d swift_restore_check -tAc 'SELECT count(*) FROM users;')
           CONFIGS=$(psql -h localhost -U swift -d swift_restore_check -tAc 'SELECT count(*) FROM country_configs;')
           VENDORS=$(psql -h localhost -U swift -d swift_restore_check -tAc 'SELECT count(*) FROM vendors;')
@@ -212,7 +251,8 @@ jobs:
   # cancelled — a SKIPPED required check reads as passing to branch protection.
   api-test:
     name: API Tests
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || fromJSON(vars.SWIFT_CI_RUNNERS || '{}')[(github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/gh-readonly-queue/main/')) && 'main' || 'pr'] || 'ubuntu-latest' }}
+    timeout-minutes: 30
     needs: api-test-shard
     if: always()
     steps:
@@ -263,7 +303,8 @@ jobs:
 
   api-build:
     name: API Build
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || fromJSON(vars.SWIFT_CI_RUNNERS || '{}')[(github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/gh-readonly-queue/main/')) && 'main' || 'pr'] || 'ubuntu-latest' }}
+    timeout-minutes: 30
     needs: lint-and-type-check
     steps:
       - uses: actions/checkout@v7
@@ -320,27 +361,27 @@ jobs:
   # No boot guard is relaxed: both processes run their own guards unchanged.
   api-boot-smoke:
     name: API Boot Smoke
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || fromJSON(vars.SWIFT_CI_RUNNERS || '{}')[(github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/gh-readonly-queue/main/')) && 'main' || 'pr'] || 'ubuntu-latest' }}
     needs: api-build
     timeout-minutes: 15
     services:
       postgres:
-        image: postgis/postgis:16-3.4
+        image: postgis/postgis:16-3.4@sha256:44126d872ac91993766c341e369c539e8196614321765d36a6f1bab0419a5fa5
         env:
           POSTGRES_USER: swift
           POSTGRES_PASSWORD: swift
           POSTGRES_DB: swift_boot
         ports:
-          - 5432:5432
+          - 5432
         options: >-
           --health-cmd="pg_isready -U swift"
           --health-interval=10s
           --health-timeout=5s
           --health-retries=5
       redis:
-        image: redis:7-alpine
+        image: redis:7-alpine@sha256:7f7d30b7fdd09467bac58198a1f166dd69789d348d4fe859cccb20e0cf287fbe
         ports:
-          - 6379:6379
+          - 6379
         options: >-
           --health-cmd="redis-cli ping"
           --health-interval=10s
@@ -351,10 +392,8 @@ jobs:
       # The database as PARTS plus a password file, as production delivers it:
       # dist/boot/secret-files.js assembles DATABASE_URL in memory.
       POSTGRES_HOST: localhost
-      POSTGRES_PORT: "5432"
       POSTGRES_USER: swift
       POSTGRES_DB: swift_boot
-      REDIS_URL: redis://localhost:6379
       LOG_LEVEL: warn
       # Managed storage on a local volume (the staging pilot's overlay,
       # deploy/docker-compose.storage-local.yml): every storage guard applies.
@@ -375,6 +414,12 @@ jobs:
         with:
           name: api-dist
           path: .
+      # The services publish on a random host port (see the note at the top);
+      # job-level env cannot read the job context, so the step sets them.
+      - name: This job's own Postgres and Redis ports
+        run: |
+          echo "POSTGRES_PORT=${{ job.services.postgres.ports['5432'] }}" >> "$GITHUB_ENV"
+          echo "REDIS_URL=redis://localhost:${{ job.services.redis.ports['6379'] }}" >> "$GITHUB_ENV"
       - name: Throwaway stand-in secrets, delivered as files like production's
         run: |
           dir="$RUNNER_TEMP/swift-secrets"
@@ -395,7 +440,8 @@ jobs:
 
   admin-build:
     name: Admin Build
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || fromJSON(vars.SWIFT_CI_RUNNERS || '{}')[(github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/gh-readonly-queue/main/')) && 'main' || 'pr'] || 'ubuntu-latest' }}
+    timeout-minutes: 30
     needs: lint-and-type-check
     steps:
       - uses: actions/checkout@v7
@@ -446,7 +492,8 @@ jobs:
 
   web-build:
     name: Web Build
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || fromJSON(vars.SWIFT_CI_RUNNERS || '{}')[(github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/gh-readonly-queue/main/')) && 'main' || 'pr'] || 'ubuntu-latest' }}
+    timeout-minutes: 30
     needs: lint-and-type-check
     steps:
       - uses: actions/checkout@v7
@@ -515,7 +562,8 @@ jobs:
     # TS/Vite half only — the Rust/Tauri binary is built + smoke-run locally
     # (CI runners lack the signing context; the webview build still gates types).
     name: Desktop Build (TS)
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || fromJSON(vars.SWIFT_CI_RUNNERS || '{}')[(github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/gh-readonly-queue/main/')) && 'main' || 'pr'] || 'ubuntu-latest' }}
+    timeout-minutes: 30
     needs: lint-and-type-check
     steps:
       - uses: actions/checkout@v7
@@ -568,17 +616,18 @@ jobs:
   # only in migrations do not false-positive the diff).
   migration-check:
     name: Migration Replay
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || fromJSON(vars.SWIFT_CI_RUNNERS || '{}')[(github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/gh-readonly-queue/main/')) && 'main' || 'pr'] || 'ubuntu-latest' }}
+    timeout-minutes: 20
     needs: lint-and-type-check
     services:
       postgres:
-        image: postgis/postgis:16-3.4
+        image: postgis/postgis:16-3.4@sha256:44126d872ac91993766c341e369c539e8196614321765d36a6f1bab0419a5fa5
         env:
           POSTGRES_USER: swift
           POSTGRES_PASSWORD: swift
           POSTGRES_DB: swift_migrate
         ports:
-          - 5432:5432
+          - 5432
         options: >-
           --health-cmd="pg_isready -U swift"
           --health-interval=10s
@@ -601,7 +650,7 @@ jobs:
       - name: Replay all migrations on a clean database
         run: cd apps/api && npx prisma migrate deploy
         env:
-          DATABASE_URL: postgresql://swift:swift@localhost:5432/swift_migrate
+          DATABASE_URL: postgresql://swift:swift@localhost:${{ job.services.postgres.ports['5432'] }}/swift_migrate
       # SWIFT-AUD-D6-04: the two dispatch geo indexes are functional GiST, which
       # Prisma can't express in schema.prisma — they live ONLY in raw-SQL
       # migrations and are invisible to `db push`. Assert `migrate deploy`
@@ -610,7 +659,7 @@ jobs:
       - name: Dispatch geo GiST indexes exist
         run: |
           for idx in riders_geo_gist drivers_geo_gist; do
-            found=$(psql "postgresql://swift:swift@localhost:5432/swift_migrate" -tAc "SELECT 1 FROM pg_indexes WHERE indexname='$idx'")
+            found=$(psql "postgresql://swift:swift@localhost:${{ job.services.postgres.ports['5432'] }}/swift_migrate" -tAc "SELECT 1 FROM pg_indexes WHERE indexname='$idx'")
             if [ "$found" != "1" ]; then echo "::error::MISSING dispatch geo index: $idx (raw-SQL migration did not apply)"; exit 1; fi
             echo "ok: $idx present"
           done
@@ -620,7 +669,7 @@ jobs:
       # zero-commission (keep-100%) guard degrading silently must go RED.
       - name: Money-integrity CHECK constraints exist
         run: |
-          DB="postgresql://swift:swift@localhost:5432/swift_migrate"
+          DB="postgresql://swift:swift@localhost:${{ job.services.postgres.ports['5432'] }}/swift_migrate"
           for c in chk_orders_zero_markup chk_order_items_zero_markup chk_orders_nonneg_money chk_order_items_qty_positive; do
             found=$(psql "$DB" -tAc "SELECT 1 FROM pg_constraint WHERE conname='$c'")
             if [ "$found" != "1" ]; then echo "::error::MISSING money CHECK constraint: $c (raw-SQL migration did not apply)"; exit 1; fi
@@ -631,7 +680,7 @@ jobs:
       # created them; the books silently losing their laws must go RED.
       - name: Ledger-integrity constraints and triggers exist
         run: |
-          DB="postgresql://swift:swift@localhost:5432/swift_migrate"
+          DB="postgresql://swift:swift@localhost:${{ job.services.postgres.ports['5432'] }}/swift_migrate"
           for c in ledger_entries_one_side ledger_entries_nonneg prepaid_balance_nonneg; do
             found=$(psql "$DB" -tAc "SELECT 1 FROM pg_constraint WHERE conname='$c'")
             if [ "$found" != "1" ]; then echo "::error::MISSING ledger CHECK constraint: $c (raw-SQL migration did not apply)"; exit 1; fi
@@ -647,7 +696,7 @@ jobs:
       # becoming double-bookable again must go RED.
       - name: Booking one-at-a-time constraints exist
         run: |
-          DB="postgresql://swift:swift@localhost:5432/swift_migrate"
+          DB="postgresql://swift:swift@localhost:${{ job.services.postgres.ports['5432'] }}/swift_migrate"
           for c in bookings_vendor_one_at_a_time bookings_slot_range_check vendors_booking_capacity_check; do
             found=$(psql "$DB" -tAc "SELECT 1 FROM pg_constraint WHERE conname='$c'")
             if [ "$found" != "1" ]; then echo "::error::MISSING booking constraint: $c (raw-SQL migration did not apply)"; exit 1; fi
@@ -660,7 +709,7 @@ jobs:
       # booked service is the provider's own — raw SQL too (provider-time.ts).
       - name: Pro one-at-a-time constraints exist
         run: |
-          DB="postgresql://swift:swift@localhost:5432/swift_migrate"
+          DB="postgresql://swift:swift@localhost:${{ job.services.postgres.ports['5432'] }}/swift_migrate"
           for c in service_jobs_provider_one_at_a_time service_jobs_ends_after_start service_offerings_duration_check service_offerings_price_check service_provider_time_off_window_check; do
             found=$(psql "$DB" -tAc "SELECT 1 FROM pg_constraint WHERE conname='$c'")
             if [ "$found" != "1" ]; then echo "::error::MISSING pro booking constraint: $c (raw-SQL migration did not apply)"; exit 1; fi
@@ -674,7 +723,7 @@ jobs:
       # becoming reissuable, or a store becoming movable, must go RED.
       - name: QR identity and vendor-edge lineage triggers exist
         run: |
-          DB="postgresql://swift:swift@localhost:5432/swift_migrate"
+          DB="postgresql://swift:swift@localhost:${{ job.services.postgres.ports['5432'] }}/swift_migrate"
           for t in qr_codes_tenant_matches_vendor slug_redirects_tenant_matches_vendor pending_attributions_tenant_matches_code attribution_claims_tenant_matches_code scan_events_tenant_matches_code scan_daily_rollups_tenant_matches_code orders_tenant_matches_attribution_code vendors_tenant_immutable qr_codes_token_reserve qr_codes_token_retire qr_codes_identity_immutable vendors_qr_target_identity vendors_qr_target_retire token_identities_immutable token_identities_no_truncate; do
             found=$(psql "$DB" -tAc "SELECT 1 FROM pg_trigger WHERE tgname='$t' AND NOT tgisinternal")
             if [ "$found" != "1" ]; then echo "::error::MISSING QR identity/lineage trigger: $t (raw-SQL migration did not apply)"; exit 1; fi
@@ -687,7 +736,7 @@ jobs:
       # consent history silently becoming rewritable must go RED.
       - name: Consent append-only trigger exists
         run: |
-          DB="postgresql://swift:swift@localhost:5432/swift_migrate"
+          DB="postgresql://swift:swift@localhost:${{ job.services.postgres.ports['5432'] }}/swift_migrate"
           found=$(psql "$DB" -tAc "SELECT 1 FROM pg_trigger WHERE tgname='consent_records_no_mutation'")
           if [ "$found" != "1" ]; then echo "::error::MISSING consent trigger: consent_records_no_mutation (raw-SQL migration did not apply)"; exit 1; fi
           echo "ok: consent_records_no_mutation present"
@@ -704,7 +753,7 @@ jobs:
         # DMMF — so a table self-enrols by being registered, and any drift
         # names the exact table.
         run: |
-          DB="postgresql://swift:swift@localhost:5432/swift_migrate"
+          DB="postgresql://swift:swift@localhost:${{ job.services.postgres.ports['5432'] }}/swift_migrate"
           # Comment lines are dropped before the quote extraction: an apostrophe in a
           # comment inside the array once read as a table name (#1149).
           expected=$(awk '/export const TENANT_TABLES = \[/,/\] as const;/' apps/api/src/lib/tenant-rls.ts | grep -v -E '^\s*//' | grep -o "'[^']*'" | tr -d "'" | sort)
@@ -732,7 +781,7 @@ jobs:
         # migrations — so it grades the migrations themselves, with no test
         # installer able to heal the answer first.
         run: |
-          DB="postgresql://swift:swift@localhost:5432/swift_migrate"
+          DB="postgresql://swift:swift@localhost:${{ job.services.postgres.ports['5432'] }}/swift_migrate"
           drifted=$(psql "$DB" -tAc "
             SELECT c.relname FROM pg_class c
             JOIN pg_namespace ns ON ns.oid = c.relnamespace
@@ -751,7 +800,7 @@ jobs:
       - name: Schema matches migration state
         run: >
           cd apps/api && npx prisma migrate diff
-          --from-url postgresql://swift:swift@localhost:5432/swift_migrate
+          --from-url postgresql://swift:swift@localhost:${{ job.services.postgres.ports['5432'] }}/swift_migrate
           --to-schema-datamodel prisma/schema.prisma
           --exit-code
 
@@ -759,7 +808,8 @@ jobs:
   # push/PR. Blocking by design.
   ui-barrier:
     name: UI Barrier
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || fromJSON(vars.SWIFT_CI_RUNNERS || '{}')[(github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/gh-readonly-queue/main/')) && 'main' || 'pr'] || 'ubuntu-latest' }}
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
       # An ESLint rule can be silenced with an inline disable comment. This
@@ -780,7 +830,8 @@ jobs:
   # and Lint & Type Check is still its own required check.
   mobile-bundle-gate:
     name: Mobile Bundle Gate
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || fromJSON(vars.SWIFT_CI_RUNNERS || '{}')[(github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/gh-readonly-queue/main/')) && 'main' || 'pr'] || 'ubuntu-latest' }}
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -825,6 +876,7 @@ jobs:
       # caches and the build land. The Android SDK, Java, Node and Docker
       # itself are kept. df before and after puts the numbers in the log.
       - name: Free runner disk for the Android build
+        if: runner.environment == 'github-hosted'
         run: |
           df -h /
           sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL /usr/share/swift /usr/local/share/boost /usr/local/julia* /usr/local/share/powershell /opt/microsoft /opt/az
@@ -845,8 +897,11 @@ jobs:
       # PR runs never fill the cache with copies. The NDK/CMake list is what the
       # build log shows Gradle installing; if it installs a new version, add it
       # here (the key changes with it).
+      # On Swift's own box the NDK and CMake are preinstalled root-owned and
+      # read-only (no job can write them), so only hosted runners restore them.
       - name: Restore the Android NDK and CMake
         id: android-ndk
+        if: runner.environment == 'github-hosted'
         uses: actions/cache/restore@v6
         with:
           path: |
@@ -888,7 +943,7 @@ jobs:
         if: always()
         run: df -h /
       - name: Save the Android NDK and CMake (main only)
-        if: github.ref == 'refs/heads/main' && steps.android-ndk.outputs.cache-hit != 'true'
+        if: runner.environment == 'github-hosted' && github.ref == 'refs/heads/main' && steps.android-ndk.outputs.cache-hit != 'true'
         uses: actions/cache/save@v6
         with:
           path: |
@@ -920,7 +975,8 @@ jobs:
 
   public-env-gate:
     name: Public Env Gate
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || fromJSON(vars.SWIFT_CI_RUNNERS || '{}')[(github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/gh-readonly-queue/main/')) && 'main' || 'pr'] || 'ubuntu-latest' }}
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -948,7 +1004,7 @@ jobs:
   # (owner's decision). First run: 246 tests, none skipped, about 3.5 minutes.
   deploy-python-tests:
     name: Deploy Python Tests
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || fromJSON(vars.SWIFT_CI_RUNNERS || '{}')[(github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/gh-readonly-queue/main/')) && 'main' || 'pr'] || 'ubuntu-latest' }}
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@v7
@@ -970,7 +1026,8 @@ jobs:
 
   secret-scan:
     name: Secret Scan
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || fromJSON(vars.SWIFT_CI_RUNNERS || '{}')[(github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/gh-readonly-queue/main/')) && 'main' || 'pr'] || 'ubuntu-latest' }}
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
         with:
@@ -985,7 +1042,8 @@ jobs:
 
   licence-gate:
     name: Licence Gate
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || fromJSON(vars.SWIFT_CI_RUNNERS || '{}')[(github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/gh-readonly-queue/main/')) && 'main' || 'pr'] || 'ubuntu-latest' }}
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -1001,7 +1059,8 @@ jobs:
 
   security:
     name: Security Scan
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository) && 'ubuntu-latest' || fromJSON(vars.SWIFT_CI_RUNNERS || '{}')[(github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/gh-readonly-queue/main/')) && 'main' || 'pr'] || 'ubuntu-latest' }}
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
         with:
