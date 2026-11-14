@@ -16,6 +16,12 @@ import { RING_PERIOD_MS } from '../../services/jobRinger';
 import { hasJobRing } from '../../services/jobRingCapability';
 import { takeoverRingCopy } from './takeoverRingCopy';
 import { ringMoney } from './ringMoney';
+import { PrepTimeChips } from './PrepTimeChips';
+import { acceptPrepMinutes, asksPrepTime } from './prepTime';
+import { usePrepChoice } from './prepTimeMemory';
+
+/** [ROUND 2 · REVIEW-B F1] The least the items list keeps on a short screen: about one line of an item. */
+export const TAKEOVER_ITEMS_MIN_HEIGHT = 72;
 
 /**
  * The NEW-ORDER takeover (alerts spec §A1 + design-100× Part 5 moment 2):
@@ -109,6 +115,11 @@ export function NewOrderTakeover({
   const expired = Number.isFinite(respondByMs) && respondByMs <= nowTs;
   useJobRing(!!orderId && !settled && !expired);
   const [canRing] = useState(hasJobRing);
+  // [APP-PREPTIME · owner 14 Nov 2026] The preparation time, as on the website's takeover: [ROUND 2] the store's own
+  // declared time (the order's, stamped at checkout) or the closest choice is pre-selected (or a change staff made for
+  // this store on this device), so ONE tap on Accept still accepts; a booking is never asked.
+  // (Per store: the order's own store, known once the order is read; until then nothing is asked.)
+  const [prepMinutes, choosePrep] = usePrepChoice(orderId, o?.vendorId, o?.estimatedPrepTime);
 
   if (!current) return null;
   const remainSecs = clockActive ? Math.max(0, Math.ceil((respondByMs - nowTs) / 1000)) : 0;
@@ -125,11 +136,14 @@ export function NewOrderTakeover({
   // [O-4] Every item came off: nothing to accept, only Reject with a reason.
   const nothingLeft = nothingToAccept(o);
 
-  const decide = (action: 'accept' | 'reject', reason?: string) =>
+  const askPrep = asksPrepTime(o);
+  const decide = (action: 'accept' | 'reject', reason?: string) => {
+    const minutes = action === 'accept' ? acceptPrepMinutes(o, prepMinutes) : undefined;
     act.mutate(
-      { id: current.orderId, action, ...(reason ? { reason } : {}) },
+      { id: current.orderId, action, ...(reason ? { reason } : {}), ...(minutes ? { prepMinutes: minutes } : {}) },
       { onSuccess: () => onDismiss(current.orderId) },
     );
+  };
 
   return (
     <Modal
@@ -197,8 +211,9 @@ export function NewOrderTakeover({
           </T>
         </View>
 
-        {/* Items — glanceable from across a kitchen. */}
-        <ScrollView style={{ flex: 1, marginTop: space.xl }} contentContainerStyle={{ gap: space.sm }}>
+        {/* Items — glanceable from across a kitchen. [ROUND 2 · REVIEW-B F1] They keep a height of their own (about
+            one line), so the decisions below can never squeeze them to nothing. */}
+        <ScrollView style={{ flex: 1, minHeight: TAKEOVER_ITEMS_MIN_HEIGHT, marginTop: space.xl }} contentContainerStyle={{ gap: space.sm }}>
           {items.map((i) => (
             <View key={i.id} style={{ flexDirection: 'row', alignItems: 'baseline', gap: space.md }}>
               <T variant="numM">{i.quantity}×</T>
@@ -250,6 +265,10 @@ export function NewOrderTakeover({
           ))}
         </ScrollView>
 
+        {/* [ROUND 2 · REVIEW-B F1] The money, the clock line and every decision scroll as one block when the screen is
+            short (a 667dp phone, a landscape tablet, the reject reasons open): it takes its own height while it fits
+            and scrolls when it does not, so Back and the reasons are always reachable. "View later" stays pinned. */}
+        <ScrollView testID="takeover-decide" style={{ flexGrow: 0, flexShrink: 1 }}>
         {/* [RING-FOOD · owner 11 Nov 2026] The store's money for the goods, never the customer's whole total (that
             carries the rider's delivery fee and tip). One plain line says whose the fee and tip are. */}
         {ring?.food != null ? (
@@ -287,7 +306,13 @@ export function NewOrderTakeover({
             <T variant="label" weight="semibold" tone="error" center>
               {OUT_OF_STOCK_WORDS.nothing}
             </T>
-          ) : (
+          ) : rejecting ? null /* [#2511 ROUND 4 · REVIEW-DELTA S4-3] Accept steps aside while a reason is asked. */ : (
+          <>
+          {/* [ROUND 2 · REVIEW-A S3-1 · REVIEW-B F1] Not while a reason to reject is asked (this whole branch steps aside
+              then, ROUND 4), nor while "reject the last item" is asked: no time is quoted then. */}
+          {askPrep && !lastOut ? (
+            <PrepTimeChips value={prepMinutes} onChange={choosePrep} vendorType={o?.vendor?.vendorType ?? storeKind} disabled={busy} />
+          ) : null}
           <PillButton
             // [Wave 3 vs reference 22] "ACCEPT ORDER", sized to be read across
             // a kitchen — the reference sets it in caps and says the thing.
@@ -299,6 +324,7 @@ export function NewOrderTakeover({
               decide('accept');
             }}
           />
+          </>
           )}
           {/* [Wave 3 vs reference 22] "A rejection always collects a reason."
               The route records it and the customer is told why — so the button
@@ -326,7 +352,9 @@ export function NewOrderTakeover({
             {(act.error as any)?.response?.data?.error?.message ?? 'That didn’t work — try again.'}
           </T>
         ) : null}
+        </ScrollView>
         <T
+          testID="takeover-view-later"
           variant="caption"
           tone="muted"
           center

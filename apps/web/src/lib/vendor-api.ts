@@ -170,6 +170,9 @@ export interface VendorOrder {
   /** Row 52: true when the caller's role at THIS order's store (owner or
    *  manager) may confirm an MMG payment. Both routes send it. */
   canConfirmPayment?: boolean;
+  /** A store's "Paid by MMG" reference. On a still-waiting order it means an operator rejected that claim, and the
+   *  order can never be paid (lib/mmg-pay-words paysAfterAccept). */
+  mmgAttestedRef?: string | null;
   /** [owner 18 Oct 2026] An accepted MMG order not marked "Paid by MMG" within 30 minutes of
    *  acceptance cancels: when (ISO) and the server's line for it. Null on every other order. */
   mmgPayBy?: string | null;

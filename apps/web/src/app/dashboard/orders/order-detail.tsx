@@ -15,7 +15,7 @@ import { MutationNotice } from '@/components/mutation-notice';
 import { CallPartyButton } from '@/components/call-party-button';
 import { storeKey, useStoreId } from '@/lib/store-scope';
 import { useFeedPollInterval } from '@/lib/store-live-feed';
-import { acceptHeldForPayment, mmgMovedLabel, mmgMoneyMoved, mmgPayBlockedReason } from '@/lib/mmg-pay-words';
+import { MMG_PAY_AFTER_ACCEPT, acceptHeldForPayment, mmgMovedLabel, mmgMoneyMoved, mmgPayBlockedReason } from '@/lib/mmg-pay-words';
 import { formatAppointmentSlot } from '@/lib/appointmentTime';
 import {
   confirmedOrderFields, customerLines, orderMoneyNotes, orderMoneyRows, orderPaymentLine, prepTimeLine, recoveryView, storeCanConfirmReturn, vendorStatusLabel, whenLabel,
@@ -34,6 +34,7 @@ import { HANDOVER_WORDS, canMarkHandedToRider, handoverNeedsNoCode, pickupCheckW
 import { orderLineOptionsParts } from '../../../../../mobile/src/modules/vendor/orderLineOptions';
 import { handedToRider } from '@/lib/store-handover-api';
 import { RiderHandoverLine } from '@/components/rider-handover-line';
+import { PREP_TIME_CHOICES, storePrepChoice } from '@/lib/prep-time';
 
 const COURIER_ACTIVE = ['RIDER_ASSIGNED', 'RIDER_EN_ROUTE_PICKUP', 'RIDER_ARRIVED_PICKUP'];
 
@@ -369,7 +370,10 @@ export function OrderDetail({ id, onClose }: { id: string; onClose: () => void }
     // order; the order's own read replaces it the moment it answers (isPlaceholderData).
     placeholderData: () => boardOrder(queryClient.getQueryData(storeKey(storeId, 'orders')), id),
   });
-  const [prepTime, setPrepTime] = useState(20);
+  // [APP-PREPTIME ROUND 2 · owner 14 Nov 2026] The order starts at its store's own declared prep time (the order's,
+  // from checkout), or the closest choice, as on the app; staff can pick another.
+  const [prepPick, setPrepPick] = useState<{ id: string; minutes: number } | null>(null);
+  const prepTime = prepPick?.id === id ? prepPick.minutes : storePrepChoice(order.data?.estimatedPrepTime);
   const [pickupCode, setPickupCode] = useState('');
   // [W-25] The store's attestation carries the provider reference from its own
   // wallet message. Without one there is nothing to reconcile against later.
@@ -520,9 +524,10 @@ export function OrderDetail({ id, onClose }: { id: string; onClose: () => void }
 
   const s = (o.status || '').toUpperCase();
   const paused = mmgDisputePaused(o);
-  // Payment-first, the same rule as the card (lib/mmg-pay-words): an MMG order
-  // is accepted only once its money has moved (CAPTURED or CLAIMED). Until then
-  // the window offers the store's confirmation, or says why it cannot.
+  // The same rule as the card (lib/mmg-pay-words). [owner 14 Nov 2026] An unpaid
+  // MMG order is accepted first (the customer then pays the store's number), and
+  // the window also offers the store's confirmation; only a payment that can no
+  // longer happen holds Accept back, and the window says why.
   // (A disputed order keeps only Reject: actionsFor.)
   const actions = actionsFor(o).filter((a) => !(a.kind === 'accept' && acceptHeldForPayment(o)));
   const pickable = !paused && ['SUPERMARKET', 'STORE'].includes(o.vendor?.vendorType ?? '') && PICKABLE_STATES.includes(s);
@@ -545,7 +550,9 @@ export function OrderDetail({ id, onClose }: { id: string; onClose: () => void }
   const riderName = o.rider?.user ? [o.rider.user.firstName, o.rider.user.lastName].filter(Boolean).join(' ') : '';
   const recovery = recoveryView(o.custodyRecovery);
   const timeline = [...(o.statusHistory ?? [])].reverse();
-  const prepLine = prepTimeLine(o);
+  // [REVIEW-B F3 on #2511] While Accept asks the time, the quoted line says the time the choice holds, never a second number.
+  const asksPrep = o.fulfillment !== 'APPOINTMENT' && actions.some((a) => a.kind === 'accept');
+  const prepLine = prepTimeLine(asksPrep ? { ...o, estimatedPrepTime: prepTime } : o);
   const fulfilmentWord = { DELIVERY: 'Delivery', PICKUP: 'Pickup', APPOINTMENT: 'Appointment' }[String(o.fulfillment ?? '')] ?? null;
   const riderAssigned = Boolean(o.riderId || o.rider);
   const isDelivery = o.fulfillment === 'DELIVERY';
@@ -788,6 +795,10 @@ export function OrderDetail({ id, onClose }: { id: string; onClose: () => void }
         {payBlockedReason && (
           <p className="w-full text-sm text-[var(--swift-muted)]">{payBlockedReason}</p>
         )}
+        {/* [owner 14 Nov 2026] An unpaid MMG order is accepted first; the customer then pays the store's number. */}
+        {isMmg && !mmgMoneyMoved(o.paymentStatus) && actions.some((a) => a.kind === 'accept') && (
+          <p className="w-full text-sm font-semibold text-[var(--swift-warning)]">{MMG_PAY_AFTER_ACCEPT}</p>
+        )}
         {confirmPayNeedsManager && (
           <p className="w-full text-sm text-[var(--swift-muted)]">Only the owner or a manager can confirm MMG payments.</p>
         )}
@@ -805,8 +816,9 @@ export function OrderDetail({ id, onClose }: { id: string; onClose: () => void }
         {showConfirmPay && (
           <p className="w-full text-sm text-[var(--swift-muted)]">Tap when {money(o.totalAmount)} is in your MMG account.</p>
         )}
-        {/* [owner 18 Oct 2026] Not marked "Paid by MMG" within 30 minutes of acceptance = cancelled. */}
-        {showConfirmPay && typeof o.mmgPayByLine === 'string' && o.mmgPayByLine.trim() !== '' && (
+        {/* [owner 18 Oct 2026] Not marked "Paid by MMG" within 30 minutes of acceptance = cancelled. [#2511 ROUND 4 ·
+            REVIEW-DELTA S3-1] Said to every login (a staff login accepts too), not only to who can confirm. */}
+        {isMmg && !mmgMoneyMoved(o.paymentStatus) && typeof o.mmgPayByLine === 'string' && o.mmgPayByLine.trim() !== '' && (
           <p className="w-full text-sm font-semibold">{o.mmgPayByLine}</p>
         )}
         {showConfirmPay && (
@@ -883,11 +895,11 @@ export function OrderDetail({ id, onClose }: { id: string; onClose: () => void }
               {a.kind === 'accept' && o.fulfillment !== 'APPOINTMENT' && (
                 <select
                   value={prepTime}
-                  onChange={(e) => setPrepTime(Number(e.target.value))}
+                  onChange={(e) => setPrepPick({ id, minutes: Number(e.target.value) })}
                   aria-label="Preparation time"
                   className="rounded-lg border border-[var(--swift-border)] px-2 py-2 text-sm"
                 >
-                  {[10, 15, 20, 30, 45, 60].map((m) => <option key={m} value={m}>{readyTimeLabel(o.vendor?.vendorType ?? storeKind, m)}</option>)}
+                  {PREP_TIME_CHOICES.map((m) => <option key={m} value={m}>{readyTimeLabel(o.vendor?.vendorType ?? storeKind, m)}</option>)}
                 </select>
               )}
               {a.kind === 'complete-pickup' && (
