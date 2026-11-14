@@ -164,6 +164,9 @@ export const REASONED_CALLERS: readonly ReasonCaller[] = [
 
   // ── Platform ───────────────────────────────────────────────────────────
   { route: 'POST /notifications/broadcast', helper: 'broadcastNotification', args: [{ title: 'T', body: 'B', category: 'service' }], requiredBodyKeys: ['title', 'body', 'category'] },
+  // [HOME-NOTICE] Words on every customer's Home (C5), and turning them off at once (C3).
+  { route: 'PUT /home-notice', helper: 'startHomeNotice', args: [{ title: 'T', body: 'B' }], requiredBodyKeys: ['body'] },
+  { route: 'POST /home-notice/stop', helper: 'stopHomeNotice', args: [] },
   { route: 'PUT /config/:key', helper: 'updateConfig', args: ['DELIVERY_FEE', { base: 100 }], requiredBodyKeys: ['value'] },
   { route: 'POST /promos', helper: 'createPromo', args: [{
     code: 'CENSUS', description: 'Census fixture', discountType: 'FIXED_AMOUNT', discountValue: 1,
