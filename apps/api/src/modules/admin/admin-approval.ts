@@ -7,6 +7,7 @@ import { IN_PERSON_ACTION, validateInPersonAsk } from '../billing/in-person-paym
 import { lockClaimPaymentAsks, validateClaimPayAsk } from '../cash/claim-payout';
 import { SOLO_ROLE, isSoleApprover } from './solo-approval';
 import { assertConfigKeyWritable } from './machine-owned-config';
+import { homeNoticeWordsOf } from '../ops/home-notice';
 
 /**
  * [ADM-005] A MONEY ACTION TAKES TWO PEOPLE.
@@ -357,6 +358,8 @@ export async function resolveApproval(
     if (data.action === IN_PERSON_ACTION && data.entityId) await validateInPersonAsk(prisma, data.entityId, subject.body);
     // [AUDIT C2-2] A setting the server owns is refused before anyone is asked to approve it.
     if (data.action === 'PUT /config/:key') assertConfigKeyWritable(subject.params?.['key']);
+    // [HOME-NOTICE] Words that could never go live are refused before anyone waits on them.
+    if (data.action === 'PUT /home-notice') homeNoticeWordsOf(subject.body);
     const asked: AskResult = await prisma.$transaction(async (tx): Promise<AskResult> => {
       if (refundEntity) await lockCreditRefundAsks(tx, refundEntity);
       if (claimEntity) await lockClaimPaymentAsks(tx, claimEntity);
