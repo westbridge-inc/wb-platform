@@ -306,10 +306,11 @@ export function NewOrderTakeover({
             <T variant="label" weight="semibold" tone="error" center>
               {OUT_OF_STOCK_WORDS.nothing}
             </T>
-          ) : (
+          ) : rejecting ? null /* [#2511 ROUND 4 · REVIEW-DELTA S4-3] Accept steps aside while a reason is asked. */ : (
           <>
-          {/* [ROUND 2 · REVIEW-A S3-1 · REVIEW-B F1] Not while a reason to reject is asked: no time is quoted then. */}
-          {askPrep && !lastOut && !rejecting ? (
+          {/* [ROUND 2 · REVIEW-A S3-1 · REVIEW-B F1] Not while a reason to reject is asked (this whole branch steps aside
+              then, ROUND 4), nor while "reject the last item" is asked: no time is quoted then. */}
+          {askPrep && !lastOut ? (
             <PrepTimeChips value={prepMinutes} onChange={choosePrep} vendorType={o?.vendor?.vendorType ?? storeKind} disabled={busy} />
           ) : null}
           <PillButton

@@ -599,3 +599,73 @@ describe('an unpaid MMG order is accepted first, then paid', () => {
   });
 });
 
+
+// ---------------------------------------------------------------------------
+// [#2511 ROUND 4 · REVIEW-DELTA] After the web accepts an unpaid MMG order, the store sees the server's 30-minute
+// "pay by" line on the card (as the app card does) and in the window for every login; the popup tells a staff login
+// that only the owner or a manager can confirm; and Accept steps aside while a reason to reject is asked.
+// ---------------------------------------------------------------------------
+describe('[ROUND 4] an accepted unpaid MMG order and the popup', () => {
+  const PAY_BY = 'Not marked Paid by MMG by 2:30 PM: the order cancels by itself.';
+
+  it('the card shows the server\'s pay-by line under "Awaiting MMG payment"', async () => {
+    hubApi({ orders: [wireVendorOrder({ id: 'o-acc', orderNumber: 'SW-7801', status: 'ACCEPTED', paymentMethod: 'MOBILE_MONEY', paymentStatus: 'PENDING', mmgAttestedRef: null, canConfirmPayment: true, mmgPayByLine: PAY_BY })] });
+    renderWithQuery(<OrdersPage />);
+    const card = await screen.findByRole('article', { name: 'Order SW-7801' });
+    expect(within(card).getByText('Awaiting MMG payment')).toBeTruthy();
+    expect(within(card).getByText(PAY_BY)).toBeTruthy();
+  });
+
+  it('a staff login sees the pay-by line on the card and in the window too', async () => {
+    hubApi({ role: 'STAFF', orders: [wireVendorOrder({ id: 'o-acc2', orderNumber: 'SW-7802', status: 'ACCEPTED', paymentMethod: 'MOBILE_MONEY', paymentStatus: 'PENDING', mmgAttestedRef: null, canConfirmPayment: false, mmgPayByLine: PAY_BY })] });
+    const view = renderWithQuery(<OrdersPage />);
+    const card = await screen.findByRole('article', { name: 'Order SW-7802' });
+    expect(within(card).getByText(PAY_BY)).toBeTruthy();
+    await view.user.click(within(card).getByText('#SW-7802'));
+    const dialog = await screen.findByRole('dialog', { name: 'Order details' });
+    expect(await within(dialog).findByText(PAY_BY)).toBeTruthy();
+    expect(within(dialog).getByText('Only the owner or a manager can confirm MMG payments.')).toBeTruthy();
+  });
+
+  it('no pay-by line once the money moved, or with no line from the server', async () => {
+    hubApi({ orders: [
+      wireVendorOrder({ id: 'o-paid', orderNumber: 'SW-7803', status: 'ACCEPTED', paymentMethod: 'MOBILE_MONEY', paymentStatus: 'CLAIMED', mmgPayByLine: PAY_BY }),
+      wireVendorOrder({ id: 'o-none', orderNumber: 'SW-7804', status: 'ACCEPTED', paymentMethod: 'MOBILE_MONEY', paymentStatus: 'PENDING', mmgAttestedRef: null, mmgPayByLine: null }),
+    ] });
+    renderWithQuery(<OrdersPage />);
+    const paid = await screen.findByRole('article', { name: 'Order SW-7803' });
+    expect(within(paid).queryByText(PAY_BY)).toBeNull();
+    const none = await screen.findByRole('article', { name: 'Order SW-7804' });
+    expect(within(none).getByText('Awaiting MMG payment')).toBeTruthy();
+  });
+
+  it('the popup tells a staff login that only the owner or a manager can confirm (the owner\'s line unchanged)', async () => {
+    hubApi({ orders: [wireVendorOrder({ id: 'o-st', orderNumber: 'SW-7805', status: 'PENDING', paymentMethod: 'MOBILE_MONEY', paymentStatus: 'PENDING', mmgAttestedRef: null, canConfirmPayment: false })] });
+    renderWithQuery(<OrdersPage />);
+    const popup = (await screen.findByText(/View later/)).closest('div.fixed') as HTMLElement;
+    expect(within(popup).getByText(PAY_AFTER)).toBeTruthy();
+    expect(within(popup).getByText('Only the owner or a manager can confirm MMG payments.')).toBeTruthy();
+    expect(within(popup).getByRole('button', { name: 'Accept' })).toBeTruthy();
+  });
+
+  it('an owner or manager in the popup is not told that', async () => {
+    hubApi({ orders: [wireVendorOrder({ id: 'o-ow', orderNumber: 'SW-7806', status: 'PENDING', paymentMethod: 'MOBILE_MONEY', paymentStatus: 'PENDING', mmgAttestedRef: null, canConfirmPayment: true })] });
+    renderWithQuery(<OrdersPage />);
+    const popup = (await screen.findByText(/View later/)).closest('div.fixed') as HTMLElement;
+    expect(within(popup).getByText(PAY_AFTER)).toBeTruthy();
+    expect(within(popup).queryByText('Only the owner or a manager can confirm MMG payments.')).toBeNull();
+  });
+
+  it('[REVIEW-DELTA S4-3] Accept and its time step aside while a reason to reject is asked; Back brings them back', async () => {
+    hubApi({ orders: [wireVendorOrder({ id: 'o-rj', orderNumber: 'SW-7807', status: 'PENDING' })] });
+    const view = renderWithQuery(<OrdersPage />);
+    const popup = (await screen.findByText(/View later/)).closest('div.fixed') as HTMLElement;
+    expect(within(popup).getByRole('button', { name: 'Accept' })).toBeTruthy();
+    await view.user.click(within(popup).getByRole('button', { name: 'Reject — tell us why' }));
+    expect(within(popup).queryByRole('button', { name: 'Accept' })).toBeNull();
+    expect(within(popup).queryByRole('combobox', { name: 'Preparation time' })).toBeNull();
+    await view.user.click(within(popup).getByRole('button', { name: 'Back' }));
+    expect(within(popup).getByRole('button', { name: 'Accept' })).toBeTruthy();
+    expect(writes.filter((w) => w.path.endsWith('/accept'))).toEqual([]);
+  });
+});

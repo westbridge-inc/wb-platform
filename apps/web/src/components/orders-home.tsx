@@ -544,6 +544,9 @@ export function OrderCardActions({ order, onOpen }: { order: VendorOrder; onOpen
           {moneyMoved ? mmgMovedLabel(order.paymentStatus) : 'Awaiting MMG payment'}
         </p>
       )}
+      {/* [#2511 ROUND 4 · REVIEW-DELTA S3-1 · owner 18 Oct 2026] Accepted, money not in yet: the server's line for when
+          the order cancels by itself (30 minutes after Accept), as on the app card. */}
+      {isMmg && !moneyMoved && !terminal && typeof order.mmgPayByLine === 'string' && order.mmgPayByLine.trim() !== '' && <p className="sw-caption font-semibold">{order.mmgPayByLine}</p>}
       {blockedReason && <p className="sw-caption">{blockedReason}</p>}
       {actions.some((a) => a.action === 'accept') && isMmg && !moneyMoved && <p className="sw-caption font-semibold">{MMG_PAY_AFTER_ACCEPT}</p>}
       {/* [REVIEW-F S4-3 on #2032] One name for the MMG step: the window's own button (the reference is typed there). */}

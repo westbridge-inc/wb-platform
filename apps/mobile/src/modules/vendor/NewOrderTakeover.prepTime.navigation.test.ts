@@ -155,6 +155,15 @@ describe('[REVIEW-B F1 · REVIEW-A S3-1] the alert keeps Back and "View later" r
     expect(selected()).toEqual(['30 min']);
   });
 
+  it('[REVIEW-DELTA S4-3] ACCEPT ORDER steps aside while a reason to reject is asked; Back brings it back', async () => {
+    await show(pending('o6b'));
+    await act(async () => button('Reject — tell us why')!.click());
+    expect(button('ACCEPT ORDER')).toBeUndefined();
+    await act(async () => button('Back')!.click());
+    expect(button('ACCEPT ORDER')).toBeTruthy();
+    expect(sent()).toEqual([]);
+  });
+
   it('the choices step aside while "reject the last item" is asked', async () => {
     await show(pending('o7'));
     await act(async () => button('Out of stock — reject the order')!.click());

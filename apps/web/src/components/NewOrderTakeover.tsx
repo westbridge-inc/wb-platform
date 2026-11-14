@@ -365,7 +365,11 @@ export default function NewOrderTakeover({ orders, onOpenOrder }: { orders: Vend
         )}
 
         {payAfter && (
-          <p className="mt-3 text-sm font-semibold text-[var(--swift-warning)]">{MMG_PAY_AFTER_ACCEPT}</p>
+          <p className="mt-3 text-sm font-semibold text-[var(--swift-warning)]">
+            {MMG_PAY_AFTER_ACCEPT}
+            {/* [#2511 ROUND 4 · REVIEW-DELTA S4-1] A staff login accepts, but only the owner or a manager can confirm. */}
+            {current.canConfirmPayment !== true && <span className="mt-1 block font-normal text-[var(--swift-muted)]">Only the owner or a manager can confirm MMG payments.</span>}
+          </p>
         )}
         {held && (
           <p className="mt-3 text-sm font-semibold text-[var(--swift-warning)]">
@@ -395,7 +399,7 @@ export default function NewOrderTakeover({ orders, onOpenOrder }: { orders: Vend
             ) : null
           ) : nothingLeft ? (
             <p role="status" className="w-full text-sm font-semibold text-[var(--swift-red)]">{OUT_OF_STOCK_WORDS.nothing}</p>
-          ) : <>
+          ) : rejecting ? null : <>
           {!booking && <select
             value={prepFor(current)}
             onChange={(e) => setPrepPick({ id: current.id, minutes: Number(e.target.value) })}
