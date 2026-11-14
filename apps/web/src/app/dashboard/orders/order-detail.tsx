@@ -32,6 +32,7 @@ import { ACCEPTED_OUT_OF_STOCK_WORDS, LAST_ITEM_ENDS_ORDER, SHOW_ALL_LIMIT, mmgR
 import { HANDOVER_WORDS, canMarkHandedToRider, handoverNeedsNoCode, pickupCheckWords } from '../../../../../mobile/src/modules/vendor/storeHandover';
 // [L09 · M026 · MENU-OPTIONS] What the customer chose, read as the app's kitchen view reads it (a plain file, imported as is).
 import { orderLineOptionsParts } from '../../../../../mobile/src/modules/vendor/orderLineOptions';
+import { KITCHEN_HOLDS_TITLE, ROUTE_NOTE_TEST_ID, kitchenHoldsDescription, kitchenHoldsOrder } from '../../../../../mobile/src/modules/vendor/deliveryOverflow';
 import { handedToRider } from '@/lib/store-handover-api';
 import { RiderHandoverLine } from '@/components/rider-handover-line';
 
@@ -559,8 +560,13 @@ export function OrderDetail({ id, onClose }: { id: string; onClose: () => void }
   const canChooseVendorDelivery = mayChangeDeliveryOwner && (o.vendor?.selfDeliveryEnabled === true || noRider) && !selfDelivery;
   // A store-wide preference changing later must not strand an existing
   // VENDOR_DELIVERY order without a way back to platform dispatch.
-  const canChoosePlatformRider = mayChangeDeliveryOwner && selfDelivery;
-  const deliveryOwnerTitle = noRider
+  // [DT-OVERFLOW] Except while Dragontail has it: Dragontail is not told, so its own driver would come too.
+  const inKitchen = kitchenHoldsOrder(o.kitchen);
+  const canChoosePlatformRider = mayChangeDeliveryOwner && selfDelivery && !inKitchen;
+  const kitchenNote = !inKitchen && o.kitchen?.title ? o.kitchen : null;
+  const deliveryOwnerTitle = inKitchen
+    ? (o.kitchen?.title || KITCHEN_HOLDS_TITLE)
+    : noRider
     ? (o.noRiderPrompt || 'No rider found. Deliver it yourselves?')
     : selfDelivery
     ? 'Your store delivers this order'
@@ -569,7 +575,9 @@ export function OrderDetail({ id, onClose }: { id: string; onClose: () => void }
       : o.fulfillmentMode === 'PLATFORM_RIDER'
         ? 'Platform rider delivery selected'
         : 'Delivery owner not chosen yet';
-  const deliveryOwnerDescription = noRider
+  const deliveryOwnerDescription = inKitchen
+    ? kitchenHoldsDescription(o.kitchen)
+    : noRider
     ? (o.noRiderDetail || 'One tap and your store delivers this order with its own rider; the customer is told. Or search for a Swift rider again.')
     : selfDelivery
     ? 'No Swift rider will be sent for this order.'
@@ -742,6 +750,7 @@ export function OrderDetail({ id, onClose }: { id: string; onClose: () => void }
           <p className="mt-1 text-sm text-[var(--swift-muted)]">
             {deliveryOwnerDescription}
           </p>
+          {kitchenNote && <p className="mt-1 text-sm font-semibold" data-testid={ROUTE_NOTE_TEST_ID}>{kitchenNote.title}</p>}
           {(canChooseVendorDelivery || canChoosePlatformRider) && (
             <div className="mt-3 flex flex-wrap gap-2">
               {canChooseVendorDelivery && (

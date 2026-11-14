@@ -10,6 +10,8 @@ import type { AddressInfo } from 'node:net';
  *                                orderId, trackUrl, promiseTimeSeconds }] }; 403 on an expired token
  *   GET  /GetPosNotification     ?storeNo= → 200 { time, status: "ok", rowCount, orders: Notification[] } (drains)
  *   POST /GetOrderUpdatesForPos  { storeNo, updateStamp } → 200 { time, updateStamp, orders: [...] }
+ *   GET  /PosGetVehicles/{StoreNo} [DT-OVERFLOW] → 200 { time, rowCount, vehicles: [{ id, number, status }] } when
+ *                                `vehicles` is set (the endpoint is optional in the spec: unset → 404)
  *
  * Test controls: failNext(path, statuses) answers the next requests to a path with those statuses (500s to drive the
  * retry policy, 403 to force a re-login), expireTokens(), refuse(path, status-body) and a request log.
@@ -42,6 +44,10 @@ export class MockDragontail {
   delayMs = 0;
   /** Delay (ms) for one path only. */
   readonly pathDelays = new Map<string, number>();
+  /** [DT-OVERFLOW] PosGetVehicles' list (null = the store does not have the optional endpoint: 404). `vehicleKey`
+   *  'vehicle' answers in the spec example's shape instead of the schema's. */
+  vehicles: Array<{ id: string; number: string; status: number }> | null = null;
+  vehicleKey: 'vehicles' | 'vehicle' = 'vehicles';
   /** Answer a path with a redirect to this address. */
   readonly redirects = new Map<string, string>();
   private server: http.Server | null = null;
@@ -87,6 +93,8 @@ export class MockDragontail {
     this.loggedOut = false;
     this.onRequest = null;
     this.redirects.clear();
+    this.vehicles = null;
+    this.vehicleKey = 'vehicles';
   }
 
   count(path: string): number {
@@ -189,6 +197,10 @@ export class MockDragontail {
         .map(({ stamp: _stamp, ...rest }) => rest);
       const top = Math.max(since, ...this.updates.map((u) => Number(u['stamp'])));
       send(200, { time: this.now(), updateStamp: top, loggedOut: this.loggedOut, orders: rows, status: null });
+      return;
+    }
+    if (path.startsWith('/PosGetVehicles/') && req.method === 'GET' && this.vehicles) {
+      send(200, { time: this.now(), rowCount: this.vehicles.length, [this.vehicleKey]: this.vehicles });
       return;
     }
     send(404, { time: this.now(), status: 'faild', errDescription: 'not found' });

@@ -12,6 +12,7 @@ import {
   DRAGONTAIL_ITEMS_ACTION,
   dragontailCancelBody,
   dragontailEvents,
+  dragontailFreeVehicles,
   dragontailInsertBody,
   dragontailUpdateEvents,
 } from './dragontail-mapper';
@@ -26,6 +27,8 @@ import {
  *                              GET /GetPosNotification?storeNo=&id=<consumer> only when DRAGONTAIL_POLL_QUEUE=1
  *                              (it may be consume-on-read; the consumer id keeps Swift off the store POS's queue).
  *   parseWebhook             → the PosNotification body ({ time, orders: Notification[] })
+ *   freeDriverCount          → GET /PosGetVehicles/{StoreNo} ("(Optional) Retrieve unassigned vehicles"), the
+ *                              delivery overflow's driver check (kitchen-overflow.ts); read-only.
  */
 export class DragontailAdapter implements KitchenIntegrationProvider {
   readonly name = 'DRAGONTAIL' as const;
@@ -109,5 +112,14 @@ export class DragontailAdapter implements KitchenIntegrationProvider {
 
   parseWebhook(body: unknown): KitchenEvent[] {
     return dragontailEvents(body);
+  }
+
+  /** [DT-OVERFLOW] How many unassigned vehicles the store has, or null for an answer Swift cannot read. A non-200 (the
+   *  endpoint is optional: a 404/405 means the store does not have it) is a refusal, which the caller treats as a
+   *  failed check. */
+  async freeDriverCount(storeNo: number): Promise<number | null> {
+    const answer = await this.client.call('GET', `/PosGetVehicles/${encodeURIComponent(String(storeNo))}`);
+    if (answer.status !== 200) throw new KitchenPermanentError(`Dragontail PosGetVehicles answered HTTP ${answer.status}`);
+    return dragontailFreeVehicles(answer.json);
   }
 }

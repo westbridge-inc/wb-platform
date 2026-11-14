@@ -38,6 +38,7 @@ import {
   orderActions,
 } from '../shared';
 import { deliveryOwnerView } from './delivery-owner';
+import { ROUTE_NOTE_TEST_ID } from '../deliveryOverflow';
 import { NO_SHOW_WORDS, orderNoShowOpen } from '../noShow';
 import { NoShowConfirm, useStartClock } from '../NoShowConfirm';
 import { MmgRefundOwedCard } from '../MmgRefundOwedCard';
@@ -296,6 +297,7 @@ function VendorOrderDetailBody({ navigation, route }: any) {
     noRiderFound: order.noRiderFound === true,
     noRiderPrompt: order.noRiderPrompt,
     noRiderDetail: order.noRiderDetail,
+    kitchen: order.kitchen,
   });
 
   const runAction = (action: (typeof actions)[number]['action']) => {
@@ -755,6 +757,11 @@ function VendorOrderDetailBody({ navigation, route }: any) {
                 <T variant="caption" tone="muted" style={{ marginTop: 2 }}>
                   {deliveryOwner.description}
                 </T>
+                {deliveryOwner.kitchenNote ? (
+                  <T variant="caption" weight="semibold" style={{ marginTop: space.sm }} testID={ROUTE_NOTE_TEST_ID}>
+                    {deliveryOwner.kitchenNote.title}
+                  </T>
+                ) : null}
               </View>
             </View>
             {deliveryOwner.canChooseVendor || deliveryOwner.canChoosePlatform ? (

@@ -1784,3 +1784,22 @@ export const applyAssistedMenu = (vendorId: string, consentId: string, csv: stri
   apiFetch(`${assisted(vendorId)}/menu/apply`, { method: 'POST', body: JSON.stringify({ consentId, csv }), reason });
 export const uploadAssistedItemPhoto = (vendorId: string, consentId: string, itemId: string, file: Blob, name: string, reason: string) =>
   apiFetch(`${assisted(vendorId)}/items/${encodeURIComponent(itemId)}/photo?${new URLSearchParams({ consentId })}`, { method: 'POST', body: fileForm(file, name), reason });
+
+// [DT-OVERFLOW · owner 14 Nov 2026] A Dragontail branch's delivery overflow: when its cash deliveries go to Swift
+// riders instead of its own drivers (refused by the server while the kitchen-system switch is off).
+export type KitchenOverflowMode = 'NONE' | 'AUTO_DRIVER_CHECK' | 'BUSY_HOURS' | 'BOTH';
+export interface KitchenBusyWindow { day: number; start: string; end: string }
+export interface KitchenOverflowView {
+  switchOn: boolean; connected: boolean; enabled: boolean;
+  mode: KitchenOverflowMode; busyHours: KitchenBusyWindow[]; updatedAt: string | null;
+}
+export interface KitchenRouteRow {
+  id: string; orderNumber: string; status: string; kitchenRoute: 'KITCHEN' | 'SWIFT_RIDERS'; kitchenRouteReason: string | null;
+  kitchenRouteAt: string | null; fulfillmentMode: string | null; riderId: string | null;
+}
+const kitchenOverflow = (vendorId: string) => `/api/v1/admin/vendors/${encodeURIComponent(vendorId)}/kitchen-integration/overflow`;
+export const fetchKitchenOverflow = (vendorId: string): Promise<Envelope<KitchenOverflowView>> => apiFetch(kitchenOverflow(vendorId));
+export const setKitchenOverflow = (vendorId: string, body: { mode: KitchenOverflowMode; busyHours?: KitchenBusyWindow[] }): Promise<Envelope<KitchenOverflowView>> =>
+  apiFetch(kitchenOverflow(vendorId), { method: 'PUT', body: JSON.stringify(body) });
+export const fetchKitchenRoutes = (vendorId: string): Promise<Envelope<KitchenRouteRow[]>> =>
+  apiFetch(`/api/v1/admin/vendors/${encodeURIComponent(vendorId)}/kitchen-integration/routes?limit=20`);

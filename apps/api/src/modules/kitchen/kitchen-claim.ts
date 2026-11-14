@@ -1,6 +1,7 @@
 import type { Prisma, PrismaClient } from '@prisma/client';
 import { log } from '../../utils/logger';
 import { dragontailIntegrationEnabled, dragontailSettings, KITCHEN_STUCK_MS } from './kitchen-switch';
+import { fallbackKitchenRoute, planKitchenRoute, type KitchenRouteDecision, type KitchenRouteDeps } from './kitchen-overflow';
 
 /**
  * [KITCHEN-INTEGRATION] The two questions the order spine asks, kept light (no service imports) so order.service
@@ -16,6 +17,10 @@ import { dragontailIntegrationEnabled, dragontailSettings, KITCHEN_STUCK_MS } fr
  *        its own drivers and never enter Swift rider dispatch.
  *    The claim is ONE row in order_integration_syncs (unique per order and provider), written inside the caller's
  *    transaction, which IS the outbox: the sender drains it, and any failure rings the tablet instead.
+ *    [DT-OVERFLOW · owner 14 Nov 2026] A DELIVERY first gets its ROUTE (kitchen-overflow.ts), decided before the
+ *    transaction and written once on the order by compare-and-set inside it: KITCHEN → claimed as above; SWIFT_RIDERS
+ *    → NOT claimed (no sync row, no number, nothing sent): the caller rings the tablet and the order goes to Swift
+ *    riders. A second claim of the same order answers from the recorded route, so it lives in exactly one place.
  *
  * 2. THE LADDER — the store's alert ladder is the tablet backstop for every claim: it WAITS while a send is in
  *    flight (bounded), RINGS the tablet for a claim that is stuck, unaccepted or left behind by the switch being
@@ -46,7 +51,13 @@ export function kitchenEligibility(order: {
  * system takes it (the caller then does NOT ring the tablet). Idempotent: a second call finds the row and answers
  * from it (true unless that sync already fell back).
  */
-export async function claimForKitchenInTransaction(tx: KitchenClaimDb, orderId: string, env: Record<string, string | undefined> = process.env): Promise<boolean> {
+export async function claimForKitchenInTransaction(
+  tx: KitchenClaimDb,
+  orderId: string,
+  env: Record<string, string | undefined> = process.env,
+  /** [DT-OVERFLOW] The route worked out before this transaction (planKitchenRoute); absent → the kitchen (as before). */
+  plan: KitchenRouteDecision | null = null,
+): Promise<boolean> {
   if (!dragontailIntegrationEnabled(env)) return false;
   const existing = await tx.orderIntegrationSync.findUnique({
     where: { orderId_provider: { orderId, provider: 'DRAGONTAIL' } },
@@ -56,14 +67,16 @@ export async function claimForKitchenInTransaction(tx: KitchenClaimDb, orderId: 
   const order = await tx.order.findUnique({
     where: { id: orderId },
     select: {
-      vendorId: true, status: true, orderType: true, fulfillment: true, paymentMethod: true,
+      vendorId: true, status: true, orderType: true, fulfillment: true, paymentMethod: true, kitchenRoute: true,
       vendor: { select: { selfDeliveryEnabled: true } },
     },
   });
+  // [DT-OVERFLOW] Already routed to the Swift tablet and Swift riders: never claimed afterwards.
+  if (order?.kitchenRoute === 'SWIFT_RIDERS') return false;
   if (!order?.vendorId || order.status !== 'PENDING') return false;
   const integration = await tx.vendorIntegration.findUnique({
     where: { vendorId_provider: { vendorId: order.vendorId, provider: 'DRAGONTAIL' } },
-    select: { id: true, enabled: true, externalStoreNo: true },
+    select: { id: true, enabled: true, externalStoreNo: true, overflowMode: true },
   });
   if (!integration?.enabled || integration.externalStoreNo == null) return false;
   const eligible = kitchenEligibility({
@@ -71,6 +84,23 @@ export async function claimForKitchenInTransaction(tx: KitchenClaimDb, orderId: 
     vendorSelfDelivers: order.vendor?.selfDeliveryEnabled ?? false,
   });
   if (!eligible.ok) return false;
+  if (order.fulfillment === 'DELIVERY') {
+    // [DT-OVERFLOW] The ONE route of this delivery, written once (compare-and-set on a still-unrouted order). A
+    // concurrent claim that routed it first wins: its commit is seen here, and this claim answers from it.
+    const decision = plan && plan.orderId === orderId ? plan : fallbackKitchenRoute(orderId, integration.overflowMode);
+    const routed = await tx.order.updateMany({
+      where: { id: orderId, kitchenRoute: null },
+      data: { kitchenRoute: decision.route, kitchenRouteReason: decision.reason, kitchenRouteAt: new Date() },
+    });
+    if (routed.count !== 1) {
+      const now = await tx.order.findUnique({ where: { id: orderId }, select: { kitchenRoute: true } });
+      if (now?.kitchenRoute !== 'KITCHEN') return false;
+      const sync = await tx.orderIntegrationSync.findUnique({ where: { orderId_provider: { orderId, provider: 'DRAGONTAIL' } }, select: { state: true } });
+      return sync != null && sync.state !== 'FALLBACK';
+    }
+    // Swift riders: nothing is claimed, numbered or sent. The caller rings the tablet as for any store.
+    if (decision.route === 'SWIFT_RIDERS') return false;
+  }
   // [review A S2-1 · B S4-1] The store's next number, taken atomically on the counter of (provider, store number):
   // never the connection's, so a recreated or renumbered connection never reuses an id; and the base is the one
   // frozen when that counter was born, so a changed DRAGONTAIL_ORDER_ID_BASE never collides with ids already used.
@@ -117,10 +147,21 @@ async function skipKitchenNumber(prisma: PrismaClient, orderId: string): Promise
  * S2-1 · B S3-8] It never runs inside the release transaction: a failing claim must never roll back a release or
  * stop the sweep for other orders and stores. Any error answers false, so the caller rings the tablet as usual.
  */
-export async function claimForKitchen(prisma: PrismaClient, orderId: string, env: Record<string, string | undefined> = process.env): Promise<boolean> {
+export async function claimForKitchen(
+  prisma: PrismaClient,
+  orderId: string,
+  env: Record<string, string | undefined> = process.env,
+  routeDeps: KitchenRouteDeps = {},
+): Promise<boolean> {
   if (!dragontailIntegrationEnabled(env)) return false;
+  // [DT-OVERFLOW] The delivery's route, worked out OUTSIDE any transaction (the driver check is a short HTTP call).
+  // A failed plan is no plan: the claim then routes the order to the kitchen, as before (the safe default).
+  const plan = await planKitchenRoute(prisma, orderId, env, routeDeps).catch((err: unknown) => {
+    log().error({ err, orderId }, '[KITCHEN-OVERFLOW] the route could not be worked out; the kitchen keeps the order');
+    return null;
+  });
   try {
-    return await prisma.$transaction((tx) => claimForKitchenInTransaction(tx, orderId, env));
+    return await prisma.$transaction((tx) => claimForKitchenInTransaction(tx, orderId, env, plan));
   } catch (err) {
     // [delta review S4-2] A commit whose answer was lost: the claim may be there after all. Ringing it too would
     // have the store make it twice, so the row decides.

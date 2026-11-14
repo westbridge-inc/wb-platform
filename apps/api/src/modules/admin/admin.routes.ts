@@ -2566,6 +2566,20 @@ export async function adminRoutes(app: FastifyInstance) {
     const { setKitchenItemNumbers } = await import('../kitchen/kitchen-admin');
     return { success: true, data: await setKitchenItemNumbers(app.prisma, (request.params as { id: string }).id, request.body) };
   });
+  // [DT-OVERFLOW · owner 14 Nov 2026] The branch's delivery overflow (the store's owner or manager sets the same), and
+  // where its recent deliveries went and why. Refused while the switch is off.
+  app.get('/vendors/:id/kitchen-integration/overflow', { preHandler: [adminGuard] }, async (request) => {
+    const { getKitchenOverflow } = await import('../kitchen/kitchen-admin');
+    return { success: true, data: await getKitchenOverflow(app.prisma, (request.params as { id: string }).id) };
+  });
+  app.put('/vendors/:id/kitchen-integration/overflow', { preHandler: [adminGuard] }, async (request) => {
+    const { putKitchenOverflow } = await import('../kitchen/kitchen-admin');
+    return { success: true, data: await putKitchenOverflow(app.prisma, (request.params as { id: string }).id, request.body) };
+  });
+  app.get('/vendors/:id/kitchen-integration/routes', { preHandler: [adminGuard] }, async (request) => {
+    const { listKitchenRoutesFor } = await import('../kitchen/kitchen-admin');
+    return { success: true, data: await listKitchenRoutesFor(app.prisma, (request.params as { id: string }).id, request.query as { limit?: unknown }) };
+  });
 
   app.put('/vendors/:id/seller-name', { preHandler: [adminGuard] }, async (request) => {
     const { id } = request.params as { id: string };

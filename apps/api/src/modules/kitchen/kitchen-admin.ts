@@ -4,6 +4,7 @@ import { AppError } from '../../utils/errors';
 import { kitchenLoginRef, kitchenSecretStatus, kitchenWebhookRef, newKitchenIntegrationId } from './kitchen-credentials';
 import { dragontailApiUrl, dragontailIntegrationEnabled, dragontailSettings } from './kitchen-switch';
 import { kitchenProvider } from './kitchen-sync';
+import { listKitchenRoutes, readBusyHours, writeKitchenOverflowSetting } from './kitchen-overflow';
 
 /**
  * [KITCHEN-INTEGRATION] The operations console's door to a store's kitchen-system connection (UI later). Handlers
@@ -14,6 +15,8 @@ import { kitchenProvider } from './kitchen-sync';
  *   POST /vendors/:id/kitchen-integration/test          log in only (no order is sent)
  *   GET  /vendors/:id/kitchen-integration/syncs         the sync log, newest first
  *   PUT  /vendors/:id/kitchen-integration/item-numbers  bulk-set kitchen item numbers on listings and choices
+ *   PUT  /vendors/:id/kitchen-integration/overflow      [DT-OVERFLOW] the branch's delivery overflow (mode, busy hours)
+ *   GET  /vendors/:id/kitchen-integration/routes        [DT-OVERFLOW] where its recent deliveries went, and why
  *
  * [review A S3-2] While the switch (DRAGONTAIL_INTEGRATION) is off the two writing routes and the test are REFUSED
  * (409 KITCHEN_SWITCH_OFF): nothing is written to the kitchen tables and no call leaves Swift. The reads still
@@ -40,6 +43,7 @@ export const kitchenItemNumbersSchema = z.object({
 function view(row: {
   id: string; provider: string; enabled: boolean; externalStoreNo: number | null; secretRef: string | null; webhookSecretRef: string | null;
   pollUpdateStamp: bigint; lastPolledAt: Date | null; lastHealthyAt: Date | null; lastError: string | null; lastErrorAt: Date | null; updatedAt: Date;
+  overflowMode: string; overflowBusyHours: unknown; overflowUpdatedAt: Date | null;
 } | null) {
   const env = process.env;
   return {
@@ -54,6 +58,7 @@ function view(row: {
         pollUpdateStamp: row.pollUpdateStamp.toString(),
         lastPolledAt: row.lastPolledAt, lastHealthyAt: row.lastHealthyAt, lastError: row.lastError, lastErrorAt: row.lastErrorAt,
         updatedAt: row.updatedAt,
+        overflow: { mode: row.overflowMode, busyHours: readBusyHours(row.overflowBusyHours), updatedAt: row.overflowUpdatedAt },
       }
       : null,
   };
@@ -200,4 +205,34 @@ export async function setKitchenItemNumbers(prisma: PrismaClient, vendorId: stri
     }
     return { items, options };
   }, { timeout: 120_000, maxWait: 10_000 });
+}
+
+/** [DT-OVERFLOW] The branch's delivery overflow, for the console: the switch, the connection, the setting. */
+export async function getKitchenOverflow(prisma: PrismaClient, vendorId: string) {
+  await vendorOrThrow(prisma, vendorId);
+  const row = await prisma.vendorIntegration.findUnique({
+    where: { vendorId_provider: { vendorId, provider: 'DRAGONTAIL' } },
+    select: { enabled: true, overflowMode: true, overflowBusyHours: true, overflowUpdatedAt: true },
+  });
+  return {
+    switchOn: dragontailIntegrationEnabled(),
+    connected: row !== null,
+    enabled: row?.enabled ?? false,
+    mode: row?.overflowMode ?? 'NONE',
+    busyHours: readBusyHours(row?.overflowBusyHours),
+    updatedAt: row?.overflowUpdatedAt ?? null,
+  };
+}
+
+/** [DT-OVERFLOW] The console's change of a branch's delivery overflow (refused while the switch is off). */
+export async function putKitchenOverflow(prisma: PrismaClient, vendorId: string, body: unknown) {
+  await vendorOrThrow(prisma, vendorId);
+  await writeKitchenOverflowSetting(prisma, vendorId, body);
+  return getKitchenOverflow(prisma, vendorId);
+}
+
+/** [DT-OVERFLOW] Where the branch's recent deliveries went (its kitchen system or Swift riders), and why. */
+export async function listKitchenRoutesFor(prisma: PrismaClient, vendorId: string, query: { limit?: unknown }) {
+  await vendorOrThrow(prisma, vendorId);
+  return listKitchenRoutes(prisma, vendorId, query);
 }

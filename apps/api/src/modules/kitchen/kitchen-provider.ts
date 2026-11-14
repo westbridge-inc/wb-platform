@@ -128,4 +128,7 @@ export interface KitchenIntegrationProvider {
   pollNotifications(storeNo: number, cursor: bigint): Promise<KitchenPollResult>;
   /** A webhook body, already authenticated by the route. Unknown shapes yield no events, never a throw. */
   parseWebhook(body: unknown): KitchenEvent[];
+  /** [DT-OVERFLOW] Free drivers at the store now, for the delivery overflow (null = an answer that cannot be read).
+   *  Optional: a provider without one never has an order moved by the driver check. */
+  freeDriverCount?(storeNo: number): Promise<number | null>;
 }

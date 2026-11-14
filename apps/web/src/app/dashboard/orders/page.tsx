@@ -8,6 +8,7 @@ import { mmgDisputePaused } from '@/lib/mmg-dispute';
 import { storeKey, useStoreId } from '@/lib/store-scope';
 import { useFeedPollInterval } from '@/lib/store-live-feed';
 import { BUCKETS, type BucketKey, completeness, groupOrders } from '@/lib/order-buckets';
+import { DeliveryOverflowCard } from '@/components/delivery-overflow-card';
 import { BoardQuiet, LoadedBoard, ManageGrid, OrderCardActions, PickupCodeCard, RevenuePulse, SelfDeliveryCard, StaffAvailability, StoreHeader, StoreStatusCard, useHubStore } from '@/components/orders-home';
 import { useStoreRole } from '@/lib/store-role';
 import { DataUnavailable } from '@/components/data-unavailable';
@@ -179,6 +180,8 @@ export default function OrdersPage() {
     {store.data && <div className="grid gap-4 wide:grid-cols-2">
       <StoreStatusCard store={store.data} manager={manager} owner={role === 'OWNER'} readFailed={store.isError} onRetryRead={() => void store.refetch()} />
       {manager && storeLive && <SelfDeliveryCard store={store.data} readFailed={store.isError} onRetryRead={() => void store.refetch()} />}
+      {/* [DT-OVERFLOW] A Dragontail branch's "Swift riders when you're busy" (renders nothing elsewhere). */}
+      {manager && storeLive && store.data.selfDeliveryEnabled && <DeliveryOverflowCard />}
       {/* [STORE-DASH · O-2] Shown once the server serves the setting. */}
       {manager && storeLive && typeof store.data.requirePickupCode === 'boolean' && <PickupCodeCard store={store.data} readFailed={store.isError} onRetryRead={() => void store.refetch()} />}
     </div>}
