@@ -24,7 +24,7 @@ beforeEach(() => {
       const body = JSON.parse(String(init?.body)) as { itemIds: string[]; isAvailable: boolean };
       sent.push(body);
       if (answer) return answer as never;
-      items = items.map((row) => (body.itemIds.includes(String(row.id)) ? { ...row, isAvailable: body.isAvailable } : row));
+      items = items.map((row) => (body.itemIds.includes(String(row['id'])) ? { ...row, isAvailable: body.isAvailable } : row));
       return { body: { success: true, data: { isAvailable: body.isAvailable, changedIds: body.itemIds, unchangedIds: [], refused: [] } } };
     }
     if (url.pathname === '/api/v1/vendor/items' && method === 'GET') return { body: { data: items } };
