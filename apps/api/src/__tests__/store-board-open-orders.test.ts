@@ -203,8 +203,8 @@ describe('[STORE-BOARD S1] GET /vendor/orders/open — every open order of the s
     const o = await order(v.id, 'PENDING', 1, { fulfillment: 'DELIVERY', deliveryAddress: '2 Door Street', deliveryLat: 6.81, deliveryLng: -58.16, deliveryFee: 500, tipAmount: 300, totalAmount: 2800 });
     const open = (await get(owner.token, '/api/v1/vendor/orders/open', v.id)).json().data as Array<Record<string, unknown>>;
     const page = (await get(owner.token, '/api/v1/vendor/orders', v.id)).json().data as Array<Record<string, unknown>>;
-    const a = open.find((r) => r.id === o.id);
-    const b = page.find((r) => r.id === o.id);
+    const a = open.find((r) => r['id'] === o.id);
+    const b = page.find((r) => r['id'] === o.id);
     expect(a).toBeTruthy();
     expect(a).toEqual(b);
     expect(typeof a!['totalAmount']).toBe('number');
