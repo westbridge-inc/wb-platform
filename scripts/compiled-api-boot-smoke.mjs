@@ -45,8 +45,10 @@ import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-/** Programs, not libraries: each runs on import, so it runs here as a process. */
-const ENTRYPOINTS = ['server.js', 'worker.js', 'boot/migrate-deploy.js'];
+/** Programs, not libraries: each runs on import, so it is never loaded here as a module. [CARDS-SWITCH-ON]
+ *  boot/boot-guard.js is the API's own boot guard, run alone by deploy/pilot-up.sh in the new image before the swap
+ *  (it exits 0 or 1 on load); its rule is tested in the API suite (boot-config.test.ts). */
+const ENTRYPOINTS = ['server.js', 'worker.js', 'boot/migrate-deploy.js', 'boot/boot-guard.js'];
 /** One-shot operator programs (dist/scripts/*), run by hand: never loaded here. */
 const OPERATOR_PROGRAMS_DIR = 'scripts/';
 /** Loaded FIRST, as every entrypoint does: NAME_FILE secrets become NAME. */

@@ -31,6 +31,8 @@ function compiledTree(files: Record<string, string>, omit: string[] = []): strin
     'dist/server.js': 'process.exit(7);\n',
     'dist/worker.js': "throw new Error('the worker entrypoint ran while loading modules');\n",
     'dist/boot/migrate-deploy.js': 'process.exit(9);\n',
+    // [CARDS-SWITCH-ON] The boot-guard program pilot-up runs in the new image: it exits on load, so it is never loaded here.
+    'dist/boot/boot-guard.js': 'process.exit(1);\n',
     'dist/boot/secret-files.js': "process.env.BOOT_SMOKE_FIXTURE_SECRET = 'from-file';\n",
     'dist/scripts/backfill.js': "throw new Error('an operator program ran while loading modules');\n",
     // Sorts before boot/: it loads cleanly only when the secret loader ran first, as in every entrypoint.
