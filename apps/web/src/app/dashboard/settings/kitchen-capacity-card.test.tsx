@@ -103,3 +103,22 @@ describe('[RIDER-SAFE 4/5] the store sees why delivery is paused', () => {
     expect(screen.queryByRole('status', { name: 'Delivery paused' })).toBeNull();
   });
 });
+
+describe('[follow-up · review B S4-9] every store role sees an offline Dragontail kitchen link on the orders screen', () => {
+  it('shown with delivery open, and alongside a delivery pause; not shown when the link is fine', async () => {
+    status = { deliveryOpen: true, reason: null, waitingForRider: 0, backlogCap: 3, message: null, kitchenLink: { offline: true, since: '2026-11-14T22:00:00.000Z' } };
+    const { unmount } = renderWithQuery(<DeliveryStatusNotice storeId="store-1" />);
+    expect((await screen.findByRole('status', { name: 'Kitchen link offline' })).textContent).toContain('make them from this tablet');
+    unmount();
+    status = { deliveryOpen: false, reason: 'SWIFT_PAUSED', waitingForRider: 0, backlogCap: 3, message: 'Swift has paused delivery in your area for now.', kitchenLink: { offline: true, since: null } };
+    const again = renderWithQuery(<DeliveryStatusNotice storeId="store-1" />);
+    expect(await screen.findByRole('status', { name: 'Kitchen link offline' })).toBeTruthy();
+    expect(screen.getByRole('status', { name: 'Delivery paused' })).toBeTruthy();
+    again.unmount();
+    status = { deliveryOpen: true, reason: null, waitingForRider: 0, backlogCap: 3, message: null, kitchenLink: { offline: false, since: null } };
+    renderWithQuery(<DeliveryStatusNotice storeId="store-1" />);
+    await new Promise((r) => setTimeout(r, 30));
+    expect(screen.queryByRole('status', { name: 'Kitchen link offline' })).toBeNull();
+  });
+});
+

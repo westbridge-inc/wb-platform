@@ -14,11 +14,21 @@ import { storeKey } from '@/lib/store-scope';
 export function DeliveryStatusNotice({ storeId }: { storeId: string | null }) {
   const status = useQuery({ queryKey: storeKey(storeId, 'delivery-status'), queryFn: getDeliveryStatus, refetchInterval: 60_000 });
   const s = status.data;
-  if (!s || s.deliveryOpen || !s.message) return null;
-  return (
-    <div role="status" aria-label="Delivery paused" className="sw-card border border-[var(--swift-red)] p-4">
-      <p className="font-semibold">{s.reason === 'SWIFT_PAUSED' ? 'Delivery is paused by Swift' : 'New delivery orders are paused'}</p>
-      <p className="mt-1 text-sm">{s.message}</p>
+  // [follow-up · review B S4-9] Every store role sees a Dragontail branch's offline kitchen link here.
+  const link = s?.kitchenLink?.offline === true && (
+    <div role="status" aria-label="Kitchen link offline" className="sw-card border border-[var(--swift-red)] p-4">
+      <p className="font-semibold">Kitchen link offline, orders on tablet</p>
+      <p className="mt-1 text-sm">Dragontail is not answering, so new orders ring here: make them from this tablet. Swift keeps checking and switches back by itself.</p>
     </div>
+  );
+  if (!s || s.deliveryOpen || !s.message) return link || null;
+  return (
+    <>
+      {link}
+      <div role="status" aria-label="Delivery paused" className="sw-card border border-[var(--swift-red)] p-4">
+        <p className="font-semibold">{s.reason === 'SWIFT_PAUSED' ? 'Delivery is paused by Swift' : 'New delivery orders are paused'}</p>
+        <p className="mt-1 text-sm">{s.message}</p>
+      </div>
+    </>
   );
 }

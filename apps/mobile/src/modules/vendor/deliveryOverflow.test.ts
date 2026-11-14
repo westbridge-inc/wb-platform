@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { busyWindowProblem, busyWindowWords, kitchenHoldsOrder, OVERFLOW_MODE_OPTIONS, overflowModeLocked, usesBusyHours, withKitchenHold, type OrderKitchenView } from './deliveryOverflow';
+import { busyWindowProblem, busyWindowWords, kitchenHoldsOrder, kitchenLinkNote, LINK_OFFLINE_DETAIL, OVERFLOW_MODE_OPTIONS, overflowModeLocked, usesBusyHours, withKitchenHold, type OrderKitchenView } from './deliveryOverflow';
 import { deliveryOwnerView, type DeliveryOwnerInput } from './screens/delivery-owner';
 
 /** The phone's order screen: the delivery card, then the kitchen system's facts on it. */
@@ -71,6 +71,14 @@ describe('[round 2] the driver check waits for Dragontail', () => {
     }
     expect(overflowModeLocked('AUTO_DRIVER_CHECK', { driverCheckAvailable: true })).toBe(false);
     expect(overflowModeLocked('BOTH', { driverCheckAvailable: true })).toBe(false);
+  });
+});
+
+describe('[follow-up · review B S4-9] the tablet\u2019s order screen note for an offline kitchen link (every store role)', () => {
+  it('only when the server says the link is offline; the words promise no fixed check interval', () => {
+    expect(kitchenLinkNote({ deliveryOpen: true, kitchenLink: { offline: true, since: null } })).toMatchObject({ title: 'Kitchen link offline, orders on tablet' });
+    for (const s of [null, {}, { kitchenLink: null }, { kitchenLink: { offline: false } }]) expect(kitchenLinkNote(s)).toBeNull();
+    expect(LINK_OFFLINE_DETAIL).not.toMatch(/every minute/);
   });
 });
 

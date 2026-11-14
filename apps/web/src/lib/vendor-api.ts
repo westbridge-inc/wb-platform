@@ -295,6 +295,8 @@ export type DeliveryStatus = {
   waitingForRider: number;
   backlogCap: number;
   message: string | null;
+  /** [follow-up · review B S4-9] A Dragontail branch's kitchen link (null: not connected, or the integration is off). */
+  kitchenLink?: { offline: boolean; since: string | null } | null;
 };
 // Registered as `/vendor/delivery-status` under the `/api/v1/vendor` prefix (double-prefixed, like toggle-orders).
 export const getDeliveryStatus = () => apiFetch(`${V}/vendor/delivery-status`).then((r) => r.data as DeliveryStatus);

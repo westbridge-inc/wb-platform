@@ -102,7 +102,8 @@ describe('the alert-class census: every kind the API sends has a deliberate loud
       'RATING_REMINDER', 'ad_campaign_completed', 'ad_campaign_live', 'ad_campaign_resumed', 'ad_campaign_scheduled',
       // [BILL-PRO PR4] the pro's own trial notice, as quiet as trial_fee_education
       // [CHECKLIST-LEGAL · owner 1 Nov 2026 (a) — a DELIBERATE change] vendor_tier_nudge left with the self-declared tier
-      'ad_invoice_receipt', 'ad_weekly_report', 'provider_fee_trial', 'trial_fee_education',
+      // [COORD ruling 14 Nov · Dragontail PDF v1.1 §3.2] operations' quiet note for one order that rang the tablet.
+      'ad_invoice_receipt', 'ad_weekly_report', 'kitchen_order_rang', 'provider_fee_trial', 'trial_fee_education',
     ]);
   });
 

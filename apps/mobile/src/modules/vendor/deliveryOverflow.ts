@@ -16,7 +16,14 @@ export interface OverflowSetting { available: boolean; mode: OverflowMode; busyH
 
 /** [DT-OUTAGE] Shown while the branch's link to Dragontail is down: every order rings this tablet until it is back. */
 export const LINK_OFFLINE_TITLE = 'Kitchen link offline, orders on tablet';
-export const LINK_OFFLINE_DETAIL = 'Dragontail is not answering, so new orders ring here. Swift checks every minute and switches back by itself.';
+export const LINK_OFFLINE_DETAIL = 'Dragontail is not answering, so new orders ring here: make them from this tablet. Swift keeps checking and switches back by itself.';
+
+/** [follow-up · review B S4-9] The order screen's note for EVERY store role (GET /vendor/delivery-status `kitchenLink`):
+ *  null unless the branch's kitchen link is offline (or on an older server that does not say). */
+export function kitchenLinkNote(status: unknown): { title: string; body: string } | null {
+  const link = status && typeof status === 'object' ? (status as { kitchenLink?: { offline?: unknown } | null }).kitchenLink : null;
+  return link?.offline === true ? { title: LINK_OFFLINE_TITLE, body: LINK_OFFLINE_DETAIL } : null;
+}
 
 export const OVERFLOW_TITLE = 'Swift riders when you’re busy';
 export const OVERFLOW_NOTE = 'Swift decides order by order, before sending. Each delivery goes to Dragontail or to this tablet with a Swift rider — never both. Pickups always go to Dragontail.';

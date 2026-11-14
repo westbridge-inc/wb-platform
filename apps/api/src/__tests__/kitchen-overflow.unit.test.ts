@@ -176,7 +176,7 @@ describe('[DT-OVERFLOW] the decision, order by order', () => {
 
   it('every reason names exactly one route, and the decision always carries the route its reason names', () => {
     for (const [reason, route] of Object.entries(KITCHEN_ROUTE_REASONS)) expect(['KITCHEN', 'SWIFT_RIDERS', 'TABLET'], reason).toContain(route);
-    expect(Object.entries(KITCHEN_ROUTE_REASONS).filter(([, r]) => r === 'SWIFT_RIDERS').map(([k]) => k).sort()).toEqual(['BUSY_HOURS', 'NO_FREE_DRIVER']);
+    expect(Object.entries(KITCHEN_ROUTE_REASONS).filter(([, r]) => r === 'SWIFT_RIDERS').map(([k]) => k).sort()).toEqual(['BUSY_HOURS', 'LINK_OFFLINE_SWIFT_RIDERS', 'NO_FREE_DRIVER']);
     // [round 3] Only an offline link puts a delivery on the tablet with its own driver.
     expect(Object.entries(KITCHEN_ROUTE_REASONS).filter(([, r]) => r === 'TABLET').map(([k]) => k)).toEqual(['LINK_OFFLINE']);
   });
@@ -296,6 +296,11 @@ describe('[round 3 · review B S3-2] an offline link: the overflow still applies
       offlineRoute?: (d: { orderId: string; route: string; reason: string; note: string }) => { route: string; reason: string };
     };
     expect(mod.offlineRoute?.({ orderId: 'o1', route: 'KITCHEN', reason: 'OVERFLOW_OFF', note: 'off' })).toMatchObject({ route: 'TABLET', reason: 'LINK_OFFLINE' });
+    // [COORD ruling 14 Nov · PDF v1.1] A Swift rider near who can carry the cash: Swift riders, busy hours or not.
+    const withRiders = mod.offlineRoute as unknown as (d: unknown, r?: unknown) => { route: string; reason: string };
+    expect(withRiders({ orderId: 'o1', route: 'KITCHEN', reason: 'OVERFLOW_OFF', note: 'off' }, { kind: 'NEAR', count: 2 })).toMatchObject({ route: 'SWIFT_RIDERS', reason: 'LINK_OFFLINE_SWIFT_RIDERS' });
+    expect(withRiders({ orderId: 'o1', route: 'KITCHEN', reason: 'OVERFLOW_OFF', note: 'off' }, { kind: 'NONE_NEAR' })).toMatchObject({ route: 'TABLET', reason: 'LINK_OFFLINE' });
+    expect(withRiders({ orderId: 'o1', route: 'KITCHEN', reason: 'OVERFLOW_OFF', note: 'off' }, { kind: 'FAILED', problem: 'x' })).toMatchObject({ route: 'TABLET', reason: 'LINK_OFFLINE' });
     expect(mod.offlineRoute?.({ orderId: 'o1', route: 'SWIFT_RIDERS', reason: 'BUSY_HOURS', note: 'busy' })).toMatchObject({ route: 'SWIFT_RIDERS', reason: 'BUSY_HOURS' });
     expect(kitchenStoreView({ kitchenRoute: 'TABLET', kitchenRouteReason: 'LINK_OFFLINE' }, null)).toMatchObject({ holdsOrder: false, title: 'On this tablet only, not in Dragontail' });
   });

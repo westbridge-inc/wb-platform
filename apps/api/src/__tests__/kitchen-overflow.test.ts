@@ -642,7 +642,7 @@ describe('[round 3 · S3-2] the kitchen link offline: busy-hours overflow still 
   const offline = () => sys(() => app.prisma.vendorIntegration.update({ where: { id: integrationId }, data: { linkOfflineAt: new Date(), linkProbeAt: new Date() } }));
   const online = () => sys(() => app.prisma.vendorIntegration.update({ where: { id: integrationId }, data: { linkOfflineAt: null, linkProbeAt: null, linkOutageSince: null } }));
 
-  it('inside busy hours: Swift riders (nothing asked of Dragontail); otherwise: the tablet with the own driver, said so', async () => {
+  it('busy hours or not, a Swift rider near takes it (nothing asked of Dragontail); none near: the tablet with the own driver, said so', async () => {
     await offline();
     try {
       await setOverflow('BUSY_HOURS', ALL_WEEK);
@@ -655,7 +655,20 @@ describe('[round 3 · S3-2] the kitchen link offline: busy-hours overflow still 
       expect(accept.statusCode, accept.body).toBe(200);
       expect((await orderOf(busy.id)).fulfillmentMode, 'bound to Swift riders, as the branch asked').toBe('PLATFORM_RIDER');
 
+      // [COORD ruling 14 Nov · PDF v1.1 "Dragontail down → a Swift rider delivers it"] Any time, a Swift rider near
+      // who can carry the cash takes an outage delivery.
       await setOverflow('NONE');
+      const outage = await makeOrder();
+      await releaseOnly();
+      expect(await orderOf(outage.id)).toMatchObject({ kitchenRoute: 'SWIFT_RIDERS', kitchenRouteReason: 'LINK_OFFLINE_SWIFT_RIDERS' });
+      const outageView = await call('GET', `/api/v1/vendor/orders/${outage.id}`, owner.token);
+      expect(outageView.json().data.kitchen).toMatchObject({ holdsOrder: false, title: 'Swift rider: Dragontail was not reachable' });
+      const takeIt = await call('PUT', `/api/v1/vendor/orders/${outage.id}/accept`, owner.token, {});
+      expect(takeIt.statusCode, takeIt.body).toBe(200);
+      expect((await orderOf(outage.id)).fulfillmentMode).toBe('PLATFORM_RIDER');
+
+      // No Swift rider near: the tablet with the branch's own driver, said so.
+      await riderOnline(false);
       const plain = await makeOrder();
       await releaseOnly();
       expect(await orderOf(plain.id)).toMatchObject({ kitchenRoute: 'TABLET', kitchenRouteReason: 'LINK_OFFLINE' });
@@ -706,6 +719,52 @@ describe('[round 3 · S4] the store’s own change is audited; busy hours need a
     const none = await call('PUT', '/api/v1/vendor/kitchen-overflow', owner.token, { mode: 'BUSY_HOURS' });
     expect(none.statusCode, none.body).toBe(400);
     expect(none.json().error.code).toBe('BUSY_HOURS_EMPTY');
+  });
+});
+
+// ── FOLLOW-UP (confirm review round 3) ──────────────────────────────────────
+
+describe('[follow-up · N-7] an order that ended before it was ever sent is never "In Dragontail"', () => {
+  it('DONE with no send: "Not sent to Dragontail", and "Get a Swift rider" is not held by Dragontail', async () => {
+    const order = await makeOrder();
+    await releaseOnly();
+    await sys(() => app.prisma.orderIntegrationSync.update({ where: { orderId_provider: { orderId: order.id, provider: 'DRAGONTAIL' } }, data: { state: 'DONE', sentAt: null } }));
+    const detail = await call('GET', `/api/v1/vendor/orders/${order.id}`, owner.token);
+    expect(detail.json().data.kitchen).toMatchObject({ holdsOrder: false, title: 'Not sent to Dragontail' });
+    await sys(() => app.prisma.orderIntegrationSync.update({ where: { orderId_provider: { orderId: order.id, provider: 'DRAGONTAIL' } }, data: { sentAt: new Date() } }));
+    const sent = await call('GET', `/api/v1/vendor/orders/${order.id}`, owner.token);
+    expect(sent.json().data.kitchen).toMatchObject({ holdsOrder: true, title: 'In Dragontail: your own driver delivers it' });
+  });
+});
+
+describe('[follow-up · review B S4-9] every store role sees the offline kitchen link on its order screen', () => {
+  it('delivery-status carries kitchenLink for plain staff; null with the switch off', async () => {
+    await sys(() => app.prisma.vendorIntegration.update({ where: { id: integrationId }, data: { linkOfflineAt: new Date(), linkProbeAt: new Date() } }));
+    try {
+      const res = await call('GET', '/api/v1/vendor/vendor/delivery-status', staff.token);
+      expect(res.statusCode, res.body).toBe(200);
+      expect(res.json().data.kitchenLink).toMatchObject({ offline: true });
+      setEnv(false);
+      const off = await call('GET', '/api/v1/vendor/vendor/delivery-status', staff.token);
+      expect(off.json().data.kitchenLink ?? null).toBeNull();
+    } finally {
+      setEnv(true);
+      await sys(() => app.prisma.vendorIntegration.update({ where: { id: integrationId }, data: { linkOfflineAt: null, linkProbeAt: null } }));
+    }
+  });
+});
+
+describe('[follow-up · N-1/N-5 · COORD ruling 14 Nov] the console’s kitchen actions need a stated reason', () => {
+  it('"Dragontail does not have it", "Try the link now" and the overflow change (PDF v1.1 §6) refuse a request with no reason', async () => {
+    const [{ readFileSync }, { resolve }] = await Promise.all([import('node:fs'), import('node:path')]);
+    const routes = readFileSync(resolve(__dirname, '../modules/admin/admin.routes.ts'), 'utf8');
+    for (const [method, route] of [['post', "'/vendors/:id/kitchen-integration/orders/:orderId/not-in-kitchen'"], ['post', "'/vendors/:id/kitchen-integration/link/try'"], ['put', "'/vendors/:id/kitchen-integration/overflow'"]] as const) {
+      const at = routes.indexOf(`app.${method}(${route}`);
+      expect(at, route).toBeGreaterThan(0);
+      const handler = routes.slice(at, routes.indexOf('\n  app.', at + 10));
+      expect(handler, route).toMatch(/reasonProblem\('C3'/);
+      expect(handler, route).toMatch(/auditWithin\(/);
+    }
   });
 });
 

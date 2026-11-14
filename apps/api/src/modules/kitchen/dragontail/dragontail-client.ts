@@ -174,6 +174,11 @@ export class DragontailClient {
       answer = { ...answer, after5xx: answer.after5xx || earlier5xx };
       if (answer.status === 403) {
         this.setToken(null);
+        // [follow-up · confirm review N-6] A WRITE whose earlier attempt got a 5xx reached Dragontail: it may have
+        // stored it, so a refusal now is "may have arrived", never "certainly not taken".
+        if (!idempotent && answer.after5xx) {
+          throw new KitchenTransientError(`Dragontail refused ${path} after a fresh login (HTTP 403), after an earlier 5xx; it may have arrived`, true, true);
+        }
         throw new KitchenPermanentError(`Dragontail refused ${path} after a fresh login (HTTP 403)`, true);
       }
     }
