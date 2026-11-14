@@ -10,17 +10,39 @@
 // [REVIEW-F S4-2 on #2032] One money-moved set for the phone and the web (plain app file, imported as is).
 export { MMG_MONEY_MOVED } from '../../../mobile/src/modules/vendor/storeOrderRules';
 import { MMG_MONEY_MOVED } from '../../../mobile/src/modules/vendor/storeOrderRules';
+import { canAttestPayment } from './vendor-hub';
 export function mmgMoneyMoved(paymentStatus: string | null | undefined): boolean {
   return (MMG_MONEY_MOVED as readonly string[]).includes(String(paymentStatus ?? ''));
 }
 
+type MmgAcceptFacts = { paymentMethod?: string | null; paymentStatus?: string | null; mmgAttestedRef?: string | null };
+
+/** An MMG order whose payment has not moved but still can: open (PENDING, AUTHORIZED) and no store claim an operator
+ *  rejected (that reference stays on the reopened order, and such an order can never be paid). */
+function mmgPaymentStillOpen(order: MmgAcceptFacts): boolean {
+  return order.paymentMethod === 'MOBILE_MONEY' && !mmgMoneyMoved(order.paymentStatus)
+    && canAttestPayment(order.paymentStatus) && order.mmgAttestedRef == null;
+}
+
 /**
  * THE rule for every place the web can accept an order (the board card, the
- * new-order popup, the order window): payment-first — an MMG order is held
- * back until its money has moved; the server refuses it otherwise.
+ * new-order popup, the order window). [owner 14 Nov 2026 · option A, with the
+ * API's PAYMENT-SIMPLIFY Q1] Accept comes BEFORE payment on an MMG order: the
+ * customer sees the store's MMG number only once the store accepts, and nothing
+ * moves past Accept until the store taps "Paid by MMG". So Accept is held back
+ * only where the server refuses it (order.service.ts assertMmgFulfilmentAllowed):
+ * an MMG payment that has not moved and can no longer happen here.
  */
-export function acceptHeldForPayment(order: { paymentMethod?: string | null; paymentStatus?: string | null }): boolean {
-  return order.paymentMethod === 'MOBILE_MONEY' && !mmgMoneyMoved(order.paymentStatus);
+export function acceptHeldForPayment(order: MmgAcceptFacts): boolean {
+  return order.paymentMethod === 'MOBILE_MONEY' && !mmgMoneyMoved(order.paymentStatus) && !mmgPaymentStillOpen(order);
+}
+
+/** [owner 14 Nov 2026] What the store is told beside Accept on an unpaid MMG order (owner-approved words). */
+export const MMG_PAY_AFTER_ACCEPT = 'The customer pays your MMG number after you accept, so tap Paid by MMG when it lands.';
+
+/** An unpaid MMG order Accept is offered on: the customer pays after the store accepts. */
+export function paysAfterAccept(order: MmgAcceptFacts): boolean {
+  return mmgPaymentStillOpen(order);
 }
 
 /** What a moved payment is called. A store's own report is never "confirmed":
