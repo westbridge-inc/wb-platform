@@ -73,9 +73,10 @@ export function weeklyFeeCardLive(env: Record<string, string | undefined> = proc
  * card session, its booking and its refund all belong to one subscription, and the door checks who may pay it (its
  * payer) by itself. For a mover with both a rider and a driver profile, name the CANONICAL subscription (the one
  * the mover fee authority names: the other cannot be priced, review B-4). It never stops what is already open: a
- * card payment opened while listed is still confirmed, booked once and refundable after the list changes. A value
- * that is set but names no valid id (or mixes `*` with ids) fails CLOSED (nobody); production also refuses it at
- * boot (assertProductionCardSwitches). Test card systems keep their own list. */
+ * card payment opened while listed is still confirmed, booked once and refundable after the list changes. A
+ * malformed value fails CLOSED: it never widens past the valid ids it names (one that names no valid id serves
+ * nobody, and `*` mixed with ids is never everyone; review #2465-A2 S4-1), and production refuses it at boot
+ * (assertProductionCardSwitches). Test card systems keep their own list. */
 export const CARD_LIVE_EVERYONE = '*';
 
 /** [B-2] Production posture through the one typed parser (the census forbids comparing the raw NODE_ENV). An

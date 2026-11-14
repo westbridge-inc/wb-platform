@@ -2004,16 +2004,46 @@ describe('[B-1] the card switch is documented with production\'s own compose set
   it('the runbook and the card contract give the recreate with the overlays, the deployed tag, the boot guard first and --no-build', () => {
     for (const [name, text] of [['runbook', docs.runbook], ['api', docs.api]] as const) {
       for (const piece of [
-        "grep -qx 'TENANT_RLS_BIND=1' deploy/.env && C+=(-f deploy/docker-compose.wall.yml)",
-        "grep -qx 'STACK_HARDENING=1' deploy/.env && C+=(-f deploy/docker-compose.hardening.yml)",
+        'CARDC=(docker compose --project-directory deploy -f deploy/docker-compose.yml)',
+        "grep -qx 'TENANT_RLS_BIND=1' deploy/.env && CARDC+=(-f deploy/docker-compose.wall.yml)",
+        "grep -qx 'STACK_HARDENING=1' deploy/.env && CARDC+=(-f deploy/docker-compose.hardening.yml)",
         'export SWIFT_TAG="$(git -C /opt/swift rev-parse HEAD)"',
-        '"${C[@]}" run --rm --no-deps -T api node dist/boot/boot-guard.js &&',
-        '"${C[@]}" run --rm --no-deps -T worker node dist/boot/boot-guard.js &&',
-        '"${C[@]}" up -d --no-deps --no-build --force-recreate api worker',
+        '[ -z "$(git -C /opt/swift status --porcelain --untracked-files=normal)" ] &&',
+        `[ "$(docker inspect -f '{{.Config.Image}}' swift-api-1)" = "swift-api:$SWIFT_TAG" ] &&`,
+        '"${CARDC[@]}" run --rm --no-deps -T api node dist/boot/boot-guard.js &&',
+        '"${CARDC[@]}" run --rm --no-deps -T worker node dist/boot/boot-guard.js &&',
+        '"${CARDC[@]}" up -d --no-deps --no-build --force-recreate api worker',
       ]) expect(text, `${name}: ${piece}`).toContain(piece);
-      expect(text.indexOf('-T worker node dist/boot/boot-guard.js'), name).toBeLessThan(text.indexOf('--no-build --force-recreate api worker'));
+      // [Review #2465-A2 S3-2] The clean checkout and the running image are checked before the guard and the swap.
+      const at = (piece: string) => text.indexOf(piece);
+      expect(at('status --porcelain'), name).toBeLessThan(at('-T api node dist/boot/boot-guard.js'));
+      expect(at("{{.Config.Image}}' swift-api-1)\" = \"swift-api:$SWIFT_TAG\""), name).toBeLessThan(at('-T api node dist/boot/boot-guard.js'));
+      expect(at('-T worker node dist/boot/boot-guard.js'), name).toBeLessThan(at('--no-build --force-recreate api worker'));
     }
     expect(docs.envTemplate).toContain('THE RECREATE');
+  });
+
+  // [Review #2465-A2 S3-1] The production helper session defines `C` as a string that its read-only count and its
+  // own recreate use; a documented `C=(...)` array in that shell turns `$C` into plain `docker` and breaks the
+  // rollback. No document assigns `C` as an array.
+  it('[A2 S3-1] no document assigns the compose array as `C`, which would break the helper session\'s $C', () => {
+    for (const [name, text] of Object.entries(docs)) {
+      expect(text, name).not.toMatch(/(^|[\s;(])C\+?=\(/m);
+      expect(text, name).not.toContain('"${C[@]}"');
+    }
+    expect(flat(docs.runbook)).toContain('THE RECREATE must never run in a shell that sourced the production helper session');
+    expect(flat(docs.api)).toContain('in a FRESH shell that has not sourced the production helper session');
+  });
+
+  it('[A2 S4] the card-day checklist counts every open hold, names the config table, checks `*` as a fixed string, and names the stop when the guard refuses the kill switch', () => {
+    const runbook = flat(docs.runbook);
+    expect(runbook).toContain("status IN ('ACTIVE','SETTLEMENT_APPLY_PENDING')");
+    expect(runbook).toContain('FROM platform_config WHERE key=\'billing.cardCheckout.platforms\'');
+    for (const text of [runbook, flat(docs.api)]) {
+      expect(text).toContain("grep -cFx 'CARD_RAIL_LIVE_SUBSCRIPTIONS=*' /opt/swift/deploy/.env");
+      expect(text).toMatch(/If the guard refuses even `?CARD_RAIL_KILL=1/);
+      expect(text).toMatch(/never put back a saved file that has cards on/i);
+    }
   });
 
   it('[A-2] before switch-on the runbook reads the card platform row and the saved-card counts', () => {

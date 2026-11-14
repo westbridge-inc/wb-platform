@@ -120,7 +120,8 @@ const STUBS: Record<string, string> = {
   CARD_RAIL_KILL: '1',
   // [CARDS-SWITCH-ON] The cards-off posture (the kill switch on, v2 off) and no ads: stubs only.
   CARD_RAIL_V2: '0', CARD_RAIL_V2_DRAIN: '0', CARD_RAIL_ENROLL: '0', ADS_ENABLED: '0',
-  // [CARDS-GO] An empty live list (every eligible partner): a stub only, to see past a malformed one.
+  // [CARDS-GO] An empty live list (in production: NOBODY, B-2; cards are off in this stub anyway): a stub only,
+  // to see past a malformed one.
   CARD_RAIL_LIVE_SUBSCRIPTIONS: '',
   PAYMENT_GATEWAY_KEY: 'STUB-NOT-A-REAL-KEY',
   PAYMENT_GATEWAY_SECRET: 'STUB-NOT-A-REAL-KEY',
