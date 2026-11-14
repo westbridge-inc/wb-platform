@@ -734,6 +734,24 @@ export const settleReturnRefund = (id: string, reference: string, amount: string
 export const broadcastNotification = (body: { title: string; body: string; role?: string; category: 'service' | 'marketing' }, reason: string) =>
   apiFetch('/api/v1/admin/notifications/broadcast', { method: 'POST', body: JSON.stringify(body), reason });
 
+/** [HOME-NOTICE · owner 13 Nov 2026] The notice on every customer's Home (phone and website), as the server holds it.
+ *  A stopped notice keeps its words, so the console shows what was last live. */
+export interface HomeNotice {
+  active: boolean;
+  /** Follows the words: a phone that closed this id stays closed; new words show again. */
+  id: string;
+  title: string | null;
+  body: string;
+  updatedAt: string;
+}
+export const fetchHomeNotice = (): Promise<Envelope<{ notice: HomeNotice | null; live: boolean }>> => apiFetch('/api/v1/admin/home-notice');
+/** C5: turning words on asks a second admin first (solo approval after the wait while the owner is the only admin). */
+export const startHomeNotice = (words: { title: string; body: string }, reason: string) =>
+  apiFetch('/api/v1/admin/home-notice', { method: 'PUT', body: JSON.stringify(words), reason });
+/** C3: turning it off is immediate — a reason, no second admin. */
+export const stopHomeNotice = (reason: string) =>
+  apiFetch('/api/v1/admin/home-notice/stop', { method: 'POST', body: JSON.stringify({}), reason });
+
 // ─── Live ops + markets ──────────────────────────────────────────
 export interface LiveOps {
   movers: { id: string; kind: 'rider' | 'driver'; lat: number; lng: number; name: string; busy: boolean; rideClass?: string }[];

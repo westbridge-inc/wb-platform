@@ -16,6 +16,8 @@ const REASON = 'Planned maintenance notice agreed with operations';
 function server(reply: () => ApiReply) {
   return mockApi((r: ApiRequest) => {
     if (r.method === 'POST' && r.url.pathname === '/api/v1/admin/notifications/broadcast') return reply();
+    // [HOME-NOTICE] The page also carries the Home notice panel (its own tests: home-notice-panel.test.tsx).
+    if (r.method === 'GET' && r.url.pathname === '/api/v1/admin/home-notice') return { body: { success: true, data: { notice: null, live: false } } };
     throw new Error(`Unexpected request: ${r.method} ${r.url}`);
   });
 }

@@ -459,6 +459,12 @@ export const ADMIN_ROUTE_AUTHORITY: Readonly<Record<AdminRouteKey, AdminRouteAut
   'PUT /zone-fares/:id': c('C5', 'platform.zonefare.write', E.zoneFare),
   'DELETE /zone-fares/:id': c('C5', 'platform.zonefare.write', E.zoneFare),
   'POST /notifications/broadcast': c('C5', 'platform.broadcast'),
+  // [HOME-NOTICE · owner 13 Nov 2026] The notice on every customer's Home. Its words going live are platform text
+  // like a broadcast (C5: a reason and a second admin); stopping it is immediate (C3: a reason, no wait) — it can
+  // only take words off customers' screens, and the safe direction must never sit in the approvals queue.
+  'GET /home-notice': c('C0', 'platform.homenotice.read'),
+  'PUT /home-notice': c('C5', 'platform.homenotice.write'),
+  'POST /home-notice/stop': c('C3', 'platform.homenotice.stop'),
 
   // ── Subscriptions ───────────────────────────────────────────────────────
   // [SEC-PII · security scan 28 Oct 2026] Movers' names (and masked numbers) on every row: a logged sensitive read.
@@ -1009,6 +1015,9 @@ export const ADMIN_ROUTES_WITHOUT_ENTITY: Readonly<Record<AdminRouteKey, string>
   'PUT /countries/:code/pricing/:kind': 'writes a versioned price book, which keeps its own before/after by version',
   'POST /countries/:code/pricing/:kind/rollback': 'pins an earlier price-book version; the version register is the record',
   'PUT /ads/settings': 'a tenant-wide settings singleton with no id in the route',
+  // [HOME-NOTICE] one fixed platform_config row; the audit row names it and carries the notice id, the words and both sides of the switch
+  'PUT /home-notice': 'one fixed platform_config row (home.notice) with no id in the route; the audit facts carry the notice id, its words and both sides of the switch',
+  'POST /home-notice/stop': 'one fixed platform_config row (home.notice) with no id in the route; the audit facts carry the notice id and both sides of the switch',
   'PUT /billing/price-book': 'a versioned price book; the version register is the record',
   'PUT /billing/agent-cash-config': 'a tenant-wide settings singleton with no id in the route',
   'PUT /batching/settings': 'a tenant-wide settings singleton with no id in the route',
