@@ -10,7 +10,8 @@ vi.mock('react', async (original) => {
   const hooks = { useState: (initial: unknown) => [initial, vi.fn()], useEffect: () => {} };
   return { ...actual, ...hooks, default: { ...actual, ...hooks } };
 });
-vi.mock('react-native', () => ({ Pressable: 'Pressable', RefreshControl: 'RefreshControl', ScrollView: 'ScrollView', View: 'View' }));
+// [STORE-BOARD A2/A3] The board reads the screen width for its tablet lanes: a phone's width keeps the one list.
+vi.mock('react-native', () => ({ Pressable: 'Pressable', RefreshControl: 'RefreshControl', ScrollView: 'ScrollView', View: 'View', useWindowDimensions: () => ({ width: 390, height: 844 }) }));
 vi.mock('@tanstack/react-query', () => ({ useQueryClient: () => ({}) }));
 vi.mock('@swift/ui', () => ({ color: fx.token, elevation: fx.token, radius: fx.token, space: fx.token }));
 vi.mock('@expo/vector-icons', () => ({ Feather: 'Feather', MaterialCommunityIcons: 'MaterialCommunityIcons' }));

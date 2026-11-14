@@ -23,7 +23,7 @@ import { assertPromoTerms, recordPromoTermsVersion, updatePromoTerms } from '../
 import { Prisma, OrderStatus, OrderType, SettlementStatus } from '@prisma/client';
 import type { FulfillmentMode, PrismaClient } from '@prisma/client';
 import { OrderService, assertMmgFulfilmentAllowed, vendorVisibleFilter, cancelledWhileHeld, holdWindowMs, isTerminalOrderStatus, preparationMayStart, releaseLapsedHoldInTransaction, MMG_MONEY_MOVED } from '../order/order.service';
-import { STORE_ACCEPT_PATH, STORE_REJECTABLE_STATUSES } from '../order/order-status';
+import { LIVE_ORDER_STATUSES, STORE_ACCEPT_PATH, STORE_REJECTABLE_STATUSES } from '../order/order-status';
 import { vendorResponseSlaMinutes, vendorRespondBy } from '../order/response-sla';
 import { VendorAnalyticsService } from './vendor-analytics.service';
 import { VendorMenuService } from './vendor-menu.service';
@@ -491,6 +491,15 @@ const vendorOrdersQuerySchema = z.object({
   // [CHAINS PR2] "All branches": every store the caller works in, even while one is selected (x-vendor-id).
   scope: z.enum(['all']).optional(),
 });
+
+// [STORE-BOARD S1] The open board takes no page: only the all-branches switch. Any other key is ignored.
+const vendorOpenOrdersQuerySchema = z.object({
+  scope: z.enum(['all']).optional(),
+});
+
+/** [STORE-BOARD S1] The most open orders one board read sends. Far above any store's real open queue; past it the
+ *  answer says how many it left out (meta.notShown) and the board says so — never a silent cut. */
+export const OPEN_BOARD_CAP = 300;
 
 const vendorItemsQuerySchema = z.object({
   categoryId: z.string().optional(),
@@ -2576,6 +2585,50 @@ export async function vendorRoutes(app: FastifyInstance) {
     return { success: true, data: { acknowledged: true } };
   });
 
+  // One shaping for every board read (GET /orders and GET /orders/open): money as numbers, the store's own money,
+  // the handover fields, the no-rider prompt, the answer clock, and a finished order's contact details withheld.
+  const BOARD_ORDER_OMIT = { pickupCode: true, pickupCodeAttempts: true, ridePin: true } as const;
+  const BOARD_ORDER_INCLUDE = {
+    items: VENDOR_ORDER_ITEMS,
+    customer: { select: { id: true, firstName: true } }, // [COORD 17 Oct] never the last name
+    // [F-027-07] allow-list, not `include` — see utils/counterparty.
+    rider: { select: riderCounterpartySelect({ withPhone: true }) },
+    // Franchise roll-up: the board aggregates every store the owner has, so each
+    // order needs to say which store it belongs to.
+    // [STORE-WORDS sweep] vendorType: each order speaks its own store's kind (a chain may run a restaurant and a shop).
+    vendor: { select: { id: true, name: true, vendorType: true, selfDeliveryEnabled: true, requirePickupCode: true } },
+  } satisfies Prisma.OrderInclude;
+  type BoardOrder = Prisma.OrderGetPayload<{ include: typeof BOARD_ORDER_INCLUDE; omit: typeof BOARD_ORDER_OMIT }>;
+  async function boardRows(request: FastifyRequest, access: VendorAccess, orders: BoardOrder[]) {
+    // [S1] Decimal → number BEFORE the shared paginator sees the rows. The
+    // board's order totals AND every line's snapshotted prices; the web
+    // storefront's `$NaN` came from exactly these strings.
+    // The response-SLA deadline rides on the read so the board's accept-clock
+    // drains toward the auto-cancel cut-off the server actually enforces.
+    const respondOpts = { slaMinutes: await vendorResponseSlaMinutes(app.prisma), holdMs: holdWindowMs() ?? 0 };
+    const roles = await storeRoles(app, request.user.userId, access);
+    const handover = await storeHandoverFields(app, orders);
+    // [S1 response-shaping] a terminal order no longer hands floor staff the
+    // customer's phone, the rider's phone, or the delivery address/GPS — the
+    // live order keeps all of it, which is the only thing a handover needs.
+    // [PROD-RIDER-TEST (a)1] The board card says "No rider found. Deliver it yourselves?" for an order whose search
+    // came back empty (one journal read per riderless delivery on the page; everything else answers without one).
+    const noRider = new Map(await Promise.all(orders.map(async (o) => [o.id, await noRiderStoreView(app.prisma, o)] as const)));
+    // [STORE-MONEY · owner 11 Nov 2026] The store's own money on each order (food, and whose the fee and tip are),
+    // by the sales statement's law — never the customer's total read as the store's.
+    const redemptions = await redemptionsFor(app.prisma, orders.map((o) => o.id));
+    return orders.map((order) => withCounterpartPhones(request, redactCustomerContact({
+      ...coerceMoney(order, ORDER_MONEY_FIELDS),
+      storeMoney: storeMoney({ ...order, promoRedemption: redemptions.get(order.id) ?? null }),
+      ...handover.get(order.id),
+      ...noRider.get(order.id),
+      items: order.items.map((item) => vendorOrderLine(coerceMoney(item, ORDER_ITEM_MONEY_FIELDS))),
+      respondBy: vendorRespondBy(order, respondOpts),
+      ...storeMmgPayBy(order),
+      canConfirmPayment: canConfirmPayment(order.vendorId ? roles.get(order.vendorId) : undefined),
+    })));
+  }
+
   /** GET /orders — Paginated, filterable order list */
   app.get('/orders', auth, async (request) => {
     const requested = selectedVendorId(request);
@@ -2606,17 +2659,8 @@ export async function vendorRoutes(app: FastifyInstance) {
       app.prisma.order.findMany({
         where,
         // HND-003: strip handover secrets from the vendor board too (see resolveOwnedOrder).
-        omit: { pickupCode: true, pickupCodeAttempts: true, ridePin: true },
-        include: {
-          items: VENDOR_ORDER_ITEMS,
-          customer: { select: { id: true, firstName: true } }, // [COORD 17 Oct] never the last name
-          // [F-027-07] allow-list, not `include` — see utils/counterparty.
-          rider: { select: riderCounterpartySelect({ withPhone: true }) },
-          // Franchise roll-up: the board aggregates every store the owner has, so each
-          // order needs to say which store it belongs to.
-          // [STORE-WORDS sweep] vendorType: each order speaks its own store's kind (a chain may run a restaurant and a shop).
-          vendor: { select: { id: true, name: true, vendorType: true, selfDeliveryEnabled: true, requirePickupCode: true } },
-        },
+        omit: BOARD_ORDER_OMIT,
+        include: BOARD_ORDER_INCLUDE,
         orderBy: { placedAt: 'desc' },
         skip: pagination.skip,
         take: pagination.limit,
@@ -2624,35 +2668,38 @@ export async function vendorRoutes(app: FastifyInstance) {
       app.prisma.order.count({ where }),
     ]);
 
-    // [S1] Decimal → number BEFORE the shared paginator sees the rows. The
-    // board's order totals AND every line's snapshotted prices; the web
-    // storefront's `$NaN` came from exactly these strings.
-    // The response-SLA deadline rides on the read so the board's accept-clock
-    // drains toward the auto-cancel cut-off the server actually enforces.
-    const respondOpts = { slaMinutes: await vendorResponseSlaMinutes(app.prisma), holdMs: holdWindowMs() ?? 0 };
-    const roles = await storeRoles(app, request.user.userId, access);
-    const handover = await storeHandoverFields(app, orders);
-    // [S1 response-shaping] a terminal order no longer hands floor staff the
-    // customer's phone, the rider's phone, or the delivery address/GPS — the
-    // live order keeps all of it, which is the only thing a handover needs.
-    // [PROD-RIDER-TEST (a)1] The board card says "No rider found. Deliver it yourselves?" for an order whose search
-    // came back empty (one journal read per riderless delivery on the page; everything else answers without one).
-    const noRider = new Map(await Promise.all(orders.map(async (o) => [o.id, await noRiderStoreView(app.prisma, o)] as const)));
-    // [STORE-MONEY · owner 11 Nov 2026] The store's own money on each order (food, and whose the fee and tip are),
-    // by the sales statement's law — never the customer's total read as the store's.
-    const redemptions = await redemptionsFor(app.prisma, orders.map((o) => o.id));
-    const data = orders.map((order) => withCounterpartPhones(request, redactCustomerContact({
-      ...coerceMoney(order, ORDER_MONEY_FIELDS),
-      storeMoney: storeMoney({ ...order, promoRedemption: redemptions.get(order.id) ?? null }),
-      ...handover.get(order.id),
-      ...noRider.get(order.id),
-      items: order.items.map((item) => vendorOrderLine(coerceMoney(item, ORDER_ITEM_MONEY_FIELDS))),
-      respondBy: vendorRespondBy(order, respondOpts),
-      ...storeMmgPayBy(order),
-      canConfirmPayment: canConfirmPayment(order.vendorId ? roles.get(order.vendorId) : undefined),
-    })));
-
+    const data = await boardRows(request, access, orders);
     return { success: true, ...paginatedResponse(data, total, pagination) };
+  });
+
+  /**
+   * [STORE-BOARD S1 · parity audit 14 Nov 2026] GET /orders/open — EVERY open order of the store for the live board
+   * (app and website): every status of the order state machine that is not finished (LIVE_ORDER_STATUSES), scoped
+   * exactly as GET /orders (the caller's stores; the selected branch, or every branch with scope=all). No page:
+   * the board used to read the newest 20 orders of any status and hide the finished ones, so an order still cooking
+   * with 20 newer orders behind it left the board. Past OPEN_BOARD_CAP the answer says how many it did not send
+   * (meta.notShown), and the decisions waiting for Accept (PENDING) are sent first. GET /orders is unchanged.
+   */
+  app.get('/orders/open', auth, async (request) => {
+    const requested = selectedVendorId(request);
+    const access = await resolveVendor(app, request.user.userId, requested);
+    const { scope } = vendorOpenOrdersQuerySchema.parse(request.query);
+    const base: Prisma.OrderWhereInput = {
+      vendorId: ordersScope(access, scope === 'all' ? undefined : requested),
+      status: { in: LIVE_ORDER_STATUSES },
+      AND: [vendorVisibleFilter(app.prisma)],
+    };
+    const read = (where: Prisma.OrderWhereInput, take: number) => (take > 0
+      ? app.prisma.order.findMany({ where, omit: BOARD_ORDER_OMIT, include: BOARD_ORDER_INCLUDE, orderBy: [{ placedAt: 'asc' }, { id: 'asc' }], take })
+      : Promise.resolve([]));
+    const [decisions, total] = await Promise.all([
+      read({ ...base, status: 'PENDING' }, OPEN_BOARD_CAP),
+      app.prisma.order.count({ where: base }),
+    ]);
+    const working = await read({ ...base, status: { in: LIVE_ORDER_STATUSES.filter((s) => s !== 'PENDING') } }, OPEN_BOARD_CAP - decisions.length);
+    const orders = [...decisions, ...working];
+    const data = await boardRows(request, access, orders);
+    return { success: true, data, meta: { total, shown: data.length, notShown: Math.max(0, total - data.length), cap: OPEN_BOARD_CAP } };
   });
 
   /** GET /orders/:id — Full order detail */

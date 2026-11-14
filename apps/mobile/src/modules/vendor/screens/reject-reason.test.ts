@@ -26,7 +26,8 @@ const api = read('src/services/api.ts');
 describe('[E10] the board collects a reason before it rejects', () => {
   it('every board card routes Reject/Decline to the reason chooser, never straight to the API', () => {
     const handlers = board.match(/onAction=\{[\s\S]*?\}\}?\n/g) ?? [];
-    expect(handlers.length).toBe(3);
+    // The new list, the in-progress list, the tablet lanes [STORE-BOARD A2/A3] and the focused card: each one checked below.
+    expect(handlers.length).toBe(4);
     // [STORE-DASH] Every card's tap goes through ONE router (onCardAction), and
     // that router sends Reject/Decline to the reason chooser (boardTaps.cardTapFor).
     for (const h of handlers) expect(h).toMatch(/onCardAction\(/);

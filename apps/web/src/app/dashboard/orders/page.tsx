@@ -3,17 +3,20 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { RefreshCw } from 'lucide-react';
-import NewOrderTakeover from '@/components/NewOrderTakeover';
+import { useOpenOrderRequests } from '@/lib/open-order-request';
+import { useScreenWakeLock } from '@/lib/wake-lock';
 import { mmgDisputePaused } from '@/lib/mmg-dispute';
 import { storeKey, useStoreId } from '@/lib/store-scope';
 import { useFeedPollInterval } from '@/lib/store-live-feed';
-import { BUCKETS, type BucketKey, completeness, groupOrders } from '@/lib/order-buckets';
+import { BUCKETS, type BucketKey, groupOrders } from '@/lib/order-buckets';
 import { BoardQuiet, LoadedBoard, ManageGrid, OrderCardActions, PickupCodeCard, RevenuePulse, SelfDeliveryCard, StaffAvailability, StoreHeader, StoreStatusCard, useHubStore } from '@/components/orders-home';
 import { useStoreRole } from '@/lib/store-role';
 import { DataUnavailable } from '@/components/data-unavailable';
 import { focusableIn } from '@/components/modal';
 import { formatAppointmentSlot } from '@/lib/appointmentTime';
-import { getOrders, money, type VendorOrder } from '@/lib/vendor-api';
+import { BOARD_ORDERS_POLL, getBoardOrders, money, type VendorOrder } from '@/lib/vendor-api';
+// [STORE-BOARD S1] The app's own words for open orders the board is not showing (plain file, imported as is).
+import { openBoardNote } from '../../../../../mobile/src/modules/vendor/openBoard';
 // [STORE-MONEY] The app's own reader of the store's money (plain file, imported as is).
 import { ringMoney } from '../../../../../mobile/src/modules/vendor/ringMoney';
 import { preloadedPart } from '@/lib/preloaded-part';
@@ -83,19 +86,25 @@ export default function OrdersPage() {
 
   // One read feeds every lane. The store's live feed re-reads it on every
   // order event (PERF row 8); the poll is the fallback, slower only while live.
-  const ordersPoll = useFeedPollInterval(storeId, 10_000, 30_000);
+  // [STORE-BOARD S1] Every open order (not the newest 50 of any status), and the newest finished ones for Done. The
+  // dashboard's new-order ring (every page, components/store-ring) reads this same query.
+  const ordersPoll = useFeedPollInterval(storeId, ...BOARD_ORDERS_POLL);
   const orders = useQuery({
     queryKey: storeKey(storeId, 'orders'),
-    queryFn: () => getOrders({ limit: 100 }),
+    queryFn: getBoardOrders,
     refetchInterval: ordersPoll,
   });
+  // [STORE-BOARD S1] The ring is the dashboard's (every page); its "View order" opens the order here.
+  useOpenOrderRequests(setSelected);
+  // [STORE-BOARD C4] A counter tablet's screen stays on while the live board is open (Screen Wake Lock; none: normal sleep).
+  useScreenWakeLock(true);
 
   const all = useMemo(() => orders.data?.orders ?? [], [orders.data]);
   // [W-11] Exhaustive: every order lands in exactly one lane, including an
   // `unknown` lane for a status this build does not recognise. The old loop
   // pushed only on a match and silently dropped everything else.
   const byBucket = useMemo(() => groupOrders(all), [all]);
-  const shown = useMemo(() => completeness(all.length, orders.data?.meta), [all.length, orders.data?.meta]);
+  const notShown = openBoardNote(orders.data?.open ?? null);
 
   const board = [
     { key: 'new' as const, label: 'New', hint: 'Waiting for a decision' },
@@ -137,7 +146,6 @@ export default function OrdersPage() {
     && (store.data?.status === 'PENDING_APPROVAL' || (store.data?._count?.orders === 0 && storeLive)));
   const lastOrderAt = all.map((o) => o.placedAt).filter(Boolean).sort().at(-1);
   return <div className="space-y-6">
-    <NewOrderTakeover orders={all} onOpenOrder={setSelected} />
     {/* [RIDER-SAFE 4/5] Why customers cannot order delivery right now (pickup stays open). */}
     <DeliveryStatusNotice storeId={storeId} />
     <StoreHeader store={store.data} action={<button onClick={() => orders.refetch()} className="sw-btn sw-btn-md sw-btn-outline"><RefreshCw size={16} className={orders.isFetching ? 'animate-spin' : ''} aria-hidden />Refresh</button>} />
@@ -148,7 +156,7 @@ export default function OrdersPage() {
     </div>
     {orders.isLoading && <div role="status" className="sw-empty"><span className="sw-skeleton h-24 w-full" />Loading your orders…</div>}
     {orders.isError && <DataUnavailable what="your orders" error={orders.error} onRetry={() => void orders.refetch()} />}
-    {!orders.isError && !orders.isLoading && shown.missing > 0 && <p role="status" className="sw-note">Showing {shown.shown} of {shown.total} orders — {shown.missing} not shown on this page.</p>}
+    {!orders.isError && !orders.isLoading && notShown && <p role="status" className="sw-note" data-testid="board-not-shown">{notShown}</p>}
     {/* The board stays up whenever orders were loaded: a failed refresh keeps
         the known orders on screen under the banner above (review S2-1). Only
         the calm "nothing here" texts need the last read to have succeeded. */}

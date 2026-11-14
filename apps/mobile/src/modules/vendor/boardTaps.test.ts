@@ -42,7 +42,8 @@ describe('[STORE-DASH] the board uses them', () => {
   it('every card waits only for its own order (no shared busy flag)', () => {
     expect(board).not.toMatch(/const busy = orderAction\.isPending/);
     expect(board).not.toMatch(/busy=\{busy\}/);
-    expect(board.match(/busy=\{pendingIds\.has\(/g)?.length).toBe(3);
+    // [STORE-BOARD A2/A3] four boards of cards now: the new list, the in-progress list, the tablet lanes, the focused card.
+    expect(board.match(/busy=\{pendingIds\.has\(/g)?.length).toBe(4);
     expect(hooks).toMatch(/mutationKey: ORDER_ACTION_KEY/);
     expect(hooks).toMatch(/filters: \{ mutationKey: ORDER_ACTION_KEY, status: 'pending' \}/);
   });

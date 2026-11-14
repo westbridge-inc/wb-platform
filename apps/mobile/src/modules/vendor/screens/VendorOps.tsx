@@ -99,6 +99,11 @@ import {
   windowTotals,
 } from '../shared';
 import { ringMoney } from '../ringMoney';
+import { openBoardNote } from '../openBoard';
+import { useOpenBoardMeta } from '../../../stores/openBoardMeta';
+import { BOARD_LANES, boardLanes } from '../boardLanes';
+import { useBoardColumns } from '../boardLayout';
+import { useKeepScreenAwake } from '../../../lib/keepAwake';
 
 // Memoized: the live board re-renders on every socket event, but react-query's
 // structural sharing keeps the SAME reference for orders that didn't change, so
@@ -908,6 +913,17 @@ function VendorStaffAvailability({ navigation, store }: any) {
           onPress={() => openMenuList(navigation)}
         />
       </View>
+      {/* [STORE-BOARD A4 · parity audit] Staff open finished orders too (the website's "Done" is every role's): the
+          order history, read through the same store-scoped route with the same redaction of finished orders. */}
+      <View style={{ flexDirection: 'row', marginTop: space.md }}>
+        <ManageTile
+          wide
+          icon="history"
+          label="Finished orders"
+          detail="Delivered, collected and cancelled"
+          onPress={() => navigation.navigate('VendorOrderHistory')}
+        />
+      </View>
     </View>
   );
 }
@@ -972,6 +988,9 @@ export function VendorOps({ store, navigation }: any) {
   const pull = usePullToRefresh(() => qc.invalidateQueries({ queryKey: ['vendor'] }));
   const switchStore = (id: string) => setSelectedStore(id);
   const fetched: any[] = ordersQ.data ?? [];
+  // [STORE-BOARD S1] What the last board read said about itself. Read at render, not subscribed: it is written by the
+  // same read that changes the board's data, so every board render after a read sees that read's note.
+  const boardMeta = useOpenBoardMeta.getState().meta;
   const boardLoading = ordersQ.isLoading && !ordersQ.data;
   const boardUnavailable = ordersQ.isError && !ordersQ.data;
   // [PERF row 562] The switch (and everything that reads it here) shows the
@@ -987,6 +1006,10 @@ export function VendorOps({ store, navigation }: any) {
   const pendingIds = usePendingOrderIds();
   // [CALLS-REACH] The board in front with an open order: a fitting moment for the in-app calls microphone (Android).
   const boardShown = useNavigationFocused(navigation);
+  // [STORE-BOARD C4] A counter tablet's screen stays on while the board is in front (the linked ExpoKeepAwake module).
+  useKeepScreenAwake(boardShown);
+  // [STORE-BOARD A2/A3] On a tablet the board is the website's lanes side by side; a phone keeps the one list.
+  const boardColumns = useBoardColumns();
   useCallsAskMoment(boardShown && reachSignal({ storeOrders: fetched }).state === 'live');
   const openOrder = (o: any) => navigation.navigate('VendorOrderDetail', { orderId: o.id, orderNumber: o.orderNumber });
   const onCardAction = (o: any, action: VendorOrderActionKind, code?: string, prepMinutes?: number) => {
@@ -996,8 +1019,10 @@ export function VendorOps({ store, navigation }: any) {
     else orderAction.mutate({ id: o.id, action, code, ...(prepMinutes ? { prepMinutes } : {}) });
   };
 
-  // The live board works the open queue; finished orders live in History.
-  const TERMINAL = ['DELIVERED', 'COMPLETED', 'CANCELLED', 'REFUNDED', 'FAILED'];
+  // The live board works the open queue; finished orders live in History. The server sends open orders only
+  // (GET /vendor/orders/open); this filter stays for the older server's newest-page answer.
+  const TERMINAL = ['DELIVERED', 'COMPLETED', 'CANCELLED', 'REFUNDED', 'FAILED', 'RETURNED'];
+  const boardNote = openBoardNote(boardMeta);
   const orders = fetched.filter((o) => !TERMINAL.includes((o.status || '').toUpperCase()));
   const isNew = (s: string) => ['PENDING', 'PLACED'].includes((s || '').toUpperCase());
   // Express bought its place at the FRONT of the kitchen queue — the customer
@@ -1151,7 +1176,7 @@ export function VendorOps({ store, navigation }: any) {
                 ? 'Loading the latest queue…'
                 : boardUnavailable
                 ? 'Board unreachable — orders may be waiting'
-                : `${newOrders.length} new · ${inProgress.length} in progress in the latest page`}
+                : `${newOrders.length} new · ${inProgress.length} in progress`}
             </T>
           </View>
         )}
@@ -1176,6 +1201,12 @@ export function VendorOps({ store, navigation }: any) {
         {ordersQ.isError && ordersQ.data ? (
           <T variant="caption" tone="muted" style={{ marginBottom: space.md }}>
             Showing the last loaded queue — refresh did not complete.
+          </T>
+        ) : null}
+        {/* [STORE-BOARD S1] The board holds every open order; if the server left any out, it says so here. */}
+        {boardNote && !boardLoading && !boardUnavailable ? (
+          <T variant="caption" tone="warning" testID="board-not-shown" style={{ marginBottom: space.md }}>
+            {boardNote}
           </T>
         ) : null}
         {!ordersQ.isLoading && !(ordersQ.isError && !ordersQ.data) && newOrders.length === 0 && orders.length > 0 ? (
@@ -1205,6 +1236,34 @@ export function VendorOps({ store, navigation }: any) {
             reachable={!ordersQ.isError}
             canManage={canManage}
           />
+        ) : queueOpen && boardColumns > 1 ? (
+          // [STORE-BOARD A2/A3] The website's lanes: New, Preparing, Ready / handoff, Out for delivery, side by side
+          // (two a row on a tablet held upright, all four from 1000 wide). Every open order is in exactly one lane.
+          <View style={{ flexDirection: 'row', flexWrap: 'wrap', marginHorizontal: -space.sm, marginBottom: space.md }}>
+            {(() => {
+              const lanes = boardLanes([...newOrders, ...inProgress]);
+              return BOARD_LANES.map((l) => (
+                <View key={l.key} testID={`board-lane-${l.key}`} style={{ width: `${100 / boardColumns}%`, paddingHorizontal: space.sm, marginBottom: space.lg }}>
+                  <View style={{ flexDirection: 'row', alignItems: 'baseline', gap: space.sm, marginBottom: space.xs }}>
+                    <T variant="label" weight="bold">{l.label}</T>
+                    <T variant="caption" tone="muted">{String(lanes[l.key].length)}</T>
+                  </View>
+                  <T variant="caption" tone="muted" style={{ marginBottom: space.sm }}>{l.hint}</T>
+                  {lanes[l.key].length === 0 ? (
+                    <T variant="caption" tone="muted">Nothing here right now</T>
+                  ) : lanes[l.key].map((o) => (
+                    <VendorOrderCard
+                      key={o.id}
+                      order={o}
+                      busy={pendingIds.has(o.id)}
+                      onAction={(action, code, prepMinutes) => onCardAction(o, action, code, prepMinutes)}
+                      onOpen={() => openOrder(o)}
+                    />
+                  ))}
+                </View>
+              ));
+            })()}
+          </View>
         ) : queueOpen ? (
           <>
             <T variant="micro" tone="muted" style={{ marginBottom: space.sm }}>

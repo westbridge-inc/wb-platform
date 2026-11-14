@@ -1,7 +1,7 @@
 import { act, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import OrdersPage from './page';
-import { mockApi, renderWithQuery, stubAudioContext, type ApiRequest } from '@/test/test-utils';
+import { OrdersBoard } from '@/test/orders-board';
+import { mockApi, withOpenBoard, renderWithQuery, stubAudioContext, type ApiRequest } from '@/test/test-utils';
 import { wireVendorOrder } from '@/test/vendor-wire-fixtures';
 import { guyanaDayKey } from '@/lib/vendor-hub';
 
@@ -34,7 +34,7 @@ function hubApi(opts: Opts = {}) {
     const offset = i - 13; // -13 … -1: the series ends yesterday, as the server's does
     return { date: guyanaDayKey(offset), revenue: offset === -7 ? 10000 : 2000, orders: 1 };
   });
-  return mockApi((request: ApiRequest) => {
+  return mockApi(withOpenBoard((request: ApiRequest) => {
     const { method, url, init } = request;
     const path = url.pathname.replace('/api/v1', '');
     if (method !== 'GET') { writes.push({ method, path, body: init?.body ? JSON.parse(String(init.body)) : null }); return { body: { success: true, data: {} } }; }
@@ -89,7 +89,7 @@ function hubApi(opts: Opts = {}) {
     if (path === '/vendor/orders') return { body: { success: true, data: orders, meta: { total: orders.length } } };
     if (path.startsWith('/vendor/orders/')) return { body: { success: true, data: orders.find((o) => `/vendor/orders/${(o as { id: string }).id}` === path) ?? orders[0] } };
     return { status: 404, body: { success: false } };
-  });
+  }));
 }
 
 beforeEach(async () => {
@@ -102,7 +102,7 @@ beforeEach(async () => {
 describe('the Orders home copies the app', () => {
   it('heads the page with the store and its state, like the app', async () => {
     hubApi({ open: false });
-    renderWithQuery(<OrdersPage />);
+    renderWithQuery(<OrdersBoard />);
     expect(await screen.findByRole('heading', { level: 1, name: 'Sample Kitchen' })).toBeTruthy();
     expect(screen.getByText(/^CLOSED( · TODAY .+)?$/)).toBeTruthy();
     expect(screen.getByText('You keep 100% of every order — Swift takes no commission.')).toBeTruthy();
@@ -110,7 +110,7 @@ describe('the Orders home copies the app', () => {
 
   it('shows the revenue pulse to an owner: today, the change on the same day last week, orders and waiting', async () => {
     hubApi({ role: 'OWNER' });
-    renderWithQuery(<OrdersPage />);
+    renderWithQuery(<OrdersBoard />);
     const pulse = await screen.findByRole('region', { name: 'Revenue today' });
     expect(await within(pulse).findByText('$15,000')).toBeTruthy();
     // 15,000 against 10,000 a week ago: up 50 %.
@@ -123,7 +123,7 @@ describe('the Orders home copies the app', () => {
 
   it('a staff login sees the loaded board instead, and no money is asked for', async () => {
     hubApi({ role: 'STAFF', orders: [wireVendorOrder({ id: 'o1', status: 'PREPARING' })] });
-    renderWithQuery(<OrdersPage />);
+    renderWithQuery(<OrdersBoard />);
     const board = await screen.findByRole('region', { name: 'Loaded board' });
     expect(await within(board).findByText('0 new · 1 in progress in the latest page')).toBeTruthy();
     expect(screen.queryByRole('region', { name: 'Revenue today' })).toBeNull();
@@ -132,7 +132,7 @@ describe('the Orders home copies the app', () => {
 
   it('shows the first-order guide to a store that has never had an order', async () => {
     hubApi({ lifetime: 0, open: false });
-    renderWithQuery(<OrdersPage />);
+    renderWithQuery(<OrdersBoard />);
     const guide = await screen.findByRole('region', { name: 'Your first order' });
     expect(within(guide).getByText('The board is live.')).toBeTruthy();
     expect(await within(guide).findByText('Add photos to your menu')).toBeTruthy();
@@ -148,14 +148,14 @@ describe('the Orders home copies the app', () => {
 
   it('a store with past orders and nothing open is told it is caught up, not shown a guide', async () => {
     hubApi({ lifetime: 40, orders: [] });
-    renderWithQuery(<OrdersPage />);
+    renderWithQuery(<OrdersBoard />);
     expect(await screen.findByText('You are all caught up')).toBeTruthy();
     expect(screen.queryByRole('region', { name: 'Your first order' })).toBeNull();
   });
 
   it('shows the Manage tiles with the app\'s words and server facts', async () => {
     hubApi({ role: 'OWNER' });
-    renderWithQuery(<OrdersPage />);
+    renderWithQuery(<OrdersBoard />);
     const grid = await screen.findByRole('region', { name: 'Manage' });
     expect(within(grid).getByText('The whole business')).toBeTruthy();
     const tile = (name: string) => within(grid).getByRole('link', { name: new RegExp(name) });
@@ -183,7 +183,7 @@ describe('the Orders home copies the app', () => {
 
   it('a Services store\'s "Hours & schedule" tile opens its Schedule, as in the app', async () => {
     hubApi({ role: 'OWNER', vendorType: 'SERVICE' });
-    renderWithQuery(<OrdersPage />);
+    renderWithQuery(<OrdersBoard />);
     const grid = await screen.findByRole('region', { name: 'Manage' });
     const tile = within(grid).getByRole('link', { name: /Hours & schedule/ });
     await waitFor(() => expect(tile.getAttribute('href')).toBe('/dashboard/schedule'));
@@ -191,7 +191,7 @@ describe('the Orders home copies the app', () => {
 
   it('a staff login gets item availability instead of the Manage tiles', async () => {
     hubApi({ role: 'STAFF' });
-    renderWithQuery(<OrdersPage />);
+    renderWithQuery(<OrdersBoard />);
     const link = await screen.findByRole('link', { name: /Item availability/ });
     expect(link.getAttribute('href')).toBe('/dashboard/inventory');
     expect(screen.queryByRole('region', { name: 'Manage' })).toBeNull();
@@ -199,7 +199,7 @@ describe('the Orders home copies the app', () => {
 
   it('opens and closes the store, and pauses new orders, through the app\'s endpoints', async () => {
     hubApi({ role: 'OWNER', open: true, accepting: true });
-    const view = renderWithQuery(<OrdersPage />);
+    const view = renderWithQuery(<OrdersBoard />);
     await view.user.click(await screen.findByRole('switch', { name: 'Store open to customers' }));
     await view.user.click(screen.getByRole('button', { name: 'Pause new orders' }));
     await waitFor(() => expect(writes).toEqual([
@@ -210,7 +210,7 @@ describe('the Orders home copies the app', () => {
 
   it('turns "Deliver my own orders" on from the website', async () => {
     hubApi({ role: 'OWNER', selfDelivery: false });
-    const view = renderWithQuery(<OrdersPage />);
+    const view = renderWithQuery(<OrdersBoard />);
     const control = await screen.findByRole('switch', { name: 'Deliver my own orders' });
     expect(control.getAttribute('aria-checked')).toBe('false');
     expect(screen.getByText('Swift sends the nearest rider for your delivery orders.')).toBeTruthy();
@@ -220,7 +220,7 @@ describe('the Orders home copies the app', () => {
 
   it('a staff login sees the store state but no open, pause or self-delivery control', async () => {
     hubApi({ role: 'STAFF' });
-    renderWithQuery(<OrdersPage />);
+    renderWithQuery(<OrdersBoard />);
     expect(await screen.findByText('Open for orders')).toBeTruthy();
     expect(screen.queryByRole('switch', { name: 'Store open to customers' })).toBeNull();
     expect(screen.queryByRole('button', { name: /Pause new orders|Resume orders/ })).toBeNull();
@@ -232,7 +232,7 @@ describe('the Orders home copies the app', () => {
       wireVendorOrder({ id: 'o-new', orderNumber: 'SW-7001', status: 'PENDING' }),
       wireVendorOrder({ id: 'o-prep', orderNumber: 'SW-7002', status: 'PREPARING' }),
     ] });
-    const view = renderWithQuery(<OrdersPage />);
+    const view = renderWithQuery(<OrdersBoard />);
     const later = await screen.findByText(/View later/).catch(() => null);
     if (later) await view.user.click(later);
     const card = (n: string) => screen.getAllByRole('article').find((a) => a.textContent?.includes(n))!;
@@ -252,7 +252,7 @@ describe('the Orders home copies the app', () => {
   // to a store where this login is staff must re-read it, not keep the owner's.
   it('re-reads the role when the store changes', async () => {
     hubApi({ storeRoles: { 'store-1': 'OWNER', 'store-2': 'STAFF' } });
-    renderWithQuery(<OrdersPage />);
+    renderWithQuery(<OrdersBoard />);
     expect(await screen.findByRole('button', { name: 'Pause new orders' })).toBeTruthy();
     await act(async () => { (await import('@/lib/auth')).setSelectedStore('store-2'); });
     await waitFor(() => expect(screen.queryByRole('button', { name: 'Pause new orders' })).toBeNull());
@@ -264,11 +264,11 @@ describe('the new-order takeover counts down like the app', () => {
   it('shows the server\'s accept deadline as m:ss', async () => {
     const first = wireVendorOrder({ id: 'o-old', orderNumber: 'SW-7100', status: 'PREPARING' });
     let orders: unknown[] = [first];
-    mockApi(({ url }) => {
+    mockApi(withOpenBoard(({ url }) => {
       if (url.pathname.endsWith('/vendor/orders')) return { body: { success: true, data: orders, meta: { total: orders.length } } };
       return { status: 404, body: { success: false } };
-    });
-    const { queryClient } = renderWithQuery(<OrdersPage />);
+    }));
+    const { queryClient } = renderWithQuery(<OrdersBoard />);
     await screen.findByText('#SW-7100');
     // A new order arrives with the server's deadline three minutes away.
     orders = [first, wireVendorOrder({ id: 'o-fresh', orderNumber: 'SW-7101', status: 'PENDING', respondBy: new Date(Date.now() + 180_000).toISOString() })];
@@ -289,7 +289,7 @@ describe('the new-order takeover counts down like the app', () => {
 describe('the store controls read the real server state', () => {
   it('a live store taking orders shows "Open for orders" and offers to pause', async () => {
     hubApi({ open: true, accepting: true });
-    const view = renderWithQuery(<OrdersPage />);
+    const view = renderWithQuery(<OrdersBoard />);
     expect(await screen.findByRole('heading', { level: 1, name: 'Sample Kitchen' })).toBeTruthy();
     expect(screen.getByText(/^OPEN( · TODAY .+)?$/)).toBeTruthy();
     expect(await screen.findByText('Open for orders')).toBeTruthy();
@@ -300,7 +300,7 @@ describe('the store controls read the real server state', () => {
 
   it('[STORE-HOURS] switch on but the store\'s own hours close it now: never "Open for orders"; says when customers can order', async () => {
     hubApi({ open: true, accepting: true, closedByHours: { opensNext: 'tomorrow at 8:00 am' } });
-    renderWithQuery(<OrdersPage />);
+    renderWithQuery(<OrdersBoard />);
     expect(await screen.findByText('Closed by your hours')).toBeTruthy();
     expect(screen.getByText('Customers can order tomorrow at 8:00 am')).toBeTruthy();
     expect(screen.queryByText('Open for orders')).toBeNull();
@@ -311,14 +311,14 @@ describe('the store controls read the real server state', () => {
 
   it('a paused store says so and offers to resume', async () => {
     hubApi({ open: true, accepting: false });
-    renderWithQuery(<OrdersPage />);
+    renderWithQuery(<OrdersBoard />);
     expect(await screen.findByText('Orders paused')).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Resume orders' })).toBeTruthy();
   });
 
   it('self-delivery that is on reads on, and turning it off sends false', async () => {
     hubApi({ selfDelivery: true });
-    const view = renderWithQuery(<OrdersPage />);
+    const view = renderWithQuery(<OrdersBoard />);
     const control = await screen.findByRole('switch', { name: 'Deliver my own orders' });
     await waitFor(() => expect(control.getAttribute('aria-checked')).toBe('true'));
     expect(screen.getByText('You deliver your orders yourself — Swift won’t send a rider.')).toBeTruthy();
@@ -330,7 +330,7 @@ describe('the store controls read the real server state', () => {
     let release!: (_reply: { body: unknown }) => void;
     const held = new Promise<{ body: unknown }>((resolve) => { release = resolve; });
     hubApi({ open: true, holdProfileRefetch: held });
-    const view = renderWithQuery(<OrdersPage />);
+    const view = renderWithQuery(<OrdersBoard />);
     const control = await screen.findByRole('switch', { name: 'Store open to customers' });
     await waitFor(() => expect(control.getAttribute('aria-checked')).toBe('true'));
     await view.user.click(control);
@@ -343,7 +343,7 @@ describe('the store controls read the real server state', () => {
 
   it('a store that is not live yet cannot be opened, paused or switched to self-delivery', async () => {
     hubApi({ status: 'PENDING_REVIEW', open: false });
-    renderWithQuery(<OrdersPage />);
+    renderWithQuery(<OrdersBoard />);
     expect(await screen.findByText('Not open yet')).toBeTruthy();
     expect((screen.getByRole('switch', { name: 'Store open to customers' }) as HTMLButtonElement).disabled).toBe(true);
     expect(screen.queryByRole('button', { name: /Pause new orders|Resume orders/ })).toBeNull();
@@ -354,19 +354,19 @@ describe('the store controls read the real server state', () => {
   // shows its OWNER the way to send its documents here; a manager or staff login is never offered it (owner only).
   it('a store not live yet shows its owner "Upload your documents" (Documents on this website); nobody else', async () => {
     hubApi({ status: 'PENDING_REVIEW', open: false });
-    const { unmount } = renderWithQuery(<OrdersPage />);
+    const { unmount } = renderWithQuery(<OrdersBoard />);
     expect(await screen.findByText('Not open yet')).toBeTruthy();
     expect((await screen.findByRole('link', { name: 'Upload your documents' })).getAttribute('href')).toBe('/dashboard/documents');
     unmount();
     for (const role of ['MANAGER', 'STAFF'] as const) {
       hubApi({ status: 'PENDING_REVIEW', open: false, role });
-      const view = renderWithQuery(<OrdersPage />);
+      const view = renderWithQuery(<OrdersBoard />);
       expect(await screen.findByText('Not open yet')).toBeTruthy();
       expect(screen.queryByRole('link', { name: 'Upload your documents' })).toBeNull();
       view.unmount();
     }
     hubApi({ status: 'ACTIVE' });
-    renderWithQuery(<OrdersPage />);
+    renderWithQuery(<OrdersBoard />);
     expect(await screen.findByRole('switch', { name: 'Store open to customers' })).toBeTruthy();
     expect(screen.queryByRole('link', { name: 'Upload your documents' })).toBeNull();
   });
@@ -376,7 +376,7 @@ describe('MMG orders on the board follow the app', () => {
   // [owner 14 Nov 2026 · option A] Accept first, then the customer pays the store's number; the confirmation stays.
   it('an unpaid MMG order offers Accept (the customer pays after it) and keeps the payment confirmation', async () => {
     hubApi({ orders: [wireVendorOrder({ id: 'o-mmg', orderNumber: 'SW-7201', status: 'PENDING', paymentMethod: 'MOBILE_MONEY', paymentStatus: 'PENDING', canConfirmPayment: true })] });
-    const view = renderWithQuery(<OrdersPage />);
+    const view = renderWithQuery(<OrdersBoard />);
     const later = await screen.findByText(/View later/).catch(() => null);
     if (later) await view.user.click(later);
     const card = await screen.findByRole('article', { name: 'Order SW-7201' });
@@ -391,7 +391,7 @@ describe('MMG orders on the board follow the app', () => {
   it('a disputed MMG order says why it is paused, on the card and in the order window, and offers no forward step', async () => {
     const disputed = wireVendorOrder({ id: 'o-disp', orderNumber: 'SW-7202', status: 'PREPARING', paymentMethod: 'MOBILE_MONEY', paymentStatus: 'CAPTURED', mmgClaimMismatchAt: '2026-10-11T12:00:00Z' });
     hubApi({ orders: [disputed] });
-    const view = renderWithQuery(<OrdersPage />);
+    const view = renderWithQuery(<OrdersBoard />);
     const card = await screen.findByRole('article', { name: 'Order SW-7202' });
     expect(within(card).getByText('Payment under review — order paused')).toBeTruthy();
     expect(within(card).queryByRole('button', { name: 'Ready for delivery' })).toBeNull();
@@ -405,7 +405,7 @@ describe('MMG orders on the board follow the app', () => {
 describe('the board and clock details follow the app', () => {
   it('an order in an unknown status keeps the board up instead of "all caught up"', async () => {
     hubApi({ orders: [wireVendorOrder({ id: 'o-odd', orderNumber: 'SW-7301', status: 'SOMETHING_NEW' })] });
-    renderWithQuery(<OrdersPage />);
+    renderWithQuery(<OrdersBoard />);
     expect(await screen.findByRole('button', { name: /Unrecognised · 1/ })).toBeTruthy();
     expect(screen.getByRole('region', { name: 'New orders' })).toBeTruthy();
     expect(screen.queryByText('You are all caught up')).toBeNull();
@@ -414,8 +414,8 @@ describe('the board and clock details follow the app', () => {
   it('the accept clock disappears once its deadline has passed', async () => {
     const first = wireVendorOrder({ id: 'o-old', orderNumber: 'SW-7400', status: 'PREPARING' });
     let orders: unknown[] = [first];
-    mockApi(({ url }) => (url.pathname.endsWith('/vendor/orders') ? { body: { success: true, data: orders, meta: { total: orders.length } } } : { status: 404, body: { success: false } }));
-    const { queryClient } = renderWithQuery(<OrdersPage />);
+    mockApi(withOpenBoard(({ url }) => (url.pathname.endsWith('/vendor/orders') ? { body: { success: true, data: orders, meta: { total: orders.length } } } : { status: 404, body: { success: false } })));
+    const { queryClient } = renderWithQuery(<OrdersBoard />);
     await screen.findByText('#SW-7400');
     orders = [first, wireVendorOrder({ id: 'o-late', orderNumber: 'SW-7401', status: 'PENDING', respondBy: new Date(Date.now() - 60_000).toISOString() })];
     await act(async () => { await queryClient.refetchQueries(); });
@@ -431,7 +431,7 @@ describe('MMG payment states on the card', () => {
   const mmgOrder = (paymentStatus: string) => wireVendorOrder({ id: 'o-mmg', orderNumber: 'SW-7501', status: 'PENDING', paymentMethod: 'MOBILE_MONEY', paymentStatus, canConfirmPayment: true });
   async function card(paymentStatus: string) {
     hubApi({ orders: [mmgOrder(paymentStatus)] });
-    const view = renderWithQuery(<OrdersPage />);
+    const view = renderWithQuery(<OrdersBoard />);
     const later = await screen.findByText(/View later/).catch(() => null);
     if (later) await view.user.click(later);
     return screen.findByRole('article', { name: 'Order SW-7501' });
@@ -471,7 +471,7 @@ describe('the store state stays current', () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     try {
       hubApi({});
-      renderWithQuery(<OrdersPage />);
+      renderWithQuery(<OrdersBoard />);
       await screen.findByRole('heading', { level: 1, name: 'Sample Kitchen' });
       const before = reads.filter((p) => p === '/vendor/profile').length;
       await act(async () => { await vi.advanceTimersByTimeAsync(21_000); });
@@ -483,7 +483,7 @@ describe('the store state stays current', () => {
 
   it('keeps the controls locked, and says so, when the store cannot be re-read after a change', async () => {
     hubApi({ open: true, failProfileRefetch: true });
-    const view = renderWithQuery(<OrdersPage />);
+    const view = renderWithQuery(<OrdersBoard />);
     const control = await screen.findByRole('switch', { name: 'Store open to customers' });
     await waitFor(() => expect(control.getAttribute('aria-checked')).toBe('true'));
     await view.user.click(control);
@@ -501,7 +501,7 @@ describe('the store state stays current', () => {
 describe('the order window\'s payment rule matches the card', () => {
   async function windowFor(paymentStatus: string) {
     hubApi({ orders: [wireVendorOrder({ id: 'o-mmg', orderNumber: 'SW-7601', status: 'PENDING', paymentMethod: 'MOBILE_MONEY', paymentStatus, canConfirmPayment: true })] });
-    const view = renderWithQuery(<OrdersPage />);
+    const view = renderWithQuery(<OrdersBoard />);
     const later = await screen.findByText(/View later/).catch(() => null);
     if (later) await view.user.click(later);
     const card = await screen.findByRole('article', { name: 'Order SW-7601' });
@@ -533,7 +533,7 @@ describe('the order window\'s payment rule matches the card', () => {
 describe('every locked store control says why', () => {
   it('the "Who delivers" card explains a failed re-read too', async () => {
     hubApi({ selfDelivery: false, failProfileRefetch: true });
-    const view = renderWithQuery(<OrdersPage />);
+    const view = renderWithQuery(<OrdersBoard />);
     const control = await screen.findByRole('switch', { name: 'Deliver my own orders' });
     await view.user.click(control);
     const card = await screen.findByRole('region', { name: 'Who delivers' });
@@ -550,7 +550,7 @@ describe('every locked store control says why', () => {
 describe('an unpaid MMG order is accepted first, then paid', () => {
   it('card, popup and window all offer Accept and say the customer pays after it', async () => {
     hubApi({ orders: [wireVendorOrder({ id: 'o-unpaid', orderNumber: 'SW-7701', status: 'PENDING', paymentMethod: 'MOBILE_MONEY', paymentStatus: 'PENDING', mmgAttestedRef: null, canConfirmPayment: true, estimatedPrepTime: 45 })] });
-    const view = renderWithQuery(<OrdersPage />);
+    const view = renderWithQuery(<OrdersBoard />);
     // 1. The new-order popup: Accept with the store's own preparation time, and the line.
     const later = await screen.findByText(/View later/);
     const popup = later.closest('div.fixed') as HTMLElement;
@@ -576,7 +576,7 @@ describe('an unpaid MMG order is accepted first, then paid', () => {
     hubApi({ orders: [
       wireVendorOrder({ id: 'o-staff', orderNumber: 'SW-7702', status: 'PENDING', paymentMethod: 'MOBILE_MONEY', paymentStatus: 'PENDING', mmgAttestedRef: null, canConfirmPayment: false }),
     ] });
-    renderWithQuery(<OrdersPage />);
+    renderWithQuery(<OrdersBoard />);
     const popup = (await screen.findByText(/View later/)).closest('div.fixed') as HTMLElement;
     expect(within(popup).getByRole('button', { name: 'Accept' })).toBeTruthy();
     expect(within(popup).getByText(PAY_AFTER)).toBeTruthy();
@@ -584,7 +584,7 @@ describe('an unpaid MMG order is accepted first, then paid', () => {
 
   it('a store claim an operator rejected can never be paid on this order: no Accept', async () => {
     hubApi({ orders: [wireVendorOrder({ id: 'o-rej', orderNumber: 'SW-7704', status: 'PENDING', paymentMethod: 'MOBILE_MONEY', paymentStatus: 'PENDING', mmgAttestedRef: 'ABC123', canConfirmPayment: true })] });
-    renderWithQuery(<OrdersPage />);
+    renderWithQuery(<OrdersBoard />);
     const popup = (await screen.findByText(/View later/)).closest('div.fixed') as HTMLElement;
     expect(within(popup).queryByRole('button', { name: 'Accept' })).toBeNull();
     expect(within(popup).queryByText(PAY_AFTER)).toBeNull();
@@ -592,7 +592,7 @@ describe('an unpaid MMG order is accepted first, then paid', () => {
 
   it('a failed payment in the popup gives its reason and no Accept', async () => {
     hubApi({ orders: [wireVendorOrder({ id: 'o-failed', orderNumber: 'SW-7703', status: 'PENDING', paymentMethod: 'MOBILE_MONEY', paymentStatus: 'FAILED', canConfirmPayment: true })] });
-    renderWithQuery(<OrdersPage />);
+    renderWithQuery(<OrdersBoard />);
     const popup = (await screen.findByText(/View later/)).closest('div.fixed') as HTMLElement;
     expect(within(popup).getByText(/MMG reports this payment as failed/)).toBeTruthy();
     expect(within(popup).queryByRole('button', { name: 'Accept' })).toBeNull();
@@ -610,7 +610,7 @@ describe('[ROUND 4] an accepted unpaid MMG order and the popup', () => {
 
   it('the card shows the server\'s pay-by line under "Awaiting MMG payment"', async () => {
     hubApi({ orders: [wireVendorOrder({ id: 'o-acc', orderNumber: 'SW-7801', status: 'ACCEPTED', paymentMethod: 'MOBILE_MONEY', paymentStatus: 'PENDING', mmgAttestedRef: null, canConfirmPayment: true, mmgPayByLine: PAY_BY })] });
-    renderWithQuery(<OrdersPage />);
+    renderWithQuery(<OrdersBoard />);
     const card = await screen.findByRole('article', { name: 'Order SW-7801' });
     expect(within(card).getByText('Awaiting MMG payment')).toBeTruthy();
     expect(within(card).getByText(PAY_BY)).toBeTruthy();
@@ -618,7 +618,7 @@ describe('[ROUND 4] an accepted unpaid MMG order and the popup', () => {
 
   it('a staff login sees the pay-by line on the card and in the window too', async () => {
     hubApi({ role: 'STAFF', orders: [wireVendorOrder({ id: 'o-acc2', orderNumber: 'SW-7802', status: 'ACCEPTED', paymentMethod: 'MOBILE_MONEY', paymentStatus: 'PENDING', mmgAttestedRef: null, canConfirmPayment: false, mmgPayByLine: PAY_BY })] });
-    const view = renderWithQuery(<OrdersPage />);
+    const view = renderWithQuery(<OrdersBoard />);
     const card = await screen.findByRole('article', { name: 'Order SW-7802' });
     expect(within(card).getByText(PAY_BY)).toBeTruthy();
     await view.user.click(within(card).getByText('#SW-7802'));
@@ -632,7 +632,7 @@ describe('[ROUND 4] an accepted unpaid MMG order and the popup', () => {
       wireVendorOrder({ id: 'o-paid', orderNumber: 'SW-7803', status: 'ACCEPTED', paymentMethod: 'MOBILE_MONEY', paymentStatus: 'CLAIMED', mmgPayByLine: PAY_BY }),
       wireVendorOrder({ id: 'o-none', orderNumber: 'SW-7804', status: 'ACCEPTED', paymentMethod: 'MOBILE_MONEY', paymentStatus: 'PENDING', mmgAttestedRef: null, mmgPayByLine: null }),
     ] });
-    renderWithQuery(<OrdersPage />);
+    renderWithQuery(<OrdersBoard />);
     const paid = await screen.findByRole('article', { name: 'Order SW-7803' });
     expect(within(paid).queryByText(PAY_BY)).toBeNull();
     const none = await screen.findByRole('article', { name: 'Order SW-7804' });
@@ -641,7 +641,7 @@ describe('[ROUND 4] an accepted unpaid MMG order and the popup', () => {
 
   it('the popup tells a staff login that only the owner or a manager can confirm (the owner\'s line unchanged)', async () => {
     hubApi({ orders: [wireVendorOrder({ id: 'o-st', orderNumber: 'SW-7805', status: 'PENDING', paymentMethod: 'MOBILE_MONEY', paymentStatus: 'PENDING', mmgAttestedRef: null, canConfirmPayment: false })] });
-    renderWithQuery(<OrdersPage />);
+    renderWithQuery(<OrdersBoard />);
     const popup = (await screen.findByText(/View later/)).closest('div.fixed') as HTMLElement;
     expect(within(popup).getByText(PAY_AFTER)).toBeTruthy();
     expect(within(popup).getByText('Only the owner or a manager can confirm MMG payments.')).toBeTruthy();
@@ -650,7 +650,7 @@ describe('[ROUND 4] an accepted unpaid MMG order and the popup', () => {
 
   it('an owner or manager in the popup is not told that', async () => {
     hubApi({ orders: [wireVendorOrder({ id: 'o-ow', orderNumber: 'SW-7806', status: 'PENDING', paymentMethod: 'MOBILE_MONEY', paymentStatus: 'PENDING', mmgAttestedRef: null, canConfirmPayment: true })] });
-    renderWithQuery(<OrdersPage />);
+    renderWithQuery(<OrdersBoard />);
     const popup = (await screen.findByText(/View later/)).closest('div.fixed') as HTMLElement;
     expect(within(popup).getByText(PAY_AFTER)).toBeTruthy();
     expect(within(popup).queryByText('Only the owner or a manager can confirm MMG payments.')).toBeNull();
@@ -658,7 +658,7 @@ describe('[ROUND 4] an accepted unpaid MMG order and the popup', () => {
 
   it('[REVIEW-DELTA S4-3] Accept and its time step aside while a reason to reject is asked; Back brings them back', async () => {
     hubApi({ orders: [wireVendorOrder({ id: 'o-rj', orderNumber: 'SW-7807', status: 'PENDING' })] });
-    const view = renderWithQuery(<OrdersPage />);
+    const view = renderWithQuery(<OrdersBoard />);
     const popup = (await screen.findByText(/View later/)).closest('div.fixed') as HTMLElement;
     expect(within(popup).getByRole('button', { name: 'Accept' })).toBeTruthy();
     await view.user.click(within(popup).getByRole('button', { name: 'Reject — tell us why' }));

@@ -140,7 +140,11 @@ describe('[W-11] the board uses it', () => {
   });
 
   it('says when it is not showing everything', () => {
-    expect(code).toMatch(/shown\.missing > 0/);
-    expect(code).toMatch(/completeness\(all\.length, orders\.data\?\.meta\)/);
+    // [STORE-BOARD S1] The board's lanes read every open order (GET /vendor/orders/open); what the server did not send
+    // (past its cap), or an older server's short page, is said under the board in the app's words. Behaviour:
+    // app/dashboard/orders/board-open-orders.test.tsx.
+    expect(code).toMatch(/queryFn: getBoardOrders/);
+    expect(code).toMatch(/openBoardNote\(orders\.data\?\.open \?\? null\)/);
+    expect(code).toMatch(/notShown && <p role="status"/);
   });
 });
