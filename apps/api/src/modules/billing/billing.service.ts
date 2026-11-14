@@ -39,7 +39,8 @@ import { checkoutAmountGyd, mmgCheckoutLive } from './fee-pay-actions';
 import { amountDueNow } from './amount-due';
 import { weeklyFeeAmount } from './subscription-fee';
 import { payInfo } from './agent-cash.service';
-import { assertPayAheadRoom, readPayAhead, PAY_AHEAD_MAX_WEEKS, PAY_AHEAD_MAX_WEEKS_WORD } from './pay-ahead';
+import { assertPayAheadRoom, readPayAhead, PAY_AHEAD_MAX_WEEKS, PAY_AHEAD_MAX_WEEKS_WORD, TRIAL_PAY_AHEAD_WORDS, trialEndedUnconverted } from './pay-ahead';
+import { convertEndedTrialInTx } from './trial-conversion';
 import { claimProviderPaymentInTx, ProviderIdentityError, subscriptionTenantInTx } from './provider-identity';
 import { cardRailKilled, cardRailV2Enabled, legacyCardSeamOff } from '../../utils/card-rail';
 import {
@@ -490,6 +491,19 @@ export class BillingService {
   async settleStartedWeekFromCredit(subscriptionId: string, now = new Date()): Promise<'paid' | 'none' | 'not_covered' | 'pending'> {
     let paid = false;
     // A week at a time, as the billing run would; bounded (a plan is never more than a few weeks behind its run).
+    // [TRIAL PAY-AHEAD · REVIEW-A #2513 S3-2] A trial that has ended owes its first week (startedWeekOwed) even before
+    // the daily conversion: convert this one account now, exactly as the conversion would, so the billing path below
+    // can pay that week from the credit instead of refunding a week that has started.
+    const trial = await this.prisma.subscription.findUnique({ where: { id: subscriptionId }, select: { status: true, trialEndDate: true } });
+    // [REVIEW-A2 #2513 S4-2] A payer whose fee is held for finance (or whose ownership needs repair) is not converted
+    // here, exactly as the daily job leaves it: the set-aside then refuses in words for that case (credit-refund.ts).
+    if (trial && trialEndedUnconverted(trial, now)) {
+      try {
+        await this.prisma.$transaction((tx) => convertEndedTrialInTx(tx, subscriptionId, now));
+      } catch (error) {
+        if (!(error instanceof AppError) || error.code !== 'MOVER_FEE_OWNERSHIP_INVALID') throw error;
+      }
+    }
     for (let week = 0; week < 6; week += 1) {
       const sub = await this.prisma.subscription.findUnique({ where: { id: subscriptionId }, include: PAYER_INCLUDE });
       if (!sub || !(await startedWeekOwed(this.prisma, sub, now))) return paid ? 'paid' : 'none';
@@ -2320,7 +2334,12 @@ export class BillingService {
         // owed now, whatever its date says, and is paid, never kept.
         const aheadOfItsWeek = payNowSessionId !== null && payment.periodStart.getTime() > now.getTime()
           && !['PAST_DUE', 'SUSPENDED', 'CHURNED'].includes(authority.status);
-        const bankedAnyway = mmgHeld || covered || forgiven || returning || !allowsAdvance;
+        // [TRIAL PAY-AHEAD · owner 14 Nov 2026] A trial's Pay now pays the first week after the trial ahead: kept as fee
+        // credit like any week that has not started (CARD_PAY_AHEAD), never labelled a late approval. A trial never
+        // advances here (only the billing run does, at its end), so this changes the label, never the money.
+        const trialPaysAhead = aheadOfItsWeek && authority.status === 'TRIAL'
+          && this.successfulChargeAuthorityAllowsAdvance({ ...authority, status: 'ACTIVE' }, sub);
+        const bankedAnyway = mmgHeld || covered || forgiven || returning || (!allowsAdvance && !trialPaysAhead);
         const bankCapture = bankedAnyway || aheadOfItsWeek;
         if (bankCapture && await this.holdWalletCurrencyMismatch(tx, payment, currencyCode, paymentRef)) return 'held';
         const claimed = await tx.subscriptionPayment.updateMany({
@@ -4829,8 +4848,12 @@ export class BillingService {
       const money = (n: number) => formatMoney(n, position.currencyCode);
       await notifyAdmins(this.prisma, this.notifications, {
         tenantId: await tenantOfSubscription(this.prisma, subscriptionId),
-        title: `Weekly fee paid more than ${PAY_AHEAD_MAX_WEEKS_WORD} weeks ahead — refund owed`,
-        body: `A partner now has ${money(position.heldAhead)} received for weeks that have not started, more than the ${PAY_AHEAD_MAX_WEEKS}-week limit (${money(position.cap)}${position.due ? `, plus ${money(position.weeklyFee)} for the week now due` : ''}). Refund the ${money(position.excess)} above the limit to the partner (finance procedure: weekly fee refunds). The money had already arrived, so nothing was refused.`,
+        // [TRIAL PAY-AHEAD · REVIEW-A #2513 S4-2] A trial is measured against its own limit (one week; none beyond the
+        // week now due once the trial has ended and is not converted yet), and the page says so.
+        title: position.trial
+          ? `Weekly fee paid more than ${TRIAL_PAY_AHEAD_WORDS} during a free trial — refund owed`
+          : `Weekly fee paid more than ${PAY_AHEAD_MAX_WEEKS_WORD} weeks ahead — refund owed`,
+        body: `A partner now has ${money(position.heldAhead)} received for weeks that have not started, more than ${position.trial ? 'a free trial takes' : `the ${PAY_AHEAD_MAX_WEEKS}-week limit`} (${money(position.cap)}${position.due ? `, plus ${money(position.weeklyFee)} for the week now due` : ''}). Refund the ${money(position.excess)} above the limit to the partner (finance procedure: weekly fee refunds). The money had already arrived, so nothing was refused.`,
         data: { kind: 'billing_invariants', alert: 'pay-ahead-over-cap', subscriptionId, excess: position.excess, currencyCode: position.currencyCode },
         dedupeKey: `pay-ahead-over-cap:${subscriptionId}:${position.heldAhead}`,
       });

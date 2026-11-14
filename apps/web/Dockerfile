@@ -115,6 +115,8 @@ COPY apps/mobile/src/modules/vendor/storeHandover.ts apps/mobile/src/modules/ven
 COPY apps/mobile/src/modules/vendor/orderLineOptions.ts apps/mobile/src/modules/vendor/orderLineOptions.ts
 COPY apps/mobile/src/lib/menuOptionsEditor.ts apps/mobile/src/lib/menuOptionsEditor.ts
 COPY apps/mobile/src/modules/vendor/screens/delivery-owner.ts apps/mobile/src/modules/vendor/screens/delivery-owner.ts
+# [DT-OVERFLOW] The Dragontail branch's overflow words and the "Get a Swift rider" rule (order window, Settings card).
+COPY apps/mobile/src/modules/vendor/deliveryOverflow.ts apps/mobile/src/modules/vendor/deliveryOverflow.ts
 # [REVIEW-LIGHT2 #2306 S3 · #2311] The Orders home's store status card reads a held store's hold the app's way (storeHoldOf; imports nothing).
 COPY apps/mobile/src/lib/vendorProfile.ts apps/mobile/src/lib/vendorProfile.ts
 # [TAP-AUDIT] The Products page's item editor uses the app's own words for the store's pick tick (imports nothing).

@@ -282,17 +282,17 @@ describe('[KITCHEN] outbound: the insert replaces the ring', () => {
     expect((await integration()).lastError).toMatch(/kitchen item number/);
   });
 
-  it('Dragontail down after the spec 3 retries: the tablet rings; one insert attempt chain, never a second send', async () => {
+  it('[DT-OVERFLOW round 2 · review A S2-1] 5xx after the spec 3 retries: a gateway answered, so the kitchen MAY have it — UNKNOWN, not rung (the careful path settles it); one insert attempt chain, never a second send', async () => {
     const before = await ringsFor(ownerUserId);
     const order = await makeOrder();
     await releaseOnly();
     mock.failNext('/PosInsertOrders', [500, 500, 500, 500]);
     await drainKitchenSyncs(deps(), { orderIds: [order.id] });
-    expect((await syncOf(order.id))?.state).toBe('FALLBACK');
+    expect((await syncOf(order.id))?.state).toBe('UNKNOWN');
     expect(mock.count('/PosInsertOrders')).toBe(4);
-    expect(await ringsFor(ownerUserId)).toBe(before + 1);
+    expect(await ringsFor(ownerUserId), 'not rung while the kitchen may have it').toBe(before);
     await drainKitchenSyncs(deps(), { orderIds: [order.id] });
-    expect(mock.count('/PosInsertOrders'), 'a fallen-back order is never sent later').toBe(4);
+    expect(mock.count('/PosInsertOrders'), 'a send that may have arrived is never sent again').toBe(4);
   });
 
   it('no login in the secret: the tablet rings', async () => {

@@ -175,7 +175,9 @@ async function payerIsProduction(prisma: PrismaClient, subscriptionId: string): 
  * and #1393's read-only decision for a NEW payment. That decision is `off`
  * while any of this fee's payments is being confirmed (an MMG checkout open,
  * confirming, held or expired without an answer; a card payment pending or
- * unclear) and while no billing clock covers the subscription. Reading never
+ * unclear) and while no billing clock covers the subscription (except a free
+ * trial awaiting its first fee, which may pay that week ahead: owner 14 Nov
+ * 2026, fee-payment-authority.ts unmappedTrialAwaitingFirstFee). Reading never
  * maps a clock, takes a hold or changes a payment.
  */
 async function payActionsFor(
