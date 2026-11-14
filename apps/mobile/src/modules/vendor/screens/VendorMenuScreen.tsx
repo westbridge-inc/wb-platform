@@ -40,6 +40,16 @@ import { money } from '../../../lib/money';
 import { inventorySummary } from '../../../lib/vendorInventory';
 import { isKeptPhoto, storePhotoUrl } from '../../../lib/images';
 import { MENU_LIST_WINDOW } from '../../../lib/listPerformance';
+import {
+  CATALOGUE_SEARCH_PLACEHOLDER,
+  filterCatalogue,
+  itemCountLine,
+  noMatchLine,
+  searchTerms,
+  tracksAnyStock,
+} from '../../../lib/catalogueSearch';
+import { useDebouncedValue } from '../../../hooks/useDebouncedValue';
+import { CatalogueSearchBar } from '../CatalogueSearchBar';
 
 /** [IMAGES-E2E PR4 · REVIEW-F S4-2 on #1965] A photo address saved before photos were uploaded: named for what it is. */
 export const OUTSIDE_PHOTO_NOTE = "Its old photo link isn't shown to customers. Upload the photo again.";
@@ -625,11 +635,12 @@ type MenuRow =
   | { kind: 'noItems'; key: string }
   | { kind: 'gap'; key: string };
 
-function menuRows(categories: any[]): MenuRow[] {
+/** [MENU-SEARCH] Each section with the items to show under it: all of them, or a search's matches only (the
+ *  section itself stays whole, so its heading counts and deletes the whole section). */
+function menuRows(sections: Array<{ category: any; items: any[] }>): MenuRow[] {
   const rows: MenuRow[] = [];
-  for (const category of categories) {
+  for (const { category, items } of sections) {
     rows.push({ kind: 'section', key: `section:${category.id}`, category });
-    const items: any[] = category.items ?? [];
     if (items.length === 0) rows.push({ kind: 'noItems', key: `no-items:${category.id}` });
     for (const item of items) rows.push({ kind: 'item', key: `item:${item.id}`, item });
     rows.push({ kind: 'gap', key: `gap:${category.id}` });
@@ -661,9 +672,21 @@ export function VendorMenuScreen({ navigation }: any) {
     [categories, selectedCategoryId],
   );
   const selectedCategoryExists = !selectedCategoryId || categories.some((category) => category.id === selectedCategoryId);
+  // [MENU-SEARCH · owner 14 Nov 2026] The website's "Search name or SKU" (dashboard/inventory), on the menu this tab
+  // already holds (every item: nothing to page): the box shows each key at once, the list follows when typing pauses.
+  const [query, setQuery] = useState('');
+  const [lowOnlyChosen, setLowOnly] = useState(false);
+  const settledQuery = useDebouncedValue(query);
+  const terms = useMemo(() => searchTerms(settledQuery), [settledQuery]);
+  // The website's "Low stock only", offered only when some item's stock is counted (never a restaurant's).
+  const countsStock = tracksAnyStock(allItems);
+  const lowOnly = lowOnlyChosen && countsStock;
+  const shown = useMemo(() => filterCatalogue(visibleCategories, { terms, lowOnly }), [visibleCategories, terms, lowOnly]);
+  const searching = shown.filtering;
+  const showAll = useCallback(() => { setQuery(''); setLowOnly(false); }, []);
   // [SPEED 22 Oct] One flat list of rows (section header, its items, a gap) for a
   // windowed list: the tab draws the first batch, not every item of every section.
-  const rows = useMemo(() => menuRows(visibleCategories), [visibleCategories]);
+  const rows = useMemo(() => menuRows(shown.sections), [shown]);
   const renderRow = useCallback(({ item: row }: { item: MenuRow }) => {
     if (row.kind === 'section') return <CategoryHeader cat={row.category} canEdit={canEdit} />;
     if (row.kind === 'gap') return <View style={{ height: space.lg }} />;
@@ -704,6 +727,19 @@ export function VendorMenuScreen({ navigation }: any) {
       ) : menuQ.isError && !menuQ.data ? (
         <ErrorState message={`We couldn't load your ${cat.label.toLowerCase()}. Check your connection and try again.`} onRetry={() => menuQ.refetch()} />
       ) : (
+        <>
+        {/* [MENU-SEARCH] Above the list, not in it: it stays on screen while the list scrolls. */}
+        {allItems.length > 0 ? (
+          <View style={{ paddingHorizontal: GUTTER, marginBottom: space.md }}>
+            <CatalogueSearchBar value={query} onChangeText={setQuery} onClear={() => setQuery('')} placeholder={CATALOGUE_SEARCH_PLACEHOLDER} />
+            <View style={{ flexDirection: 'row', alignItems: 'center', flexWrap: 'wrap', gap: space.md, marginTop: space.sm }}>
+              {countsStock ? <Chip label="Low stock only" selected={lowOnly} onPress={() => setLowOnly(!lowOnly)} /> : null}
+              <T variant="caption" tone="muted" accessibilityLiveRegion="polite" style={{ flexShrink: 1 }}>
+                {itemCountLine(shown.count)}
+              </T>
+            </View>
+          </View>
+        ) : null}
         <FlatList
           data={rows}
           keyExtractor={menuRowKey}
@@ -711,6 +747,8 @@ export function VendorMenuScreen({ navigation }: any) {
           {...MENU_LIST_WINDOW}
           contentContainerStyle={{ paddingHorizontal: GUTTER, paddingBottom: space['3xl'] }}
           showsVerticalScrollIndicator={false}
+          keyboardShouldPersistTaps="handled"
+          keyboardDismissMode="on-drag"
           refreshControl={<RefreshControl refreshing={pull.refreshing} onRefresh={() => { void pull.onRefresh(); }} tintColor={color.brand[500]} />}
           ListHeaderComponent={<>
           {menuQ.isError && menuQ.data ? (
@@ -718,6 +756,9 @@ export function VendorMenuScreen({ navigation }: any) {
               Showing the menu from the last check. Check your connection and try again.
             </T>
           ) : null}
+          {/* [MENU-SEARCH] While searching, the results lead: the counts and the manager tools step aside until the
+              search is cleared (the section chips stay: they narrow a search too). */}
+          {searching ? null : <>
           <View style={{ flexDirection: 'row', alignItems: 'flex-end', justifyContent: 'space-between', gap: space.md, marginBottom: space.lg }}>
             <View style={{ flex: 1 }}>
               <T variant="micro" tone="muted">
@@ -774,6 +815,7 @@ export function VendorMenuScreen({ navigation }: any) {
               Floor access: switch items on or sold out. Editing stays with a manager or owner.
             </T>
           )}
+          </>}
 
           {categories.length > 0 ? (
             <View style={{ marginBottom: space.lg }}>
@@ -798,6 +840,7 @@ export function VendorMenuScreen({ navigation }: any) {
             </View>
           ) : null}
 
+          {searching ? null : <>
           {/* Inventory-first: goods vendors lead with stock health (self-hides
               for restaurants/services, which don't track stock). */}
           <InventorySummaryCard categories={categories} />
@@ -830,11 +873,20 @@ export function VendorMenuScreen({ navigation }: any) {
 
           {canEdit ? <LowStockCard categories={categories} navigation={navigation} catOptions={catOptions} /> : null}
           </>}
+          </>}
           ListEmptyComponent={categories.length === 0 ? (
             <EmptyState
               icon="book-open"
               title={canEdit ? `Build your ${cat.label.toLowerCase()}` : 'No items to update'}
               body={canEdit ? 'Add a section, then start adding items.' : 'A manager or owner needs to add the first item.'}
+            />
+          ) : searching ? (
+            <EmptyState
+              icon="search"
+              title={noMatchLine(settledQuery)}
+              body={lowOnly ? 'Only low stock items are shown.' : 'Check the spelling, or search by SKU.'}
+              actionLabel="Show all items"
+              onAction={showAll}
             />
           ) : null}
           ListFooterComponent={<>
@@ -852,6 +904,7 @@ export function VendorMenuScreen({ navigation }: any) {
           ) : null}
           </>}
         />
+        </>
       )}
     </Screen>
   );
