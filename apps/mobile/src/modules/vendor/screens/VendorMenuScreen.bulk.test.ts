@@ -183,6 +183,8 @@ describe('several items at once', () => {
     expect(texts(tree)).toContain('2 items marked sold out. 1 was already sold out.');
     expect(selectable(tree)).toHaveLength(0);
     expect(popup(tree)).toBeUndefined();
+    pill(tree, 'Select').props.onPress();
+    expect(texts(draw()), 'choosing again starts from no ticks').toContain('0 selected');
   });
 
   it('Make available: its own ask; an item Swift does not allow is named in the answer', () => {
