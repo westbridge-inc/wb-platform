@@ -69,3 +69,18 @@ export function kitchenHoldsDescription(kitchen: OrderKitchenView | null | undef
 export const ROUTE_NOTE_TEST_ID = 'route-note';
 
 export const KITCHEN_HOLDS_DETAIL = 'Dispatch it from Dragontail. Swift can’t add a rider to it: Dragontail would not be told, and two drivers could come.';
+
+/** The delivery card's facts (screens/delivery-owner.ts deliveryOwnerView) as far as this file needs them. */
+interface DeliveryOwnerCard { canChoosePlatform: boolean; title: string; description: string }
+
+/**
+ * [DT-OVERFLOW] The delivery card with the kitchen system's facts applied: while Dragontail has the order, no "Get a
+ * Swift rider" and the words say why; otherwise the card unchanged, plus a note of where a Dragontail branch's order
+ * went (null for any other order). Kept out of delivery-owner.ts, which the website's first load carries.
+ */
+export function withKitchenHold<V extends DeliveryOwnerCard>(view: V, kitchen: OrderKitchenView | null | undefined): V & { kitchenNote: { title: string; detail: string } | null } {
+  if (kitchenHoldsOrder(kitchen)) {
+    return { ...view, canChoosePlatform: false, title: kitchen?.title || KITCHEN_HOLDS_TITLE, description: kitchenHoldsDescription(kitchen), kitchenNote: null };
+  }
+  return { ...view, kitchenNote: kitchen?.title ? { title: kitchen.title, detail: kitchen.detail ?? '' } : null };
+}

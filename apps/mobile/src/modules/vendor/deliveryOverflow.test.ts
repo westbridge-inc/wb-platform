@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { busyWindowProblem, busyWindowWords, kitchenHoldsOrder, OVERFLOW_MODE_OPTIONS, usesBusyHours } from './deliveryOverflow';
-import { deliveryOwnerView } from './screens/delivery-owner';
+import { busyWindowProblem, busyWindowWords, kitchenHoldsOrder, OVERFLOW_MODE_OPTIONS, usesBusyHours, withKitchenHold, type OrderKitchenView } from './deliveryOverflow';
+import { deliveryOwnerView, type DeliveryOwnerInput } from './screens/delivery-owner';
+
+/** The phone's order screen: the delivery card, then the kitchen system's facts on it. */
+const card = (input: DeliveryOwnerInput & { kitchen?: OrderKitchenView | null }) => withKitchenHold(deliveryOwnerView(input), input.kitchen);
 
 // [DT-OVERFLOW · owner 14 Nov 2026] The store's side of automatic delivery overflow: "Get a Swift rider" is never
 // offered on an order Dragontail has (Dragontail is not told: two drivers), and the busy-hours words and checks match
@@ -10,12 +13,12 @@ const own = { fulfillment: 'DELIVERY', fulfillmentMode: 'VENDOR_DELIVERY', statu
 
 describe('[DT-OVERFLOW] the delivery owner card', () => {
   it('an own-delivery order with no kitchen system keeps "Get a Swift rider" (unchanged)', () => {
-    expect(deliveryOwnerView(own).canChoosePlatform).toBe(true);
-    expect(deliveryOwnerView({ ...own, kitchen: null }).canChoosePlatform).toBe(true);
+    expect(card(own).canChoosePlatform).toBe(true);
+    expect(card({ ...own, kitchen: null }).canChoosePlatform).toBe(true);
   });
 
   it('Dragontail has it: no "Get a Swift rider", and the card says so in the store’s words', () => {
-    const view = deliveryOwnerView({ ...own, kitchen: { holdsOrder: true, title: 'In Dragontail: your own driver delivers it', detail: 'Sent to Dragontail.' } });
+    const view = card({ ...own, kitchen: { holdsOrder: true, title: 'In Dragontail: your own driver delivers it', detail: 'Sent to Dragontail.' } });
     expect(view.canChoosePlatform).toBe(false);
     expect(view.title).toBe('In Dragontail: your own driver delivers it');
     expect(view.description).toContain('Dispatch it from Dragontail');
@@ -23,16 +26,16 @@ describe('[DT-OVERFLOW] the delivery owner card', () => {
   });
 
   it('it fell back to the tablet, or Swift moved it to its riders: the choice stays, and the reason is shown', () => {
-    const back = deliveryOwnerView({ ...own, kitchen: { holdsOrder: false, title: 'On this tablet', detail: 'Dragontail could not take this order.' } });
+    const back = card({ ...own, kitchen: { holdsOrder: false, title: 'On this tablet', detail: 'Dragontail could not take this order.' } });
     expect(back.canChoosePlatform).toBe(true);
     expect(back.kitchenNote?.title).toBe('On this tablet');
-    const moved = deliveryOwnerView({ ...own, fulfillmentMode: 'PLATFORM_RIDER', kitchen: { holdsOrder: false, route: 'SWIFT_RIDERS', title: 'Swift rider: your drivers were all busy' } });
+    const moved = card({ ...own, fulfillmentMode: 'PLATFORM_RIDER', kitchen: { holdsOrder: false, route: 'SWIFT_RIDERS', title: 'Swift rider: your drivers were all busy' } });
     expect(moved.kitchenNote?.title).toBe('Swift rider: your drivers were all busy');
   });
 
   it('an older server (no kitchen field) changes nothing', () => {
     expect(kitchenHoldsOrder(undefined)).toBe(false);
-    expect(deliveryOwnerView(own).kitchenNote).toBeNull();
+    expect(card(own).kitchenNote).toBeNull();
   });
 });
 

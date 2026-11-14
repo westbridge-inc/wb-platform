@@ -1,5 +1,3 @@
-import { KITCHEN_HOLDS_TITLE, kitchenHoldsDescription, kitchenHoldsOrder, type OrderKitchenView } from '../deliveryOverflow';
-
 /** [PROD-RIDER-TEST (a)1] Fallbacks for an older server that sends the flag without its words. */
 export const NO_RIDER_PROMPT = 'No rider found. Deliver it yourselves?';
 export const NO_RIDER_DETAIL = 'One tap and your store delivers this order with its own rider; the customer is told. Or search for a Swift rider again.';
@@ -34,8 +32,6 @@ export interface DeliveryOwnerInput {
   /** The server's own prompt and detail for that case (shown verbatim). */
   noRiderPrompt?: string | null;
   noRiderDetail?: string | null;
-  /** [DT-OVERFLOW] Where a Dragontail branch's order went (GET /vendor/orders/:id `kitchen`; absent elsewhere). */
-  kitchen?: OrderKitchenView | null;
 }
 
 /** The store may close only its own riderless delivery after the kitchen has
@@ -64,13 +60,9 @@ export function deliveryOwnerView(input: DeliveryOwnerInput) {
   const canChooseVendor = mayChange && (input.selfDeliveryEnabled === true || noRider) && !selfDelivery;
   // A store whose global self-delivery setting was disabled later must still
   // be able to return an already-self-owned order to Swift.
-  // [DT-OVERFLOW] Except while Dragontail has it: Dragontail is not told, so its driver would come too.
-  const inKitchen = kitchenHoldsOrder(input.kitchen);
-  const canChoosePlatform = mayChange && selfDelivery && !inKitchen;
+  const canChoosePlatform = mayChange && selfDelivery;
 
-  const title = inKitchen
-    ? (input.kitchen?.title || KITCHEN_HOLDS_TITLE)
-    : noRider
+  const title = noRider
     ? (input.noRiderPrompt || NO_RIDER_PROMPT)
     : selfDelivery
     ? 'Your store delivers this order'
@@ -80,9 +72,7 @@ export function deliveryOwnerView(input: DeliveryOwnerInput) {
         ? 'Platform rider delivery selected'
         : 'Delivery owner not chosen yet';
 
-  const description = inKitchen
-    ? kitchenHoldsDescription(input.kitchen)
-    : noRider
+  const description = noRider
     ? (input.noRiderDetail || NO_RIDER_DETAIL)
     : selfDelivery
     ? 'No Swift rider will be sent for this order.'
@@ -103,7 +93,5 @@ export function deliveryOwnerView(input: DeliveryOwnerInput) {
     canChoosePlatform,
     title,
     description,
-    /** [DT-OVERFLOW] A Dragontail branch's order that came to this tablet: where it went and why (null otherwise). */
-    kitchenNote: !inKitchen && input.kitchen?.title ? { title: input.kitchen.title, detail: input.kitchen.detail ?? '' } : null,
   };
 }

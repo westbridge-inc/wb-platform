@@ -38,7 +38,7 @@ import {
   orderActions,
 } from '../shared';
 import { deliveryOwnerView } from './delivery-owner';
-import { ROUTE_NOTE_TEST_ID } from '../deliveryOverflow';
+import { ROUTE_NOTE_TEST_ID, withKitchenHold } from '../deliveryOverflow';
 import { NO_SHOW_WORDS, orderNoShowOpen } from '../noShow';
 import { NoShowConfirm, useStartClock } from '../NoShowConfirm';
 import { MmgRefundOwedCard } from '../MmgRefundOwedCard';
@@ -287,7 +287,7 @@ function VendorOrderDetailBody({ navigation, route }: any) {
   const timeline: any[] = [...(order.statusHistory ?? [])].reverse();
   const customerName = [order.customer?.firstName, order.customer?.lastName].filter(Boolean).join(' ') || 'Customer';
   const riderName = [order.rider?.user?.firstName, order.rider?.user?.lastName].filter(Boolean).join(' ');
-  const deliveryOwner = deliveryOwnerView({
+  const deliveryOwner = withKitchenHold(deliveryOwnerView({
     fulfillment: order.fulfillment,
     fulfillmentMode: order.fulfillmentMode,
     status: order.status,
@@ -297,8 +297,7 @@ function VendorOrderDetailBody({ navigation, route }: any) {
     noRiderFound: order.noRiderFound === true,
     noRiderPrompt: order.noRiderPrompt,
     noRiderDetail: order.noRiderDetail,
-    kitchen: order.kitchen,
-  });
+  }), order.kitchen);
 
   const runAction = (action: (typeof actions)[number]['action']) => {
     if (action === 'reject') {
