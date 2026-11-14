@@ -36,15 +36,19 @@ describe('[DT-OVERFLOW] the console panel', () => {
     expect(container.textContent).toBe('');
   });
 
-  it('shows the setting and where recent deliveries went, and saves without a reason', async () => {
+  it('shows the setting and where recent deliveries went, and saves with a stated reason (PDF v1.1 §6)', async () => {
     const writes: ApiRequest[] = [];
     serve(on, writes);
     const { user } = renderWithQuery(<KitchenOverflowPanel vendorId="vendor-dt" />);
     expect(await screen.findByText(/SW-2001: Swift riders \(no free driver\)/)).toBeTruthy();
     expect(screen.getByText(/SW-2002: Dragontail \(driver check failed or timed out \(safe default\)\)/)).toBeTruthy();
     await user.click(screen.getByRole('button', { name: 'Save' }));
+    expect(writes, 'nothing is sent before a reason').toHaveLength(0);
+    await user.type(await screen.findByRole('textbox'), REASON);
+    await user.click(screen.getByRole('button', { name: 'Continue' }));
     await waitFor(() => expect(writes).toHaveLength(1));
     expect(JSON.parse(String(writes[0]!.init?.body))).toEqual({ mode: 'AUTO_DRIVER_CHECK' });
+    expect(new Headers(writes[0]!.init?.headers).get('x-swift-reason')).toBe(REASON);
   });
 
   it('[round 2] while the driver check waits for Dragontail: its two choices are greyed, and a branch still set to one cannot be saved as is', async () => {
@@ -61,6 +65,8 @@ describe('[DT-OVERFLOW] the console panel', () => {
     expect((screen.getByRole('button', { name: 'Save' }) as HTMLButtonElement).disabled).toBe(true);
     await user.selectOptions(screen.getByRole('combobox'), 'NONE');
     await user.click(screen.getByRole('button', { name: 'Save' }));
+    await user.type(await screen.findByRole('textbox'), REASON);
+    await user.click(screen.getByRole('button', { name: 'Continue' }));
     await waitFor(() => expect(writes).toHaveLength(1));
     expect(JSON.parse(String(writes[0]!.init?.body))).toEqual({ mode: 'NONE' });
   });

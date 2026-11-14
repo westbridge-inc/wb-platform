@@ -2569,12 +2569,19 @@ export async function adminRoutes(app: FastifyInstance) {
   });
   // [DT-OVERFLOW · owner 14 Nov 2026] The branch's delivery overflow (the store's owner or manager sets the same), and
   // where its recent deliveries went and why. Refused while the switch is off.
+  const kitchenReasonRefusal = (problem: NonNullable<ReturnType<typeof reasonProblem>>) => (problem === 'missing'
+    ? 'Say why, in a sentence (for example what the branch asked for, or who at the store confirmed it). The record keeps it.'
+    : reasonRefusal(problem, 'C3'));
   app.get('/vendors/:id/kitchen-integration/overflow', { preHandler: [adminGuard] }, async (request) => {
     const { getKitchenOverflow } = await import('../kitchen/kitchen-admin');
     return { success: true, data: await getKitchenOverflow(app.prisma, (request.params as { id: string }).id) };
   });
   app.put('/vendors/:id/kitchen-integration/overflow', { preHandler: [adminGuard] }, async (request) => {
     const { putKitchenOverflow } = await import('../kitchen/kitchen-admin');
+    // [COORD ruling 14 Nov · Dragontail PDF v1.1 §6 "every change … needs a reason"] The console's change of a branch's
+    // overflow needs a stated reason, like the connection (the store app's own change stays reason-free, audited).
+    const problem = reasonProblem('C3', request.body, request.headers as never);
+    if (problem) throw new ValidationError(kitchenReasonRefusal(problem));
     // [round 2 · review A S4-1] Who moved this branch's cash deliveries between two dispatch systems: the audit row, in
     // the same transaction, carries the mode and the number of busy windows before and after (no person data).
     return { success: true, data: await putKitchenOverflow(app.prisma, (request.params as { id: string }).id, request.body,
@@ -2582,9 +2589,6 @@ export async function adminRoutes(app: FastifyInstance) {
   });
   // [round 3 · review B S4-8] Operations confirmed with the store that Dragontail does not have this order: the
   // "maybe in Dragontail" hold on "Get a Swift rider" is cleared. Audited in the same transaction.
-  const kitchenReasonRefusal = (problem: NonNullable<ReturnType<typeof reasonProblem>>) => (problem === 'missing'
-    ? 'Say why, in a sentence (for example who at the store confirmed it). The record keeps it.'
-    : reasonRefusal(problem, 'C3'));
   // [follow-up · confirm review N-5] A mistake here means two drivers for one order: a stated reason is required
   // (x-swift-reason, the same 12-500 character rule as a consequential action) and recorded.
   app.post('/vendors/:id/kitchen-integration/orders/:orderId/not-in-kitchen', { preHandler: [adminGuard] }, async (request) => {

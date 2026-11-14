@@ -55,6 +55,9 @@ export const ALERT_CLASS_KINDS: Readonly<Record<AlertClass, readonly string[]>> 
     'ad_campaign_scheduled', 'ad_campaign_live', 'ad_campaign_completed', 'ad_campaign_resumed',
     // [CHECKLIST-LEGAL · owner 1 Nov 2026 (a)] vendor_tier_nudge and vendor_tier_promoted are gone with the tier.
     'trial_fee_education', 'provider_fee_trial',
+    // [COORD ruling 14 Nov · Dragontail PDF v1.1 §3.2] one order that certainly did not reach a branch's kitchen system
+    // and rang its tablet: operations' low-priority notice (the console list, a silent push), never a page.
+    'kitchen_order_rang',
   ],
 
   standard: [

@@ -1825,8 +1825,8 @@ export interface KitchenRouteRow {
 }
 const kitchenOverflow = (vendorId: string) => `/api/v1/admin/vendors/${encodeURIComponent(vendorId)}/kitchen-integration/overflow`;
 export const fetchKitchenOverflow = (vendorId: string): Promise<Envelope<KitchenOverflowView>> => apiFetch(kitchenOverflow(vendorId));
-export const setKitchenOverflow = (vendorId: string, body: { mode: KitchenOverflowMode; busyHours?: KitchenBusyWindow[] }): Promise<Envelope<KitchenOverflowView>> =>
-  apiFetch(kitchenOverflow(vendorId), { method: 'PUT', body: JSON.stringify(body) });
+export const setKitchenOverflow = (vendorId: string, body: { mode: KitchenOverflowMode; busyHours?: KitchenBusyWindow[] }, reason: string): Promise<Envelope<KitchenOverflowView>> =>
+  apiFetch(kitchenOverflow(vendorId), { method: 'PUT', body: JSON.stringify(body), reason });
 /** [round 3] Operations confirmed with the store that Dragontail does not have this order. */
 export const clearMaybeInKitchen = (vendorId: string, orderId: string, reason: string): Promise<Envelope<{ orderId: string; maybeInKitchen: boolean }>> =>
   apiFetch(`/api/v1/admin/vendors/${encodeURIComponent(vendorId)}/kitchen-integration/orders/${encodeURIComponent(orderId)}/not-in-kitchen`, { method: 'POST', body: JSON.stringify({}), reason });

@@ -83,6 +83,8 @@ export const KITCHEN_ROUTE_REASONS = {
   NO_FREE_DRIVER: 'SWIFT_RIDERS',
   /** [round 3 · review B S3-2] The kitchen link was offline and the overflow did not move it: the tablet, own driver. */
   LINK_OFFLINE: 'TABLET',
+  /** [COORD ruling 14 Nov · PDF v1.1] The kitchen link was offline and a Swift rider near could carry it: Swift riders. */
+  LINK_OFFLINE_SWIFT_RIDERS: 'SWIFT_RIDERS',
 } as const satisfies Record<string, KitchenRouteName>;
 export type KitchenRouteReason = keyof typeof KITCHEN_ROUTE_REASONS;
 
@@ -406,9 +408,11 @@ export async function planKitchenRoute(
   if (!integration?.enabled || integration.externalStoreNo == null) return null;
   const storeNo = integration.externalStoreNo;
   const now = deps.now ? deps.now() : new Date();
-  // [round 3 · review B S3-2] An OFFLINE link still has its overflow decided: busy hours need nothing from the kitchen
-  // system, so a busy-hours delivery still goes to Swift riders. The driver check is not used (the link is down), and
-  // anything the kitchen would have taken stays on the tablet with the branch's own driver (LINK_OFFLINE).
+  // [round 3 · review B S3-2 · COORD ruling 14 Nov, PDF v1.1 "Dragontail down → a Swift rider delivers it"] An OFFLINE
+  // link still has its route decided, and needs nothing from the kitchen system: a delivery the kitchen would have
+  // taken goes to Swift riders WHENEVER a Swift rider online near the branch can carry its cash (the overflow's own
+  // guard); with none, it stays on the tablet with the branch's own driver (LINK_OFFLINE). The driver check is not
+  // used (the link is down).
   const offline = integration.linkOfflineAt != null;
   const reached = await decideKitchenRoute({
     orderId,
@@ -420,7 +424,15 @@ export async function planKitchenRoute(
     driverCheck: () => (deps.driverCheck ? deps.driverCheck(storeNo) : Promise.resolve(storedDriverCheck(integration, now))),
     swiftRiders: () => (deps.swiftRiders ? deps.swiftRiders(order) : swiftRidersNearCheck(prisma, order, env)),
   });
-  const decision = offline ? offlineRoute(reached) : reached;
+  let decision = reached;
+  if (offline && reached.route === 'KITCHEN') {
+    // The overflow already asked about Swift riders and found none (or could not ask): do not ask twice.
+    const riders: SwiftRiderCheck = reached.reason === 'NO_SWIFT_RIDER_NEAR' ? { kind: 'NONE_NEAR' }
+      : reached.reason === 'SWIFT_RIDER_CHECK_FAILED' ? { kind: 'FAILED', problem: 'the Swift rider check failed' }
+        : await (deps.swiftRiders ? deps.swiftRiders(order) : swiftRidersNearCheck(prisma, order, env))
+          .catch((err: unknown): SwiftRiderCheck => ({ kind: 'FAILED', problem: problemOf(err) }));
+    decision = offlineRoute(reached, riders);
+  }
   log().info({ orderId, route: decision.route, reason: decision.reason, note: decision.note }, '[KITCHEN-OVERFLOW] route decided');
   return decision;
 }
@@ -431,9 +443,12 @@ export function decidedOffline(orderId: string): KitchenRouteDecision {
 }
 
 /** [round 3] While the link is offline, a decision for the kitchen means the tablet (own driver); Swift riders stand. */
-export function offlineRoute(decision: KitchenRouteDecision): KitchenRouteDecision {
+export function offlineRoute(decision: KitchenRouteDecision, riders?: SwiftRiderCheck): KitchenRouteDecision {
   if (decision.route !== 'KITCHEN') return decision;
-  return decided(decision.orderId, 'LINK_OFFLINE', `${decision.note}; the kitchen link is offline: on the Swift tablet, own driver`);
+  if (riders?.kind === 'NEAR') {
+    return decided(decision.orderId, 'LINK_OFFLINE_SWIFT_RIDERS', `the kitchen link is offline; ${riders.count} Swift rider(s) near can carry it`);
+  }
+  return decided(decision.orderId, 'LINK_OFFLINE', `${decision.note}; the kitchen link is offline and no Swift rider near can carry it: on the Swift tablet, own driver`);
 }
 
 /** The claim's answer when no plan reached it (a direct call, or a failed read before the claim): the kitchen. */
@@ -511,6 +526,7 @@ export const KITCHEN_HAS_ORDER_WORDS = 'This order is in Dragontail, and your ow
 const SWIFT_REASON_WORDS: Partial<Record<KitchenRouteReason, string>> = {
   BUSY_HOURS: 'it came in during your busy hours',
   NO_FREE_DRIVER: 'your drivers were all busy',
+  LINK_OFFLINE_SWIFT_RIDERS: 'Dragontail was not reachable',
 };
 
 const KITCHEN_REASON_WORDS: Partial<Record<KitchenRouteReason, string>> = {
@@ -542,7 +558,7 @@ export function kitchenStoreView(
   if (route === 'TABLET') {
     return {
       holdsOrder: false, route, reason, title: 'On this tablet only, not in Dragontail',
-      detail: 'Dragontail was not reachable, so this order came to this tablet. Make it from here; your own driver delivers it (Dragontail does not have it).',
+      detail: 'Dragontail was not reachable and no Swift rider nearby could carry this order, so it came to this tablet. Make it from here; your own driver delivers it (Dragontail does not have it).',
     };
   }
   if (route === 'SWIFT_RIDERS') {

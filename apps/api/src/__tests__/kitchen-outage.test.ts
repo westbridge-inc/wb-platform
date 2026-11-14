@@ -90,8 +90,18 @@ async function makeOrder(fulfillment: 'DELIVERY' | 'PICKUP' = 'DELIVERY') {
 const syncOf = (orderId: string) => app.prisma.orderIntegrationSync.findUnique({ where: { orderId_provider: { orderId, provider: 'DRAGONTAIL' } } });
 const link = () => app.prisma.vendorIntegration.findUniqueOrThrow({ where: { id: integrationId } });
 const ringsOf = (orderId: string) => app.prisma.notification.count({ where: { userId: owner.userId, title: { contains: 'New' }, data: { path: ['orderId'], equals: orderId } } });
-/** Operations notes about this order (per-order pages). */
-const orderPages = (orderId: string) => app.prisma.notification.count({ where: { userId: opsAdminId, data: { path: ['orderId'], equals: orderId } } });
+/** Operations PAGES about this order (not the quiet "order on the tablet" notice). */
+const orderPages = (orderId: string) => app.prisma.notification.count({
+  where: { userId: opsAdminId, data: { path: ['orderId'], equals: orderId }, NOT: { data: { path: ['kind'], equals: 'kitchen_order_rang' } } },
+});
+/** [COORD ruling 14 Nov · PDF v1.1 §3.2] The quiet per-order notice: this order certainly did not reach Dragontail. */
+const tabletNotices = (orderId: string) => app.prisma.notification.count({
+  where: { userId: opsAdminId, AND: [{ data: { path: ['orderId'], equals: orderId } }, { data: { path: ['kind'], equals: 'kitchen_order_rang' } }] },
+});
+/** Every outage alert about the branch's link (failing / offline: one per outage, PDF v1.1). */
+const outageAlerts = () => app.prisma.notification.count({
+  where: { userId: opsAdminId, OR: [{ title: { contains: 'Kitchen link failing' } }, { title: { contains: 'Kitchen link offline' } }], data: { path: ['vendorIntegrationId'], equals: integrationId } },
+});
 /** Operations notes about the branch's link. */
 const linkNotes = (words: string) => app.prisma.notification.count({ where: { userId: opsAdminId, title: { contains: words }, data: { path: ['vendorIntegrationId'], equals: integrationId } } });
 const release = () => new OrderService(app.prisma, app.io).releaseDueHeldOrders(async () => {});
@@ -197,6 +207,7 @@ describe('[DT-OUTAGE] a send that certainly never arrived', () => {
     expect(sync?.lastError).toContain('nothing was sent');
     expect(await ringsOf(order.id)).toBe(1);
     expect(await orderPages(order.id), 'no page per order').toBe(0);
+    expect(await tabletNotices(order.id), '[PDF §3.2] operations are told, quietly, once for this order').toBe(1);
     expect((await link()).linkFailures, 'counted toward the breaker').toBe(1);
     expect((await link()).linkOfflineAt).toBeNull();
   });
@@ -268,6 +279,7 @@ describe('[DT-OUTAGE] the branch breaker', () => {
     expect(after.linkOfflineAt).not.toBeNull();
     expect(await linkNotes('Kitchen link offline, orders on tablet')).toBe(1);
     for (const o of failed) expect(await orderPages(o.id)).toBe(0);
+    for (const o of failed) expect(await tabletNotices(o.id), 'one quiet notice per order').toBe(1);
 
 
     mock.reset();
@@ -278,6 +290,7 @@ describe('[DT-OUTAGE] the branch breaker', () => {
       // [round 3 · review B S3-2] A delivery is recorded as on the tablet (own driver, not in Dragontail); a pickup has no route.
       expect((await app.prisma.order.findUniqueOrThrow({ where: { id: order.id } })).kitchenRoute).toBe(fulfillment === 'DELIVERY' ? 'TABLET' : null);
       expect(await ringsOf(order.id), `${fulfillment}: rung on the tablet`).toBe(1);
+      expect(await tabletNotices(order.id), `${fulfillment}: one quiet notice (the link is offline)`).toBe(1);
     }
     expect(mock.requests, 'nothing is sent to an offline link').toHaveLength(0);
 
@@ -382,6 +395,25 @@ describe('[DT-OUTAGE] the branch breaker', () => {
     await refusedSend();
     expect(await linkNotes('Kitchen link failing') - before, 'once per streak').toBe(1);
     expect((await link()).linkOfflineAt).toBeNull();
+    // [COORD ruling 14 Nov · PDF "one alert per outage"] The third failure takes the link offline: the SAME alert.
+    const alertsBefore = await outageAlerts();
+    await refusedSend();
+    expect((await link()).linkOfflineAt).not.toBeNull();
+    expect(await outageAlerts() - alertsBefore, 'the "offline" alert is the failing note: one alert for the outage').toBe(0);
+  });
+
+  it('[COORD ruling 14 Nov] a quiet link that fails once and then works: one "failing" note and one "back online" note (the pair)', async () => {
+    await warmToken();
+    const [alertsBefore, backBefore] = [await outageAlerts(), await linkNotes('Kitchen link back online')];
+    await sys(() => app.prisma.vendorIntegration.update({ where: { id: integrationId }, data: { lastHealthyAt: new Date(Date.now() - 11 * 60_000) } }));
+    await refusedSend();
+    expect(await outageAlerts() - alertsBefore).toBe(1);
+    const ok = await makeOrder();
+    await release();
+    await drainKitchenSyncs(deps(), { orderIds: [ok.id] });
+    expect((await syncOf(ok.id))?.state).toBe('SENT');
+    expect(await linkNotes('Kitchen link back online') - backBefore).toBe(1);
+    expect(await link()).toMatchObject({ linkOutageSince: null, linkFailures: 0 });
   });
 
   it('[round 3 · review B S2-1] the order API is down behind a working login: the probe fails (it reads the order API), the link STAYS offline, and no order is parked UNKNOWN', async () => {

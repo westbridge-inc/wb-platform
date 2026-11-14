@@ -10,7 +10,7 @@ import { emitToOrderRoom, emitToStoreRoom } from '../order/order-room-emission.s
 import { vendorOperateRefusal, type StoreRoleVerifier } from '../vendor/vendor-operate';
 import { kitchenLoginFor } from './kitchen-credentials';
 import { KITCHEN_ACCEPT_GRACE_MS, kitchenLadderDecision } from './kitchen-claim';
-import { closeQuietTrials, kitchenBreakerSettings, probeWaitMs, recordLinkFailure, recordLinkProbeSuccess, recordLinkSuccess } from './kitchen-link';
+import { closeQuietTrials, kitchenBreakerSettings, noteOrderOnTablet, probeWaitMs, recordLinkFailure, recordLinkProbeSuccess, recordLinkSuccess } from './kitchen-link';
 import {
   KitchenPermanentError,
   KitchenTransientError,
@@ -588,7 +588,8 @@ async function prepareSend(
   }
   // [DT-OUTAGE] The branch's link is offline: nothing is sent; it rings the tablet (the outage was alerted once).
   if (integration.linkOfflineAt) {
-    await fallBack(deps, sync, 'the kitchen link is offline', own, 'link');
+    // [COORD ruling 14 Nov] Rang the tablet because the link is offline: one low-priority notice for this order.
+    if (await fallBack(deps, sync, 'the kitchen link is offline', own, 'link')) await noteOrderOnTablet(deps, sync.orderId, 'the branch\'s Dragontail link is offline');
     return null;
   }
   // [security scan · d68ff3f6] The order goes to the store number it was claimed under, never a different one.
@@ -650,8 +651,12 @@ async function sendOne(deps: KitchenDeps, syncId: string, leasedAt: number): Pro
     // deadline, a login refused or answering 5xx): the tablet rings now, no page per order; the branch's breaker
     // counts it. An order-specific refusal (validation) is not a link failure: rung, and operations paged, as before.
     const linkFailure = err instanceof KitchenTransientError || (err instanceof KitchenPermanentError && err.linkFailure);
-    await fallBack(deps, sync, problemOf(err), own, linkFailure ? 'link' : 'default');
-    if (linkFailure) await recordLinkFailure(deps, sync.vendorIntegrationId, problemOf(err), envOf(deps));
+    const rang = await fallBack(deps, sync, problemOf(err), own, linkFailure ? 'link' : 'default');
+    if (linkFailure) {
+      // [COORD ruling 14 Nov · PDF §3.2 row 1] No page per order, but a low-priority notice for it.
+      if (rang) await noteOrderOnTablet(deps, sync.orderId, problemOf(err));
+      await recordLinkFailure(deps, sync.vendorIntegrationId, problemOf(err), envOf(deps));
+    }
     return;
   } finally {
     provider.setDeadline(null);

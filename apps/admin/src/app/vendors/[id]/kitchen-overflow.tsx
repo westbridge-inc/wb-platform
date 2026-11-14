@@ -31,6 +31,7 @@ export const ROUTE_REASON_WORDS: Record<string, string> = {
   OVERFLOW_CHECK_FAILED: 'overflow check failed (safe default)',
   DRIVER_CHECK_OFF: 'driver check switched off',
   LINK_OFFLINE: 'kitchen link offline: on the tablet, own driver',
+  LINK_OFFLINE_SWIFT_RIDERS: 'kitchen link offline: Swift riders',
   BUSY_HOURS: 'busy hours',
   NO_FREE_DRIVER: 'no free driver',
 };
@@ -53,8 +54,14 @@ export function KitchenOverflowPanel({ vendorId }: { vendorId: string }) {
     setMode(setting.mode);
     setWindows(setting.busyHours);
   }, [setting]);
+  const dialog = useActionDialog();
+  // [COORD ruling 14 Nov · Dragontail PDF v1.1 §6] A change made here needs a stated reason (audited), like the connection.
   const save = useMutation({
-    mutationFn: () => setKitchenOverflow(vendorId, { mode, ...(usesHours(mode) ? { busyHours: windows } : {}) }),
+    mutationFn: async () => {
+      const reason = await dialog.ask({ action: "change this branch's delivery overflow" });
+      if (!reason) return null;
+      return setKitchenOverflow(vendorId, { mode, ...(usesHours(mode) ? { busyHours: windows } : {}) }, reason);
+    },
     onSettled: () => qc.invalidateQueries({ queryKey: ['kitchen-overflow', vendorId] }),
   });
 

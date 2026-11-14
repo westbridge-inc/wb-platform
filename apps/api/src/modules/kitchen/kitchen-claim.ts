@@ -1,5 +1,7 @@
 import type { Prisma, PrismaClient } from '@prisma/client';
+import type { Server } from 'socket.io';
 import { log } from '../../utils/logger';
+import { noteOrderOnTablet } from './kitchen-link';
 import { dragontailIntegrationEnabled, dragontailSettings, KITCHEN_STUCK_MS } from './kitchen-switch';
 import { decidedOffline, fallbackKitchenRoute, planKitchenRoute, type KitchenRouteDecision, type KitchenRouteDeps } from './kitchen-overflow';
 
@@ -57,6 +59,8 @@ export async function claimForKitchenInTransaction(
   env: Record<string, string | undefined> = process.env,
   /** [DT-OVERFLOW] The route worked out before this transaction (planKitchenRoute); absent → the kitchen (as before). */
   plan: KitchenRouteDecision | null = null,
+  /** [COORD ruling 14 Nov] Set when an order the kitchen would carry was NOT claimed because the link is offline. */
+  outcome: { linkOffline?: boolean } = {},
 ): Promise<boolean> {
   if (!dragontailIntegrationEnabled(env)) return false;
   const existing = await tx.orderIntegrationSync.findUnique({
@@ -88,6 +92,7 @@ export async function claimForKitchenInTransaction(
   // as for any store. [round 3 · review B S3-2] A delivery still gets its route, written once: Swift riders when the
   // overflow says so (busy hours), otherwise TABLET (own driver, not in the kitchen system), so the store is told.
   if (integration.linkOfflineAt) {
+    if (eligible.ok) outcome.linkOffline = true;
     if (eligible.ok && order.fulfillment === 'DELIVERY') {
       const decision = plan && plan.orderId === orderId && plan.route !== 'KITCHEN' ? plan : decidedOffline(orderId);
       const routed = await tx.order.updateMany({
@@ -174,6 +179,8 @@ export async function claimForKitchen(
   orderId: string,
   env: Record<string, string | undefined> = process.env,
   routeDeps: KitchenRouteDeps = {},
+  /** [COORD ruling 14 Nov] The socket server for operations' notices (the order service passes its own). */
+  notify: { io?: Server } = {},
 ): Promise<boolean> {
   if (!dragontailIntegrationEnabled(env)) return false;
   // [DT-OVERFLOW] The delivery's route, worked out OUTSIDE any transaction (the driver check is a short HTTP call).
@@ -183,7 +190,12 @@ export async function claimForKitchen(
     return null;
   });
   try {
-    return await prisma.$transaction((tx) => claimForKitchenInTransaction(tx, orderId, env, plan));
+    const outcome: { linkOffline?: boolean } = {};
+    const claimed = await prisma.$transaction((tx) => claimForKitchenInTransaction(tx, orderId, env, plan, outcome));
+    // [COORD ruling 14 Nov · PDF v1.1 §3.2 row 1] Not sent because the branch's link is offline: the order rings the
+    // tablet (the caller rings it), and operations get one low-priority notice for it.
+    if (!claimed && outcome.linkOffline) await noteOrderOnTablet({ prisma, io: notify.io }, orderId, "the branch's Dragontail link is offline");
+    return claimed;
   } catch (err) {
     // [delta review S4-2] A commit whose answer was lost: the claim may be there after all. Ringing it too would
     // have the store make it twice, so the row decides.

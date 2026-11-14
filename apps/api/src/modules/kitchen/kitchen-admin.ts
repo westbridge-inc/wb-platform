@@ -214,7 +214,7 @@ export async function getKitchenOverflow(prisma: PrismaClient, vendorId: string)
     where: { vendorId_provider: { vendorId, provider: 'DRAGONTAIL' } },
     select: {
       enabled: true, overflowMode: true, overflowBusyHours: true, overflowUpdatedAt: true, linkOfflineAt: true, linkFailures: true,
-      linkOutageSince: true, driverCheckAt: true, driverCheckFree: true, driverCheckProblem: true,
+      linkOutageSince: true, linkProbeAt: true, driverCheckAt: true, driverCheckFree: true, driverCheckProblem: true,
     },
   });
   // [round 3 · review B S4-8] Orders on the tablet that Dragontail MAY also have (the switch went off mid-send): "Get a
@@ -233,7 +233,8 @@ export async function getKitchenOverflow(prisma: PrismaClient, vendorId: string)
     // [round 2 · review A S2-2] The kitchen tick's latest driver check for this branch (null free = it failed: why).
     driverCheck: row?.driverCheckAt ? { at: row.driverCheckAt, free: row.driverCheckFree, problem: row.driverCheckProblem } : null,
     // [round 2 · review A S3-2] A probe's login re-opened the link; the outage ends when a real send goes through.
-    linkOnTrial: row != null && row.linkOfflineAt == null && row.linkOutageSince != null,
+    // (An outage started by the "link failing" note, with no probe yet, is not a trial.)
+    linkOnTrial: row != null && row.linkOfflineAt == null && row.linkOutageSince != null && row.linkProbeAt != null,
     // [DT-OUTAGE] "Kitchen link offline, orders on tablet" (kitchen-link.ts), and the certain failures counted so far.
     linkOfflineAt: row?.linkOfflineAt ?? null,
     linkFailures: row?.linkFailures ?? 0,
