@@ -25,32 +25,33 @@ const WEB_REFUNDS = readFileSync(join(__dirname, '../../../web/src/app/legal/ref
 
 describe('LEGAL_VERSION 2026-11-10: card payments of the weekly fee, material for partners', () => {
   it('is served, and classed material exactly once, for partners only', () => {
-    expect(LEGAL_VERSION).toBe('2026-11-10');
+    expect(LEGAL_VERSION).toBe('2026-11-13'); // [STORE-VAT-EXCLUSIVE] served now under 2026-11-13 (prices before VAT, material for everyone)
     const entry = MATERIAL_CHANGES.filter((c) => c.version === '2026-11-10');
     expect(entry).toHaveLength(1);
     expect(entry[0]!.audience).toBe('partner');
     expect(NON_MATERIAL_CHANGES.map((c) => c.version)).not.toContain('2026-11-10');
     expect(partnerMaterialVersion(LEGAL_VERSION)).toBe('2026-11-10');
-    expect(materialVersion(LEGAL_VERSION)).toBe('2026-11-09');
+    expect(materialVersion('2026-11-10')).toBe('2026-11-09');
+    expect(materialVersion(LEGAL_VERSION)).toBe('2026-11-13'); // [STORE-VAT-EXCLUSIVE] prices before VAT, material for everyone
   });
 
   it.each([
     ['a rider', ['MOVER', 'CUSTOMER']], ['a store owner', ['VENDOR_OWNER', 'CUSTOMER']],
   ] as const)('%s at 2026-11-09.2 is asked once, with the card summary alone; at 2026-11-10, not', (_who, roles) => {
     const summary = MATERIAL_CHANGES.find((c) => c.version === '2026-11-10')!.summary;
-    expect(acceptanceStatus({ tosVersion: '2026-11-09.2', roles: [...roles] as UserRole[] })).toMatchObject({ needsAcceptance: true, summary });
-    expect(acceptanceStatus({ tosVersion: '2026-11-10', roles: [...roles] as UserRole[] })).toMatchObject({ needsAcceptance: false, summary: [] });
+    expect(acceptanceStatus({ tosVersion: '2026-11-09.2', roles: [...roles] as UserRole[] }, '2026-11-10')).toMatchObject({ needsAcceptance: true, summary });
+    expect(acceptanceStatus({ tosVersion: '2026-11-10', roles: [...roles] as UserRole[] }, '2026-11-10')).toMatchObject({ needsAcceptance: false, summary: [] });
   });
 
   it('a customer at 2026-11-09.2 is not asked: nothing in the change concerns a customer', () => {
-    expect(acceptanceStatus({ tosVersion: '2026-11-09.2', roles: ['CUSTOMER'] as UserRole[] })).toMatchObject({ needsAcceptance: false, summary: [] });
+    expect(acceptanceStatus({ tosVersion: '2026-11-09.2', roles: ['CUSTOMER'] as UserRole[] }, '2026-11-10')).toMatchObject({ needsAcceptance: false, summary: [] });
   });
 
   it('a partner who skipped 2026-11-09 sees both summaries, oldest first; a customer at the same version sees only the call one', () => {
     const calls = MATERIAL_CHANGES.find((c) => c.version === '2026-11-09')!.summary;
     const cards = MATERIAL_CHANGES.find((c) => c.version === '2026-11-10')!.summary;
-    expect(acceptanceStatus({ tosVersion: '2026-11-08', roles: ['MOVER', 'CUSTOMER'] as UserRole[] })).toMatchObject({ needsAcceptance: true, summary: [...calls, ...cards] });
-    expect(acceptanceStatus({ tosVersion: '2026-11-08', roles: ['CUSTOMER'] as UserRole[] })).toMatchObject({ needsAcceptance: true, summary: [...calls] });
+    expect(acceptanceStatus({ tosVersion: '2026-11-08', roles: ['MOVER', 'CUSTOMER'] as UserRole[] }, '2026-11-10')).toMatchObject({ needsAcceptance: true, summary: [...calls, ...cards] });
+    expect(acceptanceStatus({ tosVersion: '2026-11-08', roles: ['CUSTOMER'] as UserRole[] }, '2026-11-10')).toMatchObject({ needsAcceptance: true, summary: [...calls] });
   });
 
   it('the summary names the card processor, what it receives, ipapi.co, and the closing refund to the card', () => {
@@ -89,7 +90,8 @@ describe('the served words', () => {
   });
 
   it('the Terms change only by their date', () => {
-    expect(TERMS).toContain('10 November 2026');
+    // [STORE-VAT-EXCLUSIVE] served now under 2026-11-13 (its date; Terms section 5 changed there, not here).
+    expect(TERMS).toContain('13 November 2026');
     expect(flat(TERMS)).not.toContain('PowerTranz');
   });
 

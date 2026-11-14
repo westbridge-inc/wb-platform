@@ -139,6 +139,15 @@ export const MATERIAL_CHANGES: ReadonlyArray<MaterialChange> = [
       'Privacy: PowerTranz also receives your device’s network (IP) address and browser details, for the payment and the bank’s security check, and its page asks ipapi.co, an IP-location service, where your network address is located. Swift keeps the payment’s reference, amount and result, never your card number.',
       'Partners: when you close your account, a weekly fee you paid by card for a week that has not started goes back to that card. If that card refund is refused, Swift keeps the money as credit for your weekly fees and returns it another way only once you agree to that way in writing.',
     ],
+  },  {
+    // [STORE-VAT-EXCLUSIVE · owner approved the words 13 Nov 2026 · MATERIAL for everyone: customers read prices that may
+    // now be before VAT (Terms section 5), and a business lists them so (Business Agreement). GUARDRAILS standing rule 1:
+    // the in-app notice and a fresh tick, never "continued use"]
+    version: '2026-11-13',
+    summary: [
+      'Some VAT-registered businesses now show their prices before VAT, marked “+ VAT”. Their VAT is then added at checkout as a separate “VAT” line before the Total. Either way, you see the full Total, VAT included, before you confirm your order.',
+      'Businesses: you may choose to list your prices before VAT. Customers then see your prices as you list them, marked “+ VAT”, and your VAT is added at checkout as its own line. The VAT is yours to account for to the GRA, on items you have not marked zero-rated or exempt.',
+    ],
   },
 ];
 

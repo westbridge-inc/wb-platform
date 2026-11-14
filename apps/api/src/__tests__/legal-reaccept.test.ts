@@ -337,18 +337,22 @@ describe('GET/POST /auth/legal-acceptance', () => {
     // [LEGAL-CALLS · owner 9 Nov 2026] served now under 2026-11-09 (in-app calls in the Privacy Policy: material for
     // everyone), so every customer below it also gets its summary, last; a customer at 2026-11-08 gets it alone.
     const v1109 = MATERIAL_CHANGES.find((c) => c.version === '2026-11-09')!.summary;
+    // [STORE-VAT-EXCLUSIVE · owner 13 Nov 2026] served now under 2026-11-13 (prices before VAT: material for everyone),
+    // so every customer below it also gets its summary, last; a customer at 2026-11-10 gets it alone.
+    const v1113 = MATERIAL_CHANGES.find((c) => c.version === '2026-11-13')!.summary;
     // [LEGAL-CARDS · 10 Nov 2026] served now under 2026-11-10 (card payments: material for PARTNERS only), so a customer
     // is asked exactly as before, with no new summary (legal-cards-2026-11-10.unit.test.ts asks the partners).
-    expect(LEGAL_VERSION).toBe('2026-11-10');
+    expect(LEGAL_VERSION).toBe('2026-11-13'); // [STORE-VAT-EXCLUSIVE] served now under 2026-11-13 (prices before VAT, material for everyone)
     expect(materialVersion('2026-11-04')).toBe('2026-10-28.1');
     expect(materialVersion('2026-11-06')).toBe('2026-11-05');
     expect(materialVersion('2026-11-08')).toBe('2026-11-08');
-    expect(materialVersion(LEGAL_VERSION)).toBe('2026-11-09');
+    expect(materialVersion('2026-11-10')).toBe('2026-11-09');
+    expect(materialVersion(LEGAL_VERSION)).toBe('2026-11-13'); // [STORE-VAT-EXCLUSIVE] prices before VAT, material for everyone
     for (const [accepted, summary] of [
-      ['2026-10-17', [...v21, ...v251, ...v27, ...v281, ...v1105, ...v1108, ...v1109]], ['2026-10-18', [...v21, ...v251, ...v27, ...v281, ...v1105, ...v1108, ...v1109]], ['2026-10-21', [...v251, ...v27, ...v281, ...v1105, ...v1108, ...v1109]], ['2026-10-25', [...v251, ...v27, ...v281, ...v1105, ...v1108, ...v1109]],
-      ['2026-10-25.1', [...v27, ...v281, ...v1105, ...v1108, ...v1109]], ['2026-10-25.2', [...v27, ...v281, ...v1105, ...v1108, ...v1109]], ['2026-10-27', [...v281, ...v1105, ...v1108, ...v1109]], ['2026-10-28', [...v281, ...v1105, ...v1108, ...v1109]],
-      ['2026-10-28.1', [...v1105, ...v1108, ...v1109]], ['2026-11-04', [...v1105, ...v1108, ...v1109]], ['2026-11-05', [...v1108, ...v1109]], ['2026-11-06', [...v1108, ...v1109]],
-      ['2026-11-08', [...v1109]],
+      ['2026-10-17', [...v21, ...v251, ...v27, ...v281, ...v1105, ...v1108, ...v1109, ...v1113]], ['2026-10-18', [...v21, ...v251, ...v27, ...v281, ...v1105, ...v1108, ...v1109, ...v1113]], ['2026-10-21', [...v251, ...v27, ...v281, ...v1105, ...v1108, ...v1109, ...v1113]], ['2026-10-25', [...v251, ...v27, ...v281, ...v1105, ...v1108, ...v1109, ...v1113]],
+      ['2026-10-25.1', [...v27, ...v281, ...v1105, ...v1108, ...v1109, ...v1113]], ['2026-10-25.2', [...v27, ...v281, ...v1105, ...v1108, ...v1109, ...v1113]], ['2026-10-27', [...v281, ...v1105, ...v1108, ...v1109, ...v1113]], ['2026-10-28', [...v281, ...v1105, ...v1108, ...v1109, ...v1113]],
+      ['2026-10-28.1', [...v1105, ...v1108, ...v1109, ...v1113]], ['2026-11-04', [...v1105, ...v1108, ...v1109, ...v1113]], ['2026-11-05', [...v1108, ...v1109, ...v1113]], ['2026-11-06', [...v1108, ...v1109, ...v1113]],
+      ['2026-11-08', [...v1109, ...v1113]], ['2026-11-10', [...v1113]],
     ] as const) {
       const person = await mkUser(['CUSTOMER'] as UserRole[], accepted);
       expect((await call('GET', person.token)).json().data).toMatchObject({ currentVersion: LEGAL_VERSION, acceptedVersion: accepted, needsAcceptance: true, summary: [...summary] });
