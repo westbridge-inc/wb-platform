@@ -1615,6 +1615,10 @@ export const vendorApi = {
   // [Q8] latitude/longitude move the store pin: the server takes them together, inside the market, or not at all.
   updateProfile: (data: { name?: string; phone?: string; description?: string; mmgPayUrl?: string | null; mmgNumber?: string | null; publicPhone?: string | null; refundRule?: string | null; selfDeliveryEnabled?: boolean; requirePickupCode?: boolean; latitude?: number; longitude?: number; bookingCapacity?: number; maxConcurrentOrders?: number | null }) =>
     api.put('/vendor/profile', data),
+  // [DT-OVERFLOW] A Dragontail branch's "Swift riders when you're busy" (owner or manager; `available` false elsewhere).
+  kitchenOverflow: () => api.get('/vendor/kitchen-overflow'),
+  setKitchenOverflow: (body: { mode: string; busyHours?: Array<{ day: number; start: string; end: string }> }) =>
+    api.put('/vendor/kitchen-overflow', body),
   // [IMAGES-E2E] The store's own logo and cover: uploaded as a photo (the server scans it,
   // redraws it without location or camera data, and serves it to customers), or taken down.
   uploadStorePhoto: (slot: 'logo' | 'cover', form: FormData) =>

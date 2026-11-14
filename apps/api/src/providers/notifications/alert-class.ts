@@ -65,6 +65,8 @@ export const ALERT_CLASS_KINDS: Readonly<Record<AlertClass, readonly string[]>> 
     'store_delivers', 'no_rider_cancelled',
     // [KITCHEN-INTEGRATION] the store's own driver has the order (customer); a kitchen-system problem (operations).
     'kitchen_dispatched', 'kitchen_integration',
+    // [DT-OUTAGE] a branch's kitchen link went offline (orders ring the tablet) or came back: operations, once per outage.
+    'kitchen_link',
     // [OF-01/17] The ONE "no rider yet — you can cancel for free" notice; standard, like its dispatch peers.
     'riderless_cutoff',
     // [OF-33] The customer and the store, once each: the rider did not come, a new rider is being found.
