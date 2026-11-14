@@ -18,6 +18,7 @@ jobs:
   react-native-build:
     name: React Native Build Check
     runs-on: ${{ fromJSON(vars.SWIFT_CI_RUNS_ON || '"ubuntu-latest"') }}
+    timeout-minutes: 45
     defaults:
       run:
         working-directory: apps/mobile

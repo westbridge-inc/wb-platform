@@ -23,6 +23,13 @@ on:
     - cron: '0 9 * * 1'
   workflow_dispatch: {}
 
+# [CI-TRIM] A newer push to the same PR (or to main) cancels the run it
+# supersedes: the group is per ref, so only the latest commit spends runner time.
+# The API matrix is deliberately NOT path-filtered: the API suite reads files
+# across the whole repository (measured 14 Nov 2026: 32 API test files read
+# apps/mobile, 43 apps/web, 24 apps/admin, 11 docs/), so a "mobile-only" or
+# "web-only" change can still turn an API test red, and skipping it there would
+# weaken the required "API Tests" check.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -33,6 +40,10 @@ concurrency:
 permissions:
   contents: read
 
+# [CI-TRIM] Every job has a timeout about 2.5-3x its slowest green run
+# (7-14 Nov 2026), instead of the 6-hour default: a hung job on a self-hosted
+# box would otherwise hold one of its few runners for hours.
+#
 # [CI-SELFHOST] Where every job runs is ONE repository variable, SWIFT_CI_RUNS_ON
 # (Settings -> Secrets and variables -> Actions -> Variables), read as JSON:
 #   unset or "ubuntu-latest"              -> GitHub-hosted runners (the default)
@@ -50,6 +61,7 @@ jobs:
   lint-and-type-check:
     name: Lint & Type Check
     runs-on: ${{ fromJSON(vars.SWIFT_CI_RUNS_ON || '"ubuntu-latest"') }}
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -109,6 +121,7 @@ jobs:
   api-test-shard:
     name: API Tests shard ${{ matrix.shard }}/${{ matrix.total }}
     runs-on: ${{ fromJSON(vars.SWIFT_CI_RUNS_ON || '"ubuntu-latest"') }}
+    timeout-minutes: 45
     strategy:
       # Every shard runs to the end, so one red shard still shows every failure.
       fail-fast: false
@@ -227,6 +240,7 @@ jobs:
   api-test:
     name: API Tests
     runs-on: ${{ fromJSON(vars.SWIFT_CI_RUNS_ON || '"ubuntu-latest"') }}
+    timeout-minutes: 30
     needs: api-test-shard
     if: always()
     steps:
@@ -278,6 +292,7 @@ jobs:
   api-build:
     name: API Build
     runs-on: ${{ fromJSON(vars.SWIFT_CI_RUNS_ON || '"ubuntu-latest"') }}
+    timeout-minutes: 30
     needs: lint-and-type-check
     steps:
       - uses: actions/checkout@v7
@@ -414,6 +429,7 @@ jobs:
   admin-build:
     name: Admin Build
     runs-on: ${{ fromJSON(vars.SWIFT_CI_RUNS_ON || '"ubuntu-latest"') }}
+    timeout-minutes: 30
     needs: lint-and-type-check
     steps:
       - uses: actions/checkout@v7
@@ -465,6 +481,7 @@ jobs:
   web-build:
     name: Web Build
     runs-on: ${{ fromJSON(vars.SWIFT_CI_RUNS_ON || '"ubuntu-latest"') }}
+    timeout-minutes: 30
     needs: lint-and-type-check
     steps:
       - uses: actions/checkout@v7
@@ -534,6 +551,7 @@ jobs:
     # (CI runners lack the signing context; the webview build still gates types).
     name: Desktop Build (TS)
     runs-on: ${{ fromJSON(vars.SWIFT_CI_RUNS_ON || '"ubuntu-latest"') }}
+    timeout-minutes: 30
     needs: lint-and-type-check
     steps:
       - uses: actions/checkout@v7
@@ -587,6 +605,7 @@ jobs:
   migration-check:
     name: Migration Replay
     runs-on: ${{ fromJSON(vars.SWIFT_CI_RUNS_ON || '"ubuntu-latest"') }}
+    timeout-minutes: 20
     needs: lint-and-type-check
     services:
       postgres:
@@ -778,6 +797,7 @@ jobs:
   ui-barrier:
     name: UI Barrier
     runs-on: ${{ fromJSON(vars.SWIFT_CI_RUNS_ON || '"ubuntu-latest"') }}
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
       # An ESLint rule can be silenced with an inline disable comment. This
@@ -799,6 +819,7 @@ jobs:
   mobile-bundle-gate:
     name: Mobile Bundle Gate
     runs-on: ${{ fromJSON(vars.SWIFT_CI_RUNS_ON || '"ubuntu-latest"') }}
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -942,6 +963,7 @@ jobs:
   public-env-gate:
     name: Public Env Gate
     runs-on: ${{ fromJSON(vars.SWIFT_CI_RUNS_ON || '"ubuntu-latest"') }}
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -992,6 +1014,7 @@ jobs:
   secret-scan:
     name: Secret Scan
     runs-on: ${{ fromJSON(vars.SWIFT_CI_RUNS_ON || '"ubuntu-latest"') }}
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
         with:
@@ -1007,6 +1030,7 @@ jobs:
   licence-gate:
     name: Licence Gate
     runs-on: ${{ fromJSON(vars.SWIFT_CI_RUNS_ON || '"ubuntu-latest"') }}
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -1023,6 +1047,7 @@ jobs:
   security:
     name: Security Scan
     runs-on: ${{ fromJSON(vars.SWIFT_CI_RUNS_ON || '"ubuntu-latest"') }}
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
         with:
