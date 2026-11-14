@@ -2320,7 +2320,12 @@ export class BillingService {
         // owed now, whatever its date says, and is paid, never kept.
         const aheadOfItsWeek = payNowSessionId !== null && payment.periodStart.getTime() > now.getTime()
           && !['PAST_DUE', 'SUSPENDED', 'CHURNED'].includes(authority.status);
-        const bankedAnyway = mmgHeld || covered || forgiven || returning || !allowsAdvance;
+        // [TRIAL PAY-AHEAD · owner 14 Nov 2026] A trial's Pay now pays the first week after the trial ahead: kept as fee
+        // credit like any week that has not started (CARD_PAY_AHEAD), never labelled a late approval. A trial never
+        // advances here (only the billing run does, at its end), so this changes the label, never the money.
+        const trialPaysAhead = aheadOfItsWeek && authority.status === 'TRIAL'
+          && this.successfulChargeAuthorityAllowsAdvance({ ...authority, status: 'ACTIVE' }, sub);
+        const bankedAnyway = mmgHeld || covered || forgiven || returning || (!allowsAdvance && !trialPaysAhead);
         const bankCapture = bankedAnyway || aheadOfItsWeek;
         if (bankCapture && await this.holdWalletCurrencyMismatch(tx, payment, currencyCode, paymentRef)) return 'held';
         const claimed = await tx.subscriptionPayment.updateMany({

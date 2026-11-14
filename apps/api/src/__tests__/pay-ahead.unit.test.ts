@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { PAY_AHEAD_MAX_WEEKS, PAY_AHEAD_MAX_WEEKS_WORD, payAheadPosition, payAheadRefusal, weeksPaidAheadByDate, type PayAheadSub } from '../modules/billing/pay-ahead';
+import { PAY_AHEAD_MAX_WEEKS, PAY_AHEAD_MAX_WEEKS_WORD, TRIAL_PAY_AHEAD_MAX_WEEKS, TRIAL_PAY_AHEAD_WORDS, payAheadPosition, payAheadRefusal, weeksPaidAheadByDate, type PayAheadSub } from '../modules/billing/pay-ahead';
 import { manualFeeCreditHeld } from '../utils/fee-credit-hold';
 
 // [OWNER · 6 Nov 2026, UP TO A MONTH AHEAD] Partners may pay the weekly fee up
@@ -66,6 +66,52 @@ describe('the four-week limit [owner 6 Nov]', () => {
 
   it('money held over the limit (it arrived anyway) is named for a refund', () => {
     expect(payAheadPosition(sub(), 6 * FEE, NOW)).toMatchObject({ heldAhead: 6 * FEE, room: 0, excess: 2 * FEE });
+  });
+});
+
+describe('[owner 14 Nov 2026] a free trial may pay ONE week ahead: the first week after it ends', () => {
+  const trialEndDate = new Date(NOW.getTime() + 10 * DAY);
+  const trial = (over: Partial<PayAheadSub> = {}) => sub({ status: 'TRIAL', isTrialActive: true, trialEndDate, nextBillingDate: trialEndDate, ...over });
+
+  it('one week, one constant, named in words from it; the four-week check for money that lands anyway still reads four', () => {
+    expect(TRIAL_PAY_AHEAD_MAX_WEEKS).toBe(1);
+    expect(TRIAL_PAY_AHEAD_WORDS).toBe('one weekly fee ahead');
+    expect(payAheadPosition(trial(), 0, NOW)).toMatchObject({ trial: true, maxWeeks: 1, openWeeks: 1, due: false, heldAhead: 0, room: FEE, cap: 4 * FEE, excess: 0 });
+    expect(payAheadPosition(trial(), FEE, NOW)).toMatchObject({ room: 0, excess: 0 });
+    expect(payAheadPosition(trial(), FEE / 2, NOW)).toMatchObject({ room: FEE / 2 });
+    // A week booked beyond the trial by date counts toward the one week.
+    expect(payAheadPosition(trial({ nextBillingDate: new Date(trialEndDate.getTime() + 7 * DAY) }), 0, NOW)).toMatchObject({ weeksAheadByDate: 1, room: 0 });
+  });
+
+  it('once the trial has ended the four-week limit applies, as for everyone', () => {
+    const ended = trial({ trialEndDate: new Date(NOW.getTime() - DAY), nextBillingDate: new Date(NOW.getTime() - DAY) });
+    expect(payAheadPosition(ended, 0, NOW)).toMatchObject({ trial: false, maxWeeks: 4, due: true, room: 5 * FEE });
+    expect(payAheadPosition(sub(), 0, NOW)).toMatchObject({ trial: false, maxWeeks: 4, room: 4 * FEE });
+  });
+
+  it('refused in words for the trial, to the partner and to an operator', () => {
+    expect(payAheadRefusal(payAheadPosition(trial(), 0, NOW), 'partner').message)
+      .toBe('During your free trial Swift takes one weekly fee ahead: the first week after your trial ends. You can pay at most GY$8,000 now.');
+    expect(payAheadRefusal(payAheadPosition(trial(), 3_000, NOW), 'partner').message)
+      .toBe('During your free trial Swift takes one weekly fee ahead: the first week after your trial ends. GY$3,000 is already paid toward it. You can pay at most GY$5,000 now.');
+    const full = payAheadRefusal(payAheadPosition(trial(), FEE, NOW), 'partner');
+    expect(full.message).toBe('Your first weekly fee after your free trial is already paid. You can pay again once your trial has ended.');
+    expect(full.details).toMatchObject({ maxWeeks: 1, roomGyd: 0, trial: true });
+    expect(payAheadRefusal(payAheadPosition(trial(), FEE, NOW), 'admin').message)
+      .toBe('This account is in its free trial and its first weekly fee after the trial is already paid. Record nothing more: refund this payment to the partner (finance procedure: weekly fee refunds).');
+    expect(payAheadRefusal(payAheadPosition(trial(), 0, NOW), 'attach').message).toMatch(/one weekly fee ahead during its free trial/);
+  });
+
+  it('a told rise before the first week after the trial still wins: no week at the old fee the rise would charge more for', () => {
+    const riseFrom = trialEndDate;
+    const position = payAheadPosition(trial(), 0, NOW, riseFrom);
+    expect(position).toMatchObject({ openWeeks: 0, room: 0, maxWeeks: 1 });
+    expect(payAheadRefusal(position, 'partner').message).toMatch(/^Your weekly fee goes up from the fee due on/);
+    // A rise told for later than that first week does not stop it: the trial's one week is what limits, in its words.
+    const later = payAheadPosition(trial(), FEE, NOW, new Date(trialEndDate.getTime() + 21 * DAY));
+    expect(later).toMatchObject({ openWeeks: 1, room: 0 });
+    expect(payAheadRefusal(later, 'partner').message).toBe('Your first weekly fee after your free trial is already paid. You can pay again once your trial has ended.');
+    expect(payAheadRefusal(later, 'partner').details).not.toHaveProperty('riseFrom');
   });
 });
 

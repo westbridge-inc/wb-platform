@@ -114,7 +114,7 @@ export function feeStatusWords(f: FeeStatusFacts, now: Date): FeeStatus {
 
   const trialing = f.isTrialActive || status === 'TRIAL';
   const trialEnd = f.trialEndDate && f.trialEndDate.getTime() > now.getTime() ? f.trialEndDate : !due ? f.nextBillingDate : null;
-  if (trialing && trialEnd) return { state: 'TRIAL', headline: `Free trial until ${day(trialEnd)}`, detail: null, date: trialEnd.toISOString() };
+  if (trialing && trialEnd) return { state: 'TRIAL', headline: `Free trial until ${day(trialEnd)}`, detail: trialPayAheadLine(f, trialEnd, money), date: trialEnd.toISOString() };
 
   const behind = status === 'PAST_DUE' || f.isInGracePeriod;
   if (!due && !behind) {
@@ -211,6 +211,24 @@ export async function feeStatusFor(
     currencyCode: sub.currencyCode, amountDue: fee.amountDueGyd, weeklyFee: fee.weeklyFeeGyd, paidAhead: fee.walletBalanceGyd,
     paidThroughProven: !!paid, checking, feePaused, closureHoldAt: sub.closureHoldAt ?? null,
   }, now);
+}
+
+const WEEK_MS = 7 * 86_400_000;
+/**
+ * [TRIAL PAY-AHEAD · owner 14 Nov 2026] A partner in a free trial may pay the first week after it ahead: the paid week
+ * starts when the trial ends, so no trial day is lost. The line under "Free trial until <date>" names that week, or
+ * says it is already paid. Nothing when no fee will be charged then (waived, stopped, a fee of 0, or the fee paused),
+ * or when the first fee is not due exactly at the trial's end (a week was booked some other way). Never a promise of
+ * a Pay button: those stay payActions'.
+ */
+function trialPayAheadLine(f: FeeStatusFacts, trialEnd: Date, money: (n: number) => string): string | null {
+  if (f.feeWaived || !f.autoRenew || f.feePaused || !(f.weeklyFee > 0) || f.nextBillingDate.getTime() !== trialEnd.getTime()) return null;
+  const weekEnd = new Date(trialEnd.getTime() + WEEK_MS);
+  const weeks = Math.floor(f.paidAhead / f.weeklyFee + 1e-9);
+  if (weeks >= 2) return `Your first ${weeks} weekly fees after the trial are already paid.`;
+  if (weeks === 1) return `Your first week after the trial, ${day(trialEnd)} to ${day(weekEnd)}, is already paid.`;
+  if (f.paidAhead > 0) return `${money(f.paidAhead)} is already paid toward your first weekly fee, due ${day(trialEnd)}.`;
+  return `Your first weekly fee, ${money(f.weeklyFee)}, is due on ${day(trialEnd)}. Paying now covers ${day(trialEnd)} to ${day(weekEnd)}: no trial day is lost.`;
 }
 
 /** [owner 6 Nov 2026] The whole weekly fees already paid before they start, in words. */

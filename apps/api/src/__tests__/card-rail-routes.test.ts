@@ -971,6 +971,47 @@ describe('payActions CARD: the server alone decides, per platform, whether the P
     expect((await cardActionOf(p))['state']).toBe('live');
   });
 
+  // [TRIAL PAY-AHEAD · owner 14 Nov 2026] A partner in its free trial may pay the weekly fee a week ahead by card. Before,
+  // a trial had no billing clock and the read-only decision refused it (above), so no card button was ever drawn.
+  it('[owner 14 Nov] a rider in its free trial (no clock yet) pays ONE week ahead by card: kept as credit for the week that starts when the trial ends', async () => {
+    railOverride = realProvider({ savesCards: false });
+    const trialEnd = new Date(Date.now() + 9 * DAY);
+    const p = await makeRider({ mapped: false, status: 'TRIAL', due: trialEnd });
+    await app.prisma.subscription.update({ where: { id: p.subId }, data: { isTrialActive: true, trialEndDate: trialEnd } });
+    const quote = await runtime.billing.quoteCardPayNow(p.subId);
+    expect(quote).toMatchObject({ amount: 6000, currencyCode: 'GYD', due: false });
+    expect(quote.periodStart.getTime(), 'the week paid is the first after the trial').toBe(trialEnd.getTime());
+    expect(await cardActionOf(p)).toMatchObject({ id: 'CARD', state: 'live', payNow: { amount: 6000, currencyCode: 'GYD' } });
+    expect(await app.prisma.billingDunningClock.count({ where: { subscriptionId: p.subId } }), 'reading maps no clock').toBe(0);
+
+    const opened = await startSession(p, 'PAY_NOW');
+    expect(opened.statusCode, opened.body).toBe(201);
+    const session = opened.json().data;
+    railOverride = null; // the simulator's own page serves the button
+    expect(pageState((await follow(await press(session.hostedUrl, 'APPROVE'))).body)).toBe('SUCCEEDED');
+    railOverride = realProvider({ savesCards: false });
+
+    // Kept as fee credit (the week has not started), once; the trial and its first fee date untouched.
+    const row = await app.prisma.cardSession.findUniqueOrThrow({ where: { id: session.sessionId } });
+    const kept = await app.prisma.billingEvent.findUniqueOrThrow({ where: { idempotencyKey: `bank:${row.paymentId}` } });
+    expect((await app.prisma.feeReceipt.findUniqueOrThrow({ where: { billingEventId: kept.id } })).channel).toBe('CARD_PAY_AHEAD');
+    const after = await money(p.subId);
+    expect(after.sub).toMatchObject({ status: 'TRIAL', isTrialActive: true, failedAttempts: 0 });
+    expect(after.sub.nextBillingDate.getTime()).toBe(trialEnd.getTime());
+    expect(after.successes).toBe(0);
+    expect(Number((await app.prisma.prepaidBalance.findUniqueOrThrow({ where: { subscriptionId: p.subId } })).balance)).toBe(6000);
+    expect((await partnerCall(p, 'GET', `${SESSIONS}/${session.sessionId}`)).json().data).toMatchObject({ status: 'SUCCEEDED', settlement: 'banked' });
+    await runtime.service.confirm(session.sessionId);
+    expect(await app.prisma.billingEvent.count({ where: { subscriptionId: p.subId, idempotencyKey: { startsWith: 'bank:' } } })).toBe(1);
+
+    // One week is all a trial takes: no second card button, and the door says why before any page exists.
+    expect(await cardActionOf(p)).toEqual({ id: 'CARD', state: 'off' });
+    const again = await startSession(p, 'PAY_NOW');
+    expect(again.statusCode, again.body).toBe(409);
+    expect(again.json().error).toMatchObject({ code: 'PAY_AHEAD_LIMIT',
+      message: 'Your first weekly fee after your free trial is already paid. You can pay again once your trial has ended.' });
+  });
+
   it('a subscription that cannot pay (billing stopped, waived): CARD off', async () => {
     railOverride = realProvider({ savesCards: false });
     const paused = await makeRider({ status: 'PAUSED' });

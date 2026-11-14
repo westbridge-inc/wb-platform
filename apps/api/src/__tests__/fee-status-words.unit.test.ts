@@ -73,6 +73,24 @@ describe('fee status words [FEE-STATUS]', () => {
       .toMatchObject({ state: 'DUE', headline: 'Payment due since 20 Oct 2026' });
   });
 
+  // [TRIAL PAY-AHEAD · owner 14 Nov 2026] A partner in its free trial may pay the first week after it ahead: the line
+  // under the headline names that week (the paid week starts when the trial ends, so no trial day is lost), or says it
+  // is paid. Nothing when no fee will be charged then.
+  it('[owner 14 Nov] a free trial names the week a payment now covers, or says it is already paid', () => {
+    const end = new Date('2026-11-22T15:00:00Z');
+    const trial = { isTrialActive: true, status: 'TRIAL', trialEndDate: end, nextBillingDate: end, amountDue: 0, paidThroughProven: false };
+    expect(words(trial)).toEqual({ state: 'TRIAL', headline: 'Free trial until 22 Nov 2026',
+      detail: 'Your first weekly fee, GY$15,000, is due on 22 Nov 2026. Paying now covers 22 Nov 2026 to 29 Nov 2026: no trial day is lost.',
+      date: end.toISOString() });
+    expect(words({ ...trial, paidAhead: 15_000 }).detail).toBe('Your first week after the trial, 22 Nov 2026 to 29 Nov 2026, is already paid.');
+    expect(words({ ...trial, paidAhead: 30_000 }).detail).toBe('Your first 2 weekly fees after the trial are already paid.');
+    expect(words({ ...trial, paidAhead: 5_000 }).detail).toBe('GY$5,000 is already paid toward your first weekly fee, due 22 Nov 2026.');
+    for (const none of [{ feeWaived: true }, { autoRenew: false }, { feePaused: true }, { weeklyFee: 0 }, { nextBillingDate: new Date('2026-11-29T15:00:00Z') }]) {
+      expect(words({ ...trial, ...none }).detail, JSON.stringify(none)).toBeNull();
+    }
+    expect(`${words(trial).detail} ${words({ ...trial, paidAhead: 15_000 }).detail}`).not.toMatch(/wallet|balance|paid ahead|top.?up/i);
+  });
+
   it('stopped billing, a server-wide fee pause, a waived week and a closed plan', () => {
     expect(words({ status: 'PAUSED', autoRenew: false }).state).toBe('STOPPED');
     expect(words({ autoRenew: false, nextBillingDate: new Date('2026-10-20T12:00:00Z') }).headline).toBe('Weekly billing stopped');
