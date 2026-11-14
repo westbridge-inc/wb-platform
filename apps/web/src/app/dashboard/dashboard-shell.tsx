@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState, type ComponentType } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { BarChart3, Bell, Calendar, Check, ClipboardList, Boxes, UserRound, Store as StoreIcon, ChevronDown } from 'lucide-react';
 import { Providers } from '@/components/providers';
@@ -8,6 +8,7 @@ import { ConsoleUnreachable, useConsoleSession } from '@/components/console-sess
 import type { ShellPerson } from '@/components/customer-shell';
 import { ConsoleShell } from '@/components/console-shell';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { ApiRequestError, setSelectedStore } from '@/lib/auth';
 import { getStores, type Store } from '@/lib/vendor-api';
 import { switchStore, useStoreId } from '@/lib/store-scope';
@@ -109,7 +110,7 @@ function StoreSwitcher({ storeId, onSwitch, list, isError }: {
 /**
  * [SPEED 30 Oct · owner] A first tap on a tab shows its content: once the board's own reads have
  * landed, the reads the other tabs of this login make on their first draw are made once. All of it
- * lives in lib/dashboard-tab-reads, its own chunk (no page's first load carries it). Staff prefetch
+ * lives in lib/dashboard-tab-reads, loaded with the ring in the shell's after-load chunk (no page's first load carries it). Staff prefetch
  * only what they can see; a store switch or a role change starts again for the new store or role.
  */
 function useTabPrefetch(storeId: string | null, role: VendorMemberRole | undefined, vendorType: string | undefined, roleKnown: boolean) {
@@ -118,11 +119,36 @@ function useTabPrefetch(storeId: string | null, role: VendorMemberRole | undefin
     if (!storeId || !roleKnown) return;
     let stop: (() => void) | undefined;
     let live = true;
-    void import('@/lib/dashboard-tab-reads')
+    void import('@/components/dashboard-after-load')
       .then((reads) => { if (live) stop = reads.prefetchWhenIdle(queryClient, reads.dashboardTabReads(storeId, role, vendorType)); })
       .catch(() => undefined);
     return () => { live = false; stop?.(); };
   }, [queryClient, storeId, role, vendorType, roleKnown]);
+}
+
+/**
+ * [STORE-BOARD S1 · parity audit B1] The new-order ring (takeover, chime, flashing title) on every dashboard page,
+ * mounted once here. Its code rides in the shell's after-load chunk (components/dashboard-after-load, with the
+ * tabs' first reads), fetched right after the page: no page's first load carries it and the build's chunk map gains
+ * no entry (scripts/perf-budget.json). A failed fetch is tried again every 15 s: a store is never left without its ring.
+ */
+export const RING_RETRY_MS = 15_000;
+function StoreRingLoader({ storeId }: { storeId: string }) {
+  const router = useRouter();
+  const [Ring, setRing] = useState<ComponentType<{ storeId: string; toOrders?: () => void }> | null>(null);
+  useEffect(() => {
+    let live = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const load = () => {
+      import('@/components/dashboard-after-load').then(
+        (m) => { if (live) setRing(() => m.StoreRing); },
+        () => { if (live) timer = setTimeout(load, RING_RETRY_MS); },
+      );
+    };
+    load();
+    return () => { live = false; if (timer) clearTimeout(timer); };
+  }, []);
+  return Ring ? <Ring storeId={storeId} toOrders={() => router.push('/dashboard/orders')} /> : null;
 }
 
 function StoreShell({ children, person }: { children: React.ReactNode; person: ShellPerson | null }) {
@@ -184,6 +210,7 @@ function StoreShell({ children, person }: { children: React.ReactNode; person: S
   useTabPrefetch(feedStore, role, selected?.vendorType, roleKnown);
   return (<>
     {feedStore && <StoreLiveFeed key={feedStore} storeId={feedStore} />}
+    {feedStore && <StoreRingLoader key={feedStore} storeId={feedStore} />}
     <ConsoleShell person={person} home="/dashboard" title="Business" navigation={navigation}
       switcher={<StoreSwitcher storeId={storeId} onSwitch={onSwitch} list={list} isError={stores.isError && !noStoreYet && !noBusiness} />}
       signOutBody="New orders stop showing in this browser until you sign in again. Your store, menu and orders stay with your account."

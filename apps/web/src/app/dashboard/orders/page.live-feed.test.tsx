@@ -2,10 +2,10 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { act, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import OrdersPage from './page';
+import { OrdersBoard } from '@/test/orders-board';
 import { StoreLiveFeed } from '@/components/store-live-feed';
 import { setSelectedStore } from '@/lib/auth';
-import { mockApi, renderWithQuery, stubAudioContext, type ApiRequest } from '@/test/test-utils';
+import { mockApi, withOpenBoard, renderWithQuery, stubAudioContext, type ApiRequest } from '@/test/test-utils';
 import { wireVendorOrder } from '@/test/vendor-wire-fixtures';
 
 // [PERF row 8] The website's order board hears its store on the business
@@ -43,7 +43,7 @@ function board(request: ApiRequest) {
   throw new Error(`Unexpected request: ${request.method} ${request.url}`);
 }
 
-const renderBoard = () => renderWithQuery(<><StoreLiveFeed storeId="store-1" /><OrdersPage /></>);
+const renderBoard = () => renderWithQuery(<><StoreLiveFeed storeId="store-1" /><OrdersBoard /></>);
 
 describe('[PERF row 8] the website order board and the store feed', () => {
   beforeEach(() => {
@@ -52,7 +52,7 @@ describe('[PERF row 8] the website order board and the store feed', () => {
     vi.stubGlobal('WebSocket', BrowserSocket);
     setSelectedStore('store-1');
     orders = [];
-    fetchMock = mockApi(board);
+    fetchMock = mockApi(withOpenBoard(board));
   });
   afterEach(() => { vi.useRealTimers(); });
 

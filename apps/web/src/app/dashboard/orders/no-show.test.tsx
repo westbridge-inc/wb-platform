@@ -1,7 +1,7 @@
 import { screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import OrdersPage from './page';
-import { mockApi, renderWithQuery, stubAudioContext, type ApiRequest } from '@/test/test-utils';
+import { mockApi, withOpenBoard, renderWithQuery, stubAudioContext, type ApiRequest } from '@/test/test-utils';
 import { wireVendorOrderDetail } from '@/test/vendor-wire-fixtures';
 
 // ---------------------------------------------------------------------------
@@ -28,7 +28,7 @@ function appointment(over: Record<string, unknown> = {}) {
 
 function serve(detail: Record<string, unknown>) {
   const server = { ...detail };
-  mockApi((request) => {
+  mockApi(withOpenBoard((request) => {
     const path = request.url.pathname;
     if (request.method === 'GET' && path === '/api/v1/vendor/orders') return { body: { success: true, data: [{ ...server }], meta: { total: 1 } } };
     if (request.method === 'GET' && path === '/api/v1/vendor/orders/order-live') return { body: { success: true, data: { ...server } } };
@@ -40,7 +40,7 @@ function serve(detail: Record<string, unknown>) {
       return { body: { success: true, data: { id: 'order-live', status: 'CANCELLED' } } };
     }
     throw new Error(`Unexpected request: ${request.method} ${request.url}`);
-  });
+  }));
 }
 
 async function openDetail(detail: Record<string, unknown>) {
