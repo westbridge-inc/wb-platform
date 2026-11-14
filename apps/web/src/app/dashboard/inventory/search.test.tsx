@@ -67,15 +67,62 @@ describe('[MENU-SEARCH] the website searches as the app does', () => {
     expect(shown()).toEqual([]);
   });
 
-  it('"Low stock only" is not offered to a store that counts no stock; it is once an item is counted', async () => {
+  it('"Low stock" is not offered to a store that counts no stock; it is once an item is counted', async () => {
     const first = renderWithQuery(<InventoryPage />);
     await screen.findByRole('article', { name: 'White Rice' });
-    expect(screen.queryByRole('checkbox', { name: 'Low stock only' })).toBeNull();
+    expect(screen.queryByRole('button', { name: /^Low stock · / })).toBeNull();
     first.unmount();
     items[2] = { ...items[2], stockQuantity: 3 };
     renderWithQuery(<InventoryPage />);
     await screen.findByRole('article', { name: 'White Rice' });
-    await act(async () => { fireEvent.click(screen.getByRole('checkbox', { name: 'Low stock only' })); });
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Low stock · 1' })); });
     await waitFor(() => expect(shown()).toEqual(['White Rice']));
+  });
+
+});
+
+// [MENU-FILTERS · parity audit C1, owner 14 Nov 2026] The filter buttons, as on the app: Sold out, Low stock (a store
+// that counts stock only), No photo. Each says how many it holds; one at a time; pressed again, it is off.
+describe('[MENU-FILTERS] the filter buttons', () => {
+  beforeEach(() => {
+    items[1] = { ...items[1], isAvailable: false };
+    items[0] = { ...items[0], imageUrl: 'stores/v1/creme.jpg' };
+  });
+  const button = (name: string) => screen.getByRole('button', { name });
+
+  it('Sold out and No photo, with their counts, not pressed', async () => {
+    renderWithQuery(<InventoryPage />);
+    await screen.findByRole('article', { name: 'White Rice' });
+    expect(button('Sold out · 1').getAttribute('aria-pressed')).toBe('false');
+    expect(button('No photo · 2').getAttribute('aria-pressed')).toBe('false');
+  });
+
+  it('Sold out shows the switched-off items only; pressed again, every item', async () => {
+    renderWithQuery(<InventoryPage />);
+    await screen.findByRole('article', { name: 'White Rice' });
+    await act(async () => { fireEvent.click(button('Sold out · 1')); });
+    await waitFor(() => expect(shown()).toEqual(['Family Pizza']));
+    expect(button('Sold out · 1').getAttribute('aria-pressed')).toBe('true');
+    await act(async () => { fireEvent.click(button('Sold out · 1')); });
+    await waitFor(() => expect(shown()).toHaveLength(3));
+  });
+
+  it('No photo, with a search too; one button at a time', async () => {
+    renderWithQuery(<InventoryPage />);
+    await screen.findByRole('article', { name: 'White Rice' });
+    await act(async () => { fireEvent.click(button('Sold out · 1')); });
+    await act(async () => { fireEvent.click(button('No photo · 2')); });
+    expect(button('Sold out · 1').getAttribute('aria-pressed')).toBe('false');
+    await waitFor(() => expect(shown()).toEqual(['Family Pizza', 'White Rice']));
+    await type('rice');
+    await waitFor(() => expect(shown()).toEqual(['White Rice']));
+  });
+
+  it('nothing under the button: the page says which button is on', async () => {
+    items[1] = { ...items[1], isAvailable: true };
+    renderWithQuery(<InventoryPage />);
+    await screen.findByRole('article', { name: 'White Rice' });
+    await act(async () => { fireEvent.click(button('Sold out · 0')); });
+    expect(await screen.findByText('No items match. Showing sold out items only.')).toBeTruthy();
   });
 });

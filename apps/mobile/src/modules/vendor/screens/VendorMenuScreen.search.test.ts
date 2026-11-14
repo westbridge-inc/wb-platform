@@ -194,23 +194,77 @@ describe('the Menu tab has the website\'s "Search name or SKU" box', () => {
   });
 });
 
-describe('the website\'s "Low stock only" filter', () => {
-  const lowChip = (tree: any) => ofType(tree, 'Chip').find((c) => c.props.label === 'Low stock only');
+// [MENU-FILTERS · parity audit C1] The filter buttons next to the search, as on the website: Sold out, Low stock (a
+// store that counts stock only), No photo. Each says how many it holds; one at a time; tapped again, it is off.
+describe('the filter buttons', () => {
+  const button = (tree: any, word: string) => ofType(tree, 'Chip').find((c) => String(c.props.label).startsWith(`${word} · `));
 
-  it('is not offered to a store that counts no stock (a restaurant): it could only ever show nothing', () => {
-    expect(lowChip(draw())).toBeUndefined();
+  it('a restaurant (no stock counted) gets Sold out and No photo, each with its count', () => {
+    (h.menu[0] as any).items[1].isAvailable = false;
+    (h.menu[2] as any).items[9].isAvailable = false;
+    (h.menu[1] as any).items[0].imageUrl = 'stores/v1/a.jpg';
+    const tree = draw();
+    expect(button(tree, 'Low stock')).toBeUndefined();
+    expect(button(tree, 'Sold out')!.props.label).toBe('Sold out · 2');
+    expect(button(tree, 'No photo')!.props.label).toBe('No photo · 179');
+    expect(bar(tree), 'the buttons sit with the box, above the list').toBeTruthy();
+    expect(ofType(list(tree), 'Chip').filter((c) => String(c.props.label).startsWith('Sold out'))).toHaveLength(0);
   });
 
-  it('shows only counted items at or under their alert level, and works with a search', () => {
+  it('Sold out shows only the switched-off items, under their sections; tapped again, every item is back', () => {
+    (h.menu[0] as any).items[1].isAvailable = false;
+    (h.menu[2] as any).items[9].isAvailable = false;
+    let tree = draw();
+    expect(button(tree, 'Sold out')!.props.selected).toBe(false);
+    button(tree, 'Sold out')!.props.onPress();
+    tree = draw();
+    expect(button(tree, 'Sold out')!.props.selected).toBe(true);
+    expect(shownIds(tree)).toEqual(['#c0', 'c0-i1', '#c2', 'c2-i9']);
+    expect(texts(tree)).toContain('2 items');
+    button(tree, 'Sold out')!.props.onPress();
+    expect(shownIds(draw())).toHaveLength(SECTIONS * (PER_SECTION + 1));
+  });
+
+  it('No photo shows the items customers see no photo for', () => {
+    for (const s of h.menu as any[]) for (const it of s.items) it.imageUrl = 'stores/v1/x.jpg';
+    (h.menu[1] as any).items[4].imageUrl = null;
+    let tree = draw();
+    button(tree, 'No photo')!.props.onPress();
+    tree = draw();
+    expect(shownIds(tree)).toEqual(['#c1', 'c1-i4']);
+  });
+
+  it('one button at a time: choosing another moves the choice', () => {
+    (h.menu[0] as any).items[1].isAvailable = false;
+    let tree = draw();
+    button(tree, 'Sold out')!.props.onPress();
+    tree = draw();
+    button(tree, 'No photo')!.props.onPress();
+    tree = draw();
+    expect(button(tree, 'Sold out')!.props.selected).toBe(false);
+    expect(button(tree, 'No photo')!.props.selected).toBe(true);
+  });
+
+  it('no item under the button: the answer says which button is on, and one tap shows every item', () => {
+    let tree = draw();
+    button(tree, 'Sold out')!.props.onPress();
+    tree = draw();
+    const empty = list(tree).props.ListEmptyComponent;
+    expect(empty.props.title).toBe('No items match.');
+    expect(empty.props.body).toBe('Showing sold out items only.');
+    empty.props.onAction();
+    expect(shownIds(draw())).toHaveLength(SECTIONS * (PER_SECTION + 1));
+  });
+
+  it('Low stock (a store that counts stock): counted items at or under their alert level, with a search too', () => {
     const items = (h.menu[1] as any).items;
     items[0].stockQuantity = 2;
     items[1].stockQuantity = 50;
     items[2].stockQuantity = 8; items[2].lowStockThreshold = 10;
     let tree = draw();
-    expect(lowChip(tree)!.props.selected).toBe(false);
-    lowChip(tree)!.props.onPress();
+    expect(button(tree, 'Low stock')!.props.label).toBe('Low stock · 2');
+    button(tree, 'Low stock')!.props.onPress();
     tree = draw();
-    expect(lowChip(tree)!.props.selected).toBe(true);
     expect(shownIds(tree)).toEqual(['#c1', 'c1-i0', 'c1-i2']);
     expect(texts(tree)).toContain('2 items');
     bar(tree).props.onChangeText('1.2');

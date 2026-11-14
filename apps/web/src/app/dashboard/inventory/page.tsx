@@ -2,7 +2,10 @@
 
 import { addedBySwiftLine, photoAddedBySwiftLine } from '../../../../../mobile/src/lib/assistedSetupCopy';
 // [MENU-SEARCH · owner 14 Nov 2026] The app's matcher: the same words find the same items on the phone and here.
-import { CATALOGUE_SEARCH_PLACEHOLDER, isLowStockItem, itemCountLine, itemMatches, noMatchLine, searchTerms, tracksAnyStock } from '../../../../../mobile/src/lib/catalogueSearch';
+import {
+  CATALOGUE_FILTER_WORDS, CATALOGUE_SEARCH_PLACEHOLDER, filterCount, filterShownLine, itemCountLine, itemMatches, matchesFilter, noMatchLine,
+  offeredFilters, searchTerms, type CatalogueFilter,
+} from '../../../../../mobile/src/lib/catalogueSearch';
 import { memo, Suspense, useCallback, useDeferredValue, useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { useMutation, useMutationState, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -162,7 +165,7 @@ export default function InventoryPage() {
   const storeId = useStoreId();
   const [search, setSearch] = useState('');
   const [categoryId, setCategoryId] = useState('');
-  const [lowOnly, setLowOnly] = useState(false);
+  const [chosenFilter, setFilter] = useState<CatalogueFilter | null>(null);
   const [adjusting, setAdjusting] = useState<string | null>(null);
   const [editingPrice, setEditingPrice] = useState<string | null>(null);
   const [dialog, setDialog] = useState<Dialog | null>(null);
@@ -261,19 +264,20 @@ export default function InventoryPage() {
   const shownSearch = useDeferredValue(search);
   // [MENU-SEARCH] As in the app (lib/catalogueSearch): name, SKU and option names; any case, any accent; every word.
   const terms = useMemo(() => searchTerms(shownSearch), [shownSearch]);
-  // "Low stock only" is offered only when some item's stock is counted (as in the app; never a restaurant's).
-  const countsStock = useMemo(() => tracksAnyStock(items.data ?? []), [items.data]);
-  const lowShown = lowOnly && countsStock;
+  // [MENU-FILTERS · parity audit C1] The app's filter buttons: Sold out, Low stock (only when some item's stock is
+  // counted, never a restaurant's), No photo. One at a time; pressed again, it is off.
+  const filters = useMemo(() => offeredFilters(items.data ?? []), [items.data]);
+  const filter = chosenFilter && filters.includes(chosenFilter) ? chosenFilter : null;
   const list = useMemo(() => {
     let rows = items.data ?? [];
     if (terms.length) rows = rows.filter((i) => itemMatches(i, terms));
     if (categoryId) rows = rows.filter((i) => i.category?.id === categoryId);
-    if (lowShown) rows = rows.filter(isLowStockItem);
+    if (filter) rows = rows.filter((i) => matchesFilter(i, filter));
     return rows;
-  }, [items.data, terms, categoryId, lowShown]);
+  }, [items.data, terms, categoryId, filter]);
   // As in the app: the items under their section's heading, in the store's section order (an item whose section the
   // page does not know yet comes last, under no heading). With nothing filtered, an empty section shows too.
-  const filtered = terms.length > 0 || lowShown;
+  const filtered = terms.length > 0 || filter !== null;
   const groups = useMemo(() => {
     const known = new Set(sections.map((c) => c.id));
     const out = sections.filter((c) => !categoryId || c.id === categoryId)
@@ -362,12 +366,11 @@ export default function InventoryPage() {
             </button>
           )}
         </div>
-        {countsStock && (
-          <label className="flex items-center gap-2 text-sm">
-            <input type="checkbox" checked={lowOnly} onChange={(e) => setLowOnly(e.target.checked)} className="h-4 w-4 accent-[var(--swift-red)]" />
-            Low stock only
-          </label>
-        )}
+        {filters.map((f) => (
+          <button key={f} type="button" className="sw-chip" aria-pressed={filter === f} onClick={() => setFilter(filter === f ? null : f)}>
+            {CATALOGUE_FILTER_WORDS[f]} · {filterCount(items.data ?? [], f)}
+          </button>
+        ))}
         <span className="text-sm text-[var(--swift-muted)]" aria-live="polite">{itemCountLine(list.length)}</span>
       </div>
       {/* The app's SECTIONS chips: every section with how many items it holds, then "Add section". */}
@@ -382,7 +385,7 @@ export default function InventoryPage() {
       {vat.isError && <DataUnavailable what="your VAT settings" error={vat.error} onRetry={() => void vat.refetch()} />}
       {vatRate != null && <VatNote />}
       {items.isLoading && <div className="sw-empty" role="status"><span className="sw-skeleton h-24 w-full" />Loading {yourCatalogue(catalogue).toLowerCase()}…</div>}
-      {!items.isLoading && !items.isError && !list.length && <p className="sw-board-empty">{noMatchLine(terms.length ? shownSearch : '')}</p>}
+      {!items.isLoading && !items.isError && !list.length && <p className="sw-board-empty">{noMatchLine(terms.length ? shownSearch : '')}{filter ? ` ${filterShownLine(filter)}` : ''}</p>}
       {groups.map(({ section, rows }) => (
         <section key={section?.id ?? 'other'} aria-label={section?.name ?? 'Other items'}>
           {section && (
