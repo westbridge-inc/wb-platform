@@ -58,9 +58,28 @@ export interface HomeNoticeWords {
   body: string;
 }
 
-// C0/C1 controls and the bidirectional overrides/isolates: words that could hide or reorder text are refused.
+// Words that could hide or reorder text are refused:
+//   - C0/C1 controls;
+//   - [ROUND 2 · REVIEW-A/B S4-1] every Unicode FORMAT character (\p{Cf}): the bidi overrides/isolates and marks
+//     (LRM/RLM, the Arabic letter mark), zero-width space/joiner/non-joiner, word joiner and the invisible operators,
+//     a BOM, the soft hyphen, the tag block. An approver cannot see them, and two notices that look the same would
+//     carry two ids. The one exception is a zero-width joiner INSIDE an emoji (woman + ZWJ + cooking = a woman cook);
+//   - more than three combining marks stacked on one letter (they paint over the lines around the banner);
+//   - half of a surrogate pair (\p{Cs} under the u flag matches only an unpaired half), which the database cannot
+//     store as JSON: refused here as a 400 at the ask, never a 500.
 // eslint-disable-next-line no-control-regex
-const UNSAFE_CHARS = /[\u0000-\u001F\u007F-\u009F‪-‮⁦-⁩]/;
+const CONTROL_CHARS = /[\u0000-\u001F\u007F-\u009F]/;
+const FORMAT_CHARS = /\p{Cf}/u;
+const LONE_SURROGATE = /\p{Cs}/u;
+const STACKED_MARKS = /\p{M}{4,}/u;
+/** A zero-width joiner between two emoji (after an optional emoji selector or skin tone), part of one emoji. */
+const EMOJI_JOINER = /(?<=\p{Extended_Pictographic}(?:\uFE0F|\p{Emoji_Modifier})?)\u200D(?=\p{Extended_Pictographic})/gu;
+
+/** Whether the words carry a character that could hide or reorder text (see above). */
+function hasUnsafeChars(text: string): boolean {
+  return CONTROL_CHARS.test(text) || LONE_SURROGATE.test(text) || STACKED_MARKS.test(text)
+    || FORMAT_CHARS.test(text.replace(EMOJI_JOINER, ''));
+}
 
 /** Plain text, one line: every run of whitespace (newlines included) becomes one space. */
 function tidy(value: unknown): string {
@@ -77,7 +96,7 @@ export function homeNoticeWordsOf(input: unknown): HomeNoticeWords {
   if (typeof raw.body !== 'string') throw new ValidationError('Write the notice.');
   // Unsafe characters are judged on what was sent: tidying would turn a tab or newline into a space first.
   const sent = `${typeof raw.title === 'string' ? raw.title : ''}${raw.body}`.replace(/[\t\n\r]/g, ' ');
-  if (UNSAFE_CHARS.test(sent)) throw new ValidationError('The notice has a hidden character in it. Type it again as plain text.');
+  if (hasUnsafeChars(sent)) throw new ValidationError('The notice has a hidden character in it. Type it again as plain text.');
   const title = tidy(raw.title);
   const body = tidy(raw.body);
   if (!body) throw new ValidationError('Write the notice.');

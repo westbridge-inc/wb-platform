@@ -5,6 +5,9 @@ import { useQuery } from '@tanstack/react-query';
 import { Info, X } from 'lucide-react';
 import { closedNoticeIds, fetchHomeNotice, rememberClosedNotice } from '@/lib/home-notice';
 
+/** How often an open Home re-reads the notice, and how long an answer counts as fresh. */
+export const NOTICE_RECHECK_MS = 60_000;
+
 /**
  * [HOME-NOTICE · owner 13 Nov 2026] The owner's notice at the top of Home, for
  * everyone, closed with an X (lib/home-notice.ts). It is drawn only once the
@@ -12,7 +15,13 @@ import { closedNoticeIds, fetchHomeNotice, rememberClosedNotice } from '@/lib/ho
  * notice never flashes: the closed ids are read before it is first drawn.
  */
 export function HomeNotice({ className = '' }: { className?: string }) {
-  const notice = useQuery({ queryKey: ['public', 'home-notice'], queryFn: fetchHomeNotice, staleTime: 60_000, refetchOnWindowFocus: false });
+  // [ROUND 2 · REVIEW-A S3-2 · REVIEW-B S3-1] A tab left open drops a notice the owner turned off: it re-reads every
+  // minute and when the tab is looked at again (once the answer is a minute old). The browser may answer from its
+  // cache for up to a minute (the API says max-age=60), so an open tab drops it within about two minutes.
+  const notice = useQuery({
+    queryKey: ['public', 'home-notice'], queryFn: fetchHomeNotice, staleTime: NOTICE_RECHECK_MS,
+    refetchInterval: NOTICE_RECHECK_MS, refetchOnWindowFocus: true,
+  });
   // Read on the first render in the browser; on the server there is no answer yet, so nothing is drawn either way.
   const [closed, setClosed] = useState<string[]>(() => (typeof window === 'undefined' ? [] : closedNoticeIds()));
   const shown = notice.data ?? null;

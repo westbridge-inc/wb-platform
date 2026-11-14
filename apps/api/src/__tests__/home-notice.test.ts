@@ -17,7 +17,8 @@ import { isMachineOwnedConfigKey } from '../modules/admin/machine-owned-config';
 import {
   HOME_NOTICE_BODY_MAX, HOME_NOTICE_KEY, HOME_NOTICE_TITLE_MAX, homeNoticeWordsOf, noticeIdOf, publicHomeNoticeOf, storedHomeNoticeOf,
 } from '../modules/ops/home-notice';
-import { cleanupSecondApprovers, injectWithApproval } from './helpers/admin-approval';
+import { approveAsSecondAdmin, cleanupSecondApprovers, injectWithApproval } from './helpers/admin-approval';
+import { APPROVAL_HEADER } from '../modules/admin/admin-approval';
 
 // ---------------------------------------------------------------------------
 // [HOME-NOTICE · owner 13 Nov 2026] A small notice on the customer Home, for
@@ -145,6 +146,42 @@ describe('what a stored notice is', () => {
     expect(() => homeNoticeWordsOf({ body: 'bell \u0007 here' })).toThrow();
     expect(() => homeNoticeWordsOf({ body: 'flip ‮ this' })).toThrow();
   });
+
+  // [ROUND 2 · REVIEW-A S4-1 · REVIEW-B S4-1] Every Unicode FORMAT character (\p{Cf}) is refused, not only the bidi
+  // overrides: zero-width space, LRM/RLM, the Arabic letter mark, word joiner, a BOM inside the words, soft hyphen and
+  // the invisible tag block. They hide or reorder text an approver cannot see, or make two notices that look the same
+  // carry two ids. The one exception: a zero-width joiner INSIDE an emoji (a woman cook is woman + ZWJ + cooking).
+  it.each([
+    ['zero-width space', 'Pick\u200Bup is open'], ['left-to-right mark', 'Pickup \u200E is open'], ['right-to-left mark', 'Pickup \u200F is open'],
+    ['Arabic letter mark', 'Pickup \u061C is open'], ['word joiner', 'Pick\u2060up'], ['invisible plus', 'a\u2064b'],
+    ['a BOM in the middle', 'Pickup \uFEFF is open'], ['soft hyphen', 'Pick\u00ADup'], ['a tag character', 'Pickup \u{E0041}\u{E007F} is open'],
+    ['a zero-width joiner between letters', 'Pick\u200Dup'], ['a zero-width non-joiner', 'Pick\u200Cup'],
+  ])('a format character is refused: %s', (_label, body) => {
+    expect(() => homeNoticeWordsOf({ body })).toThrow(/hidden character/);
+    expect(() => homeNoticeWordsOf({ title: body, body: 'Plain words.' })).toThrow(/hidden character/);
+  });
+
+  it('stacked combining marks are refused past three on one letter; ordinary accents and emoji still pass', () => {
+    expect(() => homeNoticeWordsOf({ body: `Z${'\u0301'.repeat(4)}algo` })).toThrow(/hidden character/);
+    expect(() => homeNoticeWordsOf({ body: `Z${'\u0301'.repeat(270)}` })).toThrow(/hidden character/);
+    for (const ok of [
+      'Caf\u00E9 and cafe\u0301 are open', // é precomposed and decomposed
+      'Vi\u1EC7t and Vie\u0323\u0302t', // two marks on one letter
+      'Thank you \u2764\uFE0F', // a heart with its emoji selector
+      'Our chef \u{1F469}\u200D\u{1F373} is cooking', // woman cook: ZWJ inside one emoji
+      'Family \u{1F468}\u200D\u{1F469}\u200D\u{1F467} meals', // two joiners inside one emoji
+      'Thumbs \u{1F44D}\u{1F3FD} up', 'Flags \u{1F1EC}\u{1F1FE}', 'Keycap 1\uFE0F\u20E3',
+    ]) expect(homeNoticeWordsOf({ body: ok }).body, ok).toBe(ok);
+  });
+
+  it('a lone surrogate (half of an emoji) is refused as words, never stored', () => {
+    for (const body of ['a\uD800b', 'a\uDC00b', 'end \uD83D', '\uDE00 start']) {
+      expect(() => homeNoticeWordsOf({ body })).toThrow(/hidden character/);
+    }
+    expect(() => homeNoticeWordsOf({ title: 'x\uD800', body: 'Plain words.' })).toThrow(/hidden character/);
+    // A whole emoji is two halves together, and is fine.
+    expect(homeNoticeWordsOf({ body: 'Smile \u{1F600}' }).body).toBe('Smile \u{1F600}');
+  });
 });
 
 describe('off by default, and readable with no sign-in', () => {
@@ -183,12 +220,81 @@ describe('the console turns it on (C5) and off (C3, immediate)', () => {
     expect((await publicNotice()).body).toEqual({ notice: null });
   });
 
+  it('[ROUND 2 · REVIEW-B S4-1] half an emoji (a lone surrogate) is a clean 400 at the ask, never a 500, and nothing is queued', async () => {
+    const before = await runWithoutTenant(() => app.prisma.privilegedApproval.count({ where: { requestedBy: userIds[0]! } }), 'test-read');
+    // Sent as raw JSON text: the escape is what a crafted call carries (a JS string would already hold the half).
+    const res = await app.inject({
+      method: 'PUT', url: '/api/v1/admin/home-notice', headers: auth(),
+      payload: `{"title":${JSON.stringify(TITLE)},"body":"Pickup a\\ud800b is open","reason":${JSON.stringify(REASON)}}`,
+    });
+    expect(res.statusCode, res.body).toBe(400);
+    expect(res.json().error.message).toMatch(/hidden character/);
+    const after = await runWithoutTenant(() => app.prisma.privilegedApproval.count({ where: { requestedBy: userIds[0]! } }), 'test-read');
+    expect(after).toBe(before);
+    expect((await publicNotice()).body).toEqual({ notice: null });
+  });
+
+  it('a zero-width space is refused at the ask too', async () => {
+    const res = await app.inject({ method: 'PUT', url: '/api/v1/admin/home-notice', headers: auth(), payload: { title: TITLE, body: 'Pick\u200Bup is open', reason: REASON } });
+    expect(res.statusCode, res.body).toBe(400);
+  });
+
   it('words that could never go live are refused at the ask, not after the wait', async () => {
     const before = await runWithoutTenant(() => app.prisma.privilegedApproval.count({ where: { requestedBy: userIds[0]! } }), 'test-read');
     const res = await app.inject({ method: 'PUT', url: '/api/v1/admin/home-notice', headers: auth(), payload: { title: TITLE, body: ' ', reason: REASON } });
     expect(res.statusCode, res.body).toBe(400);
     const after = await runWithoutTenant(() => app.prisma.privilegedApproval.count({ where: { requestedBy: userIds[0]! } }), 'test-read');
     expect(after).toBe(before);
+  });
+
+  it('[ROUND 2 · REVIEW-B S4-3] the approved words are the live words: other words on an approval are refused', async () => {
+    const approved = { title: TITLE, body: 'Approved words only.' };
+    const asked = await app.inject({ method: 'PUT', url: '/api/v1/admin/home-notice', headers: auth(), payload: { ...approved, reason: REASON } });
+    expect(asked.statusCode, asked.body).toBe(202);
+    const approvalId = asked.json().error.details.approvalId as string;
+    await approveAsSecondAdmin(app, approvalId);
+    // The same approval, other words: refused, and nothing goes live.
+    const swapped = await app.inject({
+      method: 'PUT', url: '/api/v1/admin/home-notice', headers: { ...auth(), [APPROVAL_HEADER]: approvalId },
+      payload: { title: TITLE, body: 'Words nobody approved.', reason: REASON },
+    });
+    expect(swapped.statusCode, swapped.body).toBe(403);
+    expect((await publicNotice()).body).toEqual({ notice: null });
+    // The approved words on it: live, exactly those words.
+    const applied = await app.inject({
+      method: 'PUT', url: '/api/v1/admin/home-notice', headers: { ...auth(), [APPROVAL_HEADER]: approvalId },
+      payload: { ...approved, reason: REASON },
+    });
+    expect(applied.statusCode, applied.body).toBe(200);
+    expect((await publicNotice()).body.notice).toMatchObject({ id: noticeIdOf(TITLE, approved.body), title: TITLE, body: approved.body });
+    expect((await stopNotice()).statusCode).toBe(200);
+    expect((await publicNotice()).body).toEqual({ notice: null });
+  });
+
+  it('[ROUND 2 · REVIEW-B S4-3] an admin who is not the founder can never turn words on, even with an approval', async () => {
+    const phone = `+59274${String(Math.floor(Math.random() * 90000) + 10000)}`;
+    const other = await app.prisma.user.create({
+      data: {
+        phone, firstName: 'Notice', lastName: `Staff${RUN}`, roles: ['ADMIN', 'CUSTOMER'], activeRole: 'ADMIN',
+        status: 'ACTIVE', isPhoneVerified: true, admin: { create: { permissions: ['*'] } },
+      },
+    });
+    userIds.push(other.id);
+    const otherToken = app.jwt.sign({ userId: other.id, role: 'ADMIN', jti: nanoid(8) });
+    await app.prisma.session.create({
+      data: {
+        userId: other.id, token: otherToken, refreshToken: nanoid(48), authMethod: 'OTP',
+        deviceId: 'home-notice-admin', deviceType: 'test', expiresAt: new Date(Date.now() + 86_400_000),
+      },
+    });
+    const headers = { authorization: `Bearer ${otherToken}`, 'content-type': 'application/json' };
+    const payload = { title: TITLE, body: 'An admin who is not the founder.', reason: REASON };
+    const asked = await app.inject({ method: 'PUT', url: '/api/v1/admin/home-notice', headers, payload });
+    const approvalId = asked.statusCode === 202 ? (asked.json().error.details.approvalId as string) : null;
+    if (approvalId) await approveAsSecondAdmin(app, approvalId);
+    const applied = await app.inject({ method: 'PUT', url: '/api/v1/admin/home-notice', headers: { ...headers, ...(approvalId ? { [APPROVAL_HEADER]: approvalId } : {}) }, payload });
+    expect(applied.statusCode, applied.body).toBe(403);
+    expect((await publicNotice()).body).toEqual({ notice: null });
   });
 
   it('once approved it is live for everyone, signed in or not, and the console shows it', async () => {
@@ -245,12 +351,14 @@ describe('the console turns it on (C5) and off (C3, immediate)', () => {
     const ons = rows.filter((r) => r.action === 'ADMIN PUT /api/v1/admin/home-notice');
     const offs = rows.filter((r) => r.action === 'ADMIN POST /api/v1/admin/home-notice/stop');
     expect(rows.every((r) => r.entityId === HOME_NOTICE_KEY)).toBe(true);
-    expect(ons.length).toBe(3);
-    expect(offs.length).toBe(2);
-    expect(ons[0]!.changes['reason']).toBe(REASON);
-    expect(offs[0]!.changes['reason']).toBe(STOP_REASON);
-    expect(ons[0]!.changes).toMatchObject({ noticeId: noticeIdOf(TITLE, BODY), liveBefore: false, liveAfter: true, title: TITLE, body: BODY });
-    expect(offs[0]!.changes).toMatchObject({ noticeId: noticeIdOf(TITLE, BODY), liveBefore: true, liveAfter: false });
-    expect(offs[1]!.changes).toMatchObject({ liveBefore: false, liveAfter: false });
+    // Round 2's approved-words case turns one notice on and off before these.
+    expect(ons.length).toBe(4);
+    expect(offs.length).toBe(3);
+    expect(ons[1]!.changes['reason']).toBe(REASON);
+    expect(offs[1]!.changes['reason']).toBe(STOP_REASON);
+    expect(ons[0]!.changes).toMatchObject({ noticeId: noticeIdOf(TITLE, 'Approved words only.'), liveBefore: false, liveAfter: true, body: 'Approved words only.' });
+    expect(ons[1]!.changes).toMatchObject({ noticeId: noticeIdOf(TITLE, BODY), liveBefore: false, liveAfter: true, title: TITLE, body: BODY });
+    expect(offs[1]!.changes).toMatchObject({ noticeId: noticeIdOf(TITLE, BODY), liveBefore: true, liveAfter: false });
+    expect(offs[2]!.changes).toMatchObject({ liveBefore: false, liveAfter: false });
   });
 });

@@ -78,6 +78,14 @@ describe('[HOME-NOTICE] the Home notice panel', () => {
     await waitFor(() => expect((screen.getByLabelText(/^Notice/) as HTMLTextAreaElement).value).toBe(BODY));
     expect((screen.getByLabelText(/^Title/) as HTMLInputElement).value).toBe(TITLE);
     await user.click(screen.getByRole('button', { name: 'Turn off now' }));
+    // [ROUND 2 · REVIEW-A S3-2 · REVIEW-B S3-1] The dialog says what really happens on each screen: the website
+    // re-reads every minute (an open page too) behind a one-minute cache; the app re-reads when someone comes back to
+    // Home or to Swift, and every 5 minutes on a Home left open. Never "within about a minute".
+    const ask = await screen.findByRole('dialog');
+    expect(ask.textContent).toContain('It goes off at once.');
+    expect(ask.textContent).toContain('The website drops it within about 2 minutes, a page left open included.');
+    expect(ask.textContent).toContain('The app drops it when someone comes back to Home or to Swift, and within about 6 minutes on a Home left open.');
+    expect(ask.textContent).not.toMatch(/within about a minute/);
     await answerPanel(user, /^Turn off now/);
     expect(await screen.findByText(/Off\. No notice shows on Home\./)).toBeTruthy();
     expect(writes).toEqual([{ method: 'POST', path: '/api/v1/admin/home-notice/stop', body: {}, reason: REASON }]);

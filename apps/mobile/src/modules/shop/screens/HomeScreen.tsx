@@ -627,7 +627,7 @@ export function HomeScreen() {
 
         {/* [HOME-NOTICE · owner 13 Nov 2026] The owner's notice, for everyone (signed in or not) until it is turned
             off; the X closes it on this phone. Under the live order, which outranks it; nothing drawn when off. */}
-        <HomeNotice gutter={GUTTER} />
+        <HomeNotice gutter={GUTTER} live={live} />
 
         {/* THE services grid — 4x2, drawn icons, ON OPEN PAPER.
             [100x pass §5/§6] "hairline rows on open paper (no card chassis)".

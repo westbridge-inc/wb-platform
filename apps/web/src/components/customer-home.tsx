@@ -175,10 +175,11 @@ export function CustomerHome({ market, seed = null }: { market: string; seed?: G
           Restaurants, groceries, shops…
         </Link>
 
-        {/* [HOME-NOTICE · owner 13 Nov 2026] The owner's notice, for everyone, until it is turned off; closed with an X. */}
-        <HomeNotice />
-
         {data?.activeOrder ? <LiveOrder order={data.activeOrder} /> : null}
+
+        {/* [HOME-NOTICE · owner 13 Nov 2026] The owner's notice, for everyone, until it is turned off; closed with an X.
+            [ROUND 2 · REVIEW-A S3-1] Under the live order, which outranks it, as on the phone. */}
+        <HomeNotice />
 
         <nav aria-label="Services" className="mt-1 pb-3">
           <ul className="grid grid-cols-4 wide:grid-cols-8">

@@ -58,7 +58,16 @@ export function HomeNoticePanel() {
 
   const stop = () => void actions.run({
     title: 'Turn the Home notice off?',
-    body: <p>It goes off at once. Customers stop seeing it within about a minute.</p>,
+    // [ROUND 2 · REVIEW-A S3-2 · REVIEW-B S3-1] What really happens: the website re-reads every minute (an open page
+    // too) behind the API's one-minute cache; the app re-reads when someone comes back to Home or to Swift, and every
+    // 5 minutes on a Home left open (plus the phone's one-minute cache).
+    body: (
+      <>
+        <p>It goes off at once.</p>
+        <p>The website drops it within about 2 minutes, a page left open included.</p>
+        <p>The app drops it when someone comes back to Home or to Swift, and within about 6 minutes on a Home left open.</p>
+      </>
+    ),
     confirmLabel: 'Turn off now',
     submit: ({ reason }) => stopHomeNotice(reason),
     success: () => 'The notice is off.',

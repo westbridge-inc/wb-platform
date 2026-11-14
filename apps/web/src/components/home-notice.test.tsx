@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { screen, waitFor } from '@testing-library/react';
+import { act, screen, waitFor } from '@testing-library/react';
+import { focusManager } from '@tanstack/react-query';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { HomeNotice } from './home-notice';
 import { CLOSED_NOTICES_KEY, closedNoticeIds, homeNoticeOf, rememberClosedNotice } from '@/lib/home-notice';
@@ -116,6 +117,43 @@ describe('the notice on Home', () => {
   });
 });
 
+// [ROUND 2 · REVIEW-A S3-2 · REVIEW-B S3-1] A website tab left open on Home drops a notice the owner turned off: it
+// re-reads every minute, and again when the tab is looked at after a minute. (The answer may come from the browser's
+// cache for up to a minute, max-age 60, so an open tab drops it within about two minutes.)
+describe('an open tab re-reads the notice', () => {
+  afterEach(() => { vi.useRealTimers(); focusManager.setFocused(undefined); });
+  const reads = (fetchMock: ReturnType<typeof server>) => fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/api/v1/public/home-notice')).length;
+
+  it('every minute while the tab is open: a notice turned off leaves the page', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    let live: unknown = NOTICE;
+    const fetchMock = mockApi((r) => {
+      if (r.url.pathname === '/api/v1/public/home-notice') return { body: { success: true, data: { notice: live } } };
+      throw new Error(`Unexpected request: ${r.method} ${r.url}`);
+    });
+    renderWithQuery(<HomeNotice />);
+    expect(await screen.findByText(NOTICE.body)).toBeTruthy();
+    expect(reads(fetchMock)).toBe(1);
+    live = null; // the owner pressed "Turn off now"
+    await act(async () => { await vi.advanceTimersByTimeAsync(61_000); });
+    await waitFor(() => expect(reads(fetchMock)).toBeGreaterThanOrEqual(2));
+    await waitFor(() => expect(screen.queryByRole('note')).toBeNull());
+  });
+
+  it('when the tab is looked at again after a minute', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const fetchMock = server(NOTICE);
+    renderWithQuery(<HomeNotice />);
+    await screen.findByText(NOTICE.body);
+    const before = reads(fetchMock);
+    act(() => { focusManager.setFocused(false); });
+    // Not a full interval, but past the minute the answer is fresh for.
+    vi.setSystemTime(Date.now() + 61_000);
+    act(() => { focusManager.setFocused(true); });
+    await waitFor(() => expect(reads(fetchMock)).toBeGreaterThan(before));
+  });
+});
+
 describe('Home draws it for everyone', () => {
   it('the customer Home (guests and signed-in alike) renders the notice, not behind a sign-in check', () => {
     const home = readFileSync(join(process.cwd(), 'src/components/customer-home.tsx'), 'utf8');
@@ -123,5 +161,10 @@ describe('Home draws it for everyone', () => {
     const at = home.indexOf('<HomeNotice />');
     expect(at).toBeGreaterThan(-1);
     expect(home.slice(Math.max(0, at - 80), at)).not.toMatch(/status|signed/);
+  });
+
+  it('[ROUND 2 · REVIEW-A S3-1] it comes after the live order in the page, as on the phone', () => {
+    const home = readFileSync(join(process.cwd(), 'src/components/customer-home.tsx'), 'utf8');
+    expect(home.indexOf('<HomeNotice />')).toBeGreaterThan(home.indexOf('<LiveOrder order={data.activeOrder} />'));
   });
 });
