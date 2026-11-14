@@ -149,7 +149,7 @@ export const DARK_FEATURES: DarkFeature[] = [
     enabledWhen: '1',
     title: "A VAT-registered store's VAT (14%, inside its prices, shown on its receipts)",
     whileOff:
-      "No store can say it is VAT-registered, send its GRA VAT certificate, or be approved for VAT; every store's prices, carts, checkouts and receipts show no VAT, exactly as before. Orders already placed with VAT keep the VAT they froze on their receipts. Swift's own fees stay \"Not a VAT invoice\" either way. A store a person already approved on prices BEFORE VAT keeps its \"VAT 14%\" line at checkout (its prices exclude VAT: dropping the line would undercharge it) until a person moves it off.",
+      "No store can say it is VAT-registered, send its GRA VAT certificate, or be approved for VAT; every store's prices, carts, checkouts and receipts show no VAT, exactly as before. Orders already placed with VAT keep the VAT they froze on their receipts. Swift's own fees stay \"Not a VAT invoice\" either way. A store a person already approved on prices BEFORE VAT keeps its \"VAT 14%\" line at checkout (its prices exclude VAT: dropping the line would undercharge it) until a person moves it off, so this switch is NOT a full VAT off-switch for such a store: to stop its VAT, withdraw it (Admin -> Store VAT), or the store turns its VAT off in its own settings.",
     impact: 'money',
   },
   {

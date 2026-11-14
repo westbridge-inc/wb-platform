@@ -20,6 +20,7 @@ import { consoleRoleOf } from '../auth/console-role';
 import { assertStaffSurfacePosture } from '../auth/admin-mfa';
 import { brandFactsFor, collapseBrands } from '../vendor/brand';
 import { applyItemStoreOpenNow, applyOpenNow, hoursOpenByVendor } from '../vendor/store-hours';
+import { withVatAddedHint } from '../store-vat/vat-added-hint';
 
 // [B2] ONE wire contract whichever engine answered. The route used to hand
 // clients raw Meilisearch hits on the fast path and raw Prisma rows on the
@@ -435,7 +436,8 @@ export async function searchRoutes(app: FastifyInstance) {
         ]);
         // [CHAINS PR3] One card per brand, opening its best branch for this customer.
         const vendors = await oneCardPerBrand(openFirst([...visibleVendors, ...moreVendors], storeOpen), lat, lng);
-        const items = openFirst([...visibleItems, ...moreItems], itemStoreOpen);
+        // [STORE-VAT-EXCLUSIVE] "+ VAT" beside a standard-rated price of a store pricing before VAT (read live).
+        const items = await withVatAddedHint(app.prisma, openFirst([...visibleItems, ...moreItems], itemStoreOpen));
         return {
           success: true,
           data: {
@@ -456,7 +458,7 @@ export async function searchRoutes(app: FastifyInstance) {
     }
 
     // DB path (every guest; a signed-in caller while the index is absent or failing)
-    const [listed, items] = await Promise.all([
+    const [listed, dbItemHits] = await Promise.all([
       dbVendors({
         q, tenantId, publicMode, type, cuisine, limit: parsedLimit,
         near: lat != null && lng != null ? { lat, lng } : undefined,
@@ -464,6 +466,8 @@ export async function searchRoutes(app: FastifyInstance) {
       dbItems({ q, tenantId, publicMode, hiddenOnly, limit: parsedLimit }),
     ]);
     const vendors = await oneCardPerBrand(listed, lat, lng);
+    // [STORE-VAT-EXCLUSIVE] "+ VAT" beside a standard-rated price of a store pricing before VAT.
+    const items = await withVatAddedHint(app.prisma, dbItemHits);
 
     return {
       success: true,
@@ -592,7 +596,8 @@ export async function searchRoutes(app: FastifyInstance) {
       success: true,
       // ItemHit plus the one field that makes it *trending* — a superset, never
       // a different shape.
-      data: listable.map((i) => request.publicTenantId ? toItemHit(i) : ({ ...toItemHit(i), totalOrdered: i.totalOrdered })),
+      // [STORE-VAT-EXCLUSIVE] "+ VAT" beside a standard-rated price of a store pricing before VAT.
+      data: await withVatAddedHint(app.prisma, listable.map((i) => request.publicTenantId ? toItemHit(i) : ({ ...toItemHit(i), totalOrdered: i.totalOrdered }))),
     };
   });
 

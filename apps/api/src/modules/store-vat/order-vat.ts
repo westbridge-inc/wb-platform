@@ -67,7 +67,27 @@ export function vatOnTopPlan(
   lines: ReadonlyArray<{ amount: number; vatClass: string | null | undefined }>,
 ): { rateBps: number; lines: Array<{ id: string; amount: number; vatClass: VatClassName }> } | null {
   if (!terms?.onTop) return null;
-  return { rateBps: terms.rateBps, lines: lines.map((l, i) => ({ id: String(i), amount: l.amount, vatClass: classOf(l.vatClass) })) };
+  // [REVIEW-A F4 · REVIEW-B S4-2] In the ONE split order (inVatSplitOrder), the order checkout stores the store
+  // discount's line shares in: the priced VAT and the placed order's VAT can never differ by which line came first.
+  return { rateBps: terms.rateBps, lines: inVatSplitOrder(lines, (l) => l.vatClass).map((l, i) => ({ id: String(i), amount: l.amount, vatClass: classOf(l.vatClass) })) };
+}
+
+const SPLIT_RANK: Readonly<Record<VatClassName, number>> = { STANDARD: 0, ZERO_RATED: 1, EXEMPT: 2 };
+
+/**
+ * [REVIEW-A F4 · REVIEW-B S4-2] The ONE line order a store's goods discount is split in on an order whose VAT is added on
+ * top: standard-rated lines first, then zero-rated, then exempt, each kept in its own order. The split
+ * (allocateAcrossLines, largest remainder) breaks a tie by position, so the same basket in two orders could give the
+ * extra dollar of discount to a standard-rated line on one side and a zero-rated line on the other: VAT 132 on the quote,
+ * 133 on the placed order, and a cart that is refused on every try (two lines of 1,000, one of each class, a store
+ * discount of 107). With the classes in a fixed order, whichever line of a class takes a tie, the VAT is the same: both the
+ * pricer (vatOnTopPlan) and checkout's stored shares (lineAllocations) use this order.
+ */
+export function inVatSplitOrder<T>(lines: readonly T[], vatClassOf: (line: T) => string | null | undefined): T[] {
+  return lines
+    .map((line, index) => ({ line, index, rank: SPLIT_RANK[classOf(vatClassOf(line))] }))
+    .sort((a, b) => a.rank - b.rank || a.index - b.index)
+    .map((x) => x.line);
 }
 
 function classOf(raw: string | null | undefined): VatClassName {

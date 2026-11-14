@@ -82,9 +82,6 @@ const CENSUS: Record<string, { sites: number; role: Role }> = {
   'modules/safety/legal-hold.ts': { sites: 4, role: 'JOB_PENDING' },
   'modules/safety/sos-escalation.ts': { sites: 5, role: 'JOB_PENDING' },
   'modules/safety/sos-retrigger.ts': { sites: 3, role: 'JOB_PENDING' },
-  // [STORE-VAT-EXCLUSIVE] The VAT a store pricing before VAT added at checkout, summed for ITS OWN sales statement: one read
-  // scoped to the store id the authorised statement route (or the signed statement link) names; reads no other store.
-  'modules/store-vat/vat-report.ts': { sites: 1, role: 'SHARED' },
   'modules/subscription/mover-fee-authority.ts': { sites: 1, role: 'SHARED' },
   'modules/subscription/mover-fee-history.ts': { sites: 3, role: 'SHARED' },
   // isFiction (store-review demo check): reached only from authenticated requests — document

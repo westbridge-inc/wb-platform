@@ -4,7 +4,7 @@
 -- line, carried in orders."taxAmount" (already inside every total, rider-cash and receipt calculation) and frozen with
 -- orders."vatOnTop" = true.
 --
--- ADDITIVE ONLY: one enum value and one column with a constant default (no table rewrite). Every existing order reads
+-- ADDITIVE ONLY: one enum value, one column with a constant default and one nullable column (no table rewrite). Every existing order reads
 -- vatOnTop = false (its VAT, if any, is inside its goods, exactly as before), and no store can choose the new basis until
 -- STORE_VAT_EXCLUSIVE is on and a person approves it. Not platform config: no re-seed.
 
@@ -13,3 +13,5 @@ SET lock_timeout = '10s';
 
 ALTER TYPE "StoreVatMode" ADD VALUE IF NOT EXISTS 'PRICES_EXCLUDE_VAT';
 ALTER TABLE "orders" ADD COLUMN "vatOnTop" BOOLEAN NOT NULL DEFAULT false;
+-- [REVIEW-B S3-4] A proposed substitute's VAT class, frozen at the proposal (nullable, no default: no rewrite).
+ALTER TABLE "order_items" ADD COLUMN "substituteVatClass" "VatClass";

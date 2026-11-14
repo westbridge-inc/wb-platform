@@ -3465,6 +3465,11 @@ model OrderItem {
   /// [STORE-VAT · owner O-5] SNAPSHOT of the item's VAT class at order time (the substitute's, once a swap is
   /// approved). Null = the order is not a VAT store's order.
   vatClass           VatClass?
+  /// [STORE-VAT-EXCLUSIVE · REVIEW-B S3-4] The proposed substitute's VAT class, FROZEN when the store proposes it (on an
+  /// order that froze VAT): the customer's swap card and the yes both use it, so a store re-marking the item in between
+  /// can never charge a total the card did not show. Null on every other line (and on a proposal made before this column:
+  /// read live, as before). Cleared with the question.
+  substituteVatClass VatClass?
 
   @@map("order_items")
 }

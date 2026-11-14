@@ -37,6 +37,8 @@ import { CountryConfigService } from '../country/country-config.service';
 import { storeVatEffective, storeVatOnTop } from '../store-vat/store-vat';
 import { STORE_VAT_RATE_PERCENT } from '../store-vat/vat-rate';
 import { cartVatByVendor, vatOnTopPlan, vatTermsByVendor } from '../store-vat/order-vat';
+import { assertAppShowsVatLine, declaresVatLine } from '../store-vat/vat-line-capability';
+import { vatAddedAtCheckout, withVatAddedHint } from '../store-vat/vat-added-hint';
 import { estimateDrivingDistance, estimateDeliveryMinutes } from '../../utils/distance';
 import { MAX_DELIVERY_RADIUS_KM, brandBranchesFor, brandFactsFor, collapseBrands, oneDishPerBrand } from '../vendor/brand';
 import { getMapsProvider, type LatLng } from '../../providers/maps/maps-provider';
@@ -256,6 +258,9 @@ const checkoutSchema = z.object({
     .array(z.object({ lineId: z.string().min(1).max(64), unitPrice: z.number().nonnegative().max(1_000_000_000) }))
     .refine((lines) => new Set(lines.map((line) => line.lineId)).size === lines.length, 'Expected-price line IDs must be unique')
     .optional(),
+  // [STORE-VAT-EXCLUSIVE · REVIEW-A F3] What the app can show (VAT_LINE_V1: a store's "VAT 14%" line). Optional: an older
+  // app sends none and is refused a basket with a store pricing before VAT.
+  capabilities: z.array(z.string().max(40)).max(20).optional(),
 });
 
 /**
@@ -693,7 +698,8 @@ async function buildCartResponse(
       ...(cart.vendor.isCurrentlyOpen ? { isCurrentlyOpen: (await applyOpenNow(app.prisma, [cart.vendor]))[0]!.isCurrentlyOpen } : {}),
       distanceKm: Math.round(distanceKm * 10) / 10,
     } : null,
-    items: itemDetails,
+    // [STORE-VAT-EXCLUSIVE · REVIEW-B S3-1] "+ VAT" beside a standard-rated line of a store pricing before VAT.
+    items: itemDetails.map((d, i) => ({ ...d, vatAddedAtCheckout: vatAddedAtCheckout(vatTerms.get(d.vendorId)?.onTop === true, cart.items[i]!.item.vatClass) })),
     itemCount: cart.items.reduce((sum, ci) => sum + ci.quantity, 0),
     unavailableItemIds,
     // [E01 · E09] One row per future order, in checkout's order: each row is
@@ -1550,7 +1556,9 @@ export async function customerRoutes(app: FastifyInstance) {
       // business's booking, otherwise the persisted type — never a client guess.
       activeOrder: activeOrder ? { ...activeOrder, vertical: orderVertical(activeOrder), promise: promiseView(activeOrder) } : activeOrder,
       // [CHAINS PR3] A chain sells the same dish at every branch: the rail shows it once (its most-ordered branch's).
-      popularItems: oneDishPerBrand(discovery.popularItems, brandFacts),
+      // [STORE-VAT-EXCLUSIVE] "+ VAT" beside a standard-rated price of a store pricing before VAT (read live, never from
+      // the cached rail).
+      popularItems: await withVatAddedHint(app.prisma, oneDishPerBrand(discovery.popularItems, brandFacts)),
       featured,
       nearby,
       orderAgain,
@@ -2259,6 +2267,8 @@ export async function customerRoutes(app: FastifyInstance) {
 
     // [MENU-OPTIONS] An older app never adds an item it cannot show right.
     assertAppRendersOptions(item, body.capabilities);
+    // [STORE-VAT-EXCLUSIVE · REVIEW-A F3] ...nor an item of a store pricing before VAT: it cannot show the VAT line.
+    await assertAppShowsVatLine(app.prisma, [body.vendorId], body.capabilities);
     // [M023] The one option validator (cart add, cart update and checkout).
     const selectedOptions = validatedSelection(item, body.selectedOptions);
     const note = normalizeItemNote(body.specialInstructions);
@@ -2636,6 +2646,9 @@ export async function customerRoutes(app: FastifyInstance) {
         fulfillmentSelections: body.fulfillmentSelections,
         express: body.express,
         appointments: body.appointments,
+        // [STORE-VAT-EXCLUSIVE · REVIEW-A F3] Whether this app shows a store's "VAT 14%" line (an older one is refused a
+        // basket with a store pricing before VAT, checked against the terms the basket is priced with).
+        showsVatLine: declaresVatLine(body.capabilities),
         ...(body.expectedTotal != null || body.expectedLines
           ? { expectedPrices: { total: body.expectedTotal, lines: body.expectedLines } }
           : {}),
@@ -2961,12 +2974,15 @@ export async function customerRoutes(app: FastifyInstance) {
     if (!order) throw new NotFoundError('Order', id);
 
     // [STORE-VAT-EXCLUSIVE] On an order whose VAT is added on top, an open swap's change to the total includes the VAT the
-    // substitute carries (its class is read now, as the yes reads it): the card says the total the yes charges.
+    // substitute carries: the card says the total the yes charges. [REVIEW-B S3-4] The class FROZEN when the store
+    // proposed it (the yes uses the same one); only a proposal made before that column is read live, as the yes reads it.
     const substituteIds = order.vatOnTop
-      ? [...new Set(order.items.filter((i) => i.subStatus === 'PENDING' && i.substituteItemId).map((i) => i.substituteItemId!))]
+      ? [...new Set(order.items.filter((i) => i.subStatus === 'PENDING' && i.substituteItemId && i.substituteVatClass == null).map((i) => i.substituteItemId!))]
       : [];
     const substituteClasses = new Map(substituteIds.length === 0 ? [] : (await app.prisma.item.findMany({ where: { id: { in: substituteIds } }, select: { id: true, vatClass: true } })).map((it) => [it.id, it.vatClass] as const));
-    const substituteVatClassOf = (line: { substituteItemId: string | null }) => (line.substituteItemId && substituteClasses.has(line.substituteItemId)
+    const substituteVatClassOf = (line: { substituteItemId: string | null; substituteVatClass: string | null }) => (line.substituteVatClass != null
+      ? { substituteVatClass: line.substituteVatClass }
+      : line.substituteItemId && substituteClasses.has(line.substituteItemId)
       ? { substituteVatClass: substituteClasses.get(line.substituteItemId)! as string }
       : {});
 

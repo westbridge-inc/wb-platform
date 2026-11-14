@@ -118,7 +118,10 @@ export function computeRefund(input: RefundInput): RefundComputation {
   const discount = Math.max(0, Number(input.discount ?? 0));
   const inferredShare = subtotal > 0 ? Math.round((discount * lineTotal) / subtotal) : 0;
   const rawFee = Math.max(0, Number(input.deliveryFee ?? 0));
-  const inferredAmount = Math.min(paid, Math.max(0, lineTotal - inferredShare + (input.deliveryHappened ? 0 : rawFee)));
+  // [STORE-VAT-EXCLUSIVE] The VAT added on top of the returned goods comes back with them, in both calculations
+  // [REVIEW-A F6]: otherwise every return of such an order reads as a discount-inference difference of its VAT.
+  const addedVat = Math.max(0, Number(input.addedVat ?? 0) || 0);
+  const inferredAmount = Math.min(paid, Math.max(0, lineTotal - inferredShare + (input.deliveryHappened ? 0 : rawFee) + addedVat));
 
   let discountShare: number;
   let deliveryFee: number;
@@ -152,7 +155,6 @@ export function computeRefund(input: RefundInput): RefundComputation {
     deliveryFee = input.deliveryHappened ? 0 : rawFee;
     basis = 'NONE';
   }
-  const addedVat = Math.max(0, Number(input.addedVat ?? 0) || 0);
   const amount = Math.min(paid, Math.max(0, lineTotal - discountShare + deliveryFee + addedVat));
 
   const parts = [`${gyd(lineTotal)} for the returned items`];

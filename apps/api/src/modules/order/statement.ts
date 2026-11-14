@@ -233,7 +233,9 @@ export async function buildVendorStatement(prisma: unknown, vendorId: string, pe
     { label: 'Collected from customers for goods', amount: components.customerCollection },
     { label: 'Delivery fees and tips (the rider’s, not part of your sales)', amount: components.moverPayable },
     // [STORE-VAT-EXCLUSIVE] A store pricing before VAT: the VAT its customers paid on top, collected for the GRA.
-    ...(vatAddedOnTop > 0 ? [{ label: 'VAT added at checkout (yours to pay to the GRA, not part of your sales)', amount: vatAddedOnTop }] : []),
+    // [REVIEW-B S4-1] Counted by the day supplied, as the VAT report counts it (said, since the rows above count by the day
+    // placed): a month's figure here is that month's VAT report line 18 for these orders.
+    ...(vatAddedOnTop > 0 ? [{ label: 'VAT added at checkout (yours to pay to the GRA, not part of your sales; counted by the day delivered or completed, as in your VAT report)', amount: vatAddedOnTop }] : []),
     ...(components.feeFunding > 0 ? [{ label: 'Delivery-fee promotions funded by Swift (the rider’s)', amount: components.feeFunding }] : []),
   ];
   const estimatedNote = components.estimatedOrders > 0

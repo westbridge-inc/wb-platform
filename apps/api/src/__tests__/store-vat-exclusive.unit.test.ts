@@ -320,3 +320,129 @@ describe('11. a return gives back the VAT added on the returned goods', () => {
     expect(plain.sentence).not.toContain('VAT');
   });
 });
+
+// ---------------------------------------------------------------------------
+// [REVIEW-A / REVIEW-B follow-ups · 13 Nov 2026] The fixer round: each case below was RED on head 16102f34.
+// ---------------------------------------------------------------------------
+
+describe('12. [REVIEW-A F4 · REVIEW-B S4-2] the store discount is split in ONE line order on both sides', () => {
+  const terms = { sellerNumber: '012345678', sellerName: 'Aarna Ltd', rateBps: 1400, onTop: true };
+  const storeCode = { discountType: 'FIXED_AMOUNT' as const, discountValue: 107, funder: 'VENDOR' as const, vendorId: 'v1' };
+  const taxFor = (lines: Array<{ amount: number; vatClass: string }>) => priceBasket({
+    plans: [{ vendorId: 'v1', fulfillment: 'PICKUP', subtotal: 2000, deliveryFee: 0, standardDeliveryFee: 0, vatOnTop: vatOnTopPlan(terms, lines) }],
+    promo: storeCode, tip: 0,
+  }).perPlan[0]!.tax;
+
+  it('the 132-vs-133 repro: two lines of 1,000 (standard, zero-rated), a store discount of 107: the same VAT whichever line comes first', () => {
+    const stdFirst = taxFor([{ amount: 1000, vatClass: 'STANDARD' }, { amount: 1000, vatClass: 'ZERO_RATED' }]);
+    const zeroFirst = taxFor([{ amount: 1000, vatClass: 'ZERO_RATED' }, { amount: 1000, vatClass: 'STANDARD' }]);
+    expect(stdFirst).toBe(132); // 1,000 - 54 = 946 -> 132.44 -> 132
+    expect(zeroFirst).toBe(stdFirst);
+  });
+
+  it('checkout\'s stored shares, split in that order from the placed lines (in either order), recompute the VAT the quote showed', async () => {
+    const { inVatSplitOrder } = await import('../modules/store-vat/order-vat');
+    const { allocateAcrossLines } = await import('../utils/order-total');
+    const quoted = taxFor([{ amount: 1000, vatClass: 'ZERO_RATED' }, { amount: 1000, vatClass: 'STANDARD' }]);
+    for (const placed of [
+      [{ id: 'std', totalCustomer: 1000, vatClass: 'STANDARD' }, { id: 'zero', totalCustomer: 1000, vatClass: 'ZERO_RATED' }],
+      [{ id: 'zero', totalCustomer: 1000, vatClass: 'ZERO_RATED' }, { id: 'std', totalCustomer: 1000, vatClass: 'STANDARD' }],
+    ]) {
+      const shares = allocateAcrossLines(107, inVatSplitOrder(placed, (l) => l.vatClass).map((l) => ({ id: l.id, amount: l.totalCustomer })));
+      const recomputed = orderVat({
+        lines: placed.map((l) => ({ id: l.id, amount: l.totalCustomer, vatClass: l.vatClass as 'STANDARD' | 'ZERO_RATED' })),
+        lineGoodsDiscounts: new Map(shares.map((s) => [s.id, s.share] as const)),
+        rateBps: 1400, basis: 'ON_TOP',
+      });
+      expect(recomputed.vatAmount).toBe(quoted);
+    }
+  });
+
+  it('the order is standard, zero-rated, exempt, each kept in its own order', async () => {
+    const { inVatSplitOrder } = await import('../modules/store-vat/order-vat');
+    const lines = [{ id: 'e', c: 'EXEMPT' }, { id: 'z1', c: 'ZERO_RATED' }, { id: 's1', c: 'STANDARD' }, { id: 'z2', c: 'ZERO_RATED' }, { id: 's2', c: null }];
+    expect(inVatSplitOrder(lines, (l) => l.c).map((l) => l.id)).toEqual(['s1', 's2', 'z1', 'z2', 'e']);
+  });
+});
+
+describe('13. [REVIEW-A F6] a return\'s dual "inferred" figure counts the VAT added on top too', () => {
+  it('the two calculations agree on an on-top return (no false inference difference)', async () => {
+    const { computeRefund } = await import('../utils/refund');
+    const r = computeRefund({
+      paymentMethod: 'CASH', status: 'DELIVERED', deliveryFee: 800, discount: 0, totalAmount: 1742, deliveryHappened: true,
+      lines: [{ id: 'a', totalCustomer: 300, affected: true }, { id: 'b', totalCustomer: 600, affected: true }], currencyCode: 'GYD', addedVat: 42,
+    });
+    expect(r.amount).toBe(942);
+    expect(r.inferredAmount).toBe(942);
+  });
+});
+
+describe('14. [REVIEW-A F2 · REVIEW-B S3-3] the rollback keeps the VAT basis of every order and refuses while it is not safe', () => {
+  const dir = async () => {
+    const { readFileSync } = await import('node:fs');
+    const { join } = await import('node:path');
+    const base = join(__dirname, '../../prisma/migrations/20261113210000_store_vat_exclusive');
+    return { sql: readFileSync(join(base, 'rollback.sql'), 'utf8'), readme: readFileSync(join(base, 'README.md'), 'utf8') };
+  };
+
+  it('drops nothing: orders."vatOnTop" (each order\'s basis) and the substitute class stay', async () => {
+    const { sql } = await dir();
+    expect(sql).not.toMatch(/^\s*(ALTER|DROP)\b/im);
+    expect(sql).not.toMatch(/DROP\s+COLUMN/i);
+  });
+
+  it('refuses while an on-top order is open (its open list is exactly the live statuses) or a before-VAT store is still open', async () => {
+    const { sql } = await dir();
+    const { TERMINAL_ORDER_STATUSES } = await import('../modules/order/order-status');
+    const guard = sql.match(/"vatOnTop" = true\s+AND "status" NOT IN \(([^)]*)\)/);
+    expect(guard, 'the open-order guard').not.toBeNull();
+    expect(guard![1]!.split(',').map((s) => s.trim().replace(/'/g, '')).sort()).toEqual([...TERMINAL_ORDER_STATUSES].sort());
+    expect(sql).toMatch(/IF EXISTS \(\s*SELECT 1 FROM "orders"[\s\S]*?\) THEN\s+RAISE EXCEPTION/);
+    expect(sql).toMatch(/"vatMode" = 'PRICES_EXCLUDE_VAT' AND "vatStatus" = 'APPROVED' AND "isCurrentlyOpen" = true AND "acceptingOrders" = true[\s\S]*?RAISE EXCEPTION/);
+    // Row security off for the transaction BEFORE it looks (a non-bypass role gets an error, never "no rows").
+    const begin = sql.indexOf('BEGIN;');
+    const off = sql.indexOf('SET LOCAL row_security = off;');
+    expect(begin).toBeGreaterThanOrEqual(0);
+    expect(off).toBeGreaterThan(begin);
+    expect(off).toBeLessThan(sql.indexOf('IF EXISTS'));
+    expect(sql.trim().endsWith('COMMIT;')).toBe(true);
+  });
+
+  it('the README is the runbook: close the stores, let their orders finish, run it with the new code live, then roll the code back', async () => {
+    const { readme, sql } = await dir();
+    const steps = ['**Close**', '**Let their orders finish.**', '**Run `rollback.sql`**', '**Roll the code back.**'].map((s) => readme.indexOf(s));
+    expect(steps.every((i) => i >= 0)).toBe(true);
+    expect([...steps].sort((a, b) => a - b)).toEqual(steps);
+    expect(sql).toContain('RUN THIS WHILE THE NEW CODE IS STILL SERVING');
+    expect(readme).toContain('Nothing is dropped');
+  });
+});
+
+describe('15. [REVIEW-A F3 · REVIEW-B S3-1] an app that cannot show the VAT line never orders from a store pricing before VAT', () => {
+  it('the capability, and the refusal an older app shows as it is (409 APP_UPDATE_REQUIRED, plain words)', async () => {
+    const { VAT_LINE_CAPABILITY, declaresVatLine, vatLineAppUpdateRequired } = await import('../modules/store-vat/vat-line-capability');
+    expect(VAT_LINE_CAPABILITY).toBe('VAT_LINE_V1');
+    expect(declaresVatLine(['MENU_OPTIONS_V2', 'VAT_LINE_V1'])).toBe(true);
+    expect(declaresVatLine(['MENU_OPTIONS_V2'])).toBe(false);
+    expect(declaresVatLine(undefined)).toBe(false);
+    const err = vatLineAppUpdateRequired(['v1']);
+    expect(err).toMatchObject({ statusCode: 409, code: 'APP_UPDATE_REQUIRED' });
+    expect(err.message).toBe('This store’s prices are before VAT: VAT is added at checkout as its own line, and this version of the Swift app cannot show it. Update the Swift app to order from this store.');
+  });
+
+  it('"+ VAT" is said per item on every list outside the store: search (index, database, trending), the market, Home\'s dishes, the cart lines', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { join } = await import('node:path');
+    const src = (f: string) => readFileSync(join(__dirname, '..', f), 'utf8');
+    expect(src('modules/search/search.routes.ts').match(/withVatAddedHint\(app\.prisma/g)).toHaveLength(3);
+    expect(src('modules/market/market.routes.ts').match(/withVatAddedHint\(app\.prisma/g)).toHaveLength(1);
+    expect(src('modules/user/customer.routes.ts')).toMatch(/popularItems: await withVatAddedHint\(app\.prisma/);
+    expect(src('modules/user/customer.routes.ts')).toMatch(/items: itemDetails\.map\(\(d, i\) => \(\{ \.\.\.d, vatAddedAtCheckout: vatAddedAtCheckout\(/);
+    const { vatAddedAtCheckout } = await import('../modules/store-vat/vat-added-hint');
+    expect(vatAddedAtCheckout(true, 'STANDARD')).toBe(true);
+    expect(vatAddedAtCheckout(true, null)).toBe(true);
+    expect(vatAddedAtCheckout(true, 'ZERO_RATED')).toBe(false);
+    expect(vatAddedAtCheckout(true, 'EXEMPT')).toBe(false);
+    expect(vatAddedAtCheckout(false, 'STANDARD')).toBe(false);
+  });
+});

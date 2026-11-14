@@ -361,6 +361,9 @@ export class PickingService {
           substituteName: substitute.name,
           substitutePrice: substitute.basePrice,
           substituteDecideBy: decideBy,
+          // [STORE-VAT-EXCLUSIVE · REVIEW-B S3-4] On an order that froze VAT, the substitute's class is frozen with its
+          // price: the card and the yes both use THIS class, never one the store sets after the question was asked.
+          substituteVatClass: line.vatClass != null ? substitute.vatClass : null,
         },
       });
       if (updated.count === 0) {
@@ -433,7 +436,9 @@ export class PickingService {
         type: 'ORDER_UPDATE',
         title: `${line.name} removed from your order`,
         // [STORE-VAT-EXCLUSIVE] On an order whose VAT is added on top, the VAT that went with the line comes off too.
-        body: `It's out of stock at the store. Order #${line.order.orderNumber}'s total went down by $${(Number(line.totalCustomer) + closed.vatDrop).toLocaleString()}.`,
+        // [REVIEW-A F7] What the total actually went down by: the line less the discount share that went with it (closeLine's
+        // decTotal, as the no-answer sweep says), plus that VAT.
+        body: `It's out of stock at the store. Order #${line.order.orderNumber}'s total went down by $${(closed.decTotal + closed.vatDrop).toLocaleString()}.`,
         data: { orderId, kind: 'line_refunded', lineId },
       });
       return this.prisma.orderItem.findUnique({ where: { id: lineId } });
@@ -485,7 +490,7 @@ export class PickingService {
       }
       const asked = await tx.orderItem.updateMany({
         where: { id: line.id, orderId, subStatus: 'NONE', picked: false, order: { status: 'PENDING' } },
-        data: { subStatus: 'PENDING', substituteItemId: null, substituteName: null, substitutePrice: null, substituteDecideBy: decideBy },
+        data: { subStatus: 'PENDING', substituteItemId: null, substituteName: null, substitutePrice: null, substituteVatClass: null, substituteDecideBy: decideBy },
       });
       if (asked.count === 0) {
         throw new AppError(409, 'LINE_CHANGED', 'This line just changed — refresh the order');
@@ -681,10 +686,13 @@ export class PickingService {
       if (cas.count === 0) {
         throw new AppError(409, 'NOT_PENDING', 'There is no open substitution on this line');
       }
-      // [STORE-VAT] On an order that froze VAT, the line now carries the SUBSTITUTE's VAT class (read now, at the
-      // customer's yes). A substitute with no item row keeps the line's class.
+      // [STORE-VAT] On an order that froze VAT, the line now carries the SUBSTITUTE's VAT class. [REVIEW-B S3-4] The class
+      // frozen when the store proposed it (the one the customer's card showed); only a proposal made before that column
+      // reads the item now, as before. A substitute with no item row keeps the line's class.
       if (fresh.vatClass != null && fresh.substituteItemId) {
-        const subClass = await tx.item.findUnique({ where: { id: fresh.substituteItemId }, select: { vatClass: true } });
+        const subClass = fresh.substituteVatClass != null
+          ? { vatClass: fresh.substituteVatClass }
+          : await tx.item.findUnique({ where: { id: fresh.substituteItemId }, select: { vatClass: true } });
         if (subClass) await tx.orderItem.update({ where: { id: lineId }, data: { vatClass: subClass.vatClass } });
       }
 
@@ -843,7 +851,7 @@ export class PickingService {
           // wait is over on the row it writes, not on the row it read.
           ...(opts.decidedBefore ? { substituteDecideBy: { lte: opts.decidedBefore } } : {}),
         },
-        data: { subStatus, substituteItemId: null, substituteName: null, substitutePrice: null, substituteDecideBy: closedQuestionStamp(ord.status, new Date()) },
+        data: { subStatus, substituteItemId: null, substituteName: null, substitutePrice: null, substituteVatClass: null, substituteDecideBy: closedQuestionStamp(ord.status, new Date()) },
       });
       if (cas.count === 0) return false;
       await tx.order.update({
@@ -920,7 +928,7 @@ export class PickingService {
         const order = await this.lockPickableOrder(tx, line.orderId);
         const cas = await tx.orderItem.updateMany({
           where: { id: line.id, subStatus: 'PENDING', picked: false, substituteDecideBy: { lte: now } },
-          data: { subStatus: 'NONE', substituteItemId: null, substituteName: null, substitutePrice: null, substituteDecideBy: null },
+          data: { subStatus: 'NONE', substituteItemId: null, substituteName: null, substitutePrice: null, substituteVatClass: null, substituteDecideBy: null },
         });
         if (cas.count === 0) return false;
         await tx.orderStatusLog.create({
@@ -1132,7 +1140,7 @@ export class PickingService {
           // skips only lines closed earlier), so closing it here returns nothing a second time.
           await tx.orderItem.update({
             where: { id: line.id },
-            data: { subStatus: input.closeAs, substituteItemId: null, substituteName: null, substitutePrice: null, substituteDecideBy: null },
+            data: { subStatus: input.closeAs, substituteItemId: null, substituteName: null, substitutePrice: null, substituteVatClass: null, substituteDecideBy: null },
           });
           if (source.riderId) {
             await persistRiderCancellationNotice(tx, source,

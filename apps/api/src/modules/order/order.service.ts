@@ -100,7 +100,8 @@ import { notSelfDeliveredFilter } from '../fulfillment/fulfillment-mode';
 import { syncCaseOnOrderTransition } from '../custody/custody-case';
 import { assertOrderableNow, assertOrderMayProceed, heldAtSeam, hiddenAmong, refusalAudience, storeMayReject, unhideRestocked } from '../compliance/prohibited-gate';
 import { ATTESTABLE_PAYMENT_STATUSES } from '../vendor/mmg-attestation';
-import { lineVatClass, orderVatAmountFields, orderVatCreateFields, recomputeOrderVat, vatOnTopPlan, vatTermsByVendor, vatTermsForCheckout } from '../store-vat/order-vat';
+import { inVatSplitOrder, lineVatClass, orderVatAmountFields, orderVatCreateFields, recomputeOrderVat, vatOnTopPlan, vatTermsByVendor, vatTermsForCheckout } from '../store-vat/order-vat';
+import { vatLineAppUpdateRequired } from '../store-vat/vat-line-capability';
 import { isExpiredUnpaidMmgAcceptance, isUnpaidMmgAcceptance, mmgAcceptedClaimedPushCopy, mmgAcceptedPayBy, mmgAcceptedPushCopy, mmgOrderNoun } from './mmg-accept-expiry';
 import { orderStageRefusal, STEP_GONE } from './order-status-words';
 import { personTypedReason } from './typed-reason';
@@ -136,6 +137,11 @@ interface CheckoutInput {
    *  PRICE_CHANGED (seen → now) so the customer confirms the new price. An
    *  older app sends neither and is not compared (today's behaviour). */
   expectedPrices?: { total?: number; lines?: Array<{ lineId: string; unitPrice: number }> };
+  /** [STORE-VAT-EXCLUSIVE · REVIEW-A F3] false = the app did not declare it shows a store's "VAT 14%" line
+   *  (VAT_LINE_V1): a basket with a store pricing before VAT is refused (409 APP_UPDATE_REQUIRED), judged on the terms
+   *  the basket is priced with (the commit re-checks those under the store's lock). The route always says; a caller that
+   *  is not an app (a job, a test seam) leaves it out. */
+  showsVatLine?: boolean;
   /** [FULL-LAUNCH] The limit on placing orders (integrity/velocity reserveOrderPlacement), given how many orders this
    *  checkout would place. Runs when every check before the transaction has passed; the route gives the reservation
    *  back on a confirmed rollback. The route passes it; jobs and scripts have none. */
@@ -1112,6 +1118,10 @@ export class OrderService {
     // [STORE-VAT-EXCLUSIVE · owner 13 Nov 2026] The VAT terms the basket is PRICED with (a store pricing before VAT adds
     // its VAT as its own line). Read again inside the transaction under the store's lock: a change in between refuses.
     const vatTermsAtPricing = await vatTermsByVendor(this.prisma, groups.map((g) => g.vendorId));
+    if (input.showsVatLine === false) {
+      const onTop = groups.map((g) => g.vendorId).filter((id) => vatTermsAtPricing.get(id)?.onTop);
+      if (onTop.length > 0) throw vatLineAppUpdateRequired(onTop);
+    }
 
     for (const { vendorId, lines: items } of groups) {
       const vendor = items[0]!.item.vendor;
@@ -2151,7 +2161,9 @@ export class OrderService {
               // [M-33] The goods discount owned line by line from this moment,
               // summing exactly to goodsDiscount — a return refunds each line's
               // own share, never a share inferred from the aggregate.
-              lineAllocations: allocateAcrossLines(parts?.goods ?? 0, order.items.map((it) => ({ id: it.id, amount: Number(it.totalCustomer) })))
+              // [REVIEW-A F4 · REVIEW-B S4-2] On an order whose VAT is added on top, split in the ONE order the basket's VAT
+              // was priced in (inVatSplitOrder): the VAT recomputed from these shares is the VAT the customer was shown.
+              lineAllocations: allocateAcrossLines(parts?.goods ?? 0, (vatTerms?.onTop ? inVatSplitOrder(order.items, (it) => it.vatClass) : order.items).map((it) => ({ id: it.id, amount: Number(it.totalCustomer) })))
                 .map((a) => ({ orderItemId: a.id, goods: a.share })),
               refundPolicy: REFUND_POLICY,
             },
