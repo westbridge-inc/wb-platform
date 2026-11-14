@@ -2,7 +2,8 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { beforeAll, describe, expect, it } from 'vitest';
-import { VEHICLE_CLASSES, isMotorVehicle, type VehicleType } from '../config/vehicle-classes';
+import type { VehicleType } from '@prisma/client';
+import { VEHICLE_CLASSES, isMotorVehicle } from '../config/vehicle-classes';
 
 // ---------------------------------------------------------------------------
 // [LOAD-SEED-FIX · 14 Nov 2026] The provisioner (scripts/livetest/provision.ts approvalBody) approves a mover's
@@ -32,22 +33,22 @@ describe('[load seed · R13] the provisioner confirms hire-or-reward insurance f
     const body = approvalBody('cmdoc0000000000000000ins1', 'vehicle_insurance', vehicleType);
     if (isMotorVehicle(vehicleType)) {
       // What assertStoredVehicleApproval accepts: coverage class HIRE, confirmed by the reviewer.
-      expect(body.insurance).toMatchObject({ coverageClass: 'HIRE', hireClassConfirmed: true });
-      const insurance = body.insurance as Record<string, unknown>;
-      expect(typeof insurance.insurerName === 'string' && insurance.insurerName.length > 0).toBe(true);
-      expect(typeof insurance.policyNumber === 'string' && insurance.policyNumber.length > 0).toBe(true);
+      expect(body['insurance']).toMatchObject({ coverageClass: 'HIRE', hireClassConfirmed: true });
+      const insurance = body['insurance'] as Record<string, unknown>;
+      expect(typeof insurance['insurerName'] === 'string' && insurance['insurerName'].length > 0).toBe(true);
+      expect(typeof insurance['policyNumber'] === 'string' && insurance['policyNumber'].length > 0).toBe(true);
     } else {
-      expect(body.insurance).toBeUndefined();
+      expect(body['insurance']).toBeUndefined();
     }
   });
 
   it('a motorbike rider (the load seed\'s delivery riders) gets the check', () => {
-    expect(approvalBody('cmdoc0000000000000000ins2', 'vehicle_insurance', 'MOTORCYCLE').insurance).toMatchObject({ coverageClass: 'HIRE', hireClassConfirmed: true });
+    expect(approvalBody('cmdoc0000000000000000ins2', 'vehicle_insurance', 'MOTORCYCLE')['insurance']).toMatchObject({ coverageClass: 'HIRE', hireClassConfirmed: true });
   });
 
   it('no other document carries an insurance check, whatever the vehicle', () => {
     for (const docType of ['vehicle_registration', 'drivers_licence', 'fitness_cert']) {
-      expect(approvalBody('cmdoc0000000000000000ins3', docType, 'MOTORCYCLE').insurance).toBeUndefined();
+      expect(approvalBody('cmdoc0000000000000000ins3', docType, 'MOTORCYCLE')['insurance']).toBeUndefined();
     }
   });
 
