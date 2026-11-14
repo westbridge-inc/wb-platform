@@ -203,6 +203,17 @@ export function parseStorePrice(text: string): number | null {
   return Number.isSafeInteger(n) ? n : null;
 }
 
+/** [AUDIT A-4 · REVIEW #2516 S3-1] The server's bound on a price a store types (vendor.routes.ts wholePrice()). */
+export const MAX_STORE_PRICE = 10_000_000;
+/** Said under every item price box: the server refuses cents. */
+export const WHOLE_PRICE_NOTE = 'Prices are whole Guyana dollars.';
+/** An item's typed price as the server takes it: whole dollars from 0 to 10,000,000, in parseStorePrice's forms
+ *  ("1,500", "$1,500", "1500.00"); null for cents, more than ten million, a blank or a mistype. */
+export function wholePriceInput(text: string): number | null {
+  const n = parseStorePrice(text);
+  return n != null && n <= MAX_STORE_PRICE ? n : null;
+}
+
 /** A choice's typed price, or the plain reason it cannot be saved: a size needs its full price above 0 (a blank size
  *  is never a $0 pizza); an add-on left blank is free ("+GYD", as the tools always took it), and a mistype is refused. */
 export function choicePriceInput(text: string, { size }: { size: boolean }): { price: number } | { problem: string } {

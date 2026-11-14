@@ -72,7 +72,7 @@ describe('[MENU-SEARCH] the website searches as the app does', () => {
     await screen.findByRole('article', { name: 'White Rice' });
     expect(screen.queryByRole('button', { name: /^Low stock · / })).toBeNull();
     first.unmount();
-    items[2] = { ...items[2], stockQuantity: 3 };
+    items[2] = { ...items[2], stockQuantity: 3, lowStockThreshold: 5 };
     renderWithQuery(<InventoryPage />);
     await screen.findByRole('article', { name: 'White Rice' });
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Low stock · 1' })); });
@@ -124,5 +124,20 @@ describe('[MENU-FILTERS] the filter buttons', () => {
     await screen.findByRole('article', { name: 'White Rice' });
     await act(async () => { fireEvent.click(button('Sold out · 0')); });
     expect(await screen.findByText('No items match. Showing sold out items only.')).toBeTruthy();
+  });
+});
+
+// [REVIEW #2514 S4-2] As the app: while searching (or a button is on), each section chip counts its matches; the
+// section heading still counts the whole section.
+describe('[REVIEW #2514 S4-2] section chips count what the search finds', () => {
+  it('searching: All and each section count their matches; cleared, the whole sections', async () => {
+    renderWithQuery(<InventoryPage />);
+    await screen.findByRole('article', { name: 'White Rice' });
+    const chips = () => Array.from(screen.getByLabelText('Sections').querySelectorAll('button')).map((b) => b.textContent);
+    expect(chips()).toEqual(expect.arrayContaining(['All · 3', 'Desserts · 1', 'Pizza · 2']));
+    await type('rice');
+    await waitFor(() => expect(chips()).toEqual(expect.arrayContaining(['All · 1', 'Desserts · 0', 'Pizza · 1'])));
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Clear search' })); });
+    await waitFor(() => expect(chips()).toEqual(expect.arrayContaining(['All · 3', 'Desserts · 1', 'Pizza · 2'])));
   });
 });

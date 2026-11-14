@@ -49,6 +49,7 @@ import {
   filterShownLine,
   itemCountLine,
   noMatchLine,
+  isLowStockItem,
   offeredFilters,
   searchTerms,
   type CatalogueFilter,
@@ -90,12 +91,9 @@ export function MenuItemRow({
   const stockNow: number = tracksStock ? soldInStore.shown(item.id, item.stockQuantity) : 0;
   const outOfStock = tracksStock && stockNow <= 0;
   const soldOut = !markedAvailable;
-  const lowStock =
-    markedAvailable &&
-    !outOfStock &&
-    tracksStock &&
-    item.lowStockThreshold != null &&
-    stockNow <= item.lowStockThreshold;
+  // [REVIEW #2514 S4-3] The one Low stock rule (the "Low stock" button's): above 0 and at or under its own alert level,
+  // switched off or not (0 shows as "0 LEFT").
+  const lowStock = tracksStock && !outOfStock && isLowStockItem({ stockQuantity: stockNow, lowStockThreshold: item.lowStockThreshold });
   const availabilityDisabled = readOnly || setAvail.isPending;
   const [confirmDelete, setConfirmDelete] = useState(false);
   // [MENU-ROW-TOOLS · parity audit A5] A manager taps the price to change it, as on the website. Not an item whose size
@@ -390,11 +388,7 @@ function InventorySummaryCard({ categories }: { categories: any[] }) {
 function LowStockCard({ categories, navigation, catOptions }: { categories: any[]; navigation: any; catOptions: { id: string; name: string }[] }) {
   const low = categories
     .flatMap((c: any) => c.items ?? [])
-    .filter(
-      (i: any) =>
-        i.stockQuantity != null &&
-        (i.stockQuantity <= 0 || (i.lowStockThreshold != null && i.stockQuantity <= i.lowStockThreshold)),
-    )
+    .filter((i: any) => isLowStockItem(i))
     .sort((a: any, b: any) => a.stockQuantity - b.stockQuantity);
   if (low.length === 0) return null;
   return (
@@ -743,7 +737,8 @@ export function VendorMenuScreen({ navigation }: any) {
   const filter = chosenFilter && filters.includes(chosenFilter) ? chosenFilter : null;
   const shown = useMemo(() => filterCatalogue(visibleCategories, { terms, filter }), [visibleCategories, terms, filter]);
   const searching = shown.filtering;
-  const showAll = useCallback(() => { setQuery(''); setFilter(null); }, []);
+  // [REVIEW #2514 S4-1] "Show all items" means all: the section chip too.
+  const showAll = useCallback(() => { setQuery(''); setFilter(null); setSelectedCategoryId(null); }, []);
   // [MENU-BULK · parity audit C2] Several items at once: "Select" ticks rows; the bar under the list sends them sold out
   // or back on in one request, after asking. Any member of the store (as the one-item switch); never in a preview.
   const bulk = useBulkAvailability();
@@ -775,6 +770,26 @@ export function VendorMenuScreen({ navigation }: any) {
       },
     );
   };
+  // [REVIEW #2514 S4-4] Another store chosen: the tab starts afresh (no search, button or section of the other store).
+  const storeId: string | null = store?.id ?? null;
+  const [menuStoreId, setMenuStoreId] = useState<string | null>(storeId);
+  if (menuStoreId !== storeId) {
+    setMenuStoreId(storeId);
+    setQuery('');
+    setFilter(null);
+    setSelectedCategoryId(null);
+    // [MENU-BULK] Ticks, an open ask and an answer belong to the store they were made in.
+    setSelecting(false);
+    setSelected(NO_TICKS);
+    setAsk(null);
+    setBulkNote(null);
+    setBulkError(null);
+  }
+  // [REVIEW #2514 S4-2] While searching, each section chip counts its matches (the heading still counts the section).
+  const matchedEverywhere = useMemo(() => filterCatalogue(categories, { terms, filter }), [categories, terms, filter]);
+  const chipCount = (category: any): number => (matchedEverywhere.filtering
+    ? matchedEverywhere.sections.find((section) => section.category === category)?.items.length ?? 0
+    : (category.items ?? []).length);
   // [SPEED 22 Oct] One flat list of rows (section header, its items, a gap) for a
   // windowed list: the tab draws the first batch, not every item of every section.
   const rows = useMemo(() => menuRows(shown.sections), [shown]);
@@ -942,14 +957,14 @@ export function VendorMenuScreen({ navigation }: any) {
               </T>
               <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: space.sm }}>
                 <Chip
-                  label={`All · ${allItems.length}`}
+                  label={`All · ${matchedEverywhere.filtering ? matchedEverywhere.count : allItems.length}`}
                   selected={selectedCategoryId === null}
                   onPress={() => setSelectedCategoryId(null)}
                 />
                 {categories.map((category) => (
                   <Chip
                     key={category.id}
-                    label={`${category.name} · ${(category.items ?? []).length}`}
+                    label={`${category.name} · ${chipCount(category)}`}
                     selected={selectedCategoryId === category.id}
                     onPress={() => setSelectedCategoryId(category.id)}
                   />

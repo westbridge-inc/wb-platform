@@ -25,9 +25,6 @@ export const CATALOGUE_SEARCH_PLACEHOLDER = 'Search name or SKU';
 /** The longest search read: a pasted page is not a search. */
 export const MAX_CATALOGUE_SEARCH = 100;
 
-/** The "Low stock only" alert level when the item has none of its own (the website's rule). */
-const DEFAULT_LOW_STOCK_AT = 5;
-
 /** Lower-cased, accents off, runs of spaces made one: "  Crème  BRÛLÉE " -> "creme brulee". */
 export function foldText(value: unknown): string {
   if (typeof value !== 'string' || value.length === 0) return '';
@@ -87,9 +84,14 @@ export function itemMatches(item: Searchable, terms: readonly string[]): boolean
 
 type Stocked = { stockQuantity?: number | null; lowStockThreshold?: number | null; isAvailable?: unknown; imageUrl?: unknown };
 
-/** The website's "Low stock only": a counted item at or under its alert level (5 when it has none). */
+/** [REVIEW #2514 S4-3] THE low-stock rule, everywhere a store sees one (the "Low stock" button on the app and the website,
+ *  the app row's "N LEFT" / "0 LEFT" pill, its Inventory alerts card and summary, the website row's "Low stock"): a
+ *  counted item at 0, or at or under its OWN alert level. An item with no alert level is never "low" above 0. */
 export function isLowStockItem(item: Stocked): boolean {
-  return item.stockQuantity != null && item.stockQuantity <= (item.lowStockThreshold ?? DEFAULT_LOW_STOCK_AT);
+  const left = item.stockQuantity;
+  if (left == null) return false;
+  if (left <= 0) return true;
+  return item.lowStockThreshold != null && left <= item.lowStockThreshold;
 }
 
 /** "Low stock only" is offered only when some item's stock is counted (a restaurant's never is). */

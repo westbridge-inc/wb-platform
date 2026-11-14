@@ -14,6 +14,7 @@ const h = vi.hoisted(() => ({
   at: 0,
   menu: [] as unknown[],
   role: 'OWNER' as string,
+  storeId: 'store-a' as string,
   refetch: () => undefined,
 }));
 
@@ -51,7 +52,7 @@ vi.mock('../../../hooks/useDebouncedValue', () => ({ useDebouncedValue: (v: unkn
 vi.mock('../../../hooks/vendorops', () => {
   const mutation = () => ({ mutate: () => undefined, isPending: false });
   return {
-    useVendorProfile: () => ({ owner: { myRole: h.role }, store: { vendorType: 'RESTAURANT' } }),
+    useVendorProfile: () => ({ owner: { myRole: h.role }, store: { id: h.storeId, vendorType: 'RESTAURANT' } }),
     useVendorMenu: () => ({ data: h.menu, isLoading: false, isError: false, refetch: h.refetch }),
     useCreateCategory: mutation, useUpdateCategory: mutation, useDeleteCategory: mutation,
     useDeleteItem: mutation, useSetItemAvailability: mutation, useUploadCategoryPhoto: mutation, useRemoveCategoryPhoto: mutation,
@@ -99,6 +100,7 @@ beforeEach(() => {
   h.state = [];
   h.menu = menu();
   h.role = 'OWNER';
+  h.storeId = 'store-a';
 });
 
 describe('the Menu tab has the website\'s "Search name or SKU" box', () => {
@@ -259,7 +261,7 @@ describe('the filter buttons', () => {
 
   it('Low stock (a store that counts stock): counted items at or under their alert level, with a search too', () => {
     const items = (h.menu[1] as any).items;
-    items[0].stockQuantity = 2;
+    items[0].stockQuantity = 2; items[0].lowStockThreshold = 3;
     items[1].stockQuantity = 50;
     items[2].stockQuantity = 8; items[2].lowStockThreshold = 10;
     let tree = draw();
@@ -270,5 +272,39 @@ describe('the filter buttons', () => {
     expect(texts(tree)).toContain('2 items');
     bar(tree).props.onChangeText('1.2');
     expect(shownIds(draw())).toEqual(['#c1', 'c1-i2']);
+  });
+});
+
+// [REVIEW #2514 S4-1 · S4-2 · S4-4] Small follow-ups from the review of the search.
+describe('search follow-ups', () => {
+  const chip = (tree: any, start: string) => ofType(list(tree).props.ListHeaderComponent, 'Chip').find((c) => String(c.props.label).startsWith(start));
+
+  it('"Show all items" shows ALL items: it also clears a section chip', () => {
+    chip(draw(), 'Section 2').props.onPress();
+    const tree = type('pizza');
+    list(tree).props.ListEmptyComponent.props.onAction();
+    expect(shownIds(draw())).toHaveLength(SECTIONS * (PER_SECTION + 1));
+  });
+
+  it('while searching, each section chip counts its matches (All too); cleared, the whole sections again', () => {
+    let tree = type('dish 1.1');
+    expect(chip(tree, 'All').props.label).toBe('All · 11');
+    expect(chip(tree, 'Section 1').props.label).toBe('Section 1 · 11');
+    expect(chip(tree, 'Section 0').props.label).toBe('Section 0 · 0');
+    bar(tree).props.onClear();
+    tree = draw();
+    expect(chip(tree, 'All').props.label).toBe(`All · ${SECTIONS * PER_SECTION}`);
+    expect(chip(tree, 'Section 0').props.label).toBe(`Section 0 · ${PER_SECTION}`);
+  });
+
+  it('switching store starts the Menu tab afresh: no search, no button, no section from the other store', () => {
+    chip(draw(), 'Section 2').props.onPress();
+    type('dish 2.1');
+    expect(bar(draw()).props.value).toBe('dish 2.1');
+    h.storeId = 'store-b';
+    draw();
+    const tree = draw();
+    expect(bar(tree).props.value).toBe('');
+    expect(shownIds(tree)).toHaveLength(SECTIONS * (PER_SECTION + 1));
   });
 });

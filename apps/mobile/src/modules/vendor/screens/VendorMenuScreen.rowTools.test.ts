@@ -123,7 +123,11 @@ describe('A5: a manager changes the price from the list', () => {
   it('the box starts at the price, saves the new one as the item save does, and closes on the answer', () => {
     let tree = priceTool(curry());
     expect(ofType(tree, 'InlineInput')[0].props.value).toBe('1200');
-    expect(ofType(tree, 'InlineInput')[0].props.keyboardType).toBe('decimal-pad');
+    // [REVIEW #2516 S3-1] Whole Guyana dollars: a number pad, "0" as the hint, and the rule said in words.
+    expect(ofType(tree, 'InlineInput')[0].props.keyboardType).toBe('number-pad');
+    expect(ofType(tree, 'InlineInput')[0].props.placeholder).toBe('0');
+    expect(ofType(tree, 'InlineInput')[0].props.accessibilityLabel).toBe('Price: Chicken Curry');
+    expect(texts(tree)).toContain('Prices are whole Guyana dollars.');
     ofType(tree, 'InlineInput')[0].props.onChangeText('1350');
     tree = priceTool(curry());
     pill(tree, 'Save price').props.onPress();
@@ -138,6 +142,7 @@ describe('A5: a manager changes the price from the list', () => {
     const vat = curry({ basePrice: 1140, vatListedPrice: 1000 });
     let tree = priceTool(vat);
     expect(texts(tree)).toContain('Price before VAT');
+    expect(ofType(tree, 'InlineInput')[0].props.accessibilityLabel).toBe('Price before VAT: Chicken Curry');
     expect(ofType(tree, 'InlineInput')[0].props.value).toBe('1000');
     ofType(tree, 'InlineInput')[0].props.onChangeText('1100');
     tree = priceTool(vat);
@@ -145,8 +150,8 @@ describe('A5: a manager changes the price from the list', () => {
     expect(h.saves[0]!.vars).toEqual({ id: 'i1', data: { vatListedPrice: 1100 } });
   });
 
-  it('an empty, zero or non-number price cannot be saved', () => {
-    for (const typed of ['', '0', '-5', 'abc']) {
+  it('[REVIEW #2516 S3-1] cents, more than 10,000,000, an empty or non-number price cannot be saved', () => {
+    for (const typed of ['', '1250.50', '12.5', '10000001', '-5', 'abc']) {
       h.state = [];
       priceTool(curry());
       ofType(priceTool(curry()), 'InlineInput')[0].props.onChangeText(typed);
@@ -155,6 +160,18 @@ describe('A5: a manager changes the price from the list', () => {
       pill(tree, 'Save price').props.onPress();
     }
     expect(h.saves).toHaveLength(0);
+  });
+
+  it('[REVIEW #2516 S4-2] 0 and 10,000,000 are prices, as in the item editor; "1,500" is 1500', () => {
+    for (const [typed, sent] of [['0', 0], ['10000000', 10_000_000], ['1,500', 1500]] as const) {
+      h.state = []; h.saves = [];
+      priceTool(curry());
+      ofType(priceTool(curry()), 'InlineInput')[0].props.onChangeText(typed);
+      const tree = priceTool(curry());
+      expect(pill(tree, 'Save price').props.disabled, typed).toBe(false);
+      pill(tree, 'Save price').props.onPress();
+      expect(h.saves[0]!.vars.data, typed).toEqual({ basePrice: sent });
+    }
   });
 
   it('a refusal says why, in the server\'s words, and the box stays open', () => {
@@ -177,6 +194,23 @@ describe('A5: a manager changes the price from the list', () => {
   });
 });
 
+// [REVIEW #2514 S4-3] The row's "N LEFT" pill follows the one Low stock rule (lib/catalogueSearch isLowStockItem), so every
+// item the "Low stock" button shows carries a pill, a switched-off one too; an item with no alert level never does.
+describe('the row\'s low stock pill is the Low stock button\'s rule', () => {
+  const pills = (tree: any) => ofType(tree, 'TonePill').map((p) => p.props.label);
+  it('at or under its own alert level: "N LEFT"; at 0: "0 LEFT"; no alert level: none', () => {
+    expect(pills(row(curry({ stockQuantity: 3, lowStockThreshold: 5 })))).toContain('3 LEFT');
+    expect(pills(row(curry({ stockQuantity: 0, lowStockThreshold: null })))).toContain('0 LEFT');
+    expect(pills(row(curry({ stockQuantity: 3, lowStockThreshold: null }))).filter((l) => /LEFT/.test(l))).toEqual([]);
+    expect(pills(row(curry({ stockQuantity: 6, lowStockThreshold: 5 }))).filter((l) => /LEFT/.test(l))).toEqual([]);
+  });
+  it('a switched-off item that is low still shows how many are left', () => {
+    const labels = pills(row(curry({ isAvailable: false, stockQuantity: 2, lowStockThreshold: 5 })));
+    expect(labels).toContain('SOLD OUT');
+    expect(labels).toContain('2 LEFT');
+  });
+});
+
 describe('A6: stock adjusted on the row, with a reason', () => {
   const rice = (over: Record<string, unknown> = {}) => curry({ id: 'r1', name: 'Rice 5 lb', stockQuantity: 12, lowStockThreshold: 3, ...over });
 
@@ -194,6 +228,7 @@ describe('A6: stock adjusted on the row, with a reason', () => {
     expect(open.props.accessibilityRole).toBe('button');
     open.props.onPress();
     tree = stockTool(rice());
+    expect(ofType(tree, 'InlineInput')[0].props.accessibilityLabel, '[REVIEW #2516 S4-5]').toBe('Adjust stock amount: Rice 5 lb');
     expect(ofType(tree, 'Chip').map((c) => c.props.label)).toEqual(['Received stock', 'Damaged', 'Manual correction', 'Count reconcile', 'Customer return']);
     expect(ofType(tree, 'Chip')[0].props.selected).toBe(true);
     expect(pill(tree, 'Apply').props.disabled).toBe(true);

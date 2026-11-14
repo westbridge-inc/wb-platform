@@ -75,8 +75,7 @@ import {
   choicePriceInput, choicePricePlaceholder, flagsOf, followUpLabel, followUpTargets, fromPriceWords, groupFlagsBody, groupFlagsEdit,
   groupRuleWords, isFollowUpGroup, itemTypedPrice, libraryGroupsToAdd, lowestSizePrice, menuOptionsRefusal, needsSizeSwitchConfirm,
   parseStorePrice, sharedEditWarning, sharedUse, sizePriceLabel, sizeSwitchBody, sizeSwitchRows, sizeSwitchShown, sizeSwitchTyped,
-  sizeSwitchWords, usedByWords, type GroupFlags,
-} from '../../../lib/menuOptionsEditor';
+  sizeSwitchWords, usedByWords, type GroupFlags, WHOLE_PRICE_NOTE, wholePriceInput } from '../../../lib/menuOptionsEditor';
 
 /** [TAP-AUDIT] An option group (with its choices) written on a NEW item, before its first save: kept on the phone and
  *  sent with the item in the one create request (POST /vendor/items takes `optionGroups`), so a store adds an item
@@ -860,9 +859,10 @@ export function VendorItemEditorScreen({ navigation, route }: any) {
   const sizedFrom = isService ? null : lowestSizePrice(existing ? liveGroups : draftGroups.map((g) => ({
     setsPrice: g.setsPrice, options: g.options.map((o) => ({ additionalPrice: o.additionalPrice })),
   })));
-  const priceNum = sizedFrom ?? Number(price);
+  // [REVIEW #2516 S3-1] Whole Guyana dollars from 0 to 10,000,000 (the server's rule): null = not a price to save.
+  const priceNum = sizedFrom ?? wholePriceInput(price);
   const valid =
-    name.trim().length >= 1 && Number.isFinite(priceNum) && priceNum >= 0 && !!categoryId && (!isService || hoursProblem == null)
+    name.trim().length >= 1 && priceNum != null && !!categoryId && (!isService || hoursProblem == null)
     // A new item's price waits for the store's VAT word (it decides whether the price is before VAT).
     && (existing != null || vatPricing != null);
   const busy = save.isPending || uploadImage.isPending;
@@ -904,6 +904,7 @@ export function VendorItemEditorScreen({ navigation, route }: any) {
 
   const submit = async () => {
     if (readOnly || !valid || busy) return;
+    if (priceNum == null) return; // [REVIEW #2516 S3-1] not a whole-dollar price (valid already says so)
     const owner = requireAuthSessionSnapshot();
     const operationStoreId = useStoreSwitcher.getState().selectedStoreId;
     const stockNum = stock.trim() === '' ? undefined : Number(stock);
@@ -1029,8 +1030,9 @@ export function VendorItemEditorScreen({ navigation, route }: any) {
                 <T variant="caption" tone="muted" style={{ marginTop: 2 }}>Set by the choices of the group that sets the price.</T>
               </View>
             ) : (
-              <LabeledInput value={price} onChangeText={setPrice} placeholder={beforeVatNote(existing) || (!existing && vatAdded) || pricesBeforeVat ? 'Price before VAT (GYD)' : 'Price (GYD)'} keyboardType="decimal-pad" />
+              <LabeledInput value={price} onChangeText={setPrice} placeholder={beforeVatNote(existing) || (!existing && vatAdded) || pricesBeforeVat ? 'Price before VAT (GYD)' : 'Price (GYD)'} keyboardType="number-pad" />
             )}
+            {sizedFrom == null ? <T variant="caption" tone="muted">{WHOLE_PRICE_NOTE}</T> : null}
             {/* [VAT-DOCS] What customers pay for an item Swift adds VAT to (the saved price, from the server). */}
             {beforeVatNote(existing) ? <T variant="caption" tone="muted" testID="item-before-vat-note">{beforeVatNote(existing)}</T> : null}
             {!existing && vatPricing?.adds ? (
@@ -1272,7 +1274,7 @@ export function VendorItemEditorScreen({ navigation, route }: any) {
                   ? 'Loading the store’s prices…'
                 : !name.trim()
                   ? 'Name the item first'
-                  : !(Number.isFinite(priceNum) && priceNum >= 0)
+                  : priceNum == null
                     ? 'Set a price'
                     : !categoryId
                       ? 'Pick a category'
