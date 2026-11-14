@@ -451,6 +451,19 @@ const PUBLISHED: Record<
     driver_agreement: 'e5db9841fd7d5687324a62b19db6f9a4f18d4284bc36d36eafc6572d69360c0a',
     vendor_agreement: '77f282463f51f4e0f2648b9caf0cad6bc2c456abbb7c785b33ebe9b546148968',
   },
+  // [2026-11-13 · STORE-VAT-EXCLUSIVE · MATERIAL for everyone · owner approved the words 13 Nov 2026 01:07Z, verbatim from
+  // TERMS-DRAFT.md] Terms section 4 (a VAT-registered store's prices may be before VAT, marked "+ VAT", its VAT added at
+  // checkout as a separate line; the full Total is always shown before confirming) and Business Agreement section 4
+  // (listings) (the listed price is what customers pay for the goods; the before-VAT basis; the VAT is the business's to
+  // account for to the GRA). Checked mechanically before pinning: putting "10 November 2026" back in place of "13 November
+  // 2026" and the two old sentences back in place of the new ones reproduces all four 2026-11-10 pins exactly (Privacy and
+  // the Mover Agreement change only by their date).
+  '2026-11-13': {
+    terms: 'bf6cb917034e26b315e489260f6086d39a2d3a10e1f49e83827eb89c851633d4',
+    privacy: '70bbf94f206be50a51e57f060165ca073bf8047ab8df1f3007dce6e7d5616575',
+    driver_agreement: 'cb629522fd0cd554a1726e4b18a7f9d463c648fb7763b31c25ca022567ae7743',
+    vendor_agreement: 'd7b7b107adf0b1ea990faf3a35dbf4fa2999592c5c0845578dff4c34d4be72de',
+  },
 };
 
 describe('legal version binding [F-035-08]', () => {

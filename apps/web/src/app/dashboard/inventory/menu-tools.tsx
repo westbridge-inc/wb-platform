@@ -8,7 +8,7 @@ import { catalogueName } from '@/lib/catalogue-name';
 import Image from 'next/image';
 import { photo as storePhoto } from '@/lib/media';
 import { GRA_VAT_URL } from '@/lib/gra-vat-url';
-import { beforeVatNote, editablePrice, itemPricePayload, newItemBeforeVatHint, newOptionPrice, optionPriceLabel } from '@/lib/vat-price-edit';
+import { beforeVatAtCheckoutHint, beforeVatNote, editablePrice, itemPricePayload, newItemBeforeVatHint, newOptionPrice, optionPriceLabel } from '@/lib/vat-price-edit';
 import { formatMoney } from '@/lib/money';
 import type { CatalogItem, VatClass } from '@/lib/vendor-api';
 import {
@@ -102,7 +102,7 @@ export function PhotoNote({ url }: { url: string | null | undefined }) {
 }
 
 /** [STORE-VAT · owner O-5] The owner of a VAT-registered store gives each item its VAT class. */
-export function VatSelect({ item, vatRate, vatEffective, pending, onVatClass }: { item: CatalogItem; vatRate: number; vatEffective: boolean; pending: boolean; onVatClass: (_id: string, _vatClass: VatClass) => void }) {
+export function VatSelect({ item, vatRate, vatEffective, pending, onVatClass, vatBeforeVat = false }: { item: CatalogItem; vatRate: number; vatEffective: boolean; pending: boolean; onVatClass: (_id: string, _vatClass: VatClass) => void; vatBeforeVat?: boolean }) {
   return (
     <select
       aria-label={`VAT class: ${item.name}`}
@@ -111,7 +111,7 @@ export function VatSelect({ item, vatRate, vatEffective, pending, onVatClass }: 
       onChange={(e) => onVatClass(item.id, e.target.value as VatClass)}
       className="min-h-8 rounded-lg border border-[var(--swift-border)] bg-[var(--swift-card)] px-2 text-[13px]"
     >
-      {vatClassWords(vatRate, vatEffective).map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
+      {vatClassWords(vatRate, vatEffective, vatBeforeVat).map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
     </select>
   );
 }
@@ -212,7 +212,7 @@ const nextKey = () => `draft-${++draftKeys}`;
 
 /** [VAT-DOCS · security review #2256] Whether VAT is added to the prices this store types, from the profile every role
  *  that edits the menu reads (`vatAddsToPrices`, `vatRatePercent`). null while it has not loaded: no new price is sent then. */
-export type VatPricing = { adds: boolean; ratePercent: number } | null;
+export type VatPricing = { adds: boolean; ratePercent: number; beforeVat?: boolean } | null;
 
 export function ItemEditor({
   storeId, item, sections, vendorType, instantAvailable = false, vatRate, vatEffective, vatPricing = null, onClose,
@@ -239,7 +239,8 @@ export function ItemEditor({
   const [name, setName] = useState(item?.name ?? '');
   const [price, setPrice] = useState(String(editablePrice(item) ?? ''));
   // [VAT-DOCS] The field asks for the price before VAT: an item VAT is added to, or a new item in a store that adds it.
-  const beforeVatField = item ? item.vatListedPrice != null : vatAdded;
+  // [STORE-VAT-EXCLUSIVE] A store pricing before VAT labels every price "before VAT" (the payload stays the typed price).
+  const beforeVatField = (item ? item.vatListedPrice != null : vatAdded) || vatPricing?.beforeVat === true;
   // A new item's price waits for that word (it decides whether the price is before VAT).
   const vatKnown = item != null || vatPricing != null;
   const [description, setDescription] = useState(item?.description ?? '');
@@ -416,6 +417,8 @@ export function ItemEditor({
         )}
         {/* [REVIEW-F #2256 S4-2] A new item in a store whose VAT is added: the same words as the phone. */}
         {!item && vatPricing?.adds && <p className="text-xs text-[var(--swift-muted)]">{newItemBeforeVatHint(vatPricing.ratePercent)}</p>}
+        {/* [STORE-VAT-EXCLUSIVE] A store pricing before VAT: the same words as the phone. */}
+        {vatPricing?.beforeVat && <p className="text-xs text-[var(--swift-muted)]" data-testid="before-vat-at-checkout-hint">{beforeVatAtCheckoutHint(vatPricing.ratePercent)}</p>}
         {/* [VAT-DOCS] What customers pay for an item Swift adds VAT to (the saved price, from the server). */}
         {beforeVatNote(item, formatMoney) && <p className="text-xs text-[var(--swift-muted)]">{beforeVatNote(item, formatMoney)}</p>}
         <textarea className="sw-input min-h-20" aria-label="Description (optional)" placeholder="Description (optional)" value={description} onChange={(e) => setDescription(e.target.value)} />
@@ -522,7 +525,7 @@ export function ItemEditor({
               <label className="block">
                 <span className="sw-field-label">VAT on this item</span>
                 <select className="sw-input" value={vatClass} onChange={(e) => setVatClass(e.target.value as VatClass)}>
-                  {vatClassWords(vatRate, vatEffective).map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
+                  {vatClassWords(vatRate, vatEffective, vatPricing?.beforeVat === true).map((c) => <option key={c.value} value={c.value}>{c.label}</option>)}
                 </select>
                 <span className="sw-caption">You choose each item’s VAT class and are responsible for it; check with the GRA.</span>
               </label>

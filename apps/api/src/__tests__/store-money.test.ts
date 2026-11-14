@@ -11,7 +11,7 @@ import { orderComponents } from '../modules/billing/sales-components';
 
 const order = (over: Partial<StoreMoneyOrder> = {}): StoreMoneyOrder => ({
   orderType: 'FOOD_DELIVERY', fulfillment: 'DELIVERY', fulfillmentMode: null, paymentMethod: 'CASH', currencyCode: 'GYD',
-  subtotalCustomer: '4000.00', discount: '0.00', deliveryFee: '500.00', tipAmount: '300.00', totalAmount: '4800.00',
+  subtotalCustomer: '4000.00', discount: '0.00', deliveryFee: '500.00', tipAmount: '300.00', totalAmount: '4800.00', taxAmount: '0.00',
   promoRedemption: null, vendor: { vendorType: 'RESTAURANT', selfDeliveryEnabled: false },
   ...over,
 });

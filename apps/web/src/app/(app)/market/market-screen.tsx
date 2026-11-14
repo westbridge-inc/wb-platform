@@ -134,7 +134,7 @@ function MarketInner({ seed }: { seed: MarketPageSeed }) {
                     <span className="line-clamp-2 text-[13px] font-semibold leading-[18px]">{item.name}</span>
                     <span className="truncate text-[13px] leading-[18px] text-[var(--swift-muted)]">{item.vendorName}</span>
                     <span className="mt-1 flex items-center justify-between">
-                      <span className="sw-money text-[var(--swift-red)]">{item.pricedFrom ? 'From ' : ''}{money(item.basePrice)}</span>
+                      <span className="sw-money text-[var(--swift-red)]">{item.pricedFrom ? 'From ' : ''}{money(item.basePrice)}{item.vatAddedAtCheckout ? ' + VAT' : ''}</span>
                       <AddPlusGlyph />
                     </span>
                   </span>

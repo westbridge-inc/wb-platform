@@ -126,6 +126,10 @@ export interface VendorOrder {
   deliveryFee?: number | null;
   tipAmount?: number | null;
   discount?: number | null;
+  /** [STORE-VAT-EXCLUSIVE] The VAT a store pricing before VAT added at checkout (0 otherwise), its basis and rate. */
+  taxAmount?: number | null;
+  vatOnTop?: boolean | null;
+  vatRateBps?: number | null;
   /** [STORE-MONEY] The server's word on the store's own money: the food (the big number) and whose the delivery fee
    *  and tip are, in plain lines. Read through ringMoney (the app's rule file); absent on an older server. */
   storeMoney?: ServerStoreMoney | null;

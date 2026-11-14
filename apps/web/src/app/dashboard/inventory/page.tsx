@@ -62,7 +62,7 @@ function RowPhotoNote({ url }: { url: string }) {
   return tools ? <tools.PhotoNote url={url} /> : null;
 }
 /** [STORE-VAT] The owner's VAT class select and its note, drawn by the tools chunk (only VAT-registered stores). */
-function RowVat(props: { item: CatalogItem; vatRate: number; vatEffective: boolean; pending: boolean; onVatClass: (_id: string, _vatClass: VatClass) => void }) {
+function RowVat(props: { item: CatalogItem; vatRate: number; vatEffective: boolean; pending: boolean; onVatClass: (_id: string, _vatClass: VatClass) => void; vatBeforeVat?: boolean }) {
   const tools = menuTools.usePart(true);
   return tools ? <tools.VatSelect {...props} /> : null;
 }
@@ -98,7 +98,7 @@ function RowStock({ item, onAdjust }: { item: CatalogItem; onAdjust: () => void 
  * items as the same objects), not every row of the catalogue. Off-screen rows also skip
  * layout and paint until scrolled to (content-visibility), which long catalogues need.
  */
-const ItemRow = memo(function ItemRow({ item: i, pending, pricePending, manager, adjusting, editingPrice, onToggle, onAdjust, onEditPrice, onPrice, onEdit, onDelete, onSaved, vatRate, vatEffective, vatPending, onVatClass }: {
+const ItemRow = memo(function ItemRow({ item: i, pending, pricePending, manager, adjusting, editingPrice, onToggle, onAdjust, onEditPrice, onPrice, onEdit, onDelete, onSaved, vatRate, vatEffective, vatPending, onVatClass, vatBeforeVat = false }: {
   item: CatalogItem;
   pending: boolean;
   pricePending: boolean;
@@ -118,6 +118,8 @@ const ItemRow = memo(function ItemRow({ item: i, pending, pricePending, manager,
   vatEffective: boolean;
   vatPending: boolean;
   onVatClass: (_id: string, _vatClass: VatClass) => void;
+  /** [STORE-VAT-EXCLUSIVE] The store prices before VAT: its class words say VAT is added at checkout. */
+  vatBeforeVat?: boolean;
 }) {
   // The item's own photo, as the app shows it (a 96 px copy through the store-photo route); none = the placeholder.
   return <article aria-label={i.name} className="border-b border-[var(--swift-border)] py-5" style={{ contentVisibility: 'auto', containIntrinsicSize: 'auto 120px' }}>
@@ -141,7 +143,7 @@ const ItemRow = memo(function ItemRow({ item: i, pending, pricePending, manager,
       {!i.isAvailable && <span>Sold out</span>}
       {i.stockQuantity == null ? <span>Stock untracked</span> : <RowStock item={i} onAdjust={() => onAdjust(adjusting ? null : i.id)} />}
       {i.sku && <span>SKU: {i.sku}</span>}
-      {vatRate != null && <RowVat item={i} vatRate={vatRate} vatEffective={vatEffective} pending={vatPending} onVatClass={onVatClass} />}
+      {vatRate != null && <RowVat item={i} vatRate={vatRate} vatEffective={vatEffective} pending={vatPending} onVatClass={onVatClass} vatBeforeVat={vatBeforeVat} />}
     </div>
     {adjusting && <RowTool tool="stock" item={i} onDone={() => { onAdjust(null); onSaved(); }} />}
     {manager && (
@@ -178,14 +180,18 @@ export default function InventoryPage() {
   const profile = useQuery({ queryKey: storeKey(storeId, 'profile'), queryFn: getProfile });
   const isOwner = (profile.data as { myRole?: string } | undefined)?.myRole === 'OWNER';
   // [BOOK-S5b · owner A4] The selected store's word that "Confirm bookings automatically" can be chosen (switch on).
-  const profileStores = (profile.data as { vendors?: Array<{ id: string; instantBookingAvailable?: unknown; vatAddsToPrices?: unknown; vatRatePercent?: unknown }> } | undefined)?.vendors ?? [];
+  const profileStores = (profile.data as { vendors?: Array<{ id: string; instantBookingAvailable?: unknown; vatAddsToPrices?: unknown; vatRatePercent?: unknown; vatPricesBeforeVat?: unknown }> } | undefined)?.vendors ?? [];
   const profileStore = profileStores.find((v) => v.id === storeId) ?? (profileStores.length === 1 ? profileStores[0] : undefined);
   const instantAvailable = profileStore?.instantBookingAvailable === true;
   // [VAT-DOCS · security review #2256] Whether VAT is added to this store's prices, for every role that edits the menu (the
   // profile, not the owner-only VAT read): one word for the before-VAT wording and the payload. null until it has loaded.
   // A store the profile does not list (or an older server): the bare price, which the server refuses if it is wrong.
   const vatPricing: VatPricing = profile.isSuccess
-    ? { adds: profileStore?.vatAddsToPrices === true && typeof profileStore.vatRatePercent === 'number', ratePercent: Number(profileStore?.vatRatePercent) || 0 }
+    ? {
+      adds: profileStore?.vatAddsToPrices === true && typeof profileStore.vatRatePercent === 'number', ratePercent: Number(profileStore?.vatRatePercent) || 0,
+      // [STORE-VAT-EXCLUSIVE] The store prices before VAT: labelled so, sent as typed (nothing is added into the price).
+      beforeVat: profileStore?.vatPricesBeforeVat === true,
+    }
     : null;
   const vat = useQuery({ queryKey: storeKey(storeId, 'vat'), queryFn: getStoreVat, enabled: isOwner });
   const vatRate = vat.data && vat.data.status !== 'NONE' ? vat.data.ratePercent : null;
@@ -376,7 +382,7 @@ export default function InventoryPage() {
           <div className="grid gap-x-8 wide:grid-cols-2">
             {rows.map(i => <ItemRow key={i.id} item={i} pending={availPending.has(i.id)} pricePending={pricePending.has(i.id)} manager={manager} adjusting={adjusting === i.id} editingPrice={editingPrice === i.id}
               onToggle={onToggle} onAdjust={setAdjusting} onEditPrice={setEditingPrice} onPrice={onPrice} onEdit={onEdit} onDelete={onDelete} onSaved={refresh}
-              vatRate={vatRate} vatEffective={vatEffective} vatPending={vatMut.isPending && vatMut.variables?.id === i.id} onVatClass={onVatClass} />)}
+              vatRate={vatRate} vatEffective={vatEffective} vatPending={vatMut.isPending && vatMut.variables?.id === i.id} onVatClass={onVatClass} vatBeforeVat={vatPricing?.beforeVat === true} />)}
           </div>
         </section>
       ))}

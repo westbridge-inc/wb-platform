@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { orderVat, vatInsideWhole } from '../modules/store-vat/vat-math';
 import { STORE_VAT_FRACTION, STORE_VAT_RATE_BPS, STORE_VAT_RATE_PERCENT } from '../modules/store-vat/vat-rate';
-import { STORE_VAT_MODES_OFFERED, storeVatEffective, storeVatEnabled } from '../modules/store-vat/store-vat';
+import { storeVatEffective, storeVatEnabled, storeVatModesOffered } from '../modules/store-vat/store-vat';
 import { approveStoreVat } from '../modules/store-vat/store-vat-decisions';
 import { vatDiscountFor } from '../modules/store-vat/order-vat';
 
@@ -159,7 +159,12 @@ describe('the switch and the ONE predicate', () => {
   });
 
   it('[VAT-DOCS] the two modes offered: "prices already include VAT" and "add VAT at checkout", nothing else', () => {
-    expect([...STORE_VAT_MODES_OFFERED]).toEqual(['PRICES_INCLUDE_VAT', 'ADD_VAT_AT_CHECKOUT']);
+    expect([...storeVatModesOffered({})]).toEqual(['PRICES_INCLUDE_VAT', 'ADD_VAT_AT_CHECKOUT']);
+  });
+
+  it('[STORE-VAT-EXCLUSIVE] with STORE_VAT_EXCLUSIVE on: "prices before VAT" first, "prices include VAT", and no longer "add VAT into the price"', () => {
+    expect([...storeVatModesOffered({ STORE_VAT_EXCLUSIVE: '1' })]).toEqual(['PRICES_EXCLUDE_VAT', 'PRICES_INCLUDE_VAT']);
+    expect([...storeVatModesOffered({ STORE_VAT_EXCLUSIVE: 'true' })]).toEqual(['PRICES_INCLUDE_VAT', 'ADD_VAT_AT_CHECKOUT']);
   });
 });
 

@@ -19,7 +19,7 @@ import { VatCard, vatStatusLine } from './vat-card';
 
 const view = (over: Partial<StoreVatView> = {}): StoreVatView => ({
   available: true, status: 'NONE', mode: null, vatRegistrationNumber: null, effective: false, approved: null, reviewNote: null,
-  certificate: null, ratePercent: 14, modesOffered: ['PRICES_INCLUDE_VAT'], sources: [], ...over,
+  certificate: null, ratePercent: 14, modesOffered: ['PRICES_INCLUDE_VAT', 'ADD_VAT_AT_CHECKOUT'], sources: [], ...over,
 });
 const owner = { myRole: 'OWNER', vendors: [{ id: 'store-1', name: 'Sample Shop' }] };
 const manager = { myRole: 'MANAGER', vendors: [{ id: 'store-1', name: 'Sample Shop' }] };
@@ -92,6 +92,24 @@ describe('[O-5] the owner’s answer', () => {
     await waitFor(() => expect(storeVatApi.sendVatCertificate).toHaveBeenCalledWith(file, { vatRegistrationNumber: '012345678', mode: 'ADD_VAT_AT_CHECKOUT' }));
     expect(storeVatApi.updateStoreVat).not.toHaveBeenCalled();
     expect(await screen.findByText(/waiting for a person at Swift to check it/)).toBeTruthy();
+  });
+
+  it('[STORE-VAT-EXCLUSIVE] the choices are the server\'s offer: prices before VAT first, and the first claim sends it', async () => {
+    setup(owner, view({ modesOffered: ['PRICES_EXCLUDE_VAT', 'PRICES_INCLUDE_VAT'] }));
+    vi.spyOn(storeVatApi, 'sendVatCertificate').mockResolvedValue(view({ status: 'PENDING', mode: 'PRICES_EXCLUDE_VAT', vatRegistrationNumber: '012345678' }));
+    expect(await screen.findByText('Not VAT-registered: your prices and receipts show no VAT.')).toBeTruthy();
+    await userEvent.click(screen.getByRole('radio', { name: 'Yes' }));
+    const before = screen.getByRole('radio', { name: 'My prices are before VAT (VAT is added at checkout)' });
+    const include = screen.getByRole('radio', { name: 'My prices already include VAT' });
+    expect(screen.queryByRole('radio', { name: 'My prices do not include VAT' })).toBeNull();
+    expect(before.compareDocumentPosition(include) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    await userEvent.click(before);
+    expect(screen.getByText(/14% VAT is added at checkout as its own line before the total/)).toBeTruthy();
+    await userEvent.type(screen.getByLabelText('VAT registration number (exactly as on your GRA certificate)'), '012345678');
+    await userEvent.click(screen.getByRole('checkbox'));
+    const file = new File(['%PDF-1.4'], 'certificate.pdf', { type: 'application/pdf' });
+    await userEvent.upload(screen.getByLabelText('VAT certificate file'), file);
+    await waitFor(() => expect(storeVatApi.sendVatCertificate).toHaveBeenCalledWith(file, { vatRegistrationNumber: '012345678', mode: 'PRICES_EXCLUDE_VAT' }));
   });
 
   it('a store that already said yes changes how its prices relate to VAT', async () => {

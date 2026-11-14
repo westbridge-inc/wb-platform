@@ -17,13 +17,20 @@ type Tx = Prisma.TransactionClient | PrismaClient;
  *
  * `subtotalBase` is the goods at the STORE's price — what the rider actually
  * hands over at pickup. A non-CASH order fronts nothing.
+ *
+ * [STORE-VAT-EXCLUSIVE · owner 13 Nov 2026] PLUS `taxAmount`: a store pricing
+ * BEFORE VAT sells its goods for their price and its VAT (the "VAT 14%" line),
+ * so the rider hands it both, and collects both at the door inside the total.
+ * taxAmount is 0 on every other order, so their float is unchanged. It is
+ * REQUIRED here, so a reader that forgot to select it does not compile.
  */
 export function riderFloatForOrder(order: {
   paymentMethod: string;
   subtotalBase: number | string | null | undefined | { toString(): string };
+  taxAmount: number | string | null | undefined | { toString(): string };
 }): number {
   if (order.paymentMethod !== 'CASH') return 0;
-  const amount = Number(order.subtotalBase);
+  const amount = Number(order.subtotalBase) + Math.max(0, Number(order.taxAmount ?? 0) || 0);
   return Number.isFinite(amount) && amount > 0 ? amount : 0;
 }
 

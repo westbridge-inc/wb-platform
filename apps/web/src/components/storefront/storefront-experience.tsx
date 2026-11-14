@@ -46,6 +46,7 @@ import { photo } from '@/lib/media';
 import { StoreActions } from './store-actions';
 import styles from './storefront.module.css';
 import { SellerInfo } from './seller-info';
+import { itemVatAddedHint, storefrontVatAddedNote } from '@/lib/store-vat-display';
 import { AddPlusGlyph } from '@/components/add-plus';
 import { STORE_PICK } from '@/lib/store-pick';
 import { markTableQrVisit } from '@/lib/table-qr';
@@ -916,6 +917,11 @@ export function StorefrontExperience({ store, returnPath, fromQr = false, initia
               <li className={styles.fact}>Minimum {gyMoney(Number(catalog.minOrderAmount))}</li>
             ) : null}
           </ul>
+          {/* [STORE-VAT-EXCLUSIVE · owner 13 Nov 2026 · VAT Act s.90 caution] A store pricing before VAT says so before
+              anything is ordered; its prices stay exactly as typed. The live menu's word only (never a guess). */}
+          {storefrontVatAddedNote((catalog as { vat?: unknown }).vat) ? (
+            <p className={styles.storeMeta} data-testid="store-vat-note">{storefrontVatAddedNote((catalog as { vat?: unknown }).vat)}</p>
+          ) : null}
           {/* [CHAINS PR3] Another branch of the same brand, one tap away. */}
           {branches}
         </section>
@@ -1049,6 +1055,10 @@ export function StorefrontExperience({ store, returnPath, fromQr = false, initia
                             <span className={styles.itemPrice}>
                               {choices && from !== null ? <span className={styles.fromLabel}>From</span> : null}
                               <span>{gyMoney(choices ? from : itemPrice(item))}</span>
+                              {/* [STORE-VAT-EXCLUSIVE] "+ VAT" beside a standard-rated price of a store pricing before VAT. */}
+                              {itemVatAddedHint((catalog as { vat?: unknown }).vat, item as { vatClass?: string | null }) ? (
+                                <span className={styles.fromLabel}>{itemVatAddedHint((catalog as { vat?: unknown }).vat, item as { vatClass?: string | null })}</span>
+                              ) : null}
                             </span>
                             {!fulfillmentVerified ? (
                               <span className={styles.unavailableAction}>Ordering unavailable</span>
@@ -1164,7 +1174,7 @@ export function StorefrontExperience({ store, returnPath, fromQr = false, initia
                             ) : null}
                             {needsReview ? <span className={styles.reviewTag}>Needs review</span> : null}
                           </span>
-                          <span className={styles.railPrice}>{gyMoney(line.lineTotal ?? line.customerPrice * line.quantity)}</span>
+                          <span className={styles.railPrice}>{gyMoney(line.lineTotal ?? line.customerPrice * line.quantity)}{line.vatAddedAtCheckout ? ' + VAT' : ''}</span>
                           <button
                             type="button"
                             className={styles.removeLineButton}
@@ -1258,6 +1268,8 @@ export function StorefrontExperience({ store, returnPath, fromQr = false, initia
           // current (public storefront isVerified, seller-verified.ts). An older API sends nothing: no pill.
           seller={{ name: store.name, city: store.city, verified: store.isVerified === true }}
           vendorType={catalog.vendorType}
+          // [STORE-VAT-EXCLUSIVE · REVIEW-B S3-1] "+ VAT" on the sheet's prices too (the same word as the menu row).
+          vatAdded={itemVatAddedHint((catalog as { vat?: unknown }).vat, modalItem as { vatClass?: string | null }) !== null}
           selectedOptions={selectedOptions}
           onChoose={chooseOption}
           onPlace={placeTopping}

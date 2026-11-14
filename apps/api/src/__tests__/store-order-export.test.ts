@@ -362,6 +362,8 @@ describe('[ORDER-EXPORT] the columns', () => {
       'store_goods_net', 'store_delivery_fee_and_tip', 'rider_delivery_fee_and_tip',
       'cancelled_by', 'cancellation_reason', 'refund_owed', 'refund_paid', 'refund_note',
       'items',
+      // [STORE-VAT-EXCLUSIVE · REVIEW-A F1] How the VAT relates to the prices (last: every earlier column keeps its place).
+      'vat_basis',
     ]);
     for (const pii of [CUSTOMER_FIRST, CUSTOMER_LAST, customerPhone, ADDRESS, NOTE, customer.userId, 'CUSTREF', '6.81', '-58.16']) {
       expect(res.body, pii).not.toContain(pii);

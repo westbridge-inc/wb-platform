@@ -163,7 +163,7 @@ const MarketCard = React.memo(function MarketCard({ item, onOpen, onAdd, adding 
                   "maroon ≤2 per screen" law — chip, price, add button.
                   REGISTERED, not silently resolved: the screenshot is
                   the binding spec for this tab [WS-3.6]. */}
-              <Money amount={item.basePrice} from={item.pricedFrom === true} tone="brand" />
+              <Money amount={item.basePrice} from={item.pricedFrom === true} vatAdded={item.vatAddedAtCheckout === true} tone="brand" />
               {/* [Triage row 113] THE shared add "+" (kit/add-morph): the same maroon circle as the menu rows. */}
               <AddMorph
                 qty={0}

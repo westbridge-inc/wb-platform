@@ -58,7 +58,7 @@ const REVIEWED_WRITERS: Record<string, string> = {
     'reopens a released leg to its kitchen stage (releaseStageFor: ACCEPTED, PREPARING or READY_FOR_PICKUP); never CANCELLED.',
   // [STORE-VAT · owner O-5]
   'modules/store-vat/order-vat.ts#recomputeOrderVat':
-    'writes only the VAT the order froze (orderVatAmountFields: vatAmount, vatBase and the goods by class); never the status.',
+    'writes only the VAT the order froze (orderVatAmountFields: vatAmount, vatBase and the goods by class) and, on an order whose VAT is added on top [STORE-VAT-EXCLUSIVE], its taxAmount and the total moved by the VAT change (recomputedVatData); never the status.',
 };
 
 const ORDER_WRITE = /(^|\.)order\.(update|updateMany|upsert)$/;

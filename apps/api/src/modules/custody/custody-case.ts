@@ -292,6 +292,8 @@ export interface CaseOrderFacts {
   orderType: string | null;
   paymentMethod: string;
   subtotalBase: number | string | null | undefined | { toString(): string };
+  /** [STORE-VAT-EXCLUSIVE] The VAT a store pricing before VAT added: the rider fronted it with the goods. */
+  taxAmount: number | string | null | undefined | { toString(): string };
 }
 
 const gyd = (n: number) => `GY$${Math.round(n).toLocaleString('en-US')}`;

@@ -5,6 +5,7 @@ import { z } from '../../lib/zod';
 import { catalogueVendorInTenant } from '../vendor/vendor-visibility';
 import { bindBrowseTenant, decodeScopedCursor, encodeScopedCursor, requireRequestTenant } from '../search/search-scope';
 import { ITEM_HIT_SELECT, toItemHit, type ItemHit } from '../search/item-hit';
+import { withVatAddedHint } from '../store-vat/vat-added-hint';
 import { applyItemStoreOpenNow } from '../vendor/store-hours';
 import { AppError } from '../../utils/errors';
 import { marketGate, thresholdsFrom } from './launch-depth';
@@ -266,7 +267,8 @@ export async function marketRoutes(app: FastifyInstance) {
 
     const page = listable.slice(0, q.limit);
     // [STORE-HOURS] Each dish's store is "open" as checkout decides it (switch AND the store's weekly hours).
-    const items: ItemHit[] = await applyItemStoreOpenNow(app.prisma, page.map(toItemHit));
+    // [STORE-VAT-EXCLUSIVE] "+ VAT" beside a standard-rated price of a store pricing before VAT (read live).
+    const items: ItemHit[] = await withVatAddedHint(app.prisma, await applyItemStoreOpenNow(app.prisma, page.map(toItemHit)));
     const last = page[page.length - 1];
 
     return {

@@ -1,6 +1,6 @@
 import type { CartQuoteChoices } from '../../services/api';
 import { errorMessage } from '../../lib/apiError';
-import { cartVat, cartVatLine } from '../../lib/storeVat';
+import { cartVat, cartVatAdded, cartVatLine, ratePercentWords } from '../../lib/storeVat';
 
 /**
  * [E01 · E09] The cart screen's half of "the total shown is the total charged".
@@ -272,10 +272,29 @@ export function pricesAsSeen(
  * other store, and for an older server that sends no `vat`.
  */
 export function cartVatRows(quote: CartQuote | null | undefined): Array<{ vendorId: string; text: string }> {
+  // [STORE-VAT-EXCLUSIVE] A store pricing before VAT has a "VAT 14%" row instead (cartVatAddedRows): no note here.
   const stores = quote?.vendors ?? [];
   const rows = stores.flatMap((s) => {
     const line = cartVatLine(cartVat(s.vat));
     return line ? [{ vendorId: s.vendorId, name: s.name, line }] : [];
   });
   return rows.map((r) => ({ vendorId: r.vendorId, text: stores.length > 1 ? `${r.name}: ${r.line.charAt(0).toLowerCase()}${r.line.slice(1)}` : r.line }));
+}
+
+/**
+ * [STORE-VAT-EXCLUSIVE · owner 13 Nov 2026] The "VAT 14%" row of each store in the basket that prices BEFORE VAT, from the
+ * server's quote (`vendors[].vat.added`; never computed here). The total above already includes it: the row only names
+ * it, right above the Total, like the store's own bill. One store: "VAT 14%"; several: "<store> VAT 14%".
+ */
+export function cartVatAddedRows(quote: CartQuote | null | undefined): Array<{ vendorId: string; label: string; amount: number }> {
+  const stores = quote?.vendors ?? [];
+  const rows = stores.flatMap((s) => {
+    const added = cartVatAdded(s.vat);
+    return added ? [{ vendorId: s.vendorId, name: s.name, added }] : [];
+  });
+  return rows.map((r) => ({
+    vendorId: r.vendorId,
+    label: `${stores.length > 1 ? `${r.name} ` : ''}VAT ${ratePercentWords(r.added.ratePercent)}%`,
+    amount: r.added.amount,
+  }));
 }

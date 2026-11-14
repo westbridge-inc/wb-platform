@@ -387,7 +387,7 @@ export function MenuItemScreen() {
             ) : null}
 
             {/* [MENU-OPTIONS] The item's choices, like a pizza shop's sheet (components/ItemChoices). */}
-            <ItemChoices groups={groups} selection={selected} onChoose={toggleOption} onPlace={placeTopping} />
+            <ItemChoices groups={groups} selection={selected} onChoose={toggleOption} onPlace={placeTopping} vatAdded={itemVatNote(storefrontVat(vendor.data?.vat), item) === '+ VAT'} />
 
             {isBooking ? (
               <>
@@ -579,7 +579,8 @@ export function MenuItemScreen() {
                   : 'Pick a time'
                 : requiredUnmet
                   ? 'Choose required options'
-                  : `Add to cart · ${money(total)}`
+                  // [STORE-VAT-EXCLUSIVE · REVIEW-B S3-1] Before VAT: the button says so too.
+                  : `Add to cart · ${money(total)}${itemVatNote(storefrontVat(vendor.data?.vat), item) === '+ VAT' ? ' + VAT' : ''}`
           }
           icon={isBooking ? 'calendar' : 'shopping-cart'}
           variant={outOfStock ? 'dark' : 'primary'}

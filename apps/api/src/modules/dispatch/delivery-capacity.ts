@@ -353,7 +353,7 @@ export async function swiftRiderCashRefusal(
   const order = await prisma.order.findUnique({
     where: { id: orderId },
     select: {
-      tenantId: true, vendorId: true, orderType: true, courierPackageSize: true, fulfillment: true, paymentMethod: true, subtotalBase: true,
+      tenantId: true, vendorId: true, orderType: true, courierPackageSize: true, fulfillment: true, paymentMethod: true, subtotalBase: true, taxAmount: true,
       pickupLat: true, pickupLng: true, deliveryLat: true, deliveryLng: true, items: { select: { quantity: true, bulkUnits: true } },
       vendor: { select: { mmgNumber: true } },
     },

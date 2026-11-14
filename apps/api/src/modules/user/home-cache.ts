@@ -78,6 +78,9 @@ const discoverySchema = z.object({
     id: z.string(), name: z.string(), imageUrl: z.string().nullable(), price: z.number().finite(),
     vendorId: z.string(), vendorName: z.string(), vendorType: z.nativeEnum(VendorType).nullable(),
     etaMin: z.number().finite().nullable(),
+    // [STORE-VAT-EXCLUSIVE] "+ VAT" beside a standard-rated dish of a store pricing before VAT. Optional: a rail cached
+    // before this field existed (at most HOME_CACHE_TTL old) says nothing beside its prices until it turns over.
+    vatAddedAtCheckout: z.boolean().optional(),
   }).strict()).max(10),
   categories: z.array(categorySchema).max(2500),
 }).strict();

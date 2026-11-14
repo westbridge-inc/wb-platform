@@ -101,7 +101,7 @@ export function pickupReleaseKey(who: 'customer' | 'store' | 'ops' | 'store-wait
 const select = {
   id: true, orderNumber: true, tenantId: true, orderType: true, status: true, customerId: true,
   riderId: true, riderAssignmentVersion: true, paymentMethod: true, paymentStatus: true,
-  subtotalBase: true, fulfillmentModeVersion: true,
+  subtotalBase: true, taxAmount: true, fulfillmentModeVersion: true,
   readyAt: true, preparingAt: true, acceptedAt: true, estimatedPrepTime: true, placedAt: true, holdExpiresAt: true, scheduledFor: true,
   vendorId: true, pickupLat: true, pickupLng: true,
   rider: { select: { userId: true, currentLat: true, currentLng: true, lastLocationUpdate: true } },

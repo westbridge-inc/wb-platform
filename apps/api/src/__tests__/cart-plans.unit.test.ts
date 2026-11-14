@@ -144,7 +144,9 @@ describe('priceBasket is main’s checkout arithmetic, unchanged', () => {
     let spilled = 0;
     for (let n = 0; n < 20_000; n++) {
       const { plans, promo, tip } = randomBasket(r);
-      const expected = mainCheckoutArithmetic(plans, promo, tip);
+      const main = mainCheckoutArithmetic(plans, promo, tip);
+      // [STORE-VAT-EXCLUSIVE] No store here prices before VAT: every plan adds no VAT line (tax 0, vat null), the rest is main's.
+      const expected = { ...main, perPlan: main.perPlan.map((p) => ({ ...p, tax: 0, vat: null })) };
       const actual = priceBasket({ plans, promo: promo as BasketPromo | null, tip });
       expect(actual, `case ${n}: ${JSON.stringify({ plans, promo, tip })}`).toEqual(expected);
       if (promo && expected.discount > 0) withPromo += 1;
@@ -187,7 +189,7 @@ describe('priceBasket is main’s checkout arithmetic, unchanged', () => {
     const plans: BasketPlan[] = [{ vendorId: 'a', fulfillment: 'PICKUP', subtotal: 1000, deliveryFee: 0, standardDeliveryFee: 0 }];
     const priced = priceBasket({ plans, promo: { discountType: 'FIXED_AMOUNT', discountValue: 300, funder: 'VENDOR', vendorId: 'elsewhere' }, tip: 0 });
     expect(priced.discount).toBe(0);
-    expect(priced.perPlan[0]).toEqual({ discount: 0, tip: 0, total: 1000, allocation: null });
+    expect(priced.perPlan[0]).toEqual({ discount: 0, tip: 0, total: 1000, allocation: null, tax: 0, vat: null });
   });
 });
 

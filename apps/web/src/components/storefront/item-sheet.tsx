@@ -41,10 +41,12 @@ const PLACEMENTS: ReadonlyArray<{ key: Placement; label: string }> = [
 
 /** [MENU-OPTIONS] What a choice's row says about money: a size its PRICE (it is the item's price), any other choice
  *  what it adds; nothing when it is free. Null when the server's figure cannot be read. */
-function choicePrice(group: OptionGroup, amount: number | null): string | null | '' {
+function choicePrice(group: OptionGroup, amount: number | null, vatAdded = false): string | null | '' {
   if (amount === null) return null;
-  if (group.setsPrice === true) return gyMoney(amount);
-  return amount > 0 ? `+${gyMoney(amount)}` : '';
+  // [STORE-VAT-EXCLUSIVE · REVIEW-B S3-1] A standard-rated item of a store pricing before VAT: its choices say "+ VAT" too.
+  const vat = vatAdded ? ' + VAT' : '';
+  if (group.setsPrice === true) return `${gyMoney(amount)}${vat}`;
+  return amount > 0 ? `+${gyMoney(amount)}${vat}` : '';
 }
 
 /** [P35 · board 4b] About three lines of the sheet's description; past this it is clamped behind "Read more". */
@@ -70,12 +72,15 @@ export interface ItemSheetProps {
   busy: boolean;
   cartLoading: boolean;
   unitPrice: number | null;
+  /** [STORE-VAT-EXCLUSIVE · REVIEW-B S3-1] A standard-rated item of a store pricing before VAT (the storefront's
+   *  itemVatAddedHint): every price on the sheet says "+ VAT". Absent: nothing changes. */
+  vatAdded?: boolean;
   onConfirm: () => void;
   onClose: () => void;
 }
 
 export function ItemSheet({
-  item, seller, vendorType, selectedOptions, onChoose, onPlace, quantity, onQuantity, error, busy, cartLoading, unitPrice, onConfirm, onClose,
+  item, seller, vendorType, selectedOptions, onChoose, onPlace, quantity, onQuantity, error, busy, cartLoading, unitPrice, vatAdded = false, onConfirm, onClose,
 }: ItemSheetProps) {
   const groups = item.optionGroups ?? [];
   return (
@@ -103,7 +108,7 @@ export function ItemSheet({
             the Right half; a follow-up group opens right under the choice that opens it, only while it is chosen. */}
         {topLevelGroups(groups).map((group) => (
           <div key={group.id} className={styles.optionBlock}>
-            <OptionGroupFields group={group} groups={groups} selectedOptions={selectedOptions} onChoose={onChoose} onPlace={onPlace} nested={false} />
+            <OptionGroupFields group={group} groups={groups} selectedOptions={selectedOptions} onChoose={onChoose} onPlace={onPlace} nested={false} vatAdded={vatAdded} />
           </div>
         ))}
       </div>
@@ -123,7 +128,7 @@ export function ItemSheet({
             aria-describedby={error ? 'menu-options-error' : undefined}
             onClick={onConfirm}
           >
-            Add to order · {gyMoney(unitPrice === null ? null : unitPrice * quantity)}
+            Add to order · {gyMoney(unitPrice === null ? null : unitPrice * quantity)}{vatAdded ? ' + VAT' : ''}
           </button>
         </div>
       </div>
@@ -154,10 +159,11 @@ interface OptionGroupFieldsProps {
   onChoose: ItemSheetProps['onChoose'];
   onPlace: ItemSheetProps['onPlace'];
   nested: boolean;
+  vatAdded?: boolean;
 }
 
 /** One group of choices (and, under a chosen option that opens one, its follow-up group). */
-function OptionGroupFields({ group, groups, selectedOptions, onChoose, onPlace, nested }: OptionGroupFieldsProps) {
+function OptionGroupFields({ group, groups, selectedOptions, onChoose, onPlace, nested, vatAdded = false }: OptionGroupFieldsProps) {
   const selectedCount = (selectedOptions[group.id] ?? []).length;
   const single = singleChoice(group);
   const multiLimitReached = !single && selectedCount >= maxChoices(group);
@@ -188,7 +194,7 @@ function OptionGroupFields({ group, groups, selectedOptions, onChoose, onPlace, 
         const blockedByLimit = multiLimitReached && !checked;
         // [W6] A choice whose price cannot be read is never priced: the row says so.
         const extra = parseAmount(option.additionalPrice);
-        const price = choicePrice(group, extra);
+        const price = choicePrice(group, extra, vatAdded);
         const placement = checked && group.allowHalves === true ? placementOf(selectedOptions, group.id, option.id) : null;
         const opens = checked && !nested ? followUpFor(groups, group, option) : null;
         return (
@@ -227,12 +233,12 @@ function OptionGroupFields({ group, groups, selectedOptions, onChoose, onPlace, 
                   ))}
                 </div>
                 {extra !== null && extra > 0 ? (
-                  <p className={styles.optionGuidance}>Whole +{gyMoney(extra)} · half +{gyMoney(halfPrice(extra, group.halfPricePercent ?? 100))}</p>
+                  <p className={styles.optionGuidance}>Whole +{gyMoney(extra)} · half +{gyMoney(halfPrice(extra, group.halfPricePercent ?? 100))}{vatAdded ? ' (+ VAT)' : ''}</p>
                 ) : null}
               </div>
             ) : null}
             {opens ? (
-              <OptionGroupFields group={opens} groups={groups} selectedOptions={selectedOptions} onChoose={onChoose} onPlace={onPlace} nested />
+              <OptionGroupFields group={opens} groups={groups} selectedOptions={selectedOptions} onChoose={onChoose} onPlace={onPlace} nested vatAdded={vatAdded} />
             ) : null}
           </div>
         );

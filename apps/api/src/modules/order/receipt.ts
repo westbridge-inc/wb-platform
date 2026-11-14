@@ -55,6 +55,9 @@ type ReceiptOrder = {
   vatBase?: unknown;
   vatSellerNumber?: string | null;
   vatSellerName?: string | null;
+  /** [STORE-VAT-EXCLUSIVE] The VAT was ADDED on top (the store priced before VAT): taxAmount is the "VAT 14%" line. */
+  vatOnTop?: boolean | null;
+  taxAmount?: unknown;
   /** [M-36] The currency every amount on the order is in; stamped at checkout. */
   currencyCode?: string | null;
   /** [TAXI waiting charge] A ride's frozen waiting, when it was charged one. */
@@ -106,6 +109,23 @@ function vatSummary(order: ReceiptOrder, money: (n: unknown) => string): string 
   const standard = Number(order.vatStandardGoods ?? 0);
   const base = order.vatBase == null ? standard : Number(order.vatBase);
   const name = esc(order.vatSellerName);
+  // [STORE-VAT-EXCLUSIVE · owner 13 Nov 2026] Prices before VAT: the amount the VAT was added to, and the VAT added (also
+  // the "VAT n%" row above the Total). Still never a tax invoice: the store issues its own.
+  if (order.vatOnTop) {
+    const onTopRows = [
+      '<tr><td colspan="2"><strong>VAT summary</strong></td></tr>',
+      `<tr><td>${base < standard ? 'Standard-rated goods, after the store’s own discount (before VAT)' : 'Standard-rated goods (before VAT)'}</td><td class="num">${money(base)}</td></tr>`,
+      zero > 0 ? `<tr><td>Zero-rated goods (no VAT)</td><td class="num">${money(zero)}</td></tr>` : '',
+      exempt > 0 ? `<tr><td>Exempt goods (no VAT)</td><td class="num">${money(exempt)}</td></tr>` : '',
+      `<tr><td>VAT added (${rate}%)</td><td class="num">${money(order.vatAmount ?? 0)}</td></tr>`,
+    ].filter(Boolean).join('\n    ');
+    return `<table>
+    ${onTopRows}
+  </table>
+  <div class="foot">
+    VAT charged by ${name} · VAT reg. no. ${esc(order.vatSellerNumber)}. The prices of the goods exclude VAT; VAT at ${rate}% is added on the store’s price for its standard-rated goods, less any discount the store itself gave; delivery pay, tips and Swift’s fees carry no VAT. ${name} issues its own tax invoice for these goods.
+  </div>`;
+  }
   const rows = [
     '<tr><td colspan="2"><strong>VAT summary</strong></td></tr>',
     `<tr><td>${base < standard ? 'Standard-rated goods, after the store’s own discount (incl. VAT)' : 'Standard-rated goods (incl. VAT)'}</td><td class="num">${money(base)}</td></tr>`,
@@ -196,6 +216,11 @@ export function renderReceiptHtml(order: ReceiptOrder): string {
   const distance = billableDistance(order);
   const waiting = order.fareBreakdown ?? null;
   const vat = vatSummary(order, money);
+  // [STORE-VAT-EXCLUSIVE · owner 13 Nov 2026] "VAT 14%" then "Total", like the store's own bill: only on an order whose
+  // store priced before VAT. Every other receipt renders exactly as before (an empty string here).
+  const vatLine = order.vatOnTop && order.vatRateBps != null
+    ? `<tr class="totals"><td>VAT ${ratePercentLabel(order.vatRateBps)}%</td><td class="num">${money(order.taxAmount ?? order.vatAmount ?? 0)}</td></tr>`
+    : '';
 
   return `<!doctype html>
 <html lang="en">
@@ -240,7 +265,7 @@ export function renderReceiptHtml(order: ReceiptOrder): string {
     ${distance ? `<tr class="totals"><td>Distance (${esc(distance.sourceLabel)})</td><td class="num">${esc(distance.label)}</td></tr>` : ''}
     ${discount > 0 ? `<tr class="totals"><td>Discount</td><td class="num">−${money(discount)}</td></tr>` : ''}
     ${tip > 0 ? `<tr class="totals"><td>Rider tip</td><td class="num">${money(tip)}</td></tr>` : ''}
-    ${waiting && waiting.waitingCharge > 0 ? `<tr class="totals"><td>Waiting (${waiting.waitingMinutes} min)</td><td class="num">${money(waiting.waitingCharge)}</td></tr>` : ''}
+    ${waiting && waiting.waitingCharge > 0 ? `<tr class="totals"><td>Waiting (${waiting.waitingMinutes} min)</td><td class="num">${money(waiting.waitingCharge)}</td></tr>` : ''}${vatLine ? `\n    ${vatLine}` : ''}
     <tr class="grand"><td>Total</td><td class="num">${money(order.totalAmount)}</td></tr>
   </table>
 ${vat ? `  ${vat}\n` : ''}  <div class="foot">

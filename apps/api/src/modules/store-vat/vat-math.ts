@@ -15,6 +15,11 @@
  * and never carry a store's VAT.
  *
  * Exact integer arithmetic (cents as BigInt): no float ever decides a rounding.
+ *
+ * [STORE-VAT-EXCLUSIVE · owner 13 Nov 2026] Basis ON_TOP (a store pricing BEFORE VAT): the same base (standard-rated
+ * goods less the store's own discount, removed lines out), and VAT = half-up to whole GYD of base x 14/100, added to the
+ * order as its own "VAT 14%" line (Order.taxAmount). One amount per order, the same rounding rule, the same discount
+ * rule; only the fraction differs (the base excludes VAT instead of including it).
  */
 import { allocateAcrossLines } from '../../utils/order-total';
 import { STORE_VAT_RATE_BPS } from './vat-rate';
@@ -36,7 +41,7 @@ export interface OrderVatResult {
   standardGoods: number;
   zeroRatedGoods: number;
   exemptGoods: number;
-  /** The standard-rated goods the VAT was taken from: after the goods discount. */
+  /** The standard-rated goods the VAT was taken from: after the goods discount. INCLUDED: VAT-inclusive; ON_TOP: before VAT. */
   vatBase: number;
   /** The rate the amount was computed at (1400 = 14%). */
   rateBps: number;
@@ -59,6 +64,21 @@ function vatInsideCents(baseCents: bigint, rateBps: number): bigint {
   return halfUp(baseCents * BigInt(rateBps), BigInt(10_000 + rateBps) * 100n);
 }
 
+/** [STORE-VAT-EXCLUSIVE] VAT on `baseCents` (an amount BEFORE VAT, in cents) at `rateBps`, half-up to whole GYD:
+ *  base x rateBps/10000 (x 14/100 at 14%). */
+function vatOnTopCents(baseCents: bigint, rateBps: number): bigint {
+  if (!Number.isInteger(rateBps) || rateBps < 0) throw new RangeError('VAT: the rate is not a whole number of basis points');
+  return halfUp(baseCents * BigInt(rateBps), 10_000n * 100n);
+}
+
+/** [STORE-VAT-EXCLUSIVE] The VAT added to a standard-rated amount priced BEFORE VAT, half-up to whole GYD. */
+export function vatOnTopWhole(netStandard: number, rateBps: number = STORE_VAT_RATE_BPS): number {
+  return Number(vatOnTopCents(cents(Math.max(0, netStandard)), rateBps));
+}
+
+/** How an order's prices relate to its VAT: INCLUDED (the VAT is inside the goods) or ON_TOP (added as its own line). */
+export type VatBasis = 'INCLUDED' | 'ON_TOP';
+
 /** The VAT inside a VAT-inclusive standard-rated amount, half-up to whole GYD (amount x 14/114 at 14%). */
 export function vatInsideWhole(grossStandard: number, rateBps: number = STORE_VAT_RATE_BPS): number {
   return Number(vatInsideCents(cents(Math.max(0, grossStandard)), rateBps));
@@ -74,6 +94,8 @@ export function orderVat(input: {
   lineGoodsDiscounts?: ReadonlyMap<string, number>;
   /** The rate the order froze; today's rate when absent (a new order). */
   rateBps?: number;
+  /** [STORE-VAT-EXCLUSIVE] INCLUDED (default: every order before prices before VAT) or ON_TOP. */
+  basis?: VatBasis;
 }): OrderVatResult {
   const rateBps = input.rateBps ?? STORE_VAT_RATE_BPS;
   const shares = input.lineGoodsDiscounts
@@ -88,7 +110,7 @@ export function orderVat(input: {
     const charged = amount - cents(Math.max(0, shares.get(line.id) ?? 0));
     if (charged > 0n) base += charged;
   }
-  const vat = vatInsideCents(base, rateBps);
+  const vat = input.basis === 'ON_TOP' ? vatOnTopCents(base, rateBps) : vatInsideCents(base, rateBps);
   return {
     vatAmount: Number(vat),
     standardGoods: Number(standard) / 100,

@@ -100,7 +100,8 @@ import { notSelfDeliveredFilter } from '../fulfillment/fulfillment-mode';
 import { syncCaseOnOrderTransition } from '../custody/custody-case';
 import { assertOrderableNow, assertOrderMayProceed, heldAtSeam, hiddenAmong, refusalAudience, storeMayReject, unhideRestocked } from '../compliance/prohibited-gate';
 import { ATTESTABLE_PAYMENT_STATUSES } from '../vendor/mmg-attestation';
-import { lineVatClass, orderVatAmountFields, orderVatCreateFields, recomputeOrderVat, vatTermsForCheckout } from '../store-vat/order-vat';
+import { inVatSplitOrder, lineVatClass, orderVatAmountFields, orderVatCreateFields, recomputeOrderVat, vatOnTopPlan, vatTermsByVendor, vatTermsForCheckout } from '../store-vat/order-vat';
+import { vatLineAppUpdateRequired } from '../store-vat/vat-line-capability';
 import { isExpiredUnpaidMmgAcceptance, isUnpaidMmgAcceptance, mmgAcceptedClaimedPushCopy, mmgAcceptedPayBy, mmgAcceptedPushCopy, mmgOrderNoun } from './mmg-accept-expiry';
 import { orderStageRefusal, STEP_GONE } from './order-status-words';
 import { personTypedReason } from './typed-reason';
@@ -136,6 +137,11 @@ interface CheckoutInput {
    *  PRICE_CHANGED (seen → now) so the customer confirms the new price. An
    *  older app sends neither and is not compared (today's behaviour). */
   expectedPrices?: { total?: number; lines?: Array<{ lineId: string; unitPrice: number }> };
+  /** [STORE-VAT-EXCLUSIVE · REVIEW-A F3] false = the app did not declare it shows a store's "VAT 14%" line
+   *  (VAT_LINE_V1): a basket with a store pricing before VAT is refused (409 APP_UPDATE_REQUIRED), judged on the terms
+   *  the basket is priced with (the commit re-checks those under the store's lock). The route always says; a caller that
+   *  is not an app (a job, a test seam) leaves it out. */
+  showsVatLine?: boolean;
   /** [FULL-LAUNCH] The limit on placing orders (integrity/velocity reserveOrderPlacement), given how many orders this
    *  checkout would place. Runs when every check before the transaction has passed; the route gives the reservation
    *  back on a confirmed rollback. The route passes it; jobs and scripts have none. */
@@ -636,6 +642,8 @@ const RIDER_ASSIGNMENT_SNAPSHOT_SELECT = {
   // matches what picking/refunds may have changed before the lock was taken.
   paymentMethod: true,
   subtotalBase: true,
+  // [STORE-VAT-EXCLUSIVE] The VAT a store pricing before VAT adds: the rider fronts it too (riderFloatForOrder).
+  taxAmount: true,
   // Dispatch cleanup must retire only the assignment generation that this
   // locked snapshot actually claimed. Returning the authority version keeps
   // the post-commit Redis cleanup from guessing against a later mode switch.
@@ -1101,10 +1109,19 @@ export class OrderService {
         options: ResolvedOption[]; tracksStock: boolean;
         /** [G2] Snapshot of Item.bulkUnits at checkout — see the create below. */
         bulkUnits: number | null;
+        /** [STORE-VAT-EXCLUSIVE] The item's VAT class as priced (a store adding VAT on top prices its lines with it). */
+        vatClass: string | null;
       }>;
     }> = [];
     /** [RIDER-SAFE 2] The honest rider wait (seconds) per DELIVERY store when riders are BUSY; the promise carries it. */
     const riderWaitByVendor = new Map<string, number>();
+    // [STORE-VAT-EXCLUSIVE · owner 13 Nov 2026] The VAT terms the basket is PRICED with (a store pricing before VAT adds
+    // its VAT as its own line). Read again inside the transaction under the store's lock: a change in between refuses.
+    const vatTermsAtPricing = await vatTermsByVendor(this.prisma, groups.map((g) => g.vendorId));
+    if (input.showsVatLine === false) {
+      const onTop = groups.map((g) => g.vendorId).filter((id) => vatTermsAtPricing.get(id)?.onTop);
+      if (onTop.length > 0) throw vatLineAppUpdateRequired(onTop);
+    }
 
     for (const { vendorId, lines: items } of groups) {
       const vendor = items[0]!.item.vendor;
@@ -1273,7 +1290,9 @@ export class OrderService {
           // Mirror dispatch's cash-float gate: a CASH delivery needs a rider who
           // can front this order's vendor-cash. Probing float-blind would count
           // riders dispatch then skips → checkout says "yes", dispatch exhausts.
-          const cashFloat = input.paymentMethod === 'CASH' ? riderCashForLines(items) : 0;
+          // [STORE-VAT-EXCLUSIVE] A store pricing before VAT: the rider fronts its VAT too.
+          const vatTermsHere = vatTermsAtPricing.get(vendorId);
+          const cashFloat = input.paymentMethod === 'CASH' ? riderCashForLines(items, vatTermsHere?.onTop ? { rateBps: vatTermsHere.rateBps } : null) : 0;
           const storePoint = { lat: vendor.latitude, lng: vendor.longitude };
           const tooBig = () => new AppError(
             409,
@@ -1436,6 +1455,8 @@ export class OrderService {
           options: line.options,
           tracksStock: ci.item.stockQuantity !== null,
           bulkUnits: ci.item.bulkUnits ?? null,
+          // [STORE-VAT-EXCLUSIVE] The class the line is priced with when its store adds VAT on top.
+          vatClass: ci.item.vatClass,
         };
       });
 
@@ -1483,8 +1504,13 @@ export class OrderService {
     //     call-to-confirm flag and customer.totalSpent;
     //   - each plan's discount share, tip and total (orderTotal) are the
     //     numbers the orders below are written with.
+    //   - [STORE-VAT-EXCLUSIVE] a store pricing BEFORE VAT adds its VAT as its own line on its plan (vatOnTop), from the
+    //     lines in the order they are written below: the quote's "VAT 14%" line is this order's taxAmount.
     const priced = priceBasket({
-      plans: plans.map((p) => ({ vendorId: p.vendor.id, fulfillment: p.fulfillment, subtotal: p.subtotal, deliveryFee: p.deliveryFee, standardDeliveryFee: p.standardDeliveryFee })),
+      plans: plans.map((p) => ({
+        vendorId: p.vendor.id, fulfillment: p.fulfillment, subtotal: p.subtotal, deliveryFee: p.deliveryFee, standardDeliveryFee: p.standardDeliveryFee,
+        vatOnTop: vatOnTopPlan(vatTermsAtPricing.get(p.vendor.id), p.orderItems.map((oi) => ({ amount: oi.totalBase, vatClass: oi.vatClass }))),
+      })),
       promo: promoTerms ? { ...promoTerms, vendorId: promoVendorId } : null,
       tip,
     });
@@ -1884,6 +1910,13 @@ export class OrderService {
         // [STORE-VAT · owner O-5] The seller's approved VAT terms, read inside this transaction (null = no VAT: not an
         // approved VAT store, or STORE_VAT off). VAT is INSIDE the goods price: no amount below changes.
         const vatTerms = await vatTermsForCheckout(tx, plan.vendor.id);
+        // [STORE-VAT-EXCLUSIVE] Read under the store's lock: the VAT a store pricing before VAT adds must be the one the
+        // basket was priced with (the total the customer saw). A change in between (approved, withdrawn, a new basis or
+        // rate) refuses this checkout; the customer reviews the new total.
+        const pricedVatTerms = vatTermsAtPricing.get(plan.vendor.id) ?? null;
+        if ((vatTerms?.onTop ?? false) !== (pricedVatTerms?.onTop ?? false) || (vatTerms?.onTop && vatTerms.rateBps !== pricedVatTerms?.rateBps)) {
+          throw new AppError(409, 'CART_CHANGED', `VAT at ${plan.vendor.name} just changed — review your cart and place the order again.`);
+        }
         const vatClassOf = vatTerms
           ? new Map((await tx.item.findMany({ where: { id: { in: plan.orderItems.map((oi) => oi.itemId) } }, select: { id: true, vatClass: true } }))
             .map((it) => [it.id, it.vatClass] as const))
@@ -1936,6 +1969,8 @@ export class OrderService {
                 : null,
             tipAmount: planTip,
             discount: planDiscount,
+            // [STORE-VAT-EXCLUSIVE] The "VAT 14%" line of a store pricing before VAT (0 for every other order), inside totalAmount.
+            taxAmount: pricedPlan.tax,
             totalAmount,
             paymentMethod: input.paymentMethod as 'CASH' | 'MOBILE_MONEY' | 'BANK_TRANSFER' | 'CARD' | 'WALLET',
             // The payment instruction is part of the order contract. Snapshot
@@ -2126,7 +2161,9 @@ export class OrderService {
               // [M-33] The goods discount owned line by line from this moment,
               // summing exactly to goodsDiscount — a return refunds each line's
               // own share, never a share inferred from the aggregate.
-              lineAllocations: allocateAcrossLines(parts?.goods ?? 0, order.items.map((it) => ({ id: it.id, amount: Number(it.totalCustomer) })))
+              // [REVIEW-A F4 · REVIEW-B S4-2] On an order whose VAT is added on top, split in the ONE order the basket's VAT
+              // was priced in (inVatSplitOrder): the VAT recomputed from these shares is the VAT the customer was shown.
+              lineAllocations: allocateAcrossLines(parts?.goods ?? 0, (vatTerms?.onTop ? inVatSplitOrder(order.items, (it) => it.vatClass) : order.items).map((it) => ({ id: it.id, amount: Number(it.totalCustomer) })))
                 .map((a) => ({ orderItemId: a.id, goods: a.share })),
               refundPolicy: REFUND_POLICY,
             },
@@ -2135,6 +2172,12 @@ export class OrderService {
         // [STORE-VAT] The VAT inside this order's goods, from its lines and their goods-discount shares just written.
         if (vatTerms) {
           const vat = await recomputeOrderVat(tx, order.id);
+          // [STORE-VAT-EXCLUSIVE] The VAT the placed order carries (its lines as written, the store's own discount by the
+          // shares just stored) must be the VAT the customer was shown: never a different total. A line whose VAT class
+          // changed after pricing lands here; the whole checkout rolls back and the customer reviews the new total.
+          if (vatTerms.onTop && (vat?.vatAmount ?? 0) !== pricedPlan.tax) {
+            throw new AppError(409, 'CART_CHANGED', `VAT at ${plan.vendor.name} just changed — review your cart and place the order again.`);
+          }
           if (vat) Object.assign(order, orderVatAmountFields(vat));
         }
         created.push(order);

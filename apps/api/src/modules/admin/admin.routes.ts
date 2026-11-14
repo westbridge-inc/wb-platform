@@ -7666,7 +7666,7 @@ export async function adminRoutes(app: FastifyInstance) {
     nameMatchesStore: z.literal(true),
     // [REVIEW-G #2255 S4-1] The price choice the queue row showed (null: none). Optional here so an out-of-date page
     // gets the decision's "reload" refusal (409 VAT_MODE_MOVED), not a bare validation error.
-    mode: z.enum(['PRICES_INCLUDE_VAT', 'ADD_VAT_AT_CHECKOUT']).nullable().optional(),
+    mode: z.enum(['PRICES_INCLUDE_VAT', 'ADD_VAT_AT_CHECKOUT', 'PRICES_EXCLUDE_VAT']).nullable().optional(),
     reason: z.string().max(500).optional(),
   });
   const storeVatReasonSchema = z.object({ reason: z.string().trim().min(3).max(500) });
@@ -7674,7 +7674,7 @@ export async function adminRoutes(app: FastifyInstance) {
   // saw (`mode`), or refuses it with a reason the store reads.
   const storeVatModeSchema = z.object({
     approve: z.boolean(),
-    mode: z.enum(['PRICES_INCLUDE_VAT', 'ADD_VAT_AT_CHECKOUT']),
+    mode: z.enum(['PRICES_INCLUDE_VAT', 'ADD_VAT_AT_CHECKOUT', 'PRICES_EXCLUDE_VAT']),
     reason: z.string().trim().min(3).max(500).optional(),
   }).refine((b) => b.approve || b.reason !== undefined, { message: 'Say why, in words the store will read.', path: ['reason'] });
 

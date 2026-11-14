@@ -36,6 +36,9 @@ export interface ItemChoicesProps {
   selection: SheetSelection;
   onChoose: (groupId: string, optionId: string) => void;
   onPlace: (groupId: string, optionId: string, placement: Placement) => void;
+  /** [STORE-VAT-EXCLUSIVE · REVIEW-B S3-1] A standard-rated item of a store pricing before VAT: every choice's price
+   *  says "+ VAT" too (its VAT is added at checkout, on the line, choices included). */
+  vatAdded?: boolean;
 }
 
 const PLACEMENTS: ReadonlyArray<{ key: Placement; label: string }> = [
@@ -45,27 +48,28 @@ const PLACEMENTS: ReadonlyArray<{ key: Placement; label: string }> = [
 ];
 
 /** What a choice's row says about money: a size its price, any other choice what it adds (nothing when free). */
-export function choicePriceWords(group: SheetGroup, option: SheetOption): string {
+export function choicePriceWords(group: SheetGroup, option: SheetOption, vatAdded = false): string {
   const price = Number(option.additionalPrice);
   if (!Number.isFinite(price)) return '';
-  if (group.setsPrice === true) return money(price);
-  return price > 0 ? `+${money(price)}` : '';
+  const vat = vatAdded ? ' + VAT' : '';
+  if (group.setsPrice === true) return `${money(price)}${vat}`;
+  return price > 0 ? `+${money(price)}${vat}` : '';
 }
 
 /** Under a chosen half-and-half topping: what the whole and a half cost (nothing when it is free). */
-export function halfPriceWords(group: SheetGroup, option: SheetOption): string | null {
+export function halfPriceWords(group: SheetGroup, option: SheetOption, vatAdded = false): string | null {
   const price = Number(option.additionalPrice);
   if (!Number.isFinite(price) || price <= 0) return null;
   const half = halfPrice(price, group.halfPricePercent ?? 100);
-  return `Whole +${money(price)} · half +${money(half)}`;
+  return `Whole +${money(price)} · half +${money(half)}${vatAdded ? ' (+ VAT)' : ''}`;
 }
 
-function optionLabel(group: SheetGroup, option: SheetOption): string {
-  const price = choicePriceWords(group, option);
+function optionLabel(group: SheetGroup, option: SheetOption, vatAdded = false): string {
+  const price = choicePriceWords(group, option, vatAdded);
   return price ? `${option.name} · ${price}` : option.name;
 }
 
-export function ItemChoices({ groups, selection, onChoose, onPlace }: ItemChoicesProps) {
+export function ItemChoices({ groups, selection, onChoose, onPlace, vatAdded = false }: ItemChoicesProps) {
   const drawn = new Set<string>();
 
   const drawGroup = (group: SheetGroup, nested: boolean): React.ReactElement => {
@@ -105,13 +109,13 @@ export function ItemChoices({ groups, selection, onChoose, onPlace }: ItemChoice
           const chosen = isChosen(selection, group.id, option.id);
           const placement = chosen && group.allowHalves === true ? placementOf(selection, group.id, option.id) : null;
           const followUp = chosen && !nested ? followUpFor(groups, group, option) : null;
-          const halfWords = placement ? halfPriceWords(group, option) : null;
+          const halfWords = placement ? halfPriceWords(group, option, vatAdded) : null;
           return (
             <View key={option.id}>
               <CheckRow
                 kind={singleChoice(group) ? 'radio' : 'checkbox'}
                 checked={chosen}
-                label={optionLabel(group, option)}
+                label={optionLabel(group, option, vatAdded)}
                 onToggle={() => onChoose(group.id, option.id)}
                 testID={`menu-option-${option.id}`}
               />

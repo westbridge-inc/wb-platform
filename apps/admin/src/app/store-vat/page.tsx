@@ -94,7 +94,7 @@ export default function StoreVatPage() {
 
   const approveChange = async (row: StoreVatPendingRow) => show(await dialog.run({
     title: `Approve ${row.name}’s price change?`,
-    body: <p>{vatModeChangeWords(row.modeRequested)} The store&apos;s VAT stays approved; only how its prices relate to VAT changes.</p>,
+    body: <p>{vatModeChangeWords(row.modeRequested, row.mode)} The store&apos;s VAT stays approved; only how its prices relate to VAT changes.</p>,
     confirmLabel: 'Approve the change',
     reason: { hint: 'Kept on the permanent record with your decision.' },
     submit: ({ reason }) => decideStoreVatMode(row.vendorId, { approve: true, mode: String(row.modeRequested) }, reason),
@@ -132,7 +132,7 @@ export default function StoreVatPage() {
               <div className="flex flex-wrap items-baseline gap-3">
                 <Link href={`/vendors/${row.vendorId}`} className="font-semibold underline">{row.name}</Link>
                 <span className="text-sm">VAT approved.</span>
-                <span className="text-sm">{vatModeChangeWords(row.modeRequested)}</span>
+                <span className="text-sm">{vatModeChangeWords(row.modeRequested, row.mode)}</span>
               </div>
               <div className="flex flex-wrap gap-2">
                 <button type="button" className="mc-btn mc-btn-primary" onClick={() => void approveChange(row)}>Approve the change</button>

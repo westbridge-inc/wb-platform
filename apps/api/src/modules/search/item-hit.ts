@@ -46,6 +46,10 @@ export type ItemHit = {
   vendorIsCurrentlyOpen: boolean;
   /** [MENU-OPTIONS · review S4] The item's size sets its price, so `basePrice` is its lowest size: cards read "From". */
   pricedFrom: boolean;
+  /** [STORE-VAT-EXCLUSIVE · REVIEW-B S3-1] A standard-rated item of a store pricing before VAT: the card says "+ VAT".
+   *  The mappers say false; every route that serves hits sets it LIVE (store-vat/vat-added-hint withVatAddedHint), as
+   *  `vendorIsCurrentlyOpen` is set live by the open-now pass: a store's basis is never read from the index copy. */
+  vatAddedAtCheckout: boolean;
 };
 
 /** [MENU-OPTIONS] The one read of "does a size set this item's price" for every card outside the store. */
@@ -116,6 +120,7 @@ export function toItemHit(row: ItemHitRow): ItemHit {
     // a missing store reads as closed: degraded data only makes a surface more conservative [L6]
     vendorIsCurrentlyOpen: row.vendor?.isCurrentlyOpen === true,
     pricedFrom: (row.optionGroups?.length ?? 0) > 0,
+    vatAddedAtCheckout: false, // set live by withVatAddedHint
   };
 }
 
@@ -234,5 +239,6 @@ export function itemHitFromSearchDoc(h: Record<string, unknown>): ItemHit {
     // [MENU-OPTIONS] A document indexed before this field existed reads as not sized; its next sync (every size
     // edit schedules one) brings "From" back.
     pricedFrom: h['pricedFrom'] === true,
+    vatAddedAtCheckout: false, // set live by withVatAddedHint, never from the index
   };
 }

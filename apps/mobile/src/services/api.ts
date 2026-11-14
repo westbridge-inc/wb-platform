@@ -23,7 +23,7 @@ import {
 } from './apiOrigin';
 import { explainDemoEnded, isReviewSessionClosed } from '../lib/reviewSessionClosed';
 import { CALL_BRIDGE_HEADER, CALL_BRIDGE_VERSION, type CallConfig, type CallTarget } from '../lib/callBridge';
-import { cartWriteCapabilities } from '../lib/menuOptionsCapability';
+import { cartWriteCapabilities, customerOrderCapabilities } from '../lib/menuOptionsCapability';
 
 // Build-time override (set per EAS build profile, e.g. preview→staging,
 // production→prod). Development follows the current Expo/Metro bundle host so
@@ -575,7 +575,8 @@ export const customerApi = {
     // only when the order is placed or an unsent cart intent changes. The server refuses
     // a concurrent twin and replays a finished one — so a double tap, a
     // timed-out response and a reopened app all resolve to ONE order.
-    api.post('/customer/checkout', data, capturedAuthConfig(session, {
+    // [STORE-VAT-EXCLUSIVE · REVIEW-A F3] This app shows a store's "VAT 14%" line (VAT_LINE_V1).
+    api.post('/customer/checkout', { ...data, capabilities: customerOrderCapabilities() }, capturedAuthConfig(session, {
       headers: { 'Idempotency-Key': idempotencyKey },
     })),
   /** [MOB-020] What became of a checkout attempt whose answer never arrived:
@@ -620,12 +621,13 @@ export const customerApi = {
     selectedOptions?: Record<string, unknown>;
     specialInstructions?: string;
   }, session?: AuthSessionSnapshot) =>
-    api.post('/customer/cart/items', { ...data, capabilities: cartWriteCapabilities() }, capturedAuthConfig(session)),
+    // [STORE-VAT-EXCLUSIVE] ...and a store's "VAT 14%" line (VAT_LINE_V1).
+    api.post('/customer/cart/items', { ...data, capabilities: customerOrderCapabilities() }, capturedAuthConfig(session)),
   updateCartItem: (
     id: string,
     data: { quantity: number; selectedOptions?: Record<string, unknown>; specialInstructions?: string },
     session?: AuthSessionSnapshot,
-  ) => api.put(`/customer/cart/items/${id}`, { ...data, capabilities: cartWriteCapabilities() }, capturedAuthConfig(session)),
+  ) => api.put(`/customer/cart/items/${id}`, { ...data, capabilities: customerOrderCapabilities() }, capturedAuthConfig(session)),
   removeCartItem: (id: string, session?: AuthSessionSnapshot) => api.delete(`/customer/cart/items/${id}`, capturedAuthConfig(session)),
   clearCart: (session?: AuthSessionSnapshot) => api.delete('/customer/cart', capturedAuthConfig(session)),
   setCartAddress: (addressId: string, session?: AuthSessionSnapshot) => api.put('/customer/cart/address', { addressId }, capturedAuthConfig(session)),
@@ -1474,10 +1476,10 @@ export const vendorApi = {
   subscription: (session?: AuthSessionSnapshot, storeId?: string | null) => api.get('/vendor/subscription', capturedVendorAuthConfig(session, storeId)),
   /** [STORE-VAT · owner O-5] The store's VAT (OWNER only): its answer, its certificate, and what a person decided. */
   vat: (session?: AuthSessionSnapshot, storeId?: string | null) => api.get('/vendor/vat', capturedVendorAuthConfig(session, storeId)),
-  updateVat: (data: { registered: boolean; vatRegistrationNumber?: string | null; mode?: 'PRICES_INCLUDE_VAT' | 'ADD_VAT_AT_CHECKOUT' }, session?: AuthSessionSnapshot, storeId?: string | null) =>
+  updateVat: (data: { registered: boolean; vatRegistrationNumber?: string | null; mode?: 'PRICES_INCLUDE_VAT' | 'ADD_VAT_AT_CHECKOUT' | 'PRICES_EXCLUDE_VAT' }, session?: AuthSessionSnapshot, storeId?: string | null) =>
     api.put('/vendor/vat', data, capturedVendorAuthConfig(session, storeId)),
   /** The certificate file was uploaded first (/verification/upload); this files it for a PERSON's check. */
-  sendVatCertificate: (data: { fileUrl: string; consent: true; privacyNoticeVersion: string; consentTick: 'document_v1'; vatRegistrationNumber?: string; mode?: 'PRICES_INCLUDE_VAT' | 'ADD_VAT_AT_CHECKOUT' }, session?: AuthSessionSnapshot, storeId?: string | null) =>
+  sendVatCertificate: (data: { fileUrl: string; consent: true; privacyNoticeVersion: string; consentTick: 'document_v1'; vatRegistrationNumber?: string; mode?: 'PRICES_INCLUDE_VAT' | 'ADD_VAT_AT_CHECKOUT' | 'PRICES_EXCLUDE_VAT' }, session?: AuthSessionSnapshot, storeId?: string | null) =>
     api.post('/vendor/vat/certificate', data, capturedVendorAuthConfig(session, storeId)),
   /** [E12] Stop (NONE) or resume (CASH / MOBILE_MONEY) the weekly fee. */
   setBillingMethod: (method: 'CASH' | 'MOBILE_MONEY' | 'NONE', mmgPayerMsisdn?: string, session?: AuthSessionSnapshot, storeId?: string | null) =>

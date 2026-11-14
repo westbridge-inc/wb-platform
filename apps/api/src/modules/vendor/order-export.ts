@@ -68,6 +68,10 @@ export const ORDER_EXPORT_COLUMNS = [
   // [MENU-OPTIONS · owner 11 Nov 2026] What was ordered, with each line's choices (last, so every earlier column keeps
   // its place in a store's existing spreadsheet).
   'items',
+  // [STORE-VAT-EXCLUSIVE · REVIEW-A F1 · REVIEW-B S4-4] How the order's VAT relates to its prices: "included" (inside the
+  // goods, also in vat_included), "added_at_checkout" (a store pricing before VAT: the VAT is in `tax` only and
+  // vat_included is blank, so nothing double-counts it), or blank (no VAT). Last, so every earlier column keeps its place.
+  'vat_basis',
 ] as const;
 
 export interface OrderExportPeriod { fromDay: string; toDay: string; from: Date; to: Date; days: number }
@@ -196,7 +200,7 @@ const exportSelect = {
   paymentMethod: true, paymentStatus: true, mmgAttestedRef: true, mmgAttestedAt: true, customerMmgClaim: true,
   mmgClaimMismatchAt: true, mmgClaimResolution: true, mmgClaimResolvedRevision: true, mmgClaimRevision: true,
   subtotalCustomer: true, deliveryFee: true, serviceFee: true, tipAmount: true, discount: true, totalAmount: true,
-  vatAmount: true, taxAmount: true, isExpress: true, currencyCode: true,
+  vatAmount: true, taxAmount: true, vatOnTop: true, vatRateBps: true, isExpress: true, currencyCode: true,
   refundOwedAmount: true, refundSettledAt: true, refundPaidAmount: true, doorCashCollectedAmount: true, doorCashShortfallAmount: true,
   promoCode: { select: { code: true } },
   promoRedemption: { select: { funder: true, goodsDiscount: true, deliveryDiscount: true, promoCode: { select: { code: true } } } },
@@ -324,7 +328,9 @@ async function pageLines(db: Db, page: ExportOrder[], stores: Map<string, { name
       ...(sale ? [fixed(money.vendorPromoDiscount), fixed(money.sponsorReceivable), fixed(money.feeFunding), yesNo(money.estimated)] : ['', '', '', '']),
       // [REVIEW-2485-B S3-2] A Swift code spread over a multi-store basket is on the redemption, not on every order.
       text(o.promoRedemption?.promoCode.code ?? o.promoCode?.code),
-      amount(o.deliveryFee), amount(o.serviceFee), amount(o.tipAmount), amount(o.taxAmount), amount(o.vatAmount), amount(o.totalAmount),
+      amount(o.deliveryFee), amount(o.serviceFee), amount(o.tipAmount), amount(o.taxAmount),
+      // [REVIEW-A F1] VAT added on top is not included in the goods: it is in `tax` only (vat_basis says which).
+      o.vatOnTop ? '' : amount(o.vatAmount), amount(o.totalAmount),
       sale ? fixed(money.goodsSales - money.vendorPromoDiscount) : '',
       // [REVIEW-2485-DELTA S3-1 · COORD ruling] On its own delivery the store collected the fee less the Swift-funded
       // delivery discount (no rail pays that gap to a store), plus the tip.
@@ -333,6 +339,7 @@ async function pageLines(db: Db, page: ExportOrder[], stores: Map<string, { name
       text(who ? who.by.toLowerCase() : ''), text(who ? cancellationWords(who.by, who.reason) : ''),
       anyRefund && owed.gt(0) ? amount(owed) : '', anyRefund && paid.gt(0) ? amount(paid) : '', text(notes.join('; ')),
       text((itemsByOrder.get(o.id) ?? []).join(' | ')),
+      o.vatRateBps == null ? '' : o.vatOnTop ? 'added_at_checkout' : 'included',
     ];
     return `${cells.join(',')}\r\n`;
   }).join('');

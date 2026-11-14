@@ -1656,6 +1656,10 @@ export async function vendorRoutes(app: FastifyInstance) {
       // send it as such only on this word. Not a secret (customers see the VAT-inclusive prices); the VAT record stays the owner's.
       vatAddsToPrices: storeAddsVatToPrices(vendor),
       vatRatePercent: STORE_VAT_RATE_PERCENT,
+      // [STORE-VAT-EXCLUSIVE · owner 13 Nov 2026] The store prices BEFORE VAT (it chose so, waiting for or holding a person's
+      // approval): every editor labels a price "before VAT", and customers get a "VAT 14%" line at checkout once approved.
+      // The price itself is stored as typed; nothing is added into it.
+      vatPricesBeforeVat: vendor.vatMode === 'PRICES_EXCLUDE_VAT' && (vendor.vatStatus === 'PENDING' || vendor.vatStatus === 'APPROVED'),
       // [STORE-HOURS · owner 6 Nov 2026] Additive: the open switch is on but the store's own weekly hours close it now
       // (checkout refuses), and when they open next ("tomorrow at 8:00 am"). The switch itself is never changed.
       ...ownStoreHoursView(vendor),
@@ -1789,7 +1793,7 @@ export async function vendorRoutes(app: FastifyInstance) {
     const body = z.object({
       registered: z.boolean(),
       vatRegistrationNumber: z.string().trim().max(40).nullable().optional(),
-      mode: z.enum(['PRICES_INCLUDE_VAT', 'ADD_VAT_AT_CHECKOUT']).optional(),
+      mode: z.enum(['PRICES_INCLUDE_VAT', 'ADD_VAT_AT_CHECKOUT', 'PRICES_EXCLUDE_VAT']).optional(),
     }).strict().parse(request.body);
     const { updateStoreVatSettings } = await import('../store-vat/store-vat-decisions');
     const data = await updateStoreVatSettings(app.prisma, vendorId, body);
@@ -1812,7 +1816,7 @@ export async function vendorRoutes(app: FastifyInstance) {
       privacyNoticeVersion: z.string().min(1).max(20),
       consentTick: z.enum(UPLOAD_CONSENT_TICKS).optional(),
       vatRegistrationNumber: z.string().trim().max(40).optional(),
-      mode: z.enum(['PRICES_INCLUDE_VAT', 'ADD_VAT_AT_CHECKOUT']).optional(),
+      mode: z.enum(['PRICES_INCLUDE_VAT', 'ADD_VAT_AT_CHECKOUT', 'PRICES_EXCLUDE_VAT']).optional(),
     }).strict().parse(request.body);
     const { storeVatEnabled, VAT_CERTIFICATE_DOC_TYPE } = await import('../store-vat/store-vat');
     const { linkVatCertificate, vatClaimForCertificate, STORE_VAT_OFF_CODE } = await import('../store-vat/store-vat-decisions');

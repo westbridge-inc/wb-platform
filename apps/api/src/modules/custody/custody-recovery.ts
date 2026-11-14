@@ -124,6 +124,8 @@ async function lockOrderRow(tx: Prisma.TransactionClient, orderId: string): Prom
 const ORDER_SELECT = {
   id: true, tenantId: true, orderNumber: true, orderType: true, status: true, riderId: true,
   customerId: true, vendorId: true, paymentMethod: true, subtotalBase: true,
+  // [STORE-VAT-EXCLUSIVE] The rider fronts a store's added VAT with the goods (riderFloatForOrder).
+  taxAmount: true,
   courierPackageSize: true,
 } satisfies Prisma.OrderSelect;
 
@@ -157,7 +159,7 @@ async function vendorOwnerUserId(prisma: PrismaClient, vendorId: string | null):
 export async function publishCaseChange(
   deps: CustodyDeps,
   kase: CustodyRecoveryCase,
-  order: Pick<CaseOrder, 'id' | 'orderType' | 'customerId' | 'vendorId' | 'status' | 'paymentMethod' | 'subtotalBase'>,
+  order: Pick<CaseOrder, 'id' | 'orderType' | 'customerId' | 'vendorId' | 'status' | 'paymentMethod' | 'subtotalBase' | 'taxAmount'>,
   opts: { notifyCustomer?: boolean; notifyVendor?: boolean } = {},
 ): Promise<void> {
   try {
@@ -545,7 +547,7 @@ export async function caseDetail(prisma: PrismaClient, caseId: string) {
     where: { id: caseId },
     // The handoff code is the holder's alone; operations never reads it.
     omit: { transferCode: true },
-    include: { order: { select: { id: true, orderNumber: true, orderType: true, status: true, paymentMethod: true, subtotalBase: true, riderId: true, vendor: { select: { name: true } } } } },
+    include: { order: { select: { id: true, orderNumber: true, orderType: true, status: true, paymentMethod: true, subtotalBase: true, taxAmount: true, riderId: true, vendor: { select: { name: true } } } } },
   });
   if (!kase) throw new NotFoundError('RecoveryCase', caseId);
   const riderIds = [kase.holderRiderId, kase.relayRiderId].filter((x): x is string => !!x);

@@ -44,6 +44,7 @@ import { MmgRefundOwedCard } from '../MmgRefundOwedCard';
 import { parseMmgRefundView } from '../../orders/mmgRefund';
 import { NOT_COLLECTED_WORDS, notCollectedGoesToSupport, notCollectedOpen } from '../notCollected';
 import { NotCollectedConfirm } from '../NotCollectedConfirm';
+import { orderVatRow } from '../../../lib/storeVat';
 
 /** [MOB-050] The customer's collection code, as the server mints it. */
 export const PICKUP_CODE_LENGTH = 6;
@@ -673,6 +674,8 @@ function VendorOrderDetailBody({ navigation, route }: any) {
           {Number(order.deliveryFee) > 0 ? <InfoRow label={feeYours ? 'Delivery fee (yours)' : "Delivery fee (rider's)"} value={money(order.deliveryFee)} /> : null}
           {Number(order.tipAmount) > 0 ? <InfoRow label={feeYours ? 'Tip (yours)' : "Tip (rider's)"} value={money(order.tipAmount)} /> : null}
           {Number(order.discount) > 0 ? <InfoRow label="Promo discount" value={`-${money(order.discount)}`} /> : null}
+          {/* [STORE-VAT-EXCLUSIVE · owner 13 Nov 2026] A store pricing before VAT: the VAT added at checkout (the store's). */}
+          {orderVatRow(order) ? <InfoRow label={`${orderVatRow(order)!.label} (yours, for the GRA)`} value={money(orderVatRow(order)!.amount)} /> : null}
           <InfoRow label="Customer pays" value={money(order.totalAmount)} />
           {/* [STORE-MONEY · owner 11 Nov 2026] The card ends on the STORE's money — the food after its own discount —
               never the customer's total with the rider's fee and tip; the server's lines say whose the rest is. */}
