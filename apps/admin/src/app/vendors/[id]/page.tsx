@@ -21,6 +21,7 @@ import { billDateLabel } from '@/lib/bill-date';
 import { chargedWeeklyFee } from '@/lib/weekly-fee';
 import { gyDate } from '@/lib/dates';
 import { AssistedSetupPanel } from './assisted-setup';
+import { KitchenOverflowPanel } from './kitchen-overflow';
 
 // ---------------------------------------------------------------------------
 // [MISSION CONTROL · PR-1 pilot] One store, the whole story — and every action
@@ -588,6 +589,8 @@ export default function VendorDetailPage({ params }: { params: Promise<{ id: str
           )}
           {/* [ASSISTED SETUP · owner 12 Nov 2026] Papers, menu and photos added for the store, with its OK. */}
           <AssistedSetupPanel vendorId={v.id} />
+          {/* [DT-OVERFLOW · owner 14 Nov 2026] A Dragontail branch's delivery overflow (nothing while the switch is off). */}
+          <KitchenOverflowPanel vendorId={v.id} />
 
           <section aria-labelledby="recent-orders" className="space-y-2">
             <h2 id="recent-orders" className="mc-label">Recent orders</h2>

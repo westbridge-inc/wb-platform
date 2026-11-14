@@ -2567,6 +2567,31 @@ export async function adminRoutes(app: FastifyInstance) {
     const { setKitchenItemNumbers } = await import('../kitchen/kitchen-admin');
     return { success: true, data: await setKitchenItemNumbers(app.prisma, (request.params as { id: string }).id, request.body) };
   });
+  // [DT-OVERFLOW · owner 14 Nov 2026] The branch's delivery overflow (the store's owner or manager sets the same), and
+  // where its recent deliveries went and why. Refused while the switch is off.
+  app.get('/vendors/:id/kitchen-integration/overflow', { preHandler: [adminGuard] }, async (request) => {
+    const { getKitchenOverflow } = await import('../kitchen/kitchen-admin');
+    return { success: true, data: await getKitchenOverflow(app.prisma, (request.params as { id: string }).id) };
+  });
+  app.put('/vendors/:id/kitchen-integration/overflow', { preHandler: [adminGuard] }, async (request) => {
+    const { putKitchenOverflow } = await import('../kitchen/kitchen-admin');
+    // [round 2 · review A S4-1] Who moved this branch's cash deliveries between two dispatch systems: the audit row, in
+    // the same transaction, carries the mode and the number of busy windows before and after (no person data).
+    return { success: true, data: await putKitchenOverflow(app.prisma, (request.params as { id: string }).id, request.body,
+      (tx, entityId, facts) => auditWithin(tx, request as unknown as AuditRequestLike, app.prefix, { entityId, extra: facts })) };
+  });
+  // [round 3 · review B S4-8] Operations confirmed with the store that Dragontail does not have this order: the
+  // "maybe in Dragontail" hold on "Get a Swift rider" is cleared. Audited in the same transaction.
+  app.post('/vendors/:id/kitchen-integration/orders/:orderId/not-in-kitchen', { preHandler: [adminGuard] }, async (request) => {
+    const { clearMaybeInKitchen } = await import('../kitchen/kitchen-admin');
+    const { id, orderId } = request.params as { id: string; orderId: string };
+    return { success: true, data: await clearMaybeInKitchen(app.prisma, id, orderId,
+      (tx, entityId, facts) => auditWithin(tx, request as unknown as AuditRequestLike, app.prefix, { entityId, extra: facts })) };
+  });
+  app.get('/vendors/:id/kitchen-integration/routes', { preHandler: [adminGuard] }, async (request) => {
+    const { listKitchenRoutesFor } = await import('../kitchen/kitchen-admin');
+    return { success: true, data: await listKitchenRoutesFor(app.prisma, (request.params as { id: string }).id, request.query as { limit?: unknown }) };
+  });
 
   app.put('/vendors/:id/seller-name', { preHandler: [adminGuard] }, async (request) => {
     const { id } = request.params as { id: string };

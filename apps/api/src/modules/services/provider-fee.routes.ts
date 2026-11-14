@@ -71,9 +71,10 @@ export async function providerFeeRoutes(app: FastifyInstance): Promise<void> {
     if (!sub) return { success: true, data: null, standing, coveredBy, feeTerms };
     const { sanDisplay } = await import('../billing/san.service');
     const { payInfo } = await import('../billing/agent-cash.service');
-    const { feeStatusFor } = await import('../billing/fee-status');
+    const { feeStatusFor, payOpenOf } = await import('../billing/fee-status');
     const fee = await payInfo(app.prisma, sub);
     const payments = await app.prisma.subscriptionPayment.findMany({ where: { subscriptionId: sub.id }, orderBy: { createdAt: 'desc' }, take: 20 });
+    const pay = withCardPayAction(await mmgCheckout.feePayload(sub, request.headers, now), await cardRail.subscriptionFields(sub, request));
     return {
       success: true,
       data: {
@@ -81,8 +82,8 @@ export async function providerFeeRoutes(app: FastifyInstance): Promise<void> {
         payments,
         ...(await sanDisplay(app.prisma, sub)),
         ...fee,
-        feeStatus: await feeStatusFor(app.prisma, sub, fee, now),
-        ...withCardPayAction(await mmgCheckout.feePayload(sub, request.headers, now), await cardRail.subscriptionFields(sub, request)),
+        feeStatus: await feeStatusFor(app.prisma, sub, fee, now, { payOpen: payOpenOf(pay) }),
+        ...pay,
         feeReceipts: await (await import('../billing/fee-receipt')).feeReceiptsFor(app.prisma, sub.id),
         // The one predicate (pro-fee.ts): listed and taking new work exactly when this is true.
         isActive: standing.operable && sub.currentPeriodEnd > now,

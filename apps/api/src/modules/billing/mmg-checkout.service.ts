@@ -25,14 +25,14 @@ import { isDuplicateOn } from '../money/evidence';
 import { notifyAdmins, type NotificationService } from '../notification/notification.service';
 import type { BillingService } from './billing.service';
 import { payInfo } from './agent-cash.service';
-import { assertPayAheadRoom, PAY_AHEAD_MAX_WEEKS } from './pay-ahead';
+import { assertPayAheadRoom, inFreeTrial, PAY_AHEAD_MAX_WEEKS } from './pay-ahead';
 import { openCheckoutUrl, sealCheckoutUrl } from './checkout-url-seal';
 import { checkoutAmountForWeeks, isCheckoutWeeks, mmgCheckoutLive, type ClientPlatform } from './fee-pay-actions';
 import { claimProviderPaymentInTx, ProviderIdentityError, type ProviderIdentityCode } from './provider-identity';
 import { MMG_HISTORY_CLOCK_TOLERANCE_MS, mmgHistoryQueryFor, mmgHistoryTruncated } from '../../providers/mmg/mmg-history';
 import { liveServicesStoreFeeWhere, PAYER_INCLUDE, payerAudienceOf, payerUserIdOf } from '../subscription/subscription-owner';
 export { MMG_HISTORY_ROWS, MMG_HISTORY_MARGIN_MS, mmgStampOf } from '../../providers/mmg/mmg-history';
-import { instantOfGuyanaWallClock } from '../../utils/guyana-day';
+import { formatGuyanaTime, instantOfGuyanaWallClock } from '../../utils/guyana-day';
 import { ensureProviderIdentityBackfill, providerIdentityBackfillDone } from './provider-identity-backfill';
 import { partnerReceiptIds } from './mmg-checkout-receipt';
 import { openReply, type OpenedReply } from './mmg-checkout-reply';
@@ -2059,7 +2059,7 @@ export class MmgCheckoutService {
       const copy = coveredPro
         ? { title: 'MMG payment kept as credit', body: `${amount} received with MMG. Your Services store\u2019s weekly fee covers your provider profile now, so this is kept as credit on your own provider weekly fee, never lost.` }
         : status === 'CONFIRMED'
-        ? { title: 'Weekly fee paid', body: `${amount} received with MMG. Thank you.` }
+        ? { title: 'Weekly fee paid', body: `${amount} received with MMG.${await this.trialWeekLine(intent.subscriptionId)} Thank you.` }
         : status === 'NOT_PAID'
           ? { title: 'MMG payment not completed', body: `MMG did not complete your ${amount} weekly-fee payment.` }
           : { title: 'We are checking your MMG payment', body: `We are checking your ${amount} MMG payment by hand. Please do not pay again. Support will contact you.` };
@@ -2074,6 +2074,16 @@ export class MmgCheckoutService {
     } catch (err) {
       log().warn({ err, checkoutId: intent.id, status }, '[MMG checkout] the partner notice failed; the app still polls the truth');
     }
+  }
+
+  /** [TRIAL PAY-AHEAD · REVIEW-B #2513 S4-3] A payment made during the free trial pays the first week after it: say
+   *  which, so "Weekly fee paid" is never read as the trial having ended. Empty for anyone not in a trial. */
+  private async trialWeekLine(subscriptionId: string): Promise<string> {
+    const sub = await this.prisma.subscription.findUnique({ where: { id: subscriptionId },
+      select: { status: true, isTrialActive: true, trialEndDate: true, nextBillingDate: true } });
+    if (!sub?.trialEndDate || !inFreeTrial(sub, new Date()) || sub.nextBillingDate.getTime() !== sub.trialEndDate.getTime()) return '';
+    const day = (at: Date) => formatGuyanaTime(at, { day: 'numeric', month: 'short', year: 'numeric' });
+    return ` It pays your first week after your free trial, ${day(sub.trialEndDate)} to ${day(new Date(sub.trialEndDate.getTime() + 7 * 86_400_000))}.`;
   }
 
   /** [ADS-ON] The advertiser's owners hear what the partner hears: what happened, never what to tap. */

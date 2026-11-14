@@ -1,0 +1,17 @@
+-- Rollback for 20261114120000_kitchen_delivery_overflow. [round 2 · review A S3-1] CODE ONLY: NOTHING IS DROPPED.
+-- Roll the code back; run no SQL. (As 20261113210000_store_vat_exclusive does.)
+--   0. Optional, first: every branch's overflow back to NONE (the console or the store's settings), or simply keep
+--      DRAGONTAIL_INTEGRATION off (production ships with it off: then nothing ever read or wrote these columns).
+--   1. Roll the code back.
+-- Why nothing is dropped:
+--   - The new code reads every column this migration adds (the store's order and money views, the claim, the accept
+--     bind, the link breaker). Dropping them while it still serves breaks those reads ("column does not exist").
+--   - The previous release ignores all of them: orders."kitchenRoute*" and the vendor_integrations timestamps and
+--     counts are nullable; "overflowMode", "overflowBusyHours", "linkFailures" and order_integration_syncs."maybeInKitchen"
+--     have constant defaults, so its inserts still work.
+--   - orders."kitchenRoute*" are the only record of where each such order went (ops and the store read them).
+--   - The migration stays recorded as applied, so a roll-forward does not re-run it; a re-added column would lose
+--     the record anyway.
+-- If the columns must go one day, drop them only AFTER the code rollback, and delete this migration's row from
+-- _prisma_migrations in the same step.
+SELECT 'kitchen_delivery_overflow rollback: code only, nothing to run' AS note;

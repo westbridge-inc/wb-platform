@@ -1,4 +1,4 @@
-import type { Prisma, PrismaClient } from '@prisma/client';
+import type { Prisma, PrismaClient, Subscription } from '@prisma/client';
 import { billingEffectsReady } from './billing-cutover';
 import { ACTIVE_CONFIRMATION_STATES, confirmationSources, currentDunningClock, feeReversalOpenInTx, lateCardApprovalHeldInTx, type ConfirmationSource } from './dunning-clock';
 import { lockFeeCollectionAuthority, readFeeCollectionAuthority } from '../subscription/mover-fee-authority';
@@ -32,10 +32,27 @@ export async function lockFeePaymentDecision(
   return allow;
 }
 
+/**
+ * [TRIAL PAY-AHEAD · owner 14 Nov 2026] A subscription still in its free trial, whose first weekly fee falls due
+ * exactly when the trial ends, has no billing clock yet: nothing is owed and nothing has ever been paid, so there is
+ * no obligation for a clock to cover (a trial is born without one; conversion, a billing-method choice or a payment
+ * door's own locked decision maps it). Such a trial may pay its first week ahead. Only the read below accepts the
+ * missing clock, and only for this exact shape; every other missing clock still fails closed. The write path maps the
+ * clock under the payer lock (lockFeePaymentDecision -> currentDunningClock) and decides again before anything is
+ * reserved, exactly as for any other partner.
+ */
+export function unmappedTrialAwaitingFirstFee(
+  sub: Pick<Subscription, 'status' | 'isTrialActive' | 'trialEndDate' | 'nextBillingDate'>, now: Date,
+): boolean {
+  return sub.status === 'TRIAL' && sub.isTrialActive && !!sub.trialEndDate
+    && sub.trialEndDate.getTime() > now.getTime() && sub.nextBillingDate.getTime() === sub.trialEndDate.getTime();
+}
+
 /** Read-only display hint for NEW Pay actions. It cannot reserve or emit a
- * payable instruction. Missing/stale clock coverage fails closed; the write
+ * payable instruction. Missing/stale clock coverage fails closed (except a
+ * free trial awaiting its first fee: unmappedTrialAwaitingFirstFee); the write
  * path repeats the locked decision immediately before reservation/handoff. */
-export async function readFeePaymentDecision(db: PrismaClient, subscriptionId: string): Promise<FeePaymentDecision> {
+export async function readFeePaymentDecision(db: PrismaClient, subscriptionId: string, now: Date = new Date()): Promise<FeePaymentDecision> {
   return db.$transaction(async (tx) => {
     if (!await billingEffectsReady(tx)) return blocked('BILLING_PREPARING');
     const authority = await readFeeCollectionAuthority(tx, subscriptionId);
@@ -44,13 +61,15 @@ export async function readFeePaymentDecision(db: PrismaClient, subscriptionId: s
       tx.subscription.findUnique({ where: { id: subscriptionId } }),
       tx.billingDunningClock.findUnique({ where: { subscriptionId } }),
     ]);
-    if (!sub || !clock || clock.dueAt.getTime() !== sub.nextBillingDate.getTime()
+    if (!sub) return blocked('BILLING_REVIEW_REQUIRED');
+    if (!clock ? !unmappedTrialAwaitingFirstFee(sub, now) : (clock.dueAt.getTime() !== sub.nextBillingDate.getTime()
       || clock.authorityHoldReason || (authority.mover && (clock.moverPayerUserId !== authority.mover.payerUserId
-        || clock.tenantId !== authority.mover.tenantId || clock.authorityRevision !== authority.mover.revision))) return blocked('BILLING_REVIEW_REQUIRED');
-    if (clock.pausedAt || await tx.paymentConfirmationHold.count({ where: { clockId: clock.id, status: { in: ACTIVE_CONFIRMATION_STATES } } })) return blocked('PAYMENT_CONFIRMING');
+        || clock.tenantId !== authority.mover.tenantId || clock.authorityRevision !== authority.mover.revision)))) return blocked('BILLING_REVIEW_REQUIRED');
+    if (clock && (clock.pausedAt || await tx.paymentConfirmationHold.count({ where: { clockId: clock.id, status: { in: ACTIVE_CONFIRMATION_STATES } } }))) return blocked('PAYMENT_CONFIRMING');
     const { sources } = await confirmationSources(tx, authority.mover?.sourceSubscriptionIds ?? [subscriptionId]);
-    // [MMG reopen · review F3] THE per-source filter, shared with the reopen grant.
-    if ((await unresolvedConfirmationSources(tx, sources, clock.id, 1)).length) return blocked('PAYMENT_CONFIRMING');
+    // [MMG reopen · review F3] THE per-source filter, shared with the reopen grant. With no clock yet, every source is
+    // unresolved (no hold can be on a clock that does not exist).
+    if ((await unresolvedConfirmationSources(tx, sources, clock?.id ?? null, 1)).length) return blocked('PAYMENT_CONFIRMING');
     if (await feeReversalOpenInTx(tx, authority.mover?.sourceSubscriptionIds ?? [subscriptionId])) return blocked('PAYMENT_CONFIRMING');
     return allow;
   });
@@ -62,7 +81,7 @@ export async function readFeePaymentDecision(db: PrismaClient, subscriptionId: s
  * approval held for a person, no hold, another clock's hold or an active hold
  * all count. Read-only; `limit` stops early. */
 export async function unresolvedConfirmationSources<T extends { source: ConfirmationSource; reason?: string }>(
-  tx: Prisma.TransactionClient, sources: readonly T[], clockId: string, limit = Infinity,
+  tx: Prisma.TransactionClient, sources: readonly T[], clockId: string | null, limit = Infinity,
 ): Promise<T[]> {
   const unresolved: T[] = [];
   for (const source of sources) {

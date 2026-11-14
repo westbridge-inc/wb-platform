@@ -512,11 +512,22 @@ describe('the MMG door\'s rules', () => {
     const end = new Date(Date.now() + 10 * 86_400_000);
     const sub = await makeSub({ status: 'TRIAL', isTrialActive: true, trialEndDate: end, nextBillingDate: end });
     expect((await ask(sub.id, cash({ amount: 20_001 }))).statusCode).toBe(409);
+    // [TRIAL PAY-AHEAD · owner 14 Nov 2026] One week ahead during a free trial: the first week after it ends. The door
+    // is open for it before the trial has a billing clock, and says the most it takes.
+    expect(await inPersonDoor(app.prisma, sub.id)).toMatchObject({ open: true, mostGyd: 5000 });
+    const twoWeeks = await ask(sub.id, cash({ amount: 10_000 }));
+    expect(twoWeeks.statusCode).toBe(409);
+    expect(twoWeeks.json().error).toMatchObject({ code: 'PAY_AHEAD_LIMIT',
+      message: 'This account is in its free trial, and Swift takes one weekly fee ahead during a trial: the first week after it ends. Nothing was recorded. Take at most GY$5,000; if you already took more, hand the rest back.' });
+    expect(await asks(sub.id)).toBe(0);
     expect((await pay(sub.id, cash())).statusCode).toBe(200);
     const fresh = await app.prisma.subscription.findUniqueOrThrow({ where: { id: sub.id } });
     expect(fresh).toMatchObject({ status: 'TRIAL', isTrialActive: true });
     expect(fresh.nextBillingDate.getTime()).toBe(end.getTime());
     expect(await balance(sub.id)).toBe(5000);
+    const again = await ask(sub.id, cash());
+    expect(again.statusCode).toBe(409);
+    expect(again.json().error.message).toBe('This account is in its free trial and its first weekly fee after the trial is already paid. Nothing was recorded: do not take this money. If you already took it, hand it back.');
   });
 
   it('while the fee is paused nothing is owed, so no money is taken', async () => {

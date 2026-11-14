@@ -161,6 +161,8 @@ describe('census: nothing else turns subtotalBase into a float amount', () => {
     // [REVIEW-2472 A-1] delivery-capacity only READS it too: before a placed CASH order is handed to Swift riders
     // (the store's accept, or "Get a Swift rider"), it asks checkout's rider-cash question with the amount the
     // float gate will hold.
+    // [DT-OVERFLOW] kitchen-overflow only READS it as well: before a Dragontail branch's delivery is moved to Swift
+    // riders, it counts the riders near whose cash limit covers the amount the float gate will hold.
     expect(importers).toEqual([
       'modules/custody/custody-case.ts',
       'modules/custody/custody-recovery.ts',
@@ -168,6 +170,7 @@ describe('census: nothing else turns subtotalBase into a float amount', () => {
       'modules/dispatch/delivery-watchdog.ts',
       'modules/dispatch/dispatch.service.ts',
       'modules/dispatch/float.service.ts',
+      'modules/kitchen/kitchen-overflow.ts',
       'modules/order/order.service.ts',
       'modules/rider/rider.routes.ts',
     ]);

@@ -332,6 +332,10 @@ export const ADMIN_ROUTE_AUTHORITY: Readonly<Record<AdminRouteKey, AdminRouteAut
   'POST /vendors/:id/kitchen-integration/test': c('C2', 'vendor.integration.manage'),
   'GET /vendors/:id/kitchen-integration/syncs': c('C0', 'vendor.integration.read'),
   'PUT /vendors/:id/kitchen-integration/item-numbers': c('C2', 'vendor.integration.manage'),
+  'GET /vendors/:id/kitchen-integration/overflow': c('C0', 'vendor.integration.read'),
+  'PUT /vendors/:id/kitchen-integration/overflow': c('C2', 'vendor.integration.manage'),
+  'GET /vendors/:id/kitchen-integration/routes': c('C0', 'vendor.integration.read'),
+  'POST /vendors/:id/kitchen-integration/orders/:orderId/not-in-kitchen': c('C2', 'vendor.integration.manage'),
   'PUT /vendors/:id/seller-name': c('C3', 'vendor.approve', { model: 'vendor', fields: ['sellerNameCheckedName', 'sellerNameCheckedAt', 'sellerNameCheckedById'] }),
 
   // ── Movers ──────────────────────────────────────────────────────────────

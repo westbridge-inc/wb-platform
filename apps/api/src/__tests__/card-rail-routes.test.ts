@@ -20,6 +20,7 @@ import { riderRoutes } from '../modules/rider/rider.routes';
 import { driverRoutes } from '../modules/driver/driver.routes';
 import { adminRoutes } from '../modules/admin/admin.routes';
 import { stepUpKey } from '../modules/auth/step-up';
+import { SubscriptionService } from '../modules/subscription/subscription.service';
 import { BillingService } from '../modules/billing/billing.service';
 import { resolveConfirmationInTx, ACTIVE_CONFIRMATION_STATES, hasConfirmationInTx, readDunningClock } from '../modules/billing/dunning-clock';
 import { readFeePaymentDecision } from '../modules/billing/fee-payment-authority';
@@ -1046,6 +1047,66 @@ describe('payActions CARD: the server alone decides, per platform, whether the P
     expect(pageState((await follow(await press(opened.hostedUrl, 'APPROVE'))).body)).toBe('SUCCEEDED');
     railOverride = realProvider({ savesCards: false });
     expect((await cardActionOf(p))['state']).toBe('live');
+  });
+
+  // [TRIAL PAY-AHEAD · owner 14 Nov 2026] A partner in its free trial may pay the weekly fee a week ahead by card. Before,
+  // a trial had no billing clock and the read-only decision refused it (above), so no card button was ever drawn.
+  it('[owner 14 Nov] a rider in its free trial (no clock yet) pays ONE week ahead by card: kept as credit for the week that starts when the trial ends', async () => {
+    railOverride = realProvider({ savesCards: false });
+    // The trial ends within the hour, so the conversion below reaches only trials this close to their end.
+    const trialEnd = new Date(Date.now() + 60 * 60_000);
+    const p = await makeRider({ mapped: false, status: 'TRIAL', due: trialEnd });
+    await app.prisma.subscription.update({ where: { id: p.subId }, data: { isTrialActive: true, trialEndDate: trialEnd } });
+    const quote = await runtime.billing.quoteCardPayNow(p.subId);
+    expect(quote).toMatchObject({ amount: 6000, currencyCode: 'GYD', due: false });
+    expect(quote.periodStart.getTime(), 'the week paid is the first after the trial').toBe(trialEnd.getTime());
+    expect(await cardActionOf(p)).toMatchObject({ id: 'CARD', state: 'live', payNow: { amount: 6000, currencyCode: 'GYD' } });
+    expect(await app.prisma.billingDunningClock.count({ where: { subscriptionId: p.subId } }), 'reading maps no clock').toBe(0);
+    // [REVIEW-A #2513 S4-1] The trial line says what paying now covers only because a way to pay is open on this screen.
+    const screen = (await partnerCall(p, 'GET', '/subscription')).json().data;
+    expect(screen.feeStatus).toMatchObject({ state: 'TRIAL' });
+    expect(screen.feeStatus.detail).toMatch(/^Your first weekly fee, GY\$6,000, is due on .+\. Paying now covers .+ to .+: no trial day is lost\.$/);
+
+    const opened = await startSession(p, 'PAY_NOW');
+    expect(opened.statusCode, opened.body).toBe(201);
+    const session = opened.json().data;
+    railOverride = null; // the simulator's own page serves the button
+    expect(pageState((await follow(await press(session.hostedUrl, 'APPROVE'))).body)).toBe('SUCCEEDED');
+    railOverride = realProvider({ savesCards: false });
+
+    // Kept as fee credit (the week has not started), once; the trial and its first fee date untouched.
+    const row = await app.prisma.cardSession.findUniqueOrThrow({ where: { id: session.sessionId } });
+    const kept = await app.prisma.billingEvent.findUniqueOrThrow({ where: { idempotencyKey: `bank:${row.paymentId}` } });
+    expect((await app.prisma.feeReceipt.findUniqueOrThrow({ where: { billingEventId: kept.id } })).channel).toBe('CARD_PAY_AHEAD');
+    const after = await money(p.subId);
+    expect(after.sub).toMatchObject({ status: 'TRIAL', isTrialActive: true, failedAttempts: 0 });
+    expect(after.sub.nextBillingDate.getTime()).toBe(trialEnd.getTime());
+    expect(after.successes).toBe(0);
+    expect(Number((await app.prisma.prepaidBalance.findUniqueOrThrow({ where: { subscriptionId: p.subId } })).balance)).toBe(6000);
+    expect((await partnerCall(p, 'GET', `${SESSIONS}/${session.sessionId}`)).json().data).toMatchObject({ status: 'SUCCEEDED', settlement: 'banked' });
+    await runtime.service.confirm(session.sessionId);
+    expect(await app.prisma.billingEvent.count({ where: { subscriptionId: p.subId, idempotencyKey: { startsWith: 'bank:' } } })).toBe(1);
+
+    // One week is all a trial takes: no second card button, and the door says why before any page exists.
+    expect(await cardActionOf(p)).toEqual({ id: 'CARD', state: 'off' });
+    const again = await startSession(p, 'PAY_NOW');
+    expect(again.statusCode, again.body).toBe(409);
+    expect(again.json().error).toMatchObject({ code: 'PAY_AHEAD_LIMIT',
+      message: 'Your first weekly fee after your free trial is already paid. You can pay again once your trial has ended.' });
+
+    // The trial ends: the conversion makes the fee due and the billing run pays the first week from the card credit,
+    // once, with no charge to the card and nothing failed.
+    const at = new Date(trialEnd.getTime() + 60_000);
+    await new SubscriptionService(app.prisma).convertExpiredTrials(at);
+    const billable = await app.prisma.subscription.findUniqueOrThrow({ where: { id: p.subId },
+      include: { rider: { select: { userId: true } }, driver: { select: { userId: true } }, vendor: { select: { id: true, owner: { select: { userId: true } } } } } });
+    expect(await runtime.billing.billSubscription(billable as never, new Date(at.getTime() + 60_000))).toBe('succeeded');
+    const paid = await money(p.subId);
+    expect(paid.sub).toMatchObject({ status: 'ACTIVE', failedAttempts: 0 });
+    expect(paid.sub.nextBillingDate.getTime()).toBe(trialEnd.getTime() + 7 * DAY);
+    expect(paid.successes).toBe(1);
+    expect(Number((await app.prisma.prepaidBalance.findUniqueOrThrow({ where: { subscriptionId: p.subId } })).balance)).toBe(0);
+    expect(await app.prisma.cardSession.count({ where: { subscriptionId: p.subId } }), 'no second card page').toBe(1);
   });
 
   it('a subscription that cannot pay (billing stopped, waived): CARD off', async () => {

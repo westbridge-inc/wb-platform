@@ -67,6 +67,10 @@ function vendorHandler(mutation: (_request: ApiRequest) => { body: unknown; stat
         validDays: 14, consents: [], papers: { checklist: [], optional: [], missing: [], documents: [] }, items: [], canAddItems: true,
       } } };
     }
+    // [DT-OVERFLOW] ...and its Dragontail overflow panel (switch off: the panel shows nothing)
+    if (request.method === 'GET' && request.url.pathname === '/api/v1/admin/vendors/vendor-target/kitchen-integration/overflow') {
+      return { body: { success: true, data: { switchOn: false, connected: false, enabled: false, mode: 'NONE', busyHours: [], updatedAt: null } } };
+    }
     return mutation(request);
   };
 }
@@ -167,10 +171,11 @@ describe('vendor suspension mutation', () => {
     expect(screen.getByRole('heading', { name: 'Target Store' })).toBeTruthy();
     expect(screen.getByText('Live')).toBeTruthy();
     expect(requestsByMethod(fetchMock, 'PUT')).toHaveLength(1);
-    // three reads on load — the store, its activation checklist [MC-PR2] and its assisted-setup panel [ASSISTED SETUP];
-    // the refusal re-read nothing
+    // four reads on load — the store, its activation checklist [MC-PR2], its assisted-setup panel [ASSISTED SETUP] and
+    // its Dragontail overflow panel [DT-OVERFLOW]; the refusal re-read nothing
     expect(requestsByMethod(fetchMock, 'GET').map(([url]) => new URL(String(url)).pathname).sort()).toEqual([
       '/api/v1/admin/vendors/vendor-target', '/api/v1/admin/vendors/vendor-target/activation-checklist', '/api/v1/admin/vendors/vendor-target/assisted-setup',
+      '/api/v1/admin/vendors/vendor-target/kitchen-integration/overflow',
     ]);
 
     // closing the panel does not make the refusal vanish: the page keeps it

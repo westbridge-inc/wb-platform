@@ -41,6 +41,7 @@ import {
   orderActions,
 } from '../shared';
 import { deliveryOwnerView } from './delivery-owner';
+import { ROUTE_NOTE_TEST_ID, withKitchenHold } from '../deliveryOverflow';
 import { NO_SHOW_WORDS, orderNoShowOpen } from '../noShow';
 import { NoShowConfirm, useStartClock } from '../NoShowConfirm';
 import { MmgRefundOwedCard } from '../MmgRefundOwedCard';
@@ -294,7 +295,7 @@ function VendorOrderDetailBody({ navigation, route }: any) {
   const timeline: any[] = [...(order.statusHistory ?? [])].reverse();
   const customerName = [order.customer?.firstName, order.customer?.lastName].filter(Boolean).join(' ') || 'Customer';
   const riderName = [order.rider?.user?.firstName, order.rider?.user?.lastName].filter(Boolean).join(' ');
-  const deliveryOwner = deliveryOwnerView({
+  const deliveryOwner = withKitchenHold(deliveryOwnerView({
     fulfillment: order.fulfillment,
     fulfillmentMode: order.fulfillmentMode,
     status: order.status,
@@ -304,7 +305,7 @@ function VendorOrderDetailBody({ navigation, route }: any) {
     noRiderFound: order.noRiderFound === true,
     noRiderPrompt: order.noRiderPrompt,
     noRiderDetail: order.noRiderDetail,
-  });
+  }), order.kitchen);
 
   const runAction = (action: (typeof actions)[number]['action']) => {
     if (action === 'reject') {
@@ -768,6 +769,11 @@ function VendorOrderDetailBody({ navigation, route }: any) {
                 <T variant="caption" tone="muted" style={{ marginTop: 2 }}>
                   {deliveryOwner.description}
                 </T>
+                {deliveryOwner.kitchenNote ? (
+                  <T variant="caption" weight="semibold" style={{ marginTop: space.sm }} testID={ROUTE_NOTE_TEST_ID}>
+                    {deliveryOwner.kitchenNote.title}
+                  </T>
+                ) : null}
               </View>
             </View>
             {deliveryOwner.canChooseVendor || deliveryOwner.canChoosePlatform ? (

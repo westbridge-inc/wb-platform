@@ -1,5 +1,6 @@
 import {
   KitchenPermanentError,
+  KitchenTransientError,
   type KitchenEvent,
   type KitchenInsertResult,
   type KitchenIntegrationProvider,
@@ -12,6 +13,7 @@ import {
   DRAGONTAIL_ITEMS_ACTION,
   dragontailCancelBody,
   dragontailEvents,
+  dragontailFreeVehicles,
   dragontailInsertBody,
   dragontailUpdateEvents,
 } from './dragontail-mapper';
@@ -26,6 +28,8 @@ import {
  *                              GET /GetPosNotification?storeNo=&id=<consumer> only when DRAGONTAIL_POLL_QUEUE=1
  *                              (it may be consume-on-read; the consumer id keeps Swift off the store POS's queue).
  *   parseWebhook             → the PosNotification body ({ time, orders: Notification[] })
+ *   freeDriverCount          → GET /PosGetVehicles/{StoreNo} ("(Optional) Retrieve unassigned vehicles"), the
+ *                              delivery overflow's driver check (kitchen-overflow.ts); read-only.
  */
 export class DragontailAdapter implements KitchenIntegrationProvider {
   readonly name = 'DRAGONTAIL' as const;
@@ -48,12 +52,25 @@ export class DragontailAdapter implements KitchenIntegrationProvider {
     await this.client.login();
   }
 
+  /** [round 3 · review B S2-1] The outage probe: a login AND a read through the ORDER API (GetOrderUpdatesForPos at the
+   *  current cursor: idempotent, consumes nothing; the poll reads the same events itself). A login alone proves only
+   *  the login. Anything but a 200 is a failed probe. */
+  async probeOrderApi(storeNo: number, cursor: bigint): Promise<void> {
+    const answer = await this.client.call('POST', '/GetOrderUpdatesForPos', { storeNo, updateStamp: Number(cursor) }, true);
+    if (answer.status !== 200) throw new KitchenTransientError(`Dragontail GetOrderUpdatesForPos answered HTTP ${answer.status}`, false, true);
+  }
+
   private async postOrders(body: unknown, what: string): Promise<KitchenInsertResult> {
     await this.client.ensureToken();
     const answer = await this.client.call('POST', '/PosInsertOrders', body, false);
     const json = (answer.json ?? {}) as { status?: unknown; updateStamp?: unknown; orders?: unknown };
     const status = typeof json.status === 'string' ? json.status : '';
     if (answer.status !== 200 || status.toLowerCase() !== 'ok') {
+      // [round 3 · review B S3-5] A refusal on a RETRY whose earlier attempt got a 5xx: that attempt reached Dragontail
+      // and may have stored it (a duplicate id is refused as flowError/dbError). May have arrived, never "certainly not".
+      if (answer.after5xx) {
+        throw new KitchenTransientError(`Dragontail refused the ${what} on a retry after a 5xx (HTTP ${answer.status}${status ? `, ${status.slice(0, 40)}` : ''}); it may have arrived`, true, true);
+      }
       // parseError / validationError / dbError / flowError …: the same request would be refused again.
       throw new KitchenPermanentError(`Dragontail refused the ${what} (HTTP ${answer.status}${status ? `, ${status.slice(0, 40)}` : ''})`);
     }
@@ -109,5 +126,14 @@ export class DragontailAdapter implements KitchenIntegrationProvider {
 
   parseWebhook(body: unknown): KitchenEvent[] {
     return dragontailEvents(body);
+  }
+
+  /** [DT-OVERFLOW] How many unassigned vehicles the store has, or null for an answer Swift cannot read. A non-200 (the
+   *  endpoint is optional: a 404/405 means the store does not have it) is a refusal, which the caller treats as a
+   *  failed check. */
+  async freeDriverCount(storeNo: number): Promise<number | null> {
+    const answer = await this.client.call('GET', `/PosGetVehicles/${encodeURIComponent(String(storeNo))}`);
+    if (answer.status !== 200) throw new KitchenPermanentError(`Dragontail PosGetVehicles answered HTTP ${answer.status}`);
+    return dragontailFreeVehicles(answer.json);
   }
 }
